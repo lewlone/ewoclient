@@ -69,18 +69,18 @@ use rewo_net::abilities::{
     serverbound, PlayerAbilities, FLAG_CAN_FLY, FLAG_FLYING, FLAG_INSTABUILD, FLAG_INVULNERABLE,
 };
 use rewo_net::bundle::{BundleAssembler, BundleIds, Feed, BUNDLE_SIZE_LIMIT};
+use rewo_net::client_state::{read_set_default_spawn_position, ClientState, Difficulty};
 use rewo_net::game_event::ClientGameState;
 use rewo_net::ids::Ids;
 use rewo_net::play::{apply_spawn_game_mode, GameMode};
+use rewo_net::player_rotation::{
+    route_player_rotation, Anchor, LocalRotation, PlayerLookAt, PlayerRotation, RotationRoute,
+};
 use rewo_net::route_session;
 use rewo_net::session::{
     read_chat_type_bound, read_custom_payload, read_player_combat_end, read_player_combat_enter,
     read_server_data, read_store_cookie, write_cookie_response, CustomPayload, SessionState,
     BRAND_PAYLOAD_ID, MAX_COOKIE_PAYLOAD_SIZE,
-};
-use rewo_net::client_state::{read_set_default_spawn_position, ClientState, Difficulty};
-use rewo_net::player_rotation::{
-    route_player_rotation, Anchor, LocalRotation, PlayerLookAt, PlayerRotation, RotationRoute,
 };
 use rewo_proto::reader::PacketReader;
 use rewo_world::abilities::{Abilities, FlightControl};
@@ -244,7 +244,12 @@ fn check_clientbound_wire(c: &mut Checker) {
 
     // w1.crate_masks_match_the_decompiled_literals.
     // MUTATION: change any FLAG_* constant.
-    let masks = (FLAG_INVULNERABLE, FLAG_FLYING, FLAG_CAN_FLY, FLAG_INSTABUILD);
+    let masks = (
+        FLAG_INVULNERABLE,
+        FLAG_FLYING,
+        FLAG_CAN_FLY,
+        FLAG_INSTABUILD,
+    );
     c.record(
         "w1.crate_masks_match_the_decompiled_literals",
         masks == (1, 2, 4, 8),
@@ -313,7 +318,10 @@ fn check_clientbound_wire(c: &mut Checker) {
     c.record(
         "w1.apply_to_clears_as_well_as_sets",
         !a.flying && !a.mayfly && !a.instabuild && !a.invulnerable,
-        format!("all four cleared by a zero-flags packet: flying={}", a.flying),
+        format!(
+            "all four cleared by a zero-flags packet: flying={}",
+            a.flying
+        ),
     );
 }
 
@@ -366,12 +374,21 @@ fn check_mode_table(c: &mut Checker) {
     let want = [
         (GameMode::Survival, (false, false, false, Some(false), true)),
         (GameMode::Creative, (true, true, true, None, true)),
-        (GameMode::Adventure, (false, false, false, Some(false), false)),
+        (
+            GameMode::Adventure,
+            (false, false, false, Some(false), false),
+        ),
         (GameMode::Spectator, (true, false, true, Some(true), false)),
     ];
     for (mode, w) in want {
         let m = mode.update_player_abilities();
-        let got = (m.mayfly, m.instabuild, m.invulnerable, m.flying, m.may_build);
+        let got = (
+            m.mayfly,
+            m.instabuild,
+            m.invulnerable,
+            m.flying,
+            m.may_build,
+        );
         // w3.mode_table.<mode>
         // MUTATION: any single field of that arm.
         c.record(
@@ -414,7 +431,10 @@ fn check_mode_table(c: &mut Checker) {
     c.record(
         "w3.leaving_creative_clears_flight",
         !a.flying && !a.mayfly && !a.instabuild && !a.invulnerable,
-        format!("flying={} mayfly={} (both must be false)", a.flying, a.mayfly),
+        format!(
+            "flying={} mayfly={} (both must be false)",
+            a.flying, a.mayfly
+        ),
     );
 
     // w3.spectator_is_the_only_mode_that_sets_flying.
@@ -523,13 +543,12 @@ fn check_gamemode_sources(c: &mut Checker) {
     // way a mode the player was never in.
     c.record(
         "w4.previous_game_type_minus_one_is_absent",
-        state.previous_game_mode() == Some(GameMode::Creative)
-            && {
-                let s = decode(1, -1);
-                let mut st = ClientGameState::default();
-                apply_spawn_game_mode(&mut st, &mut Abilities::default(), &s);
-                st.previous_game_mode().is_none()
-            },
+        state.previous_game_mode() == Some(GameMode::Creative) && {
+            let s = decode(1, -1);
+            let mut st = ClientGameState::default();
+            apply_spawn_game_mode(&mut st, &mut Abilities::default(), &s);
+            st.previous_game_mode().is_none()
+        },
         format!(
             "prev(from 1)={:?}, prev(from -1)=None",
             state.previous_game_mode()
@@ -594,10 +613,7 @@ fn check_flight_physics(c: &mut Checker) {
         seen.push(p.vy);
     }
     let want: Vec<f64> = (1..=5).map(|n| 0.6f64.powi(n)).collect();
-    let decays = seen
-        .iter()
-        .zip(&want)
-        .all(|(g, w)| near(*g, *w, 1e-12));
+    let decays = seen.iter().zip(&want).all(|(g, w)| near(*g, *w, 1e-12));
     c.record(
         "w5.flight_has_no_gravity",
         decays && p.vy > 0.0,
@@ -829,7 +845,14 @@ fn check_flight_physics(c: &mut Checker) {
         let mut p = PlayerState::at(0.5, 80.0, 0.5);
         p.vx = vx;
         p.vz = vz;
-        tick_with(&mut p, &TickInput::default(), &Abilities::default(), false, None, &air);
+        tick_with(
+            &mut p,
+            &TickInput::default(),
+            &Abilities::default(),
+            false,
+            None,
+            &air,
+        );
         (p.vx != 0.0, p.vz != 0.0)
     };
     let joint = survives(0.0025, 0.0025);
@@ -964,7 +987,10 @@ fn check_toggle(c: &mut Checker) {
     c.record(
         "w6.a_toggle_resets_the_window",
         on && ab.flying,
-        format!("toggled on={on}, still flying after the next press={}", ab.flying),
+        format!(
+            "toggled on={on}, still flying after the next press={}",
+            ab.flying
+        ),
     );
 
     // w6.toggling_on_while_standing_jumps.
@@ -999,7 +1025,10 @@ fn check_toggle(c: &mut Checker) {
     c.record(
         "w6.creative_flight_ends_on_landing",
         !airborne && landed && !ab.flying,
-        format!("airborne changed={airborne} landed changed={landed} flying={}", ab.flying),
+        format!(
+            "airborne changed={airborne} landed changed={landed} flying={}",
+            ab.flying
+        ),
     );
 
     // w6.a_spectator_is_forced_flying_and_never_lands.
@@ -1014,7 +1043,10 @@ fn check_toggle(c: &mut Checker) {
     c.record(
         "w6.a_spectator_is_forced_flying_and_never_lands",
         ab.flying && forced.abilities_changed && !ends,
-        format!("flying={} announced={} landing_ends_it={ends}", ab.flying, forced.abilities_changed),
+        format!(
+            "flying={} announced={} landing_ends_it={ends}",
+            ab.flying, forced.abilities_changed
+        ),
     );
 
     // w6.a_client_side_change_owes_the_server_a_packet.
@@ -1080,7 +1112,10 @@ fn check_packet_to_flight(c: &mut Checker) {
     c.record(
         "w7.a_packet_grants_flight_that_actually_flies",
         ab.flying && near(p.vz, want, 1e-6),
-        format!("vz={:.5} (want {want:.5} for the packet's 0.1 flying speed)", p.vz),
+        format!(
+            "vz={:.5} (want {want:.5} for the packet's 0.1 flying speed)",
+            p.vz
+        ),
     );
 
     // w7.a_packet_can_take_flight_away_mid_air.
@@ -1098,7 +1133,10 @@ fn check_packet_to_flight(c: &mut Checker) {
     c.record(
         "w7.a_packet_can_take_flight_away_mid_air",
         before && !ab.flying && q.vy < -0.3,
-        format!("was flying={before}, now flying={}, falling vy={:.4}", ab.flying, q.vy),
+        format!(
+            "was flying={before}, now flying={}, falling vy={:.4}",
+            ab.flying, q.vy
+        ),
     );
 }
 
@@ -1111,10 +1149,12 @@ fn check_packet_to_flight(c: &mut Checker) {
 /// delimiter and terminal ids, so a renumber or a mis-resolved name shows up
 /// here rather than as a silent no-op.
 fn check_bundle(c: &mut Checker, delimiter: i32, terminal: Option<i32>) {
-    let fresh = || BundleAssembler::new(BundleIds {
-        delimiter,
-        terminal,
-    });
+    let fresh = || {
+        BundleAssembler::new(BundleIds {
+            delimiter,
+            terminal,
+        })
+    };
 
     // w8.only_the_resolved_delimiter_opens_a_bundle.
     // MUTATION: hard-code `0` as the delimiter instead of taking it from `Ids`.
@@ -1128,7 +1168,10 @@ fn check_bundle(c: &mut Checker, delimiter: i32, terminal: Option<i32>) {
     c.record(
         "w8.only_the_resolved_delimiter_opens_a_bundle",
         opened && ignored,
-        format!("delimiter={delimiter} opens={opened}, id {} passes through={ignored}", delimiter + 1),
+        format!(
+            "delimiter={delimiter} opens={opened}, id {} passes through={ignored}",
+            delimiter + 1
+        ),
     );
 
     // w8.a_bundle_is_withheld_until_it_closes.
@@ -1162,7 +1205,10 @@ fn check_bundle(c: &mut Checker, delimiter: i32, terminal: Option<i32>) {
     c.record(
         "w8.an_unterminated_bundle_survives_a_drained_queue",
         survived && closed && run.len() == 2,
-        format!("still buffering across the gap={survived}, resumed run={} packets", run.len()),
+        format!(
+            "still buffering across the gap={survived}, resumed run={} packets",
+            run.len()
+        ),
     );
 
     // w8.a_second_delimiter_closes_rather_than_nesting.
@@ -1296,7 +1342,10 @@ fn check_session(c: &mut Checker, ids: &Ids) {
         && routed_chat;
     let landed = s.server_brand.as_deref() == Some("Paper")
         && s.cookie("mynet:session") == Some(&[0xdeu8, 0xad][..])
-        && s.game_rules.get("minecraft:keep_inventory").map(String::as_str) == Some("true")
+        && s.game_rules
+            .get("minecraft:keep_inventory")
+            .map(String::as_str)
+            == Some("true")
         && s.server_data.as_ref().map(|d| d.motd.as_str()) == Some("A Minecraft Server")
         && {
             // M127: the queue carries whole `DisguisedChat`s, because the
@@ -1327,7 +1376,10 @@ fn check_session(c: &mut Checker, ids: &Ids) {
     c.record(
         "w9.an_unrelated_id_is_not_claimed",
         !claimed && s2 == SessionState::default(),
-        format!("keep_alive (id {}) claimed={claimed}", ids.cb_play_keep_alive),
+        format!(
+            "keep_alive (id {}) claimed={claimed}",
+            ids.cb_play_keep_alive
+        ),
     );
 
     // w9.the_brand_identifier_is_namespaced.
@@ -1440,7 +1492,8 @@ fn check_session(c: &mut Checker, ids: &Ids) {
     let over = read_store_cookie(&cookie_body(MAX_COOKIE_PAYLOAD_SIZE + 1));
     c.record(
         "w9.the_cookie_payload_limit_is_an_error_on_the_bound",
-        at.as_ref().is_ok_and(|(_, p)| p.len() == MAX_COOKIE_PAYLOAD_SIZE)
+        at.as_ref()
+            .is_ok_and(|(_, p)| p.len() == MAX_COOKIE_PAYLOAD_SIZE)
             && over.is_err()
             && MAX_COOKIE_PAYLOAD_SIZE == 5120,
         format!(
@@ -1500,7 +1553,9 @@ fn check_session(c: &mut Checker, ids: &Ids) {
                             ]
                 })
         ) && b.name.to_plain_text() == "Notch"
-            && b.target_name.as_ref().map(rewo_proto::nbt::Nbt::to_plain_text)
+            && b.target_name
+                .as_ref()
+                .map(rewo_proto::nbt::Nbt::to_plain_text)
                 == Some("Herobrine".to_string())
     }) && r.remaining() == 0;
     c.record(
@@ -1554,9 +1609,14 @@ fn check_session(c: &mut Checker, ids: &Ids) {
     c.record(
         "w9.server_data_reads_an_optional_icon_not_an_unconditional_one",
         a.as_ref().is_ok_and(|d| d.icon.is_none())
-            && b.as_ref().is_ok_and(|d| d.icon.as_deref() == Some(&[0x89, 0x50, 0x4e][..]))
+            && b.as_ref()
+                .is_ok_and(|d| d.icon.as_deref() == Some(&[0x89, 0x50, 0x4e][..]))
             && read_server_data(&wire_component("hi")).is_err(),
-        format!("absent -> {:?}, present -> {:?}", a.map(|d| d.icon), b.map(|d| d.icon)),
+        format!(
+            "absent -> {:?}, present -> {:?}",
+            a.map(|d| d.icon),
+            b.map(|d| d.icon)
+        ),
     );
 
     // w9.a_malformed_session_body_changes_nothing.
@@ -1660,12 +1720,7 @@ fn world_spawn_body(dimension: &str, pos: (i32, i32, i32), yaw: f32, pitch: f32)
 
 /// Drive one rotation packet through the production seam and report the
 /// resulting `(yaw, pitch)` plus which packet the seam said it was.
-fn route_rot(
-    ids: &Ids,
-    id: i32,
-    body: &[u8],
-    start: (f32, f32),
-) -> ((f32, f32), RotationRoute) {
+fn route_rot(ids: &Ids, id: i32, body: &[u8], start: (f32, f32)) -> ((f32, f32), RotationRoute) {
     route_rot_from(ids, id, body, start, [0.0, 0.0, 0.0], |_, _| None)
 }
 
@@ -1710,7 +1765,13 @@ fn check_rotation_wire(c: &mut Checker, ids: &Ids) {
         layout,
         format!(
             "({}, {}, {}, {}) then ({}, {}, {}, {})",
-            p.y_rot, p.relative_y, p.x_rot, p.relative_x, q.y_rot, q.relative_y, q.x_rot,
+            p.y_rot,
+            p.relative_y,
+            p.x_rot,
+            p.relative_x,
+            q.y_rot,
+            q.relative_y,
+            q.x_rot,
             q.relative_x
         ),
     );
@@ -1806,8 +1867,7 @@ fn check_rotation_wire(c: &mut Checker, ids: &Ids) {
     let ent = PlayerLookAt::parse(&look_body(0, [0.0; 3], Some((3, 1)))).expect("parse");
     c.record(
         "w8.at_entity_and_to_anchor_agree_after_parse",
-        point.at_entity == point.to_anchor.is_some()
-            && ent.at_entity == ent.to_anchor.is_some(),
+        point.at_entity == point.to_anchor.is_some() && ent.at_entity == ent.to_anchor.is_some(),
         format!(
             "point: {}=={}, entity: {}=={}",
             point.at_entity,
@@ -1854,8 +1914,18 @@ fn check_rotation_semantics(c: &mut Checker, ids: &Ids) {
     // MUTATION: compose against a stored "last sent" rotation, or let one flag
     // drive both axes. The two calls below use the same numbers with the flags
     // swapped, so a single-flag implementation gives the same answer twice.
-    let ((y1, p1), _) = route_rot(ids, rot_id, &rot_body(30.0, true, -5.0, false), (100.0, 20.0));
-    let ((y2, p2), _) = route_rot(ids, rot_id, &rot_body(30.0, false, -5.0, true), (100.0, 20.0));
+    let ((y1, p1), _) = route_rot(
+        ids,
+        rot_id,
+        &rot_body(30.0, true, -5.0, false),
+        (100.0, 20.0),
+    );
+    let ((y2, p2), _) = route_rot(
+        ids,
+        rot_id,
+        &rot_body(30.0, false, -5.0, true),
+        (100.0, 20.0),
+    );
     c.record(
         "w9.each_flag_composes_its_own_axis",
         (y1, p1) == (130.0, -5.0) && (y2, p2) == (30.0, 15.0),
@@ -1866,7 +1936,12 @@ fn check_rotation_semantics(c: &mut Checker, ids: &Ids) {
     // MUTATION: drop `Mth.clamp(…, -90, 90)` from `calculateAbsolute`. 80 + 30
     // overshoots, so the clamp is the only thing between the player and 110.
     let ((_, pitch), _) = route_rot(ids, rot_id, &rot_body(0.0, false, 30.0, true), (0.0, 80.0));
-    let ((_, low), _) = route_rot(ids, rot_id, &rot_body(0.0, false, -30.0, true), (0.0, -80.0));
+    let ((_, low), _) = route_rot(
+        ids,
+        rot_id,
+        &rot_body(0.0, false, -30.0, true),
+        (0.0, -80.0),
+    );
     c.record(
         "w9.the_pitch_clamps_to_ninety",
         pitch == 90.0 && low == -90.0,
@@ -1882,7 +1957,12 @@ fn check_rotation_semantics(c: &mut Checker, ids: &Ids) {
     // positive base both orders saturate to 90 anyway. Separating them needs a
     // base of the opposite sign to the step — base -80, step +400 gives
     // `clamp(320) = 90` the right way round and `-80 + 90 = 10` the wrong one.
-    let ((_, sum), _) = route_rot(ids, rot_id, &rot_body(0.0, false, 400.0, true), (0.0, -80.0));
+    let ((_, sum), _) = route_rot(
+        ids,
+        rot_id,
+        &rot_body(0.0, false, 400.0, true),
+        (0.0, -80.0),
+    );
     c.record(
         "w9.the_pitch_clamp_is_on_the_sum_not_the_step",
         sum == 90.0,
@@ -2156,7 +2236,10 @@ fn check_respawn_data(c: &mut Checker, ids: &Ids) {
     c.record(
         "w10.yaw_and_pitch_are_stored_verbatim",
         w.yaw == 540.0 && w.pitch == 130.0,
-        format!("yaw={} pitch={} (want 540 / 130, not 180 / 90)", w.yaw, w.pitch),
+        format!(
+            "yaw={} pitch={} (want 540 / 130, not 180 / 90)",
+            w.yaw, w.pitch
+        ),
     );
 
     // w10.the_packet_lands_through_the_client_state_seam.

@@ -191,8 +191,7 @@ impl LiveApp {
                     let (gw, gh) = self.gui_size();
                     let screen = self.book_view_screen_for(gw, gh, true);
                     self.screen.screens.open(screen);
-                    self.book =
-                        Some(rewo_world::book_view_screen::BookViewScreen::new(Vec::new()));
+                    self.book = Some(rewo_world::book_view_screen::BookViewScreen::new(Vec::new()));
                     self.lectern_pages = None;
                     self.lectern_shown = Some(identity);
                     self.grab_for_screen(true);
@@ -213,8 +212,7 @@ impl LiveApp {
                         });
                     if self.lectern_pages.as_ref() != pages.as_ref() {
                         if let Some(p) = pages.clone() {
-                            self.book =
-                                Some(rewo_world::book_view_screen::BookViewScreen::new(p));
+                            self.book = Some(rewo_world::book_view_screen::BookViewScreen::new(p));
                         }
                         self.lectern_pages = pages;
                     }
@@ -473,8 +471,9 @@ impl LiveApp {
                 // M164 (r48) — a waterlogged block for the mesher to find.
                 // ABOVE the player, not beside: `~ ~2 ~` is air wherever a
                 // player is standing, while `~2 ~ ~` assumes flat ground.
-                let _ = session
-                    .send_command("setblock ~ ~2 ~ minecraft:oak_slab[type=bottom,waterlogged=true]");
+                let _ = session.send_command(
+                    "setblock ~ ~2 ~ minecraft:oak_slab[type=bottom,waterlogged=true]",
+                );
             }
             log::info!(
                 "live: spawned at ({:.1},{:.1},{:.1})",
@@ -553,7 +552,12 @@ impl LiveApp {
 
     /// The world pass: skins, the lightmap, entities, block entities, the
     /// sound listener, selection, leashes and the sky.
-    fn world_pass(&mut self, dt: f32, session: &mut PlaySession, state: &mut LiveState) -> FrameView {
+    fn world_pass(
+        &mut self,
+        dt: f32,
+        session: &mut PlaySession,
+        state: &mut LiveState,
+    ) -> FrameView {
         // Player skins: request any newly-announced ones, upload any that
         // finished fetching (real skins on online-mode servers).
         for (uuid, info) in session.take_pending_skins() {
@@ -637,11 +641,7 @@ impl LiveApp {
             {
                 c.config_tasks = session.config_tasks.clone();
             }
-            let named = |want: &str| {
-                draws
-                    .iter()
-                    .any(|d| d.name == Some(want))
-            };
+            let named = |want: &str| draws.iter().any(|d| d.name == Some(want));
             if named("Zombie") {
                 c.nametag_resolved_frames += 1;
             }
@@ -655,11 +655,8 @@ impl LiveApp {
         // than beside `sounds.drive` because vanilla calls it from the render
         // path: per frame, with the camera this frame is about to use. The tick
         // loop drains sound *events*; this moves the ears.
-        self.sounds.update_listener(
-            eye_f64(session),
-            session.player.yaw,
-            session.player.pitch,
-        );
+        self.sounds
+            .update_listener(eye_f64(session), session.player.yaw, session.player.pitch);
         // Read BACK off the device rather than counting the call: deleting
         // `update_listener`'s body would leave a call-site counter green.
         let pushes = self.sounds.device.listener_pushes;
@@ -718,7 +715,9 @@ impl LiveApp {
             {
                 let band = match self.baked.as_ref() {
                     Some(baked) => {
-                        let w = self.weather.get_or_insert_with(|| WeatherAssets::new(baked));
+                        let w = self
+                            .weather
+                            .get_or_insert_with(|| WeatherAssets::new(baked));
                         rain_fog_band(session, w, Some(dt * 20.0))
                     }
                     None => [1.0e9, 1.0e9 + 1.0],
@@ -736,7 +735,14 @@ impl LiveApp {
             },
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
-        let bes = collect_block_entities(&session.world, &self.chest_states, &lightmap, alpha, session.game_time(), (cr, cu));
+        let bes = collect_block_entities(
+            &session.world,
+            &self.chest_states,
+            &lightmap,
+            alpha,
+            session.game_time(),
+            (cr, cu),
+        );
         // A spawner's caged mob rides the ENTITY pass, mounted inside its
         // block (M31), so it joins the entity draws rather than these.
         let caged = collect_spawner_mobs(
@@ -751,11 +757,11 @@ impl LiveApp {
             self.chest_states.end_portal_states(),
             self.chest_states.end_gateway_states(),
         );
-        if let Err(e) = state.world_renderer.set_end_portals(
-            &mut state.gpu,
-            &portals,
-            session.game_time(),
-        ) {
+        if let Err(e) =
+            state
+                .world_renderer
+                .set_end_portals(&mut state.gpu, &portals, session.game_time())
+        {
             log::warn!("live: end portal upload failed: {e}");
         }
         let mut draws = draws;
@@ -772,7 +778,10 @@ impl LiveApp {
         held.extend(bes.iter().map(|b| b.model.as_str()));
         // A failed upload leaves the item simply absent (no resident slot →
         // no quads), which is preferable to killing the frame loop.
-        if let Err(e) = state.world_renderer.prepare_held_items(&mut state.gpu, &held) {
+        if let Err(e) = state
+            .world_renderer
+            .prepare_held_items(&mut state.gpu, &held)
+        {
             log::warn!("live: held-item texture upload: {e}");
         }
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
@@ -842,9 +851,7 @@ impl LiveApp {
                     Some((_, n)) => *n += 1,
                     None => counts.push((d.kind, 1)),
                 }
-                if d.kind != rewo_gpu::mobs::EntityModelKind::Capsule
-                    && !kinds.contains(&d.kind)
-                {
+                if d.kind != rewo_gpu::mobs::EntityModelKind::Capsule && !kinds.contains(&d.kind) {
                     kinds.push(d.kind);
                 }
             }
@@ -876,13 +883,11 @@ impl LiveApp {
             .set_leash(&collect_leashes(session, &self.etypes, alpha, &lightmap));
         // Camera + lightmap were already set above from the same eye/state this
         // frame — don't duplicate them. Celestial still tracks the world clock.
-        state
-            .world_renderer
-            .set_celestial({
-                let mut cel = celestial_state_of(session.day_ticks);
-                apply_weather_to_celestial(&mut cel, session);
-                cel
-            });
+        state.world_renderer.set_celestial({
+            let mut cel = celestial_state_of(session.day_ticks);
+            apply_weather_to_celestial(&mut cel, session);
+            cel
+        });
         state
             .world_renderer
             .set_end_flash(end_flash_render(session, lightmap_partial));
@@ -918,7 +923,9 @@ impl LiveApp {
                 c.gui_item_frames += 1;
             }
             let items = self.items.clone();
-            let gi = self.gui_items.get_or_insert_with(|| GuiItemState::new(baked));
+            let gi = self
+                .gui_items
+                .get_or_insert_with(|| GuiItemState::new(baked));
             if self.screen.inventory_open() {
                 if let Some(c) = self.check.as_mut() {
                     c.screen_frames += 1;
@@ -1000,8 +1007,7 @@ impl LiveApp {
                 // translation and would tie the gate to a language.
                 if let Some(c) = self.check.as_mut() {
                     let (_, bt, sc) = rewo_gpu::container::recipe_book_origin(sw, sh);
-                    let row = bt
-                        + rewo_world::recipe_book_screen::PAGE_LABEL_Y as f32 * sc;
+                    let row = bt + rewo_world::recipe_book_screen::PAGE_LABEL_Y as f32 * sc;
                     if labels.iter().any(|l| (l.y - row).abs() < 0.5) {
                         c.book_page_label_frames += 1;
                     }
@@ -1049,7 +1055,10 @@ impl LiveApp {
                 // it records a transfer, and a run referencing a rect that has
                 // not reached the GPU samples whatever was there before.
                 if let Some(cache) = self.glyphs.as_mut() {
-                    if let Err(e) = state.world_renderer.sync_velvet_atlas(&mut state.gpu, cache) {
+                    if let Err(e) = state
+                        .world_renderer
+                        .sync_velvet_atlas(&mut state.gpu, cache)
+                    {
                         log::warn!("velvet atlas sync: {e}");
                     }
                 }
@@ -1103,7 +1112,9 @@ impl LiveApp {
             if let Some(c) = self.check.as_mut() {
                 c.weather_frames += 1;
             }
-            let w = self.weather.get_or_insert_with(|| WeatherAssets::new(baked));
+            let w = self
+                .weather
+                .get_or_insert_with(|| WeatherAssets::new(baked));
             apply_weather(
                 &mut state.world_renderer,
                 &mut state.gpu,
@@ -1189,7 +1200,9 @@ impl LiveApp {
                 .filter(|b| matches!(b.icon, HudIcon::JumpBar(_)))
                 .count();
             c.jump_bar_blits_max = c.jump_bar_blits_max.max(jump);
-            c.leash_verts_max = c.leash_verts_max.max(state.world_renderer.leash_vert_count());
+            c.leash_verts_max = c
+                .leash_verts_max
+                .max(state.world_renderer.leash_vert_count());
             if self.options_view == Some(rewo_world::options_screen::OptionsPage::Sound) {
                 if let Some(sc) = self.screen.screens.current() {
                     c.options_slider_sprites_max = c
@@ -1488,7 +1501,10 @@ impl LiveApp {
             (built_chat_range.start + sidebar_lines)..(built_chat_range.end + sidebar_lines);
         text.extend(built);
         if let Some(cs) = self.chat_screen.as_ref() {
-            let (gw, gh) = ((extent.width as f32 / px) as i32, (extent.height as f32 / px) as i32);
+            let (gw, gh) = (
+                (extent.width as f32 / px) as i32,
+                (extent.height as f32 / px) as i32,
+            );
             let advance = state.world_renderer.font_advance().copied();
             let width_of = move |s: &str| match &advance {
                 Some(a) => rewo_gpu::text::width(s, a),
@@ -1521,9 +1537,10 @@ impl LiveApp {
             // this `if` is the mutual exclusion with the popup: a message the
             // box computed and the popup covered never reached the screen,
             // and a counter upstream of the exclusion would say it did.
-            if usage_text.iter().any(|l| {
-                l.text.starts_with("Unknown command") && l.color_linear == [1.0, 1.0, 1.0]
-            }) {
+            if usage_text
+                .iter()
+                .any(|l| l.text.starts_with("Unknown command") && l.color_linear == [1.0, 1.0, 1.0])
+            {
                 if let Some(c) = self.check.as_mut() {
                     c.parse_error_frames += 1;
                 }
@@ -1594,7 +1611,9 @@ impl LiveApp {
                 if row_text.contains("RewoStyleWitness whispers to you: whispered")
                     && !row.is_empty()
                     && row.iter().all(|l| {
-                        l.color_linear.iter().all(|c| (c - GRAY_LINEAR).abs() < COLOR_EPS)
+                        l.color_linear
+                            .iter()
+                            .all(|c| (c - GRAY_LINEAR).abs() < COLOR_EPS)
                             && l.style.italic
                     })
                 {
@@ -1707,19 +1726,16 @@ impl LiveApp {
             if let (Some(view), Some(screen)) = (self.stats.as_ref(), self.screen.screens.current())
             {
                 let advance = state.world_renderer.font_advance();
-                chrome = crate::stats_view::chrome(
-                    view,
-                    screen,
-                    Some(mouse_gui),
-                    advance,
-                );
+                chrome = crate::stats_view::chrome(view, screen, Some(mouse_gui), advance);
                 if let Some(advance) = advance {
                     text.extend(crate::stats_view::lines(view, screen, advance, px));
                 }
             } else if self.advancements.is_some()
-                && self.screen.screens.current().is_some_and(|s| {
-                    s.kind == rewo_world::screen::ScreenKind::Advancements
-                })
+                && self
+                    .screen
+                    .screens
+                    .current()
+                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::Advancements)
             {
                 // M178: the advancements window. Generic chrome carries the
                 // transparent gradient + the Done button; our scissored
@@ -1728,8 +1744,7 @@ impl LiveApp {
                 // sprites join `chrome.sprites` ahead of the buttons.
                 let gw = (extent.width as f32 / px) as i32;
                 let gh = (extent.height as f32 / px) as i32;
-                let (win_x, win_y) =
-                    rewo_world::advancements_screen::window_origin(gw, gh);
+                let (win_x, win_y) = rewo_world::advancements_screen::window_origin(gw, gh);
                 // tick() runs here, contents-relative: the model owns the
                 // hover clock and this is its only per-frame driver.
                 if let Some(v) = self.advancements.as_mut() {
@@ -1743,13 +1758,7 @@ impl LiveApp {
                     let mut adv = crate::advancements_view::chrome(view, gw, gh, gw);
                     if let Some(advance) = state.world_renderer.font_advance() {
                         text.extend(crate::advancements_view::lines(
-                            view,
-                            &self.lang,
-                            gw,
-                            gh,
-                            gw,
-                            px,
-                            advance,
+                            view, &self.lang, gw, gh, gw, px, advance,
                         ));
                     }
                     chrome.scissored.append(&mut adv.scissored);
@@ -1834,11 +1843,9 @@ impl LiveApp {
                 // `WidgetKind::Button` and a missing branch is an invisible
                 // widget with no error.
                 chrome = screen_chrome(screen, Some(mouse_gui));
-                chrome.sprites.extend(slider_sprites(
-                    screen,
-                    Some(mouse_gui),
-                    self.options_drag,
-                ));
+                chrome
+                    .sprites
+                    .extend(slider_sprites(screen, Some(mouse_gui), self.options_drag));
                 if let Some(advance) = state.world_renderer.font_advance() {
                     text.extend(screen_text_lines(screen, advance, px));
                 }
@@ -1873,12 +1880,7 @@ impl LiveApp {
                             )
                         })
                         .collect();
-                    apply_gui_icons(
-                        &mut state.world_renderer,
-                        &mut state.gpu,
-                        gui,
-                        &items,
-                    );
+                    apply_gui_icons(&mut state.world_renderer, &mut state.gpu, gui, &items);
                 }
             }
         }

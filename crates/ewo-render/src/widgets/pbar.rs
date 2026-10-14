@@ -96,7 +96,12 @@ pub fn draw_pbar(
         return;
     }
 
-    let fill_rect = Rect::from_xywh(track_rect.left, track_rect.top, f * track_rect.width(), TRACK_HEIGHT);
+    let fill_rect = Rect::from_xywh(
+        track_rect.left,
+        track_rect.top,
+        f * track_rect.width(),
+        TRACK_HEIGHT,
+    );
     let fill_rrect = RRect::new_rect_xy(fill_rect, TRACK_HEIGHT * 0.5, TRACK_HEIGHT * 0.5);
 
     draw_fill(canvas, &fill_rect, &fill_rrect, state);
@@ -108,15 +113,39 @@ pub fn draw_pbar(
     //   - ErrorShimmer: replaced below with the ember-tinted shimmer overlay.
     match state {
         PbarState::Normal | PbarState::Complete => {
-            draw_flow(canvas, &fill_rect, &fill_rrect, time, settings.motion_speed, 1.0, 3.0);
+            draw_flow(
+                canvas,
+                &fill_rect,
+                &fill_rrect,
+                time,
+                settings.motion_speed,
+                1.0,
+                3.0,
+            );
         }
         PbarState::ErrorRose => {
-            draw_flow(canvas, &fill_rect, &fill_rrect, time, settings.motion_speed, 0.35, 8.0);
+            draw_flow(
+                canvas,
+                &fill_rect,
+                &fill_rrect,
+                time,
+                settings.motion_speed,
+                0.35,
+                8.0,
+            );
         }
         PbarState::ErrorRecede => {}
         PbarState::ErrorShimmer => {
             // Normal flow + the ember shimmer pass below.
-            draw_flow(canvas, &fill_rect, &fill_rrect, time, settings.motion_speed, 1.0, 3.0);
+            draw_flow(
+                canvas,
+                &fill_rect,
+                &fill_rrect,
+                time,
+                settings.motion_speed,
+                1.0,
+                3.0,
+            );
         }
     }
 
@@ -134,7 +163,13 @@ pub fn draw_pbar(
     if state == PbarState::ErrorShimmer {
         // The shimmer overlay sweeps the full track, not just the fill, per
         // CSS `.pbar-err-shimmer { position: absolute; inset: 0; }`.
-        draw_error_shimmer(canvas, &track_rect, &track_rrect, time, settings.motion_speed);
+        draw_error_shimmer(
+            canvas,
+            &track_rect,
+            &track_rrect,
+            time,
+            settings.motion_speed,
+        );
     }
 }
 
@@ -308,13 +343,28 @@ fn draw_bloom(canvas: &Canvas, rect: &Rect, state: PbarState) {
     let radius = 9.0; // ellipse approx
     let (c0, c1) = if ember {
         (
-            Color4f::new(212.0 / 255.0, 136.0 / 255.0, 154.0 / 255.0, 0.9 * bloom_alpha),
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.4 * bloom_alpha),
+            Color4f::new(
+                212.0 / 255.0,
+                136.0 / 255.0,
+                154.0 / 255.0,
+                0.9 * bloom_alpha,
+            ),
+            Color4f::new(
+                201.0 / 255.0,
+                106.0 / 255.0,
+                122.0 / 255.0,
+                0.4 * bloom_alpha,
+            ),
         )
     } else {
         (
             Color4f::new(1.0, 230.0 / 255.0, 238.0 / 255.0, 0.9 * bloom_alpha),
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.4 * bloom_alpha),
+            Color4f::new(
+                229.0 / 255.0,
+                184.0 / 255.0,
+                197.0 / 255.0,
+                0.4 * bloom_alpha,
+            ),
         )
     };
     if let Some(shader) = gradient_shader::radial(

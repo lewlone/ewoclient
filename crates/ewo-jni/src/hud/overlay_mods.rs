@@ -56,7 +56,11 @@ pub(super) fn load_keybinds() -> Vec<(String, i32)> {
         };
         let id = id.trim();
         let value = value.trim();
-        let value = value.split_once(':').map(|(c, _)| c).unwrap_or(value).trim();
+        let value = value
+            .split_once(':')
+            .map(|(c, _)| c)
+            .unwrap_or(value)
+            .trim();
         if let Ok(code) = value.parse::<i32>() {
             out.push((id.to_string(), code));
         }
@@ -245,7 +249,14 @@ pub(super) fn draw_friends_view(canvas: &Canvas, fonts: &FontStore, w: f32, h: f
     let mut eyebrow = Paint::default();
     eyebrow.set_anti_alias(true);
     eyebrow.set_color4f(rgba(ROSE, 0.9), None);
-    draw_tracked_em(canvas, "FRIENDS", (left, panel.top + 36.0), &eyebrow_font, &eyebrow, 0.22);
+    draw_tracked_em(
+        canvas,
+        "FRIENDS",
+        (left, panel.top + 36.0),
+        &eyebrow_font,
+        &eyebrow,
+        0.22,
+    );
 
     let count_str = format!("{} / {} ONLINE", online_n, friends.len());
     let count_w = measure_tracked_em(&eyebrow_font, &count_str, 0.16);
@@ -266,7 +277,12 @@ pub(super) fn draw_friends_view(canvas: &Canvas, fonts: &FontStore, w: f32, h: f
     let mut title = Paint::default();
     title.set_anti_alias(true);
     title.set_color4f(rgba(PEARL, 1.0), None);
-    canvas.draw_str("Who's around", (left, panel.top + 70.0), &title_font, &title);
+    canvas.draw_str(
+        "Who's around",
+        (left, panel.top + 70.0),
+        &title_font,
+        &title,
+    );
 
     if friends.is_empty() {
         let body_font = fonts.newsreader(15.0);
@@ -292,7 +308,11 @@ pub(super) fn draw_friends_view(canvas: &Canvas, fonts: &FontStore, w: f32, h: f
     let name_font = fonts.newsreader(15.0);
     let meta_font = fonts.jetbrains_mono(10.0);
     let (_, nm) = name_font.metrics();
-    let ncap = if nm.cap_height > 0.0 { nm.cap_height } else { 11.0 };
+    let ncap = if nm.cap_height > 0.0 {
+        nm.cap_height
+    } else {
+        11.0
+    };
     for (i, f) in friends.iter().enumerate() {
         let ry = rows_top + i as f32 * ROW_H;
         let mid = ry + ROW_H * 0.5;
@@ -318,7 +338,11 @@ pub(super) fn draw_friends_view(canvas: &Canvas, fonts: &FontStore, w: f32, h: f
         let mut dot = Paint::default();
         dot.set_anti_alias(true);
         dot.set_color4f(
-            if f.online { rgba(LAV, 1.0) } else { rgba(MAUVE, 0.4) },
+            if f.online {
+                rgba(LAV, 1.0)
+            } else {
+                rgba(MAUVE, 0.4)
+            },
             None,
         );
         canvas.draw_circle((dot_cx, mid), 4.0, &dot);
@@ -327,7 +351,11 @@ pub(super) fn draw_friends_view(canvas: &Canvas, fonts: &FontStore, w: f32, h: f
         let mut name = Paint::default();
         name.set_anti_alias(true);
         name.set_color4f(
-            if f.online { rgba(PEARL, 1.0) } else { rgba(MAUVE, 0.7) },
+            if f.online {
+                rgba(PEARL, 1.0)
+            } else {
+                rgba(MAUVE, 0.7)
+            },
             None,
         );
         canvas.draw_str(&f.name, (left + 20.0, mid + ncap * 0.5), &name_font, &name);
@@ -378,7 +406,14 @@ pub(super) fn draw_mods(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: 
     let mut eyebrow = Paint::default();
     eyebrow.set_anti_alias(true);
     eyebrow.set_color4f(rgba(ROSE, 0.9), None);
-    draw_tracked_em(canvas, "MODS", (left, panel.top + 36.0), &eyebrow_font, &eyebrow, 0.22);
+    draw_tracked_em(
+        canvas,
+        "MODS",
+        (left, panel.top + 36.0),
+        &eyebrow_font,
+        &eyebrow,
+        0.22,
+    );
 
     let on_count = mods.iter().filter(|m| m.enabled).count();
     let count_str = format!("{} / {} ENABLED", on_count, mods.len());
@@ -400,7 +435,12 @@ pub(super) fn draw_mods(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: 
     let mut title = Paint::default();
     title.set_anti_alias(true);
     title.set_color4f(rgba(PEARL, 1.0), None);
-    canvas.draw_str("Bundled mods", (left, panel.top + 70.0), &title_font, &title);
+    canvas.draw_str(
+        "Bundled mods",
+        (left, panel.top + 70.0),
+        &title_font,
+        &title,
+    );
 
     if mods.is_empty() {
         let body_font = fonts.newsreader(15.0);
@@ -422,7 +462,11 @@ pub(super) fn draw_mods(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: 
     let name_font = fonts.newsreader(15.0);
     let meta_font = fonts.jetbrains_mono(11.0);
     let (_, nm) = name_font.metrics();
-    let ncap = if nm.cap_height > 0.0 { nm.cap_height } else { 11.0 };
+    let ncap = if nm.cap_height > 0.0 {
+        nm.cap_height
+    } else {
+        11.0
+    };
     for (i, m) in mods.iter().enumerate() {
         let ry = rows_top + i as f32 * row_h;
         let mid = ry + row_h * 0.5;

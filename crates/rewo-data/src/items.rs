@@ -34,7 +34,11 @@ impl Items {
             }
         }
         log::info!("rewo-data: {} items", by_name.len());
-        Ok(Self { by_name, ids, by_id: Default::default() })
+        Ok(Self {
+            by_name,
+            ids,
+            by_id: Default::default(),
+        })
     }
 
     /// Whether `id` is a registered item. The item-stack decoder needs this:
@@ -82,12 +86,7 @@ impl Items {
     /// path, and the vast majority of runs never hold anything.
     pub fn name(&self, id: i32) -> Option<&str> {
         self.by_id
-            .get_or_init(|| {
-                self.by_name
-                    .iter()
-                    .map(|(n, i)| (*i, n.clone()))
-                    .collect()
-            })
+            .get_or_init(|| self.by_name.iter().map(|(n, i)| (*i, n.clone())).collect())
             .get(&id)
             .map(String::as_str)
     }

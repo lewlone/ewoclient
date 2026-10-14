@@ -17,9 +17,19 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Bin {
-    Add, Sub, Mul, Div, Rem,
-    Eq, Ne, Lt, Gt, Le, Ge,
-    And, Or,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone)]
@@ -40,18 +50,75 @@ enum Expr {
 /// Fresh Animations references).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Var {
-    HeadYaw, HeadPitch, LimbSwing, LimbSpeed, Age, Time, FrameTime, FrameCounter,
-    IsOnGround, IsInWater, IsRiding, IsChild, IsAggressive, IsHurt, IsAlive,
-    IsSneaking, IsSprinting, IsBurning, HurtTime, DeathTime, Health, MaxHealth,
-    Id, PosX, PosY, PosZ, PlayerPosX, PlayerPosY, PlayerPosZ, RotY,
-    IsRidden, IsSitting, IsInLava, IsTamed, IsOnShoulder, SwingProgress, Pi,
+    HeadYaw,
+    HeadPitch,
+    LimbSwing,
+    LimbSpeed,
+    Age,
+    Time,
+    FrameTime,
+    FrameCounter,
+    IsOnGround,
+    IsInWater,
+    IsRiding,
+    IsChild,
+    IsAggressive,
+    IsHurt,
+    IsAlive,
+    IsSneaking,
+    IsSprinting,
+    IsBurning,
+    HurtTime,
+    DeathTime,
+    Health,
+    MaxHealth,
+    Id,
+    PosX,
+    PosY,
+    PosZ,
+    PlayerPosX,
+    PlayerPosY,
+    PlayerPosZ,
+    RotY,
+    IsRidden,
+    IsSitting,
+    IsInLava,
+    IsTamed,
+    IsOnShoulder,
+    SwingProgress,
+    Pi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Func {
-    Sin, Cos, Tan, Asin, Acos, Atan, Atan2, ToRad, ToDeg,
-    Min, Max, Clamp, Abs, Floor, Ceil, Round, Exp, Frac, Log, Pow, Sqrt, Sign, Fmod,
-    Random, If, Between, Equals, In,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    ToRad,
+    ToDeg,
+    Min,
+    Max,
+    Clamp,
+    Abs,
+    Floor,
+    Ceil,
+    Round,
+    Exp,
+    Frac,
+    Log,
+    Pow,
+    Sqrt,
+    Sign,
+    Fmod,
+    Random,
+    If,
+    Between,
+    Equals,
+    In,
 }
 
 // ---------------------------------------------------------------------------
@@ -203,15 +270,34 @@ fn builtin_var(name: &str) -> Option<Var> {
 
 fn func_of(name: &str) -> Option<Func> {
     Some(match name {
-        "sin" => Func::Sin, "cos" => Func::Cos, "tan" => Func::Tan,
-        "asin" => Func::Asin, "acos" => Func::Acos, "atan" => Func::Atan, "atan2" => Func::Atan2,
-        "torad" => Func::ToRad, "todeg" => Func::ToDeg,
-        "min" => Func::Min, "max" => Func::Max, "clamp" => Func::Clamp,
-        "abs" => Func::Abs, "floor" => Func::Floor, "ceil" => Func::Ceil, "round" => Func::Round,
-        "exp" => Func::Exp, "frac" => Func::Frac, "log" => Func::Log, "pow" => Func::Pow,
-        "sqrt" => Func::Sqrt, "signum" | "sign" => Func::Sign, "fmod" => Func::Fmod,
-        "random" => Func::Random, "if" => Func::If,
-        "between" => Func::Between, "equals" => Func::Equals, "in" => Func::In,
+        "sin" => Func::Sin,
+        "cos" => Func::Cos,
+        "tan" => Func::Tan,
+        "asin" => Func::Asin,
+        "acos" => Func::Acos,
+        "atan" => Func::Atan,
+        "atan2" => Func::Atan2,
+        "torad" => Func::ToRad,
+        "todeg" => Func::ToDeg,
+        "min" => Func::Min,
+        "max" => Func::Max,
+        "clamp" => Func::Clamp,
+        "abs" => Func::Abs,
+        "floor" => Func::Floor,
+        "ceil" => Func::Ceil,
+        "round" => Func::Round,
+        "exp" => Func::Exp,
+        "frac" => Func::Frac,
+        "log" => Func::Log,
+        "pow" => Func::Pow,
+        "sqrt" => Func::Sqrt,
+        "signum" | "sign" => Func::Sign,
+        "fmod" => Func::Fmod,
+        "random" => Func::Random,
+        "if" => Func::If,
+        "between" => Func::Between,
+        "equals" => Func::Equals,
+        "in" => Func::In,
         _ => return None,
     })
 }
@@ -258,15 +344,30 @@ impl Slots {
 /// `visible` shows/hides the bone and its subtree).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-    Rx, Ry, Rz, Tx, Ty, Tz, Sx, Sy, Sz, Visible,
+    Rx,
+    Ry,
+    Rz,
+    Tx,
+    Ty,
+    Tz,
+    Sx,
+    Sy,
+    Sz,
+    Visible,
 }
 
 impl Channel {
     pub fn parse(s: &str) -> Option<Channel> {
         Some(match s {
-            "rx" => Channel::Rx, "ry" => Channel::Ry, "rz" => Channel::Rz,
-            "tx" => Channel::Tx, "ty" => Channel::Ty, "tz" => Channel::Tz,
-            "sx" => Channel::Sx, "sy" => Channel::Sy, "sz" => Channel::Sz,
+            "rx" => Channel::Rx,
+            "ry" => Channel::Ry,
+            "rz" => Channel::Rz,
+            "tx" => Channel::Tx,
+            "ty" => Channel::Ty,
+            "tz" => Channel::Tz,
+            "sx" => Channel::Sx,
+            "sy" => Channel::Sy,
+            "sz" => Channel::Sz,
             // FA toggles optional geometry with this: goat horns, bee stinger,
             // bogged mushrooms, donkey chests, a sheared snow golem's face.
             "visible" => Channel::Visible,
@@ -283,7 +384,11 @@ impl Channel {
 /// scale, e.g. `"head2.sy": "head2.sx"`).
 pub enum Target {
     Var(usize),
-    Bone { part: u16, channel: Channel, slot: usize },
+    Bone {
+        part: u16,
+        channel: Channel,
+        slot: usize,
+    },
 }
 
 /// A whole mob's animation: ordered assignments (vars first per the file
@@ -303,7 +408,11 @@ impl Program {
     /// Parse one expression string. `slots` interns any `var.*` names seen.
     pub fn compile(src: &str, slots: &mut Slots) -> Result<Program, String> {
         let toks = lex(src)?;
-        let mut p = Parser { toks, pos: 0, slots };
+        let mut p = Parser {
+            toks,
+            pos: 0,
+            slots,
+        };
         let ast = p.parse_expr(0)?;
         if p.pos != p.toks.len() {
             return Err(format!("trailing tokens in {src:?}"));
@@ -324,10 +433,23 @@ impl Program {
 enum Tok {
     Num(f32),
     Ident(String),
-    Plus, Minus, Star, Slash, Percent,
-    Eq, Ne, Lt, Gt, Le, Ge,
-    And, Or, Bang,
-    LParen, RParen, Comma,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
+    Bang,
+    LParen,
+    RParen,
+    Comma,
 }
 
 fn lex(s: &str) -> Result<Vec<Tok>, String> {
@@ -338,29 +460,84 @@ fn lex(s: &str) -> Result<Vec<Tok>, String> {
         let c = b[i] as char;
         match c {
             ' ' | '\t' | '\n' | '\r' => i += 1,
-            '+' => { out.push(Tok::Plus); i += 1; }
-            '-' => { out.push(Tok::Minus); i += 1; }
-            '*' => { out.push(Tok::Star); i += 1; }
-            '/' => { out.push(Tok::Slash); i += 1; }
-            '%' => { out.push(Tok::Percent); i += 1; }
-            '(' => { out.push(Tok::LParen); i += 1; }
-            ')' => { out.push(Tok::RParen); i += 1; }
-            ',' => { out.push(Tok::Comma); i += 1; }
-            '=' if b.get(i + 1) == Some(&b'=') => { out.push(Tok::Eq); i += 2; }
-            '!' if b.get(i + 1) == Some(&b'=') => { out.push(Tok::Ne); i += 2; }
-            '!' => { out.push(Tok::Bang); i += 1; }
-            '<' if b.get(i + 1) == Some(&b'=') => { out.push(Tok::Le); i += 2; }
-            '>' if b.get(i + 1) == Some(&b'=') => { out.push(Tok::Ge); i += 2; }
-            '<' => { out.push(Tok::Lt); i += 1; }
-            '>' => { out.push(Tok::Gt); i += 1; }
-            '&' if b.get(i + 1) == Some(&b'&') => { out.push(Tok::And); i += 2; }
-            '|' if b.get(i + 1) == Some(&b'|') => { out.push(Tok::Or); i += 2; }
+            '+' => {
+                out.push(Tok::Plus);
+                i += 1;
+            }
+            '-' => {
+                out.push(Tok::Minus);
+                i += 1;
+            }
+            '*' => {
+                out.push(Tok::Star);
+                i += 1;
+            }
+            '/' => {
+                out.push(Tok::Slash);
+                i += 1;
+            }
+            '%' => {
+                out.push(Tok::Percent);
+                i += 1;
+            }
+            '(' => {
+                out.push(Tok::LParen);
+                i += 1;
+            }
+            ')' => {
+                out.push(Tok::RParen);
+                i += 1;
+            }
+            ',' => {
+                out.push(Tok::Comma);
+                i += 1;
+            }
+            '=' if b.get(i + 1) == Some(&b'=') => {
+                out.push(Tok::Eq);
+                i += 2;
+            }
+            '!' if b.get(i + 1) == Some(&b'=') => {
+                out.push(Tok::Ne);
+                i += 2;
+            }
+            '!' => {
+                out.push(Tok::Bang);
+                i += 1;
+            }
+            '<' if b.get(i + 1) == Some(&b'=') => {
+                out.push(Tok::Le);
+                i += 2;
+            }
+            '>' if b.get(i + 1) == Some(&b'=') => {
+                out.push(Tok::Ge);
+                i += 2;
+            }
+            '<' => {
+                out.push(Tok::Lt);
+                i += 1;
+            }
+            '>' => {
+                out.push(Tok::Gt);
+                i += 1;
+            }
+            '&' if b.get(i + 1) == Some(&b'&') => {
+                out.push(Tok::And);
+                i += 2;
+            }
+            '|' if b.get(i + 1) == Some(&b'|') => {
+                out.push(Tok::Or);
+                i += 2;
+            }
             '0'..='9' | '.' => {
                 let start = i;
-                while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.' || b[i] == b'e' || b[i] == b'E') {
+                while i < b.len()
+                    && (b[i].is_ascii_digit() || b[i] == b'.' || b[i] == b'e' || b[i] == b'E')
+                {
                     i += 1;
                 }
-                let n: f32 = s[start..i].parse().map_err(|_| format!("bad number {:?}", &s[start..i]))?;
+                let n: f32 = s[start..i]
+                    .parse()
+                    .map_err(|_| format!("bad number {:?}", &s[start..i]))?;
                 out.push(Tok::Num(n));
             }
             _ if c.is_ascii_alphabetic() || c == '_' => {
@@ -430,7 +607,9 @@ impl<'a> Parser<'a> {
     fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, String> {
         let mut lhs = self.parse_prefix()?;
         while let Some(t) = self.peek() {
-            let Some((op, bp)) = Self::infix_bp(t) else { break };
+            let Some((op, bp)) = Self::infix_bp(t) else {
+                break;
+            };
             if bp < min_bp {
                 break;
             }
@@ -493,12 +672,30 @@ fn eval(e: &Expr, ctx: &AnimContext) -> f32 {
         Expr::Builtin(v) => ctx.builtin(*v),
         Expr::User(i) => ctx.user.get(*i).copied().unwrap_or(0.0),
         Expr::Neg(a) => -eval(a, ctx),
-        Expr::Not(a) => if eval(a, ctx) != 0.0 { 0.0 } else { 1.0 },
+        Expr::Not(a) => {
+            if eval(a, ctx) != 0.0 {
+                0.0
+            } else {
+                1.0
+            }
+        }
         Expr::BinOp(op, a, b) => {
             // Short-circuit boolean ops.
             match op {
-                Bin::And => return if eval(a, ctx) != 0.0 && eval(b, ctx) != 0.0 { 1.0 } else { 0.0 },
-                Bin::Or => return if eval(a, ctx) != 0.0 || eval(b, ctx) != 0.0 { 1.0 } else { 0.0 },
+                Bin::And => {
+                    return if eval(a, ctx) != 0.0 && eval(b, ctx) != 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                Bin::Or => {
+                    return if eval(a, ctx) != 0.0 || eval(b, ctx) != 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
                 _ => {}
             }
             let (x, y) = (eval(a, ctx), eval(b, ctx));
@@ -535,7 +732,10 @@ fn eval_call(f: Func, a: &[Expr], ctx: &AnimContext) -> f32 {
         Func::ToRad => ev(0).to_radians(),
         Func::ToDeg => ev(0).to_degrees(),
         Func::Min => a.iter().map(|e| eval(e, ctx)).fold(f32::INFINITY, f32::min),
-        Func::Max => a.iter().map(|e| eval(e, ctx)).fold(f32::NEG_INFINITY, f32::max),
+        Func::Max => a
+            .iter()
+            .map(|e| eval(e, ctx))
+            .fold(f32::NEG_INFINITY, f32::max),
         Func::Clamp => ev(0).clamp(ev(1), ev(2)),
         Func::Abs => ev(0).abs(),
         Func::Floor => ev(0).floor(),
@@ -553,7 +753,9 @@ fn eval_call(f: Func, a: &[Expr], ctx: &AnimContext) -> f32 {
         // per-entity-stable within a run.
         Func::Random => {
             let seed = ev(0).to_bits() as u64;
-            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x1234_5678);
+            let mut x = seed
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(0x1234_5678);
             x ^= x >> 33;
             x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
             x ^= x >> 33;
@@ -569,16 +771,34 @@ fn eval_call(f: Func, a: &[Expr], ctx: &AnimContext) -> f32 {
                 }
                 i += 2;
             }
-            if i < a.len() { eval(&a[i], ctx) } else { 0.0 }
+            if i < a.len() {
+                eval(&a[i], ctx)
+            } else {
+                0.0
+            }
         }
         Func::Between => {
             let v = ev(0);
-            if v >= ev(1) && v <= ev(2) { 1.0 } else { 0.0 }
+            if v >= ev(1) && v <= ev(2) {
+                1.0
+            } else {
+                0.0
+            }
         }
-        Func::Equals => if ev(0) == ev(1) { 1.0 } else { 0.0 },
+        Func::Equals => {
+            if ev(0) == ev(1) {
+                1.0
+            } else {
+                0.0
+            }
+        }
         Func::In => {
             let v = ev(0);
-            if a.iter().skip(1).any(|e| eval(e, ctx) == v) { 1.0 } else { 0.0 }
+            if a.iter().skip(1).any(|e| eval(e, ctx) == v) {
+                1.0
+            } else {
+                0.0
+            }
         }
     }
 }
@@ -644,7 +864,9 @@ mod tests {
     /// covers real FA data, not just hand-picked cases. No-op when unset.
     #[test]
     fn parses_real_fa_corpus_if_present() {
-        let Ok(path) = std::env::var("REWO_EXPR_CORPUS") else { return };
+        let Ok(path) = std::env::var("REWO_EXPR_CORPUS") else {
+            return;
+        };
         let text = std::fs::read_to_string(&path).expect("corpus");
         let (mut ok, mut fail) = (0, 0);
         for line in text.lines().filter(|l| !l.trim().is_empty()) {

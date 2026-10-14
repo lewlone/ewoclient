@@ -113,7 +113,10 @@ impl Modules {
     /// `modules.toml` on the dev box cannot change a golden image.
     pub fn from_defaults() -> Self {
         Self {
-            enabled: catalog::REGISTRY.iter().map(|m| m.default_enabled).collect(),
+            enabled: catalog::REGISTRY
+                .iter()
+                .map(|m| m.default_enabled)
+                .collect(),
             settings: catalog::REGISTRY
                 .iter()
                 .map(|m| {
@@ -213,10 +216,18 @@ impl Modules {
         } else {
             VANILLA_FOV
         };
-        let fov = if self.zoom_held { base / ZOOM_DIVISOR } else { base };
+        let fov = if self.zoom_held {
+            base / ZOOM_DIVISOR
+        } else {
+            base
+        };
         RenderModules {
             fov_degrees: fov.clamp(1.0, 179.0),
-            gamma: if self.is_on("fullbright") { MAX_GAMMA } else { 0.0 },
+            gamma: if self.is_on("fullbright") {
+                MAX_GAMMA
+            } else {
+                0.0
+            },
             hide_fire_overlay: self.is_on("no_fire_overlay"),
             hide_pumpkin_overlay: self.is_on("no_pumpkin_overlay"),
             damage_tilt_strength: if self.is_on("no_damage_tilt") {
@@ -368,6 +379,9 @@ mod tests {
             ..peak
         })
         .transform_point3(probe);
-        assert!((off - probe).length() < 1e-6, "strength 0 must be flat: {off:?}");
+        assert!(
+            (off - probe).length() < 1e-6,
+            "strength 0 must be flat: {off:?}"
+        );
     }
 }

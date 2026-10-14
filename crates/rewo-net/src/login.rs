@@ -52,7 +52,11 @@ pub fn answer_cookie_request(
     jar: &crate::session::SessionState,
 ) -> Result<PacketWriter> {
     let key = PacketReader::new(body).identifier()?;
-    Ok(crate::session::write_cookie_response(response_id, &key, jar.cookie(&key)))
+    Ok(crate::session::write_cookie_response(
+        response_id,
+        &key,
+        jar.cookie(&key),
+    ))
 }
 
 #[cfg(test)]
@@ -62,9 +66,15 @@ mod tests {
     #[test]
     fn a_negative_threshold_removes_compression() {
         // VarInt -1 is five bytes: FF FF FF FF 0F.
-        assert_eq!(compression_threshold(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]).unwrap(), None);
+        assert_eq!(
+            compression_threshold(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]).unwrap(),
+            None
+        );
         // VarInt i32::MIN.
-        assert_eq!(compression_threshold(&[0x80, 0x80, 0x80, 0x80, 0x08]).unwrap(), None);
+        assert_eq!(
+            compression_threshold(&[0x80, 0x80, 0x80, 0x80, 0x08]).unwrap(),
+            None
+        );
         // 0 compresses everything; 256 is the vanilla default.
         assert_eq!(compression_threshold(&[0x00]).unwrap(), Some(0));
         assert_eq!(compression_threshold(&[0x80, 0x02]).unwrap(), Some(256));
@@ -94,12 +104,18 @@ mod tests {
         let mut want = vec![0x04, 14];
         want.extend_from_slice(b"minecraft:test");
         want.push(0x00);
-        assert_eq!(answer_cookie_request(4, &body, &jar).unwrap().into_bytes(), want);
+        assert_eq!(
+            answer_cookie_request(4, &body, &jar).unwrap().into_bytes(),
+            want
+        );
         // A hit: true, then `byteArray` (VarInt length + bytes).
         jar.store_cookie("minecraft:test".into(), vec![0xCA, 0xFE]);
         want.pop();
         want.extend_from_slice(&[0x01, 0x02, 0xCA, 0xFE]);
-        assert_eq!(answer_cookie_request(4, &body, &jar).unwrap().into_bytes(), want);
+        assert_eq!(
+            answer_cookie_request(4, &body, &jar).unwrap().into_bytes(),
+            want
+        );
         assert!(answer_cookie_request(4, &[], &jar).is_err());
     }
 }

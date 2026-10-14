@@ -59,10 +59,7 @@ impl Offscreen {
         height: u32,
         format: vk::Format,
     ) -> Result<Self, String> {
-        let extent = vk::Extent2D {
-            width,
-            height,
-        };
+        let extent = vk::Extent2D { width, height };
         let (overlay, overlay_res) = OverlayPipeline::new(gpu, format, 1)?;
         let depth = DepthTarget::new(gpu, extent)?;
         unsafe {
@@ -77,23 +74,20 @@ impl Offscreen {
             let mut format_list =
                 vk::ImageFormatListCreateInfo::default().view_formats(&view_formats);
             let mut image_ci = vk::ImageCreateInfo::default()
-                        .image_type(vk::ImageType::TYPE_2D)
-                        .format(format)
-                        .extent(vk::Extent3D {
-                            width,
-                            height,
-                            depth: 1,
-                        })
-                        .mip_levels(1)
-                        .array_layers(1)
-                        .samples(vk::SampleCountFlags::TYPE_1)
-                        .tiling(vk::ImageTiling::OPTIMAL)
-                        .usage(
-                            vk::ImageUsageFlags::COLOR_ATTACHMENT
-                                | vk::ImageUsageFlags::TRANSFER_SRC,
-                        )
-                        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                        .initial_layout(vk::ImageLayout::UNDEFINED);
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(format)
+                .extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .initial_layout(vk::ImageLayout::UNDEFINED);
             if unorm.is_some() {
                 image_ci = image_ci
                     .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
@@ -364,7 +358,11 @@ impl Offscreen {
             let submit = vk::SubmitInfo2::default().command_buffer_infos(&cbs);
             let serial = gpu.clock.begin_submit();
             device
-                .queue_submit2(gpu.graphics_queue, std::slice::from_ref(&submit), self.fence)
+                .queue_submit2(
+                    gpu.graphics_queue,
+                    std::slice::from_ref(&submit),
+                    self.fence,
+                )
                 .map_err(|e| format!("submit: {e}"))?;
             device
                 .wait_for_fences(&[self.fence], true, u64::MAX)
@@ -376,12 +374,7 @@ impl Offscreen {
 
             let mut ts = [0u64; 2];
             if device
-                .get_query_pool_results(
-                    self.query_pool,
-                    0,
-                    &mut ts,
-                    vk::QueryResultFlags::TYPE_64,
-                )
+                .get_query_pool_results(self.query_pool, 0, &mut ts, vk::QueryResultFlags::TYPE_64)
                 .is_ok()
             {
                 let ns = (ts[1].wrapping_sub(ts[0])) as f64 * gpu.timestamp_period_ns;
@@ -448,7 +441,11 @@ impl Offscreen {
             let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.cb)];
             let submit = vk::SubmitInfo2::default().command_buffer_infos(&cbs);
             device
-                .queue_submit2(gpu.graphics_queue, std::slice::from_ref(&submit), self.fence)
+                .queue_submit2(
+                    gpu.graphics_queue,
+                    std::slice::from_ref(&submit),
+                    self.fence,
+                )
                 .map_err(|e| format!("submit: {e}"))?;
             device
                 .wait_for_fences(&[self.fence], true, u64::MAX)

@@ -18,9 +18,7 @@ use ewo_core::{motion, CubicBezier};
 use skia_safe::{Canvas, Color, Color4f, Font, Paint, PaintStyle, Point, RRect, Rect};
 
 use crate::text::{self, FontStore};
-use crate::widgets::{
-    draw_vbtn, draw_vghost_btn, GhostKind, VbtnState, VghostBtnState,
-};
+use crate::widgets::{draw_vbtn, draw_vghost_btn, GhostKind, VbtnState, VghostBtnState};
 
 const TEXT_PEARL_HOT: Color = Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0);
 const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
@@ -193,7 +191,13 @@ pub struct FriendsCounts {
 
 impl FriendsCounts {
     pub fn from_view(view: FriendsViewState<'_>) -> Self {
-        if let FriendsViewState::Loaded { friends, incoming, outgoing, .. } = view {
+        if let FriendsViewState::Loaded {
+            friends,
+            incoming,
+            outgoing,
+            ..
+        } = view
+        {
             FriendsCounts {
                 friends: friends.len(),
                 incoming: incoming.len(),
@@ -209,11 +213,7 @@ impl FriendsCounts {
 /// Walks the same row geometry as the renderer so `row_buttons` is the
 /// canonical hit-rect source for incoming-accept / incoming-decline /
 /// friend-remove clicks.
-pub fn friends_layout(
-    card_w: f32,
-    _fonts: &FontStore,
-    counts: FriendsCounts,
-) -> FriendsLayout {
+pub fn friends_layout(card_w: f32, _fonts: &FontStore, counts: FriendsCounts) -> FriendsLayout {
     let content_left = BODY_PAD_X;
     let content_right = card_w - BODY_PAD_X;
     let header_top = HEADER_TOP;
@@ -224,12 +224,7 @@ pub fn friends_layout(
         content_right - content_left - 12.0 - 110.0,
         38.0,
     );
-    let add_submit = Rect::from_xywh(
-        add_input.right + 12.0,
-        add_input_top,
-        110.0,
-        38.0,
-    );
+    let add_submit = Rect::from_xywh(add_input.right + 12.0, add_input_top, 110.0, 38.0);
     let link_btn_w = 220.0;
     let link_btn_h = 40.0;
     let link_launcher_btn = Rect::from_xywh(
@@ -255,15 +250,17 @@ pub fn friends_layout(
             y += section_head_to_first_row;
             for i in 0..counts.incoming {
                 let btn_y = y + row_h * 0.5 - btn_h * 0.5;
-                let accept = Rect::from_xywh(
-                    content_right - btn_w - 8.0, btn_y, btn_w, btn_h);
-                let decline = Rect::from_xywh(
-                    accept.left - btn_w - 8.0, btn_y, btn_w, btn_h);
+                let accept = Rect::from_xywh(content_right - btn_w - 8.0, btn_y, btn_w, btn_h);
+                let decline = Rect::from_xywh(accept.left - btn_w - 8.0, btn_y, btn_w, btn_h);
                 row_buttons.push(RowButton {
-                    kind: RowButtonKind::Accept, index: i, rect: accept,
+                    kind: RowButtonKind::Accept,
+                    index: i,
+                    rect: accept,
                 });
                 row_buttons.push(RowButton {
-                    kind: RowButtonKind::Decline, index: i, rect: decline,
+                    kind: RowButtonKind::Decline,
+                    index: i,
+                    rect: decline,
                 });
                 y += row_h + row_gap;
             }
@@ -274,18 +271,20 @@ pub fn friends_layout(
             y += section_head_to_first_row;
             for i in 0..counts.friends {
                 let btn_y = y + row_h * 0.5 - btn_h * 0.5;
-                let remove = Rect::from_xywh(
-                    content_right - btn_w - 8.0, btn_y, btn_w, btn_h);
+                let remove = Rect::from_xywh(content_right - btn_w - 8.0, btn_y, btn_w, btn_h);
                 // H6 — reserve a Join slot left of Remove for every friend
                 // row; the renderer only draws it for in-game friends and
                 // main.rs gates the click on `server_addr` presence.
-                let join = Rect::from_xywh(
-                    remove.left - btn_w - 8.0, btn_y, btn_w, btn_h);
+                let join = Rect::from_xywh(remove.left - btn_w - 8.0, btn_y, btn_w, btn_h);
                 row_buttons.push(RowButton {
-                    kind: RowButtonKind::Join, index: i, rect: join,
+                    kind: RowButtonKind::Join,
+                    index: i,
+                    rect: join,
                 });
                 row_buttons.push(RowButton {
-                    kind: RowButtonKind::Remove, index: i, rect: remove,
+                    kind: RowButtonKind::Remove,
+                    index: i,
+                    rect: remove,
                 });
                 y += row_h + row_gap;
             }
@@ -375,7 +374,12 @@ pub fn draw_friends(
         FriendsViewState::Failed(msg) => {
             draw_centered_message(canvas, fonts, card_w, card_h, msg, ACCENT_EMBER);
         }
-        FriendsViewState::Loaded { friends, incoming, outgoing, action } => {
+        FriendsViewState::Loaded {
+            friends,
+            incoming,
+            outgoing,
+            action,
+        } => {
             draw_add_bar(canvas, fonts, &layout, prefs);
             if let Some(toast) = action {
                 draw_action_toast(canvas, fonts, &layout, toast);
@@ -383,25 +387,43 @@ pub fn draw_friends(
             let mut y = layout.add_input.bottom + 36.0;
             if !incoming.is_empty() {
                 y = draw_section(
-                    canvas, fonts, &layout, y, "INCOMING REQUESTS",
-                    incoming, RowSection::Incoming,
+                    canvas,
+                    fonts,
+                    &layout,
+                    y,
+                    "INCOMING REQUESTS",
+                    incoming,
+                    RowSection::Incoming,
                 );
             }
             if !friends.is_empty() {
                 y = draw_section(
-                    canvas, fonts, &layout, y, "FRIENDS",
-                    friends, RowSection::Friends,
+                    canvas,
+                    fonts,
+                    &layout,
+                    y,
+                    "FRIENDS",
+                    friends,
+                    RowSection::Friends,
                 );
             }
             if !outgoing.is_empty() {
                 let _ = draw_section(
-                    canvas, fonts, &layout, y, "OUTGOING REQUESTS",
-                    outgoing, RowSection::Outgoing,
+                    canvas,
+                    fonts,
+                    &layout,
+                    y,
+                    "OUTGOING REQUESTS",
+                    outgoing,
+                    RowSection::Outgoing,
                 );
             }
             if friends.is_empty() && incoming.is_empty() && outgoing.is_empty() {
                 draw_centered_message(
-                    canvas, fonts, card_w, card_h,
+                    canvas,
+                    fonts,
+                    card_w,
+                    card_h,
                     "no friends yet — add one above.",
                     TEXT_MAUVE,
                 );
@@ -419,7 +441,12 @@ enum RowSection {
     Outgoing,
 }
 
-fn draw_not_linked(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, prefs: &FriendsPrefs) {
+fn draw_not_linked(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    layout: &FriendsLayout,
+    prefs: &FriendsPrefs,
+) {
     let msg_font = fonts.newsreader(15.0);
     let mut msg_paint = Paint::default();
     msg_paint.set_anti_alias(true);
@@ -436,7 +463,13 @@ fn draw_not_linked(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, p
     );
     // The button is rendered by the caller (we expose its bounds in
     // `layout.link_launcher_btn`); draw it here using the standard vbtn.
-    draw_vbtn_label_only(canvas, layout.link_launcher_btn, "Link launcher", &prefs.link_launcher_btn, fonts);
+    draw_vbtn_label_only(
+        canvas,
+        layout.link_launcher_btn,
+        "Link launcher",
+        &prefs.link_launcher_btn,
+        fonts,
+    );
 }
 
 fn draw_action_toast(
@@ -458,7 +491,11 @@ fn draw_action_toast(
     // (rows start at add_input.bottom + 36), so it doesn't shift any of
     // the row geometry the hit-rects depend on.
     let font = fonts.newsreader_italic_axes(12.0, 400.0);
-    let base = if toast.failed { ACCENT_EMBER } else { ACCENT_LAV };
+    let base = if toast.failed {
+        ACCENT_EMBER
+    } else {
+        ACCENT_LAV
+    };
     let mut p = Paint::default();
     p.set_anti_alias(true);
     p.set_color(base);
@@ -497,8 +534,8 @@ fn draw_add_bar(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, pref
     let mut label_paint = Paint::default();
     label_paint.set_anti_alias(true);
     let (_, lm) = label_font.metrics();
-    let baseline = (layout.add_input.top + layout.add_input.bottom) * 0.5
-        + (-lm.ascent - lm.descent) * 0.5;
+    let baseline =
+        (layout.add_input.top + layout.add_input.bottom) * 0.5 + (-lm.ascent - lm.descent) * 0.5;
 
     if prefs.add_buffer.is_empty() && !prefs.add_focused {
         label_paint.set_color(TEXT_MAUVE_DEEP);
@@ -541,7 +578,11 @@ fn draw_add_bar(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, pref
     draw_vbtn_label_only(
         canvas,
         layout.add_submit,
-        if prefs.add_buffer.is_empty() { "Add" } else { "+ Add" },
+        if prefs.add_buffer.is_empty() {
+            "Add"
+        } else {
+            "+ Add"
+        },
         &prefs.add_submit_btn,
         fonts,
     );
@@ -583,12 +624,7 @@ fn draw_section(
     let mut y = start_y + 24.0;
     for (i, row) in rows.iter().enumerate() {
         let row_h: f32 = 54.0;
-        let row_rect = Rect::from_ltrb(
-            layout.content_left,
-            y,
-            layout.content_right,
-            y + row_h,
-        );
+        let row_rect = Rect::from_ltrb(layout.content_left, y, layout.content_right, y + row_h);
         draw_friend_row(canvas, fonts, layout, &row_rect, row, section, i);
         y += row_h + 8.0;
     }
@@ -609,7 +645,11 @@ fn draw_friend_row(
     let dot_y = (row.top + row.bottom) * 0.5;
     let mut dot = Paint::default();
     dot.set_anti_alias(true);
-    dot.set_color(if view.online { ACCENT_LAV } else { TEXT_MAUVE_DEEP });
+    dot.set_color(if view.online {
+        ACCENT_LAV
+    } else {
+        TEXT_MAUVE_DEEP
+    });
     canvas.draw_circle((dot_x, dot_y), 4.0, &dot);
 
     // Display name (Fraunces)
@@ -646,36 +686,24 @@ fn draw_friend_row(
     let btn_y = (row.top + row.bottom) * 0.5 - btn_h * 0.5;
     match section {
         RowSection::Incoming => {
-            let accept_rect = Rect::from_xywh(
-                row.right - btn_w - 8.0, btn_y, btn_w, btn_h,
-            );
-            let decline_rect = Rect::from_xywh(
-                accept_rect.left - btn_w - 8.0, btn_y, btn_w, btn_h,
-            );
+            let accept_rect = Rect::from_xywh(row.right - btn_w - 8.0, btn_y, btn_w, btn_h);
+            let decline_rect = Rect::from_xywh(accept_rect.left - btn_w - 8.0, btn_y, btn_w, btn_h);
             draw_compact_label(canvas, fonts, accept_rect, "Accept", ACCENT_LAV);
             draw_compact_label(canvas, fonts, decline_rect, "Decline", TEXT_MAUVE);
         }
         RowSection::Friends => {
-            let remove_rect = Rect::from_xywh(
-                row.right - btn_w - 8.0, btn_y, btn_w, btn_h,
-            );
+            let remove_rect = Rect::from_xywh(row.right - btn_w - 8.0, btn_y, btn_w, btn_h);
             draw_compact_label(canvas, fonts, remove_rect, "Remove", ACCENT_EMBER);
             // H6 — Join button (left of Remove), only for in-game friends.
             if view.server_addr.is_some() {
-                let join_rect = Rect::from_xywh(
-                    remove_rect.left - btn_w - 8.0, btn_y, btn_w, btn_h,
-                );
+                let join_rect =
+                    Rect::from_xywh(remove_rect.left - btn_w - 8.0, btn_y, btn_w, btn_h);
                 draw_compact_label(canvas, fonts, join_rect, "Join", ACCENT_LAV);
             }
         }
         RowSection::Outgoing => {
             // Outgoing requests are passive — show a "pending…" tag.
-            let tag_rect = Rect::from_xywh(
-                row.right - btn_w - 8.0,
-                btn_y,
-                btn_w,
-                btn_h,
-            );
+            let tag_rect = Rect::from_xywh(row.right - btn_w - 8.0, btn_y, btn_w, btn_h);
             draw_compact_label(canvas, fonts, tag_rect, "pending", TEXT_MAUVE);
         }
     }

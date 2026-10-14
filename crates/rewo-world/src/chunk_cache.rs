@@ -294,7 +294,11 @@ fn read_packed(r: &mut ByteReader) -> Result<Vec<u16>, CacheError> {
     if words.saturating_mul(8) > r.buf.len() - r.pos {
         return Err(CacheError::Truncated);
     }
-    let mask = if bits == 32 { u32::MAX } else { (1u32 << bits) - 1 };
+    let mask = if bits == 32 {
+        u32::MAX
+    } else {
+        (1u32 << bits) - 1
+    };
     let mut out = Vec::with_capacity(len);
     for _ in 0..words {
         let word = r.u64()?;
@@ -1020,11 +1024,8 @@ impl ChunkCache {
         if self.total_bytes <= self.max_bytes {
             return;
         }
-        let mut by_age: Vec<((i32, i32), u64)> = self
-            .entries
-            .iter()
-            .map(|(k, v)| (*k, v.used))
-            .collect();
+        let mut by_age: Vec<((i32, i32), u64)> =
+            self.entries.iter().map(|(k, v)| (*k, v.used)).collect();
         by_age.sort_unstable_by_key(|(_, used)| *used);
         for (key, _) in by_age {
             if self.total_bytes <= self.max_bytes {
@@ -1129,7 +1130,11 @@ mod tests {
                     },
                 ),
                 (
-                    BlockEntityPos { x: -33, y: 1, z: 272 },
+                    BlockEntityPos {
+                        x: -33,
+                        y: 1,
+                        z: 272,
+                    },
                     BlockEntity {
                         type_id: 0,
                         data: Nbt::End,
@@ -1541,11 +1546,17 @@ mod tests {
         let dir = tempdir("roundtrip");
         let mut cache = ChunkCache::open(&dir, 64 * 1024 * 1024).unwrap();
         let col = rich_column();
-        assert!(cache.get(col.cx, col.cz, &shape()).is_none(), "starts empty");
+        assert!(
+            cache.get(col.cx, col.cz, &shape()).is_none(),
+            "starts empty"
+        );
         cache.put(&col, &shape()).unwrap();
         let back = cache.get(col.cx, col.cz, &shape()).expect("hit");
         assert_columns_equal(&col, &back);
-        assert!(cache.get(999, 999, &shape()).is_none(), "unstored key misses");
+        assert!(
+            cache.get(999, 999, &shape()).is_none(),
+            "unstored key misses"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

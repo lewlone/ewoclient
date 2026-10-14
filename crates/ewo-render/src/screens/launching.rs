@@ -63,42 +63,199 @@ pub struct ProgressKeyframe {
 }
 
 const PROGRESS_KEYFRAMES: &[ProgressKeyframe] = &[
-    ProgressKeyframe { t: 0.0, p: 0.0, stage: "preparing" },
-    ProgressKeyframe { t: 200.0, p: 6.0, stage: "preparing" },
-    ProgressKeyframe { t: 600.0, p: 28.0, stage: "verifying assets" },
-    ProgressKeyframe { t: 1100.0, p: 52.0, stage: "loading mods" },
-    ProgressKeyframe { t: 1400.0, p: 68.0, stage: "spawning JVM" },
-    ProgressKeyframe { t: 1800.0, p: 84.0, stage: "starting engine" },
-    ProgressKeyframe { t: 2200.0, p: 96.0, stage: "reaching title" },
-    ProgressKeyframe { t: 2400.0, p: 100.0, stage: "ready" },
+    ProgressKeyframe {
+        t: 0.0,
+        p: 0.0,
+        stage: "preparing",
+    },
+    ProgressKeyframe {
+        t: 200.0,
+        p: 6.0,
+        stage: "preparing",
+    },
+    ProgressKeyframe {
+        t: 600.0,
+        p: 28.0,
+        stage: "verifying assets",
+    },
+    ProgressKeyframe {
+        t: 1100.0,
+        p: 52.0,
+        stage: "loading mods",
+    },
+    ProgressKeyframe {
+        t: 1400.0,
+        p: 68.0,
+        stage: "spawning JVM",
+    },
+    ProgressKeyframe {
+        t: 1800.0,
+        p: 84.0,
+        stage: "starting engine",
+    },
+    ProgressKeyframe {
+        t: 2200.0,
+        p: 96.0,
+        stage: "reaching title",
+    },
+    ProgressKeyframe {
+        t: 2400.0,
+        p: 100.0,
+        stage: "ready",
+    },
 ];
 
 const LOG_SCRIPT: &[LogEntry] = &[
-    LogEntry { t: 0.0,    level: LogLevel::Info, source: "launcher", message: "Resolving instance · Velvet Hours" },
-    LogEntry { t: 80.0,   level: LogLevel::Info, source: "launcher", message: "Java 21.0.4 (Adoptium) · 6144 MB heap" },
-    LogEntry { t: 160.0,  level: LogLevel::Info, source: "assets",   message: "Verifying asset index 1.20.4 (449 MB)" },
-    LogEntry { t: 280.0,  level: LogLevel::Info, source: "assets",   message: "objects/ab/abf3… ok" },
-    LogEntry { t: 360.0,  level: LogLevel::Info, source: "assets",   message: "objects/c1/c1d8… ok" },
-    LogEntry { t: 440.0,  level: LogLevel::Info, source: "assets",   message: "objects/9e/9eaa… ok" },
-    LogEntry { t: 540.0,  level: LogLevel::Dim,  source: "assets",   message: "… 6,318 objects verified" },
-    LogEntry { t: 620.0,  level: LogLevel::Info, source: "mods",     message: "Loading 6 mods" },
-    LogEntry { t: 700.0,  level: LogLevel::Info, source: "mods",     message: "sodium-0.5.8.jar" },
-    LogEntry { t: 760.0,  level: LogLevel::Info, source: "mods",     message: "iris-1.7.0.jar" },
-    LogEntry { t: 820.0,  level: LogLevel::Info, source: "mods",     message: "distant-horizons-2.0.4.jar" },
-    LogEntry { t: 880.0,  level: LogLevel::Info, source: "mods",     message: "lithium-0.12.7.jar" },
-    LogEntry { t: 940.0,  level: LogLevel::Info, source: "mods",     message: "continuity-3.0.0.jar" },
-    LogEntry { t: 1000.0, level: LogLevel::Info, source: "mods",     message: "modmenu-9.0.0.jar" },
-    LogEntry { t: 1100.0, level: LogLevel::Info, source: "jvm",      message: "Spawning JVM · -Xmx6G -Xms6G" },
-    LogEntry { t: 1240.0, level: LogLevel::Info, source: "jvm",      message: "Native libraries linked · LWJGL 3.3.3" },
-    LogEntry { t: 1380.0, level: LogLevel::Info, source: "mc",       message: "Mojang main thread · setting up" },
-    LogEntry { t: 1500.0, level: LogLevel::Info, source: "mc",       message: "Sound engine started · OpenAL Soft" },
-    LogEntry { t: 1620.0, level: LogLevel::Info, source: "iris",     message: "Iris detected · no shaderpack" },
-    LogEntry { t: 1740.0, level: LogLevel::Info, source: "sodium",   message: "Sodium · GL 4.6 · 1024 MB VRAM" },
-    LogEntry { t: 1860.0, level: LogLevel::Info, source: "mc",       message: "Loaded resource pack · vanilla" },
-    LogEntry { t: 1980.0, level: LogLevel::Warn, source: "mods",     message: "distant-horizons: chunk-loader fallback path" },
-    LogEntry { t: 2100.0, level: LogLevel::Info, source: "mc",       message: "Built-in shaders compiled" },
-    LogEntry { t: 2240.0, level: LogLevel::Info, source: "mc",       message: "Reaching title screen…" },
-    LogEntry { t: 2400.0, level: LogLevel::Ok,   source: "mc",       message: "Title screen presented · handing off" },
+    LogEntry {
+        t: 0.0,
+        level: LogLevel::Info,
+        source: "launcher",
+        message: "Resolving instance · Velvet Hours",
+    },
+    LogEntry {
+        t: 80.0,
+        level: LogLevel::Info,
+        source: "launcher",
+        message: "Java 21.0.4 (Adoptium) · 6144 MB heap",
+    },
+    LogEntry {
+        t: 160.0,
+        level: LogLevel::Info,
+        source: "assets",
+        message: "Verifying asset index 1.20.4 (449 MB)",
+    },
+    LogEntry {
+        t: 280.0,
+        level: LogLevel::Info,
+        source: "assets",
+        message: "objects/ab/abf3… ok",
+    },
+    LogEntry {
+        t: 360.0,
+        level: LogLevel::Info,
+        source: "assets",
+        message: "objects/c1/c1d8… ok",
+    },
+    LogEntry {
+        t: 440.0,
+        level: LogLevel::Info,
+        source: "assets",
+        message: "objects/9e/9eaa… ok",
+    },
+    LogEntry {
+        t: 540.0,
+        level: LogLevel::Dim,
+        source: "assets",
+        message: "… 6,318 objects verified",
+    },
+    LogEntry {
+        t: 620.0,
+        level: LogLevel::Info,
+        source: "mods",
+        message: "Loading 6 mods",
+    },
+    LogEntry {
+        t: 700.0,
+        level: LogLevel::Info,
+        source: "mods",
+        message: "sodium-0.5.8.jar",
+    },
+    LogEntry {
+        t: 760.0,
+        level: LogLevel::Info,
+        source: "mods",
+        message: "iris-1.7.0.jar",
+    },
+    LogEntry {
+        t: 820.0,
+        level: LogLevel::Info,
+        source: "mods",
+        message: "distant-horizons-2.0.4.jar",
+    },
+    LogEntry {
+        t: 880.0,
+        level: LogLevel::Info,
+        source: "mods",
+        message: "lithium-0.12.7.jar",
+    },
+    LogEntry {
+        t: 940.0,
+        level: LogLevel::Info,
+        source: "mods",
+        message: "continuity-3.0.0.jar",
+    },
+    LogEntry {
+        t: 1000.0,
+        level: LogLevel::Info,
+        source: "mods",
+        message: "modmenu-9.0.0.jar",
+    },
+    LogEntry {
+        t: 1100.0,
+        level: LogLevel::Info,
+        source: "jvm",
+        message: "Spawning JVM · -Xmx6G -Xms6G",
+    },
+    LogEntry {
+        t: 1240.0,
+        level: LogLevel::Info,
+        source: "jvm",
+        message: "Native libraries linked · LWJGL 3.3.3",
+    },
+    LogEntry {
+        t: 1380.0,
+        level: LogLevel::Info,
+        source: "mc",
+        message: "Mojang main thread · setting up",
+    },
+    LogEntry {
+        t: 1500.0,
+        level: LogLevel::Info,
+        source: "mc",
+        message: "Sound engine started · OpenAL Soft",
+    },
+    LogEntry {
+        t: 1620.0,
+        level: LogLevel::Info,
+        source: "iris",
+        message: "Iris detected · no shaderpack",
+    },
+    LogEntry {
+        t: 1740.0,
+        level: LogLevel::Info,
+        source: "sodium",
+        message: "Sodium · GL 4.6 · 1024 MB VRAM",
+    },
+    LogEntry {
+        t: 1860.0,
+        level: LogLevel::Info,
+        source: "mc",
+        message: "Loaded resource pack · vanilla",
+    },
+    LogEntry {
+        t: 1980.0,
+        level: LogLevel::Warn,
+        source: "mods",
+        message: "distant-horizons: chunk-loader fallback path",
+    },
+    LogEntry {
+        t: 2100.0,
+        level: LogLevel::Info,
+        source: "mc",
+        message: "Built-in shaders compiled",
+    },
+    LogEntry {
+        t: 2240.0,
+        level: LogLevel::Info,
+        source: "mc",
+        message: "Reaching title screen…",
+    },
+    LogEntry {
+        t: 2400.0,
+        level: LogLevel::Ok,
+        source: "mc",
+        message: "Title screen presented · handing off",
+    },
 ];
 
 /// One of the three error variants the dev overlay can simulate.
@@ -302,9 +459,7 @@ impl LaunchingState {
     /// Whether the most recent launch ended in a non-zero exit. Drives
     /// the launching screen's footer (Retry vs the curtain rises.).
     pub fn ended_in_error(&self) -> bool {
-        self.real_exit_code
-            .map(|c| c != 0)
-            .unwrap_or(false)
+        self.real_exit_code.map(|c| c != 0).unwrap_or(false)
     }
 
     pub fn is_real_launch(&self) -> bool {
@@ -383,9 +538,7 @@ impl LaunchingState {
         let elapsed = (time - start).max(0.0);
         let scaled = elapsed / DURATION_SECONDS * SCRIPT_DURATION;
         // Drain log script up to scaled time.
-        while self.shown_logs < LOG_SCRIPT.len()
-            && LOG_SCRIPT[self.shown_logs].t <= scaled
-        {
+        while self.shown_logs < LOG_SCRIPT.len() && LOG_SCRIPT[self.shown_logs].t <= scaled {
             self.shown_logs += 1;
         }
         let just_finished = !self.done && elapsed >= DURATION_SECONDS;
@@ -540,8 +693,18 @@ fn draw_header(
     let pct_right = w - PAD_X;
     let pct_pct_x = pct_right - pct_pct_advance;
     let pct_num_x = pct_pct_x - num_advance - 2.0;
-    canvas.draw_str(&pct_str, (pct_num_x, pct_baseline), &pct_num_font, &pct_paint);
-    canvas.draw_str("%", (pct_pct_x, pct_baseline), &pct_pct_font, &pct_pct_paint);
+    canvas.draw_str(
+        &pct_str,
+        (pct_num_x, pct_baseline),
+        &pct_num_font,
+        &pct_paint,
+    );
+    canvas.draw_str(
+        "%",
+        (pct_pct_x, pct_baseline),
+        &pct_pct_font,
+        &pct_pct_paint,
+    );
 
     // Left side: eyebrow + name + meta.
     let eyebrow_font = fonts.jetbrains_mono(10.0);
@@ -572,7 +735,12 @@ fn draw_header(
     } else {
         state.instance_name.as_str()
     };
-    canvas.draw_str(display_name, (PAD_X, name_baseline), &name_font, &name_paint);
+    canvas.draw_str(
+        display_name,
+        (PAD_X, name_baseline),
+        &name_font,
+        &name_paint,
+    );
 
     // Meta row
     let meta_font = fonts.jetbrains_mono(11.0);
@@ -822,7 +990,12 @@ fn draw_log_lines(
         time_paint.set_color(TEXT_MAUVE_DEEP);
         time_paint.set_alpha_f(alpha);
         let (t_advance, _) = mono_font.measure_str(&t_str, Some(&time_paint));
-        canvas.draw_str(&t_str, (time_x_right - t_advance, baseline), &mono_font, &time_paint);
+        canvas.draw_str(
+            &t_str,
+            (time_x_right - t_advance, baseline),
+            &mono_font,
+            &time_paint,
+        );
 
         // Source column
         let src_color = match entry.level {
@@ -834,7 +1007,11 @@ fn draw_log_lines(
         let mut src_paint = Paint::default();
         src_paint.set_anti_alias(true);
         src_paint.set_color(src_color);
-        src_paint.set_alpha_f(if matches!(entry.level, LogLevel::Dim) { alpha * 0.6 } else { alpha });
+        src_paint.set_alpha_f(if matches!(entry.level, LogLevel::Dim) {
+            alpha * 0.6
+        } else {
+            alpha
+        });
         canvas.draw_str(entry.source, (src_x_left, baseline), &mono_font, &src_paint);
 
         // Message column — dim entries use italic Newsreader 12 instead of mono.
@@ -857,7 +1034,12 @@ fn draw_log_lines(
                 msg_paint.set_color(msg_color);
                 msg_paint.set_alpha_f(alpha);
                 let _ = right;
-                canvas.draw_str(entry.message, (msg_x_left, baseline), &mono_font, &msg_paint);
+                canvas.draw_str(
+                    entry.message,
+                    (msg_x_left, baseline),
+                    &mono_font,
+                    &msg_paint,
+                );
             }
         }
 
@@ -929,7 +1111,12 @@ fn draw_real_log_lines(
         // Truncate visually long lines so we don't overflow the panel.
         let visible_w = (right - msg_x_left).max(0.0);
         let trimmed = trim_to_width(&mono_font, &msg_paint, &line.text, visible_w);
-        canvas.draw_str(trimmed.as_ref(), (msg_x_left, baseline), &mono_font, &msg_paint);
+        canvas.draw_str(
+            trimmed.as_ref(),
+            (msg_x_left, baseline),
+            &mono_font,
+            &msg_paint,
+        );
 
         y += line_height;
     }
@@ -996,11 +1183,7 @@ fn draw_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, state: &Launc
         return;
     }
     let done = state.done;
-    let label = if done {
-        "the curtain rises."
-    } else {
-        "Cancel"
-    };
+    let label = if done { "the curtain rises." } else { "Cancel" };
     let font = if done {
         fonts.fraunces_axes(22.0, 50.0, 1.0, 300.0, None)
     } else {
@@ -1051,7 +1234,12 @@ fn draw_error_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32) {
     let (advance, _) = font.measure_str(label, Some(&p));
     let cx = (retry.left + retry.right) * 0.5;
     let cy = (retry.top + retry.bottom) * 0.5;
-    canvas.draw_str(label, (cx - advance * 0.5, cy + m.cap_height * 0.5), &font, &p);
+    canvas.draw_str(
+        label,
+        (cx - advance * 0.5, cy + m.cap_height * 0.5),
+        &font,
+        &p,
+    );
 
     // Back pill — mauve, less prominent.
     let rrect_back = skia_safe::RRect::new_rect_xy(back, 999.0, 999.0);
@@ -1078,5 +1266,10 @@ fn draw_error_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32) {
     let (advance2, _) = font.measure_str(label2, Some(&p2));
     let cx2 = (back.left + back.right) * 0.5;
     let cy2 = (back.top + back.bottom) * 0.5;
-    canvas.draw_str(label2, (cx2 - advance2 * 0.5, cy2 + m.cap_height * 0.5), &font, &p2);
+    canvas.draw_str(
+        label2,
+        (cx2 - advance2 * 0.5, cy2 + m.cap_height * 0.5),
+        &font,
+        &p2,
+    );
 }

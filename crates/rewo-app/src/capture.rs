@@ -101,7 +101,14 @@ pub fn civil_from_unix(secs: i64, offset_seconds: i32) -> (i32, u32, u32, u32, u
     // March-based month back to January-based; the year advances with it.
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
-    (year as i32, m as u32, d as u32, hour as u32, min as u32, sec as u32)
+    (
+        year as i32,
+        m as u32,
+        d as u32,
+        hour as u32,
+        min as u32,
+        sec as u32,
+    )
 }
 
 /// The system's UTC offset in seconds.

@@ -2,9 +2,7 @@
 //! (esp. the bottom-corner artifact) can be inspected directly instead of
 //! guessed at. Run: `cargo run -p ewo-render --example dropdown_shot`.
 
-use ewo_render::skia_safe::{
-    surfaces, Color, Color4f, EncodedImageFormat, Paint, RRect, Rect,
-};
+use ewo_render::skia_safe::{surfaces, Color, Color4f, EncodedImageFormat, Paint, RRect, Rect};
 use ewo_render::widgets::{draw_vdrop_menu, VdropState};
 use ewo_render::FontStore;
 
@@ -55,7 +53,10 @@ fn main() {
     zc.scale((6.0, 6.0));
     zc.draw_image_rect(
         &image,
-        Some((&crop, ewo_render::skia_safe::canvas::SrcRectConstraint::Fast)),
+        Some((
+            &crop,
+            ewo_render::skia_safe::canvas::SrcRectConstraint::Fast,
+        )),
         Rect::from_xywh(0.0, 0.0, 60.0, 40.0),
         &Paint::default(),
     );

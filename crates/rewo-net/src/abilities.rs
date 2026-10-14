@@ -155,14 +155,34 @@ mod tests {
     fn each_flag_bit_is_isolated() {
         let one = |bits: u8| PlayerAbilities::parse(&body(bits, 0.05, 0.1)).unwrap();
         let a = one(FLAG_INVULNERABLE);
-        assert_eq!((a.invulnerable, a.flying, a.can_fly, a.instabuild), (true, false, false, false));
+        assert_eq!(
+            (a.invulnerable, a.flying, a.can_fly, a.instabuild),
+            (true, false, false, false)
+        );
         let a = one(FLAG_FLYING);
-        assert_eq!((a.invulnerable, a.flying, a.can_fly, a.instabuild), (false, true, false, false));
+        assert_eq!(
+            (a.invulnerable, a.flying, a.can_fly, a.instabuild),
+            (false, true, false, false)
+        );
         let a = one(FLAG_CAN_FLY);
-        assert_eq!((a.invulnerable, a.flying, a.can_fly, a.instabuild), (false, false, true, false));
+        assert_eq!(
+            (a.invulnerable, a.flying, a.can_fly, a.instabuild),
+            (false, false, true, false)
+        );
         let a = one(FLAG_INSTABUILD);
-        assert_eq!((a.invulnerable, a.flying, a.can_fly, a.instabuild), (false, false, false, true));
-        assert_eq!((FLAG_INVULNERABLE, FLAG_FLYING, FLAG_CAN_FLY, FLAG_INSTABUILD), (1, 2, 4, 8));
+        assert_eq!(
+            (a.invulnerable, a.flying, a.can_fly, a.instabuild),
+            (false, false, false, true)
+        );
+        assert_eq!(
+            (
+                FLAG_INVULNERABLE,
+                FLAG_FLYING,
+                FLAG_CAN_FLY,
+                FLAG_INSTABUILD
+            ),
+            (1, 2, 4, 8)
+        );
     }
 
     /// Flying speed comes **first**. Swapping the two floats is invisible at the
@@ -199,7 +219,10 @@ mod tests {
     #[test]
     fn a_short_body_is_an_error() {
         assert!(PlayerAbilities::parse(&[]).is_err());
-        assert!(PlayerAbilities::parse(&[0, 0, 0, 0]).is_err(), "one float short");
+        assert!(
+            PlayerAbilities::parse(&[0, 0, 0, 0]).is_err(),
+            "one float short"
+        );
         assert!(PlayerAbilities::parse(&body(0, 0.05, 0.1)[..8]).is_err());
     }
 

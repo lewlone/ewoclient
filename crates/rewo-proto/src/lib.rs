@@ -19,9 +19,16 @@ use std::fmt;
 #[derive(Debug)]
 pub enum ProtoError {
     /// Ran off the end of a packet buffer.
-    Eof { needed: usize, remaining: usize },
+    Eof {
+        needed: usize,
+        remaining: usize,
+    },
     VarIntTooLong,
-    LengthOutOfRange { what: &'static str, len: i64, max: usize },
+    LengthOutOfRange {
+        what: &'static str,
+        len: i64,
+        max: usize,
+    },
     InvalidUtf8,
     Nbt(String),
     Frame(String),
@@ -32,7 +39,10 @@ impl fmt::Display for ProtoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ProtoError::Eof { needed, remaining } => {
-                write!(f, "unexpected end of packet: needed {needed}, had {remaining}")
+                write!(
+                    f,
+                    "unexpected end of packet: needed {needed}, had {remaining}"
+                )
             }
             ProtoError::VarIntTooLong => write!(f, "varint too long"),
             ProtoError::LengthOutOfRange { what, len, max } => {

@@ -169,10 +169,7 @@ fn drain_pipe<R: std::io::Read + Send + 'static>(
     for line in reader.lines() {
         match line {
             Ok(text) => {
-                if tx
-                    .send(LaunchEvent::Line { severity, text })
-                    .is_err()
-                {
+                if tx.send(LaunchEvent::Line { severity, text }).is_err() {
                     break;
                 }
             }
@@ -257,7 +254,12 @@ mod tests {
     #[test]
     fn access_token_value_is_redacted() {
         let args = v(&[
-            "--username", "Vwyla", "--accessToken", "secret-mc-token", "--version", "26.2",
+            "--username",
+            "Vwyla",
+            "--accessToken",
+            "secret-mc-token",
+            "--version",
+            "26.2",
         ]);
         let r = redact_args(&args);
         assert_eq!(r[3], REDACTED);

@@ -35,19 +35,79 @@ fn body_cuboids(slim: bool) -> [Cuboid; 12] {
     let r = -4.0 - aw; // right-arm outer edge
     let l = 4.0 + aw; // left-arm outer edge
     [
-        Cuboid { min: [-4.0, 24.0, -4.0], max: [4.0, 32.0, 4.0], size: [8.0, 8.0, 8.0], uv: (0.0, 0.0) },
-        Cuboid { min: [-4.0, 12.0, -2.0], max: [4.0, 24.0, 2.0], size: [8.0, 12.0, 4.0], uv: (16.0, 16.0) },
-        Cuboid { min: [r, 12.0, -2.0], max: [-4.0, 24.0, 2.0], size: [aw, 12.0, 4.0], uv: (40.0, 16.0) },
-        Cuboid { min: [4.0, 12.0, -2.0], max: [l, 24.0, 2.0], size: [aw, 12.0, 4.0], uv: (32.0, 48.0) },
-        Cuboid { min: [-4.0, 0.0, -2.0], max: [0.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (0.0, 16.0) },
-        Cuboid { min: [0.0, 0.0, -2.0], max: [4.0, 12.0, 2.0], size: [4.0, 12.0, 4.0], uv: (16.0, 48.0) },
+        Cuboid {
+            min: [-4.0, 24.0, -4.0],
+            max: [4.0, 32.0, 4.0],
+            size: [8.0, 8.0, 8.0],
+            uv: (0.0, 0.0),
+        },
+        Cuboid {
+            min: [-4.0, 12.0, -2.0],
+            max: [4.0, 24.0, 2.0],
+            size: [8.0, 12.0, 4.0],
+            uv: (16.0, 16.0),
+        },
+        Cuboid {
+            min: [r, 12.0, -2.0],
+            max: [-4.0, 24.0, 2.0],
+            size: [aw, 12.0, 4.0],
+            uv: (40.0, 16.0),
+        },
+        Cuboid {
+            min: [4.0, 12.0, -2.0],
+            max: [l, 24.0, 2.0],
+            size: [aw, 12.0, 4.0],
+            uv: (32.0, 48.0),
+        },
+        Cuboid {
+            min: [-4.0, 0.0, -2.0],
+            max: [0.0, 12.0, 2.0],
+            size: [4.0, 12.0, 4.0],
+            uv: (0.0, 16.0),
+        },
+        Cuboid {
+            min: [0.0, 0.0, -2.0],
+            max: [4.0, 12.0, 2.0],
+            size: [4.0, 12.0, 4.0],
+            uv: (16.0, 48.0),
+        },
         // overlay layer — hat / jacket / sleeves / pants, slightly inflated.
-        Cuboid { min: [-4.5, 23.5, -4.5], max: [4.5, 32.5, 4.5], size: [8.0, 8.0, 8.0], uv: (32.0, 0.0) },
-        Cuboid { min: [-4.25, 11.75, -2.25], max: [4.25, 24.25, 2.25], size: [8.0, 12.0, 4.0], uv: (16.0, 32.0) },
-        Cuboid { min: [r - 0.25, 11.75, -2.25], max: [-3.75, 24.25, 2.25], size: [aw, 12.0, 4.0], uv: (40.0, 32.0) },
-        Cuboid { min: [3.75, 11.75, -2.25], max: [l + 0.25, 24.25, 2.25], size: [aw, 12.0, 4.0], uv: (48.0, 48.0) },
-        Cuboid { min: [-4.25, -0.25, -2.25], max: [0.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 32.0) },
-        Cuboid { min: [-0.25, -0.25, -2.25], max: [4.25, 12.25, 2.25], size: [4.0, 12.0, 4.0], uv: (0.0, 48.0) },
+        Cuboid {
+            min: [-4.5, 23.5, -4.5],
+            max: [4.5, 32.5, 4.5],
+            size: [8.0, 8.0, 8.0],
+            uv: (32.0, 0.0),
+        },
+        Cuboid {
+            min: [-4.25, 11.75, -2.25],
+            max: [4.25, 24.25, 2.25],
+            size: [8.0, 12.0, 4.0],
+            uv: (16.0, 32.0),
+        },
+        Cuboid {
+            min: [r - 0.25, 11.75, -2.25],
+            max: [-3.75, 24.25, 2.25],
+            size: [aw, 12.0, 4.0],
+            uv: (40.0, 32.0),
+        },
+        Cuboid {
+            min: [3.75, 11.75, -2.25],
+            max: [l + 0.25, 24.25, 2.25],
+            size: [aw, 12.0, 4.0],
+            uv: (48.0, 48.0),
+        },
+        Cuboid {
+            min: [-4.25, -0.25, -2.25],
+            max: [0.25, 12.25, 2.25],
+            size: [4.0, 12.0, 4.0],
+            uv: (0.0, 32.0),
+        },
+        Cuboid {
+            min: [-0.25, -0.25, -2.25],
+            max: [4.25, 12.25, 2.25],
+            size: [4.0, 12.0, 4.0],
+            uv: (0.0, 48.0),
+        },
     ]
 }
 
@@ -93,7 +153,12 @@ fn cuboid_faces(c: &Cuboid, cape: bool) -> [Face; 6] {
         // Front (+Z) — chest / face.
         Face {
             pos: [p(x0, y1, z1), p(x1, y1, z1), p(x1, y0, z1), p(x0, y0, z1)],
-            uv: [t(fu, fv), t(fu + sw, fv), t(fu + sw, fv + sh), t(fu, fv + sh)],
+            uv: [
+                t(fu, fv),
+                t(fu + sw, fv),
+                t(fu + sw, fv + sh),
+                t(fu, fv + sh),
+            ],
             normal: [0.0, 0.0, 1.0],
             shade: 0.80,
             cape,
@@ -101,7 +166,12 @@ fn cuboid_faces(c: &Cuboid, cape: bool) -> [Face; 6] {
         // Back (-Z).
         Face {
             pos: [p(x1, y1, z0), p(x0, y1, z0), p(x0, y0, z0), p(x1, y0, z0)],
-            uv: [t(bu, bv), t(bu + sw, bv), t(bu + sw, bv + sh), t(bu, bv + sh)],
+            uv: [
+                t(bu, bv),
+                t(bu + sw, bv),
+                t(bu + sw, bv + sh),
+                t(bu, bv + sh),
+            ],
             normal: [0.0, 0.0, -1.0],
             shade: 0.62,
             cape,
@@ -109,7 +179,12 @@ fn cuboid_faces(c: &Cuboid, cape: bool) -> [Face; 6] {
         // Top (+Y).
         Face {
             pos: [p(x0, y1, z0), p(x1, y1, z0), p(x1, y1, z1), p(x0, y1, z1)],
-            uv: [t(tu, tv), t(tu + sw, tv), t(tu + sw, tv + sd), t(tu, tv + sd)],
+            uv: [
+                t(tu, tv),
+                t(tu + sw, tv),
+                t(tu + sw, tv + sd),
+                t(tu, tv + sd),
+            ],
             normal: [0.0, 1.0, 0.0],
             shade: 1.0,
             cape,
@@ -117,7 +192,12 @@ fn cuboid_faces(c: &Cuboid, cape: bool) -> [Face; 6] {
         // Bottom (-Y).
         Face {
             pos: [p(x0, y0, z1), p(x1, y0, z1), p(x1, y0, z0), p(x0, y0, z0)],
-            uv: [t(du, dv), t(du + sw, dv), t(du + sw, dv + sd), t(du, dv + sd)],
+            uv: [
+                t(du, dv),
+                t(du + sw, dv),
+                t(du + sw, dv + sd),
+                t(du, dv + sd),
+            ],
             normal: [0.0, -1.0, 0.0],
             shade: 0.50,
             cape,
@@ -125,7 +205,12 @@ fn cuboid_faces(c: &Cuboid, cape: bool) -> [Face; 6] {
         // Right (-X) — the player's right side.
         Face {
             pos: [p(x0, y1, z0), p(x0, y1, z1), p(x0, y0, z1), p(x0, y0, z0)],
-            uv: [t(ru, rv), t(ru + sd, rv), t(ru + sd, rv + sh), t(ru, rv + sh)],
+            uv: [
+                t(ru, rv),
+                t(ru + sd, rv),
+                t(ru + sd, rv + sh),
+                t(ru, rv + sh),
+            ],
             normal: [-1.0, 0.0, 0.0],
             shade: 0.68,
             cape,
@@ -133,7 +218,12 @@ fn cuboid_faces(c: &Cuboid, cape: bool) -> [Face; 6] {
         // Left (+X).
         Face {
             pos: [p(x1, y1, z1), p(x1, y1, z0), p(x1, y0, z0), p(x1, y0, z1)],
-            uv: [t(lu, lv), t(lu + sd, lv), t(lu + sd, lv + sh), t(lu, lv + sh)],
+            uv: [
+                t(lu, lv),
+                t(lu + sd, lv),
+                t(lu + sd, lv + sh),
+                t(lu, lv + sh),
+            ],
             normal: [1.0, 0.0, 0.0],
             shade: 0.68,
             cape,

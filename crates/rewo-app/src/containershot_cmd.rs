@@ -92,7 +92,8 @@ impl Checker {
         // the only part that has to be unique.
         let id = name.split('.').next().unwrap_or(name);
         if !self.seen.insert(id.to_string()) {
-            self.failures.push(format!("{name} (DUPLICATE witness id `{id}`)"));
+            self.failures
+                .push(format!("{name} (DUPLICATE witness id `{id}`)"));
             println!("[containershot] FAIL  {name}: witness id `{id}` already ran");
             return;
         }
@@ -136,8 +137,8 @@ fn chest_slots_independently(rows: i32) -> Vec<(i32, i32)> {
 }
 
 pub fn run(args: ContainershotArgs) -> Result<(), String> {
-    let paths = rewo_data::DataPaths::for_version(&args.version)
-        .ok_or("no config dir for version data")?;
+    let paths =
+        rewo_data::DataPaths::for_version(&args.version).ok_or("no config dir for version data")?;
     let jar = crate::inventoryshot_cmd::client_jar(&args.version).ok_or("client jar not found")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
     let mut c = Checker::new();
@@ -160,10 +161,11 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
             format!(
                 "{} slots; first difference {:?}",
                 theirs.len(),
-                mine.iter()
-                    .zip(&theirs)
-                    .position(|(a, b)| a != b)
-                    .map(|i| (i, mine.get(i), theirs.get(i)))
+                mine.iter().zip(&theirs).position(|(a, b)| a != b).map(|i| (
+                    i,
+                    mine.get(i),
+                    theirs.get(i)
+                ))
             ),
         );
     }
@@ -194,9 +196,8 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         let mut menus = rewo_world::menu::Menus::new();
         menus.apply_open_screen(7, 17, "Lectern".into());
         let menu = menus.open().expect("lectern menu");
-        let book_screen = rewo_world::book_view_screen::build_lectern_screen(
-            320, 240, "Done", "Take Book",
-        );
+        let book_screen =
+            rewo_world::book_view_screen::build_lectern_screen(320, 240, "Done", "Take Book");
         c.record(
             "m9.an_open_lectern_is_a_bookview_screen_not_a_container",
             menu.layout.name == "lectern"
@@ -489,10 +490,7 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                     == Some(true)
             })
         };
-        let dyes_agree = tag_and_component_agree(
-            rewo_data::loom_table::LOOM_DYES,
-            "minecraft:dye",
-        );
+        let dyes_agree = tag_and_component_agree(rewo_data::loom_table::LOOM_DYES, "minecraft:dye");
         let patterns_agree = tag_and_component_agree(
             rewo_data::loom_table::LOOM_PATTERNS,
             "minecraft:provides_banner_patterns",
@@ -526,8 +524,7 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                     "container_slot_state_changed={:?}, container_button_click={:?} — two \
                      different serverbound packets, and CrafterMenu has no clickMenuButton \
                      override at all",
-                    ids.sb_play_container_slot_state_changed,
-                    ids.sb_play_container_button_click
+                    ids.sb_play_container_slot_state_changed, ids.sb_play_container_button_click
                 ),
             );
             // M93l — the beacon's confirm packet, same rule: the body-builder
@@ -768,9 +765,7 @@ fn pixels(
     c.record(
         "p4.the_panel_is_centred_for_its_own_height",
         (tall_top - expected).abs() <= scale && tall_top < player_top,
-        format!(
-            "six-row chest top {tall_top}, player top {player_top}, expected about {expected}"
-        ),
+        format!("six-row chest top {tall_top}, player top {player_top}, expected about {expected}"),
     );
 
     // With no panel set, the pass draws the player's inventory exactly as it
@@ -971,9 +966,8 @@ fn overlays(
     // detector's, not the render's.
     let numeral_changed = (0..3).all(|i| {
         (61..77).any(|x| {
-            (15..31).any(|dy| {
-                at_ench(&empty, x, dy + 19 * i) != at_ench(&unaffordable, x, dy + 19 * i)
-            })
+            (15..31)
+                .any(|dy| at_ench(&empty, x, dy + 19 * i) != at_ench(&unaffordable, x, dy + 19 * i))
         })
     });
     c.record(
@@ -987,9 +981,8 @@ fn overlays(
     // instead. Probed at the row's left edge, outside the numeral's 16 px.
     let bg_same = (0..3).all(|i| {
         (60..61).all(|x| {
-            (14..33).all(|dy| {
-                at_ench(&empty, x, dy + 19 * i) == at_ench(&unaffordable, x, dy + 19 * i)
-            })
+            (14..33)
+                .all(|dy| at_ench(&empty, x, dy + 19 * i) == at_ench(&unaffordable, x, dy + 19 * i))
         })
     });
     c.record(
@@ -1163,7 +1156,9 @@ fn overlays(
     // quietly inverting the witness.
     let redness = |rgba: &[u8]| -> f64 {
         let px: Vec<f64> = rgba
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[3] > 0)
             .map(|p| p[0] as f64 - p[1] as f64)
             .collect();
@@ -1512,7 +1507,7 @@ fn overlays(
             let open = m.open().expect("open");
             wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
                 open, 30, false, effects, None, over, None, None, None,
-        ));
+            ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -1573,7 +1568,7 @@ fn overlays(
             let open = m.open().expect("open");
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
                 open, 30, false, effects, None, None, None, None, None,
-        )
+            )
             .ok_or("containershot: no brewing panel")?;
             panel.overlays = overlays;
             wr.set_container_panel(Some(panel));
@@ -1650,7 +1645,7 @@ fn overlays(
                 }),
                 None,
                 None,
-        ));
+            ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -1729,7 +1724,7 @@ fn overlays(
                 None,
                 view.as_ref(),
                 None,
-        ));
+            ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -1811,7 +1806,11 @@ fn overlays(
             wr,
         )?;
         let row0 = at_cut(&sheared, cell0.0 + 8, cell0.1 + 9);
-        let row1 = at_cut(&sheared, ms::cut_cell_sprite_origin(4).0 + 8, ms::cut_cell_sprite_origin(4).1 + 9);
+        let row1 = at_cut(
+            &sheared,
+            ms::cut_cell_sprite_origin(4).0 + 8,
+            ms::cut_cell_sprite_origin(4).1 + 9,
+        );
         c.record(
             "w4.the_hover_lights_the_row_ABOVE_the_one_a_click_would_hit",
             row0 != lit && row1 == lit,
@@ -1851,11 +1850,7 @@ fn overlays(
         let long_top = cut_frame(Some(view(-1, 0, 0.0, 40)), None, gpu, off, wr)?;
         let long_bot = cut_frame(Some(view(-1, 28, 1.0, 40)), None, gpu, off, wr)?;
         let thumb = |img: &Vec<u8>, off_s: f32| {
-            at_cut(
-                img,
-                ms::CUT_SCROLLER_X + 6,
-                ms::cut_scroller_y(off_s) + 7,
-            )
+            at_cut(img, ms::CUT_SCROLLER_X + 6, ms::cut_scroller_y(off_s) + 7)
         };
         let a = thumb(&short, 0.0);
         let b = thumb(&long_top, 0.0);
@@ -1899,7 +1894,7 @@ fn overlays(
             setup(&mut field);
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
                 open, 30, false, effects, None, None, None, None, None,
-        )
+            )
             .ok_or("containershot: no anvil panel")?;
             // A 6-px monospace advance, so the geometry is arithmetic.
             let (_, fills, _) = crate::live_cmd::anvil_field_render_for_test(
@@ -2034,7 +2029,6 @@ fn overlays(
             // `special_price_diff` is inert here: the view carries the already
             // -resolved `cost_a_counts`, so a discount is expressed by making
             // those differ from `cost_a.count`.
-
             result: rewo_net::item_stack::WireSlot::Empty,
             cost_b: None,
             out_of_stock,
@@ -2078,7 +2072,7 @@ fn overlays(
                 None,
                 None,
                 Some(&view),
-        ));
+            ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -2447,7 +2441,11 @@ fn overlays(
             buttons: flags
                 .iter()
                 .enumerate()
-                .map(|(i, &c)| ro::Button { recipe: i as i32, craftable: c, slots: Vec::new() })
+                .map(|(i, &c)| ro::Button {
+                    recipe: i as i32,
+                    craftable: c,
+                    slots: Vec::new(),
+                })
                 .collect(),
         };
         let two = opened(&[true, false], false);
@@ -2465,11 +2463,24 @@ fn overlays(
         let (ov0x, ov0y) = btn(0, 2, 12, 12);
         let ov = book_frame(Some(&full), Some(&two), None, gpu, off, wr)?;
         let hov = book_frame(Some(&full), Some(&two), Some((ov0x, ov0y)), gpu, off, wr)?;
-        let fur =
-            book_frame(Some(&full), Some(&opened(&[true, false], true)), None, gpu, off, wr)?;
+        let fur = book_frame(
+            Some(&full),
+            Some(&opened(&[true, false], true)),
+            None,
+            gpu,
+            off,
+            wr,
+        )?;
         let five = opened(&[true; 5], false);
         let wide = book_frame(Some(&full), Some(&five), None, gpu, off, wr)?;
-        let deep = book_frame(Some(&full), Some(&opened(&[true; 8], false)), None, gpu, off, wr)?;
+        let deep = book_frame(
+            Some(&full),
+            Some(&opened(&[true; 8], false)),
+            None,
+            gpu,
+            off,
+            wr,
+        )?;
         drop(book_frame);
 
         // b1 - the book paints its own sheet.
@@ -2542,9 +2553,8 @@ fn overlays(
         wr.set_recipe_book(Some(zeroed));
         wr.set_container(true, None);
         let from_zero = shot(gpu, off, wr)?;
-        let differs = (0..(W * H) as usize).any(|i| {
-            from_zero[i * 4] != open[i * 4] || from_zero[i * 4 + 1] != open[i * 4 + 1]
-        });
+        let differs = (0..(W * H) as usize)
+            .any(|i| from_zero[i * 4] != open[i * 4] || from_zero[i * 4 + 1] != open[i * 4 + 1]);
         c.record(
             "b4.the_panels_one_one_source_offset_reaches_the_draw",
             differs && rb::PANEL_SOURCE == (1, 1),
@@ -2749,7 +2759,11 @@ fn overlays(
         let sword_id = book_items.id("diamond_sword").expect("diamond_sword");
         let sword = book_items.name(sword_id).expect("named").to_string();
         let mut stocked = rewo_world::inventory::Inventory::default();
-        stocked.set_slot(0, 36, Some(rewo_world::inventory::ItemSlot::plain(sword_id, 1)));
+        stocked.set_slot(
+            0,
+            36,
+            Some(rewo_world::inventory::ItemSlot::plain(sword_id, 1)),
+        );
         let shut_icons = icons_at(None, &stocked, None);
         let open_icons = icons_at(Some(&full), &stocked, None);
         let first_menu_icon = |v: &[rewo_gpu::gui_item::GuiItem]| -> Option<f32> {
@@ -2931,31 +2945,29 @@ fn overlays(
             .as_ref()
             .ok_or("containershot: no baked font")?
             .advance;
-        let cell_tip = |b: &crate::live_cmd::BookRender,
-                        overlay_open: bool,
-                        cell: usize|
-         -> Vec<String> {
-            let (cx, cy) = rb::grid_slot(cell);
-            let mouse = (
-                (bl + (cx as f32 + 12.0) * bsc) as f64,
-                (bt + (cy as f32 + 12.0) * bsc) as f64,
-            );
-            crate::live_cmd::book_tooltip(
-                b,
-                overlay_open,
-                Some((cx + 12, cy + 12)),
-                &book_items,
-                &baked.item_names,
-                lang,
-                rewo_gpu::tooltip::TooltipFlag::NORMAL,
-                advance,
-                None,
-                mouse,
-                (W as f32, H as f32),
-            )
-            .map(|(_, lines, _)| lines.into_iter().map(|l| l.text).collect())
-            .unwrap_or_default()
-        };
+        let cell_tip =
+            |b: &crate::live_cmd::BookRender, overlay_open: bool, cell: usize| -> Vec<String> {
+                let (cx, cy) = rb::grid_slot(cell);
+                let mouse = (
+                    (bl + (cx as f32 + 12.0) * bsc) as f64,
+                    (bt + (cy as f32 + 12.0) * bsc) as f64,
+                );
+                crate::live_cmd::book_tooltip(
+                    b,
+                    overlay_open,
+                    Some((cx + 12, cy + 12)),
+                    &book_items,
+                    &baked.item_names,
+                    lang,
+                    rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                    advance,
+                    None,
+                    mouse,
+                    (W as f32, H as f32),
+                )
+                .map(|(_, lines, _)| lines.into_iter().map(|l| l.text).collect())
+                .unwrap_or_default()
+            };
         let one = book(20, 1, 0);
         let mut many = book(20, 1, 0);
         // `hasMultipleRecipes()` — the second half of the `(craftable,
@@ -3144,11 +3156,13 @@ fn overlays(
         // producers at once, and vanilla's answer is the REAL item, because
         // `setTooltipForNextFrameInternal` only assigns when nothing has
         // claimed the frame yet.
-        let ghost_of = |slot: usize, item: i32| vec![rewo_world::ghost_slots::Ghost {
-            slot,
-            items: vec![item],
-            is_result: false,
-        }];
+        let ghost_of = |slot: usize, item: i32| {
+            vec![rewo_world::ghost_slots::Ghost {
+                slot,
+                items: vec![item],
+                is_result: false,
+            }]
+        };
         // Menu slot 1 of a crafting table — the same slot b19 uses, and the
         // one `shifted` has a dirt stack in.
         let stone_id = book_items.id("stone").expect("stone");

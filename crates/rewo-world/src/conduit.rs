@@ -237,7 +237,13 @@ mod tests {
         let water = vec![false, true];
         let frame = vec![false, true];
         let shape = scan((0, 0, 0), |_, _, _| 0, &water, &frame);
-        assert_eq!(shape, ConduitShape { frame: 0, submerged: false });
+        assert_eq!(
+            shape,
+            ConduitShape {
+                frame: 0,
+                submerged: false
+            }
+        );
         assert!(!shape.active());
     }
 
@@ -267,8 +273,7 @@ mod tests {
         assert!(s.active() && !s.hunting());
 
         // Every position — the hunting threshold IS the shell size.
-        let want42: std::collections::HashSet<(i32, i32, i32)> =
-            offs.iter().copied().collect();
+        let want42: std::collections::HashSet<(i32, i32, i32)> = offs.iter().copied().collect();
         let s = scan(
             (0, 0, 0),
             |x, y, z| if want42.contains(&(x, y, z)) { 2 } else { 1 },
@@ -282,8 +287,14 @@ mod tests {
     #[test]
     fn the_rotation_advances_only_while_active() {
         let mut a = ConduitAnim::default();
-        let live = ConduitShape { frame: 20, submerged: true };
-        let dead = ConduitShape { frame: 0, submerged: false };
+        let live = ConduitShape {
+            frame: 20,
+            submerged: true,
+        };
+        let dead = ConduitShape {
+            frame: 0,
+            submerged: false,
+        };
         for _ in 0..10 {
             a.tick(Some(dead));
         }
@@ -300,7 +311,10 @@ mod tests {
     #[test]
     fn the_phase_holds_for_sixty_six_ticks_each() {
         let mut a = ConduitAnim::default();
-        let live = ConduitShape { frame: 20, submerged: true };
+        let live = ConduitShape {
+            frame: 20,
+            submerged: true,
+        };
         let mut seen = Vec::new();
         for _ in 0..200 {
             a.tick(Some(live));

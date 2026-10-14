@@ -102,7 +102,9 @@ impl HeldItems {
     /// Look a model up across both maps. Names cannot collide: block-entity
     /// models are `rewo:be/…`.
     pub fn any(&self, name: &str) -> Option<&HeldItemModel> {
-        self.models.get(name).or_else(|| self.block_entities.get(name))
+        self.models
+            .get(name)
+            .or_else(|| self.block_entities.get(name))
     }
 }
 
@@ -194,13 +196,22 @@ mod tests {
         };
         let p = apply_display(&t, false, [1.0, 0.5, 0.5]); // centred -> (0.5,0,0)
         assert!((p[0]).abs() < 1e-5, "{p:?}");
-        assert!((p[1] - 1.0).abs() < 1e-5, "x scaled by 2 then rotated: {p:?}");
+        assert!(
+            (p[1] - 1.0).abs() < 1e-5,
+            "x scaled by 2 then rotated: {p:?}"
+        );
     }
 
     #[test]
     fn the_hand_offset_matches_the_layer_and_mirrors_for_the_left() {
-        assert_eq!(hand_offset(false, false), [1.0 / 16.0, 2.0 / 16.0, -10.0 / 16.0]);
-        assert_eq!(hand_offset(true, false), [-1.0 / 16.0, 2.0 / 16.0, -10.0 / 16.0]);
+        assert_eq!(
+            hand_offset(false, false),
+            [1.0 / 16.0, 2.0 / 16.0, -10.0 / 16.0]
+        );
+        assert_eq!(
+            hand_offset(true, false),
+            [-1.0 / 16.0, 2.0 / 16.0, -10.0 / 16.0]
+        );
         // A baby's offsets differ on all three axes, and x is zero so it does
         // not mirror.
         assert_eq!(hand_offset(false, true), [0.0, 1.0 / 16.0, -4.5 / 16.0]);

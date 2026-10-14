@@ -15,9 +15,7 @@
 
 use ewo_core::OkLch;
 use rand::Rng;
-use skia_safe::{
-    gradient_shader, BlendMode, Canvas, Color4f, Paint, Path, Point, TileMode,
-};
+use skia_safe::{gradient_shader, BlendMode, Canvas, Color4f, Paint, Path, Point, TileMode};
 use std::f32::consts::PI;
 
 const BASE_PETALS: usize = 4;
@@ -94,7 +92,8 @@ impl Petals {
             && (self.cycle_time - self.last_burst_t) > BURST_INTERVAL_SEC
         {
             self.last_burst_t = self.cycle_time;
-            self.petals.push(make_petal(&mut rng, self.width, self.height, true));
+            self.petals
+                .push(make_petal(&mut rng, self.width, self.height, true));
         }
 
         // Update + cull.
@@ -125,7 +124,8 @@ impl Petals {
         if !self.celebrating {
             let target = ((BASE_PETALS as f32) * self.density).round() as usize;
             while self.petals.len() < target {
-                self.petals.push(make_petal(&mut rng, self.width, self.height, false));
+                self.petals
+                    .push(make_petal(&mut rng, self.width, self.height, false));
             }
         }
     }

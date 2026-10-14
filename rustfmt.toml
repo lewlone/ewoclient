@@ -1,0 +1,3 @@
+# One newline style on every platform, so `cargo fmt --check` cannot depend
+# on how git checked the tree out (Windows runners default to autocrlf).
+newline_style = "Unix"

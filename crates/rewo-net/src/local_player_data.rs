@@ -284,7 +284,11 @@ mod tests {
     #[test]
     fn air_frozen_and_absorption_survive_a_packet_with_no_flags() {
         let mut d = LocalPlayerData::default();
-        assert_eq!(d.air_supply(), MAX_AIR_SUPPLY, "define default is getMaxAirSupply()");
+        assert_eq!(
+            d.air_supply(),
+            MAX_AIR_SUPPLY,
+            "define default is getMaxAirSupply()"
+        );
         assert!(!d.is_fully_frozen());
         assert_eq!(d.absorption(), 0.0);
         let out = apply_local_metadata(&hud_body(1, -7, 140, 4.0), Some(1), None, &mut d);
@@ -296,7 +300,10 @@ mod tests {
         apply_local_metadata(&hud_body(1, 300, 139, 0.0), Some(1), None, &mut d);
         assert!(!d.is_fully_frozen());
         apply_local_metadata(&hud_body(2, 0, 999, 9.0), Some(1), None, &mut d);
-        assert_eq!((d.air_supply(), d.ticks_frozen(), d.absorption()), (300, 139, 0.0));
+        assert_eq!(
+            (d.air_supply(), d.ticks_frozen(), d.absorption()),
+            (300, 139, 0.0)
+        );
     }
 
     #[test]

@@ -118,14 +118,28 @@ mod tests {
             assert_eq!(out, bytes, "encode {value}");
             assert_eq!(varint_len(value), bytes.len(), "len {value}");
             let mut pos = 0;
-            assert_eq!(read_varint(bytes, &mut pos).unwrap(), value, "decode {value}");
+            assert_eq!(
+                read_varint(bytes, &mut pos).unwrap(),
+                value,
+                "decode {value}"
+            );
             assert_eq!(pos, bytes.len());
         }
     }
 
     #[test]
     fn varlong_roundtrip() {
-        for v in [0i64, 1, 127, 128, 255, i64::MAX, -1, i64::MIN, 1234567890123] {
+        for v in [
+            0i64,
+            1,
+            127,
+            128,
+            255,
+            i64::MAX,
+            -1,
+            i64::MIN,
+            1234567890123,
+        ] {
             let mut out = Vec::new();
             write_varlong(&mut out, v);
             let mut pos = 0;

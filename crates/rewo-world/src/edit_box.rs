@@ -422,7 +422,10 @@ impl EditBox {
         for _ in 0..dir.unsigned_abs() {
             if !reverse {
                 let length = self.value.len();
-                match self.value[result.min(length)..].iter().position(|&c| c == SPACE) {
+                match self.value[result.min(length)..]
+                    .iter()
+                    .position(|&c| c == SPACE)
+                {
                     None => result = length,
                     Some(off) => {
                         result += off;
@@ -452,7 +455,8 @@ impl EditBox {
                 if pos >= self.value.len() {
                     break;
                 }
-                pos += if (0xD800..0xDC00).contains(&self.value[pos]) && pos + 1 < self.value.len() {
+                pos += if (0xD800..0xDC00).contains(&self.value[pos]) && pos + 1 < self.value.len()
+                {
                     2
                 } else {
                     1
@@ -636,9 +640,11 @@ impl EditBox {
             // `plainSubstrByWidth(value, innerWidth, /* tail */ true)` — a run
             // measured from the END, so scrolling left jumps by a screenful
             // rather than a character.
-            self.display_pos = self
-                .display_pos
-                .saturating_sub(plain_substr_by_width_tail(&self.value, inner_width, width));
+            self.display_pos = self.display_pos.saturating_sub(plain_substr_by_width_tail(
+                &self.value,
+                inner_width,
+                width,
+            ));
         }
         if pos > last_pos {
             self.display_pos += pos - last_pos;
@@ -685,7 +691,11 @@ pub fn plain_substr_by_width(s: &[u16], max_width: i32, width: &dyn Fn(&[u16]) -
 }
 
 /// The same measured from the **end** — `plainSubstrByWidth(s, w, true)`.
-pub fn plain_substr_by_width_tail(s: &[u16], max_width: i32, width: &dyn Fn(&[u16]) -> i32) -> usize {
+pub fn plain_substr_by_width_tail(
+    s: &[u16],
+    max_width: i32,
+    width: &dyn Fn(&[u16]) -> i32,
+) -> usize {
     let mut n = 0;
     while n < s.len() && width(&s[s.len() - n - 1..]) <= max_width {
         n += 1;
@@ -730,7 +740,10 @@ mod tests {
     fn the_caret_blinks_from_the_moment_focus_was_taken() {
         let mut f = EditBox::new(32);
         f.set_focused_at(true, 10_000);
-        assert!(f.cursor_visible(10_000), "visible the instant it is focused");
+        assert!(
+            f.cursor_visible(10_000),
+            "visible the instant it is focused"
+        );
         assert!(f.cursor_visible(10_299));
         assert!(!f.cursor_visible(10_300), "off for the second 300 ms");
         assert!(!f.cursor_visible(10_599));
@@ -756,7 +769,10 @@ mod tests {
     fn a_never_focused_field_has_no_phase() {
         let f = EditBox::new(32);
         assert!(f.cursor_visible(0));
-        assert!(f.cursor_visible(123_456), "any clock, since there is no phase");
+        assert!(
+            f.cursor_visible(123_456),
+            "any clock, since there is no phase"
+        );
     }
 
     /// `setFocused` is gated on `canLoseFocus || focused`, so a pinned field
@@ -825,7 +841,11 @@ mod tests {
         let mut c = EditBox::new(5);
         c.set_value("abcde");
         c.insert_text("Z");
-        assert_eq!(c.value(), "abcde", "a full box with no selection takes nothing");
+        assert_eq!(
+            c.value(),
+            "abcde",
+            "a full box with no selection takes nothing"
+        );
     }
 
     #[test]
@@ -841,7 +861,11 @@ mod tests {
         let mut c = EditBox::new(3);
         c.set_focused(true);
         c.insert_text("😀😀");
-        assert_eq!(c.value(), "😀", "3 units of room takes one pair, not one-and-a-half");
+        assert_eq!(
+            c.value(),
+            "😀",
+            "3 units of room takes one pair, not one-and-a-half"
+        );
         assert_eq!(c.len(), 2);
     }
 
@@ -980,7 +1004,10 @@ mod tests {
             Input::new(key::C, modifier::CONTROL | modifier::ALT),
             &mut clip
         ));
-        assert!(!b.key_pressed(Input::new(key::C, 0), &mut clip), "and bare C");
+        assert!(
+            !b.key_pressed(Input::new(key::C, 0), &mut clip),
+            "and bare C"
+        );
         assert_eq!(clip, "");
     }
 
@@ -1017,11 +1044,17 @@ mod tests {
         assert_eq!(b.display_pos(), 0);
         b.scroll_to(16, 60, &mono);
         assert_eq!(b.display_pos(), 6, "the last ten units are shown");
-        assert_eq!(String::from_utf16_lossy(b.displayed(60, &mono)), "ghijklmnop");
+        assert_eq!(
+            String::from_utf16_lossy(b.displayed(60, &mono)),
+            "ghijklmnop"
+        );
         // Back to the start.
         b.scroll_to(0, 60, &mono);
         assert_eq!(b.display_pos(), 0);
-        assert_eq!(String::from_utf16_lossy(b.displayed(60, &mono)), "abcdefghij");
+        assert_eq!(
+            String::from_utf16_lossy(b.displayed(60, &mono)),
+            "abcdefghij"
+        );
     }
 
     #[test]

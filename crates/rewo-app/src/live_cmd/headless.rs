@@ -172,24 +172,87 @@ pub(super) fn run_headless(
                 std::env::remove_var("REWO_DUMP_INVENTORY");
             }
             if let Ok(whole) = crate::knobs::var("REWO_CLICK") {
-              let before_all = session.inventory.content_updates();
-              // Semicolon-separated, so a run can pick a stack up and then do
-              // something with it — a drag needs a stack on the cursor, and no
-              // single click can leave one there and use it.
-              for spec in whole.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-                // `d:<slot>,<slot>,…[,one]` is a quick-craft drag over those
-                // slots; the trailing `one` selects type 1 (one per slot).
-                if let Some(rest) = spec.strip_prefix("d:") {
-                    let one = rest.trim_end().ends_with("one");
-                    let kind = if one {
-                        rewo_world::inventory::QUICK_CRAFT_ONE
-                    } else {
-                        rewo_world::inventory::QUICK_CRAFT_SPLIT
-                    };
-                    let touched: Vec<usize> = rest
-                        .split(',')
-                        .filter_map(|v| v.trim().parse::<usize>().ok())
-                        .collect();
+                let before_all = session.inventory.content_updates();
+                // Semicolon-separated, so a run can pick a stack up and then do
+                // something with it — a drag needs a stack on the cursor, and no
+                // single click can leave one there and use it.
+                for spec in whole.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                    // `d:<slot>,<slot>,…[,one]` is a quick-craft drag over those
+                    // slots; the trailing `one` selects type 1 (one per slot).
+                    if let Some(rest) = spec.strip_prefix("d:") {
+                        let one = rest.trim_end().ends_with("one");
+                        let kind = if one {
+                            rewo_world::inventory::QUICK_CRAFT_ONE
+                        } else {
+                            rewo_world::inventory::QUICK_CRAFT_SPLIT
+                        };
+                        let touched: Vec<usize> = rest
+                            .split(',')
+                            .filter_map(|v| v.trim().parse::<usize>().ok())
+                            .collect();
+                        // M152: snapshot the three wire-derived smithing sets before the
+                        // mutable borrows below. Owned, because a closure holding
+                        // `session.recipes.as_ref()` cannot coexist with `shown_menu_mut()`.
+                        let smithing = session
+                            .recipes
+                            .as_ref()
+                            .map(rewo_net::recipe_book::SmithingSets::from_packet);
+                        let props = |id: i32| item_props(&items, id, smithing.as_ref());
+                        let accepted = session
+                            .inventory
+                            .quick_craft_accepts(&touched, kind, &props);
+                        match session
+                            .shown_menu_mut()
+                            .click_quick_craft(&accepted, kind, &props)
+                        {
+                            Some(end) => {
+                                use rewo_world::inventory::Inventory as Inv;
+                                let input = rewo_world::inventory::CONTAINER_INPUT_QUICK_CRAFT;
+                                let carried = session.inventory.carried();
+                                let phase = |slot: i16, header: i32| {
+                                    rewo_world::inventory::ClickPrediction {
+                                        slot,
+                                        button: Inv::quick_craft_button(kind, header),
+                                        changed: Vec::new(),
+                                        carried,
+                                    }
+                                };
+                                let no_slot = rewo_world::inventory::QUICK_CRAFT_NO_SLOT;
+                                let mut ok = session
+                                    .container_click_input(&phase(no_slot, 0), input)
+                                    .is_ok();
+                                for &sl in &accepted {
+                                    ok = ok
+                                        && session
+                                            .container_click_input(&phase(sl as i16, 1), input)
+                                            .is_ok();
+                                }
+                                if ok && session.container_click_input(&end, input).is_ok() {
+                                    session.shown_menu_mut().apply_prediction(&end);
+                                    println!(
+                                        "[rewo-m35] DRAG over {accepted:?} type {kind}: \
+                                     3 + {} packet(s), {} changed slot(s), carried {:?}",
+                                        accepted.len(),
+                                        end.changed.len(),
+                                        session.inventory.carried()
+                                    );
+                                } else {
+                                    println!("[rewo-m35] DRAG send failed");
+                                }
+                            }
+                            None => println!("[rewo-m35] DRAG over {accepted:?}: not predictable"),
+                        }
+                        continue;
+                    }
+                    let mut parts = spec.split(',');
+                    let slot: i32 = parts
+                        .next()
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(-1);
+                    let button: i8 = parts
+                        .next()
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
                     // M152: snapshot the three wire-derived smithing sets before the
                     // mutable borrows below. Owned, because a closure holding
                     // `session.recipes.as_ref()` cannot coexist with `shown_menu_mut()`.
@@ -198,115 +261,70 @@ pub(super) fn run_headless(
                         .as_ref()
                         .map(rewo_net::recipe_book::SmithingSets::from_packet);
                     let props = |id: i32| item_props(&items, id, smithing.as_ref());
-                    let accepted = session.inventory.quick_craft_accepts(&touched, kind, &props);
-                    match session.shown_menu_mut().click_quick_craft(&accepted, kind, &props) {
-                        Some(end) => {
-                            use rewo_world::inventory::Inventory as Inv;
-                            let input = rewo_world::inventory::CONTAINER_INPUT_QUICK_CRAFT;
-                            let carried = session.inventory.carried();
-                            let phase = |slot: i16, header: i32| {
-                                rewo_world::inventory::ClickPrediction {
-                                    slot,
-                                    button: Inv::quick_craft_button(kind, header),
-                                    changed: Vec::new(),
-                                    carried,
-                                }
-                            };
-                            let no_slot = rewo_world::inventory::QUICK_CRAFT_NO_SLOT;
-                            let mut ok = session
-                                .container_click_input(&phase(no_slot, 0), input)
-                                .is_ok();
-                            for &sl in &accepted {
-                                ok = ok
-                                    && session
-                                        .container_click_input(&phase(sl as i16, 1), input)
-                                        .is_ok();
-                            }
-                            if ok && session.container_click_input(&end, input).is_ok() {
-                                session.shown_menu_mut().apply_prediction(&end);
-                                println!(
-                                    "[rewo-m35] DRAG over {accepted:?} type {kind}: \
-                                     3 + {} packet(s), {} changed slot(s), carried {:?}",
-                                    accepted.len(),
-                                    end.changed.len(),
-                                    session.inventory.carried()
-                                );
-                            } else {
-                                println!("[rewo-m35] DRAG send failed");
-                            }
-                        }
-                        None => println!("[rewo-m35] DRAG over {accepted:?}: not predictable"),
+                    // `REWO_CLICK=<slot>,<button>[,<kind>]`, where `kind` selects
+                    // the `ContainerInput`: `q` quick-move, `s` swap (the button
+                    // is then an inventory index), `t` throw, `a` pickup-all.
+                    let kind = spec
+                        .split(',')
+                        .nth(2)
+                        .map(|f| f.trim().to_string())
+                        .unwrap_or_default();
+                    let (input, predicted) = match kind.as_str() {
+                        "q" => (
+                            rewo_world::inventory::CONTAINER_INPUT_QUICK_MOVE,
+                            session.shown_menu_mut().click_quick_move(slot, &props),
+                        ),
+                        "s" => (
+                            rewo_world::inventory::CONTAINER_INPUT_SWAP,
+                            session
+                                .shown_menu_mut()
+                                .click_swap(slot, button as i32, &props),
+                        ),
+                        "t" => (
+                            rewo_world::inventory::CONTAINER_INPUT_THROW,
+                            session.shown_menu_mut().click_throw(slot, button, &props),
+                        ),
+                        "a" => (
+                            rewo_world::inventory::CONTAINER_INPUT_PICKUP_ALL,
+                            session
+                                .shown_menu_mut()
+                                .click_pickup_all(slot, button, &props),
+                        ),
+                        _ => (
+                            0,
+                            session.shown_menu_mut().click_pickup(slot, button, &props),
+                        ),
+                    };
+                    // M93i — `CrafterScreen.slotClicked` runs its toggle BEFORE
+                    // the ordinary click and then falls through to it, so this is
+                    // additive: whatever it does, the click below still happens.
+                    let toggle = session.crafter_slot_click(slot, button, input);
+                    if toggle != rewo_world::menu::CrafterToggle::None {
+                        println!("[rewo-m93i] CRAFTER slot {slot}: {toggle:?}");
                     }
-                    continue;
-                }
-                let mut parts = spec.split(',');
-                let slot: i32 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1);
-                let button: i8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-                // M152: snapshot the three wire-derived smithing sets before the
-                // mutable borrows below. Owned, because a closure holding
-                // `session.recipes.as_ref()` cannot coexist with `shown_menu_mut()`.
-                let smithing = session
-                    .recipes
-                    .as_ref()
-                    .map(rewo_net::recipe_book::SmithingSets::from_packet);
-                let props = |id: i32| item_props(&items, id, smithing.as_ref());
-                // `REWO_CLICK=<slot>,<button>[,<kind>]`, where `kind` selects
-                // the `ContainerInput`: `q` quick-move, `s` swap (the button
-                // is then an inventory index), `t` throw, `a` pickup-all.
-                let kind = spec
-                    .split(',')
-                    .nth(2)
-                    .map(|f| f.trim().to_string())
-                    .unwrap_or_default();
-                let (input, predicted) = match kind.as_str() {
-                    "q" => (
-                        rewo_world::inventory::CONTAINER_INPUT_QUICK_MOVE,
-                        session.shown_menu_mut().click_quick_move(slot, &props),
-                    ),
-                    "s" => (
-                        rewo_world::inventory::CONTAINER_INPUT_SWAP,
-                        session.shown_menu_mut().click_swap(slot, button as i32, &props),
-                    ),
-                    "t" => (
-                        rewo_world::inventory::CONTAINER_INPUT_THROW,
-                        session.shown_menu_mut().click_throw(slot, button, &props),
-                    ),
-                    "a" => (
-                        rewo_world::inventory::CONTAINER_INPUT_PICKUP_ALL,
-                        session.shown_menu_mut().click_pickup_all(slot, button, &props),
-                    ),
-                    _ => (0, session.shown_menu_mut().click_pickup(slot, button, &props)),
-                };
-                // M93i — `CrafterScreen.slotClicked` runs its toggle BEFORE
-                // the ordinary click and then falls through to it, so this is
-                // additive: whatever it does, the click below still happens.
-                let toggle = session.crafter_slot_click(slot, button, input);
-                if toggle != rewo_world::menu::CrafterToggle::None {
-                    println!("[rewo-m93i] CRAFTER slot {slot}: {toggle:?}");
-                }
-                match predicted {
-                    Some(prediction) => {
-                        match session.container_click_input(&prediction, input) {
-                            Ok(()) => {
-                                session.shown_menu_mut().apply_prediction(&prediction);
-                                println!(
-                                    "[rewo-m35] CLICK slot {slot} button {button} input \
+                    match predicted {
+                        Some(prediction) => {
+                            match session.container_click_input(&prediction, input) {
+                                Ok(()) => {
+                                    session.shown_menu_mut().apply_prediction(&prediction);
+                                    println!(
+                                        "[rewo-m35] CLICK slot {slot} button {button} input \
                                      {input}: predicted {} changed slot(s), carried {:?}",
-                                    prediction.changed.len(),
-                                    session.inventory.carried()
-                                );
+                                        prediction.changed.len(),
+                                        session.inventory.carried()
+                                    );
+                                }
+                                Err(e) => println!("[rewo-m35] CLICK send failed: {e}"),
                             }
-                            Err(e) => println!("[rewo-m35] CLICK send failed: {e}"),
                         }
+                        None => println!("[rewo-m35] CLICK slot {slot}: not predictable"),
                     }
-                    None => println!("[rewo-m35] CLICK slot {slot}: not predictable"),
                 }
-              }
-              // One window over the whole sequence, so a drag's three packets
-              // are graded together with the click that set it up.
-              click_resyncs_at = Some(before_all);
-              clicked = true;
-              std::env::remove_var("REWO_CLICK");
+                // One window over the whole sequence, so a drag's three packets
+                // are graded together with the click that set it up.
+                click_resyncs_at = Some(before_all);
+                clicked = true;
+                std::env::remove_var("REWO_CLICK");
             }
         }
         tick += 1;
@@ -407,7 +425,13 @@ pub(super) fn run_headless(
     let particle_events = std::mem::take(&mut session.particle_events);
     // M48: permute + upload any trim sprites this frame needs, before the
     // draws take their borrow of the session.
-    let trim_slots = ensure_trims(&session, &items, &baked.trims, &mut gpu, &mut world_renderer);
+    let trim_slots = ensure_trims(
+        &session,
+        &items,
+        &baked.trims,
+        &mut gpu,
+        &mut world_renderer,
+    );
     let draws = collect_entities(
         &session,
         &etypes,
@@ -580,40 +604,42 @@ pub(super) fn run_headless(
         // for the shot. Offline test servers carry no textures property, so
         // this is the only way to photograph the preview wearing a real skin
         // — or, since M64, a real cape.
-        let mut skin = crate::knobs::var("REWO_PREVIEW_SKIN").ok().and_then(|spec| {
-            let info = match crate::skin_fetch::resolve(&spec) {
-                Ok(i) => i,
-                Err(e) => {
-                    log::warn!("preview: {spec}: {e}");
-                    return None;
-                }
-            };
-            // The two are independent: a profile may carry a cape and no
-            // skin, exactly as `SkinLoader::request` treats them.
-            let mut t = PreviewTextures::default();
-            if let Some(url) = info.url.as_ref() {
-                match crate::skin_fetch::fetch_rgba64(url) {
-                    Ok(rgba) => {
-                        log::info!(
-                            "preview: skin {spec} ({} model)",
-                            if info.slim { "slim" } else { "wide" }
-                        );
-                        t.skin = Some((rgba, info.slim));
+        let mut skin = crate::knobs::var("REWO_PREVIEW_SKIN")
+            .ok()
+            .and_then(|spec| {
+                let info = match crate::skin_fetch::resolve(&spec) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        log::warn!("preview: {spec}: {e}");
+                        return None;
                     }
-                    Err(e) => log::warn!("preview: skin {spec}: {e}"),
-                }
-            }
-            if let Some(url) = info.cape.as_ref() {
-                match crate::skin_fetch::fetch_cape_rgba(url) {
-                    Ok(rgba) => {
-                        log::info!("preview: cape {spec}");
-                        t.cape = Some(rgba);
+                };
+                // The two are independent: a profile may carry a cape and no
+                // skin, exactly as `SkinLoader::request` treats them.
+                let mut t = PreviewTextures::default();
+                if let Some(url) = info.url.as_ref() {
+                    match crate::skin_fetch::fetch_rgba64(url) {
+                        Ok(rgba) => {
+                            log::info!(
+                                "preview: skin {spec} ({} model)",
+                                if info.slim { "slim" } else { "wide" }
+                            );
+                            t.skin = Some((rgba, info.slim));
+                        }
+                        Err(e) => log::warn!("preview: skin {spec}: {e}"),
                     }
-                    Err(e) => log::warn!("preview: cape {spec}: {e}"),
                 }
-            }
-            (t.skin.is_some() || t.cape.is_some()).then_some(t)
-        });
+                if let Some(url) = info.cape.as_ref() {
+                    match crate::skin_fetch::fetch_cape_rgba(url) {
+                        Ok(rgba) => {
+                            log::info!("preview: cape {spec}");
+                            t.cape = Some(rgba);
+                        }
+                        Err(e) => log::warn!("preview: cape {spec}: {e}"),
+                    }
+                }
+                (t.skin.is_some() || t.cape.is_some()).then_some(t)
+            });
         // The headless path takes no glyph cache: the gates' golden images
         // are graded against the bitmap tooltip, and swapping the typeface
         // under them would move every one of those pixels for a reason that
@@ -646,9 +672,7 @@ pub(super) fn run_headless(
             // click it headlessly, with an empty search field.
             Default::default(),
             "",
-            &rewo_world::edit_box::EditBox::new(
-                rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH,
-            ),
+            &rewo_world::edit_box::EditBox::new(rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH),
             // Headless: a fixed clock, so a caret's blink cannot make the same
             // scene render two ways between runs.
             0,
@@ -702,7 +726,14 @@ pub(super) fn run_headless(
             sw / sh,
         );
     }
-    let bes = collect_block_entities(&session.world, &chest_states, &lightmap, 1.0, session.game_time(), (cr, cu));
+    let bes = collect_block_entities(
+        &session.world,
+        &chest_states,
+        &lightmap,
+        1.0,
+        session.game_time(),
+        (cr, cu),
+    );
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
     let caged = collect_spawner_mobs(
@@ -764,7 +795,12 @@ pub(super) fn run_headless(
     );
     let contextual = contextual_info(&session);
     let survival = rewo_gpu::survival_hud::layout_for_screen(
-        &resolve_survival_inputs(&mut session, &etypes, start.elapsed().as_millis() as u64, contextual),
+        &resolve_survival_inputs(
+            &mut session,
+            &etypes,
+            start.elapsed().as_millis() as u64,
+            contextual,
+        ),
         off.extent.width as f32,
         off.extent.height as f32,
     );
@@ -776,7 +812,8 @@ pub(super) fn run_headless(
             &items,
             // M169: the XP bar draws only when it OWNS the slot; the level
             // number is gated separately, on `hasExperience()` alone.
-            has_experience(&session) && contextual == rewo_gpu::locator_bar::ContextualInfo::Experience,
+            has_experience(&session)
+                && contextual == rewo_gpu::locator_bar::ContextualInfo::Experience,
             0.0,
         ),
         survival,

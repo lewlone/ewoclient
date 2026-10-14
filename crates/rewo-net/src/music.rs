@@ -353,9 +353,10 @@ impl MusicManager {
             if !active {
                 self.current = None;
                 self.fade = MusicFade::default();
-                self.next_song_delay = self
-                    .next_song_delay
-                    .min(self.frequency.next_song_delay(Some(music), &mut self.random));
+                self.next_song_delay = self.next_song_delay.min(
+                    self.frequency
+                        .next_song_delay(Some(music), &mut self.random),
+                );
             }
         }
 
@@ -404,7 +405,9 @@ impl MusicManager {
     /// `setMinutesBetweenSongs` — the options slider moved.
     pub fn set_frequency(&mut self, frequency: MusicFrequency, situational: Option<&Music>) {
         self.frequency = frequency;
-        self.next_song_delay = self.frequency.next_song_delay(situational, &mut self.random);
+        self.next_song_delay = self
+            .frequency
+            .next_song_delay(situational, &mut self.random);
     }
 
     /// `MusicManager`'s CONSTRUCTOR reading the option — a plain store, with no
@@ -696,12 +699,17 @@ mod tests {
         let mut m = mgr();
         let game = musics::game();
         ticks_until_start(&mut m, &game, 200).expect("started");
-        let jungle = rewo_world::music::musics::create_game_music("minecraft:music.overworld.jungle");
+        let jungle =
+            rewo_world::music::musics::create_game_music("minecraft:music.overworld.jungle");
         for _ in 0..200 {
             let out = m.tick(1.0, Some(&jungle), true, false);
             assert!(!out.stop_current);
         }
-        assert_eq!(m.current(), Some("minecraft:music.game"), "still the first track");
+        assert_eq!(
+            m.current(),
+            Some("minecraft:music.game"),
+            "still the first track"
+        );
     }
 
     /// With nothing on offer the delay is held at at least five seconds, so
@@ -764,7 +772,10 @@ mod tests {
             24_000,
             "and DEFAULT's own maxFrequency is twenty minutes"
         );
-        assert_eq!(MusicFrequency::Frequent.next_song_delay(None, &mut r), 12_000);
+        assert_eq!(
+            MusicFrequency::Frequent.next_song_delay(None, &mut r),
+            12_000
+        );
     }
 
     /// The slider clamps the track's window from above, and a clamp that

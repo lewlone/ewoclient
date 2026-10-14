@@ -204,10 +204,7 @@ pub fn glint_uv(uv: [f32; 2], offsets: (f32, f32), scale: f32) -> [f32; 2] {
     // JOML's post-multiplication.
     let (s, c) = (std::f32::consts::PI / 18.0).sin_cos();
     let (x, y) = (uv[0] * scale, uv[1] * scale);
-    [
-        c * x - s * y - offsets.0,
-        s * x + c * y + offsets.1,
-    ]
+    [c * x - s * y - offsets.0, s * x + c * y + offsets.1]
 }
 
 /// One item to draw, at a slot's top-left corner in screen pixels.
@@ -261,7 +258,12 @@ struct Push {
 /// `p` is in `0..16` model units. The rotation is XYZ in degrees, matching
 /// `DisplayTransform` and vanilla's `ItemTransform`, whose translation has
 /// already been through the deserializer's `×0.0625` and clamp.
-pub fn place(t: &DisplayTransform, p: [f32; 3], slot_centre: [f32; 2], px_per_block: f32) -> [f32; 3] {
+pub fn place(
+    t: &DisplayTransform,
+    p: [f32; 3],
+    slot_centre: [f32; 2],
+    px_per_block: f32,
+) -> [f32; 3] {
     // Model units → block space, centred on the slot.
     let c = Vec3::new(p[0] / 16.0 - 0.5, p[1] / 16.0 - 0.5, p[2] / 16.0 - 0.5);
     let scaled = Vec3::new(c.x * t.scale[0], c.y * t.scale[1], c.z * t.scale[2]);
@@ -315,11 +317,10 @@ pub fn build_glint_vertices(
                 .collect();
             // The quad's **own** 0..1 UV, not its place in the atlas — see
             // [`glint_uv`].
-            let uvs: Vec<[f32; 2]> = q
-                .uv
-                .iter()
-                .map(|t| glint_uv(*t, offsets, GLINT_SCALE_ITEM))
-                .collect();
+            let uvs: Vec<[f32; 2]> =
+                q.uv.iter()
+                    .map(|t| glint_uv(*t, offsets, GLINT_SCALE_ITEM))
+                    .collect();
             let v = |i: usize| GuiItemVertex {
                 pos: p[i],
                 uv: uvs[i],
@@ -358,11 +359,10 @@ pub fn build_vertices(
                 .iter()
                 .map(|v| place(&model.gui, *v, centre, px))
                 .collect();
-            let uvs: Vec<[f32; 2]> = q
-                .uv
-                .iter()
-                .map(|t| [uv[0] + t[0] * uv[2], uv[1] + t[1] * uv[3]])
-                .collect();
+            let uvs: Vec<[f32; 2]> =
+                q.uv.iter()
+                    .map(|t| [uv[0] + t[0] * uv[2], uv[1] + t[1] * uv[3]])
+                    .collect();
             let v = |i: usize| GuiItemVertex {
                 pos: p[i],
                 uv: uvs[i],
@@ -411,7 +411,8 @@ impl GuiItemPass {
         atlas_w: u32,
         atlas_h: u32,
     ) -> Result<Self, String> {
-        let (img, alloc, view) = crate::entities::create_texture(gpu, atlas_rgba, atlas_w, atlas_h)?;
+        let (img, alloc, view) =
+            crate::entities::create_texture(gpu, atlas_rgba, atlas_w, atlas_h)?;
         let device = gpu.device.clone();
         // NEAREST: an item icon is pixel art shown near 1:1, and linear
         // filtering would blur the 16×16 sprites the whole look depends on.

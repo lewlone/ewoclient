@@ -25,7 +25,10 @@ pub(crate) fn screen_icons(
     // too. Supplied rather than reached for, so a gate drives the same call
     // the live client makes (M45).
     overlay: Option<&rewo_world::recipe_overlay::Open>,
-) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
+) -> (
+    Vec<rewo_gpu::gui_item::GuiItem>,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+) {
     let rects = menu_slot_rects(inv, w, h, book.is_some());
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
     let mut icons = Vec::new();
@@ -53,7 +56,9 @@ pub(crate) fn screen_icons(
     // several of that ingredient.
     for g in ghosts {
         let Some(id) = g.item(cycle) else { continue };
-        let Some((sx, sy)) = inv.layout().position(g.slot) else { continue };
+        let Some((sx, sy)) = inv.layout().position(g.slot) else {
+            continue;
+        };
         let (left, top, _) = rewo_gpu::container::gui_origin_placed(
             w,
             h,
@@ -91,7 +96,10 @@ pub(crate) fn screen_icons(
             use rewo_world::recipe_book_screen::BookIconKind as K;
             let id = match icon.kind {
                 K::TabPrimary(i) => tabs.get(i).and_then(|t| items.id(t.primary)),
-                K::TabSecondary(i) => tabs.get(i).and_then(|t| t.secondary).and_then(|n| items.id(n)),
+                K::TabSecondary(i) => tabs
+                    .get(i)
+                    .and_then(|t| t.secondary)
+                    .and_then(|n| items.id(n)),
                 // The SAME item for both copies: the shadow is the display
                 // stack drawn twice, not a second recipe's result.
                 K::Slot { index, .. } => bk.slot_items.get(index).copied().flatten(),
@@ -165,7 +173,9 @@ pub(crate) fn screen_icons(
             let Some(recipe) = usize::try_from(index).ok().and_then(|i| c.recipes.get(i)) else {
                 break;
             };
-            let Some(id) = items.id(recipe.result) else { continue };
+            let Some(id) = items.id(recipe.result) else {
+                continue;
+            };
             let (gx, gy) = rewo_world::menu_screen::cut_cell_origin(pos_index);
             if let Some(icon) = icon_for(
                 items,
@@ -197,7 +207,11 @@ pub(crate) fn screen_icons(
             if !ms::offer_visible(idx, v.scroll_off, n) {
                 continue;
             }
-            let row = if ms::can_scroll(n) { idx - v.scroll_off } else { idx };
+            let row = if ms::can_scroll(n) {
+                idx - v.scroll_off
+            } else {
+                idx
+            };
             let y = ms::row_item_y(row);
             // Returns rather than pushes, so the cost-A branch below can use
             // the same geometry without a second mutable borrow.
@@ -252,7 +266,10 @@ pub(crate) fn screen_icons(
             // Cost B and the result take the ordinary path: `itemDecorations`
             // with no `countText`, so a single item shows no digit there.
             for (gx, id, count) in [
-                offer.cost_b.as_ref().map(|b| (ms::COST_B_X, b.item_id, b.count)),
+                offer
+                    .cost_b
+                    .as_ref()
+                    .map(|b| (ms::COST_B_X, b.item_id, b.count)),
                 match &offer.result {
                     rewo_net::item_stack::WireSlot::Stack(st) => {
                         Some((ms::RESULT_X, st.item_id, st.count))
@@ -427,7 +444,14 @@ pub(super) fn anvil_field_render(
     let (left, top, scale) =
         rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
     let (fx, fy, inner) = ANVIL_FIELD;
-    edit_box_render(local, advance, (left, top, scale), (fx, fy, inner), None, now_ms)
+    edit_box_render(
+        local,
+        advance,
+        (left, top, scale),
+        (fx, fy, inner),
+        None,
+        now_ms,
+    )
 }
 
 /// One `EditBox`'s text, caret and selection — shared by the anvil's name field
@@ -506,7 +530,11 @@ pub(super) fn edit_box_render(
     // so a full field shows the BAR even with the cursor at the end, which is
     // how vanilla tells you there is no room left.
     let insert = local.cursor_position() < local.len() || local.len() >= local.max_length();
-    let before = if on_screen { &displayed[..rel_cursor] } else { &displayed[..] };
+    let before = if on_screen {
+        &displayed[..rel_cursor]
+    } else {
+        &displayed[..]
+    };
     let mut cursor_x = fx + width(before) + if before.is_empty() { 0 } else { 1 };
     if on_screen && insert {
         cursor_x -= 1;
@@ -616,10 +644,7 @@ pub(super) fn carried_icon(
 )> {
     let stack = inv.carried()?;
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
-    let (x, y) = (
-        mouse.0 as f32 - 8.0 * scale,
-        mouse.1 as f32 - 8.0 * scale,
-    );
+    let (x, y) = (mouse.0 as f32 - 8.0 * scale, mouse.1 as f32 - 8.0 * scale);
     let icon = icon_for(items, trim_materials, stack, x, y, 16.0 * scale)?;
     Some((icon, count_label(stack, x, y, scale)))
 }
@@ -702,11 +727,8 @@ pub(crate) fn item_props(
         // tag-only test would look correct on every vanilla item.
         loom_banner: rewo_data::loom_table::is_banner(name),
         loom_dye: rewo_data::loom_table::in_loom_dyes(name)
-            && rewo_data::item_components_table::prototype_has_component(
-                name,
-                "minecraft:dye",
-            )
-            .unwrap_or(false),
+            && rewo_data::item_components_table::prototype_has_component(name, "minecraft:dye")
+                .unwrap_or(false),
         loom_pattern: rewo_data::loom_table::in_loom_patterns(name)
             && rewo_data::item_components_table::prototype_has_component(
                 name,

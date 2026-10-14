@@ -82,15 +82,33 @@ const CHEST_BLOCKS: &[(&str, &str)] = &[
     ("minecraft:trapped_chest", "rewo:be/trapped_chest"),
     ("minecraft:ender_chest", "rewo:be/ender_chest"),
     ("minecraft:copper_chest", "rewo:be/copper_chest"),
-    ("minecraft:exposed_copper_chest", "rewo:be/exposed_copper_chest"),
-    ("minecraft:weathered_copper_chest", "rewo:be/weathered_copper_chest"),
-    ("minecraft:oxidized_copper_chest", "rewo:be/oxidized_copper_chest"),
+    (
+        "minecraft:exposed_copper_chest",
+        "rewo:be/exposed_copper_chest",
+    ),
+    (
+        "minecraft:weathered_copper_chest",
+        "rewo:be/weathered_copper_chest",
+    ),
+    (
+        "minecraft:oxidized_copper_chest",
+        "rewo:be/oxidized_copper_chest",
+    ),
     // The waxed variants share their unwaxed material's texture — waxing
     // changes only whether the block oxidises further, not how it looks.
     ("minecraft:waxed_copper_chest", "rewo:be/copper_chest"),
-    ("minecraft:waxed_exposed_copper_chest", "rewo:be/exposed_copper_chest"),
-    ("minecraft:waxed_weathered_copper_chest", "rewo:be/weathered_copper_chest"),
-    ("minecraft:waxed_oxidized_copper_chest", "rewo:be/oxidized_copper_chest"),
+    (
+        "minecraft:waxed_exposed_copper_chest",
+        "rewo:be/exposed_copper_chest",
+    ),
+    (
+        "minecraft:waxed_weathered_copper_chest",
+        "rewo:be/weathered_copper_chest",
+    ),
+    (
+        "minecraft:waxed_oxidized_copper_chest",
+        "rewo:be/oxidized_copper_chest",
+    ),
 ];
 
 /// Which animated group a block-entity model has, if any.
@@ -224,7 +242,9 @@ impl ChestStates {
     /// bug rather than a data one.
     pub fn load(path: &Path) -> Result<Self, String> {
         let json = read_json_file(path)?;
-        let obj = json.as_object().ok_or("blocks.json: root is not an object")?;
+        let obj = json
+            .as_object()
+            .ok_or("blocks.json: root is not an object")?;
         let mut by_state = HashMap::new();
         for (block, model) in CHEST_BLOCKS {
             let Some(def) = obj.get(*block) else {
@@ -268,7 +288,14 @@ impl ChestStates {
                         ))
                     }
                 };
-                by_state.insert(id, ChestState { facing, kind, model });
+                by_state.insert(
+                    id,
+                    ChestState {
+                        facing,
+                        kind,
+                        model,
+                    },
+                );
             }
         }
         if by_state.is_empty() {

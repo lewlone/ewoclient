@@ -380,7 +380,10 @@ mod tests {
             Some(("a", "b:c")),
             "the value keeps every colon after the first"
         );
-        assert_eq!(split_line("key_key.jump:key.keyboard.space").unwrap().1, "key.keyboard.space");
+        assert_eq!(
+            split_line("key_key.jump:key.keyboard.space").unwrap().1,
+            "key.keyboard.space"
+        );
         assert_eq!(split_line("nocolon"), None);
         // An empty value is a value, not a missing one.
         assert_eq!(split_line("a:"), Some(("a", "")));
@@ -452,8 +455,16 @@ mod tests {
         let o = Options::default();
         assert!(o.smooth_lighting, "vanilla's declared default is ON");
         assert_eq!(
-            o.to_lines().iter().take(3).map(String::as_str).collect::<Vec<_>>(),
-            ["ao:true", "hideLightningFlashes:false", "musicFrequency:\"DEFAULT\""],
+            o.to_lines()
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "ao:true",
+                "hideLightningFlashes:false",
+                "musicFrequency:\"DEFAULT\""
+            ],
             "the booleans are bare JSON, the string is quoted, `ao` leads"
         );
 
@@ -463,7 +474,10 @@ mod tests {
         assert!(o.apply_line("ao:true"));
         assert!(o.smooth_lighting);
         assert!(!o.apply_line("ao:TRUE"), "JSON booleans are lowercase");
-        assert!(!o.apply_line("ao:1"), "only the two spellings `true`/`false`");
+        assert!(
+            !o.apply_line("ao:1"),
+            "only the two spellings `true`/`false`"
+        );
         assert!(o.smooth_lighting, "a bad line is skipped, not reset");
     }
 
@@ -496,8 +510,15 @@ mod tests {
         assert_eq!(o.sound_volume(SoundSource::Music), 0.0);
         assert!(o.apply_line("soundCategory_music:true"));
         assert_eq!(o.sound_volume(SoundSource::Music), 1.0);
-        assert!(!o.apply_line("soundCategory_music:1.5"), "above range rejected");
-        assert_eq!(o.sound_volume(SoundSource::Music), 1.0, "default kept, not clamped");
+        assert!(
+            !o.apply_line("soundCategory_music:1.5"),
+            "above range rejected"
+        );
+        assert_eq!(
+            o.sound_volume(SoundSource::Music),
+            1.0,
+            "default kept, not clamped"
+        );
         assert!(!o.apply_line("soundCategory_music:-0.1"));
     }
 
@@ -509,8 +530,10 @@ mod tests {
         let mut o = Options::default();
         o.set_sound_volume(SoundSource::Master, 0.5);
         o.set_sound_volume(SoundSource::Ui, 0.25);
-        let text = o.to_lines().join("
-");
+        let text = o.to_lines().join(
+            "
+",
+        );
         assert!(text.contains("soundCategory_master:0.5"), "{text}");
         assert!(text.contains("soundCategory_ui:0.25"));
         assert!(
@@ -545,10 +568,16 @@ mod tests {
             sound_volumes: [1.0; 11],
         };
         let out = o.merge_into(existing);
-        assert!(out.contains("renderDistance:12"), "an unmodelled option survived");
+        assert!(
+            out.contains("renderDistance:12"),
+            "an unmodelled option survived"
+        );
         assert!(out.contains("key_key.jump:key.keyboard.space"));
         assert!(out.contains("version:4189"));
-        assert!(out.contains("musicFrequency:\"CONSTANT\""), "and ours updated");
+        assert!(
+            out.contains("musicFrequency:\"CONSTANT\""),
+            "and ours updated"
+        );
         assert!(
             out.contains("hideLightningFlashes:true"),
             "one we own but the file lacked is appended"
@@ -605,7 +634,11 @@ mod tests {
     fn seeding_the_frequency_keeps_the_starting_delay() {
         let mut m = crate::music::MusicManager::new(7, MusicFrequency::Default);
         let before = m.next_song_delay();
-        assert_eq!(before, crate::music::STARTING_DELAY, "a fresh manager waits 100");
+        assert_eq!(
+            before,
+            crate::music::STARTING_DELAY,
+            "a fresh manager waits 100"
+        );
         m.seed_frequency(MusicFrequency::Constant);
         assert_eq!(
             m.next_song_delay(),

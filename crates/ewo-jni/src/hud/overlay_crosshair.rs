@@ -60,11 +60,15 @@ pub(super) fn crosshair_layout(w: f32, h: f32) -> CrosshairLayout {
     let preview_idle = Rect::from_xywh(preview_left, y, preview_pane_w, preview_pane_h);
     let preview_target = Rect::from_xywh(
         preview_left + preview_pane_w + preview_gap,
-        y, preview_pane_w, preview_pane_h,
+        y,
+        preview_pane_w,
+        preview_pane_h,
     );
     let preview_reach = Rect::from_xywh(
         preview_left + 2.0 * (preview_pane_w + preview_gap),
-        y, preview_pane_w, preview_pane_h,
+        y,
+        preview_pane_w,
+        preview_pane_h,
     );
     // The labels sit *under* each pane; budget +16 for them.
     y += preview_pane_h + 22.0;
@@ -87,11 +91,22 @@ pub(super) fn crosshair_layout(w: f32, h: f32) -> CrosshairLayout {
     let third_w = (col_w - 16.0) / 3.0;
     let mut ly = y;
     let bool_dot = Rect::new(col_left, ly, col_left + third_w, ly + row_h);
-    let bool_outline = Rect::new(col_left + third_w + 8.0, ly, col_left + 2.0 * third_w + 8.0, ly + row_h);
-    let bool_aa = Rect::new(col_left + 2.0 * third_w + 16.0, ly, col_left + col_w, ly + row_h);
+    let bool_outline = Rect::new(
+        col_left + third_w + 8.0,
+        ly,
+        col_left + 2.0 * third_w + 8.0,
+        ly + row_h,
+    );
+    let bool_aa = Rect::new(
+        col_left + 2.0 * third_w + 16.0,
+        ly,
+        col_left + col_w,
+        ly + row_h,
+    );
     ly = bool_dot.bottom + slider_gap + 4.0;
 
-    let mk_slider_left = |ly: f32| Rect::new(col_left, ly + 18.0, col_left + col_w, ly + 18.0 + slider_h);
+    let mk_slider_left =
+        |ly: f32| Rect::new(col_left, ly + 18.0, col_left + col_w, ly + 18.0 + slider_h);
     let arm_length = mk_slider_left(ly);
     ly = arm_length.bottom + slider_gap;
     let arm_gap_r = mk_slider_left(ly);
@@ -174,7 +189,11 @@ pub(super) fn crosshair_slider_range(slot: CrosshairSlider) -> (f32, f32) {
     }
 }
 
-pub(super) fn set_shape_slider(cfg: &mut crate::crosshair::CrosshairConfig, slot: CrosshairSlider, value: f32) {
+pub(super) fn set_shape_slider(
+    cfg: &mut crate::crosshair::CrosshairConfig,
+    slot: CrosshairSlider,
+    value: f32,
+) {
     use CrosshairSlider::*;
     match slot {
         ArmLength => cfg.arm_length = value,
@@ -264,7 +283,10 @@ pub(super) fn write_picker_to_slot(ui: &CrosshairUi, cfg: &mut crate::crosshair:
     slot[3] = (ui.picker_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
-pub(super) fn color_for_slot(cfg: &crate::crosshair::CrosshairConfig, slot: CrosshairColorSlot) -> [u8; 4] {
+pub(super) fn color_for_slot(
+    cfg: &crate::crosshair::CrosshairConfig,
+    slot: CrosshairColorSlot,
+) -> [u8; 4] {
     match slot {
         CrosshairColorSlot::Idle => cfg.color_idle,
         CrosshairColorSlot::Target => cfg.color_target,
@@ -273,7 +295,10 @@ pub(super) fn color_for_slot(cfg: &crate::crosshair::CrosshairConfig, slot: Cros
     }
 }
 
-pub(super) fn color_for_slot_mut(cfg: &mut crate::crosshair::CrosshairConfig, slot: CrosshairColorSlot) -> &mut [u8; 4] {
+pub(super) fn color_for_slot_mut(
+    cfg: &mut crate::crosshair::CrosshairConfig,
+    slot: CrosshairColorSlot,
+) -> &mut [u8; 4] {
     match slot {
         CrosshairColorSlot::Idle => &mut cfg.color_idle,
         CrosshairColorSlot::Target => &mut cfg.color_target,
@@ -413,7 +438,13 @@ impl Editor {
     }
 }
 
-pub(super) fn draw_crosshair_view(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f32, h: f32) {
+pub(super) fn draw_crosshair_view(
+    canvas: &Canvas,
+    editor: &Editor,
+    fonts: &FontStore,
+    w: f32,
+    h: f32,
+) {
     let layout = crosshair_layout(w, h);
 
     // ── Outer card chrome ───────────────────────────────────────────────
@@ -464,7 +495,12 @@ pub(super) fn draw_crosshair_view(canvas: &Canvas, editor: &Editor, fonts: &Font
     draw_crosshair_preview(canvas, &layout, &editor.crosshair, fonts);
 
     // ── Enable toggle (full-width pill) ─────────────────────────────────
-    draw_crosshair_enable_pill(canvas, layout.enable_toggle, editor.crosshair.enabled, fonts);
+    draw_crosshair_enable_pill(
+        canvas,
+        layout.enable_toggle,
+        editor.crosshair.enabled,
+        fonts,
+    );
 
     // ── Section labels (left = SHAPE, right = COLOUR) ──────────────────
     let section_font = fonts.jetbrains_mono(10.0);
@@ -472,60 +508,159 @@ pub(super) fn draw_crosshair_view(canvas: &Canvas, editor: &Editor, fonts: &Font
     section_paint.set_anti_alias(true);
     section_paint.set_color4f(rgba(MAUVE, 0.6), None);
     draw_tracked_em(
-        canvas, "SHAPE",
+        canvas,
+        "SHAPE",
         (layout.bool_dot.left, layout.bool_dot.top - 10.0),
-        &section_font, &section_paint, 0.22,
+        &section_font,
+        &section_paint,
+        0.22,
     );
     draw_tracked_em(
-        canvas, "COLOUR",
+        canvas,
+        "COLOUR",
         (layout.swatch_idle.left, layout.swatch_idle.top - 10.0),
-        &section_font, &section_paint, 0.22,
+        &section_font,
+        &section_paint,
+        0.22,
     );
 
     // ── Three boolean toggles (LEFT col) ────────────────────────────────
-    draw_crosshair_bool(canvas, layout.bool_dot, "Center dot", editor.crosshair.dot_enabled, fonts);
-    draw_crosshair_bool(canvas, layout.bool_outline, "Outline", editor.crosshair.outline_enabled, fonts);
-    draw_crosshair_bool(canvas, layout.bool_aa, "Anti-alias", editor.crosshair.anti_alias, fonts);
+    draw_crosshair_bool(
+        canvas,
+        layout.bool_dot,
+        "Center dot",
+        editor.crosshair.dot_enabled,
+        fonts,
+    );
+    draw_crosshair_bool(
+        canvas,
+        layout.bool_outline,
+        "Outline",
+        editor.crosshair.outline_enabled,
+        fonts,
+    );
+    draw_crosshair_bool(
+        canvas,
+        layout.bool_aa,
+        "Anti-alias",
+        editor.crosshair.anti_alias,
+        fonts,
+    );
 
     // ── Shape sliders (LEFT col) ────────────────────────────────────────
     draw_crosshair_slider(
-        canvas, layout.arm_length, "Arm length", editor.crosshair.arm_length,
-        crosshair_slider_range(CrosshairSlider::ArmLength), "px", 0, fonts,
+        canvas,
+        layout.arm_length,
+        "Arm length",
+        editor.crosshair.arm_length,
+        crosshair_slider_range(CrosshairSlider::ArmLength),
+        "px",
+        0,
+        fonts,
     );
     draw_crosshair_slider(
-        canvas, layout.arm_gap, "Center gap", editor.crosshair.arm_gap,
-        crosshair_slider_range(CrosshairSlider::ArmGap), "px", 1, fonts,
+        canvas,
+        layout.arm_gap,
+        "Center gap",
+        editor.crosshair.arm_gap,
+        crosshair_slider_range(CrosshairSlider::ArmGap),
+        "px",
+        1,
+        fonts,
     );
     draw_crosshair_slider(
-        canvas, layout.arm_thickness, "Arm thickness", editor.crosshair.arm_thickness,
-        crosshair_slider_range(CrosshairSlider::ArmThickness), "px", 1, fonts,
+        canvas,
+        layout.arm_thickness,
+        "Arm thickness",
+        editor.crosshair.arm_thickness,
+        crosshair_slider_range(CrosshairSlider::ArmThickness),
+        "px",
+        1,
+        fonts,
     );
     draw_crosshair_slider(
-        canvas, layout.dot_size, "Center dot size", editor.crosshair.dot_size,
-        crosshair_slider_range(CrosshairSlider::DotSize), "px", 1, fonts,
+        canvas,
+        layout.dot_size,
+        "Center dot size",
+        editor.crosshair.dot_size,
+        crosshair_slider_range(CrosshairSlider::DotSize),
+        "px",
+        1,
+        fonts,
     );
     draw_crosshair_slider(
-        canvas, layout.outline_thickness, "Outline thickness", editor.crosshair.outline_thickness,
-        crosshair_slider_range(CrosshairSlider::OutlineThickness), "px", 1, fonts,
+        canvas,
+        layout.outline_thickness,
+        "Outline thickness",
+        editor.crosshair.outline_thickness,
+        crosshair_slider_range(CrosshairSlider::OutlineThickness),
+        "px",
+        1,
+        fonts,
     );
     draw_crosshair_slider(
-        canvas, layout.reach_distance, "Reach distance", editor.crosshair.reach_distance,
-        crosshair_slider_range(CrosshairSlider::ReachDistance), "blocks", 1, fonts,
+        canvas,
+        layout.reach_distance,
+        "Reach distance",
+        editor.crosshair.reach_distance,
+        crosshair_slider_range(CrosshairSlider::ReachDistance),
+        "blocks",
+        1,
+        fonts,
     );
 
     // ── Colour swatches (RIGHT col) ─────────────────────────────────────
-    draw_crosshair_swatch(canvas, layout.swatch_idle, "Idle", editor.crosshair.color_idle, editor.crosshair_ui.selected_color == CrosshairColorSlot::Idle, fonts);
-    draw_crosshair_swatch(canvas, layout.swatch_target, "Target", editor.crosshair.color_target, editor.crosshair_ui.selected_color == CrosshairColorSlot::Target, fonts);
-    draw_crosshair_swatch(canvas, layout.swatch_reach, "In reach", editor.crosshair.color_reach, editor.crosshair_ui.selected_color == CrosshairColorSlot::Reach, fonts);
-    draw_crosshair_swatch(canvas, layout.swatch_outline, "Outline", editor.crosshair.outline_color, editor.crosshair_ui.selected_color == CrosshairColorSlot::Outline, fonts);
+    draw_crosshair_swatch(
+        canvas,
+        layout.swatch_idle,
+        "Idle",
+        editor.crosshair.color_idle,
+        editor.crosshair_ui.selected_color == CrosshairColorSlot::Idle,
+        fonts,
+    );
+    draw_crosshair_swatch(
+        canvas,
+        layout.swatch_target,
+        "Target",
+        editor.crosshair.color_target,
+        editor.crosshair_ui.selected_color == CrosshairColorSlot::Target,
+        fonts,
+    );
+    draw_crosshair_swatch(
+        canvas,
+        layout.swatch_reach,
+        "In reach",
+        editor.crosshair.color_reach,
+        editor.crosshair_ui.selected_color == CrosshairColorSlot::Reach,
+        fonts,
+    );
+    draw_crosshair_swatch(
+        canvas,
+        layout.swatch_outline,
+        "Outline",
+        editor.crosshair.outline_color,
+        editor.crosshair_ui.selected_color == CrosshairColorSlot::Outline,
+        fonts,
+    );
 
     // ── HSV picker — SV square + Hue strip + Alpha strip ───────────────
     let ui = &editor.crosshair_ui;
     let current_rgba = color_for_slot(&editor.crosshair, ui.selected_color);
     let pure_hue_rgb = hsv_to_rgb(ui.picker_h, 1.0, 1.0);
-    draw_sv_square(canvas, layout.sv_square, pure_hue_rgb, ui.picker_s, ui.picker_v);
+    draw_sv_square(
+        canvas,
+        layout.sv_square,
+        pure_hue_rgb,
+        ui.picker_s,
+        ui.picker_v,
+    );
     draw_hue_strip(canvas, layout.hue_strip, ui.picker_h);
-    draw_alpha_strip(canvas, layout.alpha_strip, [current_rgba[0], current_rgba[1], current_rgba[2]], ui.picker_a);
+    draw_alpha_strip(
+        canvas,
+        layout.alpha_strip,
+        [current_rgba[0], current_rgba[1], current_rgba[2]],
+        ui.picker_a,
+    );
 
     // ── Hex readout below the picker ────────────────────────────────────
     let hex_font = fonts.jetbrains_mono(13.0);
@@ -564,9 +699,21 @@ pub(super) fn draw_crosshair_preview(
     use skia_safe::{BlendMode, RRect};
 
     let panes = [
-        (layout.preview_idle, crate::crosshair::CrosshairState::Idle, "IDLE"),
-        (layout.preview_target, crate::crosshair::CrosshairState::Target, "TARGET"),
-        (layout.preview_reach, crate::crosshair::CrosshairState::Reach, "IN REACH"),
+        (
+            layout.preview_idle,
+            crate::crosshair::CrosshairState::Idle,
+            "IDLE",
+        ),
+        (
+            layout.preview_target,
+            crate::crosshair::CrosshairState::Target,
+            "TARGET",
+        ),
+        (
+            layout.preview_reach,
+            crate::crosshair::CrosshairState::Reach,
+            "IN REACH",
+        ),
     ];
 
     let label_font = fonts.jetbrains_mono(10.0);
@@ -611,9 +758,12 @@ pub(super) fn draw_crosshair_preview(
         // Label centred under the pane.
         let lw = measure_tracked_em(&label_font, label, 0.22);
         draw_tracked_em(
-            canvas, label,
+            canvas,
+            label,
             (pane.left + (pane.width() - lw) * 0.5, pane.bottom + 14.0),
-            &label_font, &label_paint, 0.22,
+            &label_font,
+            &label_paint,
+            0.22,
         );
     }
 }
@@ -624,20 +774,41 @@ pub(super) fn draw_crosshair_enable_pill(canvas: &Canvas, rect: Rect, on: bool, 
     let rrect = skia_safe::RRect::new_rect_xy(rect, rect.height() * 0.5, rect.height() * 0.5);
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(if on { rgba(ROSE, 0.32) } else { rgba(MAUVE, 0.12) }, None);
+    bg.set_color4f(
+        if on {
+            rgba(ROSE, 0.32)
+        } else {
+            rgba(MAUVE, 0.12)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &bg);
 
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(if on { rgba(ROSE, 0.7) } else { rgba(MAUVE, 0.3) }, None);
+    border.set_color4f(
+        if on {
+            rgba(ROSE, 0.7)
+        } else {
+            rgba(MAUVE, 0.3)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &border);
 
     let font = fonts.fraunces(17.0);
     let mut text = Paint::default();
     text.set_anti_alias(true);
-    text.set_color4f(if on { rgba(PEARL, 0.98) } else { rgba(MAUVE, 0.85) }, None);
+    text.set_color4f(
+        if on {
+            rgba(PEARL, 0.98)
+        } else {
+            rgba(MAUVE, 0.85)
+        },
+        None,
+    );
     let label = if on {
         "Enabled — vanilla crosshair suppressed"
     } else {
@@ -646,25 +817,48 @@ pub(super) fn draw_crosshair_enable_pill(canvas: &Canvas, rect: Rect, on: bool, 
     let (tw, _) = font.measure_str(label, Some(&text));
     canvas.draw_str(
         label,
-        (rect.left + (rect.width() - tw) * 0.5, rect.top + rect.height() * 0.5 + 6.0),
+        (
+            rect.left + (rect.width() - tw) * 0.5,
+            rect.top + rect.height() * 0.5 + 6.0,
+        ),
         &font,
         &text,
     );
 }
 
 /// Inline boolean toggle pill — label + a small on/off mark.
-pub(super) fn draw_crosshair_bool(canvas: &Canvas, rect: Rect, label: &str, on: bool, fonts: &FontStore) {
+pub(super) fn draw_crosshair_bool(
+    canvas: &Canvas,
+    rect: Rect,
+    label: &str,
+    on: bool,
+    fonts: &FontStore,
+) {
     let rrect = skia_safe::RRect::new_rect_xy(rect, 8.0, 8.0);
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(if on { rgba(LAV, 0.18) } else { rgba(MAUVE, 0.08) }, None);
+    bg.set_color4f(
+        if on {
+            rgba(LAV, 0.18)
+        } else {
+            rgba(MAUVE, 0.08)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &bg);
 
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(if on { rgba(LAV, 0.55) } else { rgba(MAUVE, 0.22) }, None);
+    border.set_color4f(
+        if on {
+            rgba(LAV, 0.55)
+        } else {
+            rgba(MAUVE, 0.22)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &border);
 
     let dot_r = 5.0;
@@ -672,13 +866,27 @@ pub(super) fn draw_crosshair_bool(canvas: &Canvas, rect: Rect, label: &str, on: 
     let dot_cy = rect.top + rect.height() * 0.5;
     let mut dot = Paint::default();
     dot.set_anti_alias(true);
-    dot.set_color4f(if on { rgba(ROSE, 0.95) } else { rgba(MAUVE, 0.4) }, None);
+    dot.set_color4f(
+        if on {
+            rgba(ROSE, 0.95)
+        } else {
+            rgba(MAUVE, 0.4)
+        },
+        None,
+    );
     canvas.draw_circle((dot_cx, dot_cy), dot_r, &dot);
 
     let font = fonts.newsreader(14.0);
     let mut text = Paint::default();
     text.set_anti_alias(true);
-    text.set_color4f(if on { rgba(PEARL, 0.95) } else { rgba(MAUVE, 0.78) }, None);
+    text.set_color4f(
+        if on {
+            rgba(PEARL, 0.95)
+        } else {
+            rgba(MAUVE, 0.78)
+        },
+        None,
+    );
     canvas.draw_str(label, (dot_cx + 12.0, dot_cy + 5.0), &font, &text);
 }
 
@@ -697,7 +905,12 @@ pub(super) fn draw_crosshair_slider(
     let mut label_paint = Paint::default();
     label_paint.set_anti_alias(true);
     label_paint.set_color4f(rgba(MAUVE, 0.92), None);
-    canvas.draw_str(label, (rect.left, rect.top - 6.0), &label_font, &label_paint);
+    canvas.draw_str(
+        label,
+        (rect.left, rect.top - 6.0),
+        &label_font,
+        &label_paint,
+    );
 
     // Right-aligned value tag.
     let val_str = if unit.is_empty() {
@@ -710,7 +923,12 @@ pub(super) fn draw_crosshair_slider(
     val_paint.set_anti_alias(true);
     val_paint.set_color4f(rgba(CHAMP, 0.95), None);
     let (vw, _) = val_font.measure_str(&val_str, Some(&val_paint));
-    canvas.draw_str(&val_str, (rect.right - vw, rect.top - 6.0), &val_font, &val_paint);
+    canvas.draw_str(
+        &val_str,
+        (rect.right - vw, rect.top - 6.0),
+        &val_font,
+        &val_paint,
+    );
 
     // Track + filled portion + knob.
     let (min, max) = range;
@@ -740,7 +958,14 @@ pub(super) fn draw_crosshair_slider(
 
 /// Colour-state swatch — fills the pill with the slot's current colour and
 /// outlines it (thicker outline = currently selected).
-pub(super) fn draw_crosshair_swatch(canvas: &Canvas, rect: Rect, label: &str, color: [u8; 4], selected: bool, fonts: &FontStore) {
+pub(super) fn draw_crosshair_swatch(
+    canvas: &Canvas,
+    rect: Rect,
+    label: &str,
+    color: [u8; 4],
+    selected: bool,
+    fonts: &FontStore,
+) {
     let rrect = skia_safe::RRect::new_rect_xy(rect, 8.0, 8.0);
     // A small chess-pattern background ghosts through transparent colours so
     // the user knows the alpha channel is in play.
@@ -758,7 +983,14 @@ pub(super) fn draw_crosshair_swatch(canvas: &Canvas, rect: Rect, label: &str, co
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(if selected { 2.0 } else { 1.0 });
-    border.set_color4f(if selected { rgba(PEARL, 1.0) } else { rgba(MAUVE, 0.45) }, None);
+    border.set_color4f(
+        if selected {
+            rgba(PEARL, 1.0)
+        } else {
+            rgba(MAUVE, 0.45)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &border);
 
     let font = fonts.jetbrains_mono(10.0);
@@ -767,13 +999,20 @@ pub(super) fn draw_crosshair_swatch(canvas: &Canvas, rect: Rect, label: &str, co
     // Pick legible text colour: light on dark fills, dark on light fills.
     let luma = 0.299 * color[0] as f32 + 0.587 * color[1] as f32 + 0.114 * color[2] as f32;
     text.set_color4f(
-        if luma > 140.0 { rgba((15, 0, 8), 0.95) } else { rgba(PEARL, 0.95) },
+        if luma > 140.0 {
+            rgba((15, 0, 8), 0.95)
+        } else {
+            rgba(PEARL, 0.95)
+        },
         None,
     );
     let (tw, _) = font.measure_str(label, Some(&text));
     canvas.draw_str(
         label,
-        (rect.left + (rect.width() - tw) * 0.5, rect.top + rect.height() * 0.5 + 4.0),
+        (
+            rect.left + (rect.width() - tw) * 0.5,
+            rect.top + rect.height() * 0.5 + 4.0,
+        ),
         &font,
         &text,
     );
@@ -811,7 +1050,10 @@ pub(super) fn draw_sv_square(canvas: &Canvas, rect: Rect, pure_hue_rgb: [u8; 3],
             Point::new(rect.right, rect.top),
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[Color4f::new(1.0, 1.0, 1.0, 1.0), Color4f::new(1.0, 1.0, 1.0, 0.0)],
+            &[
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+                Color4f::new(1.0, 1.0, 1.0, 0.0),
+            ],
             None,
         ),
         None,
@@ -831,7 +1073,10 @@ pub(super) fn draw_sv_square(canvas: &Canvas, rect: Rect, pure_hue_rgb: [u8; 3],
             Point::new(rect.left, rect.bottom),
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[Color4f::new(0.0, 0.0, 0.0, 0.0), Color4f::new(0.0, 0.0, 0.0, 1.0)],
+            &[
+                Color4f::new(0.0, 0.0, 0.0, 0.0),
+                Color4f::new(0.0, 0.0, 0.0, 1.0),
+            ],
             None,
         ),
         None,
@@ -948,10 +1193,7 @@ pub(super) fn draw_alpha_strip(canvas: &Canvas, rect: Rect, rgb: [u8; 3], a: f32
             }
             let tx = rect.left + col as f32 * tile;
             let ty = rect.top + row as f32 * tile;
-            canvas.draw_rect(
-                Rect::from_xywh(tx, ty, tile, tile),
-                &dark,
-            );
+            canvas.draw_rect(Rect::from_xywh(tx, ty, tile, tile), &dark);
         }
     }
 

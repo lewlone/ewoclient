@@ -68,9 +68,8 @@ impl AttributeRegistry {
                 .get("protocol_id")
                 .and_then(|i| i.as_i64())
                 .ok_or_else(|| format!("registries.json: {full} has no protocol_id"))?;
-            let slot = usize::try_from(id).map_err(|_| {
-                format!("registries.json: {full} has negative protocol_id {id}")
-            })?;
+            let slot = usize::try_from(id)
+                .map_err(|_| format!("registries.json: {full} has negative protocol_id {id}"))?;
             let cell = slots.get_mut(slot).ok_or_else(|| {
                 format!(
                     "registries.json: {full} has protocol_id {id} outside the \

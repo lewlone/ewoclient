@@ -145,7 +145,11 @@ pub enum HudIcon {
     /// slot rather than a different slot. `flip` is `isPlayerUpsideDown` and
     /// inverts the **source** v — vanilla passes a negative source height, so
     /// the destination rect is untouched and only the sampling flips.
-    Face { slot: u8, hat: bool, flip: bool },
+    Face {
+        slot: u8,
+        hat: bool,
+        flip: bool,
+    },
     /// One of the eight `hud/heart/*` sprites (M155). The tab list's health
     /// column emits these in draw order, and the order of the `icons` slice IS
     /// the draw order — which is what the container-then-fill layering needs.
@@ -432,9 +436,18 @@ impl HudPass {
             .unwrap_or_else(|_| unreachable!("3 hunger food"));
         // Through `row` rather than `place` directly: the closure holds the
         // packer for as long as it is used, and it is used again below.
-        let effect_background = row(&mut atlas, std::slice::from_ref(&sprites.effect_background), 130, 100)[0];
-        let effect_background_ambient =
-            row(&mut atlas, std::slice::from_ref(&sprites.effect_background_ambient), 160, 100)[0];
+        let effect_background = row(
+            &mut atlas,
+            std::slice::from_ref(&sprites.effect_background),
+            130,
+            100,
+        )[0];
+        let effect_background_ambient = row(
+            &mut atlas,
+            std::slice::from_ref(&sprites.effect_background_ambient),
+            160,
+            100,
+        )[0];
         // 40 icons of 18x18: 13 per row at a 19 px pitch (13 * 19 = 247),
         // rows at y = 125 + 19 * r. Sized by the slice, not assumed 40.
         let effect_icons: Vec<Rect> = {
@@ -516,13 +529,16 @@ impl HudPass {
         // rows, 16 px. This line used to claim `ATLAS_H - FACE_ATLAS_Y`,
         // which was the same number while the pool was the bottom of the
         // atlas and would have claimed everything M168 placed below it.
-        placed.push((0, FACE_ATLAS_Y, ATLAS_W, (FACE_SLOTS / FACE_COLS) * FACE_SLOT_H));
+        placed.push((
+            0,
+            FACE_ATLAS_Y,
+            ATLAS_W,
+            (FACE_SLOTS / FACE_COLS) * FACE_SLOT_H,
+        ));
         for (i, a) in placed.iter().enumerate() {
             for b in placed.iter().skip(i + 1) {
-                let disjoint = a.0 + a.2 <= b.0
-                    || b.0 + b.2 <= a.0
-                    || a.1 + a.3 <= b.1
-                    || b.1 + b.3 <= a.1;
+                let disjoint =
+                    a.0 + a.2 <= b.0 || b.0 + b.2 <= a.0 || a.1 + a.3 <= b.1 || b.1 + b.3 <= a.1;
                 debug_assert!(
                     disjoint,
                     "hud atlas: {}x{} at ({}, {}) overlaps {}x{} at ({}, {}) — \
@@ -752,7 +768,11 @@ impl HudPass {
         }
 
         // Crosshair (centered).
-        quad!((sw - self.crosshair.w) / 2.0, (sh - self.crosshair.h) / 2.0, &self.crosshair);
+        quad!(
+            (sw - self.crosshair.w) / 2.0,
+            (sh - self.crosshair.h) / 2.0,
+            &self.crosshair
+        );
 
         // Hotbar (bottom-center) + selection frame over the active slot.
         let bar_x = (sw - self.hotbar.w) / 2.0;
@@ -760,7 +780,6 @@ impl HudPass {
         quad!(bar_x, bar_y, &self.hotbar);
         let sel_x = bar_x - 1.0 + slot.min(8) as f32 * 20.0;
         quad!(sel_x, bar_y - 1.0, &self.selection);
-
 
         // M79's XP gauge — `ExperienceBar.extractBackground`. The bar is
         // positioned by `ContextualBar`'s own `left`/`top`, not by the hotbar,
@@ -840,7 +859,15 @@ impl HudPass {
                 let (x, y) = (b.x, b.y);
                 let wf = &self.white_fill;
                 let mut quad = |ox: f32, oy: f32, c: [f32; 3]| {
-                    tinted_quad(x + ox, y + oy, 9.0, 9.0, wf, 1.0, [c[0], c[1], c[2], b.alpha]);
+                    tinted_quad(
+                        x + ox,
+                        y + oy,
+                        9.0,
+                        9.0,
+                        wf,
+                        1.0,
+                        [c[0], c[1], c[2], b.alpha],
+                    );
                 };
                 // Top-left black, top-right pink, bottom-left pink,
                 // bottom-right black (`x < 8 ^ y < 8` picks pink).
@@ -930,7 +957,7 @@ impl HudPass {
                     v.len() * VERTEX_STRIDE as usize,
                 )
             };
-        
+
         let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
         self.verts = (kept / VERTEX_STRIDE as usize) as u32;
         let Some(vbuf) = self.ring.bind() else {
@@ -941,10 +968,7 @@ impl HudPass {
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             // Positive viewport — standard top-left screen coords.
-            let viewport = vk::Viewport::default()
-                .width(w)
-                .height(h)
-                .max_depth(1.0);
+            let viewport = vk::Viewport::default().width(w).height(h).max_depth(1.0);
             device.cmd_set_viewport(cb, 0, &[viewport]);
             device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
             device.cmd_bind_descriptor_sets(
@@ -972,7 +996,9 @@ impl HudPass {
     /// table — the reading that loses one blit rather than sampling some
     /// other sprite over it.
     fn icon_rect(&self, icon: HudIcon) -> Option<Rect> {
-        use crate::survival_hud::{AirSprite, ArmorSprite, FoodSprite, JumpBarSprite, VehicleHeartSprite};
+        use crate::survival_hud::{
+            AirSprite, ArmorSprite, FoodSprite, JumpBarSprite, VehicleHeartSprite,
+        };
         Some(match icon {
             // No atlas entry by design — the draw loop paints the checker
             // from solid quads before asking for a rect.
@@ -988,10 +1014,7 @@ impl HudPass {
                 let y = FACE_ATLAS_Y + row * FACE_SLOT_H;
                 let (v0, v1) = if flip {
                     // The SOURCE v inverts and the destination does not.
-                    (
-                        (y + 8) as f32 / ATLAS_H as f32,
-                        y as f32 / ATLAS_H as f32,
-                    )
+                    ((y + 8) as f32 / ATLAS_H as f32, y as f32 / ATLAS_H as f32)
                 } else {
                     (y as f32 / ATLAS_H as f32, (y + 8) as f32 / ATLAS_H as f32)
                 };
@@ -1017,8 +1040,14 @@ impl HudPass {
                     H::AbsorbingHalf => self.heart_extra[4],
                 }
             }
-            HudIcon::PlayerHeart { kind, hardcore, half, blink } => {
-                self.player_hearts[crate::survival_hud::heart_sprite_index(kind, hardcore, half, blink)]
+            HudIcon::PlayerHeart {
+                kind,
+                hardcore,
+                half,
+                blink,
+            } => {
+                self.player_hearts
+                    [crate::survival_hud::heart_sprite_index(kind, hardcore, half, blink)]
             }
             HudIcon::Armor(a) => match a {
                 ArmorSprite::Full => self.armor[0],
@@ -1149,9 +1178,12 @@ fn build_pipeline(
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD)
             .color_write_mask(
-                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B,
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
             )];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
@@ -1315,7 +1347,11 @@ impl ToolHighlight {
 /// `if (alpha > 0)` is what stops the draw.
 pub fn tool_highlight_alpha(timer: i32) -> i32 {
     let alpha = (timer as f32 * 256.0 / 10.0) as i32;
-    if alpha > 255 { 255 } else { alpha }
+    if alpha > 255 {
+        255
+    } else {
+        alpha
+    }
 }
 
 /// `extractSelectedItemName`'s placement, in **GUI pixels**.
@@ -1883,7 +1919,12 @@ mod hotbar_slot_tests {
     /// of sharing the scale.
     #[test]
     fn the_slots_are_evenly_spaced_and_fit_the_bar() {
-        for (w, h) in [(854.0, 480.0), (1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+        for (w, h) in [
+            (854.0, 480.0),
+            (1280.0, 720.0),
+            (1920.0, 1080.0),
+            (3840.0, 2160.0),
+        ] {
             let scale = gui_scale(w, h);
             let r = hotbar_slot_rects(BAR.0, BAR.1, w, h);
             let step = r[1].0 - r[0].0;

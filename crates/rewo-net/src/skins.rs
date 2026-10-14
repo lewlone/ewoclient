@@ -197,7 +197,10 @@ mod tests {
         let blob = r#"{"textures":{"CAPE":{"url":"http://textures.minecraft.net/c"}}}"#;
         let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
         let info = decode_textures_property(&b64).expect("a cape is a texture");
-        assert_eq!(info.cape.as_deref(), Some("http://textures.minecraft.net/c"));
+        assert_eq!(
+            info.cape.as_deref(),
+            Some("http://textures.minecraft.net/c")
+        );
         assert!(info.url.is_none(), "and it carries no skin");
         assert!(!info.slim, "no SKIN metadata → the classic default");
     }
@@ -208,8 +211,14 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
         let info = decode_textures_property(&b64).unwrap();
         assert_eq!(info.url.as_deref(), Some("http://textures.minecraft.net/s"));
-        assert_eq!(info.cape.as_deref(), Some("http://textures.minecraft.net/c"));
-        assert_eq!(info.elytra.as_deref(), Some("http://textures.minecraft.net/e"));
+        assert_eq!(
+            info.cape.as_deref(),
+            Some("http://textures.minecraft.net/c")
+        );
+        assert_eq!(
+            info.elytra.as_deref(),
+            Some("http://textures.minecraft.net/e")
+        );
         assert!(info.slim);
     }
 
@@ -317,7 +326,10 @@ mod tests {
         ] {
             assert!(allowed_texture_url(u).is_none(), "{u}");
         }
-        let long = format!("https://textures.minecraft.net/{}", "a".repeat(MAX_TEXTURE_URL_LEN));
+        let long = format!(
+            "https://textures.minecraft.net/{}",
+            "a".repeat(MAX_TEXTURE_URL_LEN)
+        );
         assert!(allowed_texture_url(&long).is_none());
     }
 

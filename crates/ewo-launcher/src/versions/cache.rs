@@ -68,7 +68,10 @@ pub fn load() -> Option<(VersionManifest, u64)> {
                 Some((c.manifest, c.fetched_at))
             }
             Ok(c) => {
-                log::warn!("versions: cache has unknown version {} — ignoring", c.version);
+                log::warn!(
+                    "versions: cache has unknown version {} — ignoring",
+                    c.version
+                );
                 None
             }
             Err(e) => {

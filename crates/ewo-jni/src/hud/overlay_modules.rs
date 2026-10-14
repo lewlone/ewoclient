@@ -120,7 +120,12 @@ pub(super) fn modules_layout(w: f32, h: f32) -> (Rect, Vec<ModuleSection>, Vec<M
                 TOGGLE_W,
                 TOGGLE_H,
             );
-            rows.push(ModuleRow { catalog_index: left_idx, row, toggle, sliders: Vec::new() });
+            rows.push(ModuleRow {
+                catalog_index: left_idx,
+                row,
+                toggle,
+                sliders: Vec::new(),
+            });
 
             if let Some(idx) = right_idx {
                 let row = Rect::from_xywh(right_col_x, ry, col_w, ROW_H);
@@ -130,7 +135,12 @@ pub(super) fn modules_layout(w: f32, h: f32) -> (Rect, Vec<ModuleSection>, Vec<M
                     TOGGLE_W,
                     TOGGLE_H,
                 );
-                rows.push(ModuleRow { catalog_index: idx, row, toggle, sliders: Vec::new() });
+                rows.push(ModuleRow {
+                    catalog_index: idx,
+                    row,
+                    toggle,
+                    sliders: Vec::new(),
+                });
             }
 
             ry += ROW_H + ROW_GAP;
@@ -186,14 +196,24 @@ pub(super) fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, 
     let mut title = Paint::default();
     title.set_anti_alias(true);
     title.set_color4f(rgba(PEARL, 1.0), None);
-    canvas.draw_str("EwoClient modules", (left, panel.top + 70.0), &title_font, &title);
+    canvas.draw_str(
+        "EwoClient modules",
+        (left, panel.top + 70.0),
+        &title_font,
+        &title,
+    );
 
     // ── Scrollable body — clip to the panel inner rect, translate by the
     //    editor's scroll offset, then render sections + rows in logical (un-
     //    scrolled) coordinates. The press handler offsets clicks by the same
     //    amount so hit-tests against ModuleRow rects line up. ───────────────
     let body_top = panel.top + 24.0 + 76.0;
-    let body_clip = Rect::new(panel.left + 4.0, body_top - 8.0, panel.right - 4.0, panel.bottom - 4.0);
+    let body_clip = Rect::new(
+        panel.left + 4.0,
+        body_top - 8.0,
+        panel.right - 4.0,
+        panel.bottom - 4.0,
+    );
     let max_scroll = (content_h - (panel.bottom - body_top - 8.0)).max(0.0);
     let scroll_y = editor.modules_scroll.clamp(0.0, max_scroll);
 
@@ -292,7 +312,12 @@ pub(super) fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, 
             if st.enabled {
                 rgba(led_color, 1.0)
             } else {
-                Color4f::new(0x3A as f32 / 255.0, 0x1A as f32 / 255.0, 0x23 as f32 / 255.0, 1.0)
+                Color4f::new(
+                    0x3A as f32 / 255.0,
+                    0x1A as f32 / 255.0,
+                    0x23 as f32 / 255.0,
+                    1.0,
+                )
             },
             None,
         );
@@ -313,12 +338,11 @@ pub(super) fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, 
         );
 
         // Name — clipped to leave room for the chip + toggle on the right.
-        let right_reserve = 14.0 + row.toggle.width()
+        let right_reserve = 14.0
+            + row.toggle.width()
             + editor
                 .keybind_label_for(def.id)
-                .map(|l| {
-                    9.0 * 2.0 + measure_tracked_em(&chip_font, &l, 0.18) + 10.0
-                })
+                .map(|l| 9.0 * 2.0 + measure_tracked_em(&chip_font, &l, 0.18) + 10.0)
                 .unwrap_or(0.0);
         let name_clip = Rect::new(
             text_left,
@@ -338,7 +362,12 @@ pub(super) fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, 
             },
             None,
         );
-        canvas.draw_str(def.name, (text_left, card.top + 44.0), &name_font, &name_paint);
+        canvas.draw_str(
+            def.name,
+            (text_left, card.top + 44.0),
+            &name_font,
+            &name_paint,
+        );
         canvas.restore();
 
         // Optional keybind chip left of the toggle.
@@ -364,7 +393,11 @@ pub(super) fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, 
             canvas.draw_rrect(chip_rr, &chip_border);
 
             let (_, cm) = chip_font.metrics();
-            let cap = if cm.cap_height > 0.0 { cm.cap_height } else { 7.0 };
+            let cap = if cm.cap_height > 0.0 {
+                cm.cap_height
+            } else {
+                7.0
+            };
             let mut chip_text = Paint::default();
             chip_text.set_anti_alias(true);
             chip_text.set_color4f(
@@ -395,9 +428,7 @@ pub(super) fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, 
             let dot_cx = row.toggle.left
                 - editor
                     .keybind_label_for(def.id)
-                    .map(|l| {
-                        9.0 * 2.0 + measure_tracked_em(&chip_font, &l, 0.18) + 10.0 + 16.0
-                    })
+                    .map(|l| 9.0 * 2.0 + measure_tracked_em(&chip_font, &l, 0.18) + 10.0 + 16.0)
                     .unwrap_or(16.0);
             let dot_cy = row.toggle.top + row.toggle.height() * 0.5;
             let mut dp = Paint::default();
@@ -422,11 +453,7 @@ pub(super) fn draw_modules(canvas: &Canvas, editor: &Editor, fonts: &FontStore, 
         tp.set_anti_alias(true);
         tp.set_color4f(rgba(PEARL, 0.06), None);
         canvas.draw_rrect(
-            RRect::new_rect_xy(
-                Rect::from_xywh(track_x, track_top, 2.0, track_h),
-                1.0,
-                1.0,
-            ),
+            RRect::new_rect_xy(Rect::from_xywh(track_x, track_top, 2.0, track_h), 1.0, 1.0),
             &tp,
         );
 
@@ -466,7 +493,12 @@ pub(super) fn draw_module_slider(
     let track_h = 4.0;
 
     // Track.
-    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let track = Rect::from_xywh(
+        track_left,
+        cy - track_h * 0.5,
+        track_right - track_left,
+        track_h,
+    );
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(rgba(WINE, 0.85 * alpha), None);
@@ -510,8 +542,17 @@ pub(super) fn draw_module_slider(
     vp.set_anti_alias(true);
     vp.set_color4f(rgba(PEARL, alpha), None);
     let (_, m) = val_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
-    canvas.draw_str(&val_str, (track_right + 16.0, cy + cap * 0.5), &val_font, &vp);
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        9.0
+    };
+    canvas.draw_str(
+        &val_str,
+        (track_right + 16.0, cy + cap * 0.5),
+        &val_font,
+        &vp,
+    );
 }
 
 /// Hit-rects for the module settings popover — the card itself, the close
@@ -559,7 +600,11 @@ pub(super) fn module_popover_layout(w: f32, h: f32, idx: usize) -> ModulePopover
         })
         .collect();
 
-    ModulePopoverLayout { card, close, sliders }
+    ModulePopoverLayout {
+        card,
+        close,
+        sliders,
+    }
 }
 
 /// Draw the per-module settings popover — a centred glass card with one row
@@ -591,11 +636,7 @@ pub(super) fn draw_module_popover(
     shadow.set_anti_alias(true);
     shadow.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.6), None);
     shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 18.0, false));
-    let shadow_rrect = RRect::new_rect_xy(
-        layout.card.with_offset((0.0, 10.0)),
-        16.0,
-        16.0,
-    );
+    let shadow_rrect = RRect::new_rect_xy(layout.card.with_offset((0.0, 10.0)), 16.0, 16.0);
     canvas.draw_rrect(shadow_rrect, &shadow);
 
     let mut fill = Paint::default();
@@ -649,7 +690,12 @@ pub(super) fn draw_module_popover(
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
     name_paint.set_color4f(rgba(PEARL, 1.0), None);
-    canvas.draw_str(def.name, (left, layout.card.top + pad + 44.0), &name_font, &name_paint);
+    canvas.draw_str(
+        def.name,
+        (left, layout.card.top + pad + 44.0),
+        &name_font,
+        &name_paint,
+    );
 
     let desc_font = fonts.newsreader(13.0);
     let mut desc_paint = Paint::default();

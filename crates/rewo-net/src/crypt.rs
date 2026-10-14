@@ -33,7 +33,11 @@ impl OnlineAuth {
             return None;
         }
         let uuid = parse_uuid(&uuid_s)?;
-        Some(Self { access_token, uuid, username })
+        Some(Self {
+            access_token,
+            uuid,
+            username,
+        })
     }
 }
 
@@ -202,8 +206,12 @@ mod tests {
     /// NIST SP 800-38A F.3.7 (CFB8-AES128.Encrypt) known-answer test.
     #[test]
     fn cfb8_nist_kat() {
-        let key: [u8; 16] = unhex("2b7e151628aed2a6abf7158809cf4f3c").try_into().unwrap();
-        let iv: [u8; 16] = unhex("000102030405060708090a0b0c0d0e0f").try_into().unwrap();
+        let key: [u8; 16] = unhex("2b7e151628aed2a6abf7158809cf4f3c")
+            .try_into()
+            .unwrap();
+        let iv: [u8; 16] = unhex("000102030405060708090a0b0c0d0e0f")
+            .try_into()
+            .unwrap();
         let mut c = Cfb8 {
             cipher: Aes128::new((&key).into()),
             iv,
@@ -239,9 +247,18 @@ mod tests {
     /// wiki.vg's canonical server-hash vectors (name as the sole input).
     #[test]
     fn server_hash_vectors() {
-        assert_eq!(server_hash("Notch", &[], &[]), "4ed1f46bbe04bc756bcb17c0c7ce3e4632f06a48");
-        assert_eq!(server_hash("jeb_", &[], &[]), "-7c9d5b0044c130109a5d7b5fb5c317c02b4e28c1");
-        assert_eq!(server_hash("simon", &[], &[]), "88e16a1019277b15d58faf0541e11910eb756f6");
+        assert_eq!(
+            server_hash("Notch", &[], &[]),
+            "4ed1f46bbe04bc756bcb17c0c7ce3e4632f06a48"
+        );
+        assert_eq!(
+            server_hash("jeb_", &[], &[]),
+            "-7c9d5b0044c130109a5d7b5fb5c317c02b4e28c1"
+        );
+        assert_eq!(
+            server_hash("simon", &[], &[]),
+            "88e16a1019277b15d58faf0541e11910eb756f6"
+        );
     }
 
     #[test]

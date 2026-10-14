@@ -356,14 +356,15 @@ impl PvpConfig {
                         parse_i32(value, self.jump_reset_bar_max_range_ms)
                 }
                 "show_all_hits" => {
-                    self.jump_reset_show_all_hits =
-                        parse_bool(value, self.jump_reset_show_all_hits)
+                    self.jump_reset_show_all_hits = parse_bool(value, self.jump_reset_show_all_hits)
                 }
                 _ => {}
             },
             "hit_range" => match key {
                 "enabled" => self.hit_range_enabled = parse_bool(value, self.hit_range_enabled),
-                "fade_ticks" => self.hit_range_fade_ticks = parse_i32(value, self.hit_range_fade_ticks),
+                "fade_ticks" => {
+                    self.hit_range_fade_ticks = parse_i32(value, self.hit_range_fade_ticks)
+                }
                 _ => {}
             },
             "indicators" => match key {
@@ -371,8 +372,7 @@ impl PvpConfig {
                     self.totem_count_enabled = parse_bool(value, self.totem_count_enabled)
                 }
                 "floating_health" => {
-                    self.floating_health_enabled =
-                        parse_bool(value, self.floating_health_enabled)
+                    self.floating_health_enabled = parse_bool(value, self.floating_health_enabled)
                 }
                 _ => {}
             },
@@ -455,7 +455,10 @@ impl PvpConfig {
             "bar_max_range_ms = {}\n",
             self.jump_reset_bar_max_range_ms
         ));
-        s.push_str(&format!("show_all_hits = {}\n", self.jump_reset_show_all_hits));
+        s.push_str(&format!(
+            "show_all_hits = {}\n",
+            self.jump_reset_show_all_hits
+        ));
 
         s.push_str("\n[hit_range]\n");
         s.push_str(&format!("enabled = {}\n", self.hit_range_enabled));
@@ -520,7 +523,9 @@ fn parse_f32(s: &str, fb: f32) -> f32 {
 }
 fn parse_color(s: &str, fb: i32) -> i32 {
     let t = s.trim_start_matches('#');
-    i32::from_str_radix(t, 16).map(|v| v & 0xFFFFFF).unwrap_or(fb)
+    i32::from_str_radix(t, 16)
+        .map(|v| v & 0xFFFFFF)
+        .unwrap_or(fb)
 }
 
 /// `%APPDATA%/EwoClient/profiles/<active>/pvp.toml`.
@@ -556,7 +561,9 @@ fn read_active_profile() -> String {
     let Some(appdata) = std::env::var_os("APPDATA") else {
         return "Default".to_string();
     };
-    let path = PathBuf::from(appdata).join("EwoClient").join("profiles.toml");
+    let path = PathBuf::from(appdata)
+        .join("EwoClient")
+        .join("profiles.toml");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return "Default".to_string();
     };

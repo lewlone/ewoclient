@@ -267,7 +267,10 @@ fn name_for_display(
     spectator: bool,
     lang: Option<&rewo_data::lang::Language>,
 ) -> ChatLine {
-    let base = ChatStyle { italic: spectator, ..BASE };
+    let base = ChatStyle {
+        italic: spectator,
+        ..BASE
+    };
     match display {
         Some(c) => parse_component(c, base, lang),
         None => rewo_net::sidebar::format_name_for_team(
@@ -353,8 +356,11 @@ pub fn resolve(l: &TabListLookups<'_>) -> TabListView {
             // spacerWidth + playerScoreWidth : 0)` — the space is charged only
             // when there is a score to separate, so a BlankFormat objective
             // reserves no column at all.
-            max_score_width =
-                max_score_width.max(if score_width > 0 { spacer_width + score_width } else { 0 });
+            max_score_width = max_score_width.max(if score_width > 0 {
+                spacer_width + score_width
+            } else {
+                0
+            });
         }
 
         rows.push(ResolvedRow {
@@ -384,7 +390,13 @@ pub fn resolve(l: &TabListLookups<'_>) -> TabListView {
         footer_lines: footer.iter().map(|f| line_width(f, l.width_of)).collect(),
     };
 
-    TabListView { entries, rows, input, header, footer }
+    TabListView {
+        entries,
+        rows,
+        input,
+        header,
+        footer,
+    }
 }
 
 /// The tab list's fills, in **GUI pixels**.
@@ -485,7 +497,9 @@ pub fn faces(
         let Some(e) = view.entries.get(slot.index) else {
             continue;
         };
-        let Some(face) = face_of(e.uuid) else { continue };
+        let Some(face) = face_of(e.uuid) else {
+            continue;
+        };
         let flip = loaded_of(e.uuid) && is_upside_down_name(&e.name);
         let blit = |hat: bool| rewo_gpu::hud::HudBlit {
             x: rect.x as f32,
@@ -493,7 +507,11 @@ pub fn faces(
             w: rect.w as f32,
             h: rect.h as f32,
             alpha: 1.0,
-            icon: rewo_gpu::hud::HudIcon::Face { slot: face, hat, flip },
+            icon: rewo_gpu::hud::HudIcon::Face {
+                slot: face,
+                hat,
+                flip,
+            },
         };
         out.push(blit(false));
         // `if (hat) extractHat(..)` — a second blit over the first, never a
@@ -635,7 +653,11 @@ pub fn text(
         let Some(row) = view.rows.get(slot.index) else {
             continue;
         };
-        let alpha = if row.spectator { SPECTATOR_ALPHA } else { NAME_ALPHA };
+        let alpha = if row.spectator {
+            SPECTATOR_ALPHA
+        } else {
+            NAME_ALPHA
+        };
         push(&row.name, slot.name.0, slot.name.1, alpha);
         // `graphics.text(font, entry.formattedScore, right - entry.scoreWidth,
         // yo, -1)` — right-aligned to the span's RIGHT edge, and drawn at the
@@ -799,7 +821,10 @@ mod tests {
         ];
         let v = f.resolve();
         assert_eq!(
-            v.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            v.entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
             ["alpha", "beta"]
         );
         assert_eq!(plain(&v.rows[0].name), "zzz");
@@ -1059,7 +1084,12 @@ mod tests {
         f.scoreboard = Some(scoreboard_with(RenderType::Integer, &[("aa", 1234)]));
         let v = f.resolve();
         // "1234" is 4 chars * 6 = 24, plus a 6px space.
-        assert_eq!(v.input.score, ScoreColumn::Numeric { max_score_width: 30 });
+        assert_eq!(
+            v.input.score,
+            ScoreColumn::Numeric {
+                max_score_width: 30
+            }
+        );
         assert_eq!(plain(&v.rows[0].score), "1234");
         assert_eq!(v.rows[0].score_width, 24);
         // The holder with no score contributes nothing and draws nothing.
@@ -1079,7 +1109,7 @@ mod tests {
             assert!((c[k] - yellow[k]).abs() < 1e-6, "{c:?} vs {yellow:?}");
         }
         assert_ne!(c[2], 85.0 / 255.0 * 0.0); // guards against a black read
-        // …and it is NOT the sidebar's red, which is the swap this can make.
+                                              // …and it is NOT the sidebar's red, which is the swap this can make.
         assert!(c[1] > 0.9, "red would have g = 0x55");
     }
 
@@ -1108,7 +1138,10 @@ mod tests {
     fn a_spectator_row_has_no_score() {
         let mut f = Fixture::with(&[(1, "aa"), (2, "bb")]);
         f.spectators = vec![1];
-        f.scoreboard = Some(scoreboard_with(RenderType::Integer, &[("aa", 5), ("bb", 6)]));
+        f.scoreboard = Some(scoreboard_with(
+            RenderType::Integer,
+            &[("aa", 5), ("bb", 6)],
+        ));
         let v = f.resolve();
         let l = tab_list::layout(&v.input, &v.entries);
         // Sorted: the spectator is last.
@@ -1123,12 +1156,17 @@ mod tests {
     #[test]
     fn the_score_is_right_aligned_to_the_spans_right_edge() {
         let mut f = Fixture::with(&[(1, "aa"), (2, "bb")]);
-        f.scoreboard = Some(scoreboard_with(RenderType::Integer, &[("aa", 1), ("bb", 22222)]));
+        f.scoreboard = Some(scoreboard_with(
+            RenderType::Integer,
+            &[("aa", 1), ("bb", 22222)],
+        ));
         let v = f.resolve();
         let l = tab_list::layout(&v.input, &v.entries);
         let t = text(&v, &l, 1.0, &w);
-        let scores: Vec<&rewo_gpu::world::OwnedTextLine> =
-            t.iter().filter(|l| l.text.chars().all(|c| c.is_ascii_digit())).collect();
+        let scores: Vec<&rewo_gpu::world::OwnedTextLine> = t
+            .iter()
+            .filter(|l| l.text.chars().all(|c| c.is_ascii_digit()))
+            .collect();
         assert_eq!(scores.len(), 2);
         // Their RIGHT edges agree; their left edges do not.
         let right0 = scores[0].x + v.rows[0].score_width as f32;

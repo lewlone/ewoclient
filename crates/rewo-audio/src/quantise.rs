@@ -94,7 +94,11 @@ mod tests {
     #[test]
     fn silence_truncates_to_zero_rather_than_flooring_to_minus_one() {
         assert_eq!(quantise(0.0), 0);
-        assert_eq!((-0.5f32).floor() as i32, -1, "what a floor would have given");
+        assert_eq!(
+            (-0.5f32).floor() as i32,
+            -1,
+            "what a floor would have given"
+        );
     }
 
     /// Truncation toward zero is visible on any negative sample, not just at 0.

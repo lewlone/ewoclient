@@ -38,7 +38,9 @@ pub struct Ingredient {
 
 impl Ingredient {
     pub fn of(ids: &[i32]) -> Self {
-        Self { accepts: ids.to_vec() }
+        Self {
+            accepts: ids.to_vec(),
+        }
     }
 
     fn accepts_item(&self, item: i32) -> bool {
@@ -153,7 +155,9 @@ impl StackedContents {
     /// *after* a successful pick rather than before.
     pub fn try_pick_all(&mut self, ingredients: &[Ingredient], max_size: i32) -> i32 {
         let mut min = 0;
-        let mut max = max_size.min(self.result_upper_bound(ingredients)).saturating_add(1);
+        let mut max = max_size
+            .min(self.result_upper_bound(ingredients))
+            .saturating_add(1);
         loop {
             let mid = (min + max) / 2;
             if self.try_pick(ingredients, mid) {
@@ -185,9 +189,7 @@ impl RecipePicker {
         let items: Vec<i32> = contents
             .amounts
             .iter()
-            .filter(|(item, count)| {
-                *count > 0 && ingredients.iter().any(|i| i.accepts_item(*item))
-            })
+            .filter(|(item, count)| *count > 0 && ingredients.iter().any(|i| i.accepts_item(*item)))
             .map(|(item, _)| *item)
             .collect();
         let ingredient_count = ingredients.len();
@@ -196,7 +198,10 @@ impl RecipePicker {
             ingredient_count,
             items,
             item_count,
-            data: vec![false; ingredient_count * 2 + item_count + ingredient_count * item_count * 2],
+            data: vec![
+                false;
+                ingredient_count * 2 + item_count + ingredient_count * item_count * 2
+            ],
             path: Vec::new(),
         };
         // `setInitialConnections`.
@@ -509,7 +514,11 @@ mod tests {
     fn try_pick_all_finds_the_biggest_batch() {
         let ing = [Ingredient::of(&[1]), Ingredient::of(&[2])];
         assert_eq!(contents(&[(1, 5), (2, 9)]).try_pick_all(&ing, 64), 5);
-        assert_eq!(contents(&[(1, 5), (2, 9)]).try_pick_all(&ing, 3), 3, "capped");
+        assert_eq!(
+            contents(&[(1, 5), (2, 9)]).try_pick_all(&ing, 3),
+            3,
+            "capped"
+        );
         assert_eq!(contents(&[(1, 0), (2, 9)]).try_pick_all(&ing, 64), 0);
     }
 
@@ -565,7 +574,13 @@ mod tests {
         if capacity <= 0 {
             return true;
         }
-        fn go(items: &[(i32, i32)], ings: &[Ingredient], cap: i32, i: usize, used: &mut Vec<i32>) -> bool {
+        fn go(
+            items: &[(i32, i32)],
+            ings: &[Ingredient],
+            cap: i32,
+            i: usize,
+            used: &mut Vec<i32>,
+        ) -> bool {
             if i == ings.len() {
                 return true;
             }

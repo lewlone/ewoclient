@@ -84,7 +84,10 @@ impl Blocks {
                     .and_then(|i| i.as_u64())
                     .ok_or_else(|| format!("blocks.json: {block_name} state missing id"))?
                     as u32;
-                let is_default = state.get("default").and_then(|d| d.as_bool()).unwrap_or(false);
+                let is_default = state
+                    .get("default")
+                    .and_then(|d| d.as_bool())
+                    .unwrap_or(false);
                 max_id = max_id.max(id as i64);
                 entries.push((id, block_name.clone(), is_default));
             }
@@ -170,7 +173,9 @@ impl Blocks {
     }
 
     pub fn block_name(&self, state_id: u32) -> Option<&str> {
-        self.state_to_block.get(state_id as usize).map(|s| s.as_str())
+        self.state_to_block
+            .get(state_id as usize)
+            .map(|s| s.as_str())
     }
 
     pub fn default_state(&self, block_name: &str) -> Option<u32> {

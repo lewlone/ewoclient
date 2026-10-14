@@ -195,16 +195,23 @@ pub struct CraftSlots {
 /// slots 1..5** — the result is slot 0. A crafting table is 3x3 at 1..10.
 pub fn craft_slots(book: BookType, player_inventory: bool) -> Option<CraftSlots> {
     if player_inventory {
-        return Some(CraftSlots { range: 1..5, gated: true });
+        return Some(CraftSlots {
+            range: 1..5,
+            gated: true,
+        });
     }
     Some(match book {
         // `CraftingMenu`: result 0, grid 1..=9.
-        BookType::Crafting => CraftSlots { range: 1..10, gated: true },
+        BookType::Crafting => CraftSlots {
+            range: 1..10,
+            gated: true,
+        },
         // `AbstractFurnaceMenu`: the container is ingredient 0, fuel 1,
         // result 2 — and all three are contributed.
-        BookType::Furnace | BookType::BlastFurnace | BookType::Smoker => {
-            CraftSlots { range: 0..3, gated: false }
-        }
+        BookType::Furnace | BookType::BlastFurnace | BookType::Smoker => CraftSlots {
+            range: 0..3,
+            gated: false,
+        },
     })
 }
 
@@ -597,7 +604,11 @@ pub const TAB_H: i32 = 27;
 /// and the icon shift together, and shifting only one of them is a plausible
 /// half-transcription that reads as a misplaced icon.
 pub fn tab_x_shift(selected: bool) -> i32 {
-    if selected { -2 } else { 0 }
+    if selected {
+        -2
+    } else {
+        0
+    }
 }
 
 /// A tab's sprite tracks **selection, not hover**.
@@ -691,10 +702,7 @@ pub fn squeeze(animation_time: f32) -> f32 {
 /// (`currentPage < totalPages - 1` already implies it for a clamped page) and
 /// **not** for `back` on an empty book, where `totalPages` is 0.
 pub fn page_arrows_visible(page: usize, total: usize) -> (bool, bool) {
-    (
-        total > 1 && page + 1 < total,
-        total > 1 && page > 0,
-    )
+    (total > 1 && page + 1 < total, total > 1 && page > 0)
 }
 
 /// The `x/y` page counter, drawn **only when there is more than one page**.
@@ -734,9 +742,8 @@ pub const PAGE_LABEL_KEY: &str = "gui.recipebook.page";
 /// `decomposeTemplate` on a string with no specifiers yields it unchanged, so
 /// vanilla renders the bare key too.
 pub fn page_label(page: usize, total: usize, template: &str) -> Option<String> {
-    (total > 1).then(|| {
-        rewo_data::lang::format(template, &[&(page + 1).to_string(), &total.to_string()])
-    })
+    (total > 1)
+        .then(|| rewo_data::lang::format(template, &[&(page + 1).to_string(), &total.to_string()]))
 }
 
 /// The filter toggle's sprite, as an index into a four-entry
@@ -788,7 +795,14 @@ pub struct BookQuad {
 impl BookQuad {
     /// A quad taking the whole of its sprite — the ordinary case.
     pub const fn whole(sprite: BookSprite, x: i32, y: i32, w: i32, h: i32) -> Self {
-        Self { sprite, x, y, w, h, src: None }
+        Self {
+            sprite,
+            x,
+            y,
+            w,
+            h,
+            src: None,
+        }
     }
 }
 
@@ -796,16 +810,30 @@ impl BookQuad {
 pub enum BookSprite {
     /// The 147x166 panel itself, sampled from `(1, 1)` of `recipe_book.png`.
     Panel,
-    Tab { selected: bool },
+    Tab {
+        selected: bool,
+    },
     Slot(SlotSprite),
-    PageForward { hovered: bool },
-    PageBackward { hovered: bool },
-    Filter { furnace: bool, filtering: bool, hovered: bool },
+    PageForward {
+        hovered: bool,
+    },
+    PageBackward {
+        hovered: bool,
+    },
+    Filter {
+        furnace: bool,
+        filtering: bool,
+        hovered: bool,
+    },
     /// The which-of-these overlay's nine-sliced backing (M104).
     OverlayPanel,
     /// One of its buttons. `furnace` follows the MENU, not the recipe — see
     /// [`crate::recipe_overlay::grid_positions`].
-    OverlayButton { furnace: bool, craftable: bool, hovered: bool },
+    OverlayButton {
+        furnace: bool,
+        craftable: bool,
+        hovered: bool,
+    },
 }
 
 /// What a page of the book needs to know to draw itself.
@@ -865,7 +893,9 @@ pub fn book_chrome(view: BookView, slots: &[(bool, bool)], hover: BookHover) -> 
     let (fwd, back) = page_arrows_visible(view.page, view.total_pages);
     if fwd {
         out.push(BookQuad::whole(
-            BookSprite::PageForward { hovered: hover.page_forward },
+            BookSprite::PageForward {
+                hovered: hover.page_forward,
+            },
             PAGE_FORWARD_X,
             PAGE_ARROW_Y,
             PAGE_ARROW_W,
@@ -874,7 +904,9 @@ pub fn book_chrome(view: BookView, slots: &[(bool, bool)], hover: BookHover) -> 
     }
     if back {
         out.push(BookQuad::whole(
-            BookSprite::PageBackward { hovered: hover.page_backward },
+            BookSprite::PageBackward {
+                hovered: hover.page_backward,
+            },
             PAGE_BACK_X,
             PAGE_ARROW_Y,
             PAGE_ARROW_W,
@@ -932,7 +964,11 @@ pub fn overlay_chrome(
     for (i, &c) in craftable.iter().enumerate() {
         let (bx, by) = ro::button_origin(origin, i, total);
         out.push(BookQuad::whole(
-            BookSprite::OverlayButton { furnace, craftable: c, hovered: hovered == Some(i) },
+            BookSprite::OverlayButton {
+                furnace,
+                craftable: c,
+                hovered: hovered == Some(i),
+            },
             bx,
             by,
             ro::BUTTON_SIZE,
@@ -1067,10 +1103,28 @@ fn inside(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32) -> bool {
 /// the natural "fix" and would diverge.
 pub fn book_hit(bx: i32, by: i32, view: BookView, tab_count: usize) -> Option<BookHit> {
     let (fwd, back) = page_arrows_visible(view.page, view.total_pages);
-    if fwd && inside(bx, by, PAGE_FORWARD_X, PAGE_ARROW_Y, PAGE_ARROW_W, PAGE_ARROW_H) {
+    if fwd
+        && inside(
+            bx,
+            by,
+            PAGE_FORWARD_X,
+            PAGE_ARROW_Y,
+            PAGE_ARROW_W,
+            PAGE_ARROW_H,
+        )
+    {
         return Some(BookHit::PageForward);
     }
-    if back && inside(bx, by, PAGE_BACK_X, PAGE_ARROW_Y, PAGE_ARROW_W, PAGE_ARROW_H) {
+    if back
+        && inside(
+            bx,
+            by,
+            PAGE_BACK_X,
+            PAGE_ARROW_Y,
+            PAGE_ARROW_W,
+            PAGE_ARROW_H,
+        )
+    {
         return Some(BookHit::PageBackward);
     }
     for index in 0..view.shown {
@@ -1172,7 +1226,6 @@ pub fn widget_tooltip_key(
         BookHit::Tab(_) | BookHit::Search | BookHit::Slot(_) => None,
     }
 }
-
 
 /// Which recipe cell the page shows a tooltip for, if any (M106).
 ///
@@ -1309,7 +1362,8 @@ pub fn is_crafting_slot(book: BookType, player_inventory: bool, menu_slot: usize
         // Result 0 plus the grid: 1..5 for the player's 2x2, 1..10 for a
         // crafting table's 3x3.
         BookType::Crafting => {
-            menu_slot == 0 || craft_slots(book, player_inventory).is_some_and(|c| c.range.contains(&menu_slot))
+            menu_slot == 0
+                || craft_slots(book, player_inventory).is_some_and(|c| c.range.contains(&menu_slot))
         }
         BookType::Furnace | BookType::BlastFurnace | BookType::Smoker => {
             // The furnace's own three…
@@ -1484,7 +1538,11 @@ mod tests {
     fn a_recipe_cell_is_hit_over_its_own_25_by_25() {
         let v = full_view(20, 1, 0);
         let (sx, sy) = grid_slot(7);
-        assert_eq!(book_hit(sx, sy, v, 5), Some(BookHit::Slot(7)), "top-left is in");
+        assert_eq!(
+            book_hit(sx, sy, v, 5),
+            Some(BookHit::Slot(7)),
+            "top-left is in"
+        );
         assert_eq!(
             book_hit(sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, v, 5),
             Some(BookHit::Slot(7)),
@@ -1526,9 +1584,20 @@ mod tests {
     #[test]
     fn the_magnifier_counts_as_the_search_box() {
         let v = full_view(20, 1, 0);
-        assert_eq!(book_hit(MAGNIFIER_X, SEARCH_Y + 7, v, 5), Some(BookHit::Search));
-        assert_eq!(book_hit(SEARCH_X + 40, SEARCH_Y + 7, v, 5), Some(BookHit::Search));
-        const { assert!(MAGNIFIER_X + MAGNIFIER_W > SEARCH_X, "they overlap by construction") };
+        assert_eq!(
+            book_hit(MAGNIFIER_X, SEARCH_Y + 7, v, 5),
+            Some(BookHit::Search)
+        );
+        assert_eq!(
+            book_hit(SEARCH_X + 40, SEARCH_Y + 7, v, 5),
+            Some(BookHit::Search)
+        );
+        const {
+            assert!(
+                MAGNIFIER_X + MAGNIFIER_W > SEARCH_X,
+                "they overlap by construction"
+            )
+        };
         // Just left of the magnifier is nothing.
         assert_eq!(book_hit(MAGNIFIER_X - 1, SEARCH_Y + 7, v, 5), None);
     }
@@ -1552,7 +1621,10 @@ mod tests {
         let v = full_view(20, 1, 0);
         for i in 0..CRAFTING_TABS.len() {
             let (tx, ty) = tab_position(i as i32);
-            assert_eq!(book_hit(tx + 17, ty + 13, v, CRAFTING_TABS.len()), Some(BookHit::Tab(i)));
+            assert_eq!(
+                book_hit(tx + 17, ty + 13, v, CRAFTING_TABS.len()),
+                Some(BookHit::Tab(i))
+            );
         }
         // A sixth tab does not exist on a crafting book.
         let (tx, ty) = tab_position(5);
@@ -1575,16 +1647,31 @@ mod tests {
     /// the guard is `selectedTab != button`.
     #[test]
     fn switching_tabs_resets_the_page_and_reselecting_does_nothing() {
-        let mut st = BookState { selected_tab: 0, page: 2 };
-        assert_eq!(st.press(Some(BookHit::Tab(0)), false), Some(BookAction::Navigated));
-        assert_eq!(st.page, 2, "re-selecting the same tab leaves the page alone");
-        assert_eq!(st.press(Some(BookHit::Tab(3)), false), Some(BookAction::Navigated));
+        let mut st = BookState {
+            selected_tab: 0,
+            page: 2,
+        };
+        assert_eq!(
+            st.press(Some(BookHit::Tab(0)), false),
+            Some(BookAction::Navigated)
+        );
+        assert_eq!(
+            st.page, 2,
+            "re-selecting the same tab leaves the page alone"
+        );
+        assert_eq!(
+            st.press(Some(BookHit::Tab(3)), false),
+            Some(BookAction::Navigated)
+        );
         assert_eq!((st.selected_tab, st.page), (3, 0));
     }
 
     #[test]
     fn the_arrows_move_the_page_by_one() {
-        let mut st = BookState { selected_tab: 0, page: 1 };
+        let mut st = BookState {
+            selected_tab: 0,
+            page: 1,
+        };
         st.press(Some(BookHit::PageForward), false);
         assert_eq!(st.page, 2);
         st.press(Some(BookHit::PageBackward), false);
@@ -1597,7 +1684,11 @@ mod tests {
     /// early without reaching it.
     #[test]
     fn only_a_click_on_the_page_leaves_the_search_focused() {
-        for hit in [BookHit::PageForward, BookHit::PageBackward, BookHit::Slot(0)] {
+        for hit in [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Slot(0),
+        ] {
             assert_eq!(focus_change(Some(hit)), None, "{hit:?} leaves focus alone");
         }
         for hit in [BookHit::Filter, BookHit::Tab(1)] {
@@ -1621,11 +1712,17 @@ mod tests {
         let mut st = BookState::default();
         assert_eq!(
             st.press(Some(BookHit::Slot(4)), false),
-            Some(BookAction::Recipe { index: 4, right: false })
+            Some(BookAction::Recipe {
+                index: 4,
+                right: false
+            })
         );
         assert_eq!(
             st.press(Some(BookHit::Slot(4)), true),
-            Some(BookAction::Recipe { index: 4, right: true })
+            Some(BookAction::Recipe {
+                index: 4,
+                right: true
+            })
         );
     }
 
@@ -1635,7 +1732,10 @@ mod tests {
         // so pressing it asks the caller to flip and tell the server, which is
         // what `toggleFiltering` + `sendUpdateSettings` do in that order.
         let mut st = BookState::default();
-        assert_eq!(st.press(Some(BookHit::Filter), false), Some(BookAction::ToggleFilter));
+        assert_eq!(
+            st.press(Some(BookHit::Filter), false),
+            Some(BookAction::ToggleFilter)
+        );
     }
 
     #[test]
@@ -1646,7 +1746,10 @@ mod tests {
         // Five tabs; two of the five carry a pair, so seven icons.
         assert_eq!(icons.len(), 7);
         assert_eq!(
-            icons.iter().filter(|i| matches!(i.kind, BookIconKind::TabSecondary(_))).count(),
+            icons
+                .iter()
+                .filter(|i| matches!(i.kind, BookIconKind::TabSecondary(_)))
+                .count(),
             2,
             "equipment and misc"
         );
@@ -1679,8 +1782,14 @@ mod tests {
         assert_eq!(slots.len(), 4);
         assert_eq!(slots.iter().filter(|s| s.1).count(), 1, "one shadow");
         let (sx, sy) = grid_slot(1);
-        assert!(slots.contains(&(1, true, sx + 5, sy + 5)), "the shadow at +5");
-        assert!(slots.contains(&(1, false, sx + 3, sy + 3)), "the front at +3");
+        assert!(
+            slots.contains(&(1, true, sx + 5, sy + 5)),
+            "the shadow at +5"
+        );
+        assert!(
+            slots.contains(&(1, false, sx + 3, sy + 3)),
+            "the front at +3"
+        );
         // A single-recipe slot sits at +4, between the two.
         let (zx, zy) = grid_slot(0);
         assert!(slots.contains(&(0, false, zx + 4, zy + 4)));
@@ -1711,7 +1820,9 @@ mod tests {
         v.tabs = 0;
         for multi in [false, true] {
             for i in book_icons(v, &[], &[multi; ITEMS_PER_PAGE]) {
-                let BookIconKind::Slot { index, .. } = i.kind else { continue };
+                let BookIconKind::Slot { index, .. } = i.kind else {
+                    continue;
+                };
                 let (sx, sy) = grid_slot(index);
                 assert!(i.x >= sx && i.x + 16 <= sx + SLOT_SIZE, "slot {index} x");
                 assert!(i.y >= sy && i.y + 16 <= sy + SLOT_SIZE, "slot {index} y");
@@ -1771,7 +1882,9 @@ mod tests {
         let slots = vec![(true, false); 20];
         let q = book_chrome(view(5, 3, 2), &slots, BookHover::default());
         assert_eq!(
-            q.iter().filter(|b| matches!(b.sprite, BookSprite::Slot(_))).count(),
+            q.iter()
+                .filter(|b| matches!(b.sprite, BookSprite::Slot(_)))
+                .count(),
             5,
             "the last page of 45 collections"
         );
@@ -1806,7 +1919,10 @@ mod tests {
         let back = |s: &BookSprite| matches!(s, BookSprite::PageBackward { .. });
 
         let one = book_chrome(view(3, 1, 0), &[], BookHover::default());
-        assert!(!has(&one, fwd) && !has(&one, back), "a single page has neither");
+        assert!(
+            !has(&one, fwd) && !has(&one, back),
+            "a single page has neither"
+        );
 
         let first = book_chrome(view(20, 3, 0), &[], BookHover::default());
         assert!(has(&first, fwd) && !has(&first, back));
@@ -1817,7 +1933,11 @@ mod tests {
 
     #[test]
     fn hover_reaches_the_arrows_and_the_filter_and_nothing_else() {
-        let hover = BookHover { page_forward: true, page_backward: false, filter: true };
+        let hover = BookHover {
+            page_forward: true,
+            page_backward: false,
+            filter: true,
+        };
         let q = book_chrome(view(20, 3, 1), &[], hover);
         assert!(q.contains(&BookQuad::whole(
             BookSprite::PageForward { hovered: true },
@@ -1840,17 +1960,30 @@ mod tests {
         v.filtering = true;
         v.furnace_family = true;
         let q = book_chrome(v, &[], BookHover::default());
-        let f = q.iter().find(|b| matches!(b.sprite, BookSprite::Filter { .. })).unwrap();
+        let f = q
+            .iter()
+            .find(|b| matches!(b.sprite, BookSprite::Filter { .. }))
+            .unwrap();
         assert_eq!(
             f.sprite,
-            BookSprite::Filter { furnace: true, filtering: true, hovered: false }
+            BookSprite::Filter {
+                furnace: true,
+                filtering: true,
+                hovered: false
+            }
         );
-        assert_eq!((f.x, f.y, f.w, f.h), (FILTER_X, FILTER_Y, FILTER_W, FILTER_H));
+        assert_eq!(
+            (f.x, f.y, f.w, f.h),
+            (FILTER_X, FILTER_Y, FILTER_W, FILTER_H)
+        );
         // A crafting book with the same filter state picks DIFFERENT art.
         let mut c = view(0, 1, 0);
         c.filtering = true;
         let cq = book_chrome(c, &[], BookHover::default());
-        let cf = cq.iter().find(|b| matches!(b.sprite, BookSprite::Filter { .. })).unwrap();
+        let cf = cq
+            .iter()
+            .find(|b| matches!(b.sprite, BookSprite::Filter { .. }))
+            .unwrap();
         assert_ne!(f.sprite, cf.sprite);
     }
 
@@ -1860,8 +1993,14 @@ mod tests {
         assert_eq!(screen_left(800, 176, false, false), (800 - 176) / 2);
         // …and shoved right while it is open, by a literal 177 plus the
         // centring of a 200-wide block. NOT the centring of the pair.
-        assert_eq!(screen_left(800, 176, true, false), 177 + (800 - 176 - 200) / 2);
-        assert_eq!(screen_left(800, 176, true, false) - screen_left(800, 176, false, false), 77);
+        assert_eq!(
+            screen_left(800, 176, true, false),
+            177 + (800 - 176 - 200) / 2
+        );
+        assert_eq!(
+            screen_left(800, 176, true, false) - screen_left(800, 176, false, false),
+            77
+        );
         // A narrow window keeps the menu centred and lets the book cover it.
         assert_eq!(screen_left(360, 176, true, true), (360 - 176) / 2);
         // Which is exactly the case `x_origin` stops offsetting for, so the
@@ -1962,14 +2101,21 @@ mod tests {
     fn the_pulse_peaks_at_half_and_is_flat_at_both_ends() {
         assert!((squeeze(0.0) - 1.0).abs() < 1e-6);
         assert!((squeeze(ANIMATION_TIME) - 1.0).abs() < 1e-6, "sin(PI) is 0");
-        assert!((squeeze(ANIMATION_TIME / 2.0) - 1.1).abs() < 1e-6, "the peak");
+        assert!(
+            (squeeze(ANIMATION_TIME / 2.0) - 1.1).abs() < 1e-6,
+            "the peak"
+        );
         // It only ever grows.
         assert!(squeeze(ANIMATION_TIME * 0.25) > 1.0);
     }
 
     #[test]
     fn an_arrow_hides_at_the_end_it_points_at() {
-        assert_eq!(page_arrows_visible(0, 1), (false, false), "one page, neither");
+        assert_eq!(
+            page_arrows_visible(0, 1),
+            (false, false),
+            "one page, neither"
+        );
         assert_eq!(page_arrows_visible(0, 3), (true, false), "at the front");
         assert_eq!(page_arrows_visible(1, 3), (true, true), "in the middle");
         assert_eq!(page_arrows_visible(2, 3), (false, true), "at the end");
@@ -1984,7 +2130,11 @@ mod tests {
         // 147 wide, so the true centre is 73.5 — vanilla uses 73.
         assert_eq!(page_label_x(0), 73);
         assert_eq!(page_label_x(20), 63);
-        assert_ne!(PAGE_LABEL_CENTRE_X * 2, IMAGE_W, "73*2 != 147, deliberately");
+        assert_ne!(
+            PAGE_LABEL_CENTRE_X * 2,
+            IMAGE_W,
+            "73*2 != 147, deliberately"
+        );
         // The width is halved with integer division, so an odd label is not
         // symmetric about the centre either.
         assert_eq!(page_label_x(21), 73 - 10);
@@ -2073,7 +2223,10 @@ mod tests {
         // A DIFFERENT uncraftable recipe is not a repeat.
         assert!(g.try_place(8, false));
         assert!(!g.try_place(8, false));
-        assert!(g.try_place(7, false), "back to 7, which is no longer the last");
+        assert!(
+            g.try_place(7, false),
+            "back to 7, which is no longer the last"
+        );
     }
 
     #[test]
@@ -2140,7 +2293,10 @@ mod tests {
         let second = place_effects(&mut g, 7, false, false, false);
         assert_eq!(second, PlaceEffects::default());
         assert_eq!(second.send, None, "no packet");
-        assert!(!second.clear_ghost, "`ghostSlots.clear()` is AFTER the guard");
+        assert!(
+            !second.clear_ghost,
+            "`ghostSlots.clear()` is AFTER the guard"
+        );
         assert!(!second.close_book, "and so is `setVisible(false)`");
     }
 
@@ -2148,7 +2304,10 @@ mod tests {
     fn use_max_items_rides_through_untouched() {
         let mut g = PlaceGuard::default();
         assert_eq!(place_effects(&mut g, 7, true, true, false).send, Some(true));
-        assert_eq!(place_effects(&mut g, 7, true, false, false).send, Some(false));
+        assert_eq!(
+            place_effects(&mut g, 7, true, false, false).send,
+            Some(false)
+        );
         // …and it does not leak into the other two effects.
         let shifted = place_effects(&mut g, 8, true, true, false);
         let plain = place_effects(&mut g, 9, true, false, false);
@@ -2183,7 +2342,13 @@ mod tests {
         let f = |page, total| {
             (
                 widget_tooltip_key(BookHit::PageForward, BookType::Crafting, false, page, total),
-                widget_tooltip_key(BookHit::PageBackward, BookType::Crafting, false, page, total),
+                widget_tooltip_key(
+                    BookHit::PageBackward,
+                    BookType::Crafting,
+                    false,
+                    page,
+                    total,
+                ),
             )
         };
         // One page: `totalPages > 1` fails for both.
@@ -2487,7 +2652,8 @@ mod tests {
         let grid = craft_slots(BookType::Crafting, true).unwrap();
         assert_eq!(grid.range, 1..5);
         for s in 0..46usize {
-            let n = usize::from(PLAYER_ITEM_SLOTS.contains(&s)) + usize::from(grid.range.contains(&s));
+            let n =
+                usize::from(PLAYER_ITEM_SLOTS.contains(&s)) + usize::from(grid.range.contains(&s));
             assert_eq!(n, usize::from(s != 0), "slot {s} accounted {n} times");
         }
     }
@@ -2520,7 +2686,11 @@ mod tests {
         assert_eq!(BookType::Smoker.tabs().len(), 2);
         for b in BookType::ALL {
             assert!(b.tabs()[0].is_search(), "{b:?} tab 0 is the search tab");
-            assert_eq!(b.tabs()[0].primary, "compass", "every search tab is a compass");
+            assert_eq!(
+                b.tabs()[0].primary,
+                "compass",
+                "every search tab is a compass"
+            );
             // ...and no OTHER tab is a search tab.
             assert!(b.tabs()[1..].iter().all(|t| !t.is_search()));
         }
@@ -2587,8 +2757,14 @@ mod tests {
             category_tab_of(BookType::Crafting, "minecraft:crafting_redstone"),
             Some(4)
         );
-        assert_eq!(category_tab_of(BookType::Crafting, "minecraft:furnace_food"), None);
-        assert_eq!(category_tab_of(BookType::Crafting, "minecraft:not_a_category"), None);
+        assert_eq!(
+            category_tab_of(BookType::Crafting, "minecraft:furnace_food"),
+            None
+        );
+        assert_eq!(
+            category_tab_of(BookType::Crafting, "minecraft:not_a_category"),
+            None
+        );
         // The search tab DOES contain it, which is what makes skipping it the
         // load-bearing part.
         assert!(BookType::Crafting.tabs()[0]
@@ -2670,7 +2846,12 @@ mod tests {
             has_craftable,
             matches_search: true,
         };
-        let states = [s(true, true), s(true, false), s(false, true), s(false, false)];
+        let states = [
+            s(true, true),
+            s(true, false),
+            s(false, true),
+            s(false, false),
+        ];
         assert_eq!(visible_collections(&states, false), vec![0, 1]);
         assert_eq!(visible_collections(&states, true), vec![0]);
         // Not-selected is hidden in BOTH, which is the point.
@@ -2716,8 +2897,15 @@ mod tests {
         use crate::recipe_overlay as ro;
         let origin = (40, 60);
         let qs = overlay_chrome(origin, &[true, false, true], false, None);
-        let panel: Vec<_> = qs.iter().filter(|q| q.sprite == BookSprite::OverlayPanel).collect();
-        assert!(panel.len() > 1, "nine-sliced, so several quads: {}", panel.len());
+        let panel: Vec<_> = qs
+            .iter()
+            .filter(|q| q.sprite == BookSprite::OverlayPanel)
+            .collect();
+        assert!(
+            panel.len() > 1,
+            "nine-sliced, so several quads: {}",
+            panel.len()
+        );
         // Three buttons on one row: 3 * 25 + 8 by 1 * 25 + 8.
         assert_eq!(ro::panel_size(3), (83, 33));
         let expect = crate::nine_slice::quads(
@@ -2727,7 +2915,10 @@ mod tests {
         );
         assert_eq!(panel.len(), expect.len());
         for (got, want) in panel.iter().zip(&expect) {
-            assert_eq!((got.x, got.y, got.w, got.h), (want.dx, want.dy, want.w, want.h));
+            assert_eq!(
+                (got.x, got.y, got.w, got.h),
+                (want.dx, want.dy, want.w, want.h)
+            );
             assert_eq!(got.src, Some((want.sx, want.sy, want.sw, want.sh)));
         }
         // Every panel quad precedes every button quad — the overlay is drawn
@@ -2736,7 +2927,9 @@ mod tests {
             .iter()
             .position(|q| !matches!(q.sprite, BookSprite::OverlayPanel))
             .unwrap();
-        assert!(qs[..first_button].iter().all(|q| q.sprite == BookSprite::OverlayPanel));
+        assert!(qs[..first_button]
+            .iter()
+            .all(|q| q.sprite == BookSprite::OverlayPanel));
         assert_eq!(qs.len() - first_button, 3, "one quad per recipe");
         // And only the panel carries a source rect: everything else takes the
         // whole of its own sprite.
@@ -2751,9 +2944,11 @@ mod tests {
         let buttons: Vec<_> = qs
             .iter()
             .filter_map(|q| match q.sprite {
-                BookSprite::OverlayButton { furnace, craftable, hovered } => {
-                    Some((furnace, craftable, hovered))
-                }
+                BookSprite::OverlayButton {
+                    furnace,
+                    craftable,
+                    hovered,
+                } => Some((furnace, craftable, hovered)),
                 _ => None,
             })
             .collect();
@@ -2767,7 +2962,11 @@ mod tests {
     fn the_button_family_follows_the_menu() {
         let qs = overlay_chrome((0, 0), &[true], true, None);
         assert!(qs.iter().any(|q| q.sprite
-            == BookSprite::OverlayButton { furnace: true, craftable: true, hovered: false }));
+            == BookSprite::OverlayButton {
+                furnace: true,
+                craftable: true,
+                hovered: false
+            }));
     }
 
     /// The buttons land where [`crate::recipe_overlay::button_origin`] says,

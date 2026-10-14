@@ -192,20 +192,32 @@ pub struct MediaService {
 impl MediaService {
     /// Spawn the background poller. Runs until the process exits.
     pub fn start() -> Self {
-        let shared = Arc::new(Shared { latest: Mutex::new(None), stop: AtomicBool::new(false) });
+        let shared = Arc::new(Shared {
+            latest: Mutex::new(None),
+            stop: AtomicBool::new(false),
+        });
         let (tx_actions, rx_actions) = channel();
         let thread_shared = shared.clone();
         thread::Builder::new()
             .name("ewo-smtc".into())
             .spawn(move || smtc_thread(thread_shared, rx_actions))
             .ok();
-        Self { shared, tx_actions, last_thumb_fingerprint: 0 }
+        Self {
+            shared,
+            tx_actions,
+            last_thumb_fingerprint: 0,
+        }
     }
 
     /// Apply the newest pending update to `state`, if any. Cheap to call every
     /// frame.
     pub fn poll(&mut self, state: &mut MediaState) {
-        let update = self.shared.latest.lock().ok().and_then(|mut slot| slot.take());
+        let update = self
+            .shared
+            .latest
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
         if let Some(update) = update {
             self.apply(state, update);
         }
@@ -236,8 +248,7 @@ impl MediaService {
                     Some(bytes) => {
                         let fp = fingerprint_thumb(bytes);
                         if fp != self.last_thumb_fingerprint {
-                            state.thumbnail =
-                                Image::from_encoded(Data::new_copy(bytes));
+                            state.thumbnail = Image::from_encoded(Data::new_copy(bytes));
                             self.last_thumb_fingerprint = fp;
                         }
                     }
@@ -387,8 +398,14 @@ fn smtc_thread(shared: Arc<Shared>, rx_actions: Receiver<MediaAction>) {
 
         fn capture_snapshot(session: &Session) -> Option<MediaSnapshot> {
             let props = session.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
-            let title = props.Title().map(|h| h.to_string_lossy()).unwrap_or_default();
-            let artist = props.Artist().map(|h| h.to_string_lossy()).unwrap_or_default();
+            let title = props
+                .Title()
+                .map(|h| h.to_string_lossy())
+                .unwrap_or_default();
+            let artist = props
+                .Artist()
+                .map(|h| h.to_string_lossy())
+                .unwrap_or_default();
 
             let playback = session.GetPlaybackInfo().ok();
             let playing = playback
@@ -474,6 +491,9 @@ fn shorten_source(id: &str) -> String {
     // Strip the publisher suffix `_xxxxxxxx`.
     let before_underscore = before_bang.split('_').next().unwrap_or(before_bang);
     // Take the last `.`-separated component — typically the app name.
-    let app = before_underscore.rsplit('.').next().unwrap_or(before_underscore);
+    let app = before_underscore
+        .rsplit('.')
+        .next()
+        .unwrap_or(before_underscore);
     app.to_uppercase()
 }

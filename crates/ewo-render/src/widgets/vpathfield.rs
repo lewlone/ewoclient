@@ -11,8 +11,7 @@
 
 use ewo_core::CubicBezier;
 use skia_safe::{
-    BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect,
-    Rect,
+    BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect,
 };
 
 use crate::text::FontStore;
@@ -95,7 +94,14 @@ pub fn browse_bounds(row: Rect) -> Rect {
 pub fn draw_vpathfield(canvas: &Canvas, bounds: Rect, state: &VpathfieldState, fonts: &FontStore) {
     let (input, browse) = split_bounds(bounds);
     draw_input(canvas, input, &state.value, state.hover_anim, fonts);
-    draw_vghost_btn(canvas, browse, BROWSE_LABEL, &state.browse, GhostKind::Pearl, fonts);
+    draw_vghost_btn(
+        canvas,
+        browse,
+        BROWSE_LABEL,
+        &state.browse,
+        GhostKind::Pearl,
+        fonts,
+    );
 }
 
 fn draw_input(canvas: &Canvas, bounds: Rect, value: &str, hover_anim: f32, fonts: &FontStore) {
@@ -149,7 +155,12 @@ fn draw_input(canvas: &Canvas, bounds: Rect, value: &str, hover_anim: f32, fonts
     let (_, m) = font.metrics();
     let cy = (bounds.top + bounds.bottom) * 0.5;
     let baseline = cy + m.cap_height * 0.5;
-    canvas.draw_str(&display, (bounds.left + FIELD_PAD_X, baseline), &font, &paint);
+    canvas.draw_str(
+        &display,
+        (bounds.left + FIELD_PAD_X, baseline),
+        &font,
+        &paint,
+    );
 }
 
 /// Truncate from the left edge with a leading `…` so trailing characters
@@ -166,7 +177,9 @@ fn ellipsize_left(font: &skia_safe::Font, s: &str, max_width: f32, paint: &Paint
     let prefix = '…';
     while lo < hi {
         let mid = (lo + hi) / 2;
-        let candidate: String = std::iter::once(prefix).chain(chars[mid..].iter().copied()).collect();
+        let candidate: String = std::iter::once(prefix)
+            .chain(chars[mid..].iter().copied())
+            .collect();
         let (w, _) = font.measure_str(&candidate, Some(paint));
         if w <= max_width {
             hi = mid;
@@ -177,5 +190,7 @@ fn ellipsize_left(font: &skia_safe::Font, s: &str, max_width: f32, paint: &Paint
     if lo >= chars.len() {
         return prefix.to_string();
     }
-    std::iter::once(prefix).chain(chars[lo..].iter().copied()).collect()
+    std::iter::once(prefix)
+        .chain(chars[lo..].iter().copied())
+        .collect()
 }

@@ -240,11 +240,7 @@ pub fn vehicle_attachment_point(
 /// `None` when either type is not in the registry, rather than a guessed
 /// fallback: a rider placed at an invented offset is worse than one left at
 /// its own synced position, because the error is silent and constant.
-pub fn rider_position(
-    att: &Attachments,
-    v: &VehicleInputs,
-    r: &RiderInputs,
-) -> Option<[f64; 3]> {
+pub fn rider_position(att: &Attachments, v: &VehicleInputs, r: &RiderInputs) -> Option<[f64; 3]> {
     let seat = passenger_attachment_point(att, v, r)?;
     let off = vehicle_attachment_point(att, v, r)?;
     Some([
@@ -305,7 +301,13 @@ mod tests {
                 (CART, p(0.98, 0.7, CART_SEAT, None)),
             ],
             &[
-                (BOAT, VehicleClass::Boat { raft: false, chest: false }),
+                (
+                    BOAT,
+                    VehicleClass::Boat {
+                        raft: false,
+                        chest: false,
+                    },
+                ),
                 (CART, VehicleClass::Minecart),
             ],
             &[PIG],
@@ -330,14 +332,23 @@ mod tests {
     }
 
     fn rider(type_id: i32, yaw: f32, index: usize) -> RiderInputs {
-        RiderInputs { type_id, yaw, scale: 1.0, index }
+        RiderInputs {
+            type_id,
+            yaw,
+            scale: 1.0,
+            index,
+        }
     }
 
     #[test]
     fn a_player_on_a_pig_sits_at_the_seat_minus_its_own_vehicle_point() {
         let a = att();
-        let p = rider_position(&a, &vehicle(PIG, [10.0, 64.0, -3.0], 0.0, 1), &rider(PLAYER, 0.0, 0))
-            .expect("both types registered");
+        let p = rider_position(
+            &a,
+            &vehicle(PIG, [10.0, 64.0, -3.0], 0.0, 1),
+            &rider(PLAYER, 0.0, 0),
+        )
+        .expect("both types registered");
         // 0.86875 seat − 0.6 the player's own VEHICLE point.
         assert!((p[0] - 10.0).abs() < 1e-9);
         assert!((p[1] - (64.0 + 0.86875 - 0.6)).abs() < 1e-9, "{p:?}");
@@ -348,11 +359,18 @@ mod tests {
     fn the_seat_rotates_with_the_vehicle_yaw() {
         let a = att();
         // The chicken-style `-z` seat, expressed on the ghast's front seat.
-        let at0 = rider_position(&a, &vehicle(GHAST, [0.0, 0.0, 0.0], 0.0, 1), &rider(PIG, 0.0, 0))
-            .unwrap();
-        let at90 =
-            rider_position(&a, &vehicle(GHAST, [0.0, 0.0, 0.0], 90.0, 1), &rider(PIG, 0.0, 0))
-                .unwrap();
+        let at0 = rider_position(
+            &a,
+            &vehicle(GHAST, [0.0, 0.0, 0.0], 0.0, 1),
+            &rider(PIG, 0.0, 0),
+        )
+        .unwrap();
+        let at90 = rider_position(
+            &a,
+            &vehicle(GHAST, [0.0, 0.0, 0.0], 90.0, 1),
+            &rider(PIG, 0.0, 0),
+        )
+        .unwrap();
         // Seat 0 is `+1.7 z` at yaw 0 …
         assert!((at0[2] - 1.7).abs() < 1e-4, "{at0:?}");
         assert!(at0[0].abs() < 1e-4);
@@ -394,8 +412,12 @@ mod tests {
         let a = att();
         // `rideHeight` = height/3 = 0.1875, NOT the AT_HEIGHT fallback 0.5625
         // the boat's empty declaration would otherwise produce.
-        let one = rider_position(&a, &vehicle(BOAT, [0.0, 0.0, 0.0], 0.0, 1), &rider(PLAYER, 0.0, 0))
-            .unwrap();
+        let one = rider_position(
+            &a,
+            &vehicle(BOAT, [0.0, 0.0, 0.0], 0.0, 1),
+            &rider(PLAYER, 0.0, 0),
+        )
+        .unwrap();
         assert!((one[1] - (0.5625 / 3.0 - 0.6)).abs() < 1e-6, "{one:?}");
         assert!(one[2].abs() < 1e-6, "a lone passenger sits amidships");
         // Two passengers split fore/aft …
@@ -417,28 +439,40 @@ mod tests {
         let player = rider_position(&a, &v, &rider(PLAYER, 0.0, 0)).unwrap();
         assert!((villager[1] - 70.0).abs() < 1e-9, "{villager:?}");
         // The mutation partner: anyone else takes the declared 0.1875.
-        assert!((player[1] - (70.0 + 0.1875 - 0.6)).abs() < 1e-9, "{player:?}");
+        assert!(
+            (player[1] - (70.0 + 0.1875 - 0.6)).abs() < 1e-9,
+            "{player:?}"
+        );
     }
 
     #[test]
     fn a_spider_overrides_its_own_vehicle_point_only_under_a_narrower_mount() {
         let a = att();
         // Pig width 0.9 <= spider width 1.4 → the override, 0.3125.
-        let on_pig = rider_position(&a, &vehicle(PIG, [0.0, 0.0, 0.0], 0.0, 1), &rider(SPIDER, 0.0, 0))
-            .unwrap();
+        let on_pig = rider_position(
+            &a,
+            &vehicle(PIG, [0.0, 0.0, 0.0], 0.0, 1),
+            &rider(SPIDER, 0.0, 0),
+        )
+        .unwrap();
         assert!((on_pig[1] - (0.86875 - 0.3125)).abs() < 1e-9, "{on_pig:?}");
         // Ghast width 4.0 > 1.4 → `super`, and the spider declares no VEHICLE
         // point, so AT_FEET: zero.
-        let on_ghast =
-            rider_position(&a, &vehicle(GHAST, [0.0, 0.0, 0.0], 0.0, 1), &rider(SPIDER, 0.0, 0))
-                .unwrap();
+        let on_ghast = rider_position(
+            &a,
+            &vehicle(GHAST, [0.0, 0.0, 0.0], 0.0, 1),
+            &rider(SPIDER, 0.0, 0),
+        )
+        .unwrap();
         assert!((on_ghast[1] - 4.0).abs() < 1e-9, "{on_ghast:?}");
     }
 
     #[test]
     fn an_unregistered_type_yields_no_position_rather_than_a_guess() {
         let a = att();
-        assert!(rider_position(&a, &vehicle(999, [0.0; 3], 0.0, 1), &rider(PLAYER, 0.0, 0)).is_none());
+        assert!(
+            rider_position(&a, &vehicle(999, [0.0; 3], 0.0, 1), &rider(PLAYER, 0.0, 0)).is_none()
+        );
         assert!(rider_position(&a, &vehicle(PIG, [0.0; 3], 0.0, 1), &rider(999, 0.0, 0)).is_none());
     }
 
@@ -449,7 +483,10 @@ mod tests {
         let pig = vehicle(PIG, [0.0; 3], 37.0, 1);
         assert_eq!(forced_body_yaw(&a, &pig, PLAYER), Some(37.0));
         // Mutation partner: a vehicle that does not force it.
-        assert_eq!(forced_body_yaw(&a, &vehicle(GHAST, [0.0; 3], 37.0, 1), PLAYER), None);
+        assert_eq!(
+            forced_body_yaw(&a, &vehicle(GHAST, [0.0; 3], 37.0, 1), PLAYER),
+            None
+        );
         // And `instanceof LivingEntity` — a boat riding a pig would not be
         // turned, because `positionRider`'s cast fails.
         assert_eq!(forced_body_yaw(&a, &pig, BOAT), None);

@@ -316,9 +316,7 @@ fn substitute_jvm_args(args: &[Value], tokens: &TokenMap) -> Vec<String> {
             Value::Object(obj) => {
                 // Conditional entry: { rules: [...], value: "..." | [...] }
                 let rules_value = obj.get("rules");
-                let passes = rules_value
-                    .map(eval_arg_rules)
-                    .unwrap_or(true);
+                let passes = rules_value.map(eval_arg_rules).unwrap_or(true);
                 if !passes {
                     continue;
                 }
@@ -437,7 +435,10 @@ mod tests {
         );
         assert_eq!(substitute_str("${auth_session}", &t), "tok", "legacy alias");
         assert_eq!(substitute_str("${nope}", &t), "${nope}");
-        assert_eq!(substitute_str("a${version_name}b${user_type}", &t), "a26.2bmsa");
+        assert_eq!(
+            substitute_str("a${version_name}b${user_type}", &t),
+            "a26.2bmsa"
+        );
         assert_eq!(substitute_str("$ {x} ${", &t), "$ {x} ${");
     }
 
@@ -455,14 +456,20 @@ mod tests {
         .unwrap();
         let out = substitute_game_args(&args, &t);
         assert_eq!(out[..4], ["--username", "Vwyla", "--accessToken", "tok"]);
-        assert!(out.iter().all(|a| a != "--demo"), "feature-gated arg must be skipped: {out:?}");
+        assert!(
+            out.iter().all(|a| a != "--demo"),
+            "feature-gated arg must be skipped: {out:?}"
+        );
         assert_eq!(out[4..], ["--width", "26.2"]);
     }
 
     #[test]
     fn legacy_args_split_and_substitute() {
         let t = tokens();
-        let out = substitute_legacy_game_args("--username ${auth_player_name}  --session ${auth_session}", &t);
+        let out = substitute_legacy_game_args(
+            "--username ${auth_player_name}  --session ${auth_session}",
+            &t,
+        );
         assert_eq!(out, ["--username", "Vwyla", "--session", "tok"]);
         let jvm = synthesize_legacy_jvm_args(&t);
         assert_eq!(jvm, ["-Djava.library.path=/n", "-cp", "a.jar;b.jar"]);

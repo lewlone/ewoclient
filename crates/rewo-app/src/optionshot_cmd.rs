@@ -146,12 +146,12 @@ fn check_pixels(
     let clear = [0.0, 1.0, 0.0, 1.0];
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    opts: Option<&Options>,
-                    mouse: Option<(f64, f64)>,
-                    dragging: Option<rewo_world::screen::WidgetId>,
-                    dump: &str|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                opts: Option<&Options>,
+                mouse: Option<(f64, f64)>,
+                dragging: Option<rewo_world::screen::WidgetId>,
+                dump: &str|
      -> Result<Vec<u8>, String> {
         let mut chrome = rewo_gpu::screen::ScreenDraw::default();
         let mut lines = Vec::new();
@@ -194,7 +194,15 @@ fn check_pixels(
     opts.set_sound_volume(SoundSource::Music, 0.0);
 
     let empty = shot(&mut gpu, &mut off, &mut wr, None, None, None, "empty")?;
-    let frame = shot(&mut gpu, &mut off, &mut wr, Some(&opts), None, None, "sound")?;
+    let frame = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Some(&opts),
+        None,
+        None,
+        "sound",
+    )?;
 
     // Geometry: the master slider is row 0, addBig — x = gw/2 - 155, 310 wide.
     let mx = GUI_W / 2 - os::BAND_HALF;
@@ -243,12 +251,23 @@ fn check_pixels(
 
     // o4 — hover highlights the HANDLE (hovered-or-engaged), not the track.
     let hover = ((mx + 151 + 4) as f64, (my + 10) as f64);
-    let hovered = shot(&mut gpu, &mut off, &mut wr, Some(&opts), Some(hover), None, "hover")?;
+    let hovered = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Some(&opts),
+        Some(hover),
+        None,
+        "hover",
+    )?;
     let hh_mid = texel(&widgets.slider[3], 4, 10);
     c.record(
         "o4.hover_draws_the_highlighted_handle",
-        close([hh_mid[0], hh_mid[1], hh_mid[2]], px(&hovered, (mx + 151 + 4) * SCALE, (my + 10) * SCALE), 2)
-            && !close([hh_mid[0], hh_mid[1], hh_mid[2]], at_half, 2),
+        close(
+            [hh_mid[0], hh_mid[1], hh_mid[2]],
+            px(&hovered, (mx + 151 + 4) * SCALE, (my + 10) * SCALE),
+            2,
+        ) && !close([hh_mid[0], hh_mid[1], hh_mid[2]], at_half, 2),
         format!("highlighted texel {hh_mid:?}"),
     );
 
@@ -285,7 +304,11 @@ fn check_pixels(
     let ry = HEADER + os::ROW_HEIGHT;
     let t2 = texel(track, 100, 2);
     let music_track = px(&frame, (mx + 12) * SCALE, (ry + 2) * SCALE);
-    let records_track = px(&frame, (mx + os::COLUMN_PITCH + 12) * SCALE, (ry + 2) * SCALE);
+    let records_track = px(
+        &frame,
+        (mx + os::COLUMN_PITCH + 12) * SCALE,
+        (ry + 2) * SCALE,
+    );
     c.record(
         "o6.the_pairs_sit_at_the_160_pitch",
         // tol 4: NEAREST sampling in the track's vertical gradient lands a

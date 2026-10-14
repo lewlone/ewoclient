@@ -50,9 +50,9 @@
 
 use crate::play::GameMode;
 use crate::sounds::SoundSource;
-use rewo_world::physics::PlayerState;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
+use rewo_world::physics::PlayerState;
 
 /// The fourteen `ClientboundGameEventPacket.Type` ids, 0..=13.
 ///
@@ -718,7 +718,10 @@ mod tests {
         assert_eq!(ids::START_RAINING, WeatherState::START_RAINING);
         assert_eq!(ids::STOP_RAINING, WeatherState::STOP_RAINING);
         assert_eq!(ids::RAIN_LEVEL_CHANGE, WeatherState::RAIN_LEVEL_CHANGE);
-        assert_eq!(ids::THUNDER_LEVEL_CHANGE, WeatherState::THUNDER_LEVEL_CHANGE);
+        assert_eq!(
+            ids::THUNDER_LEVEL_CHANGE,
+            WeatherState::THUNDER_LEVEL_CHANGE
+        );
     }
 
     #[test]
@@ -887,7 +890,10 @@ mod tests {
         // `if (param == 1)`. The particle itself has no home in Rewo (see the
         // module docs / REWO_PACKET_COVERAGE), which is why the only thing
         // distinguishing these two is the sound.
-        assert!(matches!(curse, GameEvent::GuardianElderEffect { curse: true }));
+        assert!(matches!(
+            curse,
+            GameEvent::GuardianElderEffect { curse: true }
+        ));
         assert!(matches!(
             no_curse,
             GameEvent::GuardianElderEffect { curse: false }
@@ -914,7 +920,12 @@ mod tests {
     }
 
     fn apply(state: &mut ClientGameState, id: u8, param: f32) {
-        apply_ab(state, id, param, &mut rewo_world::abilities::Abilities::default());
+        apply_ab(
+            state,
+            id,
+            param,
+            &mut rewo_world::abilities::Abilities::default(),
+        );
     }
 
     fn apply_ab(

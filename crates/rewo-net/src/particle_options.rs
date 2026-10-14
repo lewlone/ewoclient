@@ -257,7 +257,9 @@ mod tests {
         let mut b = 0x7F00_0001i32.to_be_bytes().to_vec();
         b.push(0xAB); // a sentinel the walk must not reach
         let mut r = PacketReader::new(&b);
-        assert!(crate::component_wire::walk(&mut r, shape_for("minecraft:flash").unwrap(), 0).unwrap());
+        assert!(
+            crate::component_wire::walk(&mut r, shape_for("minecraft:flash").unwrap(), 0).unwrap()
+        );
         assert_eq!(r.offset(), 4, "a VarInt reading stops after one byte");
     }
 

@@ -272,7 +272,9 @@ pub(crate) fn ghost_washes(
     let mut under = Vec::new();
     let mut over = Vec::new();
     for g in ghosts {
-        let Some((sx, sy)) = layout.position(g.slot) else { continue };
+        let Some((sx, sy)) = layout.position(g.slot) else {
+            continue;
+        };
         let (dx, dy, size) = gs::wash_rect(g.is_result, big);
         let fill = |tint: [f32; 4], dx: i32, dy: i32, size: i32| {
             (
@@ -326,34 +328,57 @@ pub(crate) fn live_ghosts(
     };
     let items = |d: &rewo_net::recipe_book::SlotDisplay| d.items();
     let (menu, inputs, shape) = match display {
-        D::CraftingShaped { width, height, ingredients, .. } => (
+        D::CraftingShaped {
+            width,
+            height,
+            ingredients,
+            ..
+        } => (
             // `getGridWidth/Height` — 2x2 for the player's own inventory, 3x3
             // for a crafting table.
             gs::crafting_menu(
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+                    2
+                } else {
+                    3
+                },
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+                    2
+                } else {
+                    3
+                },
             ),
             ingredients.iter().map(items).collect::<Vec<_>>(),
             Some((*width as usize, *height as usize)),
         ),
         D::CraftingShapeless { ingredients, .. } => (
             gs::crafting_menu(
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+                    2
+                } else {
+                    3
+                },
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+                    2
+                } else {
+                    3
+                },
             ),
             ingredients.iter().map(items).collect(),
             None,
         ),
-        D::Furnace { ingredient, fuel, .. } => (
-            gs::FURNACE_MENU,
-            vec![items(ingredient), items(fuel)],
-            None,
-        ),
+        D::Furnace {
+            ingredient, fuel, ..
+        } => (gs::FURNACE_MENU, vec![items(ingredient), items(fuel)], None),
         // A stonecutter or smithing display: `fillGhostRecipe`'s switch has no
         // case, so the result alone is ghosted — and neither screen has a book,
         // so this is unreachable in practice and transcribed anyway.
         _ => (
-            gs::GhostMenu { result: 0, grid: None, furnace: None },
+            gs::GhostMenu {
+                result: 0,
+                grid: None,
+                furnace: None,
+            },
             Vec::new(),
             None,
         ),
@@ -455,7 +480,9 @@ pub(crate) fn search_entry_of(
 ) -> rewo_world::recipe_search::SearchEntry {
     let mut out = rewo_world::recipe_search::SearchEntry::default();
     for id in results {
-        let Some(name) = items.name(*id) else { continue };
+        let Some(name) = items.name(*id) else {
+            continue;
+        };
         // A missing translation falls back to the id's own path, prettified —
         // the same fallback the tooltip takes, so a search finds what the
         // tooltip shows.
@@ -493,8 +520,10 @@ pub(crate) fn book_render_from(
     query: &str,
 ) -> BookRender {
     use rewo_world::recipe_book_screen as rb;
-    let flat: Vec<(i32, Option<i32>, &str)> =
-        entries.iter().map(|e| (e.id, e.group, e.category)).collect();
+    let flat: Vec<(i32, Option<i32>, &str)> = entries
+        .iter()
+        .map(|e| (e.id, e.group, e.category))
+        .collect();
     let all = rb::collections(&flat);
     let tabs = book.tabs();
     let selected_tab = state.selected_tab.min(tabs.len() - 1);
@@ -613,11 +642,18 @@ pub(crate) fn book_render_from(
         furnace_family: book.furnace_family(),
     };
     let hover = match book_mouse.and_then(|(bx, by)| rb::book_hit(bx, by, view, tabs.len())) {
-        Some(rb::BookHit::PageForward) => rb::BookHover { page_forward: true, ..Default::default() },
-        Some(rb::BookHit::PageBackward) => {
-            rb::BookHover { page_backward: true, ..Default::default() }
-        }
-        Some(rb::BookHit::Filter) => rb::BookHover { filter: true, ..Default::default() },
+        Some(rb::BookHit::PageForward) => rb::BookHover {
+            page_forward: true,
+            ..Default::default()
+        },
+        Some(rb::BookHit::PageBackward) => rb::BookHover {
+            page_backward: true,
+            ..Default::default()
+        },
+        Some(rb::BookHit::Filter) => rb::BookHover {
+            filter: true,
+            ..Default::default()
+        },
         _ => rb::BookHover::default(),
     };
     BookRender {
@@ -672,8 +708,10 @@ pub(crate) fn open_overlay(
             (b, c)
         })
         .collect();
-    let buttons: Vec<ro::Button> =
-        ro::promote(&pairs, view.filtering).into_iter().map(|(b, _)| b).collect();
+    let buttons: Vec<ro::Button> = ro::promote(&pairs, view.filtering)
+        .into_iter()
+        .map(|(b, _)| b)
+        .collect();
     ro::Open {
         origin: ro::origin(
             rb::grid_slot(index),
@@ -773,7 +811,14 @@ pub(super) fn book_field_render(
     };
     let mut fills = vec![
         // The border colour over the whole rect…
-        quad(rb::SEARCH_X, rb::SEARCH_Y, rb::SEARCH_W, rb::SEARCH_H, 0.0, 0.0),
+        quad(
+            rb::SEARCH_X,
+            rb::SEARCH_Y,
+            rb::SEARCH_W,
+            rb::SEARCH_H,
+            0.0,
+            0.0,
+        ),
         // …then the interior, one pixel in on every side.
         quad(
             rb::SEARCH_X + 1,

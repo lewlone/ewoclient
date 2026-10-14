@@ -245,7 +245,7 @@ fn registry() -> BiomeRegistry {
         grass_modifier: GrassModifier::None,
         sky_color: Some(A_SKY),
         fog_color: None,
-            has_precipitation: true,
+        has_precipitation: true,
         temperature_modifier: Default::default(),
         ambient_sounds: None,
         background_music: None,
@@ -404,13 +404,15 @@ fn cpu_checks(
     base.set_block(8, 8, 5, st.grass_block); // A/B boundary at x=8
 
     // Legacy (no biome context) mesh of chunk 0: pre-tinted layers, white.
-    let legacy = mesh_column(&base, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("legacy mesh");
+    let legacy =
+        mesh_column(&base, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("legacy mesh");
 
     // Biome-aware mesh: install the A/B layout (loaded chunks [-1,1]) + context.
     let mut world = base;
     install_biomes(&mut world, -1, 1, biome_tint_layout);
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("biome mesh");
+    let mesh =
+        mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("biome mesh");
 
     // -- grass_block in A → RED, in B → CYAN (distinct primaries) -----------
     check_tint_ratio(failures, "grass_A", &mesh, 2, 8, 2, A_GRASS);
@@ -610,7 +612,7 @@ fn check_dark_forest(failures: &mut Vec<String>, baked: &BakedAssets, st: &State
         grass_modifier: GrassModifier::DarkForest,
         sky_color: None,
         fog_color: None,
-            has_precipitation: true,
+        has_precipitation: true,
         temperature_modifier: Default::default(),
         ambient_sounds: None,
         background_music: None,
@@ -619,7 +621,8 @@ fn check_dark_forest(failures: &mut Vec<String>, baked: &BakedAssets, st: &State
     install_single_biome(&mut world, 0, 0);
     world.set_block(2, 8, 2, st.grass_block);
     world.set_biome_context(std::sync::Arc::new(single_biome_context(def)));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("dark_forest mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0)
+        .expect("dark_forest mesh");
     check_exact_tint(failures, "dark_forest", &mesh, 2, 8, 2, DARK_FOREST_RED);
 }
 
@@ -642,7 +645,7 @@ fn check_swamp(failures: &mut Vec<String>, baked: &BakedAssets, st: &States) {
         grass_modifier: GrassModifier::Swamp,
         sky_color: None,
         fog_color: None,
-            has_precipitation: true,
+        has_precipitation: true,
         temperature_modifier: Default::default(),
         ambient_sounds: None,
         background_music: None,
@@ -676,7 +679,8 @@ fn check_swamp_at(
     install_single_biome(&mut world, cx, cz);
     world.set_block(bx, 8, bz, st.grass_block);
     world.set_biome_context(std::sync::Arc::new(single_biome_context(def.clone())));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, cx, cz).expect("swamp mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, cx, cz)
+        .expect("swamp mesh");
     check_exact_tint(failures, name, &mesh, bx, 8, bz, expect);
 }
 
@@ -751,7 +755,8 @@ fn check_axis_orientation(failures: &mut Vec<String>, baked: &BakedAssets, st: &
     // correct is B (cyan).
     install_biomes(&mut world, -1, 1, |_gqx, gqz| if gqz < 2 { 0 } else { 1 });
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("axis mesh");
+    let mesh =
+        mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("axis mesh");
     check_tint_ratio(failures, "axis_z", &mesh, 2, 8, 13, B_GRASS);
 }
 
@@ -780,7 +785,8 @@ fn check_indirect_palette(failures: &mut Vec<String>, baked: &BakedAssets, st: &
     let containers = rewo_world::chunk::read_chunk_biomes(&mut r, &shape(), 7).unwrap();
     world.apply_chunks_biomes(0, 0, containers);
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("indirect mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0)
+        .expect("indirect mesh");
     check_tint_ratio(failures, "indirect_A", &mesh, 2, 8, 2, A_GRASS);
     check_tint_ratio(failures, "indirect_B", &mesh, 13, 8, 8, B_GRASS);
 }
@@ -804,7 +810,8 @@ fn check_colormap_path(failures: &mut Vec<String>, baked: &BakedAssets, st: &Sta
         }
     }
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("cmap mesh");
+    let mesh =
+        mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("cmap mesh");
     // Independent index: temp=0,downfall=0 → x=255,y=255 → 65535 → C_GRASS_CELL.
     let expect = {
         let (temp, downfall) = (0.0f64, 0.0f64);
@@ -864,9 +871,7 @@ fn check_tall_grass_below(failures: &mut Vec<String>, paths: &DataPaths, baked: 
                     "tall_grass lower (state {l}) tints {lt:?} lack Grass"
                 ));
             }
-            if ut.contains(&TintSource::GrassBelow)
-                && lt.contains(&TintSource::Grass)
-            {
+            if ut.contains(&TintSource::GrassBelow) && lt.contains(&TintSource::Grass) {
                 println!("[tintshot] tall_grass: upper=GrassBelow, lower=Grass");
             }
         }
@@ -1369,12 +1374,7 @@ fn render_sky(
 /// Tinted vertices of the block at (x,y,z): within the unit cube + a non-white
 /// color (the biome path multiplies the tint into the vertex color, vanilla
 /// `ARGB.multiply`; `reconstructed_color()` is those bytes over 255).
-fn tinted_verts(
-    mesh: &rewo_mesh::ColumnMesh,
-    x: i32,
-    y: i32,
-    z: i32,
-) -> Vec<&MeshVertex> {
+fn tinted_verts(mesh: &rewo_mesh::ColumnMesh, x: i32, y: i32, z: i32) -> Vec<&MeshVertex> {
     let inside = |v: &MeshVertex| {
         v.pos[0] >= x as f32 - 0.01
             && v.pos[0] <= x as f32 + 1.01

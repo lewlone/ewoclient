@@ -186,7 +186,11 @@ impl Perf {
             "full"
         };
         let mean_us = self.period.mean_us();
-        let fps = if mean_us > 0.0 { 1_000_000.0 / mean_us } else { 0.0 };
+        let fps = if mean_us > 0.0 {
+            1_000_000.0 / mean_us
+        } else {
+            0.0
+        };
 
         let mut line = String::with_capacity(512);
         let _ = write!(

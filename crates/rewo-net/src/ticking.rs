@@ -92,7 +92,11 @@ impl TickRateManager {
         // Java's `Math.max(float, float)` returns NaN if either argument is
         // NaN; Rust's `f32::max` returns the non-NaN one. Spelled out so the
         // two agree — see rule 1.
-        self.tickrate = if rate.is_nan() { rate } else { rate.max(MIN_TICKRATE) };
+        self.tickrate = if rate.is_nan() {
+            rate
+        } else {
+            rate.max(MIN_TICKRATE)
+        };
         // `(long)((double)NANOSECONDS_PER_SECOND / this.tickrate)` — a double
         // divide narrowed by a Java cast, which truncates toward zero and
         // yields 0 for NaN. Rust's `as i64` saturates and maps NaN to 0, which

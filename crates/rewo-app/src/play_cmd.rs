@@ -250,7 +250,8 @@ fn waypoint_check_commands() -> Vec<String> {
 }
 
 fn motion_check_commands() -> Vec<String> {
-    let boat = format!("@e[type={MOTION_CHECK_VEHICLE},tag={MOTION_CHECK_TAG},limit=1,sort=nearest]");
+    let boat =
+        format!("@e[type={MOTION_CHECK_VEHICLE},tag={MOTION_CHECK_TAG},limit=1,sort=nearest]");
     let zombie =
         format!("@e[type={MOTION_CHECK_ATTACKER},tag={MOTION_CHECK_TAG},limit=1,sort=nearest]");
     vec![
@@ -571,11 +572,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     if args.fly_check {
         // Same reasoning as every other live gate here: two command streams
         // share one rate limiter and the loser's tail vanishes silently.
-        if args.setup.is_some()
-            || args.dimension_check
-            || args.swing_check
-            || args.motion_check
-        {
+        if args.setup.is_some() || args.dimension_check || args.swing_check || args.motion_check {
             return Err(
                 "--fly-check cannot be combined with --setup or another live gate: they \
                  would share the server's chat rate limiter, and this gate's /gamemode \
@@ -916,11 +913,12 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
             let n = session.waypoints.len();
             if n > wp_peak {
                 wp_peak = n;
-                wp_seen = session
-                    .waypoints
-                    .iter_sorted()
-                    .first()
-                    .map(|w| format!("{:?} style={} colour={:?} {:?}", w.id, w.icon.style, w.icon.color, w.contents));
+                wp_seen = session.waypoints.iter_sorted().first().map(|w| {
+                    format!(
+                        "{:?} style={} colour={:?} {:?}",
+                        w.id, w.icon.style, w.icon.color, w.contents
+                    )
+                });
             }
             if wp_peak > 0 && n == 0 {
                 wp_untracked = true;
@@ -1027,9 +1025,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     }
 
     if args.waypoint_check {
-        println!(
-            "[rewo-m83] waypoints: peak {wp_peak}, untrack observed: {wp_untracked}"
-        );
+        println!("[rewo-m83] waypoints: peak {wp_peak}, untrack observed: {wp_untracked}");
         match &wp_seen {
             Some(w) => println!("[rewo-m83] first tracked waypoint: {w}"),
             None => println!("[rewo-m83] first tracked waypoint: NONE"),
@@ -1195,15 +1191,15 @@ fn motion_acceptance(session: &PlaySession, acted: &Actions) -> Result<(), Strin
     if session.is_mounted() {
         problems.push(
             "still mounted at the end of the run — the dismount was not applied, which \
-             would leave the client's physics suppressed forever".into(),
+             would leave the client's physics suppressed forever"
+                .into(),
         );
     }
 
     // ── phase 2: knockback + damage ─────────────────────────────────────
     if s.explosions == 0 {
         problems.push(
-            "no `explode` arrived — the TNT never detonated within 64 blocks of the bot"
-                .into(),
+            "no `explode` arrived — the TNT never detonated within 64 blocks of the bot".into(),
         );
     } else if s.explosion_knockbacks == 0 {
         // Distinguished from the above on purpose: an explosion that reached us
@@ -1766,7 +1762,9 @@ fn fly_drive(
     // ticks, so each rate is a measured average rather than a single-frame
     // reading — over the *sample* sub-window, which excludes the spin-up.
     if FLY_ASCEND_SAMPLE.contains(&secs) {
-        let e = fly.ascend.get_or_insert((session.player.y, session.player.y, 0));
+        let e = fly
+            .ascend
+            .get_or_insert((session.player.y, session.player.y, 0));
         e.1 = session.player.y;
         e.2 += 1;
     }
@@ -1923,7 +1921,9 @@ fn drive(
     // M68: close the mount phase's correction window. Sampled here rather than
     // derived at the end because the two phases must be attributed separately
     // and there is no way to recover the split from a single total.
-    if args.motion_check && secs >= MOTION_PHASE_SPLIT && acted.motion_corrections_at_split.is_none()
+    if args.motion_check
+        && secs >= MOTION_PHASE_SPLIT
+        && acted.motion_corrections_at_split.is_none()
     {
         acted.motion_corrections_at_split = Some(session.corrections);
     }
@@ -2040,9 +2040,7 @@ fn report(
     // whether it fired. A vanilla server bundles every entity spawn, so a
     // session that saw a mob and reports `0` here is the interesting failure.
     let (bundles, largest) = session.bundle_stats();
-    println!(
-        "[rewo-m3] bundles applied: {bundles}  (largest run: {largest} sub-packets)"
-    );
+    println!("[rewo-m3] bundles applied: {bundles}  (largest run: {largest} sub-packets)");
     // World-clock progress: an advance of ~1 per game tick elapsed proves the
     // day/night clock is running; a frozen clock reads `advance 0` here.
     match (clock_start, session.day_ticks) {
@@ -2257,10 +2255,7 @@ fn light_parity_check(
                             darker += 1
                         }
                         max_delta = max_delta.max(d.abs());
-                        if worst
-                            .as_ref()
-                            .is_none_or(|(lv, _)| want_s.max(got_s) > *lv)
-                        {
+                        if worst.as_ref().is_none_or(|(lv, _)| want_s.max(got_s) > *lv) {
                             let n = data
                                 .blocks
                                 .block_name(session.world.block_state_at(x, y, z))
@@ -2468,7 +2463,14 @@ mod tests {
             at: (0, -60, 0),
             expected_state: Some(DIRT),
             observed_state: observed,
-            observed_name: Some(if observed == 0 { "air" } else { "minecraft:dirt" }.to_string()),
+            observed_name: Some(
+                if observed == 0 {
+                    "air"
+                } else {
+                    "minecraft:dirt"
+                }
+                .to_string(),
+            ),
         }
     }
 
@@ -2476,7 +2478,14 @@ mod tests {
         DigObservation {
             at: (0, -61, 0),
             observed_state: observed,
-            observed_name: Some(if observed == 0 { "air" } else { "minecraft:grass_block" }.to_string()),
+            observed_name: Some(
+                if observed == 0 {
+                    "air"
+                } else {
+                    "minecraft:grass_block"
+                }
+                .to_string(),
+            ),
         }
     }
 

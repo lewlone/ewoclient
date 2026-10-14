@@ -277,7 +277,15 @@ fn draw_server_widget(
             0.18,
         );
         let chev_alpha = if view.hovered { 1.0 } else { 0.6 };
-        draw_chevron_right(canvas, chevron_tip, eyebrow_baseline - 3.0, 3.5, 1.3, ACCENT_ROSE, chev_alpha);
+        draw_chevron_right(
+            canvas,
+            chevron_tip,
+            eyebrow_baseline - 3.0,
+            3.5,
+            1.3,
+            ACCENT_ROSE,
+            chev_alpha,
+        );
     }
 
     // Status line.
@@ -295,7 +303,12 @@ fn draw_server_widget(
             d.online_count, d.max_players, d.tps
         ),
     };
-    canvas.draw_str(&status_text, (left, status_baseline), &status_font, &status_paint);
+    canvas.draw_str(
+        &status_text,
+        (left, status_baseline),
+        &status_font,
+        &status_paint,
+    );
 
     // Online-name strip: the reason the card grew.
     if let Some(d) = view.data.filter(|_| name_rows > 0) {
@@ -343,7 +356,12 @@ pub fn heading_bounds(fonts: &FontStore) -> Rect {
 // Heading block (left column): "EwoClient" + subtitle + tagline
 // ────────────────────────────────────────────────────────────────────────
 
-fn draw_heading_block(canvas: &Canvas, fonts: &FontStore, time: f32, heading_hover: HoverGlowState) {
+fn draw_heading_block(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    time: f32,
+    heading_hover: HoverGlowState,
+) {
     let mark_top = PAD_TOP + ASYM_MARK_MARGIN_TOP; // 104
 
     // Heading "EwoClient" — Fraunces 94, SOFT 50 / WONK 1 / wght 300.
@@ -428,10 +446,26 @@ struct MenuItemDef {
 }
 
 const MENU_ITEMS: [MenuItemDef; 4] = [
-    MenuItemDef { label: "Instances", sub: "LAST PLAYED · VELVET HOURS", muted: false },
-    MenuItemDef { label: "Settings", sub: "GRAPHICS · AUDIO · PATHS", muted: false },
-    MenuItemDef { label: "About", sub: "VELVET BUILD · V0.1", muted: false },
-    MenuItemDef { label: "Quit to desktop", sub: "CLOSE THE CURTAIN", muted: true },
+    MenuItemDef {
+        label: "Instances",
+        sub: "LAST PLAYED · VELVET HOURS",
+        muted: false,
+    },
+    MenuItemDef {
+        label: "Settings",
+        sub: "GRAPHICS · AUDIO · PATHS",
+        muted: false,
+    },
+    MenuItemDef {
+        label: "About",
+        sub: "VELVET BUILD · V0.1",
+        muted: false,
+    },
+    MenuItemDef {
+        label: "Quit to desktop",
+        sub: "CLOSE THE CURTAIN",
+        muted: true,
+    },
 ];
 
 const LABEL_SIZE: f32 = 32.0;
@@ -459,7 +493,11 @@ fn compute_menu_item_layout(card_w: f32, card_h: f32, fonts: &FontStore) -> Menu
     let sub_visual_h = -sm.ascent + sm.descent;
 
     let item_heights: [f32; 4] = std::array::from_fn(|i| {
-        let lh = if MENU_ITEMS[i].muted { muted_visual_h } else { label_visual_h };
+        let lh = if MENU_ITEMS[i].muted {
+            muted_visual_h
+        } else {
+            label_visual_h
+        };
         2.0 * ITEM_PAD_Y + lh + LABEL_TO_SUB_GAP + sub_visual_h
     });
 
@@ -478,16 +516,14 @@ fn compute_menu_item_layout(card_w: f32, card_h: f32, fonts: &FontStore) -> Menu
         item_rects[i] = Rect::from_xywh(menu_left, y, menu_right - menu_left, h_item);
         y += h_item + 2.0;
     }
-    MenuLayout { item_rects, menu_left, menu_right }
+    MenuLayout {
+        item_rects,
+        menu_left,
+        menu_right,
+    }
 }
 
-fn draw_menu_items(
-    canvas: &Canvas,
-    fonts: &FontStore,
-    w: f32,
-    h: f32,
-    states: &[VbtnState; 4],
-) {
+fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &[VbtnState; 4]) {
     let label_font = fonts.fraunces_axes(LABEL_SIZE, 50.0, 1.0, 300.0, None);
     let muted_font = newsreader_italic_axes(fonts, MUTED_SIZE, 300.0);
     let sub_font = fonts.jetbrains_mono(SUB_SIZE);
@@ -540,7 +576,12 @@ fn draw_menu_items(
             let mut glow = Paint::default();
             glow.set_anti_alias(true);
             glow.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.15 * rule_alpha),
+                Color4f::new(
+                    229.0 / 255.0,
+                    184.0 / 255.0,
+                    197.0 / 255.0,
+                    0.15 * rule_alpha,
+                ),
                 None,
             );
             canvas.draw_rect(
@@ -553,14 +594,26 @@ fn draw_menu_items(
         // a slight warm-white brighten on hover.
         if item.muted {
             let baseline = label_top + (-mm.ascent);
-            text::draw_glow_str(canvas, item.label, (baseline_x, baseline), &muted_font, hover * 0.85);
+            text::draw_glow_str(
+                canvas,
+                item.label,
+                (baseline_x, baseline),
+                &muted_font,
+                hover * 0.85,
+            );
             let mut paint = Paint::default();
             paint.set_anti_alias(true);
             paint.set_color(TEXT_MAUVE);
             canvas.draw_str(item.label, (baseline_x, baseline), &muted_font, &paint);
         } else {
             let baseline = label_top + (-lm.ascent);
-            text::draw_glow_str(canvas, item.label, (baseline_x, baseline), &label_font, hover * 0.85);
+            text::draw_glow_str(
+                canvas,
+                item.label,
+                (baseline_x, baseline),
+                &label_font,
+                hover * 0.85,
+            );
             let mut paint = Paint::default();
             paint.set_anti_alias(true);
             // Pearl → warm-white (#FFF0F4) as hover ramps.
@@ -587,8 +640,20 @@ fn draw_menu_items(
         let sub_baseline = sub_top + (-sm.ascent);
         let mut sub_paint = Paint::default();
         sub_paint.set_anti_alias(true);
-        sub_paint.set_color(if item.muted { TEXT_MAUVE_DEEP } else { TEXT_MAUVE });
-        draw_tracked(canvas, item.sub, baseline_x, sub_baseline, &sub_font, &sub_paint, 0.22);
+        sub_paint.set_color(if item.muted {
+            TEXT_MAUVE_DEEP
+        } else {
+            TEXT_MAUVE
+        });
+        draw_tracked(
+            canvas,
+            item.sub,
+            baseline_x,
+            sub_baseline,
+            &sub_font,
+            &sub_paint,
+            0.22,
+        );
 
         // Caret on the right — opacity 0 → 1, transform translateX(-6) → 0.
         // Drawn as a vector chevron rather than a "→" glyph: the serif

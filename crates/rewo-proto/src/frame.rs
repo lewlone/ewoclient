@@ -87,7 +87,10 @@ impl FrameCodec {
     /// Encode one frame: length prefix, optional compression header, body.
     pub fn encode_frame(&self, packet: &[u8]) -> Result<Vec<u8>> {
         if packet.len() > MAX_UNCOMPRESSED {
-            return Err(ProtoError::Frame(format!("packet of {} bytes too large", packet.len())));
+            return Err(ProtoError::Frame(format!(
+                "packet of {} bytes too large",
+                packet.len()
+            )));
         }
         let mut out = Vec::with_capacity(packet.len() + 10);
         match self.compression_threshold {
@@ -112,7 +115,10 @@ impl FrameCodec {
             }
         }
         if out.len() > MAX_FRAME + 3 {
-            return Err(ProtoError::Frame(format!("frame of {} bytes too large", out.len())));
+            return Err(ProtoError::Frame(format!(
+                "frame of {} bytes too large",
+                out.len()
+            )));
         }
         Ok(out)
     }
@@ -128,7 +134,9 @@ mod tests {
         let mut cursor = std::io::Cursor::new(wire);
         let mut scratch = Vec::new();
         let mut out = Vec::new();
-        codec.read_frame(&mut cursor, &mut scratch, &mut out).unwrap();
+        codec
+            .read_frame(&mut cursor, &mut scratch, &mut out)
+            .unwrap();
         out
     }
 
@@ -171,10 +179,18 @@ mod tests {
     fn a_frame_is_one_write_and_no_flush() {
         for codec in [
             FrameCodec::default(),
-            FrameCodec { compression_threshold: Some(4) },
-            FrameCodec { compression_threshold: Some(4096) },
+            FrameCodec {
+                compression_threshold: Some(4),
+            },
+            FrameCodec {
+                compression_threshold: Some(4096),
+            },
         ] {
-            let mut w = CountingWriter { writes: 0, flushes: 0, data: Vec::new() };
+            let mut w = CountingWriter {
+                writes: 0,
+                flushes: 0,
+                data: Vec::new(),
+            };
             codec.write_frame(&mut w, &[7u8; 300]).unwrap();
             assert_eq!(w.writes, 1);
             assert_eq!(w.flushes, 0);
@@ -184,7 +200,9 @@ mod tests {
 
     #[test]
     fn declared_uncompressed_length_is_capped_and_checked() {
-        let codec = FrameCodec { compression_threshold: Some(16) };
+        let codec = FrameCodec {
+            compression_threshold: Some(16),
+        };
         // data_len above the 8 MiB protocol maximum.
         let mut frame_body = Vec::new();
         write_varint(&mut frame_body, (MAX_UNCOMPRESSED + 1) as i32);

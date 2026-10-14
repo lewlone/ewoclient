@@ -344,11 +344,16 @@ mod tests {
         // Not flying: the ordinary air-control constants, which are NOT a
         // doubling — 0.02 → 0.026, not 0.04.
         assert_eq!(a.air_move_speed(false, false), crate::physics::AIR_SPEED);
-        assert_eq!(a.air_move_speed(true, false), crate::physics::AIR_SPEED_SPRINT);
-        const { assert!(
-            crate::physics::AIR_SPEED_SPRINT < crate::physics::AIR_SPEED * 2.0,
-            "the walking air constants are not a doubling"
-        ) };
+        assert_eq!(
+            a.air_move_speed(true, false),
+            crate::physics::AIR_SPEED_SPRINT
+        );
+        const {
+            assert!(
+                crate::physics::AIR_SPEED_SPRINT < crate::physics::AIR_SPEED * 2.0,
+                "the walking air constants are not a doubling"
+            )
+        };
     }
 
     #[test]
@@ -401,7 +406,10 @@ mod tests {
             ab.flying
         };
         for gap in 1..=5 {
-            assert!(toggles_after(gap), "a second press {gap} tick(s) later must toggle");
+            assert!(
+                toggles_after(gap),
+                "a second press {gap} tick(s) later must toggle"
+            );
         }
         assert!(
             !toggles_after(6),
@@ -459,7 +467,10 @@ mod tests {
         let step = fc.before_travel(&mut ab, &mut st, &TickInput::default(), true, false);
         assert!(ab.flying && step.abilities_changed);
         st.on_ground = true;
-        assert!(!fc.after_travel(&mut ab, &st, true), "spectator is excluded by name");
+        assert!(
+            !fc.after_travel(&mut ab, &st, true),
+            "spectator is excluded by name"
+        );
         assert!(ab.flying);
     }
 
@@ -473,7 +484,10 @@ mod tests {
         };
         let mut st = PlayerState::at(0.0, 0.0, 0.0);
         st.on_ground = false;
-        assert!(!fc.after_travel(&mut ab, &st, false), "airborne: nothing happens");
+        assert!(
+            !fc.after_travel(&mut ab, &st, false),
+            "airborne: nothing happens"
+        );
         st.on_ground = true;
         assert!(fc.after_travel(&mut ab, &st, false));
         assert!(!ab.flying);
@@ -500,7 +514,10 @@ mod tests {
         };
         let step = double_tap(&mut fc, &mut ab, &mut st);
         assert!(ab.flying);
-        assert!(step.jump_from_ground, "`jumpFromGround()` fires on a standing toggle");
+        assert!(
+            step.jump_from_ground,
+            "`jumpFromGround()` fires on a standing toggle"
+        );
 
         // Toggling back OFF needs its own full double-tap: the ON toggle reset
         // `jumpTriggerTime` to 0, so the very next press *re-arms* rather than
@@ -536,7 +553,11 @@ mod tests {
         fc.before_travel(&mut ab, &mut st, &idle, false, false);
         fc.before_travel(&mut ab, &mut st, &press, false, false);
         assert!(ab.flying, "still flying — that press did not toggle back");
-        assert_eq!(fc.jump_trigger_time(), JUMP_TRIGGER_TICKS - 1, "it re-armed");
+        assert_eq!(
+            fc.jump_trigger_time(),
+            JUMP_TRIGGER_TICKS - 1,
+            "it re-armed"
+        );
     }
 
     #[test]
@@ -603,6 +624,10 @@ mod tests {
             false,
             false,
         );
-        assert_eq!(st.vy, f64::from(0.15f32), "vy carries the impulse into travel");
+        assert_eq!(
+            st.vy,
+            f64::from(0.15f32),
+            "vy carries the impulse into travel"
+        );
     }
 }

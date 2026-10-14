@@ -12,9 +12,7 @@
 //! Drawn last in the backdrop stack — over the wine, caustics, and bokeh —
 //! so it dims those layers gracefully toward the edges of the card.
 
-use skia_safe::{
-    gradient_shader, Canvas, Color4f, Matrix, Paint, Point, Rect, TileMode,
-};
+use skia_safe::{gradient_shader, Canvas, Color4f, Matrix, Paint, Point, Rect, TileMode};
 
 pub fn draw(canvas: &Canvas, w: f32, h: f32) {
     let cx = 0.50 * w;

@@ -309,7 +309,10 @@ impl FilterMask {
                     let filtered = (0..width).any(|k| Self::bit(longs, unit + k));
                     unit += width;
                     if current_filtered != Some(filtered) && !current.is_empty() {
-                        runs.push(run(std::mem::take(&mut current), current_filtered == Some(true)));
+                        runs.push(run(
+                            std::mem::take(&mut current),
+                            current_filtered == Some(true),
+                        ));
                     }
                     current_filtered = Some(filtered);
                     // `StringUtils.repeat('#', nextIndex - previousIndex)` — the
@@ -337,7 +340,6 @@ impl FilterMask {
         }
     }
 }
-
 
 /// One run of `applyWithFormatting`'s alternation.
 ///
@@ -479,8 +481,7 @@ impl PlayerChat {
     /// window)`).
     pub fn trust_level(&self, received_millis: i64, decorated_plain: &str) -> ChatTrustLevel {
         if self.signature.is_none()
-            || received_millis
-                > self.body.timestamp_millis + MESSAGE_EXPIRES_AFTER_CLIENT_MILLIS
+            || received_millis > self.body.timestamp_millis + MESSAGE_EXPIRES_AFTER_CLIENT_MILLIS
         {
             return ChatTrustLevel::NotSecure;
         }
@@ -822,10 +823,7 @@ mod tests {
         assert_eq!(c.pack(&sig(3)), Some(1));
         assert_eq!(c.pack(&sig(1)), Some(2));
         // Exactly one copy of 2 survives.
-        assert_eq!(
-            (0..4).filter(|i| c.unpack(*i) == Some(&*sig(2))).count(),
-            1,
-        );
+        assert_eq!((0..4).filter(|i| c.unpack(*i) == Some(&*sig(2))).count(), 1,);
     }
 
     #[test]
@@ -884,10 +882,7 @@ mod tests {
     #[test]
     fn a_full_packed_signature_resolves_without_the_cache() {
         let c = MessageSignatureCache::new(4);
-        assert_eq!(
-            c.resolve(&PackedSignature::Full(sig(9))),
-            Some(sig(9)),
-        );
+        assert_eq!(c.resolve(&PackedSignature::Full(sig(9))), Some(sig(9)),);
     }
 
     // ── filter mask ──────────────────────────────────────────────────────
@@ -928,7 +923,10 @@ mod tests {
 
     #[test]
     fn a_fully_filtered_message_is_shown_as_nothing() {
-        assert_eq!(FilterMask::FullyFiltered.apply_with_formatting("abcd"), None);
+        assert_eq!(
+            FilterMask::FullyFiltered.apply_with_formatting("abcd"),
+            None
+        );
     }
 
     #[test]
@@ -982,7 +980,10 @@ mod tests {
         );
         // And the bit that a scalar-indexed reading would have used for `b`.
         let m = FilterMask::PartiallyFiltered(vec![0b1000]);
-        assert_eq!(masked_text(&m, "a\u{1F600}b").as_deref(), Some("a\u{1F600}#"));
+        assert_eq!(
+            masked_text(&m, "a\u{1F600}b").as_deref(),
+            Some("a\u{1F600}#")
+        );
     }
 
     // ── trust level ──────────────────────────────────────────────────────
@@ -1006,7 +1007,11 @@ mod tests {
         show_message(c, received, &undecorated, &plain)
     }
 
-    fn chat(signature: Option<Box<Signature>>, content: &str, unsigned: Option<&str>) -> PlayerChat {
+    fn chat(
+        signature: Option<Box<Signature>>,
+        content: &str,
+        unsigned: Option<&str>,
+    ) -> PlayerChat {
         PlayerChat {
             global_index: 0,
             sender: 0,
@@ -1212,10 +1217,7 @@ mod tests {
         );
         // One that does not — `chat.type.emote` with the content parameter
         // omitted, which a datapack may legally define.
-        assert_eq!(
-            c.trust_level(0, "* Steve waves"),
-            ChatTrustLevel::Modified,
-        );
+        assert_eq!(c.trust_level(0, "* Steve waves"), ChatTrustLevel::Modified,);
     }
 
     // ── the packet walks ─────────────────────────────────────────────────
@@ -1231,7 +1233,11 @@ mod tests {
         assert!(got.overlay);
         let mut body = vec![8u8, 0, 2, b'h', b'i'];
         body.push(0);
-        assert!(!SystemChat::read(&mut PacketReader::new(&body)).unwrap().overlay);
+        assert!(
+            !SystemChat::read(&mut PacketReader::new(&body))
+                .unwrap()
+                .overlay
+        );
     }
 
     #[test]
@@ -1253,7 +1259,7 @@ mod tests {
         varint(1, &mut body); // -> cached slot 0
         body.push(0); // unsignedContent absent
         varint(0, &mut body); // FilterMask PASS_THROUGH
-        // ChatType.Bound: holder id 1 (-> chat type 0), name, no target
+                              // ChatType.Bound: holder id 1 (-> chat type 0), name, no target
         varint(1, &mut body);
         body.extend_from_slice(&[8u8, 0, 5, b'S', b't', b'e', b'v', b'e']);
         body.push(0);
@@ -1270,10 +1276,7 @@ mod tests {
         assert_eq!(got.body.last_seen, vec![PackedSignature::Cached(0)]);
         assert_eq!(got.unsigned_content, None);
         assert_eq!(got.filter_mask, FilterMask::PassThrough);
-        assert_eq!(
-            got.bound.name,
-            rewo_proto::nbt::Nbt::String("Steve".into())
-        );
+        assert_eq!(got.bound.name, rewo_proto::nbt::Nbt::String("Steve".into()));
         assert_eq!(
             got.bound.chat_type,
             crate::session::ChatTypeRef::Registry(0)
@@ -1404,10 +1407,7 @@ mod tests {
         let mut chat = rewo_world::chat::ChatComponent::new();
         apply_chat_events(
             &mut chat,
-            vec![
-                message("secret", Some(sig(4))),
-                ChatEvent::Delete(sig(4)),
-            ],
+            vec![message("secret", Some(sig(4))), ChatEvent::Delete(sig(4))],
             0,
             &wrap_ctx(),
         );
@@ -1506,9 +1506,7 @@ mod tests {
     #[test]
     fn a_system_chat_bodys_translatable_resolves_through_the_flatten() {
         let body = system_chat_body("multiplayer.player.joined", "Steve", false);
-        let packet =
-            SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
-                .unwrap();
+        let packet = SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body)).unwrap();
         assert!(!packet.overlay);
         let l = lang(&[("multiplayer.player.joined", "%s joined the game")]);
         assert_eq!(
@@ -1523,9 +1521,7 @@ mod tests {
     #[test]
     fn the_same_body_with_no_table_is_the_pre_m125_rendering() {
         let body = system_chat_body("multiplayer.player.joined", "Steve", false);
-        let packet =
-            SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
-                .unwrap();
+        let packet = SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body)).unwrap();
         assert_eq!(
             rewo_world::chat_translate::chat_component_text(&packet.content, None),
             "multiplayer.player.joined"

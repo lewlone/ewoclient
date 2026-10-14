@@ -163,7 +163,9 @@ impl Suggestion {
         }
         out.extend(self.text.encode_utf16());
         if range.end > self.range.end {
-            out.extend_from_slice(&command[self.range.end.min(command.len())..range.end.min(command.len())]);
+            out.extend_from_slice(
+                &command[self.range.end.min(command.len())..range.end.min(command.len())],
+            );
         }
         Suggestion {
             range,
@@ -720,7 +722,13 @@ mod tests {
             // The drop leaves nothing, and an empty set reports (0, 0) rather
             // than the builder's (3, 8).
             ("hi Steve", 3, &["Steve"], (0, 0), &[]),
-            ("", 0, &["zeta", "Alpha", "beta"], (0, 0), &["Alpha", "beta", "zeta"]),
+            (
+                "",
+                0,
+                &["zeta", "Alpha", "beta"],
+                (0, 0),
+                &["Alpha", "beta", "zeta"],
+            ),
             ("", 0, &["a", "a", "b"], (0, 0), &["a", "b"]),
             ("", 0, &["AZb", "A_b"], (0, 0), &["A_b", "AZb"]),
             ("hello wo", 6, &[], (0, 0), &[]),
@@ -756,7 +764,8 @@ mod tests {
         // `APPLY splice hello world there` / `APPLY whole world`
         assert_eq!(
             String::from_utf16_lossy(
-                &Suggestion::new(StringRange::between(6, 8), "world").apply(&utf16("hello wo there"))
+                &Suggestion::new(StringRange::between(6, 8), "world")
+                    .apply(&utf16("hello wo there"))
             ),
             "hello world there"
         );

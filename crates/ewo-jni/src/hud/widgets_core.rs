@@ -107,10 +107,9 @@ pub fn draw(
     // idle / target out of reach / target in reach. Skipped on non-editor
     // overlay tabs along with the rest of the in-world HUD.
     if show_widgets && editor.crosshair.enabled {
-        let state = editor.crosshair.state_from_target(
-            data.target_active(),
-            data.target_distance(),
-        );
+        let state = editor
+            .crosshair
+            .state_from_target(data.target_active(), data.target_distance());
         crate::crosshair::draw(canvas, w * 0.5, h * 0.5, &editor.crosshair, state);
     }
 
@@ -202,8 +201,9 @@ pub fn draw(
             editor.skin_stamp = disk_stamp;
             editor.skin_image = load_skin_image("ewo-skin.png");
             editor.cape_image = load_skin_image("ewo-cape.png");
-            editor.skin_slim =
-                instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false);
+            editor.skin_slim = instance_file("ewo-skin-slim")
+                .map(|p| p.exists())
+                .unwrap_or(false);
         }
     }
 
@@ -297,7 +297,15 @@ pub(super) fn draw_widget(
     ay: f32,
 ) -> Rect {
     match id {
-        WidgetId::Fps => draw_stat(canvas, &data.fps().to_string(), "FPS", fonts, anchor, ax, ay),
+        WidgetId::Fps => draw_stat(
+            canvas,
+            &data.fps().to_string(),
+            "FPS",
+            fonts,
+            anchor,
+            ax,
+            ay,
+        ),
         WidgetId::Coords => draw_coords(
             canvas,
             data.player_x(),
@@ -308,7 +316,15 @@ pub(super) fn draw_widget(
             ax,
             ay,
         ),
-        WidgetId::Ping => draw_stat(canvas, &data.ping().to_string(), "MS", fonts, anchor, ax, ay),
+        WidgetId::Ping => draw_stat(
+            canvas,
+            &data.ping().to_string(),
+            "MS",
+            fonts,
+            anchor,
+            ax,
+            ay,
+        ),
         WidgetId::Keystrokes => draw_keystrokes(canvas, data.keys(), fonts, anchor, ax, ay),
         WidgetId::Armor => draw_armor(canvas, data, fonts, anchor, ax, ay),
         WidgetId::Potions => draw_potions(canvas, data, fonts, anchor, ax, ay),
@@ -316,7 +332,15 @@ pub(super) fn draw_widget(
         WidgetId::JumpResetText => draw_jump_reset_text(canvas, data, fonts, anchor, ax, ay),
         WidgetId::JumpResetBar => draw_jump_reset_bar(canvas, data, anchor, ax, ay),
         WidgetId::HitRange => draw_hit_range(canvas, data, fonts, anchor, ax, ay),
-        WidgetId::Cps => draw_cps(canvas, data.cps_left(), data.cps_right(), fonts, anchor, ax, ay),
+        WidgetId::Cps => draw_cps(
+            canvas,
+            data.cps_left(),
+            data.cps_right(),
+            fonts,
+            anchor,
+            ax,
+            ay,
+        ),
         WidgetId::Items => draw_item_counters(
             canvas,
             data.item_pearls(),
@@ -439,7 +463,11 @@ pub(super) fn draw_media_compact(
         let mut glow = Paint::default();
         glow.set_anti_alias(true);
         glow.set_color4f(rgba(ROSE, 0.55 * audio.pulse), None);
-        glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 6.0 + 8.0 * audio.pulse, false));
+        glow.set_mask_filter(MaskFilter::blur(
+            BlurStyle::Normal,
+            6.0 + 8.0 * audio.pulse,
+            false,
+        ));
         canvas.draw_rrect(thumb_rr, &glow);
     }
 
@@ -463,10 +491,17 @@ pub(super) fn draw_media_compact(
         let glyph = "\u{266A}";
         let (gw, _) = g_font.measure_str(glyph, Some(&probe));
         let (_, gm) = g_font.metrics();
-        let gcap = if gm.cap_height > 0.0 { gm.cap_height } else { 14.0 };
+        let gcap = if gm.cap_height > 0.0 {
+            gm.cap_height
+        } else {
+            14.0
+        };
         canvas.draw_str(
             glyph,
-            (thumb_rect.left + (thumb - gw) * 0.5, thumb_rect.top + (thumb + gcap) * 0.5),
+            (
+                thumb_rect.left + (thumb - gw) * 0.5,
+                thumb_rect.top + (thumb + gcap) * 0.5,
+            ),
             &g_font,
             &g,
         );
@@ -501,9 +536,20 @@ pub(super) fn draw_media_compact(
         },
         None,
     );
-    canvas.draw_str(&title_str, (title_x, title_baseline), &title_font, &title_paint);
+    canvas.draw_str(
+        &title_str,
+        (title_x, title_baseline),
+        &title_font,
+        &title_paint,
+    );
 
-    draw_iw_text_shadow_tracked(canvas, &artist_str, (text_left, artist_baseline), &artist_font, 0.18);
+    draw_iw_text_shadow_tracked(
+        canvas,
+        &artist_str,
+        (text_left, artist_baseline),
+        &artist_font,
+        0.18,
+    );
     let mut artist_paint = Paint::default();
     artist_paint.set_anti_alias(true);
     artist_paint.set_color4f(rgba(MAUVE, 1.0), None);
@@ -749,9 +795,10 @@ pub(super) struct PlateDrive {
 impl PlateDrive {
     /// Drive from a spectrum, or nothing when there is no audio to react to.
     pub(super) fn from_audio(audio: &crate::audio::Spectrum) -> Option<PlateDrive> {
-        audio
-            .is_live()
-            .then(|| PlateDrive { level: audio.level.clamp(0.0, 1.0), pulse: audio.pulse.clamp(0.0, 1.0) })
+        audio.is_live().then(|| PlateDrive {
+            level: audio.level.clamp(0.0, 1.0),
+            pulse: audio.pulse.clamp(0.0, 1.0),
+        })
     }
 }
 
@@ -835,12 +882,24 @@ pub(super) fn draw_player_head(canvas: &Canvas, rr: RRect, avatar: Rect, name: &
     let sampling = skia_safe::SamplingOptions::from(skia_safe::FilterMode::Nearest);
 
     let face = Rect::from_xywh(8.0, 8.0, 8.0, 8.0);
-    canvas.draw_image_rect_with_sampling_options(&skin, Some((&face, skia_safe::canvas::SrcRectConstraint::Strict)), avatar, sampling, &paint);
+    canvas.draw_image_rect_with_sampling_options(
+        &skin,
+        Some((&face, skia_safe::canvas::SrcRectConstraint::Strict)),
+        avatar,
+        sampling,
+        &paint,
+    );
 
     // Hat layer, if the skin has one. Drawn at the same size — vanilla insets
     // the hat slightly in 3D, but flat-on the two layers are coincident.
     let hat = Rect::from_xywh(40.0, 8.0, 8.0, 8.0);
-    canvas.draw_image_rect_with_sampling_options(&skin, Some((&hat, skia_safe::canvas::SrcRectConstraint::Strict)), avatar, sampling, &paint);
+    canvas.draw_image_rect_with_sampling_options(
+        &skin,
+        Some((&hat, skia_safe::canvas::SrcRectConstraint::Strict)),
+        avatar,
+        sampling,
+        &paint,
+    );
 
     canvas.restore_to_count(saved);
 
@@ -894,7 +953,10 @@ pub(super) fn draw_liquid_progress(
         (0.0, SPEED)
     } else if audio.is_live() {
         let drive = audio.level.clamp(0.0, 1.0);
-        (0.5 + drive * 2.2 + audio.pulse * 0.9, SPEED * (0.7 + drive * 1.1))
+        (
+            0.5 + drive * 2.2 + audio.pulse * 0.9,
+            SPEED * (0.7 + drive * 1.1),
+        )
     } else {
         (1.3, SPEED)
     };
@@ -989,7 +1051,12 @@ pub(super) fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
 ///
 /// `drive` is `Some` only for the media widget — nothing else should twitch
 /// when a bass note lands.
-pub(super) fn draw_iw_shell_driven(canvas: &Canvas, rect: Rect, radius: f32, drive: Option<PlateDrive>) {
+pub(super) fn draw_iw_shell_driven(
+    canvas: &Canvas,
+    rect: Rect,
+    radius: f32,
+    drive: Option<PlateDrive>,
+) {
     // An outer bloom that swells with the music. Drawn under everything, so it
     // reads as the plate *glowing* rather than as a ring stuck to it. This is
     // the part that carries the reaction when the plate is small — a 64px
@@ -1016,7 +1083,10 @@ pub(super) fn draw_iw_shell_driven(canvas: &Canvas, rect: Rect, radius: f32, dri
                 rect.right + grow,
                 rect.bottom + grow,
             );
-            canvas.draw_rrect(RRect::new_rect_xy(halo, radius + grow, radius + grow), &bloom);
+            canvas.draw_rrect(
+                RRect::new_rect_xy(halo, radius + grow, radius + grow),
+                &bloom,
+            );
         }
     }
 
@@ -1038,7 +1108,12 @@ pub(super) fn draw_iw_shell_driven(canvas: &Canvas, rect: Rect, radius: f32, dri
     canvas.draw_rrect(shadow_rr, &shadow);
 
     // (2) Outer dark wine ring — 1px stroke 1px outside the shell.
-    let outer = Rect::new(rect.left - 1.0, rect.top - 1.0, rect.right + 1.0, rect.bottom + 1.0);
+    let outer = Rect::new(
+        rect.left - 1.0,
+        rect.top - 1.0,
+        rect.right + 1.0,
+        rect.bottom + 1.0,
+    );
     let outer_rr = RRect::new_rect_xy(outer, radius + 1.0, radius + 1.0);
     let mut outer_paint = Paint::default();
     outer_paint.set_anti_alias(true);
@@ -1056,20 +1131,33 @@ pub(super) fn draw_iw_shell_driven(canvas: &Canvas, rect: Rect, radius: f32, dri
     canvas.draw_rrect(rrect, &fill);
 
     // (4) Inset wine ring — 1px stroke 1px inside the shell.
-    let inset_wine = Rect::new(rect.left + 1.0, rect.top + 1.0, rect.right - 1.0, rect.bottom - 1.0);
+    let inset_wine = Rect::new(
+        rect.left + 1.0,
+        rect.top + 1.0,
+        rect.right - 1.0,
+        rect.bottom - 1.0,
+    );
     let inset_r = (radius - 1.0).max(0.0);
     let mut wine_paint = Paint::default();
     wine_paint.set_anti_alias(true);
     wine_paint.set_style(PaintStyle::Stroke);
     wine_paint.set_stroke_width(1.0);
     wine_paint.set_color4f(rgba(WINE, 0.25), None);
-    canvas.draw_rrect(RRect::new_rect_xy(inset_wine, inset_r, inset_r), &wine_paint);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(inset_wine, inset_r, inset_r),
+        &wine_paint,
+    );
 
     // (5) Inset top pearl highlight — clip to the top 2px and stroke the rrect.
     canvas.save();
     let top_clip = Rect::from_xywh(rect.left, rect.top, rect.width(), 2.0);
     canvas.clip_rect(top_clip, Some(ClipOp::Intersect), Some(true));
-    let inset_top = Rect::new(rect.left + 0.5, rect.top + 0.5, rect.right - 0.5, rect.bottom - 0.5);
+    let inset_top = Rect::new(
+        rect.left + 0.5,
+        rect.top + 0.5,
+        rect.right - 0.5,
+        rect.bottom - 0.5,
+    );
     let top_r = (radius - 0.5).max(0.0);
     let mut top_paint = Paint::default();
     top_paint.set_anti_alias(true);

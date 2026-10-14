@@ -85,7 +85,10 @@ impl SoundSource {
     ];
 
     pub fn from_ordinal(id: i32) -> Option<SoundSource> {
-        usize::try_from(id).ok().and_then(|i| Self::ALL.get(i)).copied()
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| Self::ALL.get(i))
+            .copied()
     }
 
     pub fn ordinal(self) -> i32 {
@@ -454,7 +457,9 @@ pub enum SoundEvent {
     /// runaway `fade` is capped, and `tick()` never bounds it upward. Skip it
     /// and a loop that has been playing for ten minutes re-enters with
     /// `fade == 12000` and then takes 12000 ticks to fade out.
-    BiomeLoopTransition { current: Option<String> },
+    BiomeLoopTransition {
+        current: Option<String>,
+    },
     /// One `MusicManager.tick` — the situational music the client would hear
     /// here, or `None` for "nothing on offer" (M146).
     ///
@@ -468,7 +473,9 @@ pub enum SoundEvent {
     /// Pushed **every tick**, not on a change: `MusicManager.tick` is a timer
     /// as much as a selector, and a decrement that only happened when the
     /// biome changed would never start a song in a world you stood still in.
-    Music { situational: Option<rewo_world::music::Music> },
+    Music {
+        situational: Option<rewo_world::music::Music>,
+    },
 }
 
 /// Which `TickableSoundInstance` the client is starting, and what it follows.
@@ -497,10 +504,7 @@ pub enum TickableSound {
     /// and after that the ramp switches on its own. A spec that said "a bee"
     /// and re-derived the loop would restart the decision every time it was
     /// resolved.
-    BeeLoop {
-        bee: i32,
-        aggressive: bool,
-    },
+    BeeLoop { bee: i32, aggressive: bool },
     /// `new GuardianAttackSoundInstance(guardian)` — `handleEntityEvent`
     /// case **21** (M141g).
     GuardianAttack { guardian: i32 },
@@ -526,10 +530,7 @@ pub enum TickableSound {
     /// It carries **which** sound rather than the draw, for the same reason
     /// `BeeLoop` carries which loop: the choice is made once and the instance
     /// never revisits it.
-    UnderwaterSub {
-        player: i32,
-        sound: &'static str,
-    },
+    UnderwaterSub { player: i32, sound: &'static str },
     /// `new BiomeAmbientSoundsHandler.LoopSoundInstance(sound)` — the biome's
     /// looping bed (M142d).
     ///

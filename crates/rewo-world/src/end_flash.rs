@@ -143,8 +143,7 @@ impl EndFlashState {
         self.duration = random_between_inclusive(
             &mut random,
             MIN_FLASH_DURATION_IN_TICKS,
-            MAX_FLASH_DURATION_IN_TICKS
-                .min(FLASH_INTERVAL_IN_TICKS as i32 - self.offset),
+            MAX_FLASH_DURATION_IN_TICKS.min(FLASH_INTERVAL_IN_TICKS as i32 - self.offset),
         );
         self.x_angle = random_between(&mut random, -60.0, 10.0);
         self.y_angle = random_between(&mut random, -180.0, 180.0);
@@ -458,12 +457,18 @@ mod tests {
         // 578, and widening the sample would silently change the expected number.
         for seed in 1..4000i64 {
             let (offset, duration, _, _) = oracle_params(seed, true);
-            assert!((0..=MAX_FLASH_OFFSET_IN_TICKS).contains(&offset), "seed {seed}");
+            assert!(
+                (0..=MAX_FLASH_OFFSET_IN_TICKS).contains(&offset),
+                "seed {seed}"
+            );
             assert!(
                 (MIN_FLASH_DURATION_IN_TICKS..=MAX_FLASH_DURATION_IN_TICKS).contains(&duration),
                 "seed {seed}"
             );
-            assert!(i64::from(offset + duration) < FLASH_INTERVAL_IN_TICKS, "seed {seed}");
+            assert!(
+                i64::from(offset + duration) < FLASH_INTERVAL_IN_TICKS,
+                "seed {seed}"
+            );
         }
     }
 
@@ -600,7 +605,10 @@ mod tests {
         let (offset, duration, _, _) = oracle_params(1, true);
         let s = ticked_to(FLASH_INTERVAL_IN_TICKS + i64::from(offset + duration));
 
-        assert!(s.intensity > 0.0, "the tick value is a tiny positive sin(PI)");
+        assert!(
+            s.intensity > 0.0,
+            "the tick value is a tiny positive sin(PI)"
+        );
         assert_eq!(s.intensity(1.0), 0.0, "the lerp to 1.0 cancels it away");
         assert!(
             s.old_intensity > 1e-3,
@@ -616,12 +624,17 @@ mod tests {
     #[test]
     fn intensity_lerps_from_old_to_new() {
         let (offset, duration, _, _) = oracle_params(1, true);
-        let mut s = ticked_to(FLASH_INTERVAL_IN_TICKS + i64::from(offset) + i64::from(duration) / 2);
+        let mut s =
+            ticked_to(FLASH_INTERVAL_IN_TICKS + i64::from(offset) + i64::from(duration) / 2);
         let old = s.intensity(1.0);
         s.tick(FLASH_INTERVAL_IN_TICKS + i64::from(offset) + i64::from(duration) / 2 + 1);
         let new = s.intensity(1.0);
 
-        assert_ne!(old.to_bits(), new.to_bits(), "the fixture must actually move");
+        assert_ne!(
+            old.to_bits(),
+            new.to_bits(),
+            "the fixture must actually move"
+        );
         assert_eq!(s.intensity(0.0).to_bits(), old.to_bits());
         assert!((s.intensity(0.5) - (old + new) / 2.0).abs() < 1e-6);
     }

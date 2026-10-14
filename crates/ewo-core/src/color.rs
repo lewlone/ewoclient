@@ -56,7 +56,12 @@ impl Srgb {
 impl Srgba {
     pub const fn from_hex_a(rgb: u32, a: f32) -> Self {
         let c = Srgb::from_hex(rgb);
-        Self { r: c.r, g: c.g, b: c.b, a }
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a,
+        }
     }
 
     pub fn to_f32(&self) -> [f32; 4] {
@@ -93,11 +98,16 @@ impl OkLch {
         let s_cone = s_ * s_ * s_;
 
         // LMS → linear sRGB (matrix multiply)
-        let r =  4.0767416621 * l_cone - 3.3077115913 * m_cone + 0.2309699292 * s_cone;
+        let r = 4.0767416621 * l_cone - 3.3077115913 * m_cone + 0.2309699292 * s_cone;
         let g = -1.2684380046 * l_cone + 2.6097574011 * m_cone - 0.3413193965 * s_cone;
         let b = -0.0041960863 * l_cone - 0.7034186147 * m_cone + 1.7076147010 * s_cone;
 
-        [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), self.a.clamp(0.0, 1.0)]
+        [
+            r.clamp(0.0, 1.0),
+            g.clamp(0.0, 1.0),
+            b.clamp(0.0, 1.0),
+            self.a.clamp(0.0, 1.0),
+        ]
     }
 
     /// Convert to gamma-encoded sRGB straight-alpha. Useful when a target

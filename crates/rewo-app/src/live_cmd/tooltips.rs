@@ -108,9 +108,11 @@ pub(super) fn item_bars(
     let mut out = Vec::new();
     for (stack, (x, y, size)) in slots {
         let Some(stack) = stack else { continue };
-        let max = stack
-            .max_damage
-            .or_else(|| items.name(stack.item_id).and_then(rewo_data::item_props_table::max_damage));
+        let max = stack.max_damage.or_else(|| {
+            items
+                .name(stack.item_id)
+                .and_then(rewo_data::item_props_table::max_damage)
+        });
         // An item whose maximum this build cannot resolve gets no bar. A bar
         // needs a denominator, and inventing one would draw a confident and
         // wrong amount of remaining life.
@@ -310,10 +312,7 @@ pub(crate) fn container_lines(
         out.push(vec![Span::new(
             rewo_data::lang::format(
                 count_key,
-                &[
-                    &e.hover_name(translated, Some(lang)),
-                    &e.count.to_string(),
-                ],
+                &[&e.hover_name(translated, Some(lang)), &e.count.to_string()],
             ),
             GRAY_TEXT,
         )]);
@@ -367,7 +366,11 @@ pub(crate) fn styled_hover_name(
         },
         color,
     );
-    vec![if custom.is_some() { span.italic() } else { span }]
+    vec![if custom.is_some() {
+        span.italic()
+    } else {
+        span
+    }]
 }
 
 /// `minecraft:lore`'s lines, in `ItemLore.LORE_STYLE` (M163).
@@ -414,9 +417,7 @@ pub(crate) fn advanced_tooltip_lines(
                     WHITE_TEXT,
                 )])
             }
-            AdvancedLine::RegistryId => {
-                Some(vec![Span::new(registry_key.to_string(), DARK_GRAY)])
-            }
+            AdvancedLine::RegistryId => Some(vec![Span::new(registry_key.to_string(), DARK_GRAY)]),
             AdvancedLine::Components { count } => {
                 let key = lang.get("item.components")?;
                 Some(vec![Span::new(
@@ -543,8 +544,12 @@ pub(crate) fn screen_tooltip(
         if !would_disable {
             return None;
         }
-        lang.get("gui.togglable_slot")
-            .map(|t| vec![vec![rewo_gpu::tooltip::Span::new(t.to_string(), [1.0, 1.0, 1.0])]])
+        lang.get("gui.togglable_slot").map(|t| {
+            vec![vec![rewo_gpu::tooltip::Span::new(
+                t.to_string(),
+                [1.0, 1.0, 1.0],
+            )]]
+        })
     });
     // The item tooltip's content. A closure so the crafter's hint can
     // select between the two and share the assembly below — the measure,
@@ -783,7 +788,10 @@ pub(super) fn tooltip_layout(
     // off the right of a small window before the flip ever triggered.
     let scale = rewo_gpu::hud::gui_scale(w, h);
     let (sw, sh) = ((w / scale) as i32, (h / scale) as i32);
-    let (mx, my) = ((mouse.0 / scale as f64) as i32, (mouse.1 / scale as f64) as i32);
+    let (mx, my) = (
+        (mouse.0 / scale as f64) as i32,
+        (mouse.1 / scale as f64) as i32,
+    );
     let (tx, ty) = rewo_gpu::container::tooltip_position(sw, sh, mx, my, tw, th);
     // `localY += line.getHeight(font) + (i == 0 ? 2 : 0)` — the gap goes after
     // the **first** line only, which is what separates the name from the

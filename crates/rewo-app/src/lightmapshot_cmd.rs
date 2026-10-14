@@ -487,8 +487,18 @@ fn run_cases(
         // bit-layout regression fails as itself rather than as a colour
         // mismatch. Release asserts — lightmapshot runs in release, where a
         // `debug_assert!` would silently compile out.
-        let probe = MeshVertex::new([0.0, 64.0, 0.0], [0.0, 0.0], 0, light_coords(BLOCK, SKY), COLOR);
-        assert_eq!(probe.color_rgb(), COLOR, "colour bytes must survive packing");
+        let probe = MeshVertex::new(
+            [0.0, 64.0, 0.0],
+            [0.0, 0.0],
+            0,
+            light_coords(BLOCK, SKY),
+            COLOR,
+        );
+        assert_eq!(
+            probe.color_rgb(),
+            COLOR,
+            "colour bytes must survive packing"
+        );
         assert_eq!(
             (probe.block_light(), probe.sky_light()),
             (BLOCK, SKY),
@@ -505,7 +515,17 @@ fn run_cases(
         let name_c = "packed-color-b12s8";
         let (ec, lmc) = expected_srgb_colored(BLOCK, SKY, &cpu_state(&gs), color);
         let ac = render_quad_colored(
-            gpu, off, wr, view_proj, draw, name_c, light_coords(BLOCK, SKY), gs, false, args, COLOR,
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            name_c,
+            light_coords(BLOCK, SKY),
+            gs,
+            false,
+            args,
+            COLOR,
         )?;
         compare_case(failures, name_c, ac, ec, lmc);
 
@@ -553,12 +573,39 @@ fn run_cases(
         let name_s = "smooth-b12.5s8";
         let coords = 200 | (SKY as i32 * 16) << 16;
         let lm = rewo_world::lightmap::sample_smooth(200, SKY * 16, &cpu_state(&gs));
-        let es: [u8; 3] =
-            std::array::from_fn(|c| (linear_to_srgb(lm[c]) * 255.0).round().clamp(0.0, 255.0) as u8);
-        let smooth = render_quad_colored(gpu, off, wr, view_proj, draw, name_s, coords, gs, false, args, TINT_WHITE)?;
+        let es: [u8; 3] = std::array::from_fn(|c| {
+            (linear_to_srgb(lm[c]) * 255.0).round().clamp(0.0, 255.0) as u8
+        });
+        let smooth = render_quad_colored(
+            gpu, off, wr, view_proj, draw, name_s, coords, gs, false, args, TINT_WHITE,
+        )?;
         compare_case(failures, name_s, smooth, es, lm);
-        let lo = render_quad(gpu, off, wr, view_proj, draw, "smooth-b12s8", BLOCK, SKY, gs, false, args)?;
-        let hi = render_quad(gpu, off, wr, view_proj, draw, "smooth-b13s8", BLOCK + 1, SKY, gs, false, args)?;
+        let lo = render_quad(
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "smooth-b12s8",
+            BLOCK,
+            SKY,
+            gs,
+            false,
+            args,
+        )?;
+        let hi = render_quad(
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "smooth-b13s8",
+            BLOCK + 1,
+            SKY,
+            gs,
+            false,
+            args,
+        )?;
         if !(luma(lo) < luma(smooth) && luma(smooth) < luma(hi)) {
             failures.push(format!(
                 "{name_s}: luma {} is not strictly between block 12 ({}) and block 13 ({}) — the smooth fraction was not sampled",
@@ -758,7 +805,6 @@ fn run_cases(
         }
     }
 
-
     // --- Case 9 (M33b): the two fog bands, and that the shader takes their MAX.
     //
     // Rewo's world pass carries two independent fog bands. The push block's is
@@ -791,7 +837,17 @@ fn run_cases(
         // The unfogged baseline: BOTH bands disabled.
         wr.set_fog(1.0e6, 1.0e6 + 1.0);
         let clear = render_quad(
-            gpu, off, wr, view_proj, draw, "fog-none", 0, 15, state(disabled), false, args,
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "fog-none",
+            0,
+            15,
+            state(disabled),
+            false,
+            args,
         )?;
 
         // What the shader must produce for a given fog fraction. The mix runs
@@ -806,13 +862,21 @@ fn run_cases(
             }
             out
         };
-        let close = |a: [u8; 3], b: [u8; 3]| {
-            (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= 2)
-        };
+        let close = |a: [u8; 3], b: [u8; 3]| (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= 2);
 
         // (a) The environmental band alone, with the render-distance band off.
         let env_only = render_quad(
-            gpu, off, wr, view_proj, draw, "fog-env", 0, 15, state([0.0, 32.0]), false, args,
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "fog-env",
+            0,
+            15,
+            state([0.0, 32.0]),
+            false,
+            args,
         )?;
         let want_half = predict(frac(0.0, 32.0));
         println!(
@@ -839,7 +903,17 @@ fn run_cases(
         // symmetric inputs to the max, so this must land on the same colour.
         wr.set_fog(0.0, 32.0);
         let rd_only = render_quad(
-            gpu, off, wr, view_proj, draw, "fog-rd", 0, 15, state(disabled), false, args,
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "fog-rd",
+            0,
+            15,
+            state(disabled),
+            false,
+            args,
         )?;
         if !close(rd_only, env_only) {
             failures.push(format!(
@@ -854,7 +928,17 @@ fn run_cases(
         //   max -> 0.5   sum -> 0.75   product -> 0.125   min -> 0.25
         // and each of those is far outside the tolerance.
         let both = render_quad(
-            gpu, off, wr, view_proj, draw, "fog-max", 0, 15, state([0.0, 64.0]), false, args,
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "fog-max",
+            0,
+            15,
+            state([0.0, 64.0]),
+            false,
+            args,
         )?;
         let want_max = predict(0.5f32.max(0.25));
         let want_sum = predict(0.75);
@@ -880,7 +964,17 @@ fn run_cases(
         // point of a max. Environmental (0, 1024) at 16 blocks is ~0.016, so
         // this must stay on the render-distance band's 0.5.
         let weak = render_quad(
-            gpu, off, wr, view_proj, draw, "fog-weak-env", 0, 15, state([0.0, 1024.0]), false, args,
+            gpu,
+            off,
+            wr,
+            view_proj,
+            draw,
+            "fog-weak-env",
+            0,
+            15,
+            state([0.0, 1024.0]),
+            false,
+            args,
         )?;
         if !close(weak, want_max) {
             failures.push(format!(
@@ -1106,7 +1200,17 @@ fn render_quad(
     );
 
     render_quad_colored(
-        gpu, off, wr, view_proj, draw, name, coords, gpu_state, translucent, args, TINT_WHITE,
+        gpu,
+        off,
+        wr,
+        view_proj,
+        draw,
+        name,
+        coords,
+        gpu_state,
+        translucent,
+        args,
+        TINT_WHITE,
     )
 }
 

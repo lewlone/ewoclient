@@ -204,9 +204,9 @@ fn slot(r: &mut PacketReader, ids: &RecipeDisplayIds, depth: u32) -> Result<Slot
         SlotKind::Empty => SlotDisplay::Empty,
         SlotKind::AnyFuel => SlotDisplay::AnyFuel,
         SlotKind::Item => SlotDisplay::Item(r.varint().map_err(|_| ())?),
-        SlotKind::ItemStack => SlotDisplay::Stack(
-            crate::component_wire::read_item_template(r, depth)?.ok_or(())?,
-        ),
+        SlotKind::ItemStack => {
+            SlotDisplay::Stack(crate::component_wire::read_item_template(r, depth)?.ok_or(())?)
+        }
         SlotKind::Tag => SlotDisplay::Tag(r.string(32767).map_err(|_| ())?),
         SlotKind::WithAnyPotion => SlotDisplay::WithAnyPotion(Box::new(slot(r, ids, d)?)),
         SlotKind::OnlyWithComponent => {
@@ -512,10 +512,7 @@ impl SmithingSets {
 }
 
 /// `ClientboundUpdateRecipesPacket` (M152).
-pub fn parse_update_recipes(
-    body: &[u8],
-    ids: &RecipeDisplayIds,
-) -> Result<UpdateRecipes, String> {
+pub fn parse_update_recipes(body: &[u8], ids: &RecipeDisplayIds) -> Result<UpdateRecipes, String> {
     let mut r = PacketReader::new(body);
 
     // `ByteBufCodecs.map` is `readCount` then that many key/value pairs
@@ -577,9 +574,7 @@ pub fn parse_update_recipes(
 /// `ClientboundRecipeBookAddPacket`.
 pub fn parse_add(body: &[u8], ids: &RecipeDisplayIds) -> Result<BookAdd, String> {
     let mut r = PacketReader::new(body);
-    let n = r
-        .varint()
-        .map_err(|e| format!("recipe_book_add: {e:?}"))?;
+    let n = r.varint().map_err(|e| format!("recipe_book_add: {e:?}"))?;
     if !(0..=4096).contains(&n) {
         return Err(format!("recipe_book_add: {n} entries"));
     }
@@ -726,14 +721,19 @@ impl RecipeDisplay {
     pub fn overlay_shape(&self) -> rewo_world::recipe_overlay::Shape {
         use rewo_world::recipe_overlay::Shape;
         match self {
-            RecipeDisplay::CraftingShaped { width, height, ingredients, .. } => Shape::Shaped {
+            RecipeDisplay::CraftingShaped {
+                width,
+                height,
+                ingredients,
+                ..
+            } => Shape::Shaped {
                 w: (*width).max(0) as usize,
                 h: (*height).max(0) as usize,
                 ingredients: ingredients.len(),
             },
-            RecipeDisplay::CraftingShapeless { ingredients, .. } => {
-                Shape::Shapeless { ingredients: ingredients.len() }
-            }
+            RecipeDisplay::CraftingShapeless { ingredients, .. } => Shape::Shapeless {
+                ingredients: ingredients.len(),
+            },
             RecipeDisplay::Furnace { .. } => Shape::Furnace,
             RecipeDisplay::Stonecutter { .. } | RecipeDisplay::Smithing { .. } => Shape::Other,
         }
@@ -911,7 +911,10 @@ mod tests {
         );
         // Each context-needing arm yields nothing rather than guessing.
         assert_eq!(SlotDisplay::AnyFuel.items(), Vec::<i32>::new());
-        assert_eq!(SlotDisplay::Tag("c:ingots".into()).items(), Vec::<i32>::new());
+        assert_eq!(
+            SlotDisplay::Tag("c:ingots".into()).items(),
+            Vec::<i32>::new()
+        );
         assert_eq!(
             SlotDisplay::WithAnyPotion(Box::new(SlotDisplay::Item(4))).items(),
             Vec::<i32>::new(),
@@ -1101,10 +1104,22 @@ mod tests {
         assert_eq!(
             s,
             BookSettings {
-                crafting: TypeSettings { open: true, filtering: false },
-                furnace: TypeSettings { open: false, filtering: true },
-                blast_furnace: TypeSettings { open: true, filtering: true },
-                smoker: TypeSettings { open: false, filtering: false },
+                crafting: TypeSettings {
+                    open: true,
+                    filtering: false
+                },
+                furnace: TypeSettings {
+                    open: false,
+                    filtering: true
+                },
+                blast_furnace: TypeSettings {
+                    open: true,
+                    filtering: true
+                },
+                smoker: TypeSettings {
+                    open: false,
+                    filtering: false
+                },
             }
         );
         // A short body is an error rather than a partial read.
@@ -1222,11 +1237,8 @@ mod tests {
     /// whichever container it happened to pick.
     #[test]
     fn a_duplicate_property_set_key_is_last_wins() {
-        let u = parse_update_recipes(
-            &recipes_body(&[("k", &[1]), ("k", &[2, 3])], 0),
-            &no_ids(),
-        )
-        .expect("parse");
+        let u = parse_update_recipes(&recipes_body(&[("k", &[1]), ("k", &[2, 3])], 0), &no_ids())
+            .expect("parse");
         assert_eq!(u.property_sets.len(), 2, "both kept as they arrived");
         assert_eq!(u.property_set("k"), Some([2, 3].as_slice()));
     }

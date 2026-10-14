@@ -167,7 +167,13 @@ mod tests {
 
     fn one() -> Pickups {
         let mut p = Pickups::default();
-        p.add(Some((1, 1, false)), [0.0, 0.0, 0.0], 5, 77, [0.0, 10.0, 0.0]);
+        p.add(
+            Some((1, 1, false)),
+            [0.0, 0.0, 0.0],
+            5,
+            77,
+            [0.0, 10.0, 0.0],
+        );
         p
     }
 
@@ -207,7 +213,10 @@ mod tests {
         p.tick(|_| Some([0.0, 10.0, 0.0]));
         // life 2, partial 1 → t = 1.0.
         let end = p.iter().next().unwrap().render_pos(1.0);
-        assert!((end[1] - 10.0).abs() < 1e-9, "arrives at the collector: {end:?}");
+        assert!(
+            (end[1] - 10.0).abs() < 1e-9,
+            "arrives at the collector: {end:?}"
+        );
     }
 
     #[test]

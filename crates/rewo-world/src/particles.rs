@@ -104,11 +104,7 @@ impl LegacyRandom {
 
     /// `BitRandomSource.next(int)`.
     pub fn next(&mut self, bits: u32) -> i32 {
-        self.seed = self
-            .seed
-            .wrapping_mul(MULTIPLIER)
-            .wrapping_add(INCREMENT)
-            & MODULUS_MASK;
+        self.seed = self.seed.wrapping_mul(MULTIPLIER).wrapping_add(INCREMENT) & MODULUS_MASK;
         // Java's `>>` on a positive long then narrowed to int.
         (self.seed >> (48 - bits)) as i32
     }
@@ -979,7 +975,17 @@ impl ParticleSystem {
             let xa = (cmd.max_speed * cmd.x_dist) as f64;
             let ya = (cmd.max_speed * cmd.y_dist) as f64;
             let za = (cmd.max_speed * cmd.z_dist) as f64;
-            self.spawn_one(cmd.kind, cmd.x, cmd.y, cmd.z, xa, ya, za, cmd.block_state, shapes);
+            self.spawn_one(
+                cmd.kind,
+                cmd.x,
+                cmd.y,
+                cmd.z,
+                xa,
+                ya,
+                za,
+                cmd.block_state,
+                shapes,
+            );
             return;
         }
         for _ in 0..cmd.count {
@@ -1145,7 +1151,11 @@ mod tests {
 
     /// A world with a solid floor at y < 0 and air elsewhere.
     fn floor_shapes(_x: i32, y: i32, _z: i32) -> &'static [[f32; 6]] {
-        if y < 0 { &FULL_CUBE } else { &[] }
+        if y < 0 {
+            &FULL_CUBE
+        } else {
+            &[]
+        }
     }
     /// Empty world — nothing collides.
     fn void_shapes(_x: i32, _y: i32, _z: i32) -> &'static [[f32; 6]] {
@@ -1224,13 +1234,40 @@ mod tests {
                  float/double literal mix-up shows up here first"
             );
             for (t, want) in ticks.iter().enumerate() {
-                assert_eq!(p.x.to_bits() as i64, want.x, "{kind} seed {seed} tick {t}: x");
-                assert_eq!(p.y.to_bits() as i64, want.y, "{kind} seed {seed} tick {t}: y");
-                assert_eq!(p.z.to_bits() as i64, want.z, "{kind} seed {seed} tick {t}: z");
-                assert_eq!(p.xd.to_bits() as i64, want.xd, "{kind} seed {seed} tick {t}: xd");
-                assert_eq!(p.yd.to_bits() as i64, want.yd, "{kind} seed {seed} tick {t}: yd");
-                assert_eq!(p.zd.to_bits() as i64, want.zd, "{kind} seed {seed} tick {t}: zd");
-                assert_eq!(p.removed, want.removed, "{kind} seed {seed} tick {t}: removed");
+                assert_eq!(
+                    p.x.to_bits() as i64,
+                    want.x,
+                    "{kind} seed {seed} tick {t}: x"
+                );
+                assert_eq!(
+                    p.y.to_bits() as i64,
+                    want.y,
+                    "{kind} seed {seed} tick {t}: y"
+                );
+                assert_eq!(
+                    p.z.to_bits() as i64,
+                    want.z,
+                    "{kind} seed {seed} tick {t}: z"
+                );
+                assert_eq!(
+                    p.xd.to_bits() as i64,
+                    want.xd,
+                    "{kind} seed {seed} tick {t}: xd"
+                );
+                assert_eq!(
+                    p.yd.to_bits() as i64,
+                    want.yd,
+                    "{kind} seed {seed} tick {t}: yd"
+                );
+                assert_eq!(
+                    p.zd.to_bits() as i64,
+                    want.zd,
+                    "{kind} seed {seed} tick {t}: zd"
+                );
+                assert_eq!(
+                    p.removed, want.removed,
+                    "{kind} seed {seed} tick {t}: removed"
+                );
                 p.tick(&void_shapes);
             }
         }
@@ -1263,7 +1300,16 @@ mod tests {
         // already age 1 — that in-constructor `this.tick()` is easy to miss
         // and this witness is what would catch dropping it.
         grade("crit", |s| {
-            Particle::crit(10.5, 70.0, -3.25, 0.1, 0.2, -0.1, LegacyRandom::new(s), &void_shapes)
+            Particle::crit(
+                10.5,
+                70.0,
+                -3.25,
+                0.1,
+                0.2,
+                -0.1,
+                LegacyRandom::new(s),
+                &void_shapes,
+            )
         });
     }
 
@@ -1277,7 +1323,16 @@ mod tests {
     #[test]
     fn terrain_trajectory_matches_vanilla_source() {
         grade("terrain", |s| {
-            Particle::terrain(10.5, 70.0, -3.25, 0.25, -0.125, 0.5, 1, LegacyRandom::new(s))
+            Particle::terrain(
+                10.5,
+                70.0,
+                -3.25,
+                0.25,
+                -0.125,
+                0.5,
+                1,
+                LegacyRandom::new(s),
+            )
         });
     }
 
@@ -1455,20 +1510,42 @@ mod tests {
             let bits = |i: usize| -> u32 { f[i].parse::<i64>().unwrap() as u32 };
 
             let flame = Particle::flame(10.5, 70.0, -3.25, 0.0, 0.05, 0.0, LegacyRandom::new(s));
-            assert_eq!(flame.quad_size.to_bits(), bits(2), "seed {s}: flame quad_size");
+            assert_eq!(
+                flame.quad_size.to_bits(),
+                bits(2),
+                "seed {s}: flame quad_size"
+            );
 
             let poof = Particle::poof(10.5, 70.0, -3.25, 0.0, 0.1, 0.0, LegacyRandom::new(s));
-            assert_eq!(poof.quad_size.to_bits(), bits(3), "seed {s}: poof quad_size");
+            assert_eq!(
+                poof.quad_size.to_bits(),
+                bits(3),
+                "seed {s}: poof quad_size"
+            );
             assert_eq!(poof.r_col.to_bits(), bits(4), "seed {s}: poof r_col");
 
-            let terr =
-                Particle::terrain(10.5, 70.0, -3.25, 0.25, -0.125, 0.5, 1, LegacyRandom::new(s));
+            let terr = Particle::terrain(
+                10.5,
+                70.0,
+                -3.25,
+                0.25,
+                -0.125,
+                0.5,
+                1,
+                LegacyRandom::new(s),
+            );
             assert_eq!(terr.uo.to_bits(), bits(5), "seed {s}: terrain uo");
             assert_eq!(terr.vo.to_bits(), bits(6), "seed {s}: terrain vo");
 
             let crit = Particle::crit(
-                10.5, 70.0, -3.25, 0.1, 0.2, -0.1,
-                LegacyRandom::new(s), &void_shapes,
+                10.5,
+                70.0,
+                -3.25,
+                0.1,
+                0.2,
+                -0.1,
+                LegacyRandom::new(s),
+                &void_shapes,
             );
             // rCol is untouched by tick; gCol/bCol are decayed by the
             // in-constructor tick, so these three differ from each other and
@@ -1476,8 +1553,16 @@ mod tests {
             assert_eq!(crit.r_col.to_bits(), bits(7), "seed {s}: crit r_col");
             assert_eq!(crit.g_col.to_bits(), bits(8), "seed {s}: crit g_col");
             assert_eq!(crit.b_col.to_bits(), bits(9), "seed {s}: crit b_col");
-            assert_eq!(crit.lifetime, f[10].parse::<i32>().unwrap(), "seed {s}: crit lifetime");
-            assert_eq!(crit.age, f[11].parse::<i32>().unwrap(), "seed {s}: crit age");
+            assert_eq!(
+                crit.lifetime,
+                f[10].parse::<i32>().unwrap(),
+                "seed {s}: crit lifetime"
+            );
+            assert_eq!(
+                crit.age,
+                f[11].parse::<i32>().unwrap(),
+                "seed {s}: crit age"
+            );
         }
         assert_eq!(rows, 5, "expected 5 scalar rows");
     }
@@ -1494,12 +1579,48 @@ mod tests {
     // genuinely disagree (see the module header).
     // -----------------------------------------------------------------
     const KAT_NEXTFLOAT: &[(i64, [u32; 8])] = &[
-        (0, [1060839604, 1062525265, 1047940908, 1058748784, 1059270089, 1050557408, 1057810800, 1039114536]),
-        (1, [1060838101, 1036895456, 1053947420, 1053858802, 1045738288, 1024748416, 1051351522, 1059629957]),
-        (42, [1060782493, 1029695648, 1060038587, 1027890176, 1050546296, 1064381371, 1049484602, 1060449413]),
-        (1660, [1058392841, 1062264382, 1048871732, 1061801874, 1034364968, 1042934108, 1037145976, 1049116706]),
-        (-1, [1049211608, 1054936644, 1011419136, 1057770495, 1059683934, 1058655675, 1054160742, 1053585290]),
-        (123456789, [1059716710, 1061382325, 1055520148, 1048739396, 1053290614, 1046334332, 1063563777, 1054464466]),
+        (
+            0,
+            [
+                1060839604, 1062525265, 1047940908, 1058748784, 1059270089, 1050557408, 1057810800,
+                1039114536,
+            ],
+        ),
+        (
+            1,
+            [
+                1060838101, 1036895456, 1053947420, 1053858802, 1045738288, 1024748416, 1051351522,
+                1059629957,
+            ],
+        ),
+        (
+            42,
+            [
+                1060782493, 1029695648, 1060038587, 1027890176, 1050546296, 1064381371, 1049484602,
+                1060449413,
+            ],
+        ),
+        (
+            1660,
+            [
+                1058392841, 1062264382, 1048871732, 1061801874, 1034364968, 1042934108, 1037145976,
+                1049116706,
+            ],
+        ),
+        (
+            -1,
+            [
+                1049211608, 1054936644, 1011419136, 1057770495, 1059683934, 1058655675, 1054160742,
+                1053585290,
+            ],
+        ),
+        (
+            123456789,
+            [
+                1059716710, 1061382325, 1055520148, 1048739396, 1053290614, 1046334332, 1063563777,
+                1054464466,
+            ],
+        ),
     ];
     const KAT_NEXTINT_BOUNDS: [i32; 10] = [1, 2, 3, 4, 5, 7, 8, 16, 100, 1000];
     const KAT_NEXTINT: &[(i64, [i32; 10])] = &[
@@ -1511,20 +1632,128 @@ mod tests {
         (123456789, [0, 1, 2, 1, 0, 0, 7, 6, 97, 887]),
     ];
     const KAT_NEXTDOUBLE: &[(i64, [i64; 4])] = &[
-        (0, [4604759192054975113, 4597834257986432532, 4603916565303848833, 4603133115327553832]),
-        (1, [4604758385039885542, 4601058979077218200, 4596651736145909532, 4599665317554862172]),
-        (42, [4604728530581845079, 4604329149490933249, 4599233015213898676, 4598663022256506966]),
-        (1660, [4603445596438065651, 4598333990470744360, 4590545732160624112, 4592038775643178096]),
-        (-1, [4598516459646775852, 4578226784790118144, 4604138746417147354, 4601173505720155216]),
-        (123456789, [4604156343054189992, 4601903331488821802, 4600706359258197490, 4606221721377662796]),
+        (
+            0,
+            [
+                4604759192054975113,
+                4597834257986432532,
+                4603916565303848833,
+                4603133115327553832,
+            ],
+        ),
+        (
+            1,
+            [
+                4604758385039885542,
+                4601058979077218200,
+                4596651736145909532,
+                4599665317554862172,
+            ],
+        ),
+        (
+            42,
+            [
+                4604728530581845079,
+                4604329149490933249,
+                4599233015213898676,
+                4598663022256506966,
+            ],
+        ),
+        (
+            1660,
+            [
+                4603445596438065651,
+                4598333990470744360,
+                4590545732160624112,
+                4592038775643178096,
+            ],
+        ),
+        (
+            -1,
+            [
+                4598516459646775852,
+                4578226784790118144,
+                4604138746417147354,
+                4601173505720155216,
+            ],
+        ),
+        (
+            123456789,
+            [
+                4604156343054189992,
+                4601903331488821802,
+                4600706359258197490,
+                4606221721377662796,
+            ],
+        ),
     ];
     const KAT_NEXTGAUSSIAN: &[(i64, [i64; 6])] = &[
-        (0, [4605403794758891617, -4617076412053790520, 4611868235848197304, 4605054655041530518, 4607043478544092746, -4613111802860833366]),
-        (1, [4609711554963350721, -4619718795384920767, -4615778764195122810, -4619571459858301818, -4615656917833126876, -4613224800335561907]),
-        (42, [4607821503525903751, 4606456510138157128, -4616641179245592382, -4615707776640798080, 4598733263062401967, 4604341753479877564]),
-        (1660, [4603084253050553328, -4613739141630891041, -4619893422180926986, 4606478501392868506, -4618641319559742007, 4604107625973764838]),
-        (-1, [4610719237185014330, -4616906438838060740, 4602443537523694099, 4601902196913045741, 4610334578628721041, 4601817805205234878]),
-        (123456789, [4611711941745259779, -4620442120209144902, -4625505855466791876, 4605986971233101123, 4608536696796052854, -4618602305882215815]),
+        (
+            0,
+            [
+                4605403794758891617,
+                -4617076412053790520,
+                4611868235848197304,
+                4605054655041530518,
+                4607043478544092746,
+                -4613111802860833366,
+            ],
+        ),
+        (
+            1,
+            [
+                4609711554963350721,
+                -4619718795384920767,
+                -4615778764195122810,
+                -4619571459858301818,
+                -4615656917833126876,
+                -4613224800335561907,
+            ],
+        ),
+        (
+            42,
+            [
+                4607821503525903751,
+                4606456510138157128,
+                -4616641179245592382,
+                -4615707776640798080,
+                4598733263062401967,
+                4604341753479877564,
+            ],
+        ),
+        (
+            1660,
+            [
+                4603084253050553328,
+                -4613739141630891041,
+                -4619893422180926986,
+                4606478501392868506,
+                -4618641319559742007,
+                4604107625973764838,
+            ],
+        ),
+        (
+            -1,
+            [
+                4610719237185014330,
+                -4616906438838060740,
+                4602443537523694099,
+                4601902196913045741,
+                4610334578628721041,
+                4601817805205234878,
+            ],
+        ),
+        (
+            123456789,
+            [
+                4611711941745259779,
+                -4620442120209144902,
+                -4625505855466791876,
+                4605986971233101123,
+                4608536696796052854,
+                -4618602305882215815,
+            ],
+        ),
     ];
 
     #[test]
@@ -1600,7 +1829,10 @@ mod tests {
                 );
                 let ulp = (got - *want).abs();
                 worst = worst.max(ulp);
-                assert!(ulp <= MAX_ULP, "seed {seed} draw {i}: {ulp} ULP > {MAX_ULP}");
+                assert!(
+                    ulp <= MAX_ULP,
+                    "seed {seed} draw {i}: {ulp} ULP > {MAX_ULP}"
+                );
             }
         }
         // Guard the bound itself: if Rust's `ln` ever became bit-identical

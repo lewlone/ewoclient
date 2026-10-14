@@ -256,7 +256,12 @@ mod tests {
     use super::*;
 
     fn compound(pairs: &[(&str, Nbt)]) -> Nbt {
-        Nbt::Compound(pairs.iter().map(|(k, v)| ((*k).into(), v.clone())).collect())
+        Nbt::Compound(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).into(), v.clone()))
+                .collect(),
+        )
     }
 
     fn lang(pairs: &[(&str, &str)]) -> Language {
@@ -282,7 +287,9 @@ mod tests {
         let tag = compound(&[("translate", Nbt::String("a.b".into()))]);
         assert_eq!(translatable(&tag, None).unwrap().template, "a.b");
         assert_eq!(
-            translatable(&tag, Some(&lang(&[("x", "y")]))).unwrap().template,
+            translatable(&tag, Some(&lang(&[("x", "y")])))
+                .unwrap()
+                .template,
             "a.b"
         );
     }
@@ -376,7 +383,10 @@ mod tests {
     /// component branch. `None` here IS that dispatch.
     #[test]
     fn a_component_argument_is_not_a_primitive() {
-        assert_eq!(primitive_arg_text(&compound(&[("text", Nbt::String("x".into()))])), None);
+        assert_eq!(
+            primitive_arg_text(&compound(&[("text", Nbt::String("x".into()))])),
+            None
+        );
         assert_eq!(primitive_arg_text(&Nbt::List(vec![])), None);
         assert_eq!(primitive_arg_text(&Nbt::IntArray(vec![1])), None);
     }
@@ -388,8 +398,14 @@ mod tests {
     #[test]
     fn integral_arguments_keep_their_width_and_render_as_integers() {
         assert_eq!(primitive_arg_text(&Nbt::Byte(1)).as_deref(), Some("1"));
-        assert_eq!(primitive_arg_text(&Nbt::Byte(-128)).as_deref(), Some("-128"));
-        assert_eq!(primitive_arg_text(&Nbt::Short(32767)).as_deref(), Some("32767"));
+        assert_eq!(
+            primitive_arg_text(&Nbt::Byte(-128)).as_deref(),
+            Some("-128")
+        );
+        assert_eq!(
+            primitive_arg_text(&Nbt::Short(32767)).as_deref(),
+            Some("32767")
+        );
         assert_eq!(primitive_arg_text(&Nbt::Int(64)).as_deref(), Some("64"));
         assert_eq!(
             primitive_arg_text(&Nbt::Int(-2147483648)).as_deref(),
@@ -449,10 +465,7 @@ mod tests {
         ]);
         let tag = compound(&[
             ("translate", Nbt::String("chat.type.text".into())),
-            (
-                "with",
-                Nbt::List(vec![sender, Nbt::String("hello".into())]),
-            ),
+            ("with", Nbt::List(vec![sender, Nbt::String("hello".into())])),
         ]);
         let l = lang(&[("chat.type.text", "<%s> %s")]);
         assert_eq!(chat_component_text(&tag, Some(&l)), "<Steve> hello");

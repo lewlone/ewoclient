@@ -149,14 +149,20 @@ impl CpalSink {
     /// (`SoundEngine.java:417-434`). Returns `false` if any command was refused,
     /// which means the ring was full and the sequence is now incomplete — a
     /// caller that ignored this would leave a half-configured voice.
-    pub fn play_once(&self, id: rewo_net::sound_engine::ChannelId, pcm: Arc<crate::buffers::Pcm>) -> bool {
+    pub fn play_once(
+        &self,
+        id: rewo_net::sound_engine::ChannelId,
+        pcm: Arc<crate::buffers::Pcm>,
+    ) -> bool {
         use rewo_net::sound_engine::ChannelCall as C;
         let mut ok = true;
         ok &= self.ring.push(Command::Channel(id, C::SetPitch(1.0)));
         ok &= self.ring.push(Command::Channel(id, C::SetVolume(1.0)));
         ok &= self.ring.push(Command::Channel(id, C::DisableAttenuation));
         ok &= self.ring.push(Command::Channel(id, C::SetLooping(false)));
-        ok &= self.ring.push(Command::Channel(id, C::SetSelfPosition(0.0, 0.0, 0.0)));
+        ok &= self
+            .ring
+            .push(Command::Channel(id, C::SetSelfPosition(0.0, 0.0, 0.0)));
         ok &= self.ring.push(Command::Channel(id, C::SetRelative(true)));
         ok &= self.ring.push(Command::Attach(id, pcm));
         ok &= self.ring.push(Command::Channel(id, C::Play));

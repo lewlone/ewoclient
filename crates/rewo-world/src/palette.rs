@@ -125,7 +125,11 @@ impl Container {
         // clamped to >= 1: a single-biome registry has `ceil_log2(1) == 0`, and
         // although such a section never sends a direct container, a 0-bit
         // `read_bit_storage` would divide by zero.
-        let storage_bits = if indirect { bits } else { kind.global_bits().max(1) };
+        let storage_bits = if indirect {
+            bits
+        } else {
+            kind.global_bits().max(1)
+        };
         let cells = read_bit_storage(r, storage_bits, entry_count)?;
 
         Ok(Self {
@@ -211,7 +215,11 @@ fn read_bit_storage(r: &mut PacketReader, bits: u32, entry_count: usize) -> Resu
     debug_assert!((1..=32).contains(&bits));
     let values_per_long = (64 / bits) as usize;
     let long_count = entry_count.div_ceil(values_per_long);
-    let mask = if bits == 32 { u32::MAX } else { (1u32 << bits) - 1 };
+    let mask = if bits == 32 {
+        u32::MAX
+    } else {
+        (1u32 << bits) - 1
+    };
 
     let mut out = Vec::with_capacity(entry_count);
     for _ in 0..long_count {
@@ -290,7 +298,10 @@ mod tests {
         // Single → a one-entry palette plus the new id.
         let mut c = Container::single(7);
         c.set(5, 7, 4096);
-        assert!(c.single == Some(7), "an unchanged write keeps the single value");
+        assert!(
+            c.single == Some(7),
+            "an unchanged write keeps the single value"
+        );
         c.set(5, 9, 4096);
         assert_eq!((c.get(5), c.get(0), c.get(4095)), (9, 7, 7));
         assert_eq!(c.palette, vec![7, 9]);
@@ -304,7 +315,8 @@ mod tests {
         w.u8(15);
         w.raw(&pack(&vec![0u32; 4096], 15));
         let mut r = PacketReader::new(&w.buf);
-        let mut d = Container::read(&mut r, ContainerKind::BlockStates { global_bits: 15 }).unwrap();
+        let mut d =
+            Container::read(&mut r, ContainerKind::BlockStates { global_bits: 15 }).unwrap();
         d.set(100, 23456, 4096);
         assert_eq!((d.get(100), d.get(101)), (23456, 0));
     }

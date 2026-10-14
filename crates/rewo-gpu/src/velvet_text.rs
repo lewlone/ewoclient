@@ -97,12 +97,8 @@ impl VelvetTextPass {
         cache: &GlyphCache,
     ) -> Result<Self, String> {
         let edge = cache.atlas_edge();
-        let (image, image_alloc, view) = crate::entities::create_texture_r8(
-            gpu,
-            cache.atlas(),
-            edge,
-            edge,
-        )?;
+        let (image, image_alloc, view) =
+            crate::entities::create_texture_r8(gpu, cache.atlas(), edge, edge)?;
         let device = gpu.device.clone();
         unsafe {
             let sampler = device
@@ -248,12 +244,9 @@ impl VelvetTextPass {
         }
         self.verts = v.len() as u32;
         let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                v.as_ptr() as *const u8,
-                v.len() * VERTEX_STRIDE as usize,
-            )
+            std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * VERTEX_STRIDE as usize)
         };
-        
+
         let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
         self.verts = (kept / VERTEX_STRIDE as usize) as u32;
         let Some(vbuf) = self.ring.bind() else {
@@ -432,8 +425,7 @@ fn build_pipeline(
         let blend =
             vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic =
-            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
         let mut rendering = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(&color_formats)

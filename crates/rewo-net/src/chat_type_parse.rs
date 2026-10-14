@@ -178,7 +178,10 @@ impl Decoration {
             .collect();
 
         let mut fields: Vec<(String, Nbt)> = vec![
-            ("translate".to_string(), Nbt::String(self.translation_key.clone())),
+            (
+                "translate".to_string(),
+                Nbt::String(self.translation_key.clone()),
+            ),
             ("with".to_string(), Nbt::List(args)),
         ];
         // `withStyle(Style patch)` is `setStyle(patch.applyTo(getStyle()))`,
@@ -744,7 +747,11 @@ mod tests {
         ]);
         let b = body(&[("minecraft:chat", Some(empty))]);
         let v = parse_chat_type_registry(&mut PacketReader::new(&b), 1);
-        let chat = v[0].ty.chat.as_ref().expect("an empty list is not a missing one");
+        let chat = v[0]
+            .ty
+            .chat
+            .as_ref()
+            .expect("an empty list is not a missing one");
         assert!(chat.parameters.is_empty());
         let got = chat.decorate(&s("hi"), &bound("Steve", None));
         assert_eq!(got.get("with"), Some(&Nbt::List(vec![])));
@@ -804,12 +811,8 @@ mod tests {
                 // a dropped field.
                 _ => Nbt::Byte(0),
             };
-            let tag = Nbt::Compound(vec![
-                ("text".to_string(), s("x")),
-                (key.to_string(), value),
-            ]);
-            let spans =
-                rewo_world::chat_style::parse_component(&tag, parent.clone(), None);
+            let tag = Nbt::Compound(vec![("text".to_string(), s("x")), (key.to_string(), value)]);
+            let spans = rewo_world::chat_style::parse_component(&tag, parent.clone(), None);
             assert_eq!(spans.len(), 1, "{key}");
             assert_ne!(
                 spans[0].style(),

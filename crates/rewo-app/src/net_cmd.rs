@@ -138,7 +138,10 @@ fn soak(
         println!("[rewo-m1] block at ({x},{y},{z}) = state {state} ({name})");
     }
     if let (Some(path), Some(n)) = (&record_path, recorded) {
-        println!("[rewo-m1] recording written to {} ({n} packets)", path.display());
+        println!(
+            "[rewo-m1] recording written to {} ({n} packets)",
+            path.display()
+        );
     }
 
     // The soak is only meaningful if we actually got into the world.

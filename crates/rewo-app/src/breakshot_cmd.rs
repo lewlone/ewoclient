@@ -112,10 +112,12 @@ pub fn run(args: BreakshotArgs) -> Result<(), String> {
     };
     println!("[breakshot] Vulkan validation: {status}");
     if args.check && want_validation && !gpu.validation_active {
-        return Err("breakshot check: Vulkan validation requested but not active — \
+        return Err(
+            "breakshot check: Vulkan validation requested but not active — \
                     install the Vulkan SDK (VK_LAYER_KHRONOS_validation), or pass \
                     --no-validation to bypass"
-            .into());
+                .into(),
+        );
     }
     let pixels = check_pixels(&mut c, &mut gpu, &args);
 
@@ -306,7 +308,9 @@ fn check_receipt(c: &mut Checker, ids: &Ids) {
     );
     c.record(
         "a5.one_breaker_cracks_one_block",
-        d.stage_at([0, 0, 0]).is_none() && d.stage_at([1, 0, 0]) == Some(1) && d.position_count() == 1,
+        d.stage_at([0, 0, 0]).is_none()
+            && d.stage_at([1, 0, 0]) == Some(1)
+            && d.position_count() == 1,
         format!(
             "old block {:?}, new block {:?}, {} positions",
             d.stage_at([0, 0, 0]),
@@ -373,7 +377,9 @@ fn check_geometry(c: &mut Checker) {
     );
     let inside = quads.iter().all(|q| {
         q.verts.iter().all(|v| {
-            (3.0..=4.0).contains(&v[0]) && (5.0..=6.0).contains(&v[1]) && (7.0..=8.0).contains(&v[2])
+            (3.0..=4.0).contains(&v[0])
+                && (5.0..=6.0).contains(&v[1])
+                && (7.0..=8.0).contains(&v[2])
         })
     });
     c.record(
@@ -523,7 +529,13 @@ fn grey_stages() -> Vec<Vec<u8>> {
 fn floor_quad() -> (Vec<MeshVertex>, Vec<u32>) {
     let y = 65.0f32;
     let v = |x: f32, z: f32, u: f32, w: f32| {
-        MeshVertex::new([x, y, z], [u, w], 0, rewo_mesh::light_coords(15, 15), [255, 255, 255])
+        MeshVertex::new(
+            [x, y, z],
+            [u, w],
+            0,
+            rewo_mesh::light_coords(15, 15),
+            [255, 255, 255],
+        )
     };
     (
         vec![

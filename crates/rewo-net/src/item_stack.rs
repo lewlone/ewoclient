@@ -423,8 +423,7 @@ impl StackComponents {
     /// Sharpness V sword. Reading the glint straight off the enchantment list
     /// gets the common case right and both of those wrong.
     pub fn has_foil(&self) -> bool {
-        self.glint_override
-            .unwrap_or(!self.enchantments.is_empty())
+        self.glint_override.unwrap_or(!self.enchantments.is_empty())
     }
 
     /// The stacks `BundleContents` would resolve to for this patch (M61) —
@@ -718,9 +717,7 @@ fn read_patch_at(
                 // A nested patch this decoder cannot walk. The reader is parked
                 // mid-value, so the whole enclosing stack is unwalkable — the
                 // charge answer is lost with it.
-                None => {
-                    return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true, comps))
-                }
+                None => return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true, comps)),
             }
         } else if !read_interpreted(r, ty, ids, shape, &mut comps)? {
             return Ok((PatchOutcome::Unwalkable, PatchCharged::Absent, true, comps));
@@ -897,7 +894,11 @@ fn read_interpreted(
         // the whole component from the start, so this rewinds and defers.
         let save = r.offset();
         let m = r.varint().map_err(|_| ())?;
-        let p = if m > 0 { r.varint().map_err(|_| ())? } else { 0 };
+        let p = if m > 0 {
+            r.varint().map_err(|_| ())?
+        } else {
+            0
+        };
         if m > 0 && p > 0 {
             out.trim = Some((m - 1, p - 1));
             return Ok(true);
@@ -1049,7 +1050,9 @@ pub fn resolve_swing(stack: &WireStack, prototypes: &SwingAnimations) -> SwingRe
     match stack.patch {
         PatchOutcome::Unwalkable => SwingResolution::Unknown(UnknownSwing::UnwalkableComponent),
         PatchOutcome::Walked(PatchSwing::Set(v)) => SwingResolution::Exact(v),
-        PatchOutcome::Walked(PatchSwing::Removed) => SwingResolution::Exact(SwingAnimation::DEFAULT),
+        PatchOutcome::Walked(PatchSwing::Removed) => {
+            SwingResolution::Exact(SwingAnimation::DEFAULT)
+        }
         PatchOutcome::Walked(PatchSwing::Absent) => match prototypes.of(stack.item_id) {
             Some(v) => SwingResolution::Exact(v),
             None => SwingResolution::Unknown(UnknownSwing::UnregisteredItem),
@@ -1144,7 +1147,6 @@ mod tests {
         crate::component_wire::install_shapes(&ids);
     }
 
-
     /// `DyedItemColor.STREAM_CODEC` is `ByteBufCodecs.INT` — a **fixed**
     /// big-endian i32 among the var-ints, the same trap `container_set_slot`'s
     /// signed short is. Read as a var-int, 0xB02E26 would consume three bytes
@@ -1225,11 +1227,15 @@ mod tests {
         assert_eq!(r.remaining(), 0);
         // …and so does a stack with no component at all.
         let bare = stack(1, 1, &[], &[]);
-        let WireSlot::Stack(s) = read_optional(&mut PacketReader::new(&bare), IDS).expect("decodes")
+        let WireSlot::Stack(s) =
+            read_optional(&mut PacketReader::new(&bare), IDS).expect("decodes")
         else {
             panic!("expected a stack");
         };
-        assert_eq!(s.components.cooldown_group("minecraft:chorus_fruit"), "minecraft:chorus_fruit");
+        assert_eq!(
+            s.components.cooldown_group("minecraft:chorus_fruit"),
+            "minecraft:chorus_fruit"
+        );
     }
 
     #[test]
@@ -1297,7 +1303,10 @@ mod tests {
         };
         assert_eq!(s.components.writable_pages, vec!["draft one", "draft two"]);
         assert!(s.components.has_writable_book);
-        assert!(!s.components.has_written_book, "the two flags are independent");
+        assert!(
+            !s.components.has_written_book,
+            "the two flags are independent"
+        );
         assert_eq!(r.remaining(), 0, "the filtered variant was consumed");
     }
 
@@ -1402,7 +1411,13 @@ mod tests {
     #[test]
     fn an_explicit_swing_animation_override_is_decoded() {
         install_test_shapes();
-        let s = read(&stack(1, 100, &[(IDS.swing_animation, swing_value(2, 11))], &[])).unwrap();
+        let s = read(&stack(
+            1,
+            100,
+            &[(IDS.swing_animation, swing_value(2, 11))],
+            &[],
+        ))
+        .unwrap();
         assert_eq!(
             patch_of(&s),
             PatchOutcome::Walked(PatchSwing::Set(SwingAnimation::new(
@@ -1513,7 +1528,11 @@ mod tests {
         let mut r = PacketReader::new(&bytes);
         let s = read_optional(&mut r, IDS).unwrap();
         assert!(!s.aligned());
-        assert_eq!(r.u8().ok(), Some(0xAA), "the component's value is still unread");
+        assert_eq!(
+            r.u8().ok(),
+            Some(0xAA),
+            "the component's value is still unread"
+        );
     }
 
     #[test]
@@ -1640,12 +1659,7 @@ mod tests {
         varint(300, &mut id); // two bytes, so a one-byte skip would misalign
         let mut dmg = Vec::new();
         varint(37, &mut dmg);
-        let c = components_of(&stack(
-            1,
-            100,
-            &[(IDS.map_id, id), (IDS.damage, dmg)],
-            &[],
-        ));
+        let c = components_of(&stack(1, 100, &[(IDS.map_id, id), (IDS.damage, dmg)], &[]));
         assert!(c.has_map_id);
         assert_eq!(c.damage, Some(37), "the component after map_id still reads");
     }
@@ -1691,12 +1705,20 @@ mod tests {
     #[test]
     fn a_bundle_patch_keeps_the_stacks_it_holds() {
         install_test_shapes();
-        let raw = stack(1, 800, &[(16, bundle_value(&[(1, 64), (2, 1), (3, 12)]))], &[]);
+        let raw = stack(
+            1,
+            800,
+            &[(16, bundle_value(&[(1, 64), (2, 1), (3, 12)]))],
+            &[],
+        );
         let c = components_of(&raw);
         let items = c.bundle_contents().expect("the bundle was captured");
         assert_eq!(items.len(), 3);
         assert_eq!(
-            items.iter().map(|i| (i.item_id, i.count)).collect::<Vec<_>>(),
+            items
+                .iter()
+                .map(|i| (i.item_id, i.count))
+                .collect::<Vec<_>>(),
             vec![(1, 64), (2, 1), (3, 12)]
         );
     }
@@ -1861,11 +1883,7 @@ mod tests {
             600,
             &[(
                 17,
-                container_value(&[
-                    Some((1, 64, None)),
-                    None,
-                    Some((2, 1, Some("Excalibur"))),
-                ]),
+                container_value(&[Some((1, 64, None)), None, Some((2, 1, Some("Excalibur")))]),
             )],
             &[],
         );

@@ -52,7 +52,11 @@ pub struct VtoggleState {
 
 impl VtoggleState {
     pub const fn new(on: bool) -> Self {
-        Self { on, hover: false, anim: if on { 1.0 } else { 0.0 } }
+        Self {
+            on,
+            hover: false,
+            anim: if on { 1.0 } else { 0.0 },
+        }
     }
 
     /// Update hover state and react to a click. Returns `true` when the

@@ -74,8 +74,7 @@ impl FontStore {
     pub fn new() -> Self {
         let (fraunces, has_fraunces) = try_load_family("Fraunces", false);
         let (newsreader, has_newsreader) = try_load_family("Newsreader", false);
-        let (newsreader_italic, has_newsreader_italic) =
-            try_load_family("Newsreader-Italic", true);
+        let (newsreader_italic, has_newsreader_italic) = try_load_family("Newsreader-Italic", true);
         let (jetbrains_mono, has_jetbrains_mono) = try_load_family("JetBrainsMono", false);
         Self {
             fraunces,
@@ -127,12 +126,26 @@ impl FontStore {
         // (soft, wonk, opsz, weight) combination is fine. Skia handles the
         // refcounted clone in `Font::new(tf.clone(), size)` cheaply.
         let coords = [
-            Coordinate { axis: FourByteTag::from_chars('S', 'O', 'F', 'T'), value: soft },
-            Coordinate { axis: FourByteTag::from_chars('W', 'O', 'N', 'K'), value: wonk },
-            Coordinate { axis: FourByteTag::from_chars('o', 'p', 's', 'z'), value: opsz },
-            Coordinate { axis: FourByteTag::from_chars('w', 'g', 'h', 't'), value: weight },
+            Coordinate {
+                axis: FourByteTag::from_chars('S', 'O', 'F', 'T'),
+                value: soft,
+            },
+            Coordinate {
+                axis: FourByteTag::from_chars('W', 'O', 'N', 'K'),
+                value: wonk,
+            },
+            Coordinate {
+                axis: FourByteTag::from_chars('o', 'p', 's', 'z'),
+                value: opsz,
+            },
+            Coordinate {
+                axis: FourByteTag::from_chars('w', 'g', 'h', 't'),
+                value: weight,
+            },
         ];
-        let pos = VariationPosition { coordinates: &coords };
+        let pos = VariationPosition {
+            coordinates: &coords,
+        };
         let args = FontArguments::new().set_variation_design_position(pos);
         let tf = self
             .fraunces
@@ -183,10 +196,18 @@ impl FontStore {
 
         // Slow path — build the variant once and cache it.
         let coords = [
-            Coordinate { axis: FourByteTag::from_chars('o', 'p', 's', 'z'), value: size },
-            Coordinate { axis: FourByteTag::from_chars('w', 'g', 'h', 't'), value: weight },
+            Coordinate {
+                axis: FourByteTag::from_chars('o', 'p', 's', 'z'),
+                value: size,
+            },
+            Coordinate {
+                axis: FourByteTag::from_chars('w', 'g', 'h', 't'),
+                value: weight,
+            },
         ];
-        let pos = VariationPosition { coordinates: &coords };
+        let pos = VariationPosition {
+            coordinates: &coords,
+        };
         let args = FontArguments::new().set_variation_design_position(pos);
         let tf = self
             .newsreader_italic
@@ -289,7 +310,11 @@ pub fn draw_breathing(
 /// which is phase 0, so the clock is frozen at 0.
 pub fn breath_envelope(time_sec: f32, period_sec: f32) -> f32 {
     let phase = (ewo_core::motion::ambient_time(time_sec) / period_sec).rem_euclid(1.0);
-    let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
+    let triangle = if phase < 0.5 {
+        phase * 2.0
+    } else {
+        (1.0 - phase) * 2.0
+    };
     triangle * triangle * (3.0 - 2.0 * triangle)
 }
 
@@ -398,12 +423,7 @@ pub fn draw_breathing_glow(
             let mut far = Paint::default();
             far.set_anti_alias(true);
             far.set_color4f(
-                skia_safe::Color4f::new(
-                    180.0 / 255.0,
-                    116.0 / 255.0,
-                    145.0 / 255.0,
-                    0.35 * toward,
-                ),
+                skia_safe::Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.35 * toward),
                 None,
             );
             far.set_mask_filter(skia_safe::MaskFilter::blur(
@@ -417,12 +437,7 @@ pub fn draw_breathing_glow(
             let mut near = Paint::default();
             near.set_anti_alias(true);
             near.set_color4f(
-                skia_safe::Color4f::new(
-                    229.0 / 255.0,
-                    184.0 / 255.0,
-                    197.0 / 255.0,
-                    0.65 * toward,
-                ),
+                skia_safe::Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.65 * toward),
                 None,
             );
             near.set_mask_filter(skia_safe::MaskFilter::blur(
@@ -487,7 +502,11 @@ pub fn draw_tracked_glow(
         let mut p = Paint::default();
         p.set_anti_alias(true);
         p.set_color4f(color, None);
-        p.set_mask_filter(skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, blur, true));
+        p.set_mask_filter(skia_safe::MaskFilter::blur(
+            skia_safe::BlurStyle::Normal,
+            blur,
+            true,
+        ));
         let (mut x, y) = origin;
         let mut buf = [0u8; 4];
         for ch in text.chars() {

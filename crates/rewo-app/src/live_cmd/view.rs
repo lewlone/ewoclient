@@ -76,7 +76,9 @@ pub(crate) fn widget_sprites(
     })
 }
 
-pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::HudSpritesData<'_>> {
+pub(crate) fn hud_sprites(
+    baked: &assets::BakedAssets,
+) -> Option<rewo_gpu::hud::HudSpritesData<'_>> {
     let h = baked.hud.as_ref()?;
     Some(rewo_gpu::hud::HudSpritesData {
         hotbar: hud_sprite(&h.hotbar),
@@ -490,7 +492,10 @@ pub(super) fn attach_backend(live: &mut LiveSounds, opened: Result<Box<dyn Chann
 /// same reason: the launcher spawns `rewo` with a fixed argument list, so a
 /// per-session toggle has to arrive through the environment.
 pub(super) fn wants_audio(args: &LiveArgs) -> bool {
-    args.audio || std::env::var("REWO_AUDIO").map(|v| v == "1").unwrap_or(false)
+    args.audio
+        || std::env::var("REWO_AUDIO")
+            .map(|v| v == "1")
+            .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -512,7 +517,11 @@ mod tests {
         // Every distance is NaN (or inf-inf): the old `partial_cmp().unwrap()`
         // panicked here. Order is unspecified, but the sort must return and
         // keep every column.
-        for (px, pz) in [(f32::NAN, 0.0), (0.0, f32::NAN), (f32::INFINITY, f32::NEG_INFINITY)] {
+        for (px, pz) in [
+            (f32::NAN, 0.0),
+            (0.0, f32::NAN),
+            (f32::INFINITY, f32::NEG_INFINITY),
+        ] {
             let mut v = vec![(5, 5), (0, 0), (-1, 0), (3, -3)];
             sort_columns_nearest_first(&mut v, px, pz);
             v.sort();

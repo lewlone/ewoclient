@@ -331,8 +331,8 @@ pub fn placement(
     let relative_bottom_y = bottom_y - camera[1] as f32;
     // `gameTime % (width * 400L)` — the drift wraps exactly when the texture
     // does, so the sky never jumps.
-    let cloud_offset = (game_time.rem_euclid(texture_width as i64 * TICKS_PER_CELL)) as f32
-        + partial_ticks;
+    let cloud_offset =
+        (game_time.rem_euclid(texture_width as i64 * TICKS_PER_CELL)) as f32 + partial_ticks;
     let mut cloud_x = camera[0] + (cloud_offset * DRIFT_PER_TICK) as f64;
     let mut cloud_z = camera[2] + Z_BIAS;
     let width_blocks = texture_width as f64 * CELL_SIZE as f64;
@@ -833,7 +833,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(dirs(RelativeCameraPos::AboveClouds), vec![Face::Up as i32]);
-        assert_eq!(dirs(RelativeCameraPos::BelowClouds), vec![Face::Down as i32]);
+        assert_eq!(
+            dirs(RelativeCameraPos::BelowClouds),
+            vec![Face::Down as i32]
+        );
         assert_eq!(
             dirs(RelativeCameraPos::InsideClouds),
             vec![Face::Up as i32, Face::Down as i32]
@@ -867,7 +870,13 @@ mod tests {
         let t = one_cell_in(16);
         // Put the camera two cells west so the cell sits at dx = +2, dz = 0:
         // out of interior range, and only its WEST side faces us.
-        let faces = t.build_mesh(RelativeCameraPos::InsideClouds, -1, 1, CloudStatus::Fancy, 3);
+        let faces = t.build_mesh(
+            RelativeCameraPos::InsideClouds,
+            -1,
+            1,
+            CloudStatus::Fancy,
+            3,
+        );
         let sides: Vec<i32> = faces
             .iter()
             .filter(|f| f[2] & FLAG_INSIDE_FACE == 0)

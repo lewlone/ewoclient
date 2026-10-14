@@ -59,7 +59,7 @@ impl ApplicationHandler for LiveApp {
             init_celestial_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
-    init_crumbling_if_present(&mut world_renderer, &mut gpu, &baked)?;
+            init_crumbling_if_present(&mut world_renderer, &mut gpu, &baked)?;
             world_renderer.set_animations(layer_animations(&baked));
             if let Some(l) = locator_sprites(&baked) {
                 self.locator_styles = l.styles.clone();
@@ -151,7 +151,8 @@ impl ApplicationHandler for LiveApp {
                 // Ctrl+V pastes the SYSTEM clipboard, as vanilla's edit boxes do
                 // (`KeyboardHandler.getClipboard`): refresh the buffer every
                 // edit box pastes from before any of them sees the key.
-                if p && self.ctrl && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV)) {
+                if p && self.ctrl && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV))
+                {
                     if let Some(text) = crate::os_clipboard::read() {
                         self.clipboard_synced = text.clone();
                         self.clipboard = text;
@@ -221,8 +222,7 @@ impl ApplicationHandler for LiveApp {
                             let mods = (i32::from(self.shift))
                                 | (i32::from(self.ctrl) << 1)
                                 | (i32::from(self.alt) << 2);
-                            let width_fn =
-                                |t: &str| rewo_gpu::text::width(t, advance);
+                            let width_fn = |t: &str| rewo_gpu::text::width(t, advance);
                             let mut clip = std::mem::take(&mut self.clipboard);
                             let outcome = self.sign_edit.as_mut().map(|v| {
                                 v.state.key_pressed(
@@ -250,8 +250,7 @@ impl ApplicationHandler for LiveApp {
                         // gated inside the model).
                         if let Some(text) = event.text.as_ref() {
                             if let Some(advance) = self.advance() {
-                                let width_fn =
-                                    |t: &str| rewo_gpu::text::width(t, &advance);
+                                let width_fn = |t: &str| rewo_gpu::text::width(t, &advance);
                                 for ch in text.chars() {
                                     if let Some(v) = self.sign_edit.as_mut() {
                                         v.state.char_typed(ch, &width_fn);
@@ -339,7 +338,13 @@ impl ApplicationHandler for LiveApp {
                                         rewo_world::recipe_book_screen::SEARCH_INNER_W,
                                     );
                                 }
-                                any |= anvil_char(session, &mut self.screen, &items, self.baked.as_ref(), ch);
+                                any |= anvil_char(
+                                    session,
+                                    &mut self.screen,
+                                    &items,
+                                    self.baked.as_ref(),
+                                    ch,
+                                );
                             }
                             if any {
                                 return;
@@ -622,10 +627,7 @@ impl ApplicationHandler for LiveApp {
                     // dozens of times a second while held.
                     PhysicalKey::Code(KeyCode::F1) if p && !event.repeat => {
                         self.hud_hidden = !self.hud_hidden;
-                        log::info!(
-                            "hud.{}",
-                            if self.hud_hidden { "hidden" } else { "shown" }
-                        );
+                        log::info!("hud.{}", if self.hud_hidden { "hidden" } else { "shown" });
                     }
                     PhysicalKey::Code(KeyCode::F3) => {
                         self.f3_down = p;
@@ -761,7 +763,10 @@ impl ApplicationHandler for LiveApp {
                         }
                     }
                 } else if b == 0
-                    && matches!(pressed, Some((rewo_world::screen::ScreenKind::Advancements, _)))
+                    && matches!(
+                        pressed,
+                        Some((rewo_world::screen::ScreenKind::Advancements, _))
+                    )
                 {
                     // M179: the tab strip. Not framework widgets (vanilla's
                     // loop runs in the SCREEN's mouseClicked, ahead of
@@ -865,14 +870,12 @@ impl ApplicationHandler for LiveApp {
                     // since the last one. Not "two clicks anywhere in
                     // 250 ms" — moving to a neighbouring slot resets it.
                     let layout = session.shown_menu().layout();
-                    let slot =
-                        self.screen
-                            .hovered(
-                            layout,
-                            ext.width as f32,
-                            ext.height as f32,
-                            book_visible(session),
-                        );
+                    let slot = self.screen.hovered(
+                        layout,
+                        ext.width as f32,
+                        ext.height as f32,
+                        book_visible(session),
+                    );
                     let now = std::time::Instant::now();
                     let doubled = b == 0
                         && slot.is_some()
@@ -1031,7 +1034,9 @@ impl ApplicationHandler for LiveApp {
                         .state
                         .as_ref()
                         .map(|s| s.window.inner_size())
-                        .map(|sz| rewo_gpu::hud::gui_scale(sz.width as f32, sz.height as f32) as f64)
+                        .map(|sz| {
+                            rewo_gpu::hud::gui_scale(sz.width as f32, sz.height as f32) as f64
+                        })
                         .unwrap_or(1.0);
                     if let Some((dx, dy)) =
                         self.adv_drag.cursor_moved((position.x, position.y), scale)
@@ -1049,8 +1054,7 @@ impl ApplicationHandler for LiveApp {
                 if self.screen.inventory_open() {
                     if let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) {
                         let layout = self.shown_layout();
-                        let book_open =
-                            self.session.as_ref().is_some_and(book_visible);
+                        let book_open = self.session.as_ref().is_some_and(book_visible);
                         if let Some(slot) = self.screen.hovered(
                             layout,
                             ext.width as f32,
@@ -1162,7 +1166,9 @@ impl LiveApp {
             return;
         }
         let name = open.menu.menu_slot(0).and_then(|s| items.name(s.item_id));
-        let visible = name.map_or(0, |n| rewo_data::stonecutter_table::select_by_input(n).len());
+        let visible = name.map_or(0, |n| {
+            rewo_data::stonecutter_table::select_by_input(n).len()
+        });
         if !ms::cut_scroll_active(ms::cut_display_recipes(name.is_some(), visible), visible) {
             return;
         }
@@ -1191,13 +1197,11 @@ impl LiveApp {
         self.screen.book_overlay = None;
         if open {
             let (gw, gh) = self.gui_size();
-            self.screen
-                .screens
-                .open(rewo_world::screen::Screen::new(
-                    rewo_world::screen::ScreenKind::Inventory,
-                    gw,
-                    gh,
-                ));
+            self.screen.screens.open(rewo_world::screen::Screen::new(
+                rewo_world::screen::ScreenKind::Inventory,
+                gw,
+                gh,
+            ));
         } else {
             self.screen.screens.close();
         }
@@ -1226,7 +1230,10 @@ impl LiveApp {
             .and_then(|s| s.own_game_mode())
             .is_some_and(rewo_net::play::GameMode::is_spectator);
         if lectern && may_build {
-            let take = self.lang.get_or_default("lectern.take_book", "Take Book").to_string();
+            let take = self
+                .lang
+                .get_or_default("lectern.take_book", "Take Book")
+                .to_string();
             rewo_world::book_view_screen::build_lectern_screen(gw, gh, &done, &take)
         } else {
             rewo_world::book_view_screen::build_screen(gw, gh, &done)
@@ -1239,7 +1246,10 @@ impl LiveApp {
         };
         let size = state.window.inner_size();
         let px = gui_px(size.width, size.height);
-        ((size.width as f32 / px) as i32, (size.height as f32 / px) as i32)
+        (
+            (size.width as f32 / px) as i32,
+            (size.height as f32 / px) as i32,
+        )
     }
 
     /// `Gui.setScreen`'s cursor half — `mouseHandler.releaseMouse()` +
@@ -1521,8 +1531,11 @@ impl LiveApp {
                 }
                 // Keep the echo's invariant: the committed face is what the
                 // packet carried, even if a keystroke's echo was missed.
-                let be_pos =
-                    rewo_world::block_entities::BlockEntityPos { x: view.pos.0, y: view.pos.1, z: view.pos.2 };
+                let be_pos = rewo_world::block_entities::BlockEntityPos {
+                    x: view.pos.0,
+                    y: view.pos.1,
+                    z: view.pos.2,
+                };
                 if let Some(be) = session.world.block_entities.get_mut(be_pos) {
                     be.set_sign_messages(view.is_front, &view.state.lines);
                 }
@@ -1543,12 +1556,17 @@ impl LiveApp {
     /// updating live behind the editor. `setMessage` replaces one face's
     /// messages and preserves that face's colour + glow.
     pub(super) fn echo_sign_edit(&mut self) {
-        let Some(view) = self.sign_edit.as_ref() else { return };
+        let Some(view) = self.sign_edit.as_ref() else {
+            return;
+        };
         let lines = view.state.lines.clone();
         let (pos, front) = (view.pos, view.is_front);
         if let Some(session) = self.session.as_mut() {
-            let be_pos =
-                rewo_world::block_entities::BlockEntityPos { x: pos.0, y: pos.1, z: pos.2 };
+            let be_pos = rewo_world::block_entities::BlockEntityPos {
+                x: pos.0,
+                y: pos.1,
+                z: pos.2,
+            };
             if let Some(be) = session.world.block_entities.get_mut(be_pos) {
                 be.set_sign_messages(front, &lines);
             }
@@ -1567,7 +1585,9 @@ impl LiveApp {
 
     pub(super) fn rebuild_options_screen(&mut self) {
         use rewo_world::options_screen as os;
-        let Some(page) = self.options_view else { return };
+        let Some(page) = self.options_view else {
+            return;
+        };
         let (gw, gh) = self.gui_size();
         if gw <= 0 || gh <= 0 {
             return;
@@ -1616,7 +1636,9 @@ impl LiveApp {
         self.options_drag = None;
         save_options(self.options);
         match page {
-            Some(OptionsPage::Sound) | Some(OptionsPage::Video) | Some(OptionsPage::Accessibility) => {
+            Some(OptionsPage::Sound)
+            | Some(OptionsPage::Video)
+            | Some(OptionsPage::Accessibility) => {
                 self.open_options_screen(OptionsPage::Root);
             }
             _ => {
@@ -1644,7 +1666,10 @@ impl LiveApp {
         self.sounds.set_category_volume(source, value);
         // `updateMessage()` — the label tracks the LIVE drag value.
         let caption_key = format!("soundCategory.{}", source.name());
-        let caption = self.lang.get_or_default(&caption_key, source.name()).to_string();
+        let caption = self
+            .lang
+            .get_or_default(&caption_key, source.name())
+            .to_string();
         let off = self.lang.get_or_default("options.off", "OFF").to_string();
         if let Some(sc) = self.screen.screens.current_mut() {
             if let Some(w) = sc.widget_mut(id) {
@@ -1676,8 +1701,11 @@ impl LiveApp {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let view =
-            crate::advancements_view::AdvancementsView::build(&session.advancements, &self.lang, &advance);
+        let view = crate::advancements_view::AdvancementsView::build(
+            &session.advancements,
+            &self.lang,
+            &advance,
+        );
         if view.screen.tabs.is_empty() {
             // Vanilla opens onto an empty window with its two sad labels —
             // that IS the screen; keep it rather than refusing to open.
@@ -1759,5 +1787,4 @@ impl LiveApp {
         self.stats = Some(view);
         self.screen.screens.open(screen);
     }
-
 }

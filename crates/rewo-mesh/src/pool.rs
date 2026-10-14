@@ -172,7 +172,10 @@ impl MeshPool {
         self.pool.spawn(move || {
             let mesh = mesh_column_with(
                 &snapshot,
-                MeshInputs { smooth_lighting, ..tables.inputs() },
+                MeshInputs {
+                    smooth_lighting,
+                    ..tables.inputs()
+                },
                 cx,
                 cz,
             );
@@ -356,7 +359,9 @@ mod tests {
     fn up_face(mesh: &ColumnMesh) -> Vec<([f32; 3], [u8; 3])> {
         let mut face: Vec<([f32; 3], [u8; 3])> = mesh
             .vertices
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|q| {
                 q.iter().all(|v| {
                     v.pos[1] == 11.0
@@ -391,9 +396,20 @@ mod tests {
 
         assert!(pool.submit(0, &world, 0, 0));
         let smooth = up_face(&recv_blocking(&mut pool).mesh.expect("meshed"));
-        let near = smooth.iter().find(|(p, _)| *p == [5.0, 11.0, 5.0]).unwrap().1;
-        let far = smooth.iter().find(|(p, _)| *p == [4.0, 11.0, 4.0]).unwrap().1;
-        assert_eq!(near, [204; 3], "the corner nearest the raised block: {smooth:?}");
+        let near = smooth
+            .iter()
+            .find(|(p, _)| *p == [5.0, 11.0, 5.0])
+            .unwrap()
+            .1;
+        let far = smooth
+            .iter()
+            .find(|(p, _)| *p == [4.0, 11.0, 4.0])
+            .unwrap()
+            .1;
+        assert_eq!(
+            near, [204; 3],
+            "the corner nearest the raised block: {smooth:?}"
+        );
         assert_eq!(far, [255; 3], "the far corner is unoccluded: {smooth:?}");
 
         pool.set_smooth_lighting(false);

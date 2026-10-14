@@ -129,7 +129,11 @@ pub fn save_instances(instances: &[Instance]) {
             if let Err(e) = util::atomic_write(&path, s.as_bytes()) {
                 log::warn!("could not write {}: {}", path.display(), e);
             } else {
-                log::info!("saved {} instance(s) to {}", instances.len(), path.display());
+                log::info!(
+                    "saved {} instance(s) to {}",
+                    instances.len(),
+                    path.display()
+                );
             }
         }
         Err(e) => log::warn!("could not serialize instances: {}", e),
@@ -191,7 +195,13 @@ fn assign_ids_with(instances: &mut [Instance], folder_exists: &dyn Fn(&str) -> b
 fn fresh_id(name: &str, used: &HashSet<String>, folder_exists: &dyn Fn(&str) -> bool) -> String {
     let slug = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     let slug: String = slug
         .split('-')
@@ -201,7 +211,11 @@ fn fresh_id(name: &str, used: &HashSet<String>, folder_exists: &dyn Fn(&str) -> 
         .chars()
         .take(32)
         .collect();
-    let slug = if slug.is_empty() { "instance".to_string() } else { slug };
+    let slug = if slug.is_empty() {
+        "instance".to_string()
+    } else {
+        slug
+    };
     loop {
         let id = format!("{}-{:06x}", slug, rand::random::<u32>() & 0xff_ffff);
         if paths::instance_dir(&id).is_some()
@@ -267,7 +281,9 @@ mods = []
         inst.loader = InstanceLoader::Ewo {
             manifest_url: "file:///C:/path/manifest.json".into(),
         };
-        let file = InstancesFile { instances: vec![inst] };
+        let file = InstancesFile {
+            instances: vec![inst],
+        };
         let s = toml::to_string_pretty(&file).expect("serialize");
         let parsed: InstancesFile = toml::from_str(&s).expect("deserialize");
         assert_eq!(parsed.instances[0].id, "ewo-world-abc123");
@@ -290,7 +306,9 @@ mods = []
             vec![],
         );
         inst.loader = InstanceLoader::Native;
-        let file = InstancesFile { instances: vec![inst] };
+        let file = InstancesFile {
+            instances: vec![inst],
+        };
         let s = toml::to_string_pretty(&file).expect("serialize");
         let parsed: InstancesFile = toml::from_str(&s).expect("deserialize");
         assert_eq!(parsed.instances[0].loader, InstanceLoader::Native);

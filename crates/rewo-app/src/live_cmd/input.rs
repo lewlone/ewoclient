@@ -60,7 +60,9 @@ impl LiveApp {
             return;
         }
         let name = open.menu.menu_slot(0).and_then(|s| items.name(s.item_id));
-        let visible = name.map_or(0, |n| rewo_data::stonecutter_table::select_by_input(n).len());
+        let visible = name.map_or(0, |n| {
+            rewo_data::stonecutter_table::select_by_input(n).len()
+        });
         if !ms::cut_scroll_active(ms::cut_display_recipes(name.is_some(), visible), visible) {
             return;
         }
@@ -388,7 +390,10 @@ impl LiveApp {
         advance: Option<[u8; 256]>,
         gui: (i32, i32),
         px: f32,
-    ) -> (Vec<rewo_gpu::hud::HudFill>, Vec<rewo_gpu::world::OwnedTextLine>) {
+    ) -> (
+        Vec<rewo_gpu::hud::HudFill>,
+        Vec<rewo_gpu::world::OwnedTextLine>,
+    ) {
         let empty = (Vec::new(), Vec::new());
         let Some(cs) = cs else {
             return empty;
@@ -426,12 +431,8 @@ impl LiveApp {
         let value: Vec<u16> = cs.input.value().encode_utf16().collect();
         let prefix = String::from_utf16_lossy(&value[..start.min(value.len())]);
         let box_width = lines.iter().map(|l| width_of(&l.text)).max().unwrap_or(0);
-        let position = rewo_net::command_format::usage_position(
-            fx + width_of(&prefix),
-            fx,
-            fw,
-            box_width,
-        );
+        let position =
+            rewo_net::command_format::usage_position(fx + width_of(&prefix), fx, fw, box_width);
         usage_box(
             &lines,
             position,
@@ -479,7 +480,12 @@ impl LiveApp {
         };
         let completion = self.session.as_ref().map(|session| {
             let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1, cmd);
-            rewo_net::dispatcher::completion_suggestions(&session.commands, &parsed, units.len(), cmd)
+            rewo_net::dispatcher::completion_suggestions(
+                &session.commands,
+                &parsed,
+                units.len(),
+                cmd,
+            )
         });
         let Some(completion) = completion else {
             return;
@@ -508,11 +514,7 @@ impl LiveApp {
             // M119 — a namespaced id. Distinctive by construction: a selector
             // starts with `@`, and neither a literal nor a selector-option
             // name contains a colon.
-            let resource = completion
-                .local
-                .list
-                .iter()
-                .any(|s| s.text.contains(':'));
+            let resource = completion.local.list.iter().any(|s| s.text.contains(':'));
             // M120 — a coordinate default. `~` appears in no literal, no
             // selector and no registry id, so the test is disjoint from r33's
             // and r34's by construction.
@@ -605,7 +607,11 @@ impl LiveApp {
     ///
     /// This is the dispatch arm a new screen adds: the framework hands back a
     /// `(ScreenKind, WidgetId)` and the app decides what it means.
-    pub(super) fn press_widget(&mut self, kind: rewo_world::screen::ScreenKind, id: rewo_world::screen::WidgetId) {
+    pub(super) fn press_widget(
+        &mut self,
+        kind: rewo_world::screen::ScreenKind,
+        id: rewo_world::screen::WidgetId,
+    ) {
         use rewo_world::death_screen as ds;
         use rewo_world::screen::ScreenKind;
         match (kind, id) {
@@ -646,9 +652,9 @@ impl LiveApp {
             }
             (ScreenKind::BookView, rewo_world::book_view_screen::TAKE_BOOK) => {
                 if let Some(session) = self.session.as_mut() {
-                    if let Err(e) = session.container_button_click(
-                        rewo_world::book_view_screen::LECTERN_TAKE_BOOK,
-                    ) {
+                    if let Err(e) = session
+                        .container_button_click(rewo_world::book_view_screen::LECTERN_TAKE_BOOK)
+                    {
                         log::warn!("live: lectern take_book: {e}");
                     }
                 }
@@ -740,7 +746,9 @@ impl LiveApp {
     /// M173 — one press on an options page's widget.
     pub(super) fn options_press(&mut self, id: rewo_world::screen::WidgetId) {
         use rewo_world::options_screen as os;
-        let Some(page) = self.options_view else { return };
+        let Some(page) = self.options_view else {
+            return;
+        };
         match page {
             os::OptionsPage::Root => match id {
                 // `root_rows`' packing in vanilla's link order (Sounds,
@@ -757,10 +765,7 @@ impl LiveApp {
                     // `nextSongDelay` from the CURRENT situational track —
                     // `setMinutesBetweenSongs`, not the constructor's store.
                     self.options.cycle_frequency();
-                    let situational = self
-                        .session
-                        .as_ref()
-                        .and_then(|s| s.situational_music());
+                    let situational = self.session.as_ref().and_then(|s| s.situational_music());
                     self.sounds
                         .change_music_frequency(self.options.music_frequency, situational.as_ref());
                     // A cycle button saves on every click (vanilla's

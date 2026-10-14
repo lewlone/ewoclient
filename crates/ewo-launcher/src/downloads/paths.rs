@@ -84,10 +84,7 @@ pub fn library_path(artifact_path: &str) -> Option<PathBuf> {
 
 /// A single path component that can't escape its parent directory.
 fn is_plain_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment != "."
-        && segment != ".."
-        && !segment.contains(['\\', ':', '\0'])
+    !segment.is_empty() && segment != "." && segment != ".." && !segment.contains(['\\', ':', '\0'])
 }
 
 /// Assets dir: `<shared>/assets`.

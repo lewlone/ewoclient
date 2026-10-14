@@ -33,8 +33,8 @@ use gpu_allocator::vulkan::Allocation;
 
 use crate::buf_ring::BufRing;
 use crate::entities::create_texture;
-use crate::Gpu;
 use crate::world::DEPTH_FORMAT;
+use crate::Gpu;
 
 /// `PORTAL_LAYERS` for `RenderPipelines.END_PORTAL`.
 pub const PORTAL_LAYERS: i32 = 15;
@@ -96,10 +96,8 @@ impl EndPortalPass {
         sky: &PortalImage,
         portal: &PortalImage,
     ) -> Result<Self, String> {
-        let (sky_img, sky_alloc, sky_view) =
-            create_texture(gpu, sky.rgba, sky.w, sky.h)?;
-        let (por_img, por_alloc, por_view) =
-            create_texture(gpu, portal.rgba, portal.w, portal.h)?;
+        let (sky_img, sky_alloc, sky_view) = create_texture(gpu, sky.rgba, sky.w, sky.h)?;
+        let (por_img, por_alloc, por_view) = create_texture(gpu, portal.rgba, portal.w, portal.h)?;
 
         let device = gpu.device.clone();
         // REPEAT is load-bearing here in a way it is not for a normal texture:

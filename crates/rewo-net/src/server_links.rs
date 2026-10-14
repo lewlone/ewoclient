@@ -505,7 +505,9 @@ mod tests {
                     link: "https://status.example".into(),
                 },
                 UntrustedEntry {
-                    label: ServerLinkLabel::Custom(rewo_proto::nbt::Nbt::String("Our Discord".into())),
+                    label: ServerLinkLabel::Custom(rewo_proto::nbt::Nbt::String(
+                        "Our Discord".into()
+                    )),
                     link: "https://discord.example".into(),
                 },
             ]

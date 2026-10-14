@@ -261,7 +261,12 @@ fn paint_arms_and_dot(
 
     if dot_enabled && dot_size > 0.0 {
         let half = dot_size * 0.5 + inflate;
-        let rect = Rect::from_xywh(cx - half, cy - half, dot_size + 2.0 * inflate, dot_size + 2.0 * inflate);
+        let rect = Rect::from_xywh(
+            cx - half,
+            cy - half,
+            dot_size + 2.0 * inflate,
+            dot_size + 2.0 * inflate,
+        );
         canvas.draw_rect(rect, &paint);
     }
 }

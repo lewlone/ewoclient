@@ -318,11 +318,7 @@ impl LegacyRandom48 {
 
     /// `BitRandomSource.next(int)`.
     pub fn next(&mut self, bits: u32) -> i32 {
-        self.seed = self
-            .seed
-            .wrapping_mul(MULTIPLIER)
-            .wrapping_add(INCREMENT)
-            & MODULUS_MASK;
+        self.seed = self.seed.wrapping_mul(MULTIPLIER).wrapping_add(INCREMENT) & MODULUS_MASK;
         (self.seed >> (48 - bits)) as i32
     }
 }
@@ -470,11 +466,7 @@ impl SoundsIndex {
     /// [`INTENTIONALLY_EMPTY_SOUND`] is the exception: it short-circuits to
     /// `Some`, before the registry is consulted, exactly as
     /// `AbstractSoundInstance.resolve` does.
-    pub fn get_sound(
-        &self,
-        event: &str,
-        rng: &mut impl SoundRandom,
-    ) -> Option<ResolvedSound> {
+    pub fn get_sound(&self, event: &str, rng: &mut impl SoundRandom) -> Option<ResolvedSound> {
         if event == INTENTIONALLY_EMPTY_SOUND {
             return Some(ResolvedSound {
                 name: INTENTIONALLY_EMPTY_SOUND.to_string(),
@@ -573,9 +565,7 @@ impl SoundsIndex {
 /// The map is an [`IndexMap`] because gson's `LinkedTreeMap` is
 /// insertion-ordered. Within one document the keys are distinct so the order
 /// does not change the result, but it makes a diagnostic reproducible.
-pub fn parse_document(
-    json: &str,
-) -> Result<IndexMap<String, SoundEventRegistration>, String> {
+pub fn parse_document(json: &str) -> Result<IndexMap<String, SoundEventRegistration>, String> {
     let raw: IndexMap<String, serde_json::Value> =
         serde_json::from_str(json).map_err(|e| format!("sounds.json: {e}"))?;
     let mut out = IndexMap::with_capacity(raw.len());
@@ -644,8 +634,7 @@ fn parse_sound(key: &str, element: &serde_json::Value) -> Result<Sound, String> 
             let s = v
                 .as_str()
                 .ok_or_else(|| format!("sounds.json: {key}: type is not a string"))?;
-            SoundType::by_name(s)
-                .ok_or_else(|| format!("sounds.json: {key}: Invalid type: {s}"))?
+            SoundType::by_name(s).ok_or_else(|| format!("sounds.json: {key}: Invalid type: {s}"))?
         }
     };
     let volume = get_f32(object, "volume", 1.0, key)?;
@@ -665,8 +654,12 @@ fn parse_sound(key: &str, element: &serde_json::Value) -> Result<Sound, String> 
     }
     let preload = get_bool(object, "preload", false, key)?;
     let stream = get_bool(object, "stream", false, key)?;
-    let attenuation_distance =
-        get_i32(object, "attenuation_distance", DEFAULT_ATTENUATION_DISTANCE, key)?;
+    let attenuation_distance = get_i32(
+        object,
+        "attenuation_distance",
+        DEFAULT_ATTENUATION_DISTANCE,
+        key,
+    )?;
     Ok(Sound {
         name: identifier(name),
         volume,
@@ -764,10 +757,7 @@ pub fn shared_assets_dir() -> Option<PathBuf> {
 /// `validateSoundResource` is real here rather than assumed: a variant whose
 /// file the store does not carry is dropped, exactly as vanilla drops it, and
 /// the event's weights change with it.
-pub fn load_from_asset_store(
-    assets_root: &Path,
-    index_id: &str,
-) -> Result<SoundsIndex, String> {
+pub fn load_from_asset_store(assets_root: &Path, index_id: &str) -> Result<SoundsIndex, String> {
     let index_path = assets_root.join("indexes").join(format!("{index_id}.json"));
     let index = crate::read_json_file(&index_path)?;
     let objects = index
@@ -797,8 +787,8 @@ pub fn load_from_asset_store(
     let mut out = SoundsIndex::new();
     for (namespace, hash) in &documents {
         let path = object_path(assets_root, hash);
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         out.load_document(namespace, &text, &files)?;
     }
     log::info!(
@@ -1153,7 +1143,8 @@ mod tests {
     /// substituted default.
     #[test]
     fn an_unregistered_or_empty_or_zero_weight_event_is_none() {
-        let idx = index(r#"{"empty":{"sounds":[]},"z":{"sounds":[{"name":"gone","type":"event"}]}}"#);
+        let idx =
+            index(r#"{"empty":{"sounds":[]},"z":{"sounds":[{"name":"gone","type":"event"}]}}"#);
         assert_eq!(idx.get_sound_seeded("minecraft:nope", 1), None);
         assert_eq!(idx.get_sound_seeded("minecraft:empty", 1), None);
         assert_eq!(idx.get_sound_seeded("minecraft:z", 1), None);
@@ -1300,11 +1291,7 @@ mod tests {
         let mut redirects = 0usize;
         for name in idx.names() {
             let e = idx.get(name).unwrap();
-            redirects += e
-                .sounds
-                .iter()
-                .filter(|s| s.ty == SoundType::Event)
-                .count();
+            redirects += e.sounds.iter().filter(|s| s.ty == SoundType::Event).count();
         }
         assert_eq!(redirects, 61, "`type: event` variant count");
 
@@ -1360,8 +1347,8 @@ mod tests {
             return;
         }
         let idx = load_from_asset_store(&root, "32").expect("load");
-        let registry = crate::sound_events::SoundEvents::load(&paths.registries_json())
-            .expect("registry");
+        let registry =
+            crate::sound_events::SoundEvents::load(&paths.registries_json()).expect("registry");
         let mut missing = Vec::new();
         for id in 0..registry.len() as i32 {
             let name = registry.name(id).expect("dense ids");

@@ -264,11 +264,19 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let (w, h) = (512u32, 512u32);
     let mut off = Offscreen::new(gpu, w, h)?;
     let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    wr.init_entities(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))?;
+    wr.init_entities(
+        gpu,
+        crate::live_cmd::font_data(baked),
+        crate::live_cmd::entity_textures(baked),
+    )?;
     let mut kinds = wr.entity_pass().expect("entity pass").available_kinds();
     // Textures that reuse the same texels across face labels (breeze wind's
     // concentric shells) can't be color-checked — skip those mobs loudly.
-    let ambiguous = wr.entity_pass().expect("entity pass").debug_ambiguous_kinds().to_vec();
+    let ambiguous = wr
+        .entity_pass()
+        .expect("entity pass")
+        .debug_ambiguous_kinds()
+        .to_vec();
     for k in &ambiguous {
         println!(
             "[mobshot] SKIP {:?}: texture reuses rects across face labels — facelabel check N/A",
@@ -355,7 +363,12 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
             let img = off.read_rgba(gpu)?;
             if let Some(dir) = &args.out_dir {
-                save_png(&img, w, h, &dir.join(format!("{}-{view_name}.png", kind_name(kind))))?;
+                save_png(
+                    &img,
+                    w,
+                    h,
+                    &dir.join(format!("{}-{view_name}.png", kind_name(kind))),
+                )?;
             }
 
             let mut counts = [0usize; 6];
@@ -407,7 +420,10 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         for f in &failures {
             println!("[mobshot] FAIL {f}");
         }
-        Err(format!("mobshot check: {} of {checked} views failed", failures.len()))
+        Err(format!(
+            "mobshot check: {} of {checked} views failed",
+            failures.len()
+        ))
     }
 }
 
@@ -544,8 +560,13 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             let info = crate::skin_fetch::resolve(name)?;
             let url = info.url.as_deref().ok_or("profile carries no skin")?;
             let rgba = crate::skin_fetch::fetch_rgba64(url)?;
-            let uv = wr.upload_player_skin(gpu, &rgba).ok_or("skin upload failed")?;
-            println!("[mobshot] skin: {name} → {} model, uploaded", if info.slim { "slim" } else { "wide" });
+            let uv = wr
+                .upload_player_skin(gpu, &rgba)
+                .ok_or("skin upload failed")?;
+            println!(
+                "[mobshot] skin: {name} → {} model, uploaded",
+                if info.slim { "slim" } else { "wide" }
+            );
             Some((uv, info.slim))
         }
         None => None,
@@ -563,7 +584,11 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     if let Some((_, slim)) = player_skin {
         for k in kinds.iter_mut() {
             if matches!(k, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
-                *k = if slim { EntityModelKind::PlayerSlim } else { EntityModelKind::Player };
+                *k = if slim {
+                    EntityModelKind::PlayerSlim
+                } else {
+                    EntityModelKind::Player
+                };
             }
         }
         kinds.dedup();
@@ -571,7 +596,11 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     println!(
         "[mobshot] {} models: {}",
         kinds.len(),
-        kinds.iter().map(|k| k.name()).collect::<Vec<_>>().join(", ")
+        kinds
+            .iter()
+            .map(|k| k.name())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     // Short mobs in the front rows, giants (ghast, golem, camel) in the
     // back — nothing hides behind something taller.
@@ -597,7 +626,10 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         .as_deref()
         .and_then(|s| {
             let mut it = s.split(',');
-            Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+            Some((
+                it.next()?.trim().parse().ok()?,
+                it.next()?.trim().parse().ok()?,
+            ))
         })
         .unwrap_or((0.0, 0.0));
     let gesture = match args.gesture.as_deref() {
@@ -652,7 +684,11 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         .collect();
 
     let max_h = kinds.iter().map(height_of).fold(2.0f32, f32::max);
-    let center = Vec3::new(0.0, (max_h * 0.45).max(1.0), -((rows as f32 - 1.0) * sz) / 2.0);
+    let center = Vec3::new(
+        0.0,
+        (max_h * 0.45).max(1.0),
+        -((rows as f32 - 1.0) * sz) / 2.0,
+    );
     let eye = if args.only.is_some() {
         // Closeup: 3/4 view fitted to the row width + tallest mob.
         let span = (kinds.len().min(cols) as f32) * sx;
@@ -688,7 +724,11 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
     }
     off.save_png(gpu, &args.out)?;
-    println!("[mobshot] sheet: {} mobs, wrote {}", kinds.len(), args.out.display());
+    println!(
+        "[mobshot] sheet: {} mobs, wrote {}",
+        kinds.len(),
+        args.out.display()
+    );
     wr.destroy(gpu);
     off.destroy(gpu);
     Ok(())
@@ -753,7 +793,10 @@ impl Checker {
     }
 
     fn finish(self, gate: &str, expected: usize) -> Result<(), String> {
-        println!("[mobshot] {gate} witnesses observed: {} / {expected}", self.witnessed);
+        println!(
+            "[mobshot] {gate} witnesses observed: {} / {expected}",
+            self.witnessed
+        );
         if !self.failures.is_empty() {
             return Err(format!(
                 "{} propert{} failed: {}",
@@ -777,7 +820,10 @@ impl Checker {
 /// Frame one mob the way the facelabel gate does, returning `(view_proj, right,
 /// up, eye)`. Shared by all three M57 gates so a camera difference can never be
 /// the reason one of them disagrees with another.
-fn frame_kind(wr: &WorldRenderer, kind: EntityModelKind) -> Option<([[f32; 4]; 4], [f32; 3], [f32; 3], Vec3)> {
+fn frame_kind(
+    wr: &WorldRenderer,
+    kind: EntityModelKind,
+) -> Option<([[f32; 4]; 4], [f32; 3], [f32; 3], Vec3)> {
     let quads = wr.entity_pass()?.neutral_quads(kind)?;
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for (pos, _, _) in &quads {
@@ -788,7 +834,11 @@ fn frame_kind(wr: &WorldRenderer, kind: EntityModelKind) -> Option<([[f32; 4]; 4
             }
         }
     }
-    let center = Vec3::new((lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5);
+    let center = Vec3::new(
+        (lo[0] + hi[0]) * 0.5,
+        (lo[1] + hi[1]) * 0.5,
+        (lo[2] + hi[2]) * 0.5,
+    );
     let radius = (0..3).map(|i| hi[i] - lo[i]).fold(0f32, f32::max) * 0.5;
     let dir = Vec3::new(0.0, 0.0, -1.0);
     let eye = center - dir * (radius * 3.0 + 1.0);
@@ -876,7 +926,8 @@ fn run_emissive_check(
     // collapsing 89 observations into one opaque boolean.
     let (mut dark_fail, mut black_fail, mut stray_fail, mut state_fail) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let (mut checked, mut glowing, mut expected_glowing, mut state_driven_n) = (0usize, 0usize, 0usize, 0usize);
+    let (mut checked, mut glowing, mut expected_glowing, mut state_driven_n) =
+        (0usize, 0usize, 0usize, 0usize);
     let age = CHECK_AGE_TICKS;
 
     for kind in kinds {
@@ -912,9 +963,9 @@ fn run_emissive_check(
         wr.set_camera(eye.to_array());
 
         let shoot = |wr: &mut WorldRenderer,
-                         gpu: &mut Gpu,
-                         off: &mut Offscreen,
-                         entity: Option<(f32, EmissiveState)>|
+                     gpu: &mut Gpu,
+                     off: &mut Offscreen,
+                     entity: Option<(f32, EmissiveState)>|
          -> Result<Vec<u8>, String> {
             match entity {
                 Some((light, emissive)) => {
@@ -931,8 +982,18 @@ fn run_emissive_check(
             off.read_rgba(gpu)
         };
         let bg = shoot(&mut wr, gpu, &mut off, None)?;
-        let lit = shoot(&mut wr, gpu, &mut off, Some((1.0, EmissiveState::default())))?;
-        let dark = shoot(&mut wr, gpu, &mut off, Some((0.0, EmissiveState::default())))?;
+        let lit = shoot(
+            &mut wr,
+            gpu,
+            &mut off,
+            Some((1.0, EmissiveState::default())),
+        )?;
+        let dark = shoot(
+            &mut wr,
+            gpu,
+            &mut off,
+            Some((0.0, EmissiveState::default())),
+        )?;
 
         let silhouette: Vec<bool> = (0..bg.len() / 4)
             .map(|i| lit[i * 4..i * 4 + 3] != bg[i * 4..i * 4 + 3])
@@ -999,7 +1060,11 @@ fn run_emissive_check(
             "{expected_glowing} mob(s) have a layer active at vanilla's synched \
              defaults; {} went black instead{}",
             dark_fail.len(),
-            if dark_fail.is_empty() { String::new() } else { format!(" ({})", dark_fail.join(", ")) }
+            if dark_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", dark_fail.join(", "))
+            }
         ),
     );
     c.record(
@@ -1009,7 +1074,11 @@ fn run_emissive_check(
             "{} of {checked} mobs graded as the control half; {} stayed lit{}",
             checked - expected_glowing,
             black_fail.len(),
-            if black_fail.is_empty() { String::new() } else { format!(" ({})", black_fail.join(", ")) }
+            if black_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", black_fail.join(", "))
+            }
         ),
     );
     c.record(
@@ -1018,7 +1087,11 @@ fn run_emissive_check(
         format!(
             "a layer drifting off its model would paint here; {} did{}",
             stray_fail.len(),
-            if stray_fail.is_empty() { String::new() } else { format!(" ({})", stray_fail.join(", ")) }
+            if stray_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", stray_fail.join(", "))
+            }
         ),
     );
     c.record(
@@ -1029,7 +1102,11 @@ fn run_emissive_check(
              rendered at the sway's zero crossing so only the alpha can move the \
              count; {} did not grow{}",
             state_fail.len(),
-            if state_fail.is_empty() { String::new() } else { format!(" ({})", state_fail.join(", ")) }
+            if state_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", state_fail.join(", "))
+            }
         ),
     );
     c.record(
@@ -1051,8 +1128,11 @@ const ETF_WITNESSES: usize = 8;
 
 /// Flat colours the fixture pack paints its alternate textures, chosen to be
 /// unmistakable against any vanilla mob texture and against each other.
-const ETF_COLORS: [([u8; 3], &str); 3] =
-    [([255, 0, 0], "red"), ([0, 255, 0], "green"), ([0, 0, 255], "blue")];
+const ETF_COLORS: [([u8; 3], &str); 3] = [
+    ([255, 0, 0], "red"),
+    ([0, 255, 0], "green"),
+    ([0, 0, 255], "blue"),
+];
 
 /// The ETF gate: **a pack's variant rules end up on the mob's pixels, and only
 /// on the slot the rule names.**
@@ -1103,9 +1183,10 @@ fn run_etf_check(
             .is_some_and(|v| v.iter().filter(|r| r.texture.is_none()).count() == 1),
         format!(
             "cow rules: {:?}",
-            etf.rules
-                .get("cow")
-                .map(|v| v.iter().map(|r| (r.index, r.texture.is_some())).collect::<Vec<_>>())
+            etf.rules.get("cow").map(|v| v
+                .iter()
+                .map(|r| (r.index, r.texture.is_some()))
+                .collect::<Vec<_>>())
         ),
     );
 
@@ -1139,7 +1220,11 @@ fn run_etf_check(
     // resolves to "no variant" — so nothing ever draws with id 1, and an id the
     // atlas has no slot for must fall back rather than sample garbage.
     let one = shot(&mut wr, gpu, &mut off, 1)?;
-    let one_diff = one.chunks(4).zip(vanilla.chunks(4)).filter(|(a, b)| a != b).count();
+    let one_diff = one
+        .chunks(4)
+        .zip(vanilla.chunks(4))
+        .filter(|(a, b)| a != b)
+        .count();
     c.record(
         "f3.a_variant_id_with_no_atlas_slot_falls_back_to_vanilla",
         one == vanilla,
@@ -1160,7 +1245,11 @@ fn run_etf_check(
             // The flat colour arrives shaded per face, so compare by dominant
             // channel rather than exact value.
             let px = &img[i * 4..i * 4 + 3];
-            let brightest = px.iter().enumerate().max_by_key(|(_, c)| **c).map(|(c, _)| c);
+            let brightest = px
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, c)| **c)
+                .map(|(c, _)| c);
             let want = rgb.iter().position(|c| *c == 255);
             if brightest == want && px.iter().max() >= Some(&24) {
                 hits += 1;
@@ -1182,7 +1271,11 @@ fn run_etf_check(
         format!(
             "3 alternates, by dominant channel over the mob's own pixels: {}{}",
             colour_detail.join(", "),
-            if colour_fail.is_empty() { String::new() } else { format!(" — {}", colour_fail.join("; ")) }
+            if colour_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", colour_fail.join("; "))
+            }
         ),
     );
 
@@ -1298,8 +1391,10 @@ fn write_etf_fixture(path: &std::path::Path) -> Result<(), String> {
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut put = |name: &str, bytes: &[u8]| -> Result<(), String> {
         use std::io::Write;
-        zip.start_file(name, opts).map_err(|e| format!("etf fixture {name}: {e}"))?;
-        zip.write_all(bytes).map_err(|e| format!("etf fixture {name}: {e}"))
+        zip.start_file(name, opts)
+            .map_err(|e| format!("etf fixture {name}: {e}"))?;
+        zip.write_all(bytes)
+            .map_err(|e| format!("etf fixture {name}: {e}"))
     };
 
     // The cow: `textures.1` is the vanilla file, 2..4 the flat colours, and 5
@@ -1335,7 +1430,8 @@ fn write_etf_fixture(path: &std::path::Path) -> Result<(), String> {
         "assets/minecraft/textures/entity/sheep/rewo_wool.png",
         &flat_png(64, 32, [255, 0, 0]),
     )?;
-    zip.finish().map_err(|e| format!("etf fixture finish: {e}"))?;
+    zip.finish()
+        .map_err(|e| format!("etf fixture finish: {e}"))?;
     Ok(())
 }
 
@@ -1404,7 +1500,10 @@ const VARIANT_MOBS: [(EntityModelKind, &str); 8] = [
     (EntityModelKind::Horse, "minecraft:horse"),
     (EntityModelKind::Llama, "minecraft:llama"),
     (EntityModelKind::TropicalFish, "minecraft:tropical_fish"),
-    (EntityModelKind::TropicalFishLarge, "minecraft:tropical_fish"),
+    (
+        EntityModelKind::TropicalFishLarge,
+        "minecraft:tropical_fish",
+    ),
 ];
 
 /// Every texture key a kind lists — M64's mobs vary their *first* slot, M68's
@@ -1481,7 +1580,11 @@ fn run_variant_check(
     let llama = |i: i32| mv::variant_id(mv::llama_texture(i));
     let horse = |i: i32| mv::variant_id(mv::horse_texture(i));
     let distinct = |f: &dyn Fn(i32) -> Option<u16>, n: i32| {
-        (0..n).map(f).collect::<std::collections::HashSet<_>>().len() == n as usize
+        (0..n)
+            .map(f)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == n as usize
     };
     c.record(
         "n2.each_ordinal_table_is_a_bijection_with_its_own_out_of_range_rule",
@@ -1501,8 +1604,14 @@ fn run_variant_check(
              any of them as a clamp would put a wrong coat on a horse at 7 and \
              a wrong axolotl at 5. The horse's markings live in the HIGH byte \
              and must not shift the coat: 0x203 -> {:?} = 3's {:?}",
-            axo(5), axo(0), llama(9), llama(3), horse(7), horse(0),
-            horse(3 | (2 << 8)), horse(3)
+            axo(5),
+            axo(0),
+            llama(9),
+            llama(3),
+            horse(7),
+            horse(0),
+            horse(3 | (2 << 8)),
+            horse(3)
         ),
     );
 
@@ -1564,9 +1673,18 @@ fn run_variant_check(
         &rewo_proto::nbt::Nbt::Compound(vec![(
             "assets".into(),
             rewo_proto::nbt::Nbt::Compound(vec![
-                ("wild".into(), rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen".into())),
-                ("tame".into(), rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen_tame".into())),
-                ("angry".into(), rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen_angry".into())),
+                (
+                    "wild".into(),
+                    rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen".into()),
+                ),
+                (
+                    "tame".into(),
+                    rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen_tame".into()),
+                ),
+                (
+                    "angry".into(),
+                    rewo_proto::nbt::Nbt::String("minecraft:entity/wolf/wolf_ashen_angry".into()),
+                ),
             ]),
         )]),
     );
@@ -1658,7 +1776,9 @@ fn run_variant_check(
         let mut same_as_base = Vec::new();
         let mut dupes = Vec::new();
         for (kind, _) in VARIANT_MOBS {
-            let Some((vp, right, up, eye)) = frame_kind(&wr, kind) else { continue };
+            let Some((vp, right, up, eye)) = frame_kind(&wr, kind) else {
+                continue;
+            };
             wr.set_camera(eye.to_array());
             let shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, v: u16| {
                 let d = EntityDraw {
@@ -1671,8 +1791,7 @@ fn run_variant_check(
             };
             let base = shot(&mut wr, gpu, &mut off, 0)?;
             let mut seen: Vec<(u16, Vec<u8>)> = Vec::new();
-            for (_, id, path) in
-                mv::specs().filter(|(k, _, _)| kind_texture_keys(kind).contains(k))
+            for (_, id, path) in mv::specs().filter(|(k, _, _)| kind_texture_keys(kind).contains(k))
             {
                 let img = shot(&mut wr, gpu, &mut off, id)?;
                 if img == base {
@@ -1770,11 +1889,11 @@ fn check_fish(
         return Err("the large tropical fish model is unavailable".into());
     };
     let shot = |wr: &mut WorldRenderer,
-                    gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    kind: EntityModelKind,
-                    variant: u16,
-                    dye: Option<[u8; 2]>| {
+                gpu: &mut Gpu,
+                off: &mut Offscreen,
+                kind: EntityModelKind,
+                variant: u16,
+                dye: Option<[u8; 2]>| {
         let (vp, right, up, eye) = if kind == small {
             (vp_s, right_s, up_s, eye_s)
         } else {
@@ -1826,7 +1945,10 @@ fn check_fish(
         (0..a.len() / 4).filter(|&i| px(a, i) != px(b, i)).collect()
     };
     let inter = |a: &[usize], b: &[usize]| -> Vec<usize> {
-        a.iter().copied().filter(|i| b.binary_search(i).is_ok()).collect()
+        a.iter()
+            .copied()
+            .filter(|i| b.binary_search(i).is_ok())
+            .collect()
     };
     let pat = mv::fish_pattern_variant(mv::FishBase::Small, 3);
     let white = shot(wr, gpu, off, small, pat, Some([0, 0]))?;
@@ -1838,10 +1960,7 @@ fn check_fish(
     let default_dye = shot(wr, gpu, off, small, pat, None)?;
     c.record(
         "f3.the_body_dye_and_the_pattern_dye_move_disjoint_layers",
-        overlap == 0
-            && !body_set.is_empty()
-            && !patt_set.is_empty()
-            && default_dye == white,
+        overlap == 0 && !body_set.is_empty() && !patt_set.is_empty() && default_dye == white,
         format!(
             "colouring the body alone moves {} px, the pattern alone {} px, and \
              {overlap} px answer to both — `getModelTint` returns \
@@ -1853,7 +1972,11 @@ fn check_fish(
              empty. Which field is which is f3b's job, not this row's",
             body_set.len(),
             patt_set.len(),
-            if default_dye == white { "byte-identical to dye [0,0]" } else { "DIFFERS" }
+            if default_dye == white {
+                "byte-identical to dye [0,0]"
+            } else {
+                "DIFFERS"
+            }
         ),
     );
 
@@ -1910,8 +2033,7 @@ fn check_fish(
         let img = shot(wr, gpu, off, small, pat, Some([dye, 0]))?;
         let want: [f32; 3] =
             std::array::from_fn(|c| lin(diffuse[dye as usize][c]) / lin(diffuse[0][c]));
-        let alt: [f32; 3] =
-            std::array::from_fn(|c| lin(wool[dye as usize][c]) / lin(wool[0][c]));
+        let alt: [f32; 3] = std::array::from_fn(|c| lin(wool[dye as usize][c]) / lin(wool[0][c]));
         let (mut sum, mut n) = ([0.0f64; 3], [0u32; 3]);
         for &i in &body_set {
             for c in 0..3 {
@@ -1950,7 +2072,11 @@ fn check_fish(
              disagree sharply *against WHITE* even though a ratio between two \
              coloured dyes barely separates them at all",
             fail.len(),
-            if fail.is_empty() { String::new() } else { format!(" ({})", fail.join(", ")) }
+            if fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", fail.join(", "))
+            }
         ),
     );
     Ok(())
@@ -1964,8 +2090,8 @@ fn check_fish(
 /// `TamableAnimal` 18 and 19.
 fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     use rewo_net::VariantKinds;
-    let paths = rewo_data::DataPaths::for_version("26.2")
-        .ok_or("no config dir for version data")?;
+    let paths =
+        rewo_data::DataPaths::for_version("26.2").ok_or("no config dir for version data")?;
     let packets = rewo_data::packets::Packets::load(&paths.packets_json())?;
     let ids = rewo_net::ids::Ids::resolve(&packets)?;
     let etypes = rewo_data::entity_types::EntityTypes::load(&paths.registries_json())?;
@@ -2120,17 +2246,16 @@ fn run_tint_check(
     // is a rule `collect_entities` applies — a gate that set the flag by hand
     // would grade itself (M18's lesson, and M45's).
     let shot_ext = |wr: &mut WorldRenderer,
-                        gpu: &mut Gpu,
-                        off: &mut Offscreen,
-                        dye: Option<u8>,
-                        sheared: bool,
-                        baby: bool,
-                        force: Option<bool>| {
+                    gpu: &mut Gpu,
+                    off: &mut Offscreen,
+                    dye: Option<u8>,
+                    sheared: bool,
+                    baby: bool,
+                    force: Option<bool>| {
         let d = EntityDraw {
             dye,
             sheared,
-            undercoat: force
-                .unwrap_or_else(|| crate::live_cmd::undercoat_visible(kind, dye, baby)),
+            undercoat: force.unwrap_or_else(|| crate::live_cmd::undercoat_visible(kind, dye, baby)),
             mob: rewo_gpu::mobs::MobCombat {
                 is_baby: baby,
                 ..Default::default()
@@ -2145,10 +2270,10 @@ fn run_tint_check(
     // suppressed — see t6 for why that is now a necessary qualification and
     // not a convenience.
     let shot_of = |wr: &mut WorldRenderer,
-                       gpu: &mut Gpu,
-                       off: &mut Offscreen,
-                       dye: Option<u8>,
-                       sheared: bool| {
+                   gpu: &mut Gpu,
+                   off: &mut Offscreen,
+                   dye: Option<u8>,
+                   sheared: bool| {
         let d = EntityDraw {
             dye,
             sheared,
@@ -2240,7 +2365,9 @@ fn run_tint_check(
         }
         // Containment: every non-wool pixel is untouched by the dye.
         let strayed = (0..img.len() / 4)
-            .filter(|i| wool.binary_search(i).is_err() && img[i * 4..i * 4 + 3] != white[i * 4..i * 4 + 3])
+            .filter(|i| {
+                wool.binary_search(i).is_err() && img[i * 4..i * 4 + 3] != white[i * 4..i * 4 + 3]
+            })
             .count();
         if strayed > 0 {
             stray_fail.push(format!("dye {dye}: {strayed} px"));
@@ -2254,7 +2381,11 @@ fn run_tint_check(
              prediction from `SheepWoolLayer`'s semantics rather than from the \
              renderer; {} outside tolerance{}",
             ratio_fail.len(),
-            if ratio_fail.is_empty() { String::new() } else { format!(" ({})", ratio_fail.join(", ")) }
+            if ratio_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", ratio_fail.join(", "))
+            }
         ),
     );
     c.record(
@@ -2264,7 +2395,11 @@ fn run_tint_check(
             "the sheep's face and legs sample its *other* texture and must be \
              byte-identical across every dye; {} dye(s) moved them{}",
             stray_fail.len(),
-            if stray_fail.is_empty() { String::new() } else { format!(" ({})", stray_fail.join(", ")) }
+            if stray_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", stray_fail.join(", "))
+            }
         ),
     );
 
@@ -2281,7 +2416,10 @@ fn run_tint_check(
     let changed: Vec<usize> = (0..white.len() / 4)
         .filter(|&i| px(&shorn, i) != px(&white, i))
         .collect();
-    let strayed = changed.iter().filter(|i| wool.binary_search(i).is_err()).count();
+    let strayed = changed
+        .iter()
+        .filter(|i| wool.binary_search(i).is_err())
+        .count();
     let shorn_sil = (0..white.len() / 4)
         .filter(|&i| px(&shorn, i) != px(&bg, i))
         .count();
@@ -2329,9 +2467,7 @@ fn run_tint_check(
     // A second fleece, drawn over the *body* mesh at `CubeDeformation.NONE`
     // and gated on `(isJebSheep || woolColor != WHITE) && !isBaby` — with no
     // `isSheared` test at all.
-    let px = |img: &[u8], i: usize| -> [u8; 3] {
-        [img[i * 4], img[i * 4 + 1], img[i * 4 + 2]]
-    };
+    let px = |img: &[u8], i: usize| -> [u8; 3] { [img[i * 4], img[i * 4 + 1], img[i * 4 + 2]] };
     let diff = |a: &[u8], b: &[u8]| -> Vec<usize> {
         (0..a.len() / 4).filter(|&i| px(a, i) != px(b, i)).collect()
     };
@@ -2357,7 +2493,11 @@ fn run_tint_check(
         ),
     );
 
-    let sil = |img: &[u8]| (0..img.len() / 4).filter(|&i| px(img, i) != px(&bg, i)).count();
+    let sil = |img: &[u8]| {
+        (0..img.len() / 4)
+            .filter(|&i| px(img, i) != px(&bg, i))
+            .count()
+    };
     let (sil_off, sil_on) = (sil(&u_off), sil(&u_on));
     c.record(
         "u2.the_undercoat_is_the_body_mesh_so_the_silhouette_does_not_move",
@@ -2443,7 +2583,11 @@ fn run_tint_check(
              in linear — a difference no *ratio* between two dyes could see, \
              which is why this row is absolute",
             abs_fail.len(),
-            if abs_fail.is_empty() { String::new() } else { format!(" ({})", abs_fail.join(", ")) }
+            if abs_fail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", abs_fail.join(", "))
+            }
         ),
     );
 
@@ -2457,7 +2601,10 @@ fn run_tint_check(
     let woolly_on = shot_ext(&mut wr, gpu, &mut off, Some(15), false, false, None)?;
     let woolly_off = shot_ext(&mut wr, gpu, &mut off, Some(15), false, false, Some(false))?;
     let woolly_coat = diff(&woolly_on, &woolly_off);
-    let outside = woolly_coat.iter().filter(|i| coat.binary_search(i).is_err()).count();
+    let outside = woolly_coat
+        .iter()
+        .filter(|i| coat.binary_search(i).is_err())
+        .count();
     c.record(
         "u5.the_fleece_occludes_the_undercoat_wherever_it_covers_it",
         outside == 0 && woolly_coat.len() < coat.len() && !woolly_coat.is_empty(),
@@ -2514,8 +2661,7 @@ mod m93q_dye_table_sweep {
         assert_eq!(gpu.len(), 16);
         for (i, &want) in DIFFUSE.iter().enumerate() {
             assert_eq!(data[i], want, "rewo-data dye {i}");
-            let packed =
-                ((gpu[i][0] as u32) << 16) | ((gpu[i][1] as u32) << 8) | gpu[i][2] as u32;
+            let packed = ((gpu[i][0] as u32) << 16) | ((gpu[i][1] as u32) << 8) | gpu[i][2] as u32;
             assert_eq!(packed, want, "rewo-gpu dye {i}");
         }
         // Grey is the entry M93q's loom bug was about: 0x474F52, which is

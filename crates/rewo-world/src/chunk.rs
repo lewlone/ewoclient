@@ -176,7 +176,11 @@ impl Column {
     /// world y. Above the world reads full-bright; below reads dark.
     pub fn brightness_at(&self, shape: &DimensionShape, lx: i32, y: i32, lz: i32) -> u8 {
         let Some(si) = shape.section_index(y) else {
-            return if y >= shape.min_y + shape.height { 15 } else { 0 };
+            return if y >= shape.min_y + shape.height {
+                15
+            } else {
+                0
+            };
         };
         let Some(section) = self.sections.get(si) else {
             return 15;
@@ -237,7 +241,11 @@ impl Column {
 
     pub fn light_at(&self, shape: &DimensionShape, lx: i32, y: i32, lz: i32) -> (u8, u8) {
         let Some(si) = shape.section_index(y) else {
-            return if y >= shape.min_y + shape.height { (0, 15) } else { (0, 0) };
+            return if y >= shape.min_y + shape.height {
+                (0, 15)
+            } else {
+                (0, 0)
+            };
         };
         let Some(section) = self.sections.get(si) else {
             return (0, 0);
@@ -572,7 +580,10 @@ fn read_bitset(r: &mut PacketReader) -> Result<Vec<u64>> {
 }
 
 fn bitset_get(words: &[u64], i: usize) -> bool {
-    words.get(i / 64).map(|w| (w >> (i % 64)) & 1 == 1).unwrap_or(false)
+    words
+        .get(i / 64)
+        .map(|w| (w >> (i % 64)) & 1 == 1)
+        .unwrap_or(false)
 }
 
 /// Decode the four light bitsets + the nibble arrays into `sections`.
@@ -690,7 +701,10 @@ mod tests {
     }
 
     fn shape_1section() -> DimensionShape {
-        DimensionShape { min_y: 0, height: 16 }
+        DimensionShape {
+            min_y: 0,
+            height: 16,
+        }
     }
 
     /// x/y/z axes are read independently and in the exact vanilla order.
@@ -788,7 +802,11 @@ mod tests {
         let mut world = World::new(shape_1section());
         world.ensure_column(0, 0);
         world.apply_chunks_biomes(0, 0, c);
-        assert_eq!(world.noise_biome_at_quart(2, 1, 3), 7, "single fills the grid");
+        assert_eq!(
+            world.noise_biome_at_quart(2, 1, 3),
+            7,
+            "single fills the grid"
+        );
 
         // Indirect (bits=1) palette [3, 9]; cell 0 → index 1 (=9), rest 0 (=3).
         let mut indices = [0u32; 64];
@@ -814,7 +832,13 @@ mod tests {
 /// absent sky array reads 15 (see `Column::implicit_sky`), and vanilla's
 /// zero layer is *stored*, so it also stops `fill_sky_gaps` looking through
 /// it. An absent block array already reads 0, so that channel just drops it.
-fn distribute(mask: &[u64], empty: &[u64], arrays: Vec<Vec<u8>>, sections: &mut [Section], sky: bool) {
+fn distribute(
+    mask: &[u64],
+    empty: &[u64],
+    arrays: Vec<Vec<u8>>,
+    sections: &mut [Section],
+    sky: bool,
+) {
     let mut arrays = arrays.into_iter();
     let total_bits = mask.len().max(empty.len()) * 64;
     for bit in 0..total_bits {
@@ -969,7 +993,12 @@ mod light_mask_tests {
         // Sections 5 and 6 (bits 6 and 7) get light; y = 16 is section 5.
         update(
             col,
-            &payload(&[(6, filled(9)), (7, filled(8))], &[(6, filled(14)), (7, filled(13))], &[], &[]),
+            &payload(
+                &[(6, filled(9)), (7, filled(8))],
+                &[(6, filled(14)), (7, filled(13))],
+                &[],
+                &[],
+            ),
         );
         assert_eq!(w.light_at(3, 16, 4), (14, 9));
         assert_eq!(w.light_at(3, 32, 4), (13, 8));
@@ -980,7 +1009,11 @@ mod light_mask_tests {
         for y in 16..32 {
             assert_eq!(w.light_at(3, y, 4), (0, 0), "y {y} is explicitly dark");
         }
-        assert_eq!(w.light_at(3, 32, 4), (13, 8), "an unnamed section is untouched");
+        assert_eq!(
+            w.light_at(3, 32, 4),
+            (13, 8),
+            "an unnamed section is untouched"
+        );
     }
 
     /// An explicit zero sky layer in a column whose top was lower is still
@@ -1001,8 +1034,16 @@ mod light_mask_tests {
         // Section 8 sat between the old top and the new one with no array:
         // it reads the bottom row of section 9 above it, as vanilla's
         // `getLightValue` scan does — here that row is the explicit zero.
-        assert_eq!(w.light_at(0, 70, 0).1, 0, "the gap below reads the stored row above");
-        assert_eq!(w.light_at(0, 96, 0).1, 15, "above the new top is still open sky");
+        assert_eq!(
+            w.light_at(0, 70, 0).1,
+            0,
+            "the gap below reads the stored row above"
+        );
+        assert_eq!(
+            w.light_at(0, 96, 0).1,
+            15,
+            "above the new top is still open sky"
+        );
     }
 
     /// A `light_update` names only the sections whose light changed, so its
@@ -1017,7 +1058,10 @@ mod light_mask_tests {
             s.sky_light = None;
         }
         col.sky_full_above = 8;
-        update(w.column_mut(0, 0).unwrap(), &payload(&[(3, filled(4))], &[], &[], &[]));
+        update(
+            w.column_mut(0, 0).unwrap(),
+            &payload(&[(3, filled(4))], &[], &[], &[]),
+        );
         assert_eq!(w.column(0, 0).unwrap().sky_full_above, 8);
         assert_eq!(w.light_at(0, -32, 0).1, 4, "section 2 took the data");
         assert_eq!(w.light_at(0, 80, 0).1, 15, "section 9 is still open sky");
@@ -1045,7 +1089,11 @@ mod light_mask_tests {
                 let idx = (z << 4) | x; // y = 0
                 let v = ((x + z) % 16) as u8;
                 let b = &mut top_layer[idx / 2];
-                *b = if idx & 1 == 0 { (*b & 0xF0) | v } else { (*b & 0x0F) | (v << 4) };
+                *b = if idx & 1 == 0 {
+                    (*b & 0xF0) | v
+                } else {
+                    (*b & 0x0F) | (v << 4)
+                };
             }
         }
         let bytes = payload(&[(3, filled(0)), (7, top_layer)], &[], &[], &[]);
@@ -1063,12 +1111,24 @@ mod light_mask_tests {
         // Sections 3..=5 (y -16..32) are the gap; section 2 is dark data.
         for (x, z) in [(0, 0), (5, 7), (15, 15), (9, 2)] {
             for y in [-16, 0, 31] {
-                assert_eq!(col.light_at(&SHAPE, x, y, z).1, ((x + z) % 16) as u8, "({x},{y},{z})");
+                assert_eq!(
+                    col.light_at(&SHAPE, x, y, z).1,
+                    ((x + z) % 16) as u8,
+                    "({x},{y},{z})"
+                );
             }
             assert_eq!(col.light_at(&SHAPE, x, 33, z).1, 3, "section 6 itself");
             assert_eq!(col.light_at(&SHAPE, x, 48, z).1, 15, "above the top");
-            assert_eq!(col.light_at(&SHAPE, x, -20, z).1, 0, "section 2's zero data");
-            assert_eq!(col.light_at(&SHAPE, x, -60, z).1, 0, "below the lowest stored layer");
+            assert_eq!(
+                col.light_at(&SHAPE, x, -20, z).1,
+                0,
+                "section 2's zero data"
+            );
+            assert_eq!(
+                col.light_at(&SHAPE, x, -60, z).1,
+                0,
+                "below the lowest stored layer"
+            );
         }
     }
 }

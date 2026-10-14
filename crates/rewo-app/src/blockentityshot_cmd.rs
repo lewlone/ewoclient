@@ -105,7 +105,7 @@ fn chunk_body(cx: i32, cz: i32, sections: usize, bes: &[(u8, i16, i32)]) -> Vec<
     for _ in 0..sections {
         blob.extend_from_slice(&0i16.to_be_bytes()); // non-empty count
         blob.extend_from_slice(&0i16.to_be_bytes()); // fluid count
-        // Block states: single-value palette (bits 0), value 0 (air), no data.
+                                                     // Block states: single-value palette (bits 0), value 0 (air), no data.
         blob.push(0);
         varint(0, &mut blob);
         varint(0, &mut blob);
@@ -244,7 +244,9 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_chest_models(&mut c, &args.version)?;
     check_lids(&mut c, &ids, &blocks, chest, types);
     check_sign_text(&mut c, &args.version)?;
-    check_block_event_dispatch(&mut c, &ids, &blocks, &paths, &entries, types, chest, shulker, bell)?;
+    check_block_event_dispatch(
+        &mut c, &ids, &blocks, &paths, &entries, types, chest, shulker, bell,
+    )?;
     check_shulker_anim(&mut c, &args.version)?;
     check_sign_style(&mut c, &blocks, &paths, sign)?;
     check_skulls(&mut c, &blocks, &paths, &args.version)?;
@@ -351,7 +353,11 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     );
     c.record(
         "m4.the_lock_stands_proud_of_the_lid",
-        hi[2] == 16.0 && chest.quads.iter().any(|q| q.verts.iter().all(|v| v[2] >= 15.0)),
+        hi[2] == 16.0
+            && chest
+                .quads
+                .iter()
+                .any(|q| q.verts.iter().all(|v| v[2] >= 15.0)),
         format!(
             "max z {} — addBox(7,-2,14, 2,4,1) with offset(0,9,1) puts the latch at \
              z 15..16, past the lid's 15",
@@ -361,7 +367,13 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
 
     // Distinct textures, not one shared sprite: a trapped chest must not be
     // an ordinary one.
-    let tex_of = |n: &str| items.block_entities.get(n).and_then(|m| m.quads.first()).map(|q| q.tex);
+    let tex_of = |n: &str| {
+        items
+            .block_entities
+            .get(n)
+            .and_then(|m| m.quads.first())
+            .map(|q| q.tex)
+    };
     let normal = tex_of("rewo:be/chest");
     let trapped = tex_of("rewo:be/trapped_chest");
     let ender = tex_of("rewo:be/ender_chest");
@@ -454,7 +466,11 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
         // The latch, at model z 15..16 — the unambiguous "front" of the model.
         let mut sum = [0f32; 3];
         let mut n = 0.0f32;
-        for q in chest.quads.iter().filter(|q| q.verts.iter().all(|v| v[2] >= 15.0)) {
+        for q in chest
+            .quads
+            .iter()
+            .filter(|q| q.verts.iter().all(|v| v[2] >= 15.0))
+        {
             for v in &q.verts {
                 let p = rotate(f.to_y_rot(), [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0]);
                 for k in 0..3 {
@@ -468,7 +484,8 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     let fronts: Vec<[f32; 3]> = all_four.iter().map(|&f| front_of(f)).collect();
     let distinct = (0..4).all(|i| {
         (0..4).all(|j| {
-            i == j || (fronts[i][0] - fronts[j][0]).abs() + (fronts[i][2] - fronts[j][2]).abs() > 0.5
+            i == j
+                || (fronts[i][0] - fronts[j][0]).abs() + (fronts[i][2] - fronts[j][2]).abs() > 0.5
         })
     });
     c.record(
@@ -560,7 +577,11 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     // show the wrong half of the artwork.
     let tex1 = l.quads.first().map(|q| q.tex);
     let tex2 = r.quads.first().map(|q| q.tex);
-    let single = items.block_entities.get("rewo:be/chest").and_then(|m| m.quads.first()).map(|q| q.tex);
+    let single = items
+        .block_entities
+        .get("rewo:be/chest")
+        .and_then(|m| m.quads.first())
+        .map(|q| q.tex);
     c.record(
         "m15.each_half_has_its_own_texture",
         tex1.is_some() && tex1 != tex2 && tex1 != single && tex2 != single,
@@ -572,7 +593,9 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     c.record(
         "m16.the_ender_chest_has_no_halves",
         items.block_entities.contains_key("rewo:be/ender_chest")
-            && !items.block_entities.contains_key("rewo:be/ender_chest_left"),
+            && !items
+                .block_entities
+                .contains_key("rewo:be/ender_chest_left"),
         "ender_chest bakes single-only — it can never be double, and the jar has \
          no ender_left.png to bake from",
     );
@@ -716,7 +739,9 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     let mut sh_ok = true;
     let mut sh_seen = 0;
     for id in 0..40000u32 {
-        let Some(d) = states.draw_for(id) else { continue };
+        let Some(d) = states.draw_for(id) else {
+            continue;
+        };
         if !d.model.ends_with("shulker_box") {
             continue;
         }
@@ -734,10 +759,8 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
 
     // A block-entity type still in the Invisible list must resolve to nothing
     // — the fail-closed half, so an unimplemented type cannot borrow a model.
-    let banner_state = (0..40000u32).find(|&id| {
-        states.get(id).is_none()
-            && states.draw_for(id).is_none()
-    });
+    let banner_state =
+        (0..40000u32).find(|&id| states.get(id).is_none() && states.draw_for(id).is_none());
     c.record(
         "s9.an_unimplemented_type_still_draws_nothing",
         banner_state.is_some(),
@@ -850,7 +873,10 @@ fn check_lids(
     c.record(
         "l5.an_event_for_no_block_entity_is_ignored",
         world.block_entities.open_lid_count() == before,
-        format!("{} lid entries, unchanged", world.block_entities.open_lid_count()),
+        format!(
+            "{} lid entries, unchanged",
+            world.block_entities.open_lid_count()
+        ),
     );
 
     // --- the clock, independently transcribed -----------------------------
@@ -881,7 +907,10 @@ fn check_lids(
     c.record(
         "l6.the_lid_opens_over_ten_ticks_and_stops_at_one",
         ok && lid.openness == 1.0,
-        format!("openness by tick: {} — 0.1 per tick, clamped at 1", seq.join(" ")),
+        format!(
+            "openness by tick: {} — 0.1 per tick, clamped at 1",
+            seq.join(" ")
+        ),
     );
 
     lid.should_be_open = false;
@@ -970,7 +999,8 @@ fn check_lids(
     c.record(
         "l11.a_shut_lid_is_exactly_zero_and_a_full_one_is_a_right_angle",
         rewo_data::be_transform::chest_lid_angle(0.0) == 0.0
-            && (rewo_data::be_transform::chest_lid_angle(1.0) + std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            && (rewo_data::be_transform::chest_lid_angle(1.0) + std::f32::consts::FRAC_PI_2).abs()
+                < 1e-6,
         format!(
             "0 -> {:.6}, 1 -> {:.6} (want 0 and -PI/2)",
             rewo_data::be_transform::chest_lid_angle(0.0),
@@ -1325,8 +1355,16 @@ fn check_end_portal_shader(
             "end_sky.png {} and end_portal.png {} — Sampler0 is the SKY and \
              Sampler1 the portal, which is the opposite of what the render \
              type's name suggests. Missing either means no portal draws at all",
-            if baked.end_sky.is_some() { "baked" } else { "MISSING" },
-            if baked.end_portal.is_some() { "baked" } else { "MISSING" }
+            if baked.end_sky.is_some() {
+                "baked"
+            } else {
+                "MISSING"
+            },
+            if baked.end_portal.is_some() {
+                "baked"
+            } else {
+                "MISSING"
+            }
         ),
     );
 
@@ -1427,8 +1465,7 @@ fn check_spawner_mob(
     };
     c.record(
         "r1.the_display_entity_is_read_from_spawn_data",
-        crate::live_cmd::spawner_entity_id(&with_id("minecraft:zombie"))
-            .as_deref()
+        crate::live_cmd::spawner_entity_id(&with_id("minecraft:zombie")).as_deref()
             == Some("minecraft:zombie"),
         "`SpawnData` -> `entity` -> `id`; the id lives two levels down, not on \
          the block entity itself",
@@ -1595,11 +1632,7 @@ fn check_spawner_mob(
 }
 
 /// M30 — the active conduit: the frame scan, and the four draws it unlocks.
-fn check_conduit_active(
-    c: &mut Checker,
-    paths: &DataPaths,
-    version: &str,
-) -> Result<(), String> {
+fn check_conduit_active(c: &mut Checker, paths: &DataPaths, version: &str) -> Result<(), String> {
     use rewo_data::be_transform as bt;
     use rewo_world::conduit;
 
@@ -1647,13 +1680,20 @@ fn check_conduit_active(
         !s15.active() && s16.active() && !s41.hunting() && s42.hunting() && s42.active(),
         "15 frame blocks -> inactive, 16 -> active, 41 -> active but not \
              hunting, 42 -> hunting. Both thresholds read the SAME count, which \
-             is why the eye costs nothing once the scan exists".to_string(),
+             is why the eye costs nothing once the scan exists"
+            .to_string(),
     );
 
     // --- the clock --------------------------------------------------------
     let mut a = conduit::ConduitAnim::default();
-    let live = conduit::ConduitShape { frame: 20, submerged: true };
-    let dead = conduit::ConduitShape { frame: 0, submerged: false };
+    let live = conduit::ConduitShape {
+        frame: 20,
+        submerged: true,
+    };
+    let dead = conduit::ConduitShape {
+        frame: 0,
+        submerged: false,
+    };
     for _ in 0..10 {
         a.tick(Some(dead));
     }
@@ -1740,7 +1780,7 @@ fn check_conduit_active(
     let mid = y_at(0.0); //   sin = 0  -> b = 0.5
     let top = y_at(std::f32::consts::FRAC_PI_2 / 0.1); // sin =  1 -> b = 1
     let bot = y_at(3.0 * std::f32::consts::FRAC_PI_2 / 0.1); // sin = -1 -> b = 0
-    // A LINEAR map of the same drive would put the midpoint halfway up.
+                                                             // A LINEAR map of the same drive would put the midpoint halfway up.
     let linear_mid = bot + (top - bot) / 2.0;
     c.record(
         "q8.the_bob_is_not_a_plain_sine",
@@ -1763,9 +1803,7 @@ fn check_conduit_active(
     let w_second = bt::conduit_wind(0, true);
     c.record(
         "q9.the_shroud_turns_per_phase_and_its_second_copy_shrinks",
-        w0 != w1
-            && (w_second[0][0].abs() - 0.875).abs() < 1e-5
-            && (w0[0][0] - 1.0).abs() < 1e-5,
+        w0 != w1 && (w_second[0][0].abs() - 0.875).abs() < 1e-5 && (w0[0][0] - 1.0).abs() < 1e-5,
         format!(
             "phase 0 and 1 differ, and the second copy scales {:.4} against the \
              first's {:.4} — the two shells counter-rotate at different sizes, \
@@ -1852,8 +1890,7 @@ fn check_be_clock(
     // --- the pot wobble: an event and a start tick ------------------------
     c.record(
         "n4.a_pot_is_a_fourth_meaning_of_b0_equals_one",
-        types.behavior(pot_type)
-            == Some(rewo_world::block_entities::BlockEventBehavior::PotWobble),
+        types.behavior(pot_type) == Some(rewo_world::block_entities::BlockEventBehavior::PotWobble),
         format!(
             "decorated_pot={pot_type} routes to PotWobble — after a chest's \
              viewer count, a shulker's open/close pair and a spawner's reset, \
@@ -1914,9 +1951,7 @@ fn check_be_clock(
     );
 
     // An ordinal outside the two styles is NOT consumed.
-    let consumed_bad = w
-        .block_entities
-        .trigger_block_event(types, pos, 1, 9, 200);
+    let consumed_bad = w.block_entities.trigger_block_event(types, pos, 1, 9, 200);
     c.record(
         "n8.an_ordinal_outside_the_two_styles_is_not_consumed",
         !consumed_bad,
@@ -2192,7 +2227,9 @@ fn check_skulls(
     let mut ok = true;
     let mut blocks_covered: HashSet<String> = HashSet::new();
     for id in 0..40000u32 {
-        let Some(d) = states.draw_for(id) else { continue };
+        let Some(d) = states.draw_for(id) else {
+            continue;
+        };
         if !rewo_data::block_entity_models::SKULL_TEXTURES
             .iter()
             .any(|(n, _)| *n == d.model)
@@ -2246,8 +2283,7 @@ fn check_skulls(
     let corner = apply(&cm, [3.0 / 16.0, 3.0 / 16.0, 3.0 / 16.0]);
     c.record(
         "k12.a_conduit_floats_in_the_middle_of_its_block",
-        centre == [0.5, 0.5, 0.5]
-            && corner.iter().all(|v| (*v - 0.6875).abs() < 1e-5),
+        centre == [0.5, 0.5, 0.5] && corner.iter().all(|v| (*v - 0.6875).abs() < 1e-5),
         format!(
             "the model origin lands at {centre:?} and its corner at {corner:?} \
              — a conduit hangs in the middle of its block rather than standing \
@@ -2308,8 +2344,7 @@ fn check_skulls(
 
     c.record(
         "k15.a_sherd_item_name_selects_its_pattern_and_anything_else_is_plain",
-        bem::pot_side_model(Some("minecraft:angler_pottery_sherd"))
-            == "rewo:be/pot_side/angler"
+        bem::pot_side_model(Some("minecraft:angler_pottery_sherd")) == "rewo:be/pot_side/angler"
             && bem::pot_side_model(Some("skull_pottery_sherd")) == "rewo:be/pot_side/skull"
             && bem::pot_side_model(Some("minecraft:brick")) == bem::POT_SIDE_PLAIN.0
             && bem::pot_side_model(None) == bem::POT_SIDE_PLAIN.0
@@ -2327,15 +2362,9 @@ fn check_skulls(
             [p[0] / 16.0, p[1] / 16.0, p[2] / 16.0]
         })
         .collect();
-    let spread_x = corners
-        .iter()
-        .map(|p| p[0])
-        .fold(f32::MIN, f32::max)
+    let spread_x = corners.iter().map(|p| p[0]).fold(f32::MIN, f32::max)
         - corners.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
-    let spread_z = corners
-        .iter()
-        .map(|p| p[2])
-        .fold(f32::MIN, f32::max)
+    let spread_z = corners.iter().map(|p| p[2]).fold(f32::MIN, f32::max)
         - corners.iter().map(|p| p[2]).fold(f32::MAX, f32::min);
     c.record(
         "k16.the_four_side_poses_face_four_different_ways",
@@ -2446,7 +2475,9 @@ fn check_skulls(
     let mut banner_blocks: HashSet<String> = HashSet::new();
     let mut banner_states = 0;
     for id in 0..40000u32 {
-        let Some(d) = states.draw_for(id) else { continue };
+        let Some(d) = states.draw_for(id) else {
+            continue;
+        };
         if !matches!(
             d.anim,
             rewo_data::chest_states::BlockEntityAnim::Banner { .. }
@@ -2495,7 +2526,9 @@ fn check_skulls(
         "k24.the_generated_table_carries_every_box",
         box_count == 38
             && poses.iter().all(|(_, b)| !b.is_empty())
-            && poses.iter().any(|(_, b)| b.iter().any(|x| x.chain.len() > 1)),
+            && poses
+                .iter()
+                .any(|(_, b)| b.iter().any(|x| x.chain.len() > 1)),
         format!(
             "{box_count} boxes across the four poses, and at least one hangs \
              two levels deep. Machine-extracted by \
@@ -2558,7 +2591,9 @@ fn check_skulls(
 
     let mut statue_blocks: HashSet<String> = HashSet::new();
     for id in 0..40000u32 {
-        let Some(d) = states.draw_for(id) else { continue };
+        let Some(d) = states.draw_for(id) else {
+            continue;
+        };
         if !d.model.starts_with("rewo:be/statue/") {
             continue;
         }
@@ -2626,10 +2661,8 @@ fn check_skulls(
     // The wall-name derivation is not a second hard-coded list.
     c.record(
         "k10.the_wall_block_name_is_derived_not_listed",
-        rewo_data::chest_states::ChestStates::wall_name("skeleton_skull")
-            == "skeleton_wall_skull"
-            && rewo_data::chest_states::ChestStates::wall_name("zombie_head")
-                == "zombie_wall_head",
+        rewo_data::chest_states::ChestStates::wall_name("skeleton_skull") == "skeleton_wall_skull"
+            && rewo_data::chest_states::ChestStates::wall_name("zombie_head") == "zombie_wall_head",
         "skeleton_skull -> skeleton_wall_skull and zombie_head -> \
          zombie_wall_head: `wall` goes before the LAST segment, and that \
          segment differs per type, so the name is derived rather than listed \
@@ -2770,37 +2803,37 @@ fn check_sign_style(
                  msg: Nbt,
                  lang: Option<&rewo_data::lang::Language>|
      -> Vec<crate::live_cmd::OwnedSignLine> {
-            let shape = DimensionShape::OVERWORLD;
-            let mut world = rewo_world::World::new(shape);
-            let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, sign_type)]);
-            let mut r = rewo_proto::reader::PacketReader::new(&body);
-            let col = rewo_world::chunk::read_level_chunk(&mut r, &shape, blocks).unwrap();
-            world.insert_column(0, 0, col);
-            world.set_block(0, 64, 0, sign_state);
-            let mut face = vec![(
-                "messages".to_string(),
-                Nbt::List(vec![
-                    msg,
-                    Nbt::String(String::new()),
-                    Nbt::String(String::new()),
-                    Nbt::String(String::new()),
-                ]),
-            )];
-            if let Some(c) = color {
-                face.push(("color".to_string(), Nbt::String(c.to_string())));
-            }
-            if glowing {
-                face.push(("has_glowing_text".to_string(), Nbt::Byte(1)));
-            }
-            world.block_entities.insert(
-                BlockEntityPos { x: 0, y: 64, z: 0 },
-                rewo_world::block_entities::BlockEntity {
-                    type_id: sign_type,
-                    data: Nbt::Compound(vec![("front_text".to_string(), Nbt::Compound(face))]),
-                },
-            );
-            crate::live_cmd::collect_sign_text(&world, &signs, &lightmap, adv, lang)
-        };
+        let shape = DimensionShape::OVERWORLD;
+        let mut world = rewo_world::World::new(shape);
+        let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, sign_type)]);
+        let mut r = rewo_proto::reader::PacketReader::new(&body);
+        let col = rewo_world::chunk::read_level_chunk(&mut r, &shape, blocks).unwrap();
+        world.insert_column(0, 0, col);
+        world.set_block(0, 64, 0, sign_state);
+        let mut face = vec![(
+            "messages".to_string(),
+            Nbt::List(vec![
+                msg,
+                Nbt::String(String::new()),
+                Nbt::String(String::new()),
+                Nbt::String(String::new()),
+            ]),
+        )];
+        if let Some(c) = color {
+            face.push(("color".to_string(), Nbt::String(c.to_string())));
+        }
+        if glowing {
+            face.push(("has_glowing_text".to_string(), Nbt::Byte(1)));
+        }
+        world.block_entities.insert(
+            BlockEntityPos { x: 0, y: 64, z: 0 },
+            rewo_world::block_entities::BlockEntity {
+                type_id: sign_type,
+                data: Nbt::Compound(vec![("front_text".to_string(), Nbt::Compound(face))]),
+            },
+        );
+        crate::live_cmd::collect_sign_text(&world, &signs, &lightmap, adv, lang)
+    };
 
     let lit = |s: &str| Nbt::String(s.to_string());
     let plain_lines = build(None, false, lit("hi"), None);
@@ -2876,8 +2909,7 @@ fn check_sign_style(
         "g12.the_collector_truncates_a_long_line_rather_than_overhanging",
         wrapped.len() == 1
             && wrapped[0].text.len() < whole.len()
-            && sign_text::width(&wrapped[0].text, adv)
-                <= rewo_data::sign_states::SIGN_MAX_WIDTH,
+            && sign_text::width(&wrapped[0].text, adv) <= rewo_data::sign_states::SIGN_MAX_WIDTH,
         format!(
             "{:?} ({:.0} px) reached the renderer, not the whole \
              {}-character line — which before M27 ran off both ends of the board",
@@ -2981,17 +3013,17 @@ fn check_shulker_anim(c: &mut Checker, version: &str) -> Result<(), String> {
     fn oracle(status: &mut u8, p: &mut f32, p_old: &mut f32) {
         *p_old = *p;
         match *status {
-            0 => *p = 0.0,          // CLOSED
+            0 => *p = 0.0, // CLOSED
             1 => {
-                *p += 0.1;          // OPENING — note: unclamped, then tested
+                *p += 0.1; // OPENING — note: unclamped, then tested
                 if *p >= 1.0 {
                     *status = 2;
                     *p = 1.0;
                 }
             }
-            2 => *p = 1.0,          // OPENED
+            2 => *p = 1.0, // OPENED
             _ => {
-                *p -= 0.1;          // CLOSING
+                *p -= 0.1; // CLOSING
                 if *p <= 0.0 {
                     *status = 0;
                     *p = 0.0;
@@ -3111,7 +3143,11 @@ fn check_shulker_anim(c: &mut Checker, version: &str) -> Result<(), String> {
         format!(
             "origin {open:?} (24 - 0.5*16 = 16, so 8 model px = half a block), and \
              the +x axis lands on {:?} — a 270 degree turn about Y, not a tilt",
-            [open_x[0] - open[0], open_x[1] - open[1], open_x[2] - open[2]]
+            [
+                open_x[0] - open[0],
+                open_x[1] - open[1],
+                open_x[2] - open[2]
+            ]
         ),
     );
 
@@ -3297,7 +3333,10 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
     c.record(
         "t8.a_wall_sign_sits_lower_and_further_back",
         wm[1] < origin[1] && wm[2] < origin[2],
-        format!("wall ({:.3}, {:.3}) vs ground ({:.3}, {:.3})", wm[1], wm[2], origin[1], origin[2]),
+        format!(
+            "wall ({:.3}, {:.3}) vs ground ({:.3}, {:.3})",
+            wm[1], wm[2], origin[1], origin[2]
+        ),
     );
 
     // Every rotation must keep the text inside the block **horizontally** —
@@ -3311,7 +3350,12 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
     let (mut ylo, mut yhi) = (f32::MAX, f32::MIN);
     // Per *corner*, the radius across every ground rotation. Different corners
     // sit at different radii; the same corner must not.
-    let corners = [(-45.0f32, -20.0f32), (45.0, -20.0), (-45.0, 20.0), (45.0, 20.0)];
+    let corners = [
+        (-45.0f32, -20.0f32),
+        (45.0, -20.0),
+        (-45.0, 20.0),
+        (45.0, 20.0),
+    ];
     let mut spread: f32 = 0.0;
     for (ci, &(cx, cy)) in corners.iter().enumerate() {
         let (mut rlo, mut rhi) = (f32::MAX, f32::MIN);
@@ -3380,10 +3424,7 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
 
     // A short or absent list still yields four lines, because the renderer
     // always draws four.
-    let short = Nbt::Compound(vec![(
-        "messages".to_string(),
-        Nbt::List(vec![msg("one")]),
-    )]);
+    let short = Nbt::Compound(vec![("messages".to_string(), Nbt::List(vec![msg("one")]))]);
     let decoded = SignFace::from_nbt(&short, None);
     c.record(
         "t11.a_short_message_list_pads_to_four",
@@ -3462,7 +3503,9 @@ fn check_registry(
     let blocks = rewo_data::blocks::Blocks::load(&paths.blocks_json())?;
     let mut drawn_types: HashSet<&str> = HashSet::new();
     for id in states.drawn_states() {
-        let Some(block) = blocks.block_name(id) else { continue };
+        let Some(block) = blocks.block_name(id) else {
+            continue;
+        };
         // Block name -> its block-entity type. The families are named after
         // their type, bar the dye and weathering prefixes.
         let name = block.trim_start_matches("minecraft:");
@@ -3623,7 +3666,12 @@ fn check_decode(c: &mut Checker, blocks: &rewo_data::blocks::Blocks, chest: i32,
     let sign_at = by_type(sign).map(|(p, _)| *p);
     c.record(
         "b2.packed_xz_unpacks_with_x_in_the_high_nibble",
-        chest_at == Some(BlockEntityPos { x: 3 * 16 + 3, y: 64, z: -2 * 16 + 10 }),
+        chest_at
+            == Some(BlockEntityPos {
+                x: 3 * 16 + 3,
+                y: 64,
+                z: -2 * 16 + 10,
+            }),
         format!(
             "packedXZ 0x3A in chunk (3,-2) -> {chest_at:?} (want x=51 z=-22) — \
              `(x & 15) << 4 | (z & 15)`, the opposite nibble order to the section \
@@ -3632,7 +3680,12 @@ fn check_decode(c: &mut Checker, blocks: &rewo_data::blocks::Blocks, chest: i32,
     );
     c.record(
         "b3.the_y_field_is_absolute_and_signed",
-        sign_at == Some(BlockEntityPos { x: 3 * 16, y: -13, z: -2 * 16 + 15 }),
+        sign_at
+            == Some(BlockEntityPos {
+                x: 3 * 16,
+                y: -13,
+                z: -2 * 16 + 15,
+            }),
         format!(
             "y -13 -> {sign_at:?} — an i16 read as unsigned would land at 65523, above \
              the build height"
@@ -3673,7 +3726,10 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Block
     c.record(
         "c1.loading_a_column_registers_its_block_entities",
         world.block_entities.len() == 2,
-        format!("{} in the world after two columns", world.block_entities.len()),
+        format!(
+            "{} in the world after two columns",
+            world.block_entities.len()
+        ),
     );
 
     // A re-sent column is authoritative: its list replaces the old one.
@@ -3717,7 +3773,10 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Block
         ids,
         &mut world,
     );
-    let absent = world.block_entities.get(BlockEntityPos { x: 5, y: 5, z: 5 }).is_some();
+    let absent = world
+        .block_entities
+        .get(BlockEntityPos { x: 5, y: 5, z: 5 })
+        .is_some();
     // A different packet id must not be consumed by this handler.
     let wrong_id = rewo_net::route_block_entity_data(
         ids.cb_play_block_update,
@@ -3736,8 +3795,7 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Block
     );
     c.record(
         "c7.the_handler_is_selected_by_packet_id",
-        !wrong_id
-            && world.block_entities.get(pos).map(|b| b.data.clone()) == Some(Nbt::Byte(7)),
+        !wrong_id && world.block_entities.get(pos).map(|b| b.data.clone()) == Some(Nbt::Byte(7)),
         format!(
             "a block_update id was not consumed by the block-entity handler \
              (consumed={wrong_id}) and left the stored tag untouched"
@@ -3746,7 +3804,10 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Block
     c.record(
         "c5.the_update_tag_is_stored",
         world.block_entities.get(pos).map(|b| b.data.clone()) == Some(Nbt::Byte(7)),
-        format!("stored tag: {:?}", world.block_entities.get(pos).map(|b| &b.data)),
+        format!(
+            "stored tag: {:?}",
+            world.block_entities.get(pos).map(|b| &b.data)
+        ),
     );
 
     // Sorted iteration must be deterministic — the gate and any future dump
@@ -3868,8 +3929,14 @@ fn check_carried_fluid_table(
     c.record(
         "the five unconditional blocks carry water with no `waterlogged` property",
         want_unconditional.len() == 32
-            && want_unconditional.iter().all(|id| baked.fluid[*id as usize].is_some()),
-        format!("{} states across {} blocks", want_unconditional.len(), UNCONDITIONAL_WATER.len()),
+            && want_unconditional
+                .iter()
+                .all(|id| baked.fluid[*id as usize].is_some()),
+        format!(
+            "{} states across {} blocks",
+            want_unconditional.len(),
+            UNCONDITIONAL_WATER.len()
+        ),
     );
     c.record(
         "only the copper grates carry FALLING water",
@@ -3936,7 +4003,8 @@ fn check_carried_fluid_table(
                 states.iter().find(|s| {
                     let p = s.get("properties");
                     p.and_then(|p| p.get("type")).and_then(|v| v.as_str()) == Some(ty)
-                        && p.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str())
+                        && p.and_then(|p| p.get("waterlogged"))
+                            .and_then(|v| v.as_str())
                             == Some("true")
                 })
             })
@@ -3960,7 +4028,11 @@ fn check_carried_fluid_table(
         "a bottom slab occludes DOWN and a top slab UP, and neither the other",
         slab_mask("bottom").is_some_and(|m| m & DOWN != 0 && m & UP == 0)
             && slab_mask("top").is_some_and(|m| m & UP != 0 && m & DOWN == 0),
-        format!("bottom {:?}, top {:?}", slab_mask("bottom"), slab_mask("top")),
+        format!(
+            "bottom {:?}, top {:?}",
+            slab_mask("bottom"),
+            slab_mask("top")
+        ),
     );
     // Every carrier is a SOURCE: all 45 `getFluidState` overrides call
     // `getSource`, never `getFlowing`. A non-zero level here would put the
@@ -4022,11 +4094,19 @@ fn check_carried_fluid_table(
     //    `FluidHere`, and the two are written in different iterations of the
     //    bake's block loop — so a waterlogged block beside a pool sampling a
     //    different sprite is a visible seam, and this is what catches it.
-    let carried_pairs: std::collections::BTreeSet<(u16, u16)> =
-        baked.fluid.iter().flatten().map(|f| (f.layer, f.raw_layer)).collect();
+    let carried_pairs: std::collections::BTreeSet<(u16, u16)> = baked
+        .fluid
+        .iter()
+        .flatten()
+        .map(|f| (f.layer, f.raw_layer))
+        .collect();
     let pair = carried_pairs.iter().copied().next();
     let layer_name = |l: u16| {
-        baked.layer_names.get(l as usize).map(String::as_str).unwrap_or("<no such layer>")
+        baked
+            .layer_names
+            .get(l as usize)
+            .map(String::as_str)
+            .unwrap_or("<no such layer>")
     };
     c.record(
         "every carrier samples block/water_still, and one sprite serves them all",
@@ -4053,12 +4133,16 @@ fn check_carried_fluid_table(
     // `px * c / 255`, alpha untouched.
     const LEGACY_WATER_TINT: [u16; 3] = [0x3F, 0x76, 0xE4];
     let tint_ok = pair.map(|(l, r)| {
-        let (Some(tinted), Some(raw)) = (baked.layers.get(l as usize), baked.layers.get(r as usize))
+        let (Some(tinted), Some(raw)) =
+            (baked.layers.get(l as usize), baked.layers.get(r as usize))
         else {
             return (false, "a carried layer is out of range".to_string());
         };
         if tinted.len() != raw.len() || raw.len() < 4 {
-            return (false, format!("layer sizes {} vs {}", tinted.len(), raw.len()));
+            return (
+                false,
+                format!("layer sizes {} vs {}", tinted.len(), raw.len()),
+            );
         }
         let mut bad = 0usize;
         let mut nonblack = 0usize;
@@ -4078,7 +4162,10 @@ fn check_carried_fluid_table(
         }
         (
             bad == 0 && nonblack > 0,
-            format!("{bad} of {} texels disagree, {nonblack} non-black", raw.len() / 4),
+            format!(
+                "{bad} of {} texels disagree, {nonblack} non-black",
+                raw.len() / 4
+            ),
         )
     });
     c.record(
@@ -4095,7 +4182,9 @@ fn check_carried_fluid_table(
             .and_then(|s| s.as_array())
             .and_then(|states| {
                 states.iter().find(|s| {
-                    s.get("properties").and_then(|p| p.get("level")).and_then(|v| v.as_str())
+                    s.get("properties")
+                        .and_then(|p| p.get("level"))
+                        .and_then(|v| v.as_str())
                         == Some("0")
                 })
             })
@@ -4148,7 +4237,10 @@ fn check_carried_fluid_table(
         };
         for st in states {
             let p = st.get("properties");
-            if p.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str()) != Some("true") {
+            if p.and_then(|p| p.get("waterlogged"))
+                .and_then(|v| v.as_str())
+                != Some("true")
+            {
                 continue;
             }
             let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
@@ -4243,9 +4335,16 @@ fn check_bubble_column_table(
         .and_then(|b| b.get("states"))
         .and_then(|s| s.as_array())
         .and_then(|states| {
-            states.iter().find(|s| s.get("default").and_then(|d| d.as_bool()) == Some(true))
+            states
+                .iter()
+                .find(|s| s.get("default").and_then(|d| d.as_bool()) == Some(true))
         })
-        .and_then(|s| s.get("properties")?.get("drag")?.as_str().map(|v| v == "true"));
+        .and_then(|s| {
+            s.get("properties")?
+                .get("drag")?
+                .as_str()
+                .map(|v| v == "true")
+        });
     c.record(
         "the block's DEFAULT state is drag=true",
         default_is_drag == Some(true),
@@ -4277,7 +4376,10 @@ fn check_bubble_column_table(
     c.record(
         "no other block state is marked as a bubble column",
         table.iter().filter(|d| d.is_some()).count() == 2,
-        format!("{} states carry a drag value", table.iter().filter(|d| d.is_some()).count()),
+        format!(
+            "{} states carry a drag value",
+            table.iter().filter(|d| d.is_some()).count()
+        ),
     );
     Ok(())
 }

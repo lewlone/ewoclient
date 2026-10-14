@@ -5,7 +5,7 @@
 //! rules can be unit-tested.
 
 use crate::{loaders, persistence};
-use ewo_render::screens::{InstancePrefs, instances::Instance};
+use ewo_render::screens::{instances::Instance, InstancePrefs};
 
 /// Remove an instance by underlying index. Adjusts `prefs.selected` so it
 /// still points at a valid instance (or the last one, if the user deleted the
@@ -53,7 +53,11 @@ pub(crate) fn delete_instance(
             persistence::save_instances(instances);
         }
         None => {
-            log::info!("delete: refused (idx={} len={})", underlying_idx, instances.len());
+            log::info!(
+                "delete: refused (idx={} len={})",
+                underlying_idx,
+                instances.len()
+            );
         }
     }
 }
@@ -83,7 +87,10 @@ pub(crate) fn loader_spec_for(
         | ewo_render::screens::instances::InstanceLoader::Native => None,
         ewo_render::screens::instances::InstanceLoader::Ewo { .. } => {
             match loaders::base::resolve_manifest_url(version_id) {
-                Ok(url) => Some(loaders::LoaderSpec { id: "ewo".to_string(), url }),
+                Ok(url) => Some(loaders::LoaderSpec {
+                    id: "ewo".to_string(),
+                    url,
+                }),
                 Err(e) => {
                     log::warn!("downloads: EwoLoader layer skipped: {}", e);
                     None
@@ -99,8 +106,12 @@ mod tests {
     use crate::loaders::LoaderSpec;
     use ewo_render::screens::instances::InstanceLoader;
 
-    fn inst(name: &str) -> Instance { Instance::new(name.into(), "26.2".into(), "never".into(), Vec::new()) }
-    fn three() -> Vec<Instance> { vec![inst("a"), inst("b"), inst("c")] }
+    fn inst(name: &str) -> Instance {
+        Instance::new(name.into(), "26.2".into(), "never".into(), Vec::new())
+    }
+    fn three() -> Vec<Instance> {
+        vec![inst("a"), inst("b"), inst("c")]
+    }
 
     #[test]
     fn remove_instance_refuses_out_of_range_and_sole_instance() {
@@ -124,17 +135,29 @@ mod tests {
             ..InstancePrefs::default()
         };
         let mut below = three();
-        assert_eq!(remove_instance(&mut below, &mut prefs, 0, 5.0), Some("a".to_string()));
-        assert_eq!((prefs.selected, prefs.detail_scroll, prefs.selected_at), (1, 0.0, Some(5.0)));
+        assert_eq!(
+            remove_instance(&mut below, &mut prefs, 0, 5.0),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            (prefs.selected, prefs.detail_scroll, prefs.selected_at),
+            (1, 0.0, Some(5.0))
+        );
 
         prefs.selected = 2;
         let mut last = three();
-        assert_eq!(remove_instance(&mut last, &mut prefs, 2, 5.0), Some("c".to_string()));
+        assert_eq!(
+            remove_instance(&mut last, &mut prefs, 2, 5.0),
+            Some("c".to_string())
+        );
         assert_eq!((prefs.selected, last.len()), (1, 2));
 
         prefs.selected = 0;
         let mut above = three();
-        assert_eq!(remove_instance(&mut above, &mut prefs, 2, 5.0), Some("c".to_string()));
+        assert_eq!(
+            remove_instance(&mut above, &mut prefs, 2, 5.0),
+            Some("c".to_string())
+        );
         assert_eq!(prefs.selected, 0);
     }
 
@@ -149,7 +172,10 @@ mod tests {
         prefs.render_dist.value = 24.0;
         prefs.java_runtime.selected = 2;
         sync_instance_config(&mut list, &prefs);
-        assert_eq!((list[1].ram, list[1].render_distance, list[1].java_runtime), (12, 24, 2));
+        assert_eq!(
+            (list[1].ram, list[1].render_distance, list[1].java_runtime),
+            (12, 24, 2)
+        );
         assert_eq!((list[0].ram, list[2].ram), (8, 8));
     }
 
@@ -159,7 +185,9 @@ mod tests {
         assert_eq!(loader_spec_for(&InstanceLoader::Native, "26.2"), None);
         // The stored value is ignored: whatever base this machine resolves
         // (if any) is keyed by the version line.
-        let ewo = InstanceLoader::Ewo { manifest_url: "file:///stale/26.1.json".to_string() };
+        let ewo = InstanceLoader::Ewo {
+            manifest_url: "file:///stale/26.1.json".to_string(),
+        };
         match loader_spec_for(&ewo, "26.2.1") {
             Some(LoaderSpec { id, url }) => {
                 assert_eq!(id, "ewo");

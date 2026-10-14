@@ -168,7 +168,10 @@ pub fn message(e: BuiltIn<'_>) -> Option<String> {
             // the BOUND is printed first and the offending value second,
             // which is the reverse of the order they are handed in.
             let cmp = if *too_high { "more" } else { "less" };
-            format!("{} must not be {cmp} than {bound}, found {found}", kind.name())
+            format!(
+                "{} must not be {cmp} than {bound}, found {found}",
+                kind.name()
+            )
         }
         ReaderError::ExpectedArgumentSeparator => {
             "Expected whitespace to end one argument, but found trailing data".to_string()
@@ -404,8 +407,14 @@ mod tests {
 
     #[test]
     fn the_two_types_with_no_vanilla_text_answer_none_rather_than_inventing_one() {
-        assert_eq!(message(BuiltIn::Reader(&ReaderError::UnknownArgumentType)), None);
-        assert_eq!(message(BuiltIn::Reader(&ReaderError::LiteralIncorrect)), None);
+        assert_eq!(
+            message(BuiltIn::Reader(&ReaderError::UnknownArgumentType)),
+            None
+        );
+        assert_eq!(
+            message(BuiltIn::Reader(&ReaderError::LiteralIncorrect)),
+            None
+        );
     }
 
     // ── getContext ───────────────────────────────────────────────────────
@@ -554,7 +563,11 @@ mod tests {
                         },
                     ),
                 ),
-                n(2 | 4, vec![], arg("flag", "brigadier:bool", ArgumentProps::None)),
+                n(
+                    2 | 4,
+                    vec![],
+                    arg("flag", "brigadier:bool", ArgumentProps::None),
+                ),
             ],
         }
     }
@@ -654,12 +667,23 @@ mod tests {
         // exact word match, and that match cannot then fail.
         let t = tree();
         for input in [
-            "/giv", "/gives", "/give", "/GIVE", "/give ", "/sayy", "/s", "/",
-            "/give 5 extra", "/say", "/give;",
+            "/giv",
+            "/gives",
+            "/give",
+            "/GIVE",
+            "/give ",
+            "/sayy",
+            "/s",
+            "/",
+            "/give 5 extra",
+            "/say",
+            "/give;",
         ] {
             let p = parse(&t, &u(input), 1, CommandCtx::default());
             assert!(
-                p.errors.iter().all(|e| e.error != ReaderError::LiteralIncorrect),
+                p.errors
+                    .iter()
+                    .all(|e| e.error != ReaderError::LiteralIncorrect),
                 "{input} recorded a literalIncorrect"
             );
         }

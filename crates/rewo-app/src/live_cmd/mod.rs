@@ -55,10 +55,10 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::stats::{OverlayRing, StatsAccum};
 
 mod app;
+mod block_entities;
 mod frame;
 mod input;
 mod screen_pumps;
-mod block_entities;
 pub(crate) use block_entities::*;
 mod entities;
 pub(crate) use entities::*;
@@ -290,7 +290,10 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // M61: opt-in cloth capes. Off leaves `EntityTable` allocating and
     // ticking nothing, so the vanilla cape path is exactly M60's.
     if wavy_cape_requested(args.wavy_cape) {
-        log::info!("live: wavy capes on ({} segments)", rewo_world::wavy_cape::SEGMENTS);
+        log::info!(
+            "live: wavy capes on ({} segments)",
+            rewo_world::wavy_cape::SEGMENTS
+        );
         session.world.entities.set_wavy_capes(true);
     }
     // M26: `block_event`'s `b0 == 1` means a different thing to each block
@@ -1309,7 +1312,10 @@ fn skull_parts(
             let ri = bem::PIGLIN_RIGHT_EAR_PART as usize;
             xs[li] = bt::mul(&bt::part_at_rest(bem::PIGLIN_LEFT_EAR_PIVOT), &bt::rot_z(l));
             ps[li] = bem::PIGLIN_LEFT_EAR_PIVOT;
-            xs[ri] = bt::mul(&bt::part_at_rest(bem::PIGLIN_RIGHT_EAR_PIVOT), &bt::rot_z(r));
+            xs[ri] = bt::mul(
+                &bt::part_at_rest(bem::PIGLIN_RIGHT_EAR_PIVOT),
+                &bt::rot_z(r),
+            );
             ps[ri] = bem::PIGLIN_RIGHT_EAR_PIVOT;
         }
         "rewo:be/dragon_head" => {
@@ -1364,7 +1370,11 @@ mod m93m_beacon {
         // A click moves the screen's own copy.
         sc.beacon.as_mut().unwrap().choice.primary = Some(BeaconEffect::ALL[0]);
         let kept = beacon_live(&mut sc, open, &ids());
-        assert_eq!(kept.primary, Some(BeaconEffect::ALL[0]), "it survives a frame");
+        assert_eq!(
+            kept.primary,
+            Some(BeaconEffect::ALL[0]),
+            "it survives a frame"
+        );
 
         // ...and a data write of ANY slot re-seeds it from the menu.
         let mut m2 = m.clone();
@@ -1455,7 +1465,10 @@ mod m131_sounds {
 
         let mut live = rewo_net::sound_engine::LiveSounds::new(empty.clone(), registry.clone());
         attach_backend(&mut live, Err("no device".into()));
-        assert!(!live.has_sink(), "a failed open must leave the client silent");
+        assert!(
+            !live.has_sink(),
+            "a failed open must leave the client silent"
+        );
 
         let mut live = rewo_net::sound_engine::LiveSounds::new(empty, registry);
         attach_backend(&mut live, Ok(Box::new(Nothing)));
@@ -1526,7 +1539,10 @@ mod m131_sounds {
         assert_ne!(got.name, "minecraft:block.stone.break");
         assert_eq!(
             got.asset_path(),
-            format!("minecraft/sounds/dig/stone{}.ogg", &got.name["minecraft:dig/stone".len()..])
+            format!(
+                "minecraft/sounds/dig/stone{}.ogg",
+                &got.name["minecraft:dig/stone".len()..]
+            )
         );
         assert_eq!(got.attenuation_distance, 16);
     }

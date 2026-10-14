@@ -54,7 +54,10 @@ impl BossBarColor {
     ];
 
     pub fn from_ordinal(id: i32) -> Option<BossBarColor> {
-        usize::try_from(id).ok().and_then(|i| Self::ALL.get(i)).copied()
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| Self::ALL.get(i))
+            .copied()
     }
 
     fn read(r: &mut PacketReader<'_>) -> Result<BossBarColor> {
@@ -101,7 +104,10 @@ impl BossBarOverlay {
     ];
 
     pub fn from_ordinal(id: i32) -> Option<BossBarOverlay> {
-        usize::try_from(id).ok().and_then(|i| Self::ALL.get(i)).copied()
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| Self::ALL.get(i))
+            .copied()
     }
 
     fn read(r: &mut PacketReader<'_>) -> Result<BossBarOverlay> {
@@ -335,7 +341,9 @@ impl BossBars {
 
     /// The bars in display order.
     pub fn iter(&self) -> impl Iterator<Item = (u128, &BossBar)> {
-        self.order.iter().filter_map(|id| self.bars.get(id).map(|b| (*id, b)))
+        self.order
+            .iter()
+            .filter_map(|id| self.bars.get(id).map(|b| (*id, b)))
     }
 
     pub fn get(&self, id: u128) -> Option<&BossBar> {
@@ -411,7 +419,14 @@ mod tests {
         varint(out, operation);
     }
 
-    fn add_body(id: u128, name: &str, progress: f32, color: i32, overlay: i32, flags: u8) -> Vec<u8> {
+    fn add_body(
+        id: u128,
+        name: &str,
+        progress: f32,
+        color: i32,
+        overlay: i32,
+        flags: u8,
+    ) -> Vec<u8> {
         let mut b = Vec::new();
         header(&mut b, id, 0);
         nbt_string(&mut b, name);

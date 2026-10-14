@@ -178,7 +178,11 @@ fn log(msg: &str) {
     LOG_INIT.call_once(|| {
         let _ = std::fs::write(&path, b"");
     });
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "[ewo-jni] {msg}");
     }
 }
@@ -510,7 +514,12 @@ unsafe fn build_composite_program() -> Option<(u32, i32, i32)> {
     if ok == 0 {
         let mut buf = [0u8; 512];
         let mut len = 0i32;
-        gl::GetProgramInfoLog(prog, buf.len() as i32, &mut len, buf.as_mut_ptr() as *mut i8);
+        gl::GetProgramInfoLog(
+            prog,
+            buf.len() as i32,
+            &mut len,
+            buf.as_mut_ptr() as *mut i8,
+        );
         log(&format!(
             "composite program link failed: {}",
             String::from_utf8_lossy(&buf[..len.max(0) as usize])
@@ -955,8 +964,16 @@ impl Hud {
         if self.comp_sampler == 0 {
             unsafe {
                 gl::GenSamplers(1, &mut self.comp_sampler);
-                gl::SamplerParameteri(self.comp_sampler, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
-                gl::SamplerParameteri(self.comp_sampler, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+                gl::SamplerParameteri(
+                    self.comp_sampler,
+                    gl::TEXTURE_MIN_FILTER,
+                    gl::NEAREST as i32,
+                );
+                gl::SamplerParameteri(
+                    self.comp_sampler,
+                    gl::TEXTURE_MAG_FILTER,
+                    gl::NEAREST as i32,
+                );
                 gl::SamplerParameteri(
                     self.comp_sampler,
                     gl::TEXTURE_WRAP_S,
@@ -1192,7 +1209,9 @@ impl Hud {
             Some(_) => {
                 self.hud_tex = tex;
                 self.offscreen_size = (w, h);
-                log(&format!("offscreen HUD texture created ({w}x{h}, gl id {tex})"));
+                log(&format!(
+                    "offscreen HUD texture created ({w}x{h}, gl id {tex})"
+                ));
             }
             None => {
                 unsafe { gl::DeleteTextures(1, &tex) };
@@ -1842,7 +1861,10 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeMouseButton(
     x: f64,
     y: f64,
 ) {
-    with_hud(|hud| hud.editor.on_mouse_button(button, pressed != 0, x as f32, y as f32));
+    with_hud(|hud| {
+        hud.editor
+            .on_mouse_button(button, pressed != 0, x as f32, y as f32)
+    });
 }
 
 /// Overlay input — the scroll wheel. Drives the MODULES-tab vertical scroll

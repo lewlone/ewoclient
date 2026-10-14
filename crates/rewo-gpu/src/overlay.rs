@@ -142,8 +142,8 @@ impl OverlayPipeline {
             let dynamic =
                 vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
             let color_formats = [color_format];
-            let mut rendering = vk::PipelineRenderingCreateInfo::default()
-                .color_attachment_formats(&color_formats);
+            let mut rendering =
+                vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
             let ci = vk::GraphicsPipelineCreateInfo::default()
                 .stages(&stages)
                 .vertex_input_state(&vertex_input)
@@ -308,12 +308,16 @@ impl OverlayPipeline {
             gpu.device.destroy_descriptor_pool(self.pool, None);
             gpu.device.destroy_pipeline(self.pipeline, None);
             gpu.device.destroy_pipeline_layout(self.layout, None);
-            gpu.device.destroy_descriptor_set_layout(self.set_layout, None);
+            gpu.device
+                .destroy_descriptor_set_layout(self.set_layout, None);
         }
     }
 }
 
-pub(crate) fn create_shader(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, String> {
+pub(crate) fn create_shader(
+    device: &ash::Device,
+    bytes: &[u8],
+) -> Result<vk::ShaderModule, String> {
     let code = ash::util::read_spv(&mut std::io::Cursor::new(bytes))
         .map_err(|e| format!("read spv: {e}"))?;
     unsafe {

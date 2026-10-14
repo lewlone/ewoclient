@@ -210,8 +210,7 @@ impl TagOverrides {
     /// every other registry alone. Rules 1 and 2.
     pub fn apply(&mut self, update: &TagUpdate) {
         for reg in &update.registries {
-            self.by_registry
-                .insert(reg.registry.clone(), reg.clone());
+            self.by_registry.insert(reg.registry.clone(), reg.clone());
         }
         self.generation = self.generation.wrapping_add(1);
     }
@@ -564,7 +563,11 @@ mod tests {
     #[test]
     fn contains_separates_silence_from_a_negative_answer() {
         let mut o = TagOverrides::default();
-        assert_eq!(o.contains(ITEM_REGISTRY, SPEARS_TAG, 7), None, "no packet yet");
+        assert_eq!(
+            o.contains(ITEM_REGISTRY, SPEARS_TAG, 7),
+            None,
+            "no packet yet"
+        );
         o.apply(&update(&[reg(ITEM_REGISTRY, &[(SPEARS_TAG, &[7])])]));
         assert_eq!(o.contains(ITEM_REGISTRY, SPEARS_TAG, 7), Some(true));
         assert_eq!(o.contains(ITEM_REGISTRY, SPEARS_TAG, 9), Some(false));
@@ -621,10 +624,16 @@ mod tests {
     #[test]
     fn an_unmodelled_registry_is_kept_rather_than_discarded() {
         let mut o = TagOverrides::default();
-        o.apply(&read_update_tags(&encode(&update(&[
-            reg("minecraft:banner_pattern", &[("minecraft:no_item_required", &[0, 1])]),
-            reg(ITEM_REGISTRY, &[(SPEARS_TAG, &[7])]),
-        ]))).unwrap());
+        o.apply(
+            &read_update_tags(&encode(&update(&[
+                reg(
+                    "minecraft:banner_pattern",
+                    &[("minecraft:no_item_required", &[0, 1])],
+                ),
+                reg(ITEM_REGISTRY, &[(SPEARS_TAG, &[7])]),
+            ])))
+            .unwrap(),
+        );
         assert_eq!(o.registry_count(), 2);
         assert_eq!(
             o.tag("minecraft:banner_pattern", "minecraft:no_item_required"),

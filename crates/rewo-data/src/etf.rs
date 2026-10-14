@@ -100,7 +100,10 @@ impl IntRange {
 pub enum NameMatch {
     Exact(String),
     /// `pattern:` — `*` matches any run, `?` any single character.
-    Pattern { glob: String, ignore_case: bool },
+    Pattern {
+        glob: String,
+        ignore_case: bool,
+    },
 }
 
 impl NameMatch {
@@ -238,7 +241,14 @@ pub struct EntityProps<'a> {
 
 impl Default for EntityProps<'_> {
     fn default() -> Self {
-        EntityProps { uuid: 0, name: None, baby: false, size: None, y: 64, day_ticks: 0 }
+        EntityProps {
+            uuid: 0,
+            name: None,
+            baby: false,
+            size: None,
+            y: 64,
+            day_ticks: 0,
+        }
     }
 }
 
@@ -291,8 +301,13 @@ impl EtfPack {
     /// a herd does not move in lockstep. No rule matching means the vanilla
     /// texture, which is also OptiFine's fallback.
     pub fn pick(&self, key: &str, e: &EntityProps<'_>) -> u32 {
-        let Some(variants) = self.rules.get(key) else { return 0 };
-        let matching: Vec<&Variant> = variants.iter().filter(|v| v.conditions.matches(e)).collect();
+        let Some(variants) = self.rules.get(key) else {
+            return 0;
+        };
+        let matching: Vec<&Variant> = variants
+            .iter()
+            .filter(|v| v.conditions.matches(e))
+            .collect();
         let total: u64 = matching.iter().map(|v| v.weight.max(1) as u64).sum();
         if total == 0 {
             return 0;
@@ -360,7 +375,9 @@ pub fn load_pack(zip_path: &Path) -> Result<EtfPack, String> {
         // `textures/entity/cow/cow.png`.
         let base_rel = format!("entity/{}.png", rest.trim_end_matches(".properties"));
         let Some(key) = crate::assets::mob_texture_key(&base_rel) else {
-            log::info!("etf: {props_path} has no matching baked mob texture ({base_rel}) — skipped");
+            log::info!(
+                "etf: {props_path} has no matching baked mob texture ({base_rel}) — skipped"
+            );
             continue;
         };
         let mut text = String::new();
@@ -395,7 +412,9 @@ pub fn load_pack(zip_path: &Path) -> Result<EtfPack, String> {
     // Decode the alternates, dropping any that don't match the vanilla
     // texture's dimensions.
     for (key, index, path) in wanted {
-        let Some((bw, bh)) = crate::assets::mob_texture_size(key) else { continue };
+        let Some((bw, bh)) = crate::assets::mob_texture_size(key) else {
+            continue;
+        };
         let Ok(mut entry) = zip.by_name(&path) else {
             log::warn!("etf: {key} variant {index}: {path} missing from the pack");
             continue;
@@ -419,24 +438,34 @@ pub fn load_pack(zip_path: &Path) -> Result<EtfPack, String> {
     // emissive textures and no variants at all.
     let suffix = emissive_suffix(&mut zip, &names);
     for (key, base_rel, bw, bh) in crate::assets::mob_texture_specs() {
-        let Some(stem) = base_rel.strip_suffix(".png") else { continue };
+        let Some(stem) = base_rel.strip_suffix(".png") else {
+            continue;
+        };
         let path = format!("{TEXTURES_ROOT}{stem}{suffix}.png");
         if !names.contains(&path) {
             continue;
         }
-        let Ok(mut entry) = zip.by_name(&path) else { continue };
+        let Ok(mut entry) = zip.by_name(&path) else {
+            continue;
+        };
         let mut buf = Vec::new();
         if entry.read_to_end(&mut buf).is_err() {
             continue;
         }
         match crate::assets::decode_entity_png(&buf) {
             Some((rgba, w, h)) if (w, h) == (bw, bh) => {
-                pack.textures.push(EtfTexture { key, index: EMISSIVE_INDEX, w, h, rgba });
+                pack.textures.push(EtfTexture {
+                    key,
+                    index: EMISSIVE_INDEX,
+                    w,
+                    h,
+                    rgba,
+                });
                 pack.emissive.push(key);
             }
-            Some((_, w, h)) => log::warn!(
-                "etf: emissive {path} is {w}×{h} but {key} is {bw}×{bh} — skipped"
-            ),
+            Some((_, w, h)) => {
+                log::warn!("etf: emissive {path} is {w}×{h} but {key} is {bw}×{bh} — skipped")
+            }
             None => log::warn!("etf: emissive {path} failed to decode"),
         }
     }
@@ -446,7 +475,11 @@ pub fn load_pack(zip_path: &Path) -> Result<EtfPack, String> {
     // texture, which have no image by design.
     for (key, variants) in pack.rules.iter_mut() {
         variants.retain(|v| {
-            v.texture.is_none() || pack.textures.iter().any(|t| t.key == *key && t.index == v.index)
+            v.texture.is_none()
+                || pack
+                    .textures
+                    .iter()
+                    .any(|t| t.key == *key && t.index == v.index)
         });
     }
     pack.rules.retain(|_, v| !v.is_empty());
@@ -461,13 +494,21 @@ pub fn load_pack(zip_path: &Path) -> Result<EtfPack, String> {
 }
 
 /// The pack's emissive suffix, from `optifine/emissive.properties`.
-fn emissive_suffix(zip: &mut zip::ZipArchive<impl std::io::Read + std::io::Seek>, names: &[String]) -> String {
+fn emissive_suffix(
+    zip: &mut zip::ZipArchive<impl std::io::Read + std::io::Seek>,
+    names: &[String],
+) -> String {
     const PROPS: &str = "assets/minecraft/optifine/emissive.properties";
     if !names.iter().any(|n| n == PROPS) {
         return DEFAULT_EMISSIVE_SUFFIX.to_string();
     }
     let mut text = String::new();
-    if zip.by_name(PROPS).ok().and_then(|mut e| e.read_to_string(&mut text).ok()).is_none() {
+    if zip
+        .by_name(PROPS)
+        .ok()
+        .and_then(|mut e| e.read_to_string(&mut text).ok())
+        .is_none()
+    {
         return DEFAULT_EMISSIVE_SUFFIX.to_string();
     }
     text.lines()
@@ -541,7 +582,9 @@ fn parse_properties(
         if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
             continue;
         }
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let (k, v) = (k.trim(), v.trim());
         // `nbt.<index>.<path>` carries the index in the middle, unlike
         // every other key, which ends with it.
@@ -552,8 +595,12 @@ fn parse_properties(
                 None => continue,
             },
         };
-        let Ok(idx) = idx.parse::<u32>() else { continue };
-        let slot = raw.entry(idx).or_insert_with(|| (None, 1, Conditions::default()));
+        let Ok(idx) = idx.parse::<u32>() else {
+            continue;
+        };
+        let slot = raw
+            .entry(idx)
+            .or_insert_with(|| (None, 1, Conditions::default()));
         match name {
             "textures" | "skins" => slot.0 = Some(v.to_string()),
             "weights" => slot.1 = v.parse().unwrap_or(1),
@@ -563,7 +610,12 @@ fn parse_properties(
             "heights" => set_ranges(&mut slot.2.heights, &mut slot.2.unsupported, v, "heights"),
             "minHeight" => push_open(&mut slot.2.heights, v, true),
             "maxHeight" => push_open(&mut slot.2.heights, v, false),
-            "moonPhase" => set_ranges(&mut slot.2.moon_phases, &mut slot.2.unsupported, v, "moonPhase"),
+            "moonPhase" => set_ranges(
+                &mut slot.2.moon_phases,
+                &mut slot.2.unsupported,
+                v,
+                "moonPhase",
+            ),
             "dayTime" => set_ranges(&mut slot.2.day_times, &mut slot.2.unsupported, v, "dayTime"),
             // Everything Rewo has no data for. The rule is kept (so the
             // weighting of the others is unchanged) but can never match.
@@ -578,7 +630,12 @@ fn parse_properties(
         .into_iter()
         .filter_map(|(index, (tex, weight, conditions))| {
             let texture = resolve(tex.as_deref()?)?;
-            Some(Variant { index, texture, weight, conditions })
+            Some(Variant {
+                index,
+                texture,
+                weight,
+                conditions,
+            })
         })
         .collect();
     out.sort_by_key(|v| v.index);
@@ -611,9 +668,15 @@ fn parse_names(v: &str) -> Vec<NameMatch> {
     v.split_whitespace()
         .map(|t| {
             if let Some(p) = t.strip_prefix("ipattern:") {
-                NameMatch::Pattern { glob: p.to_string(), ignore_case: true }
+                NameMatch::Pattern {
+                    glob: p.to_string(),
+                    ignore_case: true,
+                }
             } else if let Some(p) = t.strip_prefix("pattern:") {
-                NameMatch::Pattern { glob: p.to_string(), ignore_case: false }
+                NameMatch::Pattern {
+                    glob: p.to_string(),
+                    ignore_case: false,
+                }
             } else {
                 NameMatch::Exact(t.to_string())
             }
@@ -640,12 +703,23 @@ fn push_open(dst: &mut Vec<IntRange>, v: &str, is_min: bool) {
         // `minHeight`/`maxHeight` are the older half-open spelling; a pair
         // of them intersects, so fold into the single range already there.
         let r = if is_min {
-            IntRange { lo: n, hi: i64::MAX }
+            IntRange {
+                lo: n,
+                hi: i64::MAX,
+            }
         } else {
-            IntRange { lo: i64::MIN, hi: n }
+            IntRange {
+                lo: i64::MIN,
+                hi: n,
+            }
         };
         match dst.first_mut() {
-            Some(f) => *f = IntRange { lo: f.lo.max(r.lo), hi: f.hi.min(r.hi) },
+            Some(f) => {
+                *f = IntRange {
+                    lo: f.lo.max(r.lo),
+                    hi: f.hi.min(r.hi),
+                }
+            }
             None => dst.push(r),
         }
     }
@@ -693,9 +767,19 @@ mod tests {
         let c = &v[0].conditions;
         assert_eq!(c.baby, Some(true));
         assert_eq!(c.sizes, vec![IntRange { lo: 1, hi: 3 }]);
-        assert_eq!(c.heights, vec![IntRange { lo: -60, hi: -60 }], "a bare -60 is a value");
+        assert_eq!(
+            c.heights,
+            vec![IntRange { lo: -60, hi: -60 }],
+            "a bare -60 is a value"
+        );
         assert_eq!(c.moon_phases.len(), 2);
-        assert_eq!(c.day_times, vec![IntRange { lo: 13_000, hi: 23_000 }]);
+        assert_eq!(
+            c.day_times,
+            vec![IntRange {
+                lo: 13_000,
+                hi: 23_000
+            }]
+        );
         assert!(c.unsupported.is_none());
         assert_eq!(c.names.len(), 2);
     }
@@ -708,10 +792,19 @@ mod tests {
         assert_eq!(IntRange::parse("3-").map(|r| r.lo), Some(3));
         assert!(IntRange::parse("3-").unwrap().contains(1_000_000));
         assert!(IntRange::parse("").is_none());
-        assert!(IntRange::parse("7-2").is_none(), "an inverted range is a typo");
+        assert!(
+            IntRange::parse("7-2").is_none(),
+            "an inverted range is a typo"
+        );
         // Negative bounds: the separator is a later dash than the sign.
-        assert_eq!(IntRange::parse("-64--30"), Some(IntRange { lo: -64, hi: -30 }));
-        assert_eq!(IntRange::parse("-64-30"), Some(IntRange { lo: -64, hi: 30 }));
+        assert_eq!(
+            IntRange::parse("-64--30"),
+            Some(IntRange { lo: -64, hi: -30 })
+        );
+        assert_eq!(
+            IntRange::parse("-64-30"),
+            Some(IntRange { lo: -64, hi: 30 })
+        );
         assert_eq!(IntRange::parse("-64-").map(|r| r.lo), Some(-64));
         assert!(IntRange::parse("-64--30").unwrap().contains(-50));
         assert!(!IntRange::parse("-64--30").unwrap().contains(0));
@@ -728,16 +821,30 @@ mod tests {
         assert!(!glob_match("c?w", "coow"));
         assert!(glob_match("*", ""));
         assert!(!glob_match("cow", "cows"));
-        let m = NameMatch::Pattern { glob: "MOO*".into(), ignore_case: true };
+        let m = NameMatch::Pattern {
+            glob: "MOO*".into(),
+            ignore_case: true,
+        };
         assert!(m.matches("moomoo"));
-        assert!(!NameMatch::Pattern { glob: "MOO*".into(), ignore_case: false }.matches("moomoo"));
+        assert!(!NameMatch::Pattern {
+            glob: "MOO*".into(),
+            ignore_case: false
+        }
+        .matches("moomoo"));
     }
 
     /// The load-bearing safety rule: a condition Rewo can't evaluate must
     /// make its rule inert, so the entity keeps its vanilla texture.
     #[test]
     fn unevaluatable_conditions_never_match() {
-        for key in ["biomes", "professions", "collarColors", "health", "weather", "blocks"] {
+        for key in [
+            "biomes",
+            "professions",
+            "collarColors",
+            "health",
+            "weather",
+            "blocks",
+        ] {
             let v = parse_properties(&format!("textures.2=b.png\n{key}.2=whatever\n"), ident);
             assert_eq!(v[0].conditions.unsupported, Some(key), "{key}");
             assert!(!v[0].conditions.matches(&EntityProps::default()));
@@ -756,12 +863,25 @@ mod tests {
     fn an_unmatched_or_unknown_texture_falls_back_to_vanilla() {
         let pack = pack_of("textures.2=b.png\nbaby.2=true\n");
         // Not a baby → no rule matches → the vanilla texture.
-        assert_eq!(pack.pick("cow", &EntityProps { uuid: 7, ..Default::default() }), 0);
+        assert_eq!(
+            pack.pick(
+                "cow",
+                &EntityProps {
+                    uuid: 7,
+                    ..Default::default()
+                }
+            ),
+            0
+        );
         // A texture with no rules at all.
         assert_eq!(pack.pick("pig", &EntityProps::default()), 0);
         // A baby draws the only matching rule, whatever its uuid.
         for uuid in 0..50u128 {
-            let e = EntityProps { uuid, baby: true, ..Default::default() };
+            let e = EntityProps {
+                uuid,
+                baby: true,
+                ..Default::default()
+            };
             assert_eq!(pack.pick("cow", &e), 2);
         }
     }
@@ -772,7 +892,10 @@ mod tests {
     #[test]
     fn the_pick_is_stable_per_entity_and_follows_weights() {
         let pack = pack_of("textures.1=a.png\ntextures.2=b.png\nweights.1=1\nweights.2=3\n");
-        let e = |uuid| EntityProps { uuid, ..Default::default() };
+        let e = |uuid| EntityProps {
+            uuid,
+            ..Default::default()
+        };
         for uuid in [0u128, 1, 12345, u128::MAX] {
             let first = pack.pick("cow", &e(uuid));
             for _ in 0..5 {
@@ -795,14 +918,27 @@ mod tests {
     /// would be a variant cow.
     #[test]
     fn a_rule_naming_the_vanilla_texture_keeps_its_share() {
-        let pack = pack_of("textures.1=vanilla
+        let pack = pack_of(
+            "textures.1=vanilla
 textures.2=b.png
-");
+",
+        );
         assert_eq!(pack.rules["cow"].len(), 2, "both rules survive parsing");
-        assert!(pack.rules["cow"][0].texture.is_none(), "rule 1 is the vanilla texture");
+        assert!(
+            pack.rules["cow"][0].texture.is_none(),
+            "rule 1 is the vanilla texture"
+        );
         let n = 20_000u128;
         let vanilla = (0..n)
-            .filter(|u| pack.pick("cow", &EntityProps { uuid: *u, ..Default::default() }) == 0)
+            .filter(|u| {
+                pack.pick(
+                    "cow",
+                    &EntityProps {
+                        uuid: *u,
+                        ..Default::default()
+                    },
+                ) == 0
+            })
             .count() as f64;
         let share = vanilla / n as f64;
         assert!(
@@ -820,8 +956,11 @@ textures.2=b.png
         // Rule indices come from `<key>.<n>` and are parsed as u32, but a
         // properties file with 65536 alternates is not a thing; the point is
         // that ordinary packs cannot reach it.
-        let v = parse_properties("textures.9999=b.png
-", ident);
+        let v = parse_properties(
+            "textures.9999=b.png
+",
+            ident,
+        );
         assert!(v[0].index < EMISSIVE_INDEX);
     }
 
@@ -829,7 +968,11 @@ textures.2=b.png
     fn moon_phase_and_day_time_read_the_world_clock() {
         let pack = pack_of("textures.2=b.png\nmoonPhase.2=3\n");
         // Day 3 (ticks 72000..95999) is moon phase 3.
-        let at = |t| EntityProps { uuid: 1, day_ticks: t, ..Default::default() };
+        let at = |t| EntityProps {
+            uuid: 1,
+            day_ticks: t,
+            ..Default::default()
+        };
         assert_eq!(pack.pick("cow", &at(72_000)), 2);
         assert_eq!(pack.pick("cow", &at(95_999)), 2);
         assert_eq!(pack.pick("cow", &at(96_000)), 0, "day 4 is phase 4");
@@ -839,21 +982,37 @@ textures.2=b.png
         let night = pack_of("textures.2=b.png\ndayTime.2=13000-23000\n");
         assert_eq!(night.pick("cow", &at(0)), 0);
         assert_eq!(night.pick("cow", &at(18_000)), 2);
-        assert_eq!(night.pick("cow", &at(24_000 + 18_000)), 2, "time of day wraps");
+        assert_eq!(
+            night.pick("cow", &at(24_000 + 18_000)),
+            2,
+            "time of day wraps"
+        );
     }
 
     #[test]
     fn height_and_size_conditions() {
         let deep = pack_of("textures.2=b.png\nheights.2=-64--30\n");
-        let at_y = |y| EntityProps { uuid: 1, y, ..Default::default() };
+        let at_y = |y| EntityProps {
+            uuid: 1,
+            y,
+            ..Default::default()
+        };
         assert_eq!(deep.pick("cow", &at_y(-40)), 2);
         assert_eq!(deep.pick("cow", &at_y(10)), 0);
 
         let big = pack_of("textures.2=b.png\nsizes.2=4-\n");
-        let sized = |s| EntityProps { uuid: 1, size: s, ..Default::default() };
+        let sized = |s| EntityProps {
+            uuid: 1,
+            size: s,
+            ..Default::default()
+        };
         assert_eq!(big.pick("cow", &sized(Some(4))), 2);
         assert_eq!(big.pick("cow", &sized(Some(2))), 0);
-        assert_eq!(big.pick("cow", &sized(None)), 0, "a sizeless mob can't match a size rule");
+        assert_eq!(
+            big.pick("cow", &sized(None)),
+            0,
+            "a sizeless mob can't match a size rule"
+        );
     }
 
     #[test]
@@ -864,20 +1023,36 @@ textures.2=b.png
 
     #[test]
     fn numeric_texture_references_use_the_mcpatcher_form() {
-        let names: Vec<String> = ["assets/minecraft/textures/entity/cow/cow.png",
-            "assets/minecraft/textures/entity/cow/cow2.png"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let r = |raw: &str| resolve_texture(raw, "entity/cow", "cow", "assets/minecraft/optifine/random/entity/cow/cow.properties", &names);
-        let alt = Some(Some("assets/minecraft/textures/entity/cow/cow2.png".to_string()));
+        let names: Vec<String> = [
+            "assets/minecraft/textures/entity/cow/cow.png",
+            "assets/minecraft/textures/entity/cow/cow2.png",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let r = |raw: &str| {
+            resolve_texture(
+                raw,
+                "entity/cow",
+                "cow",
+                "assets/minecraft/optifine/random/entity/cow/cow.properties",
+                &names,
+            )
+        };
+        let alt = Some(Some(
+            "assets/minecraft/textures/entity/cow/cow2.png".to_string(),
+        ));
         assert_eq!(r("2"), alt);
         assert_eq!(r("cow2.png"), alt);
         assert_eq!(r("cow2"), alt, ".png is optional");
         assert_eq!(r("~/textures/entity/cow/cow2.png"), alt);
         // Naming the vanilla texture is a real rule, not a missing one —
         // `Some(None)` says "resolved, and it is the base texture".
-        assert_eq!(r("1"), Some(None), "the MCPatcher `1` is the vanilla texture");
+        assert_eq!(
+            r("1"),
+            Some(None),
+            "the MCPatcher `1` is the vanilla texture"
+        );
         assert_eq!(r("cow.png"), Some(None));
         assert_eq!(r("nope.png"), None, "a reference the pack doesn't contain");
     }

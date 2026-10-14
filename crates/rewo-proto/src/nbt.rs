@@ -80,7 +80,11 @@ impl Nbt {
         if tag == 0 {
             return Ok(Nbt::End);
         }
-        let mut acc = Accounter { quota, usage: 0, depth: 0 };
+        let mut acc = Accounter {
+            quota,
+            usage: 0,
+            depth: 0,
+        };
         read_payload(r, tag, &mut acc)
     }
 
@@ -205,7 +209,9 @@ pub fn decode_modified_utf8(bytes: &[u8]) -> Result<String> {
                 if c2 & 0xC0 != 0x80 || c3 & 0xC0 != 0x80 {
                     return Err(malformed(format!("malformed input around byte {}", i + 2)));
                 }
-                units.push(((c as u16 & 0x0F) << 12) | ((c2 as u16 & 0x3F) << 6) | (c3 as u16 & 0x3F));
+                units.push(
+                    ((c as u16 & 0x0F) << 12) | ((c2 as u16 & 0x3F) << 6) | (c3 as u16 & 0x3F),
+                );
                 i += 3;
             }
             _ => return Err(malformed(format!("malformed input around byte {i}"))),
@@ -683,7 +689,10 @@ mod tests {
         let buf = string_tag(body);
         let mut r = PacketReader::new(&buf);
         let v = Nbt::read_network(&mut r);
-        assert!(v.is_err() || r.is_empty(), "the string must consume its bytes");
+        assert!(
+            v.is_err() || r.is_empty(),
+            "the string must consume its bytes"
+        );
         v
     }
 
@@ -696,7 +705,10 @@ mod tests {
         ("\u{1F600}", &[0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80]),
         (
             "a\u{0}\u{e9}\u{20ac}\u{1F600}z",
-            &[0x61, 0xC0, 0x80, 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80, 0x7A],
+            &[
+                0x61, 0xC0, 0x80, 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80,
+                0x7A,
+            ],
         ),
     ];
 
@@ -723,7 +735,10 @@ mod tests {
         buf.extend_from_slice(emoji);
         buf.push(0);
         let nbt = Nbt::read_network(&mut PacketReader::new(&buf)).unwrap();
-        assert_eq!(nbt, Nbt::Compound(vec![("\u{1F600}".into(), Nbt::String("\u{1F600}".into()))]));
+        assert_eq!(
+            nbt,
+            Nbt::Compound(vec![("\u{1F600}".into(), Nbt::String("\u{1F600}".into()))])
+        );
     }
 
     #[test]
@@ -732,7 +747,10 @@ mod tests {
             assert_eq!(encode_modified_utf8(s).as_deref(), Some(*body), "{s:?}");
         }
         // Over 65,535 encoded bytes is `writeUTF`'s UTFDataFormatException.
-        assert_eq!(encode_modified_utf8(&"a".repeat(65_535)).map(|v| v.len()), Some(65_535));
+        assert_eq!(
+            encode_modified_utf8(&"a".repeat(65_535)).map(|v| v.len()),
+            Some(65_535)
+        );
         assert_eq!(encode_modified_utf8(&"a".repeat(65_536)), None);
         assert_eq!(encode_modified_utf8(&"\u{20ac}".repeat(21_846)), None);
     }
@@ -751,7 +769,10 @@ mod tests {
             &[0xE2, 0x41, 0xAC],       // bad continuation: "around byte 2"
         ];
         for body in bad {
-            assert!(read_string_tag(body).is_err(), "{body:02X?} must be rejected");
+            assert!(
+                read_string_tag(body).is_err(),
+                "{body:02X?} must be rejected"
+            );
             assert!(decode_modified_utf8(body).is_err());
         }
     }

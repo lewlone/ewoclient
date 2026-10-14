@@ -170,7 +170,13 @@ fn varint(mut v: i32, out: &mut Vec<u8>) {
 }
 
 /// A full `ClientboundDamageEventPacket` body.
-fn damage_body(eid: i32, damage_type: i32, cause: i32, direct: i32, pos: Option<[f64; 3]>) -> Vec<u8> {
+fn damage_body(
+    eid: i32,
+    damage_type: i32,
+    cause: i32,
+    direct: i32,
+    pos: Option<[f64; 3]>,
+) -> Vec<u8> {
     let mut b = Vec::new();
     varint(eid, &mut b);
     // `ByteBufCodecs.holderRegistry` — the raw 0-based registry id.
@@ -386,7 +392,10 @@ fn check_clock(c: &mut Checker, ids: &Ids, classes: &EntityClasses, zombie: i32)
     c.record(
         "b3.a_repeat_hit_re_arms_the_clock",
         mid == 8 && t.hurt_state(1).hurt_time == 10,
-        format!("hurtTime {mid} → {} after a second hit", t.hurt_state(1).hurt_time),
+        format!(
+            "hurtTime {mid} → {} after a second hit",
+            t.hurt_state(1).hurt_time
+        ),
     );
 
     // `walkAnimation.setSpeed(1.5F)` is the first line of handleDamageEvent.
@@ -428,7 +437,10 @@ fn check_clock(c: &mut Checker, ids: &Ids, classes: &EntityClasses, zombie: i32)
     c.record(
         "b6.removal_clears_the_clock_and_a_reused_id_does_not_inherit_it",
         cleared == 0 && t.hurt_state(1).hurt_time == 0,
-        format!("after remove hurtTime={cleared}, after re-add {}", t.hurt_state(1).hurt_time),
+        format!(
+            "after remove hurtTime={cleared}, after re-add {}",
+            t.hurt_state(1).hurt_time
+        ),
     );
 }
 
@@ -670,7 +682,10 @@ fn check_death(
     c.record(
         "d8.a_living_entity_never_starts_the_death_clock",
         t.death_state(1).death_time == 0,
-        format!("deathTime after 5 ticks alive = {}", t.death_state(1).death_time),
+        format!(
+            "deathTime after 5 ticks alive = {}",
+            t.death_state(1).death_time
+        ),
     );
 
     // A repeat must not rewind: `die()` early-returns when already dead.
@@ -762,7 +777,10 @@ fn check_death(
     c.record(
         "d13.the_topple_angle_matches_the_sqrt_curve",
         roll_ok,
-        format!("{} — sqrt((deathTime-1)/20*1.6) clamped to 1, times 90 deg", rows.join("; ")),
+        format!(
+            "{} — sqrt((deathTime-1)/20*1.6) clamped to 1, times 90 deg",
+            rows.join("; ")
+        ),
     );
 
     // The curve must saturate: at deathTime 13.5 the argument is exactly 1.0.
@@ -1435,11 +1453,7 @@ fn marker_ndc(img: &[u8], empty: &[u8]) -> Option<(f64, f64, u32)> {
         return None;
     }
     let (px, py) = (sx / n as f64, sy / n as f64);
-    Some((
-        px / W as f64 * 2.0 - 1.0,
-        1.0 - py / H as f64 * 2.0,
-        n,
-    ))
+    Some((px / W as f64 * 2.0 - 1.0, 1.0 - py / H as f64 * 2.0, n))
 }
 
 /// The tilt, measured on rendered pixels through the production emitter.

@@ -81,10 +81,7 @@ pub struct JobConfig {
 
 /// Spawn the job on a fresh worker thread and return immediately.
 /// Caller polls the receiver for `JobEvent`s.
-pub fn spawn(
-    config: JobConfig,
-    tx: Sender<JobEvent>,
-) -> std::thread::JoinHandle<()> {
+pub fn spawn(config: JobConfig, tx: Sender<JobEvent>) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name(format!("ewo-dl-{}", config.entry.id))
         .spawn(move || run_job(config, tx))
@@ -121,14 +118,16 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
                 Ok(loader_manifest) => {
                     log::info!(
                         "downloads: merging loader \"{}\" manifest into {}",
-                        loader_manifest.id, vanilla_pv.id
+                        loader_manifest.id,
+                        vanilla_pv.id
                     );
                     loaders::merge(&vanilla_pv, &loader_manifest)
                 }
                 Err(e) => {
                     log::warn!(
                         "downloads: loader \"{}\" fetch failed ({}) — continuing with vanilla",
-                        spec.id, e
+                        spec.id,
+                        e
                     );
                     vanilla_pv
                 }
@@ -200,15 +199,15 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
             let path = match paths::library_path(&art.path) {
                 Some(p) => p,
                 None => {
-                    let _ = tx.send(JobEvent::Failed(format!("library {}: unsafe or unresolvable path {:?}", lib.name, art.path)));
+                    let _ = tx.send(JobEvent::Failed(format!(
+                        "library {}: unsafe or unresolvable path {:?}",
+                        lib.name, art.path
+                    )));
                     return;
                 }
             };
             if let Err(e) = ensure_file(&agent, &art.url, &art.sha1, art.size, &path) {
-                let _ = tx.send(JobEvent::Failed(format!(
-                    "library {}: {}",
-                    lib.name, e
-                )));
+                let _ = tx.send(JobEvent::Failed(format!("library {}: {}", lib.name, e)));
                 return;
             }
             downloaded += art.size;
@@ -223,7 +222,10 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
                 let path = match paths::library_path(&art.path) {
                     Some(p) => p,
                     None => {
-                        let _ = tx.send(JobEvent::Failed(format!("native {}: unsafe or unresolvable path {:?}", lib.name, art.path)));
+                        let _ = tx.send(JobEvent::Failed(format!(
+                            "native {}: unsafe or unresolvable path {:?}",
+                            lib.name, art.path
+                        )));
                         return;
                     }
                 };
@@ -297,11 +299,7 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
             return;
         };
         if let Err(e) = ensure_file(&agent, &url, &obj.hash, obj.size, &path) {
-            let _ = tx.send(JobEvent::Failed(format!(
-                "asset {}: {}",
-                &obj.hash[..8],
-                e
-            )));
+            let _ = tx.send(JobEvent::Failed(format!("asset {}: {}", &obj.hash[..8], e)));
             return;
         }
         downloaded += obj.size;
@@ -475,7 +473,10 @@ fn ensure_file(
             return Err(format!("unsupported URL scheme: {}", url));
         }
         if !paths::is_sha1_hex(&expected_sha1) {
-            return Err(format!("no sha1 for {} — refusing an unverifiable download", url));
+            return Err(format!(
+                "no sha1 for {} — refusing an unverifiable download",
+                url
+            ));
         }
         if existing_is_valid(dest, &expected_sha1, expected_size) {
             return Ok(());
@@ -485,17 +486,14 @@ fn ensure_file(
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
     let mut reader: Box<dyn Read> = if let Some(ref p) = local_path {
-        let f = fs::File::open(p)
-            .map_err(|e| format!("open {}: {}", p.display(), e))?;
+        let f = fs::File::open(p).map_err(|e| format!("open {}: {}", p.display(), e))?;
         Box::new(f)
     } else {
         let mut req = agent.get(url);
         for (k, v) in github_auth_headers_for(url) {
             req = req.set(k, &v);
         }
-        let resp = req
-            .call()
-            .map_err(|e| format!("GET {}: {}", url, e))?;
+        let resp = req.call().map_err(|e| format!("GET {}: {}", url, e))?;
         Box::new(resp.into_reader())
     };
     let part = part_path(dest);
@@ -579,8 +577,7 @@ fn is_github_release_asset_url(url: &str) -> bool {
     // would just confuse GitHub's auth check and isn't strictly needed there
     // for private repos either (it falls back to session cookies, which we
     // don't have).
-    url.starts_with("https://api.github.com/repos/")
-        && url.contains("/releases/assets/")
+    url.starts_with("https://api.github.com/repos/") && url.contains("/releases/assets/")
 }
 
 #[cfg(test)]
@@ -588,7 +585,9 @@ mod tests {
     use super::*;
 
     fn agent() -> ureq::Agent {
-        ureq::AgentBuilder::new().timeout(Duration::from_secs(1)).build()
+        ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(1))
+            .build()
     }
 
     #[test]
@@ -610,7 +609,10 @@ mod tests {
         // sha1("hello")
         let good = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
         let bad = "0000000000000000000000000000000000000000";
-        assert!(!existing_is_valid(&dest, bad, 5), "same size, wrong hash must not pass");
+        assert!(
+            !existing_is_valid(&dest, bad, 5),
+            "same size, wrong hash must not pass"
+        );
         assert!(existing_is_valid(&dest, good, 5));
         assert!(!existing_is_valid(&dest, good, 6), "size mismatch");
         // A good existing file short-circuits without touching the network.
@@ -648,9 +650,14 @@ mod tests {
         // With a token set, a release-asset API URL gets auth headers.
         std::env::set_var("EWO_LOADER_TOKEN", "ghp_test_token");
         let headers = github_auth_headers_for(asset);
-        assert!(!headers.is_empty(), "GitHub asset URL should get auth headers");
+        assert!(
+            !headers.is_empty(),
+            "GitHub asset URL should get auth headers"
+        );
         assert!(headers.iter().any(|(k, _)| *k == "Authorization"));
-        assert!(headers.iter().any(|(k, v)| *k == "Accept" && v == "application/octet-stream"));
+        assert!(headers
+            .iter()
+            .any(|(k, v)| *k == "Accept" && v == "application/octet-stream"));
 
         // ...but Modrinth + Mojang + the non-API GitHub browser-download
         // URL must NOT, even with the token set.

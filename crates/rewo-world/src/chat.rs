@@ -829,7 +829,14 @@ impl ChatComponent {
         let top = (-y - height).min(-y);
         let h = height.abs();
         Some([
-            ScrollbarRect { x: start_x, y: top, w: 2, h, rgb, alpha },
+            ScrollbarRect {
+                x: start_x,
+                y: top,
+                w: 2,
+                h,
+                rgb,
+                alpha,
+            },
             ScrollbarRect {
                 // `fill(start + 2, .., start + 1, ..)` normalises to the single
                 // column `start + 1`.
@@ -1346,7 +1353,10 @@ mod tests {
         assert_eq!(c.deletion_queue_len(), 0);
         assert!(t(&c.all_messages()[0].content).contains("deleted"));
         assert!(c.all_messages()[0].signature.is_none());
-        assert_eq!(t(&c.trimmed_messages()[0].text), ctx(false).deleted_marker_text);
+        assert_eq!(
+            t(&c.trimmed_messages()[0].text),
+            ctx(false).deleted_marker_text
+        );
     }
 
     #[test]
@@ -1453,7 +1463,10 @@ mod tests {
         assert_eq!(lines[1][0].text, " ");
         assert_eq!(lines[1][0].click(), None);
         assert_eq!(lines[1][1].text, "def");
-        assert_eq!(lines[1][1].click(), Some(&ClickEvent::RunCommand("/x".into())));
+        assert_eq!(
+            lines[1][1].click(),
+            Some(&ClickEvent::RunCommand("/x".into()))
+        );
     }
 
     // ---- M128: the hit test ---------------------------------------------

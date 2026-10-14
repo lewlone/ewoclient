@@ -409,7 +409,7 @@ mod tests {
     fn tree_bytes(arg_flags: u8, type_id: i32, props: &[u8], suggestion: Option<&str>) -> Vec<u8> {
         let mut b = Vec::new();
         varint(3, &mut b); // three nodes
-        // 0: root, one child
+                           // 0: root, one child
         b.push(0);
         varint(1, &mut b);
         varint(1, &mut b);
@@ -521,7 +521,12 @@ mod tests {
         // one desynchronises. The properties here are `entity`'s single byte,
         // so a swapped reader would take `minecraft:ask_server`'s length byte
         // as the flags and then read the name as a property.
-        let b = tree_bytes(2 | FLAG_CUSTOM_SUGGESTIONS, 6, &[1], Some("minecraft:ask_server"));
+        let b = tree_bytes(
+            2 | FLAG_CUSTOM_SUGGESTIONS,
+            6,
+            &[1],
+            Some("minecraft:ask_server"),
+        );
         let t = read_commands(&b, &known).unwrap();
         match &t.nodes[2].kind {
             NodeKind::Argument {
@@ -588,24 +593,42 @@ mod tests {
         let none = read_commands(&tree_bytes(2, 3, &[0], None), &known).unwrap();
         let min = read_commands(&tree_bytes(2, 3, &[1, 0, 0, 0, 7], None), &known).unwrap();
         let max = read_commands(&tree_bytes(2, 3, &[2, 0, 0, 0, 9], None), &known).unwrap();
-        let both =
-            read_commands(&tree_bytes(2, 3, &[3, 0, 0, 0, 1, 0, 0, 0, 2], None), &known).unwrap();
+        let both = read_commands(
+            &tree_bytes(2, 3, &[3, 0, 0, 0, 1, 0, 0, 0, 2], None),
+            &known,
+        )
+        .unwrap();
         let props = |t: &CommandTree| match &t.nodes[2].kind {
             NodeKind::Argument { props, .. } => props.clone(),
             other => panic!("{other:?}"),
         };
-        assert_eq!(props(&none), ArgumentProps::RangeI64 { min: None, max: None });
+        assert_eq!(
+            props(&none),
+            ArgumentProps::RangeI64 {
+                min: None,
+                max: None
+            }
+        );
         assert_eq!(
             props(&min),
-            ArgumentProps::RangeI64 { min: Some(7), max: None }
+            ArgumentProps::RangeI64 {
+                min: Some(7),
+                max: None
+            }
         );
         assert_eq!(
             props(&max),
-            ArgumentProps::RangeI64 { min: None, max: Some(9) }
+            ArgumentProps::RangeI64 {
+                min: None,
+                max: Some(9)
+            }
         );
         assert_eq!(
             props(&both),
-            ArgumentProps::RangeI64 { min: Some(1), max: Some(2) }
+            ArgumentProps::RangeI64 {
+                min: Some(1),
+                max: Some(2)
+            }
         );
     }
 
@@ -631,10 +654,9 @@ mod tests {
         utf("minecraft:item", &mut props);
         let t = read_commands(&tree_bytes(2, 41, &props, None), &known).unwrap();
         match &t.nodes[2].kind {
-            NodeKind::Argument { props, .. } => assert_eq!(
-                *props,
-                ArgumentProps::Registry("minecraft:item".into())
-            ),
+            NodeKind::Argument { props, .. } => {
+                assert_eq!(*props, ArgumentProps::Registry("minecraft:item".into()))
+            }
             other => panic!("{other:?}"),
         }
     }
@@ -658,15 +680,24 @@ mod tests {
         };
         assert_eq!(
             props(0),
-            ArgumentProps::Entity { single: false, players_only: false }
+            ArgumentProps::Entity {
+                single: false,
+                players_only: false
+            }
         );
         assert_eq!(
             props(1),
-            ArgumentProps::Entity { single: true, players_only: false }
+            ArgumentProps::Entity {
+                single: true,
+                players_only: false
+            }
         );
         assert_eq!(
             props(2),
-            ArgumentProps::Entity { single: false, players_only: true }
+            ArgumentProps::Entity {
+                single: false,
+                players_only: true
+            }
         );
     }
 

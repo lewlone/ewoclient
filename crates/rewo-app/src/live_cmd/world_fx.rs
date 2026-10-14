@@ -21,9 +21,10 @@ pub struct WeatherAssets {
 
 impl WeatherAssets {
     pub fn new(baked: &assets::BakedAssets) -> Self {
-        let clouds = baked.clouds.as_ref().map(|img| {
-            rewo_gpu::clouds::CloudTexture::from_rgba(&img.rgba, img.w, img.h)
-        });
+        let clouds = baked
+            .clouds
+            .as_ref()
+            .map(|img| rewo_gpu::clouds::CloudTexture::from_rgba(&img.rgba, img.w, img.h));
         if clouds.is_none() {
             log::warn!("live: no environment/clouds.png in the jar bake — no cloud deck");
         }
@@ -127,8 +128,10 @@ pub(super) fn apply_border(
         return;
     }
     let eye = eye_f64(session);
-    let render_distance =
-        (session.view_area.effective_render_distance(LOCAL_RENDER_DISTANCE_CHUNKS) * 16) as f64;
+    let render_distance = (session
+        .view_area
+        .effective_render_distance(LOCAL_RENDER_DISTANCE_CHUNKS)
+        * 16) as f64;
     let depth_far = (render_distance as f32 * 4.0).max((CLOUD_RANGE_CHUNKS * 16) as f32);
     let extracted = session
         .border
@@ -175,7 +178,10 @@ pub(super) fn parse_forced_weather() -> Option<(f32, f32)> {
     let raw = crate::knobs::var("REWO_FORCE_WEATHER").ok()?;
     let mut parts = raw.split(',');
     let rain: f32 = parts.next()?.trim().parse().ok()?;
-    let thunder: f32 = parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0.0);
+    let thunder: f32 = parts
+        .next()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0.0);
     Some((rain.clamp(0.0, 1.0), thunder.clamp(0.0, 1.0)))
 }
 
@@ -240,7 +246,11 @@ impl ParticleAssets {
         })
     }
 
-    pub(super) fn layer_for(&self, kind: rewo_world::particles::ParticleKind, frame: u32) -> Option<u32> {
+    pub(super) fn layer_for(
+        &self,
+        kind: rewo_world::particles::ParticleKind,
+        frame: u32,
+    ) -> Option<u32> {
         self.sets
             .iter()
             .find(|(k, _, _)| *k == kind)
@@ -311,15 +321,8 @@ pub(super) fn apply_crumbling(
         if d2 > 1024.0 {
             continue;
         }
-        let state = session
-            .world
-            .block_state_at(pos[0], pos[1], pos[2]);
-        for q in rewo_mesh::crumbling::block_decal_quads(
-            &baked.render,
-            &baked.models,
-            state,
-            pos,
-        ) {
+        let state = session.world.block_state_at(pos[0], pos[1], pos[2]);
+        for q in rewo_mesh::crumbling::block_decal_quads(&baked.render, &baked.models, state, pos) {
             let v = |i: usize| CrumblingVertex {
                 pos: q.verts[i],
                 uv: q.uv[i],
@@ -370,11 +373,20 @@ pub(super) fn apply_particles(
     for ev in events {
         match ev {
             ParticleEvent::Command(cmd) => p.sys.spawn_from_packet(&cmd, &shapes),
-            ParticleEvent::DestroyBlock { x, y, z, block_state } => {
+            ParticleEvent::DestroyBlock {
+                x,
+                y,
+                z,
+                block_state,
+            } => {
                 // Vanilla iterates the block's collision boxes; a shapeless
                 // block spawns nothing.
-                let shape = collide.get(block_state as usize).cloned().unwrap_or_default();
-                p.sys.spawn_destroy_block(x, y, z, block_state, &shape, &shapes);
+                let shape = collide
+                    .get(block_state as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                p.sys
+                    .spawn_destroy_block(x, y, z, block_state, &shape, &shapes);
             }
         }
     }
@@ -391,7 +403,10 @@ pub(super) fn apply_particles(
     p.last_tick = Some(session.ticks);
 
     if p.sys.is_empty() {
-        let _ = wr.set_particles(gpu, &rewo_gpu::particles::ParticleDraw { verts: Vec::new() });
+        let _ = wr.set_particles(
+            gpu,
+            &rewo_gpu::particles::ParticleDraw { verts: Vec::new() },
+        );
         return;
     }
 
@@ -511,7 +526,7 @@ pub(super) fn apply_weather(
                     placement,
                     color_argb: color,
                     fog_clouds_end: CLOUD_FOG_END,
-                camera: [eye[0] as f32, eye[1] as f32, eye[2] as f32],
+                    camera: [eye[0] as f32, eye[1] as f32, eye[2] as f32],
                 },
             ) {
                 log::warn!("live: cloud upload failed: {e}");
@@ -527,7 +542,7 @@ pub(super) fn apply_weather(
                     placement: rewo_gpu::clouds::placement(eye, height, game_time, 0.0, 1, 1),
                     color_argb: 0,
                     fog_clouds_end: 1.0,
-                camera: [eye[0] as f32, eye[1] as f32, eye[2] as f32],
+                    camera: [eye[0] as f32, eye[1] as f32, eye[2] as f32],
                 },
             );
             w.cached = None;

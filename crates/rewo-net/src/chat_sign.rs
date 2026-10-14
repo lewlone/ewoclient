@@ -9,8 +9,8 @@
 //! `SignedMessageBody`), with a strictly-incrementing link index forming
 //! the chain the server validates.
 
-use rsa::pkcs8::DecodePrivateKey;
 use rsa::pkcs1v15::SigningKey;
+use rsa::pkcs8::DecodePrivateKey;
 use rsa::sha2::Sha256;
 use rsa::signature::{SignatureEncoding, Signer};
 use rsa::RsaPrivateKey;
@@ -225,7 +225,10 @@ impl LastSeenTracker {
             return false;
         }
         self.last_tracked = Some(*signature);
-        let entry = was_shown.then_some(TrackedEntry { signature: *signature, pending: true });
+        let entry = was_shown.then_some(TrackedEntry {
+            signature: *signature,
+            pending: true,
+        });
         let index = self.tail;
         self.tail = (index + 1) % LAST_SEEN_WINDOW;
         self.offset += 1;
@@ -267,7 +270,12 @@ impl LastSeenTracker {
             }
         }
         let checksum = last_seen_checksum(&last_seen);
-        LastSeenUpdate { offset, acknowledged, checksum, last_seen }
+        LastSeenUpdate {
+            offset,
+            acknowledged,
+            checksum,
+            last_seen,
+        }
     }
 }
 
@@ -431,11 +439,17 @@ mod tests {
             h = h.wrapping_mul(31);
         }
         let expect = (31i32.wrapping_add(h)) as u8;
-        assert_eq!(last_seen_checksum(&[[0u8; 256]]), if expect == 0 { 1 } else { expect });
+        assert_eq!(
+            last_seen_checksum(&[[0u8; 256]]),
+            if expect == 0 { 1 } else { expect }
+        );
         // Negative bytes hash signed, as Java's byte does.
         let mut neg = [0u8; 256];
         neg[0] = 0xff;
-        assert_ne!(last_seen_checksum(&[neg]), last_seen_checksum(&[[0u8; 256]]));
+        assert_ne!(
+            last_seen_checksum(&[neg]),
+            last_seen_checksum(&[[0u8; 256]])
+        );
     }
 
     #[test]

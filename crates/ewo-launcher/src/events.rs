@@ -5,7 +5,13 @@ use super::*;
 
 impl App {
     /// A key press (`WindowEvent::KeyboardInput`, pressed).
-    pub(crate) fn on_key_pressed(&mut self, window: &Arc<Window>, logical_key: Key, physical_key: winit::keyboard::PhysicalKey, text: Option<winit::keyboard::SmolStr>) {
+    pub(crate) fn on_key_pressed(
+        &mut self,
+        window: &Arc<Window>,
+        logical_key: Key,
+        physical_key: winit::keyboard::PhysicalKey,
+        text: Option<winit::keyboard::SmolStr>,
+    ) {
         // Keybind capture — the Keybinds tab armed a rebind, so the
         // next key press becomes the new binding. Esc cancels; a key
         // GLFW can't name leaves the rebind armed.
@@ -34,18 +40,11 @@ impl App {
             } else if logical_key == Key::Named(NamedKey::Enter) {
                 // Display name only — the folder is keyed by the
                 // instance's stable `id`, so a rename moves nothing.
-                match persistence::validate_instance_name(
-                    &self.instance_prefs.rename_buffer,
-                ) {
+                match persistence::validate_instance_name(&self.instance_prefs.rename_buffer) {
                     Ok(trimmed) => {
                         let trimmed = trimmed.to_string();
-                        if let Some(inst) =
-                            self.instances.get_mut(self.instance_prefs.selected)
-                        {
-                            log::info!(
-                                "rename: \"{}\" → \"{}\"",
-                                inst.name, trimmed
-                            );
+                        if let Some(inst) = self.instances.get_mut(self.instance_prefs.selected) {
+                            log::info!("rename: \"{}\" → \"{}\"", inst.name, trimmed);
                             inst.name = trimmed;
                         }
                         persistence::save_instances(&self.instances);
@@ -90,8 +89,7 @@ impl App {
                     // becomes a directory under `profiles/`.
                     if !ch.is_control()
                         && !"/\\:*?\"<>|".contains(ch)
-                        && self.prefs.profile_rename_buffer.chars().count()
-                            < profile::MAX_NAME_LEN
+                        && self.prefs.profile_rename_buffer.chars().count() < profile::MAX_NAME_LEN
                     {
                         self.prefs.profile_rename_buffer.push(ch);
                         self.prefs.profile_rename_focus_time = 0.0;
@@ -125,9 +123,7 @@ impl App {
                     }
                 }
             }
-        } else if self.screen == Screen::Friends
-            && self.friends_prefs.add_focused
-        {
+        } else if self.screen == Screen::Friends && self.friends_prefs.add_focused {
             // Phase H5 — text input for the add-friend MC name.
             const NAME_MAX_LEN: usize = 32;
             if logical_key == Key::Named(NamedKey::Escape) {
@@ -154,8 +150,7 @@ impl App {
                     // 1-16 chars, but accept broader and let the
                     // bot reject — keeps the input forgiving.
                     if !ch.is_control()
-                        && self.friends_prefs.add_buffer.chars().count()
-                            < NAME_MAX_LEN
+                        && self.friends_prefs.add_buffer.chars().count() < NAME_MAX_LEN
                     {
                         self.friends_prefs.add_buffer.push(ch);
                         self.friends_prefs.add_focus_time = 0.0;
@@ -246,9 +241,8 @@ impl App {
                     // `self.modal` ends before the `&mut VdropState`.
                     let opt_count = self.modal.dropdown_options(slot).map(|v| v.len());
                     if let Some(opt_count) = opt_count {
-                        let layout = screens::new_instance_modal::compute_layout(
-                            card_w, card_h, fonts,
-                        );
+                        let layout =
+                            screens::new_instance_modal::compute_layout(card_w, card_h, fonts);
                         let head = match slot {
                             ModalSlot::Version => layout.version_head,
                             ModalSlot::Loader => layout.loader_head,
@@ -271,11 +265,7 @@ impl App {
                                 slot, fonts, card_w, card_h,
                             ) {
                                 let (menu_bounds, _flip) =
-                                    ewo_render::widgets::menu_layout(
-                                        head,
-                                        opts.len(),
-                                        card_h,
-                                    );
+                                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
                                 if let Some(state) = self.prefs.dropdown_state_mut(slot) {
                                     state.scroll_by(dy, menu_bounds, opts.len());
                                 }
@@ -289,33 +279,24 @@ impl App {
                     if let Some(slot) = self.instance_prefs.open_dropdown() {
                         // Immutable pass first (the options borrow
                         // prefs), then the mutable scroll update.
-                        let prep = screens::instances::dropdown_options(
-                            slot,
-                            &self.instance_prefs,
-                        )
-                        .and_then(|opts| {
-                            screens::instances::dropdown_head_for_slot(
-                                slot,
-                                fonts,
-                                card_w,
-                                card_h,
-                                &self.instance_prefs,
-                                &self.instances,
-                            )
-                            .map(|head| {
-                                let (menu_bounds, _flip) =
-                                    ewo_render::widgets::menu_layout(
-                                        head,
-                                        opts.len(),
-                                        card_h,
-                                    );
-                                (menu_bounds, opts.len())
-                            })
-                        });
+                        let prep = screens::instances::dropdown_options(slot, &self.instance_prefs)
+                            .and_then(|opts| {
+                                screens::instances::dropdown_head_for_slot(
+                                    slot,
+                                    fonts,
+                                    card_w,
+                                    card_h,
+                                    &self.instance_prefs,
+                                    &self.instances,
+                                )
+                                .map(|head| {
+                                    let (menu_bounds, _flip) =
+                                        ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                                    (menu_bounds, opts.len())
+                                })
+                            });
                         if let Some((menu_bounds, n)) = prep {
-                            if let Some(state) =
-                                self.instance_prefs.dropdown_state_mut(slot)
-                            {
+                            if let Some(state) = self.instance_prefs.dropdown_state_mut(slot) {
                                 state.scroll_by(dy, menu_bounds, n);
                             }
                             handled = true;
@@ -338,16 +319,12 @@ impl App {
             if let Some(fonts) = fonts {
                 if card_pos.0 < 320.0 {
                     // Cursor is over the Worlds list column.
-                    let max_scroll = screens::instances::list_max_scroll(
-                        card_h,
-                        fonts,
-                        &self.instances,
-                    );
+                    let max_scroll =
+                        screens::instances::list_max_scroll(card_h, fonts, &self.instances);
                     self.instance_prefs.list_scroll =
                         (self.instance_prefs.list_scroll + dy).clamp(0.0, max_scroll);
                 } else {
-                    let panel =
-                        screens::instances::detail_panel_bounds(card_w, card_h);
+                    let panel = screens::instances::detail_panel_bounds(card_w, card_h);
                     if rect_contains(&panel, card_pos) {
                         let max_scroll = screens::instances::detail_max_scroll(
                             card_w,
@@ -356,8 +333,8 @@ impl App {
                             &self.instance_prefs,
                             &self.instances,
                         );
-                        self.instance_prefs.detail_scroll = (self.instance_prefs.detail_scroll + dy)
-                            .clamp(0.0, max_scroll);
+                        self.instance_prefs.detail_scroll =
+                            (self.instance_prefs.detail_scroll + dy).clamp(0.0, max_scroll);
                     }
                 }
             }
@@ -398,14 +375,17 @@ impl App {
                     _ => (0.0, 1.0),
                 };
                 let max = (content_h - visible_h).max(0.0);
-                self.prefs.settings_scroll =
-                    (self.prefs.settings_scroll + dy).clamp(0.0, max);
+                self.prefs.settings_scroll = (self.prefs.settings_scroll + dy).clamp(0.0, max);
             }
         }
     }
 
     /// `WindowEvent::CursorMoved`.
-    pub(crate) fn on_cursor_moved(&mut self, window: &Arc<Window>, position: PhysicalPosition<f64>) {
+    pub(crate) fn on_cursor_moved(
+        &mut self,
+        window: &Arc<Window>,
+        position: PhysicalPosition<f64>,
+    ) {
         self.cursor = position;
         let scale = window.scale_factor();
         let card_pos = cursor_card_local(position, scale);
@@ -416,9 +396,7 @@ impl App {
 
         // Top tab bar hover → glow (every screen). Suppressed while a
         // modal is open so tabs don't light up under the shroud.
-        let any_modal = self.modal.open
-            || self.about_modal.open
-            || self.launcher_link_modal.open;
+        let any_modal = self.modal.open || self.about_modal.open || self.launcher_link_modal.open;
         self.hovered_tab = if any_modal {
             None
         } else {
@@ -508,12 +486,15 @@ impl App {
             // List-row + "+" button + sort button + × delete hover
             // + ✎ rename hover.
             if let Some(fonts) = self.fonts.as_ref() {
-                self.instance_prefs.rename_hover =
-                    screens::instances::rename_button_bounds(
-                        card_w, card_h, fonts, &self.instances, &self.instance_prefs,
-                    )
-                    .map(|r| rect_contains(&r, card_pos))
-                    .unwrap_or(false);
+                self.instance_prefs.rename_hover = screens::instances::rename_button_bounds(
+                    card_w,
+                    card_h,
+                    fonts,
+                    &self.instances,
+                    &self.instance_prefs,
+                )
+                .map(|r| rect_contains(&r, card_pos))
+                .unwrap_or(false);
                 let mut hover: Option<usize> = None;
                 let mut delete_hover: Option<usize> = None;
                 for (i, rect) in screens::instances::list_row_bounds(
@@ -535,14 +516,10 @@ impl App {
                 }
                 self.instance_prefs.list_hover = hover;
                 self.instance_prefs.delete_hover = delete_hover;
-                self.instance_prefs.add_hover = rect_contains(
-                    &screens::instances::add_button_bounds(),
-                    card_pos,
-                );
-                self.instance_prefs.sort_hover = rect_contains(
-                    &screens::instances::sort_button_bounds(fonts),
-                    card_pos,
-                );
+                self.instance_prefs.add_hover =
+                    rect_contains(&screens::instances::add_button_bounds(), card_pos);
+                self.instance_prefs.sort_hover =
+                    rect_contains(&screens::instances::sort_button_bounds(fonts), card_pos);
             }
         } else {
             // Clear lingering hover state when off the Instances screen.
@@ -556,13 +533,13 @@ impl App {
         // Update launch-button + main-menu hover state. Modal-open
         // suppresses these so background buttons don't react under
         // a modal (new-instance, About, or launcher-link).
-        let any_modal_open = self.modal.open
-            || self.about_modal.open
-            || self.launcher_link_modal.open;
+        let any_modal_open =
+            self.modal.open || self.about_modal.open || self.launcher_link_modal.open;
         if any_modal_open {
             self.launch_button = VbtnState::default();
         } else if let Some(b) = self.launch_button_bounds(card_w) {
-            self.launch_button.update(card_pos, b, self.mouse_down, time);
+            self.launch_button
+                .update(card_pos, b, self.mouse_down, time);
         } else {
             self.launch_button = VbtnState::default();
         }
@@ -629,22 +606,19 @@ impl App {
         // About modal — drive the Close button hover so the ghost
         // glow tracks the cursor without needing a click.
         if self.about_modal.open {
-            let close_rect =
-                screens::about_modal::close_button_bounds(card_w, card_h);
-            self.about_modal.close_btn.handle(card_pos, close_rect, false);
+            let close_rect = screens::about_modal::close_button_bounds(card_w, card_h);
+            self.about_modal
+                .close_btn
+                .handle(card_pos, close_rect, false);
         }
 
         // Phase H2 launcher-link modal — drive Cancel + Submit hover.
         if self.launcher_link_modal.open {
-            let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(
-                card_w, card_h,
-            );
-            let submit_rect = screens::launcher_link_modal::submit_button_bounds(
-                card_w, card_h,
-            );
-            self.launcher_link_modal.cancel_btn.handle(
-                card_pos, cancel_rect, false,
-            );
+            let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(card_w, card_h);
+            let submit_rect = screens::launcher_link_modal::submit_button_bounds(card_w, card_h);
+            self.launcher_link_modal
+                .cancel_btn
+                .handle(card_pos, cancel_rect, false);
             self.launcher_link_modal.submit_btn.update(
                 card_pos,
                 submit_rect,
@@ -681,11 +655,9 @@ impl App {
 
         let hovering_settings_widget = if self.screen == Screen::Settings {
             if let Some(fonts) = self.fonts.as_ref() {
-                screens::settings::widget_bounds(
-                    self.settings_tab, fonts, card_w, card_h,
-                )
-                .iter()
-                .any(|(_, r)| rect_contains(r, card_pos))
+                screens::settings::widget_bounds(self.settings_tab, fonts, card_w, card_h)
+                    .iter()
+                    .any(|(_, r)| rect_contains(r, card_pos))
             } else {
                 false
             }
@@ -696,29 +668,32 @@ impl App {
         let hovering_instance_widget = if self.screen == Screen::Instances {
             if let Some(fonts) = self.fonts.as_ref() {
                 let widgets = screens::instances::widget_bounds(
-                    card_w, card_h, fonts, &self.instance_prefs, &self.instances,
+                    card_w,
+                    card_h,
+                    fonts,
+                    &self.instance_prefs,
+                    &self.instances,
                 );
-                let on_widget = widgets
-                    .iter()
-                    .any(|(_, r)| rect_contains(r, card_pos));
+                let on_widget = widgets.iter().any(|(_, r)| rect_contains(r, card_pos));
                 let row_rects = screens::instances::list_row_bounds(
-                    card_h, fonts, &self.instances, &self.instance_prefs,
+                    card_h,
+                    fonts,
+                    &self.instances,
+                    &self.instance_prefs,
                 );
-                let on_list_row =
-                    row_rects.iter().any(|r| rect_contains(r, card_pos));
-                let on_add = rect_contains(
-                    &screens::instances::add_button_bounds(),
-                    card_pos,
-                );
-                let on_sort = rect_contains(
-                    &screens::instances::sort_button_bounds(fonts),
-                    card_pos,
-                );
+                let on_list_row = row_rects.iter().any(|r| rect_contains(r, card_pos));
+                let on_add = rect_contains(&screens::instances::add_button_bounds(), card_pos);
+                let on_sort =
+                    rect_contains(&screens::instances::sort_button_bounds(fonts), card_pos);
                 // × buttons are inside row rects, but we want the
                 // pointer cursor regardless — `on_list_row` already
                 // covers them.
                 let on_rename = screens::instances::rename_button_bounds(
-                    card_w, card_h, fonts, &self.instances, &self.instance_prefs,
+                    card_w,
+                    card_h,
+                    fonts,
+                    &self.instances,
+                    &self.instance_prefs,
                 )
                 .map(|r| rect_contains(&r, card_pos))
                 .unwrap_or(false);
@@ -736,15 +711,11 @@ impl App {
         // else (including the shroud) → default arrow.
         let modal_cursor = if self.modal.open {
             if let Some(fonts) = self.fonts.as_ref() {
-                let layout = screens::new_instance_modal::compute_layout(
-                    card_w, card_h, fonts,
-                );
+                let layout = screens::new_instance_modal::compute_layout(card_w, card_h, fonts);
                 if rect_contains(&layout.name_input, card_pos) {
                     Some(CursorIcon::Text)
                 } else {
-                    let widgets = screens::new_instance_modal::widget_bounds(
-                        card_w, card_h, fonts,
-                    );
+                    let widgets = screens::new_instance_modal::widget_bounds(card_w, card_h, fonts);
                     if widgets.iter().any(|(_, r)| rect_contains(r, card_pos)) {
                         Some(CursorIcon::Pointer)
                     } else {
@@ -774,7 +745,12 @@ impl App {
     }
 
     /// `WindowEvent::MouseInput` for the left button.
-    pub(crate) fn on_left_mouse(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>, state: ElementState) {
+    pub(crate) fn on_left_mouse(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Arc<Window>,
+        state: ElementState,
+    ) {
         let pressed = matches!(state, ElementState::Pressed);
         self.mouse_down = pressed;
 
@@ -812,8 +788,7 @@ impl App {
             drive_dev_overlay(overlay, card_pos, pressed, card_w, card_h);
             if rect_contains(&panel, card_pos) {
                 if pressed {
-                    let vsync_changed =
-                        handle_dev_overlay_press(overlay, card_pos, card_w, card_h);
+                    let vsync_changed = handle_dev_overlay_press(overlay, card_pos, card_w, card_h);
                     if vsync_changed {
                         if let Some(backend) = self.backend.as_ref() {
                             backend.set_vsync(overlay.vsync);
@@ -829,16 +804,15 @@ impl App {
         // else inside the card is a no-op so the modal can't be
         // dismissed by misclicks on the card itself.
         if self.about_modal.open {
-            let close_rect =
-                screens::about_modal::close_button_bounds(card_w, card_h);
-            let close_clicked =
-                self.about_modal.close_btn.handle(card_pos, close_rect, pressed);
+            let close_rect = screens::about_modal::close_button_bounds(card_w, card_h);
+            let close_clicked = self
+                .about_modal
+                .close_btn
+                .handle(card_pos, close_rect, pressed);
             if close_clicked {
                 log::info!("about: Close clicked");
                 self.about_modal.close();
-            } else if pressed
-                && screens::about_modal::shroud_consumes(card_pos, card_w, card_h)
-            {
+            } else if pressed && screens::about_modal::shroud_consumes(card_pos, card_w, card_h) {
                 log::info!("about: shroud click → closing");
                 self.about_modal.close();
             }
@@ -849,15 +823,12 @@ impl App {
         // Cancel closes + clears redeem; Submit fires submit_link_code
         // when the code is ready; shroud click closes.
         if self.launcher_link_modal.open {
-            let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(
-                card_w, card_h,
-            );
-            let submit_rect = screens::launcher_link_modal::submit_button_bounds(
-                card_w, card_h,
-            );
-            let cancel_clicked = self.launcher_link_modal.cancel_btn.handle(
-                card_pos, cancel_rect, pressed,
-            );
+            let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(card_w, card_h);
+            let submit_rect = screens::launcher_link_modal::submit_button_bounds(card_w, card_h);
+            let cancel_clicked =
+                self.launcher_link_modal
+                    .cancel_btn
+                    .handle(card_pos, cancel_rect, pressed);
             let submit_clicked = self.launcher_link_modal.submit_btn.update(
                 card_pos,
                 submit_rect,
@@ -874,9 +845,7 @@ impl App {
                 let uuid = self.auth.active().map(|a| a.uuid.clone());
                 self.social.submit_link_code(code, uuid.as_deref());
             } else if pressed
-                && screens::launcher_link_modal::shroud_consumes(
-                    card_pos, card_w, card_h,
-                )
+                && screens::launcher_link_modal::shroud_consumes(card_pos, card_w, card_h)
             {
                 log::info!("launcher-link modal: shroud click → closing");
                 self.launcher_link_modal.close();
@@ -950,16 +919,18 @@ impl App {
                             // tab without an active launch kicks off
                             // a fresh synthetic one so the screen is
                             // never empty.
-                            if target == Screen::Launching
-                                && self.launching.start_time.is_none()
-                            {
+                            if target == Screen::Launching && self.launching.start_time.is_none() {
                                 let (inst_name, inst_meta) = self
                                     .instances
                                     .get(self.instance_prefs.selected)
                                     .map(|i| {
                                         (
                                             i.name.clone(),
-                                            crate::launch_meta(i, None, self.instance_prefs.ram.value as i32),
+                                            crate::launch_meta(
+                                                i,
+                                                None,
+                                                self.instance_prefs.ram.value as i32,
+                                            ),
                                         )
                                     })
                                     .unwrap_or_else(|| {
@@ -980,10 +951,7 @@ impl App {
 
         // Step 1.5: "‹ Main menu" back-link (top-left of the
         // screen-head screens) — navigate home.
-        if !handled
-            && pressed
-            && matches!(self.screen, Screen::Settings | Screen::Instances)
-        {
+        if !handled && pressed && matches!(self.screen, Screen::Settings | Screen::Instances) {
             let back_rect = skia_safe::Rect::from_xywh(34.0, 38.0, 180.0, 42.0);
             if rect_contains(&back_rect, card_pos) {
                 log::info!("nav: {:?} → MainMenu (back-link)", self.screen);
@@ -999,8 +967,7 @@ impl App {
             if let Some(fonts) = self.fonts.as_ref() {
                 let bounds = screens::main_menu::menu_item_bounds(card_w, card_h, fonts);
                 for (i, b) in bounds.iter().enumerate() {
-                    let clicked =
-                        self.menu_items[i].update(card_pos, *b, pressed, time);
+                    let clicked = self.menu_items[i].update(card_pos, *b, pressed, time);
                     if clicked {
                         match MAIN_MENU_ACTIONS[i] {
                             MenuAction::Navigate(target) => {
@@ -1051,10 +1018,7 @@ impl App {
                 for (tab, rect) in screens::settings::sidebar_tab_bounds(fonts) {
                     if rect_contains(&rect, card_pos) {
                         if self.settings_tab != tab {
-                            log::info!(
-                                "settings: {:?} → {:?}",
-                                self.settings_tab, tab
-                            );
+                            log::info!("settings: {:?} → {:?}", self.settings_tab, tab);
                             self.settings_tab = tab;
                             self.prefs.close_dropdowns();
                             // A tab switch abandons a pending keybind
@@ -1063,8 +1027,7 @@ impl App {
                             self.prefs.keybind_request = None;
                             self.prefs.profile_renaming = None;
                             self.prefs.profile_rename_buffer.clear();
-                            self.prefs.tab_changed_at =
-                                Some(self.clock.elapsed);
+                            self.prefs.tab_changed_at = Some(self.clock.elapsed);
                             self.prefs.settings_scroll = 0.0;
                         }
                         handled = true;
@@ -1083,9 +1046,7 @@ impl App {
         // the surface is small (5 click targets + N row buttons).
         if !handled && pressed && self.screen == Screen::Friends {
             if let Some(fonts) = self.fonts.as_ref() {
-                let counts = if let social::FriendsListState::Loaded(list) =
-                    self.social.friends()
-                {
+                let counts = if let social::FriendsListState::Loaded(list) = self.social.friends() {
                     screens::FriendsCounts {
                         friends: list.friends.len(),
                         incoming: list.incoming.len(),
@@ -1152,10 +1113,7 @@ impl App {
                                     None
                                 };
                                 if let Some(addr) = addr {
-                                    log::info!(
-                                        "friends: join row {} → {}",
-                                        btn.index, addr
-                                    );
+                                    log::info!("friends: join row {} → {}", btn.index, addr);
                                     self.start_launch(
                                         self.instance_prefs.selected,
                                         Some(addr),
@@ -1170,14 +1128,12 @@ impl App {
                             {
                                 match btn.kind {
                                     screens::RowButtonKind::Accept
-                                    | screens::RowButtonKind::Decline => list
-                                        .incoming
-                                        .get(btn.index)
-                                        .map(|e| e.discord_id.clone()),
-                                    screens::RowButtonKind::Remove => list
-                                        .friends
-                                        .get(btn.index)
-                                        .map(|e| e.discord_id.clone()),
+                                    | screens::RowButtonKind::Decline => {
+                                        list.incoming.get(btn.index).map(|e| e.discord_id.clone())
+                                    }
+                                    screens::RowButtonKind::Remove => {
+                                        list.friends.get(btn.index).map(|e| e.discord_id.clone())
+                                    }
                                     // Handled above with an early break.
                                     screens::RowButtonKind::Join => None,
                                 }
@@ -1188,15 +1144,11 @@ impl App {
                                 match btn.kind {
                                     screens::RowButtonKind::Accept => {
                                         log::info!("friends: accept {}", other);
-                                        self.social.respond_friend_request(
-                                            token, other, true,
-                                        );
+                                        self.social.respond_friend_request(token, other, true);
                                     }
                                     screens::RowButtonKind::Decline => {
                                         log::info!("friends: decline {}", other);
-                                        self.social.respond_friend_request(
-                                            token, other, false,
-                                        );
+                                        self.social.respond_friend_request(token, other, false);
                                     }
                                     screens::RowButtonKind::Remove => {
                                         log::info!("friends: remove {}", other);
@@ -1275,10 +1227,7 @@ impl App {
                     &self.instance_prefs,
                 ) {
                     if rect_contains(&r, card_pos) {
-                        if let Some(inst) = self
-                            .instances
-                            .get(self.instance_prefs.selected)
-                        {
+                        if let Some(inst) = self.instances.get(self.instance_prefs.selected) {
                             self.instance_prefs.renaming = true;
                             self.instance_prefs.rename_buffer = inst.name.clone();
                             self.instance_prefs.rename_focus_time = 0.0;
@@ -1299,7 +1248,10 @@ impl App {
                     self.instance_prefs.sort_mode,
                 );
                 let row_rects = screens::instances::list_row_bounds(
-                    card_h, fonts, &self.instances, &self.instance_prefs,
+                    card_h,
+                    fonts,
+                    &self.instances,
+                    &self.instance_prefs,
                 );
                 for (display_idx, row_rect) in row_rects.iter().enumerate() {
                     let del_rect = screens::instances::delete_button_bounds(*row_rect);
@@ -1328,7 +1280,10 @@ impl App {
                     self.instance_prefs.sort_mode,
                 );
                 for (display_idx, rect) in screens::instances::list_row_bounds(
-                    card_h, fonts, &self.instances, &self.instance_prefs,
+                    card_h,
+                    fonts,
+                    &self.instances,
+                    &self.instance_prefs,
                 )
                 .iter()
                 .enumerate()
@@ -1338,11 +1293,11 @@ impl App {
                         if underlying != self.instance_prefs.selected {
                             log::info!(
                                 "instances: select {} → {}",
-                                self.instance_prefs.selected, underlying
+                                self.instance_prefs.selected,
+                                underlying
                             );
                             self.instance_prefs.select(&self.instances, underlying);
-                            self.instance_prefs.selected_at =
-                                Some(self.clock.elapsed);
+                            self.instance_prefs.selected_at = Some(self.clock.elapsed);
                         }
                         handled = true;
                         break;
@@ -1356,8 +1311,7 @@ impl App {
             if let Some(fonts) = self.fonts.as_ref() {
                 let r = screens::instances::sort_button_bounds(fonts);
                 if rect_contains(&r, card_pos) {
-                    self.instance_prefs.sort_mode =
-                        self.instance_prefs.sort_mode.cycle();
+                    self.instance_prefs.sort_mode = self.instance_prefs.sort_mode.cycle();
                     log::info!(
                         "instances: sort → {}",
                         self.instance_prefs.sort_mode.label()
@@ -1403,10 +1357,8 @@ impl App {
             && self.screen == Screen::Launching
             && self.launching.ended_in_error()
         {
-            let retry_rect =
-                screens::launching::retry_button_bounds(card_w, card_h);
-            let back_rect =
-                screens::launching::cancel_button_bounds(card_w, card_h);
+            let retry_rect = screens::launching::retry_button_bounds(card_w, card_h);
+            let back_rect = screens::launching::cancel_button_bounds(card_w, card_h);
             if rect_contains(&retry_rect, card_pos) {
                 log::info!("launching: Retry clicked");
                 let inst_name = self.launching.instance_name.clone();
@@ -1586,9 +1538,7 @@ impl App {
                     );
                 }
                 if let Some(dir) = profile::active_dir() {
-                    if let Err(e) =
-                        util::atomic_write(&dir.join("ewo-friends.txt"), s.as_bytes())
-                    {
+                    if let Err(e) = util::atomic_write(&dir.join("ewo-friends.txt"), s.as_bytes()) {
                         log::warn!("social: write ewo-friends.txt failed: {}", e);
                     }
                 }
@@ -1598,29 +1548,24 @@ impl App {
         // inside `maybe_send_heartbeat`). Only when both an
         // active account AND a live social_token are available
         // — i.e. the user has completed the launcher-link flow.
-        let heartbeat_inputs: Option<(String, String)> = self
-            .auth
-            .active()
-            .and_then(|a| {
-                self.auth
-                    .social_token(&a.uuid)
-                    .map(|t| (a.uuid.clone(), t.to_string()))
-            });
+        let heartbeat_inputs: Option<(String, String)> = self.auth.active().and_then(|a| {
+            self.auth
+                .social_token(&a.uuid)
+                .map(|t| (a.uuid.clone(), t.to_string()))
+        });
         if let Some((mc_uuid, token)) = heartbeat_inputs {
             // H6: while a server-join JVM is alive, advertise
             // `in_game · <addr>` so friends see (and can join) us.
             // `launch_rx` is `Some` only while the child runs; once
             // it exits we fall back to the current launcher screen.
-            let location = match (self.launch_rx.is_some(), self.active_server.as_deref())
-            {
-                (true, Some(addr)) => {
-                    social::HeartbeatLocation::InGame { server_addr: addr }
-                }
+            let location = match (self.launch_rx.is_some(), self.active_server.as_deref()) {
+                (true, Some(addr)) => social::HeartbeatLocation::InGame { server_addr: addr },
                 _ => social::HeartbeatLocation::InLauncher {
                     screen: screen_name(self.screen),
                 },
             };
-            self.social.maybe_send_heartbeat(time, &mc_uuid, &token, location);
+            self.social
+                .maybe_send_heartbeat(time, &mc_uuid, &token, location);
             // Phase H5: refresh friends list on the 30s cadence.
             // Post-mutation refreshes are chained inside the
             // social worker thread (see `dispatch_friend_action`).
@@ -1630,16 +1575,14 @@ impl App {
         // immediately — persist the token next to the MC account the
         // code was submitted for, clear the redemption state, close
         // the modal.
-        let pending_token: Option<(String, String)> = if let
-            social::LinkRedeemStatus::Success { token, .. } =
-            self.social.link_redeem()
-        {
-            self.social
-                .link_redeem_uuid()
-                .map(|uuid| (uuid.to_string(), token.clone()))
-        } else {
-            None
-        };
+        let pending_token: Option<(String, String)> =
+            if let social::LinkRedeemStatus::Success { token, .. } = self.social.link_redeem() {
+                self.social
+                    .link_redeem_uuid()
+                    .map(|uuid| (uuid.to_string(), token.clone()))
+            } else {
+                None
+            };
         if let Some((uuid, token)) = pending_token {
             self.auth.set_social_token(&uuid, token);
             self.social.clear_link_redeem();
@@ -1657,7 +1600,8 @@ impl App {
         // 15s cadence inside the call.
         if self.screen == Screen::MainMenu {
             let token = self.active_social_token();
-            self.social.maybe_refresh_server_status(time, token.as_deref());
+            self.social
+                .maybe_refresh_server_status(time, token.as_deref());
         }
         self.versions.poll();
         self.downloads.poll();
@@ -1668,9 +1612,7 @@ impl App {
         // showing a stale percentage.
         self.instance_prefs.download_pct.clear();
         for inst in self.instances.iter() {
-            if inst.status
-                != ewo_render::screens::instances::InstanceStatus::Pending
-            {
+            if inst.status != ewo_render::screens::instances::InstanceStatus::Pending {
                 continue;
             }
             let v = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
@@ -1678,8 +1620,7 @@ impl App {
                 if let Some(total) = status.total {
                     if total > 0 {
                         let pct = ((status.downloaded as f64 / total as f64) * 100.0)
-                            .clamp(0.0, 99.0)
-                            as u32;
+                            .clamp(0.0, 99.0) as u32;
                         self.instance_prefs
                             .download_pct
                             .insert(inst.name.clone(), pct);
@@ -1735,11 +1676,8 @@ impl App {
                                 downloaded / 1_048_576,
                                 total / 1_048_576,
                             );
-                            self.launching.push_real_line(
-                                screens::RealSeverity::Info,
-                                line,
-                                time,
-                            );
+                            self.launching
+                                .push_real_line(screens::RealSeverity::Info, line, time);
                         }
                     }
                 }
@@ -1816,9 +1754,7 @@ impl App {
                         // where MC becomes visible — so this tracks "the
                         // game is on screen now" far better than the spawn
                         // event does. Only acts while a minimize is armed.
-                        if self.pending_minimize.is_some()
-                            && is_window_ready_marker(&text)
-                        {
+                        if self.pending_minimize.is_some() && is_window_ready_marker(&text) {
                             if let Some(win) = self.window.as_ref() {
                                 win.set_minimized(true);
                             }
@@ -1841,10 +1777,7 @@ impl App {
                         persist_launch_log(
                             self.active_launch_instance_id.as_deref().unwrap_or(""),
                             &self.launching.instance_name,
-                            self.launching
-                                .real_log
-                                .as_deref()
-                                .unwrap_or(&[]),
+                            self.launching.real_log.as_deref().unwrap_or(&[]),
                             code,
                         );
                         launch_finished = true;
@@ -1923,10 +1856,7 @@ impl App {
                 if completed_versions.iter().any(|w| w == v) {
                     inst.status = ewo_render::screens::instances::InstanceStatus::Ready;
                     any_changed = true;
-                    log::info!(
-                        "instances: \"{}\" → Ready (version {})",
-                        inst.name, v
-                    );
+                    log::info!("instances: \"{}\" → Ready (version {})", inst.name, v);
                 }
             }
             if any_changed {
@@ -2026,8 +1956,7 @@ impl App {
         // and resync the GL backend's vsync to match.
         if self.prefs.reset_requested {
             self.prefs.reset_requested = false;
-            self.prefs
-                .apply_config(&screens::SettingsConfig::default());
+            self.prefs.apply_config(&screens::SettingsConfig::default());
             profile::save(&self.prefs.to_config(), &self.settings);
             if let Some(b) = self.backend.as_ref() {
                 b.set_vsync(self.prefs.vsync.on);
@@ -2061,8 +1990,7 @@ impl App {
                     let scale = window.scale_factor() as f32;
                     let logical_w = ((size.width as f32) / scale) as u32;
                     let logical_h = ((size.height as f32) / scale) as u32;
-                    let (cw, ch) =
-                        app_window::card_content_size(logical_w, logical_h);
+                    let (cw, ch) = app_window::card_content_size(logical_w, logical_h);
                     backdrop.resize(cw, ch, &self.settings);
                 }
             }
@@ -2080,7 +2008,11 @@ impl App {
                                 .map(|i| {
                                     (
                                         i.name.clone(),
-                                        crate::launch_meta(i, None, self.instance_prefs.ram.value as i32),
+                                        crate::launch_meta(
+                                            i,
+                                            None,
+                                            self.instance_prefs.ram.value as i32,
+                                        ),
                                     )
                                 })
                                 .unwrap_or_else(|| {
@@ -2139,42 +2071,43 @@ impl App {
             .active()
             .and_then(|a| self.auth.social_token(&a.uuid))
             .is_some();
-        let (friends_rows, incoming_rows, outgoing_rows, friends_err_msg) =
-            if active_has_token {
-                match self.social.friends() {
-                    social::FriendsListState::Loaded(list) => {
-                        let f = list
-                            .friends
-                            .iter()
-                            .map(friend_entry_to_view)
-                            .collect::<Vec<_>>();
-                        let i = list
-                            .incoming
-                            .iter()
-                            .map(friend_entry_to_view)
-                            .collect::<Vec<_>>();
-                        let o = list
-                            .outgoing
-                            .iter()
-                            .map(friend_entry_to_view)
-                            .collect::<Vec<_>>();
-                        (f, i, o, None)
-                    }
-                    social::FriendsListState::Failed(msg) => {
-                        (vec![], vec![], vec![], Some(msg.clone()))
-                    }
-                    _ => (vec![], vec![], vec![], None),
+        let (friends_rows, incoming_rows, outgoing_rows, friends_err_msg) = if active_has_token {
+            match self.social.friends() {
+                social::FriendsListState::Loaded(list) => {
+                    let f = list
+                        .friends
+                        .iter()
+                        .map(friend_entry_to_view)
+                        .collect::<Vec<_>>();
+                    let i = list
+                        .incoming
+                        .iter()
+                        .map(friend_entry_to_view)
+                        .collect::<Vec<_>>();
+                    let o = list
+                        .outgoing
+                        .iter()
+                        .map(friend_entry_to_view)
+                        .collect::<Vec<_>>();
+                    (f, i, o, None)
                 }
-            } else {
-                (vec![], vec![], vec![], None)
-            };
+                social::FriendsListState::Failed(msg) => {
+                    (vec![], vec![], vec![], Some(msg.clone()))
+                }
+                _ => (vec![], vec![], vec![], None),
+            }
+        } else {
+            (vec![], vec![], vec![], None)
+        };
         // The friend-action toast, cloned to an owned String so its &str
         // doesn't borrow self.social into `self.backend.as_mut()` below
         // (same pattern as link_redeem_msg). A request only ever lands a
         // status through the gated call path, so with social disabled or
         // unlinked this is always None.
-        let friend_action_failed =
-            matches!(self.social.friend_action(), social::FriendActionStatus::Failed(_));
+        let friend_action_failed = matches!(
+            self.social.friend_action(),
+            social::FriendActionStatus::Failed(_)
+        );
         let friend_action_msg: Option<String> = match self.social.friend_action() {
             social::FriendActionStatus::Idle => None,
             social::FriendActionStatus::Submitting => Some("sending…".to_string()),
@@ -2183,14 +2116,17 @@ impl App {
             }
         };
         let friend_action_age = self.social.friend_action_age(time);
-        let friend_toast = friend_action_msg.as_deref().map(|text| screens::FriendActionToast {
-            text,
-            failed: friend_action_failed,
-            // Submitting has no landing time: fully visible, no entrance.
-            age: friend_action_age.unwrap_or(f32::INFINITY),
-            remaining: friend_action_age
-                .map_or(f32::INFINITY, |a| (social::FRIEND_ACTION_TOAST_S - a).max(0.0)),
-        });
+        let friend_toast = friend_action_msg
+            .as_deref()
+            .map(|text| screens::FriendActionToast {
+                text,
+                failed: friend_action_failed,
+                // Submitting has no landing time: fully visible, no entrance.
+                age: friend_action_age.unwrap_or(f32::INFINITY),
+                remaining: friend_action_age.map_or(f32::INFINITY, |a| {
+                    (social::FRIEND_ACTION_TOAST_S - a).max(0.0)
+                }),
+            });
         let friends_view: FriendsViewState<'_> = if !self.social.enabled() {
             FriendsViewState::Disabled
         } else if !active_has_token {
@@ -2199,8 +2135,7 @@ impl App {
             FriendsViewState::Failed(msg)
         } else if matches!(
             self.social.friends(),
-            social::FriendsListState::Unknown
-                | social::FriendsListState::Loading
+            social::FriendsListState::Unknown | social::FriendsListState::Loading
         ) {
             FriendsViewState::Loading
         } else {
@@ -2221,9 +2156,7 @@ impl App {
         let link_redeem: LinkRedeemView<'_> =
             match (self.social.link_redeem(), link_redeem_msg.as_deref()) {
                 (social::LinkRedeemStatus::Submitting, _) => LinkRedeemView::Submitting,
-                (social::LinkRedeemStatus::Failed(_), Some(m)) => {
-                    LinkRedeemView::Failed(m)
-                }
+                (social::LinkRedeemStatus::Failed(_), Some(m)) => LinkRedeemView::Failed(m),
                 _ => LinkRedeemView::Idle,
             };
         let dev_overlay = self.dev_overlay.as_ref();
@@ -2294,7 +2227,9 @@ impl App {
                 capturing: self.keybind_capture.as_deref() == Some(a.id),
             })
             .collect();
-        let keybind_view = KeybindView { rows: &keybind_rows };
+        let keybind_view = KeybindView {
+            rows: &keybind_rows,
+        };
         let frame_stats = FrameStats {
             fps: self.clock.avg_fps(),
             frame_ms: self.clock.avg_dt() * 1000.0,
@@ -2307,13 +2242,15 @@ impl App {
         // below — same reason as link_redeem_msg above).
         let server_status_snapshot = self.social.server_status().cloned();
         let server_widget_view = screens::ServerWidgetView {
-            data: server_status_snapshot.as_ref().map(|s| screens::ServerWidgetData {
-                online: s.online,
-                online_count: s.online_count,
-                max_players: s.max_players,
-                tps: &s.tps,
-                players: &s.players,
-            }),
+            data: server_status_snapshot
+                .as_ref()
+                .map(|s| screens::ServerWidgetData {
+                    online: s.online,
+                    online_count: s.online_count,
+                    max_players: s.max_players,
+                    tps: &s.tps,
+                    players: &s.players,
+                }),
             hovered: self.server_widget_hover,
             hidden: !self.server_widget_visible(),
             joinable: self.social.lobby_addr().is_some(),
@@ -2341,13 +2278,40 @@ impl App {
                 let w_lp = ((w as f32) / scale).round() as u32;
                 let h_lp = ((h as f32) / scale).round() as u32;
                 app_window::draw_frame(
-                    canvas, backdrop, fonts, w_lp, h_lp, time, theme, settings,
-                    screen, hovered_tab, &launch_button, &menu_items, settings_tab, prefs,
-                    instance_prefs, launching_state, modal, about_modal,
-                    launcher_link_modal, link_redeem, dev_overlay, frame_stats,
-                    instances, heading_hover, account_view, profile_view, keybind_view,
-                    friends_prefs, friends_view, server_widget_view,
-                    main_menu_enter, back_link_hover, min_btn_hover, close_btn_hover,
+                    canvas,
+                    backdrop,
+                    fonts,
+                    w_lp,
+                    h_lp,
+                    time,
+                    theme,
+                    settings,
+                    screen,
+                    hovered_tab,
+                    &launch_button,
+                    &menu_items,
+                    settings_tab,
+                    prefs,
+                    instance_prefs,
+                    launching_state,
+                    modal,
+                    about_modal,
+                    launcher_link_modal,
+                    link_redeem,
+                    dev_overlay,
+                    frame_stats,
+                    instances,
+                    heading_hover,
+                    account_view,
+                    profile_view,
+                    keybind_view,
+                    friends_prefs,
+                    friends_view,
+                    server_widget_view,
+                    main_menu_enter,
+                    back_link_hover,
+                    min_btn_hover,
+                    close_btn_hover,
                 );
                 canvas.restore_to_count(saved);
             });
@@ -2399,7 +2363,15 @@ mod tests {
     fn progress_edge_cases() {
         assert_eq!(progress_log_bucket(0, 5, 0), None, "unknown total");
         assert_eq!(progress_log_bucket(0, 50, 1000), None, "under 10 %");
-        assert_eq!(progress_log_bucket(0, 2000, 1000), Some(100), "overshoot clamps");
-        assert_eq!(progress_log_bucket(30, 350, 1000), None, "same bucket again");
+        assert_eq!(
+            progress_log_bucket(0, 2000, 1000),
+            Some(100),
+            "overshoot clamps"
+        );
+        assert_eq!(
+            progress_log_bucket(30, 350, 1000),
+            None,
+            "same bucket again"
+        );
     }
 }

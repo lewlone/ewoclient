@@ -318,7 +318,11 @@ pub struct Span {
 
 impl Span {
     pub fn new(text: impl Into<String>, color: [f32; 3]) -> Self {
-        Self { text: text.into(), color, italic: false }
+        Self {
+            text: text.into(),
+            color,
+            italic: false,
+        }
     }
 
     pub fn italic(mut self) -> Self {
@@ -346,10 +350,7 @@ pub fn line_text(line: &Line) -> String {
 /// like a different typeface next to the real one.
 ///
 /// [`StyledSpan`]: crate::velvet_glyph::StyledSpan
-pub fn to_velvet_spans(
-    line: &Line,
-    size_px: f32,
-) -> Vec<crate::velvet_glyph::StyledSpan> {
+pub fn to_velvet_spans(line: &Line, size_px: f32) -> Vec<crate::velvet_glyph::StyledSpan> {
     use crate::velvet_glyph::{Axes, Family, ScalerKey, StyledSpan};
     line.iter()
         .map(|s| {
@@ -950,8 +951,20 @@ mod tests {
         assert_eq!((img.cells[1].x, img.cells[1].y), (48, 0));
         assert_eq!((img.cells[2].x, img.cells[2].y), (24, 0));
         // …and the *last* stack lands in the *first* cell.
-        assert_eq!(img.cells[0].kind, CellKind::Slot { item: 2, selected: false });
-        assert_eq!(img.cells[2].kind, CellKind::Slot { item: 0, selected: false });
+        assert_eq!(
+            img.cells[0].kind,
+            CellKind::Slot {
+                item: 2,
+                selected: false
+            }
+        );
+        assert_eq!(
+            img.cells[2].kind,
+            CellKind::Slot {
+                item: 0,
+                selected: false
+            }
+        );
     }
 
     #[test]
@@ -1137,10 +1150,7 @@ mod span_tests {
 
     #[test]
     fn italic_selects_the_italic_face_not_a_skew() {
-        let line: Line = vec![
-            Span::new("a", [1.0; 3]),
-            Span::new("b", [1.0; 3]).italic(),
-        ];
+        let line: Line = vec![Span::new("a", [1.0; 3]), Span::new("b", [1.0; 3]).italic()];
         let spans = to_velvet_spans(&line, 12.0);
         assert_eq!(spans.len(), 2);
         // The two must reach the cache under different keys, or the italic

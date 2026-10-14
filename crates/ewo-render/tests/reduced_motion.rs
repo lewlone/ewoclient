@@ -49,18 +49,27 @@ fn every_transition_lands_within_one_frame() {
     modal.tick(FRAME);
     assert_eq!(modal.anim, 1.0, "modal entrance");
 
-    let mut drop = VdropState { open: true, ..Default::default() };
+    let mut drop = VdropState {
+        open: true,
+        ..Default::default()
+    };
     drop.tick(FRAME);
     assert_eq!(drop.anim, 1.0, "dropdown open");
     drop.open = false;
     drop.tick(FRAME);
     assert_eq!(drop.anim, 0.0, "dropdown close");
 
-    let mut toggle = VtoggleState { on: true, ..Default::default() };
+    let mut toggle = VtoggleState {
+        on: true,
+        ..Default::default()
+    };
     toggle.tick(FRAME);
     assert_eq!(toggle.anim, 1.0, "toggle");
 
-    let mut btn = VbtnState { hover: true, ..Default::default() };
+    let mut btn = VbtnState {
+        hover: true,
+        ..Default::default()
+    };
     btn.tick(FRAME);
     assert_eq!(btn.hover_anim, 1.0, "button hover");
 
@@ -77,11 +86,22 @@ fn transitions_still_take_their_time_when_motion_is_on() {
     let mut modal = AboutModalState::default();
     modal.open();
     modal.tick(FRAME);
-    assert!(modal.anim > 0.0 && modal.anim < 0.5, "modal entrance {}", modal.anim);
+    assert!(
+        modal.anim > 0.0 && modal.anim < 0.5,
+        "modal entrance {}",
+        modal.anim
+    );
 
-    let mut toggle = VtoggleState { on: true, ..Default::default() };
+    let mut toggle = VtoggleState {
+        on: true,
+        ..Default::default()
+    };
     toggle.tick(FRAME);
-    assert!(toggle.anim > 0.0 && toggle.anim < 0.5, "toggle {}", toggle.anim);
+    assert!(
+        toggle.anim > 0.0 && toggle.anim < 0.5,
+        "toggle {}",
+        toggle.anim
+    );
 }
 
 const W: i32 = 480;
@@ -121,13 +141,30 @@ fn ambient_frame(backdrop: &Backdrop, fonts: &FontStore, time: f32) -> Vec<u8> {
     draw_glass_panel(canvas, panel, true, time, &settings, |_| {});
 
     let btn = Rect::from_xywh(120.0, 220.0, 240.0, 52.0);
-    draw_vbtn(canvas, btn, "Launch", &VbtnState::default(), time, 1.0, fonts, true);
+    draw_vbtn(
+        canvas,
+        btn,
+        "Launch",
+        &VbtnState::default(),
+        time,
+        1.0,
+        fonts,
+        true,
+    );
 
     let font = fonts.newsreader(28.0);
     let mut paint = ewo_render::skia_safe::Paint::default();
     paint.set_color(Color::WHITE);
     ewo_render::text::draw_breathing(
-        canvas, "Breathing", (40.0, 330.0), &font, &paint, 0.0, 0.02, time, 8.0,
+        canvas,
+        "Breathing",
+        (40.0, 330.0),
+        &font,
+        &paint,
+        0.0,
+        0.02,
+        time,
+        8.0,
     );
     pixels(&mut s)
 }
@@ -139,7 +176,10 @@ fn ambient_loops_are_frozen() {
     let backdrop = Backdrop::new(W as f32, H as f32, &Settings::default());
     let at0 = ambient_frame(&backdrop, &fonts, 0.0);
     for t in [0.37, 5.0, 31.9, 123.4] {
-        assert!(ambient_frame(&backdrop, &fonts, t) == at0, "ambient layers moved at t={t}");
+        assert!(
+            ambient_frame(&backdrop, &fonts, t) == at0,
+            "ambient layers moved at t={t}"
+        );
     }
 }
 
@@ -149,7 +189,10 @@ fn ambient_loops_move_when_motion_is_on() {
     let _g = Reduced::set(false);
     let backdrop = Backdrop::new(W as f32, H as f32, &Settings::default());
     let at0 = ambient_frame(&backdrop, &fonts, 0.0);
-    assert!(ambient_frame(&backdrop, &fonts, 13.7) != at0, "control: frames should differ with motion on");
+    assert!(
+        ambient_frame(&backdrop, &fonts, 13.7) != at0,
+        "control: frames should differ with motion on"
+    );
 }
 
 fn fonts() -> Option<FontStore> {

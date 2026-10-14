@@ -164,8 +164,7 @@ mod tests {
             // Held by the test while it submits duplicates, so every duplicate
             // arrives while the first decode is genuinely still running.
             let _g = self.block.lock().unwrap();
-            self.opens
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if key == "bad" {
                 return Err("no such asset".into());
             }

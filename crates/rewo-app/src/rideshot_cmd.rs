@@ -410,9 +410,27 @@ pub fn run(args: RideshotArgs) -> Result<(), String> {
     use rewo_data::entity_attachments::VehicleClass;
     let dispatch = [
         (t.pig, VehicleClass::Default),
-        (t.oak_boat, VehicleClass::Boat { raft: false, chest: false }),
-        (t.oak_chest_boat, VehicleClass::Boat { raft: false, chest: true }),
-        (t.bamboo_raft, VehicleClass::Boat { raft: true, chest: false }),
+        (
+            t.oak_boat,
+            VehicleClass::Boat {
+                raft: false,
+                chest: false,
+            },
+        ),
+        (
+            t.oak_chest_boat,
+            VehicleClass::Boat {
+                raft: false,
+                chest: true,
+            },
+        ),
+        (
+            t.bamboo_raft,
+            VehicleClass::Boat {
+                raft: true,
+                chest: false,
+            },
+        ),
         (t.minecart, VehicleClass::Minecart),
         (t.camel, VehicleClass::Camel),
         (t.horse, VehicleClass::Horse),
@@ -493,7 +511,10 @@ fn check_seat(f: &Fixture, c: &mut Checker) {
     // A player on a pig. The pig declares `passengerAttachments(0.86875F)` and
     // the player declares `vehicleAttachment(0, 0.6, 0)`.
     let tab = f.mounted(
-        &[(t.pig, [10.0, 64.0, -3.0], 0.0), (t.player, [0.0, 0.0, 0.0], 0.0)],
+        &[
+            (t.pig, [10.0, 64.0, -3.0], 0.0),
+            (t.player, [0.0, 0.0, 0.0], 0.0),
+        ],
         1,
         &[2],
     );
@@ -512,7 +533,10 @@ fn check_seat(f: &Fixture, c: &mut Checker) {
 
     // The same mount with a rider that declares no VEHICLE point at all.
     let tab2 = f.mounted(
-        &[(t.pig, [0.0, 0.0, 0.0], 0.0), (t.villager, [0.0, 0.0, 0.0], 0.0)],
+        &[
+            (t.pig, [0.0, 0.0, 0.0], 0.0),
+            (t.villager, [0.0, 0.0, 0.0], 0.0),
+        ],
         1,
         &[2],
     );
@@ -540,12 +564,7 @@ fn check_seat(f: &Fixture, c: &mut Checker) {
     let tab = f.mounted(&ghast, 1, &[2, 3, 4, 5, 6]);
     let seats: Vec<[f64; 3]> = (2..=6).map(|r| seat(&tab, 1, r, 1.0)).collect();
     // `passengerAttachments(new Vec3(0,4,1.7), (-1.7,4,0), (0,4,-1.7), (1.7,4,0))`.
-    let want = [
-        [0.0, 1.7f64],
-        [-1.7, 0.0],
-        [0.0, -1.7],
-        [1.7, 0.0],
-    ];
+    let want = [[0.0, 1.7f64], [-1.7, 0.0], [0.0, -1.7], [1.7, 0.0]];
     let matched = seats
         .iter()
         .take(4)
@@ -558,7 +577,11 @@ fn check_seat(f: &Fixture, c: &mut Checker) {
             "seats(xz)={:?} want {want:?} — four distinct seats around the ghast. MUTATION \
              PARTNER: index every rider at 0 and all four collapse onto (0, 1.7), which is \
              exactly how riders stack",
-            seats.iter().take(4).map(|s| [s[0], s[2]]).collect::<Vec<_>>()
+            seats
+                .iter()
+                .take(4)
+                .map(|s| [s[0], s[2]])
+                .collect::<Vec<_>>()
         ),
     );
     c.record(
@@ -575,7 +598,10 @@ fn check_seat(f: &Fixture, c: &mut Checker) {
 
     // Rotation. Seat 0 is `+1.7 z`; a quarter turn must put it on `-x`.
     let turned = f.mounted(
-        &[(t.happy_ghast, [0.0, 0.0, 0.0], 90.0), (t.player, [0.0; 3], 0.0)],
+        &[
+            (t.happy_ghast, [0.0, 0.0, 0.0], 90.0),
+            (t.player, [0.0; 3], 0.0),
+        ],
         1,
         &[2],
     );
@@ -814,9 +840,7 @@ fn check_overrides(f: &Fixture, c: &mut Checker) {
     let pig_aft = seat(&with_pig, 1, 3, 1.0);
     c.record(
         "r3.a_boats_second_seat_and_its_animal_bump",
-        (fore[2] - 0.2).abs() < EPS
-            && (aft[2] + 0.6).abs() < EPS
-            && (pig_aft[2] + 0.4).abs() < EPS,
+        (fore[2] - 0.2).abs() < EPS && (aft[2] + 0.6).abs() < EPS && (pig_aft[2] + 0.4).abs() < EPS,
         format!(
             "fore z={:.4} aft z={:.4} pig-aft z={:.4} (want 0.2, -0.6, -0.4). The +0.2 is \
              `passenger instanceof Animal`, read of the RIDER not the vehicle. MUTATION \
@@ -966,8 +990,7 @@ fn check_graph(f: &Fixture, c: &mut Checker) {
     let ghast = seat(&on_ghast, 1, 2, 1.0);
     c.record(
         "r4.spider_width_bound",
-        (bear[1] - (1.4f32 as f64 - 0.3125)).abs() < EPS
-            && (ghast[1] - 4.0).abs() < EPS,
+        (bear[1] - (1.4f32 as f64 - 0.3125)).abs() < EPS && (ghast[1] - 4.0).abs() < EPS,
         format!(
             "on a polar bear seat y={:.5} (bear height 1.4 − the 0.3125 override), on a \
              happy ghast y={:.5} (4.0 − 0, the AT_FEET default). The bear's width is \
@@ -979,10 +1002,7 @@ fn check_graph(f: &Fixture, c: &mut Checker) {
     );
 
     // The body-yaw force, and the `instanceof LivingEntity` that gates it.
-    let mut horse = f.table(&[
-        (t.horse, [0.0; 3], 42.0),
-        (t.player, [0.0; 3], 137.0),
-    ]);
+    let mut horse = f.table(&[(t.horse, [0.0; 3], 42.0), (t.player, [0.0; 3], 137.0)]);
     f.mount(&mut horse, 1, &[2]);
     horse.tick_lerp();
     let rider = horse.get(2).unwrap();
@@ -997,17 +1017,11 @@ fn check_graph(f: &Fixture, c: &mut Checker) {
         ),
     );
 
-    let mut ghastv = f.table(&[
-        (t.happy_ghast, [0.0; 3], 42.0),
-        (t.player, [0.0; 3], 137.0),
-    ]);
+    let mut ghastv = f.table(&[(t.happy_ghast, [0.0; 3], 42.0), (t.player, [0.0; 3], 137.0)]);
     f.mount(&mut ghastv, 1, &[2]);
     ghastv.tick_lerp();
     let free = ghastv.get(2).unwrap().yaw;
-    let mut boat_rider = f.table(&[
-        (t.horse, [0.0; 3], 42.0),
-        (t.oak_boat, [0.0; 3], 137.0),
-    ]);
+    let mut boat_rider = f.table(&[(t.horse, [0.0; 3], 42.0), (t.oak_boat, [0.0; 3], 137.0)]);
     f.mount(&mut boat_rider, 1, &[2]);
     boat_rider.tick_lerp();
     let not_living = boat_rider.get(2).unwrap().yaw;
@@ -1036,7 +1050,10 @@ fn table_at(f: &Fixture, spec: &[(i32, i32, [f64; 3])]) -> EntityTable {
     let mut t = EntityTable::default();
     t.set_attachments(f.att.clone());
     for (id, type_id, p) in spec {
-        t.add(*id, EntityState::new(0, *type_id, p[0], p[1], p[2], 0.0, 0.0));
+        t.add(
+            *id,
+            EntityState::new(0, *type_id, p[0], p[1], p[2], 0.0, 0.0),
+        );
     }
     t
 }
@@ -1389,10 +1406,7 @@ fn check_minecart_schedule(f: &Fixture, c: &mut Checker) {
     );
 
     // ---- m14: a cart is positioned before its passengers. ----
-    let mut t = table_at(
-        f,
-        &[(1, f.t.minecart, [0.0; 3]), (2, f.t.player, [0.0; 3])],
-    );
+    let mut t = table_at(f, &[(1, f.t.minecart, [0.0; 3]), (2, f.t.player, [0.0; 3])]);
     f.mount(&mut t, 1, &[2]);
     f.send_steps(&mut t, 1, &l_segment());
     for _ in 0..3 {

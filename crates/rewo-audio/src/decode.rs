@@ -109,9 +109,8 @@ pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
                     channels = spec.channels.count() as u16;
                     sample_rate = spec.rate;
                 }
-                let b = buf.get_or_insert_with(|| {
-                    SampleBuffer::<f32>::new(audio.capacity() as u64, spec)
-                });
+                let b = buf
+                    .get_or_insert_with(|| SampleBuffer::<f32>::new(audio.capacity() as u64, spec));
                 // Interleaved, which is what OpenAL wants and what the mixer
                 // will read: L R L R for stereo rather than two planes.
                 b.copy_interleaved_ref(audio);
@@ -240,9 +239,9 @@ impl VorbisReader {
             match self.decoder.decode(&packet) {
                 Ok(audio) => {
                     let spec = *audio.spec();
-                    let b = self
-                        .buf
-                        .get_or_insert_with(|| SampleBuffer::<f32>::new(audio.capacity() as u64, spec));
+                    let b = self.buf.get_or_insert_with(|| {
+                        SampleBuffer::<f32>::new(audio.capacity() as u64, spec)
+                    });
                     b.copy_interleaved_ref(audio);
                     return Ok(Some(b.samples().iter().copied().map(quantise).collect()));
                 }
@@ -435,7 +434,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod real_assets {
     //! Decoding real Ogg Vorbis from the 26.2 asset store.
@@ -550,7 +548,11 @@ mod real_assets {
         // the right total and the wrong order, which this cannot see — the
         // mixer's own witnesses are where that lands.
         assert_eq!(stereo.samples.len() % 2, 0);
-        assert_eq!(stereo.samples.len(), 432000, "4.5 s at 48 kHz, two channels");
+        assert_eq!(
+            stereo.samples.len(),
+            432000,
+            "4.5 s at 48 kHz, two channels"
+        );
     }
     // ── the incremental stream (M144) ─────────────────────────────────────
 
@@ -578,7 +580,11 @@ mod real_assets {
             rewo_data::skip_test!("no unpacked asset store (goat horn call3)");
             return;
         };
-        assert_eq!(h.format(), (2, 48000), "and it is per-variant, not per-event");
+        assert_eq!(
+            h.format(),
+            (2, 48000),
+            "and it is per-variant, not per-event"
+        );
     }
 
     /// **Reading a file in chunks gives exactly what reading it whole gives.**
@@ -605,14 +611,23 @@ mod real_assets {
             if part.is_empty() {
                 break;
             }
-            assert!(part.len() <= 577, "a read must not overshoot what was asked");
+            assert!(
+                part.len() <= 577,
+                "a read must not overshoot what was asked"
+            );
             chunked.extend(part);
             reads += 1;
-            assert!(reads < 1000, "runaway: the stream never reported exhaustion");
+            assert!(
+                reads < 1000,
+                "runaway: the stream never reported exhaustion"
+            );
         }
         assert!(reads > 1, "the fixture must actually take several reads");
         assert_eq!(chunked.len(), whole.samples.len());
-        assert_eq!(chunked, whole.samples, "chunked and whole must be the same audio");
+        assert_eq!(
+            chunked, whole.samples,
+            "chunked and whole must be the same audio"
+        );
     }
 
     /// A non-looping stream stays exhausted rather than restarting by itself.
@@ -669,7 +684,11 @@ mod real_assets {
         }
         assert_eq!(seen.len(), 1728 * 2, "two full passes");
         assert_eq!(&seen[..1728], &whole.samples[..]);
-        assert_eq!(&seen[1728..], &whole.samples[..], "the second pass is the first");
+        assert_eq!(
+            &seen[1728..],
+            &whole.samples[..],
+            "the second pass is the first"
+        );
     }
 
     /// **A zero-sized read must not restart a looping stream.**
@@ -719,7 +738,11 @@ mod real_assets {
             .expect("the adapter must open a stream");
         assert_eq!(s.format(), (1, 44_100));
         assert_eq!(s.read(1_000).unwrap().len(), 1_000);
-        assert_eq!(lib.cached(), 0, "and a stream never enters the buffer cache");
+        assert_eq!(
+            lib.cached(),
+            0,
+            "and a stream never enters the buffer cache"
+        );
 
         // A looping one from the same library is a separate position, and loops.
         let mut l = lib
@@ -730,7 +753,11 @@ mod real_assets {
             all.extend(l.read(1_000).unwrap());
         }
         assert_eq!(all.len(), 2_728, "1000 + 728 + 1000 across the loop point");
-        assert_eq!(&all[..1_728], &whole.samples[..], "the first pass is the file");
+        assert_eq!(
+            &all[..1_728],
+            &whole.samples[..],
+            "the first pass is the file"
+        );
     }
 
     /// Two streams of one asset are independent decode positions — `getStream`
@@ -749,5 +776,4 @@ mod real_assets {
         let from_c = c.read(400).unwrap();
         assert_eq!(from_a, from_c, "each starts at the beginning of the file");
     }
-
 }

@@ -609,9 +609,7 @@ pub fn distance_squared(subject: &WaypointSubject, cam: &LocatorCamera) -> f64 {
         // the entity, even though `yawAngleToCamera` does.
         WaypointSubject::Vec3i { x, y, z, .. } => at_center_of(x, y, z),
         // `fromEntity.getBlockY()`, not the camera's y.
-        WaypointSubject::Chunk { x, z } => {
-            chunk_middle(x, z, cam.entity_pos[1].floor() as i32)
-        }
+        WaypointSubject::Chunk { x, z } => chunk_middle(x, z, cam.entity_pos[1].floor() as i32),
     };
     let d = [
         cam.entity_pos[0] - p[0],
@@ -765,10 +763,7 @@ pub fn markers(
         // `Mth.sqrt((float) distanceSquared)` — the f64 is narrowed **first**,
         // so an f64 sqrt would be a different number for large distances.
         let distance = (dist_sq as f32).sqrt();
-        let sprite = styles
-            .get(w.style)
-            .map(|s| s.sprite(distance))
-            .unwrap_or(0);
+        let sprite = styles.get(w.style).map(|s| s.sprite(distance)).unwrap_or(0);
         let dot_x = mid + dot_offset(angle);
         let dot_y = top - 2;
         let pitch = pitch_direction(&w.subject, cam);
@@ -1209,11 +1204,7 @@ impl LocatorBarPass {
             ];
             for (pos, uv) in corners {
                 if v.len() < MAX_VERTS {
-                    v.push(Vertex {
-                        pos,
-                        uv,
-                        color: c,
-                    });
+                    v.push(Vertex { pos, uv, color: c });
                 } else {
                     crate::buf_ring::warn_truncated(&TRUNCATED, "locator-bar", MAX_VERTS);
                 }
@@ -1243,12 +1234,9 @@ impl LocatorBarPass {
 
         self.verts = v.len() as u32;
         let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                v.as_ptr() as *const u8,
-                v.len() * VERTEX_STRIDE as usize,
-            )
+            std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * VERTEX_STRIDE as usize)
         };
-        
+
         let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
         self.verts = (kept / VERTEX_STRIDE as usize) as u32;
         let Some(vbuf) = self.ring.bind() else {
@@ -1370,9 +1358,12 @@ fn build_pipeline(
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD)
             .color_write_mask(
-                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B,
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
             )];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
@@ -1651,7 +1642,10 @@ mod tests {
             style: 0,
             is_camera_entity: false,
         };
-        assert_eq!(markers(std::slice::from_ref(&w), &styles, &c, 320, 240).len(), 1);
+        assert_eq!(
+            markers(std::slice::from_ref(&w), &styles, &c, 320, 240).len(),
+            1
+        );
         w.is_camera_entity = true;
         assert!(markers(&[w], &styles, &c, 320, 240).is_empty());
     }
@@ -1770,13 +1764,29 @@ mod contextual_info_tests {
         let cooling = Some((0.0, 12));
         assert_eq!(next_contextual_info(false, None, false, false), Empty);
         assert_eq!(next_contextual_info(false, None, true, false), Experience);
-        assert_eq!(next_contextual_info(false, idle, true, true), JumpableVehicle, "no waypoints: the vehicle wins at ANY scale");
+        assert_eq!(
+            next_contextual_info(false, idle, true, true),
+            JumpableVehicle,
+            "no waypoints: the vehicle wins at ANY scale"
+        );
         assert_eq!(next_contextual_info(true, None, false, false), Locator);
         assert_eq!(next_contextual_info(true, None, true, false), Locator);
         assert_eq!(next_contextual_info(true, None, true, true), Experience);
-        assert_eq!(next_contextual_info(true, idle, true, true), Experience, "an idle vehicle does not outrank the others");
-        assert_eq!(next_contextual_info(true, charging, true, true), JumpableVehicle, "scale > 0 does");
-        assert_eq!(next_contextual_info(true, cooling, false, false), JumpableVehicle, "and so does a cooldown");
+        assert_eq!(
+            next_contextual_info(true, idle, true, true),
+            Experience,
+            "an idle vehicle does not outrank the others"
+        );
+        assert_eq!(
+            next_contextual_info(true, charging, true, true),
+            JumpableVehicle,
+            "scale > 0 does"
+        );
+        assert_eq!(
+            next_contextual_info(true, cooling, false, false),
+            JumpableVehicle,
+            "and so does a cooldown"
+        );
         assert_eq!(next_contextual_info(true, idle, false, false), Locator);
         // The M83 two-way wrapper is the same function with no vehicle.
         assert!(contextual_bar(true, false, false) && !contextual_bar(true, true, true));

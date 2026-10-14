@@ -161,7 +161,9 @@ fn usage_text(node: &CommandNode) -> String {
 }
 
 fn children_of(tree: &CommandTree, index: i32) -> Vec<i32> {
-    tree.node(index).map(|n| n.children.clone()).unwrap_or_default()
+    tree.node(index)
+        .map(|n| n.children.clone())
+        .unwrap_or_default()
 }
 
 /// `CommandDispatcher.getSmartUsage(node, source)` — one entry per child.
@@ -184,13 +186,13 @@ fn smart_usage_inner(tree: &CommandTree, index: i32, optional: bool, deep: bool)
     let node = tree.node(index)?;
     // `canUse` — always true here; see `dispatcher`'s module docs.
     let text = usage_text(node);
-    let self_text = if optional {
-        format!("[{text}]")
-    } else {
-        text
-    };
+    let self_text = if optional { format!("[{text}]") } else { text };
     let child_optional = node.is_executable();
-    let (open, close) = if child_optional { ("[", "]") } else { ("(", ")") };
+    let (open, close) = if child_optional {
+        ("[", "]")
+    } else {
+        ("(", ")")
+    };
     if deep {
         // The whole expansion below is skipped, which is what stops a usage
         // line growing past two levels.
@@ -410,7 +412,12 @@ pub fn usage_lines_start(parse: &ParseResults, cursor: usize) -> usize {
 /// the same shape as the popup's, and with the same consequence when the box
 /// is wider than the field: `clamp` returns its MAX, so the box hangs off the
 /// left rather than pinning to zero.
-pub fn usage_position(screen_x_of_start: i32, screen_x_of_zero: i32, inner_width: i32, box_width: i32) -> i32 {
+pub fn usage_position(
+    screen_x_of_start: i32,
+    screen_x_of_zero: i32,
+    inner_width: i32,
+    box_width: i32,
+) -> i32 {
     let max = screen_x_of_zero + inner_width - box_width;
     screen_x_of_start.max(0).min(max)
 }
@@ -459,12 +466,23 @@ mod tests {
                     arg(
                         "count",
                         "brigadier:integer",
-                        ArgumentProps::RangeI64 { min: None, max: None },
+                        ArgumentProps::RangeI64 {
+                            min: None,
+                            max: None,
+                        },
                     ),
                 ),
-                n(2 | 4, vec![], arg("flag", "brigadier:bool", ArgumentProps::None)),
+                n(
+                    2 | 4,
+                    vec![],
+                    arg("flag", "brigadier:bool", ArgumentProps::None),
+                ),
                 n(1, vec![5], Literal("gamemode".into())),
-                n(2 | 4, vec![], arg("mode", "brigadier:bool", ArgumentProps::None)),
+                n(
+                    2 | 4,
+                    vec![],
+                    arg("mode", "brigadier:bool", ArgumentProps::None),
+                ),
                 n(1 | 4, vec![7, 8], Literal("tp".into())),
                 n(1 | 4, vec![], Literal("here".into())),
                 n(1 | 4, vec![], Literal("there".into())),
@@ -490,8 +508,14 @@ mod tests {
         assert_eq!(
             runs("/give 5"),
             [
-                Run { text: "/give ".into(), color: GRAY },
-                Run { text: "5".into(), color: ARGUMENT_COLORS[0] },
+                Run {
+                    text: "/give ".into(),
+                    color: GRAY
+                },
+                Run {
+                    text: "5".into(),
+                    color: ARGUMENT_COLORS[0]
+                },
             ]
         );
     }
@@ -501,10 +525,22 @@ mod tests {
         assert_eq!(
             runs("/give 5 true"),
             [
-                Run { text: "/give ".into(), color: GRAY },
-                Run { text: "5".into(), color: ARGUMENT_COLORS[0] },
-                Run { text: " ".into(), color: GRAY },
-                Run { text: "true".into(), color: ARGUMENT_COLORS[1] },
+                Run {
+                    text: "/give ".into(),
+                    color: GRAY
+                },
+                Run {
+                    text: "5".into(),
+                    color: ARGUMENT_COLORS[0]
+                },
+                Run {
+                    text: " ".into(),
+                    color: GRAY
+                },
+                Run {
+                    text: "true".into(),
+                    color: ARGUMENT_COLORS[1]
+                },
             ]
         );
     }
@@ -516,7 +552,13 @@ mod tests {
         // whole thing after the slash is red.
         let r = runs("/notacommand");
         assert_eq!(r.last().unwrap().color, RED);
-        assert_eq!(r[0], Run { text: "/".into(), color: GRAY });
+        assert_eq!(
+            r[0],
+            Run {
+                text: "/".into(),
+                color: GRAY
+            }
+        );
         assert_eq!(r[1].text, "notacommand");
     }
 
@@ -545,16 +587,37 @@ mod tests {
         // The field scrolled six characters: the visible text is "5 true".
         let visible = u("5 true");
         let r = format_text(&p, &visible, 6);
-        assert_eq!(r[0], Run { text: "5".into(), color: ARGUMENT_COLORS[0] });
-        assert_eq!(r[1], Run { text: " ".into(), color: GRAY });
-        assert_eq!(r[2], Run { text: "true".into(), color: ARGUMENT_COLORS[1] });
+        assert_eq!(
+            r[0],
+            Run {
+                text: "5".into(),
+                color: ARGUMENT_COLORS[0]
+            }
+        );
+        assert_eq!(
+            r[1],
+            Run {
+                text: " ".into(),
+                color: GRAY
+            }
+        );
+        assert_eq!(
+            r[2],
+            Run {
+                text: "true".into(),
+                color: ARGUMENT_COLORS[1]
+            }
+        );
     }
 
     #[test]
     fn a_command_with_no_arguments_is_entirely_grey() {
         assert_eq!(
             runs("/tp here"),
-            [Run { text: "/tp here".into(), color: GRAY }]
+            [Run {
+                text: "/tp here".into(),
+                color: GRAY
+            }]
         );
     }
 
@@ -611,11 +674,28 @@ mod tests {
         // see any of that, because expanding a leaf changes nothing.
         let mut t = tree();
         t.nodes[0].children.push(9);
-        t.nodes.push(n(1, vec![10, 11], NodeKind::Literal("dup".into())));
-        t.nodes.push(n(2, vec![12], arg("x", "brigadier:bool", ArgumentProps::None)));
-        t.nodes.push(n(2, vec![13], arg("x", "brigadier:bool", ArgumentProps::None)));
-        t.nodes.push(n(2 | 4, vec![], arg("p", "brigadier:bool", ArgumentProps::None)));
-        t.nodes.push(n(2 | 4, vec![], arg("q", "brigadier:bool", ArgumentProps::None)));
+        t.nodes
+            .push(n(1, vec![10, 11], NodeKind::Literal("dup".into())));
+        t.nodes.push(n(
+            2,
+            vec![12],
+            arg("x", "brigadier:bool", ArgumentProps::None),
+        ));
+        t.nodes.push(n(
+            2,
+            vec![13],
+            arg("x", "brigadier:bool", ArgumentProps::None),
+        ));
+        t.nodes.push(n(
+            2 | 4,
+            vec![],
+            arg("p", "brigadier:bool", ArgumentProps::None),
+        ));
+        t.nodes.push(n(
+            2 | 4,
+            vec![],
+            arg("q", "brigadier:bool", ArgumentProps::None),
+        ));
         // Each child on its own still expands one level, because `deep` is
         // false at the top of `getSmartUsage(node, source)`.
         assert_eq!(
@@ -688,8 +768,10 @@ mod tests {
         let lines = usage_lines(&t, &p, bad.len(), true, Some(&l));
         assert_eq!(
             texts(&lines),
-            ["Expected whitespace to end one argument, but found trailing data \
-              at position 7: /give 5<--[HERE]"]
+            [
+                "Expected whitespace to end one argument, but found trailing data \
+              at position 7: /give 5<--[HERE]"
+            ]
         );
         // …and it is WHITE, where the entries it replaced are grey.
         assert_eq!(lines[0].color, ERROR_COLOR);
@@ -736,10 +818,7 @@ mod tests {
         let p = parse(&t, &bad, 1, CommandCtx::default());
         assert!(p.errors.is_empty(), "fixture: nothing was even tried");
         let lines = usage_lines(&t, &p, bad.len(), true, Some(&l));
-        assert_eq!(
-            texts(&lines),
-            ["Unknown command at position 1: /<--[HERE]"]
-        );
+        assert_eq!(texts(&lines), ["Unknown command at position 1: /<--[HERE]"]);
         assert_eq!(lines[0].color, ERROR_COLOR);
     }
 
@@ -792,7 +871,8 @@ mod tests {
         // could not express its claim.
         let mut t = tree();
         t.nodes[0].children.push(9);
-        t.nodes.push(n(1, vec![10], NodeKind::Literal("msg".into())));
+        t.nodes
+            .push(n(1, vec![10], NodeKind::Literal("msg".into())));
         t.nodes.push(n(
             2 | 4,
             vec![],
@@ -820,7 +900,8 @@ mod tests {
     fn a_greedy_string_argument_still_gets_a_line() {
         let mut t = tree();
         t.nodes[0].children.push(9);
-        t.nodes.push(n(1, vec![10], NodeKind::Literal("say".into())));
+        t.nodes
+            .push(n(1, vec![10], NodeKind::Literal("say".into())));
         t.nodes.push(n(
             2 | 4,
             vec![],

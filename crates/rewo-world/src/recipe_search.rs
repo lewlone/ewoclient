@@ -145,7 +145,10 @@ mod tests {
         // An entry whose id says "oak" and whose name does not.
         let x = e(&["Wooden Plank"], &[("minecraft", "oak_planks")]);
         assert!(matches(&x, "plank"), "the name matches");
-        assert!(!matches(&x, "oak"), "the ID is not searched without a colon");
+        assert!(
+            !matches(&x, "oak"),
+            "the ID is not searched without a colon"
+        );
         // ...and with a colon it is.
         assert!(matches(&x, "minecraft:oak"));
     }
@@ -204,7 +207,10 @@ mod tests {
     fn any_result_item_matching_is_enough() {
         let both = e(
             &["Diamond Sword", "Golden Sword"],
-            &[("minecraft", "diamond_sword"), ("minecraft", "golden_sword")],
+            &[
+                ("minecraft", "diamond_sword"),
+                ("minecraft", "golden_sword"),
+            ],
         );
         assert!(matches(&both, "golden"));
         assert!(matches(&both, "diamond"));

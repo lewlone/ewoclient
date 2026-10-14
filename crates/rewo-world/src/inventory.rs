@@ -1031,9 +1031,7 @@ impl Inventory {
             // by the patch, which is what `*_removed` answers.
             SlotKind::LoomBanner => props.loom_banner,
             SlotKind::LoomDye => props.loom_dye && !stack.dye_removed,
-            SlotKind::LoomPattern => {
-                props.loom_pattern && !stack.provides_banner_patterns_removed
-            }
+            SlotKind::LoomPattern => props.loom_pattern && !stack.provides_banner_patterns_removed,
             SlotKind::CartographyMap => stack.has_map_id,
             SlotKind::CartographyAdditional => props.cartography_additional,
             // M152 — the smithing table's three, each its own
@@ -1132,14 +1130,24 @@ impl Inventory {
                 // `tryRemove(amount, Integer.MAX_VALUE, player)` — that huge
                 // maxAmount is why `allowModification` never bites here, and
                 // why a crafting result can be taken whole but not in part.
-                let amount = if primary { stack.count } else { (stack.count + 1) / 2 };
+                let amount = if primary {
+                    stack.count
+                } else {
+                    (stack.count + 1) / 2
+                };
                 if amount > 0 {
                     let left = stack.count - amount;
                     changed.push((
                         index as u16,
-                        (left > 0).then_some(ItemSlot { count: left, ..stack }),
+                        (left > 0).then_some(ItemSlot {
+                            count: left,
+                            ..stack
+                        }),
                     ));
-                    carried = Some(ItemSlot { count: amount, ..stack });
+                    carried = Some(ItemSlot {
+                        count: amount,
+                        ..stack
+                    });
                 }
             }
             (Some(stack), Some(mut held)) => {
@@ -1153,7 +1161,10 @@ impl Inventory {
                         if n > 0 {
                             changed.push((
                                 index as u16,
-                                Some(ItemSlot { count: stack.count + n, ..stack }),
+                                Some(ItemSlot {
+                                    count: stack.count + n,
+                                    ..stack
+                                }),
                             ));
                             held.count -= n;
                             carried = (held.count > 0).then_some(held);
@@ -1180,7 +1191,10 @@ impl Inventory {
                         let left = stack.count - amount;
                         changed.push((
                             index as u16,
-                            (left > 0).then_some(ItemSlot { count: left, ..stack }),
+                            (left > 0).then_some(ItemSlot {
+                                count: left,
+                                ..stack
+                            }),
                         ));
                         held.count += amount;
                         carried = Some(held);
@@ -1269,12 +1283,18 @@ impl Inventory {
                 let total = target.count + moving.count;
                 if total <= cap {
                     moving.count = 0;
-                    slots[i] = Some(ItemSlot { count: total, ..target });
+                    slots[i] = Some(ItemSlot {
+                        count: total,
+                        ..target
+                    });
                     changed.push((i as u16, slots[i]));
                     any = true;
                 } else if target.count < cap {
                     moving.count -= cap - target.count;
-                    slots[i] = Some(ItemSlot { count: cap, ..target });
+                    slots[i] = Some(ItemSlot {
+                        count: cap,
+                        ..target
+                    });
                     changed.push((i as u16, slots[i]));
                     any = true;
                 }
@@ -1292,7 +1312,10 @@ impl Inventory {
                 }
                 let cap = slot_max_stack(kind).min(p.max_stack);
                 let n = moving.count.min(cap);
-                slots[i] = Some(ItemSlot { count: n, ..*moving });
+                slots[i] = Some(ItemSlot {
+                    count: n,
+                    ..*moving
+                });
                 changed.push((i as u16, slots[i]));
                 moving.count -= n;
                 any = true;
@@ -1721,7 +1744,12 @@ impl Inventory {
             let mut moved = false;
             for (range, backwards) in chain {
                 moved = self.move_stack_to(
-                    &mut slots, &mut moving, range, backwards, props, &mut changed,
+                    &mut slots,
+                    &mut moving,
+                    range,
+                    backwards,
+                    props,
+                    &mut changed,
                 )?;
                 if moved {
                     break;
@@ -1769,20 +1797,42 @@ mod tests {
         assert!(inv.is_usable_for_crafting(plain));
 
         // 1. DAMAGED — and only if it is damageable at all.
-        let chipped = ItemSlot { damage: Some(3), max_damage: Some(59), ..plain };
+        let chipped = ItemSlot {
+            damage: Some(3),
+            max_damage: Some(59),
+            ..plain
+        };
         assert!(!inv.is_usable_for_crafting(chipped));
-        let fresh = ItemSlot { damage: Some(0), max_damage: Some(59), ..plain };
-        assert!(inv.is_usable_for_crafting(fresh), "isDamaged needs damage > 0");
+        let fresh = ItemSlot {
+            damage: Some(0),
+            max_damage: Some(59),
+            ..plain
+        };
+        assert!(
+            inv.is_usable_for_crafting(fresh),
+            "isDamaged needs damage > 0"
+        );
         // A stack that cannot take damage passes whatever its damage says —
         // `isDamageableItem()` gates the comparison.
-        let odd = ItemSlot { damage: Some(3), max_damage: None, ..plain };
+        let odd = ItemSlot {
+            damage: Some(3),
+            max_damage: None,
+            ..plain
+        };
         assert!(inv.is_usable_for_crafting(odd));
 
         // 2. ENCHANTED, and 3. NAMED — both on the text side.
-        let tagged = ItemSlot { components: 7, has_components: true, ..plain };
+        let tagged = ItemSlot {
+            components: 7,
+            has_components: true,
+            ..plain
+        };
         inv.texts.insert(
             7,
-            SlotText { is_enchanted: true, ..Default::default() },
+            SlotText {
+                is_enchanted: true,
+                ..Default::default()
+            },
         );
         assert!(!inv.is_usable_for_crafting(tagged));
         inv.texts.insert(
@@ -1829,7 +1879,13 @@ mod tests {
             ..ItemSlot::plain(1, 1)
         };
         // …but `isEnchanted()` is false, so the book IS usable for crafting.
-        inv.texts.insert(9, SlotText { is_enchanted: false, ..Default::default() });
+        inv.texts.insert(
+            9,
+            SlotText {
+                is_enchanted: false,
+                ..Default::default()
+            },
+        );
         assert!(
             inv.is_usable_for_crafting(book),
             "a stored-enchantment book passes: isEnchanted reads ENCHANTMENTS alone"
@@ -1960,7 +2016,9 @@ mod tests {
         let p = c.click_quick_move(30, &plain_props).expect("predictable");
         assert!(!p.changed.is_empty());
         assert!(
-            p.changed.iter().all(|&(s, _)| (s as usize) < 27 || s as usize == 30),
+            p.changed
+                .iter()
+                .all(|&(s, _)| (s as usize) < 27 || s as usize == 30),
             "a player slot must move into the container, got {:?}",
             p.changed
         );
@@ -2064,7 +2122,9 @@ mod tests {
         // forwards, so the first free player slot rather than the last.
         for from in [0usize, 1] {
             let f = furnace_with(from, stack(1, 5));
-            let p = f.click_quick_move(from as i32, &plain_props).expect("predictable");
+            let p = f
+                .click_quick_move(from as i32, &plain_props)
+                .expect("predictable");
             assert_eq!(moved_into(&p, from), vec![3], "slot {from} fills forwards");
         }
     }
@@ -2078,7 +2138,9 @@ mod tests {
         v[20] = stack(1, 5);
         let mut smoker = smoker;
         smoker.set_content(1, &v, None);
-        let p = smoker.click_quick_move(20, &log_props).expect("predictable");
+        let p = smoker
+            .click_quick_move(20, &log_props)
+            .expect("predictable");
         assert_eq!(
             moved_into(&p, 20),
             vec![1],
@@ -2139,8 +2201,7 @@ mod tests {
         // Only reachable once the grid is full — which is why this witness
         // has to set the grid up too, and why an implementation that skipped
         // the grid would still pass a naive version of it.
-        let grid: Vec<(usize, Option<ItemSlot>)> =
-            (1..10).map(|s| (s, stack(2, 64))).collect();
+        let grid: Vec<(usize, Option<ItemSlot>)> = (1..10).map(|s| (s, stack(2, 64))).collect();
 
         let mut from_hotbar = grid.clone();
         from_hotbar.push((40, stack(1, 5))); // a hotbar slot
@@ -2457,9 +2518,17 @@ mod tests {
         // A base item is accepted by slot 1 and refused by 0 and 2.
         let base_only = smith_props(false, true, false);
         let s = stack(1, 1).unwrap();
-        assert!(!Inventory::may_place(SlotKind::SmithingTemplate, s, base_only));
+        assert!(!Inventory::may_place(
+            SlotKind::SmithingTemplate,
+            s,
+            base_only
+        ));
         assert!(Inventory::may_place(SlotKind::SmithingBase, s, base_only));
-        assert!(!Inventory::may_place(SlotKind::SmithingAddition, s, base_only));
+        assert!(!Inventory::may_place(
+            SlotKind::SmithingAddition,
+            s,
+            base_only
+        ));
 
         // And with no wire sets at all, every one refuses — which is vanilla
         // before `update_recipes`, via `getOrDefault(id, EMPTY)`.
@@ -2469,7 +2538,10 @@ mod tests {
             SlotKind::SmithingBase,
             SlotKind::SmithingAddition,
         ] {
-            assert!(!Inventory::may_place(k, s, none), "{k:?} accepted with no sets");
+            assert!(
+                !Inventory::may_place(k, s, none),
+                "{k:?} accepted with no sets"
+            );
         }
     }
 
@@ -2481,7 +2553,9 @@ mod tests {
         // player's main inventory therefore goes to an INPUT slot (0 or 1),
         // not to the hotbar the way it would in a chest.
         let anvil = single_input_menu(8, 10, stack(1, 5));
-        let p = anvil.click_quick_move(10, &plain_props).expect("predictable");
+        let p = anvil
+            .click_quick_move(10, &plain_props)
+            .expect("predictable");
         let touched: Vec<u16> = p.changed.iter().map(|(i, _)| *i).collect();
         assert!(
             touched.iter().any(|&i| i < 2),
@@ -2559,7 +2633,9 @@ mod tests {
         // `stack.getCount() == 1` lives in the quickMoveStack branch, not in
         // mayPlace — so the SAME item routes two different ways by count.
         let one = single_input_menu(9, 1, stack(1, 1));
-        let p = one.click_quick_move(1, &payment_props).expect("predictable");
+        let p = one
+            .click_quick_move(1, &payment_props)
+            .expect("predictable");
         assert!(
             p.changed.iter().any(|(i, _)| *i == 0),
             "a single payment item belongs in the beacon slot, {:?}",
@@ -2567,7 +2643,9 @@ mod tests {
         );
 
         let two = single_input_menu(9, 1, stack(1, 2));
-        let p = two.click_quick_move(1, &payment_props).expect("predictable");
+        let p = two
+            .click_quick_move(1, &payment_props)
+            .expect("predictable");
         assert!(
             !p.changed.iter().any(|(i, _)| *i == 0),
             "a PAIR must cross-move like an ordinary item, {:?}",
@@ -2877,7 +2955,8 @@ mod tests {
         v[4] = stack(1, 1);
         assert!(m.set_content(1, &v, None));
         assert!(
-            m.click_quick_move(4, &loom_props(true, false, false)).is_none(),
+            m.click_quick_move(4, &loom_props(true, false, false))
+                .is_none(),
             "an occupied banner slot must move nothing"
         );
         let free = single_input_menu(18, 4, stack(1, 1));
@@ -3026,7 +3105,10 @@ mod tests {
             "the map slot takes a filled map"
         );
         assert!(
-            m.click_pickup(1, 0, &plain_props).unwrap().changed.is_empty(),
+            m.click_pickup(1, 0, &plain_props)
+                .unwrap()
+                .changed
+                .is_empty(),
             "the additional slot must refuse it"
         );
 
@@ -3072,7 +3154,9 @@ mod tests {
         // vanilla returns rather than cross-moving. A stick shift-clicked into
         // an empty grindstone therefore moves nothing at all.
         let g = single_input_menu(15, 3, stack(1, 1));
-        let p = g.click_quick_move(3, &tool_props).expect("a tool is repairable");
+        let p = g
+            .click_quick_move(3, &tool_props)
+            .expect("a tool is repairable");
         assert!(
             p.changed.iter().any(|(i, _)| *i == 0),
             "a damageable tool belongs in a repair slot, {:?}",
@@ -3222,7 +3306,15 @@ mod tests {
         // in the first free main-inventory slot. Both look like "it moved".
         //
         // (menu id, the slot whose contents leave via the player range)
-        for (id, source) in [(8i32, 2usize), (9, 0), (19, 2), (24, 1), (15, 2), (23, 2), (18, 3)] {
+        for (id, source) in [
+            (8i32, 2usize),
+            (9, 0),
+            (19, 2),
+            (24, 1),
+            (15, 2),
+            (23, 2),
+            (18, 3),
+        ] {
             let m = single_input_menu(id, source, stack(1, 1));
             let p = m
                 .click_quick_move(source as i32, &plain_props)
@@ -3347,7 +3439,11 @@ mod tests {
     fn a_container_layout_sizes_its_own_storage() {
         // The point of the generalization: the same struct is a chest.
         let chest = Inventory::with_layout(crate::menu_layout::layout_of(5).unwrap());
-        assert_eq!(chest.slot_count(), 54 + 36, "generic_9x6 is 54 + the player's");
+        assert_eq!(
+            chest.slot_count(),
+            54 + 36,
+            "generic_9x6 is 54 + the player's"
+        );
         assert_eq!(chest.layout().name, "generic_9x6");
         // And set_content's length check follows the layout, not a constant.
         assert!(chest_accepts(&chest, 90));
@@ -3403,7 +3499,10 @@ mod tests {
         );
         assert!(crate::menu_layout::layout_of(crate::menu_layout::NO_PROTOCOL_ID).is_none());
         for (i, m) in crate::menu_layout::REGISTRY.iter().enumerate() {
-            assert_ne!(m.name, "player", "PLAYER must not be in the registry (id {i})");
+            assert_ne!(
+                m.name, "player",
+                "PLAYER must not be in the registry (id {i})"
+            );
         }
     }
 
@@ -3463,8 +3562,12 @@ mod tests {
     #[test]
     fn the_two_armour_ranges_run_in_opposite_directions() {
         // (inventory index, menu slot, piece) — from InventoryMenu's ctor.
-        for (index, menu, piece) in [(36, 8, "feet"), (37, 7, "legs"), (38, 6, "chest"), (39, 5, "head")]
-        {
+        for (index, menu, piece) in [
+            (36, 8, "feet"),
+            (37, 7, "legs"),
+            (38, 6, "chest"),
+            (39, 5, "head"),
+        ] {
             assert_eq!(
                 menu_slot_of_inventory_index(index),
                 IndexWrite::Applied(menu),
@@ -3481,7 +3584,10 @@ mod tests {
         );
         // And `armor(0)` is the helmet in menu space, which is index 39.
         let mut inv = Inventory::default();
-        assert_eq!(inv.set_inventory_index(39, stack(7, 1)), IndexWrite::Applied(5));
+        assert_eq!(
+            inv.set_inventory_index(39, stack(7, 1)),
+            IndexWrite::Applied(5)
+        );
         assert_eq!(inv.armor(0).unwrap().item_id, 7, "armor(0) is the helmet");
         assert_eq!(inv.armor(3), None, "the boots slot must still be empty");
     }
@@ -3516,7 +3622,10 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for i in 0..=OFFHAND_INDEX {
             if let IndexWrite::Applied(slot) = menu_slot_of_inventory_index(i) {
-                assert!(slot >= ARMOR_MENU_START, "index {i} reached crafting slot {slot}");
+                assert!(
+                    slot >= ARMOR_MENU_START,
+                    "index {i} reached crafting slot {slot}"
+                );
                 assert!(seen.insert(slot), "menu slot {slot} claimed twice");
             }
         }
@@ -3542,8 +3651,14 @@ mod tests {
         }
         // Neither writes anything.
         let mut inv = Inventory::default();
-        assert_eq!(inv.set_inventory_index(BODY_ARMOR_INDEX, stack(1, 1)), IndexWrite::NoMenuSlot);
-        assert_eq!(inv.set_inventory_index(-1, stack(1, 1)), IndexWrite::OutOfRange);
+        assert_eq!(
+            inv.set_inventory_index(BODY_ARMOR_INDEX, stack(1, 1)),
+            IndexWrite::NoMenuSlot
+        );
+        assert_eq!(
+            inv.set_inventory_index(-1, stack(1, 1)),
+            IndexWrite::OutOfRange
+        );
         assert!(inv.is_empty(), "neither may touch a menu slot");
     }
 
@@ -3562,8 +3677,15 @@ mod tests {
         assert_eq!(inv.state_id(), 77);
         assert_eq!(inv.content_updates(), 1);
 
-        assert_eq!(inv.set_inventory_index(0, stack(5, 3)), IndexWrite::Applied(36));
-        assert_eq!(inv.held().unwrap().item_id, 5, "hotbar index 0 is the held slot");
+        assert_eq!(
+            inv.set_inventory_index(0, stack(5, 3)),
+            IndexWrite::Applied(36)
+        );
+        assert_eq!(
+            inv.held().unwrap().item_id,
+            5,
+            "hotbar index 0 is the held slot"
+        );
         assert_eq!(inv.state_id(), 77, "an index write is not a menu update");
         assert_eq!(inv.content_updates(), 1, "and it is not a resync either");
 
@@ -3582,7 +3704,10 @@ mod tests {
         assert_eq!(inv.carried(), None);
         inv.set_carried(stack(4, 12));
         assert_eq!(inv.carried().unwrap().count, 12);
-        assert!(!inv.is_empty(), "a carried stack alone is not an empty inventory");
+        assert!(
+            !inv.is_empty(),
+            "a carried stack alone is not an empty inventory"
+        );
         inv.set_carried(None);
         assert_eq!(inv.carried(), None);
         assert!(inv.is_empty());
@@ -3760,7 +3885,10 @@ impl Inventory {
                     changed.push((target_index as u16, Some(ItemSlot { count: cap, ..s })));
                     changed.push((
                         source_index as u16,
-                        Some(ItemSlot { count: s.count - cap, ..s }),
+                        Some(ItemSlot {
+                            count: s.count - cap,
+                            ..s
+                        }),
                     ));
                 } else {
                     changed.push((target_index as u16, Some(s)));
@@ -3842,7 +3970,10 @@ impl Inventory {
             button,
             changed: vec![(
                 index as u16,
-                (left > 0).then_some(ItemSlot { count: left, ..stack }),
+                (left > 0).then_some(ItemSlot {
+                    count: left,
+                    ..stack
+                }),
             )],
             carried: self.carried,
         })
@@ -3914,7 +4045,10 @@ impl Inventory {
                 }
                 carried.count += take;
                 let left = target.count - take;
-                slots[i] = (left > 0).then_some(ItemSlot { count: left, ..target });
+                slots[i] = (left > 0).then_some(ItemSlot {
+                    count: left,
+                    ..target
+                });
                 changed.retain(|&(s, _)| s != i as u16);
                 changed.push((i as u16, slots[i]));
             }
@@ -4057,7 +4191,13 @@ impl Inventory {
             let place = Self::quick_craft_place_count(slots.len(), kind, source, p);
             let new_count = (place + carry).min(max);
             remaining -= new_count - carry;
-            changed.push((i as u16, Some(ItemSlot { count: new_count, ..source })));
+            changed.push((
+                i as u16,
+                Some(ItemSlot {
+                    count: new_count,
+                    ..source
+                }),
+            ));
         }
         if changed.is_empty() {
             return None;
@@ -4069,7 +4209,10 @@ impl Inventory {
             changed,
             // `source.setCount(remaining)` — an exhausted cursor is empty,
             // not a stack of zero.
-            carried: (remaining > 0).then_some(ItemSlot { count: remaining, ..source }),
+            carried: (remaining > 0).then_some(ItemSlot {
+                count: remaining,
+                ..source
+            }),
         })
     }
 
@@ -4093,7 +4236,10 @@ mod m93i_swap_button {
     fn a_swap_button_names_the_hotbar_or_the_offhand_and_nothing_else() {
         assert_eq!(swap_button_menu_slot(0), Some(HOTBAR_MENU_START));
         assert_eq!(swap_button_menu_slot(8), Some(HOTBAR_MENU_START + 8));
-        assert_eq!(swap_button_menu_slot(SWAP_OFFHAND_BUTTON), Some(OFFHAND_MENU_SLOT));
+        assert_eq!(
+            swap_button_menu_slot(SWAP_OFFHAND_BUTTON),
+            Some(OFFHAND_MENU_SLOT)
+        );
         // 9..40 is not a swap target — the range is the hotbar plus the one
         // literal 40, not a contiguous span, which M40 records as the reason
         // the check REJECTS rather than clamping.

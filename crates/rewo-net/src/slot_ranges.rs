@@ -84,7 +84,10 @@ fn table() -> &'static [Entry] {
 
 /// `SlotRanges.nameToIds` — reduced to the size, which is all a client checks.
 pub fn lookup(name: &str) -> Option<usize> {
-    table().iter().find(|(n, _)| n == name).map(|&(_, size)| size)
+    table()
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|&(_, size)| size)
 }
 
 /// `SlotRanges.allNames` — what `item_slots` suggests.

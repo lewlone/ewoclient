@@ -294,7 +294,9 @@ fn check_transcription(c: &mut Checker) {
         (1000, PingIcon::Ping1),
         (30_000, PingIcon::Ping1),
     ];
-    let bucket = ping.iter().all(|(ms, want)| tab_list::ping_icon(*ms) == *want);
+    let bucket = ping
+        .iter()
+        .all(|(ms, want)| tab_list::ping_icon(*ms) == *want);
     // …and the sprite index the renderer uses is the BAR COUNT, not the order
     // the if-chain tests them in.
     let slots = tab_list_view::ping_slot(PingIcon::Unknown) == 0
@@ -449,7 +451,12 @@ impl Wire {
         res.is_ok()
     }
 
-    fn resolve(&self, online_mode: bool, screen_width: i32, advance: Option<[u8; 256]>) -> TabListView {
+    fn resolve(
+        &self,
+        online_mode: bool,
+        screen_width: i32,
+        advance: Option<[u8; 256]>,
+    ) -> TabListView {
         let width_of = move |t: &str, style: ChatStyle| match &advance {
             Some(a) => rewo_gpu::text::width_styled(t, a, style.bold),
             None => 0,
@@ -652,7 +659,15 @@ fn check_wire(c: &mut Checker) {
 
     // h1 — the text readout is reached by HIGH HEALTH, never by a narrow
     // window, because the column is a constant 90.
-    let at = |s: i32| heart_blits(s, HealthState::new(s), 0, 0, rewo_gpu::tab_list::HEARTS_WIDTH);
+    let at = |s: i32| {
+        heart_blits(
+            s,
+            HealthState::new(s),
+            0,
+            0,
+            rewo_gpu::tab_list::HEARTS_WIDTH,
+        )
+    };
     c.record(
         "h1.the_text_readout_is_reached_by_high_health_not_a_narrow_window",
         !at(42).is_empty() && at(44).is_empty(),
@@ -667,8 +682,11 @@ fn check_wire(c: &mut Checker) {
 
     // h2 — a filled heart is TWO layers, container then fill, in that order.
     let full20 = at(20);
-    let first_two: Vec<HeartSprite> =
-        full20.iter().filter(|b| b.dx == 0).map(|b| b.sprite).collect();
+    let first_two: Vec<HeartSprite> = full20
+        .iter()
+        .filter(|b| b.dx == 0)
+        .map(|b| b.sprite)
+        .collect();
     c.record(
         "h2.a_filled_heart_sits_on_its_own_container",
         first_two == vec![HeartSprite::Container, HeartSprite::Full],
@@ -739,7 +757,6 @@ fn check_wire(c: &mut Checker) {
         "exact String.equals against two literals — lower case is not flipped",
     );
 }
-
 
 // ---------------------------------------------------------------------------
 // Pixels.
@@ -900,14 +917,15 @@ fn check_pixels(
     let vp = glam::Mat4::IDENTITY.to_cols_array_2d();
     let clear = [1.0, 1.0, 1.0, 1.0];
     let px = SCALE as f32;
-    let width_of = move |t: &str, style: ChatStyle| rewo_gpu::text::width_styled(t, &advance, style.bold);
+    let width_of =
+        move |t: &str, style: ChatStyle| rewo_gpu::text::width_styled(t, &advance, style.bold);
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    fills: Vec<rewo_gpu::hud::HudFill>,
-                    icons: Vec<rewo_gpu::hud::HudBlit>,
-                    lines: Vec<rewo_gpu::world::OwnedTextLine>|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                fills: Vec<rewo_gpu::hud::HudFill>,
+                icons: Vec<rewo_gpu::hud::HudBlit>,
+                lines: Vec<rewo_gpu::world::OwnedTextLine>|
      -> Result<Frame, String> {
         // `WorldRenderer::draw` gates the HUD pass on `hud_state` being set, so
         // a gate that only pushed fills would render none of them — which is
@@ -928,7 +946,9 @@ fn check_pixels(
         wr.set_hud_icons(icons);
         wr.set_text(lines);
         off.render(gpu, Some((&mut *wr, vp)), &overlay_draw, clear)?;
-        Ok(Frame { px: off.read_rgba(gpu)? })
+        Ok(Frame {
+            px: off.read_rgba(gpu)?,
+        })
     };
 
     let w = scene();
@@ -940,7 +960,14 @@ fn check_pixels(
     // Everything but the subject held constant — same renderer, same clear,
     // same frame, same hotbar. Only the tab list is absent, which is exactly
     // what the key being up does.
-    let control = shot(&mut gpu, &mut off, &mut wr, Vec::new(), Vec::new(), Vec::new())?;
+    let control = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
 
     let fills = tab_list_view::fills(&layout);
     let icons = tab_list_view::icons(&view, &layout);
@@ -1000,7 +1027,10 @@ fn check_pixels(
         pitch_ok
             && layout.entries[0].background.h == 8
             && layout.entries[1].background.y - layout.entries[0].background.y == 9,
-        format!("bands {bands:?}; background height {}", layout.entries[0].background.h),
+        format!(
+            "bands {bands:?}; background height {}",
+            layout.entries[0].background.h
+        ),
     );
 
     // -- the spectator's fade ------------------------------------------------
@@ -1281,9 +1311,7 @@ fn check_pixels(
             && slayout.entries[2].score_span.is_none(),
         format!(
             "{} text lines, score column {:?}; the spectator's span is {:?}",
-            slines_len,
-            sview.input.score,
-            slayout.entries[2].score_span
+            slines_len, sview.input.score, slayout.entries[2].score_span
         ),
     );
     let sframe = shot(
@@ -1574,7 +1602,9 @@ fn check_pixels(
         // that can silently not run, and a harness scraping FAIL lines cannot
         // tell an abort from a pass. `spans.len() == 2` below is what turns a
         // missing row into a failure rather than a skip.
-        let Some(slot) = hl.entries.get(i) else { continue };
+        let Some(slot) = hl.entries.get(i) else {
+            continue;
+        };
         let Some((left, right)) = slot.score_span else {
             continue;
         };
@@ -1595,7 +1625,12 @@ fn check_pixels(
             gaps += 1;
         }
         let pitch = ref_pitch(right - left, hp);
-        spans.push((lo - left, hi - left, pitch * (hp - 1) + REF_SPRITE - 1, pitch));
+        spans.push((
+            lo - left,
+            hi - left,
+            pitch * (hp - 1) + REF_SPRITE - 1,
+            pitch,
+        ));
     }
     c.record(
         "h11.the_hearts_span_their_column_at_a_pitch_narrower_than_the_sprite",
@@ -1709,9 +1744,10 @@ fn check_pixels(
     // only reads it.
     let placed: Vec<rewo_gpu::tab_list::Rect> = hl.entries.iter().filter_map(|e| e.face).collect();
     let rects_are_the_layouts = bare_b.len() == placed.len()
-        && bare_b.iter().zip(placed.iter()).all(|(b, r)| {
-            (b.x, b.y, b.w, b.h) == (r.x as f32, r.y as f32, r.w as f32, r.h as f32)
-        });
+        && bare_b
+            .iter()
+            .zip(placed.iter())
+            .all(|(b, r)| (b.x, b.y, b.w, b.h) == (r.x as f32, r.y as f32, r.w as f32, r.h as f32));
     c.record(
         "f1.a_face_draws_from_the_head_half_of_the_strip_into_the_layouts_rect",
         head_seen > 0
@@ -1851,7 +1887,10 @@ fn check_pixels(
     Ok(())
 }
 
-fn line_width(line: &rewo_world::chat_style::ChatLine, width_of: &dyn Fn(&str, ChatStyle) -> i32) -> i32 {
+fn line_width(
+    line: &rewo_world::chat_style::ChatLine,
+    width_of: &dyn Fn(&str, ChatStyle) -> i32,
+) -> i32 {
     line.iter()
         .map(|s| {
             width_of(
@@ -2014,7 +2053,7 @@ fn face_strip() -> Vec<u8> {
         [0, 255, 0],   // head, top    — pure green
         [0, 0, 255],   // head, bottom — pure blue
         [255, 128, 0], // hat,  top    — orange
-        [0, 255, 255],  // hat,  bottom — cyan
+        [0, 255, 255], // hat,  bottom — cyan
     ];
     let mut out = Vec::with_capacity(16 * 8 * 4);
     for y in 0..8u32 {

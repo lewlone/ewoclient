@@ -185,11 +185,23 @@ mod tests {
     #[test]
     fn out_of_range_type_ids_fall_to_none_not_whack() {
         // `ByIdMap.OutOfBoundsStrategy.ZERO` → the id-0 entry.
-        assert_eq!(SwingAnimationType::from_wire_id(0), SwingAnimationType::None);
-        assert_eq!(SwingAnimationType::from_wire_id(1), SwingAnimationType::Whack);
-        assert_eq!(SwingAnimationType::from_wire_id(2), SwingAnimationType::Stab);
+        assert_eq!(
+            SwingAnimationType::from_wire_id(0),
+            SwingAnimationType::None
+        );
+        assert_eq!(
+            SwingAnimationType::from_wire_id(1),
+            SwingAnimationType::Whack
+        );
+        assert_eq!(
+            SwingAnimationType::from_wire_id(2),
+            SwingAnimationType::Stab
+        );
         for bad in [-1, 3, 99, i32::MIN, i32::MAX] {
-            assert_eq!(SwingAnimationType::from_wire_id(bad), SwingAnimationType::None);
+            assert_eq!(
+                SwingAnimationType::from_wire_id(bad),
+                SwingAnimationType::None
+            );
         }
     }
 

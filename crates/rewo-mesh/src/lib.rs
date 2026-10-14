@@ -496,7 +496,10 @@ impl<'a> Tables<'a> {
     }
 
     fn is_cube(&self, state: u32) -> bool {
-        matches!(self.render.get(state as usize), Some(RenderKind::Cube { .. }))
+        matches!(
+            self.render.get(state as usize),
+            Some(RenderKind::Cube { .. })
+        )
     }
 
     /// `neighbor.getFaceOcclusionShape(face) == Shapes.block()` — `face` is
@@ -552,12 +555,7 @@ pub(crate) fn mesh_column_reference(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
-    mesh_column_reference_with(
-        world,
-        MeshInputs::geometry(table, models, carried),
-        cx,
-        cz,
-    )
+    mesh_column_reference_with(world, MeshInputs::geometry(table, models, carried), cx, cz)
 }
 
 #[cfg(any(test, feature = "oracle"))]
@@ -614,18 +612,7 @@ pub(crate) fn mesh_column_reference_with(
                             (&mut tvertices, &mut tindices)
                         };
                         let fluid_verts_before = fv.len();
-                        emit_fluid(
-                            world,
-                            table,
-                            carried,
-                            &mut tint_cache,
-                            fv,
-                            fi,
-                            wx,
-                            y,
-                            wz,
-                            f,
-                        );
+                        emit_fluid(world, table, carried, &mut tint_cache, fv, fi, wx, y, wz, f);
                         // Counted only when the draw produced geometry.
                         // `r48`'s claim is "meshed its water", and an increment
                         // beside the CALL would also fire for a cell whose six
@@ -951,12 +938,7 @@ pub fn mesh_column(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
-    mesh_column_with(
-        world,
-        MeshInputs::geometry(table, models, carried),
-        cx,
-        cz,
-    )
+    mesh_column_with(world, MeshInputs::geometry(table, models, carried), cx, cz)
 }
 
 /// [`mesh_column`] over full [`MeshInputs`] — the production entry point,
@@ -1041,18 +1023,7 @@ pub fn mesh_column_with(
                             (&mut tvertices, &mut tindices)
                         };
                         let fluid_verts_before = fv.len();
-                        emit_fluid(
-                            world,
-                            table,
-                            carried,
-                            &mut tint_cache,
-                            fv,
-                            fi,
-                            wx,
-                            y,
-                            wz,
-                            f,
-                        );
+                        emit_fluid(world, table, carried, &mut tint_cache, fv, fi, wx, y, wz, f);
                         // Counted only when the draw produced geometry.
                         // `r48`'s claim is "meshed its water", and an increment
                         // beside the CALL would also fire for a cell whose six
@@ -1383,9 +1354,8 @@ fn emit_fluid(
             None => (f.layer, TINT_WHITE),
         }
     };
-    let same = |x: i32, yy: i32, z: i32| {
-        fluid_level(world, table, carried, x, yy, z, lava).is_some()
-    };
+    let same =
+        |x: i32, yy: i32, z: i32| fluid_level(world, table, carried, x, yy, z, lava).is_some();
     // Corner height at grid point (wx+dx, wz+dz): max over the 4 cells
     // sharing that corner; a cell with the same fluid above it is a full
     // column (1.0).
@@ -1417,7 +1387,9 @@ fn emit_fluid(
     // the one above, each through `LightCoordsUtil.getLightCoords` (so lava's
     // own emission lights it). The top and the sides sample the fluid's cell,
     // the bottom the cell below it.
-    let lc = |x: i32, yy: i32, z: i32| table.light_coords(world, world.block_state_at(x, yy, z), x, yy, z);
+    let lc = |x: i32, yy: i32, z: i32| {
+        table.light_coords(world, world.block_state_at(x, yy, z), x, yy, z)
+    };
     let fluid_light = |yy: i32| light_max(lc(wx, yy, wz), lc(wx, yy + 1, wz));
     // `ARGB.scaleRGB(tintColor, factor)`: `up()` on top, `down()` below, and
     // `up() * north()` / `up() * west()` on the Z / X sides.
@@ -1546,7 +1518,8 @@ impl AoView<'_> {
 
 impl smooth_light::AoWorld for AoView<'_> {
     fn light_coords(&self, p: (i32, i32, i32)) -> i32 {
-        self.table.light_coords(self.world, self.state(p), p.0, p.1, p.2)
+        self.table
+            .light_coords(self.world, self.state(p), p.0, p.1, p.2)
     }
 
     fn shade_brightness(&self, p: (i32, i32, i32)) -> f32 {
@@ -1645,7 +1618,9 @@ fn light_quad(
             None if smooth_light::face_cubic(ao, pos, SMOOTH_FACE[dir], verts) => FACE_OFFSETS[dir],
             None => (0, 0, 0),
         };
-        let coords = ao.table.light_coords(world, state, wx + ox, y + oy, wz + oz);
+        let coords = ao
+            .table
+            .light_coords(world, state, wx + ox, y + oy, wz + oz);
         LitQuad {
             coords: [coords; 4],
             color: [block_vertex_color(shade_factor, 1.0, tint); 4],
@@ -1679,7 +1654,10 @@ fn cube_face(
 ) -> Option<CubeFace> {
     let world = ao.world;
     let (dx, dy, dz) = FACE_OFFSETS[face];
-    if !ao.table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
+    if !ao
+        .table
+        .should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face)
+    {
         return None;
     }
     // Dynamic biome tint (or the legacy pre-tinted layer + white). The same
@@ -1690,7 +1668,16 @@ fn cube_face(
     };
     let verts = FACE_CORNERS[face].map(|(corner, _)| corner);
     // A cube face is a shaded quad culled against its own direction.
-    let lit = light_quad(ao, state, (wx, y, wz), &verts, face, Some(face), true, tint_rgb);
+    let lit = light_quad(
+        ao,
+        state,
+        (wx, y, wz),
+        &verts,
+        face,
+        Some(face),
+        true,
+        tint_rgb,
+    );
     Some(CubeFace { layer, lit })
 }
 
@@ -1785,7 +1772,10 @@ fn emit_model(
         let cull = (quad.cull >= 0).then_some(quad.cull as usize);
         if let Some(face) = cull {
             let (dx, dy, dz) = FACE_OFFSETS[face];
-            if !ao.table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
+            if !ao
+                .table
+                .should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face)
+            {
                 continue;
             }
         }
@@ -2022,7 +2012,9 @@ mod tests {
         // y=62 either and so counted as tops.)
         let surface_at = |y: f32| {
             m.tvertices
-                .as_chunks::<4>().0.iter()
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|q| q.iter().all(|v| (v.pos[1] - y).abs() < 1e-5))
                 .count()
         };
@@ -2072,14 +2064,22 @@ mod tests {
         // In open air the same block DOES emit its top face, so the zero below
         // is the gate and not a lookup that found nothing.
         let open = mesh_at(None);
-        assert_eq!(open.carried_fluid_cells, 1, "an exposed double slab meshes its top");
+        assert_eq!(
+            open.carried_fluid_cells, 1,
+            "an exposed double slab meshes its top"
+        );
         let buried = mesh_at(Some(WL_WATER));
         let own_cell = buried
             .tvertices
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|q| q.iter().any(|v| v.pos[1] < 63.0 - 1e-5))
             .count();
-        assert_eq!(own_cell, 0, "all six of the buried carrier's faces are suppressed");
+        assert_eq!(
+            own_cell, 0,
+            "all six of the buried carrier's faces are suppressed"
+        );
         assert_eq!(
             buried.carried_fluid_cells, 0,
             "a carrier that emitted no geometry did not mesh its water"
@@ -2172,7 +2172,11 @@ mod tests {
         let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("meshed");
         let v = m.vertices[0];
         assert_eq!(v.layer_index(), 7, "legacy path uses the pre-tinted layer");
-        assert_eq!(v.color_rgb(), TINT_WHITE, "legacy path carries a white color");
+        assert_eq!(
+            v.color_rgb(),
+            TINT_WHITE,
+            "legacy path carries a white color"
+        );
         assert_eq!(
             v.reconstructed_color(),
             [1.0, 1.0, 1.0],
@@ -2193,11 +2197,11 @@ mod tests {
             grass_modifier: GrassModifier::None,
             sky_color: None,
             fog_color: None,
-                has_precipitation: true,
-        temperature_modifier: Default::default(),
-        ambient_sounds: None,
-        background_music: None,
-    };
+            has_precipitation: true,
+            temperature_modifier: Default::default(),
+            ambient_sounds: None,
+            background_music: None,
+        };
         let ctx = BiomeContext::new(
             Arc::new(BiomeRegistry::new(vec![biome])),
             Colormaps::neutral(),
@@ -2287,7 +2291,10 @@ mod tests {
             assert_eq!(v.color >> 24, 0xFF, "alpha byte is opaque");
             assert_eq!(v.reconstructed_color(), rgb.map(|b| b as f32 / 255.0));
         }
-        assert_eq!(MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, TINT_WHITE).reconstructed_color(), [1.0; 3]);
+        assert_eq!(
+            MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, TINT_WHITE).reconstructed_color(),
+            [1.0; 3]
+        );
     }
 
     /// The light word carries the layer and both smooth channels losslessly,
@@ -2388,11 +2395,11 @@ mod tests {
             grass_modifier: GrassModifier::None,
             sky_color: None,
             fog_color: None,
-                has_precipitation: true,
-        temperature_modifier: Default::default(),
-        ambient_sounds: None,
-        background_music: None,
-    };
+            has_precipitation: true,
+            temperature_modifier: Default::default(),
+            ambient_sounds: None,
+            background_music: None,
+        };
         let mut w = World::new(DimensionShape::OVERWORLD);
         w.ensure_column(0, 0);
         w.set_biome_context(Arc::new(BiomeContext::new(
@@ -3334,8 +3341,14 @@ mod tests {
         let d = World::new(DimensionShape::OVERWORLD);
         let n = nether_world();
         for face in 0..6 {
-            assert_eq!(face_shade(&d, face), CardinalLighting::DEFAULT.by_mesh_face(face));
-            assert_eq!(face_shade(&n, face), CardinalLighting::NETHER.by_mesh_face(face));
+            assert_eq!(
+                face_shade(&d, face),
+                CardinalLighting::DEFAULT.by_mesh_face(face)
+            );
+            assert_eq!(
+                face_shade(&n, face),
+                CardinalLighting::NETHER.by_mesh_face(face)
+            );
         }
         assert_eq!(face_shade(&n, 0), 0.9, "nether up");
         assert_eq!(face_shade(&n, 1), 0.9, "nether down");
@@ -3385,7 +3398,10 @@ mod tests {
             hi - lo
         };
         let of_face = |f: usize| -> Vec<_> {
-            quads(&o.vertices, &o.indices).into_iter().filter(|q| face_of_quad(q) == f).collect()
+            quads(&o.vertices, &o.indices)
+                .into_iter()
+                .filter(|q| face_of_quad(q) == f)
+                .collect()
         };
         let downs = of_face(1);
         assert_eq!(downs.len(), 1, "the four bottoms merge into one rectangle");
@@ -3421,9 +3437,36 @@ mod tests {
         // Shaded full top (y = 1), shaded full north face (z = 0), unshaded
         // mid-height horizontal quad. All sample open air: brightness 1.0.
         let models = vec![vec![
-            quad([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]], 0, true),
-            quad([[1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 2, true),
-            quad([[0.0, 0.5, 0.0], [1.0, 0.5, 0.0], [1.0, 0.5, 1.0], [0.0, 0.5, 1.0]], 0, false),
+            quad(
+                [
+                    [0.0, 1.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [1.0, 1.0, 1.0],
+                    [0.0, 1.0, 1.0],
+                ],
+                0,
+                true,
+            ),
+            quad(
+                [
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ],
+                2,
+                true,
+            ),
+            quad(
+                [
+                    [0.0, 0.5, 0.0],
+                    [1.0, 0.5, 0.0],
+                    [1.0, 0.5, 1.0],
+                    [0.0, 0.5, 1.0],
+                ],
+                0,
+                false,
+            ),
         ]];
         let table = oracle_model_table();
         let overworld = || {
@@ -3433,13 +3476,19 @@ mod tests {
         };
 
         // (int)(255 * f): 1.0 -> 255, 0.8 -> 204, 0.9 -> 229.
-        for (what, mut w, want) in [("default", overworld(), [255u8, 204, 255]), ("nether", nether_world(), [229, 204, 229])] {
+        for (what, mut w, want) in [
+            ("default", overworld(), [255u8, 204, 255]),
+            ("nether", nether_world(), [229, 204, 229]),
+        ] {
             w.set_block(4, 10, 4, 1);
             let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("model meshed");
             let got: Vec<u8> = quads(&m.vertices, &m.indices)
                 .iter()
                 .map(|q| {
-                    assert!(q.iter().all(|v| v.color_rgb() == q[0].color_rgb()), "{what}: uniform quad");
+                    assert!(
+                        q.iter().all(|v| v.color_rgb() == q[0].color_rgb()),
+                        "{what}: uniform quad"
+                    );
                     q[0].color_rgb()[0]
                 })
                 .collect();
@@ -3569,7 +3618,10 @@ mod occlusion_tests {
 
     fn mesh(w: &World, cull: &[CullInfo]) -> ColumnMesh {
         let r = render();
-        let inputs = MeshInputs { cull, ..MeshInputs::geometry(&r, &[], &[]) };
+        let inputs = MeshInputs {
+            cull,
+            ..MeshInputs::geometry(&r, &[], &[])
+        };
         mesh_column_with(w, inputs, 0, 0).expect("meshed")
     }
 
@@ -3624,7 +3676,9 @@ mod occlusion_tests {
             let m = mesh(&w, &cull());
             // East-facing water quads sit on the x = 5 plane.
             m.tvertices
-                .as_chunks::<4>().0.iter()
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|q| q.iter().all(|v| v.pos[0] == 5.0))
                 .count()
         };
@@ -3646,7 +3700,10 @@ mod occlusion_tests {
     fn pane_skip_follows_the_connection_rule() {
         let r = render();
         let c = cull();
-        let t = Tables::new(&MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &[], &[]) });
+        let t = Tables::new(&MeshInputs {
+            cull: &c,
+            ..MeshInputs::geometry(&r, &[], &[])
+        });
         // Vertical: skip regardless of connections.
         assert!(!t.should_render(PANE_EW, PANE_N, 0));
         assert!(!t.should_render(PANE_EW, PANE_N, 1));
@@ -3681,13 +3738,25 @@ mod occlusion_tests {
         r.push(RenderKind::Model(0));
         let model = r.len() as u32 - 1;
         let mut c = cull();
-        c.push(CullInfo { block: 99, ambient_occlusion: true, ..CullInfo::default() });
+        c.push(CullInfo {
+            block: 99,
+            ambient_occlusion: true,
+            ..CullInfo::default()
+        });
         let models = vec![vec![top(1.0, 1.0)]];
         // Stone one up and one west of the model: the top face's west corners
         // sit against it.
         let w = world(&[((4, 10, 4), model), ((3, 11, 4), STONE)]);
-        let m = mesh_column_with(&w, MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &models, &[]) }, 0, 0)
-            .expect("meshed");
+        let m = mesh_column_with(
+            &w,
+            MeshInputs {
+                cull: &c,
+                ..MeshInputs::geometry(&r, &models, &[])
+            },
+            0,
+            0,
+        )
+        .expect("meshed");
         let corner = |x: f32| -> Vec<[u8; 3]> {
             m.vertices
                 .iter()
@@ -3702,12 +3771,20 @@ mod occlusion_tests {
         // Flat when smooth lighting is off: the whole quad is gray(up()) = 255.
         let flat = mesh_column_with(
             &w,
-            MeshInputs { cull: &c, smooth_lighting: false, ..MeshInputs::geometry(&r, &models, &[]) },
+            MeshInputs {
+                cull: &c,
+                smooth_lighting: false,
+                ..MeshInputs::geometry(&r, &models, &[])
+            },
             0,
             0,
         )
         .expect("meshed");
-        assert!(flat.vertices.iter().filter(|v| v.layer_index() == 9).all(|v| v.color_rgb() == [255; 3]));
+        assert!(flat
+            .vertices
+            .iter()
+            .filter(|v| v.layer_index() == 9)
+            .all(|v| v.color_rgb() == [255; 3]));
     }
 
     /// The greedy path and the frozen reference agree under a real cull
@@ -3724,7 +3801,10 @@ mod occlusion_tests {
         ]);
         let r = render();
         let c = cull();
-        let inputs = MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &[], &[]) };
+        let inputs = MeshInputs {
+            cull: &c,
+            ..MeshInputs::geometry(&r, &[], &[])
+        };
         let o = mesh_column_with(&w, inputs, 0, 0).expect("optimized");
         let f = mesh_column_reference_with(&w, inputs, 0, 0).expect("reference");
         let units = |m: &ColumnMesh| {

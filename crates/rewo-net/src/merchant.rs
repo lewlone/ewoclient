@@ -221,11 +221,11 @@ mod tests {
         let mut b = Vec::new();
         b.push(7); // container id
         b.push(1); // one offer
-        // cost A: item 264 (a raw holderRegistry id), count 3, empty predicate.
+                   // cost A: item 264 (a raw holderRegistry id), count 3, empty predicate.
         b.extend_from_slice(&[0x88, 0x02]); // varint 264
         b.push(3);
         b.push(0); // predicate: an empty list
-        // the RESULT, here — count 1, item 5, an empty patch (0 added, 0 removed).
+                   // the RESULT, here — count 1, item 5, an empty patch (0 added, 0 removed).
         b.push(1);
         b.push(5);
         b.push(0);
@@ -258,7 +258,10 @@ mod tests {
         // 264 is a raw id — a `holder`-style `id + 1` reading would give 263.
         assert_eq!(o.cost_a.item_id, 264);
         assert_eq!(o.cost_a.count, 3);
-        assert_eq!(o.cost_b.as_ref().map(|c| (c.item_id, c.count)), Some((9, 2)));
+        assert_eq!(
+            o.cost_b.as_ref().map(|c| (c.item_id, c.count)),
+            Some((9, 2))
+        );
         match &o.result {
             crate::item_stack::WireSlot::Stack(s) => {
                 assert_eq!((s.item_id, s.count), (5, 1), "the SOLD item, not cost B");

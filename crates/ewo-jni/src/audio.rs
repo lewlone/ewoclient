@@ -137,10 +137,18 @@ impl AudioService {
                 backend::run(&guard.0);
             });
         match spawned {
-            Ok(_) => AudioService { shared: Some(shared), last: Spectrum::SILENT, stale: 0 },
+            Ok(_) => AudioService {
+                shared: Some(shared),
+                last: Spectrum::SILENT,
+                stale: 0,
+            },
             Err(e) => {
                 crate::log(&format!("audio: capture thread failed to start: {e}"));
-                AudioService { shared: None, last: Spectrum::SILENT, stale: 0 }
+                AudioService {
+                    shared: None,
+                    last: Spectrum::SILENT,
+                    stale: 0,
+                }
             }
         }
     }
@@ -234,7 +242,13 @@ impl Analyser {
 
     /// Feed interleaved f32 frames. Returns a snapshot each time a window
     /// fills.
-    fn feed(&mut self, interleaved: &[f32], channels: usize, out: &mut Vec<Spectrum>, source: Source) {
+    fn feed(
+        &mut self,
+        interleaved: &[f32],
+        channels: usize,
+        out: &mut Vec<Spectrum>,
+        source: Source,
+    ) {
         if channels == 0 {
             return;
         }
@@ -263,7 +277,8 @@ impl Analyser {
         let target_level = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
         // Asymmetric smoothing: jump up, ease down. Matches how a level meter
         // is expected to behave, and stops the widget flickering on transients.
-        self.level += (target_level - self.level) * if target_level > self.level { 0.5 } else { 0.08 };
+        self.level +=
+            (target_level - self.level) * if target_level > self.level { 0.5 } else { 0.08 };
 
         let mut re: Vec<f32> = self
             .window
@@ -397,10 +412,10 @@ mod backend {
         IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
         AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
         AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
-        AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, WAVEFORMATEX,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
+        AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+        WAVEFORMATEX,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
@@ -544,7 +559,10 @@ mod backend {
                     // playing. Publish silence so the bars settle instead of
                     // freezing.
                     idle_waits = 0;
-                    shared.publish(Spectrum { source, ..Spectrum::SILENT });
+                    shared.publish(Spectrum {
+                        source,
+                        ..Spectrum::SILENT
+                    });
                 }
                 continue;
             }
@@ -609,8 +627,7 @@ mod backend {
         };
 
         let done = CreateEventW(None, false, false, PCWSTR::null())?;
-        let handler: IActivateAudioInterfaceCompletionHandler =
-            ActivationHandler { done }.into();
+        let handler: IActivateAudioInterfaceCompletionHandler = ActivationHandler { done }.into();
 
         let device: Vec<u16> = VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK
             .encode_utf16()

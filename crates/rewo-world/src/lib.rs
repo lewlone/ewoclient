@@ -6,24 +6,15 @@
 //! Prediction/physics land in M3; this is the read model.
 
 pub mod abilities;
-pub mod ambient;
-pub mod music;
-pub mod anvil;
-pub mod edit_box;
-pub mod merchant_screen;
-pub mod ghost_slots;
-pub mod book_view_screen;
+pub mod active_text;
 pub mod advancements_screen;
-pub mod sign_edit_screen;
-pub mod recipe_book_screen;
-pub mod recipe_overlay;
-pub mod recipe_search;
-pub mod stacked_contents;
+pub mod ambient;
+pub mod anvil;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;
-pub mod active_text;
 pub mod block_entities;
+pub mod book_view_screen;
 pub mod border;
 pub mod cape;
 pub mod celestial;
@@ -32,18 +23,20 @@ pub mod chat_events;
 pub mod chat_screen;
 pub mod chat_style;
 pub mod chat_translate;
-pub mod command_suggestions;
 pub mod chunk;
 pub mod chunk_cache;
+pub mod command_suggestions;
 pub mod conduit;
 pub mod daylight;
 pub mod death_screen;
 pub mod destruction;
 pub mod dimension;
-pub mod end_flash;
 pub mod disconnect_screen;
+pub mod edit_box;
+pub mod end_flash;
 pub mod entities;
 pub mod entity_pick;
+pub mod ghost_slots;
 pub mod inventory;
 pub mod label;
 pub mod layout;
@@ -52,23 +45,30 @@ pub mod lightmap;
 pub mod menu;
 pub mod menu_layout;
 pub mod menu_screen;
+pub mod merchant_screen;
+pub mod minecart;
+pub mod music;
 pub mod nine_slice;
 pub mod options_screen;
-pub mod minecart;
 pub mod palette;
 pub mod particles;
 pub mod pause_screen;
 pub mod physics;
 pub mod pickup;
 pub mod raycast;
+pub mod recipe_book_screen;
+pub mod recipe_overlay;
+pub mod recipe_search;
 pub mod riding;
 pub mod rotation;
 pub mod screen;
+pub mod server_links_screen;
+pub mod sign_edit_screen;
+pub mod stacked_contents;
 pub mod stats;
 pub mod stats_screen;
 pub mod string_splitter;
 pub mod suggestions;
-pub mod server_links_screen;
 pub mod wavy_cape;
 pub mod weather;
 
@@ -376,11 +376,7 @@ impl World {
     /// bounded to a tenth of a block at the waterline, where the audible
     /// effect is the riding loops swapping fractionally early.
     pub fn is_water_at_point(&self, x: f64, y: f64, z: f64, water: &[bool]) -> bool {
-        let (bx, by, bz) = (
-            x.floor() as i32,
-            y.floor() as i32,
-            z.floor() as i32,
-        );
+        let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
         let state = self.block_state_at(bx, by, bz) as usize;
         water.get(state).copied().unwrap_or(false)
     }
@@ -935,14 +931,11 @@ mod ambient_sounds_at_tests {
     fn a_biome_replaces_the_music_volume_base_and_absence_inherits() {
         let mut w = world_with_two_biomes();
         // Give biome 1 the Pale Garden's declaration.
-        let defs = vec![
-            biome("test:plains", None),
-            {
-                let mut b = biome("test:pale_garden", None);
-                b.music_volume = Some(0.0);
-                b
-            },
-        ];
+        let defs = vec![biome("test:plains", None), {
+            let mut b = biome("test:pale_garden", None);
+            b.music_volume = Some(0.0);
+            b
+        }];
         w.set_biome_context(std::sync::Arc::new(crate::biome::BiomeContext::new(
             std::sync::Arc::new(crate::biome::BiomeRegistry::new(defs)),
             crate::biome::Colormaps::neutral(),

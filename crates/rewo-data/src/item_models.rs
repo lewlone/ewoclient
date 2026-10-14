@@ -203,9 +203,7 @@ fn read_transform(display: &Value, key: &str) -> Option<DisplayTransform> {
         d.get(k)
             .and_then(|v| v.as_array())
             .filter(|a| a.len() == 3)
-            .map(|a| {
-                std::array::from_fn(|i| a[i].as_f64().unwrap_or(default[i] as f64) as f32)
-            })
+            .map(|a| std::array::from_fn(|i| a[i].as_f64().unwrap_or(default[i] as f64) as f32))
             .unwrap_or(default)
     };
     // `ItemTransform.Deserializer`: translation × 0.0625 then clamp ±5;
@@ -240,10 +238,7 @@ type ChainResult = (
     DisplayTransform,
 );
 
-fn resolve_chain(
-    start: &str,
-    read: &mut dyn FnMut(&str) -> Option<Value>,
-) -> Option<ChainResult> {
+fn resolve_chain(start: &str, read: &mut dyn FnMut(&str) -> Option<Value>) -> Option<ChainResult> {
     /// Deep enough for every vanilla chain (item → handheld → generated →
     /// builtin) with room to spare; a cycle would otherwise hang the bake.
     const MAX_PARENT_DEPTH: usize = 16;
@@ -336,7 +331,6 @@ fn layers(textures: &HashMap<String, String>) -> Vec<String> {
     }
     out
 }
-
 
 // ---------------------------------------------------------------------------
 // Reducing a state-dependent definition (M40).
@@ -495,7 +489,10 @@ const ZERO_ON_A_PLAIN_STACK: &[&str] = &[
 /// top level would leave it suppressed. Depth is bounded because a definition
 /// is a finite tree, but a hostile pack could nest arbitrarily, so the depth
 /// is capped rather than trusted.
-pub fn reduce_definition<'v>(node: &'v Value, ctx: SelectionContext<'_>) -> Result<&'v Value, String> {
+pub fn reduce_definition<'v>(
+    node: &'v Value,
+    ctx: SelectionContext<'_>,
+) -> Result<&'v Value, String> {
     fn blocked(node: &Value, property: Option<&str>) -> String {
         let kind = node
             .get("type")
@@ -546,9 +543,7 @@ pub fn reduce_definition<'v>(node: &'v Value, ctx: SelectionContext<'_>) -> Resu
                             .iter()
                             .find(|c| match c.get("when") {
                                 Some(Value::String(s)) => s == want,
-                                Some(Value::Array(a)) => {
-                                    a.iter().any(|v| v.as_str() == Some(want))
-                                }
+                                Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(want)),
                                 _ => false,
                             })
                     })
@@ -602,7 +597,8 @@ pub fn reduce_definition<'v>(node: &'v Value, ctx: SelectionContext<'_>) -> Resu
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 for e in entries {
-                    let (Some(t), Some(m)) = (e.get("threshold").and_then(|t| t.as_f64()), e.get("model"))
+                    let (Some(t), Some(m)) =
+                        (e.get("threshold").and_then(|t| t.as_f64()), e.get("model"))
                     else {
                         return Err(blocked(node, Some(property)));
                     };
@@ -760,8 +756,7 @@ pub fn resolve_all(
         let def = read(&format!("assets/minecraft/items/{short}.json"));
         let resolved = match def {
             Some(d) => {
-                let mut read_model =
-                    |p: &str| read(&format!("assets/minecraft/models/{p}.json"));
+                let mut read_model = |p: &str| read(&format!("assets/minecraft/models/{p}.json"));
                 resolve_definition(&d, &mut read_model, ctx)
             }
             None => ItemModel::Unsupported("(missing definition)".into()),
@@ -871,7 +866,10 @@ mod tests {
                 gui,
                 ..
             } => {
-                assert_eq!(geometry, ItemGeometry::Sprite(vec!["item/diamond_sword".into()]));
+                assert_eq!(
+                    geometry,
+                    ItemGeometry::Sprite(vec!["item/diamond_sword".into()])
+                );
                 // A sprite declares no `display.gui` anywhere in its chain, and
                 // the identity is what makes it fill the slot as a flat quad
                 // facing the viewer. Substituting the block transform here
@@ -999,7 +997,10 @@ mod tests {
         // `models/item/shield.json` has no parent at all.
         let m = resolve_definition(
             &json(r#"{"model":{"type":"minecraft:model","model":"minecraft:item/shield"}}"#),
-            &mut reader(vec![("item/shield", r#"{"textures":{"layer0":"item/shield"}}"#)]),
+            &mut reader(vec![(
+                "item/shield",
+                r#"{"textures":{"layer0":"item/shield"}}"#,
+            )]),
             SelectionContext::hand(),
         );
         assert!(matches!(m, ItemModel::Unsupported(_)), "got {m:?}");
@@ -1026,7 +1027,6 @@ mod tests {
         // layer1 missing → the generator `break`s, so layer2 is never reached.
         assert_eq!(layers(&t), vec!["item/a".to_string()]);
     }
-
 
     /// The two `gui` cases are genuinely different, and which one an item gets
     /// is decided by whether its geometry came from a block model. A single

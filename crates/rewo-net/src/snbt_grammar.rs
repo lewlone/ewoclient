@@ -164,9 +164,7 @@ fn is_decimal(c: u16) -> bool {
     (0x30..=0x39).contains(&c) || c == b'_' as u16
 }
 fn is_hex(c: u16) -> bool {
-    is_decimal(c)
-        || (0x41..=0x46).contains(&c)
-        || (0x61..=0x66).contains(&c)
+    is_decimal(c) || (0x41..=0x46).contains(&c) || (0x61..=0x66).contains(&c)
 }
 fn is_binary(c: u16) -> bool {
     c == 0x30 || c == 0x31 || c == b'_' as u16
@@ -810,7 +808,13 @@ mod tests {
 
     #[test]
     fn the_escape_table_is_the_26x_one_and_backslash_s_is_a_space() {
-        for s in [r#""a\sb""#, r#""a\nb""#, r#""a\\b""#, r#""a\"b""#, r#"'a\'b'"#] {
+        for s in [
+            r#""a\sb""#,
+            r#""a\nb""#,
+            r#""a\\b""#,
+            r#""a\"b""#,
+            r#"'a\'b'"#,
+        ] {
             assert!(ok(s), "{s}");
         }
         assert!(ok(r#""\x41""#));

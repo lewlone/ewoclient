@@ -485,9 +485,8 @@ pub(super) fn book_press(
         return true;
     }
     let query = rewo_world::recipe_search::normalize(&screen.book_search.value());
-    let Some(view) =
-        live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display)
-            .and_then(|b| b.view)
+    let Some(view) = live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display)
+        .and_then(|b| b.view)
     else {
         return false;
     };
@@ -503,8 +502,7 @@ pub(super) fn book_press(
             // `toggleFiltering()` then `sendUpdateSettings()` — the local flag
             // moves first and the packet reports it, which is why this is one
             // call rather than two.
-            if let Err(e) = session.toggle_recipe_book_filter(shown_book_index(session))
-            {
+            if let Err(e) = session.toggle_recipe_book_filter(shown_book_index(session)) {
                 log::warn!("rewo: recipe book filter: {e}");
             }
             true
@@ -736,13 +734,11 @@ pub(super) fn merchant_future_xp(
             cost_a_item: o.cost_a.item_id,
             need_a: o.modified_cost_a(props(o.cost_a.item_id)),
             cost_b: o.cost_b.as_ref().map(|c| (c.item_id, c.count)),
-            constrained: o.cost_a.constrained
-                || o.cost_b.as_ref().is_some_and(|c| c.constrained),
+            constrained: o.cost_a.constrained || o.cost_b.as_ref().is_some_and(|c| c.constrained),
         })
         .collect();
     let satisfied = rewo_world::merchant_screen::satisfied_offers(&matches, slot(0), slot(1));
-    rewo_world::merchant_screen::recipe_for(selected, &satisfied)
-        .map_or(0, |i| offers.offers[i].xp)
+    rewo_world::merchant_screen::recipe_for(selected, &satisfied).map_or(0, |i| offers.offers[i].xp)
 }
 
 /// The merchant screen's scroll, which no packet carries (M93u).
@@ -761,7 +757,9 @@ pub(crate) fn merchant_view(
     offers: &rewo_net::merchant::MerchantOffers,
     props: &dyn Fn(i32) -> i32,
 ) -> MerchantView {
-    let stale = screen.merchant.is_none_or(|l| l.container_id != m.container_id);
+    let stale = screen
+        .merchant
+        .is_none_or(|l| l.container_id != m.container_id);
     if stale {
         screen.merchant = Some(MerchantLocal {
             container_id: m.container_id,
@@ -1093,7 +1091,9 @@ pub(crate) struct BeaconEffectIds(pub(super) [Option<i32>; 6]);
 impl BeaconEffectIds {
     pub(crate) fn resolve(m: &rewo_data::mob_effects::MobEffects) -> Self {
         use rewo_world::menu_screen::BeaconEffect;
-        Self(std::array::from_fn(|i| m.id_of(BeaconEffect::ALL[i].name())))
+        Self(std::array::from_fn(|i| {
+            m.id_of(BeaconEffect::ALL[i].name())
+        }))
     }
 
     /// The registry id of one of the six, for `set_beacon` (M93m).
@@ -1188,9 +1188,7 @@ pub(super) fn menu_overlays(
                     let index = (row + l.start_row) * rewo_world::menu_screen::LOOM_COLS + col;
                     // `break label82` — the grid stops at the end of the list
                     // rather than drawing empty cells.
-                    let Some(pattern) = usize::try_from(index)
-                        .ok()
-                        .and_then(|i| l.patterns.get(i))
+                    let Some(pattern) = usize::try_from(index).ok().and_then(|i| l.patterns.get(i))
                     else {
                         break;
                     };
@@ -1264,7 +1262,11 @@ pub(super) fn menu_overlays(
                 if !ms::offer_visible(i, v.scroll_off, n) {
                     continue;
                 }
-                let row = if ms::can_scroll(n) { i - v.scroll_off } else { i };
+                let row = if ms::can_scroll(n) {
+                    i - v.scroll_off
+                } else {
+                    i
+                };
                 let hovered = mouse_gui.is_some_and(|(x, y)| ms::button_hovered(row, x, y));
                 for sl in ms::button_slices(ms::TRADE_BUTTON_W) {
                     if sl.w == 0 {
@@ -1293,7 +1295,11 @@ pub(super) fn menu_overlays(
                 }
                 // The row is the offer's position in the WINDOW, which is the
                 // offer index only when nothing is scrolled.
-                let row = if ms::can_scroll(n) { i - v.scroll_off } else { i };
+                let row = if ms::can_scroll(n) {
+                    i - v.scroll_off
+                } else {
+                    i
+                };
                 let y = ms::row_item_y(row);
                 // `xo + 5 + 35 + 20` — past cost B, not past cost A. The first
                 // cut of this read `5 + 5 + 20` and put every arrow 30 px left,
@@ -1320,7 +1326,11 @@ pub(super) fn menu_overlays(
                 if !ms::cost_a_display(offer.cost_a.count, v.cost_a_counts[i]).strikethrough {
                     continue;
                 }
-                let row = if ms::can_scroll(n) { idx - v.scroll_off } else { idx };
+                let row = if ms::can_scroll(n) {
+                    idx - v.scroll_off
+                } else {
+                    idx
+                };
                 out.push((
                     a::VILLAGER_STRIKETHROUGH,
                     to_blit(rewo_world::menu_screen::ProgressBlit {

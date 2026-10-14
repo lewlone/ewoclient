@@ -317,10 +317,7 @@ const ANVIL: [SlotBlock; 4] = [
 /// origin — `(36, 137)`, not `(8, 84)`.
 const BEACON: [SlotBlock; 2] = [
     SlotBlock::One { x: 136, y: 110 },
-    SlotBlock::StandardInventory {
-        left: 36,
-        top: 137,
-    },
+    SlotBlock::StandardInventory { left: 36, top: 137 },
 ];
 
 /// `AbstractFurnaceMenu`: ingredient, fuel, result. Shared by all three
@@ -398,10 +395,7 @@ const MERCHANT: [SlotBlock; 4] = [
     SlotBlock::One { x: 136, y: 37 },
     SlotBlock::One { x: 162, y: 37 },
     SlotBlock::One { x: 220, y: 37 },
-    SlotBlock::StandardInventory {
-        left: 108,
-        top: 84,
-    },
+    SlotBlock::StandardInventory { left: 108, top: 84 },
 ];
 
 /// `ShulkerBoxMenu`: a 9x3 grid like a chest, but its own screen and its own

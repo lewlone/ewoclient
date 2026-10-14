@@ -110,7 +110,11 @@ pub const PANEL_BORDER: i32 = 4;
 /// The threshold is on the **total**, not on the row count, so 16 recipes make
 /// four rows of four and 17 make four rows of five (the last holding one).
 pub fn max_row(total: usize) -> usize {
-    if total <= 16 { MAX_ROW } else { MAX_ROW_LARGE }
+    if total <= 16 {
+        MAX_ROW
+    } else {
+        MAX_ROW_LARGE
+    }
 }
 
 /// `(int)Math.ceil((float)total / maxRow)`.
@@ -147,12 +151,7 @@ pub fn panel_size(total: usize) -> (i32, i32) {
 ///
 /// `step` is `RecipeButton.getWidth()`, always 25. See the module docs for why
 /// the three clamps below round three different ways.
-pub fn origin(
-    button: (i32, i32),
-    total: usize,
-    centre: (i32, i32),
-    step: f32,
-) -> (i32, i32) {
+pub fn origin(button: (i32, i32), total: usize, centre: (i32, i32), step: f32) -> (i32, i32) {
     let (mut x, mut y) = button;
 
     // Horizontal: a C-style truncation, so a positive quotient FLOORS.
@@ -299,8 +298,14 @@ pub struct Pos {
 /// display onto this and resolves the ingredient indices afterwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
-    Shaped { w: usize, h: usize, ingredients: usize },
-    Shapeless { ingredients: usize },
+    Shaped {
+        w: usize,
+        h: usize,
+        ingredients: usize,
+    },
+    Shapeless {
+        ingredients: usize,
+    },
     Furnace,
     /// A stonecutter or smithing display. Both `calculateIngredientsPositions`
     /// switches fall through to a `default:` that adds nothing.
@@ -341,16 +346,20 @@ pub fn grid_positions(furnace_menu: bool, shape: Shape) -> Vec<Pos> {
         };
     }
     match shape {
-        Shape::Shaped { w, h, ingredients } => crate::ghost_slots::place_recipe(3, 3, w, h, ingredients)
-            .into_iter()
-            .enumerate()
-            // `gridIndex` and `(gridXPos, gridYPos)` stay in lockstep through
-            // both of `placeRecipe`'s skips, so the callback's coordinates are
-            // recoverable from the index alone — see the test below, which is
-            // what makes reusing M103's index-returning port sound.
-            .map(|(n, cell)| grid(cell % 3, cell / 3, n))
-            .collect(),
-        Shape::Shapeless { ingredients } => (0..ingredients).map(|i| grid(i % 3, i / 3, i)).collect(),
+        Shape::Shaped { w, h, ingredients } => {
+            crate::ghost_slots::place_recipe(3, 3, w, h, ingredients)
+                .into_iter()
+                .enumerate()
+                // `gridIndex` and `(gridXPos, gridYPos)` stay in lockstep through
+                // both of `placeRecipe`'s skips, so the callback's coordinates are
+                // recoverable from the index alone — see the test below, which is
+                // what makes reusing M103's index-returning port sound.
+                .map(|(n, cell)| grid(cell % 3, cell / 3, n))
+                .collect()
+        }
+        Shape::Shapeless { ingredients } => {
+            (0..ingredients).map(|i| grid(i % 3, i / 3, i)).collect()
+        }
         Shape::Furnace | Shape::Other => Vec::new(),
     }
 }
@@ -495,7 +504,7 @@ mod tests {
     fn the_horizontal_clamp_floors_and_so_under_corrects() {
         let c = centre();
         let bound = c.0 + 50; // 123
-        // Column 4, two recipes: right edge 111 + 50 = 161, overhanging by 38.
+                              // Column 4, two recipes: right edge 111 + 50 = 161, overhanging by 38.
         let (x, _) = origin(cell(4, 0), 2, c, 25.0);
         assert_eq!(x, 111 - 25, "38 / 25 truncates to ONE step, not two");
         let right = x + cols(2) as i32 * BUTTON_PITCH;
@@ -531,7 +540,7 @@ mod tests {
     fn the_bottom_clamp_ceils_and_so_always_clears() {
         let c = centre();
         let bound = c.1 + 50; // 146
-        // Bottom row (y = 106), two rows deep: bottom edge 156, over by 10.
+                              // Bottom row (y = 106), two rows deep: bottom edge 156, over by 10.
         let (_, y) = origin(cell(0, 3), 5, c, 25.0);
         assert_eq!(y, 106 - 25, "a 10 px overhang still costs a whole step");
         assert!(y + rows(5) as i32 * BUTTON_PITCH <= bound);
@@ -543,8 +552,8 @@ mod tests {
     fn the_top_clamp_is_a_no_op_below_one_step() {
         let c = centre();
         let max_top = c.1 - 100; // -4
-        // 26 recipes: maxRow 5, six rows. From the top row (y = 31) the bottom
-        // clamp lifts it to 31 - 25*ceil((181-146)/25) = 31 - 50 = -19.
+                                 // 26 recipes: maxRow 5, six rows. From the top row (y = 31) the bottom
+                                 // clamp lifts it to 31 - 25*ceil((181-146)/25) = 31 - 50 = -19.
         let (_, y) = origin(cell(0, 0), 26, c, 25.0);
         assert_eq!(y, -19);
         assert!(y < max_top, "it is above its own top bound…");
@@ -644,14 +653,46 @@ mod tests {
     fn a_shaped_recipe_centres_the_way_the_grid_index_says() {
         // 1x1 into 3x3 centres: `startPos = floor(1.5 - 0.5) = 1`.
         assert_eq!(
-            grid_positions(false, Shape::Shaped { w: 1, h: 1, ingredients: 1 }),
-            vec![Pos { x: 3 + 7, y: 3 + 7, ingredient: 0 }]
+            grid_positions(
+                false,
+                Shape::Shaped {
+                    w: 1,
+                    h: 1,
+                    ingredients: 1
+                }
+            ),
+            vec![Pos {
+                x: 3 + 7,
+                y: 3 + 7,
+                ingredient: 0
+            }]
         );
         // 3x3 fills in reading order, no centring.
-        let full = grid_positions(false, Shape::Shaped { w: 3, h: 3, ingredients: 9 });
+        let full = grid_positions(
+            false,
+            Shape::Shaped {
+                w: 3,
+                h: 3,
+                ingredients: 9,
+            },
+        );
         assert_eq!(full.len(), 9);
-        assert_eq!(full[0], Pos { x: 3, y: 3, ingredient: 0 });
-        assert_eq!(full[8], Pos { x: 3 + 14, y: 3 + 14, ingredient: 8 });
+        assert_eq!(
+            full[0],
+            Pos {
+                x: 3,
+                y: 3,
+                ingredient: 0
+            }
+        );
+        assert_eq!(
+            full[8],
+            Pos {
+                x: 3 + 14,
+                y: 3 + 14,
+                ingredient: 8
+            }
+        );
     }
 
     /// An **asymmetric** shape, because neither fixture above can see a
@@ -667,10 +708,25 @@ mod tests {
             "row 0 is skipped, so the pair is the middle row's first two cells"
         );
         assert_eq!(
-            grid_positions(false, Shape::Shaped { w: 2, h: 1, ingredients: 2 }),
+            grid_positions(
+                false,
+                Shape::Shaped {
+                    w: 2,
+                    h: 1,
+                    ingredients: 2
+                }
+            ),
             vec![
-                Pos { x: 3, y: 3 + 7, ingredient: 0 },
-                Pos { x: 3 + 7, y: 3 + 7, ingredient: 1 },
+                Pos {
+                    x: 3,
+                    y: 3 + 7,
+                    ingredient: 0
+                },
+                Pos {
+                    x: 3 + 7,
+                    y: 3 + 7,
+                    ingredient: 1
+                },
             ]
         );
     }
@@ -679,10 +735,21 @@ mod tests {
     #[test]
     fn a_shapeless_recipe_fills_from_the_corner_where_a_shaped_one_centres() {
         let shapeless = grid_positions(false, Shape::Shapeless { ingredients: 1 });
-        let shaped = grid_positions(false, Shape::Shaped { w: 1, h: 1, ingredients: 1 });
+        let shaped = grid_positions(
+            false,
+            Shape::Shaped {
+                w: 1,
+                h: 1,
+                ingredients: 1,
+            },
+        );
         assert_eq!(
             shapeless,
-            vec![Pos { x: 3, y: 3, ingredient: 0 }],
+            vec![Pos {
+                x: 3,
+                y: 3,
+                ingredient: 0
+            }],
             "top-left, not the middle"
         );
         assert_ne!(shapeless, shaped);
@@ -693,11 +760,23 @@ mod tests {
     fn the_button_class_follows_the_menu_and_not_the_display() {
         assert_eq!(
             grid_positions(true, Shape::Furnace),
-            vec![Pos { x: 3 + 7, y: 3 + 7, ingredient: 0 }],
+            vec![Pos {
+                x: 3 + 7,
+                y: 3 + 7,
+                ingredient: 0
+            }],
             "a furnace book centres its single ingredient"
         );
         assert!(
-            grid_positions(true, Shape::Shaped { w: 3, h: 3, ingredients: 9 }).is_empty(),
+            grid_positions(
+                true,
+                Shape::Shaped {
+                    w: 3,
+                    h: 3,
+                    ingredients: 9
+                }
+            )
+            .is_empty(),
             "a furnace book draws nothing for a shaped display"
         );
         assert!(
@@ -711,7 +790,14 @@ mod tests {
     fn an_ingredient_is_centred_on_its_position_not_cornered_at_it() {
         // Button at (0, 0), ingredient at grid (0, 0): pos (3, 3), grid origin
         // (2, 2), so the CENTRE is (5, 5) and the corner is (2, 2).
-        let (x, y, s) = item_rect((0, 0), Pos { x: 3, y: 3, ingredient: 0 });
+        let (x, y, s) = item_rect(
+            (0, 0),
+            Pos {
+                x: 3,
+                y: 3,
+                ingredient: 0,
+            },
+        );
         assert_eq!(s, 6.0);
         assert_eq!((x, y), (2.0, 2.0));
         // Reading `pos` as a top-left would put it at (5, 5) — half a size off.
@@ -726,7 +812,11 @@ mod tests {
         // `getDisplayStack`'s two-level cycle, index 3 of a 3-list would move
         // the *offset* on and pick a different form.
         assert_eq!(select_ingredient(3, 3), Some(0));
-        assert_eq!(select_ingredient(0, 7), None, "an empty ingredient shows nothing");
+        assert_eq!(
+            select_ingredient(0, 7),
+            None,
+            "an empty ingredient shows nothing"
+        );
     }
 
     #[test]

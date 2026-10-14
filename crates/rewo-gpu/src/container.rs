@@ -135,11 +135,19 @@ pub struct Placement {
 
 impl Placement {
     pub fn centred(gui_w: f32, gui_h: f32) -> Self {
-        Self { gui_w, gui_h, book_open: false }
+        Self {
+            gui_w,
+            gui_h,
+            book_open: false,
+        }
     }
 
     pub fn with_book(gui_w: f32, gui_h: f32, book_open: bool) -> Self {
-        Self { gui_w, gui_h, book_open }
+        Self {
+            gui_w,
+            gui_h,
+            book_open,
+        }
     }
 }
 
@@ -174,8 +182,7 @@ pub fn recipe_book_origin(w: f32, h: f32) -> (f32, f32, f32) {
     let scale = crate::hud::gui_scale(w, h);
     let (sw, sh) = (w / scale, h / scale);
     let narrow = sw < BOOK_WIDTH_TOO_NARROW_BELOW;
-    let left =
-        ((sw - BOOK_IMAGE_W) / 2.0).floor() - if narrow { 0.0 } else { BOOK_OFFSET_X };
+    let left = ((sw - BOOK_IMAGE_W) / 2.0).floor() - if narrow { 0.0 } else { BOOK_OFFSET_X };
     let top = ((sh - BOOK_IMAGE_H) / 2.0).floor();
     (left * scale, top * scale, scale)
 }
@@ -227,13 +234,7 @@ pub fn screen_to_gui(mouse: (f64, f64), w: f32, h: f32) -> (f64, f64) {
 /// The panel size has to match the one the render used, or the hover test
 /// answers for a differently-centred panel and every slot is off by half the
 /// size difference — which for a six-row chest is 28 px, more than a slot.
-pub fn screen_to_gui_for(
-    mouse: (f64, f64),
-    w: f32,
-    h: f32,
-    gui_w: f32,
-    gui_h: f32,
-) -> (f64, f64) {
+pub fn screen_to_gui_for(mouse: (f64, f64), w: f32, h: f32, gui_w: f32, gui_h: f32) -> (f64, f64) {
     screen_to_gui_placed(mouse, w, h, Placement::centred(gui_w, gui_h))
 }
 
@@ -248,7 +249,6 @@ pub fn screen_to_gui_placed(mouse: (f64, f64), w: f32, h: f32, p: Placement) -> 
         (mouse.1 - top as f64) / scale as f64,
     )
 }
-
 
 // -- the player preview (M36) -------------------------------------------------
 //
@@ -1074,7 +1074,16 @@ impl ContainerPass {
 
         // 1. The backdrop, over everything the world drew.
         if open {
-            quad(&mut v, 0.0, 0.0, w, h, self.white, BACKDROP_TOP, BACKDROP_BOTTOM);
+            quad(
+                &mut v,
+                0.0,
+                0.0,
+                w,
+                h,
+                self.white,
+                BACKDROP_TOP,
+                BACKDROP_BOTTOM,
+            );
             // 2. The panel. One quad for the player's inventory; for a
             //    container, whatever its screen's blits are — two for a chest,
             //    which takes a band from the top of `generic_54.png` and
@@ -1111,7 +1120,12 @@ impl ContainerPass {
                         // A fill samples nothing: the shader takes a negative
                         // `u` as "untextured" and uses the vertex colour alone.
                         let r = if sprite == FILL_SPRITE {
-                            Rect { u0: -1.0, v0: -1.0, u1: -1.0, v1: -1.0 }
+                            Rect {
+                                u0: -1.0,
+                                v0: -1.0,
+                                u1: -1.0,
+                                v1: -1.0,
+                            }
                         } else {
                             self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh)
                         };
@@ -1197,7 +1211,12 @@ impl ContainerPass {
                     continue;
                 }
                 let r = if sprite == FILL_SPRITE {
-                    Rect { u0: -1.0, v0: -1.0, u1: -1.0, v1: -1.0 }
+                    Rect {
+                        u0: -1.0,
+                        v0: -1.0,
+                        u1: -1.0,
+                        v1: -1.0,
+                    }
                 } else {
                     self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh)
                 };
@@ -1417,14 +1436,7 @@ impl ContainerPass {
     }
 
     /// The atlas rect for a pixel sub-rect of one screen overlay sprite.
-    pub(crate) fn overlay_rect_px(
-        &self,
-        sprite: usize,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-    ) -> Rect {
+    pub(crate) fn overlay_rect_px(&self, sprite: usize, x: f32, y: f32, w: f32, h: f32) -> Rect {
         let (sx, sy, _, _) = self.overlay_sheets[sprite];
         let (sx, sy) = (sx as f32, sy as f32);
         Rect {
@@ -1761,9 +1773,9 @@ mod tests {
     #[test]
     fn the_sliced_pieces_tile_the_destination_exactly() {
         for (sw, sh, b, w, h) in [
-            (12, 12, 2, 96, 13), // the progress bar's border
-            (6, 6, 2, 94, 13),   // a full fill
-            (6, 6, 2, 3, 13),    // a fill narrower than its own two borders
+            (12, 12, 2, 96, 13),   // the progress bar's border
+            (6, 6, 2, 94, 13),     // a full fill
+            (6, 6, 2, 3, 13),      // a fill narrower than its own two borders
             (100, 100, 9, 64, 32), // the tooltip's background
         ] {
             let mut v = Vec::new();

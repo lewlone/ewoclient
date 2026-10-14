@@ -175,12 +175,8 @@ pub fn build(
 ) -> Screen {
     // `gridLayout.defaultCellSetting().padding(4, 4, 4, 0)` — the FOUR-argument
     // overload. Bottom is 0.
-    let default_cell = Settings::defaults().padding4(
-        BUTTON_PADDING,
-        BUTTON_PADDING,
-        BUTTON_PADDING,
-        0,
-    );
+    let default_cell =
+        Settings::defaults().padding4(BUTTON_PADDING, BUTTON_PADDING, BUTTON_PADDING, 0);
     let grid = Grid::new().default_cell(default_cell);
     let mut helper = RowHelper::new(grid, COLUMNS);
 
@@ -192,7 +188,11 @@ pub fn build(
         default_cell.padding_top(MENU_PADDING_TOP),
     );
     // Row 1: the two half-width buttons.
-    helper.add1(Element::leaf(ADVANCEMENTS, BUTTON_WIDTH_HALF, BUTTON_HEIGHT));
+    helper.add1(Element::leaf(
+        ADVANCEMENTS,
+        BUTTON_WIDTH_HALF,
+        BUTTON_HEIGHT,
+    ));
     helper.add1(Element::leaf(STATS, BUTTON_WIDTH_HALF, BUTTON_HEIGHT));
 
     // Row 2: the icon row — a horizontal LinearLayout of four 20x20 buttons

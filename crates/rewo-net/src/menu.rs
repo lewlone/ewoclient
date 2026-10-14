@@ -123,12 +123,7 @@ pub struct MenuIds {
 /// Route one `(packet id, body)` to the menu state.
 ///
 /// Returns whether the id matched — **not** whether anything was applied.
-pub fn route(
-    ids: MenuIds,
-    id: i32,
-    body: &[u8],
-    menus: &mut rewo_world::menu::Menus,
-) -> bool {
+pub fn route(ids: MenuIds, id: i32, body: &[u8], menus: &mut rewo_world::menu::Menus) -> bool {
     if id == ids.open_screen {
         match read_open_screen(body) {
             Ok(p) => {

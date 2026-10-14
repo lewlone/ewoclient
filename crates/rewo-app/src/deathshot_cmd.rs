@@ -493,7 +493,11 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     let anchor = r.label_anchor(30);
     c.record(
         "m9.the_button_label_sits_one_pixel_below_the_true_vertical_centre",
-        anchor == ((r.x + 2 + r.right() - 2) / 2, (r.y + r.bottom() - 9) / 2 + 1),
+        anchor
+            == (
+                (r.x + 2 + r.right() - 2) / 2,
+                (r.y + r.bottom() - 9) / 2 + 1,
+            ),
         format!(
             "({}, {}) — the `+ 1` is not decorative: without it a 9-px line in \
              a 20-px button sits a pixel high",
@@ -579,8 +583,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     c.record(
         "m15.the_backdrop_is_the_two_argb_literals_and_its_alpha_ramps",
         ds::BACKDROP.top == [80.0 / 255.0, 0.0, 0.0, 96.0 / 255.0]
-            && ds::BACKDROP.bottom
-                == [128.0 / 255.0, 48.0 / 255.0, 48.0 / 255.0, 160.0 / 255.0],
+            && ds::BACKDROP.bottom == [128.0 / 255.0, 48.0 / 255.0, 48.0 / 255.0, 160.0 / 255.0],
         "1615855616 = 0x60500000 and -1602211792 = 0xA0803030 — the alpha \
          changes down the screen as well as the colour, which a `tint it red` \
          reading would miss",
@@ -739,10 +742,12 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     // right than a style-blind measure would. This is the witness the first cut
     // did not have: with the bold span LAST, nothing follows it and the run's
     // `pen += w * scale` is unobservable, so a style-blind pen survived.
-    let x_of = |v: &[rewo_gpu::world::OwnedTextLine], t: &str| {
-        v.iter().find(|l| l.text == t).map(|l| l.x)
-    };
-    let gap = match (x_of(&styled_lines, "obliterated"), x_of(&styled_lines, " by a Zombie")) {
+    let x_of =
+        |v: &[rewo_gpu::world::OwnedTextLine], t: &str| v.iter().find(|l| l.text == t).map(|l| l.x);
+    let gap = match (
+        x_of(&styled_lines, "obliterated"),
+        x_of(&styled_lines, " by a Zombie"),
+    ) {
         (Some(a), Some(b)) => Some(b - a),
         _ => None,
     };
@@ -879,10 +884,10 @@ fn check_pixels(
     let clear = [CLEAR_LINEAR[0], CLEAR_LINEAR[1], CLEAR_LINEAR[2], 1.0];
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    chrome: rewo_gpu::screen::ScreenDraw,
-                    lines: Vec<rewo_gpu::world::OwnedTextLine>|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                chrome: rewo_gpu::screen::ScreenDraw,
+                lines: Vec<rewo_gpu::world::OwnedTextLine>|
      -> Result<Vec<u8>, String> {
         wr.set_screen(chrome);
         wr.set_text(lines);
@@ -933,13 +938,7 @@ fn check_pixels(
     let live = |screen: &Screen, mouse: Option<(f64, f64)>| {
         (
             crate::live_cmd::screen_chrome(screen, mouse),
-            crate::live_cmd::death_screen_lines(
-                &view,
-                screen,
-                &advance,
-                SCALE as f32,
-                screen_px,
-            ),
+            crate::live_cmd::death_screen_lines(&view, screen, &advance, SCALE as f32, screen_px),
         )
     };
 
@@ -1041,7 +1040,10 @@ fn check_pixels(
         (r.x as f64 + 20.0) * SCALE as f64,
         (r.y as f64 + 10.0) * SCALE as f64,
     );
-    let (chrome_h, lines_h) = live(&screen, Some((hover.0 / SCALE as f64, hover.1 / SCALE as f64)));
+    let (chrome_h, lines_h) = live(
+        &screen,
+        Some((hover.0 / SCALE as f64, hover.1 / SCALE as f64)),
+    );
     let hovered = shot(&mut gpu, &mut off, &mut wr, chrome_h, lines_h)?;
     c.record(
         "p5.hovering_an_enabled_button_swaps_it_to_the_white_bordered_sprite",
@@ -1072,15 +1074,7 @@ fn check_pixels(
     );
 
     // Interior, excluding the 3-px border, and excluding the label band.
-    let inner = |buf: &[u8]| {
-        interior_max(
-            buf,
-            bx0 + 8,
-            by0 + 4,
-            bx0 + 30,
-            by1 - 4,
-        )
-    };
+    let inner = |buf: &[u8]| interior_max(buf, bx0 + 8, by0 + 4, bx0 + 30, by1 - 4);
     c.record(
         "p7.the_disabled_sprite_is_much_darker_than_the_enabled_one",
         inner(&dead_frame) < 60 && inner(&frame) > 100,

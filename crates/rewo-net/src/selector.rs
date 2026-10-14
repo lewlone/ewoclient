@@ -558,12 +558,7 @@ mod tests {
         let p = SelectorParser::parse(&mut reader, true);
         let mut builder = SuggestionsBuilder::new(&units, p.cursor);
         p.fill_suggestions(&mut builder, &names());
-        builder
-            .build()
-            .list
-            .into_iter()
-            .map(|s| s.text)
-            .collect()
+        builder.build().list.into_iter().map(|s| s.text).collect()
     }
 
     #[test]

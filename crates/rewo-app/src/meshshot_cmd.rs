@@ -169,11 +169,7 @@ fn print_report(args: &MeshshotArgs, r: &GreedyOracleReport) {
          own-UP-covered {:?}, ALL-SIX-covered {:?} — `renderUp` skips \
          `shouldRenderFace`, so the top survives even a double slab; pool quads in the \
          plane between it and a waterlogged / a dry neighbour: {} / {}",
-        w.bottom_slab,
-        w.top_slab,
-        w.double_slab,
-        w.pool_plane_faces.0,
-        w.pool_plane_faces.1,
+        w.bottom_slab, w.top_slab, w.double_slab, w.pool_plane_faces.0, w.pool_plane_faces.1,
     );
 
     print_legacy("model", r.model_only_identical, r.model_only);

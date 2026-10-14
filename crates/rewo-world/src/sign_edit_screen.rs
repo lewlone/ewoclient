@@ -91,16 +91,32 @@ impl SignKind {
         self == SignKind::Hanging
     }
     pub fn line_height(self) -> i32 {
-        if self.hanging() { HANGING_LINE_HEIGHT } else { SIGN_LINE_HEIGHT }
+        if self.hanging() {
+            HANGING_LINE_HEIGHT
+        } else {
+            SIGN_LINE_HEIGHT
+        }
     }
     pub fn max_text_line_width(self) -> i32 {
-        if self.hanging() { HANGING_MAX_WIDTH } else { SIGN_MAX_WIDTH }
+        if self.hanging() {
+            HANGING_MAX_WIDTH
+        } else {
+            SIGN_MAX_WIDTH
+        }
     }
     pub fn text_scale(self) -> f32 {
-        if self.hanging() { 1.0 } else { SIGN_TEXT_SCALE }
+        if self.hanging() {
+            1.0
+        } else {
+            SIGN_TEXT_SCALE
+        }
     }
     pub fn y_offset(self) -> f32 {
-        if self.hanging() { HANGING_Y_OFFSET } else { SIGN_Y_OFFSET }
+        if self.hanging() {
+            HANGING_Y_OFFSET
+        } else {
+            SIGN_Y_OFFSET
+        }
     }
     /// `signMidpoint = 4 * lineHeight / 2` (AbstractSignEditScreen.java:173).
     pub fn midpoint(self) -> i32 {
@@ -233,7 +249,13 @@ pub enum SignKey {
 impl SignEditState {
     pub fn new(lines: [String; 4], kind: SignKind) -> Self {
         let cursor = lines[0].len();
-        Self { lines, line: 0, cursor, selection: cursor, kind }
+        Self {
+            lines,
+            line: 0,
+            cursor,
+            selection: cursor,
+            kind,
+        }
     }
 
     fn text(&self) -> &str {
@@ -379,7 +401,12 @@ impl SignEditState {
             message = self.delete_selection();
         }
         self.cursor = self.cursor.min(message.len());
-        let candidate = format!("{}{}{}", &message[..self.cursor], text, &message[self.cursor..]);
+        let candidate = format!(
+            "{}{}{}",
+            &message[..self.cursor],
+            text,
+            &message[self.cursor..]
+        );
         if width_fn(&candidate) <= self.kind.max_text_line_width() {
             self.cursor = (self.cursor + text.len()).min(candidate.len());
             self.selection = self.cursor;
@@ -481,9 +508,19 @@ pub fn board_rect(kind: SignKind, gui_w: i32) -> (f32, f32, f32, f32) {
     match kind {
         SignKind::Standing | SignKind::Wall => {
             let rows = if kind == SignKind::Wall { 12.0 } else { 26.0 };
-            (cx - 12.0 * 3.9, SIGN_Y_OFFSET + 27.0 - 13.0 * 3.9, 24.0 * 3.9, rows * 3.9)
+            (
+                cx - 12.0 * 3.9,
+                SIGN_Y_OFFSET + 27.0 - 13.0 * 3.9,
+                24.0 * 3.9,
+                rows * 3.9,
+            )
         }
-        SignKind::Hanging => (cx - 8.0 * 4.5, HANGING_Y_OFFSET - 13.0 - 8.0 * 4.5, 16.0 * 4.5, 16.0 * 4.5),
+        SignKind::Hanging => (
+            cx - 8.0 * 4.5,
+            HANGING_Y_OFFSET - 13.0 - 8.0 * 4.5,
+            16.0 * 4.5,
+            16.0 * 4.5,
+        ),
     }
 }
 
@@ -526,11 +563,7 @@ pub enum CaretDraw {
     Bar { x: f32, y: f32, w: f32, h: f32 },
 }
 
-pub fn caret_draw(
-    state: &SignEditState,
-    gui_w: i32,
-    width_fn: &dyn Fn(&str) -> i32,
-) -> CaretDraw {
+pub fn caret_draw(state: &SignEditState, gui_w: i32, width_fn: &dyn Fn(&str) -> i32) -> CaretDraw {
     let kind = state.kind;
     let ts = kind.text_scale();
     let line = state.text();
@@ -540,7 +573,10 @@ pub fn caret_draw(
     let cx = gui_w as f32 / 2.0 + ts * (prefix_w - line_w / 2.0);
     let y_text = (state.line as i32 * kind.line_height() - kind.midpoint()) as f32;
     if cursor >= line.len() {
-        CaretDraw::Underscore { x: cx, y: kind.y_offset() + ts * y_text }
+        CaretDraw::Underscore {
+            x: cx,
+            y: kind.y_offset() + ts * y_text,
+        }
     } else {
         CaretDraw::Bar {
             x: cx,
@@ -711,13 +747,20 @@ mod tests {
         for _ in 0..7 {
             s.char_typed('a', &w10);
         }
-        assert_eq!(s.lines[0].len(), 6, "60 px / 10 = 6 chars; the 7th is rejected");
+        assert_eq!(
+            s.lines[0].len(),
+            6,
+            "60 px / 10 = 6 chars; the 7th is rejected"
+        );
     }
 
     #[test]
     fn the_char_filter_rejects_section_signs_and_control_characters() {
         let mut s = state();
-        assert!(s.char_typed('§', &w10), "the screen returns true EITHER WAY");
+        assert!(
+            s.char_typed('§', &w10),
+            "the screen returns true EITHER WAY"
+        );
         assert!(s.char_typed('\u{7f}', &w10));
         assert!(s.char_typed('\n', &w10));
         assert_eq!(s.lines[0], "");

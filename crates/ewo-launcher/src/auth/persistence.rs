@@ -191,7 +191,10 @@ fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::SecretCipher) -> 
                 a.ms_refresh_token = opened.into_inner();
             }
             Err(e) => {
-                log::warn!("auth: refresh token for {} could not be opened ({e}); sign in again", a.name);
+                log::warn!(
+                    "auth: refresh token for {} could not be opened ({e}); sign in again",
+                    a.name
+                );
                 a.ms_refresh_token.clear();
             }
         }
@@ -209,7 +212,10 @@ fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::SecretCipher) -> 
 }
 
 /// A copy of `store` with every secret sealed for writing.
-fn sealed_copy(store: &AccountStore, cipher: &dyn secret::SecretCipher) -> Result<AccountStore, String> {
+fn sealed_copy(
+    store: &AccountStore,
+    cipher: &dyn secret::SecretCipher,
+) -> Result<AccountStore, String> {
     let mut out = store.clone();
     for a in &mut out.accounts {
         a.ms_refresh_token = secret::seal(cipher, &a.ms_refresh_token)?;
@@ -262,7 +268,10 @@ mod tests {
     fn two_accounts() -> AccountStore {
         let mut a = account("A", "uuid-a");
         a.social_token = Some("social-a".into());
-        AccountStore { active: Some("uuid-a".into()), accounts: vec![a, account("B", "uuid-b")] }
+        AccountStore {
+            active: Some("uuid-a".into()),
+            accounts: vec![a, account("B", "uuid-b")],
+        }
     }
 
     #[test]
@@ -270,9 +279,15 @@ mod tests {
         let store = two_accounts();
         let sealed = sealed_copy(&store, &FakeCipher).unwrap();
         let text = toml::to_string_pretty(&sealed).unwrap();
-        assert!(!text.contains("refresh-uuid-a") && !text.contains("social-a"), "{text}");
+        assert!(
+            !text.contains("refresh-uuid-a") && !text.contains("social-a"),
+            "{text}"
+        );
         let mut back = sealed;
-        assert!(!open_secrets(&mut back, &FakeCipher), "sealed values need no reseal");
+        assert!(
+            !open_secrets(&mut back, &FakeCipher),
+            "sealed values need no reseal"
+        );
         assert_eq!(back.accounts[0].ms_refresh_token, "refresh-uuid-a");
         assert_eq!(back.accounts[0].social_token.as_deref(), Some("social-a"));
         assert_eq!(back.accounts[1].ms_refresh_token, "refresh-uuid-b");

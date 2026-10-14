@@ -386,7 +386,10 @@ fn wire_layer(
         ),
         // M162 — `explode`'s tail carries a sound, so this subsystem consumes
         // five packets rather than four.
-        ("explode", packets.id(State::Play, Dir::Clientbound, "explode")),
+        (
+            "explode",
+            packets.id(State::Play, Dir::Clientbound, "explode"),
+        ),
     ];
     c.record(
         "w1.packet_ids_resolve_by_name",
@@ -522,7 +525,14 @@ fn wire_layer(
     // erroring and puts the entity somewhere else entirely.
     let ent = rewo_net::route_sound(
         SoundPacketKind::OnEntity,
-        &entity_body(&SoundRef::Registry(1596), SoundSource::Hostile, 300, 0.5, 1.75, 42),
+        &entity_body(
+            &SoundRef::Registry(1596),
+            SoundSource::Hostile,
+            300,
+            0.5,
+            1.75,
+            42,
+        ),
     );
     let ent_ok = matches!(
         &ent,
@@ -615,7 +625,11 @@ fn wire_layer(
                 SoundEvent::At(p) => Some((p.x, p.y, p.z)),
                 _ => None,
             }),
-            if wrong_global.is_none() { "None" } else { "SOMETHING" },
+            if wrong_global.is_none() {
+                "None"
+            } else {
+                "SOMETHING"
+            },
             vol_of(1015),
             vol_of(1025),
         ),
@@ -634,7 +648,14 @@ fn wire_layer(
         1.0,
         0,
     );
-    let full_ent = entity_body(&SoundRef::Registry(1596), SoundSource::Blocks, 5, 1.0, 1.0, 0);
+    let full_ent = entity_body(
+        &SoundRef::Registry(1596),
+        SoundSource::Blocks,
+        5,
+        1.0,
+        1.0,
+        0,
+    );
     let full_stop = stop_body(Some(SoundSource::Music), Some("minecraft:music.game"));
     let full_le = level_event_body(1000, 1, 2, 3, 0, false);
     let all_none = (0..full_pos.len()).all(|n| {
@@ -702,13 +723,10 @@ fn level_event_tail_witnesses(c: &mut Checker, cam: [f64; 3]) {
             continue;
         };
         let to_sound = [p.x - cam[0], p.y - cam[1], p.z - cam[2]];
-        let len = (to_sound[0] * to_sound[0] + to_sound[1] * to_sound[1] + to_sound[2] * to_sound[2])
-            .sqrt();
-        let to_event = [
-            target[0] - cam[0],
-            target[1] - cam[1],
-            target[2] - cam[2],
-        ];
+        let len =
+            (to_sound[0] * to_sound[0] + to_sound[1] * to_sound[1] + to_sound[2] * to_sound[2])
+                .sqrt();
+        let to_event = [target[0] - cam[0], target[1] - cam[1], target[2] - cam[2]];
         // **The dot's SIGN is the assertion that matters.** A distance-only
         // check passes at 180 degrees, which is exactly what reversing
         // `Vec3.subtract` produces — and that reversal is invisible to the
@@ -758,8 +776,7 @@ fn level_event_tail_witnesses(c: &mut Checker, cam: [f64; 3]) {
                 let finite = p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
                 let at_camera = (p.x, p.y, p.z) == (centre_cam[0], centre_cam[1], centre_cam[2]);
                 degenerate_ok &= finite && at_camera;
-                degenerate_detail
-                    .push_str(&format!("{} -> ({}, {}, {}); ", row.id, p.x, p.y, p.z));
+                degenerate_detail.push_str(&format!("{} -> ({}, {}, {}); ", row.id, p.x, p.y, p.z));
             }
             other => {
                 degenerate_ok = false;
@@ -840,7 +857,15 @@ fn level_event_tail_witnesses(c: &mut Checker, cam: [f64; 3]) {
                 listener_ok &= ok;
                 listener_detail.push_str(&format!(
                     "{} -> {} vol {} rel {} att {:?} at ({},{},{}) seed {:?}; ",
-                    row.id, i.identifier, i.volume, i.relative, i.attenuation, i.x, i.y, i.z, i.seed
+                    row.id,
+                    i.identifier,
+                    i.volume,
+                    i.relative,
+                    i.attenuation,
+                    i.x,
+                    i.y,
+                    i.z,
+                    i.seed
                 ));
             }
             other => {
@@ -932,9 +957,7 @@ fn explode_tail_witnesses(
     // 23rd option-bearing one. This is the guard on that: it asks the REPORT
     // how many names exist and how many are unaccounted for, so a registry that
     // grew fails here rather than in a packet.
-    let all_names: Vec<&str> = (0..)
-        .map_while(|id| particles.name(id))
-        .collect::<Vec<_>>();
+    let all_names: Vec<&str> = (0..).map_while(|id| particles.name(id)).collect::<Vec<_>>();
     // Ids are dense from 0 in this registry; if that ever stops being true the
     // count below disagrees with `particles.len()` and this fails.
     let dense = all_names.len() == particles.len();
@@ -1121,11 +1144,7 @@ fn explode_tail_witnesses(
             Self((seed ^ 25214903917) & 281474976710655)
         }
         fn next(&mut self, bits: u32) -> i32 {
-            self.0 = self
-                .0
-                .wrapping_mul(25214903917)
-                .wrapping_add(11)
-                & 281474976710655;
+            self.0 = self.0.wrapping_mul(25214903917).wrapping_add(11) & 281474976710655;
             (self.0 >> (48 - bits)) as i32
         }
         fn next_float(&mut self) -> f32 {
@@ -1147,8 +1166,7 @@ fn explode_tail_witnesses(
     // The anchor: two of the oracle's five printed triples. Without these the
     // sweep below would only prove two transcriptions agree with each other.
     let anchored = JavaLcg::new(0).explosion() == (0x3F2F_995B, 4437113781045784766)
-        && JavaLcg::new(0x5EED_A11B_1E17).explosion()
-            == (0x3F25_E16B, -3920823684251294871);
+        && JavaLcg::new(0x5EED_A11B_1E17).explosion() == (0x3F25_E16B, -3920823684251294871);
     // The oracle also prints the seed-FIRST ordering from the same start, and
     // it disagrees in both fields — so this witness cannot be satisfied by a
     // reordering of the three draws, which is the claim `motion.rs`'s doc makes
@@ -1411,8 +1429,11 @@ fn resolution_layer(c: &mut Checker, version: &str, registry: &SoundEvents) {
         },
         &SoundFileSet::All,
     );
-    let via_redirect =
-        |seed: i64| redirect.get_sound_seeded("test:redirect", seed).map(|r| r.name);
+    let via_redirect = |seed: i64| {
+        redirect
+            .get_sound_seeded("test:redirect", seed)
+            .map(|r| r.name)
+    };
     let second_draw_for = |seed: i64| -> &'static str {
         let mut rng = LegacyRandom48::new(seed);
         // Draw 1: the outer pick, over the redirect's own total weight — which
@@ -1425,8 +1446,7 @@ fn resolution_layer(c: &mut Checker, version: &str, registry: &SoundEvents) {
             _ => "test:c",
         }
     };
-    let redirect_reach: std::collections::BTreeSet<_> =
-        (0..200).filter_map(via_redirect).collect();
+    let redirect_reach: std::collections::BTreeSet<_> = (0..200).filter_map(via_redirect).collect();
     let second_ok = (0..300i64).all(|s| via_redirect(s).as_deref() == Some(second_draw_for(s)));
     c.record(
         "s4.a_redirect_consumes_a_second_rng_draw",
@@ -1517,9 +1537,18 @@ fn resolution_layer(c: &mut Checker, version: &str, registry: &SoundEvents) {
         "test:three",
         &SoundEventRegistration {
             sounds: vec![
-                Sound { weight: 1, ..Sound::file("test:a") },
-                Sound { weight: 2, ..Sound::file("test:b") },
-                Sound { weight: 3, ..Sound::file("test:c") },
+                Sound {
+                    weight: 1,
+                    ..Sound::file("test:a")
+                },
+                Sound {
+                    weight: 2,
+                    ..Sound::file("test:b")
+                },
+                Sound {
+                    weight: 3,
+                    ..Sound::file("test:c")
+                },
             ],
             replace: false,
             subtitle: None,
@@ -1737,18 +1766,11 @@ fn arithmetic_layer(c: &mut Checker) {
     let gain_of = |eng: &mut SoundEngine, src: SoundSource, dev: &mut RecordingDevice| {
         dev.clear_calls();
         let before = dev.calls.len();
-        let _ = eng.play(
-            SoundInstance::bare("test:ev", src),
-            &unit,
-            &EmptyWorld,
-            dev,
-        );
-        dev.calls[before..]
-            .iter()
-            .find_map(|(_, call)| match call {
-                ChannelCall::SetVolume(v) => Some(*v),
-                _ => None,
-            })
+        let _ = eng.play(SoundInstance::bare("test:ev", src), &unit, &EmptyWorld, dev);
+        dev.calls[before..].iter().find_map(|(_, call)| match call {
+            ChannelCall::SetVolume(v) => Some(*v),
+            _ => None,
+        })
     };
     let mut d2 = RecordingDevice::default();
     let blocks_gain = gain_of(&mut eng2, SoundSource::Blocks, &mut d2);
@@ -1941,7 +1963,10 @@ fn arithmetic_layer(c: &mut Checker) {
         );
         results.push(r);
     }
-    let started = results.iter().filter(|r| **r == PlayResult::Started).count() as i32;
+    let started = results
+        .iter()
+        .filter(|r| **r == PlayResult::Started)
+        .count() as i32;
     let refused = results
         .iter()
         .filter(|r| **r == PlayResult::NotStarted(NotStarted::NoChannel))
@@ -2064,7 +2089,10 @@ fn arithmetic_layer(c: &mut Checker) {
                 .iter()
                 .any(|c| matches!(c, ChannelCall::LinearAttenuation(_)))
             && n_calls.contains(&ChannelCall::SetRelative(true)),
-        format!("{} calls, with DisableAttenuation in place of LinearAttenuation", n_calls.len()),
+        format!(
+            "{} calls, with DisableAttenuation in place of LinearAttenuation",
+            n_calls.len()
+        ),
     );
 
     // ---- a11: a silent entity costs no lookup and no draw -------------------
@@ -2135,9 +2163,7 @@ fn arithmetic_layer(c: &mut Checker) {
         binding: rewo_net::sound_instance::Binding::Entity(7),
         ..SoundInstance::bare("test:ev", SoundSource::Neutral)
     };
-    let quiet = eng10
-        .play(bound.clone(), &unit, &SilentMob, &mut d10)
-        .1;
+    let quiet = eng10.play(bound.clone(), &unit, &SilentMob, &mut d10).1;
     let loud = eng10.play(bound, &unit, &EmptyWorld, &mut d10).1;
     c.record(
         "a11.a_silent_entity_is_refused_before_the_event_is_resolved",
@@ -2209,9 +2235,7 @@ fn decode_layer(c: &mut Checker) {
     let floored = (-0.5f32).floor() as i32; // what a floor gives at silence
     c.record(
         "d1.the_quantisation_matches_its_literal_vectors",
-        literals.iter().all(|(s, want)| quantise(*s) == *want)
-            && bias_free == 2
-            && floored == -1,
+        literals.iter().all(|(s, want)| quantise(*s) == *want) && bias_free == 2 && floored == -1,
         format!(
             "{literals:?}; the same boundary sample without the bias is {bias_free} \
              (not 1), and a floor at silence gives {floored} (not 0)"
@@ -2279,7 +2303,13 @@ fn decode_layer(c: &mut Checker) {
                 .unwrap_or(i64::MAX);
             let peak = pcm
                 .as_ref()
-                .map(|p| p.samples.iter().map(|s| (*s as i32).abs()).max().unwrap_or(0))
+                .map(|p| {
+                    p.samples
+                        .iter()
+                        .map(|s| (*s as i32).abs())
+                        .max()
+                        .unwrap_or(0)
+                })
                 .unwrap_or(0);
             c.record(
                 "d3.a_real_ogg_decodes_to_its_exact_sample_count",
@@ -2321,7 +2351,8 @@ fn decode_layer(c: &mut Checker) {
                 format!(
                     "call0 {:?}, call3 {:?}, chicken {:?}",
                     m.as_ref().map(|p| (p.channels, p.sample_rate)),
-                    s.as_ref().map(|p| (p.channels, p.sample_rate, p.samples.len())),
+                    s.as_ref()
+                        .map(|p| (p.channels, p.sample_rate, p.samples.len())),
                     ch.as_ref().map(|p| (p.channels, p.sample_rate)),
                 ),
             );
@@ -2635,7 +2666,11 @@ fn mixer_layer(c: &mut Checker) {
         let out = render(&mut m, 24_000);
         out.chunks_exact(2).filter(|s| s[0] != 0.0).count()
     };
-    let (fast, slow, unit_pitch) = (sounding_frames(1.25), sounding_frames(0.8), sounding_frames(1.0));
+    let (fast, slow, unit_pitch) = (
+        sounding_frames(1.25),
+        sounding_frames(0.8),
+        sounding_frames(1.0),
+    );
     // 4800 / 1.25 = 3840, 4800 / 0.8 = 6000. +/-2 frames for where the cursor
     // lands on the final step.
     c.record(
@@ -2764,7 +2799,9 @@ fn mixer_layer(c: &mut Checker) {
     let peak = loud.iter().fold(0.0f32, |a, s| a.max(s.abs()));
     c.record(
         "m8.a_dense_scene_clamps_instead_of_wrapping",
-        loud.iter().all(|s| (-1.0..=1.0).contains(s)) && peak > 0.9 && loud.iter().all(|s| *s >= 0.0),
+        loud.iter().all(|s| (-1.0..=1.0).contains(s))
+            && peak > 0.9
+            && loud.iter().all(|s| *s >= 0.0),
         format!(
             "24 voices summing well past full scale peak at {peak}, stay inside \
              [-1,1], and none went negative (a wrap would invert phase)"
@@ -2948,7 +2985,10 @@ fn mixer_layer(c: &mut Checker) {
     // skipped that step, so it is counted where a silent ignore would hide it.
     let mut leaked = Mixer::new(OUT_RATE);
     leaked.apply(&Command::Channel(0, CC::AttachStaticBuffer("x.ogg".into())));
-    leaked.apply(&Command::Channel(0, CC::AttachBufferStream("y.ogg".into(), true)));
+    leaked.apply(&Command::Channel(
+        0,
+        CC::AttachBufferStream("y.ogg".into(), true),
+    ));
     leaked.apply(&Command::Channel(0, CC::Play));
     let after = render(&mut leaked, 256);
     c.record(

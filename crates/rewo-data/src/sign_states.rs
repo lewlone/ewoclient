@@ -83,7 +83,10 @@ impl SignState {
     pub fn text_transform(self, front: bool) -> Affine {
         let mut m = mul(&translation(0.5, 0.5, 0.5), &rot_y(-self.angle));
         if self.attachment == SignAttachment::Wall {
-            m = mul(&m, &translation(WALL_OFFSET[0], WALL_OFFSET[1], WALL_OFFSET[2]));
+            m = mul(
+                &m,
+                &translation(WALL_OFFSET[0], WALL_OFFSET[1], WALL_OFFSET[2]),
+            );
         }
         if !front {
             m = mul(&m, &rot_y(180.0));
@@ -122,7 +125,9 @@ impl SignStates {
     /// for free.
     pub fn load(path: &Path) -> Result<Self, String> {
         let json = read_json_file(path)?;
-        let obj = json.as_object().ok_or("blocks.json: root is not an object")?;
+        let obj = json
+            .as_object()
+            .ok_or("blocks.json: root is not an object")?;
         let mut by_state = HashMap::new();
         for (block, def) in obj {
             let short = block.trim_start_matches("minecraft:");

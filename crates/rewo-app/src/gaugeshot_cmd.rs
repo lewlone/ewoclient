@@ -250,7 +250,13 @@ fn check_transcription(c: &mut Checker) {
             && (rows == 1 || pitch == ref_row_height(rows))
             && armor_y == ref_armor_y(GUI_H, rows);
         all_ok &= ok;
-        ladder.push((rows, pitch, armor_y, ref_row_height(rows), ref_armor_y(GUI_H, rows)));
+        ladder.push((
+            rows,
+            pitch,
+            armor_y,
+            ref_row_height(rows),
+            ref_armor_y(GUI_H, rows),
+        ));
     }
     c.record(
         "t1.the_rows_compress_and_the_armour_rides_on_top",
@@ -325,7 +331,11 @@ fn check_transcription(c: &mut Checker) {
     let fx = sh::layout(
         &SurvivalInputs {
             can_hurt: false,
-            effects: vec![e(1, true, false, 1000), e(2, true, true, 1000), e(3, true, false, 2000)],
+            effects: vec![
+                e(1, true, false, 1000),
+                e(2, true, true, 1000),
+                e(3, true, false, 2000),
+            ],
             ..Default::default()
         },
         GUI_W,
@@ -333,7 +343,13 @@ fn check_transcription(c: &mut Checker) {
     );
     let order: Vec<i32> = only(&fx, |i| matches!(i, HudIcon::Effect(_)))
         .iter()
-        .map(|b| if let HudIcon::Effect(id) = b.icon { id } else { -1 })
+        .map(|b| {
+            if let HudIcon::Effect(id) = b.icon {
+                id
+            } else {
+                -1
+            }
+        })
         .collect();
     c.record(
         "t4.effects_sort_ambient_first_then_longest_because_natural_is_reversed",
@@ -367,11 +383,16 @@ fn check_transcription(c: &mut Checker) {
     let out_of_table = split(vec![3, 10, -1], 3);
     c.record(
         "t4b.effect_ids_at_or_past_the_table_and_negative_ones_fall_back_to_missingno",
-        in_table.iter().all(|b| matches!(b.icon, HudIcon::Effect(_)))
+        in_table
+            .iter()
+            .all(|b| matches!(b.icon, HudIcon::Effect(_)))
             && out_of_table.len() == 3
-            && out_of_table.iter().all(|b| matches!(b.icon, HudIcon::MissingTexture)),
+            && out_of_table
+                .iter()
+                .all(|b| matches!(b.icon, HudIcon::MissingTexture)),
         "len 3: ids 0,2 in-table; 3 (== len), 10, -1 all MissingTexture. An earlier \
-             cut drew nothing here — vanilla draws the checker".to_string(),
+             cut drew nothing here — vanilla draws the checker"
+            .to_string(),
     );
 
     // t5 — three ceils: 121 of 300 underwater pops bubble 5.
@@ -566,9 +587,12 @@ fn check_wire(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegistry) {
     let mut s = Sources::new();
     let speed = rewo_data::mob_effect_table::id_of("speed").expect("speed");
     let poison = rewo_data::mob_effect_table::id_of("poison").expect("poison");
-    s.effects.apply_update(&effect_body(PLAYER, speed, 1, 1000, 0b0101));
-    s.effects.apply_update(&effect_body(PLAYER, poison, 0, 300, 0b0010));
-    s.effects.apply_update(&effect_body(PLAYER + 1, poison, 0, 300, 0b0111));
+    s.effects
+        .apply_update(&effect_body(PLAYER, speed, 1, 1000, 0b0101));
+    s.effects
+        .apply_update(&effect_body(PLAYER, poison, 0, 300, 0b0010));
+    s.effects
+        .apply_update(&effect_body(PLAYER + 1, poison, 0, 300, 0b0111));
     let inp = s.inputs(reg, Some(GameMode::Survival), 20.0, 5000, None);
     let sp = inp.effects.iter().find(|e| e.id == speed).copied();
     let po = inp.effects.iter().find(|e| e.id == poison).copied();
@@ -693,9 +717,11 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
         None,
         &mut s.local,
     );
-    s.effects.apply_update(&effect_body(PLAYER, wither, 0, 100, 0));
+    s.effects
+        .apply_update(&effect_body(PLAYER, wither, 0, 100, 0));
     let withered_frozen = s.inputs(reg, None, 20.0, 5000, None).heart_type;
-    s.effects.apply_update(&effect_body(PLAYER, poison, 0, 100, 0));
+    s.effects
+        .apply_update(&effect_body(PLAYER, poison, 0, 100, 0));
     let all_three = s.inputs(reg, None, 20.0, 5000, None).heart_type;
     c.record(
         "d1.poison_beats_wither_beats_frozen",
@@ -707,8 +733,10 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
     let mut s = Sources::new();
     let glowing = rewo_data::mob_effect_table::id_of("glowing").expect("glowing");
     let speed = rewo_data::mob_effect_table::id_of("speed").expect("speed");
-    s.effects.apply_update(&effect_body(PLAYER, speed, 0, 100, 4));
-    s.effects.apply_update(&effect_body(PLAYER, glowing, 0, 100, 4));
+    s.effects
+        .apply_update(&effect_body(PLAYER, speed, 0, 100, 4));
+    s.effects
+        .apply_update(&effect_body(PLAYER, glowing, 0, 100, 4));
     s.effects.apply_update(&effect_body(PLAYER, 99, 0, 100, 4));
     let inp = s.inputs(reg, None, 20.0, 5000, None);
     let find = |id: i32| inp.effects.iter().find(|e| e.id == id).copied();
@@ -745,7 +773,11 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
         )
         .vehicle;
     let mut synced_attrs = rewo_world::attributes::EntityAttributes::default();
-    synced_attrs.apply(reg.id_of("max_health").expect("max_health"), 30.0, Vec::new());
+    synced_attrs.apply(
+        reg.id_of("max_health").expect("max_health"),
+        30.0,
+        Vec::new(),
+    );
     let synced = s
         .inputs(
             reg,
@@ -761,8 +793,16 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
         .vehicle;
     c.record(
         "d3.the_vehicles_max_health_is_its_own_suppliers_default_until_synced",
-        unsynced == Some(sh::VehicleInput { max_health: horse_default as f32, health: 12.0 })
-            && synced == Some(sh::VehicleInput { max_health: 30.0, health: 12.0 })
+        unsynced
+            == Some(sh::VehicleInput {
+                max_health: horse_default as f32,
+                health: 12.0,
+            })
+            && synced
+                == Some(sh::VehicleInput {
+                    max_health: 30.0,
+                    health: 12.0,
+                })
             && horse_default == 53.0,
         format!(
             "unsynced {unsynced:?} (`AbstractHorse.createBaseHorseAttributes` declares \
@@ -776,8 +816,10 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
     let regen = rewo_data::mob_effect_table::id_of("regeneration").expect("regeneration");
     let hunger = rewo_data::mob_effect_table::id_of("hunger").expect("hunger");
     let none = s.inputs(reg, None, 20.0, 5000, None);
-    s.effects.apply_update(&effect_body(PLAYER, regen, 0, 100, 0));
-    s.effects.apply_update(&effect_body(PLAYER, hunger, 0, 100, 0));
+    s.effects
+        .apply_update(&effect_body(PLAYER, regen, 0, 100, 0));
+    s.effects
+        .apply_update(&effect_body(PLAYER, hunger, 0, 100, 0));
     let both = s.inputs(reg, None, 20.0, 5000, None);
     c.record(
         "d4.regeneration_and_hunger_are_has_effect_reads",
@@ -789,7 +831,6 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // M169 — the jump bar's inputs: the meter, the selector, the packet, the
 // vehicle's cooldown through the real metadata router.
@@ -797,7 +838,9 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
 
 fn check_jump(c: &mut Checker, paths: &DataPaths) {
     use rewo_gpu::locator_bar::{next_contextual_info, ContextualInfo};
-    use rewo_net::jump_riding::{player_command_body, riding_jump_data, JumpRiding, JumpableVehicle, START_RIDING_JUMP};
+    use rewo_net::jump_riding::{
+        player_command_body, riding_jump_data, JumpRiding, JumpableVehicle, START_RIDING_JUMP,
+    };
 
     let horse = Some(JumpableVehicle { cooldown: 0 });
 
@@ -916,9 +959,18 @@ fn check_jump(c: &mut Checker, paths: &DataPaths) {
         let nautilus = etypes.id_of("minecraft:nautilus")?;
         let horse = etypes.id_of("minecraft:horse")?;
         let mut t = rewo_world::entities::EntityTable::default();
-        t.add(1, rewo_world::entities::EntityState::new(0, camel, 0.0, 0.0, 0.0, 0.0, 0.0));
-        t.add(2, rewo_world::entities::EntityState::new(0, nautilus, 0.0, 0.0, 0.0, 0.0, 0.0));
-        t.add(3, rewo_world::entities::EntityState::new(0, horse, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(
+            1,
+            rewo_world::entities::EntityState::new(0, camel, 0.0, 0.0, 0.0, 0.0, 0.0),
+        );
+        t.add(
+            2,
+            rewo_world::entities::EntityState::new(0, nautilus, 0.0, 0.0, 0.0, 0.0, 0.0),
+        );
+        t.add(
+            3,
+            rewo_world::entities::EntityState::new(0, horse, 0.0, 0.0, 0.0, 0.0, 0.0),
+        );
         let dash = |eid: i32, index: u8| {
             let mut w = PacketWriter::default();
             w.varint(eid);
@@ -938,7 +990,12 @@ fn check_jump(c: &mut Checker, paths: &DataPaths) {
         rewo_net::apply_set_entity_data_for_gate(&dash(1, 19), &mut t, kinds);
         rewo_net::apply_set_entity_data_for_gate(&dash(2, 20), &mut t, kinds);
         rewo_net::apply_set_entity_data_for_gate(&dash(3, 19), &mut t, kinds);
-        Some((before_tick, t.dash_cooldown(1), t.dash_cooldown(2), t.dash_cooldown(3)))
+        Some((
+            before_tick,
+            t.dash_cooldown(1),
+            t.dash_cooldown(2),
+            t.dash_cooldown(3),
+        ))
     })();
     c.record(
         "j5.the_dash_flags_arm_their_literals_through_the_real_router_after_the_first_tick",
@@ -1021,7 +1078,10 @@ fn check_pixels(
     args: &GaugeshotArgs,
     baked: &assets::BakedAssets,
 ) -> Result<(), String> {
-    let hud = baked.hud.as_ref().ok_or("hud sprites missing from the jar")?;
+    let hud = baked
+        .hud
+        .as_ref()
+        .ok_or("hud sprites missing from the jar")?;
     let mut gpu = Gpu::new(None, true)?;
     println!(
         "[gaugeshot] Vulkan validation: {}",
@@ -1067,7 +1127,9 @@ fn check_pixels(
             off.save_png(gpu, &d.join(format!("gaugeshot_{shot_n:02}.png")))?;
         }
         shot_n += 1;
-        Ok(Frame { px: off.read_rgba(gpu)? })
+        Ok(Frame {
+            px: off.read_rgba(gpu)?,
+        })
     };
 
     let xl = ref_x_left(GUI_W);
@@ -1075,7 +1137,12 @@ fn check_pixels(
     let yb = ref_y_base(GUI_H);
 
     // p1 — full health control: the heart and drumstick texels, and no armour.
-    let full = shot(&mut gpu, &mut off, &mut wr, &SurvivalInputs::simple(20.0, 20))?;
+    let full = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        &SurvivalInputs::simple(20.0, 20),
+    )?;
     let heart_full = rgb(texel(&hud.player_hearts[8], 4, 4));
     let food_full = rgb(texel(&hud.food_full, 4, 4));
     let armour_row = ref_armor_y(GUI_H, 1);
@@ -1154,8 +1221,16 @@ fn check_pixels(
             && close(armored.gui(xl + 16 + 2, ay + 4), [184, 185, 196], 2)
             && close(armored.gui(xl + 16 + 6, ay + 4), [61, 61, 61], 2)
             && close(armored.gui(xl + 72 + 4, ay + 4), [61, 61, 61], 2)
-            && close(armored.gui(xl + 4, ay + 4), rgb(texel(&hud.armor[0], 4, 4)), 2)
-            && close(armored.gui(xl + 72 + 4, ay + 4), rgb(texel(&hud.armor[2], 4, 4)), 2),
+            && close(
+                armored.gui(xl + 4, ay + 4),
+                rgb(texel(&hud.armor[0], 4, 4)),
+                2,
+            )
+            && close(
+                armored.gui(xl + 72 + 4, ay + 4),
+                rgb(texel(&hud.armor[2], 4, 4)),
+                2,
+            ),
         format!(
             "cells 0,1 centre {:?} (armor_full 184,185,196); cell 2 left {:?} / right {:?} \
              (armor_half is full on the left, empty-grey on the right, black down its middle); \
@@ -1183,14 +1258,19 @@ fn check_pixels(
     let blue = [0u8, 148, 255];
     let blue_in_png = (0..9)
         .flat_map(|y| (0..9).map(move |x| (x, y)))
-        .filter(|&(x, y)| rgb(texel(&hud.air[0], x, y)) == blue && texel(&hud.air[0], x, y)[3] == 255)
+        .filter(|&(x, y)| {
+            rgb(texel(&hud.air[0], x, y)) == blue && texel(&hud.air[0], x, y)[3] == 255
+        })
         .count();
     let b1 = diving.count_gui(ref_bubble_x(GUI_W, 1), air_y, 9, 9, blue, 2);
     let gap = diving.count_gui(ref_bubble_x(GUI_W, 6), air_y, 9, 9, [0, 0, 0], 0);
     let b10 = diving.gui(ref_bubble_x(GUI_W, 10) + 4, air_y + 4);
     c.record(
         "p3.air_150_fills_bubble_one_leaves_bubble_six_empty_and_empties_bubble_ten",
-        b1 == blue_in_png && blue_in_png == 9 && gap == 81 && close(b10, rgb(texel(&hud.air[2], 4, 4)), 2),
+        b1 == blue_in_png
+            && blue_in_png == 9
+            && gap == 81
+            && close(b10, rgb(texel(&hud.air[2], 4, 4)), 2),
         format!(
             "bubble 1 has {b1} blue GUI pixels (air.png carries {blue_in_png}); bubble 6's cell \
              is {gap}/81 black (neither full, popping nor empty: a gap); bubble 10 centre {b10:?} \
@@ -1245,7 +1325,8 @@ fn check_pixels(
         duration: dur,
         ambient,
         show_icon: true,
-        beneficial: rewo_data::mob_effect_table::def(id).is_some_and(|d| d.category.is_beneficial()),
+        beneficial: rewo_data::mob_effect_table::def(id)
+            .is_some_and(|d| d.category.is_beneficial()),
         color: rewo_data::mob_effect_table::def(id).map_or(0, |d| d.color),
     };
     let effects = shot(

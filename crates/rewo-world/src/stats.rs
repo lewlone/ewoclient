@@ -367,7 +367,10 @@ mod tests {
             custom_stat_key("minecraft:play_time"),
             "stat.minecraft.play_time"
         );
-        assert_eq!(stat_type_key("minecraft:killed"), "stat_type.minecraft.killed");
+        assert_eq!(
+            stat_type_key("minecraft:killed"),
+            "stat_type.minecraft.killed"
+        );
         // `getDisplayName` hard-codes `minecraft.` and appends the *bare* name,
         // so a namespaced key would double the namespace.
         assert_ne!(

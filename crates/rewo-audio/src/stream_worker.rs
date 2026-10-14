@@ -111,15 +111,23 @@ pub enum StreamEvent {
         channels: u16,
         rate: u32,
     },
-    OpenFailed { key: StreamKey, error: String },
+    OpenFailed {
+        key: StreamKey,
+        error: String,
+    },
     /// One `alSourceQueueBuffers` worth.
-    Chunk { key: StreamKey, pcm: Arc<Pcm> },
+    Chunk {
+        key: StreamKey,
+        pcm: Arc<Pcm>,
+    },
     /// The stream ran out, or a read failed.
     ///
     /// **Never sent for a looping stream**, because `LoopingAudioStream`
     /// restarts rather than returning empty — the property that keeps an ambient
     /// bed alive with no special case on either side.
-    Ended { key: StreamKey },
+    Ended {
+        key: StreamKey,
+    },
 }
 
 /// The single "Sound engine" thread, as far as streaming is concerned.

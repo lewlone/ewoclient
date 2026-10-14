@@ -347,9 +347,7 @@ fn neutral_alpha(a: rewo_gpu::mobs::EmissiveAlpha) -> f32 {
     use rewo_gpu::mobs::EmissiveAlpha as A;
     match a {
         A::Always => 1.0,
-        A::PulsatingSpots {
-            phase,
-        } => ((0.0f32 * 0.045 + phase).cos() * 0.25).max(0.0),
+        A::PulsatingSpots { phase } => ((0.0f32 * 0.045 + phase).cos() * 0.25).max(0.0),
         A::Tendril => 0.0,
         A::Heart => 1.0,
         A::EyesGlowing => 0.0,
@@ -479,7 +477,12 @@ struct Stage {
 }
 
 impl Stage {
-    fn shoot(&mut self, gpu: &mut Gpu, specs: &[Spec], skip: Option<usize>) -> Result<Vec<u8>, String> {
+    fn shoot(
+        &mut self,
+        gpu: &mut Gpu,
+        specs: &[Spec],
+        skip: Option<usize>,
+    ) -> Result<Vec<u8>, String> {
         self.shoot_at(gpu, specs, skip, 0.0)
     }
 
@@ -501,7 +504,8 @@ impl Stage {
         let ring = OverlayRing::default();
         let ov = overlay_offscreen(&ring);
         self.wr.set_entities(&draws, self.right, self.up, time);
-        self.off.render(gpu, Some((&mut self.wr, self.vp)), &ov, BG)?;
+        self.off
+            .render(gpu, Some((&mut self.wr, self.vp)), &ov, BG)?;
         self.off.read_rgba(gpu)
     }
 
@@ -578,13 +582,7 @@ fn run_check(
                     blends.push((l.tex, a));
                 }
             }
-            (
-                d.kind,
-                OwnSheets {
-                    keys,
-                    blends,
-                },
-            )
+            (d.kind, OwnSheets { keys, blends })
         })
         .collect();
     let lin: HashMap<&str, Vec<([f32; 3], f32)>> = baked
@@ -892,7 +890,10 @@ fn run_check(
     let expected_same_size = rewo_data::baby_texture_table::BABY_SWAPS
         .iter()
         .filter(|s| {
-            let rel = s.adult_path.strip_prefix("textures/").unwrap_or(s.adult_path);
+            let rel = s
+                .adult_path
+                .strip_prefix("textures/")
+                .unwrap_or(s.adult_path);
             rewo_data::assets::mob_texture_specs()
                 .any(|(_, p, w, h)| p == rel && w == s.w && h == s.h)
         })
@@ -956,9 +957,7 @@ fn run_check(
             baby_px.iter().filter(|c| !explains(baby_set, **c)).count()
         ),
     ));
-    let adult_set = sheets
-        .get("zombie")
-        .ok_or("zombie not baked")?;
+    let adult_set = sheets.get("zombie").ok_or("zombie not baked")?;
     let n2 = baby_px.iter().any(|c| !explains(adult_set, *c));
     w.push(wit(
         "n2.the_swap_actually_happened_adult_sheet_cannot_explain_the_baby",
@@ -979,14 +978,20 @@ fn run_check(
         format!(
             "{} attributed px, {} unexplained by zombie.png",
             adult_px.len(),
-            adult_px.iter().filter(|c| !explains(adult_set, **c)).count()
+            adult_px
+                .iter()
+                .filter(|c| !explains(adult_set, **c))
+                .count()
         ),
     ));
     // n4 — the DEFERRED half is deliberate: a size-mismatched swap (happy
     // ghast's 64² baby against a 128² adult) is NOT baked, because offsetting
     // UVs across different sheet sizes samples the wrong texels. Its absence
     // from the atlas is the assertion.
-    let deferred_missing = !baked.mob_textures.iter().any(|t| t.key == "happy_ghast_baby");
+    let deferred_missing = !baked
+        .mob_textures
+        .iter()
+        .any(|t| t.key == "happy_ghast_baby");
     w.push(wit(
         "n4.size_mismatched_baby_sheets_stay_unbaked_on_purpose",
         deferred_missing && baked.baby_swap_skips > 0,
@@ -1145,7 +1150,11 @@ fn run_check(
              origin; {} live key(s) over {} distinct slot(s); the evicted key is {}",
             distinct_origins.len(),
             TRIM_POOL + 1,
-            if over == origins[0] { "recycled" } else { "did NOT recycle" },
+            if over == origins[0] {
+                "recycled"
+            } else {
+                "did NOT recycle"
+            },
             trim_pairs.len(),
             live_origins.len(),
             if evicted_still_resident {
@@ -1257,11 +1266,7 @@ fn run_check(
 }
 
 fn wit(name: &'static str, ok: bool, detail: String) -> Witness {
-    Witness {
-        name,
-        ok,
-        detail,
-    }
+    Witness { name, ok, detail }
 }
 
 fn diff_bytes(a: &[u8], b: &[u8]) -> usize {
@@ -1396,9 +1401,9 @@ fn grid(kind: EntityModelKind, i: usize, cols: usize) -> Spec {
         kind,
         pos: [
             (c as f32 - (cols as f32 - 1.0) / 2.0) * GRID_X,
-        0.0,
-        -(r as f32) * GRID_Z,
-    ],
+            0.0,
+            -(r as f32) * GRID_Z,
+        ],
         skin_uv: None,
         baby: false,
     }

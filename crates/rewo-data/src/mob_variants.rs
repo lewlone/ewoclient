@@ -127,16 +127,46 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     // `_pattern_1` is the baked base of that plan's pattern slot — so five
     // alternates each, in `TropicalFish.Pattern` declaration order within the
     // shape (KOB..SPOTTY are SMALL 0..5, FLOPPER..CLAYFISH are LARGE 0..5).
-    ("tropical_fish_pattern_a", "entity/fish/tropical_a_pattern_2.png"),
-    ("tropical_fish_pattern_a", "entity/fish/tropical_a_pattern_3.png"),
-    ("tropical_fish_pattern_a", "entity/fish/tropical_a_pattern_4.png"),
-    ("tropical_fish_pattern_a", "entity/fish/tropical_a_pattern_5.png"),
-    ("tropical_fish_pattern_a", "entity/fish/tropical_a_pattern_6.png"),
-    ("tropical_fish_pattern_b", "entity/fish/tropical_b_pattern_2.png"),
-    ("tropical_fish_pattern_b", "entity/fish/tropical_b_pattern_3.png"),
-    ("tropical_fish_pattern_b", "entity/fish/tropical_b_pattern_4.png"),
-    ("tropical_fish_pattern_b", "entity/fish/tropical_b_pattern_5.png"),
-    ("tropical_fish_pattern_b", "entity/fish/tropical_b_pattern_6.png"),
+    (
+        "tropical_fish_pattern_a",
+        "entity/fish/tropical_a_pattern_2.png",
+    ),
+    (
+        "tropical_fish_pattern_a",
+        "entity/fish/tropical_a_pattern_3.png",
+    ),
+    (
+        "tropical_fish_pattern_a",
+        "entity/fish/tropical_a_pattern_4.png",
+    ),
+    (
+        "tropical_fish_pattern_a",
+        "entity/fish/tropical_a_pattern_5.png",
+    ),
+    (
+        "tropical_fish_pattern_a",
+        "entity/fish/tropical_a_pattern_6.png",
+    ),
+    (
+        "tropical_fish_pattern_b",
+        "entity/fish/tropical_b_pattern_2.png",
+    ),
+    (
+        "tropical_fish_pattern_b",
+        "entity/fish/tropical_b_pattern_3.png",
+    ),
+    (
+        "tropical_fish_pattern_b",
+        "entity/fish/tropical_b_pattern_4.png",
+    ),
+    (
+        "tropical_fish_pattern_b",
+        "entity/fish/tropical_b_pattern_5.png",
+    ),
+    (
+        "tropical_fish_pattern_b",
+        "entity/fish/tropical_b_pattern_6.png",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -210,7 +240,11 @@ impl FishVariant {
             (0, 0) // KOB
         };
         Self {
-            base: if base_bit == 1 { FishBase::Large } else { FishBase::Small },
+            base: if base_bit == 1 {
+                FishBase::Large
+            } else {
+                FishBase::Small
+            },
             pattern: index as u8,
             // `DyeColor.byId` is `ByIdMap.continuous(..., WRAP)` over 16.
             body_color: ((packed >> 16) & 0xFF).rem_euclid(16) as u8,
@@ -417,7 +451,11 @@ mod tests {
         assert_eq!(FishVariant::unpack(pack(1, 1, 0, 0)).base, FishBase::Large);
         // Independence: each field moved on its own.
         let a = FishVariant::unpack(pack(0, 0, 0, 0));
-        assert_eq!(a, FishVariant::DEFAULT, "the default variant is (KOB, WHITE, WHITE)");
+        assert_eq!(
+            a,
+            FishVariant::DEFAULT,
+            "the default variant is (KOB, WHITE, WHITE)"
+        );
         assert_eq!(FishVariant::unpack(pack(0, 0, 15, 0)).pattern_color, 0);
         assert_eq!(FishVariant::unpack(pack(0, 0, 0, 15)).body_color, 0);
         assert_eq!(FishVariant::unpack(pack(0, 5, 0, 0)).pattern, 5);
@@ -427,9 +465,16 @@ mod tests {
         // No real variant sets bit 31 — `(id & 0xFF) << 24` needs id >= 128
         // and `DyeColor` stops at 15 — but the wire carries a plain `int` and
         // a bogus one must not turn the shift into an arithmetic-shift smear.
-        assert!(pack(1, 5, 15, 15) > 0, "a real packed variant is non-negative");
+        assert!(
+            pack(1, 5, 15, 15) > 0,
+            "a real packed variant is non-negative"
+        );
         let v = FishVariant::unpack(-1);
-        assert_eq!((v.body_color, v.pattern_color), (15, 15), "0xFF wraps to BLACK, not out of range");
+        assert_eq!(
+            (v.body_color, v.pattern_color),
+            (15, 15),
+            "0xFF wraps to BLACK, not out of range"
+        );
     }
 
     /// `Pattern.byId` is `ByIdMap.**sparse**`, so an id that is not one of the
@@ -445,7 +490,11 @@ mod tests {
         assert_eq!((v.body_color, v.pattern_color), (3, 7));
         // Bits 1..7 belong to no field. A mask-based membership test would
         // accept them and read a valid pattern; vanilla's does not.
-        assert_eq!(FishVariant::unpack(0x0102).pattern, 0, "bit 1 is not part of Base");
+        assert_eq!(
+            FishVariant::unpack(0x0102).pattern,
+            0,
+            "bit 1 is not part of Base"
+        );
         assert_eq!(FishVariant::unpack(0x0102).base, FishBase::Small);
         // The twelve declared ids all survive.
         for base in 0..2 {
@@ -463,7 +512,11 @@ mod tests {
     fn every_fish_pattern_resolves_to_its_own_slot() {
         let mut seen = std::collections::HashSet::new();
         for base in [FishBase::Small, FishBase::Large] {
-            assert_eq!(fish_pattern_variant(base, 0), 0, "index 0 is the baked base");
+            assert_eq!(
+                fish_pattern_variant(base, 0),
+                0,
+                "index 0 is the baked base"
+            );
             for i in 1..6u8 {
                 let id = fish_pattern_variant(base, i);
                 assert_ne!(id, 0, "{base:?} pattern {i} did not resolve");

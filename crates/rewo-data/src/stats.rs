@@ -317,7 +317,10 @@ mod tests {
     #[test]
     fn the_crouch_time_constant_is_registered_under_sneak_time() {
         assert_eq!(custom_formatter("minecraft:sneak_time"), Formatter::Time);
-        assert_eq!(custom_formatter("minecraft:crouch_time"), Formatter::Default);
+        assert_eq!(
+            custom_formatter("minecraft:crouch_time"),
+            Formatter::Default
+        );
         // …while `crouch_one_cm` really is spelled `crouch`.
         assert_eq!(
             custom_formatter("minecraft:crouch_one_cm"),
@@ -328,7 +331,10 @@ mod tests {
     #[test]
     fn the_three_exception_lists_do_not_overlap() {
         for s in TIME_STATS {
-            assert!(!DISTANCE_STATS.contains(s) && !DIVIDE_BY_TEN_STATS.contains(s), "{s}");
+            assert!(
+                !DISTANCE_STATS.contains(s) && !DIVIDE_BY_TEN_STATS.contains(s),
+                "{s}"
+            );
         }
         for s in DISTANCE_STATS {
             assert!(!DIVIDE_BY_TEN_STATS.contains(s), "{s}");

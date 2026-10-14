@@ -1794,7 +1794,8 @@ impl<'a> Connection<'a> {
                 let mut scratch = Vec::new();
                 loop {
                     let mut packet = Vec::new();
-                    if let Err(e) = reader_codec.read_frame(&mut stream, &mut scratch, &mut packet) {
+                    if let Err(e) = reader_codec.read_frame(&mut stream, &mut scratch, &mut packet)
+                    {
                         // The reason travels to the session, which turns it
                         // into the disconnect; the channel then drops.
                         let _ = tx.send(Err(reader_closed(e)));
@@ -2099,15 +2100,24 @@ fn reader_closed(e: rewo_proto::ProtoError) -> ReaderClosed {
                     | ErrorKind::BrokenPipe
             ) =>
         {
-            ReaderClosed { reason: format!("connection closed: {io}"), eof: true }
+            ReaderClosed {
+                reason: format!("connection closed: {io}"),
+                eof: true,
+            }
         }
         rewo_proto::ProtoError::Io(io)
             if matches!(io.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
         {
             // `ReadTimeoutHandler`'s 30 s → `disconnect.timeout`.
-            ReaderClosed { reason: "timed out".into(), eof: false }
+            ReaderClosed {
+                reason: "timed out".into(),
+                eof: false,
+            }
         }
-        other => ReaderClosed { reason: format!("bad inbound frame: {other}"), eof: false },
+        other => ReaderClosed {
+            reason: format!("bad inbound frame: {other}"),
+            eof: false,
+        },
     }
 }
 
@@ -2237,7 +2247,10 @@ impl PlaySession {
     /// `PlaySession` owns a socket and cannot be built in a test (M71's
     /// finding, M97's fix): this way the rule has witnesses and only the
     /// one-line call site does not.
-    pub(crate) fn camera_eye(player: &rewo_world::physics::PlayerState, spawned: bool) -> Option<[f64; 3]> {
+    pub(crate) fn camera_eye(
+        player: &rewo_world::physics::PlayerState,
+        spawned: bool,
+    ) -> Option<[f64; 3]> {
         if !spawned {
             return None;
         }
@@ -2424,7 +2437,8 @@ impl PlaySession {
             let started = match self.end_flash.as_mut() {
                 Some(f) => {
                     f.tick(clock);
-                    f.flash_started_this_tick().then(|| (f.x_angle(), f.y_angle()))
+                    f.flash_started_this_tick()
+                        .then(|| (f.x_angle(), f.y_angle()))
                 }
                 None => None,
             };
@@ -2480,8 +2494,7 @@ impl PlaySession {
         // `SkullBlockEntity.animation` — the counter a piglin head's ears and
         // a dragon head's jaw run on, which advances only while the block
         // state is POWERED (M29).
-        self.world
-            .tick_skull_animations(&self.powered_skull_states);
+        self.world.tick_skull_animations(&self.powered_skull_states);
         // `ConduitBlockEntity.clientTick` — the activation scan is the client's
         // own work, so this is the one animation whose *state* Rewo derives
         // rather than receives (M30).
@@ -2564,8 +2577,10 @@ impl PlaySession {
             // `gameplay/fast_lava` is a dimension attribute, not a player one,
             // so it comes from the active dimension type and not from
             // `update_attributes`.
-            move_attrs.fast_lava =
-                self.active_dimension_type.as_ref().is_some_and(|d| d.fast_lava);
+            move_attrs.fast_lava = self
+                .active_dimension_type
+                .as_ref()
+                .is_some_and(|d| d.fast_lava);
             // The effect-driven fields (jump boost, slow falling, dolphin's
             // grace, levitation) come from the local effect list, not from
             // `update_attributes`. Built before `self.player` is borrowed
@@ -2582,7 +2597,10 @@ impl PlaySession {
             // adapter, deliberately with no logic of its own (M71's lesson —
             // `PlaySession` owns a socket and has no tests, so a fan-out
             // written here would be unwitnessed).
-            let spectator = self.game_state.game_mode().is_some_and(|m| m.is_spectator());
+            let spectator = self
+                .game_state
+                .game_mode()
+                .is_some_and(|m| m.is_spectator());
             let step = self.flight.before_travel(
                 &mut self.abilities,
                 &mut self.player,
@@ -2749,7 +2767,10 @@ impl PlaySession {
     /// number of packets written (`None` if nothing was recording).
     pub fn finish_recording(&mut self) -> Result<Option<u64>, String> {
         match self.recorder.take() {
-            Some(rec) => rec.finish().map(Some).map_err(|e| format!("finish recording: {e}")),
+            Some(rec) => rec
+                .finish()
+                .map(Some)
+                .map_err(|e| format!("finish recording: {e}")),
             None => Ok(None),
         }
     }
@@ -3160,9 +3181,7 @@ impl PlaySession {
         // wrong point. See `PlayerLookAt::position`.
         let entities = &self.world.entities;
         let resolve = |target: i32, anchor: crate::player_rotation::Anchor| match anchor {
-            crate::player_rotation::Anchor::Feet => {
-                entities.get(target).map(|e| [e.x, e.y, e.z])
-            }
+            crate::player_rotation::Anchor::Feet => entities.get(target).map(|e| [e.x, e.y, e.z]),
             crate::player_rotation::Anchor::Eyes => None,
         };
         let route = crate::player_rotation::route_player_rotation(
@@ -3227,13 +3246,18 @@ impl PlaySession {
         if !classes.is_rideable_jumping(e.type_id) {
             return None;
         }
-        let controlled = self.world.entities.saddled(vid)
-            && self.mounts.passengers(vid).first() == Some(&me);
+        let controlled =
+            self.world.entities.saddled(vid) && self.mounts.passengers(vid).first() == Some(&me);
         if !controlled {
             return None;
         }
         let is_camel = classes.is_camel(e.type_id);
-        if is_camel && self.world.entities.camel_refuse_to_move(vid, self.game_time()) {
+        if is_camel
+            && self
+                .world
+                .entities
+                .camel_refuse_to_move(vid, self.game_time())
+        {
             return None;
         }
         let cooldown = if is_camel || classes.is_nautilus(e.type_id) {
@@ -3531,8 +3555,8 @@ impl PlaySession {
         let Some(type_id) = self.world.entities.get(eid).map(|e| e.type_id) else {
             return;
         };
-        let is_guardian = Some(type_id) == self.guardian_type_id
-            || Some(type_id) == self.elder_guardian_type_id;
+        let is_guardian =
+            Some(type_id) == self.guardian_type_id || Some(type_id) == self.elder_guardian_type_id;
         let spec = match event {
             21 if is_guardian => crate::sounds::TickableSound::GuardianAttack { guardian: eid },
             63 if Some(type_id) == self.sniffer_type_id => {
@@ -3753,8 +3777,14 @@ impl PlaySession {
                 }
             }
             let light = WorldLight(&self.world);
-            self.ambient_biome
-                .tick(&ambient, pos, self.player.eye_y(), &light, &mut rng, &mut out);
+            self.ambient_biome.tick(
+                &ambient,
+                pos,
+                self.player.eye_y(),
+                &light,
+                &mut rng,
+                &mut out,
+            );
         }
         self.ambient_rng = rng;
 
@@ -3983,13 +4013,8 @@ impl PlaySession {
     /// A body that does not parse, or that names anything but the camera
     /// entity, changes nothing.
     fn capture_local_attributes(&mut self, body: &[u8]) {
-        crate::attributes::apply_local_attributes(
-            body,
-            self.player_id,
-            &mut self.local_attributes,
-        );
+        crate::attributes::apply_local_attributes(body, self.player_id, &mut self.local_attributes);
     }
-
 
     /// `PlayerInfo.getTabListOrder()` — the tab list's first sort key (M62).
     ///
@@ -4463,7 +4488,6 @@ impl PlaySession {
         self.send(p)
     }
 
-
     /// `ServerboundContainerClickPacket` for a `ContainerInput.PICKUP` (M35).
     ///
     /// ```text
@@ -4571,7 +4595,9 @@ impl PlaySession {
             input,
             disabled,
             slot_occupied,
-            self.game_state.game_mode().is_some_and(|m| m.is_spectator()),
+            self.game_state
+                .game_mode()
+                .is_some_and(|m| m.is_spectator()),
             self.inventory.carried().is_none(),
             swap_target_empty,
         );
@@ -4671,11 +4697,10 @@ impl PlaySession {
         // whatever screen is up, and container 0 is never a button screen.
         // The body comes from the tested builder rather than being written
         // twice, so the witness grades the bytes this actually sends.
-        p.buf
-            .extend_from_slice(&crate::container_button_click_body(
-                self.shown_container_id(),
-                button,
-            ));
+        p.buf.extend_from_slice(&crate::container_button_click_body(
+            self.shown_container_id(),
+            button,
+        ));
         self.send(p)
     }
 
@@ -4694,7 +4719,8 @@ impl PlaySession {
             return Ok(());
         }
         let mut p = PacketWriter::packet(id);
-        p.buf.extend_from_slice(&crate::container_close_body(container));
+        p.buf
+            .extend_from_slice(&crate::container_close_body(container));
         self.send(p)
     }
 
@@ -4984,11 +5010,7 @@ impl PlaySession {
     /// `ChatComponent.tick` runs **after** the events, so a deletion queued
     /// this frame is not also retried this frame — `processMessageDeletionQueue`
     /// is a separate `tick()` in vanilla for the same reason.
-    pub fn apply_chat_events(
-        &mut self,
-        gui_tick: i32,
-        ctx: &rewo_world::chat::WrapContext<'_>,
-    ) {
+    pub fn apply_chat_events(&mut self, gui_tick: i32, ctx: &rewo_world::chat::WrapContext<'_>) {
         let events = std::mem::take(&mut self.chat_events);
         if let Some(overlay) =
             crate::chat_wire::apply_chat_events(&mut self.chat, events, gui_tick, ctx)
@@ -5068,10 +5090,7 @@ impl PlaySession {
     /// `chat_component_text` is this followed by `plain_text`, and the two are
     /// deliberately both here: the chat HUD wants the spans, while the log line
     /// and `--render-check`'s counters want the characters.
-    fn chat_component_spans(
-        &self,
-        tag: &rewo_proto::nbt::Nbt,
-    ) -> rewo_world::chat_style::ChatLine {
+    fn chat_component_spans(&self, tag: &rewo_proto::nbt::Nbt) -> rewo_world::chat_style::ChatLine {
         rewo_world::chat_style::parse_component(
             tag,
             rewo_world::chat_style::ChatStyle::WHITE,
@@ -5196,9 +5215,11 @@ impl PlaySession {
         };
         let main = resolve(self.inventory.held());
         let off = resolve(self.inventory.offhand());
-        self.world
-            .entities
-            .set_hand_item(id, rewo_world::entities::InteractionHand::MainHand, main);
+        self.world.entities.set_hand_item(
+            id,
+            rewo_world::entities::InteractionHand::MainHand,
+            main,
+        );
         self.world
             .entities
             .set_hand_item(id, rewo_world::entities::InteractionHand::OffHand, off);
@@ -5210,7 +5231,6 @@ impl PlaySession {
         self.player_id
             .map_or(0.0, |id| self.world.entities.attack_anim(id, partial))
     }
-
 
     /// `ServerboundUseItemPacket` — using the held item at nothing in
     /// particular (M38): eating, drawing a bow, raising a shield.
@@ -5271,7 +5291,10 @@ impl PlaySession {
     ///
     /// Returns whether a use actually began: an item with no use duration —
     /// most of them — is not usable, and vanilla plays no pose for it.
-    pub fn start_use(&mut self, hand: rewo_world::entities::InteractionHand) -> Result<bool, String> {
+    pub fn start_use(
+        &mut self,
+        hand: rewo_world::entities::InteractionHand,
+    ) -> Result<bool, String> {
         let Some(id) = self.player_id else {
             return Ok(false);
         };
@@ -5288,7 +5311,11 @@ impl PlaySession {
             return Ok(false);
         }
         self.use_item(hand)?;
-        let flags = 1 | if hand == rewo_world::entities::InteractionHand::OffHand { 2 } else { 0 };
+        let flags = 1 | if hand == rewo_world::entities::InteractionHand::OffHand {
+            2
+        } else {
+            0
+        };
         self.world.entities.set_living_flags(id, flags);
         Ok(true)
     }
@@ -5319,11 +5346,9 @@ impl PlaySession {
         // packet, so the animation starts locally rather than waiting for the
         // server to echo it back — which it never does for your own swings.
         if let Some(id) = self.player_id {
-            self.world.entities.swing(
-                id,
-                rewo_world::entities::InteractionHand::MainHand,
-                true,
-            );
+            self.world
+                .entities
+                .swing(id, rewo_world::entities::InteractionHand::MainHand, true);
         }
         if let Some(id) = self.ids.sb_play_swing {
             let mut p = PacketWriter::packet(id);
@@ -5610,7 +5635,6 @@ fn packed_degrees(b: i8) -> f32 {
     b as f32 * (360.0 / 256.0)
 }
 
-
 impl PlaySession {
     /// Vanilla `Entity.push`: entities whose bounding boxes overlap shove each
     /// other apart horizontally. Only the *player* is moved here — the server
@@ -5758,10 +5782,7 @@ pub fn glider_item_ids(items: &rewo_data::items::Items) -> Vec<i32> {
 /// `ARMOR_MENU_START + 1`. A datapack glider equippable elsewhere is the one
 /// case this reads wrong, and it is named here rather than faked with a slot
 /// table Rewo does not have.
-pub fn chest_is_glider(
-    inventory: &rewo_world::inventory::Inventory,
-    glider_items: &[i32],
-) -> bool {
+pub fn chest_is_glider(inventory: &rewo_world::inventory::Inventory, glider_items: &[i32]) -> bool {
     inventory
         .menu_slot(rewo_world::inventory::ARMOR_MENU_START + 1)
         .is_some_and(|s| glider_items.contains(&s.item_id))
@@ -5864,7 +5885,10 @@ const CONTAINER_INPUT_PICKUP: i32 = 0;
 /// - `HashedPatchMap` is *two* collections — a map of set components to their
 ///   hashes, then a set of removed ones — so an empty patch is two zeros, not
 ///   one.
-pub(crate) fn write_hashed_stack(p: &mut PacketWriter, slot: Option<rewo_world::inventory::ItemSlot>) {
+pub(crate) fn write_hashed_stack(
+    p: &mut PacketWriter,
+    slot: Option<rewo_world::inventory::ItemSlot>,
+) {
     match slot {
         None => {
             p.bool(false);
@@ -6032,12 +6056,18 @@ impl physics::PhysicsWorld for SessionPhysics<'_> {
                     continue;
                 }
             }
-            let Some(shape) = shapes.get(e.type_id) else { continue };
+            let Some(shape) = shapes.get(e.type_id) else {
+                continue;
+            };
             let living = self.classes.is_some_and(|c| c.is_living(e.type_id));
             let scale = match (living, self.attributes) {
                 (true, Some(reg)) => rewo_world::attributes::resolve(
-                    self.entities.attributes(id), Some(name), "scale", reg)
-                    .map_or(1.0, |(v, _)| v as f32),
+                    self.entities.attributes(id),
+                    Some(name),
+                    "scale",
+                    reg,
+                )
+                .map_or(1.0, |(v, _)| v as f32),
                 _ => 1.0,
             };
             // `Entity.getBoundingBox()` at the tick's own position —
@@ -6061,16 +6091,15 @@ impl physics::PhysicsWorld for SessionPhysics<'_> {
             let collides = match kind {
                 CollideKind::Always => true,
                 CollideKind::WhileAlive => alive,
-                CollideKind::HappyGhast => happy_ghast_collides(
-                    self.entities.is_baby(id),
-                    alive,
-                    self.player_y,
-                    bb.max[1],
-                ),
+                CollideKind::HappyGhast => {
+                    happy_ghast_collides(self.entities.is_baby(id), alive, self.player_y, bb.max[1])
+                }
                 CollideKind::Never => false,
             };
             if collides && bb.intersects(&search) {
-                out.push([bb.min[0], bb.min[1], bb.min[2], bb.max[0], bb.max[1], bb.max[2]]);
+                out.push([
+                    bb.min[0], bb.min[1], bb.min[2], bb.max[0], bb.max[1], bb.max[2],
+                ]);
             }
         }
         out
@@ -6153,10 +6182,26 @@ pub(crate) fn resolve_teleport(
         ok
     };
     let out = TeleportBase {
-        pos: if keep(all_finite(&pos)) { pos } else { base.pos },
-        vel: if keep(all_finite(&vel)) { vel } else { base.vel },
-        yaw: if keep(new_yaw.is_finite()) { new_yaw } else { base.yaw },
-        pitch: if keep(new_pitch.is_finite()) { new_pitch } else { base.pitch },
+        pos: if keep(all_finite(&pos)) {
+            pos
+        } else {
+            base.pos
+        },
+        vel: if keep(all_finite(&vel)) {
+            vel
+        } else {
+            base.vel
+        },
+        yaw: if keep(new_yaw.is_finite()) {
+            new_yaw
+        } else {
+            base.yaw
+        },
+        pitch: if keep(new_pitch.is_finite()) {
+            new_pitch
+        } else {
+            base.pitch
+        },
     };
     (out, dropped)
 }

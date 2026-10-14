@@ -526,7 +526,10 @@ mod tests {
 
     fn peak_lr(out: &[f32]) -> (f32, f32) {
         let l = out.iter().step_by(2).fold(0.0f32, |a, s| a.max(s.abs()));
-        let r = out[1..].iter().step_by(2).fold(0.0f32, |a, s| a.max(s.abs()));
+        let r = out[1..]
+            .iter()
+            .step_by(2)
+            .fold(0.0f32, |a, s| a.max(s.abs()));
         (l, r)
     }
 
@@ -908,7 +911,11 @@ mod tests {
     #[test]
     fn a_voice_built_by_commands_is_silent_until_play() {
         let mut m = Mixer::new(44100);
-        drive(&mut m, 7, &[C::SetVolume(1.0), C::SetSelfPosition(0.0, 0.0, -1.0)]);
+        drive(
+            &mut m,
+            7,
+            &[C::SetVolume(1.0), C::SetSelfPosition(0.0, 0.0, -1.0)],
+        );
         m.apply(&Command::Attach(7, dc(44100, 256, 1)));
         drive(&mut m, 7, &[C::SetLooping(true)]);
         assert_eq!(m.voice_count(), 1);
@@ -962,7 +969,10 @@ mod tests {
 
         drive(&mut m, 1, &[C::Unpause]);
         assert!(peak_lr(&render(&mut m, 64)).0 > 0.0);
-        assert!(m.voice(1).unwrap().cursor > cursor, "it resumed, not restarted");
+        assert!(
+            m.voice(1).unwrap().cursor > cursor,
+            "it resumed, not restarted"
+        );
 
         drive(&mut m, 1, &[C::Stop]);
         assert_eq!(m.voice_count(), 0, "stop removes the channel");
@@ -979,7 +989,10 @@ mod tests {
         let mut m = Mixer::new(44100);
         assert_eq!(m.ignored, 0);
         m.apply(&Command::Channel(1, C::AttachStaticBuffer("a.ogg".into())));
-        m.apply(&Command::Channel(1, C::AttachBufferStream("b.ogg".into(), true)));
+        m.apply(&Command::Channel(
+            1,
+            C::AttachBufferStream("b.ogg".into(), true),
+        ));
         assert_eq!(m.ignored, 2);
         // A resolved attach is the supported path, and it rewinds the voice.
         m.apply(&Command::Attach(1, dc(44100, 64, 1)));
@@ -1103,7 +1116,10 @@ mod tests {
         let at = |f: usize| out[f * 2].abs();
         assert!(at(50) < at(150), "buffer 2 is the loud one");
         assert!(at(250) < at(150), "buffer 3 is quieter than 2");
-        assert!(at(50) < at(250), "…and buffer 1 is the quietest of the three");
+        assert!(
+            at(50) < at(250),
+            "…and buffer 1 is the quietest of the three"
+        );
     }
 
     /// **An underrun is silence, and the voice survives it.**
@@ -1391,8 +1407,9 @@ mod tests {
             let mut s = Vec::with_capacity(r.frames * r.chans as usize);
             for i in 0..r.frames {
                 let t = i as f64;
-                let l = (r.amp_l * (2.0 * std::f64::consts::PI * r.freq_l * t / r.srate as f64).sin())
-                    .round() as i16;
+                let l = (r.amp_l
+                    * (2.0 * std::f64::consts::PI * r.freq_l * t / r.srate as f64).sin())
+                .round() as i16;
                 s.push(l);
                 if r.chans == 2 {
                     let rr = (r.amp_r
@@ -1794,7 +1811,10 @@ mod tests {
                 // actually captured with the resampler forced would make this
                 // test a comparison of a row with itself.
                 assert!(!default.res_lin, "{id} should be the device default");
-                assert!(linear.res_lin, "linres.{id} should have been forced to Linear");
+                assert!(
+                    linear.res_lin,
+                    "linres.{id} should have been forced to Linear"
+                );
                 let delta = linear.dsr_db - default.dsr_db;
                 assert!(
                     (delta - recorded).abs() <= 0.05,
@@ -1843,7 +1863,10 @@ mod tests {
                 let rewo = distortion_to_signal_db(&render_rewo(&r), r.fund_hz);
                 let delta = rewo - r.dsr_db;
                 worst = worst.max(delta.abs());
-                report.push(format!("{id}: rewo {rewo:+.4} openal {:+.4} d {delta:+.4}", r.dsr_db));
+                report.push(format!(
+                    "{id}: rewo {rewo:+.4} openal {:+.4} d {delta:+.4}",
+                    r.dsr_db
+                ));
             }
             // 0.35 dB, and the shape of the disagreement is the interesting
             // part. Rate conversion agrees to 0.005 dB; the pitch rows are up
@@ -2018,7 +2041,12 @@ mod tests {
             // wave is nearly but not quite square and its RMS falls a little
             // short of 1.0. This number was PREDICTED as 3.01 and the test
             // caught it — which is what pinning a measurement is for.
-            pin("32 coherent voices", db(rms(&rewo, 0), x32.rms_l), 2.7913, 0.02);
+            pin(
+                "32 coherent voices",
+                db(rms(&rewo, 0), x32.rms_l),
+                2.7913,
+                0.02,
+            );
 
             let rewo_dsr = distortion_to_signal_db(&rewo, x32.fund_hz);
             let excess = rewo_dsr - x32.dsr_db;
@@ -2124,7 +2152,12 @@ mod tests {
             // capture is the 0.8 volume against `pan.negz`'s attenuation at
             // d=1. Compare Rewo against OpenAL directly instead.
             let rewo = rms(&render_rewo(&far), 0);
-            pin("unattenuated at 400 blocks", db(rewo, far.rms_l), 4.8546, 0.02);
+            pin(
+                "unattenuated at 400 blocks",
+                db(rewo, far.rms_l),
+                4.8546,
+                0.02,
+            );
             assert!(
                 far.rms_l > behind.rms_l,
                 "an unattenuated source 400 blocks away should be louder than an \

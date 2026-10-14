@@ -97,7 +97,11 @@ impl BookViewScreen {
     /// The lines of the current page, capped to [`MAX_LINES`] as vanilla's
     /// `Math.min(128 / 9, size)` does.
     pub fn current_lines(&self) -> &[ChatLine] {
-        let page = self.pages.get(self.current_page).map(Vec::as_slice).unwrap_or(&[]);
+        let page = self
+            .pages
+            .get(self.current_page)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         &page[..page.len().min(MAX_LINES)]
     }
 
@@ -499,7 +503,11 @@ mod tests {
     }
 
     fn book(pages: usize) -> BookViewScreen {
-        BookViewScreen::new((0..pages).map(|i| vec![line(&format!("page {i}"))]).collect())
+        BookViewScreen::new(
+            (0..pages)
+                .map(|i| vec![line(&format!("page {i}"))])
+                .collect(),
+        )
     }
 
     /// A span carrying a click event, plus its plain neighbour.
@@ -512,18 +520,17 @@ mod tests {
             underlined: false,
             strikethrough: false,
             obfuscated: false,
-            events: ev.map(|c| std::sync::Arc::new(crate::chat_events::ChatEvents {
-                click: Some(c),
-                hover: None,
-                insertion: None,
-            })),
+            events: ev.map(|c| {
+                std::sync::Arc::new(crate::chat_events::ChatEvents {
+                    click: Some(c),
+                    hover: None,
+                    insertion: None,
+                })
+            }),
         };
         let page = vec![vec![
             mk("plain ", None),
-            mk(
-                "goto3",
-                Some(crate::chat_events::ClickEvent::ChangePage(3)),
-            ),
+            mk("goto3", Some(crate::chat_events::ClickEvent::ChangePage(3))),
             mk(" and ", None),
             mk(
                 "/time",
@@ -588,8 +595,8 @@ mod tests {
         let b = clickable_page();
         let spans = layout_spans(&b, 400, &measure);
         let s = spans[1]; // "goto3", w = 30
-        // `isPointInRectangle`: x >= left && x < right && y >= top && y <
-        // bottom — the LEFT/TOP edges are INSIDE, the right/bottom outside.
+                          // `isPointInRectangle`: x >= left && x < right && y >= top && y <
+                          // bottom — the LEFT/TOP edges are INSIDE, the right/bottom outside.
         assert!(
             click_event_at(&b, 400, &measure, s.x, s.y).is_some(),
             "the exact left-top corner hits"
@@ -687,7 +694,10 @@ mod tests {
         // On the last page the FORWARD button is hidden — a click in its rect
         // is not consumed (this is what a `forward_visible()`-blind click gets
         // wrong: it would return true and no-op against the page clamp).
-        assert!(!b.click(fx + 1, fy + 1, w), "a hidden forward button eats no click");
+        assert!(
+            !b.click(fx + 1, fy + 1, w),
+            "a hidden forward button eats no click"
+        );
         assert_eq!(b.current_page(), 1);
         // Now back is visible, forward is not.
         assert!(b.click(bx + 1, by + 1, w));
@@ -704,14 +714,22 @@ mod tests {
         assert!(matches!(d[0], BookDraw::Background { .. }));
         assert!(matches!(
             d[1],
-            BookDraw::Arrow { forward: true, highlighted: false, .. }
+            BookDraw::Arrow {
+                forward: true,
+                highlighted: false,
+                ..
+            }
         ));
         // Hover over the forward rect highlights it.
         let (fx, fy, _, _) = BookViewScreen::forward_rect(w);
         let d = draws(&b, w, Some((fx + 1, fy + 1)));
         assert!(matches!(
             d[1],
-            BookDraw::Arrow { forward: true, highlighted: true, .. }
+            BookDraw::Arrow {
+                forward: true,
+                highlighted: true,
+                ..
+            }
         ));
         // Last page: background + back only.
         b.page_forward();
@@ -728,7 +746,11 @@ mod tests {
         assert_eq!(s.widgets.len(), 1);
         let w = &s.widgets[0];
         assert_eq!(w.id, DONE);
-        assert_eq!((w.x, w.y), ((320 - 200) / 2, 196), "menuControlsTop = 2 + 192 + 2");
+        assert_eq!(
+            (w.x, w.y),
+            ((320 - 200) / 2, 196),
+            "menuControlsTop = 2 + 192 + 2"
+        );
         assert_eq!((w.width, w.height), (200, 20));
     }
 
@@ -740,6 +762,9 @@ mod tests {
         assert_eq!(BookViewScreen::text_origin(w), (left + 36, 2 + 30));
         assert_eq!(BookViewScreen::indicator_right(w), (left + 148, 2 + 16));
         assert_eq!(BookViewScreen::back_rect(w), (left + 43, 2 + 157, 23, 13));
-        assert_eq!(BookViewScreen::forward_rect(w), (left + 116, 2 + 157, 23, 13));
+        assert_eq!(
+            BookViewScreen::forward_rect(w),
+            (left + 116, 2 + 157, 23, 13)
+        );
     }
 }

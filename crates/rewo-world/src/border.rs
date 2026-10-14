@@ -161,7 +161,9 @@ impl Extent {
         match *self {
             Extent::Static { size } => size,
             Extent::Moving {
-                size, previous_size, ..
+                size,
+                previous_size,
+                ..
             } => mth_lerp(partial as f64, previous_size, size),
         }
     }
@@ -786,7 +788,9 @@ mod tests {
             b.extract(1.0, 0.0, 0.0, 160.0).is_none(),
             "1000 blocks from every wall with a 160-block view"
         );
-        let r = b.extract(1.0, 900.0, 0.0, 160.0).expect("100 from the wall");
+        let r = b
+            .extract(1.0, 900.0, 0.0, 160.0)
+            .expect("100 from the wall");
         assert!(r.alpha > 0.0 && r.alpha < 1.0);
         assert_eq!(r.tint, BorderStatus::Stationary.color());
         assert!(

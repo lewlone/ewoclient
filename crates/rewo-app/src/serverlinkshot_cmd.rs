@@ -257,9 +257,12 @@ fn check_wire(c: &mut Checker, ids: &Ids, baked: &assets::BakedAssets) {
             && label(1) == Some(ServerLinkLabel::Known(KnownLinkType::Website))
             && label(2)
                 == Some(ServerLinkLabel::Custom(rewo_proto::nbt::Nbt::String(
-                    "Our Discord".into()
+                    "Our Discord".into(),
                 ))),
-        format!("{:?}", links.entries().iter().map(|e| &e.label).collect::<Vec<_>>()),
+        format!(
+            "{:?}",
+            links.entries().iter().map(|e| &e.label).collect::<Vec<_>>()
+        ),
     );
 
     // w4 — `ByIdMap.continuous(…, ZERO)`: out of range is BUG_REPORT, in both
@@ -299,7 +302,10 @@ fn check_wire(c: &mut Checker, ids: &Ids, baked: &assets::BakedAssets) {
     c.record(
         "w5.one_invalid_url_drops_itself_and_the_rest_of_the_packet_survives",
         links.len() == 3
-            && links.entries().iter().all(|e| e.link.starts_with("https://"))
+            && links
+                .entries()
+                .iter()
+                .all(|e| e.link.starts_with("https://"))
             && sl::validate_untrusted_uri("javascript:alert(1)").is_none()
             && sl::validate_untrusted_uri("http://a.example").is_some()
             && sl::validate_untrusted_uri("example.com").is_none(),
@@ -440,7 +446,10 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     };
     c.record(
         "m1.the_pause_rows_stack_at_twenty_four_and_the_first_is_pushed_down_fifty",
-        sub2(y(&without, ps::ADVANCEMENTS), y(&without, ps::RETURN_TO_GAME)) == Some(24)
+        sub2(
+            y(&without, ps::ADVANCEMENTS),
+            y(&without, ps::RETURN_TO_GAME),
+        ) == Some(24)
             && sub2(y(&without, ps::ICON_ROW), y(&without, ps::ADVANCEMENTS)) == Some(24)
             && sub2(y(&without, ps::DISCONNECT), y(&without, ps::OPTIONS)) == Some(24)
             && ww(&without, ps::RETURN_TO_GAME) == Some(204)
@@ -789,10 +798,10 @@ fn check_pixels(
     let clear = [CLEAR_LINEAR[0], CLEAR_LINEAR[1], CLEAR_LINEAR[2], 1.0];
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    chrome: rewo_gpu::screen::ScreenDraw,
-                    lines: Vec<rewo_gpu::world::OwnedTextLine>|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                chrome: rewo_gpu::screen::ScreenDraw,
+                lines: Vec<rewo_gpu::world::OwnedTextLine>|
      -> Result<Vec<u8>, String> {
         wr.set_screen(chrome);
         wr.set_text(lines);
@@ -837,12 +846,8 @@ fn check_pixels(
     c.record(
         "p2.the_two_new_screens_ask_for_the_menu_background_and_no_gradient",
         pause_chrome.backdrop.is_none()
-            && pause_chrome
-                .menu_background
-                .is_some_and(|b| b.in_world)
-            && dc_chrome
-                .menu_background
-                .is_some_and(|b| !b.in_world)
+            && pause_chrome.menu_background.is_some_and(|b| b.in_world)
+            && dc_chrome.menu_background.is_some_and(|b| !b.in_world)
             && pause_chrome.buttons.len() == 6,
         format!(
             "`extractBackground`'s two branches are an if/else: these take the \
@@ -983,8 +988,13 @@ fn check_pixels(
     };
     let pair = shot(&mut gpu, &mut off, &mut wr, control, Vec::new())?;
     let wide_row = |gx: i32| px(&pair, (link0.x + gx) as u32 * SCALE as u32, by0 + 8);
-    let narrow_row =
-        |gx: i32| px(&pair, (link0.x + gx) as u32 * SCALE as u32, by0 + 40 * 2 + 8);
+    let narrow_row = |gx: i32| {
+        px(
+            &pair,
+            (link0.x + gx) as u32 * SCALE as u32,
+            by0 + 40 * 2 + 8,
+        )
+    };
     let first_tile_matches = (0..197).all(|gx| wide_row(gx) == narrow_row(gx));
     c.record(
         "p6.the_nine_slices_first_tile_is_byte_identical_to_the_one_to_one_blit",
@@ -1022,7 +1032,9 @@ fn check_pixels(
     // sprite in the dialog header and a 92×20 one on the pause menu, and both
     // would look entirely plausible.
     let mut without_reserved = dialog.clone();
-    without_reserved.widgets.retain(|w| w.kind != WidgetKind::Reserved);
+    without_reserved
+        .widgets
+        .retain(|w| w.kind != WidgetKind::Reserved);
     let stripped = shot(
         &mut gpu,
         &mut off,

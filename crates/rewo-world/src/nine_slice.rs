@@ -49,7 +49,12 @@ pub struct Border {
 impl Border {
     /// The one-number form an `.mcmeta` may use: `"border": 4`.
     pub const fn all(n: i32) -> Self {
-        Self { left: n, top: n, right: n, bottom: n }
+        Self {
+            left: n,
+            top: n,
+            right: n,
+            bottom: n,
+        }
     }
 }
 
@@ -68,7 +73,11 @@ pub struct Quad {
 
 /// A tiled band: repeat `(sx, sy, tw, th)` across `(dx, dy, w, h)`, clipping
 /// the last column and row.
-fn tile(out: &mut Vec<Quad>, (dx, dy, w, h): (i32, i32, i32, i32), (sx, sy, tw, th): (i32, i32, i32, i32)) {
+fn tile(
+    out: &mut Vec<Quad>,
+    (dx, dy, w, h): (i32, i32, i32, i32),
+    (sx, sy, tw, th): (i32, i32, i32, i32),
+) {
     // `blitTiledSprite`'s own guard. **Through [`quads`]' own five call sites it
     // is unreachable as a difference**, and a mutation deleting it survived the
     // whole suite — correctly. The `w <= 0` / `h <= 0` halves are already
@@ -87,7 +96,16 @@ fn tile(out: &mut Vec<Quad>, (dx, dy, w, h): (i32, i32, i32, i32), (sx, sy, tw, 
         let mut x = 0;
         while x < w {
             let cw = tw.min(w - x);
-            out.push(Quad { dx: dx + x, dy: dy + y, w: cw, h: ch, sx, sy, sw: cw, sh: ch });
+            out.push(Quad {
+                dx: dx + x,
+                dy: dy + y,
+                w: cw,
+                h: ch,
+                sx,
+                sy,
+                sw: cw,
+                sh: ch,
+            });
             x += tw;
         }
         y += th;
@@ -111,7 +129,16 @@ pub fn quads(dst: (i32, i32, i32, i32), sheet: (i32, i32), border: Border) -> Ve
     let (x, y, w, h) = dst;
     let (sw, sh) = sheet;
     if w == sw && h == sh {
-        return vec![Quad { dx: x, dy: y, w, h, sx: 0, sy: 0, sw, sh }];
+        return vec![Quad {
+            dx: x,
+            dy: y,
+            w,
+            h,
+            sx: 0,
+            sy: 0,
+            sw,
+            sh,
+        }];
     }
     // `Math.min(border.left(), width / 2)` and its three siblings — a sprite
     // drawn narrower than its own border must not draw its corners twice.
@@ -141,7 +168,16 @@ pub fn quads(dst: (i32, i32, i32, i32), sheet: (i32, i32), border: Border) -> Ve
 
 fn push(out: &mut Vec<Quad>, (dx, dy, w, h): (i32, i32, i32, i32), (sx, sy): (i32, i32)) {
     if w > 0 && h > 0 {
-        out.push(Quad { dx, dy, w, h, sx, sy, sw: w, sh: h });
+        out.push(Quad {
+            dx,
+            dy,
+            w,
+            h,
+            sx,
+            sy,
+            sw: w,
+            sh: h,
+        });
     }
 }
 
@@ -157,7 +193,10 @@ mod tests {
         // Every quad is inside the target…
         for q in qs {
             assert!(q.w > 0 && q.h > 0, "no empty quads: {q:?}");
-            assert!(q.dx >= dst.0 && q.dy >= dst.1, "{q:?} starts before {dst:?}");
+            assert!(
+                q.dx >= dst.0 && q.dy >= dst.1,
+                "{q:?} starts before {dst:?}"
+            );
             assert!(
                 q.dx + q.w <= dst.0 + dst.2 && q.dy + q.h <= dst.1 + dst.3,
                 "{q:?} spills out of {dst:?}"
@@ -191,7 +230,19 @@ mod tests {
     fn a_one_to_one_blit_stays_a_single_quad() {
         let qs = quads((7, 9, 32, 32), SHEET, B);
         assert_eq!(qs.len(), 1);
-        assert_eq!(qs[0], Quad { dx: 7, dy: 9, w: 32, h: 32, sx: 0, sy: 0, sw: 32, sh: 32 });
+        assert_eq!(
+            qs[0],
+            Quad {
+                dx: 7,
+                dy: 9,
+                w: 32,
+                h: 32,
+                sx: 0,
+                sy: 0,
+                sw: 32,
+                sh: 32
+            }
+        );
     }
 
     /// The overlay's smallest real panel — one button, 33x33.
@@ -206,15 +257,54 @@ mod tests {
         // satisfying the existential and the mutation survived. An `any` over a
         // set whose members you meant to check one by one can only detect total
         // failure.
-        assert!(qs.contains(&Quad { dx: 0, dy: 0, w: 4, h: 4, sx: 0, sy: 0, sw: 4, sh: 4 }));
-        assert!(qs.contains(&Quad { dx: 29, dy: 0, w: 4, h: 4, sx: 28, sy: 0, sw: 4, sh: 4 }));
-        assert!(qs.contains(&Quad { dx: 0, dy: 29, w: 4, h: 4, sx: 0, sy: 28, sw: 4, sh: 4 }));
-        assert!(qs.contains(&Quad { dx: 29, dy: 29, w: 4, h: 4, sx: 28, sy: 28, sw: 4, sh: 4 }));
+        assert!(qs.contains(&Quad {
+            dx: 0,
+            dy: 0,
+            w: 4,
+            h: 4,
+            sx: 0,
+            sy: 0,
+            sw: 4,
+            sh: 4
+        }));
+        assert!(qs.contains(&Quad {
+            dx: 29,
+            dy: 0,
+            w: 4,
+            h: 4,
+            sx: 28,
+            sy: 0,
+            sw: 4,
+            sh: 4
+        }));
+        assert!(qs.contains(&Quad {
+            dx: 0,
+            dy: 29,
+            w: 4,
+            h: 4,
+            sx: 0,
+            sy: 28,
+            sw: 4,
+            sh: 4
+        }));
+        assert!(qs.contains(&Quad {
+            dx: 29,
+            dy: 29,
+            w: 4,
+            h: 4,
+            sx: 28,
+            sy: 28,
+            sw: 4,
+            sh: 4
+        }));
         // The centre is 25 wide from a 24-wide band, so it takes TWO tiles and
         // the second is one pixel of the band's left edge.
         let centre: Vec<_> = qs.iter().filter(|q| q.sx == 4 && q.sy == 4).collect();
         assert_eq!(centre.len(), 4, "2x2 tiles for a 25x25 centre from 24x24");
-        assert!(centre.iter().any(|q| q.w == 1 && q.h == 1), "the clipped corner tile");
+        assert!(
+            centre.iter().any(|q| q.w == 1 && q.h == 1),
+            "the clipped corner tile"
+        );
     }
 
     /// The widest the overlay gets: five buttons across.
@@ -228,7 +318,11 @@ mod tests {
         // remainder.
         assert_eq!(top.len(), 6);
         assert_eq!(top.iter().map(|q| q.w).sum::<i32>(), 125);
-        assert_eq!(top.last().unwrap().w, 5, "the last tile is CLIPPED, not stretched");
+        assert_eq!(
+            top.last().unwrap().w,
+            5,
+            "the last tile is CLIPPED, not stretched"
+        );
     }
 
     /// The claim the general case rests on: with one axis exactly the sheet's,

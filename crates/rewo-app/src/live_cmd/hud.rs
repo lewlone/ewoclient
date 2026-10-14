@@ -451,12 +451,16 @@ pub(super) fn usage_box(
     px: f32,
     fill_color: u32,
     width_of: &dyn Fn(&str) -> i32,
-) -> (Vec<rewo_gpu::hud::HudFill>, Vec<rewo_gpu::world::OwnedTextLine>) {
+) -> (
+    Vec<rewo_gpu::hud::HudFill>,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+) {
     let box_width = lines.iter().map(|l| width_of(&l.text)).max().unwrap_or(0);
     let mut fills = Vec::new();
     let mut text = Vec::new();
     for (y, line) in lines.iter().enumerate() {
-        let line_y = gui_h - rewo_world::command_suggestions::USAGE_OFFSET_FROM_BOTTOM
+        let line_y = gui_h
+            - rewo_world::command_suggestions::USAGE_OFFSET_FROM_BOTTOM
             - rewo_world::command_suggestions::LINE_HEIGHT * y as i32;
         fills.push(rewo_gpu::hud::HudFill {
             x: (position - 1) as f32 * px,
@@ -893,18 +897,25 @@ pub(crate) fn resolve_book_pages(
 /// packs them. The links Rewo does not have (Skin Customization, Controls,
 /// Language, Chat, Resource Packs, Telemetry, Credits) are absent rather than
 /// stubbed.
-pub(crate) fn root_rows(lang: &rewo_data::lang::Language) -> Vec<rewo_world::options_screen::OptionRow> {
+pub(crate) fn root_rows(
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_world::options_screen::OptionRow> {
     use rewo_world::options_screen::{OptionRow, RowItem};
     vec![
         OptionRow::small(
-            RowItem::Button(lang.get_or_default("options.sounds", "Music & Sounds...").to_string()),
+            RowItem::Button(
+                lang.get_or_default("options.sounds", "Music & Sounds...")
+                    .to_string(),
+            ),
             Some(RowItem::Button(
-                lang.get_or_default("options.video", "Video Settings...").to_string(),
+                lang.get_or_default("options.video", "Video Settings...")
+                    .to_string(),
             )),
         ),
         OptionRow::small(
             RowItem::Button(
-                lang.get_or_default("options.accessibility", "Accessibility Settings...").to_string(),
+                lang.get_or_default("options.accessibility", "Accessibility Settings...")
+                    .to_string(),
             ),
             None,
         ),
@@ -936,15 +947,20 @@ pub(crate) fn sound_rows(
     let mut rows = vec![OptionRow::big(item(SoundSource::Master))];
     let rest = &SoundSource::ALL[1..];
     for pair in rest.chunks(2) {
-        rows.push(OptionRow::small(item(pair[0]), pair.get(1).map(|s| item(*s))));
+        rows.push(OptionRow::small(
+            item(pair[0]),
+            pair.get(1).map(|s| item(*s)),
+        ));
     }
     let caption = lang.get_or_default("options.music_frequency", "Music Frequency");
     let value_key = format!(
         "options.music_frequency.{}",
         rewo_net::options::frequency_name(options.music_frequency).to_lowercase()
     );
-    let value =
-        lang.get_or_default(&value_key, rewo_net::options::frequency_name(options.music_frequency));
+    let value = lang.get_or_default(
+        &value_key,
+        rewo_net::options::frequency_name(options.music_frequency),
+    );
     rows.push(OptionRow::small(
         RowItem::Button(rewo_world::options_screen::cycle_label(caption, value)),
         None,
@@ -977,7 +993,10 @@ pub(crate) fn accessibility_rows(
     use rewo_world::options_screen::{bool_label, cycle_label, OptionRow, RowItem};
     let caption = lang.get_or_default("options.hideLightningFlashes", "Hide Lightning Flashes");
     vec![OptionRow::small(
-        RowItem::Button(cycle_label(caption, bool_label(options.hide_lightning_flash))),
+        RowItem::Button(cycle_label(
+            caption,
+            bool_label(options.hide_lightning_flash),
+        )),
         None,
     )]
 }
@@ -1063,7 +1082,15 @@ pub(crate) fn sign_board_sprite(
         SignKind::Wall => (Sheet::SignBoard(wood), Fill::SubRect(0, 0, 24, 12)),
         SignKind::Hanging => (Sheet::HangingSignBoard(wood), Fill::Stretch),
     };
-    SpriteDraw { x, y, width: w, height: h, sheet, fill, color: [1.0; 4] }
+    SpriteDraw {
+        x,
+        y,
+        width: w,
+        height: h,
+        sheet,
+        fill,
+        color: [1.0; 4],
+    }
 }
 
 /// The editor's line colour (M174):
@@ -1090,7 +1117,10 @@ pub(crate) fn sign_edit_draws(
     gui_w: i32,
     advance: &[u8; 256],
     px: f32,
-) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<rewo_gpu::screen::SpriteDraw>) {
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::screen::SpriteDraw>,
+) {
     use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
     use rewo_world::sign_edit_screen as se;
     let width_fn = |t: &str| rewo_gpu::text::width(t, advance);
@@ -1159,7 +1189,9 @@ pub(crate) fn sign_edit_draws(
 
 /// sprite (M172). The `PageArrow` index order is the bake's declared one:
 /// 0 forward, 1 forward_highlighted, 2 backward, 3 backward_highlighted.
-pub(crate) fn book_sprite(d: rewo_world::book_view_screen::BookDraw) -> rewo_gpu::screen::SpriteDraw {
+pub(crate) fn book_sprite(
+    d: rewo_world::book_view_screen::BookDraw,
+) -> rewo_gpu::screen::SpriteDraw {
     use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
     use rewo_world::book_view_screen::BookDraw;
     match d {
@@ -1604,11 +1636,8 @@ pub(crate) fn survival_inputs_from(
     let max_health_attr = player_attr("max_health", 20.0);
     let armor = player_attr("armor", 0.0).floor() as i32;
     let has = |name: &str| fx::id_of(name).is_some_and(|id| src.effects.has(id));
-    let heart_type = sh::HeartKind::for_player(
-        has("poison"),
-        has("wither"),
-        src.local.is_fully_frozen(),
-    );
+    let heart_type =
+        sh::HeartKind::for_player(has("poison"), has("wither"), src.local.is_fully_frozen());
     let vehicle = src.vehicle.as_ref().map(|v| {
         let max_health = src
             .attribute_registry
@@ -1696,8 +1725,12 @@ pub(crate) fn resolve_survival_inputs(
                 .is_some_and(|c| c.is_living(e.type_id))
         })
     });
-    let (health, food, saturation, hardcore) =
-        (session.health, session.food, session.saturation, session.hardcore);
+    let (health, food, saturation, hardcore) = (
+        session.health,
+        session.food,
+        session.saturation,
+        session.hardcore,
+    );
     let PlaySession { hud, world, .. } = session;
     let vehicle = vehicle_id.and_then(|vid| {
         let e = world.entities.get(vid)?;
@@ -1943,8 +1976,7 @@ pub(crate) fn locator_bar_state(
                             let bx = p[0].floor() as i32;
                             let by = p[1].floor() as i32;
                             let bz = p[2].floor() as i32;
-                            let manhattan =
-                                (bx - x).abs() + (by - y).abs() + (bz - z).abs();
+                            let manhattan = (bx - x).abs() + (by - y).abs() + (bz - z).abs();
                             if manhattan > 3 {
                                 return None;
                             }

@@ -39,10 +39,10 @@ fn bump_gpu_generation() {
     GPU_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(not(target_os = "windows"))]
-pub use glutin_backend::GlBackend;
 #[cfg(target_os = "windows")]
 pub use dcomp_backend::GlBackend;
+#[cfg(not(target_os = "windows"))]
+pub use glutin_backend::GlBackend;
 
 // ══════════════════════════════════════════════════════════════════════════
 // Windows: Skia D3D12 + DirectComposition backend.
@@ -54,9 +54,7 @@ mod dcomp_backend {
     use std::time::{Duration, Instant};
 
     use skia_safe::gpu::d3d::{BackendContext, TextureResourceInfo};
-    use skia_safe::gpu::{
-        surfaces, BackendRenderTarget, DirectContext, Protected, SurfaceOrigin,
-    };
+    use skia_safe::gpu::{surfaces, BackendRenderTarget, DirectContext, Protected, SurfaceOrigin};
     use skia_safe::{Canvas, ColorType, Surface as SkSurface};
     use winit::event_loop::ActiveEventLoop;
     use winit::window::Window;
@@ -78,11 +76,10 @@ mod dcomp_backend {
     };
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory2, IDXGIAdapter1, IDXGIDevice, IDXGIFactory4, IDXGISwapChain1,
-        IDXGISwapChain3,
-        DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_NONE, DXGI_ADAPTER_FLAG_SOFTWARE,
+        IDXGISwapChain3, DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_NONE, DXGI_ADAPTER_FLAG_SOFTWARE,
         DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
-        DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-        DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+        DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
     };
 
     /// Composition swapchains use double-buffering.
@@ -115,8 +112,8 @@ mod dcomp_backend {
 
     impl DeviceStack {
         unsafe fn create(hwnd: HWND, width: u32, height: u32) -> Result<Self, String> {
-            let factory: IDXGIFactory4 =
-                CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).map_err(werr("CreateDXGIFactory2"))?;
+            let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))
+                .map_err(werr("CreateDXGIFactory2"))?;
             let (adapter, device) = hardware_adapter(&factory)?;
             let queue: ID3D12CommandQueue = device
                 .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())
@@ -140,7 +137,10 @@ mod dcomp_backend {
                 Height: height,
                 Format: SWAP_FORMAT,
                 Stereo: BOOL(0),
-                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BUFFER_COUNT,
                 Scaling: DXGI_SCALING_STRETCH,
@@ -151,8 +151,9 @@ mod dcomp_backend {
             let swap_chain1: IDXGISwapChain1 = factory
                 .CreateSwapChainForComposition(&queue, &desc, None)
                 .map_err(werr("CreateSwapChainForComposition"))?;
-            let swap_chain: IDXGISwapChain3 =
-                swap_chain1.cast().map_err(werr("cast to IDXGISwapChain3"))?;
+            let swap_chain: IDXGISwapChain3 = swap_chain1
+                .cast()
+                .map_err(werr("cast to IDXGISwapChain3"))?;
 
             // DirectComposition: put the swapchain on a visual rooted to the
             // HWND. Requires the window to be WS_EX_NOREDIRECTIONBITMAP (set in
@@ -165,8 +166,12 @@ mod dcomp_backend {
                 .CreateTargetForHwnd(hwnd, BOOL(1))
                 .map_err(werr("CreateTargetForHwnd"))?;
             let dcomp_visual = dcomp_device.CreateVisual().map_err(werr("CreateVisual"))?;
-            dcomp_visual.SetContent(&swap_chain).map_err(werr("SetContent"))?;
-            dcomp_target.SetRoot(&dcomp_visual).map_err(werr("SetRoot"))?;
+            dcomp_visual
+                .SetContent(&swap_chain)
+                .map_err(werr("SetContent"))?;
+            dcomp_target
+                .SetRoot(&dcomp_visual)
+                .map_err(werr("SetRoot"))?;
             dcomp_device.Commit().map_err(werr("DComp Commit"))?;
 
             let surfaces = wrap_surfaces(&mut gr_context, &swap_chain, width, height)
@@ -223,7 +228,9 @@ mod dcomp_backend {
                 width, height, BUFFER_COUNT
             );
             let simulate_loss_at = if cfg!(debug_assertions) {
-                std::env::var("EWO_SIMULATE_DEVICE_LOSS").ok().and_then(|v| v.parse().ok())
+                std::env::var("EWO_SIMULATE_DEVICE_LOSS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
             } else {
                 None
             };
@@ -246,7 +253,9 @@ mod dcomp_backend {
             self.width = width;
             self.height = height;
             // While lost, the rebuild picks up the new size.
-            let Some(stack) = self.stack.as_mut() else { return };
+            let Some(stack) = self.stack.as_mut() else {
+                return;
+            };
             // The wrapped surfaces reference the swapchain buffers, which
             // ResizeBuffers invalidates — drop them and let the GPU finish
             // first, then re-wrap the new buffers.
@@ -262,11 +271,17 @@ mod dcomp_backend {
                 )
             };
             if let Err(e) = resized {
-                log::error!("dcomp backend: ResizeBuffers {}x{} failed: {}", width, height, e);
+                log::error!(
+                    "dcomp backend: ResizeBuffers {}x{} failed: {}",
+                    width,
+                    height,
+                    e
+                );
                 self.device_lost("resize");
                 return;
             }
-            match unsafe { wrap_surfaces(&mut stack.gr_context, &stack.swap_chain, width, height) } {
+            match unsafe { wrap_surfaces(&mut stack.gr_context, &stack.swap_chain, width, height) }
+            {
                 Some(s) => stack.surfaces = s,
                 None => self.device_lost("wrap after resize"),
             }
@@ -276,7 +291,9 @@ mod dcomp_backend {
             if self.stack.is_none() && !self.try_recreate() {
                 return;
             }
-            let Some(stack) = self.stack.as_mut() else { return };
+            let Some(stack) = self.stack.as_mut() else {
+                return;
+            };
             let index = unsafe { stack.swap_chain.GetCurrentBackBufferIndex() } as usize;
             let Some(surface) = stack.surfaces.get_mut(index) else {
                 return;
@@ -326,7 +343,10 @@ mod dcomp_backend {
                 log::error!("dcomp backend: GPU device lost during {when} — recreating");
                 stack.abandon();
             }
-            self.lost.get_or_insert(Lost { attempts: 0, next_try: Instant::now() });
+            self.lost.get_or_insert(Lost {
+                attempts: 0,
+                next_try: Instant::now(),
+            });
         }
 
         /// Rebuild the device stack if the backoff allows. Returns whether a
@@ -434,8 +454,7 @@ mod dcomp_backend {
                     sample_quality_pattern: DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN,
                     protected: Protected::No,
                 };
-                let target =
-                    BackendRenderTarget::new_d3d((width as i32, height as i32), &info);
+                let target = BackendRenderTarget::new_d3d((width as i32, height as i32), &info);
                 surfaces::wrap_backend_render_target(
                     gr_context,
                     &target,
@@ -566,10 +585,8 @@ mod glutin_backend {
                 .make_current(&gl_surface)
                 .expect("make_current");
 
-            let _ = gl_surface.set_swap_interval(
-                &gl_context,
-                SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
-            );
+            let _ = gl_surface
+                .set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
 
             gl::load_with(|s| {
                 let cstr = CString::new(s).unwrap();
@@ -669,7 +686,9 @@ mod glutin_backend {
             } else {
                 SwapInterval::DontWait
             };
-            let _ = self.gl_surface.set_swap_interval(&self.gl_context, interval);
+            let _ = self
+                .gl_surface
+                .set_swap_interval(&self.gl_context, interval);
         }
     }
 

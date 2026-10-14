@@ -94,12 +94,11 @@ pub fn wait_for_redirect(server: &Server, expected_state: &str) -> LoopbackResul
             Callback::Code(_) => SUCCESS_PAGE,
             _ => FAIL_PAGE,
         };
-        let resp = Response::from_string(body)
-            .with_header(
-                "Content-Type: text/html; charset=utf-8"
-                    .parse::<tiny_http::Header>()
-                    .unwrap(),
-            );
+        let resp = Response::from_string(body).with_header(
+            "Content-Type: text/html; charset=utf-8"
+                .parse::<tiny_http::Header>()
+                .unwrap(),
+        );
         let _ = req.respond(resp);
 
         match decision {
@@ -153,8 +152,12 @@ fn parse_callback(url: &str) -> (Option<String>, Option<String>, Option<String>)
     let mut state = None;
     let mut error = None;
     for pair in query.split('&') {
-        let Some((k, v)) = pair.split_once('=') else { continue };
-        let v_decoded = urlencoding::decode(v).map(|c| c.into_owned()).unwrap_or_else(|_| v.to_string());
+        let Some((k, v)) = pair.split_once('=') else {
+            continue;
+        };
+        let v_decoded = urlencoding::decode(v)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| v.to_string());
         match k {
             "code" => code = Some(v_decoded),
             "state" => state = Some(v_decoded),
@@ -231,8 +234,14 @@ mod tests {
             classify(Some("c".into()), Some("evil"), None, "s1"),
             Callback::Ignore("state mismatch")
         );
-        assert_eq!(classify(Some("c".into()), Some("s1"), None, "s1"), Callback::Code("c".into()));
-        assert_eq!(classify(None, Some("s1"), None, "s1"), Callback::Ignore("neither code nor error"));
+        assert_eq!(
+            classify(Some("c".into()), Some("s1"), None, "s1"),
+            Callback::Code("c".into())
+        );
+        assert_eq!(
+            classify(None, Some("s1"), None, "s1"),
+            Callback::Ignore("neither code nor error")
+        );
         assert_eq!(
             parse_callback("/?code=a%2Bb&state=s1"),
             (Some("a+b".into()), Some("s1".into()), None)

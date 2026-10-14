@@ -41,7 +41,11 @@ pub fn signable_command(
     items: Option<&rewo_data::items::Items>,
 ) -> Vec<(String, String)> {
     let units: Vec<u16> = command.encode_utf16().collect();
-    let ctx = crate::dispatcher::CommandCtx { names: &[], blocks, items };
+    let ctx = crate::dispatcher::CommandCtx {
+        names: &[],
+        blocks,
+        items,
+    };
     let parsed = crate::dispatcher::parse(tree, &units, 0, ctx);
     signable_arguments(tree, &parsed, &units)
 }
@@ -49,7 +53,11 @@ pub fn signable_command(
 /// `SignableCommand.of`: `(argument name, argument text)` for every parsed
 /// signed argument, in `ArgumentVisitor` order. `command` is the string the
 /// parse ran over (UTF-16 units, as the parser indexes).
-pub fn signable_arguments(tree: &CommandTree, parsed: &ParseResults, command: &[u16]) -> Vec<(String, String)> {
+pub fn signable_arguments(
+    tree: &CommandTree,
+    parsed: &ParseResults,
+    command: &[u16],
+) -> Vec<(String, String)> {
     let mut out = Vec::new();
     // `ArgumentVisitor.visitArguments(..., rejectRootRedirects = true)`: the
     // root context, then each child until one restarts at the root (a
@@ -67,9 +75,17 @@ pub fn signable_arguments(tree: &CommandTree, parsed: &ParseResults, command: &[
     out
 }
 
-fn visit(tree: &CommandTree, ctx: &ContextBuilder, command: &[u16], out: &mut Vec<(String, String)>) {
+fn visit(
+    tree: &CommandTree,
+    ctx: &ContextBuilder,
+    command: &[u16],
+    out: &mut Vec<(String, String)>,
+) {
     for parsed in &ctx.nodes {
-        let Some(NodeKind::Argument { name, type_name, .. }) = tree.node(parsed.node).map(|n| &n.kind) else {
+        let Some(NodeKind::Argument {
+            name, type_name, ..
+        }) = tree.node(parsed.node).map(|n| &n.kind)
+        else {
             continue;
         };
         // `values.get(argument.getName())` — the value may be absent.
@@ -124,17 +140,37 @@ mod tests {
             props,
             suggestions: None,
         };
-        let n = |flags: u8, children: Vec<i32>, kind| CommandNode { flags, children, redirect: 0, kind };
-        let players = ArgumentProps::Entity { single: false, players_only: true };
+        let n = |flags: u8, children: Vec<i32>, kind| CommandNode {
+            flags,
+            children,
+            redirect: 0,
+            kind,
+        };
+        let players = ArgumentProps::Entity {
+            single: false,
+            players_only: true,
+        };
         CommandTree {
             root: 0,
             nodes: vec![
                 n(0, vec![1, 4, 6], NodeKind::Root),
                 n(1, vec![2], NodeKind::Literal("msg".into())),
-                n(2, vec![3], arg("targets", "minecraft:entity", players.clone())),
-                n(2 | 4, vec![], arg("message", "minecraft:message", ArgumentProps::None)),
+                n(
+                    2,
+                    vec![3],
+                    arg("targets", "minecraft:entity", players.clone()),
+                ),
+                n(
+                    2 | 4,
+                    vec![],
+                    arg("message", "minecraft:message", ArgumentProps::None),
+                ),
                 n(1, vec![5], NodeKind::Literal("say".into())),
-                n(2 | 4, vec![], arg("message", "minecraft:message", ArgumentProps::None)),
+                n(
+                    2 | 4,
+                    vec![],
+                    arg("message", "minecraft:message", ArgumentProps::None),
+                ),
                 n(1, vec![7], NodeKind::Literal("kill".into())),
                 n(2 | 4, vec![], arg("targets", "minecraft:entity", players)),
             ],
@@ -144,14 +180,21 @@ mod tests {
     fn signable(command: &str) -> Vec<(String, String)> {
         let t = tree();
         let units = u(command);
-        let ctx = CommandCtx { names: &[], blocks: None, items: None };
+        let ctx = CommandCtx {
+            names: &[],
+            blocks: None,
+            items: None,
+        };
         let parsed = parse(&t, &units, 0, ctx);
         signable_arguments(&t, &parsed, &units)
     }
 
     #[test]
     fn message_argument_is_signable_with_its_exact_text() {
-        assert_eq!(signable("msg Steve hello  world!"), vec![("message".into(), "hello  world!".into())]);
+        assert_eq!(
+            signable("msg Steve hello  world!"),
+            vec![("message".into(), "hello  world!".into())]
+        );
         assert_eq!(signable("say hi"), vec![("message".into(), "hi".into())]);
     }
 
@@ -163,9 +206,21 @@ mod tests {
 
     #[test]
     fn signed_packet_layout() {
-        let last_seen = LastSeenUpdate { offset: 2, acknowledged: 0b101, checksum: 7, last_seen: vec![] };
+        let last_seen = LastSeenUpdate {
+            offset: 2,
+            acknowledged: 0b101,
+            checksum: 7,
+            last_seen: vec![],
+        };
         let mut p = PacketWriter::packet(0x07);
-        write_signed_command(&mut p, "say hi", 0x0102, -1, &[("message".into(), vec![0xAB; 256])], &last_seen);
+        write_signed_command(
+            &mut p,
+            "say hi",
+            0x0102,
+            -1,
+            &[("message".into(), vec![0xAB; 256])],
+            &last_seen,
+        );
         let mut want = vec![0x07];
         want.push(6);
         want.extend_from_slice(b"say hi");
@@ -186,7 +241,10 @@ mod tests {
     fn blocks() -> rewo_data::blocks::Blocks {
         rewo_data::blocks::Blocks::for_tests(
             vec!["minecraft:air".into(), "minecraft:stone".into()],
-            vec![("minecraft:air".to_string(), vec![]), ("minecraft:stone".to_string(), vec![])],
+            vec![
+                ("minecraft:air".to_string(), vec![]),
+                ("minecraft:stone".to_string(), vec![]),
+            ],
         )
     }
 
@@ -208,7 +266,12 @@ mod tests {
             props: ArgumentProps::None,
             suggestions: None,
         };
-        let n = |flags: u8, children: Vec<i32>, redirect: i32, kind| CommandNode { flags, children, redirect, kind };
+        let n = |flags: u8, children: Vec<i32>, redirect: i32, kind| CommandNode {
+            flags,
+            children,
+            redirect,
+            kind,
+        };
         let lit = |s: &str| NodeKind::Literal(s.into());
         CommandTree {
             root: 0,
@@ -226,7 +289,12 @@ mod tests {
                 n(1, vec![11], 0, lit("if")),
                 n(1, vec![12], 0, lit("block")),
                 n(2, vec![13], 0, arg("pos", "minecraft:block_pos")),
-                n(2 | 4 | FLAG_REDIRECT, vec![], 9, arg("block", "minecraft:block_predicate")),
+                n(
+                    2 | 4 | FLAG_REDIRECT,
+                    vec![],
+                    9,
+                    arg("block", "minecraft:block_predicate"),
+                ),
                 n(1 | FLAG_REDIRECT, vec![], 0, lit("run")),
             ],
         }
@@ -265,7 +333,11 @@ mod tests {
         let t = registry_tree();
         let (b, i) = (blocks(), items());
         let units = u("execute if block ~ ~ ~ stone run say hi");
-        let ctx = CommandCtx { names: &[], blocks: Some(&b), items: Some(&i) };
+        let ctx = CommandCtx {
+            names: &[],
+            blocks: Some(&b),
+            items: Some(&i),
+        };
         let parsed = parse(&t, &units, 0, ctx);
         // The parse went all the way through: root -> `execute` fork -> root.
         let fork = parsed.context.child.as_deref().expect("forked to execute");
@@ -273,6 +345,9 @@ mod tests {
         let run = fork.child.as_deref().expect("run redirected to the root");
         assert_eq!(run.root, 0);
         assert!(signable_arguments(&t, &parsed, &units).is_empty());
-        assert_eq!(signable_command(&t, "say hi", Some(&b), Some(&i)), vec![("message".into(), "hi".into())]);
+        assert_eq!(
+            signable_command(&t, "say hi", Some(&b), Some(&i)),
+            vec![("message".into(), "hi".into())]
+        );
     }
 }

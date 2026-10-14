@@ -111,11 +111,17 @@ impl Packets {
     /// at connection setup so a version drift fails loud, not mid-stream.
     pub fn require(&self, state: State, dir: Dir, name: &str) -> Result<i32, String> {
         self.id(state, dir, name).ok_or_else(|| {
-            format!("packets.json: required packet {:?}/{:?} {name} not found", state, dir)
+            format!(
+                "packets.json: required packet {:?}/{:?} {name} not found",
+                state, dir
+            )
         })
     }
 
     pub fn name(&self, state: State, dir: Dir, id: i32) -> Option<&str> {
-        self.reverse.get(&(state, dir))?.get(&id).map(|s| s.as_str())
+        self.reverse
+            .get(&(state, dir))?
+            .get(&id)
+            .map(|s| s.as_str())
     }
 }

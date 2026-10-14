@@ -437,11 +437,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
 
 /// Advance past one value of serializer `ty`. Returns false for complex
 /// types we can't size (item stack, particle, variants, profile …).
-fn skip_value_with(
-    r: &mut PacketReader,
-    ty: i32,
-    components: Option<DataComponentIds>,
-) -> bool {
+fn skip_value_with(r: &mut PacketReader, ty: i32, components: Option<DataComponentIds>) -> bool {
     // ITEM_STACK is the one serializer whose *skip* needs external data: its
     // component patch is self-describing only if the reader knows the codecs.
     if ty == 7 {
@@ -471,27 +467,27 @@ fn skip_value(r: &mut PacketReader, ty: i32) -> bool {
             Ok(false) => true,
             Err(_) => false,
         },
-        39 => r.take(12).is_ok(), // VECTOR3 (3× f32)
-        40 => r.take(16).is_ok(), // QUATERNION (4× f32)
-        2 => r.varlong().is_ok(),               // LONG
-        3 => r.take(4).is_ok(),                 // FLOAT
-        4 => r.string(32767).is_ok(),           // STRING
-        5 => r.nbt().is_ok(),                   // COMPONENT
+        39 => r.take(12).is_ok(),     // VECTOR3 (3× f32)
+        40 => r.take(16).is_ok(),     // QUATERNION (4× f32)
+        2 => r.varlong().is_ok(),     // LONG
+        3 => r.take(4).is_ok(),       // FLOAT
+        4 => r.string(32767).is_ok(), // STRING
+        5 => r.nbt().is_ok(),         // COMPONENT
         6 => match r.bool() {
-            Ok(true) => r.nbt().is_ok(),        // OPTIONAL_COMPONENT
+            Ok(true) => r.nbt().is_ok(), // OPTIONAL_COMPONENT
             Ok(false) => true,
             Err(_) => false,
         },
-        8 => r.u8().is_ok(),                    // BOOLEAN
-        9 => r.take(12).is_ok(),               // ROTATIONS (3× f32)
-        10 => r.take(8).is_ok(),               // BLOCK_POS
+        8 => r.u8().is_ok(),     // BOOLEAN
+        9 => r.take(12).is_ok(), // ROTATIONS (3× f32)
+        10 => r.take(8).is_ok(), // BLOCK_POS
         11 => match r.bool() {
-            Ok(true) => r.take(8).is_ok(),      // OPTIONAL_BLOCK_POS
+            Ok(true) => r.take(8).is_ok(), // OPTIONAL_BLOCK_POS
             Ok(false) => true,
             Err(_) => false,
         },
         13 => match r.bool() {
-            Ok(true) => r.varint().is_ok(),     // OPTIONAL_LIVING_ENTITY_REF
+            Ok(true) => r.varint().is_ok(), // OPTIONAL_LIVING_ENTITY_REF
             Ok(false) => true,
             Err(_) => false,
         },
@@ -523,7 +519,10 @@ mod tests {
         let mut r = PacketReader::new(&b);
         let m = parse(&mut r, MetaKinds::default());
         assert_eq!(m.flags, Some(0x40));
-        assert_eq!(m.custom_name.as_ref().map(Option::as_deref), Some(Some("Bessie")));
+        assert_eq!(
+            m.custom_name.as_ref().map(Option::as_deref),
+            Some(Some("Bessie"))
+        );
     }
 
     #[test]
@@ -534,7 +533,10 @@ mod tests {
         b.extend_from_slice(&[0x07, 0x07]); // ITEM_STACK — unskippable
         let mut r = PacketReader::new(&b);
         let m = parse(&mut r, MetaKinds::default());
-        assert_eq!(m.custom_name.as_ref().map(Option::as_deref), Some(Some("Named")));
+        assert_eq!(
+            m.custom_name.as_ref().map(Option::as_deref),
+            Some(Some("Named"))
+        );
     }
 
     #[test]
@@ -566,7 +568,10 @@ mod tests {
         assert_eq!(m.main_arm, Some(0));
         // RIGHT.
         b = vec![0x0F, 42, 0x01, 0xFF];
-        assert_eq!(parse(&mut PacketReader::new(&b), MetaKinds::default()).main_arm, Some(1));
+        assert_eq!(
+            parse(&mut PacketReader::new(&b), MetaKinds::default()).main_arm,
+            Some(1)
+        );
         // The BYTE at the same index is `Mob.DATA_MOB_FLAGS_ID` (or an armor
         // stand's client flags) — not a main hand. It must skip cleanly and
         // leave a later field readable.
@@ -693,7 +698,11 @@ mod m20_mob_metadata_tests {
         body.extend_from_slice(&[16u8, 8, 1, 0xFF]);
         let m = parse_nc(&mut PacketReader::new(&body));
         assert_eq!(m.mob_flags, Some(0b0000_0100));
-        assert_eq!(m.bool16, Some(true), "the entry after the flags byte was lost");
+        assert_eq!(
+            m.bool16,
+            Some(true),
+            "the entry after the flags byte was lost"
+        );
     }
 }
 
@@ -764,7 +773,11 @@ mod m168_tests {
         let m = parse(&mut PacketReader::new(&bytes), MetaKinds::default());
         assert_eq!(m.bool19, Some(true));
         assert_eq!(m.long20, Some(-123));
-        assert_eq!(m.bool20, Some(false), "a FALSE dash entry is still an entry");
+        assert_eq!(
+            m.bool20,
+            Some(false),
+            "a FALSE dash entry is still an entry"
+        );
         assert_eq!(m.long19, Some(77));
     }
 }

@@ -97,7 +97,10 @@ impl std::fmt::Debug for MinecraftAccount {
             .field("uuid", &self.uuid)
             .field("minecraft_token", &"<redacted>")
             .field("ms_refresh_token", &"<redacted>")
-            .field("social_token", &self.social_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "social_token",
+                &self.social_token.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -105,8 +108,11 @@ impl std::fmt::Debug for MinecraftAccount {
 /// When a token issued at `now` with the login response's `expires_in`
 /// (seconds) expires. A missing value assumes [`DEFAULT_TOKEN_LIFETIME`].
 pub fn token_expiry(now: Instant, expires_in: Option<u64>) -> Instant {
-    let life = expires_in.map(Duration::from_secs).unwrap_or(DEFAULT_TOKEN_LIFETIME);
-    now.checked_add(life).unwrap_or(now + DEFAULT_TOKEN_LIFETIME)
+    let life = expires_in
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_TOKEN_LIFETIME);
+    now.checked_add(life)
+        .unwrap_or(now + DEFAULT_TOKEN_LIFETIME)
 }
 
 /// Whether a Minecraft token should be refreshed before use: it is
@@ -150,8 +156,8 @@ pub fn launch_auth(active: Option<&MinecraftAccount>, now: Instant) -> LaunchAut
     }
     // Nothing to refresh with. A token inside the margin but not yet
     // expired still beats failing.
-    let still_valid = !a.minecraft_token.is_empty()
-        && a.minecraft_token_expires_at.is_some_and(|exp| now < exp);
+    let still_valid =
+        !a.minecraft_token.is_empty() && a.minecraft_token_expires_at.is_some_and(|exp| now < exp);
     if still_valid {
         LaunchAuth::Ready
     } else {
@@ -179,7 +185,10 @@ mod tests {
     #[test]
     fn expiry_uses_expires_in_or_a_day() {
         let now = Instant::now();
-        assert_eq!(token_expiry(now, Some(3600)), now + Duration::from_secs(3600));
+        assert_eq!(
+            token_expiry(now, Some(3600)),
+            now + Duration::from_secs(3600)
+        );
         assert_eq!(token_expiry(now, None), now + DEFAULT_TOKEN_LIFETIME);
     }
 
@@ -187,20 +196,40 @@ mod tests {
     fn needs_refresh_inside_the_margin() {
         let now = Instant::now();
         let hour = Duration::from_secs(3600);
-        assert!(token_needs_refresh("", Some(now + hour), now), "missing token");
-        assert!(token_needs_refresh("t", None, now), "unknown expiry");
-        assert!(!token_needs_refresh("t", Some(now + hour), now), "an hour left");
         assert!(
-            !token_needs_refresh("t", Some(now + TOKEN_REFRESH_MARGIN + Duration::from_secs(1)), now),
+            token_needs_refresh("", Some(now + hour), now),
+            "missing token"
+        );
+        assert!(token_needs_refresh("t", None, now), "unknown expiry");
+        assert!(
+            !token_needs_refresh("t", Some(now + hour), now),
+            "an hour left"
+        );
+        assert!(
+            !token_needs_refresh(
+                "t",
+                Some(now + TOKEN_REFRESH_MARGIN + Duration::from_secs(1)),
+                now
+            ),
             "just outside the margin"
         );
-        assert!(token_needs_refresh("t", Some(now + TOKEN_REFRESH_MARGIN), now), "at the margin");
-        assert!(token_needs_refresh("t", Some(now + Duration::from_secs(60)), now), "a minute left");
+        assert!(
+            token_needs_refresh("t", Some(now + TOKEN_REFRESH_MARGIN), now),
+            "at the margin"
+        );
+        assert!(
+            token_needs_refresh("t", Some(now + Duration::from_secs(60)), now),
+            "a minute left"
+        );
         assert!(token_needs_refresh("t", Some(now), now), "expired now");
         // A day-old token (the launcher left open) is expired.
         let issued = now;
         let later = issued + DEFAULT_TOKEN_LIFETIME + Duration::from_secs(1);
-        assert!(token_needs_refresh("t", Some(token_expiry(issued, Some(86_400))), later));
+        assert!(token_needs_refresh(
+            "t",
+            Some(token_expiry(issued, Some(86_400))),
+            later
+        ));
     }
 
     #[test]
@@ -226,9 +255,15 @@ mod tests {
         assert_eq!(launch_auth(Some(&a), now), LaunchAuth::NeedsRefresh);
         // Expired with nothing to refresh with: an error, not offline.
         let a = account("t", Some(now), "");
-        assert!(matches!(launch_auth(Some(&a), now), LaunchAuth::Unavailable(_)));
+        assert!(matches!(
+            launch_auth(Some(&a), now),
+            LaunchAuth::Unavailable(_)
+        ));
         let a = account("", None, "");
-        assert!(matches!(launch_auth(Some(&a), now), LaunchAuth::Unavailable(_)));
+        assert!(matches!(
+            launch_auth(Some(&a), now),
+            LaunchAuth::Unavailable(_)
+        ));
     }
 
     #[test]

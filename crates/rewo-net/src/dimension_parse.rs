@@ -721,7 +721,8 @@ pub mod builtin {
 
     /// `DataOutput.writeUTF`: Java modified UTF-8, not UTF-8.
     fn write_string(out: &mut Vec<u8>, s: &str) {
-        let body = rewo_proto::nbt::encode_modified_utf8(s).expect("fixture string over 65535 bytes");
+        let body =
+            rewo_proto::nbt::encode_modified_utf8(s).expect("fixture string over 65535 bytes");
         out.extend_from_slice(&(body.len() as u16).to_be_bytes());
         out.extend_from_slice(&body);
     }
@@ -957,7 +958,10 @@ mod tests {
         assert!(!parse("minecraft:the_end", &the_end()).fast_lava);
         // Absent is the attribute's default, not "whatever the last entry
         // said" — the Nether's own entry with the key dropped.
-        let attrs = the_nether().get("attributes").cloned().expect("fixture attributes");
+        let attrs = the_nether()
+            .get("attributes")
+            .cloned()
+            .expect("fixture attributes");
         let bare = with(&the_nether(), "attributes", without(&attrs, ATTR_FAST_LAVA));
         assert!(!parse("test:no_fast_lava", &bare).fast_lava);
         // A `Byte` and an `Int` are the same boolean to `NbtOps`, and zero is
@@ -971,7 +975,9 @@ mod tests {
         let modifier_form = overworld_with(Nbt::Compound(vec![]));
         assert_eq!(
             parse_dimension_type("test:modifier", &modifier_form),
-            Err(DimensionTypeError::AttributeModifierUnsupported(ATTR_FAST_LAVA))
+            Err(DimensionTypeError::AttributeModifierUnsupported(
+                ATTR_FAST_LAVA
+            ))
         );
     }
 
@@ -986,8 +992,7 @@ mod tests {
                 .iter_mut()
                 .find(|(key, _)| key == "timelines")
                 .expect("fixture timelines");
-            timelines.1 =
-                Nbt::List(vec![s("minecraft:villager_schedule"), s("minecraft:day")]);
+            timelines.1 = Nbt::List(vec![s("minecraft:villager_schedule"), s("minecraft:day")]);
         }
         assert!(parse("test:direct_day", &direct_day).has_day_timeline);
 
@@ -1143,11 +1148,15 @@ mod tests {
     #[test]
     fn default_clock_is_read_and_absence_is_not_a_default() {
         assert_eq!(
-            parse("minecraft:overworld", &overworld()).default_clock.as_deref(),
+            parse("minecraft:overworld", &overworld())
+                .default_clock
+                .as_deref(),
             Some("minecraft:overworld")
         );
         assert_eq!(
-            parse("minecraft:the_end", &the_end()).default_clock.as_deref(),
+            parse("minecraft:the_end", &the_end())
+                .default_clock
+                .as_deref(),
             Some("minecraft:the_end"),
             "the End runs on its OWN clock, which is what the flash schedule reads"
         );

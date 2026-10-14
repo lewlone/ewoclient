@@ -427,8 +427,9 @@ pub fn read_explode_tail(
     let (_, prefix) = read_explode(body)?;
     let mut r = PacketReader::new(&body[prefix..]);
 
-    let particle = crate::particle_options::walk_particle(&mut r, types)
-        .ok_or_else(|| rewo_proto::ProtoError::Frame("explode: unwalkable explosionParticle".into()))?;
+    let particle = crate::particle_options::walk_particle(&mut r, types).ok_or_else(|| {
+        rewo_proto::ProtoError::Frame("explode: unwalkable explosionParticle".into())
+    })?;
     let sound = crate::sounds::SoundRef::read(&mut r)?;
 
     // `ByteBufCodecs.list()` — a VarInt count. `count` rejects a length the
@@ -826,10 +827,7 @@ mod tests {
         let got = roundtrip(v);
         // scale = ceil(0.21) = 1, so the mantissa step is 2/32766 ≈ 6.1e-5.
         for (a, b, axis) in [(got.x, v.x, 'x'), (got.y, v.y, 'y'), (got.z, v.z, 'z')] {
-            assert!(
-                (a - b).abs() < 1.0e-4,
-                "{axis}: decoded {a} vs written {b}"
-            );
+            assert!((a - b).abs() < 1.0e-4, "{axis}: decoded {a} vs written {b}");
         }
     }
 
@@ -841,7 +839,11 @@ mod tests {
         // 40 * 2/32766 ≈ 2.4e-3 — three orders coarser than the test above.
         let v = Vec3::new(40.0, 0.001_5, 0.0);
         let got = roundtrip(v);
-        assert!((got.x - 40.0).abs() < 0.01, "x kept its magnitude: {}", got.x);
+        assert!(
+            (got.x - 40.0).abs() < 0.01,
+            "x kept its magnitude: {}",
+            got.x
+        );
         assert!(
             (got.y - 0.0015).abs() > 1.0e-5,
             "y should have been coarsened by the shared scale, got {}",
@@ -894,7 +896,10 @@ mod tests {
         // wildly wrong answer, so the mistake is silent rather than fatal.
         let as_shorts = i16::from_be_bytes([bytes[0], bytes[1]]) as f64 / 8000.0;
         let real = roundtrip(Vec3::new(0.5, 0.0, 0.0)).x;
-        assert!((real - 0.5).abs() < 1.0e-3, "the real decode is right: {real}");
+        assert!(
+            (real - 0.5).abs() < 1.0e-3,
+            "the real decode is right: {real}"
+        );
         assert!(
             (as_shorts - 0.5).abs() > 0.1,
             "the legacy reading is wrong by a large factor, not a rounding: {as_shorts}"
@@ -1304,7 +1309,10 @@ mod tests {
         // is at least one byte, so a list is admissible exactly when its
         // count fits in the bytes that follow.
         let ok = passengers_body(7, &[1, 2, 3, 4]);
-        assert_eq!(read_set_passengers(&ok).unwrap().passengers, vec![1, 2, 3, 4]);
+        assert_eq!(
+            read_set_passengers(&ok).unwrap().passengers,
+            vec![1, 2, 3, 4]
+        );
     }
 
     #[test]
@@ -1461,7 +1469,10 @@ mod tests {
             (true, false)
         );
         // A player is both, so this pair alone cannot see a swap…
-        assert_eq!(motion_class_facts(Some(7), |_| true, |_| true), (true, true));
+        assert_eq!(
+            motion_class_facts(Some(7), |_| true, |_| true),
+            (true, true)
+        );
         // …and this one can: the answers differ, so a swap flips the result.
         assert_eq!(
             motion_class_facts(Some(7), |_| false, |_| true),

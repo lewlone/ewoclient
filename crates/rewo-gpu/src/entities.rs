@@ -723,8 +723,12 @@ fn build_emissive(
     // texture's own UVs at the overlay's atlas slot, and only covers quads that
     // sample the texture it belongs to.
     for (slot, key) in def.textures.iter().enumerate() {
-        let Some(&(ox, oy)) = pack_emissive.get(key) else { continue };
-        let Some(&(_, _, tw, th)) = slots.get(key) else { continue };
+        let Some(&(ox, oy)) = pack_emissive.get(key) else {
+            continue;
+        };
+        let Some(&(_, _, tw, th)) = slots.get(key) else {
+            continue;
+        };
         let quads: Vec<GpuQuad> = m
             .quads
             .iter()
@@ -737,7 +741,11 @@ fn build_emissive(
         log::info!("etf: {:?} gains an emissive overlay from {key}", def.kind);
         // Cutout, like vanilla's `entityTranslucentEmissive` — OptiFine renders
         // emissive textures through the same alpha-cutout path.
-        out.push(EmissiveDraw { quads, alpha: mobs::EmissiveAlpha::Always, cutout: true });
+        out.push(EmissiveDraw {
+            quads,
+            alpha: mobs::EmissiveAlpha::Always,
+            cutout: true,
+        });
     }
     for layer in mobs::emissive_layers(def.kind) {
         let Some(&(ox, oy, tw, th)) = slots.get(layer.tex) else {
@@ -749,7 +757,9 @@ fn build_emissive(
             continue;
         };
         // The base texture the layer's quads were authored against.
-        let Some(&(_, _, bw, bh)) = slots.get(def.textures[0]) else { continue };
+        let Some(&(_, _, bw, bh)) = slots.get(def.textures[0]) else {
+            continue;
+        };
         if (tw, th) != (bw, bh) {
             log::warn!(
                 "entities: {:?} emissive layer {} is {tw}x{th} but the base texture is {bw}x{bh} — layer dropped",
@@ -783,7 +793,11 @@ fn build_emissive(
             );
             continue;
         }
-        out.push(EmissiveDraw { quads, alpha: layer.alpha, cutout: layer.cutout });
+        out.push(EmissiveDraw {
+            quads,
+            alpha: layer.alpha,
+            cutout: layer.cutout,
+        });
     }
     out
 }
@@ -1066,7 +1080,13 @@ impl EntityPass {
         font: Option<FontData<'_>>,
         tex: MobTextures<'_>,
     ) -> Result<Self, String> {
-        Self::new_with_cem(gpu, color_format, font, tex, std::collections::HashMap::new())
+        Self::new_with_cem(
+            gpu,
+            color_format,
+            font,
+            tex,
+            std::collections::HashMap::new(),
+        )
     }
 
     /// `new` plus resource-pack CEM model overrides (M9): a kind present in
@@ -1109,7 +1129,10 @@ impl EntityPass {
             let e = &tex.entries[i];
             (std::cmp::Reverse(e.h), std::cmp::Reverse(e.w), e.key)
         });
-        let mut sizes: Vec<(u32, u32)> = order.iter().map(|&i| (tex.entries[i].w, tex.entries[i].h)).collect();
+        let mut sizes: Vec<(u32, u32)> = order
+            .iter()
+            .map(|&i| (tex.entries[i].w, tex.entries[i].h))
+            .collect();
         sizes.extend(tex.variants.iter().map(|v| (v.w, v.h)));
         let origins = pack_shelves(&sizes);
         let mut slots: std::collections::HashMap<&str, (u32, u32, u32, u32)> =
@@ -1120,7 +1143,12 @@ impl EntityPass {
                 Some((x, y)) if blit_tex(&mut atlas, Some(e.rgba), x, y, e.w, e.h) => {
                     slots.insert(e.key, (x, y, e.w, e.h));
                 }
-                _ => log::warn!("entities: mob texture {} ({}×{}) didn't pack", e.key, e.w, e.h),
+                _ => log::warn!(
+                    "entities: mob texture {} ({}×{}) didn't pack",
+                    e.key,
+                    e.w,
+                    e.h
+                ),
             }
         }
         // (base key, variant id) -> atlas origin, for the offset table below.
@@ -1186,7 +1214,11 @@ impl EntityPass {
                     // `model_from_jem` can't know it, so inherit it here or
                     // every scaled mob renders at the wrong size.
                     m.scale = (def.build)().scale;
-                    log::info!("cem: {:?} using pack model ({} quads)", def.kind, m.quads.len());
+                    log::info!(
+                        "cem: {:?} using pack model ({} quads)",
+                        def.kind,
+                        m.quads.len()
+                    );
                     m
                 }
                 None => (def.build)(),
@@ -1194,14 +1226,15 @@ impl EntityPass {
             if debug_tex {
                 for q in &m.quads {
                     if !paint_debug_rect(&mut atlas, origins[q.tex], q, &mut painted)
-                        && ambiguous_tex.insert(def.textures[q.tex]) {
-                            log::info!(
-                                "mob debug-tex: {} ({:?} {:?} quad) repaints a texel with a new label",
-                                def.textures[q.tex],
-                                def.kind,
-                                q.facing
-                            );
-                        }
+                        && ambiguous_tex.insert(def.textures[q.tex])
+                    {
+                        log::info!(
+                            "mob debug-tex: {} ({:?} {:?} quad) repaints a texel with a new label",
+                            def.textures[q.tex],
+                            def.kind,
+                            q.facing
+                        );
+                    }
                 }
             }
             // Vanilla emissive layers: the same geometry, filtered to the
@@ -1245,7 +1278,9 @@ impl EntityPass {
             let mut variants: std::collections::HashMap<u16, Vec<[f32; 2]>> =
                 std::collections::HashMap::new();
             for (&(base_key, index), &(vx, vy)) in &variant_slots {
-                let Some(slot) = def.textures.iter().position(|k| *k == base_key) else { continue };
+                let Some(slot) = def.textures.iter().position(|k| *k == base_key) else {
+                    continue;
+                };
                 let (bx, by, _, _) = origins[slot];
                 let e = variants
                     .entry(index as u16)
@@ -1261,19 +1296,20 @@ impl EntityPass {
             // one `getTextureLocation` returns for adults) and every other
             // slot stays at zero, so a mob's secondary layers keep their own
             // sheets exactly as vanilla's non-swapping render layers do.
-            let baby_offsets = baby_by_kind
-                .get(&(def.kind.index() as u16))
-                .and_then(|(adult_key, baby_key)| {
-                    let slot = def.textures.iter().position(|k| *k == *adult_key)?;
-                    let (_, ax, ay) = slots.get(*adult_key).map(|(x, y, _, _)| ((), *x, *y))?;
-                    let (_, bx, by) = slots.get(*baby_key).map(|(x, y, _, _)| ((), *x, *y))?;
-                    let mut v = vec![[0.0f32, 0.0]; def.textures.len()];
-                    v[slot] = [
-                        (bx as f32 - ax as f32) / ATLAS_W as f32,
-                        (by as f32 - ay as f32) / ATLAS_H as f32,
-                    ];
-                    Some(v)
-                });
+            let baby_offsets =
+                baby_by_kind
+                    .get(&(def.kind.index() as u16))
+                    .and_then(|(adult_key, baby_key)| {
+                        let slot = def.textures.iter().position(|k| *k == *adult_key)?;
+                        let (_, ax, ay) = slots.get(*adult_key).map(|(x, y, _, _)| ((), *x, *y))?;
+                        let (_, bx, by) = slots.get(*baby_key).map(|(x, y, _, _)| ((), *x, *y))?;
+                        let mut v = vec![[0.0f32, 0.0]; def.textures.len()];
+                        v[slot] = [
+                            (bx as f32 - ax as f32) / ATLAS_W as f32,
+                            (by as f32 - ay as f32) / ATLAS_H as f32,
+                        ];
+                        Some(v)
+                    });
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 tinted_slot: mobs::tinted_texture(def.kind)
@@ -1443,7 +1479,10 @@ impl EntityPass {
                 has_font,
                 trim_slots: std::collections::HashMap::new(),
                 trim_ring: SlotRing::new(TRIM_SLOTS),
-                player_origin: slots.get("player").map(|&(x, y, _, _)| (x, y)).unwrap_or((0, 0)),
+                player_origin: slots
+                    .get("player")
+                    .map(|&(x, y, _, _)| (x, y))
+                    .unwrap_or((0, 0)),
                 // Armour sheets are looked up by name every frame — a mob's
                 // model is fixed at build time, but what it wears is not.
                 armor_slots: slots
@@ -1494,11 +1533,7 @@ impl EntityPass {
     /// because only the handful of items actually held this frame should
     /// occupy the pool. Unknown names are ignored — a suppressed item simply
     /// has no model.
-    pub fn prepare_held_items(
-        &mut self,
-        gpu: &mut Gpu,
-        names: &[&str],
-    ) -> Result<(), String> {
+    pub fn prepare_held_items(&mut self, gpu: &mut Gpu, names: &[&str]) -> Result<(), String> {
         let Some(items) = self.held_items.take() else {
             return Ok(());
         };
@@ -1561,7 +1596,10 @@ impl EntityPass {
 
     /// The trim pool's half of [`Self::item_slot_pairs`].
     pub fn trim_slot_pairs(&self) -> Vec<(String, (u32, u32))> {
-        self.trim_slots.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        self.trim_slots
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect()
     }
 
     /// Atlas UV rect `(u0, v0, du, dv)` of a resident item texture.
@@ -1595,7 +1633,9 @@ impl EntityPass {
             return Some(o);
         }
         if w != TRIM_SLOT_W || h != TRIM_SLOT_H || rgba.len() != (w * h * 4) as usize {
-            log::warn!("entities: trim sprite {key} is {w}x{h}, expected {TRIM_SLOT_W}x{TRIM_SLOT_H}");
+            log::warn!(
+                "entities: trim sprite {key} is {w}x{h}, expected {TRIM_SLOT_W}x{TRIM_SLOT_H}"
+            );
             return None;
         }
         // Past 64 distinct sprites the ring recycles; the evicted sprite path
@@ -1771,16 +1811,18 @@ impl EntityPass {
         // `GREATER_OR_EQUAL` with no depth write, so like the trim they cannot
         // share the solid range's strict `GREATER`.
         let mut emissive_verts: Vec<Vertex> = Vec::new();
-        let glint_offsets = crate::gui_item::glint_offsets(
-            (time as f64) * 1000.0,
-            crate::gui_item::GLINT_SPEED,
-        );
+        let glint_offsets =
+            crate::gui_item::glint_offsets((time as f64) * 1000.0, crate::gui_item::GLINT_SPEED);
 
         // Advance the animation clock. `frame_time` drives FA's integrators and
         // `frame_counter` its same-frame guard, so both must be real. `time` is
         // wall-clock seconds; a still render repeats the same value, hence the
         // fallback tick.
-        let dt = if self.prev_time.is_finite() { time - self.prev_time } else { 0.0 };
+        let dt = if self.prev_time.is_finite() {
+            time - self.prev_time
+        } else {
+            0.0
+        };
         self.prev_time = time;
         self.frame_dt = if dt > 0.0 { dt.min(0.25) } else { 1.0 / 20.0 };
         self.frame_counter += 1.0;
@@ -2333,7 +2375,11 @@ impl EntityPass {
             // appended as a further "layer" with its own origin and no tint —
             // `submitModel(..., -1, sprite, ...)` passes white, because a
             // trim's colour is baked into its palette-permuted sprite.
-            let dyed = piece.layers.iter().flatten().map(|(k, t)| (Some(*k), None, *t));
+            let dyed = piece
+                .layers
+                .iter()
+                .flatten()
+                .map(|(k, t)| (Some(*k), None, *t));
             let trimmed = piece.trim.into_iter().map(|o| (None, Some(o), [1.0f32; 3]));
             // M50: `renderLayers` clears `renderFoil` inside the loop, so the
             // foil is drawn **once per piece**, riding the first layer that
@@ -2342,99 +2388,103 @@ impl EntityPass {
             // leather's overlay layer would double an additive blend.
             let mut foil_pending = piece.foil;
             for (key, trim_origin, tint) in dyed.chain(trimmed) {
-            let Some((ax, ay, sheet_w, sheet_h)) = (match (key, trim_origin) {
-                (Some(k), _) => self.armor_slots.get(k).copied(),
-                // A trim never carries the foil, so its sheet size is never
-                // read; the pool slot's own dimensions are the honest answer.
-                (_, Some((x, y))) => Some((x, y, TRIM_SLOT_W, TRIM_SLOT_H)),
-                _ => None,
-            }) else {
-                continue;
-            };
-            // This layer is the one the foil rides, if the piece has one.
-            let foil_here = foil_pending && trim_origin.is_none();
-            foil_pending &= !foil_here;
-            // The trim goes to its own range: its depth test is EQUAL, so it
-            // paints only where the armour it decorates already won.
-            let verts: &mut Vec<Vertex> = if trim_origin.is_some() { trim_verts } else { verts };
-            for b in mobs::armor_boxes(slot) {
-                let Some(pi) = mobs::armor_part(&model.parts, b.part) else {
+                let Some((ax, ay, sheet_w, sheet_h)) = (match (key, trim_origin) {
+                    (Some(k), _) => self.armor_slots.get(k).copied(),
+                    // A trim never carries the foil, so its sheet size is never
+                    // read; the pool slot's own dimensions are the honest answer.
+                    (_, Some((x, y))) => Some((x, y, TRIM_SLOT_W, TRIM_SLOT_H)),
+                    _ => None,
+                }) else {
                     continue;
                 };
-                let (m, o) = &xf[pi];
-                // The sheet is 64x32 in the classic armour layout, packed into
-                // the shared atlas at `(ax, ay)`.
-                for (_facing, pos, uvs) in
-                    mobs::cube_faces(b.uv, b.min, b.dims, slot.grow() + b.extend, b.mirror)
-                {
-                    if verts.len() + 6 > MAX_VERTS {
-                        return;
-                    }
-                    let mut p4 = [[0f32; 3]; 4];
-                    for (i, corner) in pos.iter().enumerate() {
-                        let r = mat_apply(m, *corner);
-                        let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
-                        let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
-                        let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
-                        let x = e[0] * ct + e[2] * st;
-                        let z = -e[0] * st + e[2] * ct;
-                        let mut l = [x * scale, e[1] * scale, z * scale];
-                        if let Some(mm) = &d.mount {
-                            l = [
-                                mm[0][0] * l[0] + mm[0][1] * l[1] + mm[0][2] * l[2] + mm[0][3],
-                                mm[1][0] * l[0] + mm[1][1] * l[1] + mm[1][2] * l[2] + mm[1][3],
-                                mm[2][0] * l[0] + mm[2][1] * l[1] + mm[2][2] * l[2] + mm[2][3],
-                            ];
+                // This layer is the one the foil rides, if the piece has one.
+                let foil_here = foil_pending && trim_origin.is_none();
+                foil_pending &= !foil_here;
+                // The trim goes to its own range: its depth test is EQUAL, so it
+                // paints only where the armour it decorates already won.
+                let verts: &mut Vec<Vertex> = if trim_origin.is_some() {
+                    trim_verts
+                } else {
+                    verts
+                };
+                for b in mobs::armor_boxes(slot) {
+                    let Some(pi) = mobs::armor_part(&model.parts, b.part) else {
+                        continue;
+                    };
+                    let (m, o) = &xf[pi];
+                    // The sheet is 64x32 in the classic armour layout, packed into
+                    // the shared atlas at `(ax, ay)`.
+                    for (_facing, pos, uvs) in
+                        mobs::cube_faces(b.uv, b.min, b.dims, slot.grow() + b.extend, b.mirror)
+                    {
+                        if verts.len() + 6 > MAX_VERTS {
+                            return;
                         }
-                        p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
-                    }
-                    let n = face_normal(&p4);
-                    let shade = mobs::shade_for(n);
-                    let uv4: [[f32; 2]; 4] = std::array::from_fn(|i| {
-                        [
-                            (ax as f32 + uvs[i][0]) / ATLAS_W as f32,
-                            (ay as f32 + uvs[i][1]) / ATLAS_H as f32,
-                        ]
-                    });
-                    // The dye is a **vertex colour**, which is where vanilla
-                    // puts it: `submitModel(..., color, ...)`, and `entity.fsh`
-                    // multiplies `texture * vertexColor`. It rides in the same
-                    // channel and the same space as the directional shade, so
-                    // an untinted layer is exactly `tint = 1`.
-                    for &i in &[0usize, 1, 2, 0, 2, 3] {
-                        verts.push(Vertex {
-                            pos: p4[i],
-                            uv: uv4[i],
-                            color: [shade * tint[0], shade * tint[1], shade * tint[2], 1.0],
-                            light_hurt: [light_r, light_g, light_b, hurt],
+                        let mut p4 = [[0f32; 3]; 4];
+                        for (i, corner) in pos.iter().enumerate() {
+                            let r = mat_apply(m, *corner);
+                            let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
+                            let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                            let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+                            let x = e[0] * ct + e[2] * st;
+                            let z = -e[0] * st + e[2] * ct;
+                            let mut l = [x * scale, e[1] * scale, z * scale];
+                            if let Some(mm) = &d.mount {
+                                l = [
+                                    mm[0][0] * l[0] + mm[0][1] * l[1] + mm[0][2] * l[2] + mm[0][3],
+                                    mm[1][0] * l[0] + mm[1][1] * l[1] + mm[1][2] * l[2] + mm[1][3],
+                                    mm[2][0] * l[0] + mm[2][1] * l[1] + mm[2][2] * l[2] + mm[2][3],
+                                ];
+                            }
+                            p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
+                        }
+                        let n = face_normal(&p4);
+                        let shade = mobs::shade_for(n);
+                        let uv4: [[f32; 2]; 4] = std::array::from_fn(|i| {
+                            [
+                                (ax as f32 + uvs[i][0]) / ATLAS_W as f32,
+                                (ay as f32 + uvs[i][1]) / ATLAS_H as f32,
+                            ]
                         });
-                        // M50: the foil, from the same `p4` at the same moment.
-                        // Its pipeline depth-tests EQUAL, so a position derived
-                        // a second time — however faithfully — would be rejected
-                        // fragment by fragment. M45 records the same rule.
-                        //
-                        // The UV is the quad's **own** `0..1` in its own sheet,
-                        // not its place in Rewo's atlas: vanilla feeds the glint
-                        // pass the model's `UV0`, which `ModelPart.Cube` already
-                        // divided by the 64x32 sheet. An atlas coordinate would
-                        // make the pattern depend on the packer.
-                        //
-                        // No tint. `RenderPipelines.GLINT` binds
-                        // `DefaultVertexFormat.POSITION_TEX` — no Color element,
-                        // so `BufferBuilder` drops the colour `submitModel` was
-                        // handed — `glint.vsh` declares no colour attribute, and
-                        // `RenderType.writeDynamicTransforms` writes
-                        // `ColorModulator` as WHITE. A dyed leather piece's foil
-                        // is the plain sheen.
-                        if foil_here {
-                            armor_glint.push(
-                                p4[i],
-                                [uvs[i][0] / sheet_w as f32, uvs[i][1] / sheet_h as f32],
-                            );
+                        // The dye is a **vertex colour**, which is where vanilla
+                        // puts it: `submitModel(..., color, ...)`, and `entity.fsh`
+                        // multiplies `texture * vertexColor`. It rides in the same
+                        // channel and the same space as the directional shade, so
+                        // an untinted layer is exactly `tint = 1`.
+                        for &i in &[0usize, 1, 2, 0, 2, 3] {
+                            verts.push(Vertex {
+                                pos: p4[i],
+                                uv: uv4[i],
+                                color: [shade * tint[0], shade * tint[1], shade * tint[2], 1.0],
+                                light_hurt: [light_r, light_g, light_b, hurt],
+                            });
+                            // M50: the foil, from the same `p4` at the same moment.
+                            // Its pipeline depth-tests EQUAL, so a position derived
+                            // a second time — however faithfully — would be rejected
+                            // fragment by fragment. M45 records the same rule.
+                            //
+                            // The UV is the quad's **own** `0..1` in its own sheet,
+                            // not its place in Rewo's atlas: vanilla feeds the glint
+                            // pass the model's `UV0`, which `ModelPart.Cube` already
+                            // divided by the 64x32 sheet. An atlas coordinate would
+                            // make the pattern depend on the packer.
+                            //
+                            // No tint. `RenderPipelines.GLINT` binds
+                            // `DefaultVertexFormat.POSITION_TEX` — no Color element,
+                            // so `BufferBuilder` drops the colour `submitModel` was
+                            // handed — `glint.vsh` declares no colour attribute, and
+                            // `RenderType.writeDynamicTransforms` writes
+                            // `ColorModulator` as WHITE. A dyed leather piece's foil
+                            // is the plain sheen.
+                            if foil_here {
+                                armor_glint.push(
+                                    p4[i],
+                                    [uvs[i][0] / sheet_w as f32, uvs[i][1] / sheet_h as f32],
+                                );
+                            }
                         }
                     }
                 }
-            }
             }
         }
     }
@@ -2504,17 +2554,10 @@ impl EntityPass {
                 },
                 carried,
             );
-            let frame = crate::cem::eval_program(
-                prog,
-                &mut actx,
-                model.parts.len(),
-                &model.cem_translate,
-            );
+            let frame =
+                crate::cem::eval_program(prog, &mut actx, model.parts.len(), &model.cem_translate);
             // Hand the (now-advanced) slots back for the next frame.
-            cem_state
-                .entry(cem_key(d))
-                .or_default()
-                .slots = std::mem::take(&mut actx.user);
+            cem_state.entry(cem_key(d)).or_default().slots = std::mem::take(&mut actx.user);
             frame
         });
         // A hidden bone hides its subtree. Parts are in tree pre-order, so one
@@ -2655,7 +2698,10 @@ impl EntityPass {
         // `state.getWoolColor()`, so the two slots take the *same* colour —
         // that is why the undercoat needs no dye field of its own.
         let wool = mobs::SHEEP_WOOL_COLORS[(d.dye.unwrap_or(0) & 15) as usize];
-        for s in [model.tinted_slot, model.coplanar_slot].into_iter().flatten() {
+        for s in [model.tinted_slot, model.coplanar_slot]
+            .into_iter()
+            .flatten()
+        {
             if let Some(t) = slot_tint.get_mut(s as usize) {
                 *t = lin3(wool);
             }
@@ -2704,7 +2750,10 @@ impl EntityPass {
             let du = {
                 let base = variant_uv.map_or(skin_du, |v| v[q.tex as usize]);
                 match baby_uv {
-                    Some(b) => [base[0] + b[q.tex as usize][0], base[1] + b[q.tex as usize][1]],
+                    Some(b) => [
+                        base[0] + b[q.tex as usize][0],
+                        base[1] + b[q.tex as usize][1],
+                    ],
                     None => base,
                 }
             };
@@ -2720,7 +2769,19 @@ impl EntityPass {
         }
         // M46: worn armour, a render layer over the body, before the held
         // item so a chestplate does not paint over a sword.
-        self.emit_armor(verts, trim_verts, armor_glint, d, model, &xf, s, st, ct, sr, cr);
+        self.emit_armor(
+            verts,
+            trim_verts,
+            armor_glint,
+            d,
+            model,
+            &xf,
+            s,
+            st,
+            ct,
+            sr,
+            cr,
+        );
         // M60: the cape, hanging off the same body. `AvatarRenderer` adds
         // `HumanoidArmorLayer` first and `CapeLayer` eleven layers later, so
         // this is vanilla's order — though nothing rests on it here, since
@@ -2813,15 +2874,8 @@ impl EntityPass {
     ) {
         let cell = self.cell as f32;
         let scale = TAG_PX * (8.0 / cell);
-        let total_px: f32 = name
-            .bytes()
-            .map(|b| self.advance[b as usize] as f32)
-            .sum();
-        let anchor = [
-            d.pos[0],
-            d.pos[1] + d.height + TAG_LIFT,
-            d.pos[2],
-        ];
+        let total_px: f32 = name.bytes().map(|b| self.advance[b as usize] as f32).sum();
+        let anchor = [d.pos[0], d.pos[1] + d.height + TAG_LIFT, d.pos[2]];
         let world = |px: f32, py: f32| -> [f32; 3] {
             [
                 anchor[0] + (right[0] * px + up[0] * py) * scale,
@@ -3009,7 +3063,13 @@ impl EntityPass {
     /// `false` when this frame uploaded nothing, in which case the caller must
     /// not draw.
     #[must_use]
-    unsafe fn bind_common(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) -> bool {
+    unsafe fn bind_common(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) -> bool {
         let Some(vbuf) = self.ring.bind() else {
             return false;
         };
@@ -3041,7 +3101,13 @@ impl EntityPass {
     }
 
     /// Opaque capsules — draw before any translucent content.
-    pub fn draw_solid(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    pub fn draw_solid(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         if self.solid_verts == 0 {
             return;
         }
@@ -3348,7 +3414,13 @@ impl EntityPass {
     }
 
     /// Blended nametag text — draw last (after water).
-    pub fn draw_text(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    pub fn draw_text(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         if self.text_verts == 0 {
             return;
         }
@@ -3428,22 +3500,12 @@ fn unit_capsule() -> Vec<([f32; 3], [f32; 3])> {
     let mut profile: Vec<(f32, f32, f32, f32)> = Vec::new();
     for i in 0..=3 {
         let th = (-90.0 + 30.0 * i as f32).to_radians();
-        profile.push((
-            0.5 * th.cos(),
-            0.25 * (1.0 + th.sin()),
-            th.cos(),
-            th.sin(),
-        ));
+        profile.push((0.5 * th.cos(), 0.25 * (1.0 + th.sin()), th.cos(), th.sin()));
     }
     profile.push((0.5, 0.75, 1.0, 0.0));
     for i in 1..=3 {
         let th = (30.0 * i as f32).to_radians();
-        profile.push((
-            0.5 * th.cos(),
-            0.75 + 0.25 * th.sin(),
-            th.cos(),
-            th.sin(),
-        ));
+        profile.push((0.5 * th.cos(), 0.75 + 0.25 * th.sin(), th.cos(), th.sin()));
     }
 
     let mut out = Vec::with_capacity((profile.len() - 1) * SEGMENTS * 6);
@@ -3725,7 +3787,11 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let flap = (c.age * 20.0 * DEG + c.pos).cos() * PI * 0.15 + c.amt;
             let fly = (c.amt / 0.3).min(1.0);
             rot[0] = 0.43633232 * (1.0 - fly);
-            rot[1] = if left { PI / 4.0 - flap } else { -PI / 4.0 + flap };
+            rot[1] = if left {
+                PI / 4.0 - flap
+            } else {
+                -PI / 4.0 + flap
+            };
         }
         AllayRoot => {
             // AllayModel `state.isDancing` branch, `this.root`. Idle → 0 (the
@@ -3735,7 +3801,11 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 let dance_speed = c.age * 8.0 * DEG + c.amt;
                 let spin = dance.spinning_progress;
                 // root.yRot = isSpinning ? 4π·spin : 0 (unchanged reset value).
-                rot[1] = if dance.is_spinning { PI * 4.0 * spin } else { 0.0 };
+                rot[1] = if dance.is_spinning {
+                    PI * 4.0 * spin
+                } else {
+                    0.0
+                };
                 // root.zRot = danceFrequency·(1 − spin), danceFreq = cos(dS)·16°.
                 rot[2] = dance_speed.cos() * 16.0 * DEG * (1.0 - spin);
             }
@@ -3760,7 +3830,11 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         },
         VexArm { left } => {
             let bob = (c.age * 5.5 * DEG).cos() * 0.1;
-            rot[2] = if left { -(PI / 5.0 + bob) } else { PI / 5.0 + bob };
+            rot[2] = if left {
+                -(PI / 5.0 + bob)
+            } else {
+                PI / 5.0 + bob
+            };
         }
         VexWing { left } => {
             let y = 1.0995574 + (c.age * 45.836624 * DEG).cos() * 16.2 * DEG;
@@ -3835,75 +3909,81 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
 fn humanoid_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx, amp: f32) {
     use std::f32::consts::PI;
     {
-            // The ordinary walk swing, first — `setupAnim` assigns it before
-            // `setupAttackAnimation` adds on top.
-            let phase = if left { c.f } else { c.f + PI };
-            rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
-            // Then the *hold* pose, from the item in this arm. `setupAnim`
-            // runs its `pose{Right,Left}Arm` dispatch here — after the walk
-            // assignment, before `setupAttackAnimation` — so the strike is
-            // added on top of this baseline, not instead of it. Omitting the
-            // stage renders every armed entity from an unarmed baseline: an
-            // `ITEM` arm sits π/10 (18°) higher with its walk swing unhalved.
-            apply_pose_stage(rot, left, c);
-            let a = c.attack;
-            if a.attack_time <= 0.0 {
-                // `bobModelPart` still runs — it is outside the attack guard.
-                bob_model_part(rot, left, c.age);
-                return;
-            }
-            let by = attack_body_yrot(&a);
-            let (sin_by, cos_by) = (mth_sin(by as f64), mth_cos(by as f64));
-            // rightArm.x = −cos(by)·5·ageScale, rightArm.z =  sin(by)·5·ageScale
-            // leftArm.x  =  cos(by)·5·ageScale, leftArm.z  = −sin(by)·5·ageScale
-            // …expressed as deltas from the ±5 rest pivot.
-            let sign = if left { 1.0 } else { -1.0 };
-            off[0] = sign * (cos_by * 5.0 * a.age_scale - mobs::HUMANOID_ARM_PIVOT_X);
-            off[2] = -sign * sin_by * 5.0 * a.age_scale;
-            // Both arms take the body's yaw; only the left also takes it on x.
-            rot[1] += by;
-            if left {
-                rot[0] += by;
-            }
-            let is_attack_arm = left == a.left_arm;
-            match a.kind {
-                // `case WHACK:` falls through to `case NONE: default: break;`,
-                // so it runs its block and stops — it is not also a STAB.
-                mobs::SwingKind::Whack if is_attack_arm => {
-                    let swing = ease_out_quart(a.attack_time);
-                    let aa = mth_sin((swing * PI) as f64);
-                    let bb = mth_sin((a.attack_time * PI) as f64) * -(c.pitch - 0.7) * 0.75;
-                    rot[0] -= aa * 1.2 + bb;
-                    rot[1] += by * 2.0;
-                    rot[2] += mth_sin((a.attack_time * PI) as f64) * -0.4;
-                }
-                // `SpearAnimations.thirdPersonAttackHand` *undoes* the shared
-                // yaw on both arms (and the left arm's x) before posing the
-                // attack arm — so a STAB leaves the other arm at its walk pose
-                // while still riding the moved pivot.
-                mobs::SwingKind::Stab => {
-                    rot[1] -= by;
-                    if left {
-                        rot[0] -= by;
-                    }
-                    if is_attack_arm {
-                        let t = a.attack_time;
-                        let prepare = ease_in_out_sine(spear_progress(t, 0.0, 0.05));
-                        let attack = ease_in_quad(spear_progress(t, 0.05, 0.2));
-                        let retract = ease_in_out_expo(spear_progress(t, 0.4, 1.0));
-                        rot[0] += (90.0 * prepare - 120.0 * attack + 30.0 * retract) * DEG;
-                    }
-                }
-                // NONE, and WHACK on the non-attack arm: the prologue only.
-                _ => {}
-            }
+        // The ordinary walk swing, first — `setupAnim` assigns it before
+        // `setupAttackAnimation` adds on top.
+        let phase = if left { c.f } else { c.f + PI };
+        rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
+        // Then the *hold* pose, from the item in this arm. `setupAnim`
+        // runs its `pose{Right,Left}Arm` dispatch here — after the walk
+        // assignment, before `setupAttackAnimation` — so the strike is
+        // added on top of this baseline, not instead of it. Omitting the
+        // stage renders every armed entity from an unarmed baseline: an
+        // `ITEM` arm sits π/10 (18°) higher with its walk swing unhalved.
+        apply_pose_stage(rot, left, c);
+        let a = c.attack;
+        if a.attack_time <= 0.0 {
+            // `bobModelPart` still runs — it is outside the attack guard.
             bob_model_part(rot, left, c.age);
+            return;
+        }
+        let by = attack_body_yrot(&a);
+        let (sin_by, cos_by) = (mth_sin(by as f64), mth_cos(by as f64));
+        // rightArm.x = −cos(by)·5·ageScale, rightArm.z =  sin(by)·5·ageScale
+        // leftArm.x  =  cos(by)·5·ageScale, leftArm.z  = −sin(by)·5·ageScale
+        // …expressed as deltas from the ±5 rest pivot.
+        let sign = if left { 1.0 } else { -1.0 };
+        off[0] = sign * (cos_by * 5.0 * a.age_scale - mobs::HUMANOID_ARM_PIVOT_X);
+        off[2] = -sign * sin_by * 5.0 * a.age_scale;
+        // Both arms take the body's yaw; only the left also takes it on x.
+        rot[1] += by;
+        if left {
+            rot[0] += by;
+        }
+        let is_attack_arm = left == a.left_arm;
+        match a.kind {
+            // `case WHACK:` falls through to `case NONE: default: break;`,
+            // so it runs its block and stops — it is not also a STAB.
+            mobs::SwingKind::Whack if is_attack_arm => {
+                let swing = ease_out_quart(a.attack_time);
+                let aa = mth_sin((swing * PI) as f64);
+                let bb = mth_sin((a.attack_time * PI) as f64) * -(c.pitch - 0.7) * 0.75;
+                rot[0] -= aa * 1.2 + bb;
+                rot[1] += by * 2.0;
+                rot[2] += mth_sin((a.attack_time * PI) as f64) * -0.4;
+            }
+            // `SpearAnimations.thirdPersonAttackHand` *undoes* the shared
+            // yaw on both arms (and the left arm's x) before posing the
+            // attack arm — so a STAB leaves the other arm at its walk pose
+            // while still riding the moved pivot.
+            mobs::SwingKind::Stab => {
+                rot[1] -= by;
+                if left {
+                    rot[0] -= by;
+                }
+                if is_attack_arm {
+                    let t = a.attack_time;
+                    let prepare = ease_in_out_sine(spear_progress(t, 0.0, 0.05));
+                    let attack = ease_in_quad(spear_progress(t, 0.05, 0.2));
+                    let retract = ease_in_out_expo(spear_progress(t, 0.4, 1.0));
+                    rot[0] += (90.0 * prepare - 120.0 * attack + 30.0 * retract) * DEG;
+                }
+            }
+            // NONE, and WHACK on the non-attack arm: the prologue only.
+            _ => {}
+        }
+        bob_model_part(rot, left, c.age);
     }
 }
 
 /// `AnimationUtils.animateAttackArms` — the shared undead strike. Vanilla
 /// **assigns** all three rotations, wiping whatever the humanoid stage left.
-fn animate_attack_arms(rot: &mut [f32; 3], left: bool, attack_time: f32, negate: bool, arm_drop: f32) {
+fn animate_attack_arms(
+    rot: &mut [f32; 3],
+    left: bool,
+    attack_time: f32,
+    negate: bool,
+    arm_drop: f32,
+) {
     use std::f32::consts::PI;
     let a_y = if negate { 1.0f32 } else { -1.0 } * mth_sin((attack_time * PI) as f64);
     let inv = 1.0 - attack_time;
@@ -3988,8 +4068,8 @@ fn swing_weapon_down(rot: &mut [f32; 3], left: bool, main_arm_left: bool, t: f32
 /// stage is not run here at all: everything it would contribute is overwritten
 /// before it could be seen.
 fn illager_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx) {
-    use std::f32::consts::PI;
     use mobs::IllagerArmPose as P;
+    use std::f32::consts::PI;
     // The illager's own walk: the humanoid coefficients without `/ speedValue`,
     // with yRot and zRot explicitly zeroed.
     let phase = if left { c.f } else { c.f + PI };
@@ -4011,7 +4091,11 @@ fn illager_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx) 
             // rest column, so the delta is z −rest_z and x 0.
             off[2] = 0.0;
             rot[0] = mth_cos((c.age * 0.6662) as f64) * 0.25;
-            rot[2] = if left { -PI * 3.0 / 4.0 } else { PI * 3.0 / 4.0 };
+            rot[2] = if left {
+                -PI * 3.0 / 4.0
+            } else {
+                PI * 3.0 / 4.0
+            };
             rot[1] = 0.0;
         }
         P::BowAndArrow => {
@@ -4107,8 +4191,7 @@ fn apply_pose_effect(
         //          + Mth.clamp(head.yRot, -PI/6, PI/6);
         // ```
         mobs::ArmPose::Block => {
-            rot[0] = rot[0] * 0.5 - 0.942_477_9
-                + c.pitch.clamp(-(PI * 4.0 / 9.0), 0.436_332_32);
+            rot[0] = rot[0] * 0.5 - 0.942_477_9 + c.pitch.clamp(-(PI * 4.0 / 9.0), 0.436_332_32);
             let yaw = if right_handed_pose { -30.0 } else { 30.0 };
             rot[1] = yaw * DEG + c.net.clamp(-PI / 6.0, PI / 6.0);
         }
@@ -4205,7 +4288,12 @@ fn apply_pose_effect(
         // the states we reach" argument the spear pose already makes.
         mobs::ArmPose::Spyglass => {
             rot[0] = (c.pitch - 1.919_862_2).clamp(-2.4, 3.3);
-            rot[1] = c.net + if right_handed_pose { -PI / 12.0 } else { PI / 12.0 };
+            rot[1] = c.net
+                + if right_handed_pose {
+                    -PI / 12.0
+                } else {
+                    PI / 12.0
+                };
         }
         // ```text
         // arm.xRot = Mth.clamp(head.xRot, -1.2F, 1.2F) - 1.4835298F;
@@ -4213,7 +4301,12 @@ fn apply_pose_effect(
         // ```
         mobs::ArmPose::TootHorn => {
             rot[0] = c.pitch.clamp(-1.2, 1.2) - 1.483_529_8;
-            rot[1] = c.net + if right_handed_pose { -PI / 6.0 } else { PI / 6.0 };
+            rot[1] = c.net
+                + if right_handed_pose {
+                    -PI / 6.0
+                } else {
+                    PI / 6.0
+                };
         }
         // `case BRUSH: arm.xRot = arm.xRot * 0.5F - (float)(Math.PI / 5);
         //             arm.yRot = 0.0F;`
@@ -4282,11 +4375,7 @@ impl LegacyRandom48 {
     }
 
     fn next(&mut self, bits: u32) -> i32 {
-        self.seed = self
-            .seed
-            .wrapping_mul(Self::MULTIPLIER)
-            .wrapping_add(11)
-            & Self::MASK;
+        self.seed = self.seed.wrapping_mul(Self::MULTIPLIER).wrapping_add(11) & Self::MASK;
         (self.seed >> (48 - bits)) as i32
     }
 
@@ -4495,7 +4584,11 @@ impl EntityPass {
     /// own space — a chest's lid rotating about its hinge, a shulker box's lid
     /// sliding and spinning off its base. Both animations run on the
     /// *interpolated* clock, so they advance per frame rather than per tick.
-    pub(crate) fn emit_block_entities(&self, verts: &mut Vec<Vertex>, draws: &[BlockEntityDraw<'_>]) {
+    pub(crate) fn emit_block_entities(
+        &self,
+        verts: &mut Vec<Vertex>,
+        draws: &[BlockEntityDraw<'_>],
+    ) {
         let Some(items) = self.held_items.as_ref() else {
             return;
         };
@@ -4558,12 +4651,7 @@ impl EntityPass {
                     verts.push(Vertex {
                         pos: p4[i],
                         uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                        color: [
-                            shade * d.tint[0],
-                            shade * d.tint[1],
-                            shade * d.tint[2],
-                            1.0,
-                        ],
+                        color: [shade * d.tint[0], shade * d.tint[1], shade * d.tint[2], 1.0],
                         // A block entity is never hurt — the overlay flag is
                         // a `LivingEntity` property.
                         light_hurt: [light_r, light_g, light_b, 0.0],
@@ -4848,7 +4936,12 @@ fn kf_drive(driver: mobs::KfDriver, c: &AnimCtx) -> (f32, f32) {
     use mobs::KfDriver::*;
     match driver {
         Walk { speed_f, scale_f } => (c.pos * 0.05 * speed_f, (c.amt * scale_f).min(1.0)),
-        WalkPlusAge { age_div, amt_add, speed_f, scale_f } => (
+        WalkPlusAge {
+            age_div,
+            amt_add,
+            speed_f,
+            scale_f,
+        } => (
             (c.pos + c.age / age_div) * 0.05 * speed_f,
             ((c.amt + amt_add) * scale_f).min(1.0),
         ),
@@ -4985,7 +5078,13 @@ pub fn oracle_part_deltas(
         mob: inputs.mob,
         tendril: inputs.tendril,
     };
-    let (drots, doffs) = anim_deltas(&model.parts, &model.keyframes, &model.event_rigs, &ctx, None);
+    let (drots, doffs) = anim_deltas(
+        &model.parts,
+        &model.keyframes,
+        &model.event_rigs,
+        &ctx,
+        None,
+    );
     Some(
         model
             .parts
@@ -5145,7 +5244,10 @@ fn part_transforms(
             Some(par) => {
                 let (pm, po) = &out[par as usize];
                 let gp = mat_apply(pm, pivot);
-                (mat_mul(*pm, r), [gp[0] + po[0], gp[1] + po[1], gp[2] + po[2]])
+                (
+                    mat_mul(*pm, r),
+                    [gp[0] + po[0], gp[1] + po[1], gp[2] + po[2]],
+                )
             }
             Option::None => (r, pivot),
         };
@@ -5337,11 +5439,7 @@ fn min_rotation(a: [f32; 3], b: [f32; 3]) -> [[f32; 3]; 3] {
         ];
     }
     let f = 1.0 / (1.0 + c);
-    let vx = [
-        [0.0, -v[2], v[1]],
-        [v[2], 0.0, -v[0]],
-        [-v[1], v[0], 0.0],
-    ];
+    let vx = [[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]];
     let vx2 = mat_mul(vx, vx);
     let mut out = IDENTITY3;
     for r in 0..3 {
@@ -5454,18 +5552,22 @@ fn paint_debug_rect(
     painted: &mut std::collections::HashMap<(u32, u32), [u8; 3]>,
 ) -> bool {
     let (ox, oy, tw, th) = slot;
-    let (min_u, max_u) = q
-        .uv
-        .iter()
-        .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[0]), hi.max(p[0])));
-    let (min_v, max_v) = q
-        .uv
-        .iter()
-        .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+    let (min_u, max_u) = q.uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        (lo.min(p[0]), hi.max(p[0]))
+    });
+    let (min_v, max_v) = q.uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        (lo.min(p[1]), hi.max(p[1]))
+    });
     let color = q.facing.debug_color();
     let [r, g, b] = color;
-    let (x0, x1) = ((min_u.floor().max(0.0)) as u32, (max_u.ceil().max(0.0) as u32).min(tw));
-    let (y0, y1) = ((min_v.floor().max(0.0)) as u32, (max_v.ceil().max(0.0) as u32).min(th));
+    let (x0, x1) = (
+        (min_u.floor().max(0.0)) as u32,
+        (max_u.ceil().max(0.0) as u32).min(tw),
+    );
+    let (y0, y1) = (
+        (min_v.floor().max(0.0)) as u32,
+        (max_v.ceil().max(0.0) as u32).min(th),
+    );
     let mut clean = true;
     for y in y0..y1 {
         for x in x0..x1 {
@@ -5524,7 +5626,10 @@ pub(crate) fn upload_region(
 ) -> Result<(), String> {
     let expect = (width * height * 4) as usize;
     if rgba.len() != expect {
-        return Err(format!("upload_region: {} bytes, want {expect}", rgba.len()));
+        return Err(format!(
+            "upload_region: {} bytes, want {expect}",
+            rgba.len()
+        ));
     }
     gpu.collect_garbage();
     unsafe {
@@ -5604,8 +5709,16 @@ pub(crate) fn upload_region(
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
                         .layer_count(1),
                 )
-                .image_offset(vk::Offset3D { x: x as i32, y: y as i32, z: 0 })
-                .image_extent(vk::Extent3D { width, height, depth: 1 })],
+                .image_offset(vk::Offset3D {
+                    x: x as i32,
+                    y: y as i32,
+                    z: 0,
+                })
+                .image_extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })],
         );
         let to_read = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
@@ -5620,7 +5733,9 @@ pub(crate) fn upload_region(
             cb,
             &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_read)),
         );
-        device.end_command_buffer(cb).map_err(|e| format!("skin end: {e}"))?;
+        device
+            .end_command_buffer(cb)
+            .map_err(|e| format!("skin end: {e}"))?;
         let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(cb)];
         let submitted = device.queue_submit2(
             gpu.graphics_queue,
@@ -5744,9 +5859,7 @@ fn create_texture_fmt(
         device
             .bind_buffer_memory(staging, salloc.memory(), salloc.offset())
             .map_err(|e| format!("font staging bind: {e}"))?;
-        salloc
-            .mapped_slice_mut()
-            .ok_or("font staging not mapped")?[..rgba.len()]
+        salloc.mapped_slice_mut().ok_or("font staging not mapped")?[..rgba.len()]
             .copy_from_slice(rgba);
 
         let pool = device
@@ -6054,7 +6167,8 @@ fn build_pipeline(
                     | vk::ColorComponentFlags::G
                     | vk::ColorComponentFlags::B,
             )];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
@@ -6238,16 +6352,27 @@ mod tests {
         let def = warden_def();
         let m = (def.build)();
         let layers = build_emissive(&m, def, &warden_slots(), &no_pack_emissive());
-        let body_quads = m.quads.iter().filter(|q| m.parts[q.part].name == "body").count();
+        let body_quads = m
+            .quads
+            .iter()
+            .filter(|q| m.parts[q.part].name == "body")
+            .count();
         assert!(body_quads > 0);
         // Layer 0 = bioluminescent (head + limbs, no body).
         assert!(
-            layers[0].quads.iter().all(|q| m.parts[q.part as usize].name != "body"),
+            layers[0]
+                .quads
+                .iter()
+                .all(|q| m.parts[q.part as usize].name != "body"),
             "the bioluminescent layer must not include the body"
         );
         // Layer 3 = tendrils. Each tendril is a 16x16x0 plate, so only its two
         // zero-depth faces survive `cube_faces`' area filter.
-        assert_eq!(layers[3].quads.len(), 4, "two tendril plates, two faces each");
+        assert_eq!(
+            layers[3].quads.len(),
+            4,
+            "two tendril plates, two faces each"
+        );
         assert!(layers[3]
             .quads
             .iter()
@@ -6265,11 +6390,18 @@ mod tests {
         let mut slots = warden_slots();
         slots.insert("warden_heart", (128, 512, 64, 64));
         let layers = build_emissive(&m, def, &slots, &no_pack_emissive());
-        assert_eq!(layers.len(), 4, "the mismatched layer is dropped, the rest stay");
+        assert_eq!(
+            layers.len(),
+            4,
+            "the mismatched layer is dropped, the rest stay"
+        );
         // And a missing one, likewise.
         let mut slots = warden_slots();
         slots.remove("warden_pulsating_2");
-        assert_eq!(build_emissive(&m, def, &slots, &no_pack_emissive()).len(), 4);
+        assert_eq!(
+            build_emissive(&m, def, &slots, &no_pack_emissive()).len(),
+            4
+        );
     }
 
     /// A pack's `<texture>_e.png` (ETF) becomes an always-on fullbright layer
@@ -6287,7 +6419,10 @@ mod tests {
         // *two* other slots, and the undercoat's quads are geometric twins of
         // the base's, so a filter keying off position rather than slot would
         // pick them up.
-        assert_eq!(def.textures, &["sheep", "sheep_wool", "sheep_wool_undercoat"]);
+        assert_eq!(
+            def.textures,
+            &["sheep", "sheep_wool", "sheep_wool_undercoat"]
+        );
         let slots: std::collections::HashMap<&'static str, (u32, u32, u32, u32)> = [
             ("sheep", (0u32, 0u32, 64u32, 32u32)),
             ("sheep_wool", (64, 0, 64, 32)),
@@ -6302,10 +6437,21 @@ mod tests {
         assert_eq!(layers.len(), 1, "the sheep has no built-in emissive layers");
         let wool_quads = m.quads.iter().filter(|q| q.tex == 1).count();
         assert!(wool_quads > 0);
-        assert_eq!(layers[0].quads.len(), wool_quads, "only the wool's quads glow");
-        assert!(layers[0].cutout, "OptiFine emissive textures are alpha-cutout");
+        assert_eq!(
+            layers[0].quads.len(),
+            wool_quads,
+            "only the wool's quads glow"
+        );
+        assert!(
+            layers[0].cutout,
+            "OptiFine emissive textures are alpha-cutout"
+        );
         // And it samples the overlay's slot at the wool's own texels.
-        for (got, raw) in layers[0].quads.iter().zip(m.quads.iter().filter(|q| q.tex == 1)) {
+        for (got, raw) in layers[0]
+            .quads
+            .iter()
+            .zip(m.quads.iter().filter(|q| q.tex == 1))
+        {
             let u = got.uv[0][0] * ATLAS_W as f32 - 256.0;
             let v = got.uv[0][1] * ATLAS_H as f32 - 128.0;
             assert!((u - raw.uv[0][0]).abs() < 1e-3 && (v - raw.uv[0][1]).abs() < 1e-3);
@@ -6372,7 +6518,10 @@ mod tests {
         assert!((heart(5.0) - 0.5).abs() < 1e-6);
         assert_eq!(heart(10.0), 0.0);
         assert_eq!(heart(39.9), 0.0);
-        assert!((heart(40.0) - 1.0).abs() < 1e-6, "the beat repeats every 40 ticks");
+        assert!(
+            (heart(40.0) - 1.0).abs() < 1e-6,
+            "the beat repeats every 40 ticks"
+        );
         assert!((heart(82.0) - 0.8).abs() < 1e-5);
 
         // The two entity-state functions pass their state through, and both sit
@@ -6409,17 +6558,33 @@ mod tests {
         };
         // At rest the tendrils do not move, whatever the age.
         for age in [0.0, 3.0, 17.5] {
-            let (r, _) = anim_delta(mobs::Anim::WardenTendril { left: true }, 1.0, &ctx(0.0, age));
+            let (r, _) = anim_delta(
+                mobs::Anim::WardenTendril { left: true },
+                1.0,
+                &ctx(0.0, age),
+            );
             assert_eq!(r, [0.0; 3]);
         }
         // Full countdown at age 0: cos(0) = 1 -> +/-pi*0.1, left positive.
         let peak = std::f32::consts::PI * 0.1;
-        let (l, _) = anim_delta(mobs::Anim::WardenTendril { left: true }, 1.0, &ctx(1.0, 0.0));
-        let (r, _) = anim_delta(mobs::Anim::WardenTendril { left: false }, 1.0, &ctx(1.0, 0.0));
+        let (l, _) = anim_delta(
+            mobs::Anim::WardenTendril { left: true },
+            1.0,
+            &ctx(1.0, 0.0),
+        );
+        let (r, _) = anim_delta(
+            mobs::Anim::WardenTendril { left: false },
+            1.0,
+            &ctx(1.0, 0.0),
+        );
         assert!((l[0] - peak).abs() < 1e-6 && (r[0] + peak).abs() < 1e-6);
         assert_eq!([l[1], l[2]], [0.0, 0.0], "tendrils rotate about X only");
         // Half a countdown scales the same angle.
-        let (h, _) = anim_delta(mobs::Anim::WardenTendril { left: true }, 1.0, &ctx(0.5, 0.0));
+        let (h, _) = anim_delta(
+            mobs::Anim::WardenTendril { left: true },
+            1.0,
+            &ctx(0.5, 0.0),
+        );
         assert!((h[0] - peak * 0.5).abs() < 1e-6);
         // cos(age*2.25) = 0 at age = (pi/2)/2.25 — the still point the emissive
         // gate renders at.
@@ -6428,7 +6593,10 @@ mod tests {
             1.0,
             &ctx(1.0, std::f32::consts::FRAC_PI_2 / 2.25),
         );
-        assert!(z[0].abs() < 1e-6, "the sway must vanish at its zero crossing");
+        assert!(
+            z[0].abs() < 1e-6,
+            "the sway must vanish at its zero crossing"
+        );
     }
 
     /// The tendril split must not have moved the tendrils: their rest geometry
@@ -6446,7 +6614,10 @@ mod tests {
         // Vanilla: right_tendril box [-16,-13,0]+[16,16,0] at pose (-8,-12,0)
         // inside a head pivoted at (0,-13,0) under a body at (0,3,0) — but `pos`
         // here is still part-local, so the box corners are the raw `addBox` ones.
-        let xs: Vec<f32> = quads.iter().flat_map(|q| q.pos.iter().map(|p| p[0])).collect();
+        let xs: Vec<f32> = quads
+            .iter()
+            .flat_map(|q| q.pos.iter().map(|p| p[0]))
+            .collect();
         let (lo, hi) = (
             xs.iter().cloned().fold(f32::MAX, f32::min),
             xs.iter().cloned().fold(f32::MIN, f32::max),

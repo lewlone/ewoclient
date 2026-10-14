@@ -22,10 +22,7 @@ pub(super) fn collect_block_entities(
         // not a part animation — the whole pot rocks (M29). It turns about
         // `(0.5, 0, 0.5)`, the block's FLOOR centre, where the facing turns
         // about `(0.5, 0.5, 0.5)`: a pot rocks on its base like a real one.
-        let be_transform = match world
-            .block_entities
-            .pot_wobble(*pos, game_time, alpha)
-        {
+        let be_transform = match world.block_entities.pot_wobble(*pos, game_time, alpha) {
             Some((style, progress)) if draw.anim == BlockEntityAnim::DecoratedPot => {
                 let st = match style {
                     rewo_world::block_entities::PotWobble::Positive => {
@@ -76,9 +73,8 @@ pub(super) fn collect_block_entities(
             // The sway (M29). Every cloth draw — the bare flag and each
             // pattern layer — shares ONE phase, or the layers would drift
             // apart and the pattern would slide off the flag it is painted on.
-            let phase = rewo_data::be_transform::banner_phase(
-                pos.x, pos.y, pos.z, game_time, alpha,
-            );
+            let phase =
+                rewo_data::be_transform::banner_phase(pos.x, pos.y, pos.z, game_time, alpha);
             let flag_pivot = if standing {
                 bem::BANNER_STANDING_FLAG_PIVOT
             } else {
@@ -154,7 +150,10 @@ pub(super) fn collect_block_entities(
                 } else {
                     "rewo:be/conduit_wind"
                 };
-                piece(wind, rewo_data::be_transform::conduit_wind(c.phase(), false));
+                piece(
+                    wind,
+                    rewo_data::be_transform::conduit_wind(c.phase(), false),
+                );
                 piece(wind, rewo_data::be_transform::conduit_wind(c.phase(), true));
                 piece(
                     if c.shape.hunting() {
@@ -298,7 +297,9 @@ pub(super) fn chest_openness(
 }
 
 /// `Direction.getClockWise()` for the four horizontals.
-pub(super) fn clockwise(f: rewo_data::chest_states::ChestFacing) -> rewo_data::chest_states::ChestFacing {
+pub(super) fn clockwise(
+    f: rewo_data::chest_states::ChestFacing,
+) -> rewo_data::chest_states::ChestFacing {
     use rewo_data::chest_states::ChestFacing as F;
     match f {
         F::North => F::East,
@@ -346,7 +347,6 @@ pub(crate) struct OwnedSignLine {
     pub color: [f32; 3],
     pub light: [f32; 3],
 }
-
 
 /// Every end portal and gateway in the world, as geometry for the M32 pass.
 ///
@@ -457,11 +457,7 @@ pub(crate) fn collect_spawner_mobs(
             width: w,
             height: h,
             mount: rewo_data::be_transform::spawner_mob(
-                rewo_data::be_transform::spawner_spin_degrees(
-                    spin.old_spin,
-                    spin.spin,
-                    alpha,
-                ),
+                rewo_data::be_transform::spawner_spin_degrees(spin.old_spin, spin.spin, alpha),
                 rewo_data::be_transform::spawner_mob_scale(w, h),
             ),
             light: entity_light(
@@ -481,7 +477,6 @@ pub(crate) fn collect_spawner_mobs(
     });
     out
 }
-
 
 /// Turn a collected caged mob into an `EntityDraw`.
 ///
@@ -656,9 +651,7 @@ pub(crate) fn dye_linear(i: usize) -> [f32; 3] {
 /// The tag is `patterns`, a list of `{pattern, color}` compounds written by
 /// `BannerPatternLayers.CODEC`. `color` is a dye **name**, so it is resolved
 /// through the same 16-entry order the block colours use.
-pub(crate) fn banner_layers(
-    be: &rewo_world::block_entities::BlockEntity,
-) -> Vec<(String, usize)> {
+pub(crate) fn banner_layers(be: &rewo_world::block_entities::BlockEntity) -> Vec<(String, usize)> {
     let Some(rewo_proto::nbt::Nbt::List(items)) = be.data.get("patterns") else {
         return Vec::new();
     };
@@ -827,11 +820,7 @@ pub(crate) fn collect_sign_text(
             // The block origin is folded in here rather than in the renderer,
             // so a sign's transform is the same shape as a block entity's.
             let m = rewo_data::be_transform::mul(
-                &rewo_data::be_transform::translation(
-                    pos.x as f32,
-                    pos.y as f32,
-                    pos.z as f32,
-                ),
+                &rewo_data::be_transform::translation(pos.x as f32, pos.y as f32, pos.z as f32),
                 &base,
             );
             for (i, line) in face.lines.iter().enumerate() {

@@ -207,7 +207,10 @@ impl Progress {
         if total <= 1 {
             return None;
         }
-        Some((self.completed_requirement_groups(requirements) as i32, total as i32))
+        Some((
+            self.completed_requirement_groups(requirements) as i32,
+            total as i32,
+        ))
     }
 }
 
@@ -281,7 +284,9 @@ fn parse_advancement(r: &mut PacketReader) -> Result<WireAdvancement, String> {
         .map_err(|e| format!("requirements: {e:?}"))?;
     let mut requirements = Vec::with_capacity(group_count.min(1024));
     for _ in 0..group_count {
-        let n = r.count("requirement group", 1).map_err(|e| format!("requirement group: {e:?}"))?;
+        let n = r
+            .count("requirement group", 1)
+            .map_err(|e| format!("requirement group: {e:?}"))?;
         let mut group = Vec::with_capacity(n.min(4096));
         for _ in 0..n {
             group.push(
@@ -307,7 +312,9 @@ fn parse_progress(r: &mut PacketReader) -> Result<Progress, String> {
         .map_err(|e| format!("progress criteria: {e:?}"))?;
     let mut criteria = Vec::with_capacity(n.min(4096));
     for _ in 0..n {
-        let name = r.string(32767).map_err(|e| format!("criterion key: {e:?}"))?;
+        let name = r
+            .string(32767)
+            .map_err(|e| format!("criterion key: {e:?}"))?;
         // `readNullable(readInstant)` — bool then a BE i64 of epoch millis.
         let obtained = r
             .option(|r| r.i64())
@@ -425,7 +432,6 @@ pub struct ClientAdvancements {
     /// instead of silently dropped.
     pub show_advancements: bool,
 }
-
 
 impl ClientAdvancements {
     /// `ClientAdvancements.update` (`ClientAdvancements.java:36-69`) +
@@ -595,10 +601,11 @@ impl ClientAdvancements {
     /// flipping it to ANY survived a full green suite. Ask through here.
     pub fn is_done(&self, id: &str) -> Option<bool> {
         let node = self.nodes.get(id)?;
-        Some(self
-            .progress
-            .get(id)
-            .is_some_and(|p| p.is_done(&node.advancement.requirements)))
+        Some(
+            self.progress
+                .get(id)
+                .is_some_and(|p| p.is_done(&node.advancement.requirements)),
+        )
     }
 
     /// The roots, in insertion order — the screen's tab strip.
@@ -778,13 +785,7 @@ mod tests {
             &[advancement_bytes(
                 "a:r",
                 None,
-                Some(&display_bytes(
-                    "R",
-                    TASK,
-                    0b001,
-                    1.5,
-                    2.5,
-                )),
+                Some(&display_bytes("R", TASK, 0b001, 1.5, 2.5)),
             )],
             &[],
             &[],
@@ -930,7 +931,10 @@ mod tests {
     fn insertion_passes_place_children_sent_before_their_parents() {
         let mut t = ClientAdvancements::default();
         // Child FIRST — pass one cannot insert it; pass two can.
-        t.add_all(vec![child_adv("a:c", "a:r", 1.0, 0.0), root_adv("a:r", true)]);
+        t.add_all(vec![
+            child_adv("a:c", "a:r", 1.0, 0.0),
+            root_adv("a:r", true),
+        ]);
         assert!(t.node("a:r").is_some(), "root inserted");
         assert!(t.node("a:c").is_some(), "child inserted on a later pass");
         assert!(
@@ -991,11 +995,7 @@ mod tests {
         apply_progress(
             &mut t,
             "a:r",
-            vec![
-                ("cX", Some(2)),
-                ("c1", Some(1)),
-                ("c3", Some(3)),
-            ],
+            vec![("cX", Some(2)), ("c1", Some(1)), ("c3", Some(3))],
         );
 
         let p = t.progress("a:r").unwrap();
@@ -1046,7 +1046,11 @@ mod tests {
         let reqs = t.node("a:solo").unwrap().advancement.requirements.clone();
         let p = t.progress("a:solo").unwrap();
         assert_eq!(p.percent(&reqs), 0.0);
-        assert_eq!(p.progress_text(&reqs), None, "total <= 1 suppresses the counter");
+        assert_eq!(
+            p.progress_text(&reqs),
+            None,
+            "total <= 1 suppresses the counter"
+        );
         assert!(!p.has_progress());
     }
 
@@ -1061,7 +1065,11 @@ mod tests {
         ]);
         let tabs: Vec<&str> = t.tabs().iter().map(|n| n.id.as_str()).collect();
         assert_eq!(tabs, vec!["a:first", "a:third"]);
-        let tasks: Vec<&str> = t.tab_tasks("a:first").iter().map(|n| n.id.as_str()).collect();
+        let tasks: Vec<&str> = t
+            .tab_tasks("a:first")
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect();
         assert_eq!(
             tasks,
             vec!["a:task"],
@@ -1111,7 +1119,11 @@ mod tests {
         // Java's ObjectLinkedOpenHashSet.remove+add appends at the end; the
         // screen's tab strip follows that order.
         let mut t = ClientAdvancements::default();
-        t.add_all(vec![root_adv("a:a", true), root_adv("a:b", true), root_adv("a:c", true)]);
+        t.add_all(vec![
+            root_adv("a:a", true),
+            root_adv("a:b", true),
+            root_adv("a:c", true),
+        ]);
         t.remove_ids(&["a:a".to_string()]);
         t.add_all(vec![root_adv("a:a", true)]);
         let order: Vec<&str> = t.tabs().iter().map(|n| n.id.as_str()).collect();
@@ -1170,4 +1182,3 @@ mod tests {
         assert_eq!(t.is_done("a:e"), Some(false));
     }
 }
-

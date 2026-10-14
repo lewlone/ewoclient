@@ -677,7 +677,18 @@ fn check_layer_matrix(
     let black = flat([0, 0, 0], 2);
     let vp = view_proj(0.0);
 
-    let one = render_portal(gpu, off, baked, draw, (&black, 2), (&tex, side), 1, 0, vp, 0.0)?;
+    let one = render_portal(
+        gpu,
+        off,
+        baked,
+        draw,
+        (&black, 2),
+        (&tex, side),
+        1,
+        0,
+        vp,
+        0.0,
+    )?;
     dump(args, off, gpu, "matrix-one-layer");
 
     let m = layer_matrix(1.0, 0.0);
@@ -750,7 +761,12 @@ fn check_layer_matrix(
     );
 
     // A prediction that agreed with a black clear would prove nothing either.
-    let covered = one.as_chunks::<4>().0.iter().filter(|p| p[0] > 8 || p[2] > 8).count();
+    let covered = one
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] > 8 || p[2] > 8)
+        .count();
     c.record(
         "v11.the_portal_actually_covered_the_pixels_read",
         covered > (W * H) as usize / 4,
@@ -762,7 +778,18 @@ fn check_layer_matrix(
     );
 
     // And the single-layer isolation must be real.
-    let two = render_portal(gpu, off, baked, draw, (&black, 2), (&tex, side), 2, 0, vp, 0.0)?;
+    let two = render_portal(
+        gpu,
+        off,
+        baked,
+        draw,
+        (&black, 2),
+        (&tex, side),
+        2,
+        0,
+        vp,
+        0.0,
+    )?;
     c.record(
         "v12.one_layer_is_genuinely_one_sample",
         bytes_differing(&one, &two) > (W * H) as usize / 20,

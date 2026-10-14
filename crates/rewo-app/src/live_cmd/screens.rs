@@ -665,14 +665,13 @@ pub(super) fn apply_screen(
     // with the page counter is inside a function a test can reach. This
     // function cannot be one: it needs a `PlaySession`.
     let (book_field_labels, book_field_fills) = match (book.as_ref(), baked.font.as_ref()) {
-        (Some(b), Some(f)) => {
-            book_labels(b, book_field, &baked.lang, &f.advance, w, h, now_ms)
-        }
+        (Some(b), Some(f)) => book_labels(b, book_field, &baked.lang, &f.advance, w, h, now_ms),
         _ => (Vec::new(), Vec::new()),
     };
-    wr.set_recipe_book(book.as_ref().and_then(|b| {
-        recipe_book_panel(b, &book_field_fills, book_overlay, book_mouse)
-    }));
+    wr.set_recipe_book(
+        book.as_ref()
+            .and_then(|b| recipe_book_panel(b, &book_field_fills, book_overlay, book_mouse)),
+    );
     wr.set_container_panel(container_panel(
         layout,
         session.menus.open(),
@@ -700,21 +699,20 @@ pub(super) fn apply_screen(
         )),
     ));
 
-    let (mut icons, mut labels) =
-        screen_icons(
-            menu,
-            items,
-            &session.trim_materials,
-            w,
-            h,
-            session.menus.open(),
-            cut,
-            merchant,
-            book.as_ref(),
-            &ghosts,
-            ghost_cycle,
-            book_overlay,
-        );
+    let (mut icons, mut labels) = screen_icons(
+        menu,
+        items,
+        &session.trim_materials,
+        w,
+        h,
+        session.menus.open(),
+        cut,
+        merchant,
+        book.as_ref(),
+        &ghosts,
+        ghost_cycle,
+        book_overlay,
+    );
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
@@ -760,10 +758,7 @@ pub(super) fn apply_screen(
     labels.extend(book_field_labels);
     apply_gui_icons(wr, gpu, gui, &icons);
 
-    wr.set_container(
-        true,
-        hovered_slot_position(layout, mouse, w, h, book_open),
-    );
+    wr.set_container(true, hovered_slot_position(layout, mouse, w, h, book_open));
 
     // Every visible slot's durability bar, plus the cursor's. The screen's
     // rects and the hotbar's go through the same builder.
@@ -773,16 +768,17 @@ pub(super) fn apply_screen(
             .map(|i| (menu.menu_slot(i), rects[i]))
             .collect();
         if let Some(carried) = menu.carried() {
-            if let Some((icon, _)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
+            if let Some((icon, _)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h)
+            {
                 stacks.push((Some(carried), (icon.x, icon.y, icon.size)));
             }
         }
         // `!has(UNBREAKABLE)`. No item's *prototype* carries the component in
-    // 26.2 — it is only ever patched on — so the patch flag is the whole
-    // answer here.
-    wr.set_item_bars(item_bars(&stacks, items, |s| {
-        session.inventory.text_of(s).is_some_and(|t| t.unbreakable)
-    }));
+        // 26.2 — it is only ever patched on — so the patch flag is the whole
+        // answer here.
+        wr.set_item_bars(item_bars(&stacks, items, |s| {
+            session.inventory.text_of(s).is_some_and(|t| t.unbreakable)
+        }));
     }
 
     // The tooltip's box and its one line. Both need the font's advances, so a
@@ -791,86 +787,88 @@ pub(super) fn apply_screen(
         // M106c — the frame's three producers, in vanilla's precedence. Named
         // rather than chained with `or_else` here: see `frame_tooltip`.
         frame_tooltip(
-        &mut glyphs,
-        // M133 — the three widgets that carry an `AbstractWidget` tooltip.
-        |glyphs| {
-            let b = book.as_ref()?;
-            let view = b.view?;
-            let (bx, by) = book_mouse?;
-            let hit = rewo_world::recipe_book_screen::book_hit(bx, by, view, view.tabs)?;
-            let key = rewo_world::recipe_book_screen::widget_tooltip_key(
-                hit,
-                book_type_of(layout)?,
-                view.filtering,
-                view.page,
-                view.total_pages,
-            )?;
-            tooltip_layout(
-                vec![vec![rewo_gpu::tooltip::Span::new(
-                    baked.lang.or_key(key).to_string(),
-                    [1.0, 1.0, 1.0],
-                )]],
-                advance,
-                glyphs.as_deref_mut(),
-                mouse,
-                (w, h),
-            )
-        },
-        |glyphs| screen_tooltip(
-            menu,
-            items,
-            &baked.item_names,
-            &baked.lang,
-            &session.enchantments,
-            &baked.enchantment_text,
-            &session.stack_details,
-            session.component_names.as_deref(),
-            flag,
-            advance,
-            glyphs.as_deref_mut(),
-            mouse,
-            (w, h),
-            layout,
-            session.menus.open(),
-            session
-                .game_state
-                .game_mode()
-                .is_some_and(|m| m.is_spectator()),
-            book_open,
-        ),
-        // The book's cell tooltip, SECOND. Vanilla calls it AFTER the
-        // container's and it still loses — first-wins, not last-wins.
-        |glyphs| {
-            book_tooltip(
-                book.as_ref()?,
-                book_overlay.is_some(),
-                book_mouse,
-                items,
-                &baked.item_names,
-                &baked.lang,
-                flag,
-                advance,
-                glyphs.as_deref_mut(),
-                mouse,
-                (w, h),
-            )
-        },
-        // And the ghost's, THIRD — `RecipeBookComponent.extractTooltip` runs
-        // the page's then the ghost's.
-        |glyphs| {
-            ghost_tooltip(
-                &ghosts,
-                ghost_cycle,
-                layout,
-                book_open,
-                items,
-                &baked.item_names,
-                advance,
-                glyphs.as_deref_mut(),
-                mouse,
-                (w, h),
-            )
-        },
+            &mut glyphs,
+            // M133 — the three widgets that carry an `AbstractWidget` tooltip.
+            |glyphs| {
+                let b = book.as_ref()?;
+                let view = b.view?;
+                let (bx, by) = book_mouse?;
+                let hit = rewo_world::recipe_book_screen::book_hit(bx, by, view, view.tabs)?;
+                let key = rewo_world::recipe_book_screen::widget_tooltip_key(
+                    hit,
+                    book_type_of(layout)?,
+                    view.filtering,
+                    view.page,
+                    view.total_pages,
+                )?;
+                tooltip_layout(
+                    vec![vec![rewo_gpu::tooltip::Span::new(
+                        baked.lang.or_key(key).to_string(),
+                        [1.0, 1.0, 1.0],
+                    )]],
+                    advance,
+                    glyphs.as_deref_mut(),
+                    mouse,
+                    (w, h),
+                )
+            },
+            |glyphs| {
+                screen_tooltip(
+                    menu,
+                    items,
+                    &baked.item_names,
+                    &baked.lang,
+                    &session.enchantments,
+                    &baked.enchantment_text,
+                    &session.stack_details,
+                    session.component_names.as_deref(),
+                    flag,
+                    advance,
+                    glyphs.as_deref_mut(),
+                    mouse,
+                    (w, h),
+                    layout,
+                    session.menus.open(),
+                    session
+                        .game_state
+                        .game_mode()
+                        .is_some_and(|m| m.is_spectator()),
+                    book_open,
+                )
+            },
+            // The book's cell tooltip, SECOND. Vanilla calls it AFTER the
+            // container's and it still loses — first-wins, not last-wins.
+            |glyphs| {
+                book_tooltip(
+                    book.as_ref()?,
+                    book_overlay.is_some(),
+                    book_mouse,
+                    items,
+                    &baked.item_names,
+                    &baked.lang,
+                    flag,
+                    advance,
+                    glyphs.as_deref_mut(),
+                    mouse,
+                    (w, h),
+                )
+            },
+            // And the ghost's, THIRD — `RecipeBookComponent.extractTooltip` runs
+            // the page's then the ghost's.
+            |glyphs| {
+                ghost_tooltip(
+                    &ghosts,
+                    ghost_cycle,
+                    layout,
+                    book_open,
+                    items,
+                    &baked.item_names,
+                    advance,
+                    glyphs.as_deref_mut(),
+                    mouse,
+                    (w, h),
+                )
+            },
         )
     });
     wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _, _)| draw.clone()));
@@ -884,10 +882,7 @@ pub(super) fn apply_screen(
     }
     if wr.preview_ready() {
         let held = [
-            session
-                .inventory
-                .held()
-                .and_then(|s| items.name(s.item_id)),
+            session.inventory.held().and_then(|s| items.name(s.item_id)),
             session
                 .inventory
                 .offhand()
@@ -918,16 +913,17 @@ pub(super) fn apply_screen(
             }
             None => (None, false, None),
         };
-        let (draw, vp, rect) =
-            preview_draw(session, skin_uv, slim, cape_origin, held, w, h, mouse);
-        if let Err(e) = wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>()) {
+        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, cape_origin, held, w, h, mouse);
+        if let Err(e) =
+            wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>())
+        {
             log::warn!("live: preview held items: {e}");
         }
         wr.set_preview(Some((&draw, vp, rect)));
     }
     // The tooltip's text goes last so it draws over the icons and the count
     // labels, matching the order the box is drawn in.
-        let velvet_runs: Vec<rewo_gpu::velvet_text::OwnedRun> = tooltip
+    let velvet_runs: Vec<rewo_gpu::velvet_text::OwnedRun> = tooltip
         .as_ref()
         .map(|(_, _, r)| r.clone())
         .unwrap_or_default();
@@ -980,9 +976,7 @@ pub(super) fn screen_key_action(key: PhysicalKey, ctrl: bool) -> Option<SlotActi
     }
     match code {
         // `Inventory.SLOT_OFFHAND`, the one button outside `0..9`.
-        KeyCode::KeyF => Some(SlotAction::Swap(
-            rewo_world::inventory::SWAP_OFFHAND_BUTTON,
-        )),
+        KeyCode::KeyF => Some(SlotAction::Swap(rewo_world::inventory::SWAP_OFFHAND_BUTTON)),
         KeyCode::KeyQ => Some(SlotAction::Throw { all: ctrl }),
         _ => None,
     }
@@ -1054,7 +1048,9 @@ pub(super) fn finish_drag(
         .as_ref()
         .map(rewo_net::recipe_book::SmithingSets::from_packet);
     let props = |id: i32| item_props(items, id, smithing.as_ref());
-    let accepted = session.inventory.quick_craft_accepts(&touched, kind, &props);
+    let accepted = session
+        .inventory
+        .quick_craft_accepts(&touched, kind, &props);
     if accepted.is_empty() {
         return;
     }
@@ -1076,7 +1072,10 @@ pub(super) fn finish_drag(
         if toggle != rewo_world::menu::CrafterToggle::None {
             println!("[rewo-m93i] CRAFTER slot {slot}: {toggle:?} (from a one-slot drag)");
         }
-        if let Some(p) = session.shown_menu_mut().click_pickup(slot as i32, button, &props) {
+        if let Some(p) = session
+            .shown_menu_mut()
+            .click_pickup(slot as i32, button, &props)
+        {
             if session
                 .container_click_input(&p, rewo_world::inventory::CONTAINER_INPUT_PICKUP)
                 .is_ok()
@@ -1086,7 +1085,10 @@ pub(super) fn finish_drag(
         }
         return;
     }
-    let Some(end) = session.shown_menu_mut().click_quick_craft(&accepted, kind, &props) else {
+    let Some(end) = session
+        .shown_menu_mut()
+        .click_quick_craft(&accepted, kind, &props)
+    else {
         return;
     };
     use rewo_world::inventory::Inventory as Inv;
@@ -1139,8 +1141,7 @@ pub(super) fn click_screen(
     // clears it.
     {
         let layout = session.shown_menu().layout();
-        let player_inventory =
-            layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID;
+        let player_inventory = layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID;
         if book_type_of(layout).is_some_and(|b| {
             rewo_world::recipe_book_screen::is_crafting_slot(b, player_inventory, slot)
         }) {

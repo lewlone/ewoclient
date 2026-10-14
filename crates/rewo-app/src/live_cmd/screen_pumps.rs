@@ -22,8 +22,7 @@ impl LiveApp {
         if let Some(kill) = kill {
             let (gw, gh) = self.gui_size();
             let lang = self.lang.clone();
-            let (view, screen) =
-                DeathView::open(&kill, hardcore, score, &lang, respawns, gw, gh);
+            let (view, screen) = DeathView::open(&kill, hardcore, score, &lang, respawns, gw, gh);
             log::info!(
                 "live: death screen — \"{}\", hardcore={hardcore}, score={score}",
                 view.model.cause_of_death.as_deref().unwrap_or("")
@@ -53,7 +52,8 @@ impl LiveApp {
             .current()
             .is_some_and(|s| s.kind == ScreenKind::Death && (s.width != gw || s.height != gh));
         if stale {
-            if let (Some(view), Some(s)) = (self.death.as_ref(), self.screen.screens.current_mut()) {
+            if let (Some(view), Some(s)) = (self.death.as_ref(), self.screen.screens.current_mut())
+            {
                 view.reposition(s, gw, gh);
             }
         }
@@ -248,8 +248,14 @@ impl LiveApp {
             }
             return;
         };
-        let Some(session) = self.session.as_ref() else { return };
-        let be_pos = rewo_world::block_entities::BlockEntityPos { x: pos.0, y: pos.1, z: pos.2 };
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let be_pos = rewo_world::block_entities::BlockEntityPos {
+            x: pos.0,
+            y: pos.1,
+            z: pos.2,
+        };
         let Some(be) = session.world.block_entities.get(be_pos) else {
             log::warn!(
                 "live: open_sign_editor at ({}, {}, {}): no block entity there - ignored",
@@ -278,8 +284,9 @@ impl LiveApp {
         };
         let (face, _) = be.sign_text(session.lang.as_deref());
         let initial = face.as_ref().map(|f| f.lines.clone()).unwrap_or_default();
-        let dye =
-            rewo_data::sign_text::dye_text_color(face.as_ref().and_then(|f| f.color.clone()).as_deref());
+        let dye = rewo_data::sign_text::dye_text_color(
+            face.as_ref().and_then(|f| f.color.clone()).as_deref(),
+        );
         let glowing = face.map(|f| f.glowing).unwrap_or(false);
         let done = self.lang.get_or_default("gui.done", "Done").to_string();
         let (gw, gh) = self.gui_size();
@@ -296,7 +303,10 @@ impl LiveApp {
         // The heading is `centeredText(font, title, width/2, 40, -1)` with
         // `title = Component.translatable("sign.edit")`; the label widget
         // needs its width, so the app builds it like the options titles do.
-        let title = self.lang.get_or_default("sign.edit", "Edit sign message").to_string();
+        let title = self
+            .lang
+            .get_or_default("sign.edit", "Edit sign message")
+            .to_string();
         let tw = self.text_width(&title);
         screen.widgets.push(rewo_world::screen::Widget::label(
             rewo_world::sign_edit_screen::TITLE_LABEL,

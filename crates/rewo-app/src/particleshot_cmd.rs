@@ -179,7 +179,11 @@ pub fn run(args: ParticleshotArgs) -> Result<(), String> {
         c.failures.len()
     );
     if !c.failures.is_empty() {
-        return Err(format!("particleshot: {} failed: {:?}", c.failures.len(), c.failures));
+        return Err(format!(
+            "particleshot: {} failed: {:?}",
+            c.failures.len(),
+            c.failures
+        ));
     }
     if c.witnessed != EXPECTED_WITNESSES {
         return Err(format!(
@@ -290,7 +294,18 @@ fn wire_layer(c: &mut Checker, packets: &Packets, types: &ParticleTypes) {
     // `minecraft:block` is the one supported kind carrying an options payload.
     let block_id = types.id_of("minecraft:block").unwrap();
     let with_state = level_particles_body(
-        false, false, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1, block_id, Some(1234),
+        false,
+        false,
+        1.0,
+        2.0,
+        3.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1,
+        block_id,
+        Some(1234),
     );
     let state_ok = matches!(
         rewo_net::route_level_particles(&with_state, types),
@@ -311,7 +326,20 @@ fn wire_layer(c: &mut Checker, packets: &Packets, types: &ParticleTypes) {
         .or_else(|| types.id_of("minecraft:note"))
         .unwrap();
     let dropped = rewo_net::route_level_particles(
-        &level_particles_body(false, false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1, unsupported, None),
+        &level_particles_body(
+            false,
+            false,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1,
+            unsupported,
+            None,
+        ),
         types,
     );
     c.record(
@@ -331,14 +359,22 @@ fn wire_layer(c: &mut Checker, packets: &Packets, types: &ParticleTypes) {
     c.record(
         "w8.truncated_bodies_decode_to_nothing",
         truncated_all_none,
-        format!("every one of the {} prefixes yields None, no panic", full.len()),
+        format!(
+            "every one of the {} prefixes yields None, no panic",
+            full.len()
+        ),
     );
 
     // level_event 2001 carries the broken block's state in `data`.
     let destroy = level_event_body(LEVEL_EVENT_DESTROY_BLOCK, 100, 70, -200, 4321, false);
     let d_ok = matches!(
         rewo_net::route_level_event(&destroy),
-        Some(ParticleEvent::DestroyBlock { x: 100, y: 70, z: -200, block_state: 4321 })
+        Some(ParticleEvent::DestroyBlock {
+            x: 100,
+            y: 70,
+            z: -200,
+            block_state: 4321
+        })
     );
     c.record(
         "w9.level_event_2001_decodes_pos_and_state",
@@ -469,7 +505,12 @@ fn fanout_layer(c: &mut Checker, types: &ParticleTypes) {
     let n = scat.len() as f64;
     let mean_x = scat.particles.iter().map(|p| p.x).sum::<f64>() / n;
     let mean_z = scat.particles.iter().map(|p| p.z).sum::<f64>() / n;
-    let var_x = scat.particles.iter().map(|p| (p.x - mean_x).powi(2)).sum::<f64>() / n;
+    let var_x = scat
+        .particles
+        .iter()
+        .map(|p| (p.x - mean_x).powi(2))
+        .sum::<f64>()
+        / n;
     // xDist 2.0 → unit gaussian scaled by 2 → variance ~4 (loose bounds: this
     // is a distributional claim, and the exact draws are pinned elsewhere).
     c.record(
@@ -536,12 +577,12 @@ fn fanout_layer(c: &mut Checker, types: &ParticleTypes) {
     // is a `get(random)` on the ENGINE generator — so it consumes a draw as a
     // constructor argument, before any of the particle's own.
     let expected: [(ParticleKind, u32, bool); 6] = [
-        (ParticleKind::Flame, 1, true),   // flame
-        (ParticleKind::Crit, 1, true),    // critical_hit
-        (ParticleKind::Splash, 4, true),  // splash_0..3
-        (ParticleKind::Smoke, 8, false),  // generic_7..0, by age
-        (ParticleKind::Poof, 8, false),   // generic_7..0, by age
-        (ParticleKind::Terrain, 1, false),// from the block model
+        (ParticleKind::Flame, 1, true),    // flame
+        (ParticleKind::Crit, 1, true),     // critical_hit
+        (ParticleKind::Splash, 4, true),   // splash_0..3
+        (ParticleKind::Smoke, 8, false),   // generic_7..0, by age
+        (ParticleKind::Poof, 8, false),    // generic_7..0, by age
+        (ParticleKind::Terrain, 1, false), // from the block model
     ];
     let sprites_ok = expected
         .iter()
@@ -633,7 +674,12 @@ fn rows(kind: &str) -> Vec<Row> {
                 ]);
                 removed.push(f[6] == "1");
             }
-            Some(Row { seed, lifetime, ticks, removed })
+            Some(Row {
+                seed,
+                lifetime,
+                ticks,
+                removed,
+            })
         })
         .collect()
 }
@@ -705,15 +751,30 @@ fn simulation_layer(c: &mut Checker) {
     });
     grade_kind(c, "s4.crit_trajectory", "crit", |s| {
         Particle::crit(
-            10.5, 70.0, -3.25, 0.1, 0.2, -0.1,
-            LegacyRandom::new(s), &void_shapes,
+            10.5,
+            70.0,
+            -3.25,
+            0.1,
+            0.2,
+            -0.1,
+            LegacyRandom::new(s),
+            &void_shapes,
         )
     });
     grade_kind(c, "s5.poof_trajectory", "poof", |s| {
         Particle::poof(10.5, 70.0, -3.25, 0.0, 0.1, 0.0, LegacyRandom::new(s))
     });
     grade_kind(c, "s6.terrain_trajectory", "terrain", |s| {
-        Particle::terrain(10.5, 70.0, -3.25, 0.25, -0.125, 0.5, 1, LegacyRandom::new(s))
+        Particle::terrain(
+            10.5,
+            70.0,
+            -3.25,
+            0.25,
+            -0.125,
+            0.5,
+            1,
+            LegacyRandom::new(s),
+        )
     });
 
     // The oracle runs in an empty world, so collision needs its own witness
@@ -771,8 +832,14 @@ fn simulation_layer(c: &mut Checker) {
     // Crit ticks once inside its own constructor — age 1 before any external
     // tick. Easy to drop when porting, and it shifts the whole colour decay.
     let crit = Particle::crit(
-        0.0, 64.0, 0.0, 0.0, 0.0, 0.0,
-        LegacyRandom::new(42), &void_shapes,
+        0.0,
+        64.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        LegacyRandom::new(42),
+        &void_shapes,
     );
     c.record(
         "s10.crit_ticks_inside_its_constructor",

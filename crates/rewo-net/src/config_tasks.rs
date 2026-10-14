@@ -371,7 +371,10 @@ mod tests {
         // chosen: if a later change makes `reply_action` return DECLINED, a
         // required-pack server disconnects the client and the fix silently
         // regresses into a different failure.
-        assert_ne!(reply_action("https://example.com/p.zip"), PackAction::Declined);
+        assert_ne!(
+            reply_action("https://example.com/p.zip"),
+            PackAction::Declined
+        );
         assert_ne!(reply_action("nonsense"), PackAction::Declined);
     }
 
@@ -419,7 +422,10 @@ mod tests {
             reply_action("https://example.com/pack.zip"),
             PackAction::FailedDownload
         );
-        assert_eq!(reply_action("ftp://example.com/pack.zip"), PackAction::InvalidUrl);
+        assert_eq!(
+            reply_action("ftp://example.com/pack.zip"),
+            PackAction::InvalidUrl
+        );
     }
 
     #[test]
@@ -462,7 +468,11 @@ mod tests {
         // packet id (1 VarInt byte for 6) + 16 UUID + 1 action = 18.
         assert_eq!(bytes.len(), 18, "{bytes:02x?}");
         assert_eq!(bytes[0], 6, "packet id");
-        assert_eq!(&bytes[1..17], &id.to_be_bytes(), "UUID is big-endian hi..lo");
+        assert_eq!(
+            &bytes[1..17],
+            &id.to_be_bytes(),
+            "UUID is big-endian hi..lo"
+        );
         assert_eq!(bytes[17], 2, "FAILED_DOWNLOAD ordinal");
     }
 
@@ -503,7 +513,11 @@ mod tests {
         let (replied, action) = answer_pack_push(&[0u8; 3], &mut log);
         assert_eq!(replied, 0);
         assert!(action.is_terminal());
-        assert_eq!(log.pack_replies.len(), 1, "the failure is recorded, not dropped");
+        assert_eq!(
+            log.pack_replies.len(),
+            1,
+            "the failure is recorded, not dropped"
+        );
     }
 
     #[test]
@@ -516,7 +530,10 @@ mod tests {
             answer_pack_push(&body, &mut log);
         }
         assert_eq!(
-            log.pack_replies.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            log.pack_replies
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
     }

@@ -60,7 +60,11 @@ impl Checker {
 /// The icon template every fixture display carries — item 1 (stone), count 1,
 /// empty patch.
 fn test_icon() -> rewo_net::component_wire::ItemTemplate {
-    rewo_net::component_wire::ItemTemplate { item_id: 1, count: 1, patched: false }
+    rewo_net::component_wire::ItemTemplate {
+        item_id: 1,
+        count: 1,
+        patched: false,
+    }
 }
 
 const W: u32 = 640;
@@ -213,7 +217,11 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
         format!(
             "{} tab(s), {} widget(s)",
             view.screen.tabs.len(),
-            view.screen.tabs.first().map(|t| t.widgets.len()).unwrap_or(0)
+            view.screen
+                .tabs
+                .first()
+                .map(|t| t.widgets.len())
+                .unwrap_or(0)
         ),
     );
     // The hidden ones are widgets (descendants route links through them) but
@@ -307,12 +315,8 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     let report = vc.tab_click_report(GUI_W, GUI_H, 80.0, 38.0);
     c.record(
         "m9.clicking_selects_and_names_the_root",
-        report.as_deref() == Some("minecraft:adventure/root")
-            && vc.screen.selected == Some(1),
-        format!(
-            "report {report:?}, selected {:?}",
-            vc.screen.selected
-        ),
+        report.as_deref() == Some("minecraft:adventure/root") && vc.screen.selected == Some(1),
+        format!("report {report:?}, selected {:?}", vc.screen.selected),
     );
 
     // m10 — RE-clicking the already-selected tab reports it again. This is
@@ -360,11 +364,7 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     let y_after = vw.screen.tabs[0].scroll_y;
     c.record(
         "m11.wheel_scales_by_16_and_clamps_at_the_content_edge",
-        start == -23.0
-            && after_one == -7.0
-            && hi == 0
-            && lo == -46
-            && y_before == y_after,
+        start == -23.0 && after_one == -7.0 && hi == 0 && lo == -46 && y_before == y_after,
         format!(
             "start {start}, one notch {after_one} (=x16), hi {hi}, lo {lo}, y {y_before}->{y_after}"
         ),
@@ -431,7 +431,15 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
         let mut lines = Vec::new();
         if let Some(v) = view {
             chrome = crate::advancements_view::chrome(v, GUI_W, GUI_H, GUI_W);
-            lines = crate::advancements_view::lines(v, &lang, GUI_W, GUI_H, GUI_W, SCALE as f32, &advance);
+            lines = crate::advancements_view::lines(
+                v,
+                &lang,
+                GUI_W,
+                GUI_H,
+                GUI_W,
+                SCALE as f32,
+                &advance,
+            );
         }
         wr.set_screen(chrome);
         wr.set_text(lines);
@@ -463,7 +471,10 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     c.record(
         "p1.no_screen_draws_no_window",
         px(&empty_frame, centre_fb.0, centre_fb.1) == [0, 255, 0],
-        format!("empty at {centre_fb:?} = {:?}", px(&empty_frame, centre_fb.0, centre_fb.1)),
+        format!(
+            "empty at {centre_fb:?} = {:?}",
+            px(&empty_frame, centre_fb.0, centre_fb.1)
+        ),
     );
 
     let frame = shot(&mut gpu, &mut off, &mut wr, Some(&view2), "open")?;
@@ -589,11 +600,11 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
 
     // m5 — the text builder carries the layout header AND the selected tab's
     // title (the window's top-left line).
-    let ls = crate::advancements_view::lines(&view2, &lang, GUI_W, GUI_H, GUI_W, SCALE as f32, &advance);
+    let ls =
+        crate::advancements_view::lines(&view2, &lang, GUI_W, GUI_H, GUI_W, SCALE as f32, &advance);
     c.record(
         "m5.lines_carry_header_and_window_title",
-        ls.iter().any(|l| l.text == "Advancements")
-            && ls.iter().any(|l| l.text == "Minecraft"),
+        ls.iter().any(|l| l.text == "Advancements") && ls.iter().any(|l| l.text == "Minecraft"),
         format!(
             "{} lines; header={} title={}",
             ls.len(),
@@ -631,7 +642,11 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     let hid2 = &view2.screen.tabs[0].widgets[4];
     let hcx = sx + hid2.x + 3 + 13;
     let hcy = sy + hid2.y + 13;
-    let a = px(&frame, (in_origin.0 + hcx) * SCALE, (in_origin.1 + hcy) * SCALE);
+    let a = px(
+        &frame,
+        (in_origin.0 + hcx) * SCALE,
+        (in_origin.1 + hcy) * SCALE,
+    );
     let b = px(
         &frame,
         (in_origin.0 + hcx + 17) * SCALE,

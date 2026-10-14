@@ -116,8 +116,8 @@ pub fn run(args: LocatorshotArgs) -> Result<(), String> {
         "[locatorshot] M83 locator bar — mode: {}",
         if args.check { "check" } else { "report" }
     );
-    let paths = DataPaths::for_version(&args.version)
-        .ok_or("no config dir for the rewo data root")?;
+    let paths =
+        DataPaths::for_version(&args.version).ok_or("no config dir for the rewo data root")?;
     let packets = Packets::load(&paths.packets_json())?;
     let ids = Ids::resolve(&packets)?;
     let jar = client_jar(&args.version)
@@ -616,11 +616,7 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
         &WaypointId::Uuid(1),
         "minecraft:default",
         None,
-        WaypointContents::Vec3i {
-            x: 0,
-            y: 64,
-            z: 10,
-        },
+        WaypointContents::Vec3i { x: 0, y: 64, z: 10 },
     );
     let matched = rewo_net::route_waypoint(ids.cb_play_waypoint, &one, ids, &mut s);
     let neighbours = [
@@ -641,10 +637,7 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
     // ── w3: all four body shapes decode. ───────────────────────────────────
     let mut s = WaypointStore::default();
     let shapes = [
-        (
-            WaypointId::Uuid(10),
-            WaypointContents::Empty,
-        ),
+        (WaypointId::Uuid(10), WaypointContents::Empty),
         (
             WaypointId::Uuid(11),
             WaypointContents::Vec3i {
@@ -1519,11 +1512,11 @@ fn check_pixels(
     // (`live_cmd::locator_bar_state`) fed from a store the SAME router filled.
     let entities = rewo_world::entities::EntityTable::default();
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    store: &WaypointStore,
-                    yaw: f32,
-                    pitch: f32|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                store: &WaypointStore,
+                yaw: f32,
+                pitch: f32|
      -> Result<Vec<u8>, String> {
         let state = crate::live_cmd::locator_bar_state(
             crate::live_cmd::LocatorInputs {
@@ -1693,9 +1686,7 @@ fn check_pixels(
             // The dot's leftmost lit column can be inset from the rect, so
             // compare the rect the pixels occupy rather than its first column.
             let max_x = hits.iter().map(|&(x, _)| x as i32).max().unwrap();
-            if !(min_x.unwrap() >= want_x
-                && max_x < want_x + lb::DOT_SIZE * SCALE)
-            {
+            if !(min_x.unwrap() >= want_x && max_x < want_x + lb::DOT_SIZE * SCALE) {
                 ok_moves = false;
             }
         }
@@ -1877,7 +1868,11 @@ fn check_pixels(
     // on synthetic data where the two middle columns differ. What p7 does pin
     // is the width, the two borders, and that the pixels reaching the screen
     // are the source texels rather than a resample.
-    let src = &baked.locator.as_ref().ok_or("no locator sprites")?.background;
+    let src = &baked
+        .locator
+        .as_ref()
+        .ok_or("no locator sprites")?
+        .background;
     let row_in_sprite = 2u32;
     let src_col = |x: u32| -> [u8; 4] {
         let i = ((row_in_sprite * src.w + x) * 4) as usize;

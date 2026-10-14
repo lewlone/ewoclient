@@ -439,8 +439,7 @@ pub fn scroll_off_from_wheel(scroll_off: i32, scroll_y: f64, offers: usize) -> i
 /// why the clamp's lower bound is what stops it, not the cast.
 pub fn scroll_off_from_drag(gui_y: f64, offers: usize) -> i32 {
     let max = max_scroll_off(offers);
-    let t = (gui_y as f32 - SCROLL_TOP as f32 - 13.5)
-        / (SCROLL_HEIGHT - SCROLLER_H) as f32;
+    let t = (gui_y as f32 - SCROLL_TOP as f32 - 13.5) / (SCROLL_HEIGHT - SCROLLER_H) as f32;
     ((t * max as f32 + 0.5) as i32).clamp(0, max)
 }
 
@@ -559,8 +558,16 @@ mod tests {
             s,
             [
                 ButtonSlice { dx: 0, w: 3, sx: 0 },
-                ButtonSlice { dx: 3, w: 82, sx: 3 },
-                ButtonSlice { dx: 85, w: 3, sx: 197 },
+                ButtonSlice {
+                    dx: 3,
+                    w: 82,
+                    sx: 3
+                },
+                ButtonSlice {
+                    dx: 85,
+                    w: 3,
+                    sx: 197
+                },
             ]
         );
         // They tile the destination exactly, with no gap and no overlap.
@@ -700,7 +707,10 @@ mod tests {
         assert!(satisfied_by(true, 3, 3, Some((true, 2)), 2));
         assert!(!satisfied_by(true, 2, 3, Some((true, 2)), 2), "short on A");
         assert!(!satisfied_by(true, 3, 3, Some((true, 2)), 1), "short on B");
-        assert!(!satisfied_by(false, 9, 3, Some((true, 2)), 9), "wrong item in A");
+        assert!(
+            !satisfied_by(false, 9, 3, Some((true, 2)), 9),
+            "wrong item in A"
+        );
         // An offer with NO cost B requires the second slot to be EMPTY —
         // putting anything there stops a one-item trade matching.
         assert!(satisfied_by(true, 3, 3, None, 0));
@@ -741,7 +751,10 @@ mod tests {
         assert_eq!(satisfied_offers(&[o], Some((7, 2)), None), vec![true]);
         // …and with BOTH filled a one-cost offer stops matching, because its
         // `buyB` must be empty.
-        assert_eq!(satisfied_offers(&[o], Some((7, 2)), Some((9, 1))), vec![false]);
+        assert_eq!(
+            satisfied_offers(&[o], Some((7, 2)), Some((9, 1))),
+            vec![false]
+        );
         // Nothing at all matches nothing.
         assert_eq!(satisfied_offers(&[o], None, None), vec![false]);
     }
@@ -788,7 +801,11 @@ mod tests {
         // 30 offers, max 23. The thumb's CENTRE tracks the cursor: 13.5 is half
         // of 27, and the divisor is 139 - 27 = 112.
         assert_eq!(scroll_off_from_drag(18.0 + 13.5, 30), 0, "the very top");
-        assert_eq!(scroll_off_from_drag(18.0 + 13.5 + 112.0, 30), 23, "the bottom");
+        assert_eq!(
+            scroll_off_from_drag(18.0 + 13.5 + 112.0, 30),
+            23,
+            "the bottom"
+        );
         // Halfway is 11.5 offers, and the `+ 0.5` then `(int)` rounds it to 12
         // where a floor would give 11.
         assert_eq!(scroll_off_from_drag(18.0 + 13.5 + 56.0, 30), 12);
@@ -829,9 +846,16 @@ mod tests {
         for offers in [12, 30, 40] {
             let (steps, last) = last_computed(offers);
             assert!(last > 113, "{offers} offers overshoots ({last})");
-            assert_eq!(scroller_y(steps - 1, offers as usize), Some(SCROLL_TOP + 113));
+            assert_eq!(
+                scroller_y(steps - 1, offers as usize),
+                Some(SCROLL_TOP + 113)
+            );
         }
-        assert_eq!(scroller_y(0, 30), Some(SCROLL_TOP), "and the top is the top");
+        assert_eq!(
+            scroller_y(0, 30),
+            Some(SCROLL_TOP),
+            "and the top is the top"
+        );
         // 113 is 139 - 27 + 1 — one PAST the track less the thumb.
         assert_eq!(113, SCROLL_HEIGHT - SCROLLER_H + 1);
     }
@@ -885,7 +909,11 @@ mod tests {
         assert_eq!(button_at(5.0, 18.0), Some(0));
         assert_eq!(button_at(5.0, 37.9), Some(0), "20 tall");
         assert_eq!(button_at(5.0, 38.0), Some(1));
-        assert_eq!(button_at(5.0, 18.0 + 6.0 * 20.0), Some(6), "the last of seven");
+        assert_eq!(
+            button_at(5.0, 18.0 + 6.0 * 20.0),
+            Some(6),
+            "the last of seven"
+        );
         assert_eq!(button_at(5.0, 18.0 + 7.0 * 20.0), None);
         assert_eq!(button_at(4.9, 18.0), None);
         assert_eq!(button_at(93.0, 18.0), None, "5 + 88");

@@ -1019,7 +1019,11 @@ mod tests {
     #[test]
     fn a_subtitle_alone_shows_nothing() {
         let mut s = HudState::default();
-        assert!(apply(HudPacket::SetSubtitleText, &component_body("go"), &mut s));
+        assert!(apply(
+            HudPacket::SetSubtitleText,
+            &component_body("go"),
+            &mut s
+        ));
         assert_eq!(s.titles.subtitle, Some(text("go")));
         // MUTATION partner: arming the clock from `set_subtitle` too makes
         // this 100.
@@ -1056,7 +1060,10 @@ mod tests {
     fn zero_is_a_legal_time_and_is_not_a_skip() {
         let mut s = HudState::default();
         s.titles.set_times(0, 0, 0);
-        assert_eq!((s.titles.fade_in, s.titles.stay, s.titles.fade_out), (0, 0, 0));
+        assert_eq!(
+            (s.titles.fade_in, s.titles.stay, s.titles.fade_out),
+            (0, 0, 0)
+        );
     }
 
     #[test]
@@ -1089,7 +1096,10 @@ mod tests {
         assert_eq!(s.titles.title, None);
         assert_eq!(s.titles.title_time, 0);
         // MUTATION partner: resetting unconditionally makes this (10, 70, 20).
-        assert_eq!((s.titles.fade_in, s.titles.stay, s.titles.fade_out), (5, 6, 7));
+        assert_eq!(
+            (s.titles.fade_in, s.titles.stay, s.titles.fade_out),
+            (5, 6, 7)
+        );
         // `resetTimes = true`.
         assert!(apply(HudPacket::ClearTitles, &[1], &mut s));
         assert_eq!(
@@ -1205,11 +1215,13 @@ mod tests {
 
     #[test]
     fn the_xp_curve_has_its_three_segments() {
-        let at = |level: i32| ExperienceState {
-            level,
-            ..ExperienceState::default()
-        }
-        .xp_needed_for_next_level();
+        let at = |level: i32| {
+            ExperienceState {
+                level,
+                ..ExperienceState::default()
+            }
+            .xp_needed_for_next_level()
+        };
         assert_eq!(at(0), 7);
         assert_eq!(at(14), 35);
         assert_eq!(at(15), 37);
@@ -1301,7 +1313,10 @@ mod tests {
         // keeps across a death.
         assert_eq!(s.titles.title, Some(text("welcome")));
         assert_eq!(s.titles.title_time, 18);
-        assert_eq!((s.titles.fade_in, s.titles.stay, s.titles.fade_out), (5, 6, 7));
+        assert_eq!(
+            (s.titles.fade_in, s.titles.stay, s.titles.fade_out),
+            (5, 6, 7)
+        );
         // …and the player's halves are gone, sentinel included.
         assert!(s.cooldowns.is_empty());
         assert_eq!(s.experience.level, 0);
@@ -1388,15 +1403,30 @@ mod health_display_tests {
     fn a_hit_arms_twenty_ticks_and_the_landing_frame_never_blinks() {
         let mut d = HealthDisplay::default();
         // Join-time sync: no window, display follows after 1000 ms (first frame: 0 -> 20).
-        assert_eq!(d.update(20, false, 0, 5000), HealthFrame { blink: false, display_health: 20 });
+        assert_eq!(
+            d.update(20, false, 0, 5000),
+            HealthFrame {
+                blink: false,
+                display_health: 20
+            }
+        );
         // The hit: current < last with the window open. Re-arms, but `blink`
         // was computed before the re-arm, so this frame is not a blink frame.
-        assert_eq!(d.update(14, true, 10, 5100), HealthFrame { blink: false, display_health: 20 });
+        assert_eq!(
+            d.update(14, true, 10, 5100),
+            HealthFrame {
+                blink: false,
+                display_health: 20
+            }
+        );
         let expect = |t: i64| 30 > t && (30 - t) / 3 % 2 == 1;
         for t in 11..=30 {
             let f = d.update(14, t < 30, t as i32, 5100 + (t as u64 - 10) * 50);
             assert_eq!(f.blink, expect(t), "tick {t}");
-            assert_eq!(f.display_health, 20, "ghost of the old health holds for 1000 ms");
+            assert_eq!(
+                f.display_health, 20,
+                "ghost of the old health holds for 1000 ms"
+            );
         }
         // 13, 19 and 25 blink; 11, 12, 16, 28 and 30 do not — pinned
         // individually so the closure above cannot be the only witness.
@@ -1419,9 +1449,18 @@ mod health_display_tests {
         // Heal while invulnerable: +10, so tick 3 of the window (7 left) is
         // a blink frame and tick 13 (0 left) is not.
         d.update(18, true, 10, 5300);
-        assert!(d.update(18, false, 11, 5350).blink, "armed at 10 + 10 = 20; (20 - 11) / 3 = 3, odd");
-        assert!(!d.update(18, false, 13, 5450).blink, "(20 - 13) / 3 = 2, even");
-        assert!(!d.update(18, false, 20, 5800).blink, "20 > 20 is false: the window is over");
+        assert!(
+            d.update(18, false, 11, 5350).blink,
+            "armed at 10 + 10 = 20; (20 - 11) / 3 = 3, odd"
+        );
+        assert!(
+            !d.update(18, false, 13, 5450).blink,
+            "(20 - 13) / 3 = 2, even"
+        );
+        assert!(
+            !d.update(18, false, 20, 5800).blink,
+            "20 > 20 is false: the window is over"
+        );
     }
 
     /// `LocalPlayer.hurtTo`: the first sync only flips the flag; a hit arms 20,
@@ -1435,7 +1474,11 @@ mod health_display_tests {
         h.hurt_to(20.0, 14.0);
         assert!(!h.is_invulnerable(), "the join-time sync arms nothing");
         h.hurt_to(14.0, 20.0);
-        assert_eq!(h.invulnerable_time(), 10, "a heal after the first sync arms 10");
+        assert_eq!(
+            h.invulnerable_time(),
+            10,
+            "a heal after the first sync arms 10"
+        );
         h.hurt_to(20.0, 14.0);
         assert_eq!(h.invulnerable_time(), 20);
         for _ in 0..20 {
@@ -1452,7 +1495,10 @@ mod health_display_tests {
         assert_eq!(h.invulnerable_time(), 20);
         h.reset_for_respawn();
         h.hurt_to(20.0, 1.0);
-        assert!(!h.is_invulnerable(), "a respawn's first sync is a first sync again");
+        assert!(
+            !h.is_invulnerable(),
+            "a respawn's first sync is a first sync again"
+        );
     }
 
     /// `HudState::tick` advances `Hud.tickCount` and the hurt window together.
@@ -1465,6 +1511,10 @@ mod health_display_tests {
         assert_eq!((s.gui_tick, s.local_hurt.invulnerable_time()), (2, 18));
         s.reset_for_respawn();
         assert_eq!(s.gui_tick, 2, "Hud's own counter survives a respawn");
-        assert_eq!(s.local_hurt.invulnerable_time(), 0, "LocalPlayer's does not");
+        assert_eq!(
+            s.local_hurt.invulnerable_time(),
+            0,
+            "LocalPlayer's does not"
+        );
     }
 }

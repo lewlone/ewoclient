@@ -403,13 +403,27 @@ pub struct SettingsConfig {
     pub telemetry: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_max_fps() -> f32 { 144.0 }
-fn default_window_mode() -> usize { 1 }
-fn default_master() -> f32 { 0.70 }
-fn default_music() -> f32 { 0.55 }
-fn default_effects() -> f32 { 0.50 }
-fn default_log_level() -> usize { 2 }
+fn default_true() -> bool {
+    true
+}
+fn default_max_fps() -> f32 {
+    144.0
+}
+fn default_window_mode() -> usize {
+    1
+}
+fn default_master() -> f32 {
+    0.70
+}
+fn default_music() -> f32 {
+    0.55
+}
+fn default_effects() -> f32 {
+    0.50
+}
+fn default_log_level() -> usize {
+    2
+}
 fn default_game_dir() -> String {
     "~/Library/Application Support/EwoClient".to_string()
 }
@@ -665,7 +679,11 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
     let back_baseline = head_y + (-bm.ascent);
     // Vector left-chevron + "Main menu" — the "←" glyph is a tofu box in the
     // serif display font.
-    let cap = if bm.cap_height > 0.0 { bm.cap_height } else { 14.0 };
+    let cap = if bm.cap_height > 0.0 {
+        bm.cap_height
+    } else {
+        14.0
+    };
     let chev_cy = back_baseline - cap * 0.5;
     let mut chev = Paint::default();
     chev.set_anti_alias(true);
@@ -686,7 +704,12 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
             0.85,
         );
     }
-    canvas.draw_str("Main menu", (BODY_PAD_X + 16.0, back_baseline), &back_font, &back_paint);
+    canvas.draw_str(
+        "Main menu",
+        (BODY_PAD_X + 16.0, back_baseline),
+        &back_font,
+        &back_paint,
+    );
 
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eyebrow_paint = Paint::default();
@@ -738,7 +761,12 @@ fn draw_sidebar(
     title_paint.set_color(TEXT_PEARL);
     let (_, tm) = title_font.metrics();
     let title_baseline = title_top + (-tm.ascent);
-    canvas.draw_str("Settings", (sidebar_left + 14.0, title_baseline), &title_font, &title_paint);
+    canvas.draw_str(
+        "Settings",
+        (sidebar_left + 14.0, title_baseline),
+        &title_font,
+        &title_paint,
+    );
 
     // Tabs
     let tab_label_font = fonts.fraunces_axes(18.0, 50.0, 0.0, 300.0, None);
@@ -787,8 +815,17 @@ fn draw_sidebar(
         }
         let mut label_paint = Paint::default();
         label_paint.set_anti_alias(true);
-        label_paint.set_color(if is_active || is_hover { TEXT_PEARL } else { TEXT_MAUVE });
-        canvas.draw_str(tab.label(), (label_x, label_baseline), &tab_label_font, &label_paint);
+        label_paint.set_color(if is_active || is_hover {
+            TEXT_PEARL
+        } else {
+            TEXT_MAUVE
+        });
+        canvas.draw_str(
+            tab.label(),
+            (label_x, label_baseline),
+            &tab_label_font,
+            &label_paint,
+        );
 
         y += row_h + 2.0;
     }
@@ -847,7 +884,14 @@ fn draw_panel(
             None
         };
 
-        draw_section_head(canvas, fonts, content_left, content_right, content_top, active);
+        draw_section_head(
+            canvas,
+            fonts,
+            content_left,
+            content_right,
+            content_top,
+            active,
+        );
         let body_top = section_head_bottom(content_top, fonts);
         if active == SettingsTab::Account {
             draw_account_tab(canvas, fonts, w, prefs, account);
@@ -941,7 +985,12 @@ fn draw_section_head(
     let (_, sm) = sub_font.metrics();
     let sub_top = h_baseline + hm.descent + 6.0;
     let sub_baseline = sub_top + (-sm.ascent);
-    canvas.draw_str(subhead_for(active), (left, sub_baseline), &sub_font, &sub_paint);
+    canvas.draw_str(
+        subhead_for(active),
+        (left, sub_baseline),
+        &sub_font,
+        &sub_paint,
+    );
 
     // Hairline border-bottom under section head
     let div_y = sub_baseline + sm.descent + 18.0;
@@ -991,10 +1040,20 @@ struct RowDef {
 
 impl RowDef {
     const fn row(label: &'static str, hint: &'static str, slot: Option<Slot>) -> Self {
-        Self { label, hint, slot, stack: false }
+        Self {
+            label,
+            hint,
+            slot,
+            stack: false,
+        }
     }
     const fn stacked(label: &'static str, slot: Option<Slot>) -> Self {
-        Self { label, hint: "", slot, stack: true }
+        Self {
+            label,
+            hint: "",
+            slot,
+            stack: true,
+        }
     }
 }
 
@@ -1174,7 +1233,11 @@ pub fn account_tab_layout(
         let rm = 30.0;
         let cy = (row.top + row.bottom) * 0.5;
         let remove = Rect::from_xywh(row.right - rm - 8.0, cy - rm * 0.5, rm, rm);
-        rows.push(AccountRowLayout { index: i, row, remove });
+        rows.push(AccountRowLayout {
+            index: i,
+            row,
+            remove,
+        });
     }
     let list_bottom = if account_count == 0 {
         list_top
@@ -1280,8 +1343,7 @@ fn draw_account_tab(
                 Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5), // rose (clickable affordance)
             ),
             LinkStatusView::NotLinked => (
-                "not linked — run /link on Frogsy to enable social"
-                    .to_string(),
+                "not linked — run /link on Frogsy to enable social".to_string(),
                 Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5), // mid-pearl
             ),
             LinkStatusView::Failed => (
@@ -1369,18 +1431,27 @@ fn draw_account_row(
     if view.active {
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
-        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10), None);
+        bg.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
+            None,
+        );
         canvas.draw_rrect(rrect, &bg);
         let mut rim = Paint::default();
         rim.set_anti_alias(true);
         rim.set_style(PaintStyle::Stroke);
         rim.set_stroke_width(1.0);
-        rim.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.32), None);
+        rim.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.32),
+            None,
+        );
         canvas.draw_rrect(rrect, &rim);
     } else if hovered {
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
-        bg.set_color4f(Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.05), None);
+        bg.set_color4f(
+            Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.05),
+            None,
+        );
         canvas.draw_rrect(rrect, &bg);
     }
 
@@ -1430,7 +1501,10 @@ fn draw_account_row(
     if remove_hovered {
         let mut disc = Paint::default();
         disc.set_anti_alias(true);
-        disc.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.18), None);
+        disc.set_color4f(
+            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.18),
+            None,
+        );
         canvas.draw_circle((rcx, rcy), 13.0, &disc);
     }
     let mut x = Paint::default();
@@ -1439,7 +1513,10 @@ fn draw_account_row(
     x.set_stroke_width(1.6);
     x.set_stroke_cap(PaintCap::Round);
     let x_alpha = if remove_hovered { 0.95 } else { 0.40 };
-    x.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, x_alpha), None);
+    x.set_color4f(
+        Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, x_alpha),
+        None,
+    );
     let d = 5.0;
     canvas.draw_line((rcx - d, rcy - d), (rcx + d, rcy + d), &x);
     canvas.draw_line((rcx + d, rcy - d), (rcx - d, rcy + d), &x);
@@ -1520,7 +1597,11 @@ pub struct ProfileTabLayout {
 }
 
 /// Compute the Profiles tab's layout for `profile_count` profiles.
-pub fn profiles_tab_layout(fonts: &FontStore, card_w: f32, profile_count: usize) -> ProfileTabLayout {
+pub fn profiles_tab_layout(
+    fonts: &FontStore,
+    card_w: f32,
+    profile_count: usize,
+) -> ProfileTabLayout {
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
     let panel_right = card_w - BODY_PAD_X;
@@ -1538,7 +1619,12 @@ pub fn profiles_tab_layout(fonts: &FontStore, card_w: f32, profile_count: usize)
         let cy = (row.top + row.bottom) * 0.5;
         let delete = Rect::from_xywh(row.right - rm - 8.0, cy - rm * 0.5, rm, rm);
         let rename = Rect::from_xywh(delete.left - rm - 4.0, cy - rm * 0.5, rm, rm);
-        rows.push(ProfileRowLayout { index: i, row, rename, delete });
+        rows.push(ProfileRowLayout {
+            index: i,
+            row,
+            rename,
+            delete,
+        });
     }
     let list_bottom = if profile_count == 0 {
         list_top
@@ -1559,7 +1645,13 @@ pub fn profiles_tab_layout(fonts: &FontStore, card_w: f32, profile_count: usize)
     }
 }
 
-fn draw_profiles_tab(canvas: &Canvas, fonts: &FontStore, card_w: f32, prefs: &Prefs, view: ProfileView<'_>) {
+fn draw_profiles_tab(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    card_w: f32,
+    prefs: &Prefs,
+    view: ProfileView<'_>,
+) {
     let layout = profiles_tab_layout(fonts, card_w, view.profiles.len());
 
     // Body copy.
@@ -1641,18 +1733,27 @@ fn draw_profile_row(
     if view.active {
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
-        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10), None);
+        bg.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
+            None,
+        );
         canvas.draw_rrect(rrect, &bg);
         let mut rim = Paint::default();
         rim.set_anti_alias(true);
         rim.set_style(PaintStyle::Stroke);
         rim.set_stroke_width(1.0);
-        rim.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.32), None);
+        rim.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.32),
+            None,
+        );
         canvas.draw_rrect(rrect, &rim);
     } else if hovered {
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
-        bg.set_color4f(Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.05), None);
+        bg.set_color4f(
+            Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.05),
+            None,
+        );
         canvas.draw_rrect(rrect, &bg);
     }
 
@@ -1676,13 +1777,19 @@ fn draw_profile_row(
         let irr = RRect::new_rect_xy(input, 9.0, 9.0);
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
-        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06), None);
+        bg.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
+            None,
+        );
         canvas.draw_rrect(irr, &bg);
         let mut glow = Paint::default();
         glow.set_anti_alias(true);
         glow.set_style(PaintStyle::Stroke);
         glow.set_stroke_width(3.0);
-        glow.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.12), None);
+        glow.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.12),
+            None,
+        );
         glow.set_mask_filter(skia_safe::MaskFilter::blur(
             skia_safe::BlurStyle::Normal,
             7.0,
@@ -1693,7 +1800,10 @@ fn draw_profile_row(
         border.set_anti_alias(true);
         border.set_style(PaintStyle::Stroke);
         border.set_stroke_width(1.0);
-        border.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.50), None);
+        border.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.50),
+            None,
+        );
         canvas.draw_rrect(irr, &border);
 
         let mut text_paint = Paint::default();
@@ -1745,7 +1855,10 @@ fn draw_profile_row(
         if rename_hovered {
             let mut disc = Paint::default();
             disc.set_anti_alias(true);
-            disc.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.14), None);
+            disc.set_color4f(
+                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.14),
+                None,
+            );
             canvas.draw_circle((rcx, rcy), 13.0, &disc);
         }
         let icon_color = if rename_hovered || renaming.is_some() {
@@ -1764,7 +1877,10 @@ fn draw_profile_row(
         if delete_hovered {
             let mut disc = Paint::default();
             disc.set_anti_alias(true);
-            disc.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.18), None);
+            disc.set_color4f(
+                Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.18),
+                None,
+            );
             canvas.draw_circle((rcx, rcy), 13.0, &disc);
         }
         let mut x = Paint::default();
@@ -1773,7 +1889,10 @@ fn draw_profile_row(
         x.set_stroke_width(1.6);
         x.set_stroke_cap(PaintCap::Round);
         let alpha = if delete_hovered { 0.95 } else { 0.40 };
-        x.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, alpha), None);
+        x.set_color4f(
+            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, alpha),
+            None,
+        );
         let d = 5.0;
         canvas.draw_line((rcx - d, rcy - d), (rcx + d, rcy + d), &x);
         canvas.draw_line((rcx + d, rcy - d), (rcx - d, rcy + d), &x);
@@ -1878,7 +1997,11 @@ pub fn keybinds_tab_layout(
             KEYBIND_CHORD_W,
             KEYBIND_CHORD_H,
         );
-        rows.push(KeybindRowLayout { index: i, row, chord });
+        rows.push(KeybindRowLayout {
+            index: i,
+            row,
+            chord,
+        });
     }
     let btn_top = list_top + rows_h + 18.0 - scroll;
     let reset_button = Rect::from_xywh(content_left, btn_top, PROFILE_BTN_W, ADD_BTN_H);
@@ -1967,7 +2090,12 @@ fn draw_keybind_row(
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
     name_paint.set_color(TEXT_PEARL);
-    canvas.draw_str(view.action_label, (row.left + 4.0, cy - 1.0), &name_font, &name_paint);
+    canvas.draw_str(
+        view.action_label,
+        (row.left + 4.0, cy - 1.0),
+        &name_font,
+        &name_paint,
+    );
 
     // Module eyebrow — mono, tracked, below the label.
     let eb_font = fonts.jetbrains_mono(9.0);
@@ -2016,7 +2144,11 @@ fn draw_keybind_row(
     canvas.draw_rrect(rr, &rim);
 
     // Chord text — centred, mono.
-    let label = if view.capturing { "press a key…" } else { view.chord_label };
+    let label = if view.capturing {
+        "press a key…"
+    } else {
+        view.chord_label
+    };
     let txt_font = fonts.jetbrains_mono(12.0);
     let mut txt_paint = Paint::default();
     txt_paint.set_anti_alias(true);
@@ -2082,7 +2214,12 @@ pub fn modules_tab_layout(
     // Unscrolled content height — every row plus the gaps between them.
     let mut content_h = 0.0_f32;
     for m in ewo_core::modules::REGISTRY {
-        let row_h = ACCOUNT_ROW_H + if m.settings.is_empty() { 0.0 } else { MODULE_SLIDER_STRIP };
+        let row_h = ACCOUNT_ROW_H
+            + if m.settings.is_empty() {
+                0.0
+            } else {
+                MODULE_SLIDER_STRIP
+            };
         content_h += row_h + ACCOUNT_ROW_GAP;
     }
     content_h = (content_h - ACCOUNT_ROW_GAP).max(0.0);
@@ -2118,7 +2255,12 @@ pub fn modules_tab_layout(
         } else {
             None
         };
-        rows.push(ModuleRowLayout { index: i, row, toggle, slider });
+        rows.push(ModuleRowLayout {
+            index: i,
+            row,
+            toggle,
+            slider,
+        });
         y += row_h + ACCOUNT_ROW_GAP;
     }
     ModuleTabLayout {
@@ -2194,14 +2336,24 @@ fn draw_module_row(
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
     name_paint.set_color(TEXT_PEARL);
-    canvas.draw_str(def.name, (row.left + 4.0, top_cy - 1.0), &name_font, &name_paint);
+    canvas.draw_str(
+        def.name,
+        (row.left + 4.0, top_cy - 1.0),
+        &name_font,
+        &name_paint,
+    );
 
     // Description — Newsreader, mauve, below.
     let desc_font = fonts.newsreader(13.0);
     let mut desc_paint = Paint::default();
     desc_paint.set_anti_alias(true);
     desc_paint.set_color(TEXT_MAUVE);
-    canvas.draw_str(def.description, (row.left + 4.0, top_cy + 16.0), &desc_font, &desc_paint);
+    canvas.draw_str(
+        def.description,
+        (row.left + 4.0, top_cy + 16.0),
+        &desc_font,
+        &desc_paint,
+    );
 
     // On/off toggle.
     if let Some(toggle) = prefs.module_toggles.get(layout.index) {
@@ -2255,12 +2407,7 @@ const PVP_ROW_H: f32 = 36.0;
 /// tier sounds, hit-range zones). Each row's controls are right-aligned in the
 /// content column. Rows are shifted by `scroll` (clamped to the overflow
 /// first) so the press handler sees the same rects the renderer drew.
-pub fn pvp_tab_layout(
-    fonts: &FontStore,
-    card_w: f32,
-    card_h: f32,
-    scroll: f32,
-) -> PvpTabLayout {
+pub fn pvp_tab_layout(fonts: &FontStore, card_w: f32, card_h: f32, scroll: f32) -> PvpTabLayout {
     let body_top = HEADER_BOTTOM + 8.0 + 16.0;
     let panel_left = BODY_PAD_X + SIDEBAR_WIDTH + COL_GAP;
     let panel_right = card_w - BODY_PAD_X;
@@ -2353,12 +2500,7 @@ pub fn pvp_tab_layout(
         let chip_y = y + (PVP_ROW_H - 24.0) * 0.5;
 
         let mut x = content_left + zlabel_w;
-        zone_enable[i] = Rect::from_xywh(
-            x,
-            y + (PVP_ROW_H - toggle_h) * 0.5,
-            toggle_w,
-            toggle_h,
-        );
+        zone_enable[i] = Rect::from_xywh(x, y + (PVP_ROW_H - toggle_h) * 0.5, toggle_w, toggle_h);
         x += toggle_w + z_pad;
         zone_min[i] = Rect::from_xywh(x, mid_y, z_min_w, slider_h);
         x += z_min_w + z_pad;
@@ -2390,13 +2532,7 @@ pub fn pvp_tab_layout(
 }
 
 /// Draw the PvP-Utils tab — three sections of editing controls.
-fn draw_pvp_utils_tab(
-    canvas: &Canvas,
-    fonts: &FontStore,
-    card_w: f32,
-    card_h: f32,
-    prefs: &Prefs,
-) {
+fn draw_pvp_utils_tab(canvas: &Canvas, fonts: &FontStore, card_w: f32, card_h: f32, prefs: &Prefs) {
     let layout = pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
     let cfg = &prefs.pvp;
 
@@ -2408,7 +2544,10 @@ fn draw_pvp_utils_tab(
     let (_, bm) = body_font.metrics();
     canvas.draw_str(
         "defensive jump-reset + hit-range — tune the tiers, sounds and zones.",
-        (layout.list_region.left, layout.list_region.top - ACCOUNT_COPY_BLOCK + (-bm.ascent)),
+        (
+            layout.list_region.left,
+            layout.list_region.top - ACCOUNT_COPY_BLOCK + (-bm.ascent),
+        ),
         &body_font,
         &body_paint,
     );
@@ -2418,8 +2557,17 @@ fn draw_pvp_utils_tab(
     canvas.clip_rect(layout.list_region, None, false);
 
     // ── General section ──────────────────────────────────────────────────
-    let general_label_y = layout.general_toggles[0].top - (PVP_ROW_H - crate::widgets::TOGGLE_H) * 0.5 - PVP_SECTION_HEAD + 6.0;
-    draw_pvp_section_head(canvas, fonts, "GENERAL", layout.list_region.left, general_label_y);
+    let general_label_y = layout.general_toggles[0].top
+        - (PVP_ROW_H - crate::widgets::TOGGLE_H) * 0.5
+        - PVP_SECTION_HEAD
+        + 6.0;
+    draw_pvp_section_head(
+        canvas,
+        fonts,
+        "GENERAL",
+        layout.list_region.left,
+        general_label_y,
+    );
 
     let label_font = fonts.fraunces_axes(16.0, 50.0, 0.0, 360.0, None);
     let general_labels = ["Jump reset", "Jump reset bar", "Hit range"];
@@ -2445,7 +2593,13 @@ fn draw_pvp_utils_tab(
 
     // ── Sounds per tier ──────────────────────────────────────────────────
     let tiers_label_y = layout.tier_sound[0].top - PVP_SECTION_HEAD + 4.0;
-    draw_pvp_section_head(canvas, fonts, "SOUNDS PER TIER", layout.list_region.left, tiers_label_y);
+    draw_pvp_section_head(
+        canvas,
+        fonts,
+        "SOUNDS PER TIER",
+        layout.list_region.left,
+        tiers_label_y,
+    );
 
     for (i, tier) in ewo_core::pvp::Tier::ALL.iter().enumerate() {
         let slot = cfg.sound_for_tier(*tier);
@@ -2482,8 +2636,16 @@ fn draw_pvp_utils_tab(
     }
 
     // ── Hit-range zones ──────────────────────────────────────────────────
-    let zones_label_y = layout.zone_enable[0].top - (PVP_ROW_H - crate::widgets::TOGGLE_H) * 0.5 - PVP_SECTION_HEAD + 6.0;
-    draw_pvp_section_head(canvas, fonts, "HIT-RANGE ZONES", layout.list_region.left, zones_label_y);
+    let zones_label_y =
+        layout.zone_enable[0].top - (PVP_ROW_H - crate::widgets::TOGGLE_H) * 0.5 - PVP_SECTION_HEAD
+            + 6.0;
+    draw_pvp_section_head(
+        canvas,
+        fonts,
+        "HIT-RANGE ZONES",
+        layout.list_region.left,
+        zones_label_y,
+    );
 
     for i in 0..3 {
         let z = cfg.zone(i);
@@ -2558,14 +2720,7 @@ fn draw_pvp_section_head(canvas: &Canvas, fonts: &FontStore, label: &str, x: f32
     p.set_anti_alias(true);
     p.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5)); // rose
     let (_, m) = font.metrics();
-    crate::text::draw_tracked_em(
-        canvas,
-        label,
-        (x, y + (-m.ascent)),
-        &font,
-        &p,
-        0.22,
-    );
+    crate::text::draw_tracked_em(canvas, label, (x, y + (-m.ascent)), &font, &p, 0.22);
 }
 
 /// Compact pill toggle for the PvP tab — same Velvet language as the in-game
@@ -2609,7 +2764,12 @@ fn draw_pvp_toggle(canvas: &Canvas, rect: Rect, on: bool) {
 
 /// Sound cycle chip — Velvet pill with the sound name + a "▾" hint. Click
 /// cycles to the next sound (same UX as the in-game tab).
-fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: ewo_core::pvp::PvpSound, fonts: &FontStore) {
+fn draw_pvp_sound_chip(
+    canvas: &Canvas,
+    rect: Rect,
+    sound: ewo_core::pvp::PvpSound,
+    fonts: &FontStore,
+) {
     let rr = skia_safe::RRect::new_rect_xy(rect, rect.height() * 0.4, rect.height() * 0.4);
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
@@ -2631,7 +2791,10 @@ fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: ewo_core::pvp::PvpSou
     let (_, m) = font.metrics();
     canvas.draw_str(
         label,
-        (rect.left + (rect.width() - lw - 14.0) * 0.5, rect.top + rect.height() * 0.5 + m.cap_height * 0.5),
+        (
+            rect.left + (rect.width() - lw - 14.0) * 0.5,
+            rect.top + rect.height() * 0.5 + m.cap_height * 0.5,
+        ),
         &font,
         &p,
     );
@@ -2640,7 +2803,10 @@ fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: ewo_core::pvp::PvpSou
     hint.set_color(Color::from_argb(0xCC, 0x9A, 0x80, 0x87)); // mauve
     canvas.draw_str(
         "▾",
-        (rect.right - 14.0, rect.top + rect.height() * 0.5 + m.cap_height * 0.5),
+        (
+            rect.right - 14.0,
+            rect.top + rect.height() * 0.5 + m.cap_height * 0.5,
+        ),
         &font,
         &hint,
     );
@@ -2663,7 +2829,12 @@ fn draw_pvp_value_slider(
     let track_right = (area.right - value_w).max(track_left + 20.0);
     let track_h = 4.0;
 
-    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let track = Rect::from_xywh(
+        track_left,
+        cy - track_h * 0.5,
+        track_right - track_left,
+        track_h,
+    );
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color(Color::from_argb(0xD8, 0x12, 0x00, 0x10));
@@ -2691,7 +2862,12 @@ fn draw_pvp_value_slider(
     vp.set_anti_alias(true);
     vp.set_color(TEXT_PEARL);
     let (_, m) = font.metrics();
-    canvas.draw_str(&val, (track_right + 8.0, cy + m.cap_height * 0.5), &font, &vp);
+    canvas.draw_str(
+        &val,
+        (track_right + 8.0, cy + m.cap_height * 0.5),
+        &font,
+        &vp,
+    );
 }
 
 /// Map cursor `x` onto one of the PvP-tab sliders' value range. Returns the
@@ -2710,7 +2886,14 @@ fn pvp_drag_value(track: Rect, x: f32, min: f32, max: f32) -> f32 {
 /// Press dispatch for the PvP-Utils tab. Returns `true` if the press was
 /// consumed (toggle flipped, chip cycled, or slider drag started). Edits
 /// flip `prefs.pvp_changed` so the main loop persists `pvp.toml`.
-pub fn pvp_tab_press(prefs: &mut Prefs, fonts: &FontStore, card_w: f32, card_h: f32, x: f32, y: f32) -> bool {
+pub fn pvp_tab_press(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    card_w: f32,
+    card_h: f32,
+    x: f32,
+    y: f32,
+) -> bool {
     let layout = pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
 
     // Outside the scroll viewport — ignore (e.g. clicks on the scrollbar).
@@ -2823,12 +3006,10 @@ pub fn drive_pvp_drag(prefs: &mut Prefs, fonts: &FontStore, card_w: f32, card_h:
             prefs.pvp.zone_mut(i).max_dist = v.max(min + 0.05).min(3.5);
         }
         PvpDrag::ZoneVolume(i) => {
-            prefs.pvp.zone_mut(i).volume =
-                pvp_drag_value(layout.zone_volume[i], x, 0.0, 1.0);
+            prefs.pvp.zone_mut(i).volume = pvp_drag_value(layout.zone_volume[i], x, 0.0, 1.0);
         }
         PvpDrag::ZonePitch(i) => {
-            prefs.pvp.zone_mut(i).pitch =
-                pvp_drag_value(layout.zone_pitch[i], x, 0.5, 2.0);
+            prefs.pvp.zone_mut(i).pitch = pvp_drag_value(layout.zone_pitch[i], x, 0.5, 2.0);
         }
     }
 }
@@ -2925,7 +3106,7 @@ fn draw_section_body(
             hint_paint.set_anti_alias(true);
             hint_paint.set_color(TEXT_MAUVE_DEEP);
             let hint_baseline = hint_bottom; // already includes descent
-            // Re-derive the proper baseline: hint_bottom = baseline + descent.
+                                             // Re-derive the proper baseline: hint_bottom = baseline + descent.
             let (_, hm) = hint_font.metrics();
             let hb = hint_baseline - hm.descent;
             canvas.draw_str(row.hint, (left, hb), &hint_font, &hint_paint);
@@ -2942,7 +3123,11 @@ fn draw_section_body(
             Some(Slot::MaxFps) => {
                 draw_slider_in(canvas, ctrl_box, &prefs.max_fps, time, settings);
                 draw_slider_value_label(canvas, fonts, ctrl_box, prefs.max_fps.value, |v| {
-                    if v >= 240.0 { "∞ fps".to_string() } else { format!("{} fps", v as i32) }
+                    if v >= 240.0 {
+                        "∞ fps".to_string()
+                    } else {
+                        format!("{} fps", v as i32)
+                    }
                 });
             }
             Some(Slot::Master) => {
@@ -2986,7 +3171,9 @@ fn draw_section_body(
             ),
             Some(Slot::GameDir) => draw_vpathfield(canvas, ctrl_box, &prefs.game_dir, fonts),
             Some(Slot::Downloads) => draw_vpathfield(canvas, ctrl_box, &prefs.downloads, fonts),
-            Some(Slot::ResetPrefs) => draw_danger_button_in(canvas, ctrl_box, &prefs.reset_prefs, fonts),
+            Some(Slot::ResetPrefs) => {
+                draw_danger_button_in(canvas, ctrl_box, &prefs.reset_prefs, fonts)
+            }
             None => draw_pending_placeholder(canvas, fonts, ctrl_box),
         }
 
@@ -3091,20 +3278,12 @@ fn draw_dropdown_head_in(
     fonts: &FontStore,
 ) {
     let head = dropdown_head_rect(ctrl);
-    let value = options
-        .get(state.selected)
-        .copied()
-        .unwrap_or("");
+    let value = options.get(state.selected).copied().unwrap_or("");
     draw_vdrop_head(canvas, head, value, state, time, settings, fonts);
 }
 
 /// Right-align a small "Reset preferences" pill in the control column.
-fn draw_danger_button_in(
-    canvas: &Canvas,
-    ctrl: Rect,
-    state: &VghostBtnState,
-    fonts: &FontStore,
-) {
+fn draw_danger_button_in(canvas: &Canvas, ctrl: Rect, state: &VghostBtnState, fonts: &FontStore) {
     let label = "Reset preferences";
     let btn_w = 180.0_f32.min(ctrl.width());
     let btn_h = 38.0_f32;
@@ -3213,7 +3392,13 @@ pub fn path_browse_bounds(slot: Slot, fonts: &FontStore, card_w: f32, card_h: f3
     }
     widget_bounds(SettingsTab::Paths, fonts, card_w, card_h)
         .into_iter()
-        .find_map(|(s, row)| if s == slot { Some(crate::widgets::vpathfield::browse_bounds(row)) } else { None })
+        .find_map(|(s, row)| {
+            if s == slot {
+                Some(crate::widgets::vpathfield::browse_bounds(row))
+            } else {
+                None
+            }
+        })
 }
 
 // ────────────────────────────────────────────────────────────────────────

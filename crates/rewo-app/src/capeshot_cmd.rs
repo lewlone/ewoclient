@@ -156,11 +156,7 @@ fn cape_corners(cape: &CapeDraw, body: &([[f32; 3]; 3], [f32; 3])) -> Vec<[f32; 
     for (_f, pos, _uv) in rewo_gpu::mobs::cape_faces() {
         for corner in pos {
             let r = ind_apply(&m, corner);
-            out.push([
-                r[0] + o[0] + s[0],
-                r[1] + o[1] + s[1],
-                r[2] + o[2] + s[2],
-            ]);
+            out.push([r[0] + o[0] + s[0], r[1] + o[1] + s[1], r[2] + o[2] + s[2]]);
         }
     }
     out
@@ -239,10 +235,7 @@ fn check_rotation(c: &mut Checker) {
     // MUTATION: apply the `PartPose`'s `Ry(π)` **as well**, which is what
     // happens if you read the pose as a rotation to compose rather than one
     // `setupAnim`'s leading `rotateY(-PI)` exists to cancel.
-    let m_bad = ind_mul(
-        ind_y(std::f32::consts::PI),
-        cape_rotation(0.0, 0.0, 0.0),
-    );
+    let m_bad = ind_mul(ind_y(std::f32::consts::PI), cape_rotation(0.0, 0.0, 0.0));
     let mut bad_zmin = f32::MAX;
     for (_f, pos, _uv) in rewo_gpu::mobs::cape_faces() {
         for corner in pos {
@@ -320,7 +313,7 @@ fn check_rotation(c: &mut Checker) {
     let only_y = ind_zyx(0.0, cc, 0.0);
     let cape_only_y = {
         // flap and lean both feed `a`; setting them so a == 0 isolates Ry.
-        
+
         cape_rotation(-6.0, 0.0, 0.0)
     };
     let dev2 = (0..3)
@@ -365,7 +358,10 @@ fn check_anchor(c: &mut Checker) {
     // Driven through the production table: add, tick, read. The anchor is
     // private state; this is the only way to reach it, which is the point.
     let mut t = EntityTable::default();
-    t.add(1, rewo_world::entities::EntityState::new(0, 0, 8.0, 0.0, 0.0, 0.0, 0.0));
+    t.add(
+        1,
+        rewo_world::entities::EntityState::new(0, 0, 8.0, 0.0, 0.0, 0.0, 0.0),
+    );
     let mut ok = true;
     let mut seen = Vec::new();
     for n in 1..=6u32 {
@@ -391,7 +387,10 @@ fn check_anchor(c: &mut Checker) {
     // draws the cape mid-streak. Exactly 10 still eases — vanilla's test is
     // strict on both sides.
     let mut t2 = EntityTable::default();
-    t2.add(1, rewo_world::entities::EntityState::new(0, 0, 11.0, 10.0, -11.0, 0.0, 0.0));
+    t2.add(
+        1,
+        rewo_world::entities::EntityState::new(0, 0, 11.0, 10.0, -11.0, 0.0, 0.0),
+    );
     t2.tick_lerp();
     let e = t2.get(1).unwrap();
     let at0 = e.cloak_pos(0.0);
@@ -528,7 +527,10 @@ fn worn(item: i32) -> rewo_world::entities::WornPiece {
 /// A table holding one player, visible, cape shown, chest slot as given.
 fn player_table(chest: Option<i32>) -> EntityTable {
     let mut t = EntityTable::default();
-    t.add(1, rewo_world::entities::EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+    t.add(
+        1,
+        rewo_world::entities::EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    );
     t.set_model_customisation(1, 0x01);
     if let Some(item) = chest {
         t.set_armor(1, 1, Some(worn(item)));
@@ -550,8 +552,7 @@ fn check_suppression(c: &mut Checker, f: &Fixture) {
     // indistinguishable from one that passed correctly.
     c.record(
         "d1.the_jar_gives_the_elytra_wings_and_the_chestplate_humanoid",
-        f.equipment
-            .has_layer("minecraft:elytra", ArmorLayer::Wings)
+        f.equipment.has_layer("minecraft:elytra", ArmorLayer::Wings)
             && !f
                 .equipment
                 .has_layer("minecraft:elytra", ArmorLayer::Humanoid)
@@ -655,12 +656,14 @@ fn check_wire(c: &mut Checker, paths: &rewo_data::DataPaths) -> Result<(), Strin
     // `{"textures":{"CAPE":{"url":"http://textures.minecraft.net/c"}}}` in base64 — written out
     // rather than encoded here so the fixture is the *wire* form the decoder
     // actually receives, and so this gate needs no base64 dependency.
-    let b64 = "eyJ0ZXh0dXJlcyI6eyJDQVBFIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L2MifX19";
+    let b64 =
+        "eyJ0ZXh0dXJlcyI6eyJDQVBFIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L2MifX19";
     let info = rewo_net::skins::decode_textures_property(b64);
     c.record(
         "e1.a_cape_only_profile_resolves_a_cape",
-        info.as_ref()
-            .is_some_and(|i| i.cape.as_deref() == Some("http://textures.minecraft.net/c") && i.url.is_none()),
+        info.as_ref().is_some_and(|i| {
+            i.cape.as_deref() == Some("http://textures.minecraft.net/c") && i.url.is_none()
+        }),
         format!(
             "{:?}; MUTATION requiring a SKIN entry — which is what the decoder did \
              before M60 — returns None and loses the cape entirely",
@@ -806,7 +809,8 @@ fn check_wavy_constants(c: &mut Checker) {
     // representable link length.
     c.record(
         "w2.the_renderers_joint_capacity_matches_the_simulations_length",
-        rewo_gpu::entities::CAPE_MAX_JOINTS == SEGMENTS + 1 && REST_LEN.to_bits() == 1.0f64.to_bits(),
+        rewo_gpu::entities::CAPE_MAX_JOINTS == SEGMENTS + 1
+            && REST_LEN.to_bits() == 1.0f64.to_bits(),
         format!(
             "CAPE_MAX_JOINTS {} == SEGMENTS+1 {}, and REST_LEN is exactly 1.0 \
              (16/16, a representable binary fraction); the renderer keeps its own \
@@ -935,7 +939,10 @@ fn check_wavy_geometry(c: &mut Checker) {
     // watertight with no internal caps.
     let n = SEGMENTS;
     let q = rewo_gpu::mobs::cape_slab_quads(n);
-    let caps = q.iter().filter(|q| q.joint[0] == q.joint[1] && q.joint[1] == q.joint[2]).count();
+    let caps = q
+        .iter()
+        .filter(|q| q.joint[0] == q.joint[1] && q.joint[1] == q.joint[2])
+        .count();
     let sides = q.len() - caps;
     let mut vmin = f32::MAX;
     let mut vmax = f32::MIN;
@@ -1017,7 +1024,10 @@ fn check_wavy_dynamics(c: &mut Checker) {
     // the chain has to cross the torso. Measured here rather than under the
     // forcing above, which blows the cape away from the body rather than
     // across it, so it never collides at all.
-    let mut turning = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    let mut turning = WavyCape::new(
+        SEGMENTS,
+        wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0),
+    );
     let mut post_tick_err = 0f64;
     for step in 0..120 {
         let a = wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, (step as f32 * 30.0).min(180.0));
@@ -1050,7 +1060,9 @@ fn check_wavy_dynamics(c: &mut Checker) {
         let mut w = WavyCape::new(SEGMENTS, anchor);
         let mut r = seed;
         for t in 0..300 {
-            r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            r = r
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let f = |sh: u32| ((r >> sh) & 0xFFFF) as f64 / 65535.0 - 0.5;
             let a = wavy_cape::anchor_in_cape_space(
                 (t % 39) as f32 - 6.0,
@@ -1089,7 +1101,14 @@ fn check_wavy_dynamics(c: &mut Checker) {
         let e = t.get(1).unwrap();
         let cloak = e.cloak_pos(1.0);
         let pos = e.render_pos(1.0);
-        let a = rewo_world::cape::cape_angles(cloak, pos, e.yaw, e.fall_fly_ticks() as f32 + 1.0, 0.0, 0.0);
+        let a = rewo_world::cape::cape_angles(
+            cloak,
+            pos,
+            e.yaw,
+            e.fall_fly_ticks() as f32 + 1.0,
+            0.0,
+            0.0,
+        );
         let want = wavy_cape::anchor_in_cape_space(a.flap, a.lean, a.lean2, e.yaw);
         let sim = t.wavy_cape(1).expect("a caped player simulates");
         pin_worst = pin_worst.max(dist(sim.joints()[0], want));
@@ -1129,17 +1148,14 @@ fn check_wavy_equilibrium(c: &mut Checker) {
             w.tick(anchor, [d, 0.0, 0.0]);
         }
         let tip = w.joints()[SEGMENTS];
-        let v = [
-            tip[0] - anchor[0],
-            tip[1] - anchor[1],
-            tip[2] - anchor[2],
-        ];
+        let v = [tip[0] - anchor[0], tip[1] - anchor[1], tip[2] - anchor[2]];
         v[0].hypot(v[2]).atan2(-v[1]).to_degrees()
     };
     // Vanilla's own answer for the same gap, through the shipped
     // `cape_angles`: a cloak `d` blocks behind at yaw 0 leans `100·d`.
-    let vanilla_lean =
-        |d: f64| rewo_world::cape::cape_angles([0.0, 0.0, -d], [0.0; 3], 0.0, 0.0, 0.0, 0.0).lean as f64;
+    let vanilla_lean = |d: f64| {
+        rewo_world::cape::cape_angles([0.0, 0.0, -d], [0.0; 3], 0.0, 0.0, 0.0, 0.0).lean as f64
+    };
 
     // The physics, first: the tilt is `atan(a_h / g)` across the whole range
     // a real cloak gap can reach (vanilla clamps `capeLean` at 150, i.e. 1.5
@@ -1150,7 +1166,10 @@ fn check_wavy_equilibrium(c: &mut Checker) {
         let got = settled_tilt(d);
         let want = (ANCHOR_ACCEL * d / GRAVITY).atan().to_degrees();
         worst = worst.max((got - want).abs());
-        rows.push(format!("{d} -> {got:.2} deg (vanilla {:.1})", vanilla_lean(d)));
+        rows.push(format!(
+            "{d} -> {got:.2} deg (vanilla {:.1})",
+            vanilla_lean(d)
+        ));
     }
     c.record(
         "w20.the_settled_tilt_is_atan_of_the_anchor_acceleration_over_gravity",
@@ -1213,15 +1232,24 @@ fn check_wavy_equilibrium(c: &mut Checker) {
 fn check_wavy_pushout(c: &mut Checker) {
     // A scripted 180° turn: the anchor swings to the far side of the body and
     // the chain has to cross the torso to follow it.
-    let mut c0 = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    let mut c0 = WavyCape::new(
+        SEGMENTS,
+        wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0),
+    );
     for _ in 0..200 {
-        c0.tick(wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0), [0.0; 3]);
+        c0.tick(
+            wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0),
+            [0.0; 3],
+        );
     }
     let mut min_r = f64::MAX;
     let mut grazed = false;
     for step in 0..80 {
         let yaw = (step as f32 * 30.0).min(180.0);
-        c0.tick(wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, yaw), [0.0; 3]);
+        c0.tick(
+            wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, yaw),
+            [0.0; 3],
+        );
         for p in &c0.joints()[1..] {
             let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
             min_r = min_r.min(r);
@@ -1262,11 +1290,20 @@ fn check_wavy_pushout(c: &mut Checker) {
     // its residual at a point the finished state no longer occupied.
     let seed = |c: &mut WavyCape| {
         for _ in 0..200 {
-            c.tick(wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0), [0.0; 3]);
+            c.tick(
+                wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0),
+                [0.0; 3],
+            );
         }
     };
-    let mut shipped = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
-    let mut m61 = WavyCape::new(SEGMENTS, wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0));
+    let mut shipped = WavyCape::new(
+        SEGMENTS,
+        wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0),
+    );
+    let mut m61 = WavyCape::new(
+        SEGMENTS,
+        wavy_cape::anchor_in_cape_space(0.0, 0.0, 0.0, 0.0),
+    );
     seed(&mut shipped);
     seed(&mut m61);
     let (mut shipped_err, mut m61_err, mut m61_min_r) = (0f64, 0f64, f64::MAX);
@@ -1312,7 +1349,9 @@ fn check_wavy_stability(c: &mut Checker) {
     let mut worst_reach = 0f64;
     let mut nan = false;
     for step in 0..600 {
-        r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        r = r
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let f = |sh: u32| ((r >> sh) & 0xFFFF) as f64 / 65535.0 - 0.5;
         let e = t.get_mut(1).unwrap();
         if step % 97 == 0 {
@@ -1463,18 +1502,15 @@ fn check_wavy_lifecycle(c: &mut Checker) {
         one.tick(anchor, [0.0; 3]);
     }
     let hem = one.joints()[1];
-    let swing = [
-        hem[0] - anchor[0],
-        hem[1] - anchor[1],
-        hem[2] - anchor[2],
-    ];
+    let swing = [hem[0] - anchor[0], hem[1] - anchor[1], hem[2] - anchor[2]];
     // The vanilla spine direction in the same space: the cape rotation's
     // second column (model +y, down the cape), through the model→cape map at
     // yaw 0.
     let m = cape_rotation(0.0, 0.0, 0.0);
     let theta = 180f32.to_radians();
     let (st, ct) = theta.sin_cos();
-    let spine = rewo_gpu::entities::model_dir_to_cape([m[0][1], m[1][1], m[2][1]], st, ct, 0.0, 1.0);
+    let spine =
+        rewo_gpu::entities::model_dir_to_cape([m[0][1], m[1][1], m[2][1]], st, ct, 0.0, 1.0);
     let ln = (swing[0].powi(2) + swing[1].powi(2) + swing[2].powi(2)).sqrt();
     let dot = (0..3)
         .map(|k| swing[k] / ln * spine[k] as f64)
@@ -1543,7 +1579,9 @@ fn magenta_in(img: &[u8], (x, y, w, h): (u32, u32, u32, u32)) -> u32 {
 
 /// The marker pixels as a mask, for comparing two silhouettes (M61).
 fn magenta_mask(img: &[u8]) -> Vec<bool> {
-    img.as_chunks::<4>().0.iter()
+    img.as_chunks::<4>()
+        .0
+        .iter()
         .map(|px| px[0] > 150 && px[2] > 150 && px[1] < 90)
         .collect()
 }
@@ -1608,7 +1646,9 @@ fn check_pixels(
         wr.set_held_items(crate::live_cmd::to_gpu_held_items(&baked.held_items));
 
         // A solid-magenta 64x32 cape.
-        let sheet: Vec<u8> = (0..CAPE_TEXELS).flat_map(|_| [255u8, 0, 255, 255]).collect();
+        let sheet: Vec<u8> = (0..CAPE_TEXELS)
+            .flat_map(|_| [255u8, 0, 255, 255])
+            .collect();
         let origin = wr
             .upload_player_cape(gpu, &sheet)
             .ok_or("cape upload failed")?;
@@ -1631,9 +1671,9 @@ fn check_pixels(
         let cam_right = [1.0f32, 0.0, 0.0];
         let cam_up = [0.0f32, 1.0, 0.0];
         let shot = |gpu: &mut Gpu,
-                        off: &mut Offscreen,
-                        wr: &mut WorldRenderer,
-                        draws: &[EntityDraw<'_>]|
+                    off: &mut Offscreen,
+                    wr: &mut WorldRenderer,
+                    draws: &[EntityDraw<'_>]|
          -> Result<Vec<u8>, String> {
             wr.set_entities(draws, cam_right, cam_up, 0.0);
             off.render(gpu, Some((&mut *wr, vp)), &draw, CLEAR)?;
@@ -1739,7 +1779,8 @@ fn check_pixels(
         // bypasses the simulation entirely at that length rather than
         // trusting it to converge.
         let sim1 = {
-            let anchor = wavy_cape::anchor_in_cape_space(rest_w.flap, rest_w.lean, rest_w.lean2, 0.0);
+            let anchor =
+                wavy_cape::anchor_in_cape_space(rest_w.flap, rest_w.lean, rest_w.lean2, 0.0);
             let mut s = WavyCape::new(1, anchor);
             for _ in 0..600 {
                 s.tick(anchor, [0.0; 3]);
@@ -1837,7 +1878,11 @@ fn check_pixels(
             .transpose()?
             .is_some()
             && wr
-                .init_preview(gpu, crate::live_cmd::font_data(baked), crate::live_cmd::entity_textures(baked))
+                .init_preview(
+                    gpu,
+                    crate::live_cmd::font_data(baked),
+                    crate::live_cmd::entity_textures(baked),
+                )
                 .map(|_| wr.preview_ready())
                 .unwrap_or(false);
         if preview_ok {
@@ -1859,8 +1904,14 @@ fn check_pixels(
             let window = (rx as u32, ry as u32, rw as u32, rh as u32);
             let vp_prev = rewo_gpu::container::preview_view_proj(W as f32, H as f32, 1.8, 0.0);
             let rect = ash::vk::Rect2D {
-                offset: ash::vk::Offset2D { x: rx as i32, y: ry as i32 },
-                extent: ash::vk::Extent2D { width: rw as u32, height: rh as u32 },
+                offset: ash::vk::Offset2D {
+                    x: rx as i32,
+                    y: ry as i32,
+                },
+                extent: ash::vk::Extent2D {
+                    width: rw as u32,
+                    height: rh as u32,
+                },
             };
             let mut prev = |cape: Option<CapeDraw>, yaw: f32| -> Result<Vec<u8>, String> {
                 let mut d = player_draw(cape);

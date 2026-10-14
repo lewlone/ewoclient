@@ -19,9 +19,7 @@ fn chat_fixture(count: usize, added_time: i32) -> rewo_world::chat::ChatComponen
         c.add_message(
             rewo_world::chat::GuiMessage {
                 added_time,
-                content: vec![
-                    rewo_world::chat_style::ChatStyle::WHITE.span(format!("m{i}")),
-                ],
+                content: vec![rewo_world::chat_style::ChatStyle::WHITE.span(format!("m{i}"))],
                 signature: None,
                 source: rewo_world::chat::MessageSource::SystemServer,
                 tag: None,
@@ -303,12 +301,24 @@ fn the_fill_and_the_text_use_different_opacity_multipliers() {
     let mut opts = rewo_world::chat::ChatOptions::default();
     let c = chat_fixture(1, 0);
     // Default: background 0.5, text 1.0.
-    assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.5);
-    assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha, 1.0);
+    assert_eq!(
+        super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha,
+        0.5
+    );
+    assert_eq!(
+        super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha,
+        1.0
+    );
     opts.text_background_opacity = 0.0;
-    assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.0);
+    assert_eq!(
+        super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha,
+        0.0
+    );
     // The text is untouched by it — a shared multiplier would zero both.
-    assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha, 1.0);
+    assert_eq!(
+        super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha,
+        1.0
+    );
 }
 
 /// The fade reaches the fill too, so a message dims its own backdrop with
@@ -335,7 +345,11 @@ fn the_backdrops_max_width_is_a_ceil_not_the_wraps_floor() {
     // 320 / 0.75 = 426.66… -> ceil 427, floor 426.
     let b = super::hud_fills(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
     let chat_px = 0.75_f32;
-    assert!(((b[0].w / chat_px) - (427.0 + 12.0)).abs() < 1e-3, "{}", b[0].w / chat_px);
+    assert!(
+        ((b[0].w / chat_px) - (427.0 + 12.0)).abs() < 1e-3,
+        "{}",
+        b[0].w / chat_px
+    );
 }
 
 /// The GUI scale multiplies every offset, including the 40-px margin —
@@ -359,19 +373,27 @@ fn the_gui_scale_multiplies_the_whole_box() {
 fn the_fade_and_the_text_opacity_both_reach_the_line() {
     let opts = rewo_world::chat::ChatOptions::default();
     let c = chat_fixture(1, 0);
-    assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha, 1.0);
+    assert_eq!(
+        super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha,
+        1.0
+    );
     // 190 ticks: half way through the 20-tick fade, squared -> 0.25.
     let faded = super::chat_lines(&c, 190, 1.0, 720.0, &opts, None, false).0;
     assert!((faded[0].alpha - 0.25).abs() < 1e-5);
     // Past 200 the line is not emitted at all, rather than emitted at 0.
-    assert!(super::chat_lines(&c, 200, 1.0, 720.0, &opts, None, false).0.is_empty());
+    assert!(super::chat_lines(&c, 200, 1.0, 720.0, &opts, None, false)
+        .0
+        .is_empty());
 
     let dim = rewo_world::chat::ChatOptions {
         opacity: 0.0,
         ..Default::default()
     };
     let lines = super::chat_lines(&c, 0, 1.0, 720.0, &dim, None, false).0;
-    assert!((lines[0].alpha - 0.1).abs() < 1e-6, "the floor is 0.1, not 0");
+    assert!(
+        (lines[0].alpha - 0.1).abs() < 1e-6,
+        "the floor is 0.1, not 0"
+    );
 }
 
 /// The unfocused box holds ten rows (90 / 9), so an eleventh message
@@ -395,8 +417,18 @@ fn the_unfocused_box_holds_ten_rows() {
 fn the_focused_box_is_taller_and_does_not_fade() {
     let opts = rewo_world::chat::ChatOptions::default();
     let c = chat_fixture(30, 0);
-    assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0.len(), 10);
-    assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, true).0.len(), 20);
+    assert_eq!(
+        super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false)
+            .0
+            .len(),
+        10
+    );
+    assert_eq!(
+        super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, true)
+            .0
+            .len(),
+        20
+    );
     // …and the fills follow the text, so a taller box does not draw ten
     // rows of glyphs over twenty rows of backdrop.
     assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false).len(), 10);
@@ -405,7 +437,9 @@ fn the_focused_box_is_taller_and_does_not_fade() {
     // At 300 ticks every message is long faded, and the focused view shows
     // them anyway — `AlphaCalculator.FULLY_VISIBLE` rather than
     // `timeBased`.
-    assert!(super::chat_lines(&c, 300, 1.0, 720.0, &opts, None, false).0.is_empty());
+    assert!(super::chat_lines(&c, 300, 1.0, 720.0, &opts, None, false)
+        .0
+        .is_empty());
     let focused = super::chat_lines(&c, 300, 1.0, 720.0, &opts, None, true).0;
     assert_eq!(focused.len(), 20);
     assert!(focused.iter().all(|l| l.alpha == 1.0));
@@ -444,21 +478,18 @@ fn the_hover_and_the_render_agree_about_where_a_slot_is() {
     );
     // Slot 9's own position, converted forward to a screen point.
     let (sx, sy) = layout.position(9).unwrap();
-    let mouse = (
-        (ox + (sx as f32 + 8.0) * scale) as f64,
-        {
-            let (_, oy2, _) = rewo_gpu::container::gui_origin_placed(
-                w,
-                h,
-                rewo_gpu::container::Placement::with_book(
-                    layout.image_w as f32,
-                    layout.image_h as f32,
-                    true,
-                ),
-            );
-            (oy2 + (sy as f32 + 8.0) * scale) as f64
-        },
-    );
+    let mouse = ((ox + (sx as f32 + 8.0) * scale) as f64, {
+        let (_, oy2, _) = rewo_gpu::container::gui_origin_placed(
+            w,
+            h,
+            rewo_gpu::container::Placement::with_book(
+                layout.image_w as f32,
+                layout.image_h as f32,
+                true,
+            ),
+        );
+        (oy2 + (sy as f32 + 8.0) * scale) as f64
+    });
     let screen = super::ScreenState {
         mouse,
         ..Default::default()
@@ -498,10 +529,7 @@ fn a_menu_with_no_book_is_never_displaced() {
     ] {
         assert!(super::book_visible_for(Some(b), &open), "{b:?}");
         assert!(
-            !super::book_visible_for(
-                Some(b),
-                &rewo_net::recipe_book::BookSettings::default()
-            ),
+            !super::book_visible_for(Some(b), &rewo_net::recipe_book::BookSettings::default()),
             "{b:?} shut"
         );
     }
@@ -514,9 +542,18 @@ fn each_book_type_reads_its_own_flag() {
     use rewo_world::recipe_book_screen::BookType;
     let mut only_furnace = rewo_net::recipe_book::BookSettings::default();
     only_furnace.furnace.open = true;
-    assert!(super::book_visible_for(Some(BookType::Furnace), &only_furnace));
-    assert!(!super::book_visible_for(Some(BookType::Crafting), &only_furnace));
-    assert!(!super::book_visible_for(Some(BookType::Smoker), &only_furnace));
+    assert!(super::book_visible_for(
+        Some(BookType::Furnace),
+        &only_furnace
+    ));
+    assert!(!super::book_visible_for(
+        Some(BookType::Crafting),
+        &only_furnace
+    ));
+    assert!(!super::book_visible_for(
+        Some(BookType::Smoker),
+        &only_furnace
+    ));
     assert!(!super::book_visible_for(
         Some(BookType::BlastFurnace),
         &only_furnace
@@ -562,7 +599,9 @@ fn a_wide_window_with_the_book_open_still_hovers() {
     let layout = &rewo_world::menu_layout::PLAYER;
     let (w, h) = (1920.0f32, 1080.0f32);
     let scale = rewo_gpu::hud::gui_scale(w, h);
-    assert!(!rewo_world::recipe_book_screen::width_too_narrow((w / scale) as i32));
+    assert!(!rewo_world::recipe_book_screen::width_too_narrow(
+        (w / scale) as i32
+    ));
     let (ox, oy, _) = rewo_gpu::container::gui_origin_placed(
         w,
         h,
@@ -752,24 +791,18 @@ fn the_selected_row_is_yellow_and_the_rest_are_grey() {
 #[test]
 fn the_rows_follow_the_scroll_offset() {
     let (mut s, _) = popup(25);
-    let first = super::suggestion_popup_text(
-        s.suggestions.list().unwrap(),
-        s.suggestions.config(),
-        1.0,
-    )[0]
-    .text
-    .clone();
+    let first =
+        super::suggestion_popup_text(s.suggestions.list().unwrap(), s.suggestions.config(), 1.0)[0]
+            .text
+            .clone();
     s.suggestions.mouse_scrolled(-1.0, {
         let r = s.suggestions.list().unwrap().rect;
         (r.x + 2, r.y + 2)
     });
-    let scrolled = super::suggestion_popup_text(
-        s.suggestions.list().unwrap(),
-        s.suggestions.config(),
-        1.0,
-    )[0]
-    .text
-    .clone();
+    let scrolled =
+        super::suggestion_popup_text(s.suggestions.list().unwrap(), s.suggestions.config(), 1.0)[0]
+            .text
+            .clone();
     assert_ne!(first, scrolled, "the top row moved with the offset");
 }
 
@@ -785,8 +818,14 @@ fn the_coloured_runs_butt_up_against_each_other_at_measured_widths() {
     let mut s = ChatScreen::open(ChatMethod::Command, None, 0);
     s.input.set_value("/give 5");
     let runs = vec![
-        Run { text: "/give ".into(), color: GRAY },
-        Run { text: "5".into(), color: ARGUMENT_COLORS[0] },
+        Run {
+            text: "/give ".into(),
+            color: GRAY,
+        },
+        Run {
+            text: "5".into(),
+            color: ARGUMENT_COLORS[0],
+        },
     ];
     let width_of = |t: &str| t.chars().count() as i32 * 4;
     let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0, Some(&runs), &width_of);
@@ -861,8 +900,7 @@ fn the_usage_box_is_as_wide_as_its_widest_line() {
 }
 
 #[test]
-fn each_usage_line_takes_its_own_colour_rather_than_the_boxs(
-) {
+fn each_usage_line_takes_its_own_colour_rather_than_the_boxs() {
     // M134. `extractUsage` passes ONE `-1` for the whole list and
     // `Font.getTextColor` uses it only where the style has no colour —
     // so a grey usage entry and a white exception message land in the
@@ -902,7 +940,9 @@ fn the_input_line_carries_its_text_and_a_caret() {
     s.char_typed('i', &chat_env());
     // `focused_time_ms` is unset until `set_focused_at`, so the blink's
     // clock starts at 0 and the caret is visible at t = 0.
-    let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| t.chars().count() as i32 * 6);
+    let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| {
+        t.chars().count() as i32 * 6
+    });
     assert_eq!(lines[0].text, "hi");
     // `EditBox(font, 4, height - 12, …)` with `(height - 8) / 2` centring.
     assert_eq!((lines[0].x, lines[0].y), (4.0, 230.0));
@@ -1002,7 +1042,10 @@ fn a_draft_is_italic_and_its_caret_is_not() {
         caret.color_linear, text.color_linear,
         "and it keeps the field's textColor rather than the draft's grey"
     );
-    assert_eq!(caret.color_linear, srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR));
+    assert_eq!(
+        caret.color_linear,
+        srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR)
+    );
 }
 
 /// The two converters really are the sRGB transfer function.
@@ -1126,20 +1169,27 @@ fn an_empty_chat_draws_nothing() {
     .is_empty());
 }
 
-
 /// The washes are two lists, and the veil is NOT widened for a big result
 /// slot — only the wash beneath it is.
 #[test]
 fn the_ghosts_two_washes_go_in_different_halves_and_only_one_widens() {
     use rewo_world::ghost_slots as gs;
     let layout = &rewo_world::menu_layout::PLAYER;
-    let g = [gs::Ghost { slot: 0, items: vec![1], is_result: true }];
+    let g = [gs::Ghost {
+        slot: 0,
+        items: vec![1],
+        is_result: true,
+    }];
     // A crafting table screen: the result's wash is big.
     let (under, over) = super::ghost_washes(&g, layout, false);
     assert_eq!(under.len(), 1);
     assert_eq!(over.len(), 1, "one of each, per ghost");
     assert_eq!((under[0].1.w, under[0].1.h), (24.0, 24.0), "the big wash");
-    assert_eq!((over[0].1.w, over[0].1.h), (16.0, 16.0), "the veil stays 16");
+    assert_eq!(
+        (over[0].1.w, over[0].1.h),
+        (16.0, 16.0),
+        "the veil stays 16"
+    );
     // …and the big one starts 4 px up and left of the veil.
     assert_eq!(under[0].1.dx, over[0].1.dx - 4.0);
     assert_eq!(under[0].1.dy, over[0].1.dy - 4.0);
@@ -1154,7 +1204,11 @@ fn the_ghosts_two_washes_go_in_different_halves_and_only_one_widens() {
 #[test]
 fn the_wash_under_is_red_and_the_veil_is_white() {
     use rewo_world::ghost_slots as gs;
-    let g = [gs::Ghost { slot: 1, items: vec![1], is_result: false }];
+    let g = [gs::Ghost {
+        slot: 1,
+        items: vec![1],
+        is_result: false,
+    }];
     let (under, over) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
     // alpha 48/255 on both.
     assert!((under[0].1.tint[3] - 48.0 / 255.0).abs() < 1e-6);
@@ -1175,7 +1229,11 @@ fn the_wash_under_is_red_and_the_veil_is_white() {
 #[test]
 fn the_washes_are_untextured_fills() {
     use rewo_world::ghost_slots as gs;
-    let g = [gs::Ghost { slot: 1, items: vec![1], is_result: false }];
+    let g = [gs::Ghost {
+        slot: 1,
+        items: vec![1],
+        is_result: false,
+    }];
     let (under, over) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
     assert_eq!(under[0].0, rewo_gpu::container::FILL_SPRITE);
     assert_eq!(over[0].0, rewo_gpu::container::FILL_SPRITE);
@@ -1186,7 +1244,11 @@ fn the_washes_are_untextured_fills() {
 #[test]
 fn a_ghost_on_a_slot_that_does_not_exist_is_dropped() {
     use rewo_world::ghost_slots as gs;
-    let g = [gs::Ghost { slot: 999, items: vec![1], is_result: false }];
+    let g = [gs::Ghost {
+        slot: 999,
+        items: vec![1],
+        is_result: false,
+    }];
     let (under, over) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
     assert!(under.is_empty() && over.is_empty());
 }
@@ -1196,12 +1258,23 @@ fn a_ghost_on_a_slot_that_does_not_exist_is_dropped() {
 fn each_ghost_lands_on_its_own_slot() {
     use rewo_world::ghost_slots as gs;
     let g = [
-        gs::Ghost { slot: 1, items: vec![1], is_result: false },
-        gs::Ghost { slot: 2, items: vec![2], is_result: false },
+        gs::Ghost {
+            slot: 1,
+            items: vec![1],
+            is_result: false,
+        },
+        gs::Ghost {
+            slot: 2,
+            items: vec![2],
+            is_result: false,
+        },
     ];
     let (under, _) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
     assert_eq!(under.len(), 2);
-    assert_ne!((under[0].1.dx, under[0].1.dy), (under[1].1.dx, under[1].1.dy));
+    assert_ne!(
+        (under[0].1.dx, under[0].1.dy),
+        (under[1].1.dx, under[1].1.dy)
+    );
     // And they match the layout's own positions.
     for (n, slot) in [1usize, 2].into_iter().enumerate() {
         let (sx, sy) = rewo_world::menu_layout::PLAYER.position(slot).unwrap();
@@ -1212,7 +1285,9 @@ fn each_ghost_lands_on_its_own_slot() {
 // -- the two crafting fills (M102) ---------------------------------------
 
 /// A player menu holding one stack in a given slot.
-fn inv_with(slots: &[(usize, rewo_world::inventory::ItemSlot)]) -> rewo_world::inventory::Inventory {
+fn inv_with(
+    slots: &[(usize, rewo_world::inventory::ItemSlot)],
+) -> rewo_world::inventory::Inventory {
     let mut inv = rewo_world::inventory::Inventory::default();
     for &(slot, st) in slots {
         inv.set_slot(0, slot as i32, Some(st));
@@ -1237,7 +1312,10 @@ fn the_grid_is_counted_once_through_the_craft_slot_fill() {
         rb96::BookType::Crafting,
         &max,
     );
-    assert!(c.try_pick(&ing, 1), "one on the grid satisfies one ingredient");
+    assert!(
+        c.try_pick(&ing, 1),
+        "one on the grid satisfies one ingredient"
+    );
     // …and only once: two ingredients need two items, so one is not enough.
     let mut c2 = super::crafting_contents(
         &inv_with(&[(1, dirt())]),
@@ -1305,7 +1383,10 @@ fn a_furnaces_result_slot_counts_where_a_crafting_tables_does_not() {
         rb96::BookType::Furnace,
         &max,
     );
-    assert!(zero.try_pick(&ing, 1), "furnace slot 0 is its ingredient slot");
+    assert!(
+        zero.try_pick(&ing, 1),
+        "furnace slot 0 is its ingredient slot"
+    );
 }
 
 /// The furnace half is UNGATED: a damaged stack in a furnace counts, and the
@@ -1357,8 +1438,7 @@ fn entry<'a>(
         group,
         category,
         results: results.to_vec(),
-        ingredients: ingredients
-            .map(|v| v.iter().map(|ids| Ingredient::of(ids)).collect()),
+        ingredients: ingredients.map(|v| v.iter().map(|ids| Ingredient::of(ids)).collect()),
         // M99 — no searchable text, which every witness below relies on
         // being inert: `matches` skips the stage on an empty query.
         search: Default::default(),
@@ -1426,9 +1506,7 @@ const MISC: &str = "minecraft:crafting_misc";
 fn a_slot_is_craftable_exactly_when_the_held_items_satisfy_it() {
     let e = [entry(1, None, EQUIP, &[7], Some(&[&[10], &[11]]))];
     let got = |items: &[(i32, i32)]| {
-        render(rb96::BookType::Crafting, false, &e, &mut held(items), 0)
-            .slots[0]
-            .0
+        render(rb96::BookType::Crafting, false, &e, &mut held(items), 0).slots[0].0
     };
     assert!(got(&[(10, 1), (11, 1)]), "both ingredients held");
     assert!(!got(&[(10, 1)]), "one missing");
@@ -1454,8 +1532,7 @@ fn an_entry_with_no_requirements_is_never_craftable() {
     // ...while the same entry declaring an EMPTY list is craftable, since
     // there is nothing to satisfy. The two states are distinct.
     let e2 = [entry(1, None, EQUIP, &[7], Some(&[]))];
-    let r2 =
-        render(rb96::BookType::Crafting, false, &e2, &mut held(&[]), 0);
+    let r2 = render(rb96::BookType::Crafting, false, &e2, &mut held(&[]), 0);
     assert!(r2.slots[0].0);
 }
 
@@ -1468,8 +1545,13 @@ fn a_collection_is_craftable_if_ANY_of_its_recipes_is() {
         entry(1, Some(5), EQUIP, &[7], Some(&[&[99]])),
         entry(2, Some(5), EQUIP, &[7], Some(&[&[10]])),
     ];
-    let r =
-        render(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
+    let r = render(
+        rb96::BookType::Crafting,
+        false,
+        &e,
+        &mut held(&[(10, 1)]),
+        0,
+    );
     assert_eq!(r.slots.len(), 1, "one grouped collection");
     assert!(r.slots[0].0, "the second recipe is affordable");
     assert!(r.slots[0].1, "and it has several recipes");
@@ -1484,8 +1566,13 @@ fn asking_about_one_collection_does_not_spend_anothers_items() {
         entry(1, None, EQUIP, &[7], Some(&[&[10]])),
         entry(2, None, EQUIP, &[8], Some(&[&[10]])),
     ];
-    let r =
-        render(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
+    let r = render(
+        rb96::BookType::Crafting,
+        false,
+        &e,
+        &mut held(&[(10, 1)]),
+        0,
+    );
     assert_eq!(r.slots.len(), 2);
     assert!(r.slots[0].0 && r.slots[1].0, "both, from one item");
 }
@@ -1501,9 +1588,12 @@ fn the_page_holds_this_books_categories_and_no_others() {
         entry(4, None, "minecraft:stonecutter", &[9], None),
     ];
     let r = render(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
-    assert_eq!(r.slots.len(), 2, "equipment and misc, not smoker or stonecutter");
-    let smoker =
-        render(rb96::BookType::Smoker, false, &e, &mut held(&[]), 0);
+    assert_eq!(
+        r.slots.len(),
+        2,
+        "equipment and misc, not smoker or stonecutter"
+    );
+    let smoker = render(rb96::BookType::Smoker, false, &e, &mut held(&[]), 0);
     assert_eq!(smoker.slots.len(), 1);
 }
 
@@ -1516,8 +1606,7 @@ fn the_display_cycle_reaches_the_slot_items() {
         entry(2, Some(5), EQUIP, &[71], Some(&[&[10]])),
     ];
     let at = |cycle: i32| {
-        render(rb96::BookType::Crafting, false, &e, &mut held(&[]), cycle)
-            .slot_items[0]
+        render(rb96::BookType::Crafting, false, &e, &mut held(&[]), cycle).slot_items[0]
     };
     assert_eq!(at(0), Some(70));
     assert_eq!(at(1), Some(71));
@@ -1538,8 +1627,7 @@ fn the_shadow_needs_several_recipes_AND_one_result() {
     ];
     let one = [entry(1, None, EQUIP, &[70], None)];
     let shadowed = |e: &[super::BookEntry<'_>]| {
-        render(rb96::BookType::Crafting, false, e, &mut held(&[]), 0)
-            .slot_shadowed[0]
+        render(rb96::BookType::Crafting, false, e, &mut held(&[]), 0).slot_shadowed[0]
     };
     assert!(shadowed(&same));
     assert!(!shadowed(&differ), "several recipes, different results");
@@ -1566,8 +1654,7 @@ fn a_long_book_pages_and_the_first_page_is_full() {
 fn the_filter_flag_reaches_the_view() {
     let e = [entry(1, None, EQUIP, &[7], None)];
     for filtering in [false, true] {
-        let r =
-            render(rb96::BookType::Crafting, filtering, &e, &mut held(&[]), 0);
+        let r = render(rb96::BookType::Crafting, filtering, &e, &mut held(&[]), 0);
         assert_eq!(r.view.unwrap().filtering, filtering);
     }
 }
@@ -1578,7 +1665,10 @@ fn the_filter_flag_reaches_the_view() {
 fn a_tab_index_too_big_for_this_book_clamps_rather_than_panicking() {
     let e = [entry(1, None, "minecraft:smoker_food", &[7], None)];
     // Tab 4 exists on a crafting book (five tabs) and not on a smoker (two).
-    let st = rb96::BookState { selected_tab: 4, page: 0 };
+    let st = rb96::BookState {
+        selected_tab: 4,
+        page: 0,
+    };
     let r = super::book_render_from(
         rb96::BookType::Smoker,
         false,
@@ -1601,11 +1691,12 @@ fn a_tab_index_too_big_for_this_book_clamps_rather_than_panicking() {
 /// 0, and a mutation replacing the reset with a clamp survived it.
 #[test]
 fn a_page_index_that_outlived_its_list_resets_to_the_FRONT() {
-    let three_pages: Vec<_> = (0..45)
-        .map(|i| entry(i, None, EQUIP, &[7], None))
-        .collect();
+    let three_pages: Vec<_> = (0..45).map(|i| entry(i, None, EQUIP, &[7], None)).collect();
     let page_of = |page: usize, e: &[super::BookEntry<'_>]| {
-        let st = rb96::BookState { selected_tab: 0, page };
+        let st = rb96::BookState {
+            selected_tab: 0,
+            page,
+        };
         super::book_render_from(
             rb96::BookType::Crafting,
             false,
@@ -1616,9 +1707,9 @@ fn a_page_index_that_outlived_its_list_resets_to_the_FRONT() {
             None,
             "",
         )
-            .view
-            .unwrap()
-            .page
+        .view
+        .unwrap()
+        .page
     };
     assert_eq!(page_of(2, &three_pages), 2, "still in range");
     // Out of range by one: `totalPages <= currentPage`, so page 3 of three
@@ -1637,9 +1728,7 @@ fn a_page_index_that_outlived_its_list_resets_to_the_FRONT() {
 fn the_hover_lights_what_a_click_would_take() {
     use rewo_world::recipe_book_screen as rb;
     // 45 collections, so there is a forward arrow to hover.
-    let e: Vec<_> = (0..45)
-        .map(|i| entry(i, None, EQUIP, &[7], None))
-        .collect();
+    let e: Vec<_> = (0..45).map(|i| entry(i, None, EQUIP, &[7], None)).collect();
     let at = |bx: i32, by: i32| {
         super::book_render_from(
             rb96::BookType::Crafting,
@@ -1673,8 +1762,8 @@ fn the_hover_lights_what_a_click_would_take() {
         0,
         rb96::BookState::default(),
         None,
-            "",
-        )
+        "",
+    )
     .hover;
     assert!(!absent.filter && !absent.page_forward && !absent.page_backward);
 }
@@ -1691,7 +1780,11 @@ fn a_click_places_the_recipe_the_cycle_is_showing() {
         render(rb96::BookType::Crafting, false, &e, &mut held(&[]), cycle).slot_recipes[0]
     };
     assert_eq!(at(0), Some(11));
-    assert_eq!(at(1), Some(22), "the second recipe, matching the shown item");
+    assert_eq!(
+        at(1),
+        Some(22),
+        "the second recipe, matching the shown item"
+    );
     assert_eq!(at(2), Some(11), "and it wraps with the display");
 }
 
@@ -1722,7 +1815,11 @@ fn the_search_narrows_the_page_and_an_empty_query_does_not() {
     assert_eq!(search_render(&e, "").slots.len(), 3, "no query, no filter");
     assert_eq!(search_render(&e, "sword").slots.len(), 1);
     assert_eq!(search_render(&e, "gold").slots.len(), 1);
-    assert_eq!(search_render(&e, "o").slots.len(), 3, "a substring of all three");
+    assert_eq!(
+        search_render(&e, "o").slots.len(),
+        3,
+        "a substring of all three"
+    );
     assert_eq!(search_render(&e, "zzz").slots.len(), 0);
 }
 
@@ -1732,8 +1829,16 @@ fn a_query_without_a_colon_does_not_reach_the_ids() {
     // The name says Plank and the id says oak.
     let e = [searchable(1, EQUIP, "Wooden Plank", "minecraft:oak_planks")];
     assert_eq!(search_render(&e, "plank").slots.len(), 1);
-    assert_eq!(search_render(&e, "oak").slots.len(), 0, "the id is not searched");
-    assert_eq!(search_render(&e, "minecraft:oak").slots.len(), 1, "with a colon it is");
+    assert_eq!(
+        search_render(&e, "oak").slots.len(),
+        0,
+        "the id is not searched"
+    );
+    assert_eq!(
+        search_render(&e, "minecraft:oak").slots.len(),
+        1,
+        "with a colon it is"
+    );
 }
 
 /// The page's total re-counts against the FILTERED list, so a search that
@@ -1743,7 +1848,12 @@ fn a_search_recounts_the_pages() {
     let mut e: Vec<_> = (0..45)
         .map(|i| searchable(i, EQUIP, "Cobblestone", "minecraft:cobblestone"))
         .collect();
-    e.push(searchable(99, EQUIP, "Diamond Sword", "minecraft:diamond_sword"));
+    e.push(searchable(
+        99,
+        EQUIP,
+        "Diamond Sword",
+        "minecraft:diamond_sword",
+    ));
     assert_eq!(search_render(&e, "").view.unwrap().total_pages, 3);
     let one = search_render(&e, "sword");
     assert_eq!(one.view.unwrap().total_pages, 1);
@@ -1759,9 +1869,17 @@ fn a_grouped_collection_matches_on_any_of_its_recipes() {
     a.group = Some(5);
     b.group = Some(5);
     let e = [a, b];
-    assert_eq!(search_render(&e, "").slots.len(), 1, "one grouped collection");
+    assert_eq!(
+        search_render(&e, "").slots.len(),
+        1,
+        "one grouped collection"
+    );
     assert_eq!(search_render(&e, "sword").slots.len(), 1);
-    assert_eq!(search_render(&e, "apple").slots.len(), 1, "the OTHER member");
+    assert_eq!(
+        search_render(&e, "apple").slots.len(),
+        1,
+        "the OTHER member"
+    );
     assert_eq!(search_render(&e, "iron").slots.len(), 0);
 }
 
@@ -1785,7 +1903,11 @@ fn book_view(furnace_family: bool, filtering: bool) -> rb96::BookView {
 }
 
 fn button(recipe: i32, craftable: bool) -> rewo_world::recipe_overlay::Button {
-    rewo_world::recipe_overlay::Button { recipe, craftable, slots: Vec::new() }
+    rewo_world::recipe_overlay::Button {
+        recipe,
+        craftable,
+        slots: Vec::new(),
+    }
 }
 
 /// A collection reaches the overlay craftable-first, and the flag travels
@@ -1851,11 +1973,19 @@ fn a_collections_recipes_are_graded_one_by_one_for_the_overlay() {
     let mut b = entry(2, Some(9), EQUIP, &[7], Some(&[&[99]]));
     a.group = Some(9);
     b.group = Some(9);
-    let got = render(rb96::BookType::Crafting, false, &[a, b], &mut held(&[(10, 1)]), 0);
+    let got = render(
+        rb96::BookType::Crafting,
+        false,
+        &[a, b],
+        &mut held(&[(10, 1)]),
+        0,
+    );
     assert!(got.slots[0].0, "the CELL is craftable — any of them");
     let per = &got.slot_collections[0];
     assert_eq!(
-        per.iter().map(|x| (x.recipe, x.craftable)).collect::<Vec<_>>(),
+        per.iter()
+            .map(|x| (x.recipe, x.craftable))
+            .collect::<Vec<_>>(),
         vec![(1, true), (2, false)],
         "and the overlay sees them one by one, in the collection's order"
     );
@@ -1867,7 +1997,13 @@ fn a_collections_recipes_are_graded_one_by_one_for_the_overlay() {
 fn an_unresolvable_ingredient_drops_its_position_and_moves_no_other() {
     let full = entry(1, None, EQUIP, &[7], Some(&[&[10], &[11], &[12]]));
     let holey = entry(2, None, MISC, &[7], Some(&[&[10], &[], &[12]]));
-    let got = render(rb96::BookType::Crafting, false, &[full, holey], &mut held(&[]), 0);
+    let got = render(
+        rb96::BookType::Crafting,
+        false,
+        &[full, holey],
+        &mut held(&[]),
+        0,
+    );
     let slots_of = |n: usize| got.slot_collections[n][0].slots.clone();
     let a = slots_of(0);
     let b = slots_of(1);
@@ -1938,8 +2074,14 @@ fn the_fields_background_is_two_blits_and_the_inner_one_is_inset() {
     let (_, fills) = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0, 0);
     assert!(fills.len() >= 2);
     let (outer, inner) = (fills[0].1, fills[1].1);
-    assert_eq!((outer.dx, outer.dy), (rb::SEARCH_X as f32, rb::SEARCH_Y as f32));
-    assert_eq!((outer.w, outer.h), (rb::SEARCH_W as f32, rb::SEARCH_H as f32));
+    assert_eq!(
+        (outer.dx, outer.dy),
+        (rb::SEARCH_X as f32, rb::SEARCH_Y as f32)
+    );
+    assert_eq!(
+        (outer.w, outer.h),
+        (rb::SEARCH_W as f32, rb::SEARCH_H as f32)
+    );
     assert_eq!((inner.dx, inner.dy), (outer.dx + 1.0, outer.dy + 1.0));
     assert_eq!((inner.w, inner.h), (outer.w - 2.0, outer.h - 2.0));
     // Both sample a 1x1 source, which is only exact because every region of
@@ -2140,7 +2282,10 @@ fn the_first_tooltip_of_a_frame_wins() {
     ) -> Option<&'static str> {
         super::frame_tooltip(&mut (), |_| None, |_| m, |_| b, |_| g)
     }
-    assert_eq!(pick(Some("menu"), Some("book"), Some("ghost")), Some("menu"));
+    assert_eq!(
+        pick(Some("menu"), Some("book"), Some("ghost")),
+        Some("menu")
+    );
     assert_eq!(pick(None, Some("book"), Some("ghost")), Some("book"));
     assert_eq!(pick(None, None, Some("ghost")), Some("ghost"));
     assert_eq!(pick(None, None, None), None);
@@ -2255,13 +2400,20 @@ fn the_hover_highlight_follows_the_panel_the_book_pushed() {
 /// for the path that exercises it.
 #[test]
 fn an_empty_line_list_sets_no_tooltip_rather_than_an_empty_box() {
-    assert!(
-        super::tooltip_layout(Vec::new(), &advances(), None, (100.0, 100.0), (1280.0, 720.0))
-            .is_none()
-    );
+    assert!(super::tooltip_layout(
+        Vec::new(),
+        &advances(),
+        None,
+        (100.0, 100.0),
+        (1280.0, 720.0)
+    )
+    .is_none());
     // …and one line still does, so the guard is not simply "never".
     assert!(super::tooltip_layout(
-        vec![vec![rewo_gpu::tooltip::Span::new("x".to_string(), [1.0; 3])]],
+        vec![vec![rewo_gpu::tooltip::Span::new(
+            "x".to_string(),
+            [1.0; 3]
+        )]],
         &advances(),
         None,
         (100.0, 100.0),
@@ -2373,8 +2525,7 @@ fn only_a_focused_field_draws_a_caret() {
 #[test]
 fn the_renderers_copy_of_the_books_geometry_matches_the_model() {
     use rewo_world::recipe_book_screen as rb;
-    let (w, h, off, narrow, sheet) =
-        rewo_gpu::container::book_constants_for_cross_check();
+    let (w, h, off, narrow, sheet) = rewo_gpu::container::book_constants_for_cross_check();
     assert_eq!(w, rb::IMAGE_W as f32);
     assert_eq!(h, rb::IMAGE_H as f32);
     assert_eq!(off, rb::OFFSET_X as f32);
@@ -2439,7 +2590,13 @@ fn the_players_own_menu_has_no_container_panel() {
     // a panel here would send it through the container path instead --
     // which is the change `inventoryshot` would catch, but only because
     // this stays None.
-    assert!(container_panel(&rewo_world::menu_layout::PLAYER, None, EnchantPlayer::default(), None).is_none());
+    assert!(container_panel(
+        &rewo_world::menu_layout::PLAYER,
+        None,
+        EnchantPlayer::default(),
+        None
+    )
+    .is_none());
 }
 
 #[test]
@@ -2502,7 +2659,10 @@ fn quad_leash_shapes_match_the_class_sets() {
         assert_eq!(quad_leash_shape(name), Some(boat), "{name}");
     }
     // Sniffer: TRUE with the interface default.
-    assert_eq!(quad_leash_shape("minecraft:sniffer"), Some([0.0, 0.5, 0.5, 0.5]));
+    assert_eq!(
+        quad_leash_shape("minecraft:sniffer"),
+        Some([0.0, 0.5, 0.5, 0.5])
+    );
     // The ghast itself is not quad-leashABLE — only a quad HOLDER.
     assert_eq!(quad_leash_shape("minecraft:happy_ghast"), None);
 }
@@ -2514,7 +2674,8 @@ fn every_other_menu_resolves_to_a_sheet_in_the_atlas() {
         if id == 17 {
             continue;
         }
-        let p = container_panel(l, None, EnchantPlayer::default(), None).unwrap_or_else(|| panic!("{} has no panel", l.name));
+        let p = container_panel(l, None, EnchantPlayer::default(), None)
+            .unwrap_or_else(|| panic!("{} has no panel", l.name));
         assert!(
             p.sheet < rewo_data::assets::MENU_BACKGROUND_TEXTURES.len(),
             "{} indexes past the atlas",
@@ -2531,8 +2692,14 @@ fn a_chest_is_two_blits_that_take_the_right_bands() {
     let p = container_panel(layout(2), None, EnchantPlayer::default(), None).unwrap();
     assert_eq!(p.blits.len(), 2);
     assert_eq!((p.gui_w, p.gui_h), (176.0, 168.0));
-    assert_eq!((p.blits[0].dy, p.blits[0].sy, p.blits[0].h), (0.0, 0.0, 71.0));
-    assert_eq!((p.blits[1].dy, p.blits[1].sy, p.blits[1].h), (71.0, 126.0, 96.0));
+    assert_eq!(
+        (p.blits[0].dy, p.blits[0].sy, p.blits[0].h),
+        (0.0, 0.0, 71.0)
+    );
+    assert_eq!(
+        (p.blits[1].dy, p.blits[1].sy, p.blits[1].h),
+        (71.0, 126.0, 96.0)
+    );
 }
 
 #[test]
@@ -2606,9 +2773,7 @@ fn resolve_allay_dance_gates_on_kind() {
 fn resolve_attack_anim_extracts_the_armed_render_state() {
     use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType};
     use rewo_gpu::mobs::SwingKind;
-    use rewo_world::entities::{
-        EntityState, EntityTable, HandItem, HeldItem, InteractionHand,
-    };
+    use rewo_world::entities::{EntityState, EntityTable, HandItem, HeldItem, InteractionHand};
     let mut t = EntityTable::default();
     t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
     // Nothing has happened: the neutral pose, and never `None` — vanilla's
@@ -2616,7 +2781,11 @@ fn resolve_attack_anim_extracts_the_armed_render_state() {
     let idle = resolve_attack_anim(&t, 1, 1.0);
     assert_eq!(idle.attack_time, 0.0);
     assert!(!idle.left_arm);
-    assert_eq!(idle.kind, SwingKind::Whack, "bare hand = SwingAnimation.DEFAULT");
+    assert_eq!(
+        idle.kind,
+        SwingKind::Whack,
+        "bare hand = SwingAnimation.DEFAULT"
+    );
     assert_eq!(idle.age_scale, 1.0);
     // A spear in the off hand + an off-hand swing: the attack arm flips and
     // the type comes from the item held by *that arm*.
@@ -2635,9 +2804,16 @@ fn resolve_attack_anim_extracts_the_armed_render_state() {
     t.tick_lerp();
     t.tick_lerp();
     let a = resolve_attack_anim(&t, 1, 1.0);
-    assert!(a.left_arm, "off-hand swing → the opposite of the RIGHT main arm");
+    assert!(
+        a.left_arm,
+        "off-hand swing → the opposite of the RIGHT main arm"
+    );
     assert_eq!(a.kind, SwingKind::Stab);
-    assert!((a.attack_time - 1.0 / 19.0).abs() < 1e-6, "{}", a.attack_time);
+    assert!(
+        (a.attack_time - 1.0 / 19.0).abs() < 1e-6,
+        "{}",
+        a.attack_time
+    );
     // A baby's `getAgeScale()` halves the arm-pivot swing.
     t.set_baby(1, true);
     assert_eq!(resolve_attack_anim(&t, 1, 1.0).age_scale, 0.5);
@@ -2821,7 +2997,16 @@ fn neutral_state_with_gamma_half() {
     // No day/night clock, resting flicker (1.4), no effects, gamma 0.5:
     // full daylight sky, gamma flows straight through to brightness, and
     // every effect term is off.
-    let s = resolve_lightmap(None, None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let s = resolve_lightmap(
+        None,
+        None,
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert_eq!(s.sky_factor, 1.0);
     assert_eq!(s.block_factor, 1.4);
     assert_eq!(s.sky_light_color, [1.0, 1.0, 1.0]);
@@ -2834,7 +3019,17 @@ fn neutral_state_with_gamma_half() {
 fn night_vision_duration_drives_the_factor() {
     // Absent → 0.
     assert_eq!(
-        resolve_lightmap(None, None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none()).night_vision_factor,
+        resolve_lightmap(
+            None,
+            None,
+            1.4,
+            no_effects(0),
+            0.5,
+            1.0,
+            0.0,
+            EndFlash::none()
+        )
+        .night_vision_factor,
         0.0
     );
     // Infinite (`-1`) and > 200 ticks both pin to the full 1.0 seed.
@@ -2851,7 +3046,8 @@ fn night_vision_duration_drives_the_factor() {
         ..no_effects(0)
     };
     assert_eq!(
-        resolve_lightmap(None, None, 1.4, long, 0.5, 1.0, 0.0, EndFlash::none()).night_vision_factor,
+        resolve_lightmap(None, None, 1.4, long, 0.5, 1.0, 0.0, EndFlash::none())
+            .night_vision_factor,
         1.0
     );
     // Within the last 200 ticks it pulses below 1.0 (the fade-out).
@@ -2859,7 +3055,8 @@ fn night_vision_duration_drives_the_factor() {
         night_vision_duration: Some(200),
         ..no_effects(0)
     };
-    let nv = resolve_lightmap(None, None, 1.4, ending, 0.5, 1.0, 0.0, EndFlash::none()).night_vision_factor;
+    let nv = resolve_lightmap(None, None, 1.4, ending, 0.5, 1.0, 0.0, EndFlash::none())
+        .night_vision_factor;
     assert!(
         nv > 0.0 && nv < 1.0,
         "expected a pulsing NV factor, got {nv}"
@@ -2874,7 +3071,16 @@ fn darkness_lowers_brightness_and_raises_scale() {
         darkness_blend_factor: 0.3,
         ..no_effects(0)
     };
-    let s = resolve_lightmap(None, None, 1.4, partial_dark, 0.5, 1.0, 0.0, EndFlash::none());
+    let s = resolve_lightmap(
+        None,
+        None,
+        1.4,
+        partial_dark,
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert!(
         s.brightness_factor < 0.5,
         "brightness {} should dip below gamma",
@@ -2912,7 +3118,16 @@ fn darkness_lowers_brightness_and_raises_scale() {
 fn day_ticks_drive_the_sky_half() {
     // Midnight (tick 18000) dims and blues the sky half, independent of
     // the block factor (a torch stays as bright).
-    let s = resolve_lightmap(Some(18000), None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let s = resolve_lightmap(
+        Some(18000),
+        None,
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert_eq!(s.sky_factor, 0.24);
     assert_eq!(s.sky_light_color, [0.48, 0.48, 1.0]);
     assert_eq!(s.block_factor, 1.4);
@@ -2920,7 +3135,16 @@ fn day_ticks_drive_the_sky_half() {
 
 #[test]
 fn world_lightmap_conversion_is_field_for_field() {
-    let s = resolve_lightmap(Some(18000), None, 1.7, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let s = resolve_lightmap(
+        Some(18000),
+        None,
+        1.7,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     let w = to_world_lightmap(&s);
     assert_eq!(w.sky_factor, s.sky_factor);
     assert_eq!(w.block_factor, s.block_factor);
@@ -2963,7 +3187,16 @@ fn dimension_transitions_leave_no_stale_term() {
 
     // 1. Each step matches the isolated computation for its own inputs.
     for (i, (t, d)) in ticks.iter().zip(seq).enumerate() {
-        let isolated = resolve_lightmap(Some(*t), d, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+        let isolated = resolve_lightmap(
+            Some(*t),
+            d,
+            1.4,
+            no_effects(0),
+            0.5,
+            1.0,
+            0.0,
+            EndFlash::none(),
+        );
         assert_eq!(states[i], isolated, "step {i} depends on history");
     }
 
@@ -2992,7 +3225,16 @@ fn dimension_transitions_leave_no_stale_term() {
 
     // 3. Back in the Overworld at tick 23000 the timeline drives the sky
     //    again — the End's factor-0 must not have stuck.
-    let fresh = resolve_lightmap(Some(23000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let fresh = resolve_lightmap(
+        Some(23000),
+        Some(&ow),
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert_eq!(states[3], fresh);
     assert!(
         states[3].sky_factor > 0.0,
@@ -3027,7 +3269,16 @@ fn unresolved_dimension_is_the_pre_m16_default() {
     assert!(d.day_timeline);
     assert_eq!(sky_mode_of(None), SkyMode::Overworld);
     // And the resolved lightmap is unchanged from the legacy call.
-    let s = resolve_lightmap(Some(18000), None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let s = resolve_lightmap(
+        Some(18000),
+        None,
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert_eq!(s.sky_factor, 0.24);
     assert_eq!(s.sky_light_color, [0.48, 0.48, 1.0]);
     assert_eq!(s.ambient_color, [0.0, 0.0, 0.0]);
@@ -3045,11 +3296,29 @@ fn overworld_keeps_the_day_timeline_and_gains_its_ambient() {
     assert_eq!(sky_mode_of(Some(&ow)), SkyMode::Overworld);
 
     // Noon: the timeline multiplier is 1.0 over the 1.0 base.
-    let noon = resolve_lightmap(Some(6000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let noon = resolve_lightmap(
+        Some(6000),
+        Some(&ow),
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert_eq!(noon.sky_factor, 1.0);
     assert_eq!(noon.sky_light_color, [1.0, 1.0, 1.0]);
     // Midnight: 1.0 * 0.24, white * (0.48, 0.48, 1.0) — the legacy values.
-    let mid = resolve_lightmap(Some(18000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let mid = resolve_lightmap(
+        Some(18000),
+        Some(&ow),
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert_eq!(mid.sky_factor, 0.24);
     assert_eq!(mid.sky_light_color, [0.48, 0.48, 1.0]);
     // Ambient is constant across the cycle (no timeline track keyframes it).
@@ -3091,7 +3360,16 @@ fn fixed_time_dimensions_ignore_the_overworld_clock() {
             Some(18000),
             Some(23999),
         ] {
-            let s = resolve_lightmap(t, Some(&def), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+            let s = resolve_lightmap(
+                t,
+                Some(&def),
+                1.4,
+                no_effects(0),
+                0.5,
+                1.0,
+                0.0,
+                EndFlash::none(),
+            );
             assert_eq!(s.sky_factor, 0.0, "{} sky factor at {t:?}", def.name);
             assert_eq!(s.sky_light_color, sky, "{} sky colour at {t:?}", def.name);
             assert_eq!(s.ambient_color, ambient, "{} ambient at {t:?}", def.name);
@@ -3113,8 +3391,26 @@ fn overworld_midnight_does_not_leak_across_a_respawn() {
     const MIDNIGHT: Option<i64> = Some(18000);
     let ow = overworld();
     let nether = nether();
-    let before = resolve_lightmap(MIDNIGHT, Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
-    let after = resolve_lightmap(MIDNIGHT, Some(&nether), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let before = resolve_lightmap(
+        MIDNIGHT,
+        Some(&ow),
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
+    let after = resolve_lightmap(
+        MIDNIGHT,
+        Some(&nether),
+        1.4,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     assert_eq!(
         before.sky_light_color,
         [0.48, 0.48, 1.0],
@@ -3140,7 +3436,16 @@ fn overworld_midnight_does_not_leak_across_a_respawn() {
 #[test]
 fn world_lightmap_conversion_carries_the_ambient() {
     let end = the_end();
-    let s = resolve_lightmap(Some(18000), Some(&end), 1.7, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+    let s = resolve_lightmap(
+        Some(18000),
+        Some(&end),
+        1.7,
+        no_effects(0),
+        0.5,
+        1.0,
+        0.0,
+        EndFlash::none(),
+    );
     let w = to_world_lightmap(&s);
     assert_eq!(w.ambient_color, s.ambient_color);
     assert_eq!(w.ambient_color, [63.0 / 255.0, 71.0 / 255.0, 63.0 / 255.0]);

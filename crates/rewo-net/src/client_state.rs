@@ -446,25 +446,23 @@ pub fn apply(
                 false
             }
         },
-        ClientStatePacket::SetDefaultSpawnPosition => {
-            match read_set_default_spawn_position(body) {
-                Ok(data) => {
-                    log::debug!(
-                        "net: default spawn {:?} in {} yaw={} pitch={}",
-                        data.pos,
-                        data.dimension,
-                        data.yaw,
-                        data.pitch
-                    );
-                    state.set_respawn_data(data);
-                    true
-                }
-                Err(err) => {
-                    log::debug!("net: set_default_spawn_position decode: {err}");
-                    false
-                }
+        ClientStatePacket::SetDefaultSpawnPosition => match read_set_default_spawn_position(body) {
+            Ok(data) => {
+                log::debug!(
+                    "net: default spawn {:?} in {} yaw={} pitch={}",
+                    data.pos,
+                    data.dimension,
+                    data.yaw,
+                    data.pitch
+                );
+                state.set_respawn_data(data);
+                true
             }
-        }
+            Err(err) => {
+                log::debug!("net: set_default_spawn_position decode: {err}");
+                false
+            }
+        },
     }
 }
 
@@ -602,7 +600,10 @@ mod tests {
             read_change_difficulty(&[0x81, 0x01, 0x00]).unwrap(),
             (Difficulty::Easy, false)
         );
-        assert!(read_change_difficulty(&[0x02]).is_err(), "the bool is required");
+        assert!(
+            read_change_difficulty(&[0x02]).is_err(),
+            "the bool is required"
+        );
     }
 
     /// Applying a difficulty writes both fields.
@@ -632,7 +633,11 @@ mod tests {
     #[test]
     fn a_resolvable_set_camera_redirects_the_camera() {
         let mut s = ClientState::default();
-        assert_eq!(s.camera_entity_or(Some(7)), Some(7), "defaults to the player");
+        assert_eq!(
+            s.camera_entity_or(Some(7)),
+            Some(7),
+            "defaults to the player"
+        );
         assert!(!s.camera_redirected());
         assert!(s.set_camera(42, true));
         assert!(s.camera_redirected());
@@ -683,7 +688,10 @@ mod tests {
         let mut t = EntityTable::default();
         t.add(42, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
 
-        assert!(camera_target_resolvable(42, &t, Some(7)), "a tracked entity");
+        assert!(
+            camera_target_resolvable(42, &t, Some(7)),
+            "a tracked entity"
+        );
         assert!(
             camera_target_resolvable(7, &t, Some(7)),
             "the local player, which is in vanilla's level and not in this table"

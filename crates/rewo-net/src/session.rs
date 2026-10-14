@@ -458,7 +458,9 @@ pub fn apply(kind: SessionPacket, body: &[u8], state: &mut SessionState) -> bool
                     // `LOGGER.warn("Received invalid link for type {}:{}")`,
                     // once per bad entry in vanilla; once per packet here,
                     // because the reader has already dropped the offenders.
-                    log::warn!("net: {dropped} server link(s) failed URL validation and were dropped");
+                    log::warn!(
+                        "net: {dropped} server link(s) failed URL validation and were dropped"
+                    );
                 }
                 log::debug!(
                     "net: {} server link(s): {:?}",
@@ -943,7 +945,11 @@ mod tests {
             "not the decoration's translation key"
         );
         assert_eq!(
-            bound.target_name.as_ref().map(Nbt::to_plain_text).as_deref(),
+            bound
+                .target_name
+                .as_ref()
+                .map(Nbt::to_plain_text)
+                .as_deref(),
             Some("Herobrine")
         );
         assert_eq!(r.remaining(), 0);

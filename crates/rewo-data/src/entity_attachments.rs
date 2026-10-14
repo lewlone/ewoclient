@@ -263,7 +263,10 @@ impl Attachments {
              the derivation",
             by_id.len(),
             by_id.values().filter(|p| p.seats() > 0).count(),
-            class.values().filter(|c| **c != VehicleClass::Default).count()
+            class
+                .values()
+                .filter(|c| **c != VehicleClass::Default)
+                .count()
         );
         Ok(Self {
             by_id,

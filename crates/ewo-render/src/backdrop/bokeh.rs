@@ -95,8 +95,8 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     let radius = size * 0.5;
 
     // Pearl-pink (berry) tint — variant 0 from the prototype.
-    let inner = Srgb::from_hex(0xE5B8C5).to_f32();    // accent_rose
-    let mid = Srgb::from_hex(0xB47491).to_f32();      // accent_berry, used at 0.2 alpha
+    let inner = Srgb::from_hex(0xE5B8C5).to_f32(); // accent_rose
+    let mid = Srgb::from_hex(0xB47491).to_f32(); // accent_berry, used at 0.2 alpha
     let inner_c = Color4f::new(inner[0], inner[1], inner[2], 1.0);
     let mid_c = Color4f::new(mid[0], mid[1], mid[2], 0.2);
     let outer_c = Color4f::new(0.0, 0.0, 0.0, 0.0);
@@ -104,10 +104,7 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     let Some(shader) = gradient_shader::radial(
         Point::new(cx, cy),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[inner_c, mid_c, outer_c],
-            None,
-        ),
+        gradient_shader::GradientShaderColors::ColorsInSpace(&[inner_c, mid_c, outer_c], None),
         Some(&[0.0_f32, 0.55, 0.78][..]),
         TileMode::Clamp,
         None,
@@ -130,7 +127,10 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
     paint.set_shader(shader);
-    canvas.draw_rect(Rect::from_xywh(cx - radius, cy - radius, size, size), &paint);
+    canvas.draw_rect(
+        Rect::from_xywh(cx - radius, cy - radius, size, size),
+        &paint,
+    );
 
     canvas.restore_to_count(saved);
 }
@@ -162,12 +162,22 @@ fn lerp_translate_scale(phase: f32) -> (f32, f32, f32) {
 /// with its own subtle gamma curve, and our straight Skia composite reads
 /// dimmer at the same numbers. Visual parity beats numeric parity.
 fn lerp_opacity(phase: f32) -> f32 {
-    let stops = [(0.0, 0.0), (0.15, 0.45), (0.50, 0.55), (0.85, 0.40), (1.0, 0.0)];
+    let stops = [
+        (0.0, 0.0),
+        (0.15, 0.45),
+        (0.50, 0.55),
+        (0.85, 0.40),
+        (1.0, 0.0),
+    ];
     for w in stops.windows(2) {
         let (p0, v0) = w[0];
         let (p1, v1) = w[1];
         if phase >= p0 && phase <= p1 {
-            let t = if p1 > p0 { (phase - p0) / (p1 - p0) } else { 0.0 };
+            let t = if p1 > p0 {
+                (phase - p0) / (p1 - p0)
+            } else {
+                0.0
+            };
             return lerp(v0, v1, t);
         }
     }

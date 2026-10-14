@@ -115,13 +115,22 @@ pub fn run(args: SignshotArgs) -> Result<(), String> {
 /// The decompile literals every prediction below is checked against are named
 /// where they are used; nothing here reads a constant out of the model and
 /// calls it a witness (M93q's rule).
-fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(advance);
+fn check_model(c: &mut Checker, advance: &[u8; 256]) {
+    let wf = width_of(advance);
 
     // m1 — `TextCursorUtils.isCursorVisible`: 300 on / 300 off, starting
     // visible. The boundaries decide which side of the division each ms lands
     // on; (ms / 300) % 2 == 0 puts 299 visible and 300 not.
-    let phases = [(0u64, true), (299, true), (300, false), (599, false), (600, true)];
-    let all = phases.iter().all(|(ms, want)| se::cursor_visible(*ms) == *want);
+    let phases = [
+        (0u64, true),
+        (299, true),
+        (300, false),
+        (599, false),
+        (600, true),
+    ];
+    let all = phases
+        .iter()
+        .all(|(ms, want)| se::cursor_visible(*ms) == *want);
     c.record(
         "m1.the_blink_is_300_on_300_off_starting_visible",
         all,
@@ -146,14 +155,24 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
 
     // m4 — Esc is Close (Screen.java's shouldCloseOnEsc path), everything the
     // field ate before it is Handled.
-    let mut s = se::SignEditState::new(["hi".into(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        ["hi".into(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     let r = s.key_pressed(Input::new(256, 0), &wf, &mut String::new());
-    c.record("m3.escape_is_a_close_not_an_insert", r == se::SignKey::Close, format!("{r:?}"));
+    c.record(
+        "m3.escape_is_a_close_not_an_insert",
+        r == se::SignKey::Close,
+        format!("{r:?}"),
+    );
 
     // m5 — the validator tests the WHOLE candidate against
     // `font.width(s) <= getMaxTextLineWidth()` and a failing insert is a
     // silent no-op: text AND cursor unchanged (TextFieldHelper.java:120-131).
-    let mut s = se::SignEditState::new(["seed".into(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        ["seed".into(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     s.set_cursor_to_end(false);
     let (before_text, before_cursor) = (s.lines[0].clone(), s.cursor);
     s.insert_text(&"M".repeat(40), &wf);
@@ -166,14 +185,20 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
     // m6 — an insert over a selection that FAILS leaves the line's text
     // intact (selection included) with only the selection collapsed to the
     // span's start. Odd, transcribed, and load-bearing for paste.
-    let mut s = se::SignEditState::new(["word".into(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        ["word".into(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     s.selection = 0;
     s.cursor = s.lines[0].len();
     s.insert_text(&"M".repeat(40), &wf);
     c.record(
         "m5.a_failed_paste_keeps_the_text_but_collapses_the_selection",
         s.lines[0] == "word" && s.selection == s.cursor && s.cursor == 0,
-        format!("line {:?}, sel {} cur {}", s.lines[0], s.selection, s.cursor),
+        format!(
+            "line {:?}, sel {} cur {}",
+            s.lines[0], s.selection, s.cursor
+        ),
     );
 
     // m7 — stripFormatting removes §-codes; a trailing bare § SURVIVES.
@@ -188,7 +213,10 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
     // (AbstractSignEditScreen.java:60-66). A deterministic measure keeps the
     // boundary reachable — insert_text takes the validator as a parameter, so
     // this still drives the production path.
-    let mut s = se::SignEditState::new([String::new(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        [String::new(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     let measure = |t: &str| t.chars().count() as i32 * 10;
     s.insert_text("---------", &measure); // exactly 90
     let exact_fits = s.lines[0].chars().count() == 9 && s.cursor == 9;
@@ -196,15 +224,25 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
     c.record(
         "m7b.a_candidate_of_exactly_the_max_width_is_accepted",
         exact_fits && s.lines[0].chars().count() == 9,
-        format!("exact-fit {exact_fits}, after-overflow len {}", s.lines[0].chars().count()),
+        format!(
+            "exact-fit {exact_fits}, after-overflow len {}",
+            s.lines[0].chars().count()
+        ),
     );
 
     // m8 — Delete acts AND reports unhandled (vanilla's case 261 has no
     // `return true`, so it also falls through to super).
-    let mut s = se::SignEditState::new(["ab".into(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        ["ab".into(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     s.cursor = 1;
     s.selection = 1;
-    let r = s.key_pressed(Input::new(rewo_world::edit_box::key::DELETE, 0), &wf, &mut String::new());
+    let r = s.key_pressed(
+        Input::new(rewo_world::edit_box::key::DELETE, 0),
+        &wf,
+        &mut String::new(),
+    );
     c.record(
         "m7.delete_acts_and_falls_through",
         s.lines[0] == "a" && r == se::SignKey::Unhandled,
@@ -213,7 +251,10 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
 
     // m9 — charTyped consumes EVERY character but inserts only allowed ones;
     // § (167) can never be typed.
-    let mut s = se::SignEditState::new([String::new(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        [String::new(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     let consumed_all = s.char_typed('§', &wf) && s.char_typed('x', &wf);
     c.record(
         "m8.char_typed_consumes_everything_but_only_inserts_allowed_chars",
@@ -261,7 +302,10 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
 
     // m13 — the selection spans substring widths around the centre over one
     // line height (AbstractSignEditScreen.java:212-220).
-    let mut s = se::SignEditState::new(["abcd".into(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        ["abcd".into(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     s.cursor = 1;
     s.selection = 3;
     let sel = se::selection_rect(&s, GUI_W, &wf).expect("a selection exists");
@@ -279,13 +323,17 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
 
     // m14 — at/past the end the caret is the "_" GLYPH; inside the line it is
     // a 1-text-px bar spanning lineHeight+1 (TextCursorUtils.java:11-17).
-    let mut s = se::SignEditState::new(["abc".into(), String::new(), String::new(), String::new()], se::SignKind::Standing);
+    let mut s = se::SignEditState::new(
+        ["abc".into(), String::new(), String::new(), String::new()],
+        se::SignKind::Standing,
+    );
     s.cursor = 1;
     s.selection = 1;
     let bar = se::caret_draw(&s, GUI_W, &wf);
     s.cursor = 3;
     let under = se::caret_draw(&s, GUI_W, &wf);
-    let ok = matches!(bar, se::CaretDraw::Bar { .. }) && matches!(under, se::CaretDraw::Underscore { .. });
+    let ok = matches!(bar, se::CaretDraw::Bar { .. })
+        && matches!(under, se::CaretDraw::Underscore { .. });
     c.record(
         "m13.caret_is_a_bar_inside_the_line_and_an_underscore_at_its_end",
         ok,
@@ -313,9 +361,10 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {    let wf = width_of(adva
 /// grades what production returns for it.
 fn check_derivation(c: &mut Checker, paths: &rewo_data::DataPaths) -> Result<(), String> {
     let signs = rewo_data::sign_states::SignStates::load(&paths.blocks_json())?;
-    let json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(paths.blocks_json()).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(paths.blocks_json()).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     // (block name, want_wood, want_hanging, want_wall)
     let cases = [
         ("oak_sign", 0u8, false, false),
@@ -356,7 +405,11 @@ fn check_derivation(c: &mut Checker, paths: &rewo_data::DataPaths) -> Result<(),
     c.record(
         "m15.the_production_sign_state_derivation_keys_the_editor",
         all,
-        if all { "four shapes resolve to the right wood/hanging/wall".into() } else { detail },
+        if all {
+            "four shapes resolve to the right wood/hanging/wall".into()
+        } else {
+            detail
+        },
     );
     Ok(())
 }
@@ -414,7 +467,12 @@ fn check_pixels(
 
     let make_view = |kind: se::SignKind, opened_ms_ago: u64| -> crate::live_cmd::SignEditView {
         let mut state = se::SignEditState::new(
-            ["hello sign".into(), String::new(), String::new(), String::new()],
+            [
+                "hello sign".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
             kind,
         );
         state.cursor = 6; // inside the line → the BAR caret
@@ -426,8 +484,7 @@ fn check_pixels(
             dye: 0,
             glowing: false,
             wood: 0,
-            opened: std::time::Instant::now()
-                - std::time::Duration::from_millis(opened_ms_ago),
+            opened: std::time::Instant::now() - std::time::Duration::from_millis(opened_ms_ago),
         }
     };
 
@@ -442,10 +499,10 @@ fn check_pixels(
     }
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    frame: Frame,
-                    dump: &str|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                frame: Frame,
+                dump: &str|
      -> Result<Vec<u8>, String> {
         let mut chrome = rewo_gpu::screen::ScreenDraw::default();
         let mut lines = Vec::new();
@@ -454,18 +511,28 @@ fn check_pixels(
             Frame::ChromeOnly => {
                 let screen = se::build_screen(GUI_W, H as i32 / SCALE, "Done");
                 chrome = crate::live_cmd::screen_chrome(&screen, None);
-                lines.extend(crate::live_cmd::screen_text_lines(&screen, &advance, SCALE as f32));
+                lines.extend(crate::live_cmd::screen_text_lines(
+                    &screen,
+                    &advance,
+                    SCALE as f32,
+                ));
             }
             Frame::View(view) => {
                 let screen = se::build_screen(GUI_W, H as i32 / SCALE, "Done");
                 chrome = crate::live_cmd::screen_chrome(&screen, None);
-                chrome
-                    .sprites
-                    .push(crate::live_cmd::sign_board_sprite(view.state.kind, view.wood, GUI_W));
+                chrome.sprites.push(crate::live_cmd::sign_board_sprite(
+                    view.state.kind,
+                    view.wood,
+                    GUI_W,
+                ));
                 let (mut stext, fills) =
                     crate::live_cmd::sign_edit_draws(view, GUI_W, &advance, SCALE as f32);
                 chrome.sprites.extend(fills);
-                lines.extend(crate::live_cmd::screen_text_lines(&screen, &advance, SCALE as f32));
+                lines.extend(crate::live_cmd::screen_text_lines(
+                    &screen,
+                    &advance,
+                    SCALE as f32,
+                ));
                 lines.append(&mut stext);
             }
         }
@@ -496,12 +563,13 @@ fn check_pixels(
     // Frame coordinate of source texel (dx, dy)'s CENTRE under the stretch —
     // the pass samples nearest, so the centre always lands inside the source
     // texel it came from.
-    let stretched = |sx: f32, sy: f32, sw: f32, sh: f32, tw: i32, th: i32, dx: f32, dy: f32| -> (i32, i32) {
-        (
-            sx.round() as i32 + ((dx + 0.5) / sw * tw as f32).floor() as i32,
-            sy.round() as i32 + ((dy + 0.5) / sh * th as f32).floor() as i32,
-        )
-    };
+    let stretched =
+        |sx: f32, sy: f32, sw: f32, sh: f32, tw: i32, th: i32, dx: f32, dy: f32| -> (i32, i32) {
+            (
+                sx.round() as i32 + ((dx + 0.5) / sw * tw as f32).floor() as i32,
+                sy.round() as i32 + ((dy + 0.5) / sh * th as f32).floor() as i32,
+            )
+        };
 
     let empty = shot(&mut gpu, &mut off, &mut wr, Frame::Empty, "empty")?;
 
@@ -523,9 +591,21 @@ fn check_pixels(
     let mut all = true;
     let mut detail = String::new();
     for (dx, dy) in probes {
-        let (fx, fy) = stretched(bx as f32, by as f32, 24.0, 26.0, bw, bh, dx as f32, dy as f32);
+        let (fx, fy) = stretched(
+            bx as f32, by as f32, 24.0, 26.0, bw, bh, dx as f32, dy as f32,
+        );
         let t = texel(oak, dx, dy);
-        let f = px(&shot(&mut gpu, &mut off, &mut wr, Frame::View(&make_view(se::SignKind::Standing, 100)), "standing")?, fx * SCALE, fy * SCALE);
+        let f = px(
+            &shot(
+                &mut gpu,
+                &mut off,
+                &mut wr,
+                Frame::View(&make_view(se::SignKind::Standing, 100)),
+                "standing",
+            )?,
+            fx * SCALE,
+            fy * SCALE,
+        );
         if t[3] == 255 && !close([t[0], t[1], t[2]], f, 8) {
             all = false;
             detail = format!("texel ({dx},{dy}) = {t:?}, frame = {f:?}");
@@ -535,7 +615,11 @@ fn check_pixels(
     c.record(
         "p2.the_standing_board_is_the_oak_sheet_through_the_stretch",
         all,
-        if all { "five centred probes match within 8".into() } else { detail },
+        if all {
+            "five centred probes match within 8".into()
+        } else {
+            detail
+        },
     );
 
     // p3 — a WALL sign crops to the top 12 rows. Three legs: (a) the plaque
@@ -546,13 +630,29 @@ fn check_pixels(
     // there — which pins the crop, not merely the wall board's absence.
     let wall_view = make_view(se::SignKind::Wall, 100);
     let wall_frame = shot(&mut gpu, &mut off, &mut wr, Frame::View(&wall_view), "wall")?;
-    let chrome_only = shot(&mut gpu, &mut off, &mut wr, Frame::ChromeOnly, "chrome-only")?;
+    let chrome_only = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Frame::ChromeOnly,
+        "chrome-only",
+    )?;
     let standing_view = make_view(se::SignKind::Standing, 100);
-    let standing_frame = shot(&mut gpu, &mut off, &mut wr, Frame::View(&standing_view), "standing-crop-control")?;
+    let standing_frame = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Frame::View(&standing_view),
+        "standing-crop-control",
+    )?;
     let (_, _, ww, wh) = se::board_sprite(se::SignKind::Wall, GUI_W);
     let (fx, fy) = stretched(bx as f32, by as f32, 24.0, 26.0, ww, wh, 12.0, 5.0);
     let t = texel(oak, 12, 5);
-    let plaque = close([t[0], t[1], t[2]], px(&wall_frame, fx * SCALE, fy * SCALE), 8);
+    let plaque = close(
+        [t[0], t[1], t[2]],
+        px(&wall_frame, fx * SCALE, fy * SCALE),
+        8,
+    );
     let below_x = (bx + ww / 2) * SCALE;
     let below_y = (by + wh + 3) * SCALE;
     let below_eq_chrome = px(&wall_frame, below_x, below_y) == px(&chrome_only, below_x, below_y);
@@ -571,7 +671,13 @@ fn check_pixels(
     // (124, 76, 72, 72): integral, so the probe is plain texel mapping.
     let hoak = &widgets.hanging_sign_boards[0];
     let (hx, hy, hw, hh) = se::board_sprite(se::SignKind::Hanging, GUI_W);
-    let hang_frame = shot(&mut gpu, &mut off, &mut wr, Frame::View(&make_view(se::SignKind::Hanging, 100)), "hanging")?;
+    let hang_frame = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Frame::View(&make_view(se::SignKind::Hanging, 100)),
+        "hanging",
+    )?;
     let hprobes = [(4u32, 4u32), (11, 3), (8, 12)];
     let mut all = true;
     let mut detail = String::new();
@@ -589,7 +695,11 @@ fn check_pixels(
     c.record(
         "p4.the_hanging_board_is_the_hanging_oak_sheet",
         all,
-        if all { "three probes match within 8".into() } else { detail },
+        if all {
+            "three probes match within 8".into()
+        } else {
+            detail
+        },
     );
 
     // p5 — the four lines render: a band around line 0 — derived from the
@@ -597,17 +707,16 @@ fn check_pixels(
     // two-pixel window between the words and measured nothing) — differs from
     // a BLANK-LINE caret-hidden control in MORE than a handful of pixels.
     let mut view = make_view(se::SignKind::Standing, 350);
-    view.state.lines = ["hello sign".into(), String::new(), String::new(), String::new()];
+    view.state.lines = [
+        "hello sign".into(),
+        String::new(),
+        String::new(),
+        String::new(),
+    ];
     let with_text = shot(&mut gpu, &mut off, &mut wr, Frame::View(&view), "text")?;
     let mut bare_view = make_view(se::SignKind::Standing, 350);
     bare_view.state.lines = Default::default();
-    let bare_board = shot(
-        &mut gpu,
-        &mut off,
-        &mut wr,
-        Frame::View(&bare_view),
-        "bare",
-    )?;
+    let bare_board = shot(&mut gpu, &mut off, &mut wr, Frame::View(&bare_view), "bare")?;
     let lw = rewo_gpu::text::width("hello sign", &advance);
     let (ox, oy) = se::line_origin(se::SignKind::Standing, GUI_W, 0, lw);
     let y0 = ((oy.round() as i32) - 1).max(0) * SCALE;
@@ -640,8 +749,20 @@ fn check_pixels(
 
     // p6 — the caret's wall-clock blink flips pixels: two frames identical
     // except for `opened`'s phase (visible at 100 ms, hidden at 350 ms).
-    let on = shot(&mut gpu, &mut off, &mut wr, Frame::View(&make_view(se::SignKind::Standing, 100)), "caret-on")?;
-    let off_frame = shot(&mut gpu, &mut off, &mut wr, Frame::View(&make_view(se::SignKind::Standing, 350)), "caret-off")?;
+    let on = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Frame::View(&make_view(se::SignKind::Standing, 100)),
+        "caret-on",
+    )?;
+    let off_frame = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Frame::View(&make_view(se::SignKind::Standing, 350)),
+        "caret-off",
+    )?;
     let mut flipped = 0usize;
     for y in (by * SCALE)..((by + bh) * SCALE) {
         for x in (bx * SCALE)..((bx + bw) * SCALE) {

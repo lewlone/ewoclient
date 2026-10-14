@@ -247,9 +247,7 @@ pub fn sample_smooth(block: u8, sky: u8, state: &LightmapState) -> [f32; 3] {
     let (b1, s1) = ((b0 + 1).min(15), (s0 + 1).min(15));
     let (c00, c10) = (texel(b0, s0, state), texel(b1, s0, state));
     let (c01, c11) = (texel(b0, s1, state), texel(b1, s1, state));
-    std::array::from_fn(|i| {
-        mix(mix(c00[i], c10[i], fb), mix(c01[i], c11[i], fb), fs)
-    })
+    std::array::from_fn(|i| mix(mix(c00[i], c10[i], fb), mix(c01[i], c11[i], fb), fs))
 }
 
 // --- java.util.Random / LegacyRandomSource (exact LCG) ---
@@ -546,7 +544,14 @@ mod tests {
     fn ambient_is_a_max_floor_in_source_order() {
         let nether = rgb24_to_vec3(0xFF30_2821u32 as i32);
         // Full sky: both states clamp to white — ambient cannot brighten past it.
-        let a = sample(0, 15, &LightmapState { ambient_color: nether, ..Default::default() });
+        let a = sample(
+            0,
+            15,
+            &LightmapState {
+                ambient_color: nether,
+                ..Default::default()
+            },
+        );
         let b = sample(0, 15, &LightmapState::default());
         assert_eq!(a, b, "a saturated texel is unaffected by ambient");
 

@@ -37,15 +37,17 @@ impl EntityTypes {
             .find(|(_, n)| n.as_str() == "minecraft:player")
             .map(|(id, _)| *id)
             .ok_or("registries.json: no minecraft:player entity type")?;
-        log::info!("rewo-data: {} entity types (player = {player_id})", by_id.len());
+        log::info!(
+            "rewo-data: {} entity types (player = {player_id})",
+            by_id.len()
+        );
         Ok(Self { by_id, player_id })
     }
 
     /// A table from literal pairs, for fixtures (M84). `minecraft:player` must
     /// be among them, because [`Self::player_id`] has no sensible default.
     pub fn from_pairs(pairs: &[(i32, &str)]) -> Result<Self, String> {
-        let by_id: HashMap<i32, String> =
-            pairs.iter().map(|(i, n)| (*i, n.to_string())).collect();
+        let by_id: HashMap<i32, String> = pairs.iter().map(|(i, n)| (*i, n.to_string())).collect();
         let player_id = by_id
             .iter()
             .find(|(_, n)| n.as_str() == "minecraft:player")
@@ -104,15 +106,44 @@ impl EntityTypes {
         let short = name.strip_prefix("minecraft:").unwrap_or(name);
         // Projectiles, drops, markers and decorations — never pushable.
         const NOT_LIVING: &[&str] = &[
-            "item", "experience_orb", "arrow", "spectral_arrow", "trident",
-            "snowball", "egg", "ender_pearl", "eye_of_ender", "potion",
-            "experience_bottle", "fireball", "small_fireball", "dragon_fireball",
-            "wither_skull", "wind_charge", "breeze_wind_charge", "llama_spit",
-            "shulker_bullet", "fishing_bobber", "firework_rocket", "tnt",
-            "falling_block", "lightning_bolt", "area_effect_cloud", "painting",
-            "item_frame", "glow_item_frame", "leash_knot", "marker",
-            "interaction", "text_display", "block_display", "item_display",
-            "armor_stand", "end_crystal", "evoker_fangs", "ominous_item_spawner",
+            "item",
+            "experience_orb",
+            "arrow",
+            "spectral_arrow",
+            "trident",
+            "snowball",
+            "egg",
+            "ender_pearl",
+            "eye_of_ender",
+            "potion",
+            "experience_bottle",
+            "fireball",
+            "small_fireball",
+            "dragon_fireball",
+            "wither_skull",
+            "wind_charge",
+            "breeze_wind_charge",
+            "llama_spit",
+            "shulker_bullet",
+            "fishing_bobber",
+            "firework_rocket",
+            "tnt",
+            "falling_block",
+            "lightning_bolt",
+            "area_effect_cloud",
+            "painting",
+            "item_frame",
+            "glow_item_frame",
+            "leash_knot",
+            "marker",
+            "interaction",
+            "text_display",
+            "block_display",
+            "item_display",
+            "armor_stand",
+            "end_crystal",
+            "evoker_fangs",
+            "ominous_item_spawner",
         ];
         !NOT_LIVING.contains(&short)
     }
@@ -203,19 +234,20 @@ impl EntityClasses {
                 table::REGISTERED_TYPES
             ));
         }
-        let resolve_set = |names: &[&str], what: &str| -> Result<std::collections::HashSet<i32>, String> {
-            names
-                .iter()
-                .map(|name| {
-                    types.id_of(name).ok_or_else(|| {
-                        format!(
-                            "entity_classes: generated {what} entity {name:?} is not in the \
+        let resolve_set =
+            |names: &[&str], what: &str| -> Result<std::collections::HashSet<i32>, String> {
+                names
+                    .iter()
+                    .map(|name| {
+                        types.id_of(name).ok_or_else(|| {
+                            format!(
+                                "entity_classes: generated {what} entity {name:?} is not in the \
                              entity_type registry — re-run tools/gen_entity_classes.py"
-                        )
+                            )
+                        })
                     })
-                })
-                .collect()
-        };
+                    .collect()
+            };
         let living = resolve_set(table::LIVING, "living")?;
         let swing_ticking = resolve_set(table::SWING_TICKING, "swing-ticking")?;
         let mob = resolve_set(table::MOB, "mob")?;
@@ -271,9 +303,7 @@ impl EntityClasses {
             ));
         }
         if let Some(bad) = player.iter().find(|id| mob.contains(id)) {
-            return Err(format!(
-                "entity_classes: type {bad} is a player and a mob"
-            ));
+            return Err(format!("entity_classes: type {bad} is a player and a mob"));
         }
         // M77. `Mob implements Leashable`, so every mob is leashable and the
         // set is a strict superset of `mob` — the boats are the difference.
@@ -312,7 +342,11 @@ impl EntityClasses {
                 "entity_classes: type {bad} is rideable-jumping but not living"
             ));
         }
-        if let Some(bad) = camel.iter().chain(nautilus.iter()).find(|id| !rideable_jumping.contains(id)) {
+        if let Some(bad) = camel
+            .iter()
+            .chain(nautilus.iter())
+            .find(|id| !rideable_jumping.contains(id))
+        {
             return Err(format!(
                 "entity_classes: type {bad} dashes but is not rideable-jumping"
             ));

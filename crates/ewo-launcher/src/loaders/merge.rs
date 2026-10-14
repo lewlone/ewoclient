@@ -32,13 +32,19 @@ pub fn merge(vanilla: &PerVersion, loader: &LoaderManifest) -> PerVersion {
             jvm.extend(vanilla_args.jvm.iter().cloned());
             let mut game = loader_args.game.clone();
             game.extend(vanilla_args.game.iter().cloned());
-            (Some(Arguments { jvm, game }), vanilla.minecraft_arguments.clone())
+            (
+                Some(Arguments { jvm, game }),
+                vanilla.minecraft_arguments.clone(),
+            )
         }
         // Loader targets a legacy vanilla (no `arguments` block). Loaders
         // typically only target 1.13+, so this is unlikely; if it happens,
         // take the loader's args verbatim and drop the legacy string.
         (Some(loader_args), None) => (Some(loader_args.clone()), None),
-        (None, _) => (vanilla.arguments.clone(), vanilla.minecraft_arguments.clone()),
+        (None, _) => (
+            vanilla.arguments.clone(),
+            vanilla.minecraft_arguments.clone(),
+        ),
     };
 
     PerVersion {

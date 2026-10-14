@@ -83,7 +83,10 @@ fn exchange_auth_code(
 
 /// Step 1b: alternate entry point — silent refresh using the previously
 /// persisted refresh token. No browser involved.
-fn refresh_ms_token(agent: &ureq::Agent, refresh_token: &str) -> Result<MsTokenResponse, AuthError> {
+fn refresh_ms_token(
+    agent: &ureq::Agent,
+    refresh_token: &str,
+) -> Result<MsTokenResponse, AuthError> {
     let url = MS_TOKEN_URL.replace("{tenant}", TENANT);
     let body = format!(
         "client_id={cid}&grant_type=refresh_token&refresh_token={rt}&scope={scope}",
@@ -175,7 +178,10 @@ fn xsts_authorize(agent: &ureq::Agent, xbl_token: &str) -> Result<XstsResponse, 
                     log::warn!("auth: XSTS 401 XErr={} message={}", err.xerr, err.message);
                     Err(AuthError::XstsBlocked(XstsBlock::from_xerr(err.xerr)))
                 }
-                Err(e) => Err(AuthError::Other(format!("XSTS 401 + unparsable body: {}", e))),
+                Err(e) => Err(AuthError::Other(format!(
+                    "XSTS 401 + unparsable body: {}",
+                    e
+                ))),
             }
         }
         Err(ureq::Error::Status(code, resp)) => {
@@ -194,7 +200,11 @@ struct McLoginResponse {
 }
 
 /// Step 4: exchange XSTS + UserHash for a Minecraft access token.
-fn mc_login(agent: &ureq::Agent, xsts_token: &str, uhs: &str) -> Result<McLoginResponse, AuthError> {
+fn mc_login(
+    agent: &ureq::Agent,
+    xsts_token: &str,
+    uhs: &str,
+) -> Result<McLoginResponse, AuthError> {
     let payload = json!({
         "identityToken": format!("XBL3.0 x={};{}", uhs, xsts_token),
     });

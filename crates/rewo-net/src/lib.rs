@@ -10,60 +10,58 @@
 //! real client this runs on the net thread (REWO_PLAN.md §4); for the M1
 //! soak/replay tools it runs on its own driver.
 
-pub mod music;
-pub mod options;
 pub mod abilities;
 pub mod advancements;
 pub mod ambient_handlers;
+pub mod arg_types;
 pub mod attributes;
 pub mod biome_parse;
+pub mod block_item;
 pub mod border;
 pub mod boss_bar;
 pub mod bundle;
-pub mod arg_types;
-pub mod block_item;
 pub mod chat_sign;
+pub mod music;
+pub mod options;
 // M126a — `chat_style` and `chat_translate` moved DOWN to `rewo-world`, because
 // `rewo_world::chat` has to name `ChatSpan` and the dependency runs net -> world.
 // Re-exported under their old paths so no call site moved with them.
 pub use rewo_world::{chat_style, chat_translate};
 pub mod chat_type_parse;
 pub mod chat_wire;
+pub mod chunk_batch;
+pub mod client_state;
 pub mod command_errors;
 pub mod command_format;
 pub mod commands;
-pub mod dispatcher;
-pub mod chunk_batch;
-pub mod client_state;
+pub mod component_wire;
 pub mod config;
 pub mod config_tasks;
-pub mod component_wire;
 pub mod crypt;
 pub mod dimension_parse;
-pub mod enchantment_parse;
-pub mod trim_parse;
-pub mod variant_parse;
+pub mod dispatcher;
 pub mod effects;
+pub mod enchantment_parse;
 pub mod game_event;
 pub mod hud_state;
 pub mod ids;
 pub mod item_stack;
-pub mod merchant;
-pub mod recipe_book;
-pub mod menu;
 pub mod jump_riding;
-pub mod login;
 pub mod local_player_data;
+pub mod login;
+pub mod menu;
+pub mod merchant;
 pub mod metadata;
 pub mod motion;
 pub mod particle_options;
 pub mod play;
 pub mod player_rotation;
+pub mod recipe_book;
 pub mod record;
 pub mod scoreboard;
+pub mod selector;
 pub mod server_links;
 pub mod session;
-pub mod selector;
 pub mod sidebar;
 pub mod signed_command;
 pub mod skins;
@@ -73,13 +71,15 @@ pub mod snbt_grammar;
 pub mod sound_engine;
 pub mod sound_instance;
 pub mod sounds;
-pub mod suggestion_wire;
 pub mod spawn_info;
+pub mod suggestion_wire;
 pub mod tab_list_text;
 pub mod tags;
-pub mod tickable;
 pub mod teams;
+pub mod tickable;
 pub mod ticking;
+pub mod trim_parse;
+pub mod variant_parse;
 pub mod view_area;
 pub mod waypoints;
 
@@ -405,14 +405,17 @@ impl<'a> Connection<'a> {
                 x if x == self.ids.cb_login_compression => {
                     // A negative threshold REMOVES compression
                     // (`Connection.setupCompression`, see `login`).
-                    let threshold = login::compression_threshold(&self.packet[body..]).map_err(de)?;
+                    let threshold =
+                        login::compression_threshold(&self.packet[body..]).map_err(de)?;
                     self.codec.compression_threshold = threshold;
                     log::info!("net: compression threshold {threshold:?}");
                 }
                 x if x == self.ids.cb_login_custom_query => {
-                    let (answer, channel) =
-                        login::answer_custom_query(self.ids.sb_login_custom_query_answer, &self.packet[body..])
-                            .map_err(de)?;
+                    let (answer, channel) = login::answer_custom_query(
+                        self.ids.sb_login_custom_query_answer,
+                        &self.packet[body..],
+                    )
+                    .map_err(de)?;
                     log::info!("net: login custom_query {channel} answered not-understood");
                     self.send(answer)?;
                 }
@@ -784,7 +787,14 @@ pub fn route_entity_event(
     classes: Option<&rewo_data::entity_types::EntityClasses>,
 ) -> bool {
     if id == ids.cb_play_entity_event {
-        apply_entity_event(body, entities, warden_type_id, armadillo_type_id, tick, classes);
+        apply_entity_event(
+            body,
+            entities,
+            warden_type_id,
+            armadillo_type_id,
+            tick,
+            classes,
+        );
         true
     } else {
         false
@@ -1063,7 +1073,10 @@ pub struct CombatKill {
 /// Returns `None` for an id that is not the local player's, and for a body
 /// that does not decode. A packet naming somebody else is not an error —
 /// vanilla drops it silently, and so does this.
-pub(crate) fn apply_player_combat_kill(body: &[u8], local_player: Option<i32>) -> Option<CombatKill> {
+pub(crate) fn apply_player_combat_kill(
+    body: &[u8],
+    local_player: Option<i32>,
+) -> Option<CombatKill> {
     let mut r = PacketReader::new(body);
     let Ok(player_id) = r.varint() else {
         return route_decode_none("player_combat_kill", "truncated player id");
@@ -1316,7 +1329,10 @@ pub fn apply_award_stats(body: &[u8]) -> Option<Vec<(rewo_world::stats::StatKey,
         out.push((rewo_world::stats::StatKey::new(type_id, value_id), amount));
     }
     if out.len() != count as usize {
-        route_decode_failed("award_stats", format!("truncated at {} of {count}", out.len()));
+        route_decode_failed(
+            "award_stats",
+            format!("truncated at {} of {count}", out.len()),
+        );
         log::warn!(
             "net: award_stats truncated at {} of {count} entries",
             out.len()
@@ -1478,9 +1494,7 @@ pub(crate) fn apply_take_item_entity(
         "net: take_item_entity item={item_id} collector={player_id}->{collector} \
          amount={amount} stack={stack:?}"
     );
-    world
-        .pickups
-        .add(stack, source, collector, item_id, target);
+    world.pickups.add(stack, source, collector, item_id, target);
 
     if Some(type_id) == kinds.item {
         // `itemStack.shrink(amount)` guarded by `if (!itemStack.isEmpty())`,
@@ -1973,10 +1987,7 @@ pub fn apply_set_cursor_item(
 /// An out-of-range slot is **ignored**, matching
 /// `handleSetHeldSlot`'s `if (Inventory.isHotbarSlot(...))`: it does not clamp
 /// and it does not reset.
-pub fn apply_set_held_slot(
-    body: &[u8],
-    inventory: &mut rewo_world::inventory::Inventory,
-) -> bool {
+pub fn apply_set_held_slot(body: &[u8], inventory: &mut rewo_world::inventory::Inventory) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let Ok(slot) = r.varint() else {
         route_decode_failed("set_held_slot", "truncated slot");
@@ -3282,12 +3293,30 @@ pub fn route_level_particles(
     // The fixed prefix is read as one row so a body that runs out half-way is
     // one failure, not eleven.
     let head = (
-        r.bool(), r.bool(), r.f64(), r.f64(), r.f64(),
-        r.f32(), r.f32(), r.f32(), r.f32(), r.i32(), r.varint(),
+        r.bool(),
+        r.bool(),
+        r.f64(),
+        r.f64(),
+        r.f64(),
+        r.f32(),
+        r.f32(),
+        r.f32(),
+        r.f32(),
+        r.i32(),
+        r.varint(),
     );
     let (
-        Ok(override_limiter), Ok(always_show), Ok(x), Ok(y), Ok(z), Ok(x_dist),
-        Ok(y_dist), Ok(z_dist), Ok(max_speed), Ok(count), Ok(type_id),
+        Ok(override_limiter),
+        Ok(always_show),
+        Ok(x),
+        Ok(y),
+        Ok(z),
+        Ok(x_dist),
+        Ok(y_dist),
+        Ok(z_dist),
+        Ok(max_speed),
+        Ok(count),
+        Ok(type_id),
     ) = head
     else {
         return route_decode_none("level_particles", "truncated body");
@@ -3730,7 +3759,10 @@ mod level_event_sound_tests {
         use rewo_data::level_event_sounds::{Placement, SOUNDS};
         // 1000 is a `levelEvent`, so the global switch does not have it.
         assert!(at(1000, 0, false).is_some());
-        assert!(at(1000, 0, true).is_none(), "the flag is matched, not ignored");
+        assert!(
+            at(1000, 0, true).is_none(),
+            "the flag is matched, not ignored"
+        );
 
         // 1023 IS in the global switch — the table knows it — and is refused
         // here for its placement rather than its flag.
@@ -3763,16 +3795,18 @@ mod level_event_sound_tests {
         for row in SOUNDS.iter().filter(|s| s.placement == Placement::Camera) {
             let p = at(row.id, 0, row.global).expect("camera row yields a sound");
             let to_sound = [p.x - CAM[0], p.y - CAM[1], p.z - CAM[2]];
-            let len = (to_sound[0] * to_sound[0]
-                + to_sound[1] * to_sound[1]
-                + to_sound[2] * to_sound[2])
-                .sqrt();
-            assert!((len - 2.0).abs() < 1e-9, "id {} is {len} blocks out", row.id);
+            let len =
+                (to_sound[0] * to_sound[0] + to_sound[1] * to_sound[1] + to_sound[2] * to_sound[2])
+                    .sqrt();
+            assert!(
+                (len - 2.0).abs() < 1e-9,
+                "id {} is {len} blocks out",
+                row.id
+            );
             // The block centre is (10.5, 64.5, -6.5); the camera is CAM.
             let to_event = [10.5 - CAM[0], 64.5 - CAM[1], -6.5 - CAM[2]];
-            let dot = to_sound[0] * to_event[0]
-                + to_sound[1] * to_event[1]
-                + to_sound[2] * to_event[2];
+            let dot =
+                to_sound[0] * to_event[0] + to_sound[1] * to_event[1] + to_sound[2] * to_event[2];
             assert!(dot > 0.0, "id {} points AWAY from the event", row.id);
             // And NOT at the block: the whole point is that a global event is
             // heard as a direction rather than as a distant place.
@@ -3842,7 +3876,10 @@ mod level_event_sound_tests {
     /// and the table still knows them — the half of M140's test that survives.
     #[test]
     fn a_camera_row_still_needs_its_global_flag() {
-        assert!(at(1023, 0, false).is_none(), "1023 is not in the local switch");
+        assert!(
+            at(1023, 0, false).is_none(),
+            "1023 is not in the local switch"
+        );
         assert!(rewo_data::level_event_sounds::resolve(1023, 0, true).is_some());
         assert!(rewo_data::level_event_sounds::resolve(1032, 0, false).is_some());
     }
@@ -3883,7 +3920,10 @@ mod level_event_sound_tests {
             assert!(got.is_some(), "id {} data {data} yielded nothing", row.id);
             seen += 1;
         }
-        assert!(seen > 50, "only {seen} block-placed rows; the table shrank?");
+        assert!(
+            seen > 50,
+            "only {seen} block-placed rows; the table shrank?"
+        );
     }
 
     // ── the distance delay (M162) ──────────────────────────────────────────
@@ -3978,10 +4018,8 @@ mod level_event_sound_tests {
                 G::Gt(v) => v + 1,
                 G::Le(v) => v,
             };
-            let got = super::route_level_event_sound(
-                &body(row.id, 10, 64, -7, data, row.global),
-                far,
-            );
+            let got =
+                super::route_level_event_sound(&body(row.id, 10, 64, -7, data, row.global), far);
             match got {
                 Some(SoundEvent::AtDelayed { ticks, .. }) => {
                     assert!(row.distance_delay, "id {} delayed without the flag", row.id);
@@ -3997,7 +4035,11 @@ mod level_event_sound_tests {
                 other => panic!("id {} yielded {other:?}", row.id),
             }
         }
-        assert_eq!(delayed_ids.len(), 9, "the trial-spawner family: {delayed_ids:?}");
+        assert_eq!(
+            delayed_ids.len(),
+            9,
+            "the trial-spawner family: {delayed_ids:?}"
+        );
         assert!(immediate > 50, "only {immediate} immediate rows?");
     }
 
@@ -4487,7 +4529,9 @@ mod tests {
 /// rotation bytes, not all 256. These do.
 #[cfg(test)]
 mod m77_wire_tests {
-    use super::{parse_move_minecart, parse_projectile_power, parse_set_entity_link, unpack_degrees};
+    use super::{
+        parse_move_minecart, parse_projectile_power, parse_set_entity_link, unpack_degrees,
+    };
 
     #[test]
     fn unpack_degrees_spans_the_whole_signed_byte() {
@@ -4576,7 +4620,14 @@ mod entity_event_tests {
     }
 
     fn apply(t: &mut EntityTable, entity: i32, event: i8, tick: i64) {
-        apply_entity_event(&body(entity, event), t, Some(WARDEN), Some(ARMADILLO), tick, None);
+        apply_entity_event(
+            &body(entity, event),
+            t,
+            Some(WARDEN),
+            Some(ARMADILLO),
+            tick,
+            None,
+        );
     }
 
     #[test]
@@ -4623,7 +4674,7 @@ mod entity_event_tests {
     fn ignores_a_missing_entity() {
         let mut t = table();
         apply(&mut t, 999, 4, 10); // no such entity
-        // Nothing recorded anywhere.
+                                   // Nothing recorded anywhere.
         assert_eq!(t.event_start(999, EntityEvent::WardenAttack), None);
     }
 
@@ -4641,7 +4692,14 @@ mod entity_event_tests {
         // Only 3 of the 4 id bytes — the decode must not panic or record.
         apply_entity_event(&[0, 0, 0], &mut t, Some(WARDEN), Some(ARMADILLO), 10, None);
         // Full id but no event byte.
-        apply_entity_event(&1i32.to_be_bytes(), &mut t, Some(WARDEN), Some(ARMADILLO), 10, None);
+        apply_entity_event(
+            &1i32.to_be_bytes(),
+            &mut t,
+            Some(WARDEN),
+            Some(ARMADILLO),
+            10,
+            None,
+        );
         assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
     }
 
@@ -4670,9 +4728,7 @@ mod animate_tests {
     use super::{apply_animate, apply_set_equipment, apply_swing_effect, SwingEffectIds};
     use rewo_data::components::DataComponentIds;
     use rewo_data::entity_types::EntityClasses;
-    use rewo_world::entities::{
-        EntityState, EntityTable, HandItem, HumanoidArm, InteractionHand,
-    };
+    use rewo_world::entities::{EntityState, EntityTable, HandItem, HumanoidArm, InteractionHand};
 
     /// Stand-in type ids: a player, a `Monster` descendant, a living
     /// non-`Monster` (`Cow`), a `Mannequin`, and a non-living entity (a boat).
@@ -4806,8 +4862,8 @@ mod animate_tests {
         apply_swing_effect(&[5, 3, 1, 100, 0], &mut t, ids, true, Some(&classes()));
         assert_eq!(t.current_swing_duration(5), Some(6), "no haste applied");
         // The equipment half needs the real item registry for its tables.
-        let Some(paths) = rewo_data::DataPaths::for_version("26.2")
-            .filter(|p| p.registries_json().exists())
+        let Some(paths) =
+            rewo_data::DataPaths::for_version("26.2").filter(|p| p.registries_json().exists())
         else {
             rewo_data::skip_test!("no local 26.2 datagen report (equipment half)");
             return;
@@ -4868,7 +4924,9 @@ mod animate_tests {
     /// real registry — these unit tests only need the *gate*, so the table is
     /// never consulted (the entity is rejected first). `swingshot` covers the
     /// resolved path against the live registry.
-    fn unreachable_prototypes(paths: &rewo_data::DataPaths) -> rewo_data::swing_anim::SwingAnimations {
+    fn unreachable_prototypes(
+        paths: &rewo_data::DataPaths,
+    ) -> rewo_data::swing_anim::SwingAnimations {
         // A registry-less table is impossible to build honestly, so borrow the
         // real one; the caller skips when the reports are absent.
         let items = rewo_data::items::Items::load(&paths.registries_json())
@@ -4969,7 +5027,10 @@ mod set_entity_data_tests {
         // dancing_ticks=0, isSpinning() = 0 % 55 < 15 = true (vanilla reads the
         // pre-increment counter the instant dancing flips on).
         assert_eq!(t.allay_dance_render(1, 1.0), Some((true, 0.0)));
-        assert!(!t.is_baby(1), "the Allay's index-16 BOOLEAN must not set baby");
+        assert!(
+            !t.is_baby(1),
+            "the Allay's index-16 BOOLEAN must not set baby"
+        );
     }
 
     #[test]
@@ -5007,7 +5068,11 @@ mod set_entity_data_tests {
         // state mutation at all — NOT a baby fallback.
         apply_set_entity_data(&index16_bool_true(9), &mut t, Some(ALLAY));
         assert!(!t.is_baby(9), "untracked id must not be marked baby");
-        assert_eq!(t.allay_dance_render(9, 1.0), None, "untracked id must not dance");
+        assert_eq!(
+            t.allay_dance_render(9, 1.0),
+            None,
+            "untracked id must not dance"
+        );
     }
 }
 
@@ -5219,7 +5284,10 @@ mod baby_routing_tests {
         assert!(t.is_baby(1));
 
         apply_set_entity_data(&body(1, 16, 8, &[0x00]), &mut t, None);
-        assert!(!t.is_baby(1), "not a latch - a grown-up animal must clear it");
+        assert!(
+            !t.is_baby(1),
+            "not a latch - a grown-up animal must clear it"
+        );
     }
 
     #[test]
@@ -5228,10 +5296,7 @@ mod baby_routing_tests {
         t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
         apply_set_entity_data(&body(1, 16, 8, &[0x01]), &mut t, None);
         t.remove(1);
-        assert!(
-            !t.is_baby(1),
-            "a recycled id must not hatch as a baby"
-        );
+        assert!(!t.is_baby(1), "a recycled id must not hatch as a baby");
     }
 }
 
@@ -5326,7 +5391,12 @@ mod entity_silent_tests {
         t.add(2, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
         apply_set_entity_data(&body(1, 4, 8, &[0x01]), &mut t, None);
 
-        let w = EntityTableWorld { table: &t, local: None, game_time: 0, music_volume: 1.0 };
+        let w = EntityTableWorld {
+            table: &t,
+            local: None,
+            game_time: 0,
+            music_volume: 1.0,
+        };
         assert!(w.entity_silent(1), "the silenced entity");
         assert!(!w.entity_silent(2), "and only it");
         // An id the table never saw is audible, because vanilla seeds false.
@@ -5447,12 +5517,24 @@ mod award_stats_tests {
     #[test]
     fn the_change_settings_body_is_an_ordinal_and_two_flags() {
         // Smoker (ordinal 3), open, not filtering.
-        assert_eq!(recipe_book_change_settings_body(3, true, false), vec![3u8, 1, 0]);
+        assert_eq!(
+            recipe_book_change_settings_body(3, true, false),
+            vec![3u8, 1, 0]
+        );
         // Crafting (0), shut, filtering — proving both flags are independent
         // and neither is derived from the other.
-        assert_eq!(recipe_book_change_settings_body(0, false, true), vec![0u8, 0, 1]);
-        assert_eq!(recipe_book_change_settings_body(0, false, false), vec![0u8, 0, 0]);
-        assert_eq!(recipe_book_change_settings_body(0, true, true), vec![0u8, 1, 1]);
+        assert_eq!(
+            recipe_book_change_settings_body(0, false, true),
+            vec![0u8, 0, 1]
+        );
+        assert_eq!(
+            recipe_book_change_settings_body(0, false, false),
+            vec![0u8, 0, 0]
+        );
+        assert_eq!(
+            recipe_book_change_settings_body(0, true, true),
+            vec![0u8, 1, 1]
+        );
     }
 
     #[test]
@@ -5503,7 +5585,10 @@ mod award_stats_tests {
     #[test]
     fn the_rename_body_is_one_string_and_empty_is_a_real_request() {
         // `writeUtf` is a VarInt byte length then the UTF-8 bytes.
-        assert_eq!(rename_item_body("Sting"), vec![5u8, b'S', b't', b'i', b'n', b'g']);
+        assert_eq!(
+            rename_item_body("Sting"),
+            vec![5u8, b'S', b't', b'i', b'n', b'g']
+        );
         // The empty string is the request to CLEAR the name, so it is a
         // one-byte body and not an omission. A sender that skipped it would
         // make an anvil unable to un-name anything.
@@ -5546,11 +5631,20 @@ mod award_stats_tests {
             vec![4u8, 9, 1],
             "slot 4 of container 9 — not slot 9 of container 4"
         );
-        assert_eq!(container_slot_state_changed_body(9, 4, true), vec![9u8, 4, 1]);
+        assert_eq!(
+            container_slot_state_changed_body(9, 4, true),
+            vec![9u8, 4, 1]
+        );
         // The bool is one byte, 0 or 1, and it is `enabled` — the opposite of
         // the value `setSlotState` stores (`isEnabled ? 0 : 1`).
-        assert_eq!(container_slot_state_changed_body(0, 0, false), vec![0u8, 0, 0]);
-        assert_eq!(container_slot_state_changed_body(0, 0, true), vec![0u8, 0, 1]);
+        assert_eq!(
+            container_slot_state_changed_body(0, 0, false),
+            vec![0u8, 0, 0]
+        );
+        assert_eq!(
+            container_slot_state_changed_body(0, 0, true),
+            vec![0u8, 0, 1]
+        );
         // Three bytes is the whole packet at small ids; a state id creeping in
         // from `container_click` would show here.
         assert_eq!(container_slot_state_changed_body(8, 127, true).len(), 3);
@@ -5575,8 +5669,8 @@ mod award_stats_tests {
     fn the_effect_ids_come_from_the_report_because_the_wire_never_carries_them() {
         // `for_version` is `Some` whenever the config dir exists, so the file
         // itself is what decides.
-        let Some(paths) = rewo_data::DataPaths::for_version("26.2")
-            .filter(|p| p.registries_json().exists())
+        let Some(paths) =
+            rewo_data::DataPaths::for_version("26.2").filter(|p| p.registries_json().exists())
         else {
             rewo_data::skip_test!("no local 26.2 datagen report");
             return;

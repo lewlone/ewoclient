@@ -88,10 +88,18 @@ pub struct OptionRow {
 
 impl OptionRow {
     pub fn small(left: RowItem, right: Option<RowItem>) -> Self {
-        Self { left, right, big: false }
+        Self {
+            left,
+            right,
+            big: false,
+        }
     }
     pub fn big(item: RowItem) -> Self {
-        Self { left: item, right: None, big: true }
+        Self {
+            left: item,
+            right: None,
+            big: true,
+        }
     }
 }
 
@@ -148,16 +156,42 @@ pub fn build(
             widgets.push(Widget::button(id, x, y, w, BUTTON_HEIGHT, label.clone()));
         }
         RowItem::Slider { label, value } => {
-            widgets.push(Widget::slider(id, x, y, w, BUTTON_HEIGHT, label.clone(), *value));
+            widgets.push(Widget::slider(
+                id,
+                x,
+                y,
+                w,
+                BUTTON_HEIGHT,
+                label.clone(),
+                *value,
+            ));
         }
     };
     for (i, row) in rows.iter().enumerate() {
         let y = header_h + i as i32 * ROW_HEIGHT;
-        let w0 = if row.big { BAND_WIDTH } else { SMALL_BUTTON_WIDTH };
-        place(&mut widgets, &row.left, widget_id(i, 0), widget_x(screen_w, 0), y, w0);
+        let w0 = if row.big {
+            BAND_WIDTH
+        } else {
+            SMALL_BUTTON_WIDTH
+        };
+        place(
+            &mut widgets,
+            &row.left,
+            widget_id(i, 0),
+            widget_x(screen_w, 0),
+            y,
+            w0,
+        );
         if let Some(r) = &row.right {
             debug_assert!(!row.big, "a big row spans the band; it has no right column");
-            place(&mut widgets, r, widget_id(i, 1), widget_x(screen_w, 1), y, SMALL_BUTTON_WIDTH);
+            place(
+                &mut widgets,
+                r,
+                widget_id(i, 1),
+                widget_x(screen_w, 1),
+                y,
+                SMALL_BUTTON_WIDTH,
+            );
         }
     }
     // The footer Done — `OptionsSubScreen`'s `HeaderAndFooterLayout` puts a
@@ -281,7 +315,10 @@ mod tests {
     #[test]
     fn rows_advance_on_the_item_pitch_not_the_button_height() {
         let rows = vec![
-            OptionRow::small(RowItem::Button("a".into()), Some(RowItem::Button("b".into()))),
+            OptionRow::small(
+                RowItem::Button("a".into()),
+                Some(RowItem::Button("b".into())),
+            ),
             OptionRow::small(RowItem::Button("c".into()), None),
         ];
         let s = build(OptionsPage::Sound, &rows, 640, 480, 0);
@@ -315,11 +352,31 @@ mod tests {
     /// filtered out, then musicFrequency alone in the left column.
     #[test]
     fn the_sound_page_slots_follow_vanillas_row_order() {
-        assert_eq!(sound_slot(widget_id(0, 0)), Some(SoundSlot::Volume(0)), "MASTER");
-        assert_eq!(sound_slot(widget_id(1, 0)), Some(SoundSlot::Volume(1)), "MUSIC");
-        assert_eq!(sound_slot(widget_id(1, 1)), Some(SoundSlot::Volume(2)), "RECORDS");
-        assert_eq!(sound_slot(widget_id(3, 1)), Some(SoundSlot::Volume(6)), "NEUTRAL");
-        assert_eq!(sound_slot(widget_id(5, 1)), Some(SoundSlot::Volume(10)), "UI");
+        assert_eq!(
+            sound_slot(widget_id(0, 0)),
+            Some(SoundSlot::Volume(0)),
+            "MASTER"
+        );
+        assert_eq!(
+            sound_slot(widget_id(1, 0)),
+            Some(SoundSlot::Volume(1)),
+            "MUSIC"
+        );
+        assert_eq!(
+            sound_slot(widget_id(1, 1)),
+            Some(SoundSlot::Volume(2)),
+            "RECORDS"
+        );
+        assert_eq!(
+            sound_slot(widget_id(3, 1)),
+            Some(SoundSlot::Volume(6)),
+            "NEUTRAL"
+        );
+        assert_eq!(
+            sound_slot(widget_id(5, 1)),
+            Some(SoundSlot::Volume(10)),
+            "UI"
+        );
         assert_eq!(sound_slot(widget_id(6, 0)), Some(SoundSlot::MusicFrequency));
         assert_eq!(sound_slot(widget_id(6, 1)), None, "no music toast in Rewo");
         assert_eq!(sound_slot(DONE), Some(SoundSlot::Done));
@@ -345,7 +402,11 @@ mod tests {
         // Click dead centre of a 310-wide slider at x=165: mx = 165+4+151.
         assert!((slider_value_from_mouse(165, 310, 320.0) - 0.5).abs() < 0.01);
         assert_eq!(slider_value_from_mouse(165, 310, 0.0), 0.0, "clamped left");
-        assert_eq!(slider_value_from_mouse(165, 310, 9999.0), 1.0, "clamped right");
+        assert_eq!(
+            slider_value_from_mouse(165, 310, 9999.0),
+            1.0,
+            "clamped right"
+        );
         // The handle: x + (int)(value * (width - 8)).
         assert_eq!(slider_handle_x(165, 310, 0.0), 165);
         assert_eq!(slider_handle_x(165, 310, 1.0), 165 + 302);
@@ -355,7 +416,10 @@ mod tests {
     /// The label is `caption: value`, which is what both of Rewo's options use.
     #[test]
     fn a_cycle_button_reads_caption_colon_value() {
-        assert_eq!(cycle_label("Music Frequency", "Default"), "Music Frequency: Default");
+        assert_eq!(
+            cycle_label("Music Frequency", "Default"),
+            "Music Frequency: Default"
+        );
         assert_eq!(bool_label(true), "On");
         assert_eq!(bool_label(false), "Off");
     }

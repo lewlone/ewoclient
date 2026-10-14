@@ -84,9 +84,8 @@ pub fn write_keybinds(instance_id: &str) {
     let Some(dir) = paths::instance_dir(instance_id) else {
         return;
     };
-    let mut s = String::from(
-        "# EwoClient keybinds — written by the launcher for the in-game mod.\n",
-    );
+    let mut s =
+        String::from("# EwoClient keybinds — written by the launcher for the in-game mod.\n");
     for (id, chord) in crate::profile::load_keybinds() {
         if chord.mods == 0 {
             s.push_str(&format!("{}={}\n", id, chord.key));

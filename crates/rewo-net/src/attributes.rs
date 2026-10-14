@@ -128,7 +128,9 @@ pub fn apply_local_attributes(
     player_id: Option<i32>,
     out: &mut rewo_world::attributes::EntityAttributes,
 ) -> bool {
-    let Some(player) = player_id else { return false };
+    let Some(player) = player_id else {
+        return false;
+    };
     let Some(packet) = parse(body) else {
         return false;
     };
@@ -235,7 +237,10 @@ mod tests {
         };
         let inst = Instance {
             base: 0.1,
-            modifiers: vec![modifier(SPRINTING_MODIFIER, 0.3), modifier("minecraft:speed", 0.2)],
+            modifiers: vec![
+                modifier(SPRINTING_MODIFIER, 0.3),
+                modifier("minecraft:speed", 0.2),
+            ],
         };
         let got = value_without_sprint(&inst, def);
         assert!((got - 0.1 * 1.2).abs() < 1e-12, "got {got}");
@@ -298,7 +303,11 @@ mod tests {
     fn the_local_player_store_is_inert_before_login_and_on_a_bad_body() {
         let mut store = rewo_world::attributes::EntityAttributes::default();
         // No `player_id` yet: the login packet has not arrived.
-        assert!(!apply_local_attributes(&body(7, &[(23, 5.0, &[])]), None, &mut store));
+        assert!(!apply_local_attributes(
+            &body(7, &[(23, 5.0, &[])]),
+            None,
+            &mut store
+        ));
         // A body that does not parse.
         assert!(!apply_local_attributes(&[0xFF], Some(7), &mut store));
         assert!(store.is_empty());
@@ -318,7 +327,11 @@ mod tests {
     fn modifiers_decode_with_their_identifier_and_operation() {
         let p = parse(&body(
             1,
-            &[(23, 20.0, &[("minecraft:test", 0.5, 2), ("minecraft:other", 4.0, 0)])],
+            &[(
+                23,
+                20.0,
+                &[("minecraft:test", 0.5, 2), ("minecraft:other", 4.0, 0)],
+            )],
         ))
         .expect("decode");
         let m = &p.snapshots[0].modifiers;
@@ -361,8 +374,7 @@ mod tests {
 
     #[test]
     fn several_snapshots_keep_their_order_and_ids() {
-        let p = parse(&body(3, &[(23, 20.0, &[]), (1, 5.0, &[]), (0, 1.0, &[])]))
-            .expect("decode");
+        let p = parse(&body(3, &[(23, 20.0, &[]), (1, 5.0, &[]), (0, 1.0, &[])])).expect("decode");
         let ids: Vec<i32> = p.snapshots.iter().map(|s| s.attribute).collect();
         assert_eq!(ids, vec![23, 1, 0]);
     }

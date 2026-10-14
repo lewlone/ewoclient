@@ -209,7 +209,10 @@ fn check_wire(c: &mut Checker, ids: &Ids, reg: &StatRegistries) {
         "w2.the_map_decodes_through_the_real_router_with_no_entity_table",
         handled
             && out.as_deref() == Some(&[(StatKey::new(8, 1), 1200), (StatKey::new(6, 54), 3)][..]),
-        format!("handled={handled} pairs={:?}", out.as_ref().map(|v| v.len())),
+        format!(
+            "handled={handled} pairs={:?}",
+            out.as_ref().map(|v| v.len())
+        ),
     );
 
     // w3: the milestone's central finding, and w2's mutation partner.
@@ -498,8 +501,7 @@ fn check_model(
     scrolled.set_scroll(20.0);
     c.record(
         "m13.a_row_scrolled_above_the_list_is_still_its_own_rect_but_not_hovered",
-        scrolled.row_at_unclipped(160.0, 10.0) == Some(0)
-            && scrolled.row_at(160.0, 10.0).is_none(),
+        scrolled.row_at_unclipped(160.0, 10.0) == Some(0) && scrolled.row_at(160.0, 10.0).is_none(),
         "`extractWidgetRenderState` gates `getEntryAtPosition` on the list's \
          own `isMouseOver`; without the gate a scrolled-off row still hits",
     );
@@ -743,15 +745,13 @@ fn check_pixels(
     // of "still green" is a count of what the screen failed to cover.
     const CLEAR: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
-    let shot_empty = |gpu: &mut Gpu,
-                          off: &mut Offscreen,
-                          wr: &mut WorldRenderer|
-     -> Result<Vec<u8>, String> {
-        wr.set_screen(rewo_gpu::screen::ScreenDraw::default());
-        wr.set_text(Vec::new());
-        off.render(gpu, Some((&mut *wr, vp)), &overlay_draw, CLEAR)?;
-        off.read_rgba(gpu)
-    };
+    let shot_empty =
+        |gpu: &mut Gpu, off: &mut Offscreen, wr: &mut WorldRenderer| -> Result<Vec<u8>, String> {
+            wr.set_screen(rewo_gpu::screen::ScreenDraw::default());
+            wr.set_text(Vec::new());
+            off.render(gpu, Some((&mut *wr, vp)), &overlay_draw, CLEAR)?;
+            off.read_rgba(gpu)
+        };
 
     let empty = shot_empty(&mut gpu, &mut off, &mut wr)?;
     let all_green = (0..W * H).all(|i| {
@@ -926,7 +926,8 @@ fn check_pixels(
     }
     let wide_frame = render!(&view, &wide, None);
     let border = 2 * SCALE as u32;
-    let col = |buf: &[u8], x: u32| -> Vec<[u8; 3]> { (t0y0..t0y1).map(|y| px(buf, x, y)).collect() };
+    let col =
+        |buf: &[u8], x: u32| -> Vec<[u8; 3]> { (t0y0..t0y1).map(|y| px(buf, x, y)).collect() };
     // **The left border alone does not discriminate, and the first version of
     // this witness assumed it did.** A stretch maps dest `x` to sheet
     // `x * 130 / 98`, which for `x < 2` still lands on sheet columns 0 and 1 —

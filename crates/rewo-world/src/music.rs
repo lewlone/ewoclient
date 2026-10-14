@@ -156,7 +156,10 @@ impl BackgroundMusic {
     /// vanilla biome's modifier is a set. Merging field-wise would give every
     /// Nether biome the Overworld's creative track, because the Nether biomes
     /// declare only a default.
-    pub fn resolve(dimension_base: &BackgroundMusic, biome: Option<&BackgroundMusic>) -> BackgroundMusic {
+    pub fn resolve(
+        dimension_base: &BackgroundMusic,
+        biome: Option<&BackgroundMusic>,
+    ) -> BackgroundMusic {
         match biome {
             Some(over) => over.clone(),
             None => dimension_base.clone(),
@@ -172,7 +175,10 @@ mod tests {
     fn the_seven_tracks_carry_their_own_windows() {
         // Literal, from `Musics.java:11-17`. A witness that recomputed them from
         // `create_game_music` would agree with any constant.
-        assert_eq!(musics::menu(), Music::new("minecraft:music.menu", 20, 600, true));
+        assert_eq!(
+            musics::menu(),
+            Music::new("minecraft:music.menu", 20, 600, true)
+        );
         assert_eq!(
             musics::creative(),
             Music::new("minecraft:music.creative", 12_000, 24_000, false)
@@ -185,7 +191,10 @@ mod tests {
             musics::end_boss(),
             Music::new("minecraft:music.dragon", 0, 0, true)
         );
-        assert_eq!(musics::end(), Music::new("minecraft:music.end", 6_000, 24_000, true));
+        assert_eq!(
+            musics::end(),
+            Music::new("minecraft:music.end", 6_000, 24_000, true)
+        );
         assert_eq!(
             musics::game(),
             Music::new("minecraft:music.game", 12_000, 24_000, false)
@@ -214,7 +223,10 @@ mod tests {
     #[test]
     fn selection_prefers_underwater_then_creative_then_default() {
         let full = BackgroundMusic::overworld().with_underwater(musics::under_water());
-        assert_eq!(full.select(false, false).unwrap().sound, "minecraft:music.game");
+        assert_eq!(
+            full.select(false, false).unwrap().sound,
+            "minecraft:music.game"
+        );
         assert_eq!(
             full.select(true, false).unwrap().sound,
             "minecraft:music.creative"
@@ -247,7 +259,10 @@ mod tests {
             ..BackgroundMusic::empty()
         };
         assert!(odd.select(false, false).is_none());
-        assert_eq!(odd.select(true, false).unwrap().sound, "minecraft:music.creative");
+        assert_eq!(
+            odd.select(true, false).unwrap().sound,
+            "minecraft:music.creative"
+        );
     }
 
     /// A biome REPLACES the dimension's record rather than merging into it.

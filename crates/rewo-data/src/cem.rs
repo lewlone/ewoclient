@@ -47,7 +47,9 @@ pub fn load_pack(zip_path: &Path) -> Result<CemPack, String> {
             Err(_) => continue,
         };
         let name = entry.name().to_string();
-        let Some(rest) = name.strip_prefix(CEM_DIR) else { continue };
+        let Some(rest) = name.strip_prefix(CEM_DIR) else {
+            continue;
+        };
         // Only files directly in cem/ (jem/jpm); skip nested dirs + others.
         if rest.contains('/') {
             continue;
@@ -62,7 +64,10 @@ pub fn load_pack(zip_path: &Path) -> Result<CemPack, String> {
             continue;
         }
         if let Some(stem) = rest.strip_suffix(".jem") {
-            files.push(CemFile { entity: stem.to_string(), jem: text });
+            files.push(CemFile {
+                entity: stem.to_string(),
+                jem: text,
+            });
         } else {
             jpms.insert(rest.to_string(), text);
         }

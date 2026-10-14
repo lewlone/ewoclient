@@ -168,7 +168,11 @@ pub struct TextPass {
 }
 
 impl TextPass {
-    pub fn new(gpu: &mut Gpu, color_format: vk::Format, font: &FontData<'_>) -> Result<Self, String> {
+    pub fn new(
+        gpu: &mut Gpu,
+        color_format: vk::Format,
+        font: &FontData<'_>,
+    ) -> Result<Self, String> {
         let (image, image_alloc, view) = create_texture(gpu, font.atlas, font.size, font.size)?;
         let device = gpu.device.clone();
         unsafe {
@@ -321,7 +325,7 @@ impl TextPass {
         self.verts = v.len() as u32;
         let bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 32) };
-        
+
         let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
         self.verts = (kept / VERTEX_STRIDE as usize) as u32;
         let Some(vbuf) = self.ring.bind() else {
@@ -374,7 +378,15 @@ impl TextPass {
         shear_for_cell(self.cell as f32, italic)
     }
 
-    fn push_line(&self, v: &mut Vec<Vertex>, line: &TextLine<'_>, ox: f32, oy: f32, color: [f32; 3], alpha: f32) {
+    fn push_line(
+        &self,
+        v: &mut Vec<Vertex>,
+        line: &TextLine<'_>,
+        ox: f32,
+        oy: f32,
+        color: [f32; 3],
+        alpha: f32,
+    ) {
         let px = line.px;
         let cell = self.cell as f32;
         let atlas = self.atlas_size as f32;
@@ -411,8 +423,10 @@ impl TextPass {
                         crate::buf_ring::warn_truncated(&TRUNCATED, "text", MAX_VERTS);
                         break;
                     }
-                    let (cx, cy) =
-                        ((b as u32 % 16 * self.cell) as f32, (b as u32 / 16 * self.cell) as f32);
+                    let (cx, cy) = (
+                        (b as u32 % 16 * self.cell) as f32,
+                        (b as u32 / 16 * self.cell) as f32,
+                    );
                     let x = pen + c as f32 * bold_offset * px;
                     let (u0, u1) = (cx / atlas, (cx + cell) / atlas);
                     let (t0, t1) = (cy / atlas, (cy + cell) / atlas);
@@ -427,7 +441,11 @@ impl TextPass {
                         (pos6[5], [u0, t1]),
                     ];
                     for (pos, uv) in corners {
-                        v.push(Vertex { pos, uv, color: color4 });
+                        v.push(Vertex {
+                            pos,
+                            uv,
+                            color: color4,
+                        });
                     }
                 }
             }
@@ -454,12 +472,26 @@ impl TextPass {
             let x1 = pen;
             if st.strikethrough {
                 // `this.y + 4.5F - 1.0F` .. `this.y + 4.5F`.
-                self.push_effect(v, x0, line.y + oy + 3.5 * px, x1, line.y + oy + 4.5 * px, color4);
+                self.push_effect(
+                    v,
+                    x0,
+                    line.y + oy + 3.5 * px,
+                    x1,
+                    line.y + oy + 4.5 * px,
+                    color4,
+                );
             }
             if st.underlined {
                 // `this.y + 9.0F - 1.0F` .. `this.y + 9.0F`. Below the 8-px
                 // cell, not inside it.
-                self.push_effect(v, x0, line.y + oy + 8.0 * px, x1, line.y + oy + 9.0 * px, color4);
+                self.push_effect(
+                    v,
+                    x0,
+                    line.y + oy + 8.0 * px,
+                    x1,
+                    line.y + oy + 9.0 * px,
+                    color4,
+                );
             }
         }
     }
@@ -468,7 +500,15 @@ impl TextPass {
     /// the space glyph's cell — vanilla's `FontSet.whiteGlyph()`, which is why
     /// the effects go in this pass's buffer rather than the HUD's fills: they
     /// are glyphs, and they must draw after the text they cross.
-    fn push_effect(&self, v: &mut Vec<Vertex>, x0: f32, y0: f32, x1: f32, y1: f32, color4: [f32; 4]) {
+    fn push_effect(
+        &self,
+        v: &mut Vec<Vertex>,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color4: [f32; 4],
+    ) {
         if v.len() + 6 > MAX_VERTS {
             crate::buf_ring::warn_truncated(&TRUNCATED, "text", MAX_VERTS);
             return;
@@ -476,15 +516,12 @@ impl TextPass {
         let atlas = self.atlas_size as f32;
         let u = (self.white_texel.0 as f32 + 0.5) / atlas;
         let t = (self.white_texel.1 as f32 + 0.5) / atlas;
-        for pos in [
-            [x0, y0],
-            [x1, y0],
-            [x1, y1],
-            [x0, y0],
-            [x1, y1],
-            [x0, y1],
-        ] {
-            v.push(Vertex { pos, uv: [u, t], color: color4 });
+        for pos in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]] {
+            v.push(Vertex {
+                pos,
+                uv: [u, t],
+                color: color4,
+            });
         }
     }
 
@@ -749,9 +786,12 @@ fn build_pipeline(
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD)
             .color_write_mask(
-                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B,
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
             )];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
@@ -1026,7 +1066,6 @@ mod tests {
         assert!(deltas.len() > 10, "only {} distinct deltas", deltas.len());
     }
 
-
     // -- the glyph quad ----------------------------------------------------
 
     /// Corner order is `[tl, tr, br, tl, br, bl]`.
@@ -1089,7 +1128,10 @@ mod tests {
         let first = glyph_quad(10.0, 20.0, 8.0, 2.0, 0.1, (0.0, 0.0));
         let second = glyph_quad(10.0 + 1.0 * 2.0, 20.0, 8.0, 2.0, 0.1, (0.0, 0.0));
         assert_eq!(second[TL][0] - first[TL][0], 2.0);
-        assert_eq!(second[TL][1], first[TL][1], "the second copy does not move down");
+        assert_eq!(
+            second[TL][1], first[TL][1],
+            "the second copy does not move down"
+        );
     }
 
     // -- the italic shear ---------------------------------------------------

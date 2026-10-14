@@ -528,7 +528,8 @@ mod tests {
             let want = (ANCHOR_ACCEL * d / GRAVITY).atan().to_degrees();
             assert!((tilt - want).abs() < 1e-3, "delta {d}: {tilt} vs {want}");
             // Vanilla's own answer for the same gap.
-            let vanilla = crate::cape::cape_angles([0.0, 0.0, -d], [0.0; 3], 0.0, 0.0, 0.0, 0.0).lean;
+            let vanilla =
+                crate::cape::cape_angles([0.0, 0.0, -d], [0.0; 3], 0.0, 0.0, 0.0, 0.0).lean;
             assert!(
                 (tilt - vanilla as f64).abs() < 0.05,
                 "delta {d}: cloth {tilt}, vanilla {vanilla}"
@@ -581,7 +582,11 @@ mod tests {
             );
         }
         c.tick(anchor, [0.0; 3]);
-        assert!(worst_link(&c) < 1e-4, "did not recover: {:e}", worst_link(&c));
+        assert!(
+            worst_link(&c) < 1e-4,
+            "did not recover: {:e}",
+            worst_link(&c)
+        );
     }
 
     #[test]
@@ -648,8 +653,14 @@ mod tests {
                 min_r = min_r.min((p[0] * p[0] + p[2] * p[2]).sqrt());
             }
         }
-        assert!(post < 1e-4, "post-tick link error {post:e} (M61 measured 0.230)");
-        assert!(min_r >= TORSO_RADIUS - 1e-9, "a joint reached radius {min_r}");
+        assert!(
+            post < 1e-4,
+            "post-tick link error {post:e} (M61 measured 0.230)"
+        );
+        assert!(
+            min_r >= TORSO_RADIUS - 1e-9,
+            "a joint reached radius {min_r}"
+        );
     }
 
     #[test]

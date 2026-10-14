@@ -262,7 +262,12 @@ fn screen_bbox(verts: &[rewo_gpu::gui_item::GuiItemVertex]) -> (f32, f32, f32, f
     (x0, y0, x1, y1)
 }
 
-fn draw_one(arm: Arm, item: &HeldItemModel, attack: f32, inverse_height: f32) -> Vec<rewo_gpu::gui_item::GuiItemVertex> {
+fn draw_one(
+    arm: Arm,
+    item: &HeldItemModel,
+    attack: f32,
+    inverse_height: f32,
+) -> Vec<rewo_gpu::gui_item::GuiItemVertex> {
     build_vertices(
         Mat4::IDENTITY,
         &[HandDraw {
@@ -319,11 +324,8 @@ fn check_glint(c: &mut Checker) {
     // a unit away is rejected outright — which is why the glint builder
     // repeats the pose derivation rather than re-deriving it a second,
     // subtly different way.
-    let same_positions = on.len() == plain.len()
-        && on
-            .iter()
-            .zip(plain.iter())
-            .all(|(g, p)| g.pos == p.pos);
+    let same_positions =
+        on.len() == plain.len() && on.iter().zip(plain.iter()).all(|(g, p)| g.pos == p.pos);
     c.record(
         "n2.the_glint_geometry_is_the_item_geometry_to_the_bit",
         same_positions,
@@ -337,13 +339,13 @@ fn check_glint(c: &mut Checker) {
         ),
     );
     // …and only the UVs differ, which is the whole point of the second pass.
-    let uvs_differ = on
-        .iter()
-        .zip(plain.iter())
-        .any(|(g, p)| g.uv != p.uv);
+    let uvs_differ = on.iter().zip(plain.iter()).any(|(g, p)| g.uv != p.uv);
     c.record(
         "n3.only_the_texture_coordinates_differ",
-        uvs_differ && on.iter().all(|v| v.shade == rewo_gpu::gui_item::GLINT_STRENGTH),
+        uvs_differ
+            && on
+                .iter()
+                .all(|v| v.shade == rewo_gpu::gui_item::GLINT_STRENGTH),
         format!(
             "the UVs differ ({uvs_differ}) and every glint vertex carries \
              `GlintAlpha` {:?} in the slot the item pass uses for its diffuse",
@@ -398,11 +400,7 @@ fn check_placement(c: &mut Checker) {
         let proj = projection();
         let (mut a, mut b, mut cc, mut d) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for i in 0..8 {
-            let p = glam::Vec3::new(
-                (i & 1) as f32,
-                ((i >> 1) & 1) as f32,
-                ((i >> 2) & 1) as f32,
-            );
+            let p = glam::Vec3::new((i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32);
             let clip = proj * (m * p.extend(1.0));
             let sx = (clip.x / clip.w + 1.0) / 2.0 * W as f32;
             let sy = (1.0 - clip.y / clip.w) / 2.0 * H as f32;
@@ -564,9 +562,18 @@ fn check_placement(c: &mut Checker) {
     // than after. Composing the other way is a plausible tidying that moves an
     // eaten apple most of a block.
     let custom: Vec<UseAnim> = [
-        UseAnim::None, UseAnim::Eat, UseAnim::Drink, UseAnim::Block, UseAnim::Bow,
-        UseAnim::Trident, UseAnim::Crossbow, UseAnim::Spyglass, UseAnim::TootHorn,
-        UseAnim::Brush, UseAnim::Bundle, UseAnim::Spear,
+        UseAnim::None,
+        UseAnim::Eat,
+        UseAnim::Drink,
+        UseAnim::Block,
+        UseAnim::Bow,
+        UseAnim::Trident,
+        UseAnim::Crossbow,
+        UseAnim::Spyglass,
+        UseAnim::TootHorn,
+        UseAnim::Brush,
+        UseAnim::Bundle,
+        UseAnim::Spear,
     ]
     .into_iter()
     .filter(|a| a.has_custom_arm_transform())
@@ -731,11 +738,9 @@ fn check_placement(c: &mut Checker) {
                 || v.uv[1] > geo.skin_uv[1] + geo.skin_uv[3] + 1e-4
         })
         .count();
-    let span = arm_verts
-        .iter()
-        .fold((f32::MAX, f32::MIN), |(lo, hi), v| {
-            (lo.min(v.uv[0]).min(v.uv[1]), hi.max(v.uv[0]).max(v.uv[1]))
-        });
+    let span = arm_verts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+        (lo.min(v.uv[0]).min(v.uv[1]), hi.max(v.uv[0]).max(v.uv[1]))
+    });
     c.record(
         "a2.the_arms_texel_uvs_are_normalised_into_the_skins_rect",
         outside == 0 && span.1 - span.0 > 0.01,
@@ -829,9 +834,9 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
         let item = cube_item(block_transform(), block_transform());
 
         let shot = |gpu: &mut Gpu,
-                        off: &mut Offscreen,
-                        wr: &mut WorldRenderer,
-                        v: &[rewo_gpu::gui_item::GuiItemVertex]|
+                    off: &mut Offscreen,
+                    wr: &mut WorldRenderer,
+                    v: &[rewo_gpu::gui_item::GuiItemVertex]|
          -> Result<Vec<u8>, String> {
             wr.set_hand(gpu, v, vp)?;
             off.render(gpu, Some((&mut *wr, vp)), &draw, CLEAR)?;
@@ -888,8 +893,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
         let left = shot(&mut gpu, &mut off, &mut wr, &left_verts)?;
         c.record(
             "g4.the_left_hand_renders_on_the_other_side",
-            magenta(&left, 0, H / 2, W / 2, H) > 500
-                && magenta(&left, W / 2, H / 2, W, H) < 100,
+            magenta(&left, 0, H / 2, W / 2, H) > 500 && magenta(&left, W / 2, H / 2, W, H) < 100,
             format!(
                 "{} px lower-left, {} lower-right — the reflection of g3",
                 magenta(&left, 0, H / 2, W / 2, H),
@@ -898,7 +902,12 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
         );
 
         // A swing displaces what is drawn: the mutation partner for g2.
-        let swung = shot(&mut gpu, &mut off, &mut wr, &draw_one(Arm::Right, &item, 0.4, 0.0))?;
+        let swung = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &draw_one(Arm::Right, &item, 0.4, 0.0),
+        )?;
         let moved = (0..(W * H) as usize)
             .filter(|i| rest[i * 4..i * 4 + 3] != swung[i * 4..i * 4 + 3])
             .count();
@@ -920,7 +929,12 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
         let mut both = draw_one(Arm::Right, &item, 0.0, 0.0);
         both.extend(draw_one(Arm::Right, &near_item, 0.0, 0.0));
         let layered = shot(&mut gpu, &mut off, &mut wr, &both)?;
-        let near_only = shot(&mut gpu, &mut off, &mut wr, &draw_one(Arm::Right, &near_item, 0.0, 0.0))?;
+        let near_only = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &draw_one(Arm::Right, &near_item, 0.0, 0.0),
+        )?;
         c.record(
             "g6.the_pass_depth_sorts_within_itself",
             magenta(&layered, 0, 0, W, H) >= magenta(&near_only, 0, 0, W, H),

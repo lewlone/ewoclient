@@ -306,7 +306,10 @@ mod tests {
         for _ in 0..BUTTON_DELAY_TICKS {
             DeathScreen::tick(&mut s);
         }
-        assert_eq!(s.mouse_clicked(160.0, 140.0, 0), MouseResult::Pressed(RESPAWN));
+        assert_eq!(
+            s.mouse_clicked(160.0, 140.0, 0),
+            MouseResult::Pressed(RESPAWN)
+        );
     }
 
     #[test]
@@ -340,7 +343,10 @@ mod tests {
         let mut s = DeathScreen::default().build(&labels(), 320, 240);
         assert!(!s.close_on_esc);
         assert_eq!(s.key_pressed(256, false), KeyResult::Ignored);
-        assert!(!s.pause, "isPauseScreen() is false — the world keeps ticking");
+        assert!(
+            !s.pause,
+            "isPauseScreen() is false — the world keeps ticking"
+        );
     }
 
     /// The double truncation. `width/2/2 - w/2` then `×2` is not `width/2 - w`
@@ -371,7 +377,10 @@ mod tests {
         assert_eq!(BACKDROP.top[3], 96.0 / 255.0);
         assert_eq!(BACKDROP.bottom[3], 160.0 / 255.0);
         assert_eq!(BACKDROP.top[0], 80.0 / 255.0);
-        assert_eq!(BACKDROP.bottom, [128.0 / 255.0, 48.0 / 255.0, 48.0 / 255.0, 160.0 / 255.0]);
+        assert_eq!(
+            BACKDROP.bottom,
+            [128.0 / 255.0, 48.0 / 255.0, 48.0 / 255.0, 160.0 / 255.0]
+        );
         assert_ne!(
             BACKDROP.top, BACKDROP.bottom,
             "a flat fill would lose both the colour and the alpha ramp"

@@ -62,8 +62,7 @@ fn disk_err(what: String, e: io::Error) -> ExtractError {
 /// Extract every applicable native classifier into the instance's
 /// `natives/` dir. Wipes the dir first so stale natives don't persist.
 pub fn extract_all(pv: &PerVersion, instance_id: &str) -> Result<(), ExtractError> {
-    let dest = super::plan::natives_dir_for(instance_id)
-        .ok_or(ExtractError::PathsUnresolvable)?;
+    let dest = super::plan::natives_dir_for(instance_id).ok_or(ExtractError::PathsUnresolvable)?;
     if dest.exists() {
         fs::remove_dir_all(&dest).map_err(|e| disk_err(format!("rm {}", dest.display()), e))?;
     }
@@ -144,7 +143,11 @@ fn extract_one(jar: &Path, dest: &Path, excludes: &[String]) -> Result<(), Extra
             continue;
         }
         let Some(rel) = safe_zip_entry_path(&entry) else {
-            log::warn!("natives: skipping unsafe entry {:?} in {}", name, jar.display());
+            log::warn!(
+                "natives: skipping unsafe entry {:?} in {}",
+                name,
+                jar.display()
+            );
             continue;
         };
         let out_path = dest.join(rel);
@@ -203,7 +206,13 @@ mod tests {
         {
             let mut w = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
             let opts = zip::write::SimpleFileOptions::default();
-            for name in ["ok.dll", "../escaped.dll", "/abs.dll", "META-INF/x.sf", "sub/n.so"] {
+            for name in [
+                "ok.dll",
+                "../escaped.dll",
+                "/abs.dll",
+                "META-INF/x.sf",
+                "sub/n.so",
+            ] {
                 w.start_file(name, opts).unwrap();
                 w.write_all(b"x").unwrap();
             }

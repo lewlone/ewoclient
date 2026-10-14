@@ -225,7 +225,8 @@ impl MinecartLerp {
         }
         // `(3 - this.lerpDelay + partialTick) / 3.0F` — the `3 - lerpDelay` is
         // integer arithmetic, and the divisor is the same 3.
-        let alpha = ((POS_ROT_LERP_TICKS - self.delay) as f32 + partial) / POS_ROT_LERP_TICKS as f32;
+        let alpha =
+            ((POS_ROT_LERP_TICKS - self.delay) as f32 + partial) / POS_ROT_LERP_TICKS as f32;
         let mut count_up = 0.0f32;
         let mut indexed_partial = 1.0f32;
         let mut found = false;
@@ -240,8 +241,8 @@ impl MinecartLerp {
                 count_up += weight;
                 if count_up as f64 >= self.total_weight * alpha as f64 {
                     let current = count_up - weight;
-                    indexed_partial =
-                        ((alpha as f64 * self.total_weight - current as f64) / weight as f64) as f32;
+                    indexed_partial = ((alpha as f64 * self.total_weight - current as f64)
+                        / weight as f64) as f32;
                     found = true;
                     index = i;
                     break;

@@ -112,7 +112,14 @@ pub fn dimensions(pose: Pose) -> (f64, f64, f64) {
 /// `EntityDimensions.makeBoundingBox(position)`.
 fn pose_box(pose: Pose, x: f64, y: f64, z: f64) -> Aabb {
     let (half_width, height, _) = dimensions(pose);
-    [x - half_width, y, z - half_width, x + half_width, y + height, z + half_width]
+    [
+        x - half_width,
+        y,
+        z - half_width,
+        x + half_width,
+        y + height,
+        z + half_width,
+    ]
 }
 
 /// Per-tick input, vanilla conventions: forward +1 = W, strafe +1 = left.
@@ -325,7 +332,11 @@ impl PlayerState {
     }
 
     fn block_pos(&self) -> [i32; 3] {
-        [self.x.floor() as i32, self.y.floor() as i32, self.z.floor() as i32]
+        [
+            self.x.floor() as i32,
+            self.y.floor() as i32,
+            self.z.floor() as i32,
+        ]
     }
 }
 
@@ -440,12 +451,15 @@ pub fn tick_env(
 
     if input.jump && affected_by_fluids {
         let in_lava = state.in_lava();
-        let fluid_height = if in_lava { state.lava_height } else { state.water_height };
+        let fluid_height = if in_lava {
+            state.lava_height
+        } else {
+            state.water_height
+        };
         let in_water_with_height = state.in_water() && fluid_height > 0.0;
         if !in_water_with_height || state.on_ground && !(fluid_height > FLUID_JUMP_THRESHOLD) {
             if !in_lava || state.on_ground && state.lava_height <= FLUID_JUMP_THRESHOLD {
-                if (state.on_ground
-                    || in_water_with_height && fluid_height <= FLUID_JUMP_THRESHOLD)
+                if (state.on_ground || in_water_with_height && fluid_height <= FLUID_JUMP_THRESHOLD)
                     && state.no_jump_delay == 0
                 {
                     jump_from_ground(state, &ctx);
@@ -506,7 +520,12 @@ struct Ctx<'a> {
 /// `isUnderWater()` `LocalPlayer.isUnderWater()` (`wasUnderwater`, the
 /// eye-in-water flag), `isInWater()` the fluid heights. `!isPassenger()` is
 /// taken as true.
-fn update_swimming(state: &mut PlayerState, input: &TickInput, world: &dyn PhysicsWorld, flying: bool) {
+fn update_swimming(
+    state: &mut PlayerState,
+    input: &TickInput,
+    world: &dyn PhysicsWorld,
+    flying: bool,
+) {
     if flying {
         // `Player.updateSwimming`.
         state.swimming = false;
@@ -527,7 +546,12 @@ fn update_swimming(state: &mut PlayerState, input: &TickInput, world: &dyn Physi
 /// `Player.canPlayerFitWithinBlocksAndEntitiesWhen`: the pose's box at the
 /// current position, deflated by `1.0E-7`, through `Level.noCollision` — the
 /// blocks and the world border, entity colliders out of scope.
-fn can_fit(state: &PlayerState, world: &dyn PhysicsWorld, border: Option<BorderCollision>, pose: Pose) -> bool {
+fn can_fit(
+    state: &PlayerState,
+    world: &dyn PhysicsWorld,
+    border: Option<BorderCollision>,
+    pose: Pose,
+) -> bool {
     let box_at = deflate(&pose_box(pose, state.x, state.y, state.z), EPS);
     no_collision(&box_at, world) && no_border_collision(&box_at, state, border)
 }
@@ -559,12 +583,22 @@ fn no_border_collision(b: &Aabb, state: &PlayerState, border: Option<BorderColli
 /// A slab, stairs or a fence therefore never counts, where `isSuffocating`
 /// could disagree for the few non-full-cube shapes it calls suffocating.
 fn suffocates_at(x: i32, z: i32, y0: f64, y1: f64, world: &dyn PhysicsWorld) -> bool {
-    let test = deflate(&[x as f64, y0, z as f64, x as f64 + 1.0, y1, z as f64 + 1.0], EPS);
+    let test = deflate(
+        &[x as f64, y0, z as f64, x as f64 + 1.0, y1, z as f64 + 1.0],
+        EPS,
+    );
     for y in (y0.floor() as i32 - 1)..=(y1.ceil() as i32 + 1) {
         if world.collision(x, y, z) != FULL_CUBE {
             continue;
         }
-        let cube = [x as f64, y as f64, z as f64, x as f64 + 1.0, y as f64 + 1.0, z as f64 + 1.0];
+        let cube = [
+            x as f64,
+            y as f64,
+            z as f64,
+            x as f64 + 1.0,
+            y as f64 + 1.0,
+            z as f64 + 1.0,
+        ];
         if intersects(&cube, &test) {
             return true;
         }
@@ -588,12 +622,16 @@ fn move_towards_closest_space(state: &mut PlayerState, world: &dyn PhysicsWorld,
     // `Direction.Plane.HORIZONTAL`'s WEST, EAST, NORTH, SOUTH — the order the
     // Java scans them in, so a tie keeps the earlier one (`<`, not `<=`).
     for (axis, distance_to_edge, step) in [
-        (0, xd, -1.0),        // WEST
-        (0, 1.0 - xd, 1.0),   // EAST
-        (2, zd, -1.0),        // NORTH
-        (2, 1.0 - zd, 1.0),   // SOUTH
+        (0, xd, -1.0),      // WEST
+        (0, 1.0 - xd, 1.0), // EAST
+        (2, zd, -1.0),      // NORTH
+        (2, 1.0 - zd, 1.0), // SOUTH
     ] {
-        let (nx, nz) = if axis == 0 { (pos[0] + step as i32, pos[2]) } else { (pos[0], pos[2] + step as i32) };
+        let (nx, nz) = if axis == 0 {
+            (pos[0] + step as i32, pos[2])
+        } else {
+            (pos[0], pos[2] + step as i32)
+        };
         if distance_to_edge < closest && !suffocates_at(nx, nz, y0, y1, world) {
             closest = distance_to_edge;
             dir = Some((axis, step));
@@ -697,7 +735,11 @@ fn move_relative(state: &mut PlayerState, speed: f32, xxa: f32, zza: f32) {
 /// `Player.getSpeed()`: the movement-speed attribute with the sprint
 /// modifier, as a float.
 fn speed(ctx: &Ctx) -> f32 {
-    let mult = if ctx.input.sprint { 1.0 + SPRINT_MODIFIER } else { 1.0 };
+    let mult = if ctx.input.sprint {
+        1.0 + SPRINT_MODIFIER
+    } else {
+        1.0
+    };
     (ctx.attrs.movement_speed * mult) as f32
 }
 
@@ -831,7 +873,11 @@ fn view_vector(x_rot: f32, y_rot: f32) -> [f64; 3] {
     let real_y_rot = -y_rot * rad;
     let (y_cos, y_sin) = (mth_cos(real_y_rot), mth_sin(real_y_rot));
     let (x_cos, x_sin) = (mth_cos(real_x_rot), mth_sin(real_x_rot));
-    [(y_sin * x_cos) as f64, (-x_sin) as f64, (y_cos * x_cos) as f64]
+    [
+        (y_sin * x_cos) as f64,
+        (-x_sin) as f64,
+        (y_cos * x_cos) as f64,
+    ]
 }
 
 /// `Entity.checkFallDistanceAccumulation` — a glide that is not descending
@@ -993,7 +1039,14 @@ fn travel_in_fluid(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
     }
     // jumpOutOfFluid
     if state.horizontal_collision {
-        let probe = offset(&state.aabb(), [state.vx, state.vy + 0.6f32 as f64 - state.y + old_y, state.vz]);
+        let probe = offset(
+            &state.aabb(),
+            [
+                state.vx,
+                state.vy + 0.6f32 as f64 - state.y + old_y,
+                state.vz,
+            ],
+        );
         if no_collision(&probe, ctx.world) && !contains_liquid(&probe, ctx.world) {
             state.vy = 0.3f32 as f64;
         }
@@ -1248,7 +1301,13 @@ fn back_off_from_edge(state: &PlayerState, ctx: &Ctx, delta: [f64; 3]) -> [f64; 
     [dx, delta[1], dz]
 }
 
-fn can_fall_at_least(state: &PlayerState, world: &dyn PhysicsWorld, dx: f64, dz: f64, min: f64) -> bool {
+fn can_fall_at_least(
+    state: &PlayerState,
+    world: &dyn PhysicsWorld,
+    dx: f64,
+    dz: f64,
+    min: f64,
+) -> bool {
     let b = state.aabb();
     let probe = [
         b[0] + EPS + dx,
@@ -1262,7 +1321,12 @@ fn can_fall_at_least(state: &PlayerState, world: &dyn PhysicsWorld, dx: f64, dz:
 }
 
 /// `Entity.checkSupportingBlock`.
-fn check_supporting_block(state: &mut PlayerState, world: &dyn PhysicsWorld, on_ground: bool, movement: Option<[f64; 3]>) {
+fn check_supporting_block(
+    state: &mut PlayerState,
+    world: &dyn PhysicsWorld,
+    on_ground: bool,
+    movement: Option<[f64; 3]>,
+) {
     if on_ground {
         let b = state.aabb();
         let test = [b[0], b[1] - 1.0e-6, b[2], b[3], b[1], b[5]];
@@ -1283,11 +1347,16 @@ fn check_supporting_block(state: &mut PlayerState, world: &dyn PhysicsWorld, on_
 /// `CollisionGetter.findSupportingBlock`: the colliding block whose centre is
 /// nearest the entity's position; ties go to the greatest `BlockPos`
 /// (`Vec3i.compareTo`: y, then z, then x).
-fn find_supporting_block(state: &PlayerState, world: &dyn PhysicsWorld, test: &Aabb) -> Option<[i32; 3]> {
+fn find_supporting_block(
+    state: &PlayerState,
+    world: &dyn PhysicsWorld,
+    test: &Aabb,
+) -> Option<[i32; 3]> {
     let mut best: Option<([i32; 3], f64)> = None;
     for_each_collider(test, world, |pos, _| {
         let d = |c: i32, p: f64| c as f64 + 0.5 - p;
-        let dist = d(pos[0], state.x).powi(2) + d(pos[1], state.y).powi(2) + d(pos[2], state.z).powi(2);
+        let dist =
+            d(pos[0], state.x).powi(2) + d(pos[1], state.y).powi(2) + d(pos[2], state.z).powi(2);
         let key = |p: [i32; 3]| (p[1], p[2], p[0]);
         let better = match best {
             None => true,
@@ -1308,7 +1377,9 @@ fn find_supporting_block(state: &PlayerState, world: &dyn PhysicsWorld, test: &A
 fn apply_stuck(state: &mut PlayerState, world: &dyn PhysicsWorld, flying: bool) {
     let b = deflate(&state.aabb(), 1.0e-5f32 as f64);
     let feet = state.block_pos();
-    let feet_powder = world.block(feet[0], feet[1], feet[2]).has(flags::POWDER_SNOW);
+    let feet_powder = world
+        .block(feet[0], feet[1], feet[2])
+        .has(flags::POWDER_SNOW);
     for y in b[1].floor() as i32..=b[4].floor() as i32 {
         for z in b[2].floor() as i32..=b[5].floor() as i32 {
             for x in b[0].floor() as i32..=b[3].floor() as i32 {
@@ -1343,7 +1414,12 @@ fn apply_stuck(state: &mut PlayerState, world: &dyn PhysicsWorld, flying: bool) 
 /// stateAbove.getFluidState().isEmpty()` — vanilla passes the column's own
 /// `pos` to `getCollisionShape`, which no block reads).
 fn bubble_column_effect(
-    state: &mut PlayerState, world: &dyn PhysicsWorld, x: i32, y: i32, z: i32, drag_down: bool,
+    state: &mut PlayerState,
+    world: &dyn PhysicsWorld,
+    x: i32,
+    y: i32,
+    z: i32,
+    drag_down: bool,
 ) {
     let above = world.block(x, y + 1, z);
     let nothing_above = world.collision(x, y + 1, z).is_empty() && above.fluid == PhysFluid::None;
@@ -1432,7 +1508,11 @@ fn update_fluids(
     state.lava_height = 0.0;
     state.eye_in_water = false;
     let bx = deflate(&state.aabb(), 0.001);
-    let (x0, y0, z0) = (bx[0].floor() as i32, bx[1].floor() as i32, bx[2].floor() as i32);
+    let (x0, y0, z0) = (
+        bx[0].floor() as i32,
+        bx[1].floor() as i32,
+        bx[2].floor() as i32,
+    );
     let (x1, y1, z1) = (
         bx[3].ceil() as i32 - 1,
         bx[4].ceil() as i32 - 1,
@@ -1463,23 +1543,37 @@ fn update_fluids(
                 if !lava && x == ex && z == ez && eye_y >= y as f64 && eye_y <= top {
                     state.eye_in_water = true;
                 }
-                let h = if lava { &mut state.lava_height } else { &mut state.water_height };
+                let h = if lava {
+                    &mut state.lava_height
+                } else {
+                    &mut state.water_height
+                };
                 *h = (top - entity_y).max(*h);
                 if pushed_by_fluid {
                     // `tracker.accumulateCurrent`, with the shallow-tracker
                     // height scale.
                     let flow = fluid_flow(world, x, y, z, lava);
                     let flow = if *h < 0.4 { scale_vec(flow, *h) } else { flow };
-                    if lava { current_lava.accumulate(flow) } else { current_water.accumulate(flow) }
+                    if lava {
+                        current_lava.accumulate(flow)
+                    } else {
+                        current_water.accumulate(flow)
+                    }
                 }
             }
         }
     }
     if pushed_by_fluid {
         // `updateFluidInteraction`: water at 0.014, then lava at its own rate.
-        if state.in_water() { current_water.apply(state, WATER_FLOW_SCALE); }
+        if state.in_water() {
+            current_water.apply(state, WATER_FLOW_SCALE);
+        }
         if state.in_lava() {
-            let lava_scale = if fast_lava { LAVA_FAST_FLOW_SCALE } else { LAVA_SLOW_FLOW_SCALE };
+            let lava_scale = if fast_lava {
+                LAVA_FAST_FLOW_SCALE
+            } else {
+                LAVA_SLOW_FLOW_SCALE
+            };
             current_lava.apply(state, lava_scale);
         }
     }
@@ -1539,7 +1633,10 @@ impl Current {
             return;
         }
         let mut impulse = scale_vec(scale_vec(self.sum, 1.0 / self.count as f64), scale);
-        if state.vx.abs() < 0.003 && state.vz.abs() < 0.003 && len_sq(impulse).sqrt() < MIN_FLOW_IMPULSE {
+        if state.vx.abs() < 0.003
+            && state.vz.abs() < 0.003
+            && len_sq(impulse).sqrt() < MIN_FLOW_IMPULSE
+        {
             impulse = scale_vec(normalize_vec(impulse), MIN_FLOW_IMPULSE);
         }
         state.vx += impulse[0];
@@ -1613,7 +1710,10 @@ fn affects_flow(lava: bool, fluid: PhysFluid) -> bool {
 }
 
 fn same_fluid(lava: bool, fluid: PhysFluid) -> bool {
-    matches!((lava, fluid), (false, PhysFluid::Water { .. }) | (true, PhysFluid::Lava { .. }))
+    matches!(
+        (lava, fluid),
+        (false, PhysFluid::Water { .. }) | (true, PhysFluid::Lava { .. })
+    )
 }
 
 /// `BlockState.blocksMotion`, approximated by "has collision boxes".
@@ -1643,7 +1743,11 @@ fn full_face(boxes: &[[f32; 6]], axis: usize, positive: bool) -> bool {
     boxes.iter().any(|b| {
         (0..3).all(|a| {
             if a == axis {
-                if positive { b[a + 3] == 1.0 } else { b[a] == 0.0 }
+                if positive {
+                    b[a + 3] == 1.0
+                } else {
+                    b[a] == 0.0
+                }
             } else {
                 b[a] == 0.0 && b[a + 3] == 1.0
             }
@@ -1654,7 +1758,11 @@ fn full_face(boxes: &[[f32; 6]], axis: usize, positive: bool) -> bool {
 /// `Vec3.normalize`: `Vec3.ZERO` below `1.0E-5F`, not a division by zero.
 fn normalize_vec(v: [f64; 3]) -> [f64; 3] {
     let d = len_sq(v).sqrt();
-    if d < 1.0e-5f32 as f64 { [0.0; 3] } else { [v[0] / d, v[1] / d, v[2] / d] }
+    if d < 1.0e-5f32 as f64 {
+        [0.0; 3]
+    } else {
+        [v[0] / d, v[1] / d, v[2] / d]
+    }
 }
 
 /// `Vec3.scale`.
@@ -1690,7 +1798,14 @@ fn len_sq(v: [f64; 3]) -> f64 {
 }
 
 fn offset(b: &Aabb, d: [f64; 3]) -> Aabb {
-    [b[0] + d[0], b[1] + d[1], b[2] + d[2], b[3] + d[0], b[4] + d[1], b[5] + d[2]]
+    [
+        b[0] + d[0],
+        b[1] + d[1],
+        b[2] + d[2],
+        b[3] + d[0],
+        b[4] + d[1],
+        b[5] + d[2],
+    ]
 }
 
 fn deflate(b: &Aabb, e: f64) -> Aabb {
@@ -1728,12 +1843,21 @@ fn intersects(a: &Aabb, b: &Aabb) -> bool {
 fn for_each_collider(query: &Aabb, world: &dyn PhysicsWorld, mut f: impl FnMut([i32; 3], &[Aabb])) {
     let lo = |v: f64| (v - EPS).floor() as i32 - 1;
     let hi = |v: f64| (v + EPS).floor() as i32 + 1;
-    let (x0, y0, z0, x1, y1, z1) = (lo(query[0]), lo(query[1]), lo(query[2]), hi(query[3]), hi(query[4]), hi(query[5]));
+    let (x0, y0, z0, x1, y1, z1) = (
+        lo(query[0]),
+        lo(query[1]),
+        lo(query[2]),
+        hi(query[3]),
+        hi(query[4]),
+        hi(query[5]),
+    );
     let mut boxes: Vec<Aabb> = Vec::with_capacity(4);
     for z in z0..=z1 {
         for y in y0..=y1 {
             for x in x0..=x1 {
-                let kind = (x == x0 || x == x1) as u8 + (y == y0 || y == y1) as u8 + (z == z0 || z == z1) as u8;
+                let kind = (x == x0 || x == x1) as u8
+                    + (y == y0 || y == y1) as u8
+                    + (z == z0 || z == z1) as u8;
                 if kind >= 2 {
                     continue;
                 }
@@ -1742,7 +1866,9 @@ fn for_each_collider(query: &Aabb, world: &dyn PhysicsWorld, mut f: impl FnMut([
                     continue;
                 }
                 if kind == 1
-                    && !shape.iter().any(|b| b[..3].iter().any(|v| *v < 0.0) || b[3..].iter().any(|v| *v > 1.0))
+                    && !shape
+                        .iter()
+                        .any(|b| b[..3].iter().any(|v| *v < 0.0) || b[3..].iter().any(|v| *v > 1.0))
                 {
                     continue;
                 }
@@ -1819,7 +1945,11 @@ fn collide_with_shapes(
     colliders: &[Vec<Aabb>],
     border: Option<BorderCollision>,
 ) -> [f64; 3] {
-    let order = if movement[0].abs() < movement[2].abs() { [1, 2, 0] } else { [1, 0, 2] };
+    let order = if movement[0].abs() < movement[2].abs() {
+        [1, 2, 0]
+    } else {
+        [1, 0, 2]
+    };
     let mut resolved = [0.0; 3];
     for axis in order {
         let m = movement[axis];
@@ -1849,9 +1979,8 @@ fn collide(state: &PlayerState, ctx: &Ctx, movement: [f64; 3]) -> [f64; 3] {
     // `collectCollidersIgnoringWorldBorder` decides once, with the query box,
     // whether the border joins the colliders.
     let border_for = |q: &Aabb| {
-        ctx.border.filter(|b| {
-            b.is_inside_close_to_border(state.x, state.z, q[3] - q[0], q[5] - q[2])
-        })
+        ctx.border
+            .filter(|b| b.is_inside_close_to_border(state.x, state.z, q[3] - q[0], q[5] - q[2]))
     };
     // `Entity.collide`'s single entity query: `getEntityCollisions(this,
     // aabb.expandTowards(movement))`, whose `getEntities` searches that test
@@ -1883,7 +2012,11 @@ fn collide(state: &PlayerState, ctx: &Ctx, movement: [f64; 3]) -> [f64; 3] {
     let landing = y_coll && movement[1] < 0.0;
     let max_step = ctx.attrs.step_height as f32;
     if max_step > 0.0 && (landing || state.on_ground) && (x_coll || z_coll) {
-        let grounded = if landing { offset(&bx, [0.0, step[1], 0.0]) } else { bx };
+        let grounded = if landing {
+            offset(&bx, [0.0, step[1], 0.0])
+        } else {
+            bx
+        };
         let mut q = expand_towards(&grounded, [movement[0], max_step as f64, movement[2]]);
         if !landing {
             q = expand_towards(&q, [0.0, -1.0e-5f32 as f64, 0.0]);
@@ -1891,7 +2024,12 @@ fn collide(state: &PlayerState, ctx: &Ctx, movement: [f64; 3]) -> [f64; 3] {
         let colliders = collect(&q);
         let border = border_for(&q);
         for h in step_up_candidates(&grounded, &colliders, max_step, step[1] as f32) {
-            let s = collide_with_shapes([movement[0], h as f64, movement[2]], &grounded, &colliders, border);
+            let s = collide_with_shapes(
+                [movement[0], h as f64, movement[2]],
+                &grounded,
+                &colliders,
+                border,
+            );
             if s[0] * s[0] + s[2] * s[2] > step[0] * step[0] + step[2] * step[2] {
                 let to_ground = bx[1] - grounded[1];
                 return [s[0], s[1] - to_ground, s[2]];
@@ -2001,7 +2139,11 @@ mod tests {
     const FULL: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
     const EMPTY: &[[f32; 6]] = &[];
     fn cube(solid: bool) -> &'static [[f32; 6]] {
-        if solid { FULL } else { EMPTY }
+        if solid {
+            FULL
+        } else {
+            EMPTY
+        }
     }
 
     /// Flat floor: solid at y = -1 and below.
@@ -2021,7 +2163,11 @@ mod tests {
             tick(&mut p, &TickInput::default(), &world);
         }
         assert!(p.on_ground, "landed on the slab");
-        assert!((p.y + 0.5).abs() < 1e-6, "settles on the slab top (y=-0.5), got {}", p.y);
+        assert!(
+            (p.y + 0.5).abs() < 1e-6,
+            "settles on the slab top (y=-0.5), got {}",
+            p.y
+        );
     }
 
     /// A fence is a thin post but collides 1.5 blocks tall, so walking into
@@ -2039,12 +2185,19 @@ mod tests {
             }
         };
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
-        let fwd = TickInput { forward: 1.0, ..Default::default() };
+        let fwd = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
         for _ in 0..60 {
             tick(&mut p, &fwd, &world);
         }
         assert!(p.horizontal_collision, "stopped by the fence post");
-        assert!(p.z < 2.375 - PLAYER_HALF_WIDTH + 1e-6, "did not pass the post, z={}", p.z);
+        assert!(
+            p.z < 2.375 - PLAYER_HALF_WIDTH + 1e-6,
+            "did not pass the post, z={}",
+            p.z
+        );
     }
 
     fn settle(state: &mut PlayerState) {
@@ -2078,7 +2231,10 @@ mod tests {
             tick(&mut p, &input, &floor);
         }
         let dist = p.z - z0;
-        assert!((dist - walked_from_rest(0.1)).abs() < 1e-12, "40-tick walk = {dist}");
+        assert!(
+            (dist - walked_from_rest(0.1)).abs() < 1e-12,
+            "40-tick walk = {dist}"
+        );
     }
 
     /// Vanilla sprint ≈ 5.612 blocks/s → ≈ 11.2 blocks in 2 s.
@@ -2097,7 +2253,10 @@ mod tests {
         }
         let dist = p.z - z0;
         let speed = (0.1f32 as f64 * 1.3) as f32;
-        assert!((dist - walked_from_rest(speed)).abs() < 1e-12, "40-tick sprint = {dist}");
+        assert!(
+            (dist - walked_from_rest(speed)).abs() < 1e-12,
+            "40-tick sprint = {dist}"
+        );
     }
 
     /// 40 ticks of ground movement from rest, from the formulas: each tick
@@ -2161,7 +2320,11 @@ mod tests {
             (p.vx != 0.0, p.vz != 0.0)
         };
         // Magnitude 0.00354 > 0.003 — both survive jointly.
-        assert_eq!(survives(0.0025, 0.0025), (true, true), "a per-axis clamp would zero both");
+        assert_eq!(
+            survives(0.0025, 0.0025),
+            (true, true),
+            "a per-axis clamp would zero both"
+        );
         // Magnitude 0.00283 < 0.003 — both go.
         assert_eq!(survives(0.002, 0.002), (false, false));
         // One axis alone, above the threshold: survives.
@@ -2254,7 +2417,11 @@ mod tests {
         }
         // I is the f32-computed 0.15f, so the fixed point is 1.5·I exactly.
         let i = crate::abilities::Abilities::default().vertical_flight_impulse(true, false);
-        assert!((p.vy - 1.5 * i).abs() < 1e-12, "carried vy={}, want 1.5·I", p.vy);
+        assert!(
+            (p.vy - 1.5 * i).abs() < 1e-12,
+            "carried vy={}, want 1.5·I",
+            p.vy
+        );
         let before = p.y;
         fc.before_travel(&mut ab, &mut p, &up, false, false);
         tick_with(&mut p, &up, &ab, false, None, &air);
@@ -2296,11 +2463,23 @@ mod tests {
             accel * (0.98f32 as f64) * drag / (1.0 - drag)
         };
         let base = f64::from(0.05f32);
-        assert!((terminal(false) - want(base)).abs() < 1e-6, "{}", terminal(false));
+        assert!(
+            (terminal(false) - want(base)).abs() < 1e-6,
+            "{}",
+            terminal(false)
+        );
         // Sprinting is a clean doubling here — unlike the walking air constants.
-        assert!((terminal(true) - want(base * 2.0)).abs() < 1e-6, "{}", terminal(true));
+        assert!(
+            (terminal(true) - want(base * 2.0)).abs() < 1e-6,
+            "{}",
+            terminal(true)
+        );
         // ≈ 0.4954 blocks/tick = 9.9 blocks/s, and ≈ 19.8 sprinting.
-        assert!((terminal(false) - 0.4954).abs() < 1e-3, "{}", terminal(false));
+        assert!(
+            (terminal(false) - 0.4954).abs() < 1e-3,
+            "{}",
+            terminal(false)
+        );
     }
 
     /// Sneak is the descend key while flying, and must not also apply the 0.3
@@ -2321,7 +2500,12 @@ mod tests {
             }
             p.vz
         };
-        assert!((run(true) - run(false)).abs() < 1e-12, "{} vs {}", run(true), run(false));
+        assert!(
+            (run(true) - run(false)).abs() < 1e-12,
+            "{} vs {}",
+            run(true),
+            run(false)
+        );
 
         // Control: walking, the same key *does* slow you — so the test above is
         // measuring the flight branch and not an inert flag.
@@ -2339,7 +2523,12 @@ mod tests {
             }
             p.vz
         };
-        assert!(walk(true) < walk(false) * 0.5, "{} vs {}", walk(true), walk(false));
+        assert!(
+            walk(true) < walk(false) * 0.5,
+            "{} vs {}",
+            walk(true),
+            walk(false)
+        );
     }
 
     /// A flying player still collides — flight is not no-clip. (Spectator is,
@@ -2391,7 +2580,10 @@ mod tests {
             tick(&mut a, &input, &world);
             tick_with(&mut b, &input, &Abilities::default(), false, None, &world);
         }
-        assert_eq!((a.x, a.y, a.z, a.vx, a.vy, a.vz), (b.x, b.y, b.z, b.vx, b.vy, b.vz));
+        assert_eq!(
+            (a.x, a.y, a.z, a.vx, a.vy, a.vz),
+            (b.x, b.y, b.z, b.vx, b.vy, b.vz)
+        );
     }
 
     #[test]
@@ -2502,7 +2694,11 @@ mod tests {
         for _ in 0..200 {
             tick(&mut q, &input, &world);
         }
-        assert!(q.z > 20.0, "unbordered, the same walk goes far past, z={}", q.z);
+        assert!(
+            q.z > 20.0,
+            "unbordered, the same walk goes far past, z={}",
+            q.z
+        );
         assert!(!q.horizontal_collision);
     }
 
@@ -2632,32 +2828,58 @@ mod tests {
         /// `getEntities`'s selection: every entity box overlapping the test
         /// area — which arrives already inflated, so touching counts.
         fn entity_colliders(&self, search: [f64; 6]) -> Vec<[f64; 6]> {
-            self.entities.iter().copied().filter(|b| intersects(b, &search)).collect()
+            self.entities
+                .iter()
+                .copied()
+                .filter(|b| intersects(b, &search))
+                .collect()
         }
     }
 
     /// `oak_boat`'s box (1.375 wide × 0.5625 tall, `EntityPickTable`), centred
     /// on x/z and standing on `y`.
     fn boat_box(x: f64, y: f64, z: f64) -> Aabb {
-        [x - 0.6875, y, z - 0.6875, x + 0.6875, y + 0.5625, z + 0.6875]
+        [
+            x - 0.6875,
+            y,
+            z - 0.6875,
+            x + 0.6875,
+            y + 0.5625,
+            z + 0.6875,
+        ]
     }
 
     /// [`tick_env`] over one of these worlds, with the tick's usual defaults.
     fn tick_world(p: &mut PlayerState, input: &TickInput, world: &dyn PhysicsWorld) {
-        tick_env(p, input, &Abilities::default(), false, None, &MoveAttributes::default(), world);
+        tick_env(
+            p,
+            input,
+            &Abilities::default(),
+            false,
+            None,
+            &MoveAttributes::default(),
+            world,
+        );
     }
 
     /// Stand on one: the player lands on the box's top face and stays there —
     /// exactly as on a block.
     #[test]
     fn stands_on_a_boat_sized_collider() {
-        let world = WithEntities { shapes: &floor, entities: vec![boat_box(0.5, 0.0, 0.5)] };
+        let world = WithEntities {
+            shapes: &floor,
+            entities: vec![boat_box(0.5, 0.0, 0.5)],
+        };
         let mut p = PlayerState::at(0.5, 3.0, 0.5);
         for _ in 0..80 {
             tick_world(&mut p, &TickInput::default(), &world);
         }
         assert!(p.on_ground, "landed on the collider");
-        assert!((p.y - 0.5625).abs() < 1e-6, "stands on its top face, y={}", p.y);
+        assert!(
+            (p.y - 0.5625).abs() < 1e-6,
+            "stands on its top face, y={}",
+            p.y
+        );
     }
 
     /// Walk into one and you stop. The box is raised to `[0.25, 0.8125]` only
@@ -2667,15 +2889,25 @@ mod tests {
     /// there: at that height the player still overlaps the box.
     #[test]
     fn a_boat_sized_collider_stops_a_walking_player() {
-        let world = WithEntities { shapes: &floor, entities: vec![boat_box(0.5, 0.25, 2.0)] };
+        let world = WithEntities {
+            shapes: &floor,
+            entities: vec![boat_box(0.5, 0.25, 2.0)],
+        };
         let mut p = PlayerState::at(0.5, 0.0, -1.0);
-        let fwd = TickInput { forward: 1.0, ..Default::default() };
+        let fwd = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
         for _ in 0..60 {
             tick_world(&mut p, &fwd, &world);
         }
         assert!(p.horizontal_collision, "stopped by the collider");
         assert!(p.z > 0.5, "walked up to it first, z={}", p.z);
-        assert!(p.z <= 1.3125 - PLAYER_HALF_WIDTH + 1e-6, "did not pass the face, z={}", p.z);
+        assert!(
+            p.z <= 1.3125 - PLAYER_HALF_WIDTH + 1e-6,
+            "did not pass the face, z={}",
+            p.z
+        );
         assert!(p.y.abs() < 1e-6, "and did not climb it, y={}", p.y);
     }
 
@@ -2697,11 +2929,18 @@ mod tests {
             }
         };
         let before = ShapesOnly { shapes: &shapes };
-        let empty = WithEntities { shapes: &shapes, entities: Vec::new() };
+        let empty = WithEntities {
+            shapes: &shapes,
+            entities: Vec::new(),
+        };
         let mut a = PlayerState::at(0.5, 0.0, 0.5);
         let mut b = PlayerState::at(0.5, 0.0, 0.5);
         for i in 0..120 {
-            let input = TickInput { forward: 1.0, jump: i == 20 || i == 60, ..Default::default() };
+            let input = TickInput {
+                forward: 1.0,
+                jump: i == 20 || i == 60,
+                ..Default::default()
+            };
             tick_world(&mut a, &input, &before);
             tick_world(&mut b, &input, &empty);
         }
@@ -2710,14 +2949,17 @@ mod tests {
 
     // ---- vanilla-derived expectations for the full tick ------------------
 
-    struct TestWorld<S: Fn(i32, i32, i32) -> &'static [[f32; 6]], B: Fn(i32, i32, i32) -> BlockPhysics> {
+    struct TestWorld<
+        S: Fn(i32, i32, i32) -> &'static [[f32; 6]],
+        B: Fn(i32, i32, i32) -> BlockPhysics,
+    > {
         shape: S,
         block: B,
         loaded: bool,
     }
 
-    impl<S: Fn(i32, i32, i32) -> &'static [[f32; 6]], B: Fn(i32, i32, i32) -> BlockPhysics> PhysicsWorld
-        for TestWorld<S, B>
+    impl<S: Fn(i32, i32, i32) -> &'static [[f32; 6]], B: Fn(i32, i32, i32) -> BlockPhysics>
+        PhysicsWorld for TestWorld<S, B>
     {
         fn collision(&self, x: i32, y: i32, z: i32) -> &[[f32; 6]] {
             (self.shape)(x, y, z)
@@ -2738,7 +2980,15 @@ mod tests {
     }
 
     fn step_env(p: &mut PlayerState, input: &TickInput, w: &dyn PhysicsWorld) {
-        tick_env(p, input, &Abilities::default(), false, None, &MoveAttributes::default(), w);
+        tick_env(
+            p,
+            input,
+            &Abilities::default(),
+            false,
+            None,
+            &MoveAttributes::default(),
+            w,
+        );
     }
 
     /// Ground terminal speed from the formulas alone: the accel
@@ -2757,15 +3007,27 @@ mod tests {
 
     #[test]
     fn walk_and_sprint_terminals_are_exact() {
-        let w = TestWorld { shape: |_, y, _| cube(y < 0), block: |_, _, _| stone(), loaded: true };
+        let w = TestWorld {
+            shape: |_, y, _| cube(y < 0),
+            block: |_, _, _| stone(),
+            loaded: true,
+        };
         for (sprint, speed) in [(false, 0.1f32), (true, (0.1f32 as f64 * 1.3) as f32)] {
             let mut p = PlayerState::at(0.5, 0.0, 0.5);
-            let input = TickInput { forward: 1.0, sprint, ..Default::default() };
+            let input = TickInput {
+                forward: 1.0,
+                sprint,
+                ..Default::default()
+            };
             for _ in 0..400 {
                 step_env(&mut p, &input, &w);
             }
             let want = ground_terminal(speed, 0.6);
-            assert!((p.vz - want).abs() < 1e-12, "sprint={sprint}: vz={} want {want}", p.vz);
+            assert!(
+                (p.vz - want).abs() < 1e-12,
+                "sprint={sprint}: vz={} want {want}",
+                p.vz
+            );
         }
     }
 
@@ -2776,16 +3038,32 @@ mod tests {
         for f in [0.98f32, 0.989] {
             let w = TestWorld {
                 shape: |_, y, _| cube(y < 0),
-                block: move |_, y, _| if y < 0 { BlockPhysics { friction: f, ..stone() } } else { BlockPhysics::AIR },
+                block: move |_, y, _| {
+                    if y < 0 {
+                        BlockPhysics {
+                            friction: f,
+                            ..stone()
+                        }
+                    } else {
+                        BlockPhysics::AIR
+                    }
+                },
                 loaded: true,
             };
             let mut p = PlayerState::at(0.5, 0.0, 0.5);
-            let input = TickInput { forward: 1.0, ..Default::default() };
+            let input = TickInput {
+                forward: 1.0,
+                ..Default::default()
+            };
             for _ in 0..3000 {
                 step_env(&mut p, &input, &w);
             }
             let want = ground_terminal(0.1, f);
-            assert!((p.vz - want).abs() < 1e-9, "friction {f}: vz={} want {want}", p.vz);
+            assert!(
+                (p.vz - want).abs() < 1e-9,
+                "friction {f}: vz={} want {want}",
+                p.vz
+            );
         }
     }
 
@@ -2795,11 +3073,23 @@ mod tests {
     fn soul_sand_speed_factor_scales_velocity() {
         let w = TestWorld {
             shape: |_, y, _| cube(y < 0),
-            block: |_, y, _| if y < 0 { BlockPhysics { speed_factor: 0.4, ..stone() } } else { BlockPhysics::AIR },
+            block: |_, y, _| {
+                if y < 0 {
+                    BlockPhysics {
+                        speed_factor: 0.4,
+                        ..stone()
+                    }
+                } else {
+                    BlockPhysics::AIR
+                }
+            },
             loaded: true,
         };
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
-        let input = TickInput { forward: 1.0, ..Default::default() };
+        let input = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
         for _ in 0..400 {
             step_env(&mut p, &input, &w);
         }
@@ -2816,7 +3106,14 @@ mod tests {
     fn jump_apex_is_exact() {
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         settle(&mut p);
-        tick(&mut p, &TickInput { jump: true, ..Default::default() }, &floor);
+        tick(
+            &mut p,
+            &TickInput {
+                jump: true,
+                ..Default::default()
+            },
+            &floor,
+        );
         let mut apex = p.y;
         for _ in 0..20 {
             tick(&mut p, &TickInput::default(), &floor);
@@ -2849,16 +3146,32 @@ mod tests {
             }
         };
         let mut p = PlayerState::at(2.5, 0.0, 0.5);
-        let input = TickInput { forward: 1.0, jump: true, sprint: true, ..Default::default() };
+        let input = TickInput {
+            forward: 1.0,
+            jump: true,
+            sprint: true,
+            ..Default::default()
+        };
         for _ in 0..100 {
             tick(&mut p, &input, &world);
-            assert!(p.z < 2.375 - PLAYER_HALF_WIDTH + 1e-6, "passed the post: z={} y={}", p.z, p.y);
+            assert!(
+                p.z < 2.375 - PLAYER_HALF_WIDTH + 1e-6,
+                "passed the post: z={} y={}",
+                p.z,
+                p.y
+            );
         }
     }
 
     #[test]
     fn standing_on_a_tall_collider_does_not_fall_through() {
-        let world = |x: i32, y: i32, z: i32| if (x, y, z) == (0, 0, 0) { WALL15 } else { EMPTY };
+        let world = |x: i32, y: i32, z: i32| {
+            if (x, y, z) == (0, 0, 0) {
+                WALL15
+            } else {
+                EMPTY
+            }
+        };
         let mut p = PlayerState::at(0.5, 1.5, 0.5);
         for _ in 0..40 {
             tick(&mut p, &TickInput::default(), &world);
@@ -2873,10 +3186,21 @@ mod tests {
         let block: Vec<Aabb> = vec![[1.0, 0.0, 1.0, 2.0, 1.0, 2.0]];
         let bx: Aabb = [0.35, 0.0, 0.2, 0.95, 1.8, 0.8];
         let r = collide_with_shapes([0.1, 0.0, 0.5], &bx, std::slice::from_ref(&block), None);
-        assert!((r[0] - 0.05).abs() < 1e-12 && (r[2] - 0.5).abs() < 1e-12, "{r:?}");
+        assert!(
+            (r[0] - 0.05).abs() < 1e-12 && (r[2] - 0.5).abs() < 1e-12,
+            "{r:?}"
+        );
         // The mirrored case resolves X first.
-        let r = collide_with_shapes([0.5, 0.0, 0.1], &[0.2, 0.0, 0.35, 0.8, 1.8, 0.95], &[block], None);
-        assert!((r[0] - 0.5).abs() < 1e-12 && (r[2] - 0.05).abs() < 1e-12, "{r:?}");
+        let r = collide_with_shapes(
+            [0.5, 0.0, 0.1],
+            &[0.2, 0.0, 0.35, 0.8, 1.8, 0.95],
+            &[block],
+            None,
+        );
+        assert!(
+            (r[0] - 0.5).abs() < 1e-12 && (r[2] - 0.05).abs() < 1e-12,
+            "{r:?}"
+        );
     }
 
     /// No step-up in the air: only on the ground or when landing this tick.
@@ -2896,14 +3220,20 @@ mod tests {
     /// then gravity and the 0.98F drag apply.
     #[test]
     fn a_ladder_climbs_at_the_vanilla_rate() {
-        let ladder = BlockPhysics { flags: flags::CLIMBABLE, ..BlockPhysics::AIR };
+        let ladder = BlockPhysics {
+            flags: flags::CLIMBABLE,
+            ..BlockPhysics::AIR
+        };
         let w = TestWorld {
             shape: |_, y, z| cube(y < 0 || z >= 1),
             block: move |_, y, z| if z == 0 && y >= 0 { ladder } else { stone() },
             loaded: true,
         };
         let mut p = PlayerState::at(0.5, 0.0, 0.7);
-        let input = TickInput { forward: 1.0, ..Default::default() };
+        let input = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
         for _ in 0..5 {
             step_env(&mut p, &input, &w);
         }
@@ -2912,7 +3242,10 @@ mod tests {
         let per_tick = (0.2 - 0.08) * (0.98f32 as f64);
         assert!((p.y - y0 - per_tick).abs() < 1e-12, "climbed {}", p.y - y0);
         // Sneaking with no input holds position.
-        let hold = TickInput { sneak: true, ..Default::default() };
+        let hold = TickInput {
+            sneak: true,
+            ..Default::default()
+        };
         for _ in 0..10 {
             step_env(&mut p, &hold, &w);
         }
@@ -2927,8 +3260,15 @@ mod tests {
     /// and the velocity is zeroed.
     #[test]
     fn a_cobweb_slows_the_next_move() {
-        let web = BlockPhysics { stuck: Stuck::Web, ..BlockPhysics::AIR };
-        let w = TestWorld { shape: |_, _, _| EMPTY, block: move |_, _, _| web, loaded: true };
+        let web = BlockPhysics {
+            stuck: Stuck::Web,
+            ..BlockPhysics::AIR
+        };
+        let w = TestWorld {
+            shape: |_, _, _| EMPTY,
+            block: move |_, _, _| web,
+            loaded: true,
+        };
         let mut p = PlayerState::at(0.5, 10.0, 0.5);
         p.vy = -1.0;
         step_env(&mut p, &TickInput::default(), &w); // moves freely, then gets stuck
@@ -2945,22 +3285,42 @@ mod tests {
         let world = |x: i32, y: i32, _z: i32| cube(y < 0 && x <= 0);
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         settle(&mut p);
-        let input = TickInput { strafe: 1.0, sneak: true, ..Default::default() }; // yaw 0: left = +x
+        let input = TickInput {
+            strafe: 1.0,
+            sneak: true,
+            ..Default::default()
+        }; // yaw 0: left = +x
         for _ in 0..200 {
             tick(&mut p, &input, &world);
         }
         assert!(p.on_ground, "still on the block");
-        assert!(p.x > 1.0 && p.x < 1.0 + PLAYER_HALF_WIDTH, "overhangs but stays: x={}", p.x);
+        assert!(
+            p.x > 1.0 && p.x < 1.0 + PLAYER_HALF_WIDTH,
+            "overhangs but stays: x={}",
+            p.x
+        );
     }
 
     /// Deep water, holding jump: `+0.04F` per tick, the `0.8F` drag and the
     /// `gravity / 16` fall adjustment.
     #[test]
     fn swimming_up_in_deep_water() {
-        let water = BlockPhysics { fluid: PhysFluid::Water { own_height: 8.0 / 9.0 }, ..BlockPhysics::AIR };
-        let w = TestWorld { shape: |_, _, _| EMPTY, block: move |_, y, _| if y < 20 { water } else { BlockPhysics::AIR }, loaded: true };
+        let water = BlockPhysics {
+            fluid: PhysFluid::Water {
+                own_height: 8.0 / 9.0,
+            },
+            ..BlockPhysics::AIR
+        };
+        let w = TestWorld {
+            shape: |_, _, _| EMPTY,
+            block: move |_, y, _| if y < 20 { water } else { BlockPhysics::AIR },
+            loaded: true,
+        };
         let mut p = PlayerState::at(0.5, 5.0, 0.5);
-        let jump = TickInput { jump: true, ..Default::default() };
+        let jump = TickInput {
+            jump: true,
+            ..Default::default()
+        };
         let mut vy = 0.0f64;
         for _ in 0..6 {
             step_env(&mut p, &jump, &w);
@@ -2980,7 +3340,11 @@ mod tests {
     /// 0.98F drag) rather than accelerating.
     #[test]
     fn an_unloaded_chunk_falls_at_minus_point_one() {
-        let w = TestWorld { shape: |_, _, _| EMPTY, block: |_, _, _| BlockPhysics::AIR, loaded: false };
+        let w = TestWorld {
+            shape: |_, _, _| EMPTY,
+            block: |_, _, _| BlockPhysics::AIR,
+            loaded: false,
+        };
         let mut p = PlayerState::at(0.5, 80.0, 0.5);
         for _ in 0..5 {
             step_env(&mut p, &TickInput::default(), &w);
@@ -2991,11 +3355,22 @@ mod tests {
     /// A slime block bounces a non-sneaking landing: restitution 1.0.
     #[test]
     fn slime_bounces_and_sneaking_suppresses_it() {
-        let slime = BlockPhysics { bounce: 1.0, friction: 0.8, ..stone() };
-        let w = TestWorld { shape: |_, y, _| cube(y < 0), block: move |_, y, _| if y < 0 { slime } else { BlockPhysics::AIR }, loaded: true };
+        let slime = BlockPhysics {
+            bounce: 1.0,
+            friction: 0.8,
+            ..stone()
+        };
+        let w = TestWorld {
+            shape: |_, y, _| cube(y < 0),
+            block: move |_, y, _| if y < 0 { slime } else { BlockPhysics::AIR },
+            loaded: true,
+        };
         let run = |sneak: bool| {
             let mut p = PlayerState::at(0.5, 3.0, 0.5);
-            let input = TickInput { sneak, ..Default::default() };
+            let input = TickInput {
+                sneak,
+                ..Default::default()
+            };
             let mut up = false;
             for _ in 0..30 {
                 step_env(&mut p, &input, &w);
@@ -3012,15 +3387,27 @@ mod tests {
     /// The physics the bake fills in for a water source around a column
     /// (`FluidState.getOwnHeight()` of a source = 8/9).
     fn source_water() -> BlockPhysics {
-        BlockPhysics { fluid: PhysFluid::Water { own_height: 8.0 / 9.0 }, ..BlockPhysics::AIR }
+        BlockPhysics {
+            fluid: PhysFluid::Water {
+                own_height: 8.0 / 9.0,
+            },
+            ..BlockPhysics::AIR
+        }
     }
 
     /// One `BubbleColumnBlock` cell at (0, 0, 0) inside source water over a
     /// stone floor. The cell over the column is water, so vanilla's
     /// `nothingAbove` is false and the *inside* arm applies.
     fn inside_column(drag_down: bool) -> impl Fn(i32, i32, i32) -> BlockPhysics {
-        let flag = if drag_down { flags::BUBBLE_COLUMN_DOWN } else { flags::BUBBLE_COLUMN_UP };
-        let column = BlockPhysics { flags: flag, ..source_water() };
+        let flag = if drag_down {
+            flags::BUBBLE_COLUMN_DOWN
+        } else {
+            flags::BUBBLE_COLUMN_UP
+        };
+        let column = BlockPhysics {
+            flags: flag,
+            ..source_water()
+        };
         move |x, y, z| match (x, y, z) {
             (0, 0, 0) => column,
             (0, 1..=3, 0) => source_water(),
@@ -3033,7 +3420,11 @@ mod tests {
     /// `Entity.handleOnInsideBubbleColumn`'s `min(0.7, vy + 0.06)`.
     #[test]
     fn bubble_column_up_pushes_upward_inside() {
-        let w = TestWorld { shape: |_, y, _| cube(y < 0), block: inside_column(false), loaded: true };
+        let w = TestWorld {
+            shape: |_, y, _| cube(y < 0),
+            block: inside_column(false),
+            loaded: true,
+        };
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         step_env(&mut p, &TickInput::default(), &w);
         // From rest the water arm ends at `vy − gravity/16` = −0.005
@@ -3046,13 +3437,21 @@ mod tests {
     /// The inside arm on a drag-down column: `max(-0.3, vy − 0.03)`.
     #[test]
     fn bubble_column_down_pulls_down_inside() {
-        let w = TestWorld { shape: |_, y, _| cube(y < 0), block: inside_column(true), loaded: true };
+        let w = TestWorld {
+            shape: |_, y, _| cube(y < 0),
+            block: inside_column(true),
+            loaded: true,
+        };
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         step_env(&mut p, &TickInput::default(), &w);
         let rest = -0.08 / 16.0;
         let want = (rest - 0.03f64).max(-0.3);
         assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
-        assert!(p.vy < rest, "pulls down past the unassisted tick, vy={}", p.vy);
+        assert!(
+            p.vy < rest,
+            "pulls down past the unassisted tick, vy={}",
+            p.vy
+        );
     }
 
     /// The *above* arm: air over the column makes vanilla's `nothingAbove`
@@ -3060,7 +3459,10 @@ mod tests {
     /// `min(1.8, vy + 0.1)`.
     #[test]
     fn bubble_column_above_surface() {
-        let column = BlockPhysics { flags: flags::BUBBLE_COLUMN_UP, ..source_water() };
+        let column = BlockPhysics {
+            flags: flags::BUBBLE_COLUMN_UP,
+            ..source_water()
+        };
         let w = TestWorld {
             shape: |_, y, _| cube(y < 0),
             block: move |x, y, z| match (x, y, z) {
@@ -3092,7 +3494,12 @@ mod tests {
     /// placed at (0, 0, 0).
     fn honey_block(x: i32, y: i32, z: i32) -> BlockPhysics {
         if (x, y, z) == (0, 0, 0) {
-            BlockPhysics { flags: flags::HONEY, speed_factor: 0.4, jump_factor: 0.5, ..BlockPhysics::AIR }
+            BlockPhysics {
+                flags: flags::HONEY,
+                speed_factor: 0.4,
+                jump_factor: 0.5,
+                ..BlockPhysics::AIR
+            }
         } else {
             BlockPhysics::AIR
         }
@@ -3102,7 +3509,11 @@ mod tests {
     /// for a player sliding down the block's side wall.
     #[test]
     fn honey_wall_slide_caps_fall_speed() {
-        let w = TestWorld { shape: honey_shape, block: honey_block, loaded: true };
+        let w = TestWorld {
+            shape: honey_shape,
+            block: honey_block,
+            loaded: true,
+        };
         // Falling alongside the wall: the box overlaps the honey cell but not
         // its 14/16 shape, so nothing collides.
         let mut p = PlayerState::at(-0.25, 0.5, 0.5);
@@ -3119,7 +3530,11 @@ mod tests {
     /// slide: `isSlidingDown` refuses a player over the block's top.
     #[test]
     fn honey_top_does_not_slide() {
-        let w = TestWorld { shape: honey_shape, block: honey_block, loaded: true };
+        let w = TestWorld {
+            shape: honey_shape,
+            block: honey_block,
+            loaded: true,
+        };
         let mut p = PlayerState::at(0.5, 0.9375, 0.5);
         for _ in 0..5 {
             step_env(&mut p, &TickInput::default(), &w);
@@ -3135,7 +3550,11 @@ mod tests {
     /// passes and only `getY() > pos.getY() + 0.9375 - 1.0E-7` rules it out.
     #[test]
     fn honey_top_edge_does_not_slide() {
-        let w = TestWorld { shape: honey_shape, block: honey_block, loaded: true };
+        let w = TestWorld {
+            shape: honey_shape,
+            block: honey_block,
+            loaded: true,
+        };
         // One tick's fall of 0.5 lands the feet at 0.95: above the shape's
         // 0.9375 top, still in the cell the box touches.
         let mut p = PlayerState::at(-0.25, 1.45, 0.5);
@@ -3153,16 +3572,26 @@ mod tests {
         shape: impl Fn(i32, i32, i32) -> &'static [[f32; 6]],
         block: impl Fn(i32, i32, i32) -> BlockPhysics,
     ) -> impl PhysicsWorld {
-        TestWorld { shape, block, loaded: true }
+        TestWorld {
+            shape,
+            block,
+            loaded: true,
+        }
     }
 
     /// The bake's water cell for one `level` (`fluid_own_height`), not falling.
     fn water(own_height: f32) -> BlockPhysics {
-        BlockPhysics { fluid: PhysFluid::Water { own_height }, ..BlockPhysics::AIR }
+        BlockPhysics {
+            fluid: PhysFluid::Water { own_height },
+            ..BlockPhysics::AIR
+        }
     }
 
     fn lava(own_height: f32) -> BlockPhysics {
-        BlockPhysics { fluid: PhysFluid::Lava { own_height }, ..BlockPhysics::AIR }
+        BlockPhysics {
+            fluid: PhysFluid::Lava { own_height },
+            ..BlockPhysics::AIR
+        }
     }
 
     /// One cell at (0, 0, 0) with a neighbour at (1, 0, 0), the rest air. A
@@ -3180,7 +3609,10 @@ mod tests {
     /// player downstream.
     #[test]
     fn flowing_water_pushes_downstream() {
-        let w = world(|_, _, _| EMPTY, draining(water(8.0 / 9.0), water(1.0 / 9.0)));
+        let w = world(
+            |_, _, _| EMPTY,
+            draining(water(8.0 / 9.0), water(1.0 / 9.0)),
+        );
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         step_env(&mut p, &TickInput::default(), &w);
         // `getFlow` at (0, 0, 0): the east neighbour's own height 1/9 is below
@@ -3200,7 +3632,16 @@ mod tests {
     /// height, so `getFlow` is zero and the current moves nothing.
     #[test]
     fn still_water_does_not_push() {
-        let w = world(|_, _, _| EMPTY, |_, y, _| if y < 2 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
+        let w = world(
+            |_, _, _| EMPTY,
+            |_, y, _| {
+                if y < 2 {
+                    water(8.0 / 9.0)
+                } else {
+                    BlockPhysics::AIR
+                }
+            },
+        );
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         step_env(&mut p, &TickInput::default(), &w);
         // Every sampled cell sees four neighbours at its own height:
@@ -3208,7 +3649,11 @@ mod tests {
         // The accumulated flow is zero, so `applyCurrentTo` adds nothing and
         // the tick is the plain water one: 0 horizontal and the
         // `getFluidFallingAdjustedMovement` `−gravity/16` from rest.
-        assert_eq!((p.vx, p.vz), (0.0, 0.0), "still water does not push sideways");
+        assert_eq!(
+            (p.vx, p.vz),
+            (0.0, 0.0),
+            "still water does not push sideways"
+        );
         assert!((p.vy + 0.08 / 16.0).abs() < 1e-12, "vy={}", p.vy);
     }
 
@@ -3216,8 +3661,14 @@ mod tests {
     /// the downward component.
     #[test]
     fn falling_water_pulls_down() {
-        let falling = BlockPhysics { fluid_falling: true, ..water(8.0 / 9.0) };
-        let w = world(|x, y, z| cube((x, y, z) == (1, 0, 0)), draining(falling, stone()));
+        let falling = BlockPhysics {
+            fluid_falling: true,
+            ..water(8.0 / 9.0)
+        };
+        let w = world(
+            |x, y, z| cube((x, y, z) == (1, 0, 0)),
+            draining(falling, stone()),
+        );
         let mut p = PlayerState::at(0.5, 0.0, 0.5);
         step_env(&mut p, &TickInput::default(), &w);
         // `getFlow` at (0, 0, 0): the horizontal gradient is zero — the east
@@ -3229,7 +3680,11 @@ mod tests {
         // nudge — and `travelInWater` drags by 0.8F and adds `−gravity/16`.
         let want = -0.014 * (0.8f32 as f64) - 0.08 / 16.0;
         assert!((p.vy - want).abs() < 1e-12, "vy={} want {want}", p.vy);
-        assert!(p.vy < -0.08 / 16.0, "pulled below the plain tick, vy={}", p.vy);
+        assert!(
+            p.vy < -0.08 / 16.0,
+            "pulled below the plain tick, vy={}",
+            p.vy
+        );
         assert_eq!((p.vx, p.vz), (0.0, 0.0));
     }
 
@@ -3247,7 +3702,10 @@ mod tests {
         // The mid-move `checkFallDamage` refresh does not add a second
         // application here: it skips the update while `isInWater()`.
         let water_vx = vx_after_one_tick(water(8.0 / 9.0), water(1.0 / 9.0));
-        assert!((water_vx - 0.014 * (0.8f32 as f64)).abs() < 1e-12, "water vx={water_vx}");
+        assert!(
+            (water_vx - 0.014 * (0.8f32 as f64)).abs() < 1e-12,
+            "water vx={water_vx}"
+        );
         // Lava: the same unit flow, but `updateFluidInteraction` scales it by
         // `0.0023333333333333335` (overworld; `FAST_LAVA` is 0.007). The player
         // is at rest and 0.0023… < 0.0045, so `applyCurrentTo`'s nudge replaces
@@ -3257,7 +3715,10 @@ mod tests {
         // applied again mid-tick, now without the nudge (0.0045 > 0.003), and
         // the raw 0.0023… is added. `travelInLava` scales the sum by 0.5.
         let lava_vx = vx_after_one_tick(lava(8.0 / 9.0), lava(1.0 / 9.0));
-        assert!((lava_vx - (0.0045000000000000005 + 0.0023333333333333335) * 0.5).abs() < 1e-12, "lava vx={lava_vx}");
+        assert!(
+            (lava_vx - (0.0045000000000000005 + 0.0023333333333333335) * 0.5).abs() < 1e-12,
+            "lava vx={lava_vx}"
+        );
         assert!(lava_vx < water_vx, "lava {lava_vx} vs water {water_vx}");
     }
 
@@ -3273,9 +3734,20 @@ mod tests {
             // the tick carries the rate itself. The resting case above cannot
             // show a ratio at all: its slow run is the nudge, not the rate.
             p.vx = 0.02;
-            let attrs = MoveAttributes { fast_lava, ..MoveAttributes::default() };
+            let attrs = MoveAttributes {
+                fast_lava,
+                ..MoveAttributes::default()
+            };
             let input = TickInput::default();
-            tick_env(&mut p, &input, &Abilities::default(), false, None, &attrs, &w);
+            tick_env(
+                &mut p,
+                &input,
+                &Abilities::default(),
+                false,
+                None,
+                &attrs,
+                &w,
+            );
             p.vx
         };
         // The derivation is `lava_pushes_slower_than_water`'s: the current is
@@ -3287,8 +3759,14 @@ mod tests {
         let slow = vx_after_one_tick(lava(8.0 / 9.0), lava(1.0 / 9.0), false);
         let fast = vx_after_one_tick(lava(8.0 / 9.0), lava(1.0 / 9.0), true);
         let (slow_gain, fast_gain) = (slow - still, fast - still);
-        assert!((slow_gain - LAVA_SLOW_FLOW_SCALE).abs() < 1e-12, "slow {slow_gain}");
-        assert!((fast_gain - LAVA_FAST_FLOW_SCALE).abs() < 1e-12, "fast {fast_gain}");
+        assert!(
+            (slow_gain - LAVA_SLOW_FLOW_SCALE).abs() < 1e-12,
+            "slow {slow_gain}"
+        );
+        assert!(
+            (fast_gain - LAVA_FAST_FLOW_SCALE).abs() < 1e-12,
+            "fast {fast_gain}"
+        );
         assert!(
             (fast_gain / slow_gain - 3.0).abs() < 1e-12,
             "fast lava must push 0.007/0.0023333333333333335 = 3x harder: \
@@ -3318,8 +3796,15 @@ mod tests {
     /// STANDING's 1.8 box is stopped at its mouth.
     #[test]
     fn only_the_crouching_box_fits_a_one_point_five_gap() {
-        let fwd = TickInput { forward: 1.0, ..Default::default() };
-        let sneak = TickInput { forward: 1.0, sneak: true, ..Default::default() };
+        let fwd = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
+        let sneak = TickInput {
+            forward: 1.0,
+            sneak: true,
+            ..Default::default()
+        };
 
         // The 1.8 box stops under the slab, and the mouth is the last place it
         // fits, so `updatePlayerPose` keeps STANDING.
@@ -3329,7 +3814,11 @@ mod tests {
         }
         assert_eq!(p.pose, Pose::Standing);
         assert!(p.horizontal_collision, "stopped by the slab");
-        assert!(p.z <= 2.0 - PLAYER_HALF_WIDTH + 1e-6, "did not enter, z={}", p.z);
+        assert!(
+            p.z <= 2.0 - PLAYER_HALF_WIDTH + 1e-6,
+            "did not enter, z={}",
+            p.z
+        );
 
         // Shift auto-crouches and walks in: `getDesiredPose` is CROUCHING.
         let mut q = PlayerState::at(0.5, 0.0, 0.5);
@@ -3340,7 +3829,10 @@ mod tests {
         assert!(q.crouching, "the auto-crouching flag");
         assert!(q.z > 4.0, "entered the gap, z={}", q.z);
         let b = q.aabb();
-        assert!((b[4] - b[1] - 1.5f32 as f64).abs() < 1e-12, "the 1.5-high box");
+        assert!(
+            (b[4] - b[1] - 1.5f32 as f64).abs() < 1e-12,
+            "the 1.5-high box"
+        );
         assert_eq!(q.eye_height(), 1.27f32 as f64);
         assert_eq!(q.eye_y(), q.y + 1.27f32 as f64);
     }
@@ -3349,7 +3841,10 @@ mod tests {
     /// — and crawling is `isMovingSlowly`'s second arm, the sneak speed.
     #[test]
     fn a_one_block_tunnel_crawls_at_the_sneak_speed() {
-        let fwd = TickInput { forward: 1.0, ..Default::default() };
+        let fwd = TickInput {
+            forward: 1.0,
+            ..Default::default()
+        };
         let mut p = PlayerState::at(0.5, 0.0, 4.5);
         // One tick with the head in the ceiling: `updatePlayerPose` falls back
         // to SWIMMING (`Pose::Swimming` is the one box that fits).
@@ -3357,7 +3852,10 @@ mod tests {
         assert_eq!(p.pose, Pose::Swimming, "crawling");
         assert!(!p.crouching, "the CROUCHING box does not fit either");
         assert_eq!(p.eye_height(), 0.4f32 as f64);
-        assert!((p.aabb()[4] - p.aabb()[1] - 0.6f32 as f64).abs() < 1e-12, "the 0.6-high box");
+        assert!(
+            (p.aabb()[4] - p.aabb()[1] - 0.6f32 as f64).abs() < 1e-12,
+            "the 0.6-high box"
+        );
 
         // Settle the fresh state first: a spawned player's first tick is an
         // airborne one (`accel = air_speed`), not a walk.
@@ -3371,26 +3869,49 @@ mod tests {
             tick(&mut p, &fwd, &one_block_tunnel);
         }
         let crawled = p.z - z0;
-        assert!((crawled - 0.3 * walked_from_rest(0.1)).abs() < 1e-5, "crawled {crawled}");
+        assert!(
+            (crawled - 0.3 * walked_from_rest(0.1)).abs() < 1e-5,
+            "crawled {crawled}"
+        );
 
         // Control: 40 ticks of sneak-walking in the open go through the
         // identical `modifyInput` branch — the same distance to the bit.
-        let sneak = TickInput { forward: 1.0, sneak: true, ..Default::default() };
+        let sneak = TickInput {
+            forward: 1.0,
+            sneak: true,
+            ..Default::default()
+        };
         let mut s = PlayerState::at(0.5, 0.0, 0.5);
         settle(&mut s);
         let s0 = s.z;
         for _ in 0..40 {
             tick(&mut s, &sneak, &floor);
         }
-        assert!((crawled - (s.z - s0)).abs() < 1e-12, "crawled {crawled} vs sneak-walked {}", s.z - s0);
+        assert!(
+            (crawled - (s.z - s0)).abs() < 1e-12,
+            "crawled {crawled} vs sneak-walked {}",
+            s.z - s0
+        );
     }
 
     /// `Entity.updateSwimming`: sprint + eyes under water + water at
     /// `blockPosition()`, and `Player.updateSwimming` clears it in flight.
     #[test]
     fn swimming_needs_sprint_and_water_at_the_feet() {
-        let deep = world(|_, _, _| EMPTY, |_, y, _| if y < 20 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
-        let sprint = TickInput { sprint: true, ..Default::default() };
+        let deep = world(
+            |_, _, _| EMPTY,
+            |_, y, _| {
+                if y < 20 {
+                    water(8.0 / 9.0)
+                } else {
+                    BlockPhysics::AIR
+                }
+            },
+        );
+        let sprint = TickInput {
+            sprint: true,
+            ..Default::default()
+        };
         let mut p = PlayerState::at(0.5, 5.0, 0.5);
         step_env(&mut p, &TickInput::default(), &deep);
         assert!(!p.swimming, "sprint is what starts it");
@@ -3401,7 +3922,16 @@ mod tests {
 
         // Eyes under water are not enough: y = 10.5 stands in an air pocket
         // (the feet block) with the eyes at 12.12, under water.
-        let pocket = world(|_, _, _| EMPTY, |_, y, _| if y < 20 && y != 10 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
+        let pocket = world(
+            |_, _, _| EMPTY,
+            |_, y, _| {
+                if y < 20 && y != 10 {
+                    water(8.0 / 9.0)
+                } else {
+                    BlockPhysics::AIR
+                }
+            },
+        );
         let mut q = PlayerState::at(0.5, 10.5, 0.5);
         step_env(&mut q, &sprint, &pocket);
         assert!(q.eye_in_water, "the eyes are under water");
@@ -3414,14 +3944,31 @@ mod tests {
         let mut s = PlayerState::at(0.5, 5.0, 0.5);
         step_env(&mut s, &sprint, &deep);
         assert!(s.swimming);
-        tick_env(&mut s, &sprint, &flying(), false, None, &MoveAttributes::default(), &deep);
+        tick_env(
+            &mut s,
+            &sprint,
+            &flying(),
+            false,
+            None,
+            &MoveAttributes::default(),
+            &deep,
+        );
         assert!(!s.swimming, "flying clears it");
     }
 
     /// `Player.travel`'s swim steering pulls `vy` toward `getLookAngle().y`.
     #[test]
     fn swim_steering_pulls_vy_toward_the_look_angle() {
-        let deep = world(|_, _, _| EMPTY, |_, y, _| if y < 20 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
+        let deep = world(
+            |_, _, _| EMPTY,
+            |_, y, _| {
+                if y < 20 {
+                    water(8.0 / 9.0)
+                } else {
+                    BlockPhysics::AIR
+                }
+            },
+        );
         // Hand derivation: pitch 90° → `realXRot = 90F · (float)(π/180)` =
         // 1.5707964F, and `Mth.sin` reads `SIN[16384]` =
         // `sin(16384 / 10430.378350470453)` = `sin(π/2)` = 1 — so
@@ -3434,7 +3981,10 @@ mod tests {
         assert_eq!(look_y, -1.0, "the hand derivation above");
         let mut p = PlayerState::at(0.5, 5.0, 0.5);
         p.pitch = 90.0;
-        let sprint = TickInput { sprint: true, ..Default::default() };
+        let sprint = TickInput {
+            sprint: true,
+            ..Default::default()
+        };
         step_env(&mut p, &sprint, &deep);
         assert!(p.swimming, "the tick starts swimming");
         let want = (look_y - 0.0) * 0.085 * (0.8f32 as f64);
@@ -3448,7 +3998,12 @@ mod tests {
         step_env(&mut q, &TickInput::default(), &deep);
         assert!(!q.swimming);
         assert!((q.vy + 0.08 / 16.0).abs() < 1e-12, "vy={}", q.vy);
-        assert!(q.vy.abs() * 12.0 < p.vy.abs(), "no steering: {} vs {}", q.vy, p.vy);
+        assert!(
+            q.vy.abs() * 12.0 < p.vy.abs(),
+            "no steering: {} vs {}",
+            q.vy,
+            p.vy
+        );
     }
 
     /// The regression guard: open air leaves a standing player alone — same
@@ -3462,7 +4017,10 @@ mod tests {
         }
         assert_eq!(p.pose, Pose::Standing);
         assert!(!p.swimming && !p.crouching);
-        assert_eq!(dimensions(Pose::Standing), (PLAYER_HALF_WIDTH, PLAYER_HEIGHT, EYE_HEIGHT));
+        assert_eq!(
+            dimensions(Pose::Standing),
+            (PLAYER_HALF_WIDTH, PLAYER_HEIGHT, EYE_HEIGHT)
+        );
         assert_eq!(p.eye_height(), EYE_HEIGHT);
         assert_eq!(p.eye_y(), p.y + EYE_HEIGHT);
         let b = p.aabb();
@@ -3497,11 +4055,22 @@ mod tests {
     fn a_level_glide_from_rest_is_vanilla_one_tick() {
         let w = world(|_, _, _| EMPTY, |_, _, _| stone());
         let mut p = PlayerState::at(0.5, 100.0, 0.5);
-        step_env(&mut p, &TickInput { fall_flying: true, ..Default::default() }, &w);
+        step_env(
+            &mut p,
+            &TickInput {
+                fall_flying: true,
+                ..Default::default()
+            },
+            &w,
+        );
         assert!((p.vy - -0.01764000034332275).abs() < 1e-9, "vy={}", p.vy);
         assert!((p.vz - 0.0017820000171661376).abs() < 1e-9, "vz={}", p.vz);
         assert_eq!(p.vx, 0.0, "yaw 0 has no x component");
-        assert!((100.0 - p.y - 0.01764000034332275).abs() < 1e-9, "y={} — lost altitude", p.y);
+        assert!(
+            (100.0 - p.y - 0.01764000034332275).abs() < 1e-9,
+            "y={} — lost altitude",
+            p.y
+        );
     }
 
     /// A dive converts speed into lift and forward motion (the `leanAngle < 0`
@@ -3515,12 +4084,24 @@ mod tests {
         let mut level = PlayerState::at(0.5, 100.0, 0.5);
         let mut dive = PlayerState::at(0.5, 100.0, 0.5);
         dive.pitch = -30.0;
-        let glide = TickInput { fall_flying: true, ..Default::default() };
+        let glide = TickInput {
+            fall_flying: true,
+            ..Default::default()
+        };
         step_env(&mut level, &glide, &w);
         step_env(&mut dive, &glide, &w);
-        assert!((dive.vz - 0.0023388750337735424).abs() < 1e-9, "vz={}", dive.vz);
+        assert!(
+            (dive.vz - 0.0023388750337735424).abs() < 1e-9,
+            "vz={}",
+            dive.vz
+        );
         assert!(dive.vz > level.vz, "dive {} > level {}", dive.vz, level.vz);
-        assert!(dive.vy < level.vy, "and it falls faster: {} vs {}", dive.vy, level.vy);
+        assert!(
+            dive.vy < level.vy,
+            "and it falls faster: {} vs {}",
+            dive.vy,
+            level.vy
+        );
     }
 
     /// Landing does not end the glide *here*: vanilla's server does, in
@@ -3534,7 +4115,10 @@ mod tests {
     fn landing_ends_the_glide_through_the_flag_path() {
         let w = world(|_, y, _| cube(y < 0), |_, _, _| stone());
         let mut p = PlayerState::at(0.5, 3.0, 0.5);
-        let mut glide = TickInput { fall_flying: true, ..Default::default() };
+        let mut glide = TickInput {
+            fall_flying: true,
+            ..Default::default()
+        };
         let mut ticks = 0;
         while !p.on_ground && ticks < 200 {
             step_env(&mut p, &glide, &w);
@@ -3542,7 +4126,13 @@ mod tests {
         }
         assert!(p.on_ground, "the glide reaches the floor in {ticks} ticks");
         assert!(
-            !can_start_fall_flying(&p, &Abilities::default(), &MoveAttributes::default(), false, true),
+            !can_start_fall_flying(
+                &p,
+                &Abilities::default(),
+                &MoveAttributes::default(),
+                false,
+                true
+            ),
             "`tryToStartFallFlying` refuses the ground the glide just landed on"
         );
 
@@ -3567,7 +4157,10 @@ mod tests {
     /// the flag low. The two runs hold everything but the flag constant.
     #[test]
     fn a_glide_on_a_ladder_is_just_the_air_travel() {
-        let ladder = BlockPhysics { flags: flags::CLIMBABLE, ..BlockPhysics::AIR };
+        let ladder = BlockPhysics {
+            flags: flags::CLIMBABLE,
+            ..BlockPhysics::AIR
+        };
         let w = TestWorld {
             shape: |_, y, z| cube(y < 0 || z >= 1),
             block: move |_, y, z| if z == 0 && y >= 0 { ladder } else { stone() },
@@ -3575,12 +4168,25 @@ mod tests {
         };
         let mut gliding = PlayerState::at(0.5, 0.0, 0.7);
         let mut walking = gliding;
-        let input = |fall_flying| TickInput { forward: 1.0, fall_flying, ..Default::default() };
+        let input = |fall_flying| TickInput {
+            forward: 1.0,
+            fall_flying,
+            ..Default::default()
+        };
         step_env(&mut gliding, &input(true), &w);
         step_env(&mut walking, &input(false), &w);
-        assert!(is_on_climbable(&gliding, &w, false), "the fixture is on the ladder");
-        assert_eq!((gliding.x, gliding.y, gliding.z), (walking.x, walking.y, walking.z));
-        assert_eq!((gliding.vx, gliding.vy, gliding.vz), (walking.vx, walking.vy, walking.vz));
+        assert!(
+            is_on_climbable(&gliding, &w, false),
+            "the fixture is on the ladder"
+        );
+        assert_eq!(
+            (gliding.x, gliding.y, gliding.z),
+            (walking.x, walking.y, walking.z)
+        );
+        assert_eq!(
+            (gliding.vx, gliding.vy, gliding.vz),
+            (walking.vx, walking.vy, walking.vz)
+        );
     }
 
     /// `Player.tryToStartFallFlying`'s condition, all 64 rows of the table in

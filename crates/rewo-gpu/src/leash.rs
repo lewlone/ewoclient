@@ -97,12 +97,38 @@ pub fn build_ribbon(
     let mut strip: Vec<LeashVertex> = Vec::with_capacity(((LEASH_STEPS + 1) * 4) as usize);
     for k in 0..=LEASH_STEPS {
         add_vertex_pair(
-            &mut strip, start, dx, dy, dz, 0.05, dx_off, dz_off, k, false, slack, start_packed, end_packed, lm,
+            &mut strip,
+            start,
+            dx,
+            dy,
+            dz,
+            0.05,
+            dx_off,
+            dz_off,
+            k,
+            false,
+            slack,
+            start_packed,
+            end_packed,
+            lm,
         );
     }
     for k in (0..=LEASH_STEPS).rev() {
         add_vertex_pair(
-            &mut strip, start, dx, dy, dz, 0.0, dx_off, dz_off, k, true, slack, start_packed, end_packed, lm,
+            &mut strip,
+            start,
+            dx,
+            dy,
+            dz,
+            0.0,
+            dx_off,
+            dz_off,
+            k,
+            true,
+            slack,
+            start_packed,
+            end_packed,
+            lm,
         );
     }
     strip_to_list(&strip)
@@ -126,7 +152,11 @@ fn add_vertex_pair(
     lm: &dyn Fn(u8, u8) -> [f32; 3],
 ) {
     let progress = k as f32 / LEASH_STEPS as f32;
-    let color_modifier = if k % 2 == i32::from(backwards) { 0.7 } else { 1.0 };
+    let color_modifier = if k % 2 == i32::from(backwards) {
+        0.7
+    } else {
+        1.0
+    };
     // Mth.lerp(progress, startBlockLight, endBlockLight) then (int) -
     // truncation toward zero, exact on this non-negative range - and the same
     // for sky, PACKED per vertex (LeashFeatureRenderer.java:60-62). The
@@ -203,7 +233,10 @@ mod tests {
         for x in [0.25f64, 1.0, 4.0, 9.0, 100.0, 0.05] {
             let got = inv_sqrt(x);
             let want = 1.0 / x.sqrt();
-            assert!((got - want).abs() / want < 2e-3, "invSqrt({x}) = {got}, want {want}");
+            assert!(
+                (got - want).abs() / want < 2e-3,
+                "invSqrt({x}) = {got}, want {want}"
+            );
         }
     }
 
@@ -239,7 +272,11 @@ mod tests {
         let v = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, LIT, &lm);
         let zmin = v.iter().map(|vt| vt.pos[2]).fold(f32::MAX, f32::min);
         let zmax = v.iter().map(|vt| vt.pos[2]).fold(f32::MIN, f32::max);
-        assert!(zmax - zmin > 0.01, "ribbon has no perpendicular width: z span {}", zmax - zmin);
+        assert!(
+            zmax - zmin > 0.01,
+            "ribbon has no perpendicular width: z span {}",
+            zmax - zmin
+        );
     }
 
     #[test]
@@ -255,17 +292,16 @@ mod tests {
         // minima are equal, because both curves meet at the lower endpoint.
         let near_mid = |v: &[LeashVertex]| {
             v.iter()
-                .min_by(|a, b| {
-                    (a.pos[0] - 2.0)
-                        .abs()
-                        .total_cmp(&(b.pos[0] - 2.0).abs())
-                })
+                .min_by(|a, b| (a.pos[0] - 2.0).abs().total_cmp(&(b.pos[0] - 2.0).abs()))
                 .unwrap()
                 .pos[1]
         };
         let mid_taut = near_mid(&taut);
         let mid_slack = near_mid(&slack);
-        assert!(mid_slack < mid_taut, "slack {mid_slack} not below taut {mid_taut} at midpoint");
+        assert!(
+            mid_slack < mid_taut,
+            "slack {mid_slack} not below taut {mid_taut} at midpoint"
+        );
     }
 
     #[test]
@@ -274,7 +310,10 @@ mod tests {
         // rises late — the min y is close to the start, not the end.
         let v = build_ribbon([0.0, 2.0, 0.0], [0.0, 8.0, 4.0], true, LIT, LIT, &lm);
         let min_y = v.iter().map(|vt| vt.pos[1]).fold(f32::MAX, f32::min);
-        assert!((min_y - 2.0).abs() < 0.1, "upward rope should hug the start y, got {min_y}");
+        assert!(
+            (min_y - 2.0).abs() < 0.1,
+            "upward rope should hug the start y, got {min_y}"
+        );
     }
 
     #[test]
@@ -285,10 +324,19 @@ mod tests {
         let bright = crate::entities::srgb_to_linear(0.5);
         let dim = crate::entities::srgb_to_linear(0.5 * 0.7);
         let reds: Vec<f32> = v.iter().map(|vt| vt.color[0]).collect();
-        assert!(reds.iter().any(|r| (r - bright).abs() < 1e-4), "a full-strength segment");
-        assert!(reds.iter().any(|r| (r - dim).abs() < 1e-4), "a dimmed segment");
+        assert!(
+            reds.iter().any(|r| (r - bright).abs() < 1e-4),
+            "a full-strength segment"
+        );
+        assert!(
+            reds.iter().any(|r| (r - dim).abs() < 1e-4),
+            "a dimmed segment"
+        );
         for vt in &v {
-            assert!(vt.color[0] >= vt.color[1] && vt.color[1] >= vt.color[2], "brown r>=g>=b");
+            assert!(
+                vt.color[0] >= vt.color[1] && vt.color[1] >= vt.color[2],
+                "brown r>=g>=b"
+            );
         }
     }
 
@@ -297,14 +345,7 @@ mod tests {
         // Lit at the start, dark at the end: the near and far reds differ.
         // Packed components now — the fade comes from the lightmap CURVE
         // between (15,15) and (0,0), evaluated per vertex.
-        let v = build_ribbon(
-            [0.0, 1.0, 0.0],
-            [6.0, 1.0, 0.0],
-            false,
-            LIT,
-            (0, 0),
-            &lm,
-        );
+        let v = build_ribbon([0.0, 1.0, 0.0], [6.0, 1.0, 0.0], false, LIT, (0, 0), &lm);
         let near = v.first().unwrap().color[0];
         // Envelope comparison within POSITION windows at each end: the strip
         // runs forward then backward, so index slices re-cover the start, and

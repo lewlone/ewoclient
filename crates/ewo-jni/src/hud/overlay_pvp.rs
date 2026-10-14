@@ -30,9 +30,14 @@ pub(super) fn pvp_layout(w: f32, h: f32) -> PvpLayout {
     let general_rows = 5;
     let tier_rows = 5;
     let zone_rows = 3;
-    let body_h = SECTION_HEAD_H + ROW_H * general_rows as f32
-        + SECTION_GAP + SECTION_HEAD_H + ROW_H * tier_rows as f32
-        + SECTION_GAP + SECTION_HEAD_H + ROW_H * zone_rows as f32;
+    let body_h = SECTION_HEAD_H
+        + ROW_H * general_rows as f32
+        + SECTION_GAP
+        + SECTION_HEAD_H
+        + ROW_H * tier_rows as f32
+        + SECTION_GAP
+        + SECTION_HEAD_H
+        + ROW_H * zone_rows as f32;
     let panel_h = PAD * 2.0 + HEADER_H + body_h;
     let px = (w - PANEL_W) * 0.5;
     let py = ((h - panel_h) * 0.5).max(70.0); // never above the tab strip
@@ -134,7 +139,12 @@ pub(super) fn pvp_layout(w: f32, h: f32) -> PvpLayout {
 /// Draw a sound-cycle chip — a Velvet pill with the sound's name, clickable
 /// to cycle to the next sound. Simpler than a full portal dropdown and
 /// composes cleanly in this dense layout.
-pub(super) fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: crate::pvp::PvpSound, fonts: &FontStore) {
+pub(super) fn draw_pvp_sound_chip(
+    canvas: &Canvas,
+    rect: Rect,
+    sound: crate::pvp::PvpSound,
+    fonts: &FontStore,
+) {
     let rr = RRect::new_rect_xy(rect, rect.height() * 0.4, rect.height() * 0.4);
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
@@ -155,10 +165,17 @@ pub(super) fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: crate::pvp
     p.set_color4f(rgba(PEARL, 0.92), None);
     let (lw, _) = font.measure_str(label, Some(&p));
     let (_, m) = font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 8.0 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        8.0
+    };
     canvas.draw_str(
         label,
-        (rect.left + (rect.width() - lw) * 0.5 - 4.0, rect.top + rect.height() * 0.5 + cap * 0.5),
+        (
+            rect.left + (rect.width() - lw) * 0.5 - 4.0,
+            rect.top + rect.height() * 0.5 + cap * 0.5,
+        ),
         &font,
         &p,
     );
@@ -168,7 +185,10 @@ pub(super) fn draw_pvp_sound_chip(canvas: &Canvas, rect: Rect, sound: crate::pvp
     hint.set_color4f(rgba(MAUVE, 0.85), None);
     canvas.draw_str(
         "▾",
-        (rect.right - 12.0, rect.top + rect.height() * 0.5 + cap * 0.5),
+        (
+            rect.right - 12.0,
+            rect.top + rect.height() * 0.5 + cap * 0.5,
+        ),
         &font,
         &hint,
     );
@@ -185,7 +205,12 @@ pub(super) fn draw_pvp_distance_slider(canvas: &Canvas, area: Rect, value: f32, 
     let track_right = area.right - value_w;
     let track_h = 3.0;
 
-    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let track = Rect::from_xywh(
+        track_left,
+        cy - track_h * 0.5,
+        track_right - track_left,
+        track_h,
+    );
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(rgba(WINE, 0.85), None);
@@ -206,7 +231,11 @@ pub(super) fn draw_pvp_distance_slider(canvas: &Canvas, area: Rect, value: f32, 
     vp.set_anti_alias(true);
     vp.set_color4f(rgba(PEARL, 0.92), None);
     let (_, m) = font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 7.0 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        7.0
+    };
     canvas.draw_str(&val, (track_right + 6.0, cy + cap * 0.5), &font, &vp);
 }
 
@@ -218,7 +247,12 @@ pub(super) fn draw_pvp_volume_slider(canvas: &Canvas, area: Rect, value: f32, fo
     let track_right = area.right - value_w;
     let track_h = 3.0;
 
-    let track = Rect::from_xywh(track_left, cy - track_h * 0.5, track_right - track_left, track_h);
+    let track = Rect::from_xywh(
+        track_left,
+        cy - track_h * 0.5,
+        track_right - track_left,
+        track_h,
+    );
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(rgba(WINE, 0.85), None);
@@ -245,7 +279,11 @@ pub(super) fn draw_pvp_volume_slider(canvas: &Canvas, area: Rect, value: f32, fo
     vp.set_anti_alias(true);
     vp.set_color4f(rgba(PEARL, 0.92), None);
     let (_, m) = font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 7.0 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        7.0
+    };
     canvas.draw_str(&val, (track_right + 6.0, cy + cap * 0.5), &font, &vp);
 }
 
@@ -288,7 +326,13 @@ pub(super) fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f
 
     // ── Section: GENERAL ─────────────────────────────────────────────────
     let general_section_top = layout.general_toggles[0].top - (row_h - 20.0) * 0.5 - 26.0;
-    draw_pvp_section_label(canvas, "GENERAL", body_left, general_section_top + 18.0, fonts);
+    draw_pvp_section_label(
+        canvas,
+        "GENERAL",
+        body_left,
+        general_section_top + 18.0,
+        fonts,
+    );
 
     let general_labels = [
         "Jump reset",
@@ -311,14 +355,29 @@ pub(super) fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f
         lp.set_anti_alias(true);
         lp.set_color4f(rgba(PEARL, 1.0), None);
         let (_, m) = label_font.metrics();
-        let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
-        canvas.draw_str(general_labels[i], (body_left, cy + cap * 0.5), &label_font, &lp);
+        let cap = if m.cap_height > 0.0 {
+            m.cap_height
+        } else {
+            9.0
+        };
+        canvas.draw_str(
+            general_labels[i],
+            (body_left, cy + cap * 0.5),
+            &label_font,
+            &lp,
+        );
         draw_panel_toggle(canvas, layout.general_toggles[i], general_states[i]);
     }
 
     // ── Section: SOUNDS PER TIER ─────────────────────────────────────────
     let tiers_section_top = layout.tier_sound[0].top - 26.0;
-    draw_pvp_section_label(canvas, "SOUNDS PER TIER", body_left, tiers_section_top + 18.0, fonts);
+    draw_pvp_section_label(
+        canvas,
+        "SOUNDS PER TIER",
+        body_left,
+        tiers_section_top + 18.0,
+        fonts,
+    );
 
     for (i, tier) in crate::pvp::Tier::ALL.iter().enumerate() {
         let slot = cfg.sound_for_tier(*tier);
@@ -327,7 +386,11 @@ pub(super) fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f
         lp.set_anti_alias(true);
         lp.set_color4f(rgba(PEARL, 1.0), None);
         let (_, m) = label_font.metrics();
-        let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+        let cap = if m.cap_height > 0.0 {
+            m.cap_height
+        } else {
+            9.0
+        };
         canvas.draw_str(tier.label(), (body_left, cy + cap * 0.5), &label_font, &lp);
         draw_pvp_sound_chip(canvas, layout.tier_sound[i], slot.sound, fonts);
         draw_pvp_volume_slider(canvas, layout.tier_volume[i], slot.volume, fonts);
@@ -335,7 +398,13 @@ pub(super) fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f
 
     // ── Section: HIT-RANGE ZONES ─────────────────────────────────────────
     let zones_section_top = layout.zone_enable[0].top - 26.0;
-    draw_pvp_section_label(canvas, "HIT-RANGE ZONES", body_left, zones_section_top + 18.0, fonts);
+    draw_pvp_section_label(
+        canvas,
+        "HIT-RANGE ZONES",
+        body_left,
+        zones_section_top + 18.0,
+        fonts,
+    );
 
     for i in 0..3 {
         let z = cfg.zone(i);
@@ -345,7 +414,11 @@ pub(super) fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f
         lp.set_anti_alias(true);
         lp.set_color4f(rgba(PEARL, 1.0), None);
         let (_, m) = label_font.metrics();
-        let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+        let cap = if m.cap_height > 0.0 {
+            m.cap_height
+        } else {
+            9.0
+        };
         canvas.draw_str(&zlabel, (body_left, cy + cap * 0.5), &label_font, &lp);
         draw_panel_toggle(canvas, layout.zone_enable[i], z.enabled);
         draw_pvp_distance_slider(canvas, layout.zone_min[i], z.min_dist, fonts);
@@ -358,7 +431,13 @@ pub(super) fn draw_pvp(canvas: &Canvas, editor: &Editor, fonts: &FontStore, w: f
     let _ = body_right;
 }
 
-pub(super) fn draw_pvp_section_label(canvas: &Canvas, label: &str, x: f32, y: f32, fonts: &FontStore) {
+pub(super) fn draw_pvp_section_label(
+    canvas: &Canvas,
+    label: &str,
+    x: f32,
+    y: f32,
+    fonts: &FontStore,
+) {
     let font = fonts.jetbrains_mono(10.0);
     let mut p = Paint::default();
     p.set_anti_alias(true);

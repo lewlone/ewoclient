@@ -757,13 +757,18 @@ fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
             };
             let gray = q[0].color_rgb()[0];
             if q.iter().any(|v| v.color_rgb() != [gray; 3]) {
-                return Err(format!("{name}: face {face} is not one gray: {:?}", q.iter().map(|v| v.color_rgb()).collect::<Vec<_>>()));
+                return Err(format!(
+                    "{name}: face {face} is not one gray: {:?}",
+                    q.iter().map(|v| v.color_rgb()).collect::<Vec<_>>()
+                ));
             }
             got[face] = Some(gray);
         }
         let got: [u8; 6] = std::array::from_fn(|f| got[f].unwrap_or(0));
         if got != want {
-            return Err(format!("{name}: meshed face grays {got:?}, expected {want:?}"));
+            return Err(format!(
+                "{name}: meshed face grays {got:?}, expected {want:?}"
+            ));
         }
         let sky = mesh
             .vertices
@@ -933,7 +938,9 @@ mod tests {
     #[test]
     fn the_bundled_transcription_matches_the_decompiled_json_files() {
         let defs = bundled();
-        let Some(json) = decompiled_json() else { return };
+        let Some(json) = decompiled_json() else {
+            return;
+        };
         assert_eq!(defs.len(), json.len());
         for (holder, j) in json.iter().enumerate() {
             j.diff("bundled", holder, &defs[holder]).unwrap();
@@ -945,7 +952,9 @@ mod tests {
     /// reader and a parser that mis-read the *same* field still fail.
     #[test]
     fn the_expectation_table_matches_the_decompiled_json_files() {
-        let Some(json) = decompiled_json() else { return };
+        let Some(json) = decompiled_json() else {
+            return;
+        };
         assert_eq!(EXPECT.len(), json.len());
         for (holder, expect) in EXPECT.iter().enumerate() {
             expect
@@ -959,7 +968,9 @@ mod tests {
     /// names the field and the file.
     #[test]
     fn the_json_oracle_rejects_a_drifted_transcription() {
-        let Some(json) = decompiled_json() else { return };
+        let Some(json) = decompiled_json() else {
+            return;
+        };
         let mut defs = bundled();
         // Nether graded against the Overworld's file.
         assert!(json[0].diff("bundled", 0, &defs[3]).is_err());
@@ -982,7 +993,9 @@ mod tests {
     /// is independent of `has_fixed_time`.
     #[test]
     fn the_day_timeline_is_resolved_from_the_decompiled_tag_files() {
-        let Some(json) = decompiled_json() else { return };
+        let Some(json) = decompiled_json() else {
+            return;
+        };
         assert_eq!(json[0].timelines_raw, vec!["#minecraft:in_overworld"]);
         assert!(json[0].has_day_timeline && !json[0].has_fixed_time);
         for holder in [2usize, 3] {

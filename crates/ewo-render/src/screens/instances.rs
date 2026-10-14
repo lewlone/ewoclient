@@ -333,7 +333,13 @@ impl InstancePrefs {
 /// launches when the dropdown's selected index is N.
 pub fn dropdown_options(slot: Slot, prefs: &InstancePrefs) -> Option<Vec<&str>> {
     match slot {
-        Slot::JavaRuntime => Some(prefs.jre_runtime_labels.iter().map(String::as_str).collect()),
+        Slot::JavaRuntime => Some(
+            prefs
+                .jre_runtime_labels
+                .iter()
+                .map(String::as_str)
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -413,9 +419,7 @@ pub enum InstanceLoader {
     /// EwoLoader — friendly fork of fabric-loader. URL points at the
     /// manifest file (HTTP or `file://`). The loader's `id` field
     /// (deserialized from the JSON itself) keys the cache.
-    Ewo {
-        manifest_url: String,
-    },
+    Ewo { manifest_url: String },
     /// Rewo — the from-scratch native client (REWO_PLAN.md). Not a JVM
     /// loader at all: launch spawns `rewo.exe` with the REWO_* env
     /// contract instead of building a JVM plan. Downloads still run the
@@ -572,7 +576,10 @@ pub fn default_instances() -> Vec<Instance> {
 /// Mods of the instance at index `selected`. Returns an empty slice if
 /// the index is out of range.
 pub fn instance_mods(instances: &[Instance], selected: usize) -> &[ModInfo] {
-    instances.get(selected).map(|i| i.mods.as_slice()).unwrap_or(&[])
+    instances
+        .get(selected)
+        .map(|i| i.mods.as_slice())
+        .unwrap_or(&[])
 }
 
 /// Card-local bounds of the Launch button. Hit-tested by `main.rs`.
@@ -613,7 +620,17 @@ pub fn draw_instances(
 ) {
     draw_screen_head(canvas, fonts, w, back_link_hover);
     draw_list(canvas, fonts, h, time, prefs, instances);
-    draw_detail(canvas, fonts, w, h, time, settings, launch_button, prefs, instances);
+    draw_detail(
+        canvas,
+        fonts,
+        w,
+        h,
+        time,
+        settings,
+        launch_button,
+        prefs,
+        instances,
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -640,7 +657,11 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
     back_paint.set_color(back_color);
     let (_, bm) = back_font.metrics();
     let back_baseline = head_y + (-bm.ascent);
-    let cap = if bm.cap_height > 0.0 { bm.cap_height } else { 14.0 };
+    let cap = if bm.cap_height > 0.0 {
+        bm.cap_height
+    } else {
+        14.0
+    };
     let chev_cy = back_baseline - cap * 0.5;
     let mut chev = Paint::default();
     chev.set_anti_alias(true);
@@ -661,7 +682,12 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
             0.85,
         );
     }
-    canvas.draw_str("Main menu", (LIST_LEFT_PAD + 16.0, back_baseline), &back_font, &back_paint);
+    canvas.draw_str(
+        "Main menu",
+        (LIST_LEFT_PAD + 16.0, back_baseline),
+        &back_font,
+        &back_paint,
+    );
 
     // Right: screen-eyebrow "INSTANCES"
     let eyebrow_font = fonts.jetbrains_mono(10.0);
@@ -727,7 +753,12 @@ fn draw_list(
     head_paint.set_color(TEXT_PEARL);
     let (_, hm) = head_font.metrics();
     let head_baseline = list_top + (-hm.ascent);
-    canvas.draw_str("Worlds", (LIST_LEFT_PAD, head_baseline), &head_font, &head_paint);
+    canvas.draw_str(
+        "Worlds",
+        (LIST_LEFT_PAD, head_baseline),
+        &head_font,
+        &head_paint,
+    );
 
     // "+" New-instance button — hairline-rose rrect at the right edge of
     // the list head with a Fraunces 20 plus-sign. Border + glyph brighten
@@ -787,7 +818,13 @@ fn draw_list(
     // Sort label — small mono-tracked clickable below the head, above the
     // hairline divider. Click cycles through sort modes.
     let sort_baseline = head_baseline + hm.descent + 22.0;
-    draw_sort_label(canvas, fonts, sort_baseline, prefs.sort_mode, prefs.sort_hover);
+    draw_sort_label(
+        canvas,
+        fonts,
+        sort_baseline,
+        prefs.sort_mode,
+        prefs.sort_hover,
+    );
 
     // Hairline below head + sort row
     let head_div_y = sort_baseline + 8.0;
@@ -829,7 +866,11 @@ fn draw_list(
         let is_delete_hover = prefs.delete_hover == Some(display_idx);
         // Newly-created instance always lives at underlying index 0 —
         // animate that one's drop-in.
-        let row_anim = if underlying_idx == 0 { new_row_anim } else { None };
+        let row_anim = if underlying_idx == 0 {
+            new_row_anim
+        } else {
+            None
+        };
         // Hairline between consecutive rows. Skip before the first row;
         // the gradient mask on the hover background still sits cleanly
         // under the line.
@@ -842,7 +883,15 @@ fn draw_list(
         }
         let progress_pct = prefs.download_pct.get(&inst.name).copied();
         draw_list_row(
-            canvas, fonts, inst, y, row_h, is_selected, is_hovered, row_anim, is_delete_hover,
+            canvas,
+            fonts,
+            inst,
+            y,
+            row_h,
+            is_selected,
+            is_hovered,
+            row_anim,
+            is_delete_hover,
             progress_pct,
         );
         y += row_h;
@@ -863,11 +912,7 @@ fn draw_list(
         Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
         None,
     );
-    canvas.draw_line(
-        (LIST_WIDTH, HEADER_BOTTOM),
-        (LIST_WIDTH, h - 28.0),
-        &border,
-    );
+    canvas.draw_line((LIST_WIDTH, HEADER_BOTTOM), (LIST_WIDTH, h - 28.0), &border);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -994,7 +1039,12 @@ fn draw_list_row(
             0.8,
         );
     }
-    canvas.draw_str(&inst.name, (LIST_LEFT_PAD, name_baseline), &name_font, &name_paint);
+    canvas.draw_str(
+        &inst.name,
+        (LIST_LEFT_PAD, name_baseline),
+        &name_font,
+        &name_paint,
+    );
 
     // Meta below name (JetBrains Mono small caps tracked)
     let meta_font = fonts.jetbrains_mono(10.0);
@@ -1161,7 +1211,16 @@ fn draw_detail(
 
         canvas.translate((0.0, -scroll));
 
-        draw_head(canvas, fonts, content_left, content_top, selected, prefs, time, settings);
+        draw_head(
+            canvas,
+            fonts,
+            content_left,
+            content_top,
+            selected,
+            prefs,
+            time,
+            settings,
+        );
         draw_head_divider(canvas, content_left, content_right, head_div_y);
 
         // Launch button sits inside the panel at top-right of the head
@@ -1185,16 +1244,21 @@ fn draw_detail(
 
         // Config rows + mod section
         let mods_top = draw_config_rows(
-            canvas, fonts, content_left, content_right, cfg_top, time, settings, prefs,
+            canvas,
+            fonts,
+            content_left,
+            content_right,
+            cfg_top,
+            time,
+            settings,
+            prefs,
         );
         if !selected.mods.is_empty() {
             // Reuse `selected_at` for the mod-row stagger animation —
             // CSS `mod-row-in` plays each row at delay `i * 50ms` over
             // ~300ms (opacity 0.4 → 1, translateY 4 → 0). We compute
             // `reveal_age = time - selected_at` and pass it through.
-            let reveal_age = prefs
-                .selected_at
-                .map(|start| (time - start).max(0.0));
+            let reveal_age = prefs.selected_at.map(|start| (time - start).max(0.0));
             draw_mod_section(
                 canvas,
                 fonts,
@@ -1274,12 +1338,7 @@ fn draw_head(
         // in main.rs's KeyboardInput).
         let input_h = -nm.ascent + nm.descent + 8.0;
         let input_w = 420.0;
-        let input_rect = Rect::from_xywh(
-            content_left - 8.0,
-            name_top - 4.0,
-            input_w,
-            input_h,
-        );
+        let input_rect = Rect::from_xywh(content_left - 8.0, name_top - 4.0, input_w, input_h);
         let input_rrect = skia_safe::RRect::new_rect_xy(input_rect, 10.0, 10.0);
 
         let mut bg = Paint::default();
@@ -1321,7 +1380,12 @@ fn draw_head(
         text_paint.set_anti_alias(true);
         text_paint.set_color(TEXT_PEARL);
         let display = &prefs.rename_buffer;
-        canvas.draw_str(display, (content_left, name_baseline), &name_font, &text_paint);
+        canvas.draw_str(
+            display,
+            (content_left, name_baseline),
+            &name_font,
+            &text_paint,
+        );
 
         // Blinking caret right after the typed text.
         let blink = ((prefs.rename_focus_time * 1.6).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -1339,10 +1403,7 @@ fn draw_head(
             caret.set_anti_alias(true);
             caret.set_style(PaintStyle::Stroke);
             caret.set_stroke_width(2.0);
-            caret.set_color4f(
-                Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
-                None,
-            );
+            caret.set_color4f(Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha), None);
             canvas.draw_line((caret_x, caret_top), (caret_x, caret_bottom), &caret);
         }
     } else {
@@ -1350,7 +1411,12 @@ fn draw_head(
         let mut name_paint = Paint::default();
         name_paint.set_anti_alias(true);
         name_paint.set_color(TEXT_PEARL);
-        canvas.draw_str(&selected.name, (content_left, name_baseline), &name_font, &name_paint);
+        canvas.draw_str(
+            &selected.name,
+            (content_left, name_baseline),
+            &name_font,
+            &name_paint,
+        );
 
         // Rename icon — small custom-drawn pencil next to the name.
         // We can't rely on the bundled Latin/mono fonts having ✎ U+270E,
@@ -1374,7 +1440,11 @@ fn draw_head(
     let mods_label = format!(
         "{} {}",
         selected.mods.len(),
-        if selected.mods.len() == 1 { "MOD" } else { "MODS" },
+        if selected.mods.len() == 1 {
+            "MOD"
+        } else {
+            "MODS"
+        },
     );
     let active_count = prefs.mods_on.iter().filter(|&&v| v).count();
     let active_label = format!("{} ACTIVE", active_count);
@@ -1458,23 +1528,39 @@ fn draw_config_rows(
 
     // Row 1: RAM allocation
     y = draw_slider_row(
-        canvas, fonts, left, right, y,
+        canvas,
+        fonts,
+        left,
+        right,
+        y,
         "RAM allocation",
         &format!("{} GB", prefs.ram.value as i32),
-        &prefs.ram, time, settings,
+        &prefs.ram,
+        time,
+        settings,
     );
 
     // Row 2: Render distance
     y = draw_slider_row(
-        canvas, fonts, left, right, y,
+        canvas,
+        fonts,
+        left,
+        right,
+        y,
         "Render distance",
         &format!("{} CHUNKS", prefs.render_dist.value as i32),
-        &prefs.render_dist, time, settings,
+        &prefs.render_dist,
+        time,
+        settings,
     );
 
     // Row 3: Java runtime — label + dropdown head (no inline value)
     y = draw_dropdown_row(
-        canvas, fonts, left, right, y,
+        canvas,
+        fonts,
+        left,
+        right,
+        y,
         "Java runtime",
         java_runtime_label(prefs),
         &prefs.java_runtime,
@@ -1783,7 +1869,12 @@ fn draw_mod_row(
     let (v_advance, _) = version_font.measure_str(&m.version, Some(&version_paint));
     let (_, vm) = version_font.metrics();
     let version_baseline = cy + vm.cap_height * 0.5;
-    canvas.draw_str(&m.version, (right - v_advance, version_baseline), &version_font, &version_paint);
+    canvas.draw_str(
+        &m.version,
+        (right - v_advance, version_baseline),
+        &version_font,
+        &version_paint,
+    );
 
     // Category in col 3 (Mono 9, tracked uppercase)
     let cat_font = fonts.jetbrains_mono(9.0);
@@ -1844,7 +1935,12 @@ pub fn widget_bounds(
     let widget_top = y + label_h + CONFIG_LABEL_TO_WIDGET_GAP;
     out.push((
         Slot::Ram,
-        Rect::from_xywh(content_left, widget_top, content_right - content_left, CONFIG_SLIDER_HEIGHT),
+        Rect::from_xywh(
+            content_left,
+            widget_top,
+            content_right - content_left,
+            CONFIG_SLIDER_HEIGHT,
+        ),
     ));
     y = widget_top + CONFIG_SLIDER_HEIGHT + CONFIG_ROW_GAP;
 
@@ -1852,7 +1948,12 @@ pub fn widget_bounds(
     let widget_top = y + label_h + CONFIG_LABEL_TO_WIDGET_GAP;
     out.push((
         Slot::RenderDist,
-        Rect::from_xywh(content_left, widget_top, content_right - content_left, CONFIG_SLIDER_HEIGHT),
+        Rect::from_xywh(
+            content_left,
+            widget_top,
+            content_right - content_left,
+            CONFIG_SLIDER_HEIGHT,
+        ),
     ));
     y = widget_top + CONFIG_SLIDER_HEIGHT + CONFIG_ROW_GAP;
 
@@ -2073,13 +2174,7 @@ pub fn sort_button_bounds(fonts: &FontStore) -> Rect {
 }
 
 /// Render the small clickable sort label.
-fn draw_sort_label(
-    canvas: &Canvas,
-    fonts: &FontStore,
-    baseline: f32,
-    mode: SortMode,
-    hover: bool,
-) {
+fn draw_sort_label(canvas: &Canvas, fonts: &FontStore, baseline: f32, mode: SortMode, hover: bool) {
     let label_font = fonts.jetbrains_mono(10.0);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
@@ -2106,7 +2201,12 @@ fn draw_sort_label(
         Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5)
     });
     let label = mode.label();
-    canvas.draw_str(label, (LIST_LEFT_PAD + prefix_w, baseline), &label_font, &value_paint);
+    canvas.draw_str(
+        label,
+        (LIST_LEFT_PAD + prefix_w, baseline),
+        &label_font,
+        &value_paint,
+    );
 }
 
 /// Maximum allowed scroll offset for the Worlds list. `>= 0`.
@@ -2163,7 +2263,11 @@ mod tests {
         let p = prefs_with(&["Java 17 · jdk-17", "Java 21 · jdk-21"]);
         assert_eq!(
             dropdown_options(Slot::JavaRuntime, &p).unwrap(),
-            vec![JAVA_RUNTIME_AUTO_LABEL, "Java 17 · jdk-17", "Java 21 · jdk-21"]
+            vec![
+                JAVA_RUNTIME_AUTO_LABEL,
+                "Java 17 · jdk-17",
+                "Java 21 · jdk-21"
+            ]
         );
     }
 

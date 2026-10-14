@@ -152,7 +152,11 @@ impl ParsedRef {
         me
     }
 
-    fn run_block(&mut self, reader: &mut StringReader, reg: Registry<'_>) -> Result<(), ReaderError> {
+    fn run_block(
+        &mut self,
+        reader: &mut StringReader,
+        reg: Registry<'_>,
+    ) -> Result<(), ReaderError> {
         // `#` is a block TAG, whose properties are "vague" — matched loosely
         // against whatever the tag's members share. Rewo has the tag list but
         // not the per-tag property intersection, so a tag parses its id and
@@ -166,9 +170,7 @@ impl ParsedRef {
         let start = reader.cursor();
         let raw = read_identifier(reader);
         let id = with_default_namespace(&raw);
-        let known = reg
-            .blocks
-            .is_some_and(|b| b.properties(&id).is_some());
+        let known = reg.blocks.is_some_and(|b| b.properties(&id).is_some());
         if !known {
             // `orElseThrow` rewinds before throwing, so the suggester still
             // sees the whole typed id as its prefix.
@@ -261,7 +263,11 @@ impl ParsedRef {
         me
     }
 
-    fn run_item(&mut self, reader: &mut StringReader, reg: Registry<'_>) -> Result<(), ReaderError> {
+    fn run_item(
+        &mut self,
+        reader: &mut StringReader,
+        reg: Registry<'_>,
+    ) -> Result<(), ReaderError> {
         let start = reader.cursor();
         let raw = read_identifier(reader);
         let id = with_default_namespace(&raw);
@@ -291,7 +297,12 @@ impl ParsedRef {
     }
 
     /// Apply the state the parse left.
-    pub fn fill_suggestions(&self, builder: &mut SuggestionsBuilder, reg: Registry<'_>, block: bool) {
+    pub fn fill_suggestions(
+        &self,
+        builder: &mut SuggestionsBuilder,
+        reg: Registry<'_>,
+        block: bool,
+    ) {
         // Every bracket suggestion is SUPPRESSED once anything is typed rather
         // than filtered — see the module docs.
         let empty = builder.remaining().is_empty();
@@ -336,7 +347,9 @@ impl ParsedRef {
             Suggest::PropertyValue(key) => {
                 if let Some(values) = self.property_values(reg, key) {
                     for v in values {
-                        if v.to_lowercase().starts_with(&builder.remaining().to_lowercase()) {
+                        if v.to_lowercase()
+                            .starts_with(&builder.remaining().to_lowercase())
+                        {
                             builder.suggest(v);
                         }
                     }

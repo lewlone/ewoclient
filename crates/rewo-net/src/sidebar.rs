@@ -150,7 +150,12 @@ pub struct Rect {
 
 impl Rect {
     fn corners(x0: i32, y0: i32, x1: i32, y1: i32) -> Rect {
-        Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+        Rect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        }
     }
     pub fn right(self) -> i32 {
         self.x + self.w
@@ -357,7 +362,12 @@ pub fn resolve_for(
 
         // `biggestWidth = max(biggest, nameWidth + (scoreWidth > 0 ? spacer + scoreWidth : 0))`
         // — the spacer is charged only when there is a score to separate.
-        let charged = name_width + if score_width > 0 { spacer_width + score_width } else { 0 };
+        let charged = name_width
+            + if score_width > 0 {
+                spacer_width + score_width
+            } else {
+                0
+            };
         biggest = biggest.max(charged);
 
         entries.push(SidebarEntry {
@@ -461,7 +471,10 @@ pub fn format_value_with_default(
         // format's style over the digits.
         None => parse_component(
             &Nbt::String(digits),
-            ChatStyle { color: rgb_of(default_rgb), ..base },
+            ChatStyle {
+                color: rgb_of(default_rgb),
+                ..base
+            },
             lang,
         ),
         // `BlankFormat.format` returns `Component.empty()`. Zero spans, and
@@ -629,7 +642,11 @@ fn fold(u: u16, upper: bool) -> u16 {
     let mapped = it.pop().unwrap();
     let mut buf = [0u16; 2];
     let enc = mapped.encode_utf16(&mut buf);
-    if enc.len() == 1 { enc[0] } else { u }
+    if enc.len() == 1 {
+        enc[0]
+    } else {
+        u
+    }
 }
 
 #[cfg(test)]
@@ -652,7 +669,10 @@ mod tests {
     }
 
     fn input<'a>() -> SidebarInput<'a> {
-        SidebarInput { width_of: &w6, lang: None }
+        SidebarInput {
+            width_of: &w6,
+            lang: None,
+        }
     }
 
     fn literal(s: &str) -> Nbt {
@@ -803,7 +823,10 @@ mod tests {
                 "colour {id}"
             );
         }
-        assert_eq!(team_display_slot(&sb, "Steve"), Some(DisplaySlot::TeamWhite));
+        assert_eq!(
+            team_display_slot(&sb, "Steve"),
+            Some(DisplaySlot::TeamWhite)
+        );
     }
 
     #[test]
@@ -884,7 +907,8 @@ mod tests {
 
     #[test]
     fn an_unteamed_owner_renders_as_its_own_name_in_the_base_colour() {
-        let line = format_name_for_team(None, &literal("Steve"), ChatStyle::plain(TEXT_COLOR), None);
+        let line =
+            format_name_for_team(None, &literal("Steve"), ChatStyle::plain(TEXT_COLOR), None);
         assert_eq!(plain(&line), "Steve");
         assert_eq!(line[0].color, TEXT_COLOR);
     }
@@ -896,8 +920,12 @@ mod tests {
         sb.teams
             .apply(&team("t", Some(11), literal("<"), literal(">"), &["Steve"]));
         let t = sb.teams.team("t").unwrap();
-        let line =
-            format_name_for_team(Some(t), &literal("Steve"), ChatStyle::plain(TEXT_COLOR), None);
+        let line = format_name_for_team(
+            Some(t),
+            &literal("Steve"),
+            ChatStyle::plain(TEXT_COLOR),
+            None,
+        );
         assert_eq!(plain(&line), "<Steve>");
         let aqua = [0x55 as f32 / 255.0, 1.0, 1.0];
         for span in &line {
@@ -918,8 +946,12 @@ mod tests {
         sb.teams
             .apply(&team("t", Some(11), prefix, literal(""), &["Steve"]));
         let t = sb.teams.team("t").unwrap();
-        let line =
-            format_name_for_team(Some(t), &literal("Steve"), ChatStyle::plain(TEXT_COLOR), None);
+        let line = format_name_for_team(
+            Some(t),
+            &literal("Steve"),
+            ChatStyle::plain(TEXT_COLOR),
+            None,
+        );
         assert_eq!(plain(&line), "*Steve");
         let gold = [1.0, 0xAA as f32 / 255.0, 0.0];
         assert_eq!(line[0].color, gold);
@@ -1024,7 +1056,10 @@ mod tests {
             .collect();
         assert_eq!(
             by,
-            [("score_wins", "own".into()), ("objective_wins", "obj".into())]
+            [
+                ("score_wins", "own".into()),
+                ("objective_wins", "obj".into())
+            ]
         );
 
         // ...and with no objective format at all, the default is reached.
@@ -1242,8 +1277,12 @@ mod tests {
         sb.teams.apply(&p);
         assert_eq!(team_display_slot(&sb, "Steve"), Some(DisplaySlot::TeamRed));
         let t = sb.teams.team("red").unwrap();
-        let line =
-            format_name_for_team(Some(t), &literal("Steve"), ChatStyle::plain(TEXT_COLOR), None);
+        let line = format_name_for_team(
+            Some(t),
+            &literal("Steve"),
+            ChatStyle::plain(TEXT_COLOR),
+            None,
+        );
         assert_eq!(plain(&line), "[Steve]");
     }
 }

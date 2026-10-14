@@ -58,11 +58,11 @@
 use clap::Args as ClapArgs;
 use rewo_data::components::DataComponentIds;
 use rewo_data::entity_types::EntityClasses;
+use rewo_data::item_tags::ItemTag;
 use rewo_data::items::Items;
 use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType, SwingAnimations};
 use rewo_data::{entity_types::EntityTypes, packets::Packets, DataPaths};
 use rewo_gpu::entities::{oracle_part_deltas, CemFrameInputs, EntityDraw, OracleInputs};
-use rewo_data::item_tags::ItemTag;
 use rewo_gpu::mobs::{ArmPose, ArmPoses, EntityModelKind, SwingKind, SwingPose};
 use rewo_net::ids::Ids;
 use rewo_net::item_stack::SwingWireData;
@@ -333,7 +333,9 @@ fn load_effect_ids(paths: &DataPaths) -> Result<SwingEffectIds, String> {
         mining_fatigue: id("minecraft:mining_fatigue"),
     };
     if ids.haste.is_none() || ids.conduit_power.is_none() || ids.mining_fatigue.is_none() {
-        return Err(format!("registries.json: missing a swing mob effect ({ids:?})"));
+        return Err(format!(
+            "registries.json: missing a swing mob effect ({ids:?})"
+        ));
     }
     Ok(ids)
 }
@@ -749,10 +751,7 @@ fn bob_zrot(left: bool, age_in_ticks: f32) -> f32 {
 }
 
 /// A named part's `(rot delta, pos delta)` in the oracle output.
-fn find(
-    deltas: &[(&'static str, [f32; 3], [f32; 3])],
-    name: &str,
-) -> Option<([f32; 3], [f32; 3])> {
+fn find(deltas: &[(&'static str, [f32; 3], [f32; 3])], name: &str) -> Option<([f32; 3], [f32; 3])> {
     deltas
         .iter()
         .find(|&&(n, _, _)| n == name)
@@ -775,11 +774,7 @@ fn pose(
     spears: &ItemTag,
     bow: Option<i32>,
     crossbow: Option<i32>,
-) -> (
-    SwingPose,
-    ArmPoses,
-    Vec<(&'static str, [f32; 3], [f32; 3])>,
-) {
+) -> (SwingPose, ArmPoses, Vec<(&'static str, [f32; 3], [f32; 3])>) {
     let attack = crate::live_cmd::resolve_attack_anim(t, eid, alpha);
     // The SAME app resolver `collect_entities` uses — the gate must not build
     // its own `ArmPoses`, or it would stop proving the live mapping.
@@ -1037,9 +1032,14 @@ fn check_ids(c: &mut Checker, ctx: &Ctx) {
     // are the generator's; the spot checks are the four decompiled call sites
     // (`Player`, `Monster`, `Mannequin`) restated as entity types.
     let k = &ctx.classes;
-    let living_ok = [ctx.player_tid, ctx.zombie_tid, ctx.cow_tid, ctx.mannequin_tid]
-        .iter()
-        .all(|id| k.is_living(*id))
+    let living_ok = [
+        ctx.player_tid,
+        ctx.zombie_tid,
+        ctx.cow_tid,
+        ctx.mannequin_tid,
+    ]
+    .iter()
+    .all(|id| k.is_living(*id))
         && !k.is_living(ctx.boat_tid);
     let ticking_ok = k.ticks_swing(ctx.player_tid)
         && k.ticks_swing(ctx.zombie_tid)
@@ -1086,7 +1086,10 @@ fn check_routing(c: &mut Checker, ctx: &Ctx) {
         if s.is_some() {
             inert = false;
         }
-        seen.push(format!("{action}:{}", if s.is_some() { "SET" } else { "-" }));
+        seen.push(format!(
+            "{action}:{}",
+            if s.is_some() { "SET" } else { "-" }
+        ));
     }
     c.record(
         "b3.other_actions_never_touch_the_swing",
@@ -1190,7 +1193,12 @@ fn check_lifecycle(c: &mut Checker, ctx: &Ctx) {
     c.record(
         "c3.a_first_half_repeat_is_ignored",
         before == after && after.1 == 2 && after.4 == Some(InteractionHand::MainHand),
-        format!("swingTime={} arm={:?} unchanged={}", after.1, after.4, before == after),
+        format!(
+            "swingTime={} arm={:?} unchanged={}",
+            after.1,
+            after.4,
+            before == after
+        ),
     );
     // …and one at exactly duration/2 restarts.
     t.tick_lerp(); // swingTime 3 == 6/2
@@ -1199,7 +1207,10 @@ fn check_lifecycle(c: &mut Checker, ctx: &Ctx) {
     c.record(
         "c4.the_half_boundary_restarts_the_swing",
         after.0 && after.1 == -1 && after.4 == Some(InteractionHand::OffHand),
-        format!("swinging={} swingTime={} arm={:?}", after.0, after.1, after.4),
+        format!(
+            "swinging={} swingTime={} arm={:?}",
+            after.0, after.1, after.4
+        ),
     );
     // Partial-tick interpolation between oAttackAnim and attackAnim.
     let mut t = table(ctx);
@@ -1550,7 +1561,10 @@ fn check_equipment(c: &mut Checker, ctx: &Ctx) {
         armed == Some(19)
             && t.hand_item(1, InteractionHand::MainHand) == HandItem::Empty
             && t.current_swing_duration(1) == Some(6),
-        format!("armed={armed:?} → unarmed={:?}", t.current_swing_duration(1)),
+        format!(
+            "armed={armed:?} → unarmed={:?}",
+            t.current_swing_duration(1)
+        ),
     );
     // Haste shortens, mining fatigue lengthens, dig speed wins outright.
     let mut t = table(ctx);
@@ -1584,14 +1598,41 @@ fn check_equipment(c: &mut Checker, ctx: &Ctx) {
 fn check_arms(c: &mut Checker, ctx: &Ctx) {
     let mut t = table(ctx);
     swing(ctx, &mut t, 1, 0);
-    let (main_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
+    let (main_pose, _, _) = pose(
+        EntityModelKind::Player,
+        &t,
+        1,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        &ctx.spears,
+        None,
+        Some(ctx.crossbow),
+    );
     c.record(
         "e1.a_main_hand_swing_uses_the_main_arm",
         !main_pose.left_arm,
-        format!("attackArm left={} (mainArm defaults to RIGHT)", main_pose.left_arm),
+        format!(
+            "attackArm left={} (mainArm defaults to RIGHT)",
+            main_pose.left_arm
+        ),
     );
     swing(ctx, &mut t, 1, 3);
-    let (off_pose, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
+    let (off_pose, _, _) = pose(
+        EntityModelKind::Player,
+        &t,
+        1,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        &ctx.spears,
+        None,
+        Some(ctx.crossbow),
+    );
     c.record(
         "e2.an_off_hand_swing_uses_the_opposite_arm",
         off_pose.left_arm,
@@ -1608,9 +1649,33 @@ fn check_arms(c: &mut Checker, ctx: &Ctx) {
     );
     let _ = &ctx.classes;
     swing(ctx, &mut t, 1, 0);
-    let (lm, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
+    let (lm, _, _) = pose(
+        EntityModelKind::Player,
+        &t,
+        1,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        &ctx.spears,
+        None,
+        Some(ctx.crossbow),
+    );
     swing(ctx, &mut t, 1, 3);
-    let (lo, _, _) = pose(EntityModelKind::Player, &t, 1, 1.0, 0.0, 0.0, 0.0, 0.0, &ctx.spears, None, Some(ctx.crossbow));
+    let (lo, _, _) = pose(
+        EntityModelKind::Player,
+        &t,
+        1,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        &ctx.spears,
+        None,
+        Some(ctx.crossbow),
+    );
     c.record(
         "e3.the_main_arm_metadata_mirrors_both_hands",
         routed && lm.left_arm && !lo.left_arm,
@@ -1636,12 +1701,18 @@ fn posed(
     alpha: f32,
     pitch: f32,
     limb: (f32, f32),
-) -> (
-    SwingPose,
-    Vec<(&'static str, [f32; 3], [f32; 3])>,
-    Expect,
-) {
-    posed_net(ctx, kind, hand_action, stack, ticks, alpha, pitch, 0.0, limb)
+) -> (SwingPose, Vec<(&'static str, [f32; 3], [f32; 3])>, Expect) {
+    posed_net(
+        ctx,
+        kind,
+        hand_action,
+        stack,
+        ticks,
+        alpha,
+        pitch,
+        0.0,
+        limb,
+    )
 }
 
 /// [`posed`] with an explicit net head yaw — the SPEAR hold pose is the only
@@ -1657,11 +1728,7 @@ fn posed_net(
     pitch: f32,
     net: f32,
     limb: (f32, f32),
-) -> (
-    SwingPose,
-    Vec<(&'static str, [f32; 3], [f32; 3])>,
-    Expect,
-) {
+) -> (SwingPose, Vec<(&'static str, [f32; 3], [f32; 3])>, Expect) {
     let mut t = table(ctx);
     if let Some(s) = stack {
         equip(ctx, &mut t, 1, &[(0, s.clone()), (1, s)]);
@@ -1670,7 +1737,19 @@ fn posed_net(
     for _ in 0..ticks {
         t.tick_lerp();
     }
-    let (attack, poses, deltas) = pose(kind, &t, 1, alpha, pitch, net, limb.0, limb.1, &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+    let (attack, poses, deltas) = pose(
+        kind,
+        &t,
+        1,
+        alpha,
+        pitch,
+        net,
+        limb.0,
+        limb.1,
+        &ctx.spears,
+        Some(ctx.bow),
+        Some(ctx.crossbow),
+    );
     let expect = expect_attack(
         attack.attack_time,
         attack.left_arm,
@@ -1730,7 +1809,9 @@ fn check_pose(c: &mut Checker, ctx: &Ctx) {
         right.is_some_and(|(_, o)| near3(o, e.right_off, 1e-5)),
         format!(
             "off={} want {}",
-            right.map(|(_, o)| fmt3(o)).unwrap_or_else(|| "<missing>".into()),
+            right
+                .map(|(_, o)| fmt3(o))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(e.right_off)
         ),
     );
@@ -1739,7 +1820,8 @@ fn check_pose(c: &mut Checker, ctx: &Ctx) {
         left.is_some_and(|(_, o)| near3(o, e.left_off, 1e-5)),
         format!(
             "off={} want {}",
-            left.map(|(_, o)| fmt3(o)).unwrap_or_else(|| "<missing>".into()),
+            left.map(|(_, o)| fmt3(o))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(e.left_off)
         ),
     );
@@ -1748,7 +1830,9 @@ fn check_pose(c: &mut Checker, ctx: &Ctx) {
         right.is_some_and(|(r, _)| near3(r, e.right_rot, TOL)),
         format!(
             "right rot={} want {}",
-            right.map(|(r, _)| fmt3(r)).unwrap_or_else(|| "<missing>".into()),
+            right
+                .map(|(r, _)| fmt3(r))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(e.right_rot)
         ),
     );
@@ -1758,7 +1842,8 @@ fn check_pose(c: &mut Checker, ctx: &Ctx) {
             && left.is_some_and(|(r, _)| near(r[2], bob_zrot(true, 0.0), TOL)),
         format!(
             "left rot={} want {} (zRot is the idle bob alone — no strike term)",
-            left.map(|(r, _)| fmt3(r)).unwrap_or_else(|| "<missing>".into()),
+            left.map(|(r, _)| fmt3(r))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(e.left_rot)
         ),
     );
@@ -1837,13 +1922,13 @@ fn check_pose(c: &mut Checker, ctx: &Ctx) {
     );
     c.record(
         "g1.the_stab_strike_on_the_attack_arm_is_exact",
-        astab.kind == SwingKind::Stab
-            && sr.is_some_and(|(r, _)| near3(r, estab.right_rot, TOL)),
+        astab.kind == SwingKind::Stab && sr.is_some_and(|(r, _)| near3(r, estab.right_rot, TOL)),
         format!(
             "kind={:?} attackTime={:.6} right rot={} want {}",
             astab.kind,
             astab.attack_time,
-            sr.map(|(r, _)| fmt3(r)).unwrap_or_else(|| "<missing>".into()),
+            sr.map(|(r, _)| fmt3(r))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(estab.right_rot)
         ),
     );
@@ -1860,7 +1945,8 @@ fn check_pose(c: &mut Checker, ctx: &Ctx) {
              both hands is SPEAR/SPEAR, and affectsOffhandPose leaves the RIGHT arm \
              unposed, so the delegate's cancellation is visible bare there — while \
              the left keeps its hold yaw {:+.6}; body.yRot={:+.6}, pivot still moved",
-            sl.map(|(r, _)| fmt3(r)).unwrap_or_else(|| "<missing>".into()),
+            sl.map(|(r, _)| fmt3(r))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(estab.left_rot),
             hold_left[1],
             estab.body[1]
@@ -1911,8 +1997,8 @@ fn check_integration(c: &mut Checker, ctx: &Ctx) {
         },
     )
     .unwrap_or_default();
-    let neutral = oracle_part_deltas(EntityModelKind::Zombie, &OracleInputs::default())
-        .unwrap_or_default();
+    let neutral =
+        oracle_part_deltas(EntityModelKind::Zombie, &OracleInputs::default()).unwrap_or_default();
     let same = zombie.len() == neutral.len()
         && zombie
             .iter()
@@ -1971,7 +2057,10 @@ fn check_integration(c: &mut Checker, ctx: &Ctx) {
     );
     let read = rewo_gpu::cem::model_from_jem(jem, &jpms)
         .ok()
-        .and_then(|m| m.cem.map(|prog| (prog, m.parts.len(), m.cem_translate.clone())))
+        .and_then(|m| {
+            m.cem
+                .map(|prog| (prog, m.parts.len(), m.cem_translate.clone()))
+        })
         .map(|(prog, parts, tr)| {
             rewo_gpu::cem::eval_program(&prog, &mut actx, parts, &tr);
             (
@@ -2073,11 +2162,14 @@ fn check_integration(c: &mut Checker, ctx: &Ctx) {
         format!(
             "idle right={} want {}; left={} want {} (scale −1); at ageInTicks 34 right={} \
              want {}",
-            r0.map(|(r, _)| fmt3(r)).unwrap_or_else(|| "<missing>".into()),
+            r0.map(|(r, _)| fmt3(r))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(w_r0),
-            l0.map(|(r, _)| fmt3(r)).unwrap_or_else(|| "<missing>".into()),
+            l0.map(|(r, _)| fmt3(r))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(w_l0),
-            r1.map(|(r, _)| fmt3(r)).unwrap_or_else(|| "<missing>".into()),
+            r1.map(|(r, _)| fmt3(r))
+                .unwrap_or_else(|| "<missing>".into()),
             fmt3(w_r1)
         ),
     );
@@ -2680,12 +2772,30 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         if flags != 0 {
             meta(ctx, &mut t, 1, 8, 0, &[flags]);
         }
-        let (attack, poses, deltas) =
-            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
-                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let (attack, poses, deltas) = pose(
+            EntityModelKind::Player,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
+        );
         let e = expect_attack(
-            attack.attack_time, attack.left_arm, attack.kind, attack.age_scale,
-            pitch, limb.0, limb.1, 0.0, poses, 0.0,
+            attack.attack_time,
+            attack.left_arm,
+            attack.kind,
+            attack.age_scale,
+            pitch,
+            limb.0,
+            limb.1,
+            0.0,
+            poses,
+            0.0,
         );
         let r = find(&deltas, "right_arm").map(|(r, _)| r);
         (poses, r, e)
@@ -2731,7 +2841,10 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
     c.record(
         "m9.every_use_driven_pose_body_is_exact",
         all_exact,
-        format!("rendered vs independently transcribed: {}", detail.join("; ")),
+        format!(
+            "rendered vs independently transcribed: {}",
+            detail.join("; ")
+        ),
     );
 
     // The gate is what makes the difference: the same shield with the flag
@@ -2766,9 +2879,19 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         let mut t = table(ctx);
         equip(ctx, &mut t, 1, &[(1, Stack::Plain(ctx.shield))]);
         meta(ctx, &mut t, 1, 8, 0, &[using_off]);
-        let (attack, poses, deltas) =
-            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
-                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let (attack, poses, deltas) = pose(
+            EntityModelKind::Player,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
+        );
         let _ = attack;
         (poses, deltas, ())
     };
@@ -2789,12 +2912,30 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         let mut t = table(ctx);
         equip(ctx, &mut t, 1, &[(0, Stack::Plain(ctx.bow))]);
         meta(ctx, &mut t, 1, 8, 0, &[using_main]);
-        let (attack, poses, deltas) =
-            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
-                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let (attack, poses, deltas) = pose(
+            EntityModelKind::Player,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
+        );
         let e = expect_attack(
-            attack.attack_time, attack.left_arm, attack.kind, attack.age_scale,
-            pitch, limb.0, limb.1, 0.0, poses, 0.0,
+            attack.attack_time,
+            attack.left_arm,
+            attack.kind,
+            attack.age_scale,
+            pitch,
+            limb.0,
+            limb.1,
+            0.0,
+            poses,
+            0.0,
         );
         (poses, find(&deltas, "left_arm").map(|(r, _)| r), e)
     };
@@ -2802,8 +2943,12 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         "m13.a_two_handed_pose_writes_the_other_arm_too",
         bow_open.0.right == ArmPose::BowAndArrow
             && bow_open.0.left == ArmPose::Empty
-            && bow_open.1.is_some_and(|r| near3(r, bow_open.2.left_rot, TOL))
-            && bow_open.1.is_some_and(|r| (r[1] - (0.1 + 0.4)).abs() < 1e-4),
+            && bow_open
+                .1
+                .is_some_and(|r| near3(r, bow_open.2.left_rot, TOL))
+            && bow_open
+                .1
+                .is_some_and(|r| (r[1] - (0.1 + 0.4)).abs() < 1e-4),
         format!(
             "bow drawn: right={:?} left={:?}; LEFT arm rot={} want={} — the left \
              arm's yRot is 0.1 + head.yRot + 0.4 even though its own pose is EMPTY \
@@ -2820,8 +2965,17 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         let mut t = table(ctx);
         equip(ctx, &mut t, 1, &[(0, stack)]);
         let (_, poses, _) = pose(
-            EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
-            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+            EntityModelKind::Player,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         poses
     };
@@ -2859,12 +3013,26 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
     let overridden = {
         let mut t = table(ctx);
         equip(
-            ctx, &mut t, 1,
-            &[(0, Stack::Charged(ctx.crossbow, ctx.apple)), (1, Stack::Plain(ctx.spear))],
+            ctx,
+            &mut t,
+            1,
+            &[
+                (0, Stack::Charged(ctx.crossbow, ctx.apple)),
+                (1, Stack::Plain(ctx.spear)),
+            ],
         );
         let (_, poses, _) = pose(
-            EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
-            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+            EntityModelKind::Player,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         poses
     };
@@ -2887,12 +3055,30 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         for _ in 0..ticks {
             t.tick_lerp();
         }
-        let (attack, poses, deltas) =
-            pose(EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
-                 &ctx.spears, Some(ctx.bow), Some(ctx.crossbow));
+        let (attack, poses, deltas) = pose(
+            EntityModelKind::Player,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
+        );
         let e = expect_attack(
-            attack.attack_time, attack.left_arm, attack.kind, attack.age_scale,
-            pitch, limb.0, limb.1, 0.0, poses, 0.0,
+            attack.attack_time,
+            attack.left_arm,
+            attack.kind,
+            attack.age_scale,
+            pitch,
+            limb.0,
+            limb.1,
+            0.0,
+            poses,
+            0.0,
         );
         (poses, find(&deltas, "left_arm").map(|(r, _)| r), e)
     };
@@ -2931,8 +3117,17 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         let mut t = table(ctx);
         equip(ctx, &mut t, 3, &[(0, Stack::Plain(ctx.sword))]);
         let (_, poses, _) = pose(
-            EntityModelKind::Zombie, &t, 3, 1.0, pitch, 0.0, limb.0, limb.1,
-            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+            EntityModelKind::Zombie,
+            &t,
+            3,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         poses
     };
@@ -2940,8 +3135,17 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         let mut t = table(ctx);
         equip(ctx, &mut t, 1, &[(0, Stack::Plain(ctx.sword))]);
         let (_, poses, _) = pose(
-            EntityModelKind::Player, &t, 1, 1.0, pitch, 0.0, limb.0, limb.1,
-            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+            EntityModelKind::Player,
+            &t,
+            1,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         poses
     };
@@ -2962,8 +3166,17 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
         equip(ctx, &mut t, 3, &[(0, Stack::Plain(ctx.shield))]);
         meta(ctx, &mut t, 3, 8, 0, &[using_main]);
         let (_, poses, _) = pose(
-            EntityModelKind::Zombie, &t, 3, 1.0, pitch, 0.0, limb.0, limb.1,
-            &ctx.spears, Some(ctx.bow), Some(ctx.crossbow),
+            EntityModelKind::Zombie,
+            &t,
+            3,
+            1.0,
+            pitch,
+            0.0,
+            limb.0,
+            limb.1,
+            &ctx.spears,
+            Some(ctx.bow),
+            Some(ctx.crossbow),
         );
         poses
     };
@@ -2983,9 +3196,12 @@ fn check_item_use(c: &mut Checker, ctx: &Ctx) {
     // deriving the order from twoHandedOffhand.
     let mut order_ok = true;
     let mut order_detail = Vec::new();
-    for (rh, main_used, want_first_left) in
-        [(true, true, false), (true, false, true), (false, true, true), (false, false, false)]
-    {
+    for (rh, main_used, want_first_left) in [
+        (true, true, false),
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
         let p = ArmPoses {
             right: ArmPose::Item,
             left: ArmPose::Item,
@@ -3241,7 +3457,9 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
         "k10.only_a_baby_holding_an_item_drops_its_arms",
         r_bi.is_some_and(|r| near3(r, w_bi, TOL))
             && r_bb.is_some_and(|r| near3(r, w_bb, TOL))
-            && r_bi.zip(r_bb).is_some_and(|(a, b)| (a[0] - b[0]).abs() > 1.0),
+            && r_bi
+                .zip(r_bb)
+                .is_some_and(|(a, b)| (a[0] - b[0]).abs() > 1.0),
         format!(
             "baby+item right={} want={} ({:.1} deg, armDrop 0); baby+empty right={} \
              want={} ({:.1} deg, still raised)",
@@ -3411,7 +3629,12 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
         meta(ctx, t, 1, 17, 8, &[1]);
     });
     let pil_hold = pose_of(ctx.pillager_tid, EntityModelKind::Pillager, &|ctx, t| {
-        equip(ctx, t, 1, &[(0, Stack::Plain(ctx.crossbow)), (1, Stack::Empty)]);
+        equip(
+            ctx,
+            t,
+            1,
+            &[(0, Stack::Plain(ctx.crossbow)), (1, Stack::Empty)],
+        );
     });
     let pil_neutral = pose_of(ctx.pillager_tid, EntityModelKind::Pillager, &|_, _| {});
     let evo_spell = pose_of(ctx.evoker_tid, EntityModelKind::Evoker, &|ctx, t| {
@@ -3420,9 +3643,13 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
     let evo_celeb = pose_of(ctx.evoker_tid, EntityModelKind::Evoker, &|ctx, t| {
         meta(ctx, t, 1, 16, 8, &[1]);
     });
-    let ill_bow = pose_of(ctx.illusioner_tid, EntityModelKind::Illusioner, &|ctx, t| {
-        meta(ctx, t, 1, 15, 0, &[0b0000_0100]);
-    });
+    let ill_bow = pose_of(
+        ctx.illusioner_tid,
+        EntityModelKind::Illusioner,
+        &|ctx, t| {
+            meta(ctx, t, 1, 15, 0, &[0b0000_0100]);
+        },
+    );
     let vin_crossed = pose_of(ctx.vindicator_tid, EntityModelKind::Vindicator, &|_, _| {});
     c.record(
         "k15.each_illager_class_derives_its_own_arm_pose",
@@ -3443,12 +3670,20 @@ fn check_mob_rigs(c: &mut Checker, ctx: &Ctx) {
 
     // A spellcaster's index-17 BYTE must not be read on a non-spellcaster, and
     // a pillager's index-17 BOOLEAN must not be read on one.
-    let vin_spell = pose_of(ctx.vindicator_tid, EntityModelKind::Vindicator, &|ctx, t| {
-        meta(ctx, t, 1, 17, 0, &[3]);
-    });
-    let vin_charge = pose_of(ctx.vindicator_tid, EntityModelKind::Vindicator, &|ctx, t| {
-        meta(ctx, t, 1, 17, 8, &[1]);
-    });
+    let vin_spell = pose_of(
+        ctx.vindicator_tid,
+        EntityModelKind::Vindicator,
+        &|ctx, t| {
+            meta(ctx, t, 1, 17, 0, &[3]);
+        },
+    );
+    let vin_charge = pose_of(
+        ctx.vindicator_tid,
+        EntityModelKind::Vindicator,
+        &|ctx, t| {
+            meta(ctx, t, 1, 17, 8, &[1]);
+        },
+    );
     c.record(
         "k16.the_index_17_slots_are_kind_gated",
         vin_spell == P::Crossed && vin_charge == P::Crossed,

@@ -199,9 +199,9 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     let pages = crate::live_cmd::resolve_book_pages(&writable, advance.as_ref(), lang);
     c.record(
         "m3.a_writable_book_shows_its_strings_read_only",
-        pages.as_ref().is_some_and(|p| {
-            p.len() == 1 && p[0].len() == 1 && p[0][0][0].text == "a draft"
-        }),
+        pages
+            .as_ref()
+            .is_some_and(|p| p.len() == 1 && p[0].len() == 1 && p[0][0][0].text == "a draft"),
         format!("no WritableBookViewScreen exists in 26.2 — got {pages:?}"),
     );
 
@@ -374,9 +374,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
         c.record(
             "m8.click_rects_are_left_in_right_exclusive_over_plain_spans",
             left_in && right_out && plain_out,
-            format!(
-                "left-in={left_in} right-out={right_out} plain-declines={plain_out}"
-            ),
+            format!("left-in={left_in} right-out={right_out} plain-declines={plain_out}"),
         );
     }
 }
@@ -428,16 +426,17 @@ fn check_pixels(
     let clear = [0.0, 1.0, 0.0, 1.0];
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    book: Option<(&BookViewScreen, Option<(i32, i32)>)>,
-                    dump: &str|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                book: Option<(&BookViewScreen, Option<(i32, i32)>)>,
+                dump: &str|
      -> Result<Vec<u8>, String> {
         let mut chrome = rewo_gpu::screen::ScreenDraw::default();
         let mut lines = Vec::new();
         if let Some((view, mouse)) = book {
             let screen = bv::build_screen(GUI_W, H as i32 / SCALE, "Done");
-            chrome = crate::live_cmd::screen_chrome(&screen, mouse.map(|(x, y)| (x as f64, y as f64)));
+            chrome =
+                crate::live_cmd::screen_chrome(&screen, mouse.map(|(x, y)| (x as f64, y as f64)));
             for d in bv::draws(view, GUI_W, mouse) {
                 chrome.sprites.push(crate::live_cmd::book_sprite(d));
             }
@@ -491,7 +490,10 @@ fn check_pixels(
     c.record(
         "p1.no_book_draws_no_parchment",
         px(&empty_frame, centre_fb.0, centre_fb.1) == [0, 255, 0],
-        format!("empty frame at {centre_fb:?} = {:?}", px(&empty_frame, centre_fb.0, centre_fb.1)),
+        format!(
+            "empty frame at {centre_fb:?} = {:?}",
+            px(&empty_frame, centre_fb.0, centre_fb.1)
+        ),
     );
 
     // p2 — the parchment is the CROPPED book.png texel-for-texel: probe five
@@ -505,11 +507,7 @@ fn check_pixels(
     let mut detail = String::new();
     for (dx, dy) in probes {
         let t = texel(book_bg, dx, dy);
-        let f = px(
-            &page0,
-            (left + dx as i32) * SCALE,
-            (2 + dy as i32) * SCALE,
-        );
+        let f = px(&page0, (left + dx as i32) * SCALE, (2 + dy as i32) * SCALE);
         if t[3] == 255 && !close([t[0], t[1], t[2]], f, 2) {
             all = false;
             detail = format!("texel ({dx},{dy}) = {t:?}, frame = {f:?}");
@@ -518,7 +516,11 @@ fn check_pixels(
     c.record(
         "p2.the_parchment_is_the_cropped_book_png_byte_for_byte",
         all,
-        if all { "five probes match within 2".into() } else { detail },
+        if all {
+            "five probes match within 2".into()
+        } else {
+            detail
+        },
     );
 
     // p3 — page 0 shows the FORWARD arrow's own texels at (left+116, 159)...
@@ -530,7 +532,10 @@ fn check_pixels(
     c.record(
         "p3.page_zero_draws_the_forward_arrow",
         close([t[0], t[1], t[2]], px(&page0, fx, fy), 2),
-        format!("arrow texel ({adx},{ady}) = {t:?}, frame = {:?}", px(&page0, fx, fy)),
+        format!(
+            "arrow texel ({adx},{ady}) = {t:?}, frame = {:?}",
+            px(&page0, fx, fy)
+        ),
     );
 
     // p4 — ...and NOT the back arrow: that spot shows the parchment.
@@ -566,7 +571,13 @@ fn check_pixels(
         left + bv::PAGE_FORWARD_BUTTON_X + 2,
         bv::BACKGROUND_TOP + bv::PAGE_BUTTON_Y + 2,
     );
-    let hovered = shot(&mut gpu, &mut off, &mut wr, Some((&three, Some(hover))), "hover")?;
+    let hovered = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Some((&three, Some(hover))),
+        "hover",
+    )?;
     let th = texel(fwd_h, hdx, hdy);
     let hx = (left + bv::PAGE_FORWARD_BUTTON_X + hdx as i32) * SCALE;
     let hy = (bv::BACKGROUND_TOP + bv::PAGE_BUTTON_Y + hdy as i32) * SCALE;
@@ -628,7 +639,13 @@ fn check_pixels(
         (leftmost, rightmost)
     };
     let empty_book = BookViewScreen::new(Vec::new());
-    let blank = shot(&mut gpu, &mut off, &mut wr, Some((&empty_book, None)), "blank")?;
+    let blank = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Some((&empty_book, None)),
+        "blank",
+    )?;
     let (dl, dr) = ind_diff(&page0, &blank);
     c.record(
         "p8.the_indicator_right_edge_sits_at_the_anchor",
@@ -661,7 +678,6 @@ fn check_pixels(
         with_text > 20 && without <= 2,
         format!("dark pixels: with text {with_text}, empty book {without}"),
     );
-
 
     // p9 — the Done button's chrome draws at menuControlsTop: the band
     // differs from the no-screen frame in many pixels (nine-sliced chrome +
@@ -701,7 +717,11 @@ fn check_pixels(
     for gy in ay..ay + 9 {
         for gx in (anchor - 8).max(left)..anchor {
             let f = px(&blank, gx * SCALE, gy * SCALE);
-            let t = texel(book_bg, (gx - left) as u32, (gy - bv::BACKGROUND_TOP) as u32);
+            let t = texel(
+                book_bg,
+                (gx - left) as u32,
+                (gy - bv::BACKGROUND_TOP) as u32,
+            );
             if f[0] < 40 && f[1] < 40 && f[2] < 40 && t[0] > 100 {
                 blank_digit_dark += 1;
             }
@@ -741,15 +761,28 @@ fn check_pixels(
     let styled = SlotText {
         has_written_book: true,
         book_pages: vec![rewo_proto::nbt::Nbt::Compound(vec![
-            ("text".into(), rewo_proto::nbt::Nbt::String("crimson words".into())),
-            ("color".into(), rewo_proto::nbt::Nbt::String("dark_red".into())),
+            (
+                "text".into(),
+                rewo_proto::nbt::Nbt::String("crimson words".into()),
+            ),
+            (
+                "color".into(),
+                rewo_proto::nbt::Nbt::String("dark_red".into()),
+            ),
         ])],
         ..Default::default()
     };
-    let styled_pages = crate::live_cmd::resolve_book_pages(&styled, Some(&advance), Some(baked_lang))
-        .ok_or("styled book did not resolve")?;
+    let styled_pages =
+        crate::live_cmd::resolve_book_pages(&styled, Some(&advance), Some(baked_lang))
+            .ok_or("styled book did not resolve")?;
     let styled_book = BookViewScreen::new(styled_pages);
-    let styled_frame = shot(&mut gpu, &mut off, &mut wr, Some((&styled_book, None)), "styled")?;
+    let styled_frame = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Some((&styled_book, None)),
+        "styled",
+    )?;
     let mut reddish = 0;
     {
         let (tx, ty) = BookViewScreen::text_origin(GUI_W);
@@ -823,9 +856,7 @@ fn differing_opaque_texel(
         for dx in 0..a.w.min(b.w) {
             let i = ((dy * a.w + dx) * 4) as usize;
             let j = ((dy * b.w + dx) * 4) as usize;
-            if a.rgba[i + 3] == 255
-                && b.rgba[j + 3] == 255
-                && a.rgba[i..i + 3] != b.rgba[j..j + 3]
+            if a.rgba[i + 3] == 255 && b.rgba[j + 3] == 255 && a.rgba[i..i + 3] != b.rgba[j..j + 3]
             {
                 return Some((dx, dy));
             }

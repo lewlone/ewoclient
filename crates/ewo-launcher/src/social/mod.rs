@@ -478,13 +478,11 @@ impl SocialState {
             return;
         }
         let Some(base) = self.base_for(None, SocialCall::LinkRedeem) else {
-            self.link_redeem =
-                LinkRedeemStatus::Failed("social features aren't configured".into());
+            self.link_redeem = LinkRedeemStatus::Failed("social features aren't configured".into());
             return;
         };
         let Some(uuid) = for_uuid else {
-            self.link_redeem =
-                LinkRedeemStatus::Failed("sign in with Microsoft first".into());
+            self.link_redeem = LinkRedeemStatus::Failed("sign in with Microsoft first".into());
             return;
         };
         self.link_redeem = LinkRedeemStatus::Submitting;
@@ -686,10 +684,7 @@ impl SocialState {
     }
 
     pub fn submit_friend_request_by_name(&mut self, social_token: &str, mc_name: String) {
-        self.dispatch_friend_action(
-            social_token,
-            FriendActionPayload::RequestByName(mc_name),
-        );
+        self.dispatch_friend_action(social_token, FriendActionPayload::RequestByName(mc_name));
     }
 
     pub fn respond_friend_request(
@@ -708,17 +703,10 @@ impl SocialState {
     }
 
     pub fn remove_friend(&mut self, social_token: &str, discord_id: String) {
-        self.dispatch_friend_action(
-            social_token,
-            FriendActionPayload::Remove(discord_id),
-        );
+        self.dispatch_friend_action(social_token, FriendActionPayload::Remove(discord_id));
     }
 
-    fn dispatch_friend_action(
-        &mut self,
-        social_token: &str,
-        payload: FriendActionPayload,
-    ) {
+    fn dispatch_friend_action(&mut self, social_token: &str, payload: FriendActionPayload) {
         let Some(base) = self.base_for(Some(social_token), SocialCall::FriendAction) else {
             return;
         };
@@ -754,7 +742,10 @@ impl SocialState {
 #[derive(Debug)]
 enum FriendActionPayload {
     RequestByName(String),
-    Respond { from_discord_id: String, accept: bool },
+    Respond {
+        from_discord_id: String,
+        accept: bool,
+    },
     Remove(String),
 }
 
@@ -790,7 +781,11 @@ fn send_heartbeat(
 
     let agent = ureq_agent();
     let bearer = format!("Bearer {}", social_token);
-    match agent.post(&url).set("Authorization", &bearer).send_json(body) {
+    match agent
+        .post(&url)
+        .set("Authorization", &bearer)
+        .send_json(body)
+    {
         Ok(_) => {}
         Err(ureq::Error::Status(code, _)) => {
             log::warn!("social: heartbeat HTTP {}", code);
@@ -821,9 +816,7 @@ fn fetch_friends(base: &str, social_token: &str) -> Result<FriendsList, String> 
         }
     };
 
-    let json: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("json parse: {}", e))?;
+    let json: serde_json::Value = resp.into_json().map_err(|e| format!("json parse: {}", e))?;
 
     fn parse_section(arr: &serde_json::Value) -> Vec<FriendEntry> {
         arr.as_array()
@@ -831,18 +824,14 @@ fn fetch_friends(base: &str, social_token: &str) -> Result<FriendsList, String> 
                 items
                     .iter()
                     .filter_map(|item| {
-                        let discord_id =
-                            item.get("discord_id")?.as_str()?.to_string();
+                        let discord_id = item.get("discord_id")?.as_str()?.to_string();
                         let minecraft_uuid = item
                             .get("minecraft_uuid")
                             .and_then(|v| v.as_str())
                             .map(str::to_string);
                         let presence = item.get("presence").and_then(|p| {
                             Some(FriendPresence {
-                                location: p
-                                    .get("location")?
-                                    .as_str()?
-                                    .to_string(),
+                                location: p.get("location")?.as_str()?.to_string(),
                                 server_addr: p
                                     .get("server_addr")
                                     .and_then(|v| v.as_str())
@@ -902,7 +891,10 @@ fn fetch_server_status(base: &str) -> Option<ServerStatus> {
         _ => "N/A".to_string(),
     };
     Some(ServerStatus {
-        online: json.get("online").and_then(|v| v.as_bool()).unwrap_or(false),
+        online: json
+            .get("online")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         online_count: json
             .get("online_count")
             .and_then(|v| v.as_u64())
@@ -939,9 +931,7 @@ fn run_friend_action(
                     let status = resp
                         .into_json::<serde_json::Value>()
                         .ok()
-                        .and_then(|v| {
-                            v.get("status").and_then(|s| s.as_str()).map(str::to_string)
-                        })
+                        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string))
                         .unwrap_or_else(|| "unknown".into());
                     let msg = match status.as_str() {
                         "pending" => format!("request sent to {}", name),
@@ -958,11 +948,7 @@ fn run_friend_action(
                     let body = resp
                         .into_json::<serde_json::Value>()
                         .ok()
-                        .and_then(|v| {
-                            v.get("status")
-                                .and_then(|s| s.as_str())
-                                .map(str::to_string)
-                        })
+                        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string))
                         .unwrap_or_else(|| "not-found".into());
                     FriendActionStatus::Failed(match body.as_str() {
                         "not-found" => format!("no Minecraft account named {}", name),
@@ -994,13 +980,11 @@ fn run_friend_action(
                 .set("Authorization", &bearer)
                 .send_json(body)
             {
-                Ok(_) => FriendActionStatus::Done(
-                    if accept {
-                        "request accepted".into()
-                    } else {
-                        "request declined".into()
-                    },
-                ),
+                Ok(_) => FriendActionStatus::Done(if accept {
+                    "request accepted".into()
+                } else {
+                    "request declined".into()
+                }),
                 Err(ureq::Error::Status(404, _)) => {
                     FriendActionStatus::Failed("request expired".into())
                 }
@@ -1014,11 +998,7 @@ fn run_friend_action(
         }
         FriendActionPayload::Remove(discord_id) => {
             let url = remove_friend_url(base, &discord_id);
-            match agent
-                .delete(&url)
-                .set("Authorization", &bearer)
-                .call()
-            {
+            match agent.delete(&url).set("Authorization", &bearer).call() {
                 Ok(_) => FriendActionStatus::Done("friend removed".into()),
                 Err(ureq::Error::Status(404, _)) => {
                     FriendActionStatus::Failed("already removed".into())
@@ -1058,9 +1038,7 @@ fn redeem_one(base: &str, code: &str) -> LinkRedeemStatus {
                         token: t,
                         discord_id: d,
                     },
-                    _ => LinkRedeemStatus::Failed(
-                        "bot returned a malformed response".into(),
-                    ),
+                    _ => LinkRedeemStatus::Failed("bot returned a malformed response".into()),
                 }
             }
             Err(e) => LinkRedeemStatus::Failed(format!("bad response: {}", e)),
@@ -1098,7 +1076,9 @@ mod tests {
             100.0,
             "0123456789abcdef0123456789abcdef",
             token,
-            HeartbeatLocation::InLauncher { screen: "main_menu" },
+            HeartbeatLocation::InLauncher {
+                screen: "main_menu",
+            },
         );
         s.maybe_refresh_friends(100.0, token);
         s.refresh_friends_now(token);
@@ -1145,7 +1125,11 @@ mod tests {
             "https://bot.example.net/b ot",
         ] {
             assert!(validate_base(bad).is_err(), "{bad} should be rejected");
-            assert_eq!(config_from(Some(bad), None), None, "{bad} must disable social");
+            assert_eq!(
+                config_from(Some(bad), None),
+                None,
+                "{bad} must disable social"
+            );
         }
     }
 
@@ -1153,8 +1137,11 @@ mod tests {
     fn lobby_is_optional_and_never_defaulted() {
         let c = config_from(Some("https://bot.example.net"), None).unwrap();
         assert_eq!(c.lobby_addr, None);
-        let c = config_from(Some("https://bot.example.net"), Some(" play.example.net:25565 "))
-            .unwrap();
+        let c = config_from(
+            Some("https://bot.example.net"),
+            Some(" play.example.net:25565 "),
+        )
+        .unwrap();
         assert_eq!(c.lobby_addr.as_deref(), Some("play.example.net:25565"));
         let c = config_from(Some("https://bot.example.net"), Some("bad host")).unwrap();
         assert_eq!(c.lobby_addr, None);
@@ -1165,16 +1152,30 @@ mod tests {
         use SocialCall::*;
         let all = [LinkRedeem, ServerStatus, Heartbeat, Friends, FriendAction];
         for call in all {
-            assert!(!call_allowed(false, Some("tok"), call), "{call:?} with no config");
+            assert!(
+                !call_allowed(false, Some("tok"), call),
+                "{call:?} with no config"
+            );
             assert!(!call_allowed(false, None, call), "{call:?} with no config");
         }
         // Configured but unlinked: only the user-initiated redemption.
         for call in all {
-            assert_eq!(call_allowed(true, None, call), call == LinkRedeem, "{call:?}");
-            assert_eq!(call_allowed(true, Some(""), call), call == LinkRedeem, "{call:?}");
+            assert_eq!(
+                call_allowed(true, None, call),
+                call == LinkRedeem,
+                "{call:?}"
+            );
+            assert_eq!(
+                call_allowed(true, Some(""), call),
+                call == LinkRedeem,
+                "{call:?}"
+            );
         }
         for call in all {
-            assert!(call_allowed(true, Some("tok"), call), "{call:?} once linked");
+            assert!(
+                call_allowed(true, Some("tok"), call),
+                "{call:?} once linked"
+            );
         }
     }
 
@@ -1224,7 +1225,11 @@ mod tests {
     #[test]
     fn settled_friend_action_expires_after_the_toast_window() {
         let mut s = SocialState::with_config(None);
-        land(&mut s, FriendActionStatus::Done("Request sent".into()), 10.0);
+        land(
+            &mut s,
+            FriendActionStatus::Done("Request sent".into()),
+            10.0,
+        );
         assert!(matches!(s.friend_action(), FriendActionStatus::Done(_)));
         assert_eq!(s.friend_action_age(12.5), Some(2.5));
         s.poll(10.0 + FRIEND_ACTION_TOAST_S - 0.01);

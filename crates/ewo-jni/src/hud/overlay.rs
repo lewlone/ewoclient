@@ -42,7 +42,11 @@ pub(super) fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontSto
     let font = fonts.jetbrains_mono(11.0);
     let tracking = 0.22; // CSS `.tab { letter-spacing: .22em }`.
     let (_, m) = font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        9.0
+    };
 
     for (i, &tab) in tabs.iter().enumerate() {
         let v = OverlayView::ALL[i];
@@ -123,7 +127,11 @@ pub(super) fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontSto
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
         paint.set_color4f(
-            if active { rgba(PEARL, 1.0) } else { rgba(MAUVE, 1.0) },
+            if active {
+                rgba(PEARL, 1.0)
+            } else {
+                rgba(MAUVE, 1.0)
+            },
             None,
         );
         draw_tracked_em(
@@ -142,7 +150,11 @@ pub(super) fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontSto
 
 /// The Settings-view panel rect, its client-profile chips, and the 4
 /// paint-rate selector buttons. Fixed-size so renderer + hit-tester agree.
-pub(super) fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Vec<Rect>, [Rect; 4], Rect) {
+pub(super) fn settings_layout(
+    w: f32,
+    h: f32,
+    profile_count: usize,
+) -> (Rect, Vec<Rect>, [Rect; 4], Rect) {
     const CHIP_W: f32 = 112.0;
     const CHIP_H: f32 = 32.0;
     const GAP: f32 = 8.0;
@@ -177,7 +189,12 @@ pub(super) fn settings_layout(w: f32, h: f32, profile_count: usize) -> (Rect, Ve
     let buttons_top = chips_top + chip_rows * (CHIP_H + GAP) + 64.0;
     let mut buttons = [empty_rect(); 4];
     for (i, slot) in buttons.iter_mut().enumerate() {
-        *slot = Rect::from_xywh(left + i as f32 * (BTN_W + BTN_GAP), buttons_top, BTN_W, BTN_H);
+        *slot = Rect::from_xywh(
+            left + i as f32 * (BTN_W + BTN_GAP),
+            buttons_top,
+            BTN_W,
+            BTN_H,
+        );
     }
 
     // Glass-strength track. Generous height so it is easy to grab; the visible
@@ -266,12 +283,25 @@ pub(super) fn draw_quick_edit(canvas: &Canvas, editor: &Editor, fonts: &FontStor
 }
 
 /// One option button in the paint-rate selector.
-pub(super) fn draw_settings_button(canvas: &Canvas, rect: Rect, label: &str, active: bool, fonts: &FontStore) {
+pub(super) fn draw_settings_button(
+    canvas: &Canvas,
+    rect: Rect,
+    label: &str,
+    active: bool,
+    fonts: &FontStore,
+) {
     let rrect = RRect::new_rect_xy(rect, 9.0, 9.0);
 
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(if active { rgba(ROSE, 0.55) } else { rgba(WINE, 0.8) }, None);
+    bg.set_color4f(
+        if active {
+            rgba(ROSE, 0.55)
+        } else {
+            rgba(WINE, 0.8)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &bg);
 
     let mut border = Paint::default();
@@ -279,7 +309,11 @@ pub(super) fn draw_settings_button(canvas: &Canvas, rect: Rect, label: &str, act
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
     border.set_color4f(
-        if active { rgba(ROSE, 0.85) } else { rgba(ROSE, 0.18) },
+        if active {
+            rgba(ROSE, 0.85)
+        } else {
+            rgba(ROSE, 0.18)
+        },
         None,
     );
     canvas.draw_rrect(rrect, &border);
@@ -288,11 +322,19 @@ pub(super) fn draw_settings_button(canvas: &Canvas, rect: Rect, label: &str, act
     let tracking = 0.10;
     let label_w = measure_tracked_em(&font, label, tracking);
     let (_, m) = font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        9.0
+    };
     let mut text = Paint::default();
     text.set_anti_alias(true);
     text.set_color4f(
-        if active { rgba(PEARL, 1.0) } else { rgba(MAUVE, 1.0) },
+        if active {
+            rgba(PEARL, 1.0)
+        } else {
+            rgba(MAUVE, 1.0)
+        },
         None,
     );
     draw_tracked_em(
@@ -331,7 +373,12 @@ pub(super) fn draw_settings(canvas: &Canvas, editor: &Editor, fonts: &FontStore,
     let mut title = Paint::default();
     title.set_anti_alias(true);
     title.set_color4f(rgba(PEARL, 1.0), None);
-    canvas.draw_str("HUD preferences", (left, panel.top + 78.0), &title_font, &title);
+    canvas.draw_str(
+        "HUD preferences",
+        (left, panel.top + 78.0),
+        &title_font,
+        &title,
+    );
 
     let label_font = fonts.jetbrains_mono(10.0);
 
@@ -480,12 +527,7 @@ pub(super) fn home_layout(w: f32, h: f32) -> (Rect, Rect, [Rect; 5], Rect, Rect)
     // (not the entire panel height) — old layout had the model dominate.
     let skin_w = 150.0;
     let skin_h = 360.0;
-    let skin = Rect::from_xywh(
-        panel.left + 32.0,
-        panel.top + 124.0,
-        skin_w,
-        skin_h,
-    );
+    let skin = Rect::from_xywh(panel.left + 32.0, panel.top + 124.0, skin_w, skin_h);
 
     // Right column — stat cards (a 2-wide grid, the last card full width).
     let rx = skin.right + 28.0;
@@ -530,8 +572,7 @@ pub(super) fn fmt_playtime(secs: i32) -> String {
 
 /// `%APPDATA%/EwoClient/profiles.toml`.
 pub(super) fn profiles_toml_path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA")
-        .map(|a| PathBuf::from(a).join("EwoClient").join("profiles.toml"))
+    std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("EwoClient").join("profiles.toml"))
 }
 
 /// Read `profiles.toml` — `(active, all profile names)`. `None` if the file
@@ -567,7 +608,10 @@ pub(super) fn read_profiles() -> Option<(String, Vec<String>)> {
         return None;
     }
     if active.is_empty() {
-        active = all.first().cloned().unwrap_or_else(|| "Default".to_string());
+        active = all
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Default".to_string());
     }
     if all.is_empty() {
         all.push(active.clone());
@@ -604,7 +648,13 @@ pub(super) fn write_profiles(active: &str, all: &[String]) {
 /// plus the design's `.card.hairglow` subtle pearl-tint chrome:
 /// `inset 0 1px 0 rgba(244,232,234,.06)` top highlight + `0 0 0 1px rgba(229,184,197,.04)`
 /// rose tint ring. The lifts cards off the panel without screaming for attention.
-pub(super) fn draw_stat_card(canvas: &Canvas, rect: Rect, label: &str, value: &str, fonts: &FontStore) {
+pub(super) fn draw_stat_card(
+    canvas: &Canvas,
+    rect: Rect,
+    label: &str,
+    value: &str,
+    fonts: &FontStore,
+) {
     let radius = 12.0;
     draw_chip(canvas, rect, radius);
 
@@ -621,7 +671,12 @@ pub(super) fn draw_stat_card(canvas: &Canvas, rect: Rect, label: &str, value: &s
     canvas.save();
     let top_clip = Rect::from_xywh(rect.left, rect.top, rect.width(), 2.0);
     canvas.clip_rect(top_clip, Some(ClipOp::Intersect), Some(true));
-    let inset = Rect::new(rect.left + 0.5, rect.top + 0.5, rect.right - 0.5, rect.bottom - 0.5);
+    let inset = Rect::new(
+        rect.left + 0.5,
+        rect.top + 0.5,
+        rect.right - 0.5,
+        rect.bottom - 0.5,
+    );
     let mut top = Paint::default();
     top.set_anti_alias(true);
     top.set_style(PaintStyle::Stroke);
@@ -636,7 +691,14 @@ pub(super) fn draw_stat_card(canvas: &Canvas, rect: Rect, label: &str, value: &s
     let mut label_paint = Paint::default();
     label_paint.set_anti_alias(true);
     label_paint.set_color4f(rgba(MAUVE, 1.0), None);
-    draw_tracked_em(canvas, label, (left, rect.top + 22.0), &label_font, &label_paint, 0.22);
+    draw_tracked_em(
+        canvas,
+        label,
+        (left, rect.top + 22.0),
+        &label_font,
+        &label_paint,
+        0.22,
+    );
 
     let value_font = fonts.fraunces_axes(20.0, 36.0, 0.0, 560.0, None);
     let mut value_paint = Paint::default();
@@ -649,7 +711,13 @@ pub(super) fn draw_stat_card(canvas: &Canvas, rect: Rect, label: &str, value: &s
 /// an LED dot + label; when on, the pill takes a vertical berry-wine gradient
 /// fill + a brighter rose border + a glowing rose LED. Hover shading is added
 /// by the outer hit-test (HOME doesn't currently track hover).
-pub(super) fn draw_toggle_chip(canvas: &Canvas, rect: Rect, label: &str, on: bool, fonts: &FontStore) {
+pub(super) fn draw_toggle_chip(
+    canvas: &Canvas,
+    rect: Rect,
+    label: &str,
+    on: bool,
+    fonts: &FontStore,
+) {
     let r = rect.height() * 0.5;
     let rrect = RRect::new_rect_xy(rect, r, r);
 
@@ -666,7 +734,12 @@ pub(super) fn draw_toggle_chip(canvas: &Canvas, rect: Rect, label: &str, on: boo
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
                     rgba(BERRY, 0.45),
-                    Color4f::new(0x7F as f32 / 255.0, 0x40 as f32 / 255.0, 0x5A as f32 / 255.0, 0.45),
+                    Color4f::new(
+                        0x7F as f32 / 255.0,
+                        0x40 as f32 / 255.0,
+                        0x5A as f32 / 255.0,
+                        0.45,
+                    ),
                 ],
                 None,
             ),
@@ -687,7 +760,14 @@ pub(super) fn draw_toggle_chip(canvas: &Canvas, rect: Rect, label: &str, on: boo
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(if on { rgba(ROSE, 0.34) } else { rgba(PEARL, 0.10) }, None);
+    border.set_color4f(
+        if on {
+            rgba(ROSE, 0.34)
+        } else {
+            rgba(PEARL, 0.10)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &border);
 
     let cy = (rect.top + rect.bottom) * 0.5;
@@ -707,7 +787,12 @@ pub(super) fn draw_toggle_chip(canvas: &Canvas, rect: Rect, label: &str, on: boo
         if on {
             rgba(ROSE, 1.0)
         } else {
-            Color4f::new(0x43 as f32 / 255.0, 0x24 as f32 / 255.0, 0x2E as f32 / 255.0, 1.0)
+            Color4f::new(
+                0x43 as f32 / 255.0,
+                0x24 as f32 / 255.0,
+                0x2E as f32 / 255.0,
+                1.0,
+            )
         },
         None,
     );
@@ -715,16 +800,41 @@ pub(super) fn draw_toggle_chip(canvas: &Canvas, rect: Rect, label: &str, on: boo
 
     let font = fonts.jetbrains_mono(9.0);
     let (_, m) = font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 9.0 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        9.0
+    };
     let mut text = Paint::default();
     text.set_anti_alias(true);
-    text.set_color4f(if on { rgba(PEARL, 1.0) } else { rgba(MAUVE, 1.0) }, None);
-    draw_tracked_em(canvas, label, (dot_x + 12.0, cy + cap * 0.5), &font, &text, 0.22);
+    text.set_color4f(
+        if on {
+            rgba(PEARL, 1.0)
+        } else {
+            rgba(MAUVE, 1.0)
+        },
+        None,
+    );
+    draw_tracked_em(
+        canvas,
+        label,
+        (dot_x + 12.0, cy + cap * 0.5),
+        &font,
+        &text,
+        0.22,
+    );
 }
 
 /// The HOME / overview view — a rotatable 3D skin, session stats, the
 /// account + profile, and quick per-HUD-widget visibility toggles.
-pub(super) fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fonts: &FontStore, w: f32, h: f32) {
+pub(super) fn draw_home(
+    canvas: &Canvas,
+    editor: &mut Editor,
+    data: &HudData,
+    fonts: &FontStore,
+    w: f32,
+    h: f32,
+) {
     let (panel, skin_rect, stats, media_rect, toggle_area) = home_layout(w, h);
     draw_chip(canvas, panel, 16.0);
     let left = panel.left + 28.0;
@@ -759,7 +869,11 @@ pub(super) fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fo
 
     // ── Title — "Welcome back, <player>" with the name in rose italic ──────
     let player = data.player_name();
-    let display_name = if player.is_empty() { editor.active_profile.clone() } else { player };
+    let display_name = if player.is_empty() {
+        editor.active_profile.clone()
+    } else {
+        player
+    };
     let title_font = fonts.fraunces_axes(34.0, 70.0, 0.0, 540.0, Some(144.0));
     let name_font = fonts.fraunces_axes(34.0, 100.0, 1.0, 540.0, Some(144.0));
 
@@ -807,7 +921,10 @@ pub(super) fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fo
     draw_tracked_em(
         canvas,
         hint_text,
-        (skin_rect.left + (skin_rect.width() - hint_w) * 0.5, skin_rect.bottom - 12.0),
+        (
+            skin_rect.left + (skin_rect.width() - hint_w) * 0.5,
+            skin_rect.bottom - 12.0,
+        ),
         &hint_font,
         &hint,
         0.16,
@@ -820,7 +937,12 @@ pub(super) fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fo
         "—".to_string()
     };
     let coords = if data.world_active() {
-        format!("{:.0}  {:.0}  {:.0}", data.player_x(), data.player_y(), data.player_z())
+        format!(
+            "{:.0}  {:.0}  {:.0}",
+            data.player_x(),
+            data.player_y(),
+            data.player_z()
+        )
     } else {
         "—".to_string()
     };
@@ -886,7 +1008,12 @@ pub(super) fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fo
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
     name_paint.set_color4f(rgba(PEARL, 1.0), None);
-    canvas.draw_str(&account, (av_cx + av_r + 14.0, av_cy - 3.0), &name_font, &name_paint);
+    canvas.draw_str(
+        &account,
+        (av_cx + av_r + 14.0, av_cy - 3.0),
+        &name_font,
+        &name_paint,
+    );
 
     // Meta line — italic Newsreader "profile · <Name>". Mixed case avoids
     // the redundant "PROFILE · PROFILE" reading when the active profile is
@@ -896,7 +1023,12 @@ pub(super) fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fo
     meta_paint.set_anti_alias(true);
     meta_paint.set_color4f(rgba(MAUVE, 1.0), None);
     let meta = format!("profile  ·  {}", editor.active_profile);
-    canvas.draw_str(&meta, (av_cx + av_r + 14.0, av_cy + 14.0), &meta_font, &meta_paint);
+    canvas.draw_str(
+        &meta,
+        (av_cx + av_r + 14.0, av_cy + 14.0),
+        &meta_font,
+        &meta_paint,
+    );
 
     // ── Media-controller card (large) ──────────────────────────────────────
     draw_media_large(
@@ -935,7 +1067,7 @@ pub(super) fn draw_home(canvas: &Canvas, editor: &mut Editor, data: &HudData, fo
         let label = id.title();
         let label_w = measure_tracked_em(&chip_label_font, label, 0.22);
         let chip_w = 15.0 + 8.0 + label_w + 14.0; // dot_offset + dot+gap + label + right_pad
-        // Wrap to a new row if this chip won't fit on the current one.
+                                                  // Wrap to a new row if this chip won't fit on the current one.
         if cursor_x + chip_w > toggle_area.right && cursor_x > toggle_area.left {
             cursor_x = toggle_area.left;
             cursor_y += chip_h + chip_gap_y;
@@ -1071,7 +1203,10 @@ pub(super) fn draw_media_button(
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
         if let Some(shader) = gradient_shader::linear(
-            (Point::new(rect.left, rect.top), Point::new(rect.left, rect.bottom)),
+            (
+                Point::new(rect.left, rect.top),
+                Point::new(rect.left, rect.bottom),
+            ),
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[rose_lift, rgba(BERRY, 1.0)],
                 None,
@@ -1179,19 +1314,13 @@ pub(super) fn draw_media_button(
                 Rect::from_xywh(cx - gap * 0.5 - bw, cy - bh * 0.5, bw, bh),
                 &g,
             );
-            canvas.draw_rect(
-                Rect::from_xywh(cx + gap * 0.5, cy - bh * 0.5, bw, bh),
-                &g,
-            );
+            canvas.draw_rect(Rect::from_xywh(cx + gap * 0.5, cy - bh * 0.5, bw, bh), &g);
         }
         // ⏮ previous — left bar + reverse triangle.
         '<' => {
             let bh = size * 1.6;
             let bw = size * 0.32;
-            canvas.draw_rect(
-                Rect::from_xywh(cx - size * 1.1, cy - bh * 0.5, bw, bh),
-                &g,
-            );
+            canvas.draw_rect(Rect::from_xywh(cx - size * 1.1, cy - bh * 0.5, bw, bh), &g);
             let path = {
                 let mut p = skia_safe::Path::new();
                 p.move_to((cx + size * 0.9, cy - bh * 0.5));
@@ -1206,10 +1335,7 @@ pub(super) fn draw_media_button(
         '>' => {
             let bh = size * 1.6;
             let bw = size * 0.32;
-            canvas.draw_rect(
-                Rect::from_xywh(cx + size * 0.78, cy - bh * 0.5, bw, bh),
-                &g,
-            );
+            canvas.draw_rect(Rect::from_xywh(cx + size * 0.78, cy - bh * 0.5, bw, bh), &g);
             let path = {
                 let mut p = skia_safe::Path::new();
                 p.move_to((cx - size * 0.9, cy - bh * 0.5));
@@ -1265,7 +1391,11 @@ pub(super) fn draw_media_large(
         let mut bloom = Paint::default();
         bloom.set_anti_alias(true);
         bloom.set_color4f(rgba(ROSE, 0.38 * energy), None);
-        bloom.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 14.0 + 20.0 * energy, false));
+        bloom.set_mask_filter(MaskFilter::blur(
+            BlurStyle::Normal,
+            14.0 + 20.0 * energy,
+            false,
+        ));
         canvas.draw_rrect(RRect::new_rect_xy(halo, 18.0 + grow, 18.0 + grow), &bloom);
     }
 
@@ -1279,11 +1409,7 @@ pub(super) fn draw_media_large(
                 Point::new(rect.right, rect.bottom),
             ),
             gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    rgba(BERRY, 0.22),
-                    rgba(LAV, 0.10),
-                    rgba(WINE, 0.72),
-                ],
+                &[rgba(BERRY, 0.22), rgba(LAV, 0.10), rgba(WINE, 0.72)],
                 None,
             ),
             Some(&[0.0_f32, 0.4, 1.0][..]),
@@ -1319,7 +1445,12 @@ pub(super) fn draw_media_large(
     canvas.save();
     let top_clip = Rect::from_xywh(rect.left, rect.top, rect.width(), 2.0);
     canvas.clip_rect(top_clip, Some(ClipOp::Intersect), Some(true));
-    let inset = Rect::new(rect.left + 0.5, rect.top + 0.5, rect.right - 0.5, rect.bottom - 0.5);
+    let inset = Rect::new(
+        rect.left + 0.5,
+        rect.top + 0.5,
+        rect.right - 0.5,
+        rect.bottom - 0.5,
+    );
     let mut top = Paint::default();
     top.set_anti_alias(true);
     top.set_style(PaintStyle::Stroke);
@@ -1347,7 +1478,11 @@ pub(super) fn draw_media_large(
         let mut probe = Paint::default();
         let (gw, _) = g_font.measure_str(glyph, Some(&probe));
         let (_, gm) = g_font.metrics();
-        let gcap = if gm.cap_height > 0.0 { gm.cap_height } else { 22.0 };
+        let gcap = if gm.cap_height > 0.0 {
+            gm.cap_height
+        } else {
+            22.0
+        };
         probe.set_anti_alias(true);
         let mut gp = Paint::default();
         gp.set_anti_alias(true);
@@ -1421,7 +1556,12 @@ pub(super) fn draw_media_large(
         },
         None,
     );
-    canvas.draw_str(&title_str, (mid_left, title_baseline), &title_font, &title_paint);
+    canvas.draw_str(
+        &title_str,
+        (mid_left, title_baseline),
+        &title_font,
+        &title_paint,
+    );
 
     // Artist line — italic Newsreader-ish (we don't have a true italic
     // Fraunces cut here yet; tracked Newsreader mauve is a close stand-in).
@@ -1437,7 +1577,12 @@ pub(super) fn draw_media_large(
         let mut artist = Paint::default();
         artist.set_anti_alias(true);
         artist.set_color4f(rgba(MAUVE, 1.0), None);
-        canvas.draw_str(&artist_str, (mid_left, title_baseline + 18.0), &artist_font, &artist);
+        canvas.draw_str(
+            &artist_str,
+            (mid_left, title_baseline + 18.0),
+            &artist_font,
+            &artist,
+        );
     }
     canvas.restore();
 
@@ -1533,7 +1678,12 @@ pub(super) fn draw_media_large(
     let cluster_left = rect.right - 14.0 - cluster_w;
     let cy = rect.top + rect.height() * 0.5;
     let prev = Rect::from_xywh(cluster_left, cy - ctl_size * 0.5, ctl_size, ctl_size);
-    let play = Rect::from_xywh(cluster_left + ctl_size + gap, cy - play_size * 0.5, play_size, play_size);
+    let play = Rect::from_xywh(
+        cluster_left + ctl_size + gap,
+        cy - play_size * 0.5,
+        play_size,
+        play_size,
+    );
     let next = Rect::from_xywh(
         cluster_left + ctl_size + gap + play_size + gap,
         cy - ctl_size * 0.5,

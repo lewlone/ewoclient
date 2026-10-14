@@ -19,10 +19,10 @@
 
 use winit::window::Window;
 
-#[cfg(target_os = "windows")]
-mod win32;
 #[cfg(target_os = "linux")]
 mod wayland;
+#[cfg(target_os = "windows")]
+mod win32;
 
 pub mod icon;
 

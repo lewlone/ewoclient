@@ -126,7 +126,11 @@ fn draw_tint(
         let speed = settings.motion_speed.max(0.0001);
         // Reduced motion: `.glass-tint` rests on its base opacity 1 (phase 0).
         let phase = (motion::ambient_time(time) / (8.0 / speed)).rem_euclid(1.0);
-        let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
+        let triangle = if phase < 0.5 {
+            phase * 2.0
+        } else {
+            (1.0 - phase) * 2.0
+        };
         let smooth = triangle * triangle * (3.0 - 2.0 * triangle);
         // CSS keyframe: 1.0 ↔ (1.0 - 0.10*breath_amp), peak depth at phase=0.5.
         1.0 - 0.10 * settings.breath_amp * smooth

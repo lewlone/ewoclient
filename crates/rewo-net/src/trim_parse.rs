@@ -148,7 +148,8 @@ pub fn parse_trim_material_registry(
                 _ => None,
             })
             .unwrap_or_else(|| {
-                id.split_once(':').map_or(id.clone(), |(_, p)| p.to_string())
+                id.split_once(':')
+                    .map_or(id.clone(), |(_, p)| p.to_string())
             });
         let mut overrides = Vec::new();
         if let Some(Nbt::Compound(map)) = data.as_ref().and_then(|n| n.get("override_armor_assets"))
@@ -180,7 +181,11 @@ mod tests {
         // A datapack's own namespace does not enter the path — the *path* is
         // what `withPath` rewrites.
         assert_eq!(
-            layer_asset_path("mypack:swirl", "trims/entity/humanoid_leggings", "gold_darker"),
+            layer_asset_path(
+                "mypack:swirl",
+                "trims/entity/humanoid_leggings",
+                "gold_darker"
+            ),
             "trims/entity/humanoid_leggings/swirl_gold_darker"
         );
     }

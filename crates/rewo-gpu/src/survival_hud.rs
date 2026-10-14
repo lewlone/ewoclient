@@ -204,7 +204,11 @@ impl HudRandom {
     }
 
     fn next(&mut self, bits: u32) -> i32 {
-        self.seed = (self.seed.wrapping_mul(Self::MULTIPLIER).wrapping_add(Self::ADDEND)) & Self::MASK;
+        self.seed = (self
+            .seed
+            .wrapping_mul(Self::MULTIPLIER)
+            .wrapping_add(Self::ADDEND))
+            & Self::MASK;
         (self.seed >> (48 - bits)) as i32
     }
 
@@ -261,7 +265,8 @@ impl EffectInput {
 /// vanilla, which nothing can reproduce; Rewo keeps the list's own order.
 pub fn effect_compare(a: &EffectInput, b: &EffectInput) -> std::cmp::Ordering {
     const UPDATE_CUT_OFF: i32 = 32147;
-    if (a.duration <= UPDATE_CUT_OFF || b.duration <= UPDATE_CUT_OFF) && (!a.ambient || !b.ambient) {
+    if (a.duration <= UPDATE_CUT_OFF || b.duration <= UPDATE_CUT_OFF) && (!a.ambient || !b.ambient)
+    {
         // `compareFalseFirst`: false < true, which is `bool`'s own `Ord`.
         a.ambient
             .cmp(&b.ambient)
@@ -467,7 +472,9 @@ fn player_health(inp: &SurvivalInputs, gui_w: i32, gui_h: i32, out: &mut Vec<Hud
     let x_left = gui_w / 2 - 91;
     let x_right = gui_w / 2 + 91;
     let y_line_base = gui_h - 39;
-    let max_health = inp.max_health_attr.max(old_health.max(current_health) as f32);
+    let max_health = inp
+        .max_health_attr
+        .max(old_health.max(current_health) as f32);
     let total_absorption = ceil_f(inp.absorption);
     let num_health_rows = ceil_f((max_health + total_absorption as f32) / 2.0 / 10.0);
     let health_row_height = (10 - (num_health_rows - 2)).max(3);
@@ -478,7 +485,14 @@ fn player_health(inp: &SurvivalInputs, gui_w: i32, gui_h: i32, out: &mut Vec<Hud
         -1
     };
 
-    armor(inp.armor, y_line_base, num_health_rows, health_row_height, x_left, out);
+    armor(
+        inp.armor,
+        y_line_base,
+        num_health_rows,
+        health_row_height,
+        x_left,
+        out,
+    );
     hearts(
         inp,
         &mut rng,
@@ -545,20 +559,21 @@ fn hearts(
     let health_container_count = ceil_d(f64::from(max_health) / 2.0);
     let absorption_container_count = ceil_d(f64::from(absorption) / 2.0);
     let max_health_halves_count = health_container_count * 2;
-    let heart = |k: HeartKind, xo: i32, yo: i32, blinks: bool, half: bool, out: &mut Vec<HudBlit>| {
-        out.push(blit(
-            xo,
-            yo,
-            9,
-            9,
-            HudIcon::PlayerHeart {
-                kind: k,
-                hardcore,
-                half,
-                blink: blinks,
-            },
-        ));
-    };
+    let heart =
+        |k: HeartKind, xo: i32, yo: i32, blinks: bool, half: bool, out: &mut Vec<HudBlit>| {
+            out.push(blit(
+                xo,
+                yo,
+                9,
+                9,
+                HudIcon::PlayerHeart {
+                    kind: k,
+                    hardcore,
+                    half,
+                    blink: blinks,
+                },
+            ));
+        };
     for container_index in (0..health_container_count + absorption_container_count).rev() {
         let row = container_index / 10;
         let column = container_index % 10;
@@ -597,10 +612,20 @@ fn hearts(
 }
 
 /// `extractFood` (`Hud.java:958-991`) — right to left.
-fn food(inp: &SurvivalInputs, rng: &mut HudRandom, y_line_base: i32, x_right: i32, out: &mut Vec<HudBlit>) {
+fn food(
+    inp: &SurvivalInputs,
+    rng: &mut HudRandom,
+    y_line_base: i32,
+    x_right: i32,
+    out: &mut Vec<HudBlit>,
+) {
     let food = inp.food;
     let (empty, half, full) = if inp.hunger_effect {
-        (FoodSprite::EmptyHunger, FoodSprite::HalfHunger, FoodSprite::FullHunger)
+        (
+            FoodSprite::EmptyHunger,
+            FoodSprite::HalfHunger,
+            FoodSprite::FullHunger,
+        )
     } else {
         (FoodSprite::Empty, FoodSprite::Half, FoodSprite::Full)
     };
@@ -698,12 +723,30 @@ fn vehicle_health(inp: &SurvivalInputs, gui_w: i32, gui_h: i32, out: &mut Vec<Hu
         hearts -= row_hearts;
         for i in 0..row_hearts {
             let xo = x_right - i * 8 - 9;
-            out.push(blit(xo, yo, 9, 9, HudIcon::VehicleHeart(VehicleHeartSprite::Container)));
+            out.push(blit(
+                xo,
+                yo,
+                9,
+                9,
+                HudIcon::VehicleHeart(VehicleHeartSprite::Container),
+            ));
             if i * 2 + 1 + base_health < current {
-                out.push(blit(xo, yo, 9, 9, HudIcon::VehicleHeart(VehicleHeartSprite::Full)));
+                out.push(blit(
+                    xo,
+                    yo,
+                    9,
+                    9,
+                    HudIcon::VehicleHeart(VehicleHeartSprite::Full),
+                ));
             }
             if i * 2 + 1 + base_health == current {
-                out.push(blit(xo, yo, 9, 9, HudIcon::VehicleHeart(VehicleHeartSprite::Half)));
+                out.push(blit(
+                    xo,
+                    yo,
+                    9,
+                    9,
+                    HudIcon::VehicleHeart(VehicleHeartSprite::Half),
+                ));
             }
         }
         yo -= 10;
@@ -727,13 +770,31 @@ pub fn jump_progress_px(scale: f32) -> i32 {
 /// `JumpableVehicleBar.extractBackground`.
 fn jump_bar(j: JumpInput, gui_w: i32, gui_h: i32, out: &mut Vec<HudBlit>) {
     let (left, top) = contextual_bar_pos(gui_w, gui_h);
-    out.push(blit(left, top, 182, 5, HudIcon::JumpBar(JumpBarSprite::Background)));
+    out.push(blit(
+        left,
+        top,
+        182,
+        5,
+        HudIcon::JumpBar(JumpBarSprite::Background),
+    ));
     if j.cooldown > 0 {
-        out.push(blit(left, top, 182, 5, HudIcon::JumpBar(JumpBarSprite::Cooldown)));
+        out.push(blit(
+            left,
+            top,
+            182,
+            5,
+            HudIcon::JumpBar(JumpBarSprite::Cooldown),
+        ));
     } else {
         let progress = jump_progress_px(j.scale);
         if progress > 0 {
-            out.push(blit(left, top, progress, 5, HudIcon::JumpBar(JumpBarSprite::Progress)));
+            out.push(blit(
+                left,
+                top,
+                progress,
+                5,
+                HudIcon::JumpBar(JumpBarSprite::Progress),
+            ));
         }
     }
 }
@@ -764,7 +825,13 @@ fn effects(inp: &SurvivalInputs, gui_w: i32, out: &mut Vec<HudBlit>) {
             x -= 25 * harmful_count;
             y += 26;
         }
-        out.push(blit(x, y, 24, 24, HudIcon::EffectBackground { ambient: e.ambient }));
+        out.push(blit(
+            x,
+            y,
+            24,
+            24,
+            HudIcon::EffectBackground { ambient: e.ambient },
+        ));
         // `getMobEffectSprite` (26.2 `Hud.java`): a keyless holder —
         // Rewo's case is an id outside the sprite table — falls back to
         // `MissingTextureAtlasSprite::getLocation`, the magenta/black
@@ -833,18 +900,36 @@ mod tests {
     fn the_per_frame_seed_wraps_as_an_int() {
         let t = 7000; // 7000 * 312871 = 2_190_097_000 > i32::MAX
         let wrapped = 7000i32.wrapping_mul(312871);
-        assert!(wrapped < 0, "must have wrapped for the test to mean anything");
-        assert_eq!(HudRandom::for_tick(t), HudRandom::with_seed(i64::from(wrapped)));
-        assert_ne!(HudRandom::for_tick(t), HudRandom::with_seed(7000i64 * 312871));
+        assert!(
+            wrapped < 0,
+            "must have wrapped for the test to mean anything"
+        );
+        assert_eq!(
+            HudRandom::for_tick(t),
+            HudRandom::with_seed(i64::from(wrapped))
+        );
+        assert_ne!(
+            HudRandom::for_tick(t),
+            HudRandom::with_seed(7000i64 * 312871)
+        );
     }
 
     #[test]
     fn the_heart_sprite_index_is_get_sprites_table() {
         // full, full_blinking, half, half_blinking, hardcore_full, ...
-        assert_eq!(heart_sprite_index(HeartKind::Normal, false, false, false), 8);
+        assert_eq!(
+            heart_sprite_index(HeartKind::Normal, false, false, false),
+            8
+        );
         assert_eq!(heart_sprite_index(HeartKind::Normal, false, false, true), 9);
-        assert_eq!(heart_sprite_index(HeartKind::Normal, false, true, false), 10);
-        assert_eq!(heart_sprite_index(HeartKind::Normal, true, false, false), 12);
+        assert_eq!(
+            heart_sprite_index(HeartKind::Normal, false, true, false),
+            10
+        );
+        assert_eq!(
+            heart_sprite_index(HeartKind::Normal, true, false, false),
+            12
+        );
         assert_eq!(heart_sprite_index(HeartKind::Normal, true, true, true), 15);
         assert_eq!(heart_sprite_index(HeartKind::Frozen, true, true, true), 47);
         assert_eq!(
@@ -852,7 +937,10 @@ mod tests {
             HeartKind::Poisoned,
             "POISON first"
         );
-        assert_eq!(HeartKind::for_player(false, true, true), HeartKind::Withered);
+        assert_eq!(
+            HeartKind::for_player(false, true, true),
+            HeartKind::Withered
+        );
         assert_eq!(HeartKind::for_player(false, false, true), HeartKind::Frozen);
     }
 
@@ -866,14 +954,27 @@ mod tests {
         let x_left = GW / 2 - 91;
         let y = GH - 39;
         // Containers run from the LAST index to the first.
-        assert_eq!((hearts[0].x, hearts[0].y), ((x_left + 9 * 8) as f32, y as f32));
+        assert_eq!(
+            (hearts[0].x, hearts[0].y),
+            ((x_left + 9 * 8) as f32, y as f32)
+        );
         assert_eq!(
             hearts[0].icon,
-            HudIcon::PlayerHeart { kind: HeartKind::Container, hardcore: false, half: false, blink: false }
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Container,
+                hardcore: false,
+                half: false,
+                blink: false
+            }
         );
         assert_eq!(
             hearts[1].icon,
-            HudIcon::PlayerHeart { kind: HeartKind::Normal, hardcore: false, half: false, blink: false }
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Normal,
+                hardcore: false,
+                half: false,
+                blink: false
+            }
         );
         assert_eq!(hearts[18].x, x_left as f32);
         let food = icons(&v, |i| matches!(i, HudIcon::Food(_)));
@@ -884,19 +985,45 @@ mod tests {
         assert_eq!(food[1].icon, HudIcon::Food(FoodSprite::Full));
         assert_eq!(food[18].x, (x_right - 9 * 8 - 9) as f32);
         // Nothing else.
-        assert!(icons(&v, |i| matches!(i, HudIcon::Armor(_) | HudIcon::Air(_) | HudIcon::VehicleHeart(_) | HudIcon::Effect(_) | HudIcon::EffectBackground { .. } | HudIcon::JumpBar(_))).is_empty());
+        assert!(icons(&v, |i| matches!(
+            i,
+            HudIcon::Armor(_)
+                | HudIcon::Air(_)
+                | HudIcon::VehicleHeart(_)
+                | HudIcon::Effect(_)
+                | HudIcon::EffectBackground { .. }
+                | HudIcon::JumpBar(_)
+        ))
+        .is_empty());
     }
 
     /// 0.3 health is a half heart: `Mth.ceil`, where M3 rounded to nothing.
     #[test]
     fn health_is_ceiled_not_rounded() {
-        let inp = SurvivalInputs { health: 0.3, display_health: 1, ..Default::default() };
+        let inp = SurvivalInputs {
+            health: 0.3,
+            display_health: 1,
+            ..Default::default()
+        };
         let v = layout(&inp, GW, GH);
-        let fills: Vec<_> = icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Normal, .. }));
+        let fills: Vec<_> = icons(&v, |i| {
+            matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Normal,
+                    ..
+                }
+            )
+        });
         assert_eq!(fills.len(), 1);
         assert_eq!(
             fills[0].icon,
-            HudIcon::PlayerHeart { kind: HeartKind::Normal, hardcore: false, half: true, blink: false }
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Normal,
+                hardcore: false,
+                half: true,
+                blink: false
+            }
         );
     }
 
@@ -911,7 +1038,15 @@ mod tests {
             ..Default::default()
         };
         let v = layout(&inp, GW, GH);
-        let containers = icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Container, .. }));
+        let containers = icons(&v, |i| {
+            matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Container,
+                    ..
+                }
+            )
+        });
         assert_eq!(containers.len(), 30);
         let y = GH - 39;
         // rows = ceil(60/2/10) = 3; rowHeight = max(10 - 1, 3) = 9.
@@ -936,24 +1071,83 @@ mod tests {
     /// or WITHERED when withered — and never as the player's own type.
     #[test]
     fn absorption_hearts_are_absorbing_unless_withered() {
-        let base = SurvivalInputs { absorption: 3.0, ..Default::default() };
+        let base = SurvivalInputs {
+            absorption: 3.0,
+            ..Default::default()
+        };
         let v = layout(&base, GW, GH);
-        let containers = icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Container, .. }));
+        let containers = icons(&v, |i| {
+            matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Container,
+                    ..
+                }
+            )
+        });
         assert_eq!(containers.len(), 12, "10 health + ceil(3/2) = 2 absorption");
-        let abs = icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Absorbing, .. }));
+        let abs = icons(&v, |i| {
+            matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Absorbing,
+                    ..
+                }
+            )
+        });
         assert_eq!(abs.len(), 2);
         // The outer container (index 11) is halves 22 -> absHalves 2 -> 2 < 3 and 3 == 3 -> half.
-        assert!(matches!(abs[0].icon, HudIcon::PlayerHeart { half: true, .. }));
-        assert!(matches!(abs[1].icon, HudIcon::PlayerHeart { half: false, .. }));
+        assert!(matches!(
+            abs[0].icon,
+            HudIcon::PlayerHeart { half: true, .. }
+        ));
+        assert!(matches!(
+            abs[1].icon,
+            HudIcon::PlayerHeart { half: false, .. }
+        ));
         // Second row: containers 10 and 11 sit one row up at rowHeight 10.
         assert_eq!(abs[0].y as i32, GH - 39 - 10);
-        let withered = SurvivalInputs { heart_type: HeartKind::Withered, ..base.clone() };
+        let withered = SurvivalInputs {
+            heart_type: HeartKind::Withered,
+            ..base.clone()
+        };
         let v = layout(&withered, GW, GH);
-        assert!(icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Absorbing, .. })).is_empty());
-        assert_eq!(icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Withered, .. })).len(), 12);
-        let poisoned = SurvivalInputs { heart_type: HeartKind::Poisoned, ..base };
+        assert!(icons(&v, |i| matches!(
+            i,
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Absorbing,
+                ..
+            }
+        ))
+        .is_empty());
+        assert_eq!(
+            icons(&v, |i| matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Withered,
+                    ..
+                }
+            ))
+            .len(),
+            12
+        );
+        let poisoned = SurvivalInputs {
+            heart_type: HeartKind::Poisoned,
+            ..base
+        };
         let v = layout(&poisoned, GW, GH);
-        assert_eq!(icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Absorbing, .. })).len(), 2, "poison does not recolour absorption");
+        assert_eq!(
+            icons(&v, |i| matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Absorbing,
+                    ..
+                }
+            ))
+            .len(),
+            2,
+            "poison does not recolour absorption"
+        );
     }
 
     /// Blink: the container blinks, the OLD health is drawn blinking under
@@ -972,12 +1166,39 @@ mod tests {
         let hearts = icons(&v, is_heart);
         // Per container: container(blink) + [old blink fill] + [current fill].
         // Container 9 (halves 18): 18 < 20 -> old blink fill; 18 < 14 false.
-        assert_eq!(hearts[0].icon, HudIcon::PlayerHeart { kind: HeartKind::Container, hardcore: true, half: false, blink: true });
-        assert_eq!(hearts[1].icon, HudIcon::PlayerHeart { kind: HeartKind::Normal, hardcore: true, half: false, blink: true });
+        assert_eq!(
+            hearts[0].icon,
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Container,
+                hardcore: true,
+                half: false,
+                blink: true
+            }
+        );
+        assert_eq!(
+            hearts[1].icon,
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Normal,
+                hardcore: true,
+                half: false,
+                blink: true
+            }
+        );
         // Container 6 (halves 12): old 12 < 20 blink fill, then 12 < 14 with 13 == 14 false -> full.
-        let c6: Vec<_> = hearts.iter().filter(|b| b.x as i32 == GW / 2 - 91 + 6 * 8).collect();
+        let c6: Vec<_> = hearts
+            .iter()
+            .filter(|b| b.x as i32 == GW / 2 - 91 + 6 * 8)
+            .collect();
         assert_eq!(c6.len(), 3);
-        assert_eq!(c6[2].icon, HudIcon::PlayerHeart { kind: HeartKind::Normal, hardcore: true, half: false, blink: false });
+        assert_eq!(
+            c6[2].icon,
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Normal,
+                hardcore: true,
+                half: false,
+                blink: false
+            }
+        );
         let total: usize = hearts.len();
         assert_eq!(total, 10 + 10 + 7);
     }
@@ -986,15 +1207,45 @@ mod tests {
     /// is `tickCount % ceil(maxHealth + 5)`, and only among HEALTH hearts.
     #[test]
     fn the_regeneration_wave_lifts_one_heart() {
-        let inp = SurvivalInputs { regeneration: true, tick_count: 3, ..Default::default() };
+        let inp = SurvivalInputs {
+            regeneration: true,
+            tick_count: 3,
+            ..Default::default()
+        };
         let v = layout(&inp, GW, GH);
-        let containers = icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Container, .. }));
-        let lifted: Vec<_> = containers.iter().filter(|b| b.y as i32 == GH - 39 - 2).collect();
+        let containers = icons(&v, |i| {
+            matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Container,
+                    ..
+                }
+            )
+        });
+        let lifted: Vec<_> = containers
+            .iter()
+            .filter(|b| b.y as i32 == GH - 39 - 2)
+            .collect();
         assert_eq!(lifted.len(), 1);
         assert_eq!(lifted[0].x as i32, GW / 2 - 91 + 3 * 8);
         // tick 12 % 25 = 12 -> no container has that index: nothing lifts.
-        let v = layout(&SurvivalInputs { tick_count: 12, ..inp }, GW, GH);
-        assert!(icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Container, .. })).iter().all(|b| b.y as i32 == GH - 39));
+        let v = layout(
+            &SurvivalInputs {
+                tick_count: 12,
+                ..inp
+            },
+            GW,
+            GH,
+        );
+        assert!(icons(&v, |i| matches!(
+            i,
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Container,
+                ..
+            }
+        ))
+        .iter()
+        .all(|b| b.y as i32 == GH - 39));
     }
 
     /// Low health jitters every container by `nextInt(2)` off the seeded
@@ -1002,17 +1253,47 @@ mod tests {
     /// a pure function of the tick and two frames with the same tick agree.
     #[test]
     fn low_health_jitter_is_the_seeded_lcg_in_draw_order() {
-        let inp = SurvivalInputs { health: 4.0, display_health: 4, tick_count: 77, ..Default::default() };
+        let inp = SurvivalInputs {
+            health: 4.0,
+            display_health: 4,
+            tick_count: 77,
+            ..Default::default()
+        };
         let v = layout(&inp, GW, GH);
-        let containers = icons(&v, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Container, .. }));
+        let containers = icons(&v, |i| {
+            matches!(
+                i,
+                HudIcon::PlayerHeart {
+                    kind: HeartKind::Container,
+                    ..
+                }
+            )
+        });
         let mut rng = HudRandom::for_tick(77);
         for c in &containers {
             assert_eq!(c.y as i32, GH - 39 + rng.next_int(2));
         }
         assert_eq!(layout(&inp, GW, GH), v, "deterministic per tick");
         // 5 health: no jitter at all.
-        let v5 = layout(&SurvivalInputs { health: 5.0, display_health: 5, tick_count: 77, ..Default::default() }, GW, GH);
-        assert!(icons(&v5, |i| matches!(i, HudIcon::PlayerHeart { kind: HeartKind::Container, .. })).iter().all(|b| b.y as i32 == GH - 39));
+        let v5 = layout(
+            &SurvivalInputs {
+                health: 5.0,
+                display_health: 5,
+                tick_count: 77,
+                ..Default::default()
+            },
+            GW,
+            GH,
+        );
+        assert!(icons(&v5, |i| matches!(
+            i,
+            HudIcon::PlayerHeart {
+                kind: HeartKind::Container,
+                ..
+            }
+        ))
+        .iter()
+        .all(|b| b.y as i32 == GH - 39));
     }
 
     /// Food: the hunger variant, the half, and the saturation wobble on the
@@ -1020,15 +1301,33 @@ mod tests {
     /// AFTER the hearts' draws.
     #[test]
     fn food_swaps_sprites_under_hunger_and_wobbles_at_zero_saturation() {
-        let inp = SurvivalInputs { food: 7, hunger_effect: true, ..Default::default() };
+        let inp = SurvivalInputs {
+            food: 7,
+            hunger_effect: true,
+            ..Default::default()
+        };
         let v = layout(&inp, GW, GH);
         let food = icons(&v, |i| matches!(i, HudIcon::Food(_)));
         // 10 empties + 3 full (i=0,1,2: 1,3,5 < 7) + 1 half (i=3: 7 == 7).
         assert_eq!(food.len(), 14);
-        assert!(food.iter().all(|b| matches!(b.icon, HudIcon::Food(FoodSprite::EmptyHunger | FoodSprite::FullHunger | FoodSprite::HalfHunger))));
-        assert_eq!(food.iter().filter(|b| b.icon == HudIcon::Food(FoodSprite::HalfHunger)).count(), 1);
+        assert!(food.iter().all(|b| matches!(
+            b.icon,
+            HudIcon::Food(
+                FoodSprite::EmptyHunger | FoodSprite::FullHunger | FoodSprite::HalfHunger
+            )
+        )));
+        assert_eq!(
+            food.iter()
+                .filter(|b| b.icon == HudIcon::Food(FoodSprite::HalfHunger))
+                .count(),
+            1
+        );
         // Wobble: food 20 -> period 61; tick 61 wobbles, tick 62 does not.
-        let wob = SurvivalInputs { saturation: 0.0, tick_count: 61, ..Default::default() };
+        let wob = SurvivalInputs {
+            saturation: 0.0,
+            tick_count: 61,
+            ..Default::default()
+        };
         let v = layout(&wob, GW, GH);
         let food = icons(&v, |i| matches!(i, HudIcon::Food(_)));
         let mut rng = HudRandom::for_tick(61); // hearts at 20 hp draw nothing first
@@ -1036,8 +1335,17 @@ mod tests {
             let dy = rng.next_int(3) - 1;
             assert!(pair.iter().all(|b| b.y as i32 == GH - 39 + dy));
         }
-        let v = layout(&SurvivalInputs { tick_count: 62, ..wob }, GW, GH);
-        assert!(icons(&v, |i| matches!(i, HudIcon::Food(_))).iter().all(|b| b.y as i32 == GH - 39));
+        let v = layout(
+            &SurvivalInputs {
+                tick_count: 62,
+                ..wob
+            },
+            GW,
+            GH,
+        );
+        assert!(icons(&v, |i| matches!(i, HudIcon::Food(_)))
+            .iter()
+            .all(|b| b.y as i32 == GH - 39));
     }
 
     /// Air: hidden when full and dry; shown while refilling out of water;
@@ -1049,34 +1357,89 @@ mod tests {
         assert!(icons(&dry_full, |i| matches!(i, HudIcon::Air(_))).is_empty());
         // 150 of 300, underwater: full = ceil(148*10/300)=ceil(4.93)=5,
         // popping = ceil(5.0)=5 -> not popping; empty = 10 - ceil(151*10/300)=10-6=4.
-        let inp = SurvivalInputs { air_supply: 150, eye_in_water: true, ..Default::default() };
+        let inp = SurvivalInputs {
+            air_supply: 150,
+            eye_in_water: true,
+            ..Default::default()
+        };
         let v = layout(&inp, GW, GH);
         let air = icons(&v, |i| matches!(i, HudIcon::Air(_)));
-        assert_eq!(air.iter().filter(|b| b.icon == HudIcon::Air(AirSprite::Full)).count(), 5);
-        assert_eq!(air.iter().filter(|b| b.icon == HudIcon::Air(AirSprite::Bursting)).count(), 0);
-        assert_eq!(air.iter().filter(|b| b.icon == HudIcon::Air(AirSprite::Empty)).count(), 4);
-        assert_eq!(air.len(), 9, "bubble 6 is neither full, popping nor empty: a gap");
+        assert_eq!(
+            air.iter()
+                .filter(|b| b.icon == HudIcon::Air(AirSprite::Full))
+                .count(),
+            5
+        );
+        assert_eq!(
+            air.iter()
+                .filter(|b| b.icon == HudIcon::Air(AirSprite::Bursting))
+                .count(),
+            0
+        );
+        assert_eq!(
+            air.iter()
+                .filter(|b| b.icon == HudIcon::Air(AirSprite::Empty))
+                .count(),
+            4
+        );
+        assert_eq!(
+            air.len(),
+            9,
+            "bubble 6 is neither full, popping nor empty: a gap"
+        );
         // y: food drawn (no vehicle) -> yLineAir = base - 20, then
         // getAirBubbleYLine with rows-1 = -1 -> +10 -> base - 10.
         assert!(air.iter().all(|b| b.y as i32 == GH - 39 - 10));
-        assert_eq!(air[0].x as i32, GW / 2 + 91 - 9, "bubble 1 is the rightmost");
+        assert_eq!(
+            air[0].x as i32,
+            GW / 2 + 91 - 9,
+            "bubble 1 is the rightmost"
+        );
         // 149: full = ceil(147*10/300)=ceil(4.9)=5; popping = ceil(4.967)=5 -> no.
         // 141: full = ceil(139/30)=ceil(4.63)=5; popping = ceil(4.7)=5.
         // 120: full = ceil(118/30)=ceil(3.93)=4; popping = ceil(4.0)=4 -> no.
         // 121: full = ceil(3.967)=4; popping = ceil(4.03)=5 -> POPPING at bubble 5.
-        let v = layout(&SurvivalInputs { air_supply: 121, ..inp.clone() }, GW, GH);
+        let v = layout(
+            &SurvivalInputs {
+                air_supply: 121,
+                ..inp.clone()
+            },
+            GW,
+            GH,
+        );
         let air = icons(&v, |i| matches!(i, HudIcon::Air(_)));
-        let pop: Vec<_> = air.iter().filter(|b| b.icon == HudIcon::Air(AirSprite::Bursting)).collect();
+        let pop: Vec<_> = air
+            .iter()
+            .filter(|b| b.icon == HudIcon::Air(AirSprite::Bursting))
+            .collect();
         assert_eq!(pop.len(), 1);
         assert_eq!(pop[0].x as i32, GW / 2 + 91 - 4 * 8 - 9);
         // The same air OUT of the water: no popping sprite, and the bubbles
         // still show because current < max.
-        let v = layout(&SurvivalInputs { air_supply: 121, eye_in_water: false, ..inp.clone() }, GW, GH);
+        let v = layout(
+            &SurvivalInputs {
+                air_supply: 121,
+                eye_in_water: false,
+                ..inp.clone()
+            },
+            GW,
+            GH,
+        );
         let air = icons(&v, |i| matches!(i, HudIcon::Air(_)));
         assert!(!air.is_empty());
-        assert!(air.iter().all(|b| b.icon != HudIcon::Air(AirSprite::Bursting)));
+        assert!(air
+            .iter()
+            .all(|b| b.icon != HudIcon::Air(AirSprite::Bursting)));
         // Drowning (negative) clamps to 0: ten empties, wobbling on even ticks.
-        let v = layout(&SurvivalInputs { air_supply: -15, tick_count: 4, ..inp.clone() }, GW, GH);
+        let v = layout(
+            &SurvivalInputs {
+                air_supply: -15,
+                tick_count: 4,
+                ..inp.clone()
+            },
+            GW,
+            GH,
+        );
         let air = icons(&v, |i| matches!(i, HudIcon::Air(_)));
         assert_eq!(air.len(), 10);
         assert!(air.iter().all(|b| b.icon == HudIcon::Air(AirSprite::Empty)));
@@ -1085,30 +1448,90 @@ mod tests {
         for b in &air {
             assert_eq!(b.y as i32, GH - 39 - 10 + rng.next_int(2));
         }
-        let v = layout(&SurvivalInputs { air_supply: -15, tick_count: 5, ..inp }, GW, GH);
-        assert!(icons(&v, |i| matches!(i, HudIcon::Air(_))).iter().all(|b| b.y as i32 == GH - 39 - 10));
+        let v = layout(
+            &SurvivalInputs {
+                air_supply: -15,
+                tick_count: 5,
+                ..inp
+            },
+            GW,
+            GH,
+        );
+        assert!(icons(&v, |i| matches!(i, HudIcon::Air(_)))
+            .iter()
+            .all(|b| b.y as i32 == GH - 39 - 10));
     }
 
     /// A living vehicle replaces the food row with its hearts, capped at 30,
     /// rows of ten from the bottom, and pushes the air line up by its rows.
     #[test]
     fn a_vehicle_replaces_food_and_moves_the_air_line() {
-        let horse = VehicleInput { max_health: 30.0, health: 15.0 };
+        let horse = VehicleInput {
+            max_health: 30.0,
+            health: 15.0,
+        };
         assert_eq!(vehicle_max_hearts(Some(horse)), 15);
-        assert_eq!(vehicle_max_hearts(Some(VehicleInput { max_health: 29.0, health: 1.0 })), 14, "(int)(29.5)/2 = 14");
-        assert_eq!(vehicle_max_hearts(Some(VehicleInput { max_health: 200.0, health: 1.0 })), 30, "capped");
-        assert_eq!(vehicle_max_hearts(Some(VehicleInput { max_health: 1.0, health: 1.0 })), 0, "(int)(1.5)/2 = 0 -> no bar at all");
-        let inp = SurvivalInputs { vehicle: Some(horse), air_supply: 100, ..Default::default() };
+        assert_eq!(
+            vehicle_max_hearts(Some(VehicleInput {
+                max_health: 29.0,
+                health: 1.0
+            })),
+            14,
+            "(int)(29.5)/2 = 14"
+        );
+        assert_eq!(
+            vehicle_max_hearts(Some(VehicleInput {
+                max_health: 200.0,
+                health: 1.0
+            })),
+            30,
+            "capped"
+        );
+        assert_eq!(
+            vehicle_max_hearts(Some(VehicleInput {
+                max_health: 1.0,
+                health: 1.0
+            })),
+            0,
+            "(int)(1.5)/2 = 0 -> no bar at all"
+        );
+        let inp = SurvivalInputs {
+            vehicle: Some(horse),
+            air_supply: 100,
+            ..Default::default()
+        };
         let v = layout(&inp, GW, GH);
-        assert!(icons(&v, |i| matches!(i, HudIcon::Food(_))).is_empty(), "food skipped");
+        assert!(
+            icons(&v, |i| matches!(i, HudIcon::Food(_))).is_empty(),
+            "food skipped"
+        );
         let vh = icons(&v, |i| matches!(i, HudIcon::VehicleHeart(_)));
         // 15 containers (10 + 5), 15 health -> 7 full + 1 half.
-        assert_eq!(vh.iter().filter(|b| b.icon == HudIcon::VehicleHeart(VehicleHeartSprite::Container)).count(), 15);
-        assert_eq!(vh.iter().filter(|b| b.icon == HudIcon::VehicleHeart(VehicleHeartSprite::Full)).count(), 7);
-        assert_eq!(vh.iter().filter(|b| b.icon == HudIcon::VehicleHeart(VehicleHeartSprite::Half)).count(), 1);
+        assert_eq!(
+            vh.iter()
+                .filter(|b| b.icon == HudIcon::VehicleHeart(VehicleHeartSprite::Container))
+                .count(),
+            15
+        );
+        assert_eq!(
+            vh.iter()
+                .filter(|b| b.icon == HudIcon::VehicleHeart(VehicleHeartSprite::Full))
+                .count(),
+            7
+        );
+        assert_eq!(
+            vh.iter()
+                .filter(|b| b.icon == HudIcon::VehicleHeart(VehicleHeartSprite::Half))
+                .count(),
+            1
+        );
         let y = GH - 39;
         let row2: Vec<_> = vh.iter().filter(|b| b.y as i32 == y - 10).collect();
-        assert_eq!(row2.len(), 5, "the second row holds the five leftover containers and no fills");
+        assert_eq!(
+            row2.len(),
+            5,
+            "the second row holds the five leftover containers and no fills"
+        );
         // Air: yLineAir = base - 10 (no food), rows = 2 -> rowOffset 1 -> base - 20.
         let air = icons(&v, |i| matches!(i, HudIcon::Air(_)));
         assert!(!air.is_empty());
@@ -1122,13 +1545,30 @@ mod tests {
         let inp = SurvivalInputs {
             can_hurt: false,
             armor: 10,
-            vehicle: Some(VehicleInput { max_health: 20.0, health: 20.0 }),
-            effects: vec![EffectInput { id: 0, duration: 100, ambient: false, show_icon: true, beneficial: true, color: 1 }],
+            vehicle: Some(VehicleInput {
+                max_health: 20.0,
+                health: 20.0,
+            }),
+            effects: vec![EffectInput {
+                id: 0,
+                duration: 100,
+                ambient: false,
+                show_icon: true,
+                beneficial: true,
+                color: 1,
+            }],
             ..Default::default()
         };
         let v = layout(&inp, GW, GH);
-        assert!(icons(&v, |i| matches!(i, HudIcon::PlayerHeart { .. } | HudIcon::Armor(_) | HudIcon::Food(_) | HudIcon::Air(_))).is_empty());
-        assert_eq!(icons(&v, |i| matches!(i, HudIcon::VehicleHeart(_))).len(), 20);
+        assert!(icons(&v, |i| matches!(
+            i,
+            HudIcon::PlayerHeart { .. } | HudIcon::Armor(_) | HudIcon::Food(_) | HudIcon::Air(_)
+        ))
+        .is_empty());
+        assert_eq!(
+            icons(&v, |i| matches!(i, HudIcon::VehicleHeart(_))).len(),
+            20
+        );
         assert_eq!(icons(&v, |i| matches!(i, HudIcon::Effect(_))).len(), 1);
     }
 
@@ -1159,7 +1599,9 @@ mod tests {
                 GW,
                 GH,
             );
-            icons(&v, |i| matches!(i, HudIcon::Effect(_) | HudIcon::MissingTexture))
+            icons(&v, |i| {
+                matches!(i, HudIcon::Effect(_) | HudIcon::MissingTexture)
+            })
         };
         // In-table ids keep their icon; the boundary is half-open.
         let inside = run(vec![0, 2], table_len);
@@ -1167,11 +1609,7 @@ mod tests {
         // At the length and past it: missing. Negative: missing too.
         for id in [table_len as i32, table_len as i32 + 7, -1] {
             let got = run(vec![id], table_len);
-            assert_eq!(
-                got.len(),
-                1,
-                "id {id} still emitted a blit"
-            );
+            assert_eq!(got.len(), 1, "id {id} still emitted a blit");
             assert!(
                 matches!(got[0].icon, HudIcon::MissingTexture),
                 "id {id} did not fall back to the checker"
@@ -1216,14 +1654,29 @@ mod tests {
         // `Ordering.natural().reverse()` flips it: 3, 5, 4, 2, 1; `showIcon`
         // drops 4. So the ambient effect is drawn FIRST — a witness written
         // from "ambient goes last" was wrong before the code was.
-        let order: Vec<i32> = ics.iter().map(|b| if let HudIcon::Effect(id) = b.icon { id } else { -1 }).collect();
+        let order: Vec<i32> = ics
+            .iter()
+            .map(|b| {
+                if let HudIcon::Effect(id) = b.icon {
+                    id
+                } else {
+                    -1
+                }
+            })
+            .collect();
         assert_eq!(order, vec![3, 5, 2, 1]);
         // Positions: id 3 is harmful #1 (neutral shares the row) at
         // (GW - 25, 27); id 5 beneficial #1 at (GW - 25, 1); id 2 harmful #2 at
         // (GW - 50, 27); id 1 beneficial #2 at (GW - 50, 1).
         let pos: Vec<(i32, i32)> = bgs.iter().map(|b| (b.x as i32, b.y as i32)).collect();
-        assert_eq!(pos, vec![(GW - 25, 27), (GW - 25, 1), (GW - 50, 27), (GW - 50, 1)]);
-        assert_eq!((ics[0].x as i32, ics[0].y as i32, ics[0].w as i32), (GW - 25 + 3, 30, 18));
+        assert_eq!(
+            pos,
+            vec![(GW - 25, 27), (GW - 25, 1), (GW - 50, 27), (GW - 50, 1)]
+        );
+        assert_eq!(
+            (ics[0].x as i32, ics[0].y as i32, ics[0].w as i32),
+            (GW - 25 + 3, 30, 18)
+        );
         assert_eq!(bgs[0].icon, HudIcon::EffectBackground { ambient: true });
         assert_eq!(bgs[1].icon, HudIcon::EffectBackground { ambient: false });
         assert!(ics.iter().all(|b| b.alpha == 1.0));
@@ -1234,9 +1687,20 @@ mod tests {
     /// off `Mth.cos`'s table.
     #[test]
     fn the_effect_fade_is_the_transcribed_pulse() {
-        let e = |dur: i32, ambient: bool| EffectInput { id: 0, duration: dur, ambient, show_icon: true, beneficial: true, color: 0 };
+        let e = |dur: i32, ambient: bool| EffectInput {
+            id: 0,
+            duration: dur,
+            ambient,
+            show_icon: true,
+            beneficial: true,
+            color: 0,
+        };
         assert_eq!(effect_icon_alpha(&e(201, false)), 1.0);
-        assert_eq!(effect_icon_alpha(&e(-1, false)), 1.0, "infinite never ends within 200");
+        assert_eq!(
+            effect_icon_alpha(&e(-1, false)),
+            1.0,
+            "infinite never ends within 200"
+        );
         assert_eq!(effect_icon_alpha(&e(5, true)), 1.0, "ambient never fades");
         // remaining 200: used = 0 -> second term 0; first = clamp(200/50*0.5=2.0, 0, 0.5) = 0.5.
         assert_eq!(effect_icon_alpha(&e(200, false)), 0.5);
@@ -1256,21 +1720,62 @@ mod tests {
     #[test]
     fn the_jump_bar_is_lerp_discrete_in_the_contextual_slot() {
         assert_eq!(jump_progress_px(0.0), 0);
-        assert_eq!(jump_progress_px(0.001), 1, "a barely-pressed jump is one pixel");
+        assert_eq!(
+            jump_progress_px(0.001),
+            1,
+            "a barely-pressed jump is one pixel"
+        );
         assert_eq!(jump_progress_px(0.5), 91);
         assert_eq!(jump_progress_px(1.0), 182);
         assert_eq!(contextual_bar_pos(GW, GH), ((GW - 182) / 2, GH - 29));
-        let inp = SurvivalInputs { jump: Some(JumpInput { scale: 0.5, cooldown: 0 }), ..Default::default() };
+        let inp = SurvivalInputs {
+            jump: Some(JumpInput {
+                scale: 0.5,
+                cooldown: 0,
+            }),
+            ..Default::default()
+        };
         let v = layout(&inp, GW, GH);
         let jb = icons(&v, |i| matches!(i, HudIcon::JumpBar(_)));
         assert_eq!(jb.len(), 2);
         assert_eq!(jb[0].icon, HudIcon::JumpBar(JumpBarSprite::Background));
-        assert_eq!((jb[1].icon, jb[1].w as i32), (HudIcon::JumpBar(JumpBarSprite::Progress), 91));
-        let v = layout(&SurvivalInputs { jump: Some(JumpInput { scale: 0.5, cooldown: 3 }), ..Default::default() }, GW, GH);
+        assert_eq!(
+            (jb[1].icon, jb[1].w as i32),
+            (HudIcon::JumpBar(JumpBarSprite::Progress), 91)
+        );
+        let v = layout(
+            &SurvivalInputs {
+                jump: Some(JumpInput {
+                    scale: 0.5,
+                    cooldown: 3,
+                }),
+                ..Default::default()
+            },
+            GW,
+            GH,
+        );
         let jb = icons(&v, |i| matches!(i, HudIcon::JumpBar(_)));
-        assert_eq!(jb[1].icon, HudIcon::JumpBar(JumpBarSprite::Cooldown), "cooldown replaces the progress entirely");
-        let v = layout(&SurvivalInputs { jump: Some(JumpInput { scale: 0.0, cooldown: 0 }), ..Default::default() }, GW, GH);
-        assert_eq!(icons(&v, |i| matches!(i, HudIcon::JumpBar(_))).len(), 1, "progress 0 draws no progress");
+        assert_eq!(
+            jb[1].icon,
+            HudIcon::JumpBar(JumpBarSprite::Cooldown),
+            "cooldown replaces the progress entirely"
+        );
+        let v = layout(
+            &SurvivalInputs {
+                jump: Some(JumpInput {
+                    scale: 0.0,
+                    cooldown: 0,
+                }),
+                ..Default::default()
+            },
+            GW,
+            GH,
+        );
+        assert_eq!(
+            icons(&v, |i| matches!(i, HudIcon::JumpBar(_))).len(),
+            1,
+            "progress 0 draws no progress"
+        );
     }
 
     /// Draw order is vanilla's: armour, hearts, food, air, vehicle, effects.
@@ -1279,7 +1784,14 @@ mod tests {
         let inp = SurvivalInputs {
             armor: 2,
             air_supply: 10,
-            effects: vec![EffectInput { id: 0, duration: 1, ambient: false, show_icon: true, beneficial: true, color: 0 }],
+            effects: vec![EffectInput {
+                id: 0,
+                duration: 1,
+                ambient: false,
+                show_icon: true,
+                beneficial: true,
+                color: 0,
+            }],
             ..Default::default()
         };
         let v = layout(&inp, GW, GH);

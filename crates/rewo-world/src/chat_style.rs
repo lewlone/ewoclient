@@ -195,7 +195,10 @@ impl ChatStyle {
     /// because `iterateFormatted` substitutes the *enclosing* style — see
     /// [`apply_legacy`].)
     fn colored(color: [f32; 3], events: Option<Arc<ChatEvents>>) -> Self {
-        Self { events, ..Self::plain(color) }
+        Self {
+            events,
+            ..Self::plain(color)
+        }
     }
 
     pub fn span(&self, text: impl Into<String>) -> ChatSpan {
@@ -356,11 +359,26 @@ fn legacy_color_index(code: char) -> Option<usize> {
 fn apply_legacy(style: &ChatStyle, reset: &ChatStyle, code: char) -> Option<ChatStyle> {
     // `getByCode` lowercases before matching, so `§C` is `§c`.
     Some(match code.to_ascii_lowercase() {
-        'k' => ChatStyle { obfuscated: true, ..style.clone() },
-        'l' => ChatStyle { bold: true, ..style.clone() },
-        'm' => ChatStyle { strikethrough: true, ..style.clone() },
-        'n' => ChatStyle { underlined: true, ..style.clone() },
-        'o' => ChatStyle { italic: true, ..style.clone() },
+        'k' => ChatStyle {
+            obfuscated: true,
+            ..style.clone()
+        },
+        'l' => ChatStyle {
+            bold: true,
+            ..style.clone()
+        },
+        'm' => ChatStyle {
+            strikethrough: true,
+            ..style.clone()
+        },
+        'n' => ChatStyle {
+            underlined: true,
+            ..style.clone()
+        },
+        'o' => ChatStyle {
+            italic: true,
+            ..style.clone()
+        },
         // Not `Style.EMPTY`: `iterateFormatted` substitutes `resetStyle`
         // before `applyLegacyFormat` ever sees RESET.
         'r' => reset.clone(),
@@ -478,7 +496,9 @@ fn walk(
         // *appended to it*, so they are its siblings and inherit its style —
         // not the caller's (module rule 6).
         Nbt::List(items) => {
-            let Some((first, rest)) = items.split_first() else { return };
+            let Some((first, rest)) = items.split_first() else {
+                return;
+            };
             walk(first, parent, lang, steps, out);
             let root = resolved_style(first, parent);
             for item in rest {
@@ -598,7 +618,10 @@ fn resolve_style(tag: &Nbt, parent: &ChatStyle) -> ChatStyle {
     // M128 — the three non-visual fields, merged INDEPENDENTLY of each other
     // (`applyTo` is a per-field null check) and independently of the six
     // visual ones.
-    style.events = ChatEvents::apply_to(chat_events::parse_events(tag).as_ref(), parent.events.as_ref());
+    style.events = ChatEvents::apply_to(
+        chat_events::parse_events(tag).as_ref(),
+        parent.events.as_ref(),
+    );
     if let Some(color) = tag.get("color").and_then(Nbt::as_str).and_then(parse_color) {
         style.color = color;
     }
@@ -667,7 +690,12 @@ mod tests {
     use super::*;
 
     fn compound(fields: &[(&str, Nbt)]) -> Nbt {
-        Nbt::Compound(fields.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+        Nbt::Compound(
+            fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
     }
 
     fn text(s: &str) -> Nbt {
@@ -690,7 +718,13 @@ mod tests {
                 (
                     s.text.as_str(),
                     rgb_to_u32(s.color),
-                    [s.bold, s.italic, s.underlined, s.strikethrough, s.obfuscated],
+                    [
+                        s.bold,
+                        s.italic,
+                        s.underlined,
+                        s.strikethrough,
+                        s.obfuscated,
+                    ],
                 )
             })
             .collect()
@@ -768,8 +802,14 @@ mod tests {
     fn a_colour_code_clears_the_format_flags_so_the_order_decides_boldness() {
         // The classic trap. `applyLegacyFormat`'s colour branch assigns
         // `false` to all five flags before setting the colour.
-        assert_eq!(shape(&parse_legacy("§c§lX", ChatStyle::WHITE)), vec![("X", RED, BOLD)]);
-        assert_eq!(shape(&parse_legacy("§l§cX", ChatStyle::WHITE)), vec![("X", RED, NONE)]);
+        assert_eq!(
+            shape(&parse_legacy("§c§lX", ChatStyle::WHITE)),
+            vec![("X", RED, BOLD)]
+        );
+        assert_eq!(
+            shape(&parse_legacy("§l§cX", ChatStyle::WHITE)),
+            vec![("X", RED, NONE)]
+        );
     }
 
     #[test]
@@ -799,28 +839,43 @@ mod tests {
     #[test]
     fn format_flags_accumulate_until_something_clears_them() {
         let line = parse_legacy("§l§o§nx", ChatStyle::WHITE);
-        assert_eq!(shape(&line), vec![("x", WHITE, [true, true, true, false, false])]);
+        assert_eq!(
+            shape(&line),
+            vec![("x", WHITE, [true, true, true, false, false])]
+        );
     }
 
     #[test]
     fn reset_returns_every_field_not_only_the_colour() {
         let line = parse_legacy("§c§lbold§rplain", ChatStyle::WHITE);
-        assert_eq!(shape(&line), vec![("bold", RED, BOLD), ("plain", WHITE, NONE)]);
+        assert_eq!(
+            shape(&line),
+            vec![("bold", RED, BOLD), ("plain", WHITE, NONE)]
+        );
     }
 
     #[test]
     fn reset_returns_to_the_enclosing_style_rather_than_to_white() {
         // `iterateFormatted` substitutes its `resetStyle` argument, which is
         // seeded with the run's own style — not `Style.EMPTY`.
-        let base = ChatStyle { italic: true, ..ChatStyle::plain(rgb_f32(GREEN)) };
+        let base = ChatStyle {
+            italic: true,
+            ..ChatStyle::plain(rgb_f32(GREEN))
+        };
         let line = parse_legacy("§ca§rb", base);
         assert_eq!(shape(&line), vec![("a", RED, NONE), ("b", GREEN, ITALIC)]);
     }
 
     #[test]
     fn a_code_is_matched_case_insensitively() {
-        assert_eq!(shape(&parse_legacy("§Cx", ChatStyle::WHITE)), vec![("x", RED, NONE)]);
-        assert_eq!(shape(&parse_legacy("§Lx", ChatStyle::WHITE)), vec![("x", WHITE, BOLD)]);
+        assert_eq!(
+            shape(&parse_legacy("§Cx", ChatStyle::WHITE)),
+            vec![("x", RED, NONE)]
+        );
+        assert_eq!(
+            shape(&parse_legacy("§Lx", ChatStyle::WHITE)),
+            vec![("x", WHITE, BOLD)]
+        );
         assert_eq!(
             shape(&parse_legacy("§c§lb§Rp", ChatStyle::WHITE)),
             vec![("b", RED, BOLD), ("p", WHITE, NONE)]
@@ -831,7 +886,10 @@ mod tests {
     fn an_unrecognised_code_consumes_both_characters_and_changes_nothing() {
         // `i++` sits outside the `formatting != null` guard, so `§z` is eaten
         // whole. Emitting the letter would be the natural wrong answer.
-        assert_eq!(shape(&parse_legacy("a§zb", ChatStyle::WHITE)), vec![("ab", WHITE, NONE)]);
+        assert_eq!(
+            shape(&parse_legacy("a§zb", ChatStyle::WHITE)),
+            vec![("ab", WHITE, NONE)]
+        );
     }
 
     #[test]
@@ -841,18 +899,27 @@ mod tests {
         // like the escaped code becomes literal text. This assertion was
         // written the other way round first, expecting `§§c` to yield a
         // literal `§c` or a red run; it does neither.
-        assert_eq!(shape(&parse_legacy("§§cx", ChatStyle::WHITE)), vec![("cx", WHITE, NONE)]);
+        assert_eq!(
+            shape(&parse_legacy("§§cx", ChatStyle::WHITE)),
+            vec![("cx", WHITE, NONE)]
+        );
     }
 
     #[test]
     fn a_trailing_section_sign_is_dropped() {
-        assert_eq!(shape(&parse_legacy("hi§", ChatStyle::WHITE)), vec![("hi", WHITE, NONE)]);
+        assert_eq!(
+            shape(&parse_legacy("hi§", ChatStyle::WHITE)),
+            vec![("hi", WHITE, NONE)]
+        );
     }
 
     #[test]
     fn no_empty_spans_are_emitted() {
         // Three style changes with no text between them, and a leading code.
-        assert_eq!(shape(&parse_legacy("§a§b§cx", ChatStyle::WHITE)), vec![("x", RED, NONE)]);
+        assert_eq!(
+            shape(&parse_legacy("§a§b§cx", ChatStyle::WHITE)),
+            vec![("x", RED, NONE)]
+        );
         assert!(parse_legacy("", ChatStyle::WHITE).is_empty());
         assert!(parse_legacy("§c", ChatStyle::WHITE).is_empty());
     }
@@ -860,14 +927,21 @@ mod tests {
     #[test]
     fn a_repeated_code_does_not_split_the_run() {
         // The style is unchanged, so there is nothing to flush.
-        assert_eq!(shape(&parse_legacy("§ca§cb", ChatStyle::WHITE)), vec![("ab", RED, NONE)]);
+        assert_eq!(
+            shape(&parse_legacy("§ca§cb", ChatStyle::WHITE)),
+            vec![("ab", RED, NONE)]
+        );
     }
 
     // ── component trees ───────────────────────────────────────────────────
 
     #[test]
     fn a_bare_string_component_is_one_span_of_the_base_style() {
-        let line = parse_component(&Nbt::String("hi".into()), ChatStyle::plain(rgb_f32(GREEN)), None);
+        let line = parse_component(
+            &Nbt::String("hi".into()),
+            ChatStyle::plain(rgb_f32(GREEN)),
+            None,
+        );
         assert_eq!(shape(&line), vec![("hi", GREEN, NONE)]);
     }
 
@@ -878,7 +952,10 @@ mod tests {
             ("color", Nbt::String("red".into())),
             ("bold", Nbt::Byte(1)),
         ]);
-        assert_eq!(shape(&parse_component(&tag, ChatStyle::WHITE, None)), vec![("x", RED, BOLD)]);
+        assert_eq!(
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
+            vec![("x", RED, BOLD)]
+        );
     }
 
     #[test]
@@ -936,7 +1013,10 @@ mod tests {
             ("text", Nbt::String("head".into())),
             ("extra", Nbt::List(vec![text("tail")])),
         ]);
-        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE, None)), "headtail");
+        assert_eq!(
+            plain_text(&parse_component(&tag, ChatStyle::WHITE, None)),
+            "headtail"
+        );
     }
 
     #[test]
@@ -1077,7 +1157,11 @@ mod tests {
         let l = lang(&[("k", "<%s> hi")]);
         assert_eq!(
             shape(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
-            vec![("<", RED, NONE), ("Steve", GREEN, NONE), ("> hi", RED, NONE)]
+            vec![
+                ("<", RED, NONE),
+                ("Steve", GREEN, NONE),
+                ("> hi", RED, NONE)
+            ]
         );
     }
 
@@ -1176,7 +1260,11 @@ mod tests {
         let l = lang(&[("outer", "[%s]"), ("inner", "deep")]);
         assert_eq!(
             shape(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
-            vec![("[", WHITE, NONE), ("deep", GREEN, NONE), ("]", WHITE, NONE)]
+            vec![
+                ("[", WHITE, NONE),
+                ("deep", GREEN, NONE),
+                ("]", WHITE, NONE)
+            ]
         );
     }
 
@@ -1224,7 +1312,10 @@ mod tests {
         );
         // And it really did hit the wall rather than terminating early for
         // some other reason — an unbounded walk would owe 2^40 leaves.
-        assert!(line.len() > 1000, "the walk did do the work it could afford");
+        assert!(
+            line.len() > 1000,
+            "the walk did do the work it could afford"
+        );
     }
 
     #[test]
@@ -1236,7 +1327,10 @@ mod tests {
             ("text", Nbt::String("literal".into())),
             ("translate", Nbt::String("key".into())),
         ]);
-        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE, None)), "literal");
+        assert_eq!(
+            plain_text(&parse_component(&tag, ChatStyle::WHITE, None)),
+            "literal"
+        );
     }
 
     #[test]
@@ -1246,11 +1340,17 @@ mod tests {
         // `byteValue() != 0` would have made it `false`.
         for tag in [Nbt::Byte(1), Nbt::Short(1), Nbt::Int(256), Nbt::Float(0.5)] {
             let c = compound(&[("text", Nbt::String("x".into())), ("bold", tag.clone())]);
-            assert_eq!(shape(&parse_component(&c, ChatStyle::WHITE, None)), vec![("x", WHITE, BOLD)]);
+            assert_eq!(
+                shape(&parse_component(&c, ChatStyle::WHITE, None)),
+                vec![("x", WHITE, BOLD)]
+            );
         }
         for tag in [Nbt::Byte(0), Nbt::Int(0), Nbt::Double(0.0)] {
             let c = compound(&[("text", Nbt::String("x".into())), ("bold", tag.clone())]);
-            assert_eq!(shape(&parse_component(&c, ChatStyle::WHITE, None)), vec![("x", WHITE, NONE)]);
+            assert_eq!(
+                shape(&parse_component(&c, ChatStyle::WHITE, None)),
+                vec![("x", WHITE, NONE)]
+            );
         }
     }
 
@@ -1274,7 +1374,10 @@ mod tests {
     #[test]
     fn a_component_with_no_contents_yields_only_its_children() {
         let tag = compound(&[("extra", Nbt::List(vec![text("only")]))]);
-        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE, None)), "only");
+        assert_eq!(
+            plain_text(&parse_component(&tag, ChatStyle::WHITE, None)),
+            "only"
+        );
     }
 
     #[test]
@@ -1289,7 +1392,10 @@ mod tests {
 
     #[test]
     fn a_span_round_trips_through_its_own_style() {
-        let style = ChatStyle { obfuscated: true, ..ChatStyle::plain(rgb_f32(RED)) };
+        let style = ChatStyle {
+            obfuscated: true,
+            ..ChatStyle::plain(rgb_f32(RED))
+        };
         assert_eq!(style.span("x").style(), style.clone());
     }
 
@@ -1313,7 +1419,10 @@ mod tests {
         ]);
         let line = parse_component(&tag, ChatStyle::WHITE, None);
         assert_eq!(line.len(), 1);
-        assert_eq!(line[0].click(), Some(&ClickEvent::RunCommand("/kill".into())));
+        assert_eq!(
+            line[0].click(),
+            Some(&ClickEvent::RunCommand("/kill".into()))
+        );
     }
 
     /// `applyTo` is a null check per field, so an `extra` child inherits the
@@ -1442,7 +1551,9 @@ mod tests {
             ("insertion", Nbt::String("i".into())),
         ]);
         // Every key above is in the list, and the list names nothing else.
-        let Nbt::Compound(fields) = &tag else { unreachable!() };
+        let Nbt::Compound(fields) = &tag else {
+            unreachable!()
+        };
         let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, STYLE_FIELDS.to_vec());
         // And every one of them is actually consumed.

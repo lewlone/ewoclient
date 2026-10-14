@@ -3,8 +3,8 @@ use super::*;
 impl Editor {
     /// Build the editor, loading the persisted layout from `hud.toml`.
     pub fn new() -> Self {
-        let (profile_active, profile_list) = read_profiles()
-            .unwrap_or_else(|| ("Default".to_string(), vec!["Default".to_string()]));
+        let (profile_active, profile_list) =
+            read_profiles().unwrap_or_else(|| ("Default".to_string(), vec!["Default".to_string()]));
         let mut e = Editor {
             view: OverlayView::Home,
             layout: HudLayout::load(),
@@ -29,7 +29,9 @@ impl Editor {
             cape_image: load_skin_image("ewo-cape.png"),
             skin_yaw: 0.5,
             skin_drag: None,
-            skin_slim: instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false),
+            skin_slim: instance_file("ewo-skin-slim")
+                .map(|p| p.exists())
+                .unwrap_or(false),
             skin_stamp: skin_png_stamp(),
             skin_checked_at: f32::NEG_INFINITY,
             pvp: crate::pvp::PvpConfig::load(),
@@ -194,7 +196,11 @@ impl Editor {
             return Vec::new();
         }
         let layout = crosshair_layout(w, h);
-        vec![layout.preview_idle, layout.preview_target, layout.preview_reach]
+        vec![
+            layout.preview_idle,
+            layout.preview_target,
+            layout.preview_reach,
+        ]
     }
 
     /// Human-readable label for the keybind bound to `module_id`, or `None` if
@@ -396,8 +402,7 @@ impl Editor {
                 return;
             }
             if self.view == OverlayView::Modules {
-                let (panel, _, rows, content_h) =
-                    modules_layout(self.window.0, self.window.1);
+                let (panel, _, rows, content_h) = modules_layout(self.window.0, self.window.1);
                 let body_top = panel.top + 24.0 + 76.0;
                 let visible = panel.bottom - body_top - 8.0;
                 let max_scroll = (content_h - visible).max(0.0);
@@ -500,8 +505,7 @@ impl Editor {
 
         match self.view {
             OverlayView::Home => {
-                let (_, skin_rect, _, media_rect, _) =
-                    home_layout(self.window.0, self.window.1);
+                let (_, skin_rect, _, media_rect, _) = home_layout(self.window.0, self.window.1);
                 if point_in(skin_rect, x, y) {
                     self.skin_drag = Some(x);
                     return;
@@ -515,12 +519,8 @@ impl Editor {
                     let cluster_w = ctl_size + gap + play_size + gap + ctl_size;
                     let cluster_left = media_rect.right - 14.0 - cluster_w;
                     let cy = media_rect.top + media_rect.height() * 0.5;
-                    let prev = Rect::from_xywh(
-                        cluster_left,
-                        cy - ctl_size * 0.5,
-                        ctl_size,
-                        ctl_size,
-                    );
+                    let prev =
+                        Rect::from_xywh(cluster_left, cy - ctl_size * 0.5, ctl_size, ctl_size);
                     let play = Rect::from_xywh(
                         cluster_left + ctl_size + gap,
                         cy - play_size * 0.5,
@@ -811,7 +811,9 @@ impl Editor {
         let Some(track) = layout.sliders.get(slot).copied() else {
             return;
         };
-        let Some(setting) = catalog::REGISTRY.get(idx).and_then(|m| m.settings.get(slot))
+        let Some(setting) = catalog::REGISTRY
+            .get(idx)
+            .and_then(|m| m.settings.get(slot))
         else {
             return;
         };

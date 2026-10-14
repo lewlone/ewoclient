@@ -543,16 +543,28 @@ fn check_swizzle(
 // -- Part B: the production path ----------------------------------------------
 
 /// Drive `capture::grab` itself, at the live client's format.
-fn check_grab(c: &mut Checker, gpu: &mut Gpu, ring: &OverlayRing, dir: &Path) -> Result<(), String> {
+fn check_grab(
+    c: &mut Checker,
+    gpu: &mut Gpu,
+    ring: &OverlayRing,
+    dir: &Path,
+) -> Result<(), String> {
     let draw = overlay_offscreen(ring);
     let vp = view_proj();
 
     // -- b1/b3: the real thing ------------------------------------------------
     let mut wr = sky_renderer(gpu, LIVE)?;
-    let grabbed = capture::grab(gpu, &mut wr, vp, &draw, LIVE, vk::Extent2D {
-        width: W,
-        height: H,
-    });
+    let grabbed = capture::grab(
+        gpu,
+        &mut wr,
+        vp,
+        &draw,
+        LIVE,
+        vk::Extent2D {
+            width: W,
+            height: H,
+        },
+    );
     wr.destroy(gpu);
     let path = grabbed?;
     let decoded = decode_png(&path);
@@ -624,7 +636,10 @@ fn check_grab(c: &mut Checker, gpu: &mut Gpu, ring: &OverlayRing, dir: &Path) ->
     // a real vertical spread, which also shows the world pass ran at all.
     let top = px(&manual_png, W / 2, 4);
     let bottom = px(&manual_png, W / 2, H - 5);
-    let varied = (0..3).map(|i| top[i].abs_diff(bottom[i])).max().unwrap_or(0);
+    let varied = (0..3)
+        .map(|i| top[i].abs_diff(bottom[i]))
+        .max()
+        .unwrap_or(0);
     c.record(
         "b2.grabs_frame_is_the_one_a_hand_driven_offscreen_renders",
         grab_png == manual_png && varied > 8,
@@ -724,7 +739,12 @@ fn check_naming(c: &mut Checker, dir: &Path) -> Result<(), String> {
     }
     c.record(
         "c2.the_dedup_ladder_leaves_the_first_bare_and_starts_at_two",
-        names == ["2026-07-28_09.04.05.png", "2026-07-28_09.04.05_2.png", "2026-07-28_09.04.05_3.png"],
+        names
+            == [
+                "2026-07-28_09.04.05.png",
+                "2026-07-28_09.04.05_2.png",
+                "2026-07-28_09.04.05_3.png",
+            ],
         format!(
             "three captures in the same second give {names:?}. \
              `Screenshot.getFile` is `name + (count == 1 ? \"\" : \"_\" + count) + \

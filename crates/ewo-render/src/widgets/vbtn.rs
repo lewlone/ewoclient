@@ -93,13 +93,7 @@ impl VbtnState {
     /// Also: spawns a ripple on the press-edge inside bounds, and emits
     /// cursor specks while the cursor is moving inside bounds (throttled
     /// to one per ~40ms, matching the prototype's `lastSpeckRef`).
-    pub fn update(
-        &mut self,
-        mouse: (f32, f32),
-        bounds: Rect,
-        mouse_down: bool,
-        time: f32,
-    ) -> bool {
+    pub fn update(&mut self, mouse: (f32, f32), bounds: Rect, mouse_down: bool, time: f32) -> bool {
         let in_bounds = bounds.contains(Point::new(mouse.0, mouse.1));
         let was_pressing = self.pressing;
         self.hover = in_bounds;
@@ -184,7 +178,10 @@ impl VbtnState {
 
     fn spawn_speck(&mut self, x: f32, y: f32) {
         // Bump LCG, derive a hue_t in [0, 1) for the rose↔champagne lerp.
-        self.rng_state = self.rng_state.wrapping_mul(1664525).wrapping_add(1013904223);
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(1664525)
+            .wrapping_add(1013904223);
         let hue_t = ((self.rng_state >> 8) & 0xFFFF) as f32 / 65535.0;
         // Find an inactive slot, or overwrite the oldest active one.
         let mut victim = 0usize;

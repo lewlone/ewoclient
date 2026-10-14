@@ -195,7 +195,11 @@ impl PearlDust {
                 *slot = build_halo_sprite(canvas).map(|img| (generation, img));
             }
         }
-        let halo_sprite = self.halo_sprite.borrow().as_ref().map(|(_, img)| img.clone());
+        let halo_sprite = self
+            .halo_sprite
+            .borrow()
+            .as_ref()
+            .map(|(_, img)| img.clone());
 
         let mut halo_paint = Paint::default();
         let mut core = Paint::default();

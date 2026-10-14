@@ -13,8 +13,18 @@ pub struct CubicBezier {
 }
 
 impl CubicBezier {
-    pub const SILK: Self = Self { x1: 0.22, y1: 1.0, x2: 0.36, y2: 1.0 };
-    pub const LINEAR: Self = Self { x1: 0.0, y1: 0.0, x2: 1.0, y2: 1.0 };
+    pub const SILK: Self = Self {
+        x1: 0.22,
+        y1: 1.0,
+        x2: 0.36,
+        y2: 1.0,
+    };
+    pub const LINEAR: Self = Self {
+        x1: 0.0,
+        y1: 0.0,
+        x2: 1.0,
+        y2: 1.0,
+    };
 
     /// Evaluate the curve at progress `x` ∈ [0, 1]. Out-of-range inputs are
     /// clamped to the endpoints.

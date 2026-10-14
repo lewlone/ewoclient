@@ -246,7 +246,10 @@ pub fn prepare(
         }
     }
     glyphs.extend(empties);
-    Prepared { areas: glyphs, bounds }
+    Prepared {
+        areas: glyphs,
+        bounds,
+    }
 }
 
 /// `ActiveTextCollector.findElementUnderCursor` — the index of the span whose
@@ -280,7 +283,10 @@ pub struct ClickableStyleFinder {
 
 impl ClickableStyleFinder {
     pub fn new(include_insertions: bool) -> Self {
-        Self { include_insertions, result: None }
+        Self {
+            include_insertions,
+            result: None,
+        }
     }
 
     /// `ClickableStyleFinder.accept(alignment, anchorX, y, parameters, text)`
@@ -359,10 +365,7 @@ mod tests {
     fn a_plain_glyphs_box_is_its_advance_by_nine() {
         let p = prepare(&[plain("ab")], 0.0, 0.0, &w6s);
         assert_eq!(p.areas.len(), 2);
-        assert_eq!(
-            (p.areas[0].left, p.areas[0].right),
-            (0.0, 6.0)
-        );
+        assert_eq!((p.areas[0].left, p.areas[0].right), (0.0, 6.0));
         assert_eq!((p.areas[1].left, p.areas[1].right), (6.0, 12.0));
         assert_eq!((p.areas[0].top, p.areas[0].bottom), (0.0, 9.0));
     }
@@ -380,8 +383,14 @@ mod tests {
     #[test]
     fn the_row_is_nine_pixels_tall() {
         let spans = [link("a", "/a")];
-        assert_eq!(cmd_at(&spans, 0.0, 10.0, (2.0, 10.0)).as_deref(), Some("/a"));
-        assert_eq!(cmd_at(&spans, 0.0, 10.0, (2.0, 18.9)).as_deref(), Some("/a"));
+        assert_eq!(
+            cmd_at(&spans, 0.0, 10.0, (2.0, 10.0)).as_deref(),
+            Some("/a")
+        );
+        assert_eq!(
+            cmd_at(&spans, 0.0, 10.0, (2.0, 18.9)).as_deref(),
+            Some("/a")
+        );
         assert_eq!(cmd_at(&spans, 0.0, 10.0, (2.0, 19.0)), None);
         assert_eq!(cmd_at(&spans, 0.0, 10.0, (2.0, 9.9)), None);
     }
@@ -426,14 +435,20 @@ mod tests {
         let glyph = p.areas.iter().find(|a| !a.empty && a.span == 1).unwrap();
         assert_eq!(glyph.left, 11.0);
         // 11.5 is inside both the space's [6, 12) and the glyph's [11, 18).
-        assert_eq!(cmd_at(&spans, 0.0, 0.0, (11.5, 4.0)).as_deref(), Some("/space"));
+        assert_eq!(
+            cmd_at(&spans, 0.0, 0.0, (11.5, 4.0)).as_deref(),
+            Some("/space")
+        );
     }
 
     /// Bold moves three edges by `extraThickness` and the fourth by the whole
     /// `boldOffset`, because the right edge is the advance.
     #[test]
     fn bold_widens_the_box_by_the_bold_offset_on_the_right() {
-        let bold = ChatSpan { bold: true, ..plain("a") };
+        let bold = ChatSpan {
+            bold: true,
+            ..plain("a")
+        };
         let p = prepare(&[bold], 0.0, 0.0, &w6s);
         let a = p.areas[0];
         assert_eq!(a.right, 7.0);

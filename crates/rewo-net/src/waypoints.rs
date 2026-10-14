@@ -55,7 +55,8 @@ pub enum WaypointOp {
 
 impl WaypointOp {
     /// Declaration order, which `Enum::ordinal` makes the id.
-    pub const VALUES: [WaypointOp; 3] = [WaypointOp::Track, WaypointOp::Untrack, WaypointOp::Update];
+    pub const VALUES: [WaypointOp; 3] =
+        [WaypointOp::Track, WaypointOp::Untrack, WaypointOp::Update];
 
     /// `ByIdMap.continuous(Enum::ordinal, values(), WRAP)` —
     /// `sortedValues[Mth.positiveModulo(id, 3)]`.

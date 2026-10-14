@@ -58,7 +58,14 @@ impl Default for VsliderState {
 
 impl VsliderState {
     pub fn new(value: f32, min: f32, max: f32) -> Self {
-        Self { value, min, max, step: None, hover: false, dragging: false }
+        Self {
+            value,
+            min,
+            max,
+            step: None,
+            hover: false,
+            dragging: false,
+        }
     }
 
     pub fn with_step(mut self, step: f32) -> Self {
@@ -136,8 +143,7 @@ pub fn draw_vslider(
     let handle_x = track_left + frac * track_w;
     if frac > 0.0 {
         let fill_rect = Rect::from_xywh(track_left, track_top, frac * track_w, TRACK_HEIGHT);
-        let fill_rrect =
-            RRect::new_rect_xy(fill_rect, TRACK_HEIGHT * 0.5, TRACK_HEIGHT * 0.5);
+        let fill_rrect = RRect::new_rect_xy(fill_rect, TRACK_HEIGHT * 0.5, TRACK_HEIGHT * 0.5);
         draw_fill(canvas, &fill_rect, &fill_rrect);
     }
 
@@ -220,10 +226,20 @@ fn draw_handle(
     // Firefly pulse — 3s ease-in-out, opacity 0.65↔1, scale 1↔1.15.
     let speed = motion_speed.max(0.0001);
     let phase = (time / (3.0 / speed)).rem_euclid(1.0);
-    let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
+    let triangle = if phase < 0.5 {
+        phase * 2.0
+    } else {
+        (1.0 - phase) * 2.0
+    };
     let smooth = triangle * triangle * (3.0 - 2.0 * triangle);
     // Hover lights the handle up (brighter, larger halo); dragging more so.
-    let halo_mult = if dragging { 1.3 } else if hover { 1.18 } else { 1.0 };
+    let halo_mult = if dragging {
+        1.3
+    } else if hover {
+        1.18
+    } else {
+        1.0
+    };
     // Reduced motion (StyleSheet1 ~L1563): the loop stops and `.vslider-halo`
     // rests on its un-animated style: opacity 1, scale 1.
     let reduced = ewo_core::motion::is_reduced();
@@ -232,7 +248,13 @@ fn draw_handle(
     let halo_alpha = (halo_base * halo_mult).min(1.0);
     let halo_scale = (1.0 + 0.15 * smooth) * if dragging || hover { 1.18 } else { 1.0 };
     // Dragging / hover brightens the handle core.
-    let drag_boost = if dragging { 1.2 } else if hover { 1.1 } else { 1.0 };
+    let drag_boost = if dragging {
+        1.2
+    } else if hover {
+        1.1
+    } else {
+        1.0
+    };
 
     let handle_r = HANDLE_SIZE * 0.5;
     // Halo — `inset: -10px` of a 14×14 yields 34×34, so radius 17.
@@ -243,7 +265,12 @@ fn draw_handle(
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
                 Color4f::new(1.0, 230.0 / 255.0, 238.0 / 255.0, 0.55 * drag_boost),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.20 * drag_boost),
+                Color4f::new(
+                    229.0 / 255.0,
+                    184.0 / 255.0,
+                    197.0 / 255.0,
+                    0.20 * drag_boost,
+                ),
                 Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
             ],
             None,

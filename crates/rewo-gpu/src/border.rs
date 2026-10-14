@@ -246,11 +246,7 @@ pub struct BorderPass {
 }
 
 impl BorderPass {
-    pub fn new(
-        gpu: &mut Gpu,
-        color_format: vk::Format,
-        tex: &BorderImage,
-    ) -> Result<Self, String> {
+    pub fn new(gpu: &mut Gpu, color_format: vk::Format, tex: &BorderImage) -> Result<Self, String> {
         let device = gpu.device.clone();
         let (image, alloc, view) = crate::entities::create_texture(gpu, tex.rgba, tex.w, tex.h)?;
         // REPEAT because the wall tiles the texture along its whole length, and
@@ -618,8 +614,14 @@ mod tests {
         let s = square(100.0);
         let a = BorderDraw::build(&s, [0.0, 64.0, 0.0], 160.0, 512.0, 0);
         let b = BorderDraw::build(&s, [40.0, 64.0, -30.0], 160.0, 512.0, 0);
-        let za: Vec<f32> = a.verts[SOUTH * 4..SOUTH * 4 + 4].iter().map(|v| v.pos[2]).collect();
-        let zb: Vec<f32> = b.verts[SOUTH * 4..SOUTH * 4 + 4].iter().map(|v| v.pos[2]).collect();
+        let za: Vec<f32> = a.verts[SOUTH * 4..SOUTH * 4 + 4]
+            .iter()
+            .map(|v| v.pos[2])
+            .collect();
+        let zb: Vec<f32> = b.verts[SOUTH * 4..SOUTH * 4 + 4]
+            .iter()
+            .map(|v| v.pos[2])
+            .collect();
         assert_eq!(za, zb, "the +Z wall did not move with the camera");
         assert_eq!(za, vec![100.0; 4]);
     }
@@ -629,7 +631,10 @@ mod tests {
         let s = square(100.0);
         let d = BorderDraw::build(&s, [0.0, 64.0, 0.0], 160.0, 512.0, 0);
         let ys: Vec<f32> = d.verts.iter().map(|v| v.pos[1]).collect();
-        assert!(ys.iter().all(|y| y.abs() == 512.0), "half-height is depth_far");
+        assert!(
+            ys.iter().all(|y| y.abs() == 512.0),
+            "half-height is depth_far"
+        );
         assert!(ys.contains(&512.0) && ys.contains(&-512.0));
     }
 
@@ -637,12 +642,18 @@ mod tests {
     fn the_horizontal_clip_bites_only_on_a_border_wider_than_the_view() {
         // A 200-block border inside a 160-block view is drawn end to end.
         let d = BorderDraw::build(&square(100.0), [0.0, 64.0, 0.0], 160.0, 512.0, 0);
-        let xs: Vec<f32> = d.verts[SOUTH * 4..SOUTH * 4 + 4].iter().map(|v| v.pos[0]).collect();
+        let xs: Vec<f32> = d.verts[SOUTH * 4..SOUTH * 4 + 4]
+            .iter()
+            .map(|v| v.pos[0])
+            .collect();
         assert_eq!(xs[0], -100.0);
         assert_eq!(xs[1], 100.0);
         // A 20,000-block one is clipped to the camera's reach.
         let d = BorderDraw::build(&square(10_000.0), [0.0, 64.0, 0.0], 160.0, 512.0, 0);
-        let xs: Vec<f32> = d.verts[SOUTH * 4..SOUTH * 4 + 4].iter().map(|v| v.pos[0]).collect();
+        let xs: Vec<f32> = d.verts[SOUTH * 4..SOUTH * 4 + 4]
+            .iter()
+            .map(|v| v.pos[0])
+            .collect();
         assert_eq!(xs[0], -160.0);
         assert_eq!(xs[1], 160.0);
     }

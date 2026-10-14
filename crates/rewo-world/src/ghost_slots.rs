@@ -164,12 +164,19 @@ pub struct GhostMenu {
 
 /// The crafting family: result 0, then a `w x h` grid from slot 1.
 pub const fn crafting_menu(w: usize, h: usize) -> GhostMenu {
-    GhostMenu { result: 0, grid: Some((1, w, h)), furnace: None }
+    GhostMenu {
+        result: 0,
+        grid: Some((1, w, h)),
+        furnace: None,
+    }
 }
 
 /// `AbstractFurnaceMenu`: ingredient 0, fuel 1, **result 2**.
-pub const FURNACE_MENU: GhostMenu =
-    GhostMenu { result: 2, grid: None, furnace: Some((0, 1)) };
+pub const FURNACE_MENU: GhostMenu = GhostMenu {
+    result: 2,
+    grid: None,
+    furnace: Some((0, 1)),
+};
 
 /// One ingredient, already resolved to the items it stands for.
 pub type Resolved = Vec<i32>;
@@ -200,7 +207,11 @@ pub fn layout(
     // `setSlot` skips an ingredient that resolves to nothing, so an unresolvable
     // display leaves its slot un-ghosted rather than washing an empty cell.
     if !result.is_empty() {
-        out.push(Ghost { slot: menu.result, items: result, is_result: true });
+        out.push(Ghost {
+            slot: menu.result,
+            items: result,
+            is_result: true,
+        });
     }
     if let Some((first, gw, gh)) = menu.grid {
         match shape {
@@ -235,11 +246,19 @@ pub fn layout(
         }
     } else if let Some((ing_slot, fuel)) = menu.furnace {
         if let Some(i) = inputs.first().filter(|v| !v.is_empty()) {
-            out.push(Ghost { slot: ing_slot, items: i.clone(), is_result: false });
+            out.push(Ghost {
+                slot: ing_slot,
+                items: i.clone(),
+                is_result: false,
+            });
         }
         if fuel_slot_empty {
             if let Some(f) = inputs.get(1).filter(|v| !v.is_empty()) {
-                out.push(Ghost { slot: fuel, items: f.clone(), is_result: false });
+                out.push(Ghost {
+                    slot: fuel,
+                    items: f.clone(),
+                    is_result: false,
+                });
             }
         }
     }
@@ -294,8 +313,14 @@ mod tests {
             "grid cells 3,4,5 — the middle row"
         );
         // A 1x1 shape centres on both axes; shapeless never centres at all.
-        assert_eq!(layout(crafting_menu(3, 3), one(99), &[one(1)], Some((1, 1)), true)[1].slot, 5);
-        assert_eq!(layout(crafting_menu(3, 3), one(99), &[one(1)], None, true)[1].slot, 1);
+        assert_eq!(
+            layout(crafting_menu(3, 3), one(99), &[one(1)], Some((1, 1)), true)[1].slot,
+            5
+        );
+        assert_eq!(
+            layout(crafting_menu(3, 3), one(99), &[one(1)], None, true)[1].slot,
+            1
+        );
     }
 
     /// A shapeless recipe with more ingredients than slots is TRUNCATED.
@@ -331,7 +356,10 @@ mod tests {
         let ing = [Vec::new(), one(2)];
         let g = layout(crafting_menu(2, 2), one(99), &ing, None, true);
         assert_eq!(g.len(), 2, "the result and the second ingredient");
-        assert_eq!(g[1].slot, 2, "and the second keeps ITS slot, not the first's");
+        assert_eq!(
+            g[1].slot, 2,
+            "and the second keeps ITS slot, not the first's"
+        );
         // A result that resolves to nothing is skipped too.
         let no_result = layout(crafting_menu(2, 2), Vec::new(), &[one(1)], None, true);
         assert!(no_result.iter().all(|x| !x.is_result));
@@ -341,7 +369,11 @@ mod tests {
     /// smithing one — ghosts the RESULT alone.
     #[test]
     fn a_display_with_no_input_case_ghosts_the_result_alone() {
-        let menu = GhostMenu { result: 3, grid: None, furnace: None };
+        let menu = GhostMenu {
+            result: 3,
+            grid: None,
+            furnace: None,
+        };
         let g = layout(menu, one(99), &[one(1), one(2)], None, true);
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].slot, 3);
@@ -377,18 +409,30 @@ mod tests {
     /// A ghost cycles through its ingredient's members, one level.
     #[test]
     fn a_ghost_cycles_through_its_own_members_only() {
-        let g = Ghost { slot: 1, items: vec![10, 11, 12], is_result: false };
+        let g = Ghost {
+            slot: 1,
+            items: vec![10, 11, 12],
+            is_result: false,
+        };
         assert_eq!(g.item(0), Some(10));
         assert_eq!(g.item(1), Some(11));
         assert_eq!(g.item(2), Some(12));
         assert_eq!(g.item(3), Some(10), "and wraps");
         // A single-member ingredient never changes.
-        let one = Ghost { slot: 1, items: vec![7], is_result: false };
+        let one = Ghost {
+            slot: 1,
+            items: vec![7],
+            is_result: false,
+        };
         for i in 0..5 {
             assert_eq!(one.item(i), Some(7));
         }
         // An empty one shows nothing rather than panicking.
-        let none = Ghost { slot: 1, items: Vec::new(), is_result: false };
+        let none = Ghost {
+            slot: 1,
+            items: Vec::new(),
+            is_result: false,
+        };
         assert_eq!(none.item(0), None);
     }
 

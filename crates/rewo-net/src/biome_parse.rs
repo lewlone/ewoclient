@@ -31,8 +31,8 @@
 
 use rewo_proto::nbt::Nbt;
 use rewo_world::ambient::{AmbientAddition, AmbientMood, AmbientSounds};
-use rewo_world::music::{BackgroundMusic, Music};
 use rewo_world::biome::{BiomeDef, GrassModifier};
+use rewo_world::music::{BackgroundMusic, Music};
 use rewo_world::weather::TemperatureModifier;
 
 /// Default water color (`#3f76e4`, opaque) when a biome somehow omits it —
@@ -624,7 +624,10 @@ mod ambient_tests {
                     "creative".into(),
                     track("minecraft:music.creative", 12_000, 24_000),
                 ),
-                ("default".into(), track("minecraft:music.game", 12_000, 24_000)),
+                (
+                    "default".into(),
+                    track("minecraft:music.game", 12_000, 24_000),
+                ),
             ]),
         )])
     }

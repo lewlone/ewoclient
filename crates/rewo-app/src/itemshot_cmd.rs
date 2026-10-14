@@ -210,7 +210,10 @@ fn check_pickup(c: &mut Checker, version: &str) -> Result<(), String> {
 
     // A whole stack, collected by a tracked mob. The entity goes; an
     // animation appears carrying its appearance.
-    let mut w = world_with(&[(1, item, [4.0, 64.0, 0.0]), (2, types.player_id, [0.0, 64.0, 0.0])]);
+    let mut w = world_with(&[
+        (1, item, [4.0, 64.0, 0.0]),
+        (2, types.player_id, [0.0, 64.0, 0.0]),
+    ]);
     w.entities.set_item_stack(1, Some((99, 3, false)));
     let routed = route_take_item_entity(
         ids.cb_play_take_item_entity,
@@ -350,7 +353,10 @@ fn check_pickup(c: &mut Checker, version: &str) -> Result<(), String> {
     c.record(
         "p10.an_untracked_collected_entity_is_inert",
         w.pickups.is_empty(),
-        format!("pickups={} after a packet naming an unknown entity", w.pickups.len()),
+        format!(
+            "pickups={} after a packet naming an unknown entity",
+            w.pickups.len()
+        ),
     );
 
     // …but an untracked **collector** is not inert: `if (to == null) to =
@@ -385,7 +391,10 @@ fn check_pickup(c: &mut Checker, version: &str) -> Result<(), String> {
     //
     // MUTATION: a linear ease puts the halfway point at 0.5 of the distance
     // rather than 0.25.
-    let mut w = world_with(&[(1, item, [0.0, 0.0, 0.0]), (2, types.player_id, [0.0, 10.0, 0.0])]);
+    let mut w = world_with(&[
+        (1, item, [0.0, 0.0, 0.0]),
+        (2, types.player_id, [0.0, 10.0, 0.0]),
+    ]);
     w.entities.set_item_stack(1, Some((99, 1, false)));
     route_take_item_entity(
         ids.cb_play_take_item_entity,
@@ -590,7 +599,10 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         jar_json(jar, "assets/minecraft/items/copper_spear.json")
             .map(|d| resolve_definition(&d, &mut |_| None, ctx))
     };
-    let (in_slot, in_hand) = (spear(SelectionContext::gui()), spear(SelectionContext::hand()));
+    let (in_slot, in_hand) = (
+        spear(SelectionContext::gui()),
+        spear(SelectionContext::hand()),
+    );
     c.record(
         "a9.a_spear_selects_different_geometry_in_a_slot_and_in_the_hand",
         in_slot != in_hand
@@ -650,8 +662,7 @@ fn check_geometry(c: &mut Checker, baked: &assets::BakedAssets) {
     // The two transforms differ, and the left one mirrors — the handheld
     // chain gives a sword rotation [0,-90,55] right / [0,90,-55] left.
     let mirrored = sword.is_some_and(|m| {
-        (m.right.rotation[1] + m.left.rotation[1]).abs() < 1e-4
-            && m.right.rotation[1].abs() > 1e-3
+        (m.right.rotation[1] + m.left.rotation[1]).abs() < 1e-4 && m.right.rotation[1].abs() > 1e-3
     });
     c.record(
         "b5.the_left_hand_transform_mirrors_the_right",
@@ -857,9 +868,10 @@ fn check_render(
         off.read_rgba(gpu)
     };
     // The unglinted case, which is every witness written before M45.
-    let render = |held: [Option<&str>; 2], gpu: &mut Gpu, wr: &mut WorldRenderer, off: &mut Offscreen| {
-        render_glint(held, [false; 2], gpu, wr, off)
-    };
+    let render =
+        |held: [Option<&str>; 2], gpu: &mut Gpu, wr: &mut WorldRenderer, off: &mut Offscreen| {
+            render_glint(held, [false; 2], gpu, wr, off)
+        };
 
     // M24b: the same scene, but as a *dropped* stack — no model, no capsule,
     // the item is the entity. `EntityModelKind::Capsule` is passed to prove
@@ -929,9 +941,19 @@ fn check_render(
     };
 
     let empty = render([None, None], &mut gpu, &mut wr, &mut off)?;
-    let sword = render([Some("minecraft:diamond_sword"), None], &mut gpu, &mut wr, &mut off)?;
+    let sword = render(
+        [Some("minecraft:diamond_sword"), None],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let dirt = render([Some("minecraft:dirt"), None], &mut gpu, &mut wr, &mut off)?;
-    let bow = render([Some("minecraft:white_bed"), None], &mut gpu, &mut wr, &mut off)?;
+    let bow = render(
+        [Some("minecraft:white_bed"), None],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     if let Some(dir_out) = &args.out_dir {
         std::fs::create_dir_all(dir_out).map_err(|e| format!("out-dir: {e}"))?;
         let _ = off.save_png(&gpu, &dir_out.join("itemshot-empty.png"));
@@ -989,7 +1011,9 @@ fn check_render(
     let (bx, by) = centroid(&dirt_px);
     c.record(
         "c5.both_sources_land_in_the_same_place",
-        !dirt_px.is_empty() && (bx - cx).abs() < W as f32 * 0.25 && (by - cy).abs() < H as f32 * 0.25,
+        !dirt_px.is_empty()
+            && (bx - cx).abs() < W as f32 * 0.25
+            && (by - cy).abs() < H as f32 * 0.25,
         format!(
             "block-item centroid ({bx:.0}, {by:.0}) vs sprite ({cx:.0}, {cy:.0}) — the same \
              hand, so the two geometry sources share one transform chain"
@@ -997,7 +1021,12 @@ fn check_render(
     );
     // The left hand mirrors: holding the sword in the off hand must move it to
     // the other side of the body.
-    let left = render([None, Some("minecraft:diamond_sword")], &mut gpu, &mut wr, &mut off)?;
+    let left = render(
+        [None, Some("minecraft:diamond_sword")],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let left_px = changed(&empty, &left);
     let (lx, _ly) = centroid(&left_px);
     c.record(
@@ -1010,10 +1039,40 @@ fn check_render(
     // An item name with no baked model draws nothing, which is the only
     // honest empty baseline here: `ground_item: None` falls through to the
     // *capsule fallback*, so it is a control rather than a blank.
-    let g_none = ground(Some("minecraft:__absent__"), 1, 0.0, 0, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_none = ground(
+        Some("minecraft:__absent__"),
+        1,
+        0.0,
+        0,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let g_capsule = ground(None, 0, 0.0, 0, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_sword = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_dirt = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_sword = ground(
+        Some("minecraft:diamond_sword"),
+        1,
+        0.0,
+        7,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let g_dirt = ground(
+        Some("minecraft:dirt"),
+        1,
+        0.0,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let g_sword_px = changed(&g_none, &g_sword);
     let g_dirt_px = changed(&g_none, &g_dirt);
     c.record(
@@ -1070,8 +1129,28 @@ fn check_render(
     // at the same instant must place the item at different heights.
     // The offsets must be sine *extrema*, not 0 and PI — those are both zeros,
     // which is what the first version of this witness got wrong.
-    let g_bob_a = ground(Some("minecraft:dirt"), 1, std::f32::consts::FRAC_PI_2, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_bob_b = ground(Some("minecraft:dirt"), 1, 3.0 * std::f32::consts::FRAC_PI_2, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_bob_a = ground(
+        Some("minecraft:dirt"),
+        1,
+        std::f32::consts::FRAC_PI_2,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let g_bob_b = ground(
+        Some("minecraft:dirt"),
+        1,
+        3.0 * std::f32::consts::FRAC_PI_2,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let (_, ya) = centroid(&changed(&g_none, &g_bob_a));
     let (_, yb) = centroid(&changed(&g_none, &g_bob_b));
     c.record(
@@ -1085,8 +1164,28 @@ fn check_render(
 
     // The spin is `age / 20 + bobOffset`: advancing the clock a quarter turn
     // must change the silhouette of an asymmetric item.
-    let g_t0 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_t1 = ground(Some("minecraft:diamond_sword"), 1, 0.0, 7, 0.25 * std::f32::consts::PI / 2.0 * 20.0 / 20.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_t0 = ground(
+        Some("minecraft:diamond_sword"),
+        1,
+        0.0,
+        7,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let g_t1 = ground(
+        Some("minecraft:diamond_sword"),
+        1,
+        0.0,
+        7,
+        0.25 * std::f32::consts::PI / 2.0 * 20.0 / 20.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     c.record(
         "g4.the_item_spins_with_the_clock",
         !changed(&g_t0, &g_t1).is_empty(),
@@ -1099,8 +1198,28 @@ fn check_render(
 
     // `getRenderedAmount` is a step function, and each step adds copies that
     // the seeded LCG jitters apart — so more copies cover more pixels.
-    let g_one = ground(Some("minecraft:dirt"), 1, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_many = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_one = ground(
+        Some("minecraft:dirt"),
+        1,
+        0.0,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let g_many = ground(
+        Some("minecraft:dirt"),
+        64,
+        0.0,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let one_px = changed(&g_none, &g_one).len();
     let many_px = changed(&g_none, &g_many).len();
     c.record(
@@ -1114,8 +1233,28 @@ fn check_render(
 
     // The bucketing is a step, not a ramp: 17 and 32 both render 3 copies, so
     // they must be pixel-identical.
-    let g_17 = ground(Some("minecraft:dirt"), 17, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_32 = ground(Some("minecraft:dirt"), 32, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_17 = ground(
+        Some("minecraft:dirt"),
+        17,
+        0.0,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let g_32 = ground(
+        Some("minecraft:dirt"),
+        32,
+        0.0,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     c.record(
         "g6.the_copy_count_is_bucketed_not_proportional",
         g_17 == g_32,
@@ -1128,8 +1267,28 @@ fn check_render(
 
     // The jitter is seeded by the item, so the same stack is stable across
     // renders and a different seed lays the copies out differently.
-    let g_seed_a = ground(Some("minecraft:dirt"), 64, 0.0, 9, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_seed_b = ground(Some("minecraft:dirt"), 64, 0.0, 4242, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_seed_a = ground(
+        Some("minecraft:dirt"),
+        64,
+        0.0,
+        9,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let g_seed_b = ground(
+        Some("minecraft:dirt"),
+        64,
+        0.0,
+        4242,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     c.record(
         "g7.the_copy_jitter_is_seeded_and_reproducible",
         g_many == g_seed_a && g_many != g_seed_b,
@@ -1142,7 +1301,17 @@ fn check_render(
     );
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
-    let g_bow = ground(Some("minecraft:white_bed"), 1, 0.0, 3, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let g_bow = ground(
+        Some("minecraft:white_bed"),
+        1,
+        0.0,
+        3,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     c.record(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
@@ -1223,7 +1392,14 @@ fn check_render(
     // could rotate the torso. Every other humanoid puts its torso cube on the
     // static root, so a chestplate's body box resolved to nothing and mobs
     // wore armoured arms over a bare chest while this passed.
-    let parts = ["head", "body", "right_arm", "left_arm", "right_leg", "left_leg"];
+    let parts = [
+        "head",
+        "body",
+        "right_arm",
+        "left_arm",
+        "right_leg",
+        "left_leg",
+    ];
     let mut wearers = 0usize;
     let mut incomplete: Vec<(&str, &str)> = Vec::new();
     for def in rewo_gpu::mobs::MOBS {
@@ -1282,7 +1458,6 @@ fn check_render(
         ),
     );
 
-
     // -- the leather dye (M47) ------------------------------------------------
     //
     // `getColorForLayer` is four lines and three cases, and the third one is
@@ -1313,7 +1488,10 @@ fn check_render(
         (Some(None), 0),
         (Some(None), red),
     ];
-    let got: Vec<u32> = cases.iter().map(|&(d, y)| equipment::color_for_layer(d, y)).collect();
+    let got: Vec<u32> = cases
+        .iter()
+        .map(|&(d, y)| equipment::color_for_layer(d, y))
+        .collect();
     let want: Vec<u32> = cases.iter().map(|&(d, y)| independent(d, y)).collect();
     c.record(
         "d1.get_color_for_layer_matches_an_independent_transcription",
@@ -1331,8 +1509,12 @@ fn check_render(
     );
 
     // The jar's own data, not a belief about it.
-    let leather = baked.equipment.layers("minecraft:leather", equipment::ArmorLayer::Humanoid);
-    let iron = baked.equipment.layers("minecraft:iron", equipment::ArmorLayer::Humanoid);
+    let leather = baked
+        .equipment
+        .layers("minecraft:leather", equipment::ArmorLayer::Humanoid);
+    let iron = baked
+        .equipment
+        .layers("minecraft:iron", equipment::ArmorLayer::Humanoid);
     c.record(
         "d2.only_leather_is_dyeable_and_it_is_a_base_plus_an_overlay",
         leather.len() == 2
@@ -1356,8 +1538,10 @@ fn check_render(
     // An undyed leather piece is **brown**, not the greyscale its sheet is
     // authored in — the bug M46 shipped with and this milestone closes.
     let undyed = equipment::color_for_layer(leather[0].dyeable, equipment::dye_argb(None));
-    let dyed = equipment::color_for_layer(leather[0].dyeable, equipment::dye_argb(Some(0x00B0_2E26)));
-    let overlay_dyed = equipment::color_for_layer(leather[1].dyeable, equipment::dye_argb(Some(0x00B0_2E26)));
+    let dyed =
+        equipment::color_for_layer(leather[0].dyeable, equipment::dye_argb(Some(0x00B0_2E26)));
+    let overlay_dyed =
+        equipment::color_for_layer(leather[1].dyeable, equipment::dye_argb(Some(0x00B0_2E26)));
     c.record(
         "d3.an_undyed_leather_piece_is_brown_and_a_dye_moves_only_the_base",
         undyed == 0xFF00_0000 | equipment::LEATHER_COLOR
@@ -1381,8 +1565,23 @@ fn check_render(
         foil: false,
     };
     let brown = [0.627_451, 0.396_078_4, 0.250_980_4];
-    let f_brown = render_armor([None, Some(piece(brown)), None, None], &mut gpu, &mut wr, &mut off)?;
-    let f_red = render_armor([None, Some(piece([0.690_196, 0.180_392, 0.149_02])), None, None], &mut gpu, &mut wr, &mut off)?;
+    let f_brown = render_armor(
+        [None, Some(piece(brown)), None, None],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let f_red = render_armor(
+        [
+            None,
+            Some(piece([0.690_196, 0.180_392, 0.149_02])),
+            None,
+            None,
+        ],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let f_none = render_armor([None; 4], &mut gpu, &mut wr, &mut off)?;
     let armour_px = changed(&f_brown, &f_none);
     let ratio = |img: &[u8], px: &[(u32, u32)]| -> (f64, f64) {
@@ -1408,8 +1607,6 @@ fn check_render(
             armour_px.len()
         ),
     );
-
-
 
     // -- the trimmed icon (M49) -----------------------------------------------
     //
@@ -1447,7 +1644,9 @@ fn check_render(
         ),
     );
     // An unknown material must land on the base, not on nothing.
-    let unknown = baked.held_items.any(&format!("{base_name}#minecraft:nosuchmaterial"));
+    let unknown = baked
+        .held_items
+        .any(&format!("{base_name}#minecraft:nosuchmaterial"));
     c.record(
         "u2.an_unnamed_material_falls_back_to_the_untrimmed_icon",
         unknown.is_some() && layer_counts(unknown) == 1,
@@ -1543,7 +1742,10 @@ fn check_render(
             "coast x {{gold, iron, gold_darker}} → {} distinct 64x32 sprite(s) \
              from one greyscale source. `gold` and `gold_darker` are separate \
              palettes, which is what an `override_armor_assets` entry selects",
-            [&gold, &iron, &gold_darker].iter().filter(|s| s.is_some()).count()
+            [&gold, &iron, &gold_darker]
+                .iter()
+                .filter(|s| s.is_some())
+                .count()
         ),
     );
 
@@ -1575,9 +1777,9 @@ fn check_render(
     );
 
     // ...and it reaches pixels, in its own depth-EQUAL range.
-    let trim_origin = gold.as_ref().and_then(|(rgba, w, h)| {
-        wr.upload_entity_trim(&mut gpu, "gate/coast_gold", rgba, *w, *h)
-    });
+    let trim_origin = gold
+        .as_ref()
+        .and_then(|(rgba, w, h)| wr.upload_entity_trim(&mut gpu, "gate/coast_gold", rgba, *w, *h));
     let iron_key = baked
         .equipment
         .layers("minecraft:iron", equipment::ArmorLayer::Humanoid)
@@ -1594,7 +1796,12 @@ fn check_render(
         ..bare
     };
     let f_bare = render_armor([None, Some(bare), None, None], &mut gpu, &mut wr, &mut off)?;
-    let f_trim = render_armor([None, Some(trimmed), None, None], &mut gpu, &mut wr, &mut off)?;
+    let f_trim = render_armor(
+        [None, Some(trimmed), None, None],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let f_none = render_armor([None; 4], &mut gpu, &mut wr, &mut off)?;
     let trim_px = changed(&f_trim, &f_bare).len();
     let armour_px = changed(&f_bare, &f_none).len();
@@ -1629,8 +1836,28 @@ fn check_render(
         ),
     );
 
-    let g_plain = ground(Some("minecraft:diamond_sword"), 1, 0.0, 3, 0.0, false, &mut gpu, &mut wr, &mut off)?;
-    let g_glint = ground(Some("minecraft:diamond_sword"), 1, 0.0, 3, 0.0, true, &mut gpu, &mut wr, &mut off)?;
+    let g_plain = ground(
+        Some("minecraft:diamond_sword"),
+        1,
+        0.0,
+        3,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let g_glint = ground(
+        Some("minecraft:diamond_sword"),
+        1,
+        0.0,
+        3,
+        0.0,
+        true,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     let ground_px = changed(&g_glint, &g_plain).len();
     c.record(
         "n2.a_dropped_enchanted_stack_glints",
@@ -1639,16 +1866,44 @@ fn check_render(
             "{ground_px} pixels differ between a dropped stack with the foil flag              and the same one without - `ItemEntityRenderer` draws the item and              nothing else, so every changed pixel is on the item"
         ),
     );
-    let again = ground(Some("minecraft:diamond_sword"), 1, 0.0, 3, 0.0, false, &mut gpu, &mut wr, &mut off)?;
+    let again = ground(
+        Some("minecraft:diamond_sword"),
+        1,
+        0.0,
+        3,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     c.record(
         "n3.no_foil_flag_is_byte_identical",
         again == g_plain,
         "the same draw twice without the flag is byte-identical, so every pixel n2          measured came from the glint pass and none from a stale buffer",
     );
 
-    let h_plain = render_glint([Some("minecraft:diamond_sword"), None], [false; 2], &mut gpu, &mut wr, &mut off)?;
-    let h_main = render_glint([Some("minecraft:diamond_sword"), None], [true, false], &mut gpu, &mut wr, &mut off)?;
-    let h_off = render_glint([Some("minecraft:diamond_sword"), None], [false, true], &mut gpu, &mut wr, &mut off)?;
+    let h_plain = render_glint(
+        [Some("minecraft:diamond_sword"), None],
+        [false; 2],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let h_main = render_glint(
+        [Some("minecraft:diamond_sword"), None],
+        [true, false],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let h_off = render_glint(
+        [Some("minecraft:diamond_sword"), None],
+        [false, true],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
     c.record(
         "n4.a_mob_held_stack_glints_in_the_hand_that_holds_it",
         changed(&h_main, &h_plain).len() > 50 && changed(&h_off, &h_plain).is_empty(),
@@ -1715,7 +1970,9 @@ fn check_render(
                  gpu: &mut Gpu,
                  wr: &mut WorldRenderer,
                  off: &mut Offscreen|
-     -> Result<Vec<u8>, String> { render_armor([None, Some(p), None, None], gpu, wr, off) };
+     -> Result<Vec<u8>, String> {
+        render_armor([None, Some(p), None, None], gpu, wr, off)
+    };
 
     let a_plain = chest(iron_piece(false, None), &mut gpu, &mut wr, &mut off)?;
     let a_foil = chest(iron_piece(true, None), &mut gpu, &mut wr, &mut off)?;

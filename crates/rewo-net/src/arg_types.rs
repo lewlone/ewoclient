@@ -116,8 +116,22 @@ pub const HEIGHTMAPS: [&str; 4] = [
 /// `TeamColor.VALUES`' serialized names — `ChatFormatting`'s sixteen, in its
 /// order.
 pub const TEAM_COLORS: [&str; 16] = [
-    "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple", "gold", "gray",
-    "dark_gray", "blue", "green", "aqua", "red", "light_purple", "yellow", "white",
+    "black",
+    "dark_blue",
+    "dark_green",
+    "dark_aqua",
+    "dark_red",
+    "dark_purple",
+    "gold",
+    "gray",
+    "dark_gray",
+    "blue",
+    "green",
+    "aqua",
+    "red",
+    "light_purple",
+    "yellow",
+    "white",
 ];
 /// `DisplaySlot`'s — three plain slots, then the sixteen `sidebar.team.*` ones
 /// in the same colour order as [`TEAM_COLORS`].
@@ -302,7 +316,9 @@ pub enum Value {
     Greedy,
     /// An identifier, optionally `#`-prefixed for the tag-accepting variants.
     /// The `Option` is the registry the wire named, where there was one.
-    Id { tag: bool },
+    Id {
+        tag: bool,
+    },
     /// An SNBT value's EXTENT (M121) — `nbt_tag`, and `component` / `style`,
     /// which are a `TagParser` value fed to a codec.
     Snbt,
@@ -317,7 +333,9 @@ pub enum Value {
     /// and so inherits brigadier's empty default.
     Swizzle,
     /// `item_slot` (`single`) and `item_slots`, over [`crate::slot_ranges`].
-    Slot { single: bool },
+    Slot {
+        single: bool,
+    },
     /// `time` — a float and then a unit from [`TIME_UNITS`].
     Time,
     /// `hex_color` — three or six hex digits.
@@ -426,8 +444,8 @@ impl Value {
             Self::HexColor => {
                 let start = reader.cursor();
                 let text = reader.read_unquoted_string();
-                let hex = matches!(text.len(), 3 | 6)
-                    && text.chars().all(|c| c.is_ascii_hexdigit());
+                let hex =
+                    matches!(text.len(), 3 | 6) && text.chars().all(|c| c.is_ascii_hexdigit());
                 if hex {
                     Ok(())
                 } else {
@@ -461,7 +479,8 @@ impl Value {
                 while reader.can_read() && reader.peek() != b' ' as u16 {
                     reader.skip();
                 }
-                let name: String = String::from_utf16_lossy(&reader.string()[start..reader.cursor()]);
+                let name: String =
+                    String::from_utf16_lossy(&reader.string()[start..reader.cursor()]);
                 match crate::slot_ranges::lookup(&name) {
                     Some(1) => Ok(()),
                     Some(_) if !*single => Ok(()),
@@ -573,7 +592,9 @@ impl Value {
 
 /// An operation is punctuation, so it cannot be read as a word.
 fn read_operation_or_word(reader: &mut StringReader, choices: &[&str]) -> String {
-    let punctuation = choices.iter().all(|c| !c.chars().next().is_some_and(char::is_alphanumeric));
+    let punctuation = choices
+        .iter()
+        .all(|c| !c.chars().next().is_some_and(char::is_alphanumeric));
     if !punctuation {
         return reader.read_unquoted_string();
     }
@@ -653,7 +674,10 @@ mod tests {
     #[test]
     fn each_type_takes_exactly_its_own_number_of_components() {
         assert!(ok(Coords::Angle, "0"));
-        assert!(!ok(Coords::Angle, "0 0"), "one component, and the rest is not its own");
+        assert!(
+            !ok(Coords::Angle, "0 0"),
+            "one component, and the rest is not its own"
+        );
         assert!(ok(Coords::Vec2, "1 2"));
         assert!(!ok(Coords::Vec2, "1"));
         assert!(ok(Coords::ColumnPos, "1 2"));
@@ -795,24 +819,57 @@ mod tests {
         // here or by its own module.
         let structured: [&str; 0] = [];
         let all = [
-            "minecraft:angle", "minecraft:block_pos", "minecraft:block_predicate",
-            "minecraft:block_state", "minecraft:column_pos", "minecraft:component",
-            "minecraft:dialog", "minecraft:dimension", "minecraft:entity",
-            "minecraft:entity_anchor", "minecraft:float_range", "minecraft:function",
-            "minecraft:game_profile", "minecraft:gamemode", "minecraft:heightmap",
-            "minecraft:hex_color", "minecraft:int_range", "minecraft:item_predicate",
-            "minecraft:item_slot", "minecraft:item_slots", "minecraft:item_stack",
-            "minecraft:loot_modifier", "minecraft:loot_predicate", "minecraft:loot_table",
-            "minecraft:message", "minecraft:nbt_compound_tag", "minecraft:nbt_path",
-            "minecraft:nbt_tag", "minecraft:objective", "minecraft:objective_criteria",
-            "minecraft:operation", "minecraft:particle", "minecraft:resource",
-            "minecraft:resource_key", "minecraft:resource_location",
-            "minecraft:resource_or_tag", "minecraft:resource_or_tag_key",
-            "minecraft:resource_selector", "minecraft:rotation", "minecraft:score_holder",
-            "minecraft:scoreboard_slot", "minecraft:style", "minecraft:swizzle",
-            "minecraft:team", "minecraft:team_color", "minecraft:template_mirror",
-            "minecraft:template_rotation", "minecraft:time", "minecraft:uuid",
-            "minecraft:vec2", "minecraft:vec3",
+            "minecraft:angle",
+            "minecraft:block_pos",
+            "minecraft:block_predicate",
+            "minecraft:block_state",
+            "minecraft:column_pos",
+            "minecraft:component",
+            "minecraft:dialog",
+            "minecraft:dimension",
+            "minecraft:entity",
+            "minecraft:entity_anchor",
+            "minecraft:float_range",
+            "minecraft:function",
+            "minecraft:game_profile",
+            "minecraft:gamemode",
+            "minecraft:heightmap",
+            "minecraft:hex_color",
+            "minecraft:int_range",
+            "minecraft:item_predicate",
+            "minecraft:item_slot",
+            "minecraft:item_slots",
+            "minecraft:item_stack",
+            "minecraft:loot_modifier",
+            "minecraft:loot_predicate",
+            "minecraft:loot_table",
+            "minecraft:message",
+            "minecraft:nbt_compound_tag",
+            "minecraft:nbt_path",
+            "minecraft:nbt_tag",
+            "minecraft:objective",
+            "minecraft:objective_criteria",
+            "minecraft:operation",
+            "minecraft:particle",
+            "minecraft:resource",
+            "minecraft:resource_key",
+            "minecraft:resource_location",
+            "minecraft:resource_or_tag",
+            "minecraft:resource_or_tag_key",
+            "minecraft:resource_selector",
+            "minecraft:rotation",
+            "minecraft:score_holder",
+            "minecraft:scoreboard_slot",
+            "minecraft:style",
+            "minecraft:swizzle",
+            "minecraft:team",
+            "minecraft:team_color",
+            "minecraft:template_mirror",
+            "minecraft:template_rotation",
+            "minecraft:time",
+            "minecraft:uuid",
+            "minecraft:vec2",
+            "minecraft:vec3",
         ];
         let mut unclaimed: Vec<&str> = Vec::new();
         for t in all {
@@ -840,7 +897,9 @@ mod tests {
     fn offers(type_name: &str, typed: &str) -> Vec<String> {
         let units: Vec<u16> = typed.encode_utf16().collect();
         let mut b = SuggestionsBuilder::new(&units, 0);
-        resolve(type_name).unwrap().suggest(&mut b, None, None, None);
+        resolve(type_name)
+            .unwrap()
+            .suggest(&mut b, None, None, None);
         b.build().list.into_iter().map(|s| s.text).collect()
     }
 
@@ -875,7 +934,10 @@ mod tests {
     fn a_scoreboard_slots_dots_are_splitters_for_the_suggester() {
         assert_eq!(offers("minecraft:scoreboard_slot", "").len(), 19);
         assert!(parses("minecraft:scoreboard_slot", "below_name"));
-        assert!(parses("minecraft:scoreboard_slot", "sidebar.team.dark_gray"));
+        assert!(parses(
+            "minecraft:scoreboard_slot",
+            "sidebar.team.dark_gray"
+        ));
         // `matchesSubStr` splits on `.`, so a fragment from the middle or the
         // end of a dotted name matches it — this is why typing the colour
         // alone finds its team slot.
@@ -952,7 +1014,10 @@ mod tests {
         // dispatcher.
         let units: Vec<u16> = "weapon rest".encode_utf16().collect();
         let mut r = StringReader::new(&units);
-        assert!(resolve("minecraft:item_slot").unwrap().parse(&mut r).is_ok());
+        assert!(resolve("minecraft:item_slot")
+            .unwrap()
+            .parse(&mut r)
+            .is_ok());
         assert_eq!(r.cursor(), 6);
     }
 
@@ -976,7 +1041,9 @@ mod tests {
         // argument's own start would replace `10` along with the unit.
         let units: Vec<u16> = "10".encode_utf16().collect();
         let mut b = SuggestionsBuilder::new(&units, 0);
-        resolve("minecraft:time").unwrap().suggest(&mut b, None, None, None);
+        resolve("minecraft:time")
+            .unwrap()
+            .suggest(&mut b, None, None, None);
         let built = b.build();
         assert_eq!(built.range.start, 2, "the unit replaces nothing typed");
         let texts: Vec<String> = built.list.into_iter().map(|s| s.text).collect();
@@ -1038,5 +1105,4 @@ mod tests {
             assert!(matches!(resolve(t), Some(Value::Word)), "{t}");
         }
     }
-
 }

@@ -137,7 +137,11 @@ mod tests {
         // length of the direction vector the caller passed.
         for scale in [1.0, 7.0] {
             let h = cast([0.5, 0.5, 0.5], [scale, 0.0, 0.0], 10.0, |x, _, _| x >= 3).unwrap();
-            assert!((h.distance - 2.5).abs() < 1e-9, "scale {scale}: {}", h.distance);
+            assert!(
+                (h.distance - 2.5).abs() < 1e-9,
+                "scale {scale}: {}",
+                h.distance
+            );
         }
         // Standing inside a solid cell is distance zero, not the first
         // boundary crossing.

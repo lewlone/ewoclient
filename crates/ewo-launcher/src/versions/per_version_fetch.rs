@@ -65,7 +65,8 @@ pub fn get_or_fetch(entry: &ManifestEntry) -> Result<PerVersion, FetchError> {
     }
     log::info!(
         "per-version: cache miss for {} — fetching from {}",
-        entry.id, entry.url
+        entry.id,
+        entry.url
     );
     fetch_and_cache(entry)
 }
@@ -99,8 +100,8 @@ fn fetch_and_cache(entry: &ManifestEntry) -> Result<PerVersion, FetchError> {
         }
     }
 
-    let parsed: PerVersion = serde_json::from_str(&body)
-        .map_err(|e| FetchError::Parse(e.to_string()))?;
+    let parsed: PerVersion =
+        serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
 
     // Best-effort write to disk cache. If it fails we still return the
     // parsed result — the caller doesn't care that the next call will
@@ -138,8 +139,7 @@ fn load_cached(id: &str) -> Option<PerVersion> {
 }
 
 fn save_cached(id: &str, raw_body: &str) -> Result<(), FetchError> {
-    let path = cached_path(id)
-        .ok_or_else(|| FetchError::Disk("config dir unresolvable".into()))?;
+    let path = cached_path(id).ok_or_else(|| FetchError::Disk("config dir unresolvable".into()))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| FetchError::Disk(format!("mkdir {}: {}", parent.display(), e)))?;

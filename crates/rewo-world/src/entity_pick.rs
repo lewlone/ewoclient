@@ -515,7 +515,11 @@ pub fn crosshair_pick(i: &PickInputs) -> Option<EntityHit> {
         i.dir[1] * max_distance,
         i.dir[2] * max_distance,
     ];
-    let to = [i.eye[0] + delta[0], i.eye[1] + delta[1], i.eye[2] + delta[2]];
+    let to = [
+        i.eye[0] + delta[0],
+        i.eye[1] + delta[1],
+        i.eye[2] + delta[2],
+    ];
     // `cameraEntity.getBoundingBox().expandTowards(direction.scale(maxDistance)).inflate(1.0)`.
     let search = i.camera_bb.expand_towards(delta).inflate(1.0);
     let hit = entity_hit_result(i.eye, to, &search, i.candidates, max_distance_sq)?;
@@ -534,7 +538,10 @@ mod tests {
     use super::*;
 
     fn box_at(x: f64, y: f64, z: f64, w: f64, h: f64) -> Aabb {
-        Aabb::new([x - w / 2.0, y, z - w / 2.0], [x + w / 2.0, y + h, z + w / 2.0])
+        Aabb::new(
+            [x - w / 2.0, y, z - w / 2.0],
+            [x + w / 2.0, y + h, z + w / 2.0],
+        )
     }
 
     fn candidate(id: i32, bb: Aabb) -> Candidate {
@@ -678,15 +685,12 @@ mod tests {
         let search = Aabb::new([-0.3, -1.62, -0.3], [0.3, 0.18, 0.3])
             .expand_towards([4.5, 0.0, 0.0])
             .inflate(1.0);
-        let found = entity_hit_result(
-            [0.0, 0.0, 0.0],
-            [4.5, 0.0, 0.0],
-            &search,
-            &[far],
-            4.5 * 4.5,
-        );
+        let found = entity_hit_result([0.0, 0.0, 0.0], [4.5, 0.0, 0.0], &search, &[far], 4.5 * 4.5);
         assert!(found.is_some(), "swept to the larger of the two ranges");
-        assert!(crosshair_pick(&inputs(&[far], None)).is_none(), "then filtered");
+        assert!(
+            crosshair_pick(&inputs(&[far], None)).is_none(),
+            "then filtered"
+        );
     }
 
     #[test]

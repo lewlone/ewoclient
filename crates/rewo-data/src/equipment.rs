@@ -197,7 +197,9 @@ impl EquipmentAssets {
             };
             let mut raw = String::new();
             {
-                let Ok(mut e) = zip.by_name(path) else { continue };
+                let Ok(mut e) = zip.by_name(path) else {
+                    continue;
+                };
                 if std::io::Read::read_to_string(&mut e, &mut raw).is_err() {
                     continue;
                 }
@@ -261,7 +263,12 @@ impl EquipmentAssets {
                 continue;
             };
             if !out.textures.iter().any(|t| t.key == key) {
-                out.textures.push(ArmorTexture { key: key.clone(), w, h, rgba });
+                out.textures.push(ArmorTexture {
+                    key: key.clone(),
+                    w,
+                    h,
+                    rgba,
+                });
             }
             out.by_asset
                 .entry((asset, layer))

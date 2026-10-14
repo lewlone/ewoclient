@@ -337,9 +337,7 @@ impl PlaySession {
                 Ok(v) => self.apply_move_vehicle(&v),
                 Err(err) => self.decode_failed("move_vehicle", err),
             }
-        } else if Some(id) == ids.cb_play_level_particles
-            || Some(id) == ids.cb_play_level_event
-        {
+        } else if Some(id) == ids.cb_play_level_particles || Some(id) == ids.cb_play_level_event {
             // M37. Both packets feed the same queue; the renderer drains it
             // and owns the actual spawning, because the particle system needs
             // the block shapes and the RNG that live on that side.
@@ -622,13 +620,7 @@ impl PlaySession {
             // M81: `damage_event`'s twin. It arms the same clock and, for a
             // player only, stores the yaw the camera tilt leans away from —
             // the one thing `damage_event` never carries.
-        } else if crate::route_player_combat_kill(
-            id,
-            body,
-            ids,
-            self.player_id,
-            &mut self.death,
-        ) {
+        } else if crate::route_player_combat_kill(id, body, ids, self.player_id, &mut self.death) {
             // M82: you died. The id is always your own, so this is resolved
             // against the local-player door and never against the entity
             // table — `REWO_PLAN.md` §0.0 gotcha 13.
@@ -774,8 +766,7 @@ impl PlaySession {
             let key = PacketReader::new(body).identifier().unwrap_or_default();
             if let Some(resp_id) = ids.sb_play_cookie_response {
                 let payload = self.session.cookie(&key).map(<[u8]>::to_vec);
-                let resp =
-                    crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
+                let resp = crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
                 self.send(resp)?;
             }
         } else if crate::route_client_state(
@@ -1172,8 +1163,7 @@ impl PlaySession {
                         &|content| self.decorate_chat(content, &chat.bound),
                         &|tag| self.chat_component_text(tag),
                     );
-                    let was_shown =
-                        matches!(outcome, crate::chat_wire::ChatOutcome::Shown { .. });
+                    let was_shown = matches!(outcome, crate::chat_wire::ChatOutcome::Shown { .. });
                     if let Some(sig) = chat.signature.as_deref() {
                         self.mark_message_processed(sig, was_shown)?;
                     }
@@ -1210,19 +1200,17 @@ impl PlaySession {
             // which is why a missing table is a warn-and-drop rather than a
             // partial parse.
             match self.command_argument_types.as_ref() {
-                Some(types) => {
-                    match crate::commands::read_commands(body, &|i| types.name(i)) {
-                        Ok(tree) => {
-                            log::info!(
-                                "net: command tree — {} nodes, {} top-level",
-                                tree.nodes.len(),
-                                tree.top_level().len()
-                            );
-                            self.commands = tree;
-                        }
-                        Err(e) => self.decode_failed("commands", e),
+                Some(types) => match crate::commands::read_commands(body, &|i| types.name(i)) {
+                    Ok(tree) => {
+                        log::info!(
+                            "net: command tree — {} nodes, {} top-level",
+                            tree.nodes.len(),
+                            tree.top_level().len()
+                        );
+                        self.commands = tree;
                     }
-                }
+                    Err(e) => self.decode_failed("commands", e),
+                },
                 None => log::debug!("net: commands arrived before the argument-type table"),
             }
         } else if id == ids.cb_play_command_suggestions {

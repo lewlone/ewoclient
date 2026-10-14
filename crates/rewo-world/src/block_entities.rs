@@ -168,7 +168,10 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     ("minecraft:structure_block", BlockEntityKind::ModelIsEnough),
     ("minecraft:jigsaw", BlockEntityKind::ModelIsEnough),
     ("minecraft:shelf", BlockEntityKind::ModelIsEnough),
-    ("minecraft:chiseled_bookshelf", BlockEntityKind::ModelIsEnough),
+    (
+        "minecraft:chiseled_bookshelf",
+        BlockEntityKind::ModelIsEnough,
+    ),
     ("minecraft:creaking_heart", BlockEntityKind::ModelIsEnough),
     // -- the rest have no renderer at all in vanilla: pure block models with
     //    an inventory or a tick behind them.
@@ -177,7 +180,10 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     ("minecraft:dispenser", BlockEntityKind::ModelIsEnough),
     ("minecraft:dropper", BlockEntityKind::ModelIsEnough),
     ("minecraft:brewing_stand", BlockEntityKind::ModelIsEnough),
-    ("minecraft:daylight_detector", BlockEntityKind::ModelIsEnough),
+    (
+        "minecraft:daylight_detector",
+        BlockEntityKind::ModelIsEnough,
+    ),
     ("minecraft:hopper", BlockEntityKind::ModelIsEnough),
     ("minecraft:comparator", BlockEntityKind::ModelIsEnough),
     ("minecraft:command_block", BlockEntityKind::ModelIsEnough),
@@ -186,7 +192,10 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     ("minecraft:blast_furnace", BlockEntityKind::ModelIsEnough),
     ("minecraft:beehive", BlockEntityKind::ModelIsEnough),
     ("minecraft:sculk_sensor", BlockEntityKind::ModelIsEnough),
-    ("minecraft:calibrated_sculk_sensor", BlockEntityKind::ModelIsEnough),
+    (
+        "minecraft:calibrated_sculk_sensor",
+        BlockEntityKind::ModelIsEnough,
+    ),
     ("minecraft:sculk_catalyst", BlockEntityKind::ModelIsEnough),
     ("minecraft:sculk_shrieker", BlockEntityKind::ModelIsEnough),
     ("minecraft:crafter", BlockEntityKind::ModelIsEnough),
@@ -195,7 +204,10 @@ pub const TYPE_TABLE: &[(&str, BlockEntityKind)] = &[
     // `client/renderer/blockentity/` — caught by `resolve`'s unclassified
     // check on the first run, which is the whole point of that check.
     ("minecraft:potent_sulfur", BlockEntityKind::ModelIsEnough),
-    ("minecraft:test_instance_block", BlockEntityKind::ModelIsEnough),
+    (
+        "minecraft:test_instance_block",
+        BlockEntityKind::ModelIsEnough,
+    ),
 ];
 
 /// Type-id → classification, resolved once against the live registry.
@@ -800,7 +812,8 @@ impl BlockEntities {
         self.wobbles.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.skull_anim
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
-        self.conduits.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.conduits
+            .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
     }
 
     pub fn len(&self) -> usize {
@@ -1252,7 +1265,10 @@ mod tests {
     #[test]
     fn the_sign_echo_creates_an_absent_face_bare() {
         use rewo_proto::nbt::Nbt;
-        let mut be = BlockEntity { type_id: 7, data: Nbt::Compound(vec![]) };
+        let mut be = BlockEntity {
+            type_id: 7,
+            data: Nbt::Compound(vec![]),
+        };
         let lines = ["x".to_string(), String::new(), String::new(), String::new()];
         be.set_sign_messages(false, &lines);
         let (front, back) = be.sign_text(None);

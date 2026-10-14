@@ -1,11 +1,7 @@
 //! Compile the M0 overlay shaders GLSL -> SPIR-V with glslc (Vulkan SDK).
 //! REWO_PLAN.md D4: GLSL + glslc, revisit Slang if/when mesh shaders land.
 
-use std::{
-    env,
-    path::PathBuf,
-    process::Command,
-};
+use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     let out: PathBuf = env::var("OUT_DIR").unwrap().into();

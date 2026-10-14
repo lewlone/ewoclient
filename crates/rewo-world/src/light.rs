@@ -361,7 +361,14 @@ impl LightEngine {
     /// The open-sky column at `(x, z)` moved from `old_bottom` to
     /// `new_bottom`: cells that became sources are set to 15 and spread; cells
     /// that stopped being sources are cleared and cascade.
-    fn diff_sky_column(&mut self, world: &mut World, x: i32, z: i32, old_bottom: i32, new_bottom: i32) {
+    fn diff_sky_column(
+        &mut self,
+        world: &mut World,
+        x: i32,
+        z: i32,
+        old_bottom: i32,
+        new_bottom: i32,
+    ) {
         let top = world.shape.min_y + world.shape.height;
         for yy in old_bottom.min(new_bottom)..top {
             if yy >= new_bottom {
@@ -665,7 +672,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next(&mut self, n: u32) -> u32 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 33) % n as u64) as u32
         }
     }
@@ -725,7 +735,11 @@ mod tests {
         let mut rng = Lcg(0x5EED_1234);
         let states = [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 1];
         for step in 0..600 {
-            let (x, y, z) = (2 + rng.next(12) as i32, 3 + rng.next(14) as i32, 2 + rng.next(12) as i32);
+            let (x, y, z) = (
+                2 + rng.next(12) as i32,
+                3 + rng.next(14) as i32,
+                2 + rng.next(12) as i32,
+            );
             let new = states[rng.next(states.len() as u32) as usize];
             let old = w.block_state_at(x, y, z);
             w.set_block(x, y, z, new);
@@ -746,7 +760,11 @@ mod tests {
         w.set_block(8, 6, 8, 4);
         e.on_block_change(&mut w, p_tables(), 8, 6, 8, 0, 4);
         assert_eq!(w.light_at(8, 6, 8).1, 15, "the slab cell is still open sky");
-        assert_eq!(w.light_at(8, 5, 8).1, 14, "below it: lit sideways, not a source");
+        assert_eq!(
+            w.light_at(8, 5, 8).1,
+            14,
+            "below it: lit sideways, not a source"
+        );
         assert_matches_recompute(&mut w, 0);
     }
 
@@ -757,7 +775,11 @@ mod tests {
         let mut e = LightEngine::new();
         w.set_block(8, 5, 8, 2); // torch 14
         e.on_block_change(&mut w, tables(), 8, 5, 8, 0, 2);
-        let pt = LightTables { emission: &[0, 0, 14, 15], dampening: &[0, 15, 0, 15], face_occludes: &[0; 4] };
+        let pt = LightTables {
+            emission: &[0, 0, 14, 15],
+            dampening: &[0, 15, 0, 15],
+            face_occludes: &[0; 4],
+        };
         w.set_block(9, 5, 8, 3); // a 15-emitter next to it
         e.on_block_change(&mut w, pt, 9, 5, 8, 0, 3);
         w.set_block(9, 5, 8, 0);
@@ -777,7 +799,11 @@ mod tests {
             let (mut b, mut eb) = p_world();
             let mut batch = Vec::new();
             for _ in 0..(1 + rng.next(40)) {
-                let (x, y, z) = (2 + rng.next(6) as i32, 3 + rng.next(8) as i32, 2 + rng.next(6) as i32);
+                let (x, y, z) = (
+                    2 + rng.next(6) as i32,
+                    3 + rng.next(8) as i32,
+                    2 + rng.next(6) as i32,
+                );
                 let new = states[rng.next(states.len() as u32) as usize];
                 let old = a.block_state_at(x, y, z);
                 a.set_block(x, y, z, new);
@@ -830,7 +856,11 @@ mod tests {
         }
     }
 
-    fn snapshot_cols(w: &World, cols: &[(i32, i32)], ys: std::ops::Range<i32>) -> Vec<(i32, i32, i32, (u8, u8))> {
+    fn snapshot_cols(
+        w: &World,
+        cols: &[(i32, i32)],
+        ys: std::ops::Range<i32>,
+    ) -> Vec<(i32, i32, i32, (u8, u8))> {
         let mut v = Vec::new();
         for &(cx, cz) in cols {
             for y in ys.clone() {
@@ -844,13 +874,21 @@ mod tests {
         v
     }
 
-    fn assert_cols_match_recompute(w: &mut World, cols: &[(i32, i32)], ys: std::ops::Range<i32>, what: &str) {
+    fn assert_cols_match_recompute(
+        w: &mut World,
+        cols: &[(i32, i32)],
+        ys: std::ops::Range<i32>,
+        what: &str,
+    ) {
         let inc = snapshot_cols(w, cols, ys.clone());
         relight_all(w, cols);
         let full = snapshot_cols(w, cols, ys);
         if let Some(i) = (0..inc.len()).find(|&i| inc[i] != full[i]) {
             let (x, y, z, a) = inc[i];
-            panic!("{what}: ({x},{y},{z}) incremental {a:?} != recompute {:?}", full[i].3);
+            panic!(
+                "{what}: ({x},{y},{z}) incremental {a:?} != recompute {:?}",
+                full[i].3
+            );
         }
     }
 
@@ -884,14 +922,19 @@ mod tests {
             let col = w.column_mut(cx, cz).unwrap();
             for s in &mut col.sections[si..] {
                 assert!(
-                    s.sky_light.as_ref().is_some_and(|a| a.iter().all(|b| *b == 0xFF)),
+                    s.sky_light
+                        .as_ref()
+                        .is_some_and(|a| a.iter().all(|b| *b == 0xFF)),
                     "only all-15 sections can be omitted"
                 );
                 s.sky_light = None;
             }
             col.sky_full_above = si;
         }
-        assert!(before == snapshot_cols(w, cols, -64..320), "sparsifying changed a read");
+        assert!(
+            before == snapshot_cols(w, cols, -64..320),
+            "sparsifying changed a read"
+        );
     }
 
     /// The incremental==full property across column borders, with and without
@@ -960,9 +1003,16 @@ mod tests {
             e.on_block_change(&mut w, p_tables(), 6, y, 12, 0, 1);
         }
         let under = w.light_at(16, 59, 7).1;
-        assert!(under < 15, "under the roof centre: sky {under}, not a source");
+        assert!(
+            under < 15,
+            "under the roof centre: sky {under}, not a source"
+        );
         assert!(w.light_at(16, 20, 7).1 < 15, "the shade reaches down");
-        assert_eq!(w.light_at(16, 61, 7).1, 15, "above the roof is still open sky");
+        assert_eq!(
+            w.light_at(16, 61, 7).1,
+            15,
+            "above the roof is still open sky"
+        );
         assert_eq!(w.light_at(6, 69, 12).1, 0, "inside the tower");
         assert_cols_match_recompute(&mut w, &cols, -2..80, "roof");
     }
@@ -989,7 +1039,15 @@ mod tests {
         w.set_block(9, 5, 8, 9);
         let touched = e.on_block_change(&mut w, p_tables(), 9, 5, 8, 0, 9);
         assert_eq!(w.light_at(15, 5, 8).0, 1);
-        assert_eq!(w.light_at(16, 5, 8).0, 0, "the neighbour's own light is unchanged");
-        assert_eq!(touched, vec![(0, 0), (1, 0)], "only loaded columns, the neighbour included");
+        assert_eq!(
+            w.light_at(16, 5, 8).0,
+            0,
+            "the neighbour's own light is unchanged"
+        );
+        assert_eq!(
+            touched,
+            vec![(0, 0), (1, 0)],
+            "only loaded columns, the neighbour included"
+        );
     }
 }

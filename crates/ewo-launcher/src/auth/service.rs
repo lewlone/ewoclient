@@ -86,7 +86,11 @@ fn apply_success(store: &mut AccountStore, job: &InFlight, account: MinecraftAcc
             return false;
         }
     }
-    log::info!("auth: signed in as {} (uuid={})", account.name, account.uuid);
+    log::info!(
+        "auth: signed in as {} (uuid={})",
+        account.name,
+        account.uuid
+    );
     let new_active = active_after_success(job, store.active.as_deref(), &account.uuid);
     store.upsert(account);
     store.active = new_active;
@@ -288,10 +292,7 @@ impl AuthService {
             persistence::save_store(&self.store);
             log::info!("auth: stored social token for {}", uuid);
         } else {
-            log::warn!(
-                "auth: ignored social_token for unknown uuid {}",
-                uuid
-            );
+            log::warn!("auth: ignored social_token for unknown uuid {}", uuid);
         }
     }
 
@@ -358,11 +359,7 @@ fn run_interactive(tx: Sender<AuthEvent>) {
 
     let _ = tx.send(AuthEvent::Progress(ChainStage::OpeningBrowser));
     if let Err(e) = opener::open(&auth_url) {
-        log::warn!(
-            "auth: could not open browser ({}); URL is: {}",
-            e,
-            auth_url,
-        );
+        log::warn!("auth: could not open browser ({}); URL is: {}", e, auth_url,);
         // Don't fail outright — print the URL so the user can paste it.
         // A separate error variant ("browser open failed, paste URL")
         // would be nicer UX; punted for now.
@@ -382,9 +379,10 @@ fn run_interactive(tx: Sender<AuthEvent>) {
     };
 
     let progress_tx = tx.clone();
-    let result = chain::run_chain_from_auth_code(&code, &redirect_uri, &pkce.verifier, move |stage| {
-        let _ = progress_tx.send(AuthEvent::Progress(stage));
-    });
+    let result =
+        chain::run_chain_from_auth_code(&code, &redirect_uri, &pkce.verifier, move |stage| {
+            let _ = progress_tx.send(AuthEvent::Progress(stage));
+        });
 
     match result {
         Ok(account) => {
@@ -462,7 +460,10 @@ mod tests {
 
     #[test]
     fn refresh_for_a_removed_account_is_dropped() {
-        let mut s = AccountStore { active: Some("b".into()), accounts: vec![account("b", "")] };
+        let mut s = AccountStore {
+            active: Some("b".into()),
+            accounts: vec![account("b", "")],
+        };
         assert!(!apply_success(&mut s, &refresh("a"), account("a", "fresh")));
         assert_eq!(s.accounts.len(), 1);
         assert_eq!(s.active.as_deref(), Some("b"));
@@ -470,7 +471,9 @@ mod tests {
 
     #[test]
     fn interactive_sign_in_becomes_active_unless_user_switched() {
-        let job = InFlight::Interactive { active_at_start: Some("a".into()) };
+        let job = InFlight::Interactive {
+            active_at_start: Some("a".into()),
+        };
         let mut s = store("a");
         assert!(apply_success(&mut s, &job, account("c", "t")));
         assert_eq!(s.active.as_deref(), Some("c"));
@@ -482,7 +485,9 @@ mod tests {
         assert!(s.accounts.iter().any(|x| x.uuid == "c"), "C is still added");
 
         // First sign-in on an empty store.
-        let job = InFlight::Interactive { active_at_start: None };
+        let job = InFlight::Interactive {
+            active_at_start: None,
+        };
         let mut s = AccountStore::default();
         assert!(apply_success(&mut s, &job, account("a", "t")));
         assert_eq!(s.active.as_deref(), Some("a"));

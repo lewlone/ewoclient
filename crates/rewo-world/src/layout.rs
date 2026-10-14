@@ -487,7 +487,12 @@ impl Grid {
             self.height = 0;
             return;
         }
-        let max_row = self.children.iter().map(|c| c.last_row()).max().unwrap_or(0);
+        let max_row = self
+            .children
+            .iter()
+            .map(|c| c.last_row())
+            .max()
+            .unwrap_or(0);
         let max_col = self
             .children
             .iter()
@@ -981,7 +986,10 @@ mod tests {
         e.leaves(&mut v);
         assert_eq!(v[0].2, 0, "first child on row 0");
         assert_eq!(v[1].2, 10, "the wide child moved to row 1");
-        assert_eq!(v[2].2, 20, "and the next narrow child is on row 2, not row 1");
+        assert_eq!(
+            v[2].2, 20,
+            "and the next narrow child is on row 2, not row 1"
+        );
         assert_eq!(v[2].1, 0, "at column 0");
     }
 

@@ -480,7 +480,11 @@ fn block_color_layers(block: &str) -> &'static [TintSource] {
 
 /// Resolve a face's tint source from its `tintindex` value + the block's
 /// layers, applying the tall-grass UPPER → `GrassBelow` rule.
-fn resolve_tint_source(layers: &[TintSource], tintindex: Option<i64>, upper_half: bool) -> TintSource {
+fn resolve_tint_source(
+    layers: &[TintSource],
+    tintindex: Option<i64>,
+    upper_half: bool,
+) -> TintSource {
     let Some(ti) = tintindex else {
         return TintSource::None;
     };
@@ -778,17 +782,37 @@ pub struct MobVariantTexture {
 const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("player", "entity/player/wide/steve.png", 64, 64),
     ("zombie", "entity/zombie/zombie.png", 64, 64),
-    ("zombie_villager", "entity/zombie_villager/zombie_villager.png", 64, 64),
+    (
+        "zombie_villager",
+        "entity/zombie_villager/zombie_villager.png",
+        64,
+        64,
+    ),
     ("husk", "entity/zombie/husk.png", 64, 64),
     ("drowned", "entity/zombie/drowned.png", 64, 64),
-    ("drowned_outer", "entity/zombie/drowned_outer_layer.png", 64, 64),
+    (
+        "drowned_outer",
+        "entity/zombie/drowned_outer_layer.png",
+        64,
+        64,
+    ),
     ("skeleton", "entity/skeleton/skeleton.png", 64, 32),
     ("stray", "entity/skeleton/stray.png", 64, 32),
     ("stray_overlay", "entity/skeleton/stray_overlay.png", 64, 32),
     ("bogged", "entity/skeleton/bogged.png", 64, 32),
-    ("bogged_overlay", "entity/skeleton/bogged_overlay.png", 64, 32),
+    (
+        "bogged_overlay",
+        "entity/skeleton/bogged_overlay.png",
+        64,
+        32,
+    ),
     ("parched", "entity/skeleton/parched.png", 64, 64),
-    ("wither_skeleton", "entity/skeleton/wither_skeleton.png", 64, 32),
+    (
+        "wither_skeleton",
+        "entity/skeleton/wither_skeleton.png",
+        64,
+        32,
+    ),
     ("creeper", "entity/creeper/creeper.png", 64, 32),
     ("spider", "entity/spider/spider.png", 64, 32),
     ("cave_spider", "entity/spider/cave_spider.png", 64, 32),
@@ -806,7 +830,12 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("glow_squid", "entity/squid/glow_squid.png", 64, 32),
     ("rabbit", "entity/rabbit/rabbit_brown.png", 64, 64),
     ("villager", "entity/villager/villager.png", 64, 64),
-    ("wandering_trader", "entity/wandering_trader/wandering_trader.png", 64, 64),
+    (
+        "wandering_trader",
+        "entity/wandering_trader/wandering_trader.png",
+        64,
+        64,
+    ),
     ("witch", "entity/witch/witch.png", 64, 128),
     ("pillager", "entity/illager/pillager.png", 64, 64),
     ("vindicator", "entity/illager/vindicator.png", 64, 64),
@@ -815,7 +844,12 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("vex", "entity/illager/vex.png", 32, 32),
     ("phantom", "entity/phantom/phantom.png", 64, 64),
     ("guardian", "entity/guardian/guardian.png", 64, 64),
-    ("elder_guardian", "entity/guardian/guardian_elder.png", 64, 64),
+    (
+        "elder_guardian",
+        "entity/guardian/guardian_elder.png",
+        64,
+        64,
+    ),
     ("shulker", "entity/shulker/shulker.png", 64, 64),
     ("silverfish", "entity/silverfish/silverfish.png", 64, 32),
     ("endermite", "entity/endermite/endermite.png", 64, 32),
@@ -823,7 +857,12 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("ghast", "entity/ghast/ghast.png", 128, 64),
     ("piglin", "entity/piglin/piglin.png", 64, 64),
     ("piglin_brute", "entity/piglin/piglin_brute.png", 64, 64),
-    ("zombified_piglin", "entity/piglin/zombified_piglin.png", 64, 64),
+    (
+        "zombified_piglin",
+        "entity/piglin/zombified_piglin.png",
+        64,
+        64,
+    ),
     ("hoglin", "entity/hoglin/hoglin.png", 128, 64),
     ("zoglin", "entity/hoglin/zoglin.png", 128, 64),
     ("strider", "entity/strider/strider.png", 64, 128),
@@ -865,9 +904,19 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
-    ("copper_golem", "entity/copper_golem/copper_golem.png", 64, 64),
+    (
+        "copper_golem",
+        "entity/copper_golem/copper_golem.png",
+        64,
+        64,
+    ),
     ("nautilus", "entity/nautilus/nautilus.png", 128, 128),
-    ("zombie_nautilus", "entity/nautilus/zombie_nautilus.png", 128, 128),
+    (
+        "zombie_nautilus",
+        "entity/nautilus/zombie_nautilus.png",
+        128,
+        128,
+    ),
     // Emissive overlay layers (M52) — the textures vanilla's `EyesLayer` /
     // `LivingEntityEmissiveLayer` re-render the model with. Each is the
     // same size as its mob's base texture, which is what lets the emissive
@@ -877,10 +926,30 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("phantom_eyes", "entity/phantom/phantom_eyes.png", 64, 64),
     ("breeze_eyes", "entity/breeze/breeze_eyes.png", 32, 32),
     ("creaking_eyes", "entity/creaking/creaking_eyes.png", 64, 64),
-    ("copper_golem_eyes", "entity/copper_golem/copper_golem_eyes.png", 64, 64),
-    ("warden_bioluminescent", "entity/warden/warden_bioluminescent_layer.png", 128, 128),
-    ("warden_pulsating_1", "entity/warden/warden_pulsating_spots_1.png", 128, 128),
-    ("warden_pulsating_2", "entity/warden/warden_pulsating_spots_2.png", 128, 128),
+    (
+        "copper_golem_eyes",
+        "entity/copper_golem/copper_golem_eyes.png",
+        64,
+        64,
+    ),
+    (
+        "warden_bioluminescent",
+        "entity/warden/warden_bioluminescent_layer.png",
+        128,
+        128,
+    ),
+    (
+        "warden_pulsating_1",
+        "entity/warden/warden_pulsating_spots_1.png",
+        128,
+        128,
+    ),
+    (
+        "warden_pulsating_2",
+        "entity/warden/warden_pulsating_spots_2.png",
+        128,
+        128,
+    ),
     ("warden_heart", "entity/warden/warden_heart.png", 128, 128),
     // M68 — the two render layers whose sheet is a *second* texture on a mesh
     // Rewo already builds.
@@ -892,7 +961,12 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     // class wrapping it is `SheepFurModel`. The sheet's own layout settles it:
     // its head block is 12 px wide over 8 rows (w=6, d=8), which is the body
     // head's box unwrap, where the fur sheet's is 12 px over 6 (d=6).
-    ("sheep_wool_undercoat", "entity/sheep/sheep_wool_undercoat.png", 64, 32),
+    (
+        "sheep_wool_undercoat",
+        "entity/sheep/sheep_wool_undercoat.png",
+        64,
+        32,
+    ),
     // `TropicalFishRenderer` swaps `this.model` between two meshes and the
     // texture with it, so `tropical_b.png` is not an alternate skin for one
     // fish — it is the sheet belonging to the *large* body plan.
@@ -901,8 +975,18 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     // of each six is the baked base (KOB / FLOPPER); the other five ride the
     // variant band (`crate::mob_variants`), which is what lets one pattern
     // slot address all six.
-    ("tropical_fish_pattern_a", "entity/fish/tropical_a_pattern_1.png", 32, 32),
-    ("tropical_fish_pattern_b", "entity/fish/tropical_b_pattern_1.png", 32, 32),
+    (
+        "tropical_fish_pattern_a",
+        "entity/fish/tropical_a_pattern_1.png",
+        32,
+        32,
+    ),
+    (
+        "tropical_fish_pattern_b",
+        "entity/fish/tropical_b_pattern_1.png",
+        32,
+        32,
+    ),
 ];
 
 /// A decoded GUI sprite: RGBA8 + pixel dimensions.
@@ -1183,7 +1267,11 @@ pub struct BakeStats {
 ///     result is purely `propagatesSkylightDown ? 0 : 1`; both fluids carry
 ///     `SKY_PROPAGATE = 0` (`LiquidBlock.propagatesSkylightDown` = false) → 1.
 fn fluid_light(lava: bool) -> (u8, u8) {
-    let name = if lava { "minecraft:lava" } else { "minecraft:water" };
+    let name = if lava {
+        "minecraft:lava"
+    } else {
+        "minecraft:water"
+    };
     let emission = crate::block_light::EMISSION
         .iter()
         .find(|&&(b, _)| b == name)
@@ -1191,7 +1279,9 @@ fn fluid_light(lava: bool) -> (u8, u8) {
     // 1 = always propagates; anything else (0 = never, 2 = only-if-not-
     // waterlogged, which fluids never carry) means dampening 1.
     let propagates = matches!(
-        crate::block_light::SKY_PROPAGATE.iter().find(|&&(b, _)| b == name),
+        crate::block_light::SKY_PROPAGATE
+            .iter()
+            .find(|&&(b, _)| b == name),
         Some(&(_, 1))
     );
     let dampening = if propagates { 0 } else { 1 };
@@ -1407,11 +1497,11 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 swap.entity
             ),
         }
-    }    // M64: vanilla's metadata-driven alternates. Each must be its base's size,
-    // because it reuses the base's UVs — the same constraint M57b puts on a
-    // pack's ETF alternates, and every vanilla one satisfies it by
-    // construction. One that does not is dropped rather than rendered
-    // scrambled.
+    } // M64: vanilla's metadata-driven alternates. Each must be its base's size,
+      // because it reuses the base's UVs — the same constraint M57b puts on a
+      // pack's ETF alternates, and every vanilla one satisfies it by
+      // construction. One that does not is dropped rather than rendered
+      // scrambled.
     let mut mob_variant_textures = Vec::new();
     for (key, index, path) in crate::mob_variants::specs() {
         let Some((w, h)) = mob_texture_size(key) else {
@@ -1518,14 +1608,15 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 
     let no_occlude: std::collections::HashSet<&str> =
         crate::block_light::NO_OCCLUDE.iter().copied().collect();
-    let const_emission: HashMap<&str, u8> =
-        crate::block_light::EMISSION.iter().copied().collect();
+    let const_emission: HashMap<&str, u8> = crate::block_light::EMISSION.iter().copied().collect();
     let lit_emission: HashMap<&str, u8> =
         crate::block_light::LIT_EMISSION.iter().copied().collect();
     let sky_propagate: HashMap<&str, u8> =
         crate::block_light::SKY_PROPAGATE.iter().copied().collect();
-    let damp_override: HashMap<&str, u8> =
-        crate::block_light::DAMPENING_OVERRIDE.iter().copied().collect();
+    let damp_override: HashMap<&str, u8> = crate::block_light::DAMPENING_OVERRIDE
+        .iter()
+        .copied()
+        .collect();
     let state_emission: HashMap<&str, (&str, &str, &str, &[(&str, u8)])> =
         crate::block_light::STATE_EMISSION
             .iter()
@@ -1534,8 +1625,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
 
     let constant_collision: HashMap<&str, &[[f32; 6]]> =
         crate::collision_table::COLLISION.iter().copied().collect();
-    let no_collision: std::collections::HashSet<&str> =
-        crate::collision_table::NO_COLLISION.iter().copied().collect();
+    let no_collision: std::collections::HashSet<&str> = crate::collision_table::NO_COLLISION
+        .iter()
+        .copied()
+        .collect();
     let skip_rules: HashMap<&str, u8> =
         crate::block_props::SKIP_RENDERING.iter().copied().collect();
     for (block_ord, (block_name, def)) in blocks.iter().enumerate() {
@@ -1554,7 +1647,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 continue;
             };
             let props = state.get("properties").and_then(|p| p.as_object());
-            let on = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()) == Some("true");
+            let on =
+                |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()) == Some("true");
             let mut connect = 0u8;
             if skip == 2 {
                 // Mesher face order: north 2, south 3, west 4, east 5.
@@ -1584,7 +1678,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 emissive_rendering: false,
                 ambient_occlusion: true,
             };
-            let mut phys = crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
+            let mut phys =
+                crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
             if short == "water" || short == "lava" {
                 let level = props
                     .and_then(|p| p.get("level"))
@@ -1719,7 +1814,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             } else {
                 Vec::new()
             };
-            cull[id as usize].ao_occluder = collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+            cull[id as usize].ao_occluder =
+                collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
             // The three `BlockBehaviour` facts the mesher's vanilla smooth
             // lighting asks per state, plus the model's ambient occlusion
             // (the FIRST model part's `useAmbientOcclusion()`).
@@ -1727,8 +1823,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             cull[id as usize].view_blocking =
                 is_view_blocking(block_name.as_str(), props, ao_occluder);
             cull[id as usize].shade_dark = shade_dark(block_name.as_str(), props, ao_occluder);
-            cull[id as usize].emissive_rendering =
-                emissive_rendering(block_name.as_str(), props);
+            cull[id as usize].emissive_rendering = emissive_rendering(block_name.as_str(), props);
             cull[id as usize].ambient_occlusion = bs
                 .as_ref()
                 .is_none_or(|bs| baker.first_model_ambient_occlusion(bs, props));
@@ -1746,8 +1841,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // `propagatesSkylightDown` defaults to "not a full cube and no
             // fluid", but 16 block classes override it — glass returns true so
             // sky passes it at full strength, fences return "not waterlogged".
-            let waterlogged =
-                props.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str()) == Some("true");
+            let waterlogged = props
+                .and_then(|p| p.get("waterlogged"))
+                .and_then(|v| v.as_str())
+                == Some("true");
             let propagates = match sky_propagate.get(block_name.as_str()) {
                 Some(0) => false,
                 Some(1) => true,
@@ -1843,8 +1940,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     // renderer reads, so a block that renders water and a block that counts as
     // water cannot disagree. The `RenderKind::Fluid` half is water's own states.
     for (id, w) in water.iter_mut().enumerate() {
-        *w = fluid[id].is_some()
-            || matches!(render[id], RenderKind::Fluid { lava: false, .. });
+        *w = fluid[id].is_some() || matches!(render[id], RenderKind::Fluid { lava: false, .. });
     }
 
     // Translucency, now that every layer exists and every forced reference
@@ -1879,7 +1975,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     );
 
     if !baker.animations.is_empty() {
-        log::info!("rewo-data: {} animated texture layers", baker.animations.len());
+        log::info!(
+            "rewo-data: {} animated texture layers",
+            baker.animations.len()
+        );
     }
     Ok(BakedAssets {
         lang,
@@ -1949,15 +2048,27 @@ pub const PARTICLE_SPRITE_SETS: &[(&str, &[&str])] = &[
     (
         "smoke",
         &[
-            "generic_7", "generic_6", "generic_5", "generic_4", "generic_3", "generic_2",
-            "generic_1", "generic_0",
+            "generic_7",
+            "generic_6",
+            "generic_5",
+            "generic_4",
+            "generic_3",
+            "generic_2",
+            "generic_1",
+            "generic_0",
         ],
     ),
     (
         "poof",
         &[
-            "generic_7", "generic_6", "generic_5", "generic_4", "generic_3", "generic_2",
-            "generic_1", "generic_0",
+            "generic_7",
+            "generic_6",
+            "generic_5",
+            "generic_4",
+            "generic_3",
+            "generic_2",
+            "generic_1",
+            "generic_0",
         ],
     ),
 ];
@@ -2002,7 +2113,10 @@ fn bake_particle_sprites(jar: Jar) -> Option<ParticleSprites> {
         }
     }
     log::info!("rewo-data: {} particle sprite layers", layers.len());
-    Some(ParticleSprites { layers, set_offsets })
+    Some(ParticleSprites {
+        layers,
+        set_offsets,
+    })
 }
 
 /// Point-upscale an RGBA image to `TEX_SIZE` square. Only exact integer
@@ -2665,14 +2779,8 @@ fn bake_container(jar: Jar) -> Option<ContainerSprites> {
         // *twice* in the jar, once here and once a directory up, and the two
         // copies are different art.
         bundle_slot: get(jar, "gui/sprites/container/bundle/slot_background.png")?,
-        bundle_highlight_back: get(
-            jar,
-            "gui/sprites/container/bundle/slot_highlight_back.png",
-        )?,
-        bundle_highlight_front: get(
-            jar,
-            "gui/sprites/container/bundle/slot_highlight_front.png",
-        )?,
+        bundle_highlight_back: get(jar, "gui/sprites/container/bundle/slot_highlight_back.png")?,
+        bundle_highlight_front: get(jar, "gui/sprites/container/bundle/slot_highlight_front.png")?,
         bundle_bar_border: get(
             jar,
             "gui/sprites/container/bundle/bundle_progressbar_border.png",
@@ -2828,18 +2936,8 @@ pub fn adv_tab_path(kind: usize, cap: usize, selected: bool) -> String {
 /// table's, not the jar's — an entry's INDEX is part of the screen-pass
 /// contract, so it is append-only like `sheet_index`.
 pub const SIGN_WOODS: [&str; 12] = [
-    "oak",
-    "spruce",
-    "birch",
-    "acacia",
-    "cherry",
-    "jungle",
-    "dark_oak",
-    "pale_oak",
-    "crimson",
-    "warped",
-    "mangrove",
-    "bamboo",
+    "oak", "spruce", "birch", "acacia", "cherry", "jungle", "dark_oak", "pale_oak", "crimson",
+    "warped", "mangrove", "bamboo",
 ];
 
 /// Extract the button, background, tab and statistics sheets. Any missing one
@@ -2949,7 +3047,10 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
     }
     let mut adv_backgrounds = Vec::with_capacity(5);
     for name in ADV_BACKGROUNDS {
-        adv_backgrounds.push(get(jar, &format!("gui/advancements/backgrounds/{name}.png"))?);
+        adv_backgrounds.push(get(
+            jar,
+            &format!("gui/advancements/backgrounds/{name}.png"),
+        )?);
     }
     Some(WidgetSprites {
         button: get(jar, "gui/sprites/widget/button.png")?,
@@ -3139,8 +3240,7 @@ fn bake_locator(jar: Jar) -> Option<LocatorSprites> {
                 sprites.push(i);
                 continue;
             }
-            let Some(img) = get(jar, &format!("gui/sprites/hud/locator_bar_dot/{path}.png"))
-            else {
+            let Some(img) = get(jar, &format!("gui/sprites/hud/locator_bar_dot/{path}.png")) else {
                 continue;
             };
             let i = dots.len() as u16;
@@ -3298,7 +3398,9 @@ type Jar<'a> = &'a mut zip::ZipArchive<std::io::BufReader<std::fs::File>>;
 /// which lands on vanilla's own fallback — the untrimmed icon.
 fn trim_material_cases(def: &serde_json::Value) -> Vec<String> {
     let model = def.get("model");
-    if model.and_then(|m| m.get("property")).and_then(|p| p.as_str())
+    if model
+        .and_then(|m| m.get("property"))
+        .and_then(|p| p.as_str())
         != Some("minecraft:trim_material")
     {
         return Vec::new();
@@ -3396,10 +3498,8 @@ impl<'a> Baker<'a> {
 
         // M14 tint metadata for this state: the block's BlockColors layers +
         // whether this is the tall-grass UPPER half (which samples pos.below()).
-        let upper_half = props
-            .and_then(|p| p.get("half"))
-            .and_then(|h| h.as_str())
-            == Some("upper");
+        let upper_half =
+            props.and_then(|p| p.get("half")).and_then(|h| h.as_str()) == Some("upper");
         let tint = TintInfo {
             foliage,
             layers: block_color_layers(block),
@@ -3476,7 +3576,9 @@ impl<'a> Baker<'a> {
     fn collision_boxes(&mut self, refs: &[ModelRef], tall: bool) -> Vec<[f32; 6]> {
         let mut out = Vec::new();
         for r in refs {
-            let Some(resolved) = self.resolve_model(&r.model) else { continue };
+            let Some(resolved) = self.resolve_model(&r.model) else {
+                continue;
+            };
             for el in resolved.elements.clone() {
                 let (Some(from), Some(to)) = (box_coords(&el, "from"), box_coords(&el, "to"))
                 else {
@@ -3522,8 +3624,7 @@ impl<'a> Baker<'a> {
             return None;
         }
         let el = &resolved.elements[0];
-        if box_coords(el, "from")? != [0.0, 0.0, 0.0]
-            || box_coords(el, "to")? != [16.0, 16.0, 16.0]
+        if box_coords(el, "from")? != [0.0, 0.0, 0.0] || box_coords(el, "to")? != [16.0, 16.0, 16.0]
         {
             return None;
         }
@@ -3655,7 +3756,6 @@ impl<'a> Baker<'a> {
         }
     }
 
-
     /// Bake every resolvable item's held model (M22).
     ///
     /// Two phases, because resolving a definition and baking its geometry both
@@ -3663,7 +3763,10 @@ impl<'a> Baker<'a> {
     /// list comes from the jar itself (`assets/minecraft/items/*.json`) rather
     /// than the registry, so this needs no extra input and cannot drift from
     /// what the jar ships.
-    fn bake_held_items(&mut self, trims: &crate::equipment::TrimAssets) -> crate::held_items::HeldItems {
+    fn bake_held_items(
+        &mut self,
+        trims: &crate::equipment::TrimAssets,
+    ) -> crate::held_items::HeldItems {
         use crate::held_items::{HeldItemModel, HeldItems, TexturePool};
         use crate::item_models::{resolve_definition, ItemGeometry, ItemModel, SelectionContext};
 
@@ -3778,11 +3881,12 @@ impl<'a> Baker<'a> {
             // The slot geometry, when the definition selects a different
             // model there. A variant that fails to bake leaves `None`, so the
             // slot falls back to the hand's quads rather than drawing nothing.
-            let gui_quads = gui_geometry.and_then(|g| match &g {
-                ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
-                ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
-            })
-            .filter(|q| !q.is_empty());
+            let gui_quads = gui_geometry
+                .and_then(|g| match &g {
+                    ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
+                    ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
+                })
+                .filter(|q| !q.is_empty());
             match baked {
                 Some(quads) if !quads.is_empty() => {
                     models.insert(
@@ -3842,9 +3946,8 @@ impl<'a> Baker<'a> {
             // The pot bake validates every derived sherd texture against the
             // jar, so it returns a Result the others do not.
             let jar = &mut self.jar;
-            let mut pots = crate::block_entity_models::bake_decorated_pot(
-                &mut pool,
-                &mut |tex_name: &str| {
+            let mut pots =
+                crate::block_entity_models::bake_decorated_pot(&mut pool, &mut |tex_name: &str| {
                     let path = format!("assets/minecraft/textures/{tex_name}.png");
                     let mut bytes = Vec::new();
                     jar.by_name(&path)
@@ -3852,8 +3955,7 @@ impl<'a> Baker<'a> {
                         .and_then(|mut e| e.read_to_end(&mut bytes).ok())?;
                     let (rgba, w, h) = decode_png_any(&bytes)?;
                     Some(crate::held_items::HeldTexture { w, h, rgba })
-                },
-            );
+                });
             be_models.append(&mut pots);
         }
         let be_count = be_models.len();
@@ -4006,7 +4108,10 @@ impl<'a> Baker<'a> {
     }
 
     fn resolve_model(&mut self, model: &str) -> Option<ResolvedModel> {
-        let key = model.strip_prefix("minecraft:").unwrap_or(model).to_string();
+        let key = model
+            .strip_prefix("minecraft:")
+            .unwrap_or(model)
+            .to_string();
         if let Some(c) = self.model_cache.get(&key) {
             return c.clone();
         }
@@ -4110,7 +4215,8 @@ impl<'a> Baker<'a> {
         let Some(name) = resolve_texture_var("#particle", &model.textures) else {
             return NO_PARTICLE_LAYER;
         };
-        self.layer_for(&name, TintKind::None).unwrap_or(NO_PARTICLE_LAYER)
+        self.layer_for(&name, TintKind::None)
+            .unwrap_or(NO_PARTICLE_LAYER)
     }
 
     /// Texture-array layer for a texture name; `foliage` picks the tint
@@ -4229,42 +4335,12 @@ fn face_geometry(
     let (tx, ty, tz) = (t[0], t[1], t[2]);
     // [TL, TR, BR, BL] with textures upright (+Y is up for side faces).
     let verts = match face {
-        0 => [
-            [fx, ty, fz],
-            [tx, ty, fz],
-            [tx, ty, tz],
-            [fx, ty, tz],
-        ], // up
-        1 => [
-            [fx, fy, fz],
-            [tx, fy, fz],
-            [tx, fy, tz],
-            [fx, fy, tz],
-        ], // down
-        2 => [
-            [tx, ty, fz],
-            [fx, ty, fz],
-            [fx, fy, fz],
-            [tx, fy, fz],
-        ], // north (-Z)
-        3 => [
-            [fx, ty, tz],
-            [tx, ty, tz],
-            [tx, fy, tz],
-            [fx, fy, tz],
-        ], // south (+Z)
-        4 => [
-            [fx, ty, fz],
-            [fx, ty, tz],
-            [fx, fy, tz],
-            [fx, fy, fz],
-        ], // west (-X)
-        _ => [
-            [tx, ty, tz],
-            [tx, ty, fz],
-            [tx, fy, fz],
-            [tx, fy, tz],
-        ], // east (+X)
+        0 => [[fx, ty, fz], [tx, ty, fz], [tx, ty, tz], [fx, ty, tz]], // up
+        1 => [[fx, fy, fz], [tx, fy, fz], [tx, fy, tz], [fx, fy, tz]], // down
+        2 => [[tx, ty, fz], [fx, ty, fz], [fx, fy, fz], [tx, fy, fz]], // north (-Z)
+        3 => [[fx, ty, tz], [tx, ty, tz], [tx, fy, tz], [fx, fy, tz]], // south (+Z)
+        4 => [[fx, ty, fz], [fx, ty, tz], [fx, fy, tz], [fx, fy, fz]], // west (-X)
+        _ => [[tx, ty, tz], [tx, ty, fz], [tx, fy, fz], [tx, fy, tz]], // east (+X)
     };
     // uv rect [u1,v1,u2,v2] in 0..16 texture space; default = face extent.
     let rect = uv_field
@@ -4279,7 +4355,12 @@ fn face_geometry(
             ]
         })
         .unwrap_or_else(|| default_uv(f, t, face));
-    let (u1, v1, u2, v2) = (rect[0] / 16.0, rect[1] / 16.0, rect[2] / 16.0, rect[3] / 16.0);
+    let (u1, v1, u2, v2) = (
+        rect[0] / 16.0,
+        rect[1] / 16.0,
+        rect[2] / 16.0,
+        rect[3] / 16.0,
+    );
     let uv = [[u1, v1], [u2, v1], [u2, v2], [u1, v2]];
     (verts, uv)
 }
@@ -4287,7 +4368,7 @@ fn face_geometry(
 /// Default uv from the element's extent projected onto the face.
 fn default_uv(f: [f32; 3], t: [f32; 3], face: usize) -> [f32; 4] {
     match face {
-        0 | 1 => [f[0], f[2], t[0], t[2]], // x,z
+        0 | 1 => [f[0], f[2], t[0], t[2]],               // x,z
         2 | 3 => [f[0], 16.0 - t[1], t[0], 16.0 - f[1]], // x,y
         _ => [f[2], 16.0 - t[1], t[2], 16.0 - f[1]],     // z,y
     }
@@ -4317,7 +4398,10 @@ fn apply_element_rotation(verts: &mut [[f32; 3]; 4], rot: &serde_json::Value) {
         .unwrap_or([8.0, 8.0, 8.0]);
     let axis = rot.get("axis").and_then(|a| a.as_str()).unwrap_or("y");
     let angle = rot.get("angle").and_then(|a| a.as_f64()).unwrap_or(0.0) as f32;
-    let rescale = rot.get("rescale").and_then(|r| r.as_bool()).unwrap_or(false);
+    let rescale = rot
+        .get("rescale")
+        .and_then(|r| r.as_bool())
+        .unwrap_or(false);
     let rad = angle.to_radians();
     let (s, c) = (rad.sin(), rad.cos());
     let scale = if rescale && c.abs() > 1e-4 {
@@ -4456,10 +4540,7 @@ fn pick_variant(
     None
 }
 
-fn variant_matches(
-    key: &str,
-    props: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> bool {
+fn variant_matches(key: &str, props: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
     if key.is_empty() {
         return true;
     }
@@ -4702,8 +4783,11 @@ fn rotate_box(b: [f32; 6], x_deg: i32, y_deg: i32) -> [f32; 6] {
 fn model_collision(short: &str) -> Option<bool> {
     // Fence-likes: vanilla collides them 1.5 blocks tall so they can't be
     // jumped. Checked before `_fence` since `_fence_gate` also ends in `_gate`.
-    if short.ends_with("_fence") || short == "fence" || short.ends_with("_fence_gate")
-        || short.ends_with("_wall") || short == "wall"
+    if short.ends_with("_fence")
+        || short == "fence"
+        || short.ends_with("_fence_gate")
+        || short.ends_with("_wall")
+        || short == "wall"
     {
         return Some(true);
     }
@@ -4789,7 +4873,12 @@ fn special_collision(
     short: &str,
     props: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<Vec<[f32; 6]>> {
-    let prop = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or("");
+    let prop = |k: &str| {
+        props
+            .and_then(|p| p.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    };
     const P: f32 = 1.0 / 16.0;
     let cw = |d: &str| match d {
         "north" => "east",
@@ -4814,7 +4903,9 @@ fn special_collision(
         }
         out
     };
-    let bars = crate::block_props::SKIP_RENDERING.iter().any(|(n, k)| *n == name && *k == 2);
+    let bars = crate::block_props::SKIP_RENDERING
+        .iter()
+        .any(|(n, k)| *n == name && *k == 2);
     if bars || crate::block_props::FENCES_TAG.contains(&name.as_str()) {
         // `CrossCollisionBlock` collision: `column(post, 0, h)` plus
         // `boxZ(arm, 0, h, 0, 8)` per connected side. `IronBarsBlock`
@@ -4830,7 +4921,8 @@ fn special_collision(
     if crate::block_props::WALLS_TAG.contains(&name.as_str()) {
         // `WallBlock` collision: `column(8, 0, 24)` if `up`, and
         // `boxZ(6, 0, 24, 0, 11)` for every side that is not `none`.
-        let post = (prop("up") == "true").then_some([4.0 * P, 0.0, 4.0 * P, 12.0 * P, 1.5, 12.0 * P]);
+        let post =
+            (prop("up") == "true").then_some([4.0 * P, 0.0, 4.0 * P, 12.0 * P, 1.5, 12.0 * P]);
         return Some(arms(
             [5.0 * P, 0.0, 0.0, 11.0 * P, 1.5, 11.0 * P],
             post,
@@ -4888,7 +4980,11 @@ fn special_collision(
         // `SnowLayerBlock.getCollisionShape`: `SHAPES[layers - 1]`, 2/16 each.
         let layers: f32 = prop("layers").parse().unwrap_or(1.0);
         let h = (layers - 1.0) * 2.0 * P;
-        return Some(if h > 0.0 { vec![[0.0, 0.0, 0.0, 1.0, h, 1.0]] } else { Vec::new() });
+        return Some(if h > 0.0 {
+            vec![[0.0, 0.0, 0.0, 1.0, h, 1.0]]
+        } else {
+            Vec::new()
+        });
     }
     if short.ends_with("chest") && short != "ender_chest" {
         // `ChestBlock.getShape`: SINGLE `column(14, 0, 14)`; a double half is
@@ -4897,7 +4993,9 @@ fn special_collision(
         let facing = prop("facing");
         return Some(match prop("type") {
             "left" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], cw(facing)),
-            "right" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], ccw(facing)),
+            "right" => {
+                rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], ccw(facing))
+            }
             _ => vec![[P, 0.0, P, 15.0 * P, 14.0 * P, 15.0 * P]],
         });
     }
@@ -4908,7 +5006,11 @@ fn special_collision(
     if short.ends_with("_bed") {
         // `BedBlock.SHAPES[connected.opposite()]`: a 3..9 slab and two legs at
         // the far end, given for NORTH. HEAD connects toward `facing.opposite`.
-        let key = if prop("part") == "head" { prop("facing") } else { opposite(prop("facing")) };
+        let key = if prop("part") == "head" {
+            prop("facing")
+        } else {
+            opposite(prop("facing"))
+        };
         let north = [
             [0.0, 3.0 * P, 0.0, 1.0, 9.0 * P, 1.0],
             [0.0, 0.0, 0.0, 3.0 * P, 3.0 * P, 3.0 * P],
@@ -4925,7 +5027,14 @@ fn special_collision(
             let north = [[0.5 - half, 4.0 * P, 0.5, 0.5 + half, 12.0 * P, 1.0]];
             return Some(rotate_horizontal(&north, prop("facing")));
         }
-        return Some(vec![[0.5 - half, 0.0, 0.5 - half, 0.5 + half, 0.5, 0.5 + half]]);
+        return Some(vec![[
+            0.5 - half,
+            0.0,
+            0.5 - half,
+            0.5 + half,
+            0.5,
+            0.5 + half,
+        ]]);
     }
     None
 }
@@ -5151,7 +5260,7 @@ mod tests {
     fn resolve_tint_source_by_tintindex_and_half() {
         use TintSource::*;
         let petals = block_color_layers("pink_petals"); // [None, Grass]
-        // tintindex 0 → blank, tintindex 1 → grass.
+                                                        // tintindex 0 → blank, tintindex 1 → grass.
         assert_eq!(resolve_tint_source(petals, Some(0), false), None);
         assert_eq!(resolve_tint_source(petals, Some(1), false), Grass);
         // No tintindex on the face → never tinted.
@@ -5185,8 +5294,16 @@ mod tests {
         // fluid light assignment in isolation. Water: no emission, and
         // LiquidBlock.propagatesSkylightDown = false → getLightDampening = 1.
         // Lava: block_light::EMISSION pins it to 15, same dampening.
-        assert_eq!(fluid_light(false), (0, 1), "water = (emission 0, dampening 1)");
-        assert_eq!(fluid_light(true), (15, 1), "lava = (emission 15, dampening 1)");
+        assert_eq!(
+            fluid_light(false),
+            (0, 1),
+            "water = (emission 0, dampening 1)"
+        );
+        assert_eq!(
+            fluid_light(true),
+            (15, 1),
+            "lava = (emission 15, dampening 1)"
+        );
     }
 
     #[test]
@@ -5327,7 +5444,10 @@ mod tests {
         for id in states_where(raw, "minecraft:oak_leaves", &[]) {
             let c = &baked.cull[id];
             assert!(!c.view_blocking, "oak_leaves ({id})");
-            assert_eq!(c.shade_dark, c.ao_occluder, "oak_leaves uses the default ({id})");
+            assert_eq!(
+                c.shade_dark, c.ao_occluder,
+                "oak_leaves uses the default ({id})"
+            );
         }
     }
 
@@ -5399,16 +5519,16 @@ mod tests {
             crate::skip_test!("no local 26.2 jar/datagen report");
             return;
         };
-        for block in ["minecraft:sculk_sensor", "minecraft:calibrated_sculk_sensor"] {
+        for block in [
+            "minecraft:sculk_sensor",
+            "minecraft:calibrated_sculk_sensor",
+        ] {
             for id in states_where(raw, block, &[("sculk_sensor_phase", "active")]) {
                 assert!(baked.cull[id].emissive_rendering, "{block} active ({id})");
             }
             for phase in ["inactive", "cooldown"] {
                 for id in states_where(raw, block, &[("sculk_sensor_phase", phase)]) {
-                    assert!(
-                        !baked.cull[id].emissive_rendering,
-                        "{block} {phase} ({id})"
-                    );
+                    assert!(!baked.cull[id].emissive_rendering, "{block} {phase} ({id})");
                 }
             }
         }
@@ -5431,7 +5551,10 @@ mod tests {
             );
         }
         for id in states_where(raw, "minecraft:stone", &[]) {
-            assert!(baked.cull[id].ambient_occlusion, "cube_all defaults true ({id})");
+            assert!(
+                baked.cull[id].ambient_occlusion,
+                "cube_all defaults true ({id})"
+            );
         }
     }
 

@@ -435,15 +435,22 @@ impl ScreenPass {
         // are readable constants instead of a lookup.
         let mut sheets = vec![((0u32, 0u32), (0u32, 0u32)); SHEET_COUNT];
         let put = |atlas: &mut Vec<u8>,
-                       sheets: &mut Vec<((u32, u32), (u32, u32))>,
-                       s: Sheet,
-                       data: &crate::hud::HudSpriteData<'_>,
-                       x: u32,
-                       y: u32| {
+                   sheets: &mut Vec<((u32, u32), (u32, u32))>,
+                   s: Sheet,
+                   data: &crate::hud::HudSpriteData<'_>,
+                   x: u32,
+                   y: u32| {
             place(atlas, data, x, y);
             sheets[sheet_index(s)] = ((x, y), (data.w, data.h));
         };
-        put(&mut atlas, &mut sheets, Sheet::Button, &sprites.button, 0, 0);
+        put(
+            &mut atlas,
+            &mut sheets,
+            Sheet::Button,
+            &sprites.button,
+            0,
+            0,
+        );
         put(
             &mut atlas,
             &mut sheets,
@@ -478,7 +485,14 @@ impl ScreenPass {
         );
         for (i, c) in sprites.stat_columns.iter().enumerate() {
             let x = 36 + 18 * i as u32;
-            put(&mut atlas, &mut sheets, Sheet::StatColumn(i as u8), c, x, row);
+            put(
+                &mut atlas,
+                &mut sheets,
+                Sheet::StatColumn(i as u8),
+                c,
+                x,
+                row,
+            );
         }
         put(
             &mut atlas,
@@ -576,10 +590,38 @@ impl ScreenPass {
         }
         // M173 — the slider shelf, under the arrows: the two 200x20 tracks
         // stacked, then the two 8x20 handles beside them.
-        put(&mut atlas, &mut sheets, Sheet::SliderSheet(0), &sprites.slider[0], 200, 280);
-        put(&mut atlas, &mut sheets, Sheet::SliderSheet(1), &sprites.slider[1], 200, 300);
-        put(&mut atlas, &mut sheets, Sheet::SliderSheet(2), &sprites.slider[2], 404, 280);
-        put(&mut atlas, &mut sheets, Sheet::SliderSheet(3), &sprites.slider[3], 414, 280);
+        put(
+            &mut atlas,
+            &mut sheets,
+            Sheet::SliderSheet(0),
+            &sprites.slider[0],
+            200,
+            280,
+        );
+        put(
+            &mut atlas,
+            &mut sheets,
+            Sheet::SliderSheet(1),
+            &sprites.slider[1],
+            200,
+            300,
+        );
+        put(
+            &mut atlas,
+            &mut sheets,
+            Sheet::SliderSheet(2),
+            &sprites.slider[2],
+            404,
+            280,
+        );
+        put(
+            &mut atlas,
+            &mut sheets,
+            Sheet::SliderSheet(3),
+            &sprites.slider[3],
+            414,
+            280,
+        );
         // M174 — the sign-board shelves: the 12 standing boards (24x26) in a
         // row at y 320, the 12 hanging boards (16x16) below them at y 352.
         for i in 0..12 {
@@ -610,7 +652,14 @@ impl ScreenPass {
         // M178 — the advancements shelf, everything below y=512 so no older
         // texel moves. The window crop at (0,512); then rows of tabs, frames,
         // boxes and backdrops.
-        put(&mut atlas, &mut sheets, Sheet::AdvWindow, &sprites.adv_window, 0, 512);
+        put(
+            &mut atlas,
+            &mut sheets,
+            Sheet::AdvWindow,
+            &sprites.adv_window,
+            0,
+            512,
+        );
         for (i, t) in sprites.adv_tabs.iter().enumerate() {
             let i = i as u32;
             let (x, y) = if i < 12 {
@@ -634,7 +683,11 @@ impl ScreenPass {
             put(
                 &mut atlas,
                 &mut sheets,
-                [Sheet::AdvBoxObtained, Sheet::AdvBoxUnobtained, Sheet::AdvTitleBox][i],
+                [
+                    Sheet::AdvBoxObtained,
+                    Sheet::AdvBoxUnobtained,
+                    Sheet::AdvTitleBox,
+                ][i],
                 b,
                 0,
                 754 + 28 * i as u32,
@@ -1031,9 +1084,14 @@ fn lower_sprite(
             (0, 0, src.w, src.h),
             s.color,
         ),
-        Fill::NineSlice(border) => {
-            nine_slice(v, scale, (s.x, s.y, s.width, s.height), src, border, s.color)
-        }
+        Fill::NineSlice(border) => nine_slice(
+            v,
+            scale,
+            (s.x, s.y, s.width, s.height),
+            src,
+            border,
+            s.color,
+        ),
         Fill::SubRect(u, sv, sw, sh) => push_src(
             v,
             scale,
@@ -1146,7 +1204,15 @@ fn nine_slice(
         color,
     );
     // edges + centre, tiled
-    push_tiled(v, scale, (x + l, y, mw, t), src, (l, 0, sw, t), (sw, t), color);
+    push_tiled(
+        v,
+        scale,
+        (x + l, y, mw, t),
+        src,
+        (l, 0, sw, t),
+        (sw, t),
+        color,
+    );
     push_tiled(
         v,
         scale,
@@ -1216,4 +1282,3 @@ fn push_quad(
         v.push(Vertex { pos, uv, color });
     }
 }
-

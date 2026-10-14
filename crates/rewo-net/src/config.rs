@@ -128,7 +128,9 @@ impl ConfigData {
         if self.biome_defs.is_empty() {
             None
         } else {
-            Some(rewo_world::biome::BiomeRegistry::new(self.biome_defs.clone()))
+            Some(rewo_world::biome::BiomeRegistry::new(
+                self.biome_defs.clone(),
+            ))
         }
     }
 
@@ -227,7 +229,10 @@ impl ConfigData {
             let entry_name = match r.identifier() {
                 Ok(v) => v,
                 Err(e) => {
-                    crate::route_decode_failed(&format!("registry_data {registry}: entry {idx}"), e);
+                    crate::route_decode_failed(
+                        &format!("registry_data {registry}: entry {idx}"),
+                        e,
+                    );
                     return Ok(());
                 }
             };
@@ -274,7 +279,10 @@ impl ConfigData {
             let has_nbt = match r.bool() {
                 Ok(v) => v,
                 Err(e) => {
-                    crate::route_decode_failed(&format!("registry_data {registry}: {entry_name}"), e);
+                    crate::route_decode_failed(
+                        &format!("registry_data {registry}: {entry_name}"),
+                        e,
+                    );
                     return Ok(());
                 }
             };
@@ -290,7 +298,10 @@ impl ConfigData {
             let nbt = match r.nbt() {
                 Ok(v) => v,
                 Err(e) => {
-                    crate::route_decode_failed(&format!("registry_data {registry}: {entry_name}"), e);
+                    crate::route_decode_failed(
+                        &format!("registry_data {registry}: {entry_name}"),
+                        e,
+                    );
                     return Ok(());
                 }
             };
@@ -339,7 +350,9 @@ pub fn handle_config_packet(
     if id == ids.cb_config_keep_alive {
         // A keep-alive that cannot be answered is a timeout in 15 s anyway;
         // failing now at least names the cause.
-        let ka = PacketReader::new(body).i64().map_err(|e| de("keep_alive", e))?;
+        let ka = PacketReader::new(body)
+            .i64()
+            .map_err(|e| de("keep_alive", e))?;
         let mut resp = PacketWriter::packet(ids.sb_config_keep_alive);
         resp.i64(ka);
         send(resp)?;
@@ -392,7 +405,11 @@ pub fn handle_config_packet(
         // M166 — the second blocking task. See `config_tasks` for why the
         // reply is FAILED_DOWNLOAD and not DECLINED.
         let (pack, action) = config_tasks::answer_pack_push(body, ctx.tasks);
-        send(config_tasks::write_pack_reply(ids.sb_config_resource_pack, pack, action))?;
+        send(config_tasks::write_pack_reply(
+            ids.sb_config_resource_pack,
+            pack,
+            action,
+        ))?;
     } else if id == ids.cb_config_finish {
         send(PacketWriter::packet(ids.sb_config_finish))?;
         return Ok(ConfigStep::Finished);
@@ -411,13 +428,25 @@ pub fn handle_config_packet(
     } else if id == ids.cb_config_custom_payload {
         // M78 — the vanilla server sends `minecraft:brand` from its
         // configuration listener's opening burst and never sends another.
-        crate::session::apply(crate::session::SessionPacket::CustomPayload, body, ctx.session);
+        crate::session::apply(
+            crate::session::SessionPacket::CustomPayload,
+            body,
+            ctx.session,
+        );
     } else if id == ids.cb_config_store_cookie {
-        crate::session::apply(crate::session::SessionPacket::StoreCookie, body, ctx.session);
+        crate::session::apply(
+            crate::session::SessionPacket::StoreCookie,
+            body,
+            ctx.session,
+        );
     } else if id == ids.cb_config_server_links {
         // M85 — `serverLinks` is a field of the common listener, so it crosses
         // into play with the brand and the cookie jar.
-        crate::session::apply(crate::session::SessionPacket::ServerLinks, body, ctx.session);
+        crate::session::apply(
+            crate::session::SessionPacket::ServerLinks,
+            body,
+            ctx.session,
+        );
     } else if id == ids.cb_config_disconnect {
         return Ok(ConfigStep::Disconnect);
     }

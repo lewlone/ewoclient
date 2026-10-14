@@ -94,10 +94,7 @@ impl EntityPickTable {
         log::info!(
             "rewo-data: entity pick shapes — {} types, {} never pickable",
             by_id.len(),
-            by_id
-                .values()
-                .filter(|s| s.rule == PickRule::Never)
-                .count()
+            by_id.values().filter(|s| s.rule == PickRule::Never).count()
         );
         Ok(Self { by_id })
     }
@@ -157,8 +154,8 @@ impl EntityTypeTag {
             .map_err(|e| format!("{REDIRECTABLE_TAG_PATH}: {e}"))?
             .read_to_string(&mut text)
             .map_err(|e| format!("{REDIRECTABLE_TAG_PATH}: {e}"))?;
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("{REDIRECTABLE_TAG_PATH}: {e}"))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("{REDIRECTABLE_TAG_PATH}: {e}"))?;
         let values = json
             .get("values")
             .and_then(|v| v.as_array())
@@ -199,7 +196,7 @@ impl EntityTypeTag {
 
 #[cfg(test)]
 mod tests {
-    use crate::entity_pick_table::{ENTITY_PICK, PickRule, REGISTERED_TYPES};
+    use crate::entity_pick_table::{PickRule, ENTITY_PICK, REGISTERED_TYPES};
 
     #[test]
     fn the_generated_table_covers_every_pinned_type_exactly_once() {
@@ -249,7 +246,10 @@ mod tests {
     #[test]
     fn the_two_conditional_living_rules_are_on_the_right_types() {
         assert_eq!(rule_of("minecraft:player"), PickRule::AliveUnlessSpectator);
-        assert_eq!(rule_of("minecraft:armor_stand"), PickRule::AliveUnlessMarker);
+        assert_eq!(
+            rule_of("minecraft:armor_stand"),
+            PickRule::AliveUnlessMarker
+        );
     }
 
     #[test]
@@ -258,7 +258,10 @@ mod tests {
             rule_of("minecraft:arrow"),
             PickRule::RedirectableProjectileNotInGround
         );
-        assert_eq!(rule_of("minecraft:fireball"), PickRule::RedirectableProjectile);
+        assert_eq!(
+            rule_of("minecraft:fireball"),
+            PickRule::RedirectableProjectile
+        );
     }
 
     #[test]

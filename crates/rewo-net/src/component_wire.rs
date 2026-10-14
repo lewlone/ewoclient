@@ -125,29 +125,27 @@ const TRIM_MATERIAL_DIRECT: Shape = Shape::Tuple(&[TRIM_ASSETS, S_NBT]);
 const TRIM_PATTERN_DIRECT: Shape = Shape::Tuple(&[S_STR, S_NBT, S_BOOL]);
 
 /// `BannerPatternLayers.Layer.STREAM_CODEC` — a pattern holder and a dye.
-const BANNER_LAYER: Shape = Shape::Tuple(&[
-    Shape::Holder(&Shape::Tuple(&[S_STR, S_STR])),
-    S_VARINT,
-]);
+const BANNER_LAYER: Shape =
+    Shape::Tuple(&[Shape::Holder(&Shape::Tuple(&[S_STR, S_STR])), S_VARINT]);
 
 /// `MobEffectInstance.STREAM_CODEC` — the effect, then its details, which
 /// nest through `hiddenEffect`.
 const MOB_EFFECT_DETAILS: Shape = Shape::Tuple(&[
-    S_VARINT, // amplifier
-    S_VARINT, // duration
-    S_BOOL,   // ambient
-    S_BOOL,   // showParticles
-    S_BOOL,   // showIcon
+    S_VARINT,                        // amplifier
+    S_VARINT,                        // duration
+    S_BOOL,                          // ambient
+    S_BOOL,                          // showParticles
+    S_BOOL,                          // showIcon
     Shape::Optional(&Shape::NbtTag), // hiddenEffect, as a tag rather than a recursion
 ]);
 const MOB_EFFECT_INSTANCE: Shape = Shape::Tuple(&[S_HOLDER_REG, MOB_EFFECT_DETAILS]);
 
 /// `PotionContents.STREAM_CODEC`.
 const POTION_CONTENTS: Shape = Shape::Tuple(&[
-    Shape::Optional(&S_HOLDER_REG),          // potion
-    Shape::Optional(&S_INT),                 // customColor
-    Shape::List(&MOB_EFFECT_INSTANCE),       // customEffects
-    Shape::Optional(&S_STR),                 // customName
+    Shape::Optional(&S_HOLDER_REG),    // potion
+    Shape::Optional(&S_INT),           // customColor
+    Shape::List(&MOB_EFFECT_INSTANCE), // customEffects
+    Shape::Optional(&S_STR),           // customName
 ]);
 
 /// `CustomModelData.STREAM_CODEC` — four parallel lists.
@@ -433,10 +431,7 @@ pub static CODECS: &[ComponentCodec] = &[
     c("minecraft:dyed_color", Shape::Int),
     c("minecraft:map_color", Shape::Int),
     c("minecraft:custom_model_data", CUSTOM_MODEL_DATA),
-    c(
-        "minecraft:block_state",
-        Shape::Map(&S_STR, &S_STR),
-    ),
+    c("minecraft:block_state", Shape::Map(&S_STR, &S_STR)),
     c(
         "minecraft:trim",
         Shape::Tuple(&[
@@ -460,7 +455,10 @@ pub static CODECS: &[ComponentCodec] = &[
         Shape::List(&Shape::Optional(&Shape::ItemStackTemplate)),
     ),
     // `composite(type idMapper, VarInt duration)`.
-    c("minecraft:swing_animation", Shape::Tuple(&[S_VARINT, S_VARINT])),
+    c(
+        "minecraft:swing_animation",
+        Shape::Tuple(&[S_VARINT, S_VARINT]),
+    ),
     // `composite(BOOL hideTooltip, collection of component type ids)`.
     c(
         "minecraft:tooltip_display",
@@ -469,7 +467,10 @@ pub static CODECS: &[ComponentCodec] = &[
     // -- M41b: the rest of what composes out of the shapes above ------------
     c("minecraft:enchantable", Shape::VarInt),
     c("minecraft:weapon", Shape::Tuple(&[S_VARINT, S_FLOAT])),
-    c("minecraft:use_effects", Shape::Tuple(&[S_BOOL, S_BOOL, S_FLOAT])),
+    c(
+        "minecraft:use_effects",
+        Shape::Tuple(&[S_BOOL, S_BOOL, S_FLOAT]),
+    ),
     c("minecraft:food", Shape::Tuple(&[S_VARINT, S_FLOAT, S_BOOL])),
     c(
         "minecraft:attack_range",
@@ -1285,7 +1286,11 @@ mod tests {
             ("text".to_string(), Nbt::String(String::new())),
             ("translate".to_string(), Nbt::String("k".to_string())),
         ]);
-        assert_eq!(tag.to_plain_text(), "k", "`if out.is_empty()` lets it through");
+        assert_eq!(
+            tag.to_plain_text(),
+            "k",
+            "`if out.is_empty()` lets it through"
+        );
         assert_eq!(nbt_text(&tag), "", "`else if` drops it");
         assert_eq!(
             crate::enchantment_parse::nbt_plain(&tag),
@@ -1331,7 +1336,10 @@ mod tests {
             // two. Without it a `renders_empty` that reverted to `nbt_text`
             // agrees on every fixture in this list.
             Nbt::String(format!("{sec}c")),
-            Nbt::Compound(vec![("translate".to_string(), Nbt::String("k".to_string()))]),
+            Nbt::Compound(vec![(
+                "translate".to_string(),
+                Nbt::String("k".to_string()),
+            )]),
             Nbt::Compound(vec![
                 ("text".to_string(), Nbt::String("a".to_string())),
                 (
@@ -1364,7 +1372,10 @@ mod tests {
         // …and the alias really does carry the table, rather than agreeing
         // by both ignoring it. Without this the loop above passes for a pair
         // that both answer the raw key.
-        let key = Nbt::Compound(vec![("translate".to_string(), Nbt::String("k".to_string()))]);
+        let key = Nbt::Compound(vec![(
+            "translate".to_string(),
+            Nbt::String("k".to_string()),
+        )]);
         assert_eq!(
             rewo_world::chat_translate::chat_component_text(&key, Some(&lang)),
             "resolved"
@@ -1400,9 +1411,15 @@ mod tests {
             ),
         ]);
         let lang = rewo_data::lang::Language::from_map(
-            [("k".to_string(), "a %s b".to_string())].into_iter().collect(),
+            [("k".to_string(), "a %s b".to_string())]
+                .into_iter()
+                .collect(),
         );
-        assert_eq!(tag.to_plain_text(), "k", "the key, and the argument is lost");
+        assert_eq!(
+            tag.to_plain_text(),
+            "k",
+            "the key, and the argument is lost"
+        );
         assert_eq!(nbt_text(&tag), "k");
         assert_eq!(
             rewo_world::chat_style::flatten(&tag, Some(&lang)),
@@ -1869,7 +1886,10 @@ mod tests {
         varint(15, &mut inline); // comparatorOutput
         let n = inline.len();
         inline.push(0xEE);
-        assert_eq!(walked(shape("minecraft:jukebox_playable"), &inline), Some(n));
+        assert_eq!(
+            walked(shape("minecraft:jukebox_playable"), &inline),
+            Some(n)
+        );
     }
 
     #[test]
@@ -1958,9 +1978,21 @@ mod tests {
         assert_eq!(
             items,
             vec![
-                ItemTemplate { item_id: 1, count: 64, patched: false },
-                ItemTemplate { item_id: 2, count: 1, patched: true },
-                ItemTemplate { item_id: 999, count: 16, patched: false },
+                ItemTemplate {
+                    item_id: 1,
+                    count: 64,
+                    patched: false
+                },
+                ItemTemplate {
+                    item_id: 2,
+                    count: 1,
+                    patched: true
+                },
+                ItemTemplate {
+                    item_id: 999,
+                    count: 16,
+                    patched: false
+                },
             ]
         );
     }
@@ -2054,8 +2086,16 @@ mod tests {
         assert_eq!(
             items,
             vec![
-                ItemTemplate { item_id: 7, count: 1, patched: true },
-                ItemTemplate { item_id: 9, count: 3, patched: false },
+                ItemTemplate {
+                    item_id: 7,
+                    count: 1,
+                    patched: true
+                },
+                ItemTemplate {
+                    item_id: 9,
+                    count: 3,
+                    patched: false
+                },
             ],
             "only the outer bundle's own stacks are captured"
         );
@@ -2192,7 +2232,10 @@ mod tests {
             "the generic walk disagrees with the capture"
         );
         assert_eq!(slots.len(), 3);
-        assert_eq!(text(&slots[1].as_ref().unwrap().custom_name).as_deref(), Some("Bag of Holding"));
+        assert_eq!(
+            text(&slots[1].as_ref().unwrap().custom_name).as_deref(),
+            Some("Bag of Holding")
+        );
     }
 
     /// An empty slot is one zero byte and **is kept**. Dropping it would
@@ -2294,7 +2337,10 @@ mod tests {
         install_test_shapes();
         let mut b = Vec::new();
         varint(1, &mut b);
-        slot(Some((2, 1, &[(NO_SUCH_COMPONENT, vec![0xAA, 0xBB])])), &mut b);
+        slot(
+            Some((2, 1, &[(NO_SUCH_COMPONENT, vec![0xAA, 0xBB])])),
+            &mut b,
+        );
         assert_eq!(captured_container(&b), None);
         assert_eq!(walked(shape("minecraft:container"), &b), None);
     }

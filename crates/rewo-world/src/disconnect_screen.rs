@@ -172,11 +172,7 @@ impl DisconnectDetails {
     /// The cause is what gates it, and that gate is the whole transcription:
     /// `createDisconnectionInfo` fills the field and
     /// `new DisconnectionDetails(reason)` does not.
-    pub fn new(
-        cause: DisconnectCause,
-        reason: impl Into<String>,
-        candidate: Option<&str>,
-    ) -> Self {
+    pub fn new(cause: DisconnectCause, reason: impl Into<String>, candidate: Option<&str>) -> Self {
         Self {
             reason: reason.into(),
             bug_report_link: cause
@@ -290,9 +286,9 @@ pub fn split_lines(text: &str, max_width: i32, width_of: &dyn Fn(&str) -> i32) -
     let mut out = Vec::new();
     let mut start = 0usize;
     while start < bytes.len() {
-        let Some(line_break) = crate::string_splitter::find_line_break(
-            &bytes, start, max_width, width_of,
-        ) else {
+        let Some(line_break) =
+            crate::string_splitter::find_line_break(&bytes, start, max_width, width_of)
+        else {
             // `endOfText` — the whole remainder is one line.
             out.push(bytes[start..].iter().collect());
             break;
@@ -498,7 +494,10 @@ mod tests {
             DisconnectDetails::new(DisconnectCause::ClientError, "boom", BUG_LINK).bug_report_link,
             Some("https://bugs.example".into())
         );
-        for quiet in [DisconnectCause::ServerRequested, DisconnectCause::EndOfStream] {
+        for quiet in [
+            DisconnectCause::ServerRequested,
+            DisconnectCause::EndOfStream,
+        ] {
             assert_eq!(
                 DisconnectDetails::new(quiet, "You are banned", BUG_LINK).bug_report_link,
                 None,
@@ -518,13 +517,9 @@ mod tests {
     /// back button down.
     #[test]
     fn the_report_button_appears_with_the_link_and_moves_the_back_button() {
-        let quiet = DisconnectDetails::new(
-            DisconnectCause::ServerRequested,
-            "Server closed",
-            BUG_LINK,
-        );
-        let noisy =
-            DisconnectDetails::new(DisconnectCause::ClientError, "Server closed", BUG_LINK);
+        let quiet =
+            DisconnectDetails::new(DisconnectCause::ServerRequested, "Server closed", BUG_LINK);
+        let noisy = DisconnectDetails::new(DisconnectCause::ClientError, "Server closed", BUG_LINK);
         let a = build(&labels(), &quiet, 320, 240, &w6);
         let b = build(&labels(), &noisy, 320, 240, &w6);
         assert!(a.widget(REPORT).is_none());

@@ -144,7 +144,12 @@ pub struct LevelEventSound {
 
 /// Shorthand for the overwhelmingly common shape: at the block, no delay, no
 /// gate, a literal volume.
-const fn at_block(id: i32, sound: &'static str, source: &'static str, volume: f32) -> LevelEventSound {
+const fn at_block(
+    id: i32,
+    sound: &'static str,
+    source: &'static str,
+    volume: f32,
+) -> LevelEventSound {
     LevelEventSound {
         id,
         sound,
@@ -159,7 +164,12 @@ const fn at_block(id: i32, sound: &'static str, source: &'static str, volume: f3
 }
 
 /// Same, but with `distanceDelay` set — the trial-spawner / vault family.
-const fn delayed(id: i32, sound: &'static str, source: &'static str, volume: f32) -> LevelEventSound {
+const fn delayed(
+    id: i32,
+    sound: &'static str,
+    source: &'static str,
+    volume: f32,
+) -> LevelEventSound {
     LevelEventSound {
         distance_delay: true,
         ..at_block(id, sound, source, volume)
@@ -177,7 +187,12 @@ pub const SOUNDS: &[LevelEventSound] = &[
     at_block(1000, "minecraft:block.dispenser.dispense", "block", 1.0),
     at_block(1001, "minecraft:block.dispenser.fail", "block", 1.0),
     at_block(1002, "minecraft:block.dispenser.launch", "block", 1.0),
-    at_block(1004, "minecraft:entity.firework_rocket.shoot", "neutral", 1.0),
+    at_block(
+        1004,
+        "minecraft:entity.firework_rocket.shoot",
+        "neutral",
+        1.0,
+    ),
     // 1009 is two different sounds, and **only** for data 0 and 1: vanilla's
     // `if/else if` has no `else`, so any other value is silence rather than a
     // fall-through to the first branch.
@@ -187,15 +202,35 @@ pub const SOUNDS: &[LevelEventSound] = &[
     },
     LevelEventSound {
         data: DataGate::Eq(1),
-        ..at_block(1009, "minecraft:entity.generic.extinguish_fire", "block", 0.7)
+        ..at_block(
+            1009,
+            "minecraft:entity.generic.extinguish_fire",
+            "block",
+            0.7,
+        )
     },
     at_block(1015, "minecraft:entity.ghast.warn", "hostile", 10.0),
     at_block(1016, "minecraft:entity.ghast.shoot", "hostile", 10.0),
     at_block(1017, "minecraft:entity.ender_dragon.shoot", "hostile", 10.0),
     at_block(1018, "minecraft:entity.blaze.shoot", "hostile", 2.0),
-    at_block(1019, "minecraft:entity.zombie.attack_wooden_door", "hostile", 2.0),
-    at_block(1020, "minecraft:entity.zombie.attack_iron_door", "hostile", 2.0),
-    at_block(1021, "minecraft:entity.zombie.break_wooden_door", "hostile", 2.0),
+    at_block(
+        1019,
+        "minecraft:entity.zombie.attack_wooden_door",
+        "hostile",
+        2.0,
+    ),
+    at_block(
+        1020,
+        "minecraft:entity.zombie.attack_iron_door",
+        "hostile",
+        2.0,
+    ),
+    at_block(
+        1021,
+        "minecraft:entity.zombie.break_wooden_door",
+        "hostile",
+        2.0,
+    ),
     at_block(1022, "minecraft:entity.wither.break_block", "hostile", 2.0),
     LevelEventSound {
         placement: Placement::Camera,
@@ -206,7 +241,12 @@ pub const SOUNDS: &[LevelEventSound] = &[
     at_block(1024, "minecraft:entity.wither.shoot", "hostile", 2.0),
     at_block(1025, "minecraft:entity.bat.takeoff", "neutral", 0.05),
     at_block(1026, "minecraft:entity.zombie.infect", "hostile", 2.0),
-    at_block(1027, "minecraft:entity.zombie_villager.converted", "hostile", 2.0),
+    at_block(
+        1027,
+        "minecraft:entity.zombie_villager.converted",
+        "hostile",
+        2.0,
+    ),
     LevelEventSound {
         placement: Placement::Camera,
         global: true,
@@ -236,8 +276,18 @@ pub const SOUNDS: &[LevelEventSound] = &[
         ..at_block(1038, "minecraft:block.end_portal.spawn", "hostile", 1.0)
     },
     at_block(1039, "minecraft:entity.phantom.bite", "hostile", 0.3),
-    at_block(1040, "minecraft:entity.zombie.converted_to_drowned", "hostile", 2.0),
-    at_block(1041, "minecraft:entity.husk.converted_to_zombie", "hostile", 2.0),
+    at_block(
+        1040,
+        "minecraft:entity.zombie.converted_to_drowned",
+        "hostile",
+        2.0,
+    ),
+    at_block(
+        1041,
+        "minecraft:entity.husk.converted_to_zombie",
+        "hostile",
+        2.0,
+    ),
     at_block(1042, "minecraft:block.grindstone.use", "block", 1.0),
     at_block(1043, "minecraft:item.book.page_turn", "block", 1.0),
     at_block(1044, "minecraft:block.smithing_table.use", "block", 1.0),
@@ -254,7 +304,12 @@ pub const SOUNDS: &[LevelEventSound] = &[
         "block",
         2.0,
     ),
-    at_block(1048, "minecraft:entity.skeleton.converted_to_stray", "hostile", 2.0),
+    at_block(
+        1048,
+        "minecraft:entity.skeleton.converted_to_stray",
+        "hostile",
+        2.0,
+    ),
     at_block(1049, "minecraft:block.crafter.craft", "block", 1.0),
     at_block(1050, "minecraft:block.crafter.fail", "block", 1.0),
     at_block(1051, "minecraft:entity.wind_charge.throw", "block", 0.5),
@@ -280,7 +335,12 @@ pub const SOUNDS: &[LevelEventSound] = &[
     at_block(2002, "minecraft:entity.splash_potion.break", "neutral", 1.0),
     LevelEventSound {
         data: DataGate::Eq(1),
-        ..at_block(2006, "minecraft:entity.dragon_fireball.explode", "hostile", 1.0)
+        ..at_block(
+            2006,
+            "minecraft:entity.dragon_fireball.explode",
+            "hostile",
+            1.0,
+        )
     },
     at_block(2007, "minecraft:entity.splash_potion.break", "neutral", 1.0),
     // -- 3000s ------------------------------------------------------------
@@ -306,9 +366,24 @@ pub const SOUNDS: &[LevelEventSound] = &[
         ),
         ..at_block(3007, "minecraft:block.sculk_shrieker.shriek", "block", 2.0)
     },
-    delayed(3012, "minecraft:block.trial_spawner.spawn_mob", "block", 1.0),
-    delayed(3013, "minecraft:block.trial_spawner.detect_player", "block", 1.0),
-    delayed(3014, "minecraft:block.trial_spawner.eject_item", "block", 1.0),
+    delayed(
+        3012,
+        "minecraft:block.trial_spawner.spawn_mob",
+        "block",
+        1.0,
+    ),
+    delayed(
+        3013,
+        "minecraft:block.trial_spawner.detect_player",
+        "block",
+        1.0,
+    ),
+    delayed(
+        3014,
+        "minecraft:block.trial_spawner.eject_item",
+        "block",
+        1.0,
+    ),
     LevelEventSound {
         note: Some("only when the block entity at pos is a vault"),
         ..delayed(3015, "minecraft:block.vault.activate", "block", 1.0)
@@ -317,16 +392,36 @@ pub const SOUNDS: &[LevelEventSound] = &[
     delayed(3018, "minecraft:block.cobweb.place", "block", 1.0),
     // 3019 is 3013's ominous twin and plays the same sound; only the particle
     // type differs.
-    delayed(3019, "minecraft:block.trial_spawner.detect_player", "block", 1.0),
+    delayed(
+        3019,
+        "minecraft:block.trial_spawner.detect_player",
+        "block",
+        1.0,
+    ),
     LevelEventSound {
         data: DataGate::Eq(0),
-        ..delayed(3020, "minecraft:block.trial_spawner.ominous_activate", "block", 0.3)
+        ..delayed(
+            3020,
+            "minecraft:block.trial_spawner.ominous_activate",
+            "block",
+            0.3,
+        )
     },
     LevelEventSound {
         data: DataGate::Ne(0),
-        ..delayed(3020, "minecraft:block.trial_spawner.ominous_activate", "block", 1.0)
+        ..delayed(
+            3020,
+            "minecraft:block.trial_spawner.ominous_activate",
+            "block",
+            1.0,
+        )
     },
-    delayed(3021, "minecraft:block.trial_spawner.spawn_item", "block", 1.0),
+    delayed(
+        3021,
+        "minecraft:block.trial_spawner.spawn_item",
+        "block",
+        1.0,
+    ),
 ];
 
 /// An id that plays a sound whose identity this table cannot supply.
@@ -402,12 +497,12 @@ pub const SILENT: &[i32] = &[
 /// there is no way to tell a deliberate omission from a missed `case`, which
 /// is the failure mode a hand-transcribed 83-entry switch actually has.
 pub const ALL_IDS: &[i32] = &[
-    1000, 1001, 1002, 1004, 1009, 1010, 1011, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022,
-    1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 1038, 1039,
-    1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050, 1051, 1052, 1500, 1501,
-    1502, 1503, 1504, 1505, 2000, 2001, 2002, 2003, 2004, 2006, 2007, 2008, 2009, 2010, 2011,
-    2012, 2013, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3011, 3012, 3013,
-    3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021,
+    1000, 1001, 1002, 1004, 1009, 1010, 1011, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023,
+    1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 1038, 1039, 1040, 1041,
+    1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050, 1051, 1052, 1500, 1501, 1502, 1503, 1504,
+    1505, 2000, 2001, 2002, 2003, 2004, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 3000, 3001,
+    3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018,
+    3019, 3020, 3021,
 ];
 
 /// The sound a `level_event` packet asks for, or `None`.
@@ -717,7 +812,10 @@ mod tests {
             .map(|s| s.sound)
             .filter(|n| registry.id_of(n).is_none())
             .collect();
-        assert!(unknown.is_empty(), "not registered sound events: {unknown:?}");
+        assert!(
+            unknown.is_empty(),
+            "not registered sound events: {unknown:?}"
+        );
     }
 
     /// …and every one of them has a `sounds.json` entry that actually

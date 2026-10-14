@@ -201,11 +201,7 @@ pub struct EndSkyPass {
 }
 
 impl EndSkyPass {
-    pub fn new(
-        gpu: &mut Gpu,
-        color_format: vk::Format,
-        tex: &EndSkyImage,
-    ) -> Result<Self, String> {
+    pub fn new(gpu: &mut Gpu, color_format: vk::Format, tex: &EndSkyImage) -> Result<Self, String> {
         let (image, image_alloc, view) = create_texture(gpu, tex.rgba, tex.w, tex.h)?;
 
         let verts = end_sky_quads();
@@ -323,7 +319,13 @@ impl EndSkyPass {
     /// Draw the cube in rotation-only sky space. `sky_vp` is the world pass's
     /// `view_proj · T(eye)` — the same construction the celestial pass uses,
     /// reproducing vanilla's translation-stripped model-view.
-    pub fn draw(&self, gpu: &Gpu, cb: vk::CommandBuffer, sky_vp: [[f32; 4]; 4], extent: vk::Extent2D) {
+    pub fn draw(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        sky_vp: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
         let device = &gpu.device;
         let push = Push { mvp: sky_vp };
         unsafe {
@@ -417,7 +419,9 @@ pub(crate) fn upload_buffer(
             .map_err(|e| format!("end-sky bind: {e}"))?;
     }
     if !bytes.is_empty() {
-        alloc.mapped_slice_mut().ok_or("end-sky buffer not mapped")?[..bytes.len()]
+        alloc
+            .mapped_slice_mut()
+            .ok_or("end-sky buffer not mapped")?[..bytes.len()]
             .copy_from_slice(bytes);
     }
     Ok(Buf {

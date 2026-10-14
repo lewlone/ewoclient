@@ -24,7 +24,12 @@ const ROSE: (u8, u8, u8) = (0xE5, 0xB8, 0xC5);
 const WINE: (u8, u8, u8) = (0x12, 0x00, 0x10);
 
 fn rgba(c: (u8, u8, u8), a: f32) -> Color4f {
-    Color4f::new(c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0, a)
+    Color4f::new(
+        c.0 as f32 / 255.0,
+        c.1 as f32 / 255.0,
+        c.2 as f32 / 255.0,
+        a,
+    )
 }
 
 /// One plate variant to render.
@@ -44,39 +49,43 @@ fn main() {
     let bg_path = flag(&args, "--bg");
     let crop = flag(&args, "--crop").and_then(|s| parse_crop(&s));
     let out = flag(&args, "--out").unwrap_or_else(|| "glass_shot.png".to_string());
-    let time: f32 = flag(&args, "--time").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let time: f32 = flag(&args, "--time")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
 
     // Blur ladder. Index 0 is the lightly-blurred rim source; index 1 is the
     // heavy frost the interior samples.
     let blur_sigmas = [2.0_f32, 9.0];
 
     let glass = |edge: f32, strength: f32, disperse: f32, specular: f32| {
-        Kind::Glass(Params { edge, strength, disperse, specular, ..Params::WIDGET })
+        Kind::Glass(Params {
+            edge,
+            strength,
+            disperse,
+            specular,
+            ..Params::WIDGET
+        })
     };
-    let variants = [Variant {
+    let variants = [
+        Variant {
             label: "CURRENT · flat wine 0.50".into(),
             kind: Kind::Current,
-
         },
         Variant {
             label: "edge 16 · str 12 · subtle".into(),
             kind: glass(16.0, 12.0, 1.0, 0.14),
-
         },
         Variant {
             label: "edge 18 · str 20 · WIDGET preset".into(),
             kind: Kind::Glass(Params::WIDGET),
-
         },
         Variant {
             label: "edge 24 · str 30".into(),
             kind: glass(24.0, 30.0, 2.4, 0.24),
-
         },
         Variant {
             label: "edge 30 · str 44 · thick".into(),
             kind: glass(30.0, 44.0, 3.4, 0.30),
-
         },
         Variant {
             label: "edge 30 · str 44 · no tint (glassiest)".into(),
@@ -88,8 +97,8 @@ fn main() {
                 tint: ewo_render::skia_safe::Color4f::new(0.094, 0.0, 0.055, 0.34),
                 ..Params::WIDGET
             }),
-
-        }];
+        },
+    ];
 
     let (w, h) = (1000i32, 860i32);
     let mut surface = surfaces::raster_n32_premul((w, h)).expect("surface");
@@ -127,11 +136,15 @@ fn main() {
         halo.set_anti_alias(true);
         halo.set_color4f(Color4f::new(0.0, 0.0, 0.0, 0.8), None);
         halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
-        surface.canvas().draw_str(&v.label, (x, y - 14.0), &cap, &halo);
+        surface
+            .canvas()
+            .draw_str(&v.label, (x, y - 14.0), &cap, &halo);
         let mut cp = Paint::default();
         cp.set_anti_alias(true);
         cp.set_color4f(rgba(PEARL, 0.95), None);
-        surface.canvas().draw_str(&v.label, (x, y - 14.0), &cap, &cp);
+        surface
+            .canvas()
+            .draw_str(&v.label, (x, y - 14.0), &cap, &cp);
 
         match &v.kind {
             Kind::Current => draw_iw_shell(surface.canvas(), bounds, 14.0),
@@ -175,13 +188,15 @@ fn blur_snapshot(surface: &mut skia_safe::Surface, scale: f32, sigma: f32) -> Im
     );
     let mut small = surfaces::raster_n32_premul((bw, bh)).expect("blur surface");
     let mut p = Paint::default();
-    p.set_image_filter(image_filters::blur((sigma, sigma), TileMode::Clamp, None, None));
-    small.canvas().draw_image_rect(
-        &src,
+    p.set_image_filter(image_filters::blur(
+        (sigma, sigma),
+        TileMode::Clamp,
         None,
-        Rect::from_wh(bw as f32, bh as f32),
-        &p,
-    );
+        None,
+    ));
+    small
+        .canvas()
+        .draw_image_rect(&src, None, Rect::from_wh(bw as f32, bh as f32), &p);
     small.image_snapshot()
 }
 
@@ -197,13 +212,21 @@ fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
     canvas.draw_rrect(shadow_rr, &shadow);
 
     // (2) Outer dark wine ring.
-    let outer = Rect::new(rect.left - 1.0, rect.top - 1.0, rect.right + 1.0, rect.bottom + 1.0);
+    let outer = Rect::new(
+        rect.left - 1.0,
+        rect.top - 1.0,
+        rect.right + 1.0,
+        rect.bottom + 1.0,
+    );
     let mut outer_paint = Paint::default();
     outer_paint.set_anti_alias(true);
     outer_paint.set_style(PaintStyle::Stroke);
     outer_paint.set_stroke_width(1.0);
     outer_paint.set_color4f(rgba(WINE, 0.55), None);
-    canvas.draw_rrect(RRect::new_rect_xy(outer, radius + 1.0, radius + 1.0), &outer_paint);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(outer, radius + 1.0, radius + 1.0),
+        &outer_paint,
+    );
 
     let rrect = RRect::new_rect_xy(rect, radius, radius);
 
@@ -214,7 +237,12 @@ fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
     canvas.draw_rrect(rrect, &fill);
 
     // (4) Inset wine ring.
-    let inset = Rect::new(rect.left + 1.0, rect.top + 1.0, rect.right - 1.0, rect.bottom - 1.0);
+    let inset = Rect::new(
+        rect.left + 1.0,
+        rect.top + 1.0,
+        rect.right - 1.0,
+        rect.bottom - 1.0,
+    );
     let ir = (radius - 1.0).max(0.0);
     let mut wine_paint = Paint::default();
     wine_paint.set_anti_alias(true);
@@ -230,7 +258,12 @@ fn draw_iw_shell(canvas: &Canvas, rect: Rect, radius: f32) {
         None,
         Some(true),
     );
-    let top = Rect::new(rect.left + 0.5, rect.top + 0.5, rect.right - 0.5, rect.bottom - 0.5);
+    let top = Rect::new(
+        rect.left + 0.5,
+        rect.top + 0.5,
+        rect.right - 0.5,
+        rect.bottom - 0.5,
+    );
     let tr = (radius - 0.5).max(0.0);
     let mut top_paint = Paint::default();
     top_paint.set_anti_alias(true);
@@ -256,16 +289,20 @@ fn draw_media_content(canvas: &Canvas, b: Rect, fonts: &FontStore) {
     let art = Rect::from_xywh(b.left + pad, b.top + pad, 64.0, 64.0);
     let mut art_paint = Paint::default();
     art_paint.set_anti_alias(true);
-    art_paint.set_shader(
-        gradient_shader::linear(
-            (Point::new(art.left, art.top), Point::new(art.right, art.bottom)),
-            &[Color4f::new(0.36, 0.28, 0.42, 1.0), Color4f::new(0.62, 0.40, 0.48, 1.0)][..],
-            None,
-            TileMode::Clamp,
-            None,
-            None,
+    art_paint.set_shader(gradient_shader::linear(
+        (
+            Point::new(art.left, art.top),
+            Point::new(art.right, art.bottom),
         ),
-    );
+        &[
+            Color4f::new(0.36, 0.28, 0.42, 1.0),
+            Color4f::new(0.62, 0.40, 0.48, 1.0),
+        ][..],
+        None,
+        TileMode::Clamp,
+        None,
+        None,
+    ));
     canvas.draw_rrect(RRect::new_rect_xy(art, 8.0, 8.0), &art_paint);
 
     let tx = art.right + 14.0;
@@ -285,7 +322,12 @@ fn draw_media_content(canvas: &Canvas, b: Rect, fonts: &FontStore) {
     let mut mp = Paint::default();
     mp.set_anti_alias(true);
     mp.set_color4f(rgba(MAUVE, 1.0), None);
-    canvas.draw_str("0:10 / 3:08", (b.right - 92.0, b.top + pad + 20.0), &mono, &mp);
+    canvas.draw_str(
+        "0:10 / 3:08",
+        (b.right - 92.0, b.top + pad + 20.0),
+        &mono,
+        &mp,
+    );
 
     // Progress track + fill.
     let track = Rect::from_xywh(tx, b.top + pad + 54.0, b.right - tx - pad, 4.0);
@@ -321,7 +363,12 @@ fn draw_bg(canvas: &Canvas, img: &Image, crop: Option<Rect>, w: f32, h: f32) {
     let scale = (w / src.width()).max(h / src.height());
     let (dw, dh) = (src.width() * scale, src.height() * scale);
     let dst = Rect::from_xywh((w - dw) * 0.5, (h - dh) * 0.5, dw, dh);
-    canvas.draw_image_rect(img, Some((&src, SrcRectConstraint::Fast)), dst, &Paint::default());
+    canvas.draw_image_rect(
+        img,
+        Some((&src, SrcRectConstraint::Fast)),
+        dst,
+        &Paint::default(),
+    );
 }
 
 /// Fallback background with strong light/dark contrast, so the plate is judged
@@ -341,10 +388,14 @@ fn draw_synthetic(canvas: &Canvas, w: f32, h: f32) {
             n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
             let j = ((n ^ (n >> 16)) & 0xFFFF) as f32 / 65_535.0;
             // Diagonal sweep from bright to dark across the frame.
-            let sweep = ((rx as f32 / cols as f32) * 0.6 + (ry as f32 / rows as f32) * 0.4).clamp(0.0, 1.0);
+            let sweep =
+                ((rx as f32 / cols as f32) * 0.6 + (ry as f32 / rows as f32) * 0.4).clamp(0.0, 1.0);
             let k = (1.15 - sweep) * (0.85 + j * 0.3);
             p.set_color4f(Color4f::new(0.30 * k, 0.52 * k, 0.26 * k, 1.0), None);
-            canvas.draw_rect(Rect::from_xywh(rx as f32 * tile, ry as f32 * tile, tile, tile), &p);
+            canvas.draw_rect(
+                Rect::from_xywh(rx as f32 * tile, ry as f32 * tile, tile, tile),
+                &p,
+            );
         }
     }
 }

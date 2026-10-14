@@ -125,7 +125,14 @@ pub fn draw_frame(
     match screen {
         Screen::MainMenu => {
             screens::draw_main_menu(
-                canvas, fonts, card_w, card_h, time, menu_states, heading_hover, server_widget,
+                canvas,
+                fonts,
+                card_w,
+                card_h,
+                time,
+                menu_states,
+                heading_hover,
+                server_widget,
                 main_menu_enter,
             );
         }
@@ -145,18 +152,40 @@ pub fn draw_frame(
         }
         Screen::Friends => {
             let _ = screens::draw_friends(
-                canvas, fonts, card_w, card_h, time, friends_prefs, friends_view,
+                canvas,
+                fonts,
+                card_w,
+                card_h,
+                time,
+                friends_prefs,
+                friends_view,
             );
         }
         Screen::Settings => {
             screens::draw_settings(
-                canvas, fonts, card_w, card_h, time, settings, settings_tab, prefs, account,
-                profiles, keybinds, back_link_hover,
+                canvas,
+                fonts,
+                card_w,
+                card_h,
+                time,
+                settings,
+                settings_tab,
+                prefs,
+                account,
+                profiles,
+                keybinds,
+                back_link_hover,
             );
         }
         Screen::Launching => {
             screens::draw_launching(
-                canvas, fonts, card_w, card_h, time, settings, launching_state,
+                canvas,
+                fonts,
+                card_w,
+                card_h,
+                time,
+                settings,
+                launching_state,
             );
         }
     }
@@ -181,7 +210,14 @@ pub fn draw_frame(
     // Dev overlay sits above everything when --dev is enabled.
     if let Some(state) = dev_overlay {
         screens::draw_dev_overlay(
-            canvas, fonts, card_w, card_h, time, settings, state, frame_stats,
+            canvas,
+            fonts,
+            card_w,
+            card_h,
+            time,
+            settings,
+            state,
+            frame_stats,
         );
     }
 
@@ -213,11 +249,17 @@ fn draw_window_buttons(canvas: &Canvas, width: f32, min_hover: bool, close_hover
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
     if min_hover {
-        bg.set_color4f(Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.14), None);
+        bg.set_color4f(
+            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.14),
+            None,
+        );
         canvas.draw_rrect(RRect::new_rect_xy(minimize, 7.0, 7.0), &bg);
     }
     if close_hover {
-        bg.set_color4f(Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.20), None);
+        bg.set_color4f(
+            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.20),
+            None,
+        );
         canvas.draw_rrect(RRect::new_rect_xy(close, 7.0, 7.0), &bg);
     }
 
@@ -273,7 +315,12 @@ pub fn draw_chrome_outer(canvas: &Canvas, w: f32, h: f32) {
     // rather than a black bevel.
     canvas.clear(Color::TRANSPARENT);
 
-    let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
+    let card = Rect::from_xywh(
+        CARD_INSET,
+        CARD_INSET,
+        w - 2.0 * CARD_INSET,
+        h - 2.0 * CARD_INSET,
+    );
 
     // No outer drop shadow — the card fills the window edge-to-edge, so there
     // is no margin to render one into. Edge definition comes from the inset
@@ -291,7 +338,12 @@ pub fn draw_chrome_outer(canvas: &Canvas, w: f32, h: f32) {
 /// Draw the inset hairline rim and the `::after` inner berry glow on top of
 /// whatever was rendered into the card.
 pub fn draw_chrome_inner(canvas: &Canvas, w: f32, h: f32) {
-    let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
+    let card = Rect::from_xywh(
+        CARD_INSET,
+        CARD_INSET,
+        w - 2.0 * CARD_INSET,
+        h - 2.0 * CARD_INSET,
+    );
     // Inset hairline rim: inset 0 0 0 1px rgba(229, 184, 197, 0.08)
     let mut rim = Paint::default();
     rim.set_anti_alias(true);
@@ -363,7 +415,12 @@ fn build_inner_glow(canvas: &Canvas, w: f32, h: f32, wi: i32, hi: i32) -> Option
 
 /// The actual glow draw: a blurred stroke clipped to the card rrect.
 fn draw_inner_glow_direct(canvas: &Canvas, w: f32, h: f32) {
-    let card = Rect::from_xywh(CARD_INSET, CARD_INSET, w - 2.0 * CARD_INSET, h - 2.0 * CARD_INSET);
+    let card = Rect::from_xywh(
+        CARD_INSET,
+        CARD_INSET,
+        w - 2.0 * CARD_INSET,
+        h - 2.0 * CARD_INSET,
+    );
     let card_rrect_ = RRect::new_rect_xy(card, CARD_RADIUS, CARD_RADIUS);
     let saved = canvas.save();
     canvas.clip_rrect(card_rrect_, Some(ClipOp::Intersect), Some(true));
@@ -410,4 +467,3 @@ fn draw_outer_shadow(
     }
     canvas.draw_rrect(shadow_rrect, &paint);
 }
-

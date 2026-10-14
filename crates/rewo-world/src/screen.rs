@@ -572,8 +572,6 @@ pub fn slider_handle_x(x: i32, width: i32, value: f32) -> i32 {
     x + (value * (width - 8) as f32) as i32
 }
 
-
-
 /// What a click did.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MouseResult {
@@ -1201,8 +1199,7 @@ impl ScrollList {
         if x < l || x >= r {
             return None;
         }
-        (0..self.rows.len())
-            .find(|&i| y >= self.row_top(i) as f64 && y < self.row_bottom(i) as f64)
+        (0..self.rows.len()).find(|&i| y >= self.row_top(i) as f64 && y < self.row_bottom(i) as f64)
     }
 
     /// The row under the cursor as the renderer sees it: the list gate, then
@@ -1290,7 +1287,10 @@ mod tests {
             "isHovered does not — the asymmetry is vanilla's"
         );
         w.visible = false;
-        assert!(!w.is_hovered(Some((5.0, 5.0))), "invisible is never hovered");
+        assert!(
+            !w.is_hovered(Some((5.0, 5.0))),
+            "invisible is never hovered"
+        );
     }
 
     /// The `WidgetSprites` three-argument constructor, in all four states.
@@ -1327,7 +1327,10 @@ mod tests {
     fn a_string_widget_does_not_grey_although_it_is_inactive() {
         let label = Widget::label(0, 4, 4, 100, "title");
         let multi = Widget::multi_label(1, 4, 4, 100, vec!["a".into(), "b".into()], true);
-        assert!(!label.active, "StringWidget's constructor sets active = false");
+        assert!(
+            !label.active,
+            "StringWidget's constructor sets active = false"
+        );
         assert!(!multi.active);
         assert_eq!(label.label_color(), DEFAULT_LABEL);
         assert_eq!(multi.label_color(), DEFAULT_LABEL);
@@ -1612,7 +1615,11 @@ mod tests {
         assert_eq!(l.row_at(299.0, 35.0), Some(0));
         assert_eq!(l.row_at(300.0, 35.0), None, "x == getRowRight() misses");
         assert_eq!(l.row_at(160.0, 48.0), Some(0));
-        assert_eq!(l.row_at(160.0, 49.0), Some(1), "y == bottom is the next row");
+        assert_eq!(
+            l.row_at(160.0, 49.0),
+            Some(1),
+            "y == bottom is the next row"
+        );
     }
 
     /// `isOverScrollbar` is `x <= scrollBarX() + width`, inclusive â€” the one
@@ -1624,7 +1631,10 @@ mod tests {
         assert!(l.over_scrollbar(x0 as f64, 40.0));
         assert!(l.over_scrollbar((x0 + SCROLLBAR_WIDTH) as f64, 40.0));
         assert!(!l.over_scrollbar((x0 + SCROLLBAR_WIDTH + 1) as f64, 40.0));
-        assert!(!l.over_scrollbar(x0 as f64, l.bottom() as f64), "bottom is not");
+        assert!(
+            !l.over_scrollbar(x0 as f64, l.bottom() as f64),
+            "bottom is not"
+        );
     }
 
     #[test]
@@ -1663,7 +1673,10 @@ mod tests {
         assert!(s.is(ScreenKind::Inventory));
         s.open(Screen::new(ScreenKind::Death, 320, 240));
         assert!(s.is(ScreenKind::Death));
-        assert!(!s.is(ScreenKind::Inventory), "there is no stack to pop back to");
+        assert!(
+            !s.is(ScreenKind::Inventory),
+            "there is no stack to pop back to"
+        );
         s.close();
         assert_eq!(s.kind(), None);
     }
@@ -1679,17 +1692,26 @@ mod tests {
             .with_widgets(vec![Widget::slider(7, 165, 40, 310, 20, "Master", 0.5)]);
         // Press at the 3/4 point.
         let r = s.mouse_clicked(165.0 + 4.0 + 0.75 * 302.0, 50.0, 0);
-        assert!(matches!(r, MouseResult::Slider(7, v) if (v - 0.75).abs() < 0.01), "{r:?}");
+        assert!(
+            matches!(r, MouseResult::Slider(7, v) if (v - 0.75).abs() < 0.01),
+            "{r:?}"
+        );
         // Drag past the right end pins at 1.0.
         assert_eq!(s.slider_drag(7, 9_999.0), Some(1.0));
         // The arrow step: exactly one handle-pixel of a 310-wide slider.
         let (_, v) = s.slider_key(false).expect("focused by the press");
-        assert!((v - (1.0 - 1.0 / 302.0)).abs() < 1e-6, "step 1/302, got {v}");
+        assert!(
+            (v - (1.0 - 1.0 / 302.0)).abs() < 1e-6,
+            "step 1/302, got {v}"
+        );
         // …and a 150-wide slider steps 1/142: the two differ by design.
         let mut small = Screen::new(ScreenKind::Options, 640, 480)
             .with_widgets(vec![Widget::slider(8, 165, 40, 150, 20, "Music", 0.5)]);
         small.mouse_clicked(165.0 + 4.0 + 0.5 * 142.0, 50.0, 0);
         let (_, v) = small.slider_key(true).expect("focused");
-        assert!((v - (0.5 + 1.0 / 142.0)).abs() < 0.01, "step 1/142, got {v}");
+        assert!(
+            (v - (0.5 + 1.0 / 142.0)).abs() < 0.01,
+            "step 1/142, got {v}"
+        );
     }
 }

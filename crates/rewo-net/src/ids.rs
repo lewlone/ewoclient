@@ -1188,7 +1188,10 @@ mod coverage_table_tests {
         assert!(!is_dispatched("cb_play_not_a_real_field"));
         // `contains_word` must not match a prefix of a longer identifier —
         // the `cb_play_sound` / `cb_play_sound_entity` hazard.
-        assert!(!contains_word("x == ids.cb_play_sound_entity", "cb_play_sound"));
+        assert!(!contains_word(
+            "x == ids.cb_play_sound_entity",
+            "cb_play_sound"
+        ));
         assert!(contains_word("x == ids.cb_play_sound;", "cb_play_sound"));
     }
 }

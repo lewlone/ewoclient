@@ -69,8 +69,7 @@ impl FrameClock {
         if g.is_empty() {
             return Vec::new();
         }
-        let (ready, keep): (Vec<_>, Vec<_>) =
-            g.drain(..).partition(|(tag, _)| all || *tag <= done);
+        let (ready, keep): (Vec<_>, Vec<_>) = g.drain(..).partition(|(tag, _)| all || *tag <= done);
         *g = keep;
         ready.into_iter().map(|(_, f)| f).collect()
     }

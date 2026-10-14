@@ -205,12 +205,18 @@ pub(crate) mod tests {
         let sealed = seal(&FakeCipher, "refresh-tok").unwrap();
         assert!(sealed.starts_with(PREFIX));
         assert!(!sealed.contains("refresh-tok"));
-        assert_eq!(open(&FakeCipher, &sealed).unwrap(), Opened::Sealed("refresh-tok".into()));
+        assert_eq!(
+            open(&FakeCipher, &sealed).unwrap(),
+            Opened::Sealed("refresh-tok".into())
+        );
     }
 
     #[test]
     fn unprefixed_value_is_legacy_plaintext() {
-        assert_eq!(open(&FakeCipher, "old-tok").unwrap(), Opened::Plain("old-tok".into()));
+        assert_eq!(
+            open(&FakeCipher, "old-tok").unwrap(),
+            Opened::Plain("old-tok".into())
+        );
     }
 
     #[test]
@@ -238,7 +244,10 @@ pub(crate) mod tests {
     fn dpapi_round_trips() {
         let sealed = seal(&Dpapi, "ms-refresh-\u{e9}-token").unwrap();
         assert!(sealed.starts_with(PREFIX));
-        assert_eq!(open(&Dpapi, &sealed).unwrap().into_inner(), "ms-refresh-\u{e9}-token");
+        assert_eq!(
+            open(&Dpapi, &sealed).unwrap().into_inner(),
+            "ms-refresh-\u{e9}-token"
+        );
     }
 
     #[cfg(windows)]

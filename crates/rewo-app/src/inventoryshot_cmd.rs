@@ -30,9 +30,9 @@ use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::world::WorldRenderer;
 use rewo_gpu::Gpu;
 use rewo_world::inventory::{
-    OFFHAND_MENU_SLOT, QUICK_CRAFT_ONE, QUICK_CRAFT_SPLIT, SWAP_OFFHAND_BUTTON,
     slot_at, slot_contains, slot_position, ArmorPiece, Inventory, ItemProps, ItemSlot,
-    ARMOR_MENU_START, HOTBAR_MENU_START, MENU_SLOTS,
+    ARMOR_MENU_START, HOTBAR_MENU_START, MENU_SLOTS, OFFHAND_MENU_SLOT, QUICK_CRAFT_ONE,
+    QUICK_CRAFT_SPLIT, SWAP_OFFHAND_BUTTON,
 };
 
 use crate::stats::OverlayRing;
@@ -191,7 +191,10 @@ fn check_wire(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     push_varint(&mut body, MENU_SLOTS as i32);
     for i in 0..MENU_SLOTS {
         let carry = i == HOTBAR_MENU_START + 2;
-        body.extend_from_slice(&stack_bytes(if carry { 276 } else { 0 }, if carry { 5 } else { 0 }));
+        body.extend_from_slice(&stack_bytes(
+            if carry { 276 } else { 0 },
+            if carry { 5 } else { 0 },
+        ));
     }
     body.extend_from_slice(&stack_bytes(0, 0)); // the carried stack
 
@@ -199,10 +202,7 @@ fn check_wire(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     let matched = route(ids.cb_play_container_set_content, &body, &mut inv);
     c.record(
         "w2.a_full_container_reaches_the_hotbar_through_the_real_route",
-        matched
-            && inv.hotbar(2)
-                == plain(276, 5)
-            && inv.hotbar(0).is_none(),
+        matched && inv.hotbar(2) == plain(276, 5) && inv.hotbar(0).is_none(),
         format!(
             "hotbar 2 is {:?}, hotbar 0 empty. Menu slot {} is hotbar index 2 — the \
              conversion between the wire's 46-slot menu and the 9 slots the game \
@@ -396,8 +396,7 @@ fn check_authoritative_writes(
     route(ids.cb_play_set_player_inventory, &write, &mut inv);
     c.record(
         "sw5.an_authoritative_write_does_not_disturb_the_click_prediction_state",
-        inv.hotbar(0) == plain(64, 3)
-            && (inv.state_id(), inv.content_updates()) == before,
+        inv.hotbar(0) == plain(64, 3) && (inv.state_id(), inv.content_updates()) == before,
         format!(
             "state id still {}, resync count still {}. `handleSetPlayerInventory` is \
              `getInventory().setItem(...)` — it bypasses the container menu entirely, \
@@ -487,12 +486,7 @@ fn check_authoritative_writes(
     push_varint(&mut tag_body, 300);
     push_str(&mut tag_body, "minecraft:swords");
     push_varint(&mut tag_body, 0); // declared, and empty
-    let matched = rewo_net::route_tags(
-        ids.cb_play_update_tags,
-        &tag_body,
-        ids,
-        &mut overrides,
-    );
+    let matched = rewo_net::route_tags(ids.cb_play_update_tags, &tag_body, ids, &mut overrides);
     c.record(
         "sw9.the_server_can_retag_an_item_and_rewo_now_hears_it",
         matched
@@ -601,7 +595,6 @@ fn check_placement(c: &mut Checker) {
     );
 }
 
-
 // -- 4. the screen: layout, hover, and the click arithmetic (M35) -------------
 
 /// A stack with no components, which is every case the arithmetic below cares
@@ -681,22 +674,25 @@ fn check_screen(c: &mut Checker) {
     // from `slot_position`: these are the numbers the decompile prints, and
     // the point is that the two agree.
     let mut expected: Vec<(usize, (i32, i32))> = vec![
-        (0, (154, 28)),   // addResultSlot(owner, 154, 28)
-        (1, (98, 18)),    // addCraftingGridSlots(98, 18): x + y*2
+        (0, (154, 28)), // addResultSlot(owner, 154, 28)
+        (1, (98, 18)),  // addCraftingGridSlots(98, 18): x + y*2
         (2, (116, 18)),
         (3, (98, 36)),
         (4, (116, 36)),
-        (5, (8, 8)),      // ArmorSlot(..., 8, 8 + i * 18), head first
+        (5, (8, 8)), // ArmorSlot(..., 8, 8 + i * 18), head first
         (6, (8, 26)),
         (7, (8, 44)),
         (8, (8, 62)),
-        (45, (77, 62)),   // Slot(inventory, 40, 77, 62)
+        (45, (77, 62)), // Slot(inventory, 40, 77, 62)
     ];
     // addStandardInventorySlots(inventory, 8, 84): three rows of nine, then
     // the hotbar at top + 58.
     for row in 0..3 {
         for col in 0..9 {
-            expected.push((9 + row * 9 + col, (8 + col as i32 * 18, 84 + row as i32 * 18)));
+            expected.push((
+                9 + row * 9 + col,
+                (8 + col as i32 * 18, 84 + row as i32 * 18),
+            ));
         }
     }
     for col in 0..9 {
@@ -723,8 +719,7 @@ fn check_screen(c: &mut Checker) {
 
     c.record(
         "s2.the_hotbar_row_is_58_below_the_main_grid_not_54",
-        slot_position(36).map(|p| p.1) == Some(142)
-            && slot_position(27).map(|p| p.1) == Some(120),
+        slot_position(36).map(|p| p.1) == Some(142) && slot_position(27).map(|p| p.1) == Some(120),
         format!(
             "main row 3 at y={:?}, hotbar at y={:?} — a 22 px gap. Three rows of 18 \
              would put the hotbar at 138; vanilla's `topToHotbar` is a named 58, and \
@@ -765,7 +760,10 @@ fn check_screen(c: &mut Checker) {
     c.record(
         "s4.neighbouring_slots_tile_without_a_dead_column",
         gaps.is_empty(),
-        format!("{} of 8 boundaries in the first main row hand straight over", 8 - gaps.len()),
+        format!(
+            "{} of 8 boundaries in the first main row hand straight over",
+            8 - gaps.len()
+        ),
     );
 
     // -- the click arithmetic ----------------------------------------------
@@ -834,7 +832,10 @@ fn check_screen(c: &mut Checker) {
     c.record(
         "s8.two_different_items_swap",
         swap.changed == vec![(9u16, plain(1, 5))] && swap.carried == plain(55, 3),
-        format!("slot takes {:?}, cursor takes {:?}", swap.changed[0].1, swap.carried),
+        format!(
+            "slot takes {:?}, cursor takes {:?}",
+            swap.changed[0].1, swap.carried
+        ),
     );
 
     // Components make two stacks of the same item unlike, so they swap rather
@@ -864,8 +865,7 @@ fn check_screen(c: &mut Checker) {
              M35 could only ask whether either side carried components at all, \
              which swapped both of these and left two identically-enchanted books \
              unable to stack",
-            differing.changed[0].1,
-            matching.changed[0].1
+            differing.changed[0].1, matching.changed[0].1
         ),
     );
 
@@ -934,7 +934,11 @@ fn check_screen(c: &mut Checker) {
     ms[9] = plain(55, 60);
     mm.set_content(1, &ms, None);
     let merged = mm.click_quick_move(36, &props).unwrap();
-    let into_9 = merged.changed.iter().find(|(s, _)| *s == 9).and_then(|(_, v)| *v);
+    let into_9 = merged
+        .changed
+        .iter()
+        .find(|(s, _)| *s == 9)
+        .and_then(|(_, v)| *v);
     c.record(
         "q4.quick_move_tops_up_an_existing_stack_before_taking_an_empty_slot",
         into_9 == plain(55, 64),
@@ -1094,7 +1098,12 @@ fn check_screen(c: &mut Checker) {
     let three_over_two = dg.click_quick_craft(&[9, 10], QUICK_CRAFT_SPLIT, &mixed);
     let counts: Vec<i32> = three_over_two
         .as_ref()
-        .map(|p| p.changed.iter().filter_map(|(_, v)| v.map(|s| s.count)).collect())
+        .map(|p| {
+            p.changed
+                .iter()
+                .filter_map(|(_, v)| v.map(|s| s.count))
+                .collect()
+        })
         .unwrap_or_default();
     let leftover = three_over_two.as_ref().and_then(|p| p.carried);
     c.record(
@@ -1124,7 +1133,9 @@ fn check_screen(c: &mut Checker) {
         "d4.a_single_slot_drag_collapses_into_a_pickup",
         Inventory::quick_craft_is_pickup(&[9], QUICK_CRAFT_ONE) == Some((9, 1))
             && Inventory::quick_craft_is_pickup(&[9, 10], QUICK_CRAFT_ONE).is_none()
-            && dg.click_quick_craft(&[9], QUICK_CRAFT_SPLIT, &mixed).is_none(),
+            && dg
+                .click_quick_craft(&[9], QUICK_CRAFT_SPLIT, &mixed)
+                .is_none(),
         "vanilla resets the quick-craft state and re-dispatches a one-slot drag as \
          `PICKUP` with `buttonNum = quickcraftType`. So the drag path must refuse \
          it — sending it as a drag would predict a spread the server never makes",
@@ -1275,11 +1286,12 @@ fn check_click_packet(c: &mut Checker, paths: &DataPaths) -> Result<(), String> 
     Ok(())
 }
 
-
 // -- 5. the player preview (M36) ----------------------------------------------
 
 fn check_preview(c: &mut Checker) {
-    use rewo_gpu::container::{gui_origin, preview_angles, preview_rect, preview_view_proj, PREVIEW};
+    use rewo_gpu::container::{
+        gui_origin, preview_angles, preview_rect, preview_view_proj, PREVIEW,
+    };
 
     // An independent transcription of the call `InventoryScreen` makes:
     // `extractEntityInInventoryFollowsMouse(g, xo + 26, yo + 8, xo + 75, yo + 78, 30, 0.0625F, ...)`.
@@ -1373,7 +1385,7 @@ fn check_preview(c: &mut Checker) {
     let no_turn = {
         let (_, _, gs) = gui_origin(sw, sh);
         let s = gs * 30.0;
-        
+
         glam::Mat4::from_translation(glam::Vec3::new(rw / 2.0, rh / 2.0, 0.0))
             * glam::Mat4::from_scale(glam::Vec3::new(s, s, -s))
             * glam::Mat4::from_translation(glam::Vec3::new(0.0, BB / 2.0 + 0.0625, 0.0))
@@ -1443,10 +1455,7 @@ fn check_names(
     c.record(
         "t8.every_item_the_jar_ships_has_a_name",
         total > 0 && names.len() == total,
-        format!(
-            "{} names for {total} items",
-            names.len()
-        ),
+        format!("{} names for {total} items", names.len()),
     );
     // The seven items that carry both spellings. The preference is for the
     // block one, and it cannot be observed, because the two strings agree.
@@ -1587,7 +1596,10 @@ fn check_lang(
     for k in dep.removed() {
         reversed.remove(k);
     }
-    let lost: Vec<&&str> = survivors.iter().filter(|k| !reversed.contains_key(**k)).collect();
+    let lost: Vec<&&str> = survivors
+        .iter()
+        .filter(|k| !reversed.contains_key(**k))
+        .collect();
     c.record(
         "l4.the_removals_run_before_the_renames",
         lost.len() == survivors.len() && !survivors.is_empty(),
@@ -1633,7 +1645,10 @@ fn check_lang(
     let mut lost_names = 0usize;
     let mut changed: Vec<&str> = Vec::new();
     for name in &items {
-        let after = baked.item_names.get(&std::format!("minecraft:{name}")).map(String::as_str);
+        let after = baked
+            .item_names
+            .get(&std::format!("minecraft:{name}"))
+            .map(String::as_str);
         if after.is_none() {
             lost_names += 1;
         }
@@ -1667,10 +1682,7 @@ fn check_lang(
         .map(|(k, _)| k)
         .filter(|k| k.starts_with("enchantment."))
         .collect();
-    let moved: Vec<&&str> = ench
-        .iter()
-        .filter(|k| raw.get(k) != lang.get(k))
-        .collect();
+    let moved: Vec<&&str> = ench.iter().filter(|k| raw.get(k) != lang.get(k)).collect();
     c.record(
         "l7.no_enchantment_string_is_removed_or_renamed",
         ench.len() == 54 && moved.is_empty(),
@@ -1765,10 +1777,11 @@ fn check_rarity(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
     // How much of the game that covers.
     let items = rewo_data::items::Items::load(&paths.registries_json())?;
-    let names: Vec<&str> = (0..)
-        .map_while(|i| items.name(i))
+    let names: Vec<&str> = (0..).map_while(|i| items.name(i)).collect();
+    let non_default: Vec<&&str> = names
+        .iter()
+        .filter(|n| rarity(n) != DEFAULT_RARITY)
         .collect();
-    let non_default: Vec<&&str> = names.iter().filter(|n| rarity(n) != DEFAULT_RARITY).collect();
     let buckets = [UNCOMMON, RARE, EPIC].map(|r| names.iter().filter(|n| rarity(n) == r).count());
     c.record(
         "r2.the_prototype_table_covers_a_hundred_and_fifteen_items",
@@ -1963,7 +1976,10 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     c.record(
         "m3.a_damage_patch_is_read_and_leaves_the_reader_aligned",
         dmg == (Some(120), true, 0),
-        format!("damage {:?}, walked {}, {} byte(s) left over", dmg.0, dmg.1, dmg.2),
+        format!(
+            "damage {:?}, walked {}, {} byte(s) left over",
+            dmg.0, dmg.1, dmg.2
+        ),
     );
 
     // Three entries, the middle one a component the decoder walks but does not
@@ -2034,7 +2050,10 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
     // A chat component is one NBT tag, which is why `custom_name` needs no
     // codec of its own.
-    let named = read(&stack(&[(ids.custom_name, nbt_string("Old Faithful"))], &[]));
+    let named = read(&stack(
+        &[(ids.custom_name, nbt_string("Old Faithful"))],
+        &[],
+    ));
     let name = match &named {
         Ok((rewo_net::item_stack::WireSlot::Stack(s), rest)) => (
             // M163: carried as the component, so the gate flattens it here.
@@ -2151,11 +2170,7 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         &[
             (
                 ids.container,
-                container_value(&[
-                    Some((1, 64, None)),
-                    None,
-                    Some((276, 1, Some("Excalibur"))),
-                ]),
+                container_value(&[Some((1, 64, None)), None, Some((276, 1, Some("Excalibur")))]),
             ),
             // 300 — two var-int bytes, so a one-byte slip shows in the value
             // and not only in the alignment.
@@ -2170,16 +2185,16 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
             && *rest == 0
             && slots.len() == 3
             && slots[1].is_none()
-            && slots[0].as_ref().is_some_and(|s| (s.item_id, s.count) == (1, 64))
-            && slots[2]
+            && slots[0]
                 .as_ref()
-                .is_some_and(|s| {
-                    s.custom_name
-                        .as_ref()
-                        .map(|t| rewo_world::chat_style::flatten(t, None))
-                        .as_deref()
-                        == Some("Excalibur")
-                })
+                .is_some_and(|s| (s.item_id, s.count) == (1, 64))
+            && slots[2].as_ref().is_some_and(|s| {
+                s.custom_name
+                    .as_ref()
+                    .map(|t| rewo_world::chat_style::flatten(t, None))
+                    .as_deref()
+                    == Some("Excalibur")
+            })
             && comps.damage == Some(300)
     });
     c.record(
@@ -2190,7 +2205,8 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
              `custom_name` is the one span the capture reads itself rather than \
              through `Shape::NbtTag` — reading it as anything else (a `Str`, say) \
              desynchronises, and the trailing damage is what notices",
-            got.as_ref().map(|(c, _, _)| c.container_contents().map(<[_]>::len)),
+            got.as_ref()
+                .map(|(c, _, _)| c.container_contents().map(<[_]>::len)),
             got.as_ref().and_then(|(c, _, _)| c.damage),
             got.as_ref().map(|(_, a, _)| *a),
             got.as_ref().map(|(_, _, r)| *r),
@@ -2344,9 +2360,18 @@ fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::p
             }
         }
     };
-    entry("minecraft:sharpness", Some(("enchantment.minecraft.sharpness", 5)));
-    entry("minecraft:mending", Some(("enchantment.minecraft.mending", 1)));
-    entry("minecraft:vanishing_curse", Some(("enchantment.minecraft.vanishing_curse", 1)));
+    entry(
+        "minecraft:sharpness",
+        Some(("enchantment.minecraft.sharpness", 5)),
+    );
+    entry(
+        "minecraft:mending",
+        Some(("enchantment.minecraft.mending", 1)),
+    );
+    entry(
+        "minecraft:vanishing_curse",
+        Some(("enchantment.minecraft.vanishing_curse", 1)),
+    );
     entry("minecraft:nameless", None);
 
     let mut r = rewo_proto::reader::PacketReader::new(&body);
@@ -2371,11 +2396,7 @@ fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::p
     );
 
     // The three rules, through the production line builder.
-    let lines = crate::live_cmd::enchantment_lines(
-        &[(0, 5), (1, 1), (2, 1)],
-        &registry,
-        text,
-    );
+    let lines = crate::live_cmd::enchantment_lines(&[(0, 5), (1, 1), (2, 1)], &registry, text);
     let names: Vec<String> = lines.iter().map(rewo_gpu::tooltip::line_text).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     c.record(
@@ -2438,7 +2459,10 @@ fn check_glint(c: &mut Checker, baked: &assets::BakedAssets) {
     c.record(
         "x2.the_first_offset_wraps_at_its_period",
         (late.0 - o.0).abs() < 1e-4,
-        format!("one full 110 s period later the u offset is {:?} against {:?}", late.0, o.0),
+        format!(
+            "one full 110 s period later the u offset is {:?} against {:?}",
+            late.0, o.0
+        ),
     );
 
     // The matrix: scale by 8, rotate 10 degrees, then translate. The order
@@ -2593,9 +2617,7 @@ const TIP_POS: (i32, i32) = (60, 40);
 /// [`insert_image`] actually chose, rather than restated as 1 — so a witness
 /// built on this cannot agree with an insertion that has moved.
 fn bundle_tip(bundle: &rewo_gpu::tooltip::Bundle) -> rewo_gpu::container::TooltipDraw {
-    use rewo_gpu::tooltip::{
-        bundle_image, image_pass_offsets, insert_image, measure, Component,
-    };
+    use rewo_gpu::tooltip::{bundle_image, image_pass_offsets, insert_image, measure, Component};
     let mut list = vec![Component::text(40)];
     insert_image(&mut list, Component::Bundle(bundle.clone()));
     let at = list
@@ -2668,7 +2690,9 @@ fn check_advanced_tooltip(
 ) -> Result<(), String> {
     use rewo_data::components::{DataComponentIds, DataComponentRegistry};
     use rewo_data::item_components_table::{prototype_component_count, prototype_has_component};
-    use rewo_gpu::tooltip::{advanced_lines, container_plan, AdvancedLine, DurabilityState, TooltipFlag};
+    use rewo_gpu::tooltip::{
+        advanced_lines, container_plan, AdvancedLine, DurabilityState, TooltipFlag,
+    };
     use rewo_net::item_stack::{read_optional, StackComponents, StackDetail, WireSlot};
 
     let registry = DataComponentRegistry::load(&paths.registries_json())?;
@@ -2730,8 +2754,14 @@ fn check_advanced_tooltip(
              `isDamageableItem()` is `has(MAX_DAMAGE) && !has(UNBREAKABLE) && \
              has(DAMAGE)`",
             damaged.first(),
-            pristine.iter().take_while(|l| **l != AdvancedLine::RegistryId).count(),
-            never.iter().take_while(|l| **l != AdvancedLine::RegistryId).count()
+            pristine
+                .iter()
+                .take_while(|l| **l != AdvancedLine::RegistryId)
+                .count(),
+            never
+                .iter()
+                .take_while(|l| **l != AdvancedLine::RegistryId)
+                .count()
         ),
     );
 
@@ -2751,16 +2781,14 @@ fn check_advanced_tooltip(
         .unwrap_or_default();
     c.record(
         "ad2.the_order_is_durability_then_a_dark_gray_literal_id_then_the_count",
-        full
-            == vec![
-                AdvancedLine::Durability {
-                    remaining: 1500,
-                    max: 1561
-                },
-                AdvancedLine::RegistryId,
-                AdvancedLine::Components { count: 19 },
-            ]
-            && zero == vec![AdvancedLine::RegistryId]
+        full == vec![
+            AdvancedLine::Durability {
+                remaining: 1500,
+                max: 1561,
+            },
+            AdvancedLine::RegistryId,
+            AdvancedLine::Components { count: 19 },
+        ] && zero == vec![AdvancedLine::RegistryId]
             && unknown == vec![AdvancedLine::RegistryId]
             && normal.is_empty()
             && ungated_text == "0 component(s)",
@@ -2934,7 +2962,9 @@ fn check_advanced_tooltip(
         v.push(0xAB);
         v
     };
-    let dirt_id = items.id("minecraft:dirt").ok_or("no dirt in the registry")?;
+    let dirt_id = items
+        .id("minecraft:dirt")
+        .ok_or("no dirt in the registry")?;
     let sword_id = items
         .id("minecraft:diamond_sword")
         .ok_or("no diamond_sword in the registry")?;
@@ -2995,7 +3025,10 @@ fn check_advanced_tooltip(
     );
 
     // The line rule. `lineCount <= 4` with the increment inside the guard.
-    let plans: Vec<_> = [0usize, 1, 4, 5, 6, 27].iter().map(|n| container_plan(*n)).collect();
+    let plans: Vec<_> = [0usize, 1, 4, 5, 6, 27]
+        .iter()
+        .map(|n| container_plan(*n))
+        .collect();
     let mutated = |n: usize| {
         // MUTATION — the same loop with `lineCount < 4`.
         let (mut line, mut item) = (0i32, 0i32);
@@ -3028,10 +3061,7 @@ fn check_advanced_tooltip(
              reporting the remainder as the **total** gives {:?} for those same \
              three counts, so a full box would say `and 5 more…` underneath all \
              five of the lines it just printed",
-            plans
-                .iter()
-                .map(|p| (p.shown, p.more))
-                .collect::<Vec<_>>(),
+            plans.iter().map(|p| (p.shown, p.more)).collect::<Vec<_>>(),
             mutated(5),
             remainder_as_total
         ),
@@ -3100,12 +3130,8 @@ fn check_advanced_tooltip(
             "translate".to_string(),
             rewo_proto::nbt::Nbt::String("block.minecraft.dirt".to_string()),
         )]);
-        let resolved = crate::live_cmd::container_lines(
-            &nested(key.clone()),
-            &items,
-            &baked.item_names,
-            lang,
-        );
+        let resolved =
+            crate::live_cmd::container_lines(&nested(key.clone()), &items, &baked.item_names, lang);
         let empty_lang = rewo_data::lang::Language::empty();
         let coded = crate::live_cmd::container_lines(
             &nested(rewo_proto::nbt::Nbt::String("\u{00a7}cRed".to_string())),
@@ -3162,7 +3188,9 @@ fn check_advanced_tooltip(
         let packets = Packets::load(&paths.packets_json())?;
         let net_ids = rewo_net::ids::Ids::resolve(&packets)?;
         rewo_net::component_wire::install_shapes(registry.ids());
-        let dirt = items.id("minecraft:dirt").ok_or("no dirt in the registry")?;
+        let dirt = items
+            .id("minecraft:dirt")
+            .ok_or("no dirt in the registry")?;
 
         // `container_set_slot`: container 0, state id, i16 slot, then a stack
         // whose patch carries `entries`.
@@ -3211,12 +3239,7 @@ fn check_advanced_tooltip(
         // The line the tooltip builder emits for the hotbar slot this writes.
         let hover = |inv: &Inventory, l: &rewo_data::lang::Language| {
             let stack = inv.hotbar(0).expect("the slot was written");
-            crate::live_cmd::styled_hover_name(
-                inv.text_of(stack),
-                "Dirt",
-                [1.0, 1.0, 1.0],
-                l,
-            )
+            crate::live_cmd::styled_hover_name(inv.text_of(stack), "Dirt", [1.0, 1.0, 1.0], l)
         };
 
         // The expectation is the JAR's own answer for the key, not a literal.
@@ -3251,9 +3274,7 @@ fn check_advanced_tooltip(
         let item = hover(&by_item_name, lang);
         c.record(
             "nf2.a_custom_name_is_italic_and_an_item_name_is_not",
-            custom[0].italic
-                && !item[0].italic
-                && rewo_gpu::tooltip::line_text(&item) == "Blade",
+            custom[0].italic && !item[0].italic && rewo_gpu::tooltip::line_text(&item) == "Blade",
             format!(
                 "custom_name italic={} , item_name italic={} text={:?}. \
                  `ItemStack.getStyledHoverName` adds ITALIC iff \
@@ -3266,16 +3287,13 @@ fn check_advanced_tooltip(
         );
 
         // Lore: DARK_PURPLE + ITALIC, and the text is a component too.
-        let lored = send(&[(
-            ids.lore,
-            {
-                let mut v = Vec::new();
-                push_varint(&mut v, 2);
-                v.extend_from_slice(&translate("block.minecraft.dirt"));
-                v.extend_from_slice(&literal("\u{00a7}cRed"));
-                v
-            },
-        )]);
+        let lored = send(&[(ids.lore, {
+            let mut v = Vec::new();
+            push_varint(&mut v, 2);
+            v.extend_from_slice(&translate("block.minecraft.dirt"));
+            v.extend_from_slice(&literal("\u{00a7}cRed"));
+            v
+        })]);
         let lore_stack = lored.hotbar(0).expect("the slot was written");
         let lore = lored
             .text_of(lore_stack)
@@ -3336,19 +3354,16 @@ fn check_advanced_tooltip(
         // Proof the stack really carries BOTH — without this the witness is
         // also satisfied by a decode that dropped `item_name` on the floor,
         // which is a different bug wearing the same green.
-        let both_text = both
-            .hotbar(0)
-            .and_then(|st| both.text_of(st))
-            .map(|t| {
-                (
-                    t.custom_name
-                        .as_ref()
-                        .map(|c| rewo_world::chat_style::flatten(c, Some(lang))),
-                    t.item_name
-                        .as_ref()
-                        .map(|c| rewo_world::chat_style::flatten(c, Some(lang))),
-                )
-            });
+        let both_text = both.hotbar(0).and_then(|st| both.text_of(st)).map(|t| {
+            (
+                t.custom_name
+                    .as_ref()
+                    .map(|c| rewo_world::chat_style::flatten(c, Some(lang))),
+                t.item_name
+                    .as_ref()
+                    .map(|c| rewo_world::chat_style::flatten(c, Some(lang))),
+            )
+        });
         c.record(
             "nf6.a_custom_name_beats_an_item_name_on_the_same_stack",
             both_text == Some((Some("Skullcrusher".to_string()), Some("Cudgel".to_string())))
@@ -3435,11 +3450,20 @@ fn check_advanced_tooltip(
             let from_plain = tip(&plain_stack);
             c.record(
                 "nf7.the_production_tooltip_builder_uses_the_styled_hover_name",
-                from_both.as_ref().and_then(|l| l.first()).map(String::as_str)
+                from_both
+                    .as_ref()
+                    .and_then(|l| l.first())
+                    .map(String::as_str)
                     == Some("Skullcrusher")
-                    && from_named.as_ref().and_then(|l| l.first()).map(String::as_str)
+                    && from_named
+                        .as_ref()
+                        .and_then(|l| l.first())
+                        .map(String::as_str)
                         == Some(&expect[..])
-                    && from_plain.as_ref().and_then(|l| l.first()).map(String::as_str)
+                    && from_plain
+                        .as_ref()
+                        .and_then(|l| l.first())
+                        .map(String::as_str)
                         == Some("Dirt"),
                 format!(
                     "hovering menu slot {HOTBAR_MENU_START} of the player panel: \
@@ -3458,7 +3482,9 @@ fn check_advanced_tooltip(
 
     // ── Stage 5: the held-item label ──────────────────────────────────────
 
-    use rewo_gpu::hud::{selected_item_name_pos, text_backdrop_rect, tool_highlight_alpha, ToolHighlight};
+    use rewo_gpu::hud::{
+        selected_item_name_pos, text_backdrop_rect, tool_highlight_alpha, ToolHighlight,
+    };
 
     let mut h = ToolHighlight::default();
     h.tick(Some((1, "Diamond Sword")), 1.0);
@@ -3579,7 +3605,9 @@ fn check_tooltip_image(c: &mut Checker, baked: &assets::BakedAssets) {
     let twelve = Component::Bundle(test_bundle(12));
     c.record(
         "ti2.a_bundle_is_a_fixed_96_wide_whatever_it_holds",
-        one.width() == GRID_WIDTH && twelve.width() == GRID_WIDTH && one.height() != twelve.height(),
+        one.width() == GRID_WIDTH
+            && twelve.width() == GRID_WIDTH
+            && one.height() != twelve.height(),
         format!(
             "1 stack -> {}x{}, 12 -> {}x{}. `ClientBundleTooltip.getWidth` is a \
              literal `return 96`, so only the *height* tracks the contents — a \
@@ -3798,7 +3826,9 @@ fn check_tooltip_image(c: &mut Checker, baked: &assets::BakedAssets) {
              weight is 47 of the 94 the border's 96 leaves room for, and the bar's \
              y is the component's own top plus the *full* grid height, not the \
              last row that happened to be drawn",
-            bars.0, bars.1, bars.2,
+            bars.0,
+            bars.1,
+            bars.2,
             mid.map(|b| (b.x, b.y))
         ),
     );
@@ -3927,7 +3957,16 @@ fn check_pixels(
     let layers = [white];
     let mut wr = WorldRenderer::new(&mut gpu, off.format, 16, &layers)?;
     let r = pixels_inner(
-        c, &mut gpu, &mut off, &mut wr, baked, &atlas, &verts, &grid_verts, &draw, args,
+        c,
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        baked,
+        &atlas,
+        &verts,
+        &grid_verts,
+        &draw,
+        args,
     );
     wr.destroy(&mut gpu);
     off.destroy(&mut gpu);
@@ -3969,9 +4008,9 @@ fn pixels_inner(
     // entirely, so any view-projection will do.
     let vp = glam::Mat4::IDENTITY.to_cols_array_2d();
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    v: &[rewo_gpu::gui_item::GuiItemVertex]|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                v: &[rewo_gpu::gui_item::GuiItemVertex]|
      -> Result<Vec<u8>, String> {
         wr.set_gui_items(gpu, v)?;
         off.render(gpu, Some((&mut *wr, vp)), draw, CLEAR)?;
@@ -4023,9 +4062,7 @@ fn pixels_inner(
         glint: false,
     }];
     let lights = ItemLights::default();
-    let flat_verts = build_vertices(&flat, &flat_slots, &lights, &|t| {
-        atlas.uv.get(&t).copied()
-    });
+    let flat_verts = build_vertices(&flat, &flat_slots, &lights, &|t| atlas.uv.get(&t).copied());
     let flat_img = shot(gpu, off, wr, &flat_verts)?;
     let flat_box = changed_bounds(&flat_img, &empty);
     let tilt_box = changed_bounds(&img, &empty).map(|(x0, y0, x1, y1)| {
@@ -4046,7 +4083,6 @@ fn pixels_inner(
              one transform for the other is the mutation this rejects"
         ),
     );
-
 
     // -- the screen (M35) ---------------------------------------------------
     let Some(sprites) = crate::live_cmd::container_sprites(baked) else {
@@ -4082,7 +4118,14 @@ fn pixels_inner(
     };
 
     // Points inside flat regions of the panel, away from every bevel.
-    let probes = [(20, 80), (60, 110), (120, 30), (90, 150), (170, 160), (4, 100)];
+    let probes = [
+        (20, 80),
+        (60, 110),
+        (120, 30),
+        (90, 150),
+        (170, 160),
+        (4, 100),
+    ];
     let wrong: Vec<_> = probes
         .iter()
         .filter(|&&(x, y)| at(&open, x, y) != src(x, y))
@@ -4206,7 +4249,11 @@ fn pixels_inner(
 
     // And the pixels. Hovering a slot with an item must draw a box that is not
     // there when the slot is empty.
-    let tip_at = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, t| -> Result<Vec<u8>, String> {
+    let tip_at = |wr: &mut WorldRenderer,
+                  gpu: &mut Gpu,
+                  off: &mut Offscreen,
+                  t|
+     -> Result<Vec<u8>, String> {
         wr.set_container(true, rewo_world::inventory::slot_position(9));
         wr.set_container_tooltip(t);
         let f = shot(gpu, off, wr, &[])?;
@@ -4373,7 +4420,10 @@ fn pixels_inner(
         ..t.clone()
     };
     let cells_of = |t: &rewo_gpu::container::TooltipDraw| {
-        t.bundle.as_ref().map(|i| i.cells.clone()).unwrap_or_default()
+        t.bundle
+            .as_ref()
+            .map(|i| i.cells.clone())
+            .unwrap_or_default()
     };
     let bar_of = |t: &rewo_gpu::container::TooltipDraw| t.bundle.as_ref().and_then(|i| i.bar);
 
@@ -4557,10 +4607,7 @@ fn pixels_inner(
              quarter is 23 and not 24. The blit is at `x + 1` \
              (`PROGRESSBAR_BORDER`), which is what leaves the border's frame a \
              pixel to sit in; drawing it at `x` runs the fill under the left edge",
-            states
-                .iter()
-                .map(|(_, _, (_, x0))| *x0)
-                .collect::<Vec<_>>()
+            states.iter().map(|(_, _, (_, x0))| *x0).collect::<Vec<_>>()
         ),
     );
 
@@ -4785,10 +4832,7 @@ fn pixels_inner(
     // performance property this gate cannot see and does not claim. What is
     // asserted here is the identity itself, which is what stops a
     // fully-faded row leaving a visible black bar.
-    wr.set_hud_fills(vec![rewo_gpu::hud::HudFill {
-        alpha: 0.0,
-        ..band
-    }]);
+    wr.set_hud_fills(vec![rewo_gpu::hud::HudFill { alpha: 0.0, ..band }]);
     let zero = shot(gpu, off, wr, &[])?;
     wr.set_hud_fills(Vec::new());
     let cleared = shot(gpu, off, wr, &[])?;
@@ -4824,8 +4868,16 @@ fn pixels_inner(
              half is the sensitivity partner for `set_hud_fills` REPLACING \
              rather than accumulating, which is what stops a stale black bar \
              hanging over the world after the last message fades",
-            if zero == hud_only { "matches" } else { "DIFFERS" },
-            if cleared == hud_only { "matches" } else { "DIFFERS" },
+            if zero == hud_only {
+                "matches"
+            } else {
+                "DIFFERS"
+            },
+            if cleared == hud_only {
+                "matches"
+            } else {
+                "DIFFERS"
+            },
         ),
     );
 

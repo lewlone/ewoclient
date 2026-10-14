@@ -24,9 +24,7 @@ use skia_safe::{
 
 use crate::screens::launching::LaunchError;
 use crate::text::{self, FontStore};
-use crate::widgets::{
-    draw_vghost_btn, draw_vslider, GhostKind, VghostBtnState, VsliderState,
-};
+use crate::widgets::{draw_vghost_btn, draw_vslider, GhostKind, VghostBtnState, VsliderState};
 
 const PANEL_RADIUS: f32 = 14.0;
 const PANEL_W: f32 = 280.0;
@@ -183,7 +181,12 @@ pub fn widget_bounds(card_w: f32, card_h: f32) -> Vec<(Slot, Rect)> {
         let slider_top = y + label_h + LABEL_TO_SLIDER_GAP;
         out.push((
             *slot,
-            Rect::from_xywh(content_left, slider_top, content_right - content_left, SLIDER_HEIGHT),
+            Rect::from_xywh(
+                content_left,
+                slider_top,
+                content_right - content_left,
+                SLIDER_HEIGHT,
+            ),
         ));
         y = slider_top + SLIDER_HEIGHT + ROW_GAP;
     }
@@ -418,7 +421,10 @@ fn draw_inner(
     canvas.draw_line((content_left, div_y), (content_right, div_y), &div);
 
     // Rows
-    let bounds = widget_bounds(panel.width() + panel.left * 2.0, panel.height() + panel.top * 2.0);
+    let bounds = widget_bounds(
+        panel.width() + panel.left * 2.0,
+        panel.height() + panel.top * 2.0,
+    );
     let label_font = fonts.newsreader(13.0);
     let value_font = fonts.jetbrains_mono(11.0);
     let (_, lm) = label_font.metrics();
@@ -436,7 +442,12 @@ fn draw_inner(
         let mut label_paint = Paint::default();
         label_paint.set_anti_alias(true);
         label_paint.set_color(TEXT_MID_PEARL);
-        canvas.draw_str(*label, (content_left, label_baseline), &label_font, &label_paint);
+        canvas.draw_str(
+            *label,
+            (content_left, label_baseline),
+            &label_font,
+            &label_paint,
+        );
 
         // Right-aligned value pill (mono 11)
         let (slider_state, value_str) = state_and_value_for(*slot, state);
@@ -502,10 +513,7 @@ fn draw_inner(
     let _ = TEXT_MAUVE;
 }
 
-fn state_and_value_for(
-    slot: Slot,
-    state: &DevOverlayState,
-) -> (&VsliderState, String) {
+fn state_and_value_for(slot: Slot, state: &DevOverlayState) -> (&VsliderState, String) {
     match slot {
         Slot::MotionSpeed => (
             &state.motion_speed,

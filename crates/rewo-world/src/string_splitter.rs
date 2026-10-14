@@ -217,7 +217,11 @@ impl FlatComponents {
     /// arithmetic would step over it without consuming anything.
     fn new(input: &[ChatSpan]) -> Self {
         Self {
-            parts: input.iter().filter(|p| !p.text.is_empty()).cloned().collect(),
+            parts: input
+                .iter()
+                .filter(|p| !p.text.is_empty())
+                .cloned()
+                .collect(),
         }
     }
 
@@ -347,7 +351,8 @@ pub fn split_lines_wrapped(
     // vanilla's `while (shouldRestart)`: after each emitted line the whole part
     // walk restarts with a FRESH finder against the shortened list, which is
     // what re-calling the finder here is.
-    while let Some((line_break, split_style)) = find_styled_line_break(&parts.parts, max_width, width_of)
+    while let Some((line_break, split_style)) =
+        find_styled_line_break(&parts.parts, max_width, width_of)
     {
         let Some(tail) = parts.char_at(line_break) else {
             // Unreachable: `iterateFormatted` only returns false after
@@ -655,14 +660,11 @@ mod tests {
         // in an 18-px box wrap after the third character, exactly as one
         // six-character part does — a finder rebuilt per part would never
         // reach the limit and would emit one long line.
-        let split: Vec<String> = split_lines_wrapped(
-            &[plain("ab"), plain("cd"), plain("ef")],
-            18,
-            &w6s,
-        )
-        .into_iter()
-        .map(|l| l.plain())
-        .collect();
+        let split: Vec<String> =
+            split_lines_wrapped(&[plain("ab"), plain("cd"), plain("ef")], 18, &w6s)
+                .into_iter()
+                .map(|l| l.plain())
+                .collect();
         assert_eq!(split, vec!["abc".to_string(), "def".to_string()]);
     }
 
@@ -674,7 +676,10 @@ mod tests {
             .into_iter()
             .map(|l| l.plain())
             .collect();
-        assert_eq!(split, vec!["ab".to_string(), "cde".to_string(), "f".to_string()]);
+        assert_eq!(
+            split,
+            vec!["ab".to_string(), "cde".to_string(), "f".to_string()]
+        );
     }
 
     #[test]
@@ -725,11 +730,15 @@ mod tests {
         }
     }
 
-
     /// `FlatComponents::split_at` with vanilla's `position > contentsSize` read
     /// as `>=` — the mutation that survived M126's battery, kept so the claim
     /// of equivalence is measured rather than argued.
-    fn split_at_ge(parts: &mut Vec<ChatSpan>, skip_position: usize, skip_size: usize, split_style: ChatStyle) -> ChatLine {
+    fn split_at_ge(
+        parts: &mut Vec<ChatSpan>,
+        skip_position: usize,
+        skip_size: usize,
+        split_style: ChatStyle,
+    ) -> ChatLine {
         let mut result: ChatLine = Vec::new();
         let mut position = skip_position;
         let mut in_skip = false;
@@ -745,7 +754,10 @@ mod tests {
                 }
                 let before: String = contents[..position].iter().collect();
                 if !before.is_empty() {
-                    result.push(ChatSpan { text: before, ..parts[0].clone() });
+                    result.push(ChatSpan {
+                        text: before,
+                        ..parts[0].clone()
+                    });
                 }
                 position += skip_size;
                 in_skip = true;
@@ -823,19 +835,31 @@ mod tests {
                     let prod = style_at(&input, skip_position);
                     let mut a = FlatComponents::new(&input);
                     let line_a = a.split_at(skip_position, skip_size, prod.clone());
-                    let mut b: Vec<ChatSpan> =
-                        input.iter().filter(|p| !p.text.is_empty()).cloned().collect();
+                    let mut b: Vec<ChatSpan> = input
+                        .iter()
+                        .filter(|p| !p.text.is_empty())
+                        .cloned()
+                        .collect();
                     let line_b = split_at_ge(&mut b, skip_position, skip_size, prod);
-                    assert_eq!(line_a, line_b, "line at {skip_position}/{skip_size} of {shape:?}");
-                    assert_eq!(a.parts, b, "parts at {skip_position}/{skip_size} of {shape:?}");
+                    assert_eq!(
+                        line_a, line_b,
+                        "line at {skip_position}/{skip_size} of {shape:?}"
+                    );
+                    assert_eq!(
+                        a.parts, b,
+                        "parts at {skip_position}/{skip_size} of {shape:?}"
+                    );
                     agreed += 1;
 
                     // (b) an unrelated split style — where they come apart.
                     let odd = ChatStyle::plain([0.0, 1.0, 0.0]);
                     let mut c = FlatComponents::new(&input);
                     let lc = c.split_at(skip_position, skip_size, odd.clone());
-                    let mut d: Vec<ChatSpan> =
-                        input.iter().filter(|p| !p.text.is_empty()).cloned().collect();
+                    let mut d: Vec<ChatSpan> = input
+                        .iter()
+                        .filter(|p| !p.text.is_empty())
+                        .cloned()
+                        .collect();
                     let ld = split_at_ge(&mut d, skip_position, skip_size, odd);
                     if lc != ld || c.parts != d {
                         disagreed += 1;
@@ -850,7 +874,10 @@ mod tests {
         // If this ever reached zero the mutation really would be equivalent,
         // and the `>` could go. It does not: a break landing exactly on a part
         // boundary is the shape that separates them.
-        assert!(disagreed > 0, "the two readings never diverged — recheck the claim");
+        assert!(
+            disagreed > 0,
+            "the two readings never diverged — recheck the claim"
+        );
     }
 
     #[test]
@@ -1046,13 +1073,15 @@ mod tests {
     #[test]
     fn two_links_on_one_line_keep_their_own_targets() {
         use crate::chat_events::ClickEvent;
-        let out = split_lines_wrapped(
-            &[clickable("aaa ", "/a"), clickable("bbb", "/b")],
-            24,
-            &w6s,
-        );
+        let out = split_lines_wrapped(&[clickable("aaa ", "/a"), clickable("bbb", "/b")], 24, &w6s);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].spans[0].click(), Some(&ClickEvent::RunCommand("/a".into())));
-        assert_eq!(out[1].spans[0].click(), Some(&ClickEvent::RunCommand("/b".into())));
+        assert_eq!(
+            out[0].spans[0].click(),
+            Some(&ClickEvent::RunCommand("/a".into()))
+        );
+        assert_eq!(
+            out[1].spans[0].click(),
+            Some(&ClickEvent::RunCommand("/b".into()))
+        );
     }
 }

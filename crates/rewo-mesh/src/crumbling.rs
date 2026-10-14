@@ -91,14 +91,10 @@ const CUBE_CORNERS: [[[f32; 3]; 4]; 6] = [
 /// below rather than as a quaternion, because the quaternion's argument order
 /// is the one thing here a reader cannot check by inspection.
 const FACE_ROTATION: [[f32; 3]; 6] = [
-    [0.0, 0.0, 0.0],                                    // up   — identity
-    [std::f32::consts::PI, 0.0, 0.0],                   // down — rotationX(π)
-    [
-        std::f32::consts::FRAC_PI_2,
-        0.0,
-        std::f32::consts::PI,
-    ], // north
-    [std::f32::consts::FRAC_PI_2, 0.0, 0.0],            // south
+    [0.0, 0.0, 0.0],                                          // up   — identity
+    [std::f32::consts::PI, 0.0, 0.0],                         // down — rotationX(π)
+    [std::f32::consts::FRAC_PI_2, 0.0, std::f32::consts::PI], // north
+    [std::f32::consts::FRAC_PI_2, 0.0, 0.0],                  // south
     [
         std::f32::consts::FRAC_PI_2,
         0.0,
@@ -207,7 +203,8 @@ mod tests {
             let us: Vec<f32> = uvs.iter().map(|q| q[0]).collect();
             let vs: Vec<f32> = uvs.iter().map(|q| q[1]).collect();
             let span = |a: &[f32]| {
-                a.iter().cloned().fold(f32::MIN, f32::max) - a.iter().cloned().fold(f32::MAX, f32::min)
+                a.iter().cloned().fold(f32::MIN, f32::max)
+                    - a.iter().cloned().fold(f32::MAX, f32::min)
             };
             assert!(
                 (span(&us) - 1.0).abs() < 1e-5,
@@ -234,9 +231,8 @@ mod tests {
     /// original does.
     #[test]
     fn the_projection_is_planar_per_face() {
-        let close = |a: [f32; 2], b: [f32; 2]| {
-            (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5
-        };
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
         // Up (+Y): moving in y must not move the uv.
         let (a, b) = (decal_uv([0.3, 0.0, 0.7], 0), decal_uv([0.3, 1.0, 0.7], 0));
         assert!(close(a, b), "{a:?} vs {b:?}");
@@ -255,7 +251,10 @@ mod tests {
     #[test]
     fn the_top_face_is_the_bare_xz_projection() {
         let uv = decal_uv([0.25, 1.0, 0.75], 0);
-        assert!((uv[0] - 0.25).abs() < 1e-6 && (uv[1] - 0.75).abs() < 1e-6, "{uv:?}");
+        assert!(
+            (uv[0] - 0.25).abs() < 1e-6 && (uv[1] - 0.75).abs() < 1e-6,
+            "{uv:?}"
+        );
     }
 
     #[test]

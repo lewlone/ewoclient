@@ -400,7 +400,11 @@ mod tests {
             for &b in data {
                 crc ^= b as u32;
                 for _ in 0..8 {
-                    crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0xEDB8_8320
+                    } else {
+                        crc >> 1
+                    };
                 }
             }
             !crc
@@ -430,8 +434,14 @@ mod tests {
             assert!(err.contains("larger than"), "{err}");
         }
         // A sane header passes the check (the decode then fails: no IDAT).
-        assert_eq!(png_dims_within(&header_only_png(64, 64), (64, 64)), Ok((64, 64)));
-        assert!(png_dims_within(&header_only_png(0, 64), (64, 64)).is_err(), "empty");
+        assert_eq!(
+            png_dims_within(&header_only_png(64, 64), (64, 64)),
+            Ok((64, 64))
+        );
+        assert!(
+            png_dims_within(&header_only_png(0, 64), (64, 64)).is_err(),
+            "empty"
+        );
     }
 
     #[test]
@@ -447,7 +457,12 @@ mod tests {
     #[test]
     fn a_body_one_byte_over_the_cap_is_rejected() {
         let cap = 1000;
-        assert_eq!(read_capped(std::io::repeat(7).take(cap as u64), cap).unwrap().len(), cap);
+        assert_eq!(
+            read_capped(std::io::repeat(7).take(cap as u64), cap)
+                .unwrap()
+                .len(),
+            cap
+        );
         let err = read_capped(std::io::repeat(7).take(cap as u64 + 1), cap).unwrap_err();
         assert!(err.contains("cap"), "{err}");
         // An endless body is cut off at cap+1 rather than read to exhaustion.
@@ -475,7 +490,17 @@ mod tests {
     fn usernames_are_validated_and_encoded() {
         assert!(valid_username("lewlone"));
         assert!(valid_username("Name_12"));
-        for bad in ["", "seventeen_chars_x", "a/b", "a b", "a?b", "..", "x%2fy", "näme", "a\n"] {
+        for bad in [
+            "",
+            "seventeen_chars_x",
+            "a/b",
+            "a b",
+            "a?b",
+            "..",
+            "x%2fy",
+            "näme",
+            "a\n",
+        ] {
             assert!(!valid_username(bad), "{bad:?}");
             assert!(resolve(bad).is_err(), "{bad:?}");
         }

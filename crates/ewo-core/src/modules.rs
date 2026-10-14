@@ -700,7 +700,11 @@ mod tests {
                 "assist module {id} leaked into the legit build",
             );
         }
-        assert_eq!(REGISTRY.len(), 12, "legit build should carry exactly 12 modules");
+        assert_eq!(
+            REGISTRY.len(),
+            12,
+            "legit build should carry exactly 12 modules"
+        );
     }
 
     #[test]

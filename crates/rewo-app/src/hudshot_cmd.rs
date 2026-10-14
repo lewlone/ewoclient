@@ -205,7 +205,12 @@ pub fn run(args: HudshotArgs) -> Result<(), String> {
             br.label_origin.0 - br.chip[0],
             0.01,
         );
-        g.near("e3:br_places_bottom_right", br.chip[0] + br.chip[2], 500.0, 0.01);
+        g.near(
+            "e3:br_places_bottom_right",
+            br.chip[0] + br.chip[2],
+            500.0,
+            0.01,
+        );
     }
 
     // ── f: the shadow stack. Three copies, sigmas 5/3/0, the last 1px down.
@@ -263,7 +268,12 @@ pub fn run(args: HudshotArgs) -> Result<(), String> {
             let b = r.glyphs.last().unwrap();
             (b.dst_x + b.dst_w / 2.0) - (a.dst_x + a.dst_w / 2.0)
         };
-        g.near("g1:shadow_span_tracks_text", span(&runs[4]), span(&runs[7]), 0.05);
+        g.near(
+            "g1:shadow_span_tracks_text",
+            span(&runs[4]),
+            span(&runs[7]),
+            0.05,
+        );
         g.check(
             "g2:shadow_glyph_count",
             runs[4].glyphs.len() == runs[7].glyphs.len(),
@@ -275,8 +285,18 @@ pub fn run(args: HudshotArgs) -> Result<(), String> {
     //    every Velvet heading would silently render at the default instance.
     {
         let id = cache.glyph_id(Family::Fraunces, false, 'X').unwrap();
-        let light = ScalerKey::new(Family::Fraunces, false, 48.0, Axes::fraunces(0.0, 0.0, 100.0, None));
-        let heavy = ScalerKey::new(Family::Fraunces, false, 48.0, Axes::fraunces(0.0, 0.0, 900.0, None));
+        let light = ScalerKey::new(
+            Family::Fraunces,
+            false,
+            48.0,
+            Axes::fraunces(0.0, 0.0, 100.0, None),
+        );
+        let heavy = ScalerKey::new(
+            Family::Fraunces,
+            false,
+            48.0,
+            Axes::fraunces(0.0, 0.0, 900.0, None),
+        );
         let a = cache.glyph(light, id).unwrap();
         let b = cache.glyph(heavy, id).unwrap();
         let ink = |gl: rewo_gpu::velvet_glyph::Glyph, c: &GlyphCache| -> u32 {

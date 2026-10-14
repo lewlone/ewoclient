@@ -163,15 +163,14 @@ thread_local! {
 fn with_effect<R>(f: impl FnOnce(&RuntimeEffect) -> R) -> Option<R> {
     EFFECT.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let effect = slot.get_or_insert_with(|| {
-            match RuntimeEffect::make_for_shader(GLASS_SKSL, None) {
+        let effect =
+            slot.get_or_insert_with(|| match RuntimeEffect::make_for_shader(GLASS_SKSL, None) {
                 Ok(effect) => Some(effect),
                 Err(err) => {
                     log::warn!("liquid_glass: SkSL failed to compile: {err}");
                     None
                 }
-            }
-        });
+            });
         effect.as_ref().map(f)
     })
 }
@@ -296,7 +295,12 @@ impl<'a> Backdrop<'a> {
     /// Use one image for both roles. Cheaper, but the rim and the interior then
     /// want incompatible amounts of blur — fine for a quick call, not the look.
     pub fn uniform(image: &'a Image, scale: f32) -> Self {
-        Backdrop { rim: image, rim_scale: scale, frost: image, frost_scale: scale }
+        Backdrop {
+            rim: image,
+            rim_scale: scale,
+            frost: image,
+            frost_scale: scale,
+        }
     }
 }
 

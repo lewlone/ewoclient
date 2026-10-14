@@ -256,7 +256,9 @@ impl PlaySession {
         let Some(id) = self.ids.sb_play_chat_command_signed else {
             return Err("chat_command_signed unavailable".into());
         };
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
         let salt: i64 = rand::Rng::gen(&mut rand::thread_rng());
         let last_seen = self.last_seen.generate_and_apply_update();
         let signatures: Vec<(String, Vec<u8>)> = match self.signer.as_mut() {

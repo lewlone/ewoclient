@@ -115,7 +115,10 @@ impl ItemTag {
                 .ok_or_else(|| format!("{source}: `{name}` is not a registered item"))?;
             ids.insert(id);
         }
-        log::info!("rewo-data: item tag {source} — {} item(s) resolved", ids.len());
+        log::info!(
+            "rewo-data: item tag {source} — {} item(s) resolved",
+            ids.len()
+        );
         Ok(Self { ids })
     }
 
@@ -156,10 +159,7 @@ mod tests {
     fn fixture_dir() -> std::path::PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "rewo-item-tags-test-{}-{n}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("rewo-item-tags-test-{}-{n}", std::process::id()))
     }
 
     /// Write the two-item registry fixture, returning its directory and path.
@@ -242,7 +242,8 @@ mod tests {
 
     #[test]
     fn a_plain_value_list_resolves_to_protocol_ids() {
-        let t = ItemTag::from_json(r#"{"values":["minecraft:iron_spear"]}"#, &items(), "t").unwrap();
+        let t =
+            ItemTag::from_json(r#"{"values":["minecraft:iron_spear"]}"#, &items(), "t").unwrap();
         assert!(t.contains(7));
         assert!(!t.contains(9));
         assert_eq!(t.len(), 1);
@@ -263,7 +264,10 @@ mod tests {
                 "object form",
                 r#"{"values":[{"id":"minecraft:iron_spear","required":false}]}"#,
             ),
-            ("unregistered item", r#"{"values":["minecraft:not_an_item"]}"#),
+            (
+                "unregistered item",
+                r#"{"values":["minecraft:not_an_item"]}"#,
+            ),
             ("empty list", r#"{"values":[]}"#),
             ("no values key", r#"{"replace":false}"#),
             ("not json", r#"{"values":"#),

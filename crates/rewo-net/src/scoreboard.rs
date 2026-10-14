@@ -542,10 +542,7 @@ impl Scoreboard {
     /// arriving before its objective is simply lost.
     pub fn apply_set_score(&mut self, p: &SetScore) -> bool {
         if !self.objectives.contains_key(&p.objective_name) {
-            log::debug!(
-                "play: set_score for unknown objective {}",
-                p.objective_name
-            );
+            log::debug!("play: set_score for unknown objective {}", p.objective_name);
             return false;
         }
         let entry = self
@@ -617,7 +614,9 @@ impl Scoreboard {
 
     /// The objective shown in a slot, if any — `Scoreboard::getDisplayObjective`.
     pub fn display_objective(&self, slot: DisplaySlot) -> Option<&Objective> {
-        self.display.get(&slot).and_then(|name| self.objectives.get(name))
+        self.display
+            .get(&slot)
+            .and_then(|name| self.objectives.get(name))
     }
 
     /// The **name** stored against a slot.
@@ -1080,14 +1079,12 @@ mod tests {
         // The other objective is untouched — `retain` must not clear every
         // slot, only the ones naming this objective.
         assert_eq!(
-            sb.display_objective(DisplaySlot::List).map(|o| o.name.as_str()),
+            sb.display_objective(DisplaySlot::List)
+                .map(|o| o.name.as_str()),
             Some("deaths")
         );
         assert_eq!(sb.score("alice", "deaths").unwrap().value, 1);
-        assert_eq!(
-            sb.display_objective_name(DisplaySlot::List),
-            Some("deaths")
-        );
+        assert_eq!(sb.display_objective_name(DisplaySlot::List), Some("deaths"));
     }
 
     #[test]

@@ -224,11 +224,7 @@ struct Voice<'a> {
 
 impl<'a> Voice<'a> {
     fn new(sink: &'a CpalSink, id: ChannelId) -> Voice<'a> {
-        Voice {
-            sink,
-            id,
-            ok: true,
-        }
+        Voice { sink, id, ok: true }
     }
     fn call(mut self, c: C) -> Self {
         self.ok &= self.sink.ring().push(Command::Channel(self.id, c));
@@ -302,7 +298,8 @@ fn look(sink: &CpalSink, pos: [f64; 3], yaw_deg: f32, pitch_deg: f32) {
 }
 
 fn moved(sink: &CpalSink, id: ChannelId, x: f64, y: f64, z: f64) {
-    sink.ring().push(Command::Channel(id, C::SetSelfPosition(x, y, z)));
+    sink.ring()
+        .push(Command::Channel(id, C::SetSelfPosition(x, y, z)));
 }
 
 fn stop(sink: &CpalSink, id: ChannelId) {
@@ -646,7 +643,11 @@ fn stage_pan(sink: &CpalSink, ids: &mut Ids) -> Result<(), String> {
     println!("    Right = forward x up = (0,0,1) x (0,1,0) = -X, so a source at -X must be on");
     println!("    your RIGHT. If left and right are swapped here the cross product is the");
     println!("    wrong way round (up x forward), and every sound in the game is mirrored.");
-    for (label, x) in [("hard right (-X)", -6.0f64), ("centre", 0.0), ("hard left (+X)", 6.0)] {
+    for (label, x) in [
+        ("hard right (-X)", -6.0f64),
+        ("centre", 0.0),
+        ("hard left (+X)", 6.0),
+    ] {
         beat(label);
         Voice::new(sink, ids.next())
             .pitch(1.0)
@@ -754,7 +755,9 @@ fn stage_relative(sink: &CpalSink, ids: &mut Ids) -> Result<(), String> {
     println!("    The listener walks from 0 to 40 blocks away, well past the {ATTEN}-block");
     println!("    cutoff that silenced stage 4. This one must NOT fade and must NOT pan.");
     for step in [0.0f64, 10.0, 25.0, 40.0] {
-        beat(&format!("listener {step:>4.0} blocks away — must be unchanged"));
+        beat(&format!(
+            "listener {step:>4.0} blocks away — must be unchanged"
+        ));
         look(sink, [step, 0.0, 0.0], 0.0, 0.0);
         Voice::new(sink, ids.next())
             .pitch(1.0)
@@ -840,7 +843,10 @@ fn stage_crowd(sink: &CpalSink, ids: &mut Ids) -> Result<(), String> {
 fn stage_loop(sink: &CpalSink, ids: &mut Ids) -> Result<(), String> {
     let pcm = load(clip::HARP)?;
     let d = seconds_of(&pcm);
-    println!("    A {d:.2} s clip with SetLooping(true), for ~8 s — about {} wraps.", (8.0 / d) as u32);
+    println!(
+        "    A {d:.2} s clip with SetLooping(true), for ~8 s — about {} wraps.",
+        (8.0 / d) as u32
+    );
     println!("    Listen at the seam: a click, a gap or a stutter each time round is the");
     println!("    wrap, and it will recur at a fixed interval rather than randomly.");
     println!();
@@ -972,21 +978,34 @@ fn main() {
         std::process::exit(2);
     }
 
-    let chosen: Vec<&Stage> = STAGES.iter().filter(|s| only.is_none_or(|n| s.n == n)).collect();
+    let chosen: Vec<&Stage> = STAGES
+        .iter()
+        .filter(|s| only.is_none_or(|n| s.n == n))
+        .collect();
     if only.is_none() {
-        println!("Running all {} stages. Roughly three minutes.", chosen.len());
+        println!(
+            "Running all {} stages. Roughly three minutes.",
+            chosen.len()
+        );
         println!("Each one says what it grades and what a failure sounds like.");
         println!("`--list` shows them; `--stage N` runs one.");
         println!();
     }
 
     for s in &chosen {
-        println!("── {}. {} {}", s.n, s.name, "─".repeat(46usize.saturating_sub(s.name.len())));
+        println!(
+            "── {}. {} {}",
+            s.n,
+            s.name,
+            "─".repeat(46usize.saturating_sub(s.name.len()))
+        );
         println!("    GRADES: {}", s.grades);
         println!("    FAILS:  {}", s.fails);
         if let Err(e) = (s.run)(&sink, &mut ids) {
             eprintln!("    !! stage {} could not run: {e}", s.n);
-            eprintln!("       a listening pass that skipped a stage would read as a pass; stopping.");
+            eprintln!(
+                "       a listening pass that skipped a stage would read as a pass; stopping."
+            );
             eprintln!("       this needs an unpacked 26.2 asset store; see REWO_PLAN.md");
             std::process::exit(2);
         }

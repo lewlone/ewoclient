@@ -112,11 +112,7 @@ pub fn draw_modal(
 
     let mut layer_paint = Paint::default();
     layer_paint.set_alpha_f(anim);
-    canvas.save_layer(
-        &SaveLayerRec::default()
-            .bounds(&card)
-            .paint(&layer_paint),
-    );
+    canvas.save_layer(&SaveLayerRec::default().bounds(&card).paint(&layer_paint));
 
     // Chrome: scaled about the card centre.
     let cx = (card.left + card.right) * 0.5;
@@ -203,7 +199,10 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
         if let Some(shader) = gradient_shader::linear(
-            (Point::new(card.left, card.top), Point::new(card.left, card.bottom)),
+            (
+                Point::new(card.left, card.top),
+                Point::new(card.left, card.bottom),
+            ),
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
                     Color4f::new(38.0 / 255.0, 18.0 / 255.0, 30.0 / 255.0, 0.92),
@@ -262,7 +261,6 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
         RRect::new_rect_xy(inset, CARD_RADIUS - 0.5, CARD_RADIUS - 0.5),
         &rim,
     );
-
 }
 
 /// All text and widgets, clipped to the card. Never transformed by scale.
@@ -308,7 +306,12 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
     let (_, tm) = title_font.metrics();
     let title_top = eb_baseline + em.descent + 12.0;
     let title_baseline = title_top + (-tm.ascent);
-    canvas.draw_str(title, (cx - t_advance * 0.5, title_baseline), &title_font, &t_paint);
+    canvas.draw_str(
+        title,
+        (cx - t_advance * 0.5, title_baseline),
+        &title_font,
+        &t_paint,
+    );
 
     // Version line — JetBrains Mono 10 tracked
     let ver_font = fonts.jetbrains_mono(10.0);
@@ -339,7 +342,12 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
     let (_, tagm) = tag_font.metrics();
     let tag_top = ver_baseline + vm.descent + 28.0;
     let tag_baseline = tag_top + (-tagm.ascent);
-    canvas.draw_str(tag, (cx - tag_advance * 0.5, tag_baseline), &tag_font, &tag_paint);
+    canvas.draw_str(
+        tag,
+        (cx - tag_advance * 0.5, tag_baseline),
+        &tag_font,
+        &tag_paint,
+    );
 
     // Credits — three centered mono 10 tracked lines
     let cred_font = fonts.jetbrains_mono(10.0);
@@ -377,5 +385,12 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
         btn_w,
         btn_h,
     );
-    draw_vghost_btn(canvas, close_rect, "Close", &state.close_btn, GhostKind::Pearl, fonts);
+    draw_vghost_btn(
+        canvas,
+        close_rect,
+        "Close",
+        &state.close_btn,
+        GhostKind::Pearl,
+        fonts,
+    );
 }

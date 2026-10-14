@@ -325,7 +325,11 @@ fn check_resolver(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     let synced = resolve(&t, "minecraft:zombie", 4.0);
     c.record(
         "f2.a_synced_max_draws_a_bar",
-        synced == Some(HealthBar { current: 7.0, max: 20.0 }),
+        synced
+            == Some(HealthBar {
+                current: 7.0,
+                max: 20.0,
+            }),
         format!("{synced:?} (want Some(7/20) — MUTATION PARTNER f1)"),
     );
 
@@ -346,7 +350,11 @@ fn check_resolver(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         "f3.the_unsynced_case_is_not_health_one",
         ra.is_none()
             && ra_explicit.is_none()
-            && rb == Some(HealthBar { current: 1.0, max: 20.0 }),
+            && rb
+                == Some(HealthBar {
+                    current: 1.0,
+                    max: 20.0,
+                }),
         format!(
             "no-attrs implicit={ra:?} no-attrs explicit-1.0={ra_explicit:?} \
              synced={rb:?} (the spec's 'distinguishably from health 1.0': Rewo \
@@ -594,21 +602,14 @@ fn color_eq(a: [f32; 4], b: [f32; 4]) -> bool {
 
 fn project(vp: &Mat4, p: [f32; 3], w: f32, h: f32) -> (f32, f32) {
     let c = *vp * Vec4::new(p[0], p[1], p[2], 1.0);
-    (
-        (c.x / c.w * 0.5 + 0.5) * w,
-        (0.5 - c.y / c.w * 0.5) * h,
-    )
+    ((c.x / c.w * 0.5 + 0.5) * w, (0.5 - c.y / c.w * 0.5) * h)
 }
 
 // ---------------------------------------------------------------------------
 // a..e — the emitter, against the spec.
 // ---------------------------------------------------------------------------
 
-fn check_emitter(
-    c: &mut Checker,
-    baked: &assets::BakedAssets,
-    check: bool,
-) -> Result<(), String> {
+fn check_emitter(c: &mut Checker, baked: &assets::BakedAssets, check: bool) -> Result<(), String> {
     let mut gpu = Gpu::new(None, true)?;
     println!(
         "[healthbarshot] Vulkan validation: {}",
@@ -660,7 +661,10 @@ fn check_emitter(
     c.record(
         "a0.a_shown_bar_is_two_quads",
         v.len() == BAR_VERTS,
-        format!("{} vertices (want {BAR_VERTS} — a plate and a fill)", v.len()),
+        format!(
+            "{} vertices (want {BAR_VERTS} — a plate and a fill)",
+            v.len()
+        ),
     );
     let m = measure(&v, anchor, right, up, scale);
     c.record(
@@ -899,7 +903,10 @@ fn check_emitter(
         format!(
             "{:?} px, spread {spread:.4} (want <= 1 px and a real width — MUTATION \
              PARTNER e2)",
-            widths.iter().map(|w| (w * 100.0).round() / 100.0).collect::<Vec<_>>()
+            widths
+                .iter()
+                .map(|w| (w * 100.0).round() / 100.0)
+                .collect::<Vec<_>>()
         ),
     );
     let collapsed = (1..4)
@@ -913,7 +920,10 @@ fn check_emitter(
              azimuth 0 by more than a pixel (want 3: the two side views go edge-on \
              and the rear view mirrors). This is why e1 is a real property and not \
              an identity",
-            fixed_widths.iter().map(|w| (w * 100.0).round() / 100.0).collect::<Vec<_>>()
+            fixed_widths
+                .iter()
+                .map(|w| (w * 100.0).round() / 100.0)
+                .collect::<Vec<_>>()
         ),
     );
     // Anchoring: the bar rides the entity, and it rides the *head*.

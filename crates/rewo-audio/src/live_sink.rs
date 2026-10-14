@@ -248,10 +248,7 @@ impl<S: PcmSource> LiveSink<S> {
     ///
     /// Without this every read happens inline on the caller's thread — see the
     /// [`streams`](Self::streams) field.
-    pub fn with_stream_worker(
-        mut self,
-        worker: crate::stream_worker::StreamWorker,
-    ) -> LiveSink<S> {
+    pub fn with_stream_worker(mut self, worker: crate::stream_worker::StreamWorker) -> LiveSink<S> {
         self.set_stream_worker(worker);
         self
     }
@@ -593,9 +590,7 @@ impl<S: PcmSource> LiveSink<S> {
                 continue;
             }
             match ev {
-                E::Opened {
-                    channels, rate, ..
-                } => {
+                E::Opened { channels, rate, .. } => {
                     let bytes = crate::buffers::calculate_buffer_size(
                         channels,
                         rate,
@@ -852,7 +847,8 @@ mod tests {
             }
         }
         fn with(mut self, key: &str, frames: usize, channels: u16, rate: u32) -> Fake {
-            self.assets.insert(key.to_string(), (frames, channels, rate));
+            self.assets
+                .insert(key.to_string(), (frames, channels, rate));
             self
         }
     }
@@ -873,11 +869,7 @@ mod tests {
             })
         }
 
-        fn open_stream(
-            &mut self,
-            key: &str,
-            _looping: bool,
-        ) -> Result<Box<dyn PcmStream>, String> {
+        fn open_stream(&mut self, key: &str, _looping: bool) -> Result<Box<dyn PcmStream>, String> {
             // `looping` is ignored here on purpose: from the producer's side a
             // looping stream is simply one that never returns empty, which the
             // fixture expresses as `remaining_frames: None`.
@@ -1000,7 +992,11 @@ mod tests {
         for _ in 0..20 {
             sink.tick();
         }
-        assert_eq!(sink.stopped(0), Some(true), "one second is 20 ticks at any rate");
+        assert_eq!(
+            sink.stopped(0),
+            Some(true),
+            "one second is 20 ticks at any rate"
+        );
     }
 
     /// A stereo buffer is the same *duration* as a mono one of the same frame
@@ -1071,10 +1067,9 @@ mod tests {
         let cmds = drain(&sink);
 
         assert!(
-            !cmds.iter().any(|c| matches!(
-                c,
-                Command::Channel(_, ChannelCall::AttachStaticBuffer(_))
-            )),
+            !cmds
+                .iter()
+                .any(|c| matches!(c, Command::Channel(_, ChannelCall::AttachStaticBuffer(_)))),
             "the callback cannot resolve a key and must never be handed one"
         );
         let attached: Vec<&Arc<Pcm>> = cmds
@@ -1199,9 +1194,10 @@ mod tests {
             0,
             "a stream failure is not a static one"
         );
-        assert!(!drain(&sink)
-            .iter()
-            .any(|c| matches!(c, Command::Channel(_, ChannelCall::AttachBufferStream(_, _)))));
+        assert!(!drain(&sink).iter().any(|c| matches!(
+            c,
+            Command::Channel(_, ChannelCall::AttachBufferStream(_, _))
+        )));
         assert_eq!(
             sink.stopped(5),
             Some(true),
@@ -1272,7 +1268,10 @@ mod tests {
         sink.submit(0, &ChannelCall::SetPitch(1.0));
         sink.set_listener(ListenerTransform::INITIAL);
         let cmds = drain(&sink);
-        assert!(matches!(cmds[0], Command::Channel(0, ChannelCall::SetPitch(_))));
+        assert!(matches!(
+            cmds[0],
+            Command::Channel(0, ChannelCall::SetPitch(_))
+        ));
         assert!(matches!(cmds[1], Command::Listener(_)));
     }
 
@@ -1319,8 +1318,10 @@ mod tests {
     ) -> (LiveSink<Fake>, std::rc::Rc<std::cell::Cell<u32>>) {
         let reads = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut fake = Fake::new().with(KEY, 44_100, 1, 44_100);
-        fake.streams
-            .insert(MUSIC.to_string(), (channels, rate, frames, std::rc::Rc::clone(&reads)));
+        fake.streams.insert(
+            MUSIC.to_string(),
+            (channels, rate, frames, std::rc::Rc::clone(&reads)),
+        );
         (
             LiveSink::new(CommandRing::with_capacity(DEFAULT_RING_CAPACITY), fake),
             reads,
@@ -1396,17 +1397,28 @@ mod tests {
         for _ in 0..19 {
             sink.tick();
         }
-        assert!(queued(&sink).is_empty(), "nothing consumed yet, nothing to add");
+        assert!(
+            queued(&sink).is_empty(),
+            "nothing consumed yet, nothing to add"
+        );
 
         // The twentieth crosses one second of playback.
         sink.tick();
-        assert_eq!(queued(&sink).len(), 1, "one second consumed, one buffer back");
+        assert_eq!(
+            queued(&sink).len(),
+            1,
+            "one second consumed, one buffer back"
+        );
 
         // And it keeps pace rather than running away.
         for _ in 0..60 {
             sink.tick();
         }
-        assert_eq!(queued(&sink).len(), 3, "three more seconds, three more buffers");
+        assert_eq!(
+            queued(&sink).len(),
+            3,
+            "three more seconds, three more buffers"
+        );
     }
 
     /// **A stream that has not been played consumes nothing**, however long the
@@ -1425,8 +1437,15 @@ mod tests {
         for _ in 0..200 {
             sink.tick();
         }
-        assert!(queued(&sink).is_empty(), "ten seconds of ticks, nothing queued");
-        assert_eq!(reads.get(), after_prime, "and the stream was never read again");
+        assert!(
+            queued(&sink).is_empty(),
+            "ten seconds of ticks, nothing queued"
+        );
+        assert_eq!(
+            reads.get(),
+            after_prime,
+            "and the stream was never read again"
+        );
     }
 
     /// **A looping stream is never stopped**, because it never runs out.
@@ -1458,13 +1477,21 @@ mod tests {
         // Two seconds of mono 44.1 kHz: the prime exhausts it immediately.
         let (mut sink, _) = sink_with_stream(1, 44_100, Some(88_200));
         stream_sequence(&mut sink, 1, true);
-        assert_eq!(queued(&sink), vec![44_100, 44_100], "two seconds, then empty");
+        assert_eq!(
+            queued(&sink),
+            vec![44_100, 44_100],
+            "two seconds, then empty"
+        );
 
         // Thirty-nine ticks is under the two seconds that were queued.
         for _ in 0..39 {
             sink.tick();
         }
-        assert_eq!(sink.stopped(1), Some(false), "the queue is still being heard");
+        assert_eq!(
+            sink.stopped(1),
+            Some(false),
+            "the queue is still being heard"
+        );
         sink.tick();
         assert_eq!(sink.stopped(1), Some(true), "and now it has been");
     }
@@ -1727,9 +1754,7 @@ mod tests {
     fn a_landing_does_not_attach_a_channel_waiting_on_a_different_key() {
         let mut sink = worker_sink();
         let gate = std::sync::Arc::new(std::sync::Mutex::new(()));
-        sink.buffers.with_worker(TwoKeys {
-            gate: gate.clone(),
-        });
+        sink.buffers.with_worker(TwoKeys { gate: gate.clone() });
 
         let held = gate.lock().unwrap();
         sink.attach_static(1, "short");
@@ -1790,11 +1815,13 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert!(sink.channels[&1].dead, "a missing asset must not park forever");
+        assert!(
+            sink.channels[&1].dead,
+            "a missing asset must not park forever"
+        );
         assert_eq!(sink.channels[&1].pending, None);
         assert_eq!(sink.unresolved, 1);
     }
-
 
     // ── M159: the streaming decode on the sound-engine thread ───────────────
     //
@@ -2207,7 +2234,10 @@ mod end_to_end {
         assert_eq!(mixer.ignored, 0, "and it was handed samples, not a key");
 
         out.pull(&mut mixer, 128);
-        assert!(out.peak() > 0.0, "the mixer rendered silence for a played sound");
+        assert!(
+            out.peak() > 0.0,
+            "the mixer rendered silence for a played sound"
+        );
     }
 
     /// **A streamed event reaches the mixer as audible samples too** (M144).
@@ -2227,7 +2257,12 @@ mod end_to_end {
         // that the four primed buffers are a fraction of it.
         source.streams.insert(
             "minecraft/sounds/music/game/calm1.ogg".to_string(),
-            (1, 44_100, Some(441_000), std::rc::Rc::new(std::cell::Cell::new(0))),
+            (
+                1,
+                44_100,
+                Some(441_000),
+                std::rc::Rc::new(std::cell::Cell::new(0)),
+            ),
         );
         let sink = LiveSink::new(Arc::clone(&ring), source);
 
@@ -2294,7 +2329,10 @@ mod end_to_end {
         assert_eq!(mixer.ignored, 0, "and it was handed samples, not a key");
 
         out.pull(&mut mixer, 128);
-        assert!(out.peak() > 0.0, "the mixer rendered silence for a streamed sound");
+        assert!(
+            out.peak() > 0.0,
+            "the mixer rendered silence for a streamed sound"
+        );
 
         // It keeps being fed as the client ticks, rather than stopping after the
         // four it started with.
@@ -2338,19 +2376,30 @@ mod end_to_end {
         let stops_after = |ring: &CommandRing| {
             let mut n = 0;
             while let Some(c) = ring.pop() {
-                if matches!(c, Command::Channel(_, rewo_net::sound_engine::ChannelCall::Stop)) {
+                if matches!(
+                    c,
+                    Command::Channel(_, rewo_net::sound_engine::ChannelCall::Stop)
+                ) {
                     n += 1;
                 }
             }
             n
         };
-        assert_eq!(stops_after(&ring), 0, "nothing was torn down on the play tick");
+        assert_eq!(
+            stops_after(&ring),
+            0,
+            "nothing was torn down on the play tick"
+        );
 
         // Half a second is ten ticks. Nine of them must leave it alone.
         for _ in 0..9 {
             live.drive(&[], &entities, None, 0, 1.0);
         }
-        assert_eq!(stops_after(&ring), 0, "a sounding voice survives nine ticks");
+        assert_eq!(
+            stops_after(&ring),
+            0,
+            "a sounding voice survives nine ticks"
+        );
 
         live.drive(&[], &entities, None, 0, 1.0);
         assert_eq!(stops_after(&ring), 1, "and is released on the tenth");

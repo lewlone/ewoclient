@@ -35,29 +35,17 @@ pub fn mul(a: &Affine, b: &Affine) -> Affine {
 }
 
 pub fn translation(x: f32, y: f32, z: f32) -> Affine {
-    [
-        [1.0, 0.0, 0.0, x],
-        [0.0, 1.0, 0.0, y],
-        [0.0, 0.0, 1.0, z],
-    ]
+    [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z]]
 }
 
 pub fn scale(x: f32, y: f32, z: f32) -> Affine {
-    [
-        [x, 0.0, 0.0, 0.0],
-        [0.0, y, 0.0, 0.0],
-        [0.0, 0.0, z, 0.0],
-    ]
+    [[x, 0.0, 0.0, 0.0], [0.0, y, 0.0, 0.0], [0.0, 0.0, z, 0.0]]
 }
 
 /// A rotation about +Y by `deg` degrees — `Axis.YP.rotationDegrees`.
 pub fn rot_y(deg: f32) -> Affine {
     let (s, c) = deg.to_radians().sin_cos();
-    [
-        [c, 0.0, s, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [-s, 0.0, c, 0.0],
-    ]
+    [[c, 0.0, s, 0.0], [0.0, 1.0, 0.0, 0.0], [-s, 0.0, c, 0.0]]
 }
 
 /// `Matrix4f.rotationAround(quaternion, ox, oy, oz)` for a Y rotation —
@@ -576,11 +564,7 @@ pub fn chest_lid(openness: f32) -> Affine {
     let (s, c) = chest_lid_angle(openness).sin_cos();
     // xRot: y and z turn, x is the axis. No translation — a hinge does not
     // move, which is exactly what distinguishes it from the shulker lid.
-    [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, c, -s, 0.0],
-        [0.0, s, c, 0.0],
-    ]
+    [[1.0, 0.0, 0.0, 0.0], [0.0, c, -s, 0.0], [0.0, s, c, 0.0]]
 }
 
 /// `ShulkerBoxRenderer.ShulkerBoxModel.setupAnim(progress)`:
@@ -607,7 +591,10 @@ pub fn shulker_lid(progress: f32) -> Affine {
     // `T(setPos) · Ry(yRot)`, applied to pivot-relative coordinates. The pivot
     // the emitter subtracts is the rest pose, so the translation this puts back
     // is the *moved* position — the difference between the two is the slide.
-    mul(&translation(0.0, y, 0.0), &rot_y(MAX_LID_ROTATION_DEG * progress))
+    mul(
+        &translation(0.0, y, 0.0),
+        &rot_y(MAX_LID_ROTATION_DEG * progress),
+    )
 }
 
 // ------------------------------------------------ the block-entity clock
@@ -665,21 +652,13 @@ pub fn banner_flag_part(phase: f32, pivot: [f32; 3]) -> Affine {
 /// A rotation about +X by `rad` radians.
 pub fn rot_x(rad: f32) -> Affine {
     let (s, c) = rad.sin_cos();
-    [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, c, -s, 0.0],
-        [0.0, s, c, 0.0],
-    ]
+    [[1.0, 0.0, 0.0, 0.0], [0.0, c, -s, 0.0], [0.0, s, c, 0.0]]
 }
 
 /// A rotation about +Z by `rad` radians.
 pub fn rot_z(rad: f32) -> Affine {
     let (s, c) = rad.sin_cos();
-    [
-        [c, -s, 0.0, 0.0],
-        [s, c, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-    ]
+    [[c, -s, 0.0, 0.0], [s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
 }
 
 /// `Matrix4f.rotateAround(q, ox, oy, oz)` for an arbitrary rotation.
@@ -767,11 +746,7 @@ pub fn pot_wobble(style: WobbleStyle, progress: f32) -> Affine {
 /// A Y rotation given radians rather than degrees.
 pub fn rot_y_rad(rad: f32) -> Affine {
     let (s, c) = rad.sin_cos();
-    [
-        [c, 0.0, s, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [-s, 0.0, c, 0.0],
-    ]
+    [[c, 0.0, s, 0.0], [0.0, 1.0, 0.0, 0.0], [-s, 0.0, c, 0.0]]
 }
 
 /// `PiglinHeadModel.setupAnim` — the ears.
@@ -848,7 +823,10 @@ mod tests {
         assert!((o[1] - 16.0).abs() < 1e-5, "{o:?}");
         // 270 degrees about +Y takes +x to +z.
         let x = apply(&shulker_lid(1.0), [1.0, 0.0, 0.0]);
-        assert!((x[0] - o[0]).abs() < 1e-5 && (x[2] - o[2] - 1.0).abs() < 1e-5, "{x:?}");
+        assert!(
+            (x[0] - o[0]).abs() < 1e-5 && (x[2] - o[2] - 1.0).abs() < 1e-5,
+            "{x:?}"
+        );
     }
 
     #[test]
@@ -903,8 +881,7 @@ mod tests {
             for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [1.0, 1.0, 0.0]] {
                 let q = apply(&m, p);
                 assert!(
-                    (-1e-5..=1.0 + 1e-5).contains(&q[0])
-                        && (-1e-5..=1.0 + 1e-5).contains(&q[2]),
+                    (-1e-5..=1.0 + 1e-5).contains(&q[0]) && (-1e-5..=1.0 + 1e-5).contains(&q[2]),
                     "{deg} deg sent {p:?} to {q:?}"
                 );
             }

@@ -122,7 +122,11 @@ impl HeldItems {
     /// since a draw carries a name and does not care which kind it is. The
     /// namespaces cannot collide: block-entity models are `rewo:be/…`.
     pub fn any(&self, name: &str) -> Option<&HeldItemModel> {
-        if let Some(m) = self.models.get(name).or_else(|| self.block_entities.get(name)) {
+        if let Some(m) = self
+            .models
+            .get(name)
+            .or_else(|| self.block_entities.get(name))
+        {
             return Some(m);
         }
         // M49: `"<item>#<trim material>"` is a trimmed icon variant. Falling
@@ -160,11 +164,7 @@ impl TexturePool {
     /// Intern a texture under `key`, calling `load` only on a miss. `None` when
     /// the texture cannot be decoded, which suppresses the item rather than
     /// drawing it untextured.
-    pub fn intern(
-        &mut self,
-        key: &str,
-        load: impl FnOnce() -> Option<HeldTexture>,
-    ) -> Option<u16> {
+    pub fn intern(&mut self, key: &str, load: impl FnOnce() -> Option<HeldTexture>) -> Option<u16> {
         if let Some(&i) = self.by_key.get(key) {
             return Some(i);
         }
@@ -250,7 +250,9 @@ mod tests {
             .collect(),
             block_entities: HashMap::new(),
             textures: Vec::new(),
-            unsupported: [("minecraft:special".to_string(), 51)].into_iter().collect(),
+            unsupported: [("minecraft:special".to_string(), 51)]
+                .into_iter()
+                .collect(),
         };
         assert_eq!(items.block_count(), 2);
         assert_eq!(items.sprite_count(), 1);

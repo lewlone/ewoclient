@@ -146,7 +146,11 @@ impl Backdrop {
         }
 
         let need_refresh = match self.slow_cache.borrow().as_ref() {
-            Some(c) if c.w == wi && c.h == hi && c.generation == crate::gl_backend::gpu_generation() => {
+            Some(c)
+                if c.w == wi
+                    && c.h == hi
+                    && c.generation == crate::gl_backend::gpu_generation() =>
+            {
                 // Under reduced motion the layers are static, so the cached
                 // composite never goes stale (and the three full-screen blurs
                 // stop costing GPU time). Size/generation changes still rebuild.

@@ -72,8 +72,7 @@ pub fn open(version: &str) -> Result<Box<dyn ChannelSink>, String> {
     let stream_source: Box<dyn PcmSource + Send> =
         Box::new(BytesSource(move |key: &str| index3.read(&root3, key)));
 
-    let backend =
-        CpalBackend::open_with_workers(source, Some(worker_source), Some(stream_source))?;
+    let backend = CpalBackend::open_with_workers(source, Some(worker_source), Some(stream_source))?;
     log::info!(
         "audio: device open at {} Hz. This says a stream was accepted; it does \
          not say anything is audible.",

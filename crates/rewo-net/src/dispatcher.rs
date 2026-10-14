@@ -261,9 +261,7 @@ impl StringReader {
                     // `readerInvalidEscape().createWithContext(this,
                     // String.valueOf(c))` — the offending character is the
                     // exception's argument, and its message quotes it.
-                    return Err(ReaderError::InvalidEscape(
-                        String::from_utf16_lossy(&[c]),
-                    ));
+                    return Err(ReaderError::InvalidEscape(String::from_utf16_lossy(&[c])));
                 }
                 out.push(c);
                 escaped = false;
@@ -438,10 +436,22 @@ fn range_error<T: PartialOrd>(
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArgKind {
     Bool,
-    Integer { min: i64, max: i64 },
-    Long { min: i64, max: i64 },
-    Float { min: f64, max: f64 },
-    Double { min: f64, max: f64 },
+    Integer {
+        min: i64,
+        max: i64,
+    },
+    Long {
+        min: i64,
+        max: i64,
+    },
+    Float {
+        min: f64,
+        max: f64,
+    },
+    Double {
+        min: f64,
+        max: f64,
+    },
     Str(StringType),
     /// `minecraft:entity` and `minecraft:game_profile` (M118) — the `@e[…]`
     /// syntax. `playersOnly` differs between them and affects only which
@@ -866,7 +876,12 @@ pub struct Completion {
 /// `updateCommandInfo` skips it on the reader before calling, so the cursor
 /// starts at 1 and every range is an index into the whole field. Passing the
 /// slashless string instead shifts every suggestion by one.
-pub fn parse(tree: &CommandTree, command: &[u16], start: usize, ctx: CommandCtx<'_>) -> ParseResults {
+pub fn parse(
+    tree: &CommandTree,
+    command: &[u16],
+    start: usize,
+    ctx: CommandCtx<'_>,
+) -> ParseResults {
     let mut reader = StringReader::new(command);
     reader.set_cursor(start);
     let context = ContextBuilder::new(tree.root, start);
@@ -1117,7 +1132,10 @@ pub fn completion_suggestions(
                 // LITERAL starts with the typed text, which is the opposite
                 // direction from `matchesSubStr`'s "does the pattern occur in
                 // the candidate".
-                if lit.to_lowercase().starts_with(&builder.remaining().to_lowercase()) {
+                if lit
+                    .to_lowercase()
+                    .starts_with(&builder.remaining().to_lowercase())
+                {
                     builder.suggest(lit);
                 }
             }
@@ -1158,13 +1176,14 @@ mod tests {
     /// `/tp <unknown>` whose argument type this client cannot parse.
     fn tree() -> CommandTree {
         use crate::commands::NodeKind::*;
-        let arg = |name: &str, type_name: &str, props: ArgumentProps, sugg: Option<&str>| Argument {
-            name: name.into(),
-            type_id: 0,
-            type_name: type_name.into(),
-            props,
-            suggestions: sugg.map(str::to_string),
-        };
+        let arg =
+            |name: &str, type_name: &str, props: ArgumentProps, sugg: Option<&str>| Argument {
+                name: name.into(),
+                type_id: 0,
+                type_name: type_name.into(),
+                props,
+                suggestions: sugg.map(str::to_string),
+            };
         let n = |flags: u8, children: Vec<i32>, kind| CommandNode {
             flags,
             children,
@@ -1190,7 +1209,11 @@ mod tests {
                     ),
                 ),
                 n(1, vec![4], Literal("gamemode".into())),
-                n(2 | 4, vec![], arg("flag", "brigadier:bool", ArgumentProps::None, None)),
+                n(
+                    2 | 4,
+                    vec![],
+                    arg("flag", "brigadier:bool", ArgumentProps::None, None),
+                ),
                 n(1, vec![6], Literal("say".into())),
                 n(
                     2 | 4,
@@ -1308,8 +1331,12 @@ mod tests {
         let long = ArgKind::resolve("brigadier:long", &unbounded);
         assert_ne!(int, long);
         let big = "3000000000";
-        assert!(int.parse(&mut StringReader::from_str(big), CommandCtx::default()).is_err());
-        assert!(long.parse(&mut StringReader::from_str(big), CommandCtx::default()).is_ok());
+        assert!(int
+            .parse(&mut StringReader::from_str(big), CommandCtx::default())
+            .is_err());
+        assert!(long
+            .parse(&mut StringReader::from_str(big), CommandCtx::default())
+            .is_ok());
         // Float and double are the same pair one shape over.
         let f = ArgumentProps::RangeF64 {
             min: None,
@@ -1327,7 +1354,10 @@ mod tests {
         // …and the one type that IS transcribed resolves to itself whatever
         // its props say, because `single`/`playersOnly` do not change how the
         // text parses.
-        assert_eq!(ArgKind::resolve("minecraft:entity", &unbounded), ArgKind::Entity);
+        assert_eq!(
+            ArgKind::resolve("minecraft:entity", &unbounded),
+            ArgKind::Entity
+        );
     }
 
     // ── literal completion, which is the point ───────────────────────────
@@ -1445,7 +1475,15 @@ mod tests {
         let units = u("/kill @");
         let p = parse(&t, &units, 1, CommandCtx::default());
         let names = vec!["Steve".to_string()];
-        let c = completion_suggestions(&t, &p, units.len(), CommandCtx { names: &names, ..Default::default() });
+        let c = completion_suggestions(
+            &t,
+            &p,
+            units.len(),
+            CommandCtx {
+                names: &names,
+                ..Default::default()
+            },
+        );
         assert!(!c.ask_server);
         let texts: Vec<&str> = c.local.list.iter().map(|s| s.text.as_str()).collect();
         assert!(texts.contains(&"@e"));
@@ -1609,7 +1647,9 @@ mod tests {
             *props = ArgumentProps::Registry("minecraft:block".into());
         }
         let p2 = parse(&t2, &units, 1, ctx);
-        assert!(completion_suggestions(&t2, &p2, units.len(), ctx).local.is_empty());
+        assert!(completion_suggestions(&t2, &p2, units.len(), ctx)
+            .local
+            .is_empty());
     }
 
     #[test]
@@ -1636,24 +1676,57 @@ mod tests {
         // reaches it.
         let none = ArgumentProps::None;
         let all = [
-            "minecraft:angle", "minecraft:block_pos", "minecraft:block_predicate",
-            "minecraft:block_state", "minecraft:column_pos", "minecraft:component",
-            "minecraft:dialog", "minecraft:dimension", "minecraft:entity",
-            "minecraft:entity_anchor", "minecraft:float_range", "minecraft:function",
-            "minecraft:game_profile", "minecraft:gamemode", "minecraft:heightmap",
-            "minecraft:hex_color", "minecraft:int_range", "minecraft:item_predicate",
-            "minecraft:item_slot", "minecraft:item_slots", "minecraft:item_stack",
-            "minecraft:loot_modifier", "minecraft:loot_predicate", "minecraft:loot_table",
-            "minecraft:message", "minecraft:nbt_compound_tag", "minecraft:nbt_path",
-            "minecraft:nbt_tag", "minecraft:objective", "minecraft:objective_criteria",
-            "minecraft:operation", "minecraft:particle", "minecraft:resource",
-            "minecraft:resource_key", "minecraft:resource_location",
-            "minecraft:resource_or_tag", "minecraft:resource_or_tag_key",
-            "minecraft:resource_selector", "minecraft:rotation", "minecraft:score_holder",
-            "minecraft:scoreboard_slot", "minecraft:style", "minecraft:swizzle",
-            "minecraft:team", "minecraft:team_color", "minecraft:template_mirror",
-            "minecraft:template_rotation", "minecraft:time", "minecraft:uuid",
-            "minecraft:vec2", "minecraft:vec3",
+            "minecraft:angle",
+            "minecraft:block_pos",
+            "minecraft:block_predicate",
+            "minecraft:block_state",
+            "minecraft:column_pos",
+            "minecraft:component",
+            "minecraft:dialog",
+            "minecraft:dimension",
+            "minecraft:entity",
+            "minecraft:entity_anchor",
+            "minecraft:float_range",
+            "minecraft:function",
+            "minecraft:game_profile",
+            "minecraft:gamemode",
+            "minecraft:heightmap",
+            "minecraft:hex_color",
+            "minecraft:int_range",
+            "minecraft:item_predicate",
+            "minecraft:item_slot",
+            "minecraft:item_slots",
+            "minecraft:item_stack",
+            "minecraft:loot_modifier",
+            "minecraft:loot_predicate",
+            "minecraft:loot_table",
+            "minecraft:message",
+            "minecraft:nbt_compound_tag",
+            "minecraft:nbt_path",
+            "minecraft:nbt_tag",
+            "minecraft:objective",
+            "minecraft:objective_criteria",
+            "minecraft:operation",
+            "minecraft:particle",
+            "minecraft:resource",
+            "minecraft:resource_key",
+            "minecraft:resource_location",
+            "minecraft:resource_or_tag",
+            "minecraft:resource_or_tag_key",
+            "minecraft:resource_selector",
+            "minecraft:rotation",
+            "minecraft:score_holder",
+            "minecraft:scoreboard_slot",
+            "minecraft:style",
+            "minecraft:swizzle",
+            "minecraft:team",
+            "minecraft:team_color",
+            "minecraft:template_mirror",
+            "minecraft:template_rotation",
+            "minecraft:time",
+            "minecraft:uuid",
+            "minecraft:vec2",
+            "minecraft:vec3",
         ];
         let unknown: Vec<&str> = all
             .into_iter()
@@ -1942,7 +2015,9 @@ mod tests {
         // which is the direction error `LiteralCommandNode.listSuggestions`
         // exists to avoid: the LITERAL must start with the typed text, and
         // `gamemode` does not start with `gamemodex`.
-        assert!(completion_suggestions(&t, &p, 10, CommandCtx::default()).local.is_empty());
+        assert!(completion_suggestions(&t, &p, 10, CommandCtx::default())
+            .local
+            .is_empty());
         // A PREFIX of it does — but not the whole word, because
         // `SuggestionsBuilder.suggest` drops a suggestion equal to what is
         // typed (M114a). This assertion used the complete literal first and

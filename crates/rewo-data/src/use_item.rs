@@ -190,9 +190,12 @@ impl UseProfiles {
     /// not contain, nothing is known, and answering "unusable" would be a guess
     /// dressed as a fact. The caller suppresses the use pose instead.
     pub fn of(&self, item_id: i32) -> Option<UseProfile> {
-        self.valid
-            .contains(&item_id)
-            .then(|| self.usable.get(&item_id).copied().unwrap_or(UseProfile::UNUSABLE))
+        self.valid.contains(&item_id).then(|| {
+            self.usable
+                .get(&item_id)
+                .copied()
+                .unwrap_or(UseProfile::UNUSABLE)
+        })
     }
 
     pub fn usable_count(&self) -> usize {

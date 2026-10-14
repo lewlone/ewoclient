@@ -86,11 +86,7 @@ impl Checker {
     /// Record a `f64` property against an independently derived literal.
     fn near(&mut self, name: &str, got: Option<f64>, want: f64, why: &str) {
         let pass = got.is_some_and(|g| (g - want).abs() <= EPS);
-        self.record(
-            name,
-            pass,
-            format!("{got:?} (want {want} — {why})"),
-        );
+        self.record(name, pass, format!("{got:?} (want {want} — {why})"));
     }
 }
 
@@ -149,7 +145,14 @@ fn body(entity: i32, snaps: &[(i32, f64, Vec<Mod>)]) -> Vec<u8> {
 /// A body whose operation field is written as a **multi-byte** VarInt with a
 /// redundant continuation byte. Legal VarInt, same value; a reader that took a
 /// single byte would see `0x82` and then desynchronise on the rest.
-fn body_wide_operation(entity: i32, attr: i32, base: f64, id: &str, amount: f64, op: i32) -> Vec<u8> {
+fn body_wide_operation(
+    entity: i32,
+    attr: i32,
+    base: f64,
+    id: &str,
+    amount: f64,
+    op: i32,
+) -> Vec<u8> {
     let mut out = Vec::new();
     varint(entity, &mut out);
     varint(1, &mut out);
@@ -377,10 +380,7 @@ fn check_wire(c: &mut Checker, env: &Env, control: i32, zombie: i32) {
     // a7: an out-of-range operation id is ADD_VALUE, not a rejected packet —
     // `ByIdMap.continuous(..., OutOfBoundsStrategy.ZERO)`.
     let mut t = table_with(zombie);
-    env.send(
-        &mut t,
-        &body(1, &[(23, 20.0, vec![m("rewo:oob", 5.0, 9)])]),
-    );
+    env.send(&mut t, &body(1, &[(23, 20.0, vec![m("rewo:oob", 5.0, 9)])]));
     c.near(
         "a7.an_out_of_range_operation_is_add_value",
         env.value(&t, "minecraft:zombie", "max_health"),
@@ -476,7 +476,11 @@ fn check_value(c: &mut Checker, env: &Env, zombie: i32) {
     c.near(
         "b6.operations_group_by_kind_not_packet_order",
         send(
-            vec![m("rewo:t", 1.0, 2), m("rewo:b", 0.5, 1), m("rewo:v", 10.0, 0)],
+            vec![
+                m("rewo:t", 1.0, 2),
+                m("rewo:b", 0.5, 1),
+                m("rewo:v", 10.0, 0),
+            ],
             20.0,
         ),
         90.0,
@@ -538,7 +542,10 @@ fn check_receipt(c: &mut Checker, env: &Env, zombie: i32, pig: i32, boat: i32) {
     c.record(
         "c1.an_untracked_entity_stores_nothing",
         t.attributes(1).is_none(),
-        format!("attributes={:?} (want None)", t.attributes(1).map(|a| a.len())),
+        format!(
+            "attributes={:?} (want None)",
+            t.attributes(1).map(|a| a.len())
+        ),
     );
 
     // c2: a non-living entity is inert. Vanilla throws IllegalStateException;
@@ -575,10 +582,7 @@ fn check_receipt(c: &mut Checker, env: &Env, zombie: i32, pig: i32, boat: i32) {
     // c4: a snapshot REPLACES that attribute's modifiers rather than merging
     // with the previous packet's.
     let mut t = table_with(zombie);
-    env.send(
-        &mut t,
-        &body(1, &[(23, 20.0, vec![m("rewo:a", 10.0, 0)])]),
-    );
+    env.send(&mut t, &body(1, &[(23, 20.0, vec![m("rewo:a", 10.0, 0)])]));
     let first = env.value(&t, "minecraft:zombie", "max_health");
     env.send(&mut t, &body(1, &[(23, 20.0, vec![])]));
     let second = env.value(&t, "minecraft:zombie", "max_health");
@@ -682,7 +686,12 @@ fn check_defaults(c: &mut Checker, env: &Env, zombie: i32, pig: i32, golem: i32)
 
     // d5: an attribute the supplier does not declare is None even though the
     // attribute itself is perfectly real and has a registry default of 0.0.
-    let got = resolve(None, Some("minecraft:pig"), "spawn_reinforcements", &env.reg);
+    let got = resolve(
+        None,
+        Some("minecraft:pig"),
+        "spawn_reinforcements",
+        &env.reg,
+    );
     let zom = resolve(
         None,
         Some("minecraft:zombie"),
@@ -763,7 +772,10 @@ fn check_defaults(c: &mut Checker, env: &Env, zombie: i32, pig: i32, golem: i32)
                 continue;
             };
             if *base < def.min || *base > def.max {
-                bad.push(format!("{name}/{attr}: {base} outside [{}, {}]", def.min, def.max));
+                bad.push(format!(
+                    "{name}/{attr}: {base} outside [{}, {}]",
+                    def.min, def.max
+                ));
             }
         }
     }
@@ -820,7 +832,11 @@ fn check_defaults(c: &mut Checker, env: &Env, zombie: i32, pig: i32, golem: i32)
             ));
         }
     }
-    let n_living = env.types.ids().filter(|&i| env.classes.is_living(i)).count();
+    let n_living = env
+        .types
+        .ids()
+        .filter(|&i| env.classes.is_living(i))
+        .count();
     c.record(
         "d14.is_living_and_has_a_supplier_are_the_same_set",
         disagree.is_empty() && n_living == rewo_data::entity_attributes::ENTITY_DEFAULTS.len(),

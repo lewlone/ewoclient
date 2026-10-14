@@ -84,10 +84,16 @@ fn main() {
     event_loop.run_app(&mut app).expect("run");
     match app.result {
         Some(true) => {
-            println!("RECOVERED: generation {}, 120 frames rendered after recreation", gpu_generation());
+            println!(
+                "RECOVERED: generation {}, 120 frames rendered after recreation",
+                gpu_generation()
+            );
         }
         _ => {
-            println!("NOT RECOVERED within 30 s (generation {})", gpu_generation());
+            println!(
+                "NOT RECOVERED within 30 s (generation {})",
+                gpu_generation()
+            );
             std::process::exit(1);
         }
     }

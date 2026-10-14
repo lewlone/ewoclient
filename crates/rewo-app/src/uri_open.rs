@@ -50,11 +50,7 @@
 pub fn open_uri_args(uri: &str) -> Vec<String> {
     let uri = uri.to_owned();
     if cfg!(target_os = "windows") {
-        vec![
-            "rundll32".into(),
-            "url.dll,FileProtocolHandler".into(),
-            uri,
-        ]
+        vec!["rundll32".into(), "url.dll,FileProtocolHandler".into(), uri]
     } else if cfg!(target_os = "macos") {
         vec!["open".into(), uri]
     } else {

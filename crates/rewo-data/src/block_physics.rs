@@ -15,8 +15,12 @@ pub enum PhysFluid {
     None,
     /// `FluidState.getOwnHeight()` = `amount / 9` — 8/9 for a source or a
     /// falling column (the "same fluid above" 1.0 is resolved by the caller).
-    Water { own_height: f32 },
-    Lava { own_height: f32 },
+    Water {
+        own_height: f32,
+    },
+    Lava {
+        own_height: f32,
+    },
 }
 
 /// `makeStuckInBlock` source for a block's `entityInside`.
@@ -144,7 +148,8 @@ impl BlockPhysics {
         water_block: bool,
     ) -> Self {
         use crate::block_props as bp;
-        let find = |t: &[(&str, f32)], d: f32| t.iter().find(|(n, _)| *n == block).map_or(d, |(_, v)| *v);
+        let find =
+            |t: &[(&str, f32)], d: f32| t.iter().find(|(n, _)| *n == block).map_or(d, |(_, v)| *v);
         let has = |t: &[&str]| t.contains(&block);
         let prop = |name: &str| props.and_then(|p| p.get(name)).and_then(|v| v.as_str());
         let mut f = 0u16;
@@ -190,7 +195,10 @@ impl BlockPhysics {
         if has(bp::SUPPRESSES_BOUNCE_TAG) {
             f |= flags::SUPPRESSES_BOUNCE;
         }
-        if matches!(block, "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air") {
+        if matches!(
+            block,
+            "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+        ) {
             f |= flags::AIR;
         }
         let facing = match prop("facing") {
@@ -216,7 +224,9 @@ impl BlockPhysics {
             stuck,
             fluid: PhysFluid::None,
             // Only a `LiquidBlock` has `level`; anything else is not a fluid.
-            fluid_falling: prop("level").and_then(|l| l.parse().ok()).is_some_and(fluid_is_falling),
+            fluid_falling: prop("level")
+                .and_then(|l| l.parse().ok())
+                .is_some_and(fluid_is_falling),
         }
     }
 }
@@ -225,7 +235,11 @@ impl BlockPhysics {
 /// `stateCache[min(level, 8)]` — 0 is the source (amount 8), 1..7 flow with
 /// amount `8 - level`, 8+ is falling with amount 8.
 pub fn fluid_own_height(level: u8) -> f32 {
-    let amount = if level == 0 || level >= 8 { 8 } else { 8 - level };
+    let amount = if level == 0 || level >= 8 {
+        8
+    } else {
+        8 - level
+    };
     amount as f32 / 9.0
 }
 
@@ -241,15 +255,33 @@ mod tests {
 
     #[test]
     fn tables_resolve_vanilla_values() {
-        assert_eq!(BlockPhysics::resolve("minecraft:ice", None, false).friction, 0.98);
-        assert_eq!(BlockPhysics::resolve("minecraft:blue_ice", None, false).friction, 0.989);
-        assert_eq!(BlockPhysics::resolve("minecraft:slime_block", None, false).friction, 0.8);
-        assert_eq!(BlockPhysics::resolve("minecraft:stone", None, false).friction, 0.6);
+        assert_eq!(
+            BlockPhysics::resolve("minecraft:ice", None, false).friction,
+            0.98
+        );
+        assert_eq!(
+            BlockPhysics::resolve("minecraft:blue_ice", None, false).friction,
+            0.989
+        );
+        assert_eq!(
+            BlockPhysics::resolve("minecraft:slime_block", None, false).friction,
+            0.8
+        );
+        assert_eq!(
+            BlockPhysics::resolve("minecraft:stone", None, false).friction,
+            0.6
+        );
         let honey = BlockPhysics::resolve("minecraft:honey_block", None, false);
         assert_eq!((honey.speed_factor, honey.jump_factor), (0.4, 0.5));
-        assert_eq!(BlockPhysics::resolve("minecraft:soul_sand", None, false).speed_factor, 0.4);
+        assert_eq!(
+            BlockPhysics::resolve("minecraft:soul_sand", None, false).speed_factor,
+            0.4
+        );
         assert!(BlockPhysics::resolve("minecraft:ladder", None, false).has(flags::CLIMBABLE));
-        assert!(BlockPhysics::resolve("minecraft:twisting_vines_plant", None, false).has(flags::CLIMBABLE));
+        assert!(
+            BlockPhysics::resolve("minecraft:twisting_vines_plant", None, false)
+                .has(flags::CLIMBABLE)
+        );
         assert!(BlockPhysics::resolve("minecraft:oak_fence", None, false).has(flags::FENCE));
         assert!(BlockPhysics::resolve("minecraft:cobblestone_wall", None, false).has(flags::WALL));
         assert_eq!(Stuck::Web.multiplier(), Some([0.25, 0.05f32 as f64, 0.25]));
@@ -298,7 +330,8 @@ mod tests {
         let down = BlockPhysics::resolve("minecraft:bubble_column", Some(&drag("true")), true);
         assert!(down.has(flags::BUBBLE_COLUMN_DOWN) && !down.has(flags::BUBBLE_COLUMN_UP));
         // `DRAG_DOWN` is registered true, so a state without `drag` is down.
-        assert!(BlockPhysics::resolve("minecraft:bubble_column", None, true).has(flags::BUBBLE_COLUMN_DOWN));
+        assert!(BlockPhysics::resolve("minecraft:bubble_column", None, true)
+            .has(flags::BUBBLE_COLUMN_DOWN));
         assert!(BlockPhysics::resolve("minecraft:honey_block", None, false).has(flags::HONEY));
         // And no other block gains them.
         for name in ["minecraft:water", "minecraft:stone", "minecraft:soul_sand"] {
@@ -326,7 +359,11 @@ mod real_bake {
         let blocks = root.join("rewo/26.2/datagen/generated/reports/blocks.json");
         let b = bake(&jar, &blocks).expect("bake");
         let table = crate::blocks::Blocks::load(&blocks).expect("blocks");
-        let id = |name: &str| table.default_state(name).unwrap_or_else(|| panic!("{name}")) as usize;
+        let id = |name: &str| {
+            table
+                .default_state(name)
+                .unwrap_or_else(|| panic!("{name}")) as usize
+        };
         for (name, occludes, translucent, skip) in [
             ("minecraft:stone", 0b11_1111, false, 0),
             ("minecraft:grass_block", 0b11_1111, false, 0),
@@ -353,11 +390,23 @@ mod real_bake {
             ("minecraft:stone", full.clone()),
             ("minecraft:grass_block", full.clone()),
             ("minecraft:glass", full.clone()),
-            ("minecraft:soul_sand", vec![[0.0, 0.0, 0.0, 1.0, 14.0 * p, 1.0]]),
+            (
+                "minecraft:soul_sand",
+                vec![[0.0, 0.0, 0.0, 1.0, 14.0 * p, 1.0]],
+            ),
             ("minecraft:mud", vec![[0.0, 0.0, 0.0, 1.0, 14.0 * p, 1.0]]),
-            ("minecraft:honey_block", vec![[p, 0.0, p, 15.0 * p, 15.0 * p, 15.0 * p]]),
-            ("minecraft:chest", vec![[p, 0.0, p, 15.0 * p, 14.0 * p, 15.0 * p]]),
-            ("minecraft:skeleton_skull", vec![[0.25, 0.0, 0.25, 0.75, 0.5, 0.75]]),
+            (
+                "minecraft:honey_block",
+                vec![[p, 0.0, p, 15.0 * p, 15.0 * p, 15.0 * p]],
+            ),
+            (
+                "minecraft:chest",
+                vec![[p, 0.0, p, 15.0 * p, 14.0 * p, 15.0 * p]],
+            ),
+            (
+                "minecraft:skeleton_skull",
+                vec![[0.25, 0.0, 0.25, 0.75, 0.5, 0.75]],
+            ),
             ("minecraft:powder_snow", vec![]),
             ("minecraft:torch", vec![]),
             ("minecraft:cobweb", vec![]),
@@ -382,7 +431,10 @@ mod real_bake {
             assert!(!b.collide[id(name)].is_empty(), "{name} collides");
         }
         let fence = &b.collide[id("minecraft:oak_fence")];
-        assert!(fence.iter().any(|b| b[4] == 1.5), "fence is 1.5 tall: {fence:?}");
+        assert!(
+            fence.iter().any(|b| b[4] == 1.5),
+            "fence is 1.5 tall: {fence:?}"
+        );
         assert_eq!(b.physics[id("minecraft:ice")].friction, 0.98);
         assert!(b.physics[id("minecraft:ladder")].has(super::flags::CLIMBABLE));
         assert!(matches!(

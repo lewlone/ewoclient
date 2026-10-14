@@ -21,8 +21,8 @@
 
 use ewo_core::{motion, CubicBezier, Settings};
 use skia_safe::{
-    gradient_shader, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint,
-    PaintStyle, Path, Point, RRect, Rect, TileMode,
+    gradient_shader, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint, PaintStyle,
+    Path, Point, RRect, Rect, TileMode,
 };
 
 /// Per-row stagger delay (CSS `animation-delay: calc(var(--row-i) * 50ms)`).
@@ -116,8 +116,8 @@ impl VdropState {
             self.hovered_row = None;
             return;
         }
-        let inside_x = mouse.0 >= menu_bounds.left + MENU_PAD
-            && mouse.0 <= menu_bounds.right - MENU_PAD;
+        let inside_x =
+            mouse.0 >= menu_bounds.left + MENU_PAD && mouse.0 <= menu_bounds.right - MENU_PAD;
         // Cursor must also be inside the menu's visible vertical range —
         // anything outside the clipped area shouldn't highlight a row.
         let inside_y = mouse.1 >= menu_bounds.top && mouse.1 <= menu_bounds.bottom;
@@ -203,12 +203,25 @@ pub fn draw_vdrop_head(
     vbtn::draw_tint_for_dropdown(canvas, bounds, HEAD_RADIUS);
 
     // Layer 2: rim — pulse anim shared with vbtn
-    vbtn::draw_rim_for_dropdown(canvas, bounds, HEAD_RADIUS, time, settings.motion_speed, state.hover_head);
+    vbtn::draw_rim_for_dropdown(
+        canvas,
+        bounds,
+        HEAD_RADIUS,
+        time,
+        settings.motion_speed,
+        state.hover_head,
+    );
 
     // Layer 3: sheen — clipped to head
     let saved2 = canvas.save();
     canvas.clip_rrect(rrect, None, Some(true));
-    vbtn::draw_sheen_for_dropdown(canvas, bounds, time, settings.motion_speed, state.hover_head);
+    vbtn::draw_sheen_for_dropdown(
+        canvas,
+        bounds,
+        time,
+        settings.motion_speed,
+        state.hover_head,
+    );
     canvas.restore_to_count(saved2);
 
     // Layer 4: value text + caret
@@ -245,8 +258,8 @@ fn draw_head_label_and_caret(
     // Rotation angle in radians: 45° at rest, -135° fully open.
     let from = std::f32::consts::FRAC_PI_4; // 45°
     let to = -3.0 * std::f32::consts::FRAC_PI_4; // -135°
-    // `anim` already tracks the open/close direction, so the easing is
-    // the same expression regardless of the menu's open state.
+                                                 // `anim` already tracks the open/close direction, so the easing is
+                                                 // the same expression regardless of the menu's open state.
     let eased = CubicBezier::SILK.eval(anim.clamp(0.0, 1.0));
     let angle = from + (to - from) * eased;
 
@@ -258,7 +271,15 @@ fn draw_head_label_and_caret(
     p.set_anti_alias(true);
     p.set_style(PaintStyle::Stroke);
     p.set_stroke_width(1.5);
-    p.set_color4f(Color4f::new(0xF4 as f32 / 255.0, 0xE8 as f32 / 255.0, 0xEA as f32 / 255.0, 0.7), None);
+    p.set_color4f(
+        Color4f::new(
+            0xF4 as f32 / 255.0,
+            0xE8 as f32 / 255.0,
+            0xEA as f32 / 255.0,
+            0.7,
+        ),
+        None,
+    );
     let half = size * 0.5;
     // Two strokes: right edge and bottom edge of a small square.
     canvas.draw_line((half, -half), (half, half), &p);
@@ -352,7 +373,12 @@ pub fn draw_vdrop_menu(
     // Rows fade with the layer and translate by whole pixels; at rest both
     // layers coincide exactly. The rows' own staggered reveal runs on top.
     let scale = 0.98 + 0.02 * anim;
-    let ty = (if flip_up { 4.0 * (1.0 - anim) } else { -4.0 * (1.0 - anim) }).round();
+    let ty = (if flip_up {
+        4.0 * (1.0 - anim)
+    } else {
+        -4.0 * (1.0 - anim)
+    })
+    .round();
 
     let cx = (bounds.left + bounds.right) * 0.5;
     let cy = if flip_up { bounds.bottom } else { bounds.top };
@@ -617,7 +643,12 @@ fn draw_menu_rows(
         paint.set_anti_alias(true);
         paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
         let baseline = dot_cy + m.cap_height * 0.5;
-        canvas.draw_str(*opt, (row_left + ROW_PAD_X + 14.0, baseline), &label_font, &paint);
+        canvas.draw_str(
+            *opt,
+            (row_left + ROW_PAD_X + 14.0, baseline),
+            &label_font,
+            &paint,
+        );
 
         if let Some(s) = row_layer_handle {
             canvas.restore_to_count(s);

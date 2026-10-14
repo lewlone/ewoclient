@@ -307,7 +307,10 @@ pub fn sync_mods_with_catalog(mods: &mut Vec<ModInfo>) -> bool {
         .iter()
         .filter(|m| m.toggleable)
         .map(|m| {
-            let on = existing.get(m.display_name).copied().unwrap_or(m.default_on);
+            let on = existing
+                .get(m.display_name)
+                .copied()
+                .unwrap_or(m.default_on);
             ModInfo::new(m.display_name, m.version, m.category, on)
         })
         .collect();

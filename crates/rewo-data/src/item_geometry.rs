@@ -119,26 +119,37 @@ pub fn extrude(mask: &SpriteMask, layer: u8) -> Vec<ItemQuad> {
     let mut out = Vec::new();
     // The two full-size faces. `from (0,0,7.5)`, `to (16,16,8.5)`;
     // SOUTH gets UVs (0,0)-(16,16) and NORTH the u-mirrored (16,0)-(0,16).
-    out.push(face_quad([0.0, 0.0], [16.0, 16.0], MAX_Z, [0.0, 0.0, 16.0, 16.0], 3, layer));
-    out.push(face_quad([0.0, 0.0], [16.0, 16.0], MIN_Z, [16.0, 0.0, 0.0, 16.0], 2, layer));
+    out.push(face_quad(
+        [0.0, 0.0],
+        [16.0, 16.0],
+        MAX_Z,
+        [0.0, 0.0, 16.0, 16.0],
+        3,
+        layer,
+    ));
+    out.push(face_quad(
+        [0.0, 0.0],
+        [16.0, 16.0],
+        MIN_Z,
+        [16.0, 0.0, 0.0, 16.0],
+        2,
+        layer,
+    ));
     out.extend(side_faces(mask, layer));
     out
 }
 
 /// A full-size front/back quad at `z`.
-fn face_quad(
-    min: [f32; 2],
-    max: [f32; 2],
-    z: f32,
-    uvs: [f32; 4],
-    dir: u8,
-    layer: u8,
-) -> ItemQuad {
+fn face_quad(min: [f32; 2], max: [f32; 2], z: f32, uvs: [f32; 4], dir: u8, layer: u8) -> ItemQuad {
     let [u0, v0, u1, v1] = uvs;
     // Wound so the quad faces its `dir`; the renderer does not cull, but the
     // winding keeps the two faces distinguishable for the oracle.
     let front = dir == 3;
-    let (a, b) = if front { (min[0], max[0]) } else { (max[0], min[0]) };
+    let (a, b) = if front {
+        (min[0], max[0])
+    } else {
+        (max[0], min[0])
+    };
     // The u order does not follow the winding (the two faces share it).
     let (ua, ub) = (u0, u1);
     ItemQuad {
@@ -182,7 +193,9 @@ fn side_faces(mask: &SpriteMask, layer: u8) -> Vec<ItemQuad> {
                 if !seen.insert((facing, x, y)) {
                     continue;
                 }
-                out.push(side_quad(facing, x as f32, y as f32, x_scale, y_scale, layer));
+                out.push(side_quad(
+                    facing, x as f32, y as f32, x_scale, y_scale, layer,
+                ));
             }
         }
     }

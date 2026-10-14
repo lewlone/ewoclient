@@ -84,7 +84,9 @@ pub(crate) fn split_quads(v: &[MeshVertex], idx: &[u32]) -> Result<Vec<[MeshVert
             ));
         }
     }
-    Ok(v.as_chunks::<4>().0.iter()
+    Ok(v.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2], c[3]])
         .collect())
 }
@@ -122,7 +124,8 @@ pub(crate) fn expand_quad_list(qs: &[[MeshVertex; 4]]) -> Result<Vec<ExpandedFac
         let Some((face, (base, w, h))) = decoded else {
             return Err(first_err.unwrap_or_default());
         };
-        if (w > 1 || h > 1) && !(1..4).all(|i| q[i].light == q[0].light && q[i].color == q[0].color) {
+        if (w > 1 || h > 1) && !(1..4).all(|i| q[i].light == q[0].light && q[i].color == q[0].color)
+        {
             return Err(format!(
                 "face {face} at {base:?}: a {w}x{h} rectangle whose corners differ — a merge must be uniform"
             ));
@@ -288,7 +291,7 @@ pub(crate) fn oracle_biome_context() -> rewo_world::biome::BiomeContext {
         grass_modifier: GrassModifier::None,
         sky_color: None,
         fog_color: None,
-            has_precipitation: true,
+        has_precipitation: true,
         temperature_modifier: Default::default(),
         ambient_sounds: None,
         background_music: None,
@@ -632,7 +635,9 @@ pub(crate) fn fluid_face_counts(v: &[MeshVertex], floor: f32) -> (usize, usize, 
 
 /// Quads whose four vertices all sit on the plane `x`.
 pub(crate) fn quads_on_x_plane(v: &[MeshVertex], x: f32) -> usize {
-    v.as_chunks::<4>().0.iter()
+    v.as_chunks::<4>()
+        .0
+        .iter()
         .filter(|q| q.iter().all(|p| (p.pos[0] - x).abs() < 1e-6))
         .count()
 }
@@ -1248,10 +1253,22 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         .collect();
     let mut boundary_rects = [[(0, 0); 2]; 2];
     for (i, (y, channel, lo_name, hi_name)) in
-        [(66, "block", "unlit", "lit"), (70, "sky", "bright", "dim")].into_iter().enumerate()
+        [(66, "block", "unlit", "lit"), (70, "sky", "bright", "dim")]
+            .into_iter()
+            .enumerate()
     {
-        let lo = oracle_face_at(&exp, 1, [8, y, 11], &format!("{channel}-light plate, {lo_name} half"))?;
-        let hi = oracle_face_at(&exp, 1, [13, y, 12], &format!("{channel}-light plate, {hi_name} half"))?;
+        let lo = oracle_face_at(
+            &exp,
+            1,
+            [8, y, 11],
+            &format!("{channel}-light plate, {lo_name} half"),
+        )?;
+        let hi = oracle_face_at(
+            &exp,
+            1,
+            [13, y, 12],
+            &format!("{channel}-light plate, {hi_name} half"),
+        )?;
         if lo.f.light == hi.f.light {
             return Err(format!(
                 "{channel}-light probe is vacuous: both halves carry light words {:x?} — the poke did not reach the sampled neighbour cells at y={}",
@@ -1261,7 +1278,9 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         }
         let on_plate: Vec<_> = plate_rects
             .iter()
-            .filter(|(base, _, _)| base[1] == y && (8..=15).contains(&base[0]) && (11..=14).contains(&base[2]))
+            .filter(|(base, _, _)| {
+                base[1] == y && (8..=15).contains(&base[0]) && (11..=14).contains(&base[2])
+            })
             .collect();
         let mut largest = [(0, 0); 2];
         for &&(base, w, h) in &on_plate {
@@ -1316,8 +1335,16 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
     // their own constant, vanilla's `ARGB.multiply` (`a * b / 255`).
     let tinted = |gray: u32, rgb: [u8; 3]| pack_color(rgb.map(|t| (gray * t as u32 / 255) as u8));
     let common_gray = (0..=255u32).find(|&g| {
-        spruce.f.color.iter().all(|&c| c == tinted(g, ORACLE_SPRUCE_RGB))
-            && birch.f.color.iter().all(|&c| c == tinted(g, ORACLE_BIRCH_RGB))
+        spruce
+            .f
+            .color
+            .iter()
+            .all(|&c| c == tinted(g, ORACLE_SPRUCE_RGB))
+            && birch
+                .f
+                .color
+                .iter()
+                .all(|&c| c == tinted(g, ORACLE_BIRCH_RGB))
     });
     if common_gray.is_none() {
         return Err(format!(

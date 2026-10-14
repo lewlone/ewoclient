@@ -160,7 +160,12 @@ impl TabKind {
 
     /// The cell's rect relative to the window origin.
     pub fn rect_at(self, index: usize) -> (i32, i32, i32, i32) {
-        (self.x_at(index), self.y_at(index), self.width(), self.height())
+        (
+            self.x_at(index),
+            self.y_at(index),
+            self.width(),
+            self.height(),
+        )
     }
 
     /// `extractIcon`'s per-type icon inset.
@@ -207,7 +212,12 @@ pub enum Cap {
 /// `AdvancementTab.create` — walk the types in declaration order subtracting
 /// capacities until the index fits; `None` past the last (26 tabs).
 pub fn tab_slot_for_index(mut index: usize) -> Option<(TabKind, usize)> {
-    for kind in [TabKind::Above, TabKind::Below, TabKind::Left, TabKind::Right] {
+    for kind in [
+        TabKind::Above,
+        TabKind::Below,
+        TabKind::Left,
+        TabKind::Right,
+    ] {
         if index < kind.max() {
             return Some((kind, index));
         }
@@ -683,8 +693,7 @@ pub fn tooltip_geom(tab: &Tab, window_left: i32, screen_width: i32) -> Option<To
         return None;
     }
     let (sx, sy) = tab.scroll_int();
-    let left_side =
-        window_left + sx + w.x + w.width + 26 >= screen_width;
+    let left_side = window_left + sx + w.x + w.width + 26 >= screen_width;
     let title_bar_height = 9 * w.title_lines.len() as i32 + 9 + 8;
     let title_top = sy + w.y + (26 - title_bar_height) / 2;
     let title_bar_bottom = title_top + title_bar_height;
@@ -831,15 +840,27 @@ mod tests {
         // Tab cell at (0, -28) size 28x32: its TOP edge is y=-28. The strip's
         // hover is STRICT, so x=0 itself is outside.
         assert!(TabKind::Above.is_mouse_over(0, 0, 0, 1.0, -27.5));
-        assert!(!TabKind::Above.is_mouse_over(0, 0, 0, 0.0, -27.5), "left edge excluded");
-        assert!(!TabKind::Above.is_mouse_over(0, 0, 0, 1.0, -28.0), "top edge excluded");
+        assert!(
+            !TabKind::Above.is_mouse_over(0, 0, 0, 0.0, -27.5),
+            "left edge excluded"
+        );
+        assert!(
+            !TabKind::Above.is_mouse_over(0, 0, 0, 1.0, -28.0),
+            "top edge excluded"
+        );
 
         let t = Tab::new(TabKind::Above, 0, &node("r", None, 1.0, 1.0));
         let (sx, sy) = t.scroll_int();
         let w = &t.widgets[0];
         // Widget at floor(28)=28, floor(27)=27; box 26 wide INCLUSIVE.
-        assert!(w.is_mouse_over(sx, sy, sx + 28 + 26, sy + 27 + 26), "+26 included");
-        assert!(!w.is_mouse_over(sx, sy, sx + 28 + 27, sy + 27), "+27 excluded");
+        assert!(
+            w.is_mouse_over(sx, sy, sx + 28 + 26, sy + 27 + 26),
+            "+26 included"
+        );
+        assert!(
+            !w.is_mouse_over(sx, sy, sx + 28 + 27, sy + 27),
+            "+27 excluded"
+        );
     }
 
     #[test]
@@ -947,17 +968,23 @@ mod tests {
         // …but a displayLESS intermediate is skipped entirely.
         let mut s2 = AdvancementsScreen::default();
         s2.add_root(&node("r", None, 0.0, 0.0));
-        s2.add_task("r", &NodeInput {
-            id: "mid".into(),
-            parent: Some("r".into()),
-            display: None,
-            done: false,
-            percent: 0.0,
-        });
+        s2.add_task(
+            "r",
+            &NodeInput {
+                id: "mid".into(),
+                parent: Some("r".into()),
+                display: None,
+                done: false,
+                percent: 0.0,
+            },
+        );
         s2.add_task("r", &node("leaf", Some("mid"), 2.0, 0.0));
         let t2 = &s2.tabs[0];
         let leaf = t2.widgets.iter().find(|w| w.id == "leaf").unwrap();
-        assert_eq!(leaf.parent_widget.map(|p| t2.widgets[p].id.as_str()), Some("r"));
+        assert_eq!(
+            leaf.parent_widget.map(|p| t2.widgets[p].id.as_str()),
+            Some("r")
+        );
     }
 
     #[test]
@@ -1025,7 +1052,11 @@ mod tests {
     #[test]
     fn bar_split_follows_the_three_way_rule() {
         // width 100: raw = floor(p * 100).
-        assert_eq!(bar_widget(1.0, 100).bar_split(100), (50, true, true, true), "complete");
+        assert_eq!(
+            bar_widget(1.0, 100).bar_split(100),
+            (50, true, true, true),
+            "complete"
+        );
         assert_eq!(
             bar_widget(0.0, 100).bar_split(100),
             (50, false, false, false),
@@ -1037,17 +1068,35 @@ mod tests {
             "the normal split"
         );
         // raw 98 is NOT > width-2 (98): still the normal split.
-        assert_eq!(bar_widget(0.98, 100).bar_split(100), (98, true, false, false));
+        assert_eq!(
+            bar_widget(0.98, 100).bar_split(100),
+            (98, true, false, false)
+        );
         // raw 99 > 98: the odd branch — obtained BAR but unobtained ICON.
-        assert_eq!(bar_widget(0.99, 100).bar_split(100), (50, true, true, false));
+        assert_eq!(
+            bar_widget(0.99, 100).bar_split(100),
+            (50, true, true, false)
+        );
     }
 
     #[test]
     fn bar_boundaries_are_exclusive_on_both_sides() {
         // width 10: branches at raw < 2 and raw > 8.
-        assert_eq!(bar_widget(0.19, 10).bar_split(10), (5, false, false, false), "raw=1");
-        assert_eq!(bar_widget(0.20, 10).bar_split(10), (2, true, false, false), "raw=2 normal");
-        assert_eq!(bar_widget(0.89, 10).bar_split(10), (8, true, false, false), "raw=8 normal");
+        assert_eq!(
+            bar_widget(0.19, 10).bar_split(10),
+            (5, false, false, false),
+            "raw=1"
+        );
+        assert_eq!(
+            bar_widget(0.20, 10).bar_split(10),
+            (2, true, false, false),
+            "raw=2 normal"
+        );
+        assert_eq!(
+            bar_widget(0.89, 10).bar_split(10),
+            (8, true, false, false),
+            "raw=8 normal"
+        );
         assert_eq!(
             bar_widget(0.90, 10).bar_split(10),
             (5, true, true, false),

@@ -91,10 +91,17 @@ pub(crate) fn rect_contains(rect: &skia_safe::Rect, p: (f32, f32)) -> bool {
 mod tests {
     use super::*;
 
-    fn size() -> PhysicalSize<u32> { PhysicalSize::new(1000, 600) }
-    fn zone(x: f64, y: f64, s: f64) -> Option<Zone> { hit_test(PhysicalPosition::new(x, y), size(), s) }
+    fn size() -> PhysicalSize<u32> {
+        PhysicalSize::new(1000, 600)
+    }
+    fn zone(x: f64, y: f64, s: f64) -> Option<Zone> {
+        hit_test(PhysicalPosition::new(x, y), size(), s)
+    }
     fn centre(r: &skia_safe::Rect, s: f64) -> (f64, f64) {
-        (((r.left + r.right) * 0.5) as f64 * s, ((r.top + r.bottom) * 0.5) as f64 * s)
+        (
+            ((r.left + r.right) * 0.5) as f64 * s,
+            ((r.top + r.bottom) * 0.5) as f64 * s,
+        )
     }
 
     #[test]
@@ -102,11 +109,19 @@ mod tests {
         use ResizeDirection::*;
         for s in [1.0, 2.0] {
             for (x, y, d) in [
-                (1.0, 1.0, NorthWest), (999.0, 1.0, NorthEast), (1.0, 599.0, SouthWest),
-                (999.0, 599.0, SouthEast), (500.0, 2.0, North), (500.0, 598.0, South),
-                (2.0, 300.0, West), (998.0, 300.0, East),
+                (1.0, 1.0, NorthWest),
+                (999.0, 1.0, NorthEast),
+                (1.0, 599.0, SouthWest),
+                (999.0, 599.0, SouthEast),
+                (500.0, 2.0, North),
+                (500.0, 598.0, South),
+                (2.0, 300.0, West),
+                (998.0, 300.0, East),
             ] {
-                assert!(matches!(zone(x, y, s), Some(Zone::Resize(dir)) if dir == d), "at ({x},{y}) s={s}");
+                assert!(
+                    matches!(zone(x, y, s), Some(Zone::Resize(dir)) if dir == d),
+                    "at ({x},{y}) s={s}"
+                );
             }
         }
     }
@@ -142,8 +157,23 @@ mod tests {
     #[test]
     fn card_helpers_divide_by_scale() {
         let p = PhysicalPosition::new(200.0, 100.0);
-        assert_eq!((cursor_card_local(p, 1.0), cursor_card_local(p, 2.0)), ((200.0, 100.0), (100.0, 50.0)));
-        assert_eq!((card_content_width(size(), 1.0), card_content_width(size(), 2.0)), (1000.0, 500.0));
-        assert_eq!((card_content_height(size(), 1.0), card_content_height(size(), 2.0)), (600.0, 300.0));
+        assert_eq!(
+            (cursor_card_local(p, 1.0), cursor_card_local(p, 2.0)),
+            ((200.0, 100.0), (100.0, 50.0))
+        );
+        assert_eq!(
+            (
+                card_content_width(size(), 1.0),
+                card_content_width(size(), 2.0)
+            ),
+            (1000.0, 500.0)
+        );
+        assert_eq!(
+            (
+                card_content_height(size(), 1.0),
+                card_content_height(size(), 2.0)
+            ),
+            (600.0, 300.0)
+        );
     }
 }

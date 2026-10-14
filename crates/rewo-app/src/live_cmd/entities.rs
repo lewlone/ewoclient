@@ -313,7 +313,11 @@ pub(crate) fn resolve_mob_anim(
     let wanted = wanted_gesture(kind, pose, state);
     // Entering SCARED starts the peek at its held ball pose — vanilla
     // `fastForward(SCARED.animationDuration())` = 2.5 s.
-    let head_start = if wanted == Some(Gesture::ArmadilloScared) { 2.5 } else { 0.0 };
+    let head_start = if wanted == Some(Gesture::ArmadilloScared) {
+        2.5
+    } else {
+        0.0
+    };
     let resolved = gestures.update(id, wanted, now, head_start, tick);
     let gesture = resolved.and_then(|(g, age, start_tick)| match g {
         // Attack stopped the roar durably (until a fresh ROARING transition).
@@ -330,7 +334,11 @@ pub(crate) fn resolve_mob_anim(
 /// Wire state → gesture for the rigged kinds. Pose ordinals are
 /// `Pose.java`'s ids; state ordinals are the `Sniffer.State` /
 /// `ArmadilloState` enum orders (metadata index 17).
-pub(super) fn wanted_gesture(kind: EntityModelKind, pose: u8, state: u8) -> Option<rewo_gpu::mobs::Gesture> {
+pub(super) fn wanted_gesture(
+    kind: EntityModelKind,
+    pose: u8,
+    state: u8,
+) -> Option<rewo_gpu::mobs::Gesture> {
     use rewo_gpu::mobs::Gesture::*;
     Some(match kind {
         EntityModelKind::Warden => match pose {
@@ -873,7 +881,9 @@ pub(crate) fn resolve_labels<'a>(
     label: &rewo_world::label::LabelInputs<'_>,
     name: Option<&'a str>,
 ) -> (Option<&'a str>, Option<rewo_gpu::entities::HealthBar>) {
-    let shown = rewo_world::label::should_show_name(label).then_some(name).flatten();
+    let shown = rewo_world::label::should_show_name(label)
+        .then_some(name)
+        .flatten();
     // `None` without an attribute registry, which is the same fail-closed
     // answer the resolver gives for an unsynced max — a bar is never drawn on
     // a guess.
@@ -934,10 +944,12 @@ pub(crate) fn resolve_allay_dance(
     (kind == EntityModelKind::Allay)
         .then(|| entities.allay_dance_render(id, alpha))
         .flatten()
-        .map(|(is_spinning, spinning_progress)| rewo_gpu::mobs::AllayDance {
-            is_spinning,
-            spinning_progress,
-        })
+        .map(
+            |(is_spinning, spinning_progress)| rewo_gpu::mobs::AllayDance {
+                is_spinning,
+                spinning_progress,
+            },
+        )
 }
 
 /// Resolve an entity's combat-swing render inputs — the production seam shared
@@ -1308,7 +1320,9 @@ pub(crate) fn frame_crosshair_pick(
 /// seam (M22). The two shapes are deliberately identical so this stays
 /// mechanical; `rewo-gpu` keeps no `rewo-data` dependency, the same rule
 /// `SwingKind` / `MobCombat` already follow.
-pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_gpu::held::HeldItems {
+pub(crate) fn to_gpu_held_items(
+    src: &rewo_data::held_items::HeldItems,
+) -> rewo_gpu::held::HeldItems {
     use rewo_gpu::held as g;
     let conv_t = |t: &rewo_data::item_models::DisplayTransform| g::DisplayTransform {
         rotation: t.rotation,
@@ -1326,29 +1340,27 @@ pub(crate) fn to_gpu_held_items(src: &rewo_data::held_items::HeldItems) -> rewo_
             })
             .collect()
     };
-    let conv_models = |m: &std::collections::HashMap<
-        String,
-        rewo_data::held_items::HeldItemModel,
-    >| {
-        m.iter()
-            .map(|(k, m)| {
-                (
-                    k.clone(),
-                    g::HeldItemModel {
-                        quads: conv_quads(&m.quads),
-                        right: conv_t(&m.right),
-                        left: conv_t(&m.left),
-                        ground: conv_t(&m.ground),
-                        gui: conv_t(&m.gui),
-                        first_right: conv_t(&m.first_right),
-                        first_left: conv_t(&m.first_left),
-                        from_block: m.from_block,
-                        gui_quads: m.gui_quads.as_deref().map(conv_quads),
-                    },
-                )
-            })
-            .collect()
-    };
+    let conv_models =
+        |m: &std::collections::HashMap<String, rewo_data::held_items::HeldItemModel>| {
+            m.iter()
+                .map(|(k, m)| {
+                    (
+                        k.clone(),
+                        g::HeldItemModel {
+                            quads: conv_quads(&m.quads),
+                            right: conv_t(&m.right),
+                            left: conv_t(&m.left),
+                            ground: conv_t(&m.ground),
+                            gui: conv_t(&m.gui),
+                            first_right: conv_t(&m.first_right),
+                            first_left: conv_t(&m.first_left),
+                            from_block: m.from_block,
+                            gui_quads: m.gui_quads.as_deref().map(conv_quads),
+                        },
+                    )
+                })
+                .collect()
+        };
     rewo_gpu::held::HeldItems {
         models: conv_models(&src.models),
         block_entities: conv_models(&src.block_entities),
@@ -1619,12 +1631,13 @@ pub(super) fn emissive_state(
     use rewo_world::entities::EntityEvent;
     let ents = &session.world.entities;
     let tendril = match kind {
-        EntityModelKind::Warden => ents
-            .event_start(id, EntityEvent::WardenTendril)
-            .map_or(0.0, |start| {
-                let elapsed = (session.ticks as i64 - start).max(0) as f32;
-                ((WARDEN_TENDRIL_TICKS - elapsed) / WARDEN_TENDRIL_TICKS).clamp(0.0, 1.0)
-            }),
+        EntityModelKind::Warden => {
+            ents.event_start(id, EntityEvent::WardenTendril)
+                .map_or(0.0, |start| {
+                    let elapsed = (session.ticks as i64 - start).max(0) as f32;
+                    ((WARDEN_TENDRIL_TICKS - elapsed) / WARDEN_TENDRIL_TICKS).clamp(0.0, 1.0)
+                })
+        }
         _ => 0.0,
     };
     rewo_gpu::entities::EmissiveState {
@@ -1723,11 +1736,7 @@ pub(crate) fn fish_kind(v: rewo_data::mob_variants::FishVariant) -> EntityModelK
         rewo_data::mob_variants::FishBase::Large => EntityModelKind::TropicalFishLarge,
     }
 }
-pub(crate) fn vanilla_variant(
-    kind: EntityModelKind,
-    id: i32,
-    session: &PlaySession,
-) -> u16 {
+pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySession) -> u16 {
     let Some(v) = session.world.entities.variant(id) else {
         return 0;
     };
@@ -1781,11 +1790,7 @@ pub(crate) fn vanilla_variant(
 /// `Leashable.createQuadLeashOffsets` — the four points are
 /// `(±leftRight·w, height·h, ±frontBack·w + front·w)`, ordered
 /// back-left, front-left(-z), front-right, back-right(+z).
-pub(crate) fn quad_leash_offsets(
-    w: f64,
-    h: f64,
-    shape: [f64; 4],
-) -> [[f64; 3]; 4] {
+pub(crate) fn quad_leash_offsets(w: f64, h: f64, shape: [f64; 4]) -> [[f64; 3]; 4] {
     let (front, front_back, left_right, height) = (shape[0], shape[1], shape[2], shape[3]);
     let fo = front * w;
     let fb = front_back * w;
@@ -1873,7 +1878,10 @@ pub(super) fn collect_leashes(
         let pos = h.render_pos(alpha);
         if etypes.name(h.type_id) == Some("minecraft:leash_knot") {
             // LeashFenceKnotEntity.getRopeHoldPosition = pos + (0, 0.2, 0).
-            Some(([pos[0], pos[1] + 0.2, pos[2]], [pos[0], pos[1] + 0.2, pos[2]]))
+            Some((
+                [pos[0], pos[1] + 0.2, pos[2]],
+                [pos[0], pos[1] + 0.2, pos[2]],
+            ))
         } else {
             let (_, hh) = etypes.dimensions(h.type_id);
             let heye = (hh * 0.85) as f64;
@@ -1897,11 +1905,9 @@ pub(super) fn collect_leashes(
         } else {
             session.world.entities.get(holder)
         };
-        let holder_is_quad_ghast = holder_entity
-            .is_some_and(|h| etypes.name(h.type_id) == Some("minecraft:happy_ghast"));
-        let leashed_shape = etypes
-            .name(e.type_id)
-            .and_then(quad_leash_shape);
+        let holder_is_quad_ghast =
+            holder_entity.is_some_and(|h| etypes.name(h.type_id) == Some("minecraft:happy_ghast"));
+        let leashed_shape = etypes.name(e.type_id).and_then(quad_leash_shape);
         let quad = holder_is_quad_ghast && leashed_shape.is_some();
 
         let Some((end, end_eye)) = hold(holder) else {
@@ -2012,10 +2018,10 @@ pub(super) fn collect_entities<'a>(
     // mode and the viewer's own team. Read once per frame, not per entity.
     let mut viewer = LabelViewer::from_session(session, hud_hidden);
     viewer.crosshair_pick = crosshair_pick;
-                                                  // Headless-only verification knob: `REWO_FORCE_LIMB=swing,amount`
-                                                  // pins every player's walk pose so a still-target PNG can prove the
-                                                  // limb-swing mechanism deterministically (a live walker's phase at
-                                                  // capture time is timing-dependent). One-shot; zero-cost when unset.
+    // Headless-only verification knob: `REWO_FORCE_LIMB=swing,amount`
+    // pins every player's walk pose so a still-target PNG can prove the
+    // limb-swing mechanism deterministically (a live walker's phase at
+    // capture time is timing-dependent). One-shot; zero-cost when unset.
     let force_limb: Option<(f32, f32)> = crate::knobs::var("REWO_FORCE_LIMB").ok().and_then(|s| {
         let mut it = s.split(',');
         Some((
@@ -2188,7 +2194,11 @@ pub(super) fn collect_entities<'a>(
             kind,
             yaw: e.yaw,
             // M24: `state.deathTime = entity.deathTime > 0 ? deathTime + partial : 0`.
-            death_time: session.world.entities.death_state(id).render_death_time(alpha),
+            death_time: session
+                .world
+                .entities
+                .death_state(id)
+                .render_death_time(alpha),
             // M24b: a dropped stack. `Some` makes the renderer draw the item
             // instead of a model — `ItemEntityRenderer` has no body of its own.
             ground_item: ground_stack.and_then(|(i, _, _)| item_names.name(i)),
@@ -2345,16 +2355,13 @@ pub(crate) fn init_entities_maybe_cem(
 /// M175 — the generated isBaby swaps resolved to (kind index, adult key,
 /// baby key), filtered to pairs whose BOTH sheets are in this bake. The GPU
 /// side turns each into a per-slot UV offset.
-pub(super) fn baby_swap_pairs(baked: &assets::BakedAssets) -> Vec<(u16, &'static str, &'static str)> {
+pub(super) fn baby_swap_pairs(
+    baked: &assets::BakedAssets,
+) -> Vec<(u16, &'static str, &'static str)> {
     rewo_data::baby_texture_table::BABY_SWAPS
         .iter()
         .filter_map(|swap| {
-            let baked_keys = || {
-                baked
-                    .mob_textures
-                    .iter()
-                    .any(|t| t.key == swap.baby_key)
-            };
+            let baked_keys = || baked.mob_textures.iter().any(|t| t.key == swap.baby_key);
             let adult_key = adult_key_of(swap)?;
             if !baked_keys() {
                 return None;
@@ -2363,10 +2370,7 @@ pub(super) fn baby_swap_pairs(baked: &assets::BakedAssets) -> Vec<(u16, &'static
             // strip_prefix is the whole lookup); the table stores short
             // names, so re-namespace here — the first cut passed the short
             // name, every row resolved to Capsule, and the swaps were inert.
-            let kind = rewo_gpu::mobs::kind_for_entity_name(&format!(
-                "minecraft:{}",
-                swap.entity
-            ));
+            let kind = rewo_gpu::mobs::kind_for_entity_name(&format!("minecraft:{}", swap.entity));
             Some((kind.index() as u16, adult_key, swap.baby_key))
         })
         .collect()
@@ -2376,7 +2380,10 @@ pub(super) fn baby_swap_pairs(baked: &assets::BakedAssets) -> Vec<(u16, &'static
 /// path is not one Rewo bakes at all (then no model uses it and there is
 /// nothing to offset).
 pub(crate) fn adult_key_of(swap: &rewo_data::baby_texture_table::BabySwap) -> Option<&'static str> {
-    let rel = swap.adult_path.strip_prefix("textures/").unwrap_or(swap.adult_path);
+    let rel = swap
+        .adult_path
+        .strip_prefix("textures/")
+        .unwrap_or(swap.adult_path);
     rewo_data::assets::mob_texture_key(rel)
 }
 
@@ -2440,7 +2447,9 @@ pub(crate) fn entity_textures_with<'a>(
 /// They are appended *after* the base textures in the packer's input, exactly
 /// as a pack's ETF alternates are, so every existing texel address is
 /// unchanged and `mobshot --check` still grades the geometry it graded before.
-pub(super) fn vanilla_variants(baked: &assets::BakedAssets) -> Vec<rewo_gpu::entities::VariantTexEntry<'_>> {
+pub(super) fn vanilla_variants(
+    baked: &assets::BakedAssets,
+) -> Vec<rewo_gpu::entities::VariantTexEntry<'_>> {
     baked
         .mob_variant_textures
         .iter()

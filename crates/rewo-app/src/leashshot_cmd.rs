@@ -62,9 +62,11 @@ pub fn run(args: LeashshotArgs) -> Result<(), String> {
     };
     println!("[leashshot] Vulkan validation: {status}");
     if args.check && want_validation && !gpu.validation_active {
-        return Err("leashshot check: Vulkan validation requested but not active — \
+        return Err(
+            "leashshot check: Vulkan validation requested but not active — \
             install the Vulkan SDK, or pass --no-validation"
-            .into());
+                .into(),
+        );
     }
     run_check(&mut gpu, &baked, &args)
 }
@@ -124,9 +126,9 @@ fn run_check(
 
     // A closure that renders `verts` and reads the frame back.
     let frame = |gpu: &mut Gpu,
-                     off: &mut Offscreen,
-                     verts: &[rewo_gpu::leash::LeashVertex],
-                     dist: f32|
+                 off: &mut Offscreen,
+                 verts: &[rewo_gpu::leash::LeashVertex],
+                 dist: f32|
      -> Result<Vec<u8>, String> {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
         wr.set_camera([0.0, 0.0, -dist]);
@@ -152,16 +154,28 @@ fn run_check(
     dump(&mut off, gpu, "empty");
     let n_empty = rope_pixels(&empty).len();
     if n_empty > 20 {
-        fails.push(format!("g0 empty frame has {n_empty} rope pixels (want ~0)"));
+        fails.push(format!(
+            "g0 empty frame has {n_empty} rope pixels (want ~0)"
+        ));
     }
 
     // -- g1: a level rope draws a thin brown line -------------------------
-    let level = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, LIT, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
+    let level = build_ribbon(
+        [-2.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        false,
+        LIT,
+        LIT,
+        &|b, s| rewo_world::lightmap::sample(b, s, &lm),
+    );
     let f1 = frame(gpu, &mut off, &level, 5.0)?;
     dump(&mut off, gpu, "level");
     let p1 = rope_pixels(&f1);
     if p1.len() < 200 {
-        fails.push(format!("g1 level rope only {} rope pixels (want a line)", p1.len()));
+        fails.push(format!(
+            "g1 level rope only {} rope pixels (want a line)",
+            p1.len()
+        ));
     } else {
         let xs: Vec<u32> = p1.iter().map(|&(x, _, _)| x).collect();
         let ys: Vec<u32> = p1.iter().map(|&(_, y, _)| y).collect();
@@ -178,8 +192,12 @@ fn run_check(
     // A rope to a point below: slack curves under the straight interpolation.
     let start = [-2.0, 1.5, 0.0];
     let end = [2.0, -1.5, 0.0];
-    let slack = build_ribbon(start, end, true, LIT, LIT, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
-    let taut = build_ribbon(start, end, false, LIT, LIT, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
+    let slack = build_ribbon(start, end, true, LIT, LIT, &|b, s| {
+        rewo_world::lightmap::sample(b, s, &lm)
+    });
+    let taut = build_ribbon(start, end, false, LIT, LIT, &|b, s| {
+        rewo_world::lightmap::sample(b, s, &lm)
+    });
     let fs = frame(gpu, &mut off, &slack, 5.0)?;
     dump(&mut off, gpu, "slack");
     let ft = frame(gpu, &mut off, &taut, 5.0)?;
@@ -220,7 +238,14 @@ fn run_check(
     }
 
     // -- g4: light fades along a rope lit at one end ----------------------
-    let faded = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, DARK, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
+    let faded = build_ribbon(
+        [-2.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        false,
+        LIT,
+        DARK,
+        &|b, s| rewo_world::lightmap::sample(b, s, &lm),
+    );
     let f4 = frame(gpu, &mut off, &faded, 5.0)?;
     dump(&mut off, gpu, "faded");
     let p4 = rope_pixels(&f4);
@@ -236,7 +261,13 @@ fn run_check(
             right.push(r);
         }
     }
-    let avg = |v: &[u8]| if v.is_empty() { 0.0 } else { v.iter().map(|&r| r as f32).sum::<f32>() / v.len() as f32 };
+    let avg = |v: &[u8]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().map(|&r| r as f32).sum::<f32>() / v.len() as f32
+        }
+    };
     let (la, ra) = (avg(&left), avg(&right));
     if (la - ra).abs() < 10.0 {
         fails.push(format!(
@@ -256,7 +287,10 @@ fn run_check(
         println!("[leashshot] PASS — {total} witnesses");
         Ok(())
     } else {
-        Err(format!("leashshot: {} of {total} witnesses failed", fails.len()))
+        Err(format!(
+            "leashshot: {} of {total} witnesses failed",
+            fails.len()
+        ))
     }
 }
 

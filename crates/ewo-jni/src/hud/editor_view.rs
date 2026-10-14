@@ -100,7 +100,6 @@ pub(super) fn draw_widget_outline(
             &label_paint,
             0.12,
         );
-
     }
 
     if grip {
@@ -268,7 +267,11 @@ pub(super) fn draw_side_panel(canvas: &Canvas, editor: &Editor, fonts: &FontStor
     // Widget rows.
     let name_font = fonts.jetbrains_mono(12.0);
     let (_, nm) = name_font.metrics();
-    let ncap = if nm.cap_height > 0.0 { nm.cap_height } else { 9.0 };
+    let ncap = if nm.cap_height > 0.0 {
+        nm.cap_height
+    } else {
+        9.0
+    };
     for (i, id) in WidgetId::ALL.into_iter().enumerate() {
         let row = pl.rows[i];
         let wl = editor.layout.get(id);
@@ -285,7 +288,11 @@ pub(super) fn draw_side_panel(canvas: &Canvas, editor: &Editor, fonts: &FontStor
         let mut dot = Paint::default();
         dot.set_anti_alias(true);
         dot.set_color4f(
-            if wl.enabled { rgba(ROSE, 1.0) } else { rgba(MAUVE, 0.4) },
+            if wl.enabled {
+                rgba(ROSE, 1.0)
+            } else {
+                rgba(MAUVE, 0.4)
+            },
             None,
         );
         canvas.draw_circle((row.left + 9.0, mid_y), 3.5, &dot);
@@ -294,7 +301,11 @@ pub(super) fn draw_side_panel(canvas: &Canvas, editor: &Editor, fonts: &FontStor
         let mut name = Paint::default();
         name.set_anti_alias(true);
         name.set_color4f(
-            if wl.enabled { rgba(PEARL, 1.0) } else { rgba(MAUVE, 0.7) },
+            if wl.enabled {
+                rgba(PEARL, 1.0)
+            } else {
+                rgba(MAUVE, 0.7)
+            },
             None,
         );
         draw_tracked_em(
@@ -325,7 +336,14 @@ pub(super) fn draw_panel_toggle(canvas: &Canvas, rect: Rect, on: bool) {
 
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(if on { rgba(ROSE, 0.6) } else { rgba(WINE, 0.85) }, None);
+    bg.set_color4f(
+        if on {
+            rgba(ROSE, 0.6)
+        } else {
+            rgba(WINE, 0.85)
+        },
+        None,
+    );
     canvas.draw_rrect(rrect, &bg);
     if !on {
         let mut border = Paint::default();
@@ -344,20 +362,37 @@ pub(super) fn draw_panel_toggle(canvas: &Canvas, rect: Rect, on: bool) {
     };
     let mut knob = Paint::default();
     knob.set_anti_alias(true);
-    knob.set_color4f(if on { rgba(PEARL, 1.0) } else { rgba(MAUVE, 0.9) }, None);
+    knob.set_color4f(
+        if on {
+            rgba(PEARL, 1.0)
+        } else {
+            rgba(MAUVE, 0.9)
+        },
+        None,
+    );
     canvas.draw_circle((cx, rect.top + r), knob_r, &knob);
 }
 
 /// One cell of the anchor grid — a mini screen-position map: a dot sits where
 /// the cell's anchor would pin the widget. The selected widget's current
 /// anchor cell is highlighted.
-pub(super) fn draw_anchor_cell(canvas: &Canvas, rect: Rect, anchor: Anchor, current: bool, active: bool) {
+pub(super) fn draw_anchor_cell(
+    canvas: &Canvas,
+    rect: Rect,
+    anchor: Anchor,
+    current: bool,
+    active: bool,
+) {
     let rrect = RRect::new_rect_xy(rect, 6.0, 6.0);
 
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
     bg.set_color4f(
-        if current { rgba(ROSE, 0.28) } else { rgba(WINE, 0.7) },
+        if current {
+            rgba(ROSE, 0.28)
+        } else {
+            rgba(WINE, 0.7)
+        },
         None,
     );
     canvas.draw_rrect(rrect, &bg);
@@ -367,7 +402,11 @@ pub(super) fn draw_anchor_cell(canvas: &Canvas, rect: Rect, anchor: Anchor, curr
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
     border.set_color4f(
-        if current { rgba(ROSE, 0.8) } else { rgba(ROSE, 0.15) },
+        if current {
+            rgba(ROSE, 0.8)
+        } else {
+            rgba(ROSE, 0.15)
+        },
         None,
     );
     canvas.draw_rrect(rrect, &border);

@@ -190,10 +190,7 @@ impl PlayerLookAt {
     ///
     /// Vanilla's signature is `@Nullable` but neither branch can return null in
     /// 26.2; `handleLookAt`'s `if (pos != null)` guard is vestigial.
-    pub fn position(
-        &self,
-        resolve: impl FnOnce(i32, Anchor) -> Option<[f64; 3]>,
-    ) -> [f64; 3] {
+    pub fn position(&self, resolve: impl FnOnce(i32, Anchor) -> Option<[f64; 3]>) -> [f64; 3] {
         // `this.toAnchor` is non-null exactly when `atEntity` — [`Self::parse`]
         // sets them together, as vanilla's two constructors do — so the
         // `at_entity` test and the `and_then` are **redundant with each other**
@@ -326,11 +323,7 @@ mod tests {
         b
     }
 
-    fn look_at_body(
-        from: i32,
-        pos: [f64; 3],
-        at_entity: Option<(i32, i32)>,
-    ) -> Vec<u8> {
+    fn look_at_body(from: i32, pos: [f64; 3], at_entity: Option<(i32, i32)>) -> Vec<u8> {
         let mut b = Vec::new();
         b.push(from as u8); // a VarInt of 0 or 1 is one byte
         for v in pos {

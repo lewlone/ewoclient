@@ -37,7 +37,11 @@ fn bright_bbox(surface: &mut Surface, y0: i32, y1: i32) -> (i32, i32) {
         let i = y as usize * stride + x as usize * 4;
         px[i].max(px[i + 1]).max(px[i + 2])
     };
-    let peak = (y0..y1).flat_map(|y| (0..W).map(move |x| (x, y))).map(|(x, y)| lum(x, y)).max().unwrap();
+    let peak = (y0..y1)
+        .flat_map(|y| (0..W).map(move |x| (x, y)))
+        .map(|(x, y)| lum(x, y))
+        .max()
+        .unwrap();
     let min = (peak as f32 * TEXT_SHARE) as u8;
     let (mut bx0, mut by0, mut bx1, mut by1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
     for y in y0..y1 {
@@ -67,7 +71,11 @@ fn fonts() -> Option<FontStore> {
 
 fn about_frame(fonts: &FontStore, anim: f32) -> Surface {
     let mut s = surface();
-    let state = AboutModalState { open: true, anim, ..Default::default() };
+    let state = AboutModalState {
+        open: true,
+        anim,
+        ..Default::default()
+    };
     about_modal::draw_modal(s.canvas(), fonts, W as f32, H as f32, &state);
     s
 }
@@ -93,8 +101,20 @@ fn button_label_keeps_its_size_while_pressed() {
     let bounds = Rect::from_xywh(160.0, 200.0, 320.0, 56.0);
     let frame = |pressing: bool| {
         let mut s = surface();
-        let state = VbtnState { pressing, ..Default::default() };
-        draw_vbtn(s.canvas(), bounds, "Launch the game", &state, 0.0, 1.0, &fonts, true);
+        let state = VbtnState {
+            pressing,
+            ..Default::default()
+        };
+        draw_vbtn(
+            s.canvas(),
+            bounds,
+            "Launch the game",
+            &state,
+            0.0,
+            1.0,
+            &fonts,
+            true,
+        );
         s
     };
     let rest = bright_bbox(&mut frame(false), 0, H);
@@ -114,7 +134,12 @@ fn dropdown_rows_keep_their_size_while_opening() {
     ];
     let frame = |anim: f32| {
         let mut s = surface();
-        let state = VdropState { open: true, anim, time_open: 10.0, ..Default::default() };
+        let state = VdropState {
+            open: true,
+            anim,
+            time_open: 10.0,
+            ..Default::default()
+        };
         draw_vdrop_menu(s.canvas(), menu, false, &opts, &state, &fonts);
         s
     };

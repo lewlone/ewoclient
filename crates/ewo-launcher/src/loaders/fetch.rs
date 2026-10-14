@@ -64,11 +64,14 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
         log::info!("loader: fetching {} from {}", id, url);
         fetch_http(url)?
     } else {
-        return Err(FetchError::Other(format!("unsupported URL scheme: {}", url)));
+        return Err(FetchError::Other(format!(
+            "unsupported URL scheme: {}",
+            url
+        )));
     };
 
-    let mut parsed: LoaderManifest = serde_json::from_str(&body)
-        .map_err(|e| FetchError::Parse(e.to_string()))?;
+    let mut parsed: LoaderManifest =
+        serde_json::from_str(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
     if url.starts_with("https://") {
         reject_local_libraries(&parsed)?;
     } else if let Some(dir) = local_path.as_deref().and_then(Path::parent) {
@@ -92,10 +95,18 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
 /// rejected here too.
 fn reject_local_libraries(manifest: &LoaderManifest) -> Result<(), FetchError> {
     for lib in &manifest.libraries {
-        let artifacts = lib.downloads.artifact.iter().chain(lib.downloads.classifiers.values());
+        let artifacts = lib
+            .downloads
+            .artifact
+            .iter()
+            .chain(lib.downloads.classifiers.values());
         for a in artifacts {
             if !a.url.starts_with("https://") {
-                let kind = if is_relative_url(&a.url) { "relative" } else { "non-https" };
+                let kind = if is_relative_url(&a.url) {
+                    "relative"
+                } else {
+                    "non-https"
+                };
                 return Err(FetchError::Other(format!(
                     "remote loader manifest lists a {} library: {} ({})",
                     kind, lib.name, a.url
@@ -128,9 +139,8 @@ fn resolve_relative_libraries(manifest: &mut LoaderManifest, dir: &Path) -> Resu
                 continue;
             }
             let rel = a.url.replace('\\', "/");
-            let escapes = rel.starts_with('/')
-                || rel.contains(':')
-                || rel.split('/').any(|seg| seg == "..");
+            let escapes =
+                rel.starts_with('/') || rel.contains(':') || rel.split('/').any(|seg| seg == "..");
             if escapes {
                 return Err(FetchError::Other(format!(
                     "loader manifest library {} has a relative url that leaves the manifest folder: {}",
@@ -175,8 +185,7 @@ pub fn cached_path(id: &str) -> Option<PathBuf> {
 }
 
 fn save_cached(id: &str, raw_body: &str) -> Result<(), FetchError> {
-    let path = cached_path(id)
-        .ok_or_else(|| FetchError::Disk("config dir unresolvable".into()))?;
+    let path = cached_path(id).ok_or_else(|| FetchError::Disk("config dir unresolvable".into()))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| FetchError::Disk(format!("mkdir {}: {}", parent.display(), e)))?;
@@ -206,9 +215,15 @@ mod tests {
     fn remote_manifest_may_not_name_local_or_http_libraries() {
         let ok = manifest_with_library_url("https://maven.example/a/b.jar");
         assert!(reject_local_libraries(&ok).is_ok());
-        for bad in ["file:///C:/Windows/evil.jar", "http://maven.example/a/b.jar"] {
+        for bad in [
+            "file:///C:/Windows/evil.jar",
+            "http://maven.example/a/b.jar",
+        ] {
             let m = manifest_with_library_url(bad);
-            assert!(reject_local_libraries(&m).is_err(), "{bad} must be rejected");
+            assert!(
+                reject_local_libraries(&m).is_err(),
+                "{bad} must be rejected"
+            );
         }
     }
 
@@ -247,13 +262,19 @@ mod tests {
             .collect();
         let resolved = crate::util::file_url_to_path(&urls[0]).expect("relative became file://");
         assert_eq!(resolved, dir.join("libs").join("rel.jar"));
-        assert_eq!(urls[1], "file:///elsewhere/abs.jar", "absolute file:// untouched");
+        assert_eq!(
+            urls[1], "file:///elsewhere/abs.jar",
+            "absolute file:// untouched"
+        );
         assert_eq!(urls[2], "https://m.example/web.jar", "https untouched");
 
         // A relative url may not climb out of the manifest folder.
         let evil = json.replace("libs/rel.jar", "../../secret.jar");
         std::fs::write(&manifest, evil).unwrap();
-        assert!(matches!(get_or_fetch("ewo-rel-test", &url), Err(FetchError::Other(_))));
+        assert!(matches!(
+            get_or_fetch("ewo-rel-test", &url),
+            Err(FetchError::Other(_))
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -262,10 +283,7 @@ mod tests {
         // Synthesize a minimal loader manifest, write it to a temp file,
         // then ensure get_or_fetch can read it back via `file://`.
         let mut path = env::temp_dir();
-        path.push(format!(
-            "ewoclient_test_loader_{}.json",
-            std::process::id()
-        ));
+        path.push(format!("ewoclient_test_loader_{}.json", std::process::id()));
         let manifest_json = r#"{
             "id": "ewo-test-0.0.1",
             "inheritsFrom": "1.21.4",
@@ -282,10 +300,7 @@ mod tests {
         // backslashes + prepend an extra `/` to match the
         // `file:///C:/...` shape.
         let url = if cfg!(windows) {
-            format!(
-                "file:///{}",
-                path.to_string_lossy().replace('\\', "/")
-            )
+            format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
         } else {
             format!("file://{}", path.to_string_lossy())
         };

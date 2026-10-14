@@ -385,8 +385,13 @@ pub fn save_keybinds(keybinds: &BTreeMap<String, KeyChord>) {
 /// carries `enabled` bools and one `fov` float.
 pub fn load_modules() -> (Vec<bool>, f32) {
     use ewo_core::modules as catalog;
-    let mut enabled: Vec<bool> = catalog::REGISTRY.iter().map(|m| m.default_enabled).collect();
-    let mut fov = catalog::get("fov").map(|m| m.setting_default(0)).unwrap_or(90.0);
+    let mut enabled: Vec<bool> = catalog::REGISTRY
+        .iter()
+        .map(|m| m.default_enabled)
+        .collect();
+    let mut fov = catalog::get("fov")
+        .map(|m| m.setting_default(0))
+        .unwrap_or(90.0);
 
     let Some(text) = modules_path(&active_name()).and_then(|p| fs::read_to_string(p).ok()) else {
         return (enabled, fov);
@@ -591,7 +596,11 @@ pub fn delete(name: &str) -> Option<(SettingsConfig, Settings)> {
         }
     }
     write_index(&index);
-    log::info!("profile: deleted \"{}\" (active now \"{}\")", name, index.active);
+    log::info!(
+        "profile: deleted \"{}\" (active now \"{}\")",
+        name,
+        index.active
+    );
     Some(load_one(&index.active))
 }
 

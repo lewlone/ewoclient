@@ -58,7 +58,10 @@ impl RuntimeService {
     /// disk simple; could parallelize per-major later).
     pub fn start_fetch(&mut self, major: u32) {
         if self.in_flight.is_some() {
-            log::info!("runtime: already fetching — ignoring request for Java {}", major);
+            log::info!(
+                "runtime: already fetching — ignoring request for Java {}",
+                major
+            );
             return;
         }
         log::info!("runtime: starting Adoptium fetch for Java {}", major);
@@ -182,7 +185,10 @@ fn download_verify(
     }
     // An archive left over from an earlier run is reused only if its sha256
     // still matches; anything else is re-downloaded.
-    if fs::metadata(dest).map(|m| m.len() == info.size).unwrap_or(false) {
+    if fs::metadata(dest)
+        .map(|m| m.len() == info.size)
+        .unwrap_or(false)
+    {
         match sha256_file(dest) {
             Ok(h) if h.eq_ignore_ascii_case(&info.sha256) => {
                 let _ = tx.send(RuntimeEvent::Progress {
@@ -191,7 +197,10 @@ fn download_verify(
                 });
                 return Ok(());
             }
-            _ => log::warn!("runtime: cached {} failed sha256 — re-downloading", dest.display()),
+            _ => log::warn!(
+                "runtime: cached {} failed sha256 — re-downloading",
+                dest.display()
+            ),
         }
     }
     let agent = ureq::AgentBuilder::new()
@@ -205,8 +214,8 @@ fn download_verify(
     let mut reader = resp.into_reader();
     // Stream to `<archive>.part`; only a verified file is renamed into place.
     let part = part_path(dest);
-    let mut file = fs::File::create(&part)
-        .map_err(|e| format!("create {}: {}", part.display(), e))?;
+    let mut file =
+        fs::File::create(&part).map_err(|e| format!("create {}: {}", part.display(), e))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     let mut written: u64 = 0;
@@ -281,8 +290,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 fn extract_archive(archive: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
     if dest.exists() {
-        fs::remove_dir_all(dest)
-            .map_err(|e| format!("rm {}: {}", dest.display(), e))?;
+        fs::remove_dir_all(dest).map_err(|e| format!("rm {}: {}", dest.display(), e))?;
     }
     fs::create_dir_all(dest).map_err(|e| format!("mkdir {}: {}", dest.display(), e))?;
     let f = fs::File::open(archive).map_err(|e| format!("open {}: {}", archive.display(), e))?;
@@ -299,7 +307,9 @@ fn extract_archive(archive: &std::path::Path, dest: &std::path::Path) -> Result<
 fn extract_tar_gz(file: fs::File, dest: &std::path::Path) -> Result<(), String> {
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
-    let entries = archive.entries().map_err(|e| format!("tar entries: {}", e))?;
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("tar entries: {}", e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("tar entry: {}", e))?;
         let raw_path = entry
@@ -349,8 +359,7 @@ fn extract_zip(file: fs::File, dest: &std::path::Path) -> Result<(), String> {
         };
         let out_path = dest.join(rel);
         if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
         }
         let mut out = fs::File::create(&out_path)
             .map_err(|e| format!("create {}: {}", out_path.display(), e))?;

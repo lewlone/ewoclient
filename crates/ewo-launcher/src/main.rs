@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use ewo_core::{Screen, Settings, Theme};
 use ewo_render::backdrop::Backdrop;
+use ewo_render::screens::instances::Instance;
 use ewo_render::screens::settings::{
     AccountHover, AccountOpView, AccountRequest, AccountRowView, AccountView, KeybindRequest,
     KeybindRowView, KeybindView, LinkStatusView, ProfileHover, ProfileRequest, ProfileRowView,
@@ -21,10 +22,9 @@ use ewo_render::screens::settings::{
 };
 use ewo_render::screens::{
     self, AboutModalState, DevOverlayState, DevSlot, FrameStats, FriendRowView, FriendsPrefs,
-    FriendsViewState, InstancePrefs, InstanceSlot, LaunchingState, LauncherLinkModalState,
+    FriendsViewState, InstancePrefs, InstanceSlot, LauncherLinkModalState, LaunchingState,
     LinkRedeemView, ModalSlot, NewInstanceModalState, Prefs, SettingsSlot, SettingsTab,
 };
-use ewo_render::screens::instances::Instance;
 use ewo_render::skia_safe;
 use ewo_render::text::HoverGlowState;
 use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
@@ -84,7 +84,10 @@ fn launch_meta(
     java_major: Option<u32>,
     ram_gb: i32,
 ) -> String {
-    if matches!(inst.loader, ewo_render::screens::instances::InstanceLoader::Native) {
+    if matches!(
+        inst.loader,
+        ewo_render::screens::instances::InstanceLoader::Native
+    ) {
         return inst.version.clone();
     }
     match java_major {
@@ -103,8 +106,8 @@ struct PendingPrepare {
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
 mod auth;
@@ -392,7 +395,11 @@ impl App {
             about_modal: AboutModalState::default(),
             launcher_link_modal: LauncherLinkModalState::default(),
             friends_prefs: FriendsPrefs::default(),
-            dev_overlay: if dev { Some(DevOverlayState::default()) } else { None },
+            dev_overlay: if dev {
+                Some(DevOverlayState::default())
+            } else {
+                None
+            },
             launch_button: VbtnState::default(),
             menu_items: [VbtnState::default(); 4],
             heading_hover: HoverGlowState::default(),
@@ -487,10 +494,9 @@ impl App {
     /// online-name strip when there are names to show. One source for the
     /// hover and click rects so they match what `draw_main_menu` paints.
     fn server_widget_rect(&self, card_w: f32, card_h: f32) -> skia_safe::Rect {
-        let rows = self
-            .social
-            .server_status()
-            .map_or(0, |s| screens::server_widget_name_rows(s.online, s.players.len()));
+        let rows = self.social.server_status().map_or(0, |s| {
+            screens::server_widget_name_rows(s.online, s.players.len())
+        });
         screens::server_widget_bounds(card_w, card_h, rows)
     }
 
@@ -601,9 +607,7 @@ impl App {
             ewo_render::screens::instances::InstanceLoader::Native
         ) {
             let Some(program) = launch::find_rewo_binary() else {
-                log::warn!(
-                    "launch: rewo binary not found next to the launcher — falling back"
-                );
+                log::warn!("launch: rewo binary not found next to the launcher — falling back");
                 return false;
             };
             let mut envs = vec![("REWO_VERSION".to_string(), version_id.to_string())];
@@ -625,11 +629,22 @@ impl App {
                 log::info!("launch: rewo live → {}", addr);
             }
             let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
-            let _ = launch::spawn_native(launch::NativePlan { program, args, envs }, tx);
+            let _ = launch::spawn_native(
+                launch::NativePlan {
+                    program,
+                    args,
+                    envs,
+                },
+                tx,
+            );
             self.launch_rx = Some(rx);
             self.active_launch_instance_id = Some(inst.id.clone());
             self.launching.enter_real(time, inst_name, inst_meta);
-            log::info!("launch: rewo spawned for \"{}\" ({})", inst.name, version_id);
+            log::info!(
+                "launch: rewo spawned for \"{}\" ({})",
+                inst.name,
+                version_id
+            );
             return true;
         }
         let manifest = match self.versions.manifest() {
@@ -642,7 +657,10 @@ impl App {
         let entry = match manifest.entry(version_id) {
             Some(e) => e.clone(),
             None => {
-                log::warn!("launch: {} not in master manifest — falling back", version_id);
+                log::warn!(
+                    "launch: {} not in master manifest — falling back",
+                    version_id
+                );
                 return false;
             }
         };
@@ -762,11 +780,8 @@ impl App {
     /// papered over by the synthetic animation.
     fn fail_launch_visibly(&mut self, msg: &str, time: f32) {
         log::warn!("launch: {}", msg);
-        self.launching.push_real_line(
-            screens::RealSeverity::Warn,
-            format!("[ewo] {}", msg),
-            time,
-        );
+        self.launching
+            .push_real_line(screens::RealSeverity::Warn, format!("[ewo] {}", msg), time);
         self.launching.set_real_exit(Some(127), time);
     }
 
@@ -857,7 +872,10 @@ impl App {
         if launch::prepare::is_loader_error(msg) {
             self.launching.push_real_line(
                 screens::RealSeverity::Warn,
-                format!("[ewo] the EwoLoader could not be loaded, so the game was not started ({})", msg),
+                format!(
+                    "[ewo] the EwoLoader could not be loaded, so the game was not started ({})",
+                    msg
+                ),
                 time,
             );
             self.launching.set_real_exit(Some(127), time);
@@ -865,8 +883,12 @@ impl App {
         }
         match pending.fail {
             PrepareFail::Synthetic => {
-                log::info!("launch: falling back to synthetic for \"{}\"", pending.inst_name);
-                self.launching.enter(time, &pending.inst_name, &pending.inst_meta);
+                log::info!(
+                    "launch: falling back to synthetic for \"{}\"",
+                    pending.inst_name
+                );
+                self.launching
+                    .enter(time, &pending.inst_name, &pending.inst_meta);
             }
             PrepareFail::Error(line) => {
                 self.launching.push_real_line(
@@ -911,11 +933,8 @@ impl App {
         // manifest's major requirement; a stale pin (JRE uninstalled, list
         // reshuffled) falls back to auto with a warning rather than
         // launching something wrong. `detect_jres` is the warmed cache.
-        let pinned = launch::jre::resolve_pin(
-            &launch::detect_jres(),
-            inst.java_runtime,
-            required_major,
-        );
+        let pinned =
+            launch::jre::resolve_pin(&launch::detect_jres(), inst.java_runtime, required_major);
         let jvm_path = match pinned.or_else(|| launch::pick_jre(required_major)) {
             Some(j) => {
                 log::info!(
@@ -930,8 +949,7 @@ impl App {
                 j.path.clone()
             }
             None => {
-                let installed: Vec<u32> =
-                    launch::detect_jres().iter().map(|j| j.major).collect();
+                let installed: Vec<u32> = launch::detect_jres().iter().map(|j| j.major).collect();
                 log::info!(
                     "launch: no Java {} installed (have: {:?}) — fetching from Adoptium",
                     required_major,
@@ -1044,7 +1062,8 @@ impl App {
         );
         log::info!(
             "launch: real JVM spawned for \"{}\" ({})",
-            inst.name, version_id
+            inst.name,
+            version_id
         );
         true
     }
@@ -1085,10 +1104,9 @@ impl App {
                 // The running-game line names the pid, which the pure
                 // decision can't carry; it is appended here.
                 match (input, tracked) {
-                    (SlotInput::Running { .. }, Some(t)) => log::warn!(
-                        "launch: {reason} (pid {}) — ignoring launch request",
-                        t.pid
-                    ),
+                    (SlotInput::Running { .. }, Some(t)) => {
+                        log::warn!("launch: {reason} (pid {}) — ignoring launch request", t.pid)
+                    }
                     _ => log::warn!("launch: {reason} — ignoring launch request"),
                 }
                 return true;
@@ -1155,10 +1173,16 @@ impl App {
         // local offline Rewo test server (127.0.0.1:25599) for eyeballing
         // the Native → `rewo live` path. Join flows (Some) always win.
         let server = server.or_else(|| {
-            std::env::var("EWO_DEV_SERVER").ok().filter(|s| !s.is_empty())
+            std::env::var("EWO_DEV_SERVER")
+                .ok()
+                .filter(|s| !s.is_empty())
         });
         if let Some(addr) = &server {
-            log::info!("launch: server-join → {} (instance \"{}\")", addr, inst_name);
+            log::info!(
+                "launch: server-join → {} (instance \"{}\")",
+                addr,
+                inst_name
+            );
         } else {
             log::info!("vbtn: Launch clicked → launching \"{}\"", inst_name);
         }
@@ -1176,7 +1200,10 @@ impl App {
         // process, and windowless — a live game is left alone).
         let reaped = launch::reaper::reap_recorded_zombies();
         if reaped > 0 {
-            log::info!("launch: reaped {} zombie game process(es) from an earlier run", reaped);
+            log::info!(
+                "launch: reaped {} zombie game process(es) from an earlier run",
+                reaped
+            );
         }
 
         // Real launch fires only when the instance is Ready + the manifest
@@ -1207,11 +1234,17 @@ impl App {
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
         let loader_spec = loader_spec_for(&inst.loader, version_id);
         let Some(manifest) = self.versions.manifest() else {
-            log::warn!("downloads: master manifest not loaded — can't retry {}", version_id);
+            log::warn!(
+                "downloads: master manifest not loaded — can't retry {}",
+                version_id
+            );
             return;
         };
         let Some(entry) = manifest.entry(version_id).cloned() else {
-            log::warn!("downloads: {} not in master manifest — can't retry", version_id);
+            log::warn!(
+                "downloads: {} not in master manifest — can't retry",
+                version_id
+            );
             return;
         };
         self.downloads.start(entry, loader_spec);
@@ -1321,12 +1354,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
@@ -1416,7 +1444,11 @@ impl ApplicationHandler for App {
                 self.on_cursor_moved(&window, position);
             }
 
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.on_left_mouse(event_loop, &window, state);
             }
 
@@ -1626,17 +1658,15 @@ fn drive_settings_sliders(
             }
         }
         let probe = if in_list { mouse } else { (-1.0, -1.0) };
-        prefs.keybind_reset.handle(probe, layout.reset_button, false);
+        prefs
+            .keybind_reset
+            .handle(probe, layout.reset_button, false);
         return false;
     }
     // Modules tab — toggle hover + the FOV slider, within the scrolled list.
     if tab == SettingsTab::Modules {
-        let layout = screens::settings::modules_tab_layout(
-            fonts,
-            card_w,
-            card_h,
-            prefs.settings_scroll,
-        );
+        let layout =
+            screens::settings::modules_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
         let max = (layout.content_h - layout.list_region.height()).max(0.0);
         prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
         let in_list = rect_contains(&layout.list_region, mouse);
@@ -1656,12 +1686,8 @@ fn drive_settings_sliders(
     // PvP-Utils tab — slider drag and release. Press dispatch (toggles + chip
     // cycles + drag start) lives in the MouseInput Pressed branch.
     if tab == SettingsTab::PvpUtils {
-        let layout = screens::settings::pvp_tab_layout(
-            fonts,
-            card_w,
-            card_h,
-            prefs.settings_scroll,
-        );
+        let layout =
+            screens::settings::pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
         let max = (layout.content_h - layout.list_region.height()).max(0.0);
         prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
         if prefs.pvp_drag.is_some() {
@@ -1886,12 +1912,8 @@ fn handle_settings_press(
     // Modules tab — a toggle click flips the module; a slider press is
     // consumed here (the drag itself runs in `drive_settings_sliders`).
     if tab == SettingsTab::Modules {
-        let layout = screens::settings::modules_tab_layout(
-            fonts,
-            card_w,
-            card_h,
-            prefs.settings_scroll,
-        );
+        let layout =
+            screens::settings::modules_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
         if rect_contains(&layout.list_region, mouse) {
             for rl in &layout.rows {
                 if rect_contains(&rl.toggle, mouse) {
@@ -1916,7 +1938,8 @@ fn handle_settings_press(
     // `true` when the press was consumed (toggle/cycle/drag start). The drag
     // itself runs through `drive_settings_sliders`.
     if tab == SettingsTab::PvpUtils {
-        let consumed = screens::settings::pvp_tab_press(prefs, fonts, card_w, card_h, mouse.0, mouse.1);
+        let consumed =
+            screens::settings::pvp_tab_press(prefs, fonts, card_w, card_h, mouse.0, mouse.1);
         return (consumed, false);
     }
 
@@ -1934,8 +1957,7 @@ fn handle_settings_press(
                 let in_head = rect_contains(&head, mouse);
                 if in_menu {
                     if let Some(state) = prefs.dropdown_state_mut(open_slot) {
-                        if let Some(idx) = state.handle_menu(mouse, menu_bounds, opts.len(), true)
-                        {
+                        if let Some(idx) = state.handle_menu(mouse, menu_bounds, opts.len(), true) {
                             log::info!("dropdown {:?} → {} ({})", open_slot, idx, opts[idx]);
                             changed = true;
                         }
@@ -2039,9 +2061,7 @@ fn drive_instance_widgets(
         return false;
     };
     let mut value_changed = false;
-    for (slot, rect) in
-        screens::instances::widget_bounds(card_w, card_h, fonts, prefs, instances)
-    {
+    for (slot, rect) in screens::instances::widget_bounds(card_w, card_h, fonts, prefs, instances) {
         match slot {
             InstanceSlot::Ram => {
                 if prefs.ram.drive(mouse, rect, mouse_down) {
@@ -2062,12 +2082,14 @@ fn drive_instance_widgets(
         // Immutable pass first (the options borrow prefs), then the
         // mutable hover update.
         let prep = screens::instances::dropdown_options(slot, prefs).and_then(|opts| {
-            screens::instances::dropdown_head_for_slot(slot, fonts, card_w, card_h, prefs, instances)
-                .map(|head| {
-                    let (menu_bounds, _flip) =
-                        ewo_render::widgets::menu_layout(head, opts.len(), card_h);
-                    (menu_bounds, opts.len())
-                })
+            screens::instances::dropdown_head_for_slot(
+                slot, fonts, card_w, card_h, prefs, instances,
+            )
+            .map(|head| {
+                let (menu_bounds, _flip) =
+                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                (menu_bounds, opts.len())
+            })
         });
         if let Some((menu_bounds, n)) = prep {
             if let Some(state) = prefs.dropdown_state_mut(slot) {
@@ -2119,7 +2141,10 @@ fn handle_instances_press(
                             "instance dropdown {:?} → {} ({})",
                             open_slot,
                             idx,
-                            prefs.jre_runtime_labels.get(idx).map_or("?", String::as_str)
+                            prefs
+                                .jre_runtime_labels
+                                .get(idx)
+                                .map_or("?", String::as_str)
                         );
                         commit = true;
                     }
@@ -2139,9 +2164,7 @@ fn handle_instances_press(
     }
 
     // (3) Normal widget dispatch.
-    for (slot, rect) in
-        screens::instances::widget_bounds(card_w, card_h, fonts, prefs, instances)
-    {
+    for (slot, rect) in screens::instances::widget_bounds(card_w, card_h, fonts, prefs, instances) {
         if !rect_contains(&rect, mouse) {
             continue;
         }
@@ -2231,11 +2254,10 @@ fn handle_dev_overlay_press(
                     return true;
                 }
             }
-            DevSlot::SimError
-                if overlay.sim_error_btn.handle(mouse, rect, true) => {
-                    overlay.cycle_sim_error();
-                    log::info!("dev: sim_error = {:?}", overlay.sim_error);
-                }
+            DevSlot::SimError if overlay.sim_error_btn.handle(mouse, rect, true) => {
+                overlay.cycle_sim_error();
+                log::info!("dev: sim_error = {:?}", overlay.sim_error);
+            }
             // Sliders consumed by drive_dev_overlay.
             _ => {}
         }
@@ -2335,10 +2357,9 @@ fn handle_modal_press(
             .dropdown_options(open_slot)
             .map(|v| v.iter().map(|s| (*s).to_string()).collect());
         if let Some(opts) = opts {
-            if let Some(head) =
-                screens::new_instance_modal::widget_bounds(card_w, card_h, fonts)
-                    .into_iter()
-                    .find_map(|(s, r)| if s == open_slot { Some(r) } else { None })
+            if let Some(head) = screens::new_instance_modal::widget_bounds(card_w, card_h, fonts)
+                .into_iter()
+                .find_map(|(s, r)| if s == open_slot { Some(r) } else { None })
             {
                 let (menu_bounds, _flip) =
                     ewo_render::widgets::menu_layout(head, opts.len(), card_h);
@@ -2346,13 +2367,8 @@ fn handle_modal_press(
                 let in_head = rect_contains(&head, mouse);
                 if in_menu {
                     if let Some(state) = modal.dropdown_state_mut(open_slot) {
-                        if let Some(idx) =
-                            state.handle_menu(mouse, menu_bounds, opts.len(), true)
-                        {
-                            log::info!(
-                                "modal dropdown {:?} → {} ({})",
-                                open_slot, idx, opts[idx]
-                            );
+                        if let Some(idx) = state.handle_menu(mouse, menu_bounds, opts.len(), true) {
+                            log::info!("modal dropdown {:?} → {} ({})", open_slot, idx, opts[idx]);
                         }
                     }
                     return true;
@@ -2489,9 +2505,7 @@ fn commit_new_instance(
     let seeded_mods = match &loader {
         ewo_render::screens::instances::InstanceLoader::Vanilla
         | ewo_render::screens::instances::InstanceLoader::Native => Vec::new(),
-        ewo_render::screens::instances::InstanceLoader::Ewo { .. } => {
-            bundled::seed_instance_mods()
-        }
+        ewo_render::screens::instances::InstanceLoader::Ewo { .. } => bundled::seed_instance_mods(),
     };
     let mut new_inst = Instance::new(
         form.name.clone(),
@@ -2512,7 +2526,10 @@ fn commit_new_instance(
     new_inst.status = ewo_render::screens::instances::InstanceStatus::Pending;
     log::info!(
         "instances: created \"{}\" ({} · {} · {} GB)",
-        form.name, form.version, form.loader, form.ram
+        form.name,
+        form.version,
+        form.loader,
+        form.ram
     );
     instances.insert(0, new_inst);
     // Selection is by underlying index → newly inserted is at 0; previously
@@ -2583,10 +2600,7 @@ fn update_cursor_icon(
 }
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
 
@@ -2617,10 +2631,15 @@ fn main() {
 fn mint_rewo_env() -> i32 {
     let store = auth::persistence::load_store();
     let Some(account) = store.active_account() else {
-        log::error!("mint-rewo-env: no active account in auth.toml — sign in via the launcher first");
+        log::error!(
+            "mint-rewo-env: no active account in auth.toml — sign in via the launcher first"
+        );
         return 1;
     };
-    log::info!("mint-rewo-env: refreshing Minecraft token for {}…", account.name);
+    log::info!(
+        "mint-rewo-env: refreshing Minecraft token for {}…",
+        account.name
+    );
     match auth::chain::run_chain_from_refresh(&account.ms_refresh_token, |stage| {
         log::info!("mint-rewo-env: {}", stage.label());
     }) {

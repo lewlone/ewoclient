@@ -280,23 +280,47 @@ const ADJACENCY: [AdjacencyInfo; 6] = [
         vert_weights: [
             // vert0Weights
             [
-                SizeInfo::FlipWest, SizeInfo::South, SizeInfo::FlipWest, SizeInfo::FlipSouth,
-                SizeInfo::West, SizeInfo::FlipSouth, SizeInfo::West, SizeInfo::South,
+                SizeInfo::FlipWest,
+                SizeInfo::South,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipSouth,
+                SizeInfo::West,
+                SizeInfo::FlipSouth,
+                SizeInfo::West,
+                SizeInfo::South,
             ],
             // vert1Weights
             [
-                SizeInfo::FlipWest, SizeInfo::North, SizeInfo::FlipWest, SizeInfo::FlipNorth,
-                SizeInfo::West, SizeInfo::FlipNorth, SizeInfo::West, SizeInfo::North,
+                SizeInfo::FlipWest,
+                SizeInfo::North,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipNorth,
+                SizeInfo::West,
+                SizeInfo::FlipNorth,
+                SizeInfo::West,
+                SizeInfo::North,
             ],
             // vert2Weights
             [
-                SizeInfo::FlipEast, SizeInfo::North, SizeInfo::FlipEast, SizeInfo::FlipNorth,
-                SizeInfo::East, SizeInfo::FlipNorth, SizeInfo::East, SizeInfo::North,
+                SizeInfo::FlipEast,
+                SizeInfo::North,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipNorth,
+                SizeInfo::East,
+                SizeInfo::FlipNorth,
+                SizeInfo::East,
+                SizeInfo::North,
             ],
             // vert3Weights
             [
-                SizeInfo::FlipEast, SizeInfo::South, SizeInfo::FlipEast, SizeInfo::FlipSouth,
-                SizeInfo::East, SizeInfo::FlipSouth, SizeInfo::East, SizeInfo::South,
+                SizeInfo::FlipEast,
+                SizeInfo::South,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipSouth,
+                SizeInfo::East,
+                SizeInfo::FlipSouth,
+                SizeInfo::East,
+                SizeInfo::South,
             ],
         ],
     },
@@ -307,23 +331,47 @@ const ADJACENCY: [AdjacencyInfo; 6] = [
         vert_weights: [
             // vert0Weights
             [
-                SizeInfo::East, SizeInfo::South, SizeInfo::East, SizeInfo::FlipSouth,
-                SizeInfo::FlipEast, SizeInfo::FlipSouth, SizeInfo::FlipEast, SizeInfo::South,
+                SizeInfo::East,
+                SizeInfo::South,
+                SizeInfo::East,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipEast,
+                SizeInfo::South,
             ],
             // vert1Weights
             [
-                SizeInfo::East, SizeInfo::North, SizeInfo::East, SizeInfo::FlipNorth,
-                SizeInfo::FlipEast, SizeInfo::FlipNorth, SizeInfo::FlipEast, SizeInfo::North,
+                SizeInfo::East,
+                SizeInfo::North,
+                SizeInfo::East,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipEast,
+                SizeInfo::North,
             ],
             // vert2Weights
             [
-                SizeInfo::West, SizeInfo::North, SizeInfo::West, SizeInfo::FlipNorth,
-                SizeInfo::FlipWest, SizeInfo::FlipNorth, SizeInfo::FlipWest, SizeInfo::North,
+                SizeInfo::West,
+                SizeInfo::North,
+                SizeInfo::West,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipWest,
+                SizeInfo::North,
             ],
             // vert3Weights
             [
-                SizeInfo::West, SizeInfo::South, SizeInfo::West, SizeInfo::FlipSouth,
-                SizeInfo::FlipWest, SizeInfo::FlipSouth, SizeInfo::FlipWest, SizeInfo::South,
+                SizeInfo::West,
+                SizeInfo::South,
+                SizeInfo::West,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipWest,
+                SizeInfo::South,
             ],
         ],
     },
@@ -334,23 +382,47 @@ const ADJACENCY: [AdjacencyInfo; 6] = [
         vert_weights: [
             // vert0Weights
             [
-                SizeInfo::Up, SizeInfo::FlipWest, SizeInfo::Up, SizeInfo::West,
-                SizeInfo::FlipUp, SizeInfo::West, SizeInfo::FlipUp, SizeInfo::FlipWest,
+                SizeInfo::Up,
+                SizeInfo::FlipWest,
+                SizeInfo::Up,
+                SizeInfo::West,
+                SizeInfo::FlipUp,
+                SizeInfo::West,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipWest,
             ],
             // vert1Weights
             [
-                SizeInfo::Up, SizeInfo::FlipEast, SizeInfo::Up, SizeInfo::East,
-                SizeInfo::FlipUp, SizeInfo::East, SizeInfo::FlipUp, SizeInfo::FlipEast,
+                SizeInfo::Up,
+                SizeInfo::FlipEast,
+                SizeInfo::Up,
+                SizeInfo::East,
+                SizeInfo::FlipUp,
+                SizeInfo::East,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipEast,
             ],
             // vert2Weights
             [
-                SizeInfo::Down, SizeInfo::FlipEast, SizeInfo::Down, SizeInfo::East,
-                SizeInfo::FlipDown, SizeInfo::East, SizeInfo::FlipDown, SizeInfo::FlipEast,
+                SizeInfo::Down,
+                SizeInfo::FlipEast,
+                SizeInfo::Down,
+                SizeInfo::East,
+                SizeInfo::FlipDown,
+                SizeInfo::East,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipEast,
             ],
             // vert3Weights
             [
-                SizeInfo::Down, SizeInfo::FlipWest, SizeInfo::Down, SizeInfo::West,
-                SizeInfo::FlipDown, SizeInfo::West, SizeInfo::FlipDown, SizeInfo::FlipWest,
+                SizeInfo::Down,
+                SizeInfo::FlipWest,
+                SizeInfo::Down,
+                SizeInfo::West,
+                SizeInfo::FlipDown,
+                SizeInfo::West,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipWest,
             ],
         ],
     },
@@ -361,23 +433,47 @@ const ADJACENCY: [AdjacencyInfo; 6] = [
         vert_weights: [
             // vert0Weights
             [
-                SizeInfo::Up, SizeInfo::FlipWest, SizeInfo::FlipUp, SizeInfo::FlipWest,
-                SizeInfo::FlipUp, SizeInfo::West, SizeInfo::Up, SizeInfo::West,
+                SizeInfo::Up,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipUp,
+                SizeInfo::West,
+                SizeInfo::Up,
+                SizeInfo::West,
             ],
             // vert1Weights
             [
-                SizeInfo::Down, SizeInfo::FlipWest, SizeInfo::FlipDown, SizeInfo::FlipWest,
-                SizeInfo::FlipDown, SizeInfo::West, SizeInfo::Down, SizeInfo::West,
+                SizeInfo::Down,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipWest,
+                SizeInfo::FlipDown,
+                SizeInfo::West,
+                SizeInfo::Down,
+                SizeInfo::West,
             ],
             // vert2Weights
             [
-                SizeInfo::Down, SizeInfo::FlipEast, SizeInfo::FlipDown, SizeInfo::FlipEast,
-                SizeInfo::FlipDown, SizeInfo::East, SizeInfo::Down, SizeInfo::East,
+                SizeInfo::Down,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipDown,
+                SizeInfo::East,
+                SizeInfo::Down,
+                SizeInfo::East,
             ],
             // vert3Weights
             [
-                SizeInfo::Up, SizeInfo::FlipEast, SizeInfo::FlipUp, SizeInfo::FlipEast,
-                SizeInfo::FlipUp, SizeInfo::East, SizeInfo::Up, SizeInfo::East,
+                SizeInfo::Up,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipEast,
+                SizeInfo::FlipUp,
+                SizeInfo::East,
+                SizeInfo::Up,
+                SizeInfo::East,
             ],
         ],
     },
@@ -388,23 +484,47 @@ const ADJACENCY: [AdjacencyInfo; 6] = [
         vert_weights: [
             // vert0Weights
             [
-                SizeInfo::Up, SizeInfo::South, SizeInfo::Up, SizeInfo::FlipSouth,
-                SizeInfo::FlipUp, SizeInfo::FlipSouth, SizeInfo::FlipUp, SizeInfo::South,
+                SizeInfo::Up,
+                SizeInfo::South,
+                SizeInfo::Up,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipUp,
+                SizeInfo::South,
             ],
             // vert1Weights
             [
-                SizeInfo::Up, SizeInfo::North, SizeInfo::Up, SizeInfo::FlipNorth,
-                SizeInfo::FlipUp, SizeInfo::FlipNorth, SizeInfo::FlipUp, SizeInfo::North,
+                SizeInfo::Up,
+                SizeInfo::North,
+                SizeInfo::Up,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipUp,
+                SizeInfo::North,
             ],
             // vert2Weights
             [
-                SizeInfo::Down, SizeInfo::North, SizeInfo::Down, SizeInfo::FlipNorth,
-                SizeInfo::FlipDown, SizeInfo::FlipNorth, SizeInfo::FlipDown, SizeInfo::North,
+                SizeInfo::Down,
+                SizeInfo::North,
+                SizeInfo::Down,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipNorth,
+                SizeInfo::FlipDown,
+                SizeInfo::North,
             ],
             // vert3Weights
             [
-                SizeInfo::Down, SizeInfo::South, SizeInfo::Down, SizeInfo::FlipSouth,
-                SizeInfo::FlipDown, SizeInfo::FlipSouth, SizeInfo::FlipDown, SizeInfo::South,
+                SizeInfo::Down,
+                SizeInfo::South,
+                SizeInfo::Down,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipSouth,
+                SizeInfo::FlipDown,
+                SizeInfo::South,
             ],
         ],
     },
@@ -415,23 +535,47 @@ const ADJACENCY: [AdjacencyInfo; 6] = [
         vert_weights: [
             // vert0Weights
             [
-                SizeInfo::FlipDown, SizeInfo::South, SizeInfo::FlipDown, SizeInfo::FlipSouth,
-                SizeInfo::Down, SizeInfo::FlipSouth, SizeInfo::Down, SizeInfo::South,
+                SizeInfo::FlipDown,
+                SizeInfo::South,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipSouth,
+                SizeInfo::Down,
+                SizeInfo::FlipSouth,
+                SizeInfo::Down,
+                SizeInfo::South,
             ],
             // vert1Weights
             [
-                SizeInfo::FlipDown, SizeInfo::North, SizeInfo::FlipDown, SizeInfo::FlipNorth,
-                SizeInfo::Down, SizeInfo::FlipNorth, SizeInfo::Down, SizeInfo::North,
+                SizeInfo::FlipDown,
+                SizeInfo::North,
+                SizeInfo::FlipDown,
+                SizeInfo::FlipNorth,
+                SizeInfo::Down,
+                SizeInfo::FlipNorth,
+                SizeInfo::Down,
+                SizeInfo::North,
             ],
             // vert2Weights
             [
-                SizeInfo::FlipUp, SizeInfo::North, SizeInfo::FlipUp, SizeInfo::FlipNorth,
-                SizeInfo::Up, SizeInfo::FlipNorth, SizeInfo::Up, SizeInfo::North,
+                SizeInfo::FlipUp,
+                SizeInfo::North,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipNorth,
+                SizeInfo::Up,
+                SizeInfo::FlipNorth,
+                SizeInfo::Up,
+                SizeInfo::North,
             ],
             // vert3Weights
             [
-                SizeInfo::FlipUp, SizeInfo::South, SizeInfo::FlipUp, SizeInfo::FlipSouth,
-                SizeInfo::Up, SizeInfo::FlipSouth, SizeInfo::Up, SizeInfo::South,
+                SizeInfo::FlipUp,
+                SizeInfo::South,
+                SizeInfo::FlipUp,
+                SizeInfo::FlipSouth,
+                SizeInfo::Up,
+                SizeInfo::FlipSouth,
+                SizeInfo::Up,
+                SizeInfo::South,
             ],
         ],
     },
@@ -454,12 +598,42 @@ const AMBIENT_VERTEX_REMAP: [[usize; 4]; 6] = [
 /// picks the quad's max on that axis, `false` its min. Indexed by
 /// [`Face::index`]; the rows are the module docs' vertex-order table.
 const FACE_INFO: [[[bool; 3]; 4]; 6] = [
-    [[false, false, true], [false, false, false], [true, false, false], [true, false, true]], // DOWN
-    [[false, true, false], [false, true, true], [true, true, true], [true, true, false]],     // UP
-    [[true, true, false], [true, false, false], [false, false, false], [false, true, false]], // NORTH
-    [[false, true, true], [false, false, true], [true, false, true], [true, true, true]],     // SOUTH
-    [[false, true, false], [false, false, false], [false, false, true], [false, true, true]], // WEST
-    [[true, true, true], [true, false, true], [true, false, false], [true, true, false]],     // EAST
+    [
+        [false, false, true],
+        [false, false, false],
+        [true, false, false],
+        [true, false, true],
+    ], // DOWN
+    [
+        [false, true, false],
+        [false, true, true],
+        [true, true, true],
+        [true, true, false],
+    ], // UP
+    [
+        [true, true, false],
+        [true, false, false],
+        [false, false, false],
+        [false, true, false],
+    ], // NORTH
+    [
+        [false, true, true],
+        [false, false, true],
+        [true, false, true],
+        [true, true, true],
+    ], // SOUTH
+    [
+        [false, true, false],
+        [false, false, false],
+        [false, false, true],
+        [false, true, true],
+    ], // WEST
+    [
+        [true, true, true],
+        [true, false, true],
+        [true, false, false],
+        [true, true, false],
+    ], // EAST
 ];
 
 /// Where each `FaceInfo` corner sits in an arbitrarily ordered quad:
@@ -490,7 +664,11 @@ pub fn face_info_order(vertices: &[[f32; 3]; 4], direction: Face) -> [usize; 4] 
             (0..4)
                 .filter(|&i| !used[i])
                 .min_by(|&a, &b| {
-                    let d = |i: usize| (0..3).map(|x| (vertices[i][x] - target[x]).powi(2)).sum::<f32>();
+                    let d = |i: usize| {
+                        (0..3)
+                            .map(|x| (vertices[i][x] - target[x]).powi(2))
+                            .sum::<f32>()
+                    };
                     d(a).total_cmp(&d(b))
                 })
                 .expect("four vertices, four corners")
@@ -585,12 +763,24 @@ fn prepare_quad_shape(
 
     // `faceCubic`: does the quad lie on the outer face of a full block?
     let face_cubic = match direction {
-        Face::Down => min_y == max_y && (min_y < MIN_EPSILON || world.is_collision_shape_full_block(pos)),
-        Face::Up => min_y == max_y && (max_y > MAX_EPSILON || world.is_collision_shape_full_block(pos)),
-        Face::North => min_z == max_z && (min_z < MIN_EPSILON || world.is_collision_shape_full_block(pos)),
-        Face::South => min_z == max_z && (max_z > MAX_EPSILON || world.is_collision_shape_full_block(pos)),
-        Face::West => min_x == max_x && (min_x < MIN_EPSILON || world.is_collision_shape_full_block(pos)),
-        Face::East => min_x == max_x && (max_x > MAX_EPSILON || world.is_collision_shape_full_block(pos)),
+        Face::Down => {
+            min_y == max_y && (min_y < MIN_EPSILON || world.is_collision_shape_full_block(pos))
+        }
+        Face::Up => {
+            min_y == max_y && (max_y > MAX_EPSILON || world.is_collision_shape_full_block(pos))
+        }
+        Face::North => {
+            min_z == max_z && (min_z < MIN_EPSILON || world.is_collision_shape_full_block(pos))
+        }
+        Face::South => {
+            min_z == max_z && (max_z > MAX_EPSILON || world.is_collision_shape_full_block(pos))
+        }
+        Face::West => {
+            min_x == max_x && (min_x < MIN_EPSILON || world.is_collision_shape_full_block(pos))
+        }
+        Face::East => {
+            min_x == max_x && (max_x > MAX_EPSILON || world.is_collision_shape_full_block(pos))
+        }
     };
 
     QuadShape {
@@ -865,7 +1055,14 @@ mod tests {
     /// a quad already in `FaceInfo` order, and it undoes any reordering.
     #[test]
     fn face_info_order_recovers_the_baked_quad_order() {
-        let faces = [Face::Down, Face::Up, Face::North, Face::South, Face::West, Face::East];
+        let faces = [
+            Face::Down,
+            Face::Up,
+            Face::North,
+            Face::South,
+            Face::West,
+            Face::East,
+        ];
         for face in faces {
             // A partial quad, so min and max differ on both in-plane axes.
             let (lo, hi) = (0.25f32, 0.75f32);
@@ -877,7 +1074,11 @@ mod tests {
                         Face::West | Face::East => 0,
                     };
                     if a == plane_axis {
-                        if c[a] { 1.0 } else { 0.0 }
+                        if c[a] {
+                            1.0
+                        } else {
+                            0.0
+                        }
                     } else if c[a] {
                         hi
                     } else {
@@ -885,12 +1086,19 @@ mod tests {
                     }
                 })
             });
-            assert_eq!(face_info_order(&canonical, face), [0, 1, 2, 3], "{face:?} identity");
+            assert_eq!(
+                face_info_order(&canonical, face),
+                [0, 1, 2, 3],
+                "{face:?} identity"
+            );
             for shift in 1..4 {
                 let rotated: [[f32; 3]; 4] = std::array::from_fn(|i| canonical[(i + shift) % 4]);
                 let order = face_info_order(&rotated, face);
                 for k in 0..4 {
-                    assert_eq!(rotated[order[k]], canonical[k], "{face:?} shift {shift} vertex {k}");
+                    assert_eq!(
+                        rotated[order[k]], canonical[k],
+                        "{face:?} shift {shift} vertex {k}"
+                    );
                 }
             }
         }
@@ -973,8 +1181,21 @@ mod tests {
         // are false and `if (!translucent3 && !translucent0)` fires.
         let base_world = || {
             TestWorld::new(SKY_AIR)
-                .at((1, 1, 0), Cell { shade: 0.5, ..SKY_AIR })
-                .at((1, 1, 1), Cell { light: 0x0040_0000, shade: 0.25, ..SKY_AIR })
+                .at(
+                    (1, 1, 0),
+                    Cell {
+                        shade: 0.5,
+                        ..SKY_AIR
+                    },
+                )
+                .at(
+                    (1, 1, 1),
+                    Cell {
+                        light: 0x0040_0000,
+                        shade: 0.25,
+                        ..SKY_AIR
+                    },
+                )
         };
 
         // Both side probes opaque: the diagonal is replaced by `shade0`/`light0`.
@@ -1001,14 +1222,25 @@ mod tests {
         for probe in [(1, 2, 0), (0, 2, 1)] {
             let world = base_world().at(probe, SOLID);
             let quad = quad_ambient_occlusion(&world, (0, 0, 0), Face::Up, UP_FACE);
-            assert_eq!(quad.brightness, [1.0, 1.0, 0.6875, 0.875], "probe {probe:?}");
-            assert_eq!(quad.light_coords, [0x00F0_0000, 0x00F0_0000, 0x00C4_0000, 0x00F0_0000], "probe {probe:?}");
+            assert_eq!(
+                quad.brightness,
+                [1.0, 1.0, 0.6875, 0.875],
+                "probe {probe:?}"
+            );
+            assert_eq!(
+                quad.light_coords,
+                [0x00F0_0000, 0x00F0_0000, 0x00C4_0000, 0x00F0_0000],
+                "probe {probe:?}"
+            );
         }
 
         // Neither probe opaque: same as above, the diagonal is used.
         let quad = quad_ambient_occlusion(&base_world(), (0, 0, 0), Face::Up, UP_FACE);
         assert_eq!(quad.brightness, [1.0, 1.0, 0.6875, 0.875]);
-        assert_eq!(quad.light_coords, [0x00F0_0000, 0x00F0_0000, 0x00C4_0000, 0x00F0_0000]);
+        assert_eq!(
+            quad.light_coords,
+            [0x00F0_0000, 0x00F0_0000, 0x00C4_0000, 0x00F0_0000]
+        );
     }
 
     /// A partial (non-cubic) face runs the weighted branch
@@ -1034,17 +1266,72 @@ mod tests {
         // Shades are picked as exact binary fractions so the expectations are
         // exact; the diagonal lights are `pack(0, 10)` = 10<<20 = 0x00A0_0000.
         let world = TestWorld::new(LIT_AIR)
-            .at((1, 0, 0), Cell { light: 0x0040_0000, shade: 1.0, ..SKY_AIR })
-            .at((-1, 0, 0), Cell { light: 0x0080_0000, shade: 0.5, ..SKY_AIR })
-            .at((0, 0, -1), Cell { light: 0x0020_0000, shade: 1.0, ..SKY_AIR })
-            .at((0, 0, 1), Cell { light: 0x0060_0000, shade: 0.25, ..SKY_AIR })
-            .at((1, 0, -1), Cell { shade: 0.75, ..LIT_AIR })
-            .at((1, 0, 1), Cell { shade: 0.5, ..LIT_AIR })
-            .at((-1, 0, -1), Cell { shade: 1.0, ..LIT_AIR })
-            .at((-1, 0, 1), Cell { shade: 0.25, ..LIT_AIR });
+            .at(
+                (1, 0, 0),
+                Cell {
+                    light: 0x0040_0000,
+                    shade: 1.0,
+                    ..SKY_AIR
+                },
+            )
+            .at(
+                (-1, 0, 0),
+                Cell {
+                    light: 0x0080_0000,
+                    shade: 0.5,
+                    ..SKY_AIR
+                },
+            )
+            .at(
+                (0, 0, -1),
+                Cell {
+                    light: 0x0020_0000,
+                    shade: 1.0,
+                    ..SKY_AIR
+                },
+            )
+            .at(
+                (0, 0, 1),
+                Cell {
+                    light: 0x0060_0000,
+                    shade: 0.25,
+                    ..SKY_AIR
+                },
+            )
+            .at(
+                (1, 0, -1),
+                Cell {
+                    shade: 0.75,
+                    ..LIT_AIR
+                },
+            )
+            .at(
+                (1, 0, 1),
+                Cell {
+                    shade: 0.5,
+                    ..LIT_AIR
+                },
+            )
+            .at(
+                (-1, 0, -1),
+                Cell {
+                    shade: 1.0,
+                    ..LIT_AIR
+                },
+            )
+            .at(
+                (-1, 0, 1),
+                Cell {
+                    shade: 0.25,
+                    ..LIT_AIR
+                },
+            );
 
         let shape = prepare_quad_shape(&world, (0, 0, 0), Face::Up, &vertices);
-        assert!(shape.face_partial && !shape.face_cubic, "must take the weighted branch");
+        assert!(
+            shape.face_partial && !shape.face_cubic,
+            "must take the weighted branch"
+        );
 
         let quad = quad_ambient_occlusion(&world, (0, 0, 0), Face::Up, vertices);
 
@@ -1093,7 +1380,13 @@ mod tests {
         // Up face of the cube at (0,0,0), base = (0,1,0), every position dark
         // except the side sample (1,1,0) = corners[0], which holds the light of
         // a level-14 source: `pack(14, 0)` = 14<<4 = 224 = 0x0000_00E0.
-        let world = TestWorld::new(DARK_AIR).at((1, 1, 0), Cell { light: 0x0000_00E0, ..DARK_AIR });
+        let world = TestWorld::new(DARK_AIR).at(
+            (1, 1, 0),
+            Cell {
+                light: 0x0000_00E0,
+                ..DARK_AIR
+            },
+        );
         let quad = quad_ambient_occlusion(&world, (0, 0, 0), Face::Up, UP_FACE);
 
         // `lightCenter` is the centre block's own `pack(0, 0)`, and so

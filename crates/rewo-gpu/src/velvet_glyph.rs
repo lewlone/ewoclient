@@ -76,27 +76,49 @@ pub struct Axes {
 }
 
 impl Axes {
-    pub const DEFAULT: Axes = Axes { soft: None, wonk: None, opsz: None, wght: None };
+    pub const DEFAULT: Axes = Axes {
+        soft: None,
+        wonk: None,
+        opsz: None,
+        wght: None,
+    };
 
     /// `ewo_render::FontStore::fraunces_axes`'s signature, so a widget
     /// transcription reads the same on both sides.
     pub fn fraunces(soft: f32, wonk: f32, wght: f32, opsz: Option<f32>) -> Self {
-        Axes { soft: Some(soft), wonk: Some(wonk), opsz, wght: Some(wght) }
+        Axes {
+            soft: Some(soft),
+            wonk: Some(wonk),
+            opsz,
+            wght: Some(wght),
+        }
     }
 
     fn settings(self) -> Vec<Setting<f32>> {
         let mut v = Vec::with_capacity(4);
         if let Some(x) = self.soft {
-            v.push(Setting { tag: tag(b"SOFT"), value: x });
+            v.push(Setting {
+                tag: tag(b"SOFT"),
+                value: x,
+            });
         }
         if let Some(x) = self.wonk {
-            v.push(Setting { tag: tag(b"WONK"), value: x });
+            v.push(Setting {
+                tag: tag(b"WONK"),
+                value: x,
+            });
         }
         if let Some(x) = self.opsz {
-            v.push(Setting { tag: tag(b"opsz"), value: x });
+            v.push(Setting {
+                tag: tag(b"opsz"),
+                value: x,
+            });
         }
         if let Some(x) = self.wght {
-            v.push(Setting { tag: tag(b"wght"), value: x });
+            v.push(Setting {
+                tag: tag(b"wght"),
+                value: x,
+            });
         }
         v
     }
@@ -190,8 +212,7 @@ struct Face {
 
 impl Face {
     fn font(&self) -> FontRef<'_> {
-        FontRef::from_index(&self.data, self.offset as usize)
-            .expect("face validated at load")
+        FontRef::from_index(&self.data, self.offset as usize).expect("face validated at load")
     }
 }
 
@@ -211,7 +232,13 @@ struct Shelf {
 
 impl Shelf {
     fn new(width: u32, height: u32) -> Self {
-        Self { width, height, pen_x: 0, pen_y: 0, row_h: 0 }
+        Self {
+            width,
+            height,
+            pen_x: 0,
+            pen_y: 0,
+            row_h: 0,
+        }
     }
 
     /// Reserve `w × h`, returning its origin. `None` when the atlas is full —
@@ -450,7 +477,15 @@ impl GlyphCache {
             at
         };
 
-        let g = Glyph { x, y, w, h, left, top, advance };
+        let g = Glyph {
+            x,
+            y,
+            w,
+            h,
+            left,
+            top,
+            advance,
+        };
         self.glyphs.insert((key, glyph_id, 0), g);
         Some(g)
     }
@@ -764,12 +799,22 @@ impl GlyphCache {
     /// the widget layout uses, and the reason `Metrics::cap_height` exists.
     ///
     /// Returns the laid spans and the total advance.
-    pub fn layout_line(&mut self, spans: &[StyledSpan], origin: (f32, f32)) -> (Vec<LaidSpan>, f32) {
+    pub fn layout_line(
+        &mut self,
+        spans: &[StyledSpan],
+        origin: (f32, f32),
+    ) -> (Vec<LaidSpan>, f32) {
         let (mut pen, baseline) = origin;
         let mut out = Vec::with_capacity(spans.len());
         for span in spans {
             let mut glyphs = Vec::new();
-            let adv = self.layout_run(span.key, &span.text, span.tracking_em, (pen, baseline), &mut glyphs);
+            let adv = self.layout_run(
+                span.key,
+                &span.text,
+                span.tracking_em,
+                (pen, baseline),
+                &mut glyphs,
+            );
             pen += adv;
             out.push(LaidSpan {
                 glyphs,
@@ -822,9 +867,10 @@ mod tests {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets/fonts")
             .join(format!("{stem}.ttf"));
-        Some(std::fs::read(&p).unwrap_or_else(|e| {
-            panic!("committed font {} is unreadable: {e}", p.display())
-        }))
+        Some(
+            std::fs::read(&p)
+                .unwrap_or_else(|e| panic!("committed font {} is unreadable: {e}", p.display())),
+        )
     }
 
     fn loaded() -> Option<GlyphCache> {
@@ -860,7 +906,10 @@ mod tests {
             Family::Fraunces,
             false,
             18.0,
-            Axes { soft: Some(0.0), ..Axes::DEFAULT },
+            Axes {
+                soft: Some(0.0),
+                ..Axes::DEFAULT
+            },
         );
         assert_ne!(
             unset, zeroed,
@@ -1072,7 +1121,10 @@ mod tests {
         let mut out = Vec::new();
         let w = c.layout_run(k, "A A", 0.0, (0.0, 30.0), &mut out);
         assert_eq!(out.len(), 2, "the space must not emit a quad");
-        assert!(out[1].dst_x > out[0].dst_x + 1.0, "the space did not advance");
+        assert!(
+            out[1].dst_x > out[0].dst_x + 1.0,
+            "the space did not advance"
+        );
         assert!(w > 0.0);
     }
 
@@ -1104,8 +1156,14 @@ mod tests {
         let sharp_peak = atlas_peak(sharp, &c);
 
         let blurred = c.glyph_blurred(k, id, 2.5).unwrap();
-        assert!(blurred.w > sharp.w && blurred.h > sharp.h, "box did not grow");
-        assert!(atlas_peak(blurred, &c) < sharp_peak, "blur did not soften the peak");
+        assert!(
+            blurred.w > sharp.w && blurred.h > sharp.h,
+            "box did not grow"
+        );
+        assert!(
+            atlas_peak(blurred, &c) < sharp_peak,
+            "blur did not soften the peak"
+        );
         // A normalized kernel conserves total coverage (edge clamping adds a
         // little). A kernel that failed to normalize would show up here as a
         // wildly wrong sum rather than as a subtly wrong-looking shadow.
@@ -1130,8 +1188,14 @@ mod tests {
         let blur_cx = blurred.left as f32 + blurred.w as f32 / 2.0;
         let sharp_cy = -(sharp.top as f32) + sharp.h as f32 / 2.0;
         let blur_cy = -(blurred.top as f32) + blurred.h as f32 / 2.0;
-        assert!((sharp_cx - blur_cx).abs() < 0.6, "x drift {sharp_cx} vs {blur_cx}");
-        assert!((sharp_cy - blur_cy).abs() < 0.6, "y drift {sharp_cy} vs {blur_cy}");
+        assert!(
+            (sharp_cx - blur_cx).abs() < 0.6,
+            "x drift {sharp_cx} vs {blur_cx}"
+        );
+        assert!(
+            (sharp_cy - blur_cy).abs() < 0.6,
+            "y drift {sharp_cy} vs {blur_cy}"
+        );
     }
 
     #[test]
@@ -1178,8 +1242,12 @@ mod tests {
         let upright = ScalerKey::new(Family::Newsreader, false, 32.0, Axes::DEFAULT);
         let italic = ScalerKey::new(Family::Newsreader, true, 32.0, Axes::DEFAULT);
         assert_ne!(upright, italic, "the italic flag must reach the key");
-        let Some(id_u) = c.glyph_id(Family::Newsreader, false, 'a') else { return };
-        let Some(id_i) = c.glyph_id(Family::Newsreader, true, 'a') else { return };
+        let Some(id_u) = c.glyph_id(Family::Newsreader, false, 'a') else {
+            return;
+        };
+        let Some(id_i) = c.glyph_id(Family::Newsreader, true, 'a') else {
+            return;
+        };
         let gu = c.glyph(upright, id_u).unwrap();
         let gi = c.glyph(italic, id_i).unwrap();
         // Different faces rasterize to different boxes; identical boxes would
@@ -1200,6 +1268,9 @@ mod tests {
             StyledSpan::new("x", small, [1.0; 3]),
             StyledSpan::new("X", big, [1.0; 3]),
         ]);
-        assert!(a_both > a_small, "a mixed row must size to its tallest span");
+        assert!(
+            a_both > a_small,
+            "a mixed row must size to its tallest span"
+        );
     }
 }

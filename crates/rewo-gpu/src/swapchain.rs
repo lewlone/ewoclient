@@ -115,8 +115,10 @@ impl Swapchain {
             // an extension rather than core.
             let unorm = crate::world::unorm_of(format.format).filter(|f| *f != format.format);
             let mutable = gpu.swapchain_mutable && unorm.is_some();
-            let view_formats: Vec<vk::Format> =
-                unorm.into_iter().chain(std::iter::once(format.format)).collect();
+            let view_formats: Vec<vk::Format> = unorm
+                .into_iter()
+                .chain(std::iter::once(format.format))
+                .collect();
             let mut format_list =
                 vk::ImageFormatListCreateInfo::default().view_formats(&view_formats);
             let mut ci = vk::SwapchainCreateInfoKHR::default()

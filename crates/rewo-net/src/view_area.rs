@@ -513,7 +513,10 @@ mod tests {
         assert!(!apply(ViewAreaPacket::Center, &truncated, &mut area));
         assert_eq!(area, before, "x read, z missing — nothing applied");
 
-        for kind in [ViewAreaPacket::ChunkRadius, ViewAreaPacket::SimulationDistance] {
+        for kind in [
+            ViewAreaPacket::ChunkRadius,
+            ViewAreaPacket::SimulationDistance,
+        ] {
             let mut area = before;
             assert!(!apply(kind, &[], &mut area));
             assert_eq!(area, before);
@@ -581,7 +584,11 @@ mod tests {
         // Drive the ids end-to-end so a swapped arm lands in the wrong field
         // rather than merely returning the wrong enum.
         let mut area = ViewArea::default();
-        let one = |v: i32| body(|w| { w.varint(v); });
+        let one = |v: i32| {
+            body(|w| {
+                w.varint(v);
+            })
+        };
         apply(kind_for_id(95, ids).unwrap(), &one(16), &mut area);
         apply(kind_for_id(111, ids).unwrap(), &one(6), &mut area);
         assert_eq!(area.chunk_radius, 16, "id 95 is the render distance");

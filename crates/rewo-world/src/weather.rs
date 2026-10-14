@@ -197,7 +197,9 @@ impl ClimateNoise {
             // Note the mixed precision, which is vanilla's: the noise is
             // sampled from `float` inputs, scaled in double, then the whole
             // adjustment is done in float.
-            let v = (self.temperature.get_value_2d(x as f32 as f64 / 8.0, z as f32 as f64 / 8.0)
+            let v = (self
+                .temperature
+                .get_value_2d(x as f32 as f64 / 8.0, z as f32 as f64 / 8.0)
                 * 8.0) as f32;
             base - (v + y as f32 - snow_level as f32) * 0.05 / 40.0
         } else {
@@ -459,8 +461,7 @@ pub fn rain_column(
         + z.wrapping_mul(13_761))
         & 0xFF;
     let speed = 3.0 + rng.next_float();
-    let texture_offset =
-        -((wrapped_ticks + tick_offset) as f32 + partial_ticks) / 32.0 * speed;
+    let texture_offset = -((wrapped_ticks + tick_offset) as f32 + partial_ticks) / 32.0 * speed;
     ColumnInstance {
         x,
         z,
@@ -1032,7 +1033,9 @@ pub fn alpha_blend(destination: i32, source: i32) -> i32 {
     let a = sa + da * (255 - sa) / 255;
     let ch = |shift: u32| -> u32 {
         let (dc, sc) = ((d >> shift) & 0xFF, (s >> shift) & 0xFF);
-        (sc * sa + dc * da * (255 - sa) / 255).checked_div(a).unwrap_or(0)
+        (sc * sa + dc * da * (255 - sa) / 255)
+            .checked_div(a)
+            .unwrap_or(0)
     };
     ((a << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)) as i32
 }
@@ -1246,7 +1249,10 @@ mod attribute_tests {
         a.apply(1.0, 0.0);
         assert!(a.sky_light_level < 15.0, "{}", a.sky_light_level);
         assert!(a.sky_light_factor < 1.0, "{}", a.sky_light_factor);
-        assert_ne!(a.sky_light_color, -1, "and it tints toward the night colour");
+        assert_ne!(
+            a.sky_light_color, -1,
+            "and it tints toward the night colour"
+        );
     }
 
     /// `ARGB.multiply` treats opaque white as the identity on either side.
@@ -1313,7 +1319,13 @@ impl RainFog {
     /// `deltaTicks` is always a fraction of a tick. A headless renderer that
     /// draws one frame after a long settle would otherwise overshoot past the
     /// target and oscillate.
-    pub fn update(&mut self, rain_level: f32, sky_light: u8, rains_in_biome: bool, delta_ticks: f32) {
+    pub fn update(
+        &mut self,
+        rain_level: f32,
+        sky_light: u8,
+        rains_in_biome: bool,
+        delta_ticks: f32,
+    ) {
         let target = Self::target(rain_level, sky_light, rains_in_biome);
         let factor = (delta_ticks * 0.2).clamp(0.0, 1.0);
         self.multiplier += (target - self.multiplier) * factor;
@@ -1359,9 +1371,17 @@ mod rain_fog_tests {
     #[test]
     fn sky_light_gates_it_off_underground() {
         assert_eq!(RainFog::target(1.0, 0, true), 0.0);
-        assert_eq!(RainFog::target(1.0, 8, true), 0.0, "8 is the floor, exclusive");
+        assert_eq!(
+            RainFog::target(1.0, 8, true),
+            0.0,
+            "8 is the floor, exclusive"
+        );
         assert!(RainFog::target(1.0, 9, true) > 0.0);
-        assert_eq!(RainFog::target(1.0, 15, true), 1.0, "full sky light, full fog");
+        assert_eq!(
+            RainFog::target(1.0, 15, true),
+            1.0,
+            "full sky light, full fog"
+        );
     }
 
     /// A dry biome still thickens, at half strength.

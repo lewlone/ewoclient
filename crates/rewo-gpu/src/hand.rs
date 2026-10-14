@@ -276,7 +276,11 @@ pub fn item_hand(arm: Arm, inverse_height: f32, attack: f32, swings: bool) -> Ma
         arm,
         inverse_height,
         attack,
-        if swings { SwingKind::Whack } else { SwingKind::None },
+        if swings {
+            SwingKind::Whack
+        } else {
+            SwingKind::None
+        },
     )
 }
 
@@ -294,7 +298,6 @@ pub fn item_hand_kind(arm: Arm, inverse_height: f32, attack: f32, kind: SwingKin
         SwingKind::Stab => base * spear_attack(arm, attack),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // The use-driven poses (M38).
@@ -473,7 +476,10 @@ fn block_transform(arm: Arm, is_shield: bool) -> Mat4 {
 /// The trident's wind-up.
 fn trident_transform(arm: Arm) -> Mat4 {
     let invert = arm.invert();
-    translate(invert * -0.5, 0.7, 0.1) * rot_x(-55.0) * rot_y(invert * 35.3) * rot_z(invert * -9.785)
+    translate(invert * -0.5, 0.7, 0.1)
+        * rot_x(-55.0)
+        * rot_y(invert * 35.3)
+        * rot_z(invert * -9.785)
 }
 
 /// The pose for an item being used, composed with the resting transform in
@@ -666,11 +672,7 @@ fn quad_verts(
 ///
 /// Only items glint. The bare arm is skin, and vanilla's `submitArmWithItem`
 /// takes the arm branch before any foil is considered.
-pub fn build_glint_vertices(
-    view: Mat4,
-    hands: &[HandDraw<'_>],
-    millis: f64,
-) -> Vec<GuiItemVertex> {
+pub fn build_glint_vertices(view: Mat4, hands: &[HandDraw<'_>], millis: f64) -> Vec<GuiItemVertex> {
     let offsets = crate::gui_item::glint_offsets(millis, crate::gui_item::GLINT_SPEED);
     let mut out = Vec::new();
     for h in hands {
@@ -678,7 +680,11 @@ pub fn build_glint_vertices(
             continue;
         };
         let left = h.arm == Arm::Left;
-        let display = if left { &model.first_left } else { &model.first_right };
+        let display = if left {
+            &model.first_left
+        } else {
+            &model.first_right
+        };
         let pose = match &h.using {
             Some(u) => match use_hand(h.arm, h.inverse_height, u, 1.0, h.is_shield) {
                 Some(m) => m,
@@ -719,7 +725,11 @@ pub fn build_vertices(
         match h.item {
             Some(model) => {
                 let left = h.arm == Arm::Left;
-                let display = if left { &model.first_left } else { &model.first_right };
+                let display = if left {
+                    &model.first_left
+                } else {
+                    &model.first_right
+                };
                 // A use in progress replaces the swing: vanilla's branch is
                 // `if (isUsingItem() && remaining > 0 && usedHand == hand)`,
                 // and the swing `switch` lives in its `else`.
@@ -749,7 +759,9 @@ pub fn build_vertices(
                             rect[1] + q.uv[i][1] * rect[3],
                         ]
                     });
-                    let shade = crate::gui_item::direction_normal(q.dir).y.mul_add(0.15, 0.85);
+                    let shade = crate::gui_item::direction_normal(q.dir)
+                        .y
+                        .mul_add(0.15, 0.85);
                     quad_verts(&mut out, &m, &pos, &uv, shade);
                 }
             }
@@ -928,7 +940,10 @@ mod tests {
             scale: [1.0; 3],
         };
         let mid = at(display_transform(&t, false), [0.5, 0.5, 0.5]);
-        assert!(mid.length() < 1e-6, "the model's centre lands on the origin");
+        assert!(
+            mid.length() < 1e-6,
+            "the model's centre lands on the origin"
+        );
     }
 
     /// The arm and the item swing on **different constants, not a scaled copy
@@ -984,7 +999,6 @@ mod tests {
         );
     }
 
-
     /// A cube of 0..16 model units, as the block bake produces.
     fn unit_cube_item(first_right: DisplayTransform) -> HeldItemModel {
         // Only the +Z face is needed to bound the shape in x and y; the eight
@@ -992,8 +1006,24 @@ mod tests {
         // from the same eight.
         let mut quads = Vec::new();
         for (dir, verts) in [
-            (5u8, [[16.0, 0.0, 0.0], [16.0, 16.0, 0.0], [16.0, 16.0, 16.0], [16.0, 0.0, 16.0]]),
-            (4u8, [[0.0, 0.0, 0.0], [0.0, 16.0, 0.0], [0.0, 16.0, 16.0], [0.0, 0.0, 16.0]]),
+            (
+                5u8,
+                [
+                    [16.0, 0.0, 0.0],
+                    [16.0, 16.0, 0.0],
+                    [16.0, 16.0, 16.0],
+                    [16.0, 0.0, 16.0],
+                ],
+            ),
+            (
+                4u8,
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.0, 16.0, 0.0],
+                    [0.0, 16.0, 16.0],
+                    [0.0, 0.0, 16.0],
+                ],
+            ),
         ] {
             quads.push(crate::held::HeldQuad {
                 verts,
@@ -1086,7 +1116,10 @@ mod tests {
         let mut bob = ViewBob::default();
         // A flick: the camera jumps 40 degrees, the bob has not moved yet.
         let (sx, _) = bob.sway(40.0, 0.0, 1.0);
-        assert!((sx - 4.0).abs() < 1e-6, "a tenth of the 40 degree lag: {sx}");
+        assert!(
+            (sx - 4.0).abs() < 1e-6,
+            "a tenth of the 40 degree lag: {sx}"
+        );
         // Held still, the bob converges and the sway decays to nothing.
         for _ in 0..40 {
             bob.tick(40.0, 0.0);

@@ -211,10 +211,7 @@ impl ChatEvents {
         Some(Arc::new(ChatEvents {
             click: child.click.clone().or_else(|| parent.click.clone()),
             hover: child.hover.clone().or_else(|| parent.hover.clone()),
-            insertion: child
-                .insertion
-                .clone()
-                .or_else(|| parent.insertion.clone()),
+            insertion: child.insertion.clone().or_else(|| parent.insertion.clone()),
         }))
     }
 }
@@ -246,9 +243,9 @@ pub fn parse_click_event(tag: &Nbt) -> Option<ClickEvent> {
     let action = tag.get("action").and_then(Nbt::as_str)?;
     Some(match action {
         // `ExtraCodecs.UNTRUSTED_URI`.
-        "open_url" => ClickEvent::OpenUrl(parse_untrusted_uri(
-            tag.get("url").and_then(Nbt::as_str)?,
-        )?),
+        "open_url" => {
+            ClickEvent::OpenUrl(parse_untrusted_uri(tag.get("url").and_then(Nbt::as_str)?)?)
+        }
         // `allowFromServer = false`. The action codec's `validate` rejects the
         // dispatch key before any payload is read, so this is not "decoded and
         // then refused" — it never decodes.
@@ -437,11 +434,8 @@ pub fn show_text_lines(
     let HoverEvent::ShowText(value) = style.hover()? else {
         return None;
     };
-    let spans = crate::chat_style::parse_component(
-        value,
-        crate::chat_style::ChatStyle::WHITE,
-        lang,
-    );
+    let spans =
+        crate::chat_style::parse_component(value, crate::chat_style::ChatStyle::WHITE, lang);
     Some(
         crate::string_splitter::split_lines_wrapped(&spans, hover_text_width(gui_width), width_of)
             .into_iter()
@@ -462,7 +456,12 @@ mod tests {
     use super::*;
 
     fn compound(fields: &[(&str, Nbt)]) -> Nbt {
-        Nbt::Compound(fields.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+        Nbt::Compound(
+            fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
     }
 
     fn s(v: &str) -> Nbt {
@@ -511,9 +510,15 @@ mod tests {
             url("https://example.com/a?b=c#d"),
             Some(ClickEvent::OpenUrl("https://example.com/a?b=c#d".into()))
         );
-        assert_eq!(url("http://example.com"), Some(ClickEvent::OpenUrl("http://example.com".into())));
+        assert_eq!(
+            url("http://example.com"),
+            Some(ClickEvent::OpenUrl("http://example.com".into()))
+        );
         // `toLowerCase(Locale.ROOT)` on the scheme, so the case is not a gate.
-        assert_eq!(url("HTTPS://example.com"), Some(ClickEvent::OpenUrl("HTTPS://example.com".into())));
+        assert_eq!(
+            url("HTTPS://example.com"),
+            Some(ClickEvent::OpenUrl("HTTPS://example.com".into()))
+        );
         for bad in [
             "file:///C:/windows/system32",
             "javascript:alert(1)",
@@ -550,20 +555,32 @@ mod tests {
     #[test]
     fn a_command_may_not_carry_a_section_sign_and_a_clipboard_value_may() {
         assert_eq!(
-            click(&[("action", s("run_command")), ("command", s("/say \u{00A7}c"))]),
+            click(&[
+                ("action", s("run_command")),
+                ("command", s("/say \u{00A7}c"))
+            ]),
             None
         );
         assert_eq!(
-            click(&[("action", s("suggest_command")), ("command", s("/say \u{00A7}c"))]),
+            click(&[
+                ("action", s("suggest_command")),
+                ("command", s("/say \u{00A7}c"))
+            ]),
             None
         );
         assert_eq!(
-            click(&[("action", s("run_command")), ("command", s("/say \u{0007}"))]),
+            click(&[
+                ("action", s("run_command")),
+                ("command", s("/say \u{0007}"))
+            ]),
             None
         );
         // Plain `Codec.STRING`.
         assert_eq!(
-            click(&[("action", s("copy_to_clipboard")), ("value", s("\u{00A7}c"))]),
+            click(&[
+                ("action", s("copy_to_clipboard")),
+                ("value", s("\u{00A7}c"))
+            ]),
             Some(ClickEvent::CopyToClipboard("\u{00A7}c".into()))
         );
     }
@@ -600,24 +617,33 @@ mod tests {
         let custom = |id: &str| click(&[("action", s("custom")), ("id", s(id))]);
         assert_eq!(
             custom("minecraft:chat_expand"),
-            Some(ClickEvent::Custom { id: "minecraft:chat_expand".into(), payload: None })
+            Some(ClickEvent::Custom {
+                id: "minecraft:chat_expand".into(),
+                payload: None
+            })
         );
         assert_eq!(
             custom("chat_expand"),
-            Some(ClickEvent::Custom { id: "minecraft:chat_expand".into(), payload: None })
+            Some(ClickEvent::Custom {
+                id: "minecraft:chat_expand".into(),
+                payload: None
+            })
         );
         assert_eq!(
             custom(":chat_expand"),
-            Some(ClickEvent::Custom { id: "minecraft:chat_expand".into(), payload: None })
+            Some(ClickEvent::Custom {
+                id: "minecraft:chat_expand".into(),
+                payload: None
+            })
         );
         // `validNamespaceChar` has no `/`; `validPathChar` does.
-        assert_eq!(
-            custom("a/b:c"),
-            None
-        );
+        assert_eq!(custom("a/b:c"), None);
         assert_eq!(
             custom("ns:a/b"),
-            Some(ClickEvent::Custom { id: "ns:a/b".into(), payload: None })
+            Some(ClickEvent::Custom {
+                id: "ns:a/b".into(),
+                payload: None
+            })
         );
         assert_eq!(custom("Upper:case"), None);
         assert_eq!(custom("..:x"), None);
@@ -631,7 +657,10 @@ mod tests {
                 ("id", s("x:y")),
                 ("payload", Nbt::Int(7)),
             ]),
-            Some(ClickEvent::Custom { id: "x:y".into(), payload: Some(Nbt::Int(7)) })
+            Some(ClickEvent::Custom {
+                id: "x:y".into(),
+                payload: Some(Nbt::Int(7))
+            })
         );
     }
 
@@ -647,7 +676,10 @@ mod tests {
         let item = [("action", s("show_item")), ("id", s("minecraft:stone"))];
         assert_eq!(hover(&item), Some(HoverEvent::ShowItem(compound(&item))));
         let entity = [("action", s("show_entity")), ("id", s("minecraft:pig"))];
-        assert_eq!(hover(&entity), Some(HoverEvent::ShowEntity(compound(&entity))));
+        assert_eq!(
+            hover(&entity),
+            Some(HoverEvent::ShowEntity(compound(&entity)))
+        );
         assert_eq!(hover(&[("action", s("show_achievement"))]), None);
     }
 
@@ -658,7 +690,11 @@ mod tests {
         assert_eq!(parse_events(&compound(&[("text", s("hi"))])), None);
         assert_eq!(
             parse_events(&compound(&[("text", s("hi")), ("insertion", s("Steve"))])),
-            Some(ChatEvents { click: None, hover: None, insertion: Some("Steve".into()) })
+            Some(ChatEvents {
+                click: None,
+                hover: None,
+                insertion: Some("Steve".into())
+            })
         );
     }
 

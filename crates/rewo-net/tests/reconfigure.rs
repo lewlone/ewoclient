@@ -71,8 +71,13 @@ fn start_configuration_round_trips_back_to_play() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let mut s = Server { stream, codec: FrameCodec::default() };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut s = Server {
+            stream,
+            codec: FrameCodec::default(),
+        };
         let ids = sids;
         // Handshake + login.
         s.expect(ids.sb_handshake_intention, "intention");
@@ -91,8 +96,13 @@ fn start_configuration_round_trips_back_to_play() {
         s.send(ka);
         let body = s.expect(ids.sb_play_keep_alive, "play keep_alive reply");
         assert_eq!(PacketReader::new(&body).i64().unwrap(), 7);
-        s.send(PacketWriter::packet(ids.cb_play_start_configuration.unwrap()));
-        s.expect(ids.sb_play_config_acknowledged, "configuration_acknowledged");
+        s.send(PacketWriter::packet(
+            ids.cb_play_start_configuration.unwrap(),
+        ));
+        s.expect(
+            ids.sb_play_config_acknowledged,
+            "configuration_acknowledged",
+        );
 
         // Reconfiguration: a config keep-alive and ping, then finish.
         let mut ka = PacketWriter::packet(ids.cb_config_keep_alive);
@@ -139,7 +149,10 @@ fn start_configuration_round_trips_back_to_play() {
     }
     server.join().expect("server script failed");
     session.pump(PumpBudget::UNLIMITED).unwrap();
-    assert!(saw_config, "the client never entered the configuration sub-state");
+    assert!(
+        saw_config,
+        "the client never entered the configuration sub-state"
+    );
     assert!(!session.is_reconfiguring());
     assert_eq!(session.reconfigurations, 1);
     let _ = ids;
@@ -153,8 +166,13 @@ fn a_bad_frame_disconnects_with_its_reason() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let mut s = Server { stream, codec: FrameCodec::default() };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut s = Server {
+            stream,
+            codec: FrameCodec::default(),
+        };
         let ids = sids;
         s.expect(ids.sb_login_hello, "hello");
         let mut fin = PacketWriter::packet(ids.cb_login_finished);
@@ -202,8 +220,13 @@ fn pump_stops_at_its_packet_budget() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let mut s = Server { stream, codec: FrameCodec::default() };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut s = Server {
+            stream,
+            codec: FrameCodec::default(),
+        };
         let ids = sids;
         s.expect(ids.sb_login_hello, "hello");
         let mut fin = PacketWriter::packet(ids.cb_login_finished);
@@ -234,7 +257,10 @@ fn pump_stops_at_its_packet_budget() {
             rewo_world::biome::Colormaps::neutral(),
         )
         .unwrap();
-    let budget = PumpBudget { max_packets: 3, max_time: Duration::from_secs(1) };
+    let budget = PumpBudget {
+        max_packets: 3,
+        max_time: Duration::from_secs(1),
+    };
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut total = 0;
     while total < 10 && Instant::now() < deadline {
@@ -265,8 +291,13 @@ fn login_answers_queries_and_cookies_and_honours_a_negative_threshold() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let mut s = Server { stream, codec: FrameCodec::default() };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut s = Server {
+            stream,
+            codec: FrameCodec::default(),
+        };
         let ids = sids;
         // Both are id 0 in their states, so read them in order rather than
         // let `expect(hello)` stop at the handshake.
@@ -326,8 +357,13 @@ fn malformed_bodies_are_counted_once_each() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let mut s = Server { stream, codec: FrameCodec::default() };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut s = Server {
+            stream,
+            codec: FrameCodec::default(),
+        };
         let ids = sids;
         s.expect(ids.sb_login_hello, "hello");
         let mut fin = PacketWriter::packet(ids.cb_login_finished);
@@ -347,7 +383,10 @@ fn malformed_bodies_are_counted_once_each() {
             (ids.cb_play_update_mob_effect, vec![]),
             (ids.cb_play_remove_mob_effect, vec![]),
             // health present, food and saturation missing
-            (ids.cb_play_set_health.unwrap(), 5.0f32.to_be_bytes().to_vec()),
+            (
+                ids.cb_play_set_health.unwrap(),
+                5.0f32.to_be_bytes().to_vec(),
+            ),
             // no chunk coords at all
             (ids.cb_play_light_update.unwrap(), vec![]),
             // one entry promised: a ChunkPos, then no biome byte array

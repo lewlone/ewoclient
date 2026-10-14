@@ -186,12 +186,13 @@ fn check_state(c: &mut Checker) {
         .collect();
     c.record(
         "s2.the_extent_collapses_to_static_on_the_last_tick_not_after_it",
-        statuses == vec![
-            BorderStatus::Growing,
-            BorderStatus::Growing,
-            BorderStatus::Growing,
-            BorderStatus::Stationary,
-        ],
+        statuses
+            == vec![
+                BorderStatus::Growing,
+                BorderStatus::Growing,
+                BorderStatus::Growing,
+                BorderStatus::Stationary,
+            ],
         format!(
             "{statuses:?} — three moving ticks for a three-tick lerp, then \
              stationary. An `< 0` guard would give a fourth moving tick with \
@@ -403,7 +404,11 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
         ("set_border_center", ids.cb_play_set_border_center, 88),
         ("set_border_lerp_size", ids.cb_play_set_border_lerp_size, 89),
         ("set_border_size", ids.cb_play_set_border_size, 90),
-        ("set_border_warning_delay", ids.cb_play_set_border_warning_delay, 91),
+        (
+            "set_border_warning_delay",
+            ids.cb_play_set_border_warning_delay,
+            91,
+        ),
         (
             "set_border_warning_distance",
             ids.cb_play_set_border_warning_distance,
@@ -474,7 +479,12 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
     lerp_body.extend_from_slice(&64.0f64.to_be_bytes());
     write_varlong(&mut lerp_body, 0);
     let mut via_lerp = WorldBorder::default();
-    rewo_net::route_border(ids.cb_play_set_border_lerp_size, &lerp_body, ids, &mut via_lerp);
+    rewo_net::route_border(
+        ids.cb_play_set_border_lerp_size,
+        &lerp_body,
+        ids,
+        &mut via_lerp,
+    );
     let mut via_init = WorldBorder::default();
     rewo_net::route_border(
         ids.cb_play_initialize_border,
@@ -507,7 +517,12 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
     let mut distance = Vec::new();
     write_varint(&mut distance, 45);
     rewo_net::route_border(ids.cb_play_set_border_warning_delay, &delay, ids, &mut b);
-    rewo_net::route_border(ids.cb_play_set_border_warning_distance, &distance, ids, &mut b);
+    rewo_net::route_border(
+        ids.cb_play_set_border_warning_distance,
+        &distance,
+        ids,
+        &mut b,
+    );
     c.record(
         "w5.the_two_warning_packets_cross_their_names_onto_the_right_fields",
         b.warning_time() == 123 && b.warning_blocks() == 45,
@@ -743,7 +758,9 @@ fn overlay_offscreen(ring: &OverlayRing) -> OverlayDraw<'_> {
 }
 
 fn max_channel(px: &[u8]) -> u8 {
-    px.as_chunks::<4>().0.iter()
+    px.as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|p| p[..3].iter().copied())
         .max()
         .unwrap_or(0)
@@ -771,7 +788,12 @@ fn mean_lit(px: &[u8], ch: usize) -> f32 {
 }
 
 fn lit_fraction(px: &[u8]) -> f32 {
-    let n = px.as_chunks::<4>().0.iter().filter(|p| p[0] | p[1] | p[2] != 0).count();
+    let n = px
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] | p[1] | p[2] != 0)
+        .count();
     n as f32 / (px.len() / 4) as f32
 }
 
@@ -813,9 +835,9 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
 
         let inner = (|| -> Result<(), String> {
             let shot = |gpu: &mut Gpu,
-                            off: &mut Offscreen,
-                            wr: &mut WorldRenderer,
-                            d: Option<&rewo_gpu::border::BorderDraw>|
+                        off: &mut Offscreen,
+                        wr: &mut WorldRenderer,
+                        d: Option<&rewo_gpu::border::BorderDraw>|
              -> Result<Vec<u8>, String> {
                 wr.set_border(gpu, d)?;
                 off.render(gpu, Some((&mut *wr, vp)), &draw, CLEAR)?;
@@ -886,7 +908,9 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
                     ((tint >> 8) & 0xFF) as f32,
                     (tint & 0xFF) as f32,
                 ];
-                let err = (0..3).map(|i| (got[i] - want[i]).abs()).fold(0f32, f32::max);
+                let err = (0..3)
+                    .map(|i| (got[i] - want[i]).abs())
+                    .fold(0f32, f32::max);
                 ok &= err <= CHANNEL_TOL;
                 detail.push(format!("{name} {got:?} vs {want:?} (err {err:.2})"));
                 if let Some(dir) = &args.out_dir {
@@ -923,7 +947,9 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
                 expected_channel(((STATIONARY_COLOR >> 8) & 0xFF) as u8, 0.5),
                 expected_channel((STATIONARY_COLOR & 0xFF) as u8, 0.5),
             ];
-            let err = (0..3).map(|i| (got[i] - want[i]).abs()).fold(0f32, f32::max);
+            let err = (0..3)
+                .map(|i| (got[i] - want[i]).abs())
+                .fold(0f32, f32::max);
             c.record(
                 "g4.the_extract_alpha_weights_the_wall_through_the_blend",
                 err <= CHANNEL_TOL,
@@ -1050,7 +1076,9 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
             let px = shot(&mut gpu, &mut off, &mut wr3, Some(&discard_draw))?;
             let kept = px.as_chunks::<4>().0.iter().filter(|p| p[3] == 255).count();
             let written: Vec<u8> = px
-                .as_chunks::<4>().0.iter()
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|p| p[3])
                 .filter(|a| *a != 255)
                 .collect();
@@ -1084,7 +1112,9 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
                 let per_ch: Vec<usize> = (0..4)
                     .map(|ch| {
                         again
-                            .as_chunks::<4>().0.iter()
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
                             .zip(empty.as_chunks::<4>().0)
                             .filter(|(a, b)| a[ch] != b[ch])
                             .count()

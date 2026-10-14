@@ -636,7 +636,10 @@ mod tests {
         m.apply_close();
         assert!(m.menu_for(9).is_none());
         m.apply_open_screen(10, 2, "Another".into());
-        assert!(m.menu_for(9).is_none(), "the old id must not match the new menu");
+        assert!(
+            m.menu_for(9).is_none(),
+            "the old id must not match the new menu"
+        );
         assert!(m.menu_for(10).is_some());
     }
 
@@ -705,8 +708,20 @@ mod tests {
         // total == 0 is the one that matters — it is what would divide by
         // zero. current == 0 is redundant (0/total is 0 already) and is
         // transcribed because the source says it.
-        assert_eq!(furnace([0, 0, 100, 0]).open().unwrap().furnace_burn_progress(), 0.0);
-        assert_eq!(furnace([0, 0, 0, 200]).open().unwrap().furnace_burn_progress(), 0.0);
+        assert_eq!(
+            furnace([0, 0, 100, 0])
+                .open()
+                .unwrap()
+                .furnace_burn_progress(),
+            0.0
+        );
+        assert_eq!(
+            furnace([0, 0, 0, 200])
+                .open()
+                .unwrap()
+                .furnace_burn_progress(),
+            0.0
+        );
         let m = furnace([0, 0, 100, 200]);
         assert!((m.open().unwrap().furnace_burn_progress() - 0.5).abs() < 1e-6);
     }
@@ -743,7 +758,10 @@ mod tests {
         // A furnace's slot 0 is the fuel, and the two accessors must not be
         // reading the same constant.
         assert_ne!(BREW_TICKS, FURNACE_LIT_DURATION);
-        assert_eq!(BREW_TICKS, FURNACE_LIT_REMAINING, "the same index, the other meaning");
+        assert_eq!(
+            BREW_TICKS, FURNACE_LIT_REMAINING,
+            "the same index, the other meaning"
+        );
     }
 
     #[test]
@@ -771,10 +789,16 @@ mod tests {
         // non-negative integer, so costs read as clues and clues as levels
         // all render something plausible.
         let m = enchant(&[
-            (0, 5), (1, 12), (2, 30),      // costs
-            (3, 424242i32 as i16),         // seed
-            (4, 7), (5, 8), (6, 9),        // enchant clues
-            (7, 1), (8, 2), (9, 3),        // level clues
+            (0, 5),
+            (1, 12),
+            (2, 30),               // costs
+            (3, 424242i32 as i16), // seed
+            (4, 7),
+            (5, 8),
+            (6, 9), // enchant clues
+            (7, 1),
+            (8, 2),
+            (9, 3), // level clues
         ]);
         let e = m.open().unwrap();
         assert_eq!(e.enchant_costs(), [5, 12, 30]);
@@ -804,7 +828,11 @@ mod tests {
         // `getGoldCount()` reads the COUNT of the stack in menu slot 1, so the
         // affordability test's two halves arrive on two different packets.
         let mut m = enchant(&[(0, 5)]);
-        assert_eq!(m.open().unwrap().enchant_lapis(), 0, "an empty slot is zero");
+        assert_eq!(
+            m.open().unwrap().enchant_lapis(),
+            0,
+            "an empty slot is zero"
+        );
         let inv = m.menu_for(6).unwrap();
         let mut content = vec![None; inv.slot_count()];
         content[ENCHANT_LAPIS_SLOT] = Some(crate::inventory::ItemSlot {
@@ -878,7 +906,10 @@ mod tests {
         assert_eq!(b.beacon_levels(), 3);
         assert_eq!(b.beacon_primary(), Some(4), "encoded 5 is id 4");
         assert_eq!(b.beacon_secondary(), None, "0 is no secondary");
-        assert!(!b.beacon_has_payment(), "the payment slot is a SLOT, not data");
+        assert!(
+            !b.beacon_has_payment(),
+            "the payment slot is a SLOT, not data"
+        );
     }
 
     #[test]
@@ -1000,7 +1031,10 @@ mod m93h_crafter {
         // ...and no other menu has toggles, however like a crafter it looks.
         // 12 is `crafting`, which also has a 3x3 grid at slots 1..=9.
         for other in [0, 2, 12, 14, 18, 23] {
-            assert!(!is_crafter_grid_slot(other, 0), "menu {other} has no toggles");
+            assert!(
+                !is_crafter_grid_slot(other, 0),
+                "menu {other} has no toggles"
+            );
         }
     }
 
@@ -1111,8 +1145,7 @@ mod m93k_tooltip {
             for occupied in [false, true] {
                 for spectator in [false, true] {
                     for carried_empty in [false, true] {
-                        let vanilla_hint =
-                            !disabled && carried_empty && !occupied && !spectator;
+                        let vanilla_hint = !disabled && carried_empty && !occupied && !spectator;
                         let would_disable = crafter_toggle(
                             PICKUP,
                             disabled,

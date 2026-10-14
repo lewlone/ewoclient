@@ -1894,10 +1894,7 @@ impl WorldRenderer {
 
     /// This frame's preview: the model to pose, the matrix that places it, and
     /// the window it is clipped to. `None` closes it.
-    pub fn set_preview(
-        &mut self,
-        draw: Option<(&EntityDraw<'_>, [[f32; 4]; 4], vk::Rect2D)>,
-    ) {
+    pub fn set_preview(&mut self, draw: Option<(&EntityDraw<'_>, [[f32; 4]; 4], vk::Rect2D)>) {
         match (draw, self.preview.as_mut()) {
             (Some((d, vp, rect)), Some(pass)) => {
                 // The camera basis only orients billboards — nametags — and the
@@ -1949,7 +1946,10 @@ impl WorldRenderer {
     /// what it *should* draw answers from the model, and the question is
     /// whether the windowed frame loop reached the builder at all.
     pub fn container_panel_overlays(&self) -> usize {
-        self.gui.container_panel.as_ref().map_or(0, |p| p.overlays.len())
+        self.gui
+            .container_panel
+            .as_ref()
+            .map_or(0, |p| p.overlays.len())
     }
 
     /// How many quads this frame's RECIPE BOOK carries — its panel plus its
@@ -1960,7 +1960,8 @@ impl WorldRenderer {
     /// and the question is whether the windowed frame loop reached the book's
     /// builder at all. That is the M86 gap, one feature over.
     pub fn container_panel_book_quads(&self) -> usize {
-        self.gui.recipe_book
+        self.gui
+            .recipe_book
             .as_ref()
             .map_or(0, |b| b.blits.len() + b.overlays.len())
     }
@@ -2798,7 +2799,11 @@ impl WorldRenderer {
     /// Reserve `need` bytes of staging in this frame's open upload batch,
     /// opening one if there is none or it is full. Returns the slot, the byte
     /// offset to write at, and the recording command buffer.
-    fn stage(&mut self, gpu: &mut Gpu, need: u64) -> Result<(usize, u64, vk::CommandBuffer), String> {
+    fn stage(
+        &mut self,
+        gpu: &mut Gpu,
+        need: u64,
+    ) -> Result<(usize, u64, vk::CommandBuffer), String> {
         // `bufferOffset` of a buffer→image copy must be a multiple of 4; 16
         // keeps every staged span aligned for either copy kind.
         let need_aligned = need.div_ceil(16) * 16;
@@ -3205,7 +3210,8 @@ impl WorldRenderer {
                 // the End has none.
                 if let (Some(celestial), Some(flash)) = (&self.celestial, self.end_flash) {
                     if flash.0 > 1.0e-5 {
-                        celestial.draw_end_flash(gpu, cb, sky_vp, extent, flash.0, flash.1, flash.2);
+                        celestial
+                            .draw_end_flash(gpu, cb, sky_vp, extent, flash.0, flash.1, flash.2);
                     }
                 }
             }
@@ -3278,14 +3284,26 @@ impl WorldRenderer {
         // terrain occludes them, before weather so rain layers over smoke.
         if let Some(pass) = &self.particles {
             let (light, sky_col) = self.lightmap.push_words();
-            pass.draw(gpu, cb, view_proj, (light, sky_col, self.lightmap.extra_words()), extent);
+            pass.draw(
+                gpu,
+                cb,
+                view_proj,
+                (light, sky_col, self.lightmap.extra_words()),
+                extent,
+            );
         }
         // Rain and snow come after everything solid and translucent, blended
         // and depth-tested but not depth-writing — vanilla's
         // `WEATHER_NO_DEPTH_WRITE` branch.
         if let Some(pass) = &self.weather {
             let (light, sky_col) = self.lightmap.push_words();
-            pass.draw(gpu, cb, view_proj, (light, sky_col, self.lightmap.extra_words()), extent);
+            pass.draw(
+                gpu,
+                cb,
+                view_proj,
+                (light, sky_col, self.lightmap.extra_words()),
+                extent,
+            );
         }
         // The world border (M80) draws in vanilla's `weather` frame-graph pass,
         // immediately after the rain and snow — and unlike them it *writes*
@@ -3303,11 +3321,7 @@ impl WorldRenderer {
         // drawn in view space at a fraction of a block, well inside anything
         // the world put there.
         if let (Some(pass), Some(vp)) = (&self.hand, self.gui.hand_vp) {
-            clear_depth_rect(
-                gpu,
-                cb,
-                vk::Rect2D::default().extent(extent),
-            );
+            clear_depth_rect(gpu, cb, vk::Rect2D::default().extent(extent));
             pass.draw(gpu, cb, vp, extent);
             self.in_gamma_space(gpu, cb, extent, || pass.draw_glint(gpu, cb, vp, extent));
         }
@@ -3394,7 +3408,8 @@ impl WorldRenderer {
         if let Some(text) = self.text.as_mut() {
             if !self.gui.text_lines.is_empty() {
                 let lines: Vec<TextLine> = self
-                    .gui.text_lines
+                    .gui
+                    .text_lines
                     .iter()
                     .map(|l| TextLine {
                         x: l.x,
@@ -3416,7 +3431,8 @@ impl WorldRenderer {
         if !self.gui.velvet_runs.is_empty() {
             if let Some(mut vt) = self.velvet_text.take() {
                 let runs: Vec<crate::velvet_text::Run> = self
-                    .gui.velvet_runs
+                    .gui
+                    .velvet_runs
                     .iter()
                     .map(|r| crate::velvet_text::Run {
                         glyphs: &r.glyphs,
@@ -3777,7 +3793,8 @@ impl WorldRenderer {
             );
             gpu.device.cmd_pipeline_barrier2(
                 cb,
-                &vk::DependencyInfo::default().buffer_memory_barriers(std::slice::from_ref(&before)),
+                &vk::DependencyInfo::default()
+                    .buffer_memory_barriers(std::slice::from_ref(&before)),
             );
             let after = vk::MemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
@@ -3905,11 +3922,7 @@ impl WorldRenderer {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in [
-                self.vbuf,
-                self.ibuf,
-                self.count_readback,
-            ] {
+            for b in [self.vbuf, self.ibuf, self.count_readback] {
                 device.destroy_buffer(b, None);
             }
         }
@@ -3959,13 +3972,10 @@ fn write_lightmap_extra(alloc: &mut Option<Allocation>, state: &WorldLightmapSta
         ambient: state.extra_words(),
         env_fog: state.env_fog_words(),
     };
-    let slice = alloc
-        .as_mut()
-        .and_then(|a| a.mapped_slice_mut())
-        .expect(
-            "LightmapExtra slot has no host mapping — WorldRenderer::new establishes one for \
+    let slice = alloc.as_mut().and_then(|a| a.mapped_slice_mut()).expect(
+        "LightmapExtra slot has no host mapping — WorldRenderer::new establishes one for \
              every slot, so this is a draw recorded after destroy()/take_allocations()",
-        );
+    );
     let bytes = bytemuck::bytes_of(&block);
     slice[..bytes.len()].copy_from_slice(bytes);
 }
@@ -5018,7 +5028,11 @@ mod tests {
         s.sky_factor = 0.24;
         s.sky_color = [0.1, 0.2, 0.3];
         assert_eq!(s.sky_factor, 0.24);
-        assert_eq!(s.ambient_color, [0.0, 0.0, 0.0], "set_lightmap must not touch ambient");
+        assert_eq!(
+            s.ambient_color,
+            [0.0, 0.0, 0.0],
+            "set_lightmap must not touch ambient"
+        );
         assert_eq!(s.sky_color, [0.1, 0.2, 0.3]);
         assert_eq!(s.brightness_factor, 0.5);
         assert_eq!(s.darkness_scale, 0.45);

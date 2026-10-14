@@ -593,9 +593,12 @@ impl SuggestionsList {
         if current < first {
             self.offset = clamp_i32(current, 0, max_offset).max(0) as usize;
         } else if current > last {
-            self.offset =
-                clamp_i32(current + cfg.line_start_offset - limit as i32, 0, max_offset).max(0)
-                    as usize;
+            self.offset = clamp_i32(
+                current + cfg.line_start_offset - limit as i32,
+                0,
+                max_offset,
+            )
+            .max(0) as usize;
         }
     }
 
@@ -838,10 +841,7 @@ mod tests {
         let range = StringRange::between(start, end);
         Suggestions {
             range,
-            list: texts
-                .iter()
-                .map(|t| Suggestion::new(range, *t))
-                .collect(),
+            list: texts.iter().map(|t| Suggestion::new(range, *t)).collect(),
         }
     }
 

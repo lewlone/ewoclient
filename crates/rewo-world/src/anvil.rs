@@ -185,7 +185,10 @@ mod tests {
     fn an_editable_field_swallows_every_key_the_screen_would_have_used() {
         // The surprising half, and the one a transcription inverts: `super` is
         // reached only when the box did NOT handle the key AND could not have.
-        assert!(key_consumed(false, true), "unhandled but consumable — swallowed");
+        assert!(
+            key_consumed(false, true),
+            "unhandled but consumable — swallowed"
+        );
         assert!(key_consumed(true, true));
         assert!(key_consumed(true, false), "handled by an unfocusable box");
         // The ONLY path to the screen.
@@ -219,7 +222,11 @@ mod tests {
         assert!(validate_name(&ok).is_some());
 
         let too_long: String = std::iter::repeat_n('\u{1F600}', 26).collect();
-        assert_eq!(too_long.chars().count(), 26, "a char count would allow this");
+        assert_eq!(
+            too_long.chars().count(),
+            26,
+            "a char count would allow this"
+        );
         assert!(validate_name(&too_long).is_none());
 
         // And the plain ASCII boundary, so the rule is not emoji-specific.
@@ -266,7 +273,10 @@ mod tests {
         assert_eq!(n.on_name_changed("Diamond Sword", Some(plain)), None);
         assert_eq!(n.sent(), "");
         // Anything else is an ordinary rename.
-        assert_eq!(n.on_name_changed("Sting", Some(plain)), Some("Sting".into()));
+        assert_eq!(
+            n.on_name_changed("Sting", Some(plain)),
+            Some("Sting".into())
+        );
         // Now typing the default name DOES send, because the stored name is
         // "Sting" and the request is "".
         assert_eq!(

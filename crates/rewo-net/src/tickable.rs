@@ -834,9 +834,8 @@ fn tick_riding(r: &RidingRamp, inst: &mut SoundInstance, w: &dyn RampWorld) -> R
     };
     // `shoudlPlaySound()` (vanilla's spelling) — always true in the base
     // class, rails-or-old-behaviour for a minecart.
-    let should_play = !r.is_minecart
-        || w.on_rails(r.vehicle)
-        || !w.new_minecart_behavior(r.vehicle);
+    let should_play =
+        !r.is_minecart || w.on_rails(r.vehicle) || !w.new_minecart_behavior(r.vehicle);
 
     inst.volume = if speed >= 0.01 && should_play {
         // `clampedLerp`, so the FACTOR is clamped to 0..1 — a different
@@ -903,11 +902,7 @@ fn tick_biome_loop(b: &mut BiomeLoopRamp, inst: &mut SoundInstance) -> RampOutco
     // written. Transcribed rather than tidied.
     let stopped = b.fade < 0;
     b.fade += b.fade_direction;
-    inst.volume = mth_clamp(
-        b.fade as f32 / UNDERWATER_FADE_DURATION as f32,
-        0.0,
-        1.0,
-    );
+    inst.volume = mth_clamp(b.fade as f32 / UNDERWATER_FADE_DURATION as f32, 0.0, 1.0);
     RampOutcome {
         stopped,
         queued: None,
@@ -944,11 +939,7 @@ pub fn direction_from_rotation(rot_x: f32, rot_y: f32) -> (f64, f64, f64) {
     let y_sin = mth_sin(-rot_y * DEG - std::f32::consts::PI);
     let x_cos = -mth_cos(-rot_x * DEG);
     let x_sin = mth_sin(-rot_x * DEG);
-    (
-        (y_sin * x_cos) as f64,
-        x_sin as f64,
-        (y_cos * x_cos) as f64,
-    )
+    ((y_sin * x_cos) as f64, x_sin as f64, (y_cos * x_cos) as f64)
 }
 
 #[cfg(test)]
@@ -1338,7 +1329,10 @@ mod tests {
 
         assert!(out.stopped, "same tick, not the next one");
         let (queued_inst, queued_ramp) = out.queued.expect("the alternative was queued");
-        assert_eq!(queued_inst.identifier, "minecraft:entity.bee.loop_aggressive");
+        assert_eq!(
+            queued_inst.identifier,
+            "minecraft:entity.bee.loop_aggressive"
+        );
         assert_eq!(queued_inst.volume, 0.0, "it starts silent…");
         assert!(queued_inst.can_start_silent, "…and is allowed to");
         assert!(queued_inst.looping);
@@ -1459,13 +1453,19 @@ mod tests {
         let mut w = World::at(3, (0.0, 100.0, 0.0));
         w.fall_flying.push(3);
         w.speed_sqr.insert(3, 400.0); // saturates the raw volume at 1.0
-        let mut r = Ramp::Elytra(ElytraRamp { player: 3, time: 25 });
+        let mut r = Ramp::Elytra(ElytraRamp {
+            player: 3,
+            time: 25,
+        });
         let mut i = inst();
         r.tick(&mut i, &w); // time 26 → factor 6/20 = 0.3
         assert!((i.volume - 0.3).abs() < 1e-6, "{}", i.volume);
         assert_eq!(i.pitch, 1.0, "0.3 is below the 0.8 threshold");
 
-        let mut r = Ramp::Elytra(ElytraRamp { player: 3, time: 100 });
+        let mut r = Ramp::Elytra(ElytraRamp {
+            player: 3,
+            time: 100,
+        });
         r.tick(&mut i, &w);
         assert_eq!(i.volume, 1.0);
         assert!((i.pitch - 1.2).abs() < 1e-6, "1.0 + (1.0 - 0.8)");
@@ -1589,7 +1589,10 @@ mod tests {
         });
         let mut i = inst();
         r.tick(&mut i, &w);
-        assert_eq!(i.volume, 5.0, "not clamped here; the engine clamps the gain");
+        assert_eq!(
+            i.volume, 5.0,
+            "not clamped here; the engine clamps the gain"
+        );
     }
 
     /// **The pair mutes by submersion, and the minecart asks the PLAYER while
@@ -1732,7 +1735,9 @@ mod tests {
             r.tick(&mut i, &w);
         }
         assert_eq!(i.volume, 1.0);
-        let Ramp::UnderwaterLoop(u) = r else { unreachable!() };
+        let Ramp::UnderwaterLoop(u) = r else {
+            unreachable!()
+        };
         assert_eq!(u.fade, 40, "capped above at FADE_DURATION");
 
         // Twenty to fall back — half as many.
@@ -1741,12 +1746,19 @@ mod tests {
             r.tick(&mut i, &w);
         }
         assert_eq!(i.volume, 0.0);
-        let Ramp::UnderwaterLoop(u) = r else { unreachable!() };
+        let Ramp::UnderwaterLoop(u) = r else {
+            unreachable!()
+        };
         assert_eq!(u.fade, 0);
 
         // Now it goes negative — and still writes a volume this tick.
-        assert!(!r.tick(&mut i, &w).stopped, "the guard is read BEFORE the step");
-        let Ramp::UnderwaterLoop(u) = r else { unreachable!() };
+        assert!(
+            !r.tick(&mut i, &w).stopped,
+            "the guard is read BEFORE the step"
+        );
+        let Ramp::UnderwaterLoop(u) = r else {
+            unreachable!()
+        };
         assert_eq!(u.fade, -2, "not clamped below");
         assert_eq!(i.volume, 0.0, "max(0, ..) keeps it non-negative");
         assert!(r.tick(&mut i, &w).stopped, "the NEXT tick sees fade < 0");
@@ -1763,7 +1775,9 @@ mod tests {
         for _ in 0..200 {
             r.tick(&mut i, &w);
         }
-        let Ramp::UnderwaterLoop(u) = r else { unreachable!() };
+        let Ramp::UnderwaterLoop(u) = r else {
+            unreachable!()
+        };
         assert_eq!(u.fade, 40, "200 ticks of +1 still caps at 40");
     }
 
@@ -1794,7 +1808,9 @@ mod tests {
         let mut i = inst();
         let out = r.tick(&mut i, &());
         assert!(out.stopped);
-        let Ramp::BiomeLoop(b) = r else { unreachable!() };
+        let Ramp::BiomeLoop(b) = r else {
+            unreachable!()
+        };
         assert_eq!(b.fade, 0, "the step ran anyway");
         assert_eq!(i.volume, 0.0, "and so did the write");
     }
@@ -1808,7 +1824,9 @@ mod tests {
         for _ in 0..100 {
             assert!(!r.tick(&mut i, &()).stopped);
         }
-        let Ramp::BiomeLoop(b) = r else { unreachable!() };
+        let Ramp::BiomeLoop(b) = r else {
+            unreachable!()
+        };
         assert_eq!(b.fade, 0);
         assert_eq!(i.volume, 0.0);
     }
@@ -2082,7 +2100,10 @@ mod tests {
     fn only_the_six_that_override_can_play_sound_are_silence_gated() {
         let riding = riding(true, false);
         let gated: Vec<(&str, Option<i32>)> = vec![
-            ("entity_bound", Ramp::EntityBound { entity: 1 }.silence_gated_entity()),
+            (
+                "entity_bound",
+                Ramp::EntityBound { entity: 1 }.silence_gated_entity(),
+            ),
             (
                 "bee",
                 Ramp::Bee(BeeRamp {
@@ -2109,7 +2130,10 @@ mod tests {
                 .silence_gated_entity(),
             ),
             ("riding", riding.silence_gated_entity()),
-            ("sniffer", Ramp::Sniffer { sniffer: 6 }.silence_gated_entity()),
+            (
+                "sniffer",
+                Ramp::Sniffer { sniffer: 6 }.silence_gated_entity(),
+            ),
         ];
         for (what, g) in gated {
             assert!(g.is_some(), "{what} overrides canPlaySound and must gate");
@@ -2124,8 +2148,7 @@ mod tests {
             ),
             (
                 "underwater loop",
-                Ramp::UnderwaterLoop(UnderwaterRamp { player: 7, fade: 0 })
-                    .silence_gated_entity(),
+                Ramp::UnderwaterLoop(UnderwaterRamp { player: 7, fade: 0 }).silence_gated_entity(),
             ),
             (
                 "underwater sub",

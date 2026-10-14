@@ -119,11 +119,7 @@ pub fn camera_basis(view: [[f32; 4]; 4]) -> ([f32; 3], [f32; 3]) {
 /// blocks and the basis is unitless, so the arithmetic is identical either way
 /// — but keeping the relative form visible makes the world-space output an
 /// explicit choice (see the module header, and the M33 weather trap).
-pub fn build_quads(
-    out: &mut Vec<ParticleVertex>,
-    particles: &[ParticleQuad],
-    view: [[f32; 4]; 4],
-) {
+pub fn build_quads(out: &mut Vec<ParticleVertex>, particles: &[ParticleQuad], view: [[f32; 4]; 4]) {
     let (right, up) = camera_basis(view);
     for p in particles {
         let s = p.size;
@@ -397,7 +393,11 @@ fn create_layer_array(
                 &vk::ImageCreateInfo::default()
                     .image_type(vk::ImageType::TYPE_2D)
                     .format(vk::Format::R8G8B8A8_SRGB)
-                    .extent(vk::Extent3D { width: size, height: size, depth: 1 })
+                    .extent(vk::Extent3D {
+                        width: size,
+                        height: size,
+                        depth: 1,
+                    })
                     .mip_levels(1)
                     .array_layers(count)
                     .samples(vk::SampleCountFlags::TYPE_1)

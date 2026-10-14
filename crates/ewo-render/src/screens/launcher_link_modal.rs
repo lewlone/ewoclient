@@ -196,7 +196,12 @@ pub fn draw_modal(
     eyebrow_paint.set_anti_alias(true);
     eyebrow_paint.set_color(scale_color(TEXT_MAUVE, alpha));
     let eyebrow_y = card.top + PAD_TOP + 12.0;
-    canvas.draw_str("LINK LAUNCHER", (content_left, eyebrow_y), &eyebrow_font, &eyebrow_paint);
+    canvas.draw_str(
+        "LINK LAUNCHER",
+        (content_left, eyebrow_y),
+        &eyebrow_font,
+        &eyebrow_paint,
+    );
 
     // Title.
     let title_font = fonts.fraunces_axes(28.0, 50.0, 0.0, 600.0, None);
@@ -205,7 +210,12 @@ pub fn draw_modal(
     title_paint.set_color(scale_color(TEXT_PEARL_HOT, alpha));
     let (_, tm) = title_font.metrics();
     let title_y = eyebrow_y + 26.0 + (-tm.ascent);
-    canvas.draw_str("Enter the code", (content_left, title_y), &title_font, &title_paint);
+    canvas.draw_str(
+        "Enter the code",
+        (content_left, title_y),
+        &title_font,
+        &title_paint,
+    );
 
     // Subtitle (italic newsreader).
     let sub_font = Font::new(fonts.newsreader_italic_typeface().clone(), 13.0);
@@ -268,7 +278,14 @@ pub fn draw_modal(
     let cancel = cancel_button_bounds(card_w, card_h);
     let submit = submit_button_bounds(card_w, card_h);
 
-    draw_vghost_btn(canvas, cancel, "Cancel", &state.cancel_btn, GhostKind::Pearl, fonts);
+    draw_vghost_btn(
+        canvas,
+        cancel,
+        "Cancel",
+        &state.cancel_btn,
+        GhostKind::Pearl,
+        fonts,
+    );
 
     // Submit button label depends on state.
     let submit_label = match redeem {
@@ -326,7 +343,11 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
 
     // Drop shadow stack
     for (offset_y, sigma, color) in &[
-        (24.0_f32, 28.0_f32, Color4f::new(0.0, 0.0, 0.0, 0.45 * alpha)),
+        (
+            24.0_f32,
+            28.0_f32,
+            Color4f::new(0.0, 0.0, 0.0, 0.45 * alpha),
+        ),
         (10.0, 14.0, Color4f::new(0.0, 0.0, 0.0, 0.35 * alpha)),
         (0.0, 30.0, Color4f::new(0.71, 0.45, 0.57, 0.20 * alpha)),
     ] {
@@ -339,7 +360,10 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
             false,
         ));
         let shadow_rect = card.with_offset((0.0, *offset_y));
-        canvas.draw_rrect(RRect::new_rect_xy(shadow_rect, CARD_RADIUS, CARD_RADIUS), &sh);
+        canvas.draw_rrect(
+            RRect::new_rect_xy(shadow_rect, CARD_RADIUS, CARD_RADIUS),
+            &sh,
+        );
     }
 
     // Backdrop blur (refract) — capture what's beneath through a blur.
@@ -382,10 +406,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(
-        Color4f::new(0.90, 0.72, 0.77, 0.18 * alpha),
-        None,
-    );
+    rim.set_color4f(Color4f::new(0.90, 0.72, 0.77, 0.18 * alpha), None);
     canvas.draw_rrect(rrect, &rim);
 }
 
@@ -437,11 +458,7 @@ fn draw_digit_slot(
             line.set_stroke_width(1.0);
             line.set_style(PaintStyle::Stroke);
             line.set_color4f(Color4f::new(0.60, 0.50, 0.55, 0.45 * alpha), None);
-            canvas.draw_line(
-                (r.left + 16.0, mid_y),
-                (r.right - 16.0, mid_y),
-                &line,
-            );
+            canvas.draw_line((r.left + 16.0, mid_y), (r.right - 16.0, mid_y), &line);
         }
     }
     // Suppress unused-variable warnings on the rose accents we deliberately

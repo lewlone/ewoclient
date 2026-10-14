@@ -447,7 +447,11 @@ pub fn loom_cell_origin(row: i32, column: i32) -> (i32, i32) {
 /// **`ceil`, not round or truncate**, and the `+ 1` on the flame: a furnace
 /// with a hair of fuel left still shows one pixel of flame, and an arrow at
 /// any progress at all shows one pixel of arrow.
-pub fn furnace_progress(lit: bool, lit_progress: f32, burn_progress: f32) -> (Option<ProgressBlit>, ProgressBlit) {
+pub fn furnace_progress(
+    lit: bool,
+    lit_progress: f32,
+    burn_progress: f32,
+) -> (Option<ProgressBlit>, ProgressBlit) {
     let flame = lit.then(|| {
         let h = (lit_progress * 13.0).ceil() as i32 + 1;
         ProgressBlit {
@@ -524,7 +528,11 @@ pub const BREW_TICKS_TOTAL: i32 = 400;
 pub fn brewing_progress(
     fuel: i32,
     ticks: i32,
-) -> (Option<ProgressBlit>, Option<ProgressBlit>, Option<ProgressBlit>) {
+) -> (
+    Option<ProgressBlit>,
+    Option<ProgressBlit>,
+    Option<ProgressBlit>,
+) {
     // Integer ceiling division by 20: `(18 * fuel + 19) / 20`, written in
     // vanilla as `+ 20 - 1`. Clamped on BOTH sides, so a corrupt negative fuel
     // reads as empty rather than as a huge negative width.
@@ -754,9 +762,7 @@ impl EnchantRow {
             EnchantRow::Unaffordable { .. } => Some(ENCHANT_COST_DISABLED),
             // Not hover-dependent: `col` is reassigned to the same value in
             // both arms of the enabled branch, after the name has used it.
-            EnchantRow::Available { .. } | EnchantRow::Hovered { .. } => {
-                Some(ENCHANT_COST_ENABLED)
-            }
+            EnchantRow::Available { .. } | EnchantRow::Hovered { .. } => Some(ENCHANT_COST_ENABLED),
         }
     }
 
@@ -985,8 +991,16 @@ pub fn beacon_buttons() -> Vec<BeaconButton> {
         y: 47,
         kind: BeaconButtonKind::Upgrade,
     });
-    out.push(BeaconButton { x: 164, y: 107, kind: BeaconButtonKind::Confirm });
-    out.push(BeaconButton { x: 190, y: 107, kind: BeaconButtonKind::Cancel });
+    out.push(BeaconButton {
+        x: 164,
+        y: 107,
+        kind: BeaconButtonKind::Confirm,
+    });
+    out.push(BeaconButton {
+        x: 190,
+        y: 107,
+        kind: BeaconButtonKind::Cancel,
+    });
     out
 }
 
@@ -1031,13 +1045,13 @@ pub struct BeaconChoice {
 /// * The upgrade button is hidden entirely while there is no primary, and
 ///   otherwise **borrows the primary's effect**, so it is the one button whose
 ///   icon changes as you click elsewhere.
-pub fn beacon_button_state(
-    b: BeaconButton,
-    s: BeaconChoice,
-    hovered: bool,
-) -> BeaconButtonState {
+pub fn beacon_button_state(b: BeaconButton, s: BeaconChoice, hovered: bool) -> BeaconButtonState {
     let (active, selected) = match b.kind {
-        BeaconButtonKind::Power { effect, primary, tier } => {
+        BeaconButtonKind::Power {
+            effect,
+            primary,
+            tier,
+        } => {
             let chosen = if primary { s.primary } else { s.secondary };
             (tier < s.levels, chosen == Some(effect))
         }
@@ -1082,7 +1096,15 @@ pub fn beacon_button_hovered(b: BeaconButton, gui_x: f64, gui_y: f64) -> bool {
 /// The 18x18 icon inside a 22x22 button — **inset by 2 on both axes**, so it
 /// leaves a 2 px frame on every side.
 pub fn beacon_icon_rect(b: BeaconButton) -> ProgressBlit {
-    ProgressBlit { dx: b.x + 2, dy: b.y + 2, w: 18, h: 18, sx: 0, sy: 0, src: None }
+    ProgressBlit {
+        dx: b.x + 2,
+        dy: b.y + 2,
+        w: 18,
+        h: 18,
+        sx: 0,
+        sy: 0,
+        src: None,
+    }
 }
 
 /// The button's own 22x22 chrome rect.
@@ -1248,7 +1270,10 @@ mod tests {
         // field as elapsed time runs the animation backwards, which looks
         // plausible and is exactly inverted.
         let started = brewing_progress(0, 400).1;
-        assert!(started.is_none(), "at t=400 the arrow is 0 tall, so not drawn");
+        assert!(
+            started.is_none(),
+            "at t=400 the arrow is 0 tall, so not drawn"
+        );
         let nearly_done = brewing_progress(0, 1).1.expect("almost finished");
         assert_eq!(nearly_done.h, 27);
         // ...and it is monotonic in the direction that matters.
@@ -1289,7 +1314,9 @@ mod tests {
         // the destination still rises samples the TOP of the bubble column and
         // draws it at the bottom, so the art slides instead of filling.
         for t in 1..15 {
-            let Some(b) = brewing_progress(0, t).2 else { continue };
+            let Some(b) = brewing_progress(0, t).2 else {
+                continue;
+            };
             assert_eq!(b.sy, 29 - b.h, "t={t}: sampled from the sprite's bottom up");
             assert_eq!(b.sy + b.h, 29, "t={t}: and always reaching its bottom edge");
         }
@@ -1329,7 +1356,11 @@ mod tests {
         // arrow's exact height is 27.93 and vanilla shows 27; at 399 it is
         // 0.07 and vanilla shows NOTHING, where a ceil would show a pixel.
         assert!(brewing_progress(0, 399).1.is_none(), "0.07 truncates to 0");
-        assert_eq!(brewing_progress(0, 1).1.unwrap().h, 27, "27.93 truncates to 27");
+        assert_eq!(
+            brewing_progress(0, 1).1.unwrap().h,
+            27,
+            "27.93 truncates to 27"
+        );
         // The furnace, for contrast, is the other way at the same fraction.
         assert_eq!(furnace_progress(false, 0.0, 0.001).1.w, 1);
     }
@@ -1397,8 +1428,14 @@ mod tests {
         // whatever they charge in LEVELS. Reading it as "the cost in lapis"
         // greys an expensive top row with a full stack in the slot.
         let one = rows([1, 2, 3], 1, 30);
-        assert!(matches!(one[0], EnchantRow::Available { .. }), "1 lapis buys row 0");
-        assert!(matches!(one[1], EnchantRow::Unaffordable { .. }), "but not row 1");
+        assert!(
+            matches!(one[0], EnchantRow::Available { .. }),
+            "1 lapis buys row 0"
+        );
+        assert!(
+            matches!(one[1], EnchantRow::Unaffordable { .. }),
+            "but not row 1"
+        );
         assert!(matches!(one[2], EnchantRow::Unaffordable { .. }));
         // ...and a costly row is affordable on one lapis if the levels are there.
         let costly = rows([30, 0, 0], 1, 30);
@@ -1409,9 +1446,18 @@ mod tests {
     fn either_half_of_the_affordability_test_alone_disables_a_row() {
         // It is an OR of two independent shortages, so a witness that only
         // ever varies one of them cannot tell an `&&` from an `||`.
-        assert!(matches!(rows([10, 0, 0], 0, 30)[0], EnchantRow::Unaffordable { .. }), "no lapis");
-        assert!(matches!(rows([10, 0, 0], 64, 9)[0], EnchantRow::Unaffordable { .. }), "no levels");
-        assert!(matches!(rows([10, 0, 0], 64, 10)[0], EnchantRow::Available { .. }), "exactly enough");
+        assert!(
+            matches!(rows([10, 0, 0], 0, 30)[0], EnchantRow::Unaffordable { .. }),
+            "no lapis"
+        );
+        assert!(
+            matches!(rows([10, 0, 0], 64, 9)[0], EnchantRow::Unaffordable { .. }),
+            "no levels"
+        );
+        assert!(
+            matches!(rows([10, 0, 0], 64, 10)[0], EnchantRow::Available { .. }),
+            "exactly enough"
+        );
     }
 
     #[test]
@@ -1419,9 +1465,14 @@ mod tests {
         // `&& !hasInfiniteMaterials()` wraps the WHOLE test, so instabuild
         // makes an offer available with no lapis and no levels.
         let broke = enchant_rows([30, 30, 30], 0, 0, true, None);
-        assert!(broke.iter().all(|r| matches!(r, EnchantRow::Available { .. })));
+        assert!(broke
+            .iter()
+            .all(|r| matches!(r, EnchantRow::Available { .. })));
         // ...but it does not conjure an offer that is not there.
-        assert_eq!(enchant_rows([0, 0, 0], 0, 0, true, None), [EnchantRow::Empty; 3]);
+        assert_eq!(
+            enchant_rows([0, 0, 0], 0, 0, true, None),
+            [EnchantRow::Empty; 3]
+        );
     }
 
     #[test]
@@ -1429,11 +1480,20 @@ mod tests {
         // The hover test sits inside the enabled branch, so the cursor over an
         // unaffordable row changes nothing at all.
         let at = |c: [i32; 3], lapis, xp| enchant_rows(c, lapis, xp, false, Some((100.0, 20.0)));
-        assert!(matches!(at([10, 0, 0], 64, 30)[0], EnchantRow::Hovered { .. }));
-        assert!(matches!(at([10, 0, 0], 0, 30)[0], EnchantRow::Unaffordable { .. }));
+        assert!(matches!(
+            at([10, 0, 0], 64, 30)[0],
+            EnchantRow::Hovered { .. }
+        ));
+        assert!(matches!(
+            at([10, 0, 0], 0, 30)[0],
+            EnchantRow::Unaffordable { .. }
+        ));
         assert!(matches!(at([0, 0, 0], 64, 30)[0], EnchantRow::Empty));
         // The cursor is over row 0's band only.
-        assert!(matches!(at([10, 10, 10], 64, 30)[1], EnchantRow::Available { .. }));
+        assert!(matches!(
+            at([10, 10, 10], 64, 30)[1],
+            EnchantRow::Available { .. }
+        ));
     }
 
     #[test]
@@ -1457,11 +1517,26 @@ mod tests {
         // 108x19 and the tooltip's is `isHovering(.., 108, 17, ..)`, whose
         // body bleeds one pixel on every side of a box declared two rows
         // shorter. They agree in the middle and disagree at the edges.
-        assert!(enchant_row_hovered(0, 100.0, 32.0), "the highlight reaches y=32");
-        assert!(!enchant_tooltip_hovered(0, 100.0, 32.0), "the tooltip stops at 31");
-        assert!(enchant_tooltip_hovered(0, 100.0, 13.0), "the tooltip reaches up to 13");
-        assert!(!enchant_row_hovered(0, 100.0, 13.0), "the highlight starts at 14");
-        assert!(enchant_tooltip_hovered(0, 59.0, 20.0), "and one pixel left of the row");
+        assert!(
+            enchant_row_hovered(0, 100.0, 32.0),
+            "the highlight reaches y=32"
+        );
+        assert!(
+            !enchant_tooltip_hovered(0, 100.0, 32.0),
+            "the tooltip stops at 31"
+        );
+        assert!(
+            enchant_tooltip_hovered(0, 100.0, 13.0),
+            "the tooltip reaches up to 13"
+        );
+        assert!(
+            !enchant_row_hovered(0, 100.0, 13.0),
+            "the highlight starts at 14"
+        );
+        assert!(
+            enchant_tooltip_hovered(0, 59.0, 20.0),
+            "and one pixel left of the row"
+        );
         assert!(!enchant_row_hovered(0, 59.0, 20.0));
         // Over the middle they agree, which is why the difference is easy to
         // miss and why the witness probes the edges.
@@ -1490,7 +1565,11 @@ mod tests {
         // yellow while its cost stays the same green as an unhovered one.
         let hov = EnchantRow::Hovered { cost: 5 };
         let avail = EnchantRow::Available { cost: 5 };
-        assert_ne!(hov.name_color(), avail.name_color(), "the name tracks hover");
+        assert_ne!(
+            hov.name_color(),
+            avail.name_color(),
+            "the name tracks hover"
+        );
         assert_eq!(hov.cost_color(), avail.cost_color(), "the cost does not");
         assert_eq!(hov.cost_color(), Some(ENCHANT_COST_ENABLED));
         // And the disabled name is the available one halved per channel with
@@ -1532,7 +1611,10 @@ mod tests {
 
     #[test]
     fn the_click_gates_lapis_requirement_is_the_row_index_like_the_renders() {
-        assert!(!enchant_click_allowed(2, [0, 0, 5], 2, true, 30, false), "needs 3");
+        assert!(
+            !enchant_click_allowed(2, [0, 0, 5], 2, true, 30, false),
+            "needs 3"
+        );
         assert!(enchant_click_allowed(2, [0, 0, 5], 3, true, 30, false));
     }
 
@@ -1542,8 +1624,14 @@ mod tests {
         // the empty-item test nor the zero-cost one, so instabuild cannot
         // enchant an empty slot.
         assert!(enchant_click_allowed(2, [0, 0, 5], 0, true, 0, true));
-        assert!(!enchant_click_allowed(2, [0, 0, 5], 0, false, 0, true), "still needs an item");
-        assert!(!enchant_click_allowed(0, [0, 0, 0], 64, true, 30, true), "and a live offer");
+        assert!(
+            !enchant_click_allowed(2, [0, 0, 5], 0, false, 0, true),
+            "still needs an item"
+        );
+        assert!(
+            !enchant_click_allowed(0, [0, 0, 0], 64, true, 30, true),
+            "and a live offer"
+        );
     }
 
     #[test]
@@ -1563,7 +1651,11 @@ mod tests {
         // highlight's.
         assert_eq!(enchant_click_row(100.0, 20.0), Some(0));
         assert_eq!(enchant_click_row(100.0, 39.0), Some(1));
-        assert_eq!(enchant_click_row(100.0, 13.0), None, "the tooltip's row, not the press's");
+        assert_eq!(
+            enchant_click_row(100.0, 13.0),
+            None,
+            "the tooltip's row, not the press's"
+        );
         assert_eq!(enchant_click_row(59.0, 20.0), None);
         assert_eq!(enchant_click_row(200.0, 20.0), None);
     }
@@ -1656,11 +1748,26 @@ mod tests {
             primary: true,
             tier: 2,
         });
-        let at = |levels| BeaconChoice { levels, ..Default::default() };
-        assert_eq!(beacon_button_state(speed, at(0), false), BeaconButtonState::Disabled);
-        assert_eq!(beacon_button_state(speed, at(1), false), BeaconButtonState::Normal);
-        assert_eq!(beacon_button_state(strength, at(2), false), BeaconButtonState::Disabled);
-        assert_eq!(beacon_button_state(strength, at(3), false), BeaconButtonState::Normal);
+        let at = |levels| BeaconChoice {
+            levels,
+            ..Default::default()
+        };
+        assert_eq!(
+            beacon_button_state(speed, at(0), false),
+            BeaconButtonState::Disabled
+        );
+        assert_eq!(
+            beacon_button_state(speed, at(1), false),
+            BeaconButtonState::Normal
+        );
+        assert_eq!(
+            beacon_button_state(strength, at(2), false),
+            BeaconButtonState::Disabled
+        );
+        assert_eq!(
+            beacon_button_state(strength, at(3), false),
+            BeaconButtonState::Normal
+        );
     }
 
     #[test]
@@ -1678,10 +1785,23 @@ mod tests {
             primary: Some(BeaconEffect::Speed),
             ..Default::default()
         };
-        assert_eq!(beacon_button_state(speed, chosen(0), true), BeaconButtonState::Disabled);
-        assert_eq!(beacon_button_state(speed, chosen(4), true), BeaconButtonState::Selected);
         assert_eq!(
-            beacon_button_state(speed, BeaconChoice { levels: 4, ..Default::default() }, true),
+            beacon_button_state(speed, chosen(0), true),
+            BeaconButtonState::Disabled
+        );
+        assert_eq!(
+            beacon_button_state(speed, chosen(4), true),
+            BeaconButtonState::Selected
+        );
+        assert_eq!(
+            beacon_button_state(
+                speed,
+                BeaconChoice {
+                    levels: 4,
+                    ..Default::default()
+                },
+                true
+            ),
             BeaconButtonState::Highlighted
         );
     }
@@ -1711,15 +1831,24 @@ mod tests {
     #[test]
     fn the_upgrade_button_is_hidden_until_a_primary_is_chosen() {
         let up = button_of(BeaconButtonKind::Upgrade);
-        let none = BeaconChoice { levels: 4, ..Default::default() };
-        assert_eq!(beacon_button_state(up, none, false), BeaconButtonState::Hidden);
+        let none = BeaconChoice {
+            levels: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            beacon_button_state(up, none, false),
+            BeaconButtonState::Hidden
+        );
         assert_eq!(beacon_upgrade_effect(none), None);
         let with = BeaconChoice {
             levels: 4,
             primary: Some(BeaconEffect::Haste),
             ..Default::default()
         };
-        assert_ne!(beacon_button_state(up, with, false), BeaconButtonState::Hidden);
+        assert_ne!(
+            beacon_button_state(up, with, false),
+            BeaconButtonState::Hidden
+        );
         // It BORROWS the primary's icon — the one button whose art changes as
         // you click elsewhere.
         assert_eq!(beacon_upgrade_effect(with), Some(BeaconEffect::Haste));
@@ -1736,11 +1865,23 @@ mod tests {
             secondary: None,
             has_payment: pay,
         };
-        assert_eq!(beacon_button_state(confirm, s(false, true), false), BeaconButtonState::Disabled);
-        assert_eq!(beacon_button_state(confirm, s(true, false), false), BeaconButtonState::Disabled);
-        assert_eq!(beacon_button_state(confirm, s(true, true), false), BeaconButtonState::Normal);
+        assert_eq!(
+            beacon_button_state(confirm, s(false, true), false),
+            BeaconButtonState::Disabled
+        );
+        assert_eq!(
+            beacon_button_state(confirm, s(true, false), false),
+            BeaconButtonState::Disabled
+        );
+        assert_eq!(
+            beacon_button_state(confirm, s(true, true), false),
+            BeaconButtonState::Normal
+        );
         // Cancel never disables — `updateStatus` leaves it alone.
-        assert_eq!(beacon_button_state(cancel, s(false, false), false), BeaconButtonState::Normal);
+        assert_eq!(
+            beacon_button_state(cancel, s(false, false), false),
+            BeaconButtonState::Normal
+        );
     }
 
     #[test]
@@ -1758,10 +1899,17 @@ mod tests {
     fn the_button_hover_box_has_no_bleed() {
         // Unlike a slot's 18x18 test and unlike the enchanting row's tooltip
         // box: `AbstractWidget.isMouseOver` is a plain half-open rect.
-        let b = BeaconButton { x: 50, y: 30, kind: BeaconButtonKind::Cancel };
+        let b = BeaconButton {
+            x: 50,
+            y: 30,
+            kind: BeaconButtonKind::Cancel,
+        };
         assert!(beacon_button_hovered(b, 50.0, 30.0));
         assert!(beacon_button_hovered(b, 71.9, 51.9));
-        assert!(!beacon_button_hovered(b, 49.0, 40.0), "no one-pixel bleed left");
+        assert!(
+            !beacon_button_hovered(b, 49.0, 40.0),
+            "no one-pixel bleed left"
+        );
         assert!(!beacon_button_hovered(b, 72.0, 40.0), "nor right");
         assert!(!beacon_button_hovered(b, 60.0, 52.0), "nor below");
     }
@@ -1798,7 +1946,9 @@ mod tests {
         // the game rule the layout encodes.
         let column_of = |e: BeaconEffect| {
             b.iter().find_map(|b| match b.kind {
-                BeaconButtonKind::Power { effect, primary, .. } if effect == e => Some(primary),
+                BeaconButtonKind::Power {
+                    effect, primary, ..
+                } if effect == e => Some(primary),
                 _ => None,
             })
         };
@@ -1808,7 +1958,9 @@ mod tests {
         for e in BeaconEffect::ALL {
             assert_eq!(
                 b.iter()
-                    .filter(|b| matches!(b.kind, BeaconButtonKind::Power { effect, .. } if effect == e))
+                    .filter(
+                        |b| matches!(b.kind, BeaconButtonKind::Power { effect, .. } if effect == e)
+                    )
                     .count(),
                 1,
                 "{e:?}"
@@ -1862,7 +2014,11 @@ mod tests {
             assert_eq!((y0, v0), (0, 0.0));
             assert_eq!(h0, rows as i32 * 18 + 17, "the top is rows*18 + 17");
             assert_eq!(y1, h0, "the second blit starts where the first ends");
-            assert_eq!((v1, h1), (126.0, 96), "the player's half is 96px from v=126");
+            assert_eq!(
+                (v1, h1),
+                (126.0, 96),
+                "the player's half is 96px from v=126"
+            );
             // NOT `== image_h`. This assertion was written as "the two exactly
             // fill the panel" and failed, and the failure was correct: vanilla
             // paints `rows * 18 + 17 + 96 = rows * 18 + 113` of a panel it
@@ -1929,7 +2085,11 @@ mod tests {
         let six = screen_of(5).unwrap();
         let q6 = background_quads(six);
         assert_eq!(q6[0].v1 * six.sheet_h, 125.0, "6 rows: 6*18 + 17");
-        assert_eq!(q6[1].v0 * six.sheet_h, 126.0, "still one row apart, never before");
+        assert_eq!(
+            q6[1].v0 * six.sheet_h,
+            126.0,
+            "still one row apart, never before"
+        );
     }
 
     #[test]
@@ -2146,7 +2306,9 @@ pub fn beacon_press(b: BeaconButton, s: BeaconChoice) -> BeaconPress {
     match b.kind {
         BeaconButtonKind::Confirm => BeaconPress::Confirm,
         BeaconButtonKind::Cancel => BeaconPress::Cancel,
-        BeaconButtonKind::Power { effect, primary, .. } => beacon_select(s, effect, primary),
+        BeaconButtonKind::Power {
+            effect, primary, ..
+        } => beacon_select(s, effect, primary),
         // The upgrade button borrows the primary and presses as a secondary.
         BeaconButtonKind::Upgrade => match s.primary {
             Some(p) => beacon_select(s, p, false),
@@ -2178,10 +2340,22 @@ mod m93l_beacon_press {
     use super::*;
 
     fn power(effect: BeaconEffect, primary: bool, tier: i32) -> BeaconButton {
-        BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Power { effect, primary, tier } }
+        BeaconButton {
+            x: 0,
+            y: 0,
+            kind: BeaconButtonKind::Power {
+                effect,
+                primary,
+                tier,
+            },
+        }
     }
     fn lit() -> BeaconChoice {
-        BeaconChoice { levels: 4, has_payment: true, ..Default::default() }
+        BeaconChoice {
+            levels: 4,
+            has_payment: true,
+            ..Default::default()
+        }
     }
     fn effects(primary: bool) -> (BeaconEffect, BeaconEffect) {
         // Two distinct tier-0 effects from the real table, so the fixture
@@ -2199,7 +2373,11 @@ mod m93l_beacon_press {
         // primary, which is the "primary at level II" double.
         let (a, b) = effects(true);
         // secondary = b, choose primary = a  ->  b is discarded.
-        let s = BeaconChoice { primary: None, secondary: Some(b), ..lit() };
+        let s = BeaconChoice {
+            primary: None,
+            secondary: Some(b),
+            ..lit()
+        };
         let BeaconPress::Select(next) = beacon_press(power(a, true, 0), s) else {
             panic!("a fresh primary must select");
         };
@@ -2207,7 +2385,11 @@ mod m93l_beacon_press {
         assert_eq!(next.secondary, None, "a different secondary is cleared");
 
         // secondary = a, choose primary = a  ->  a is KEPT.
-        let s = BeaconChoice { primary: None, secondary: Some(a), ..lit() };
+        let s = BeaconChoice {
+            primary: None,
+            secondary: Some(a),
+            ..lit()
+        };
         let BeaconPress::Select(next) = beacon_press(power(a, true, 0), s) else {
             panic!("must select");
         };
@@ -2218,7 +2400,10 @@ mod m93l_beacon_press {
     #[test]
     fn pressing_the_lit_button_is_inert() {
         let (a, _) = effects(true);
-        let s = BeaconChoice { primary: Some(a), ..lit() };
+        let s = BeaconChoice {
+            primary: Some(a),
+            ..lit()
+        };
         assert_eq!(beacon_press(power(a, true, 0), s), BeaconPress::None);
         // ...but the same button in the OTHER column is a different selection.
         assert!(matches!(
@@ -2231,25 +2416,59 @@ mod m93l_beacon_press {
     fn a_disabled_or_hidden_button_does_not_press() {
         let (a, _) = effects(true);
         // tier 3 on a level-1 beacon: `tier < levels` is false.
-        let weak = BeaconChoice { levels: 1, has_payment: true, ..Default::default() };
+        let weak = BeaconChoice {
+            levels: 1,
+            has_payment: true,
+            ..Default::default()
+        };
         assert_eq!(beacon_press(power(a, true, 3), weak), BeaconPress::None);
         // Confirm needs BOTH a payment and a primary.
-        let confirm = BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Confirm };
+        let confirm = BeaconButton {
+            x: 0,
+            y: 0,
+            kind: BeaconButtonKind::Confirm,
+        };
         assert_eq!(
-            beacon_press(confirm, BeaconChoice { primary: Some(a), has_payment: false, ..lit() }),
+            beacon_press(
+                confirm,
+                BeaconChoice {
+                    primary: Some(a),
+                    has_payment: false,
+                    ..lit()
+                }
+            ),
             BeaconPress::None
         );
         assert_eq!(
-            beacon_press(confirm, BeaconChoice { primary: None, ..lit() }),
+            beacon_press(
+                confirm,
+                BeaconChoice {
+                    primary: None,
+                    ..lit()
+                }
+            ),
             BeaconPress::None
         );
         assert_eq!(
-            beacon_press(confirm, BeaconChoice { primary: Some(a), ..lit() }),
+            beacon_press(
+                confirm,
+                BeaconChoice {
+                    primary: Some(a),
+                    ..lit()
+                }
+            ),
             BeaconPress::Confirm
         );
         // Cancel is unconditional — it does not even need a primary.
-        let cancel = BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Cancel };
-        assert_eq!(beacon_press(cancel, BeaconChoice::default()), BeaconPress::Cancel);
+        let cancel = BeaconButton {
+            x: 0,
+            y: 0,
+            kind: BeaconButtonKind::Cancel,
+        };
+        assert_eq!(
+            beacon_press(cancel, BeaconChoice::default()),
+            BeaconPress::Cancel
+        );
     }
 
     #[test]
@@ -2257,15 +2476,31 @@ mod m93l_beacon_press {
         // It is a BeaconPowerButton with isPrimary = false whose effect is
         // re-pointed at the primary, not a fourth kind of press.
         let (a, _) = effects(true);
-        let up = BeaconButton { x: 0, y: 0, kind: BeaconButtonKind::Upgrade };
-        let s = BeaconChoice { primary: Some(a), ..lit() };
+        let up = BeaconButton {
+            x: 0,
+            y: 0,
+            kind: BeaconButtonKind::Upgrade,
+        };
+        let s = BeaconChoice {
+            primary: Some(a),
+            ..lit()
+        };
         let BeaconPress::Select(next) = beacon_press(up, s) else {
             panic!("the upgrade must select");
         };
         assert_eq!(next.primary, Some(a), "the primary is untouched");
         assert_eq!(next.secondary, Some(a), "the secondary becomes the primary");
         // Hidden with no primary, and inert once already doubled.
-        assert_eq!(beacon_press(up, BeaconChoice { primary: None, ..lit() }), BeaconPress::None);
+        assert_eq!(
+            beacon_press(
+                up,
+                BeaconChoice {
+                    primary: None,
+                    ..lit()
+                }
+            ),
+            BeaconPress::None
+        );
         assert_eq!(beacon_press(up, next), BeaconPress::None);
     }
 }
@@ -2312,7 +2547,10 @@ pub fn loom_cell_at(gui_x: f64, gui_y: f64, start_row: i32) -> Option<i32> {
     if dx < 0.0 || dy < 0.0 {
         return None;
     }
-    let (col, row) = ((dx / LOOM_CELL as f64) as i32, (dy / LOOM_CELL as f64) as i32);
+    let (col, row) = (
+        (dx / LOOM_CELL as f64) as i32,
+        (dy / LOOM_CELL as f64) as i32,
+    );
     if col >= LOOM_COLS || row >= LOOM_ROWS {
         return None;
     }
@@ -2466,7 +2704,12 @@ pub fn cut_cell_click_at(gui_x: f64, gui_y: f64, start_index: i32) -> Option<i32
 /// Which absolute index draws its **highlighted** chrome, from
 /// `extractButtons`' `ym >= posY && ym < posY + 18` — the icon's origin, two
 /// pixels below the click box's.
-pub fn cut_cell_highlight_at(gui_x: f64, gui_y: f64, start_index: i32, visible: usize) -> Option<i32> {
+pub fn cut_cell_highlight_at(
+    gui_x: f64,
+    gui_y: f64,
+    start_index: i32,
+    visible: usize,
+) -> Option<i32> {
     for pos_index in 0..CUT_PAGE {
         let index = start_index + pos_index;
         if index as usize >= visible {
@@ -2592,8 +2835,16 @@ mod m93s_stonecutter_grid {
     #[test]
     fn a_cell_has_three_different_y_origins() {
         // Row 1, column 0 — pos_index 4.
-        assert_eq!(cut_cell_origin(4), (52, 14 + 18 + 2), "icon/highlight/tooltip");
-        assert_eq!(cut_cell_sprite_origin(4), (52, 14 + 18 + 1), "chrome, 1px above");
+        assert_eq!(
+            cut_cell_origin(4),
+            (52, 14 + 18 + 2),
+            "icon/highlight/tooltip"
+        );
+        assert_eq!(
+            cut_cell_sprite_origin(4),
+            (52, 14 + 18 + 1),
+            "chrome, 1px above"
+        );
         // The click box is at the row's own top, two above the icon.
         assert_eq!(cut_cell_click_at(52.0, (14 + 18) as f64, 0), Some(4));
     }
@@ -2627,8 +2878,16 @@ mod m93s_stonecutter_grid {
     #[test]
     fn the_cells_tile_with_no_gap_horizontally() {
         assert_eq!(cut_cell_click_at(52.0, 14.0, 0), Some(0));
-        assert_eq!(cut_cell_click_at(67.9, 14.0, 0), Some(0), "the far edge of cell 0");
-        assert_eq!(cut_cell_click_at(68.0, 14.0, 0), Some(1), "and 68 is already cell 1");
+        assert_eq!(
+            cut_cell_click_at(67.9, 14.0, 0),
+            Some(0),
+            "the far edge of cell 0"
+        );
+        assert_eq!(
+            cut_cell_click_at(68.0, 14.0, 0),
+            Some(1),
+            "and 68 is already cell 1"
+        );
         assert_eq!(cut_cell_click_at(51.9, 14.0, 0), None);
         assert_eq!(cut_cell_click_at(52.0, 13.9, 0), None);
         // Four columns and three rows, then nothing.
@@ -2651,11 +2910,17 @@ mod m93s_stonecutter_grid {
         // The click loop runs the whole 12-cell page regardless of the list's
         // length, so an empty cell in a partial last row DOES produce an index
         // — and `isValidRecipeIndex` is what makes it inert.
-        assert_eq!(cut_cell_click_at(52.0 + 3.0 * 16.0, 14.0 + 2.0 * 18.0, 0), Some(11));
+        assert_eq!(
+            cut_cell_click_at(52.0 + 3.0 * 16.0, 14.0 + 2.0 * 18.0, 0),
+            Some(11)
+        );
         assert!(!cut_click_accepted(11, 5));
         assert!(cut_click_accepted(4, 5));
         assert!(!cut_click_accepted(5, 5), "the bound is strict");
-        assert!(!cut_click_accepted(-1, 5), "negative is rejected, not wrapped");
+        assert!(
+            !cut_click_accepted(-1, 5),
+            "negative is rejected, not wrapped"
+        );
     }
 
     #[test]
@@ -2696,7 +2961,10 @@ mod m93s_stonecutter_grid {
         // the 7.5 (half of 15) is for.
         assert_eq!(cut_scroll_offs_from_drag(21.5), 0.0);
         assert_eq!(cut_scroll_offs_from_drag(60.5), 1.0);
-        assert!((cut_scroll_offs_from_drag(41.0) - 0.5).abs() < 1e-6, "the midpoint");
+        assert!(
+            (cut_scroll_offs_from_drag(41.0) - 0.5).abs() < 1e-6,
+            "the midpoint"
+        );
         // Outside the track it clamps rather than extrapolating.
         assert_eq!(cut_scroll_offs_from_drag(0.0), 0.0);
         assert_eq!(cut_scroll_offs_from_drag(999.0), 1.0);
@@ -2762,8 +3030,16 @@ mod m93o_loom_grid {
         // begins. A 12px hit on a 14px pitch would leave dead seams; a 16px
         // one would make neighbours overlap.
         assert_eq!(loom_cell_at(60.0, 13.0, 0), Some(0));
-        assert_eq!(loom_cell_at(73.9, 26.9, 0), Some(0), "the far corner of cell 0");
-        assert_eq!(loom_cell_at(74.0, 13.0, 0), Some(1), "and 74 is already cell 1");
+        assert_eq!(
+            loom_cell_at(73.9, 26.9, 0),
+            Some(0),
+            "the far corner of cell 0"
+        );
+        assert_eq!(
+            loom_cell_at(74.0, 13.0, 0),
+            Some(1),
+            "and 74 is already cell 1"
+        );
         assert_eq!(loom_cell_at(60.0, 27.0, 0), Some(4), "one row down is +4");
         // Just outside on either axis is a miss, not a clamp.
         assert_eq!(loom_cell_at(59.9, 13.0, 0), None);

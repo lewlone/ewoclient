@@ -427,9 +427,9 @@ fn check_cloud_mesh(c: &mut Checker) {
             CloudStatus::Fast,
             12,
         );
-        let hit = faces
-            .iter()
-            .any(|f| (f[0] << 1) | ((f[2] & 128) >> 7) == x && (f[1] << 1) | ((f[2] & 64) >> 6) == z);
+        let hit = faces.iter().any(|f| {
+            (f[0] << 1) | ((f[2] & 128) >> 7) == x && (f[1] << 1) | ((f[2] & 64) >> 6) == z
+        });
         ok &= hit;
     }
     c.record(
@@ -607,7 +607,11 @@ fn view_proj(eye: [f32; 3], target: [f32; 3]) -> [[f32; 4]; 4] {
 }
 
 fn lit(img: &[u8]) -> usize {
-    img.as_chunks::<4>().0.iter().filter(|p| p[0] > 8 || p[1] > 8 || p[2] > 8).count()
+    img.as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] > 8 || p[1] > 8 || p[2] > 8)
+        .count()
 }
 
 fn overlay_offscreen(ring: &OverlayRing) -> OverlayDraw<'_> {
@@ -632,7 +636,9 @@ fn client_jar(version: &str) -> Option<PathBuf> {
 /// A solid 8x8 cloud map, so the deck is unbroken above the camera.
 fn solid_clouds() -> CloudTexture {
     let side = 8u32;
-    let rgba: Vec<u8> = (0..side * side).flat_map(|_| [255u8, 255, 255, 255]).collect();
+    let rgba: Vec<u8> = (0..side * side)
+        .flat_map(|_| [255u8, 255, 255, 255])
+        .collect();
     CloudTexture::from_rgba(&rgba, side, side)
 }
 
@@ -651,10 +657,18 @@ fn check_cloud_pixels(
     // at [0,0,0] that is indistinguishable from correct. This is exactly the
     // bug the first live shot exposed and this gate did not.
     const EYE: [f64; 3] = [1536.5, 70.0, -2048.5];
-    let vp = view_proj([EYE[0] as f32, EYE[1] as f32, EYE[2] as f32],
-                       [EYE[0] as f32, EYE[1] as f32 + 1.0, EYE[2] as f32 - 1.0]);
+    let vp = view_proj(
+        [EYE[0] as f32, EYE[1] as f32, EYE[2] as f32],
+        [EYE[0] as f32, EYE[1] as f32 + 1.0, EYE[2] as f32 - 1.0],
+    );
     let placement = rewo_gpu::clouds::placement(EYE, 90.0, 0, 0.0, tex.width, tex.height);
-    let faces = tex.build_mesh(placement.relative_pos, placement.cell_x, placement.cell_z, CloudStatus::Fancy, 8);
+    let faces = tex.build_mesh(
+        placement.relative_pos,
+        placement.cell_x,
+        placement.cell_z,
+        CloudStatus::Fancy,
+        8,
+    );
 
     let shot = |gpu: &mut Gpu, off: &mut Offscreen, color: i32| -> Result<Vec<u8>, String> {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
@@ -701,7 +715,11 @@ fn check_cloud_pixels(
     let above = {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
         let above_eye = [EYE[0], 130.0, EYE[2]];
-        wr.set_camera([above_eye[0] as f32, above_eye[1] as f32, above_eye[2] as f32]);
+        wr.set_camera([
+            above_eye[0] as f32,
+            above_eye[1] as f32,
+            above_eye[2] as f32,
+        ]);
         wr.set_sky_mode(SkyMode::None);
         wr.init_clouds(gpu)?;
         let p = rewo_gpu::clouds::placement(above_eye, 90.0, 0, 0.0, tex.width, tex.height);
@@ -712,12 +730,24 @@ fn check_cloud_pixels(
                 placement: p,
                 color_argb: 0xCCFF_FFFFu32 as i32,
                 fog_clouds_end: 512.0,
-                camera: [above_eye[0] as f32, above_eye[1] as f32, above_eye[2] as f32],
+                camera: [
+                    above_eye[0] as f32,
+                    above_eye[1] as f32,
+                    above_eye[2] as f32,
+                ],
             },
         )?;
         let above_vp = view_proj(
-            [above_eye[0] as f32, above_eye[1] as f32, above_eye[2] as f32],
-            [above_eye[0] as f32, above_eye[1] as f32 - 1.0, above_eye[2] as f32 - 1.0],
+            [
+                above_eye[0] as f32,
+                above_eye[1] as f32,
+                above_eye[2] as f32,
+            ],
+            [
+                above_eye[0] as f32,
+                above_eye[1] as f32 - 1.0,
+                above_eye[2] as f32 - 1.0,
+            ],
         );
         off.render(gpu, Some((&mut wr, above_vp)), draw, CLEAR)?;
         let img = off.read_rgba(gpu)?;
@@ -796,10 +826,10 @@ fn check_weather_pixels(
     );
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    rain: Vec<WeatherColumn>,
-                    snow: Vec<WeatherColumn>,
-                    intensity: f32|
+                off: &mut Offscreen,
+                rain: Vec<WeatherColumn>,
+                snow: Vec<WeatherColumn>,
+                intensity: f32|
      -> Result<Vec<u8>, String> {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
         wr.set_camera([WEYE[0] as f32, WEYE[1] as f32, WEYE[2] as f32]);
@@ -855,7 +885,12 @@ fn check_weather_pixels(
     );
 
     let faint = shot(gpu, off, columns.clone(), Vec::new(), 0.15)?;
-    let bright_sum: u64 = rain_img.as_chunks::<4>().0.iter().map(|p| p[0] as u64).sum();
+    let bright_sum: u64 = rain_img
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[0] as u64)
+        .sum();
     let faint_sum: u64 = faint.as_chunks::<4>().0.iter().map(|p| p[0] as u64).sum();
     c.record(
         "g6.intensity_scales_what_reaches_the_screen",
@@ -903,7 +938,12 @@ fn check_weather_pixels(
         })
         .collect();
     let dark_img = shot(gpu, off, dark, Vec::new(), 1.0)?;
-    let dark_sum: u64 = dark_img.as_chunks::<4>().0.iter().map(|p| p[0] as u64).sum();
+    let dark_sum: u64 = dark_img
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[0] as u64)
+        .sum();
     c.record(
         "g9.weather_is_lit_by_the_same_lightmap_as_terrain",
         dark_sum * 4 < bright_sum,

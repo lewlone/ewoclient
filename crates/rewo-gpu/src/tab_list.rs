@@ -363,7 +363,11 @@ fn fold(u: u16, upper: bool) -> u16 {
     let mapped = it.pop().unwrap();
     let mut buf = [0u16; 2];
     let enc = mapped.encode_utf16(&mut buf);
-    if enc.len() == 1 { enc[0] } else { u }
+    if enc.len() == 1 {
+        enc[0]
+    } else {
+        u
+    }
 }
 
 // ── Layout ────────────────────────────────────────────────────────────────
@@ -381,7 +385,12 @@ pub struct Rect {
 
 impl Rect {
     fn corners(x1: i32, y1: i32, x2: i32, y2: i32) -> Rect {
-        Rect { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
+        Rect {
+            x: x1,
+            y: y1,
+            w: x2 - x1,
+            h: y2 - y1,
+        }
     }
     pub fn right(&self) -> i32 {
         self.x + self.w
@@ -595,7 +604,12 @@ pub fn layout(input: &TabListInput, entries: &[TabEntry]) -> TabListLayout {
         // is explicitly given the *slot* origin back (`xo - (showHead ? 9 : 0)`).
         let (face, text_x) = if input.show_head {
             (
-                Some(Rect { x: slot_x, y, w: FACE_SIZE, h: FACE_SIZE }),
+                Some(Rect {
+                    x: slot_x,
+                    y,
+                    w: FACE_SIZE,
+                    h: FACE_SIZE,
+                }),
                 slot_x + FACE_ADVANCE,
             )
         } else {
@@ -825,7 +839,13 @@ pub struct HeartBlit {
 /// The whole body is gated on `fullHearts > 0`, so a dead player (score 0 with
 /// a caught-up display) draws **nothing at all** rather than ten empty
 /// containers.
-pub fn heart_blits(score: i32, health: HealthState, tick: i64, left: i32, right: i32) -> Vec<HeartBlit> {
+pub fn heart_blits(
+    score: i32,
+    health: HealthState,
+    tick: i64,
+    left: i32,
+    right: i32,
+) -> Vec<HeartBlit> {
     let displayed = health.displayed_value();
     let (full_hearts, hearts_to_render) = heart_counts(score, displayed);
     if full_hearts <= 0 {
@@ -846,20 +866,32 @@ pub fn heart_blits(score: i32, health: HealthState, tick: i64, left: i32, right:
     // The containers PAST the fill. Runs zero times when `fullHearts` exceeds
     // `heartsToRender`, which an odd score reaches.
     for heart in full_hearts..hearts_to_render {
-        out.push(HeartBlit { dx: heart * per, sprite: container });
+        out.push(HeartBlit {
+            dx: heart * per,
+            sprite: container,
+        });
     }
     for heart in 0..full_hearts {
         // Every filled position gets its container too — the second loop opens
         // with the same unconditional blit.
-        out.push(HeartBlit { dx: heart * per, sprite: container });
+        out.push(HeartBlit {
+            dx: heart * per,
+            sprite: container,
+        });
         if blink {
             // The GHOST layer, driven by `displayedValue` rather than the live
             // score — which is what makes a drop show where the health *was*.
             if heart * 2 + 1 < displayed {
-                out.push(HeartBlit { dx: heart * per, sprite: HeartSprite::FullBlinking });
+                out.push(HeartBlit {
+                    dx: heart * per,
+                    sprite: HeartSprite::FullBlinking,
+                });
             }
             if heart * 2 + 1 == displayed {
-                out.push(HeartBlit { dx: heart * per, sprite: HeartSprite::HalfBlinking });
+                out.push(HeartBlit {
+                    dx: heart * per,
+                    sprite: HeartSprite::HalfBlinking,
+                });
             }
         }
         if heart * 2 + 1 < score {
@@ -1023,7 +1055,7 @@ mod tests {
         // version that recomputed before incrementing lands one column short
         // on every overflowing size.
         const TABLE: &[(usize, i32, i32)] = &[
-            (0, 1, 0),   // loop never runs
+            (0, 1, 0), // loop never runs
             (1, 1, 1),
             (20, 1, 20), // `rows > 20` is false at exactly 20
             (21, 2, 11), // not 20 + 1
@@ -1435,7 +1467,9 @@ mod tests {
         // every score in every column lines up regardless of its own name.
         let e = n_players(2);
         let mut input = TabListInput::new(854, true, 60);
-        input.score = ScoreColumn::Numeric { max_score_width: 20 };
+        input.score = ScoreColumn::Numeric {
+            max_score_width: 20,
+        };
         let l = layout(&input, &e);
         let s = &l.entries[0];
         assert_eq!(s.score_span.unwrap().0, s.name.0 + 60 + 1);
@@ -1448,8 +1482,7 @@ mod tests {
         let l = layout(&TabListInput::new(854, true, 60), &e);
         assert_eq!(l.entries.len(), 80);
         for s in &l.entries {
-            let expected_x =
-                l.entries[0].background.x + s.col * (l.slot_width + COLUMN_GAP);
+            let expected_x = l.entries[0].background.x + s.col * (l.slot_width + COLUMN_GAP);
             assert_eq!(s.background.x, expected_x);
             assert_eq!(s.background.y, l.list_band.y + 1 + s.row * ROW_STRIDE);
             assert!(s.row < l.rows);
@@ -1557,11 +1590,17 @@ mod hearts_tests {
     fn a_damage_blink_starts_dark_and_a_heal_blink_starts_lit() {
         let mut hurt = HealthState::new(20);
         hurt.update(19, 100);
-        assert!(!hurt.is_blinking(100), "a decrease is DARK on the tick it lands");
+        assert!(
+            !hurt.is_blinking(100),
+            "a decrease is DARK on the tick it lands"
+        );
 
         let mut healed = HealthState::new(20);
         healed.update(21, 100);
-        assert!(healed.is_blinking(100), "an increase is LIT on the tick it lands");
+        assert!(
+            healed.is_blinking(100),
+            "an increase is LIT on the tick it lands"
+        );
     }
 
     /// The blink ends, and it is a square wave rather than a fade.
@@ -1587,11 +1626,11 @@ mod hearts_tests {
         h.update(10, 0); // decrease: blink until 20
         h.update(11, 1); // increase one tick later: blink until 11, not 20
         assert!(h.is_blinking(8), "still blinking inside the shorter window");
-        assert!(!h.is_blinking(9), "and 9 is a DARK phase of that window, not its end");
         assert!(
-            !h.is_blinking(12),
-            "and over well before the decrease's 20"
+            !h.is_blinking(9),
+            "and 9 is a DARK phase of that window, not its end"
         );
+        assert!(!h.is_blinking(12), "and over well before the decrease's 20");
     }
 
     /// The displayed value catches up **only after** the delay, and the test
@@ -1656,8 +1695,11 @@ mod hearts_tests {
     fn a_filled_heart_sits_on_its_own_container() {
         let h = HealthState::new(20);
         let blits = heart_blits(20, h, 0, 0, HEARTS_WIDTH);
-        let at_zero: Vec<HeartSprite> =
-            blits.iter().filter(|b| b.dx == 0).map(|b| b.sprite).collect();
+        let at_zero: Vec<HeartSprite> = blits
+            .iter()
+            .filter(|b| b.dx == 0)
+            .map(|b| b.sprite)
+            .collect();
         assert_eq!(
             at_zero,
             vec![HeartSprite::Container, HeartSprite::Full],
@@ -1692,7 +1734,10 @@ mod hearts_tests {
             .filter(|b| b.dx == 9 * per)
             .map(|b| b.sprite)
             .collect();
-        assert!(ninth.contains(&HeartSprite::Full), "and index 9 is ordinary");
+        assert!(
+            ninth.contains(&HeartSprite::Full),
+            "and index 9 is ordinary"
+        );
     }
 
     /// **The two halves of `update` provably cannot both fire on one tick**,

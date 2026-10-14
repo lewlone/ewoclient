@@ -21,9 +21,7 @@
 //! Launching screen's stage label (and reusable elsewhere).
 
 use ewo_core::CubicBezier;
-use skia_safe::{
-    canvas::SaveLayerRec, image_filters, Canvas, Font, Paint, TileMode,
-};
+use skia_safe::{canvas::SaveLayerRec, image_filters, Canvas, Font, Paint, TileMode};
 
 /// Crossfade duration in seconds.
 const FADE_SECONDS: f32 = 0.5;
@@ -107,12 +105,9 @@ fn draw_with_effects(
     let mut layer_paint = Paint::default();
     layer_paint.set_alpha_f(alpha);
     if blur_sigma > 0.05 {
-        if let Some(filter) = image_filters::blur(
-            (blur_sigma, blur_sigma),
-            TileMode::Decal,
-            None,
-            None,
-        ) {
+        if let Some(filter) =
+            image_filters::blur((blur_sigma, blur_sigma), TileMode::Decal, None, None)
+        {
             layer_paint.set_image_filter(filter);
         }
     }

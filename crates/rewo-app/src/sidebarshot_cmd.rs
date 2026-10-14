@@ -194,12 +194,7 @@ pub fn run(args: SidebarshotArgs) -> Result<(), String> {
 fn ref_frame(gui_w: i32, gui_h: i32, width: i32, count: i32) -> (i32, i32, i32, i32) {
     let height = count * 9;
     let bottom = gui_h / 2 + height / 3;
-    (
-        gui_w - width - 3,
-        gui_w - 3 + 2,
-        bottom,
-        bottom - count * 9,
-    )
+    (gui_w - width - 3, gui_w - 3 + 2, bottom, bottom - count * 9)
 }
 
 /// `graphics.text(font, e.name, left, y, -1, false)` — row `i`'s baseline row
@@ -399,12 +394,7 @@ struct Frame {
 impl Frame {
     fn at(&self, x: i32, y: i32) -> [u8; 4] {
         let i = ((y as usize) * W as usize + x as usize) * 4;
-        [
-            self.px[i],
-            self.px[i + 1],
-            self.px[i + 2],
-            self.px[i + 3],
-        ]
+        [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
     }
     /// The GUI pixel at `(gx, gy)`, sampled at its centre so a half-pixel
     /// rounding cannot decide the answer.
@@ -542,29 +532,24 @@ fn check_pixels(
     let clear = [1.0, 1.0, 1.0, 1.0];
     let px = SCALE as f32;
 
-    let styled_ids = rewo_data::number_formats::NumberFormatTypeIds::load(&
-        DataPaths::for_version("26.2")
+    let styled_ids = rewo_data::number_formats::NumberFormatTypeIds::load(
+        &DataPaths::for_version("26.2")
             .ok_or("no config dir")?
             .registries_json(),
     )?;
     let scoreboard = build_scoreboard(styled_ids);
     let lang = baked.lang.clone();
 
-    let sidebar = crate::live_cmd::resolve_sidebar(
-        &scoreboard,
-        "SbViewer",
-        false,
-        &lang,
-        Some(advance),
-    )
-    .ok_or("sidebarshot: the production resolver found no sidebar")?;
+    let sidebar =
+        crate::live_cmd::resolve_sidebar(&scoreboard, "SbViewer", false, &lang, Some(advance))
+            .ok_or("sidebarshot: the production resolver found no sidebar")?;
     let layout = sidebar::layout(&sidebar, GUI_W, GUI_H);
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    fills: Vec<rewo_gpu::hud::HudFill>,
-                    lines: Vec<rewo_gpu::world::OwnedTextLine>|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                fills: Vec<rewo_gpu::hud::HudFill>,
+                lines: Vec<rewo_gpu::world::OwnedTextLine>|
      -> Result<Frame, String> {
         // `WorldRenderer::draw` gates the HUD pass on `hud_state` being set,
         // so a gate that only pushed fills would render none of them — which
@@ -585,7 +570,9 @@ fn check_pixels(
         wr.set_hud_fills(fills);
         wr.set_text(lines);
         off.render(gpu, Some((&mut *wr, vp)), &overlay_draw, clear)?;
-        Ok(Frame { px: off.read_rgba(gpu)? })
+        Ok(Frame {
+            px: off.read_rgba(gpu)?,
+        })
     };
 
     // -- the control: no display objective at all ---------------------------

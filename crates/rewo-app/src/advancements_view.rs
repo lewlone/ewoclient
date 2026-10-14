@@ -40,7 +40,7 @@
 //!   (`getProgressText`, `:139`).
 
 use rewo_data::lang::Language;
-use rewo_gpu::screen::{Fill, ScreenDraw, ScissorBatch, Sheet, SpriteDraw};
+use rewo_gpu::screen::{Fill, ScissorBatch, ScreenDraw, Sheet, SpriteDraw};
 use rewo_gpu::world::OwnedTextLine;
 use rewo_world::string_splitter::find_line_break;
 use rewo_world::{
@@ -71,7 +71,11 @@ impl AdvancementsView {
         let measure = |t: &str| rewo_gpu::text::width(t, advance);
         let mut screen = asm::AdvancementsScreen::default();
         for root in adv.tabs() {
-            let display = root.advancement.display.as_ref().expect("tabs have displays");
+            let display = root
+                .advancement
+                .display
+                .as_ref()
+                .expect("tabs have displays");
             let done = adv.is_done(&root.id).unwrap_or(false);
             let percent = adv
                 .progress(&root.id)
@@ -415,11 +419,7 @@ fn resolve_display(
 }
 
 /// `AdvancementWidget.findOptimalLines` over plain text.
-fn find_optimal_lines(
-    input: &str,
-    preferred: i32,
-    measure: &dyn Fn(&str) -> i32,
-) -> Vec<String> {
+fn find_optimal_lines(input: &str, preferred: i32, measure: &dyn Fn(&str) -> i32) -> Vec<String> {
     let mut best: Option<(f32, Vec<String>)> = None;
     for off in TEST_SPLIT_OFFSETS {
         let split = split_plain(input, preferred - off, measure);
@@ -543,7 +543,11 @@ pub fn chrome(view: &AdvancementsView, gui_w: i32, gui_h: i32, screen_width: i32
                 height: h,
                 sheet: Sheet::White,
                 fill: Fill::Stretch,
-                color: if black { [0.0, 0.0, 0.0, 1.0] } else { [1.0; 4] },
+                color: if black {
+                    [0.0, 0.0, 0.0, 1.0]
+                } else {
+                    [1.0; 4]
+                },
             });
         }
     }
@@ -635,13 +639,7 @@ pub fn chrome(view: &AdvancementsView, gui_w: i32, gui_h: i32, screen_width: i32
 /// The hover tooltip's two-half progress bar — `extractHover`'s blit pair:
 /// differing halves sample the OBTAINED sheet from u=0 and the UNOBTAINED
 /// sheet ending at u=200; matching halves collapse to one full-width blit.
-fn push_bar(
-    out: &mut Vec<SpriteDraw>,
-    w: &asm::Widget,
-    g: &asm::TooltipGeom,
-    ox: i32,
-    oy: i32,
-) {
+fn push_bar(out: &mut Vec<SpriteDraw>, w: &asm::Widget, g: &asm::TooltipGeom, ox: i32, oy: i32) {
     let (first_half_w, first_obt, second_obt, _) = w.bar_split(w.width);
     let second_bar_w = w.width - first_half_w;
     if first_obt != second_obt {
@@ -735,11 +733,7 @@ pub fn lines(
             if text.is_empty() {
                 return;
             }
-            let x = if centered {
-                x - measure(text) / 2
-            } else {
-                x
-            };
+            let x = if centered { x - measure(text) / 2 } else { x };
             out.push(OwnedTextLine {
                 x: x as f32 * px,
                 y: y as f32 * px,
@@ -802,7 +796,14 @@ pub fn lines(
                     } else {
                         scroll.0 + w.x + w.width - tw - 5
                     };
-                    push(&mut out, text, in_x + tx, in_y + g.title_top + 9, 0xFF_FFFF, false);
+                    push(
+                        &mut out,
+                        text,
+                        in_x + tx,
+                        in_y + g.title_top + 9,
+                        0xFF_FFFF,
+                        false,
+                    );
                 }
                 for (li, line) in w.description_lines.iter().enumerate() {
                     push(
@@ -950,8 +951,8 @@ mod tests {
         d.cursor_seed((0.0, 0.0));
         d.press(0);
         let _ = d.cursor_moved((10.0, 10.0), 1.0); // left drag latched
-        // RIGHT press taken MID-drag — vanilla's mouseClicked leaves
-        // isScrolling alone; the cancellation belongs to the next MOVE.
+                                                   // RIGHT press taken MID-drag — vanilla's mouseClicked leaves
+                                                   // isScrolling alone; the cancellation belongs to the next MOVE.
         d.press(1);
         assert_eq!(d.cursor_moved((20.0, 20.0), 1.0), None, "right-held move");
         // Left takes over again: the latch was cleared UNDER THE RIGHT

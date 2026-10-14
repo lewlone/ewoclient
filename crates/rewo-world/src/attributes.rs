@@ -179,7 +179,13 @@ impl EntityAttributes {
                 kept.push(m);
             }
         }
-        self.by_id.insert(attr, Instance { base, modifiers: kept });
+        self.by_id.insert(
+            attr,
+            Instance {
+                base,
+                modifiers: kept,
+            },
+        );
     }
 
     /// The stored instance for a wire id, if the server has sent one.
@@ -267,7 +273,10 @@ mod tests {
 
     #[test]
     fn a_bare_base_is_the_value() {
-        let i = Instance { base: 20.0, modifiers: vec![] };
+        let i = Instance {
+            base: 20.0,
+            modifiers: vec![],
+        };
         assert_eq!(i.value(&MAX_HEALTH), 20.0);
     }
 
@@ -298,7 +307,10 @@ mod tests {
         // the post-ADD_VALUE base (30), so both give 45 here...
         let with_add_base = Instance {
             base: 20.0,
-            modifiers: vec![m(10.0, Operation::AddValue), m(0.5, Operation::AddMultipliedBase)],
+            modifiers: vec![
+                m(10.0, Operation::AddValue),
+                m(0.5, Operation::AddMultipliedBase),
+            ],
         };
         assert_eq!(with_add_base.value(&MAX_HEALTH), 45.0);
 
@@ -316,9 +328,15 @@ mod tests {
 
     #[test]
     fn the_clamp_bites_at_both_ends() {
-        let low = Instance { base: 0.0, modifiers: vec![] };
+        let low = Instance {
+            base: 0.0,
+            modifiers: vec![],
+        };
         assert_eq!(low.value(&MAX_HEALTH), 1.0, "min is 1.0, not 0.0");
-        let high = Instance { base: 5000.0, modifiers: vec![] };
+        let high = Instance {
+            base: 5000.0,
+            modifiers: vec![],
+        };
         assert_eq!(high.value(&MAX_HEALTH), 1024.0);
     }
 

@@ -394,9 +394,9 @@ impl BiomeMoodState {
             // block, on the same ray — always further away and quieter than
             // the block that triggered it, under LINEAR attenuation.
             out.push(SoundEvent::Instance(SoundInstance::for_ambient_mood(
-                    mood.sound.clone(),
-                    feet[0] + dx / dist * out_dist,
-                    eye_y + dy / dist * out_dist,
+                mood.sound.clone(),
+                feet[0] + dx / dist * out_dist,
+                eye_y + dy / dist * out_dist,
                 feet[2] + dz / dist * out_dist,
             )));
             self.moodiness = 0.0;
@@ -640,7 +640,11 @@ mod tests {
 
         out.clear();
         underwater_edge(7, [1.0, 64.0, 2.0], true, false, false, &mut out);
-        assert_eq!(out.len(), 1, "the exit sound ALONE — the loop is not stopped");
+        assert_eq!(
+            out.len(),
+            1,
+            "the exit sound ALONE — the loop is not stopped"
+        );
         match &out[0] {
             SoundEvent::Local(l) => assert_eq!(l.name, UNDERWATER_EXIT),
             other => panic!("{other:?}"),
@@ -665,7 +669,12 @@ mod tests {
         underwater_edge(1, [0.0; 3], false, true, false, &mut out);
         let loops = out
             .iter()
-            .filter(|e| matches!(e, SoundEvent::Tickable(TickableSound::UnderwaterLoop { .. })))
+            .filter(|e| {
+                matches!(
+                    e,
+                    SoundEvent::Tickable(TickableSound::UnderwaterLoop { .. })
+                )
+            })
             .count();
         assert_eq!(loops, 2);
         // …and nothing in the sequence stops one.
@@ -681,7 +690,10 @@ mod tests {
         h.tick(Some(true), false, [0.0; 3], &mut out);
         assert!(out.is_empty(), "firstTick suppresses it");
         h.tick(Some(true), false, [0.0; 3], &mut out);
-        assert!(out.is_empty(), "…and the edge already latched, so still nothing");
+        assert!(
+            out.is_empty(),
+            "…and the edge already latched, so still nothing"
+        );
         h.tick(None, false, [0.0; 3], &mut out);
         assert!(out.is_empty());
         h.tick(Some(true), false, [0.0; 3], &mut out);
@@ -692,7 +704,10 @@ mod tests {
     /// because it comes from `Player.playSound`.
     #[test]
     fn drag_picks_the_sound_and_the_source_is_players() {
-        for (drag, want) in [(true, BUBBLE_WHIRLPOOL_INSIDE), (false, BUBBLE_UPWARDS_INSIDE)] {
+        for (drag, want) in [
+            (true, BUBBLE_WHIRLPOOL_INSIDE),
+            (false, BUBBLE_UPWARDS_INSIDE),
+        ] {
             let mut h = BubbleColumnHandler::default();
             let mut out = Vec::new();
             h.tick(None, false, [0.0; 3], &mut out); // clear firstTick
@@ -719,7 +734,10 @@ mod tests {
         h.tick(Some(true), true, [0.0; 3], &mut out);
         assert!(out.is_empty(), "suppressed");
         h.tick(Some(true), false, [0.0; 3], &mut out);
-        assert!(out.is_empty(), "…and latched, so leaving spectator is silent");
+        assert!(
+            out.is_empty(),
+            "…and latched, so leaving spectator is silent"
+        );
     }
 
     /// A missing chunk reads as "no column", which RE-ARMS the edge — the
@@ -765,7 +783,14 @@ mod tests {
             let mut s = BiomeMoodState { moodiness: 0.5 };
             let mut out = Vec::new();
             let mut r = rng();
-            s.tick(&mood, [0.0, 64.0, 0.0], 65.62, &FixedLight(block, 0), &mut r, &mut out);
+            s.tick(
+                &mood,
+                [0.0, 64.0, 0.0],
+                65.62,
+                &FixedLight(block, 0),
+                &mut r,
+                &mut out,
+            );
             s.moodiness
         };
         assert!(step(0) > 0.5, "block light 0 builds");
@@ -781,7 +806,10 @@ mod tests {
         let build = step(0) - 0.5;
         let drain = 0.5 - step(15);
         let unit = 1.0 / mood.tick_delay as f32;
-        assert!((build - unit).abs() < unit * 1e-3, "dark builds by 1/tickDelay");
+        assert!(
+            (build - unit).abs() < unit * 1e-3,
+            "dark builds by 1/tickDelay"
+        );
         assert!(
             (drain - 14.0 * unit).abs() < unit * 1e-3,
             "light 15 drains by 14/tickDelay"
@@ -797,7 +825,14 @@ mod tests {
             let mut s = BiomeMoodState { moodiness: 0.5 };
             let mut out = Vec::new();
             let mut r = rng();
-            s.tick(&mood, [0.0, 64.0, 0.0], 65.62, &FixedLight(block, sky), &mut r, &mut out);
+            s.tick(
+                &mood,
+                [0.0, 64.0, 0.0],
+                65.62,
+                &FixedLight(block, sky),
+                &mut r,
+                &mut out,
+            );
             s.moodiness
         };
         // Sky 1 with pitch-black block light still DRAINS, because the block
@@ -825,8 +860,8 @@ mod tests {
         };
         assert_eq!(i.identifier, "minecraft:ambient.cave");
         // The placed sound is `offset` further from the ear than the block.
-        let d_sound = ((i.x - feet[0]).powi(2) + (i.y - eye).powi(2) + (i.z - feet[2]).powi(2))
-            .sqrt();
+        let d_sound =
+            ((i.x - feet[0]).powi(2) + (i.y - eye).powi(2) + (i.z - feet[2]).powi(2)).sqrt();
         assert!(
             d_sound > mood.sound_position_offset,
             "further than the offset alone"
@@ -949,7 +984,10 @@ mod tests {
             (plain - 0.009).abs() < 0.0004,
             "the plain band is 0.009 (the constant says 0.01), measured {plain}"
         );
-        assert!((ultra - 0.0001).abs() < 0.00005, "ultra rare, measured {ultra}");
+        assert!(
+            (ultra - 0.0001).abs() < 0.00005,
+            "ultra rare, measured {ultra}"
+        );
         assert!(
             (ultra + rare + plain - 0.01).abs() < 0.0005,
             "…and they sum to the widest band, which is what partitioning means"
@@ -1136,7 +1174,14 @@ mod tests {
         );
         // A different loop is.
         out.clear();
-        h.tick(&with_loop("minecraft:ambient.crimson_forest.loop"), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        h.tick(
+            &with_loop("minecraft:ambient.crimson_forest.loop"),
+            [0.0; 3],
+            1.62,
+            &NoLight,
+            &mut r,
+            &mut out,
+        );
         assert_eq!(
             transitions(&out),
             vec![Some("minecraft:ambient.crimson_forest.loop".to_string())]
@@ -1154,12 +1199,30 @@ mod tests {
         let mut out = Vec::new();
         h.tick(&with_loop("a"), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
         out.clear();
-        h.tick(&AmbientSounds::empty(), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
-        assert_eq!(transitions(&out), vec![None], "the fade-out still has to be told");
+        h.tick(
+            &AmbientSounds::empty(),
+            [0.0; 3],
+            1.62,
+            &NoLight,
+            &mut r,
+            &mut out,
+        );
+        assert_eq!(
+            transitions(&out),
+            vec![None],
+            "the fade-out still has to be told"
+        );
         // …and staying there emits nothing more.
         out.clear();
         for _ in 0..5 {
-            h.tick(&AmbientSounds::empty(), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+            h.tick(
+                &AmbientSounds::empty(),
+                [0.0; 3],
+                1.62,
+                &NoLight,
+                &mut r,
+                &mut out,
+            );
         }
         assert!(transitions(&out).is_empty());
     }
@@ -1207,7 +1270,14 @@ mod tests {
             }
         }
         for _ in 0..50 {
-            h.tick(&AmbientSounds::empty(), [0.0; 3], 1.62, &Bright, &mut r, &mut out);
+            h.tick(
+                &AmbientSounds::empty(),
+                [0.0; 3],
+                1.62,
+                &Bright,
+                &mut r,
+                &mut out,
+            );
         }
         assert_eq!(h.moodiness(), 0.9, "frozen, not drained");
         // With a mood present, the same light drains it.

@@ -83,8 +83,7 @@ impl ModuleConfig {
     /// or missing file never breaks the modules.
     pub fn load() -> Self {
         let mut cfg = Self::defaults();
-        let Some(text) = modules_toml_path().and_then(|p| std::fs::read_to_string(p).ok())
-        else {
+        let Some(text) = modules_toml_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
             return cfg;
         };
         let mut current: Option<usize> = None;
@@ -104,8 +103,10 @@ impl ModuleConfig {
             let value = value.trim().trim_matches('"');
             if key == "enabled" {
                 cfg.states[idx].enabled = value == "true";
-            } else if let Some(slot) =
-                catalog::REGISTRY[idx].settings.iter().position(|s| s.id == key)
+            } else if let Some(slot) = catalog::REGISTRY[idx]
+                .settings
+                .iter()
+                .position(|s| s.id == key)
             {
                 if let Ok(v) = value.parse::<f32>() {
                     cfg.states[idx].settings[slot] = v;

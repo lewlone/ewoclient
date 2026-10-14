@@ -37,12 +37,8 @@ const SKY_LIGHT_COLOR: &[(i64, [f32; 3])] = &[
     (22860, NIGHT_SKY_LIGHT_COLOR),
 ];
 /// `SKY_COLOR` multiplier track — the rendered sky fades to black at night.
-const SKY_COLOR: &[(i64, [f32; 3])] = &[
-    (133, WHITE),
-    (11867, WHITE),
-    (13670, BLACK),
-    (22330, BLACK),
-];
+const SKY_COLOR: &[(i64, [f32; 3])] =
+    &[(133, WHITE), (11867, WHITE), (13670, BLACK), (22330, BLACK)];
 /// `FOG_COLOR` multiplier track.
 const FOG_COLOR: &[(i64, [f32; 3])] = &[
     (133, WHITE),

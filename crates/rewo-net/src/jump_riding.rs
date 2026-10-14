@@ -149,10 +149,12 @@ mod tests {
     const HORSE: Option<JumpableVehicle> = Some(JumpableVehicle { cooldown: 0 });
 
     fn hold(j: &mut JumpRiding, ticks: usize) -> Vec<f32> {
-        (0..ticks).map(|_| {
-            j.tick(true, HORSE);
-            j.scale()
-        }).collect()
+        (0..ticks)
+            .map(|_| {
+                j.tick(true, HORSE);
+                j.scale()
+            })
+            .collect()
     }
 
     /// The ramp is the formula's: no 1.0 cap, no 0.1 floor, a decay after ten.
@@ -168,7 +170,11 @@ mod tests {
         assert!((v[10] - 1.0).abs() < 1e-6, "tick 10: 0.8 + 2/1 * 0.1");
         assert!((v[11] - 0.9).abs() < 1e-6, "tick 11: 0.8 + 2/2 * 0.1");
         let v = hold(&mut j, 8); // ticks 12..=19 (the first hold ended on tick 11)
-        assert!((v[7] - 0.82).abs() < 1e-6, "tick 19: 0.8 + 2/10 * 0.1 = 0.82; got {}", v[7]);
+        assert!(
+            (v[7] - 0.82).abs() < 1e-6,
+            "tick 19: 0.8 + 2/10 * 0.1 = 0.82; got {}",
+            v[7]
+        );
         assert!((v[6] - (0.8 + 2.0 / 9.0 * 0.1)).abs() < 1e-6, "tick 18");
         assert!(v.iter().all(|s| *s > 0.8), "decays TOWARD 0.8, never below");
     }
@@ -184,7 +190,10 @@ mod tests {
         assert_eq!(j.ticks(), -10);
         for _ in 0..9 {
             assert_eq!(j.tick(false, HORSE), None);
-            assert!((j.scale() - 0.5).abs() < 1e-6, "the bar stays up through the jump");
+            assert!(
+                (j.scale() - 0.5).abs() < 1e-6,
+                "the bar stays up through the jump"
+            );
         }
         assert_eq!(j.tick(false, HORSE), None);
         assert_eq!((j.ticks(), j.scale()), (0, 0.0), "the tenth tick zeroes it");
@@ -207,9 +216,16 @@ mod tests {
         // Re-press: rising edge -> ticks 0, scale 0. Without the zero it would
         // stay 0.5 and the next held tick would jump to 0.1 off a live 0.5.
         j.tick(true, HORSE);
-        assert_eq!((j.ticks(), j.scale()), (0, 0.0), "the press resets a held scale");
+        assert_eq!(
+            (j.ticks(), j.scale()),
+            (0, 0.0),
+            "the press resets a held scale"
+        );
         j.tick(true, HORSE);
-        assert!((j.scale() - 0.1).abs() < 1e-6, "and the ramp restarts from tick 1");
+        assert!(
+            (j.scale() - 0.1).abs() < 1e-6,
+            "and the ramp restarts from tick 1"
+        );
     }
 
     /// No vehicle, or a vehicle on cooldown, is the `else`: scale 0 and no
@@ -223,7 +239,11 @@ mod tests {
         let mut j = JumpRiding::default();
         hold(&mut j, 6);
         let camel = Some(JumpableVehicle { cooldown: 3 });
-        assert_eq!(j.tick(false, camel), None, "the release during a dash cooldown sends nothing");
+        assert_eq!(
+            j.tick(false, camel),
+            None,
+            "the release during a dash cooldown sends nothing"
+        );
         assert_eq!(j.scale(), 0.0);
         // And after the cooldown clears, a fresh press starts from zero.
         assert_eq!(j.tick(true, HORSE), None);
@@ -232,7 +252,10 @@ mod tests {
 
     #[test]
     fn the_packet_is_three_varints() {
-        assert_eq!(player_command_body(7, START_RIDING_JUMP, 100), vec![7, 3, 100]);
+        assert_eq!(
+            player_command_body(7, START_RIDING_JUMP, 100),
+            vec![7, 3, 100]
+        );
         assert_eq!(START_RIDING_JUMP, 3, "the enum's fourth constant");
     }
 }

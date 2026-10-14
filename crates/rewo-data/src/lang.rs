@@ -82,8 +82,7 @@ impl DeprecatedTranslations {
             removed: Vec<String>,
             renamed: IndexMap<String, String>,
         }
-        let doc: Doc =
-            serde_json::from_str(json).map_err(|e| format!("deprecated.json: {e}"))?;
+        let doc: Doc = serde_json::from_str(json).map_err(|e| format!("deprecated.json: {e}"))?;
         Ok(Self {
             removed: doc.removed,
             renamed: doc.renamed,
@@ -618,7 +617,11 @@ mod tests {
     fn a_literal_percent_is_a_one_character_part() {
         assert_eq!(
             decompose_template("100%% sure", 0),
-            Some(vec![Part::Literal("100"), Part::Literal("%"), Part::Literal(" sure")])
+            Some(vec![
+                Part::Literal("100"),
+                Part::Literal("%"),
+                Part::Literal(" sure")
+            ])
         );
     }
 
@@ -686,13 +689,19 @@ mod tests {
     /// only compose in this order.
     #[test]
     fn the_rewrite_and_the_substitution_compose() {
-        assert_eq!(format(&rewrite_unsupported_formats("%d apples"), &["3"]), "3 apples");
+        assert_eq!(
+            format(&rewrite_unsupported_formats("%d apples"), &["3"]),
+            "3 apples"
+        );
     }
 
     /// A multi-byte value must survive both passes byte-for-byte.
     #[test]
     fn non_ascii_text_is_untouched() {
-        assert_eq!(rewrite_unsupported_formats("caf\u{e9} \u{2014} %d"), "caf\u{e9} \u{2014} %s");
+        assert_eq!(
+            rewrite_unsupported_formats("caf\u{e9} \u{2014} %d"),
+            "caf\u{e9} \u{2014} %s"
+        );
         assert_eq!(format("caf\u{e9} %s", &["\u{2014}"]), "caf\u{e9} \u{2014}");
     }
 
@@ -700,10 +709,7 @@ mod tests {
     /// client puts on screen for a missing translation.
     #[test]
     fn a_missing_key_resolves_to_itself() {
-        let l = Language::from_json(
-            r#"{"a.b":"Value"}"#,
-            &DeprecatedTranslations::empty(),
-        );
+        let l = Language::from_json(r#"{"a.b":"Value"}"#, &DeprecatedTranslations::empty());
         assert_eq!(l.get("a.b"), Some("Value"));
         assert_eq!(l.get("nope"), None);
         assert_eq!(l.or_key("nope"), "nope");

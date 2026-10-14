@@ -90,13 +90,13 @@ impl ShellStyle {
     /// One table among possible others. When the HUD is redesigned this is the
     /// thing that gets replaced -- not the shader, and not the widget code.
     pub const VELVET: ShellStyle = ShellStyle {
-        bloom: srgb(0xE5, 0xB8, 0xC5, 0.42),         // rose, scaled by energy
-        shadow: [0.0, 0.0, 0.0, 0.55],               // black, +6y, sigma 8
-        outer_ring: srgb(0x12, 0x00, 0x10, 0.55),    // wine, 1px outside
-        fill: srgb(0x12, 0x00, 0x10, 0.50),          // wine
-        inset_ring: srgb(0x12, 0x00, 0x10, 0.25),    // wine, 1px inside
+        bloom: srgb(0xE5, 0xB8, 0xC5, 0.42), // rose, scaled by energy
+        shadow: [0.0, 0.0, 0.0, 0.55],       // black, +6y, sigma 8
+        outer_ring: srgb(0x12, 0x00, 0x10, 0.55), // wine, 1px outside
+        fill: srgb(0x12, 0x00, 0x10, 0.50),  // wine
+        inset_ring: srgb(0x12, 0x00, 0x10, 0.25), // wine, 1px inside
         top_highlight: srgb(0xF4, 0xE8, 0xEA, 0.10), // pearl, top 2px only
-        border: srgb(0xF4, 0xE8, 0xEA, 0.18),        // pearl, resting alpha
+        border: srgb(0xF4, 0xE8, 0xEA, 0.18), // pearl, resting alpha
     };
 }
 
@@ -144,11 +144,7 @@ pub struct VelvetChromePass {
 }
 
 impl VelvetChromePass {
-    pub fn new(
-        gpu: &mut Gpu,
-        color_format: vk::Format,
-        style: ShellStyle,
-    ) -> Result<Self, String> {
+    pub fn new(gpu: &mut Gpu, color_format: vk::Format, style: ShellStyle) -> Result<Self, String> {
         let device = gpu.device.clone();
         unsafe {
             let bindings = [vk::DescriptorSetLayoutBinding::default()
@@ -266,12 +262,9 @@ impl VelvetChromePass {
         let n = shells.len().min(MAX_SHELLS);
         self.instances = n as u32;
         let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                shells.as_ptr() as *const u8,
-                n * INSTANCE_STRIDE as usize,
-            )
+            std::slice::from_raw_parts(shells.as_ptr() as *const u8, n * INSTANCE_STRIDE as usize)
         };
-        
+
         let kept = self.ring.write_fixed(bytes, INSTANCE_STRIDE as usize);
         self.instances = (kept / INSTANCE_STRIDE as usize) as u32;
         let Some(vbuf) = self.ring.bind() else {
@@ -417,8 +410,7 @@ fn build_pipeline(
         let blend =
             vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic =
-            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let color_formats = [color_format];
         let mut rendering = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(&color_formats)

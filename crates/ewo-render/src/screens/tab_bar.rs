@@ -144,7 +144,11 @@ pub fn draw_tab_bar(
 
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_color(if active || is_hover { TEXT_PEARL } else { TEXT_MAUVE });
+        paint.set_color(if active || is_hover {
+            TEXT_PEARL
+        } else {
+            TEXT_MAUVE
+        });
 
         let baseline = rect.top + ITEM_PAD_Y + (-metrics.ascent);
         let origin = (rect.left + ITEM_PAD_X, baseline);

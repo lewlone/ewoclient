@@ -322,8 +322,12 @@ impl ChatScreen {
             CommandInfo::Command(text) => self.command_request = Some(text),
             CommandInfo::Message => {
                 self.command_request = None;
-                self.suggestions
-                    .auto_show(&mut self.input, env.metrics, env.auto_suggestions, env.width);
+                self.suggestions.auto_show(
+                    &mut self.input,
+                    env.metrics,
+                    env.auto_suggestions,
+                    env.width,
+                );
             }
             CommandInfo::Blank => self.command_request = None,
         }
@@ -348,8 +352,12 @@ impl ChatScreen {
         env: &SuggestionEnv<'_>,
     ) {
         self.suggestions.set_pending(Some(suggestions));
-        self.suggestions
-            .auto_show(&mut self.input, env.metrics, env.auto_suggestions, env.width);
+        self.suggestions.auto_show(
+            &mut self.input,
+            env.metrics,
+            env.auto_suggestions,
+            env.width,
+        );
     }
 
     /// `ChatScreen.keyPressed`.
@@ -376,12 +384,10 @@ impl ChatScreen {
         // edit box and the confirmation. That is what lets Up/Down walk the
         // popup rather than the send history whenever one is open.
         let before = self.input.value();
-        if self.suggestions.key_pressed(
-            input,
-            &mut self.input,
-            env.metrics,
-            env.width,
-        ) {
+        if self
+            .suggestions
+            .key_pressed(input, &mut self.input, env.metrics, env.width)
+        {
             if self.input.value() != before {
                 // Applying a suggestion is an edit, so vanilla's responder
                 // fires — but from inside `setValue`, while `keepSuggestions`
@@ -717,10 +723,7 @@ pub enum DraftOutcome {
 /// is the half that surprises: it collapses every internal run of whitespace to
 /// a single space, so a message is never sent with a double space in it.
 pub fn normalize_chat_message(message: &str) -> String {
-    let normalized: String = message
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let normalized: String = message.split_whitespace().collect::<Vec<_>>().join(" ");
     normalized.chars().take(MAX_CHAT_LENGTH).collect()
 }
 
@@ -844,21 +847,29 @@ mod tests {
         let cmd_draft = Draft::of("/time set");
         // `MESSAGE.isDraftRestorable` is a bare `true`.
         assert_eq!(
-            ChatScreen::open(ChatMethod::Message, Some(&msg_draft), 0).input.value(),
+            ChatScreen::open(ChatMethod::Message, Some(&msg_draft), 0)
+                .input
+                .value(),
             "hello there"
         );
         assert_eq!(
-            ChatScreen::open(ChatMethod::Message, Some(&cmd_draft), 0).input.value(),
+            ChatScreen::open(ChatMethod::Message, Some(&cmd_draft), 0)
+                .input
+                .value(),
             "/time set"
         );
         // `COMMAND`'s is `this == draft.chatMethod`, so a message draft is not
         // restored — otherwise `/` would give "/hello there".
         assert_eq!(
-            ChatScreen::open(ChatMethod::Command, Some(&msg_draft), 0).input.value(),
+            ChatScreen::open(ChatMethod::Command, Some(&msg_draft), 0)
+                .input
+                .value(),
             "/"
         );
         assert_eq!(
-            ChatScreen::open(ChatMethod::Command, Some(&cmd_draft), 0).input.value(),
+            ChatScreen::open(ChatMethod::Command, Some(&cmd_draft), 0)
+                .input
+                .value(),
             "/time set"
         );
     }
@@ -930,7 +941,10 @@ mod tests {
         let mut s = screen(0);
         let mut clip = String::new();
         s.input.set_value("   ");
-        assert_eq!(s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10, &env()), ChatAction::None);
+        assert_eq!(
+            s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10, &env()),
+            ChatAction::None
+        );
         // `handleChatInput`'s `if (!msg.isEmpty())` guards the send, not the
         // close — the screen goes away either way.
         assert_eq!(s.exit_reason(), ExitReason::Done);
@@ -1029,7 +1043,10 @@ mod tests {
         let mut s = screen(0);
         assert_eq!(s.mouse_scrolled(1.0, false, (0, 0)), ChatAction::Scroll(7));
         assert_eq!(s.mouse_scrolled(4.0, false, (0, 0)), ChatAction::Scroll(7));
-        assert_eq!(s.mouse_scrolled(-4.0, false, (0, 0)), ChatAction::Scroll(-7));
+        assert_eq!(
+            s.mouse_scrolled(-4.0, false, (0, 0)),
+            ChatAction::Scroll(-7)
+        );
         // Shift holds it to one line.
         assert_eq!(s.mouse_scrolled(4.0, true, (0, 0)), ChatAction::Scroll(1));
     }
@@ -1041,10 +1058,7 @@ mod tests {
         let mut s = screen(0);
         s.input.set_value("unsent");
         s.close();
-        assert_eq!(
-            s.removed(true),
-            DraftOutcome::Save(Draft::of("unsent")),
-        );
+        assert_eq!(s.removed(true), DraftOutcome::Save(Draft::of("unsent")),);
 
         let mut s = screen(0);
         let mut clip = String::new();
@@ -1156,7 +1170,13 @@ mod tests {
         let mut clip = String::new();
         s.char_typed('S', &e);
         assert!(s.suggestions.is_visible());
-        s.key_pressed(k(crate::command_suggestions::KEY_ESCAPE), &mut clip, &recent, 10, &e);
+        s.key_pressed(
+            k(crate::command_suggestions::KEY_ESCAPE),
+            &mut clip,
+            &recent,
+            10,
+            &e,
+        );
         assert!(!s.suggestions.is_visible());
         s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &e);
         assert_eq!(s.input.value(), "earlier");
@@ -1245,7 +1265,10 @@ mod tests {
         let mut s = screen(0);
         let mut clip = String::new();
         // F5, which the caller should still get.
-        assert_eq!(s.key_pressed(k(294), &mut clip, &[], 10, &env()), ChatAction::NotHandled);
+        assert_eq!(
+            s.key_pressed(k(294), &mut clip, &[], 10, &env()),
+            ChatAction::NotHandled
+        );
     }
 
     // ---- M128: clickable chat text ---------------------------------------
@@ -1254,13 +1277,18 @@ mod tests {
     use std::sync::Arc;
 
     fn styled(events: ChatEvents) -> ChatStyle {
-        ChatStyle { events: Some(Arc::new(events)), ..ChatStyle::WHITE }
+        ChatStyle {
+            events: Some(Arc::new(events)),
+            ..ChatStyle::WHITE
+        }
     }
 
     fn with_click(click: ClickEvent) -> ChatStyle {
-        styled(ChatEvents { click: Some(click), ..Default::default() })
+        styled(ChatEvents {
+            click: Some(click),
+            ..Default::default()
+        })
     }
-
 
     /// `Commands.trimOptionalPrefix` takes ONE slash, so `//co i` survives as
     /// `/co i` — a plugin command, not a typo.
@@ -1276,7 +1304,10 @@ mod tests {
     fn a_run_command_click_leaves_as_a_command_without_its_slash() {
         let mut s = screen(0);
         assert_eq!(
-            s.handle_component_clicked(&with_click(ClickEvent::RunCommand("/kill @e".into())), false),
+            s.handle_component_clicked(
+                &with_click(ClickEvent::RunCommand("/kill @e".into())),
+                false
+            ),
             ChatClick::RunCommand("kill @e".into())
         );
     }
@@ -1318,12 +1349,24 @@ mod tests {
             ClickEvent::CopyToClipboard("x".into()),
             ClickEvent::ChangePage(3),
             ClickEvent::ShowDialog(rewo_proto::nbt::Nbt::String("d".into())),
-            ClickEvent::Custom { id: "ns:thing".into(), payload: None },
-            ClickEvent::Custom { id: QUEUE_EXPAND_ID.into(), payload: None },
-            ClickEvent::Custom { id: GO_TO_RESTRICTIONS_SCREEN.into(), payload: None },
+            ClickEvent::Custom {
+                id: "ns:thing".into(),
+                payload: None,
+            },
+            ClickEvent::Custom {
+                id: QUEUE_EXPAND_ID.into(),
+                payload: None,
+            },
+            ClickEvent::Custom {
+                id: GO_TO_RESTRICTIONS_SCREEN.into(),
+                payload: None,
+            },
         ] {
             assert!(
-                matches!(s.handle_component_clicked(&with_click(event.clone()), false), ChatClick::Declined(_)),
+                matches!(
+                    s.handle_component_clicked(&with_click(event.clone()), false),
+                    ChatClick::Declined(_)
+                ),
                 "{event:?}"
             );
         }
@@ -1341,13 +1384,19 @@ mod tests {
             insertion: Some("Steve".into()),
             ..Default::default()
         });
-        assert_eq!(s.handle_component_clicked(&both, true), ChatClick::NotHandled);
+        assert_eq!(
+            s.handle_component_clicked(&both, true),
+            ChatClick::NotHandled
+        );
         assert_eq!(s.input.value(), "Steve");
 
         // And with no insertion at all, a shift-click still does not run it.
         let mut s = screen(0);
         let click_only = with_click(ClickEvent::RunCommand("/kill".into()));
-        assert_eq!(s.handle_component_clicked(&click_only, true), ChatClick::NotHandled);
+        assert_eq!(
+            s.handle_component_clicked(&click_only, true),
+            ChatClick::NotHandled
+        );
         assert_eq!(s.input.value(), "");
     }
 
@@ -1357,8 +1406,14 @@ mod tests {
     fn a_shift_insertion_inserts_rather_than_replaces() {
         let mut s = screen(0);
         s.input.set_value("hi ");
-        let style = styled(ChatEvents { insertion: Some("Steve".into()), ..Default::default() });
-        assert_eq!(s.handle_component_clicked(&style, true), ChatClick::NotHandled);
+        let style = styled(ChatEvents {
+            insertion: Some("Steve".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            s.handle_component_clicked(&style, true),
+            ChatClick::NotHandled
+        );
         assert_eq!(s.input.value(), "hi Steve");
     }
 
@@ -1388,7 +1443,10 @@ mod tests {
         assert!(!s.is_draft(), "suggest_command replaced the field");
 
         let mut s = fresh();
-        let ins = styled(ChatEvents { insertion: Some("Steve".into()), ..Default::default() });
+        let ins = styled(ChatEvents {
+            insertion: Some("Steve".into()),
+            ..Default::default()
+        });
         s.handle_component_clicked(&ins, true);
         assert!(!s.is_draft(), "the shift insertion changed the field");
     }
@@ -1397,8 +1455,14 @@ mod tests {
     #[test]
     fn a_plain_style_is_not_consumed() {
         let mut s = screen(0);
-        assert_eq!(s.handle_component_clicked(&ChatStyle::WHITE, false), ChatClick::NotHandled);
-        assert_eq!(s.handle_component_clicked(&ChatStyle::WHITE, true), ChatClick::NotHandled);
+        assert_eq!(
+            s.handle_component_clicked(&ChatStyle::WHITE, false),
+            ChatClick::NotHandled
+        );
+        assert_eq!(
+            s.handle_component_clicked(&ChatStyle::WHITE, true),
+            ChatClick::NotHandled
+        );
     }
 
     /// `event.button() == 0` — a right-click on a link does not even look.

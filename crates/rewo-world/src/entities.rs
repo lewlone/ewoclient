@@ -1674,7 +1674,9 @@ impl EntityTable {
     /// mutation to it changed nothing — the battery reported it as a survivor,
     /// which is what a dead accessor looks like from the outside.
     pub fn guardian_has_attack_target(&self, id: i32) -> bool {
-        self.guardian_attack.get(&id).is_some_and(GuardianAttack::has_target)
+        self.guardian_attack
+            .get(&id)
+            .is_some_and(GuardianAttack::has_target)
     }
 
     /// `Guardian.getAttackAnimationScale(0.0F)` —
@@ -1685,9 +1687,9 @@ impl EntityTable {
     /// `ElderGuardian.java:40`), so the same counter yields a different scale
     /// and the elder's beam ramps a third faster.
     pub fn guardian_attack_scale(&self, id: i32, attack_duration: i32) -> f32 {
-        self.guardian_attack
-            .get(&id)
-            .map_or(0.0, |g| g.client_side_attack_time as f32 / attack_duration as f32)
+        self.guardian_attack.get(&id).map_or(0.0, |g| {
+            g.client_side_attack_time as f32 / attack_duration as f32
+        })
     }
 
     /// `Bee.DATA_ANGER_END_TIME` (M141f) — a synced **deadline**, not a flag.
@@ -2555,9 +2557,7 @@ impl EntityTable {
     /// The installed attachment table, if any. Read by M83's locator bar for
     /// a type's declared `sized(width, height)` — the only place outside
     /// riding that needs an entity's bounding box.
-    pub fn attachments(
-        &self,
-    ) -> Option<&rewo_data::entity_attachments::Attachments> {
+    pub fn attachments(&self) -> Option<&rewo_data::entity_attachments::Attachments> {
         self.attachments.as_deref()
     }
 
@@ -2733,11 +2733,7 @@ impl EntityTable {
             // The forcing is vanilla's own lagging-cloak gap, in blocks;
             // `wavy_cape::ANCHOR_ACCEL` is what turns it into an
             // acceleration, and its comment carries the derivation.
-            let delta = [
-                cloak[0] - pos[0],
-                cloak[1] - pos[1],
-                cloak[2] - pos[2],
-            ];
+            let delta = [cloak[0] - pos[0], cloak[1] - pos[1], cloak[2] - pos[2]];
             capes
                 .entry(*id)
                 .or_insert_with(|| {
@@ -3030,10 +3026,16 @@ mod tests {
         }
         let (spinning, prog) = t.allay_dance_render(1, 1.0).unwrap();
         assert!(spinning, "5 % 55 < 15 → spinning");
-        assert!((prog - 5.0 / 15.0).abs() < 1e-6, "progress @alpha=1 = 5/15: {prog}");
+        assert!(
+            (prog - 5.0 / 15.0).abs() < 1e-6,
+            "progress @alpha=1 = 5/15: {prog}"
+        );
         // Partial-tick interpolation blends spinning_ticks0=4 → spinning_ticks=5.
         let half = t.allay_dance_render(1, 0.5).unwrap().1;
-        assert!((half - 4.5 / 15.0).abs() < 1e-6, "progress @alpha=0.5 = 4.5/15: {half}");
+        assert!(
+            (half - 4.5 / 15.0).abs() < 1e-6,
+            "progress @alpha=0.5 = 4.5/15: {half}"
+        );
         // Tick 15 crosses out of the spin window (15 % 55 = 15, not < 15), so
         // spinning flips off and spinning_ticks starts ramping back down.
         for _ in 5..15 {
@@ -3070,7 +3072,10 @@ mod tests {
         assert_eq!(t.allay_dance_render(1, 1.0), Some((true, 0.0)));
         t.tick_lerp();
         let (_, prog) = t.allay_dance_render(1, 1.0).unwrap();
-        assert!((prog - 1.0 / 15.0).abs() < 1e-6, "one tick after restart: 1/15, got {prog}");
+        assert!(
+            (prog - 1.0 / 15.0).abs() < 1e-6,
+            "one tick after restart: 1/15, got {prog}"
+        );
     }
 
     #[test]
@@ -3081,13 +3086,20 @@ mod tests {
         t.tick_lerp();
         assert!(t.allay_dance_render(1, 1.0).is_some());
         t.remove(1);
-        assert_eq!(t.allay_dance_render(1, 1.0), None, "removal clears the dance");
+        assert_eq!(
+            t.allay_dance_render(1, 1.0),
+            None,
+            "removal clears the dance"
+        );
         // A reused id (dropped despawn, new occupant) must not inherit the clock.
         t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
         t.set_dancing(1, true);
         t.tick_lerp();
         let (_, prog) = t.allay_dance_render(1, 1.0).unwrap();
-        assert!((prog - 1.0 / 15.0).abs() < 1e-6, "fresh occupant restarts at 1/15, got {prog}");
+        assert!(
+            (prog - 1.0 / 15.0).abs() < 1e-6,
+            "fresh occupant restarts at 1/15, got {prog}"
+        );
     }
 
     // -- combat swings (M19) ------------------------------------------------
@@ -3170,7 +3182,13 @@ mod tests {
         assert!(t.swing(1, InteractionHand::OffHand, true));
         assert_eq!(
             t.swing_debug(1),
-            Some((true, -1, 3.0 / 6.0, 2.0 / 6.0, Some(InteractionHand::OffHand)))
+            Some((
+                true,
+                -1,
+                3.0 / 6.0,
+                2.0 / 6.0,
+                Some(InteractionHand::OffHand)
+            ))
         );
     }
 
@@ -3255,7 +3273,11 @@ mod tests {
         for _ in 0..12 {
             t.tick_lerp();
         }
-        assert_eq!(t.swing_debug(1).unwrap().1, -1, "frozen at the accept value");
+        assert_eq!(
+            t.swing_debug(1).unwrap().1,
+            -1,
+            "frozen at the accept value"
+        );
         assert_eq!(t.attack_anim(1, 1.0), 0.0);
         // An exact update repairs it and the clock resumes.
         t.set_hand_item(
@@ -3418,7 +3440,11 @@ mod m20_mob_state_tests {
         t.set_mob_flags(1, 0b0000_0010);
         assert_eq!(t.main_arm(1), HumanoidArm::Left);
         t.set_mob_flags(1, 0b0000_0100);
-        assert_eq!(t.main_arm(1), HumanoidArm::Right, "clearing bit 2 restores it");
+        assert_eq!(
+            t.main_arm(1),
+            HumanoidArm::Right,
+            "clearing bit 2 restores it"
+        );
         assert!(t.mob_state(1).is_aggressive());
     }
 
@@ -3494,7 +3520,11 @@ mod m21_hurt_tests {
         t.remove(1);
         assert_eq!(t.hurt_state(1), HurtState::default());
         t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
-        assert_eq!(t.hurt_state(1), HurtState::default(), "a reused id must not inherit it");
+        assert_eq!(
+            t.hurt_state(1),
+            HurtState::default(),
+            "a reused id must not inherit it"
+        );
     }
 
     /// A usable item, for the M23 clock tests.
@@ -3866,7 +3896,11 @@ mod jump_vehicle_tests {
     fn the_dash_cooldown_arms_after_the_first_tick_from_zero_only() {
         let mut t = table_with(9);
         t.arm_dash_cooldown(9, 55);
-        assert_eq!(t.dash_cooldown(9), 0, "the spawn-time DASH entry arrives before the first tick");
+        assert_eq!(
+            t.dash_cooldown(9),
+            0,
+            "the spawn-time DASH entry arrives before the first tick"
+        );
         t.tick_lerp();
         assert!(t.has_ticked(9));
         t.arm_dash_cooldown(9, 55);
@@ -3876,7 +3910,11 @@ mod jump_vehicle_tests {
         }
         assert_eq!(t.dash_cooldown(9), 45);
         t.arm_dash_cooldown(9, 55);
-        assert_eq!(t.dash_cooldown(9), 45, "`dashCooldown == 0 ? 55 : dashCooldown` does not restart");
+        assert_eq!(
+            t.dash_cooldown(9),
+            45,
+            "`dashCooldown == 0 ? 55 : dashCooldown` does not restart"
+        );
         for _ in 0..50 {
             t.tick_lerp();
         }
@@ -3892,15 +3930,30 @@ mod jump_vehicle_tests {
     #[test]
     fn the_camel_refuses_while_sitting_or_changing_pose() {
         let mut t = table_with(9);
-        assert!(!t.camel_refuse_to_move(9, 1000), "default 0: standing, long settled");
+        assert!(
+            !t.camel_refuse_to_move(9, 1000),
+            "default 0: standing, long settled"
+        );
         t.set_last_pose_change_tick(9, -900);
-        assert!(t.camel_refuse_to_move(9, 1000), "negative = sitting, always refuses");
+        assert!(
+            t.camel_refuse_to_move(9, 1000),
+            "negative = sitting, always refuses"
+        );
         t.set_last_pose_change_tick(9, 900);
-        assert!(t.camel_refuse_to_move(9, 951), "standing up: 51 < 52 is still the transition");
+        assert!(
+            t.camel_refuse_to_move(9, 951),
+            "standing up: 51 < 52 is still the transition"
+        );
         assert!(!t.camel_refuse_to_move(9, 952), "52 is not");
         t.set_last_pose_change_tick(9, -900);
-        assert!(t.camel_refuse_to_move(9, 939) && t.camel_refuse_to_move(9, 940), "sitting refuses regardless of the 40");
-        assert!(!t.camel_refuse_to_move(8, 1000), "an untracked entity refuses nothing");
+        assert!(
+            t.camel_refuse_to_move(9, 939) && t.camel_refuse_to_move(9, 940),
+            "sitting refuses regardless of the 40"
+        );
+        assert!(
+            !t.camel_refuse_to_move(8, 1000),
+            "an untracked entity refuses nothing"
+        );
         // Saddled defaults to false and follows the setter.
         assert!(!t.saddled(9));
         t.set_saddled(9, true);

@@ -90,7 +90,10 @@ pub fn model_from_jem_for(
     // Vanilla parent of a top-level part, when both ends exist in this `.jem`.
     let hier = crate::vanilla_hier::parents_for(entity);
     let top_name = |p: &Value| {
-        p.get("part").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        p.get("part")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
     };
     let present: Vec<String> = models.iter().map(top_name).collect();
     let vanilla_parent = |name: &str| -> Option<String> {
@@ -109,7 +112,10 @@ pub fn model_from_jem_for(
                 continue;
             }
             let ready = match vanilla_parent(&present[i]) {
-                Some(p) => present.iter().position(|n| *n == p).is_some_and(|j| placed[j]),
+                Some(p) => present
+                    .iter()
+                    .position(|n| *n == p)
+                    .is_some_and(|j| placed[j]),
                 None => true,
             };
             if ready {
@@ -133,15 +139,35 @@ pub fn model_from_jem_for(
             .and_then(|p| top_bones.get(&p).copied())
             .map_or((None, [0.0; 3]), |(bone, piv)| (Some(bone), piv));
         let pivot_abs = to_model_pt([-t[0], -t[1], -t[2]]);
-        let mut c = NodeCtx { bones: &mut bones, translates: &mut translates, names: &mut names, tops: &mut tops, boxes: &mut boxes };
-        let bone = add_node(&mut b, part, parent_bone, parent_pivot, t, t, t, true, &mut c);
+        let mut c = NodeCtx {
+            bones: &mut bones,
+            translates: &mut translates,
+            names: &mut names,
+            tops: &mut tops,
+            boxes: &mut boxes,
+        };
+        let bone = add_node(
+            &mut b,
+            part,
+            parent_bone,
+            parent_pivot,
+            t,
+            t,
+            t,
+            true,
+            &mut c,
+        );
         top_bones.insert(present[i].clone(), (bone, pivot_abs));
     }
     if boxes == 0 {
         return Err("jem: no boxes (geometry only in referenced .jpm?)".into());
     }
     let mut model = b.finish(1.0);
-    debug_assert_eq!(translates.len(), model.parts.len(), "translate baseline per bone");
+    debug_assert_eq!(
+        translates.len(),
+        model.parts.len(),
+        "translate baseline per bone"
+    );
     model.cem_translate = translates;
     model.cem_names = names;
     model.cem_top = tops;
@@ -185,7 +211,11 @@ fn add_node(
 ) -> usize {
     // Box offset: submodel translates accumulate; the top-level translate is
     // the pivot, so it's removed (`acc_t − top_t` == 0 for the top level).
-    let box_off = [acc_t[0] - top_t[0], acc_t[1] - top_t[1], acc_t[2] - top_t[2]];
+    let box_off = [
+        acc_t[0] - top_t[0],
+        acc_t[1] - top_t[1],
+        acc_t[2] - top_t[2],
+    ];
     // Absolute pivot: top-level = −translate; submodel = its accumulated
     // position (`box_off`). Both mapped to model space by `to_model_pt`.
     let pivot_abs = if is_top {
@@ -204,11 +234,7 @@ fn add_node(
     // X/Y negate, Z passes. 71 of FA's 119 models use it (234 parts), so
     // dropping it put limbs in visibly wrong places.
     let rot = vec3(node.get("rotate")).map_or([0.0; 3], |r| {
-        [
-            -r[0].to_radians(),
-            -r[1].to_radians(),
-            r[2].to_radians(),
-        ]
+        [-r[0].to_radians(), -r[1].to_radians(), r[2].to_radians()]
     });
     let bone = b.cem_part(rel_pivot, rot, parent_bone);
     debug_assert_eq!(c.translates.len(), bone, "translate vec tracks bone index");
@@ -263,7 +289,17 @@ fn add_node(
         for sub in subs {
             let st = vec3(sub.get("translate")).unwrap_or([0.0; 3]);
             let child_acc = [acc_t[0] + st[0], acc_t[1] + st[1], acc_t[2] + st[2]];
-            add_node(b, sub, Some(bone), pivot_abs, child_acc, st, top_t, false, c);
+            add_node(
+                b,
+                sub,
+                Some(bone),
+                pivot_abs,
+                child_acc,
+                st,
+                top_t,
+                false,
+                c,
+            );
         }
     }
     bone
@@ -280,7 +316,9 @@ fn emit_box(
     pivot: [f32; 3],
     mirror: bool,
 ) {
-    let Some(c) = bx.get("coordinates").and_then(|v| v.as_array()) else { return };
+    let Some(c) = bx.get("coordinates").and_then(|v| v.as_array()) else {
+        return;
+    };
     if c.len() < 6 {
         return;
     }
@@ -291,7 +329,12 @@ fn emit_box(
     let uv = bx
         .get("textureOffset")
         .and_then(|v| v.as_array())
-        .map(|a| (a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32))
+        .map(|a| {
+            (
+                a[0].as_f64().unwrap_or(0.0) as f32,
+                a[1].as_f64().unwrap_or(0.0) as f32,
+            )
+        })
         // No box-UV offset → 0; per-face `uv*` rects (below) override anyway.
         .unwrap_or((0.0, 0.0));
     // Per-face UV rects (OptiFine `uvNorth`/… — texture-pixel [u0,v0,u1,v1]).
@@ -309,7 +352,17 @@ fn emit_box(
     let jmin = [min[0] + off[0], min[1] + off[1], min[2] + off[2]];
     let to_model = Fold::rot([0.0, 0.0, std::f32::consts::PI], [0.0, BASE_Y, 0.0]);
     let unpivot = Fold::at([-pivot[0], -pivot[1], -pivot[2]]);
-    b.cube_f_faceuv(part, 0, uv, jmin, dims, grow, mirror, &[to_model, unpivot], &face_uv);
+    b.cube_f_faceuv(
+        part,
+        0,
+        uv,
+        jmin,
+        dims,
+        grow,
+        mirror,
+        &[to_model, unpivot],
+        &face_uv,
+    );
 }
 
 /// Read a `uv<Face>` key as a texture-pixel rect `[u0,v0,u1,v1]`, or `None`
@@ -365,7 +418,11 @@ fn parse_anim(src: &str, bones: &HashMap<String, usize>) -> Result<AnimProgram, 
                         // Intern a slot for `bone.channel` so its value is
                         // readable by later expressions (mirror/derive-scale).
                         let slot = slots.get_or_add(key);
-                        Target::Bone { part: part as u16, channel, slot }
+                        Target::Bone {
+                            part: part as u16,
+                            channel,
+                            slot,
+                        }
                     }
                     _ => continue, // unknown bone or channel → skip
                 }
@@ -390,7 +447,10 @@ fn parse_anim(src: &str, bones: &HashMap<String, usize>) -> Result<AnimProgram, 
             log::warn!("cem: unsupported variable {name:?} — evaluates to 0");
         }
     }
-    Ok(AnimProgram { steps, slot_count: slots.len() })
+    Ok(AnimProgram {
+        steps,
+        slot_count: slots.len(),
+    })
 }
 
 /// Evaluate a mob's animation program for one frame. Returns, per part:
@@ -424,7 +484,11 @@ pub fn eval_program(
                     *u = v;
                 }
             }
-            Target::Bone { part, channel, slot } => {
+            Target::Bone {
+                part,
+                channel,
+                slot,
+            } => {
                 // Publish the raw (OptiFine-convention) value for later reads,
                 // BEFORE the render-space sign flip below.
                 if let Some(u) = ctx.user.get_mut(*slot) {
@@ -463,7 +527,11 @@ pub fn eval_program(
             }
         }
     }
-    CemFrame { deltas: out, scale, visible }
+    CemFrame {
+        deltas: out,
+        scale,
+        visible,
+    }
 }
 
 /// One frame of evaluated CEM bone channels, indexed by part.
@@ -521,7 +589,10 @@ mod tests {
     /// the parent now that submodels are their own bones — sum up the chain).
     fn abs_pivot_y(m: &Model, part: usize) -> f32 {
         let p = &m.parts[part];
-        let base = p.parent.map(|par| abs_pivot_y(m, par as usize)).unwrap_or(0.0);
+        let base = p
+            .parent
+            .map(|par| abs_pivot_y(m, par as usize))
+            .unwrap_or(0.0);
         base + p.pivot[1]
     }
 
@@ -552,7 +623,10 @@ mod tests {
         let m = model_from_jem(jem, &no_jpms()).unwrap();
         assert_eq!(m.quads.len(), 6, "one box → six faces");
         let (lo, hi) = y_span(&m);
-        assert!((lo - 6.0).abs() < 0.01 && (hi - 18.0).abs() < 0.01, "y span {lo}..{hi}");
+        assert!(
+            (lo - 6.0).abs() < 0.01 && (hi - 18.0).abs() < 0.01,
+            "y span {lo}..{hi}"
+        );
     }
 
     /// A submodel's `translate` accumulates (positions nested geometry). The
@@ -566,7 +640,10 @@ mod tests {
                "boxes":[{"coordinates":[-4,0,-4,8,8,8],"textureOffset":[0,0]}]}]}]}"#;
         let m = model_from_jem(jem, &no_jpms()).unwrap();
         let (lo, hi) = y_span(&m);
-        assert!((lo + 2.0).abs() < 0.01 && (hi - 6.0).abs() < 0.01, "head y span {lo}..{hi}");
+        assert!(
+            (lo + 2.0).abs() < 0.01 && (hi - 6.0).abs() < 0.01,
+            "head y span {lo}..{hi}"
+        );
     }
 
     /// The pivot equals `to_model(−translate)` — the vanilla zombie leg
@@ -582,7 +659,10 @@ mod tests {
         let m = model_from_jem(jem, &no_jpms()).unwrap();
         let leg = m.parts[1].pivot; // part 0 is the static root
         let body = m.parts[2].pivot;
-        assert!((leg[0] - 1.9).abs() < 0.01 && (leg[1] - 12.0).abs() < 0.01, "leg pivot {leg:?}");
+        assert!(
+            (leg[0] - 1.9).abs() < 0.01 && (leg[1] - 12.0).abs() < 0.01,
+            "leg pivot {leg:?}"
+        );
         assert!(body[1].abs() < 0.01, "body pivot {body:?}");
     }
 
@@ -599,7 +679,10 @@ mod tests {
         let m = model_from_jem(jem, &no_jpms()).unwrap();
         // parts: 0 = static root, 1 = body (top-level), 2 = head2 (submodel).
         let body = m.parts[1].pivot;
-        assert!((body[1] - 17.0).abs() < 0.01, "body pivot = to_model(−translate) = 17, got {body:?}");
+        assert!(
+            (body[1] - 17.0).abs() < 0.01,
+            "body pivot = to_model(−translate) = 17, got {body:?}"
+        );
         assert_eq!(m.parts[2].parent, Some(1), "head2 is a child of body");
         // head2 stores its pivot relative to body; absolute must be the neck.
         let head2_abs = [
@@ -607,10 +690,16 @@ mod tests {
             body[1] + m.parts[2].pivot[1],
             body[2] + m.parts[2].pivot[2],
         ];
-        assert!((head2_abs[1] - 6.0).abs() < 0.01, "head submodel pivots at the neck y=6, got {head2_abs:?}");
+        assert!(
+            (head2_abs[1] - 6.0).abs() < 0.01,
+            "head submodel pivots at the neck y=6, got {head2_abs:?}"
+        );
         // Static geometry preserved: head box still spans model y[-2,6].
         let (lo, hi) = y_span(&m);
-        assert!((lo + 2.0).abs() < 0.01 && (hi - 6.0).abs() < 0.01, "head y span {lo}..{hi}");
+        assert!(
+            (lo + 2.0).abs() < 0.01 && (hi - 6.0).abs() < 0.01,
+            "head y span {lo}..{hi}"
+        );
     }
 
     /// A referenced `_animations.jpm` parses into a bone-targeted program.
@@ -650,7 +739,10 @@ mod tests {
             .find(|q| q.facing == crate::mobs::Facing::North)
             .expect("north face emitted");
         // rect (a,b,c,e)=(14,17,15,18) → verts [(c,b),(a,b),(a,e),(c,e)].
-        assert_eq!(north.uv, [[15.0, 17.0], [14.0, 17.0], [14.0, 18.0], [15.0, 18.0]]);
+        assert_eq!(
+            north.uv,
+            [[15.0, 17.0], [14.0, 17.0], [14.0, 18.0], [15.0, 18.0]]
+        );
         // The South plane (no explicit uv) falls back to the box-UV unwrap
         // near the texture origin — proving the override is per-face, not
         // whole-box.
@@ -659,7 +751,11 @@ mod tests {
             .iter()
             .find(|q| q.facing == crate::mobs::Facing::South)
             .expect("south face emitted");
-        assert!(south.uv.iter().all(|c| c[0] < 5.0 && c[1] < 5.0), "box-UV fallback, got {:?}", south.uv);
+        assert!(
+            south.uv.iter().all(|c| c[0] < 5.0 && c[1] < 5.0),
+            "box-UV fallback, got {:?}",
+            south.uv
+        );
         assert_ne!(south.uv, north.uv, "override must not leak to other faces");
     }
 
@@ -693,9 +789,15 @@ mod tests {
         let f = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
         // parts: 0 = static root, 1 = "root" (anim holder), 2 = r_eye_white, 3 = l_eye_white.
         assert_eq!(f.scale[2][1], 3.0, "r_eye_white.sy = 3");
-        assert_eq!(f.scale[3][1], 3.0, "l_eye_white.sy mirrors r — requires file order");
+        assert_eq!(
+            f.scale[3][1], 3.0,
+            "l_eye_white.sy mirrors r — requires file order"
+        );
         assert_eq!(f.scale[2][0], 1.0, "unassigned scale axis stays 1");
-        assert!((f.deltas[2][0] + 0.25).abs() < 1e-6, "rx negated by the 180°Z fold");
+        assert!(
+            (f.deltas[2][0] + 0.25).abs() < 1e-6,
+            "rx negated by the 180°Z fold"
+        );
     }
 
     /// OptiFine translation channels *replace* a bone's position, stated in
@@ -737,7 +839,10 @@ mod tests {
             {"part":"leg1","translate":[-19,-9,-4],
              "boxes":[{"coordinates":[-1,0,-1,2,10,2],"textureOffset":[0,0]}]}]}"#;
         let mut jpms2 = HashMap::new();
-        jpms2.insert("b.jpm".to_string(), r#"{"animations":[{"leg1.ty":"23.5"}]}"#.to_string());
+        jpms2.insert(
+            "b.jpm".to_string(),
+            r#"{"animations":[{"leg1.ty":"23.5"}]}"#.to_string(),
+        );
         let m2 = model_from_jem(jem2, &jpms2).unwrap();
         let mut ctx2 = crate::cem_anim::AnimContext::default();
         let f2 = eval_program(
@@ -786,15 +891,26 @@ mod tests {
             let f = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
             seen.push(f.deltas[2][2]); // parts: 0 static, 1 root, 2 head; rz
         }
-        assert_eq!(seen, vec![1.0, 2.0, 3.0], "integrator advances once per frame");
+        assert_eq!(
+            seen,
+            vec![1.0, 2.0, 3.0],
+            "integrator advances once per frame"
+        );
         // Re-evaluating the SAME frame must hold the value, not double-step.
         let f = eval_program(prog, &mut ctx, m.parts.len(), &m.cem_translate);
-        assert_eq!(f.deltas[2][2], 3.0, "same frame_counter holds the integrator");
+        assert_eq!(
+            f.deltas[2][2], 3.0,
+            "same frame_counter holds the integrator"
+        );
     }
 
     #[test]
     fn empty_or_boxless_model_errors() {
         assert!(model_from_jem("{}", &no_jpms()).is_err());
-        assert!(model_from_jem(r#"{"models":[{"part":"root","model":"x.jpm"}]}"#, &no_jpms()).is_err());
+        assert!(model_from_jem(
+            r#"{"models":[{"part":"root","model":"x.jpm"}]}"#,
+            &no_jpms()
+        )
+        .is_err());
     }
 }

@@ -1137,7 +1137,8 @@ fn run_sky_mode_cases(
             let zero = off.read_counted(gpu)?;
             if max_channel_delta(&frame, &zero) != 0 {
                 failures.push(
-                    "END flash: intensity 0 changed the frame — the 1e-5 gate is not holding".into(),
+                    "END flash: intensity 0 changed the frame — the 1e-5 gate is not holding"
+                        .into(),
                 );
             }
 
@@ -1147,7 +1148,9 @@ fn run_sky_mode_cases(
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
             let under = off.read_counted(gpu)?;
             if max_channel_delta(&frame, &under) != 0 {
-                failures.push("END flash: 9e-6 drew — the threshold is a literal 1e-5, not zero".into());
+                failures.push(
+                    "END flash: 9e-6 drew — the threshold is a literal 1e-5, not zero".into(),
+                );
             }
 
             // A real flash brightens, and brightens MORE at a higher

@@ -56,11 +56,8 @@ pub fn largest_png_entry(ico: &[u8]) -> Option<&[u8]> {
         if e + 16 > ico.len() {
             return None;
         }
-        let size = u32::from_le_bytes([ico[e + 8], ico[e + 9], ico[e + 10], ico[e + 11]])
-            as usize;
-        let off =
-            u32::from_le_bytes([ico[e + 12], ico[e + 13], ico[e + 14], ico[e + 15]])
-                as usize;
+        let size = u32::from_le_bytes([ico[e + 8], ico[e + 9], ico[e + 10], ico[e + 11]]) as usize;
+        let off = u32::from_le_bytes([ico[e + 12], ico[e + 13], ico[e + 14], ico[e + 15]]) as usize;
         if size == 0 || off.saturating_add(size) > ico.len() {
             continue;
         }
@@ -90,7 +87,9 @@ fn rgba_from_png(png_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
         .output_buffer_size()
         .ok_or_else(|| "png: no output buffer size (unsupported transform combo)".to_string())?;
     let mut out = vec![0u8; buf_len];
-    let frame = reader.next_frame(&mut out).map_err(|e| format!("png data: {e}"))?;
+    let frame = reader
+        .next_frame(&mut out)
+        .map_err(|e| format!("png data: {e}"))?;
     out.truncate(frame.buffer_size());
     match frame.color_type {
         png::ColorType::Rgba => Ok((out, w, h)),
@@ -118,7 +117,8 @@ fn rgba_from_png(png_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
                 }
                 rgba.extend_from_slice(&palette[base..base + 3]);
                 rgba.push(
-                    trns.and_then(|t| t.get(*idx as usize).copied()).unwrap_or(255),
+                    trns.and_then(|t| t.get(*idx as usize).copied())
+                        .unwrap_or(255),
                 );
             }
             Ok((rgba, w, h))
@@ -199,7 +199,7 @@ mod tests {
     fn truncated_entry_is_skipped_not_panicked_on() {
         let mut blob = ico_container(&[(0, 0, 128, true)]);
         blob.truncate(blob.len() - 100); // corrupt past the last payload end
-        // Directory says 128 bytes; the blob is short now → skipped.
+                                         // Directory says 128 bytes; the blob is short now → skipped.
         assert!(largest_png_entry(&blob).is_none());
     }
 

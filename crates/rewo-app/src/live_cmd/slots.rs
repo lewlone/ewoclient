@@ -294,16 +294,17 @@ pub(crate) fn recipe_book_panel(
     let view = b.view?;
     let mut blits = Vec::new();
     let mut overlays = Vec::new();
-    let chrome = rb::book_chrome(view, &b.slots, b.hover)
-        .into_iter()
-        .chain(open.into_iter().flat_map(|o| {
-            rb::overlay_chrome(
-                o.origin,
-                &o.craftable_flags(),
-                o.furnace,
-                book_mouse.and_then(|(bx, by)| o.hovered(bx, by)),
-            )
-        }));
+    let chrome =
+        rb::book_chrome(view, &b.slots, b.hover)
+            .into_iter()
+            .chain(open.into_iter().flat_map(|o| {
+                rb::overlay_chrome(
+                    o.origin,
+                    &o.craftable_flags(),
+                    o.furnace,
+                    book_mouse.and_then(|(bx, by)| o.hovered(bx, by)),
+                )
+            }));
     for q in chrome {
         let (sx, sy, sw, sh) = q.src.unwrap_or((0, 0, q.w, q.h));
         let blit = rewo_gpu::container::PanelBlit {
@@ -344,14 +345,26 @@ pub(crate) fn recipe_book_panel(
             rb::BookSprite::PageBackward { hovered } => {
                 overlays.push((a::BOOK_PAGE_ARROW + 2 + usize::from(hovered), blit))
             }
-            rb::BookSprite::Filter { furnace, filtering, hovered } => {
-                let base = if furnace { a::BOOK_FILTER_FURNACE } else { a::BOOK_FILTER };
+            rb::BookSprite::Filter {
+                furnace,
+                filtering,
+                hovered,
+            } => {
+                let base = if furnace {
+                    a::BOOK_FILTER_FURNACE
+                } else {
+                    a::BOOK_FILTER
+                };
                 overlays.push((base + rb::filter_sprite_offset(filtering, hovered), blit))
             }
             // M104 — the only sprite in this list that is nine-sliced, so the
             // one whose `src` is not the whole of it.
             rb::BookSprite::OverlayPanel => overlays.push((a::BOOK_OVERLAY_PANEL, blit)),
-            rb::BookSprite::OverlayButton { furnace, craftable, hovered } => overlays.push((
+            rb::BookSprite::OverlayButton {
+                furnace,
+                craftable,
+                hovered,
+            } => overlays.push((
                 a::BOOK_OVERLAY_BUTTON
                     + if furnace { 4 } else { 0 }
                     + 2 * usize::from(!craftable)

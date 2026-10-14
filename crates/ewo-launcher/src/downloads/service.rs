@@ -236,8 +236,17 @@ mod tests {
         assert_eq!(decide(Some((&failed, &None)), &None), StartDecision::Start);
         // A finished vanilla job doesn't swallow a later loader request.
         assert_eq!(decide(Some((&done, &None)), &ewo()), StartDecision::Start);
-        assert_eq!(decide(Some((&running, &None)), &None), StartDecision::Ignore);
-        assert_eq!(decide(Some((&running, &None)), &ewo()), StartDecision::Queue);
-        assert_eq!(decide(Some((&running, &ewo())), &ewo()), StartDecision::Ignore);
+        assert_eq!(
+            decide(Some((&running, &None)), &None),
+            StartDecision::Ignore
+        );
+        assert_eq!(
+            decide(Some((&running, &None)), &ewo()),
+            StartDecision::Queue
+        );
+        assert_eq!(
+            decide(Some((&running, &ewo())), &ewo()),
+            StartDecision::Ignore
+        );
     }
 }

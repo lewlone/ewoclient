@@ -64,7 +64,9 @@ pub fn pack_gui_atlas(items: &rewo_gpu::held::HeldItems, wanted: &[u16]) -> GuiA
         );
     }
     if dropped > 0 {
-        log::warn!("live: {dropped} item textures did not fit the GUI atlas — those icons will not draw");
+        log::warn!(
+            "live: {dropped} item textures did not fit the GUI atlas — those icons will not draw"
+        );
     }
     GuiAtlas { rgba, uv }
 }
@@ -74,10 +76,7 @@ pub fn pack_gui_atlas(items: &rewo_gpu::held::HeldItems, wanted: &[u16]) -> GuiA
 /// The whole baked item set is far larger than the atlas, so this takes the
 /// textures of the items the *player actually has*, which is at most nine
 /// models' worth.
-pub fn gui_atlas_wanted(
-    items: &rewo_gpu::held::HeldItems,
-    models: &[String],
-) -> Vec<u16> {
+pub fn gui_atlas_wanted(items: &rewo_gpu::held::HeldItems, models: &[String]) -> Vec<u16> {
     let mut out: Vec<u16> = Vec::new();
     for name in models {
         if let Some(m) = items.any(name) {
@@ -102,10 +101,12 @@ pub fn hotbar_models(
         let base = items.name(s.item_id)?;
         // M49: the same composed name the screen slots use, so a trimmed piece
         // wears its trim in the hotbar too.
-        Some(match s.trim_material.and_then(|m| trim_materials.get(m as usize)) {
-            Some(m) => format!("{base}#{}", m.id),
-            None => base.to_string(),
-        })
+        Some(
+            match s.trim_material.and_then(|m| trim_materials.get(m as usize)) {
+                Some(m) => format!("{base}#{}", m.id),
+                None => base.to_string(),
+            },
+        )
     })
 }
 
@@ -304,10 +305,7 @@ impl HandState {
             last_tick: 0,
             forced_attack: None,
             started: std::time::Instant::now(),
-            glint: baked
-                .glint
-                .as_ref()
-                .map(|i| (i.rgba.clone(), i.w, i.h)),
+            glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
         }
     }
 
@@ -532,9 +530,7 @@ pub(super) fn apply_hand(
     };
     // `case BLOCK` excepts a real shield, which carries its own display
     // transform for the context and would otherwise be posed twice.
-    let is_shield = |id: Option<i32>| {
-        id.and_then(|i| items.name(i)) == Some("minecraft:shield")
-    };
+    let is_shield = |id: Option<i32>| id.and_then(|i| items.name(i)) == Some("minecraft:shield");
     // `ItemStack.hasFoil()` for each hand (M44). It comes from the
     // **inventory**, not the equipment feed: the server never sends a player
     // their own equipment, which is the same reason M38's swing duration reads
@@ -624,10 +620,7 @@ impl GuiItemState {
             lights: rewo_gpu::gui_item::ItemLights::default(),
             held: to_gpu_held_items(&baked.held_items),
             started: std::time::Instant::now(),
-            glint: baked
-                .glint
-                .as_ref()
-                .map(|i| (i.rgba.clone(), i.w, i.h)),
+            glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
         }
     }
 }

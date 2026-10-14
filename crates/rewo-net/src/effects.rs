@@ -580,11 +580,20 @@ mod tests {
         assert_eq!(t.active().len(), 2, "the other entity's effect is not ours");
         let speed = *t.get(SPEED).expect("speed kept");
         assert_eq!(
-            (speed.amplifier, speed.duration, speed.ambient, speed.visible, speed.show_icon),
+            (
+                speed.amplifier,
+                speed.duration,
+                speed.ambient,
+                speed.visible,
+                speed.show_icon
+            ),
             (1, 3, true, false, true)
         );
         assert!(t.has(NV_ID) && t.get(NV_ID).unwrap().is_infinite());
-        assert!(!t.get(NV_ID).unwrap().ends_within(200), "infinite never ends within");
+        assert!(
+            !t.get(NV_ID).unwrap().ends_within(200),
+            "infinite never ends within"
+        );
         assert!(t.get(SPEED).unwrap().ends_within(200));
         // Replace in place, no duplicate row.
         t.apply_update(&update_body(PLAYER, SPEED, 2, 10, 0));
@@ -596,7 +605,10 @@ mod tests {
         }
         assert_eq!(t.get(SPEED).unwrap().duration, 0, "mapDuration stops at 0");
         assert_eq!(t.get(NV_ID).unwrap().duration, -1);
-        assert!(t.has(SPEED), "an expired effect waits for the server's remove");
+        assert!(
+            t.has(SPEED),
+            "an expired effect waits for the server's remove"
+        );
         t.apply_remove(&{
             let mut b = Vec::new();
             write_varint(&mut b, PLAYER);

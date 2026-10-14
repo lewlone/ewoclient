@@ -28,7 +28,9 @@ pub fn draw_scrollbar(canvas: &Canvas, region: Rect, scroll: f32, content_h: f32
     let frac = (scroll / max_scroll).clamp(0.0, 1.0);
 
     let track_h = visible_h - 2.0 * TRACK_INSET;
-    let thumb_h = ((visible_h / content_h) * track_h).max(MIN_THUMB_H).min(track_h);
+    let thumb_h = ((visible_h / content_h) * track_h)
+        .max(MIN_THUMB_H)
+        .min(track_h);
     let thumb_top = region.top + TRACK_INSET + frac * (track_h - thumb_h);
     let thumb_rect = Rect::from_xywh(
         region.right - TRACK_WIDTH - TRACK_INSET,

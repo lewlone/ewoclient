@@ -25,9 +25,8 @@ use ewo_jni::fixture::{self, Scene};
 use ewo_jni::hud::{self, Editor, HudData};
 use ewo_render::FontStore;
 use skia_safe::{
-    gradient_shader, image_filters, surfaces, BlendMode, ClipOp, Color,
-    Color4f, CubicResampler, Data, EncodedImageFormat, FilterMode, Image, Paint, Point, RRect,
-    Rect, TileMode,
+    gradient_shader, image_filters, surfaces, BlendMode, ClipOp, Color, Color4f, CubicResampler,
+    Data, EncodedImageFormat, FilterMode, Image, Paint, Point, RRect, Rect, TileMode,
 };
 
 fn main() {
@@ -45,7 +44,9 @@ fn main() {
     // The HUD animates now, so a shot is a shot *at a time*. Fixed default so
     // two runs of the harness are byte-identical and a PNG diff means a real
     // change rather than a different phase of the ripple.
-    let time: f32 = flag(&args, "--time").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let time: f32 = flag(&args, "--time")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
     let glass_strength: f32 = flag(&args, "--glass")
         .and_then(|s| s.parse().ok())
         .unwrap_or(1.0);
@@ -122,7 +123,10 @@ fn main() {
     // `--audio level[,pulse[,shape]]` — pin a synthetic spectrum. The real one
     // depends on what is playing on the machine, which no screenshot can rely on.
     if let Some(spec) = flag(&args, "--audio") {
-        let f: Vec<f32> = spec.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        let f: Vec<f32> = spec
+            .split(',')
+            .filter_map(|p| p.trim().parse().ok())
+            .collect();
         editor.set_spectrum(
             f.first().copied().unwrap_or(0.7),
             f.get(1).copied().unwrap_or(0.0),
@@ -250,7 +254,11 @@ fn render(
         fonts,
         wf,
         hf,
-        hud::Frame { time, glass: Some(glass), glass_strength },
+        hud::Frame {
+            time,
+            glass: Some(glass),
+            glass_strength,
+        },
     );
 
     // Backfill the cutouts. In-game the un-frosted game is painted *under* the
@@ -304,7 +312,12 @@ fn downscale_blur(surface: &mut skia_safe::Surface, scale: f32, sigma: f32) -> I
     );
     let mut small = surfaces::raster_n32_premul((w, h)).expect("glass source surface");
     let mut paint = Paint::default();
-    paint.set_image_filter(image_filters::blur((sigma, sigma), TileMode::Clamp, None, None));
+    paint.set_image_filter(image_filters::blur(
+        (sigma, sigma),
+        TileMode::Clamp,
+        None,
+        None,
+    ));
     small
         .canvas()
         .draw_image_rect(&src, None, Rect::from_wh(w as f32, h as f32), &paint);
@@ -450,10 +463,7 @@ fn draw_synthetic_scene(canvas: &skia_safe::Canvas, w: f32, h: f32) {
             };
             // Darken with depth (ambient occlusion-ish) and jitter per tile.
             let k = (1.0 - depth * 0.55) * (0.86 + n * 0.28);
-            block.set_color4f(
-                Color4f::new(base_r * k, base_g * k, base_b * k, 1.0),
-                None,
-            );
+            block.set_color4f(Color4f::new(base_r * k, base_g * k, base_b * k, 1.0), None);
             canvas.draw_rect(
                 Rect::from_xywh(rx as f32 * tile, horizon + ry as f32 * tile, tile, tile),
                 &block,
@@ -504,7 +514,9 @@ fn draw_synthetic_scene(canvas: &skia_safe::Canvas, w: f32, h: f32) {
 /// harness produce byte-identical backgrounds and a PNG diff means a real
 /// change in the HUD, not noise in the backdrop.
 fn hash01(x: i32, y: i32) -> f32 {
-    let mut n = (x as u32).wrapping_mul(374_761_393).wrapping_add((y as u32).wrapping_mul(668_265_263));
+    let mut n = (x as u32)
+        .wrapping_mul(374_761_393)
+        .wrapping_add((y as u32).wrapping_mul(668_265_263));
     n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
     ((n ^ (n >> 16)) & 0xFFFF) as f32 / 65_535.0
 }

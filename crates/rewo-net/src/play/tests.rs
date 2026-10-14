@@ -493,7 +493,10 @@ mod respawn_tests {
         let t = &s.transitions[0];
         assert_eq!(t.old_columns, 3, "the world we left had three columns");
         assert_eq!(t.queued_for_removal, 3, "this transition pushed three");
-        assert_eq!(t.removal_queue_len, 4, "the pre-existing entry is still queued");
+        assert_eq!(
+            t.removal_queue_len, 4,
+            "the pre-existing entry is still queued"
+        );
         assert_eq!(t.new_world_columns, 0);
         assert_eq!(t.dirty_after, 0);
         assert!(t.clock_reset);
@@ -751,7 +754,10 @@ mod respawn_tests {
         assert_eq!(h.food, 20, "FoodData is not synched data — always fresh");
         // `DATA_SHARED_FLAGS_ID` travels on the same `assignValues`, so a
         // player who was mid-glide when they died comes back mid-glide.
-        assert!(h.local_fall_flying, "FLAG_FALL_FLYING carried by assignValues");
+        assert!(
+            h.local_fall_flying,
+            "FLAG_FALL_FLYING carried by assignValues"
+        );
         assert!(!h.dead);
         assert!(
             !h.spawned,
@@ -783,7 +789,10 @@ mod respawn_tests {
         // The fresh entity's shared flags are the defaults, and the server will
         // never re-state one that is already default — so without this reset a
         // glide outlives its player.
-        assert!(!h.local_fall_flying, "fresh entity starts with the flag low");
+        assert!(
+            !h.local_fall_flying,
+            "fresh entity starts with the flag low"
+        );
         assert!(!h.dead);
         assert!(!h.spawned);
     }
@@ -846,7 +855,11 @@ mod clock_map_tests {
 
         // One shared delta, each clock scaling it by its own rate.
         m.handle_updates(1100, &[]);
-        assert_eq!(m.peek(0).unwrap().total, 5_100, "rate 1 takes the whole delta");
+        assert_eq!(
+            m.peek(0).unwrap().total,
+            5_100,
+            "rate 1 takes the whole delta"
+        );
         assert_eq!(m.peek(1).unwrap().total, 127, "rate 0.5 takes half of it");
     }
 
@@ -869,7 +882,11 @@ mod clock_map_tests {
 
         m.handle_updates(1050, &[]);
         assert_eq!(m.peek(7).unwrap().total, 50, "rate 1.0, so it counts up");
-        assert_eq!(m.peek(0).unwrap().total, 5_050, "and the other is unaffected");
+        assert_eq!(
+            m.peek(0).unwrap().total,
+            5_050,
+            "and the other is unaffected"
+        );
     }
 
     /// `lastTickGameTime` is the **manager's**, not the instance's
@@ -897,7 +914,11 @@ mod clock_map_tests {
         let mut m = ClockManager::default();
         m.handle_updates(100, &[(0, 5_000, 0.0, 1.0)]);
         m.handle_updates(120, &[(0, 0, 0.0, 1.0)]);
-        assert_eq!(m.peek(0).unwrap().total, 0, "/time set beats the +20 advance");
+        assert_eq!(
+            m.peek(0).unwrap().total,
+            0,
+            "/time set beats the +20 advance"
+        );
     }
 
     /// `clear` is the level boundary — every clock, not only the overworld's,
@@ -967,7 +988,10 @@ mod clock_map_tests {
     fn default_clock_time_has_three_outcomes() {
         use rewo_world::dimension::{DimensionTypeDef, Skybox};
 
-        let ids = vec!["minecraft:overworld".to_string(), "minecraft:the_end".to_string()];
+        let ids = vec![
+            "minecraft:overworld".to_string(),
+            "minecraft:the_end".to_string(),
+        ];
         let dim = |clock: Option<&str>| {
             let mut d = DimensionTypeDef::unresolved_holder(0);
             d.skybox = Skybox::End;
@@ -1462,7 +1486,10 @@ mod ping_tests {
 
     #[test]
     fn update_latency_is_parsed_rather_than_discarded() {
-        assert_eq!(parse_player_info_latency(&latency_body(&[(7, 42)])), [(7, 42)]);
+        assert_eq!(
+            parse_player_info_latency(&latency_body(&[(7, 42)])),
+            [(7, 42)]
+        );
     }
 
     #[test]
@@ -1481,7 +1508,10 @@ mod ping_tests {
         // PlayerTabOverlay buckets latency < 0 into the no-connection icon, so
         // the wire really does carry negatives; clamping at decode would erase
         // a state vanilla renders.
-        assert_eq!(parse_player_info_latency(&latency_body(&[(9, -1)])), [(9, -1)]);
+        assert_eq!(
+            parse_player_info_latency(&latency_body(&[(9, -1)])),
+            [(9, -1)]
+        );
     }
 
     #[test]
@@ -1633,8 +1663,14 @@ mod player_info_field_tests {
         let (e, res) = parse_player_info(&b);
         assert!(res.is_ok());
         assert_eq!(e.len(), 2);
-        assert_eq!((e[0].uuid, e[0].gamemode, e[0].tab_list_order), (1, Some(GameMode::Spectator), Some(10)));
-        assert_eq!((e[1].uuid, e[1].gamemode, e[1].tab_list_order), (2, Some(GameMode::Creative), Some(20)));
+        assert_eq!(
+            (e[0].uuid, e[0].gamemode, e[0].tab_list_order),
+            (1, Some(GameMode::Spectator), Some(10))
+        );
+        assert_eq!(
+            (e[1].uuid, e[1].gamemode, e[1].tab_list_order),
+            (2, Some(GameMode::Creative), Some(20))
+        );
     }
 
     #[test]
@@ -1867,17 +1903,23 @@ mod m146_music {
         let bg = BackgroundMusic::of_sound("minecraft:music.game.end");
         // Both: the dragon.
         assert_eq!(
-            situational_music_from(true, true, &bg, false, false).unwrap().sound,
+            situational_music_from(true, true, &bg, false, false)
+                .unwrap()
+                .sound,
             "minecraft:music.dragon"
         );
         // A boss bar elsewhere — a wither in the Overworld — is the biome's.
         assert_eq!(
-            situational_music_from(false, true, &bg, false, false).unwrap().sound,
+            situational_music_from(false, true, &bg, false, false)
+                .unwrap()
+                .sound,
             "minecraft:music.game.end"
         );
         // The End with no boss is also the biome's.
         assert_eq!(
-            situational_music_from(true, false, &bg, false, false).unwrap().sound,
+            situational_music_from(true, false, &bg, false, false)
+                .unwrap()
+                .sound,
             "minecraft:music.game.end"
         );
     }
@@ -1894,7 +1936,11 @@ mod m146_music {
         assert_eq!(pick(false, false), "minecraft:music.game");
         assert_eq!(pick(true, false), "minecraft:music.creative");
         assert_eq!(pick(false, true), "minecraft:music.under_water");
-        assert_eq!(pick(true, true), "minecraft:music.under_water", "water wins");
+        assert_eq!(
+            pick(true, true),
+            "minecraft:music.under_water",
+            "water wins"
+        );
     }
 
     /// A place that offers nothing offers nothing — **not** the game track.
@@ -1903,10 +1949,14 @@ mod m146_music {
     /// really is reachable: `OverworldBiomes.java:596` declares one.
     #[test]
     fn an_empty_record_is_silence_rather_than_a_default() {
-        assert!(situational_music_from(false, false, &BackgroundMusic::empty(), false, false).is_none());
+        assert!(
+            situational_music_from(false, false, &BackgroundMusic::empty(), false, false).is_none()
+        );
         // …and the dragon still overrides it, because that arm returns before
         // the record is consulted at all.
-        assert!(situational_music_from(true, true, &BackgroundMusic::empty(), false, false).is_some());
+        assert!(
+            situational_music_from(true, true, &BackgroundMusic::empty(), false, false).is_some()
+        );
     }
 }
 
@@ -1986,15 +2036,31 @@ mod fall_flying_tests {
     /// ladder's business, and an already-flying elytra is not started twice.
     #[test]
     fn the_take_off_line_is_a_conjunction() {
-        assert_eq!(attempt(false, false, false, false, false, true), None, "no press");
-        assert_eq!(attempt(true, true, false, false, false, true), None, "held, not newly pressed");
+        assert_eq!(
+            attempt(false, false, false, false, false, true),
+            None,
+            "no press"
+        );
+        assert_eq!(
+            attempt(true, true, false, false, false, true),
+            None,
+            "held, not newly pressed"
+        );
         assert_eq!(
             attempt(true, false, true, false, false, true),
             None,
             "the press that toggled creative flight"
         );
-        assert_eq!(attempt(true, false, false, true, false, true), None, "on a climbable");
-        assert_eq!(attempt(true, false, false, false, true, true), None, "already gliding");
+        assert_eq!(
+            attempt(true, false, false, true, false, true),
+            None,
+            "on a climbable"
+        );
+        assert_eq!(
+            attempt(true, false, false, false, true, true),
+            None,
+            "already gliding"
+        );
     }
 
     /// The item test is the prototype's `minecraft:glider` component — which
@@ -2056,7 +2122,11 @@ mod entity_collider_tests {
         player_y: f64,
     ) -> SessionPhysics<'a> {
         SessionPhysics {
-            blocks: physics::WorldPhysics { world, collide: &[], blocks: &[] },
+            blocks: physics::WorldPhysics {
+                world,
+                collide: &[],
+                blocks: &[],
+            },
             entities: &world.entities,
             mounts,
             exclude_root,
@@ -2107,9 +2177,18 @@ mod entity_collider_tests {
         let classes = EntityClasses::from_raw_ids(&[pig], &[]);
         let mounts = crate::motion::Mounts::new();
         let mut world = World::new(DimensionShape::OVERWORLD);
-        world
-            .entities
-            .add(7, EntityState::new(0, types.id_of("minecraft:oak_boat").unwrap(), 8.0, 70.0, 8.0, 0.0, 0.0));
+        world.entities.add(
+            7,
+            EntityState::new(
+                0,
+                types.id_of("minecraft:oak_boat").unwrap(),
+                8.0,
+                70.0,
+                8.0,
+                0.0,
+                0.0,
+            ),
+        );
         world
             .entities
             .add(9, EntityState::new(1, pig, 12.0, 70.0, 8.0, 0.0, 0.0));
@@ -2133,12 +2212,24 @@ mod entity_collider_tests {
             passengers: vec![1],
         });
         let mut world = World::new(DimensionShape::OVERWORLD);
-        world.entities.add(7, EntityState::new(0, boat, 8.0, 70.0, 8.0, 0.0, 0.0));
-        world.entities.add(8, EntityState::new(1, boat, 12.0, 70.0, 8.0, 0.0, 0.0));
+        world
+            .entities
+            .add(7, EntityState::new(0, boat, 8.0, 70.0, 8.0, 0.0, 0.0));
+        world
+            .entities
+            .add(8, EntityState::new(1, boat, 12.0, 70.0, 8.0, 0.0, 0.0));
         // What the tick computes for the local player: root of id 1 is 7.
         let exclude_root = Some(mounts.root_vehicle(1).unwrap_or(1));
         assert_eq!(exclude_root, Some(7), "fixture precondition");
-        let p = live_physics(&world, &types, &classes, &shapes, &mounts, exclude_root, 0.0);
+        let p = live_physics(
+            &world,
+            &types,
+            &classes,
+            &shapes,
+            &mounts,
+            exclude_root,
+            0.0,
+        );
 
         assert_eq!(
             p.entity_colliders(SEARCH),
@@ -2158,8 +2249,12 @@ mod entity_collider_tests {
         let classes = EntityClasses::from_raw_ids(&[shulker], &[]);
         let mounts = crate::motion::Mounts::new();
         let mut world = World::new(DimensionShape::OVERWORLD);
-        world.entities.add(4, EntityState::new(0, shulker, 8.0, 70.0, 8.0, 0.0, 0.0));
-        world.entities.add(5, EntityState::new(1, shulker, 12.0, 70.0, 8.0, 0.0, 0.0));
+        world
+            .entities
+            .add(4, EntityState::new(0, shulker, 8.0, 70.0, 8.0, 0.0, 0.0));
+        world
+            .entities
+            .add(5, EntityState::new(1, shulker, 12.0, 70.0, 8.0, 0.0, 0.0));
         world.entities.set_health(5, 0.0);
         let p = live_physics(&world, &types, &classes, &shapes, &mounts, None, 0.0);
 

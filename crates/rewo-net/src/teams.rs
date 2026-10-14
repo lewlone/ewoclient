@@ -386,10 +386,7 @@ pub fn label_visibility(v: Visibility) -> rewo_world::label::NameTagVisibility {
 /// the easy assumption: a bare `new PlayerTeam(...)` sees friendly invisibles
 /// until a parameters packet says otherwise. In practice method 0 always
 /// carries parameters, so this is a defensive arm rather than a live path.
-pub fn label_team<'a>(
-    teams: &'a Teams,
-    member: &str,
-) -> Option<rewo_world::label::TeamView<'a>> {
+pub fn label_team<'a>(teams: &'a Teams, member: &str) -> Option<rewo_world::label::TeamView<'a>> {
     let team = teams.team(teams.team_of_member(member)?)?;
     let (visibility, see_friendly_invisibles) = match &team.parameters {
         Some(p) => (
@@ -456,7 +453,12 @@ mod tests {
         out.push(options);
     }
 
-    fn body(name: &str, method: i8, with_params: Option<(Option<i32>, u8)>, players: &[&str]) -> Vec<u8> {
+    fn body(
+        name: &str,
+        method: i8,
+        with_params: Option<(Option<i32>, u8)>,
+        players: &[&str],
+    ) -> Vec<u8> {
         let mut b = Vec::new();
         utf(&mut b, name);
         b.push(method as u8);
@@ -474,7 +476,8 @@ mod tests {
 
     #[test]
     fn an_add_packet_carries_both_parameters_and_the_founding_roster() {
-        let p = parse_set_player_team(&body("red", 0, Some((Some(12), 3)), &["alice", "bob"])).unwrap();
+        let p =
+            parse_set_player_team(&body("red", 0, Some((Some(12), 3)), &["alice", "bob"])).unwrap();
         assert_eq!(p.name, "red");
         assert_eq!(p.method, TeamMethod::Add);
         assert_eq!(p.players, ["alice", "bob"]);
@@ -569,8 +572,11 @@ mod tests {
     #[test]
     fn a_player_added_to_a_second_team_leaves_the_first() {
         let mut teams = Teams::new();
-        assert!(teams.apply(&parse_set_player_team(&body("red", 0, Some((None, 0)), &["alice"])).unwrap()));
-        assert!(teams.apply(&parse_set_player_team(&body("blue", 0, Some((None, 0)), &[])).unwrap()));
+        assert!(teams
+            .apply(&parse_set_player_team(&body("red", 0, Some((None, 0)), &["alice"])).unwrap()));
+        assert!(
+            teams.apply(&parse_set_player_team(&body("blue", 0, Some((None, 0)), &[])).unwrap())
+        );
         assert!(teams.apply(&parse_set_player_team(&body("blue", 3, None, &["alice"])).unwrap()));
 
         assert_eq!(teams.team_of_member("alice"), Some("blue"));
@@ -583,7 +589,9 @@ mod tests {
     #[test]
     fn removing_a_team_clears_its_members_memberships() {
         let mut teams = Teams::new();
-        teams.apply(&parse_set_player_team(&body("red", 0, Some((None, 0)), &["alice", "bob"])).unwrap());
+        teams.apply(
+            &parse_set_player_team(&body("red", 0, Some((None, 0)), &["alice", "bob"])).unwrap(),
+        );
         teams.apply(&parse_set_player_team(&body("red", 1, None, &[])).unwrap());
 
         assert!(teams.team("red").is_none());
@@ -594,7 +602,9 @@ mod tests {
     #[test]
     fn a_leave_removes_only_the_named_players() {
         let mut teams = Teams::new();
-        teams.apply(&parse_set_player_team(&body("red", 0, Some((None, 0)), &["alice", "bob"])).unwrap());
+        teams.apply(
+            &parse_set_player_team(&body("red", 0, Some((None, 0)), &["alice", "bob"])).unwrap(),
+        );
         teams.apply(&parse_set_player_team(&body("red", 4, None, &["alice"])).unwrap());
 
         assert_eq!(teams.team_of_member("alice"), None);
@@ -629,7 +639,9 @@ mod tests {
     #[test]
     fn a_change_updates_parameters_without_touching_the_roster() {
         let mut teams = Teams::new();
-        teams.apply(&parse_set_player_team(&body("red", 0, Some((Some(1), 0)), &["alice"])).unwrap());
+        teams.apply(
+            &parse_set_player_team(&body("red", 0, Some((Some(1), 0)), &["alice"])).unwrap(),
+        );
         teams.apply(&parse_set_player_team(&body("red", 2, Some((Some(9), 2)), &[])).unwrap());
 
         let red = teams.team("red").unwrap();

@@ -76,9 +76,7 @@ impl StatsView {
         gui_w: i32,
         gui_h: i32,
     ) -> (Self, Screen) {
-        let model = StatsModel::build(
-            counter, reg, items, types, lang, tab, sort, gui_w, gui_h,
-        );
+        let model = StatsModel::build(counter, reg, items, types, lang, tab, sort, gui_w, gui_h);
         let screen = model.build_screen(&labels, gui_w, gui_h);
         let built_from = model.built_from;
         (
@@ -485,7 +483,11 @@ pub fn lines(
                 let (cx, cy, cw, ch) = list.content_rect(i);
                 // `getContentYMiddle() - 9 / 2`.
                 let y = cy + ch / 2 - LINE_HEIGHT / 2;
-                let color = if i % 2 == 0 { ss::ROW_WHITE } else { ss::ROW_DIM };
+                let color = if i % 2 == 0 {
+                    ss::ROW_WHITE
+                } else {
+                    ss::ROW_DIM
+                };
                 run(&mut out, &row.label, cx + 2, y, color);
                 let vw = rewo_gpu::text::width(&row.value, advance);
                 run(&mut out, &row.value, cx + cw - vw - 4, y, color);

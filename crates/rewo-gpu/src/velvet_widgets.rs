@@ -17,9 +17,21 @@ use crate::velvet_glyph::{Axes, Family, GlyphCache, PositionedGlyph, ScalerKey};
 //    transfer function — matching `ewo-jni`'s `rgba()` exactly. See the
 //    colour-space note in REWO_VELVET_UI_PLAN.md §3: these are composited in
 //    GAMMA space, so the pass must render through a UNORM view.
-pub const PEARL: [f32; 3] = [0xF4 as f32 / 255.0, 0xE8 as f32 / 255.0, 0xEA as f32 / 255.0];
-pub const ROSE: [f32; 3] = [0xE5 as f32 / 255.0, 0xB8 as f32 / 255.0, 0xC5 as f32 / 255.0];
-pub const WINE: [f32; 3] = [0x12 as f32 / 255.0, 0x00 as f32 / 255.0, 0x10 as f32 / 255.0];
+pub const PEARL: [f32; 3] = [
+    0xF4 as f32 / 255.0,
+    0xE8 as f32 / 255.0,
+    0xEA as f32 / 255.0,
+];
+pub const ROSE: [f32; 3] = [
+    0xE5 as f32 / 255.0,
+    0xB8 as f32 / 255.0,
+    0xC5 as f32 / 255.0,
+];
+pub const WINE: [f32; 3] = [
+    0x12 as f32 / 255.0,
+    0x00 as f32 / 255.0,
+    0x10 as f32 / 255.0,
+];
 
 /// Where a widget's anchor point sits within its own box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,7 +267,11 @@ pub fn emit_coords(
             sigma,
             &mut g,
         );
-        runs.push(TintedRun { glyphs: g, color: WINE, alpha });
+        runs.push(TintedRun {
+            glyphs: g,
+            color: WINE,
+            alpha,
+        });
     }
     let mut g = Vec::new();
     cache.layout_run(
@@ -265,7 +281,11 @@ pub fn emit_coords(
         layout.label_origin,
         &mut g,
     );
-    runs.push(TintedRun { glyphs: g, color: ROSE, alpha: 0.9 });
+    runs.push(TintedRun {
+        glyphs: g,
+        color: ROSE,
+        alpha: 0.9,
+    });
 
     for (sigma, alpha, dy) in IW_SHADOW {
         let mut g = Vec::new();
@@ -277,11 +297,19 @@ pub fn emit_coords(
             sigma,
             &mut g,
         );
-        runs.push(TintedRun { glyphs: g, color: WINE, alpha });
+        runs.push(TintedRun {
+            glyphs: g,
+            color: WINE,
+            alpha,
+        });
     }
     let mut g = Vec::new();
     cache.layout_run(value_key, value_text, 0.0, layout.value_origin, &mut g);
-    runs.push(TintedRun { glyphs: g, color: PEARL, alpha: 1.0 });
+    runs.push(TintedRun {
+        glyphs: g,
+        color: PEARL,
+        alpha: 1.0,
+    });
 
     (shell, runs)
 }
@@ -320,9 +348,15 @@ mod tests {
     #[test]
     fn anchor_tokens_round_trip_for_hud_toml() {
         for a in [
-            Anchor::Tl, Anchor::Tc, Anchor::Tr,
-            Anchor::Ml, Anchor::Mc, Anchor::Mr,
-            Anchor::Bl, Anchor::Bc, Anchor::Br,
+            Anchor::Tl,
+            Anchor::Tc,
+            Anchor::Tr,
+            Anchor::Ml,
+            Anchor::Mc,
+            Anchor::Mr,
+            Anchor::Bl,
+            Anchor::Bc,
+            Anchor::Br,
         ] {
             assert_eq!(Anchor::from_str(a.as_str()), Some(a));
         }
@@ -331,7 +365,10 @@ mod tests {
 
     #[test]
     fn the_value_format_is_one_decimal_rounded_y_and_two_spaces() {
-        assert_eq!(coords_value_text(-128.44, 64.4, -1492.01), "-128.4  64  -1492.0");
+        assert_eq!(
+            coords_value_text(-128.44, 64.4, -1492.01),
+            "-128.4  64  -1492.0"
+        );
         // y ROUNDS, it does not truncate.
         assert_eq!(coords_value_text(0.0, 63.7, 0.0), "0.0  64  0.0");
         assert!(
@@ -346,7 +383,11 @@ mod tests {
         let l = layout_coords(&mut c, -128.4, 64.0, -1492.0, Anchor::Tl, 0.0, 0.0);
         // chip_w = pad*2 + label + gap + value
         let expect_w = COORDS_PAD_X * 2.0 + l.label_w + COORDS_GAP + l.value_w;
-        assert!((l.chip[2] - expect_w).abs() < 0.001, "{} vs {expect_w}", l.chip[2]);
+        assert!(
+            (l.chip[2] - expect_w).abs() < 0.001,
+            "{} vs {expect_w}",
+            l.chip[2]
+        );
         // chip_h = pad*2 + cap, from the VALUE font.
         assert!((l.chip[3] - (COORDS_PAD_Y * 2.0 + l.cap)).abs() < 0.001);
         // baseline = top + pad_y + cap

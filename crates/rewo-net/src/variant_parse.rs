@@ -201,7 +201,10 @@ mod tests {
         )]);
         let v = parse_wolf_variant_registry(&mut PacketReader::new(&b), 1);
         assert_eq!(v[0].wild.as_deref(), Some("entity/wolf/wolf_ashen.png"));
-        assert_eq!(v[0].tame.as_deref(), Some("entity/wolf/wolf_ashen_tame.png"));
+        assert_eq!(
+            v[0].tame.as_deref(),
+            Some("entity/wolf/wolf_ashen_tame.png")
+        );
         assert_eq!(
             v[0].angry.as_deref(),
             Some("entity/wolf/wolf_ashen_angry.png"),
@@ -221,7 +224,10 @@ mod tests {
             ("minecraft:cold", None),
             (
                 "minecraft:warm",
-                Some(compound(&[("asset_id", s("minecraft:entity/frog/frog_warm"))])),
+                Some(compound(&[(
+                    "asset_id",
+                    s("minecraft:entity/frog/frog_warm"),
+                )])),
             ),
         ]);
         let v = parse_single_asset_registry(&mut PacketReader::new(&b), 2);

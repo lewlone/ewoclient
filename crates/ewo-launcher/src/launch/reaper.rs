@@ -54,7 +54,9 @@ pub fn same_process(tracked: &Tracked, current: Option<u64>) -> bool {
 pub enum GameState {
     /// Exited, or its PID now belongs to a different process.
     Gone,
-    Running { visible_window: bool },
+    Running {
+        visible_window: bool,
+    },
 }
 
 fn pidfile_path() -> Option<PathBuf> {
@@ -135,13 +137,17 @@ pub fn reap_recorded_zombies() -> usize {
     for t in recorded() {
         match state(&t) {
             GameState::Gone => forget(&t),
-            GameState::Running { visible_window: false } => {
+            GameState::Running {
+                visible_window: false,
+            } => {
                 if reap(&t) {
                     reaped += 1;
                 }
                 forget(&t);
             }
-            GameState::Running { visible_window: true } => {}
+            GameState::Running {
+                visible_window: true,
+            } => {}
         }
     }
     reaped
@@ -208,7 +214,9 @@ mod imp {
             return false;
         }
         let path = String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
-        path.ends_with("\\java.exe") || path.ends_with("\\javaw.exe") || path.ends_with("\\rewo.exe")
+        path.ends_with("\\java.exe")
+            || path.ends_with("\\javaw.exe")
+            || path.ends_with("\\rewo.exe")
     }
 
     pub fn process_creation_time(pid: u32) -> Option<u64> {
@@ -295,7 +303,9 @@ mod imp {
 
     pub fn state(t: &Tracked) -> GameState {
         if process_creation_time(t.pid) == Some(t.created) {
-            GameState::Running { visible_window: true }
+            GameState::Running {
+                visible_window: true,
+            }
         } else {
             GameState::Gone
         }
@@ -327,7 +337,10 @@ mod tests {
     #[test]
     fn pidfile_round_trips_and_ignores_legacy_bare_pids() {
         let recs = vec![
-            Tracked { pid: 42, created: 133_000_000_000_000_000 },
+            Tracked {
+                pid: 42,
+                created: 133_000_000_000_000_000,
+            },
             Tracked { pid: 7, created: 1 },
         ];
         assert_eq!(parse_records(&format_records(&recs)), recs);
@@ -338,9 +351,15 @@ mod tests {
 
     #[test]
     fn same_process_requires_matching_creation_time() {
-        let t = Tracked { pid: 10, created: 99 };
+        let t = Tracked {
+            pid: 10,
+            created: 99,
+        };
         assert!(same_process(&t, Some(99)));
-        assert!(!same_process(&t, Some(100)), "PID reused by a newer process");
+        assert!(
+            !same_process(&t, Some(100)),
+            "PID reused by a newer process"
+        );
         assert!(!same_process(&t, None), "process gone");
     }
 
@@ -364,7 +383,10 @@ mod tests {
         };
         let t = Tracked { pid, created };
         assert!(matches!(state(&t), GameState::Running { .. }));
-        let stale = Tracked { pid, created: created.wrapping_add(1) };
+        let stale = Tracked {
+            pid,
+            created: created.wrapping_add(1),
+        };
         assert_eq!(state(&stale), GameState::Gone);
     }
 }

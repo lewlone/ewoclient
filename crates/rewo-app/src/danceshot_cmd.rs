@@ -239,7 +239,8 @@ fn expect_dance(
 /// dance.
 fn expect_wing(age_seconds: f32, anim_pos: f32, anim_speed: f32, left: bool) -> [f32; 3] {
     let age_in_ticks = age_seconds * 20.0;
-    let flap = (age_in_ticks * 20.0 * DEG + anim_pos).cos() * std::f32::consts::PI * 0.15 + anim_speed;
+    let flap =
+        (age_in_ticks * 20.0 * DEG + anim_pos).cos() * std::f32::consts::PI * 0.15 + anim_speed;
     let fly = (anim_speed / 0.3).min(1.0);
     let x = 0.43633232 * (1.0 - fly);
     let y = if left {
@@ -455,7 +456,13 @@ fn check_routing(
         let mut t = EntityTable::default();
         add(&mut t, 1, allay_tid);
         // index 20, BOOLEAN(8), true — a valid skippable entry at the wrong slot.
-        route_set_entity_data(sed, &sed_body(1, 20, 8, &[0x01]), ids, &mut t, Some(allay_tid));
+        route_set_entity_data(
+            sed,
+            &sed_body(1, 20, 8, &[0x01]),
+            ids,
+            &mut t,
+            Some(allay_tid),
+        );
         let dance = t.allay_dance_render(1, 1.0);
         let baby = t.is_baby(1);
         c.record(
@@ -471,7 +478,13 @@ fn check_routing(
         let mut t = EntityTable::default();
         add(&mut t, 1, allay_tid);
         // index 16, FLOAT(3), 4 bytes — captured by neither (16,1) nor (16,8).
-        route_set_entity_data(sed, &sed_body(1, 16, 3, &[0, 0, 0, 0]), ids, &mut t, Some(allay_tid));
+        route_set_entity_data(
+            sed,
+            &sed_body(1, 16, 3, &[0, 0, 0, 0]),
+            ids,
+            &mut t,
+            Some(allay_tid),
+        );
         let dance = t.allay_dance_render(1, 1.0);
         let baby = t.is_baby(1);
         let size = t.size(1);
@@ -517,7 +530,8 @@ fn check_counters(c: &mut Checker, ids: &Ids, sed: i32, allay_tid: i32) {
             && at15.is_some_and(|(s, _)| !s)
             && at55.is_some_and(|(s, _)| s);
         // Independent confirmation of the exact boundary.
-        let indep = sim_is_spinning(sim(14).0) && !sim_is_spinning(sim(15).0) && sim_is_spinning(sim(55).0);
+        let indep =
+            sim_is_spinning(sim(14).0) && !sim_is_spinning(sim(15).0) && sim_is_spinning(sim(55).0);
         c.record(
             "c2.spin_window_boundary_14_15_55",
             ok && indep,
@@ -572,7 +586,10 @@ fn check_counters(c: &mut Checker, ids: &Ids, sed: i32, allay_tid: i32) {
         c.record(
             "c2.false_then_true_restarts_from_zero",
             dance.is_some_and(|(s, p)| s == want.0 && near(p, want.1, 1e-6)),
-            format!("prod={dance:?} indep(fresh 1 tick)=({}, {:.6})", want.0, want.1),
+            format!(
+                "prod={dance:?} indep(fresh 1 tick)=({}, {:.6})",
+                want.0, want.1
+            ),
         );
     }
     // `isSpinning` and `spinningProgress` are DISTINCT quantities. At 20 ticks

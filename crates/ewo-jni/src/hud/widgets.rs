@@ -72,7 +72,11 @@ pub(super) fn draw_stat(
     // Size the chip to the number's cap height — digits and the uppercase
     // unit have no descenders, so capped sizing hugs the glyphs.
     let (_, m) = num_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 30.0 * 0.72 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        30.0 * 0.72
+    };
     let chip_w = pad_x * 2.0 + num_w + gap + unit_w;
     let chip_h = pad_y * 2.0 + cap;
     let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
@@ -149,7 +153,11 @@ pub(super) fn draw_coords(
     let (value_w, _) = value_font.measure_str(&value, Some(&probe));
 
     let (_, m) = value_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 18.0 * 0.72 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        18.0 * 0.72
+    };
     let chip_w = pad_x * 2.0 + label_w + gap + value_w;
     let chip_h = pad_y * 2.0 + cap;
     let (cx, cy) = anchor.origin(ax, ay, chip_w, chip_h);
@@ -196,7 +204,13 @@ pub(super) enum KeyGlyph {
 }
 
 /// Draw one WASD/space key cap — re-skin of `hud.jsx`'s `.hud-key`.
-pub(super) fn draw_key(canvas: &Canvas, rect: Rect, active: bool, fonts: &FontStore, glyph: KeyGlyph) {
+pub(super) fn draw_key(
+    canvas: &Canvas,
+    rect: Rect,
+    active: bool,
+    fonts: &FontStore,
+    glyph: KeyGlyph,
+) {
     let radius = 9.0;
     // Active keys press down 2px (CSS `.hud-key.active { transform: translateY(2px) }`).
     let rect = if active {
@@ -270,7 +284,11 @@ pub(super) fn draw_key(canvas: &Canvas, rect: Rect, active: bool, fonts: &FontSt
             p.set_color4f(glyph_color, None);
             let (lw, _) = font.measure_str(s, Some(&p));
             let (_, m) = font.metrics();
-            let cap = if m.cap_height > 0.0 { m.cap_height } else { 14.0 };
+            let cap = if m.cap_height > 0.0 {
+                m.cap_height
+            } else {
+                14.0
+            };
             canvas.draw_str(s, (cx - lw / 2.0, cy + cap / 2.0), &font, &p);
         }
         KeyGlyph::Bar => {
@@ -425,7 +443,11 @@ pub(super) fn draw_armor(
         let mut probe = Paint::default();
         let (pw, _) = pct_font.measure_str(&pct, Some(&probe));
         let (_, pm) = pct_font.metrics();
-        let pcap = if pm.cap_height > 0.0 { pm.cap_height } else { 10.0 };
+        let pcap = if pm.cap_height > 0.0 {
+            pm.cap_height
+        } else {
+            10.0
+        };
         let px = sx + SLOT_W / 2.0 - pw / 2.0;
         let py = sy + SLOT_H / 2.0 + pcap / 2.0;
 
@@ -509,7 +531,12 @@ pub(super) fn draw_potions(
             ),
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new((r * 1.3).min(1.0), (g * 1.3).min(1.0), (b * 1.3).min(1.0), 1.0),
+                    Color4f::new(
+                        (r * 1.3).min(1.0),
+                        (g * 1.3).min(1.0),
+                        (b * 1.3).min(1.0),
+                        1.0,
+                    ),
                     Color4f::new(r * 0.62, g * 0.62, b * 0.62, 1.0),
                 ],
                 None,
@@ -539,7 +566,14 @@ pub(super) fn draw_potions(
         let mut time_paint = Paint::default();
         time_paint.set_anti_alias(true);
         time_paint.set_color4f(rgba(ROSE, 1.0), None);
-        draw_tracked_em(canvas, time, time_pos, &time_font, &time_paint, time_tracking_em);
+        draw_tracked_em(
+            canvas,
+            time,
+            time_pos,
+            &time_font,
+            &time_paint,
+            time_tracking_em,
+        );
     }
 
     chip
@@ -634,7 +668,11 @@ pub(super) fn draw_target(
         initial_paint.set_color4f(rgba(PEARL, 1.0), None);
         let (iw, _) = avatar_font.measure_str(&initial, Some(&initial_paint));
         let (_, im) = avatar_font.metrics();
-        let icap = if im.cap_height > 0.0 { im.cap_height } else { 22.0 };
+        let icap = if im.cap_height > 0.0 {
+            im.cap_height
+        } else {
+            22.0
+        };
         canvas.draw_str(
             &initial,
             (
@@ -673,7 +711,15 @@ pub(super) fn draw_target(
 
         let mut track = Paint::default();
         track.set_anti_alias(true);
-        track.set_color4f(Color4f::new(PEARL.0 as f32 / 255.0, PEARL.1 as f32 / 255.0, PEARL.2 as f32 / 255.0, 0.12), None);
+        track.set_color4f(
+            Color4f::new(
+                PEARL.0 as f32 / 255.0,
+                PEARL.1 as f32 / 255.0,
+                PEARL.2 as f32 / 255.0,
+                0.12,
+            ),
+            None,
+        );
         canvas.draw_rrect(bar_rr, &track);
 
         let frac = (health / max_health).clamp(0.0, 1.0);
@@ -708,7 +754,10 @@ pub(super) fn draw_target(
             ) {
                 fill_paint.set_shader(shader);
             }
-            canvas.draw_rrect(RRect::new_rect_xy(fill, bar_h / 2.0, bar_h / 2.0), &fill_paint);
+            canvas.draw_rrect(
+                RRect::new_rect_xy(fill, bar_h / 2.0, bar_h / 2.0),
+                &fill_paint,
+            );
         }
     }
 
@@ -744,9 +793,17 @@ pub(super) fn draw_jump_reset_text(
     ax: f32,
     ay: f32,
 ) -> Rect {
-    let tier = if data.pvp_jump_active() { data.pvp_jump_tier() } else { PvpTier::Perfect };
+    let tier = if data.pvp_jump_active() {
+        data.pvp_jump_tier()
+    } else {
+        PvpTier::Perfect
+    };
     let offset_ms = data.pvp_jump_offset_ms();
-    let fade = if data.pvp_jump_active() { data.pvp_jump_fade() } else { 0.45 };
+    let fade = if data.pvp_jump_active() {
+        data.pvp_jump_fade()
+    } else {
+        0.45
+    };
 
     let tier_text = tier.label();
     let ms_text = match tier {
@@ -768,10 +825,18 @@ pub(super) fn draw_jump_reset_text(
     let mut probe = Paint::default();
     probe.set_anti_alias(true);
     let (title_w, _) = title_font.measure_str(tier_text, Some(&probe));
-    let ms_w = if ms_text.is_empty() { 0.0 } else { measure_tracked_em(&ms_font, &ms_text, ms_tracking_em) };
+    let ms_w = if ms_text.is_empty() {
+        0.0
+    } else {
+        measure_tracked_em(&ms_font, &ms_text, ms_tracking_em)
+    };
 
     let (_, m) = title_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 22.0 * 0.72 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        22.0 * 0.72
+    };
     let chip_w = pad_x * 2.0 + title_w + ms_w;
     let chip_h = pad_y * 2.0 + cap;
     let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
@@ -780,7 +845,11 @@ pub(super) fn draw_jump_reset_text(
 
     let baseline_y = y + pad_y + cap;
     let tier_color = pvp_tier_color(tier);
-    let alpha = if data.pvp_jump_active() { fade.clamp(0.0, 1.0) } else { 0.5 };
+    let alpha = if data.pvp_jump_active() {
+        fade.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
 
     // Glow under PERFECT — celebratory champagne halo, only when the result
     // is fresh (no glow in the editor preview).
@@ -809,7 +878,14 @@ pub(super) fn draw_jump_reset_text(
         let mut ms_paint = Paint::default();
         ms_paint.set_anti_alias(true);
         ms_paint.set_color4f(rgba(MAUVE, alpha), None);
-        draw_tracked_em(canvas, &ms_text, ms_pos, &ms_font, &ms_paint, ms_tracking_em);
+        draw_tracked_em(
+            canvas,
+            &ms_text,
+            ms_pos,
+            &ms_font,
+            &ms_paint,
+            ms_tracking_em,
+        );
     }
 
     chip
@@ -834,8 +910,16 @@ pub(super) fn draw_jump_reset_bar(
 
     let active = data.pvp_jump_active();
     let fade = if active { data.pvp_jump_fade() } else { 0.5 };
-    let tier = if active { data.pvp_jump_tier() } else { PvpTier::Perfect };
-    let offset_ms = if active { data.pvp_jump_offset_ms() as f32 } else { 0.0 };
+    let tier = if active {
+        data.pvp_jump_tier()
+    } else {
+        PvpTier::Perfect
+    };
+    let offset_ms = if active {
+        data.pvp_jump_offset_ms() as f32
+    } else {
+        0.0
+    };
 
     let track = Rect::from_xywh(x, y + (chip_h - BAR_H) * 0.5, BAR_W, BAR_H);
     let track_rr = RRect::new_rect_xy(track, BAR_H * 0.5, BAR_H * 0.5);
@@ -870,7 +954,12 @@ pub(super) fn draw_jump_reset_bar(
         let tier_color = pvp_tier_color(tier);
         let mark_w = 3.0;
         let mark_h = PIP + 2.0;
-        let mark = Rect::from_xywh(mx - mark_w * 0.5, y + (chip_h - mark_h) * 0.5, mark_w, mark_h);
+        let mark = Rect::from_xywh(
+            mx - mark_w * 0.5,
+            y + (chip_h - mark_h) * 0.5,
+            mark_w,
+            mark_h,
+        );
         let mark_rr = RRect::new_rect_xy(mark, 1.5, 1.5);
 
         // Halo behind the mark.
@@ -908,7 +997,11 @@ pub(super) fn draw_hit_range(
     ay: f32,
 ) -> Rect {
     let active = data.pvp_hit_active();
-    let distance = if active { data.pvp_hit_distance() } else { 3.00 };
+    let distance = if active {
+        data.pvp_hit_distance()
+    } else {
+        3.00
+    };
     let fade = if active { data.pvp_hit_fade() } else { 0.45 };
     let zone_color = if active && data.pvp_hit_color() != 0 {
         let c = data.pvp_hit_color();
@@ -935,7 +1028,11 @@ pub(super) fn draw_hit_range(
     let unit_w = measure_tracked_em(&unit_font, unit, unit_tracking_em);
 
     let (_, m) = num_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 28.0 * 0.72 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        28.0 * 0.72
+    };
     let chip_w = pad_x * 2.0 + num_w + gap + unit_w;
     let chip_h = pad_y * 2.0 + cap;
     let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
@@ -959,7 +1056,14 @@ pub(super) fn draw_hit_range(
     let mut unit_paint = Paint::default();
     unit_paint.set_anti_alias(true);
     unit_paint.set_color4f(rgba(ROSE, alpha), None);
-    draw_tracked_em(canvas, unit, unit_pos, &unit_font, &unit_paint, unit_tracking_em);
+    draw_tracked_em(
+        canvas,
+        unit,
+        unit_pos,
+        &unit_font,
+        &unit_paint,
+        unit_tracking_em,
+    );
 
     chip
 }
@@ -998,9 +1102,12 @@ pub(super) fn draw_cps(
     let unit_w = measure_tracked_em(&unit_font, unit, unit_tracking_em);
 
     let (_, m) = num_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 30.0 * 0.72 };
-    let chip_w =
-        pad_x * 2.0 + l_w + inner_gap + div_w + inner_gap + r_w + unit_gap + unit_w;
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        30.0 * 0.72
+    };
+    let chip_w = pad_x * 2.0 + l_w + inner_gap + div_w + inner_gap + r_w + unit_gap + unit_w;
     let chip_h = pad_y * 2.0 + cap;
     let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
     let chip = Rect::from_xywh(x, y, chip_w, chip_h);
@@ -1037,7 +1144,14 @@ pub(super) fn draw_cps(
     let mut unit_paint = Paint::default();
     unit_paint.set_anti_alias(true);
     unit_paint.set_color4f(rgba(MAUVE, 1.0), None);
-    draw_tracked_em(canvas, unit, unit_pos, &unit_font, &unit_paint, unit_tracking_em);
+    draw_tracked_em(
+        canvas,
+        unit,
+        unit_pos,
+        &unit_font,
+        &unit_paint,
+        unit_tracking_em,
+    );
 
     chip
 }
@@ -1077,7 +1191,11 @@ pub(super) fn draw_item_counters(
     let mut probe = Paint::default();
     probe.set_anti_alias(true);
     let (_, m) = num_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 22.0 * 0.72 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        22.0 * 0.72
+    };
 
     let mut widths: [(f32, f32); 4] = [(0.0, 0.0); 4];
     let mut total = 0.0;
@@ -1110,7 +1228,14 @@ pub(super) fn draw_item_counters(
         let mut label_paint = Paint::default();
         label_paint.set_anti_alias(true);
         label_paint.set_color4f(rgba(MAUVE, alpha), None);
-        draw_tracked_em(canvas, label, label_pos, &label_font, &label_paint, label_tracking_em);
+        draw_tracked_em(
+            canvas,
+            label,
+            label_pos,
+            &label_font,
+            &label_paint,
+            label_tracking_em,
+        );
 
         let num_x = cursor_x + label_w + label_to_num_gap;
         let num_s = n.to_string();
@@ -1167,9 +1292,17 @@ pub(super) fn draw_shield_cooldown(
     let label_w = measure_tracked_em(&label_font, label, label_tracking_em);
 
     let (_, vm) = value_font.metrics();
-    let value_cap = if vm.cap_height > 0.0 { vm.cap_height } else { 18.0 * 0.72 };
+    let value_cap = if vm.cap_height > 0.0 {
+        vm.cap_height
+    } else {
+        18.0 * 0.72
+    };
     let (_, lm) = label_font.metrics();
-    let label_cap = if lm.cap_height > 0.0 { lm.cap_height } else { 11.0 * 0.72 };
+    let label_cap = if lm.cap_height > 0.0 {
+        lm.cap_height
+    } else {
+        11.0 * 0.72
+    };
 
     let header_h = value_cap.max(label_cap);
     let chip_h = pad_y * 2.0 + header_h + bar_gap + bar_h;
@@ -1186,7 +1319,14 @@ pub(super) fn draw_shield_cooldown(
     let mut label_paint = Paint::default();
     label_paint.set_anti_alias(true);
     label_paint.set_color4f(rgba(CHAMP, 1.0), None);
-    draw_tracked_em(canvas, label, label_pos, &label_font, &label_paint, label_tracking_em);
+    draw_tracked_em(
+        canvas,
+        label,
+        label_pos,
+        &label_font,
+        &label_paint,
+        label_tracking_em,
+    );
 
     let value_x = x + chip_w - pad_x - val_w;
     let _ = label_w + value_gap; // gap consumed implicitly by chip_w
@@ -1263,7 +1403,11 @@ pub(super) fn draw_combo(
     let unit_w = measure_tracked_em(&unit_font, unit, unit_tracking_em);
 
     let (_, m) = num_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 30.0 * 0.72 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        30.0 * 0.72
+    };
     let chip_w = pad_x * 2.0 + num_w + gap + unit_w;
     let chip_h = pad_y * 2.0 + cap;
     let (x, y) = anchor.origin(ax, ay, chip_w, chip_h);
@@ -1305,7 +1449,14 @@ pub(super) fn draw_combo(
     let mut unit_paint = Paint::default();
     unit_paint.set_anti_alias(true);
     unit_paint.set_color4f(rgba(MAUVE, 1.0), None);
-    draw_tracked_em(canvas, unit, unit_pos, &unit_font, &unit_paint, unit_tracking_em);
+    draw_tracked_em(
+        canvas,
+        unit,
+        unit_pos,
+        &unit_font,
+        &unit_paint,
+        unit_tracking_em,
+    );
 
     canvas.restore();
 
@@ -1340,10 +1491,18 @@ pub(super) fn draw_attack_charge(
 
     let label_w = measure_tracked_em(&label_font, label, label_tracking_em);
     let (_, lm) = label_font.metrics();
-    let label_cap = if lm.cap_height > 0.0 { lm.cap_height } else { 11.0 * 0.72 };
+    let label_cap = if lm.cap_height > 0.0 {
+        lm.cap_height
+    } else {
+        11.0 * 0.72
+    };
 
     // Right-aligned percentage value in JetBrains Mono.
-    let value = if charge >= 0.999 { "READY".to_string() } else { format!("{:>3}%", (charge * 100.0).round() as i32) };
+    let value = if charge >= 0.999 {
+        "READY".to_string()
+    } else {
+        format!("{:>3}%", (charge * 100.0).round() as i32)
+    };
     let value_font = fonts.jetbrains_mono(11.0);
     let mut probe = Paint::default();
     probe.set_anti_alias(true);
@@ -1362,7 +1521,14 @@ pub(super) fn draw_attack_charge(
     let mut label_paint = Paint::default();
     label_paint.set_anti_alias(true);
     label_paint.set_color4f(rgba(CHAMP, 1.0), None);
-    draw_tracked_em(canvas, label, label_pos, &label_font, &label_paint, label_tracking_em);
+    draw_tracked_em(
+        canvas,
+        label,
+        label_pos,
+        &label_font,
+        &label_paint,
+        label_tracking_em,
+    );
     let _ = label_w; // gap consumed implicitly by chip_w
 
     let value_pos = (x + chip_w - pad_x - val_w, baseline);
@@ -1435,7 +1601,11 @@ pub(super) fn draw_totem_overhead(canvas: &Canvas, ind: &Indicator, fonts: &Font
     probe.set_anti_alias(true);
     let (lw, _) = num_font.measure_str(&label, Some(&probe));
     let (_, m) = num_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 14.0 * 0.72 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        14.0 * 0.72
+    };
     let chip_w = pad_x * 2.0 + lw;
     let chip_h = pad_y * 2.0 + cap;
 
@@ -1504,7 +1674,11 @@ pub(super) fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &Fon
 
     // Fill — rose for healthy, ember for low. Threshold at 30% mirrors
     // vanilla's "low HP" heart flash.
-    let fill_color = if frac < 0.30 { (0xC9, 0x6A, 0x7A) } else { ROSE };
+    let fill_color = if frac < 0.30 {
+        (0xC9, 0x6A, 0x7A)
+    } else {
+        ROSE
+    };
     let fill_rect = Rect::from_xywh(bar_x, bar_y, bar_w * frac, bar_h);
     if fill_rect.width() > 0.0 {
         let fill_rr = RRect::new_rect_xy(fill_rect, bar_h * 0.5, bar_h * 0.5);
@@ -1529,7 +1703,11 @@ pub(super) fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &Fon
     probe.set_anti_alias(true);
     let (hp_w, _) = hp_font.measure_str(&hp_label, Some(&probe));
     let (_, m) = hp_font.metrics();
-    let cap = if m.cap_height > 0.0 { m.cap_height } else { 7.5 };
+    let cap = if m.cap_height > 0.0 {
+        m.cap_height
+    } else {
+        7.5
+    };
     let text_baseline = bar_y + bar_h + cap + 4.0;
 
     let mut shadow = Paint::default();
@@ -1546,7 +1724,12 @@ pub(super) fn draw_floating_health(canvas: &Canvas, ind: &Indicator, fonts: &Fon
     let mut hp_paint = Paint::default();
     hp_paint.set_anti_alias(true);
     hp_paint.set_color4f(rgba(PEARL, alpha_mul), None);
-    canvas.draw_str(&hp_label, (cx - hp_w * 0.5, text_baseline), &hp_font, &hp_paint);
+    canvas.draw_str(
+        &hp_label,
+        (cx - hp_w * 0.5, text_baseline),
+        &hp_font,
+        &hp_paint,
+    );
 
     // Damage pop — ember "-N.N" beside the HP, fading out over 1.5 s.
     if ind.damage_age_sec >= 0.0 && ind.last_damage > 0.05 {

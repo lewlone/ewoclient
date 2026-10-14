@@ -57,23 +57,35 @@ mod tests {
     use SlotDecision::*;
     use SlotInput::*;
 
-    #[test] fn preparing_refuses_the_click() {
-        assert_eq!(decide(Preparing), Busy("a launch is already being prepared"));
+    #[test]
+    fn preparing_refuses_the_click() {
+        assert_eq!(
+            decide(Preparing),
+            Busy("a launch is already being prepared")
+        );
     }
-    #[test] fn never_launched_is_free_and_clears_nothing() {
+    #[test]
+    fn never_launched_is_free_and_clears_nothing() {
         assert_eq!(decide(NeverLaunched), Free);
     }
-    #[test] fn starting_refuses_the_click() {
+    #[test]
+    fn starting_refuses_the_click() {
         assert_eq!(decide(Starting), Busy("a game is starting"));
     }
-    #[test] fn exited_game_is_forgotten_then_free() {
+    #[test]
+    fn exited_game_is_forgotten_then_free() {
         assert_eq!(decide(Gone), ForgetThenFree);
     }
-    #[test] fn zombie_game_is_reaped_then_free() {
+    #[test]
+    fn zombie_game_is_reaped_then_free() {
         assert_eq!(decide(Running { zombie: true }), ReapThenFree);
     }
-    #[test] fn running_game_refuses_the_click() {
-        assert_eq!(decide(Running { zombie: false }), Busy("a game is already running"));
+    #[test]
+    fn running_game_refuses_the_click() {
+        assert_eq!(
+            decide(Running { zombie: false }),
+            Busy("a game is already running")
+        );
     }
 
     /// The "never kill a running game" guarantee, over the observations
@@ -90,7 +102,10 @@ mod tests {
                     if zombie {
                         assert_eq!(decision, ReapThenFree, "{at}");
                     } else {
-                        assert!(matches!(decision, Busy(_)), "live game must be Busy: {decision:?} ({at})");
+                        assert!(
+                            matches!(decision, Busy(_)),
+                            "live game must be Busy: {decision:?} ({at})"
+                        );
                     }
                 }
             }

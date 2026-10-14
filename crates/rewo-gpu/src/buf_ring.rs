@@ -312,7 +312,10 @@ mod tests {
             crate::MAX_FRAMES_IN_FLIGHT,
             crate::MAX_FRAMES_IN_FLIGHT
         ));
-        assert!(!ring_slot_is_retired(BUF_RING - 1, crate::MAX_FRAMES_IN_FLIGHT));
+        assert!(!ring_slot_is_retired(
+            BUF_RING - 1,
+            crate::MAX_FRAMES_IN_FLIGHT
+        ));
     }
 
     #[test]
@@ -325,7 +328,10 @@ mod tests {
         }
         assert_eq!(seen[0], seen[BUF_RING], "the ring must close on itself");
         assert_eq!(
-            seen[..BUF_RING].iter().collect::<std::collections::HashSet<_>>().len(),
+            seen[..BUF_RING]
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
             BUF_RING,
             "every slot must be distinct before one repeats"
         );

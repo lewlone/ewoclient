@@ -365,7 +365,10 @@ mod tests {
         b.on_batch_start(base);
         b.on_batch_finished(4, base + 8_000_000);
 
-        assert_eq!(a.aggregated_nanos_per_chunk(), b.aggregated_nanos_per_chunk());
+        assert_eq!(
+            a.aggregated_nanos_per_chunk(),
+            b.aggregated_nanos_per_chunk()
+        );
     }
 
     /// Without a `chunk_batch_start` the interval is measured from the

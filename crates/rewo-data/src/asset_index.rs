@@ -161,15 +161,25 @@ mod tests {
     fn a_missing_key_and_a_missing_object_are_different_errors() {
         let (_d, root) = store();
         let idx = AssetIndex::load(&root, "32").unwrap();
-        let absent = idx.read(&root, "minecraft/sounds/step/grass9.ogg").unwrap_err();
+        let absent = idx
+            .read(&root, "minecraft/sounds/step/grass9.ogg")
+            .unwrap_err();
         assert!(absent.contains("not in the asset index"), "{absent}");
-        assert!(absent.contains("grass9"), "the error names the key: {absent}");
+        assert!(
+            absent.contains("grass9"),
+            "the error names the key: {absent}"
+        );
 
         // The object removed from under a live index — a store that has lost a
         // file rather than one that never listed it.
-        let obj = crate::sounds_json::object_path(&root, idx.hash("minecraft/sounds/step/grass1.ogg").unwrap());
+        let obj = crate::sounds_json::object_path(
+            &root,
+            idx.hash("minecraft/sounds/step/grass1.ogg").unwrap(),
+        );
         std::fs::remove_file(&obj).unwrap();
-        let gone = idx.read(&root, "minecraft/sounds/step/grass1.ogg").unwrap_err();
+        let gone = idx
+            .read(&root, "minecraft/sounds/step/grass1.ogg")
+            .unwrap_err();
         assert!(!gone.contains("not in the asset index"), "{gone}");
         assert!(gone.contains("grass1"), "{gone}");
     }

@@ -67,8 +67,7 @@ fn build_velvet_filter() -> ImageFilter {
     let blur = image_filters::blur((20.0, 20.0), TileMode::Decal, None, None)
         .expect("velvet-folds blur filter");
 
-    let noise = shaders::fractal_noise((0.007, 0.011), 2, 4.0, None)
-        .expect("fractal noise shader");
+    let noise = shaders::fractal_noise((0.007, 0.011), 2, 4.0, None).expect("fractal noise shader");
     let noise_filter = image_filters::shader(noise, None).expect("noise → filter");
 
     image_filters::displacement_map(

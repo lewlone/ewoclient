@@ -403,9 +403,6 @@ mod tests {
 
     #[test]
     fn parses_legacy_1x() {
-        assert_eq!(
-            parse_major(r#"java version "1.8.0_392""#),
-            Some(8)
-        );
+        assert_eq!(parse_major(r#"java version "1.8.0_392""#), Some(8));
     }
 }

@@ -346,7 +346,14 @@ impl Fixture {
 
     /// The common case: a mob at point-blank range seen by a plain viewer.
     fn zombie_labels(&self, t: &EntityTable) -> (bool, bool) {
-        self.labels(t, "minecraft:zombie", 4.0, &LabelViewer::default(), None, false)
+        self.labels(
+            t,
+            "minecraft:zombie",
+            4.0,
+            &LabelViewer::default(),
+            None,
+            false,
+        )
     }
 
     /// [`Self::healthy_named_zombie`] with `riders` aboard, through the real
@@ -356,7 +363,10 @@ impl Fixture {
     fn ridden_zombie(&self, riders: &[i32]) -> EntityTable {
         let mut t = self.healthy_named_zombie();
         for r in riders {
-            t.add(*r, EntityState::new(0, self.zombie, 0.0, 0.0, 0.0, 0.0, 0.0));
+            t.add(
+                *r,
+                EntityState::new(0, self.zombie, 0.0, 0.0, 0.0, 0.0, 0.0),
+            );
         }
         rewo_net::route_set_passengers(
             self.ids.cb_play_set_passengers,
@@ -609,8 +619,22 @@ fn check_predicate(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         &attrs_body(1, &[(f.name_tag_distance, 128.0)]),
     );
     let d40 = 40.0f64 * 40.0;
-    let sneak_at_40 = f.labels(&far_sneak, "minecraft:zombie", d40, &LabelViewer::default(), None, false);
-    let stand_at_40 = f.labels(&far_stand, "minecraft:zombie", d40, &LabelViewer::default(), None, false);
+    let sneak_at_40 = f.labels(
+        &far_sneak,
+        "minecraft:zombie",
+        d40,
+        &LabelViewer::default(),
+        None,
+        false,
+    );
+    let stand_at_40 = f.labels(
+        &far_stand,
+        "minecraft:zombie",
+        d40,
+        &LabelViewer::default(),
+        None,
+        false,
+    );
     c.record(
         "b3.the_sneak_bound_does_not_scale_with_name_tag_distance",
         !sneak_at_40.0 && stand_at_40.0,
@@ -630,17 +654,55 @@ fn check_predicate(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     // Straddle the default from the constant rather than a literal, so the
     // witness moves with `Entity.DEFAULT_NAME_TAG_DISTANCE` if it ever does.
     let d = DEFAULT_NAME_TAG_DISTANCE;
-    let inside_64 = f.labels(&plain, "minecraft:zombie", (d - 0.01) * (d - 0.01), &LabelViewer::default(), None, false);
-    let outside_64 = f.labels(&plain, "minecraft:zombie", (d + 0.01) * (d + 0.01), &LabelViewer::default(), None, false);
+    let inside_64 = f.labels(
+        &plain,
+        "minecraft:zombie",
+        (d - 0.01) * (d - 0.01),
+        &LabelViewer::default(),
+        None,
+        false,
+    );
+    let outside_64 = f.labels(
+        &plain,
+        "minecraft:zombie",
+        (d + 0.01) * (d + 0.01),
+        &LabelViewer::default(),
+        None,
+        false,
+    );
     // **Exactly on the bound.** Straddling it either side is not enough: the
     // first cut of this witness used only 63.99/64.01 and a `<=` mutation kept
     // the whole gate green, because nothing ever sat at the bound itself. The
     // source is `<`, so `distanceToCameraSq == Mth.square(ntd)` is out.
-    let at_64 = f.labels(&plain, "minecraft:zombie", d * d, &LabelViewer::default(), None, false);
+    let at_64 = f.labels(
+        &plain,
+        "minecraft:zombie",
+        d * d,
+        &LabelViewer::default(),
+        None,
+        false,
+    );
     let mut long_range = f.healthy_named_zombie();
-    f.send_attrs(&mut long_range, &attrs_body(1, &[(f.name_tag_distance, 128.0)]));
-    let at_100 = f.labels(&long_range, "minecraft:zombie", 100.0 * 100.0, &LabelViewer::default(), None, false);
-    let plain_at_100 = f.labels(&plain, "minecraft:zombie", 100.0 * 100.0, &LabelViewer::default(), None, false);
+    f.send_attrs(
+        &mut long_range,
+        &attrs_body(1, &[(f.name_tag_distance, 128.0)]),
+    );
+    let at_100 = f.labels(
+        &long_range,
+        "minecraft:zombie",
+        100.0 * 100.0,
+        &LabelViewer::default(),
+        None,
+        false,
+    );
+    let plain_at_100 = f.labels(
+        &plain,
+        "minecraft:zombie",
+        100.0 * 100.0,
+        &LabelViewer::default(),
+        None,
+        false,
+    );
     c.record(
         "b4.the_outer_gate_is_the_name_tag_distance_attribute",
         inside_64.0 && !outside_64.0 && !at_64.0 && at_100.0 && !plain_at_100.0,
@@ -828,7 +890,14 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
     // e1 — ALWAYS.
     let t_always = teams_with(V_ALWAYS, 0, &[&mob_member]);
-    let always = f.labels(&base, "minecraft:zombie", 4.0, &LabelViewer::default(), rewo_net::teams::label_team(&t_always, &mob_member), false);
+    let always = f.labels(
+        &base,
+        "minecraft:zombie",
+        4.0,
+        &LabelViewer::default(),
+        rewo_net::teams::label_team(&t_always, &mob_member),
+        false,
+    );
     c.record(
         "e1.visibility_always_shows_a_visible_entity",
         always.0 && always.1,
@@ -841,7 +910,14 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
     // e2 — NEVER.
     let t_never = teams_with(V_NEVER, 0, &[&mob_member]);
-    let never = f.labels(&base, "minecraft:zombie", 4.0, &LabelViewer::default(), rewo_net::teams::label_team(&t_never, &mob_member), false);
+    let never = f.labels(
+        &base,
+        "minecraft:zombie",
+        4.0,
+        &LabelViewer::default(),
+        rewo_net::teams::label_team(&t_never, &mob_member),
+        false,
+    );
     c.record(
         "e2.visibility_never_hides_both_labels",
         !never.0 && !never.1,
@@ -854,7 +930,14 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
     // e3 — HIDE_FOR_OTHER_TEAMS, all three viewer states.
     let t_other = teams_with(V_HIDE_OTHER, 0, &[&mob_member]);
-    let no_team = f.labels(&base, "minecraft:zombie", 4.0, &LabelViewer::default(), rewo_net::teams::label_team(&t_other, &mob_member), false);
+    let no_team = f.labels(
+        &base,
+        "minecraft:zombie",
+        4.0,
+        &LabelViewer::default(),
+        rewo_net::teams::label_team(&t_other, &mob_member),
+        false,
+    );
     let other_team = f.labels(
         &base,
         "minecraft:zombie",
@@ -893,7 +976,14 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
     // e4 — HIDE_FOR_OWN_TEAM: the exact inverse on the two teamed arms.
     let t_own = teams_with(V_HIDE_OWN, 0, &[&mob_member]);
-    let own_no_team = f.labels(&base, "minecraft:zombie", 4.0, &LabelViewer::default(), rewo_net::teams::label_team(&t_own, &mob_member), false);
+    let own_no_team = f.labels(
+        &base,
+        "minecraft:zombie",
+        4.0,
+        &LabelViewer::default(),
+        rewo_net::teams::label_team(&t_own, &mob_member),
+        false,
+    );
     let own_other = f.labels(
         &base,
         "minecraft:zombie",
@@ -939,8 +1029,22 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     };
     let t_other_csfi = teams_with(V_HIDE_OTHER, OPT_SEE_INVIS, &[&mob_member]);
     let t_other_plain = teams_with(V_HIDE_OTHER, 0, &[&mob_member]);
-    let with_csfi = f.labels(&invisible, "minecraft:zombie", 4.0, &red, rewo_net::teams::label_team(&t_other_csfi, &mob_member), false);
-    let without_csfi = f.labels(&invisible, "minecraft:zombie", 4.0, &red, rewo_net::teams::label_team(&t_other_plain, &mob_member), false);
+    let with_csfi = f.labels(
+        &invisible,
+        "minecraft:zombie",
+        4.0,
+        &red,
+        rewo_net::teams::label_team(&t_other_csfi, &mob_member),
+        false,
+    );
+    let without_csfi = f.labels(
+        &invisible,
+        "minecraft:zombie",
+        4.0,
+        &red,
+        rewo_net::teams::label_team(&t_other_plain, &mob_member),
+        false,
+    );
     c.record(
         "e5.can_see_friendly_invisibles_carries_the_hide_for_other_teams_arm",
         with_csfi.0 && !without_csfi.0,
@@ -955,7 +1059,14 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     );
 
     let t_own_csfi = teams_with(V_HIDE_OWN, OPT_SEE_INVIS, &[&mob_member]);
-    let own_csfi = f.labels(&invisible, "minecraft:zombie", 4.0, &red, rewo_net::teams::label_team(&t_own_csfi, &mob_member), false);
+    let own_csfi = f.labels(
+        &invisible,
+        "minecraft:zombie",
+        4.0,
+        &red,
+        rewo_net::teams::label_team(&t_own_csfi, &mob_member),
+        false,
+    );
     // **The discriminating viewer is on the OTHER team.** With the viewer on
     // `red` the arm reads `team.name != mine && ...`, which is already false,
     // so bolting a `canSeeFriendlyInvisibles ||` escape onto it short-circuits
@@ -967,9 +1078,23 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         team: Some("blue"),
         ..Default::default()
     };
-    let own_csfi_other = f.labels(&invisible, "minecraft:zombie", 4.0, &blue, rewo_net::teams::label_team(&t_own_csfi, &mob_member), false);
+    let own_csfi_other = f.labels(
+        &invisible,
+        "minecraft:zombie",
+        4.0,
+        &blue,
+        rewo_net::teams::label_team(&t_own_csfi, &mob_member),
+        false,
+    );
     let t_always_csfi = teams_with(V_ALWAYS, OPT_SEE_INVIS, &[&mob_member]);
-    let always_csfi = f.labels(&invisible, "minecraft:zombie", 4.0, &red, rewo_net::teams::label_team(&t_always_csfi, &mob_member), false);
+    let always_csfi = f.labels(
+        &invisible,
+        "minecraft:zombie",
+        4.0,
+        &red,
+        rewo_net::teams::label_team(&t_always_csfi, &mob_member),
+        false,
+    );
     c.record(
         "e6.the_two_other_arms_read_the_option_only_through_is_invisible_to",
         !own_csfi.0 && !own_csfi_other.0 && always_csfi.0,
@@ -994,8 +1119,22 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         hud_hidden: true,
         ..Default::default()
     };
-    let teamed = f.labels(&ridden, "minecraft:zombie", 4.0, &hidden_viewer, rewo_net::teams::label_team(&t_short, &mob_member), false);
-    let unteamed = f.labels(&ridden, "minecraft:zombie", 4.0, &hidden_viewer, None, false);
+    let teamed = f.labels(
+        &ridden,
+        "minecraft:zombie",
+        4.0,
+        &hidden_viewer,
+        rewo_net::teams::label_team(&t_short, &mob_member),
+        false,
+    );
+    let unteamed = f.labels(
+        &ridden,
+        "minecraft:zombie",
+        4.0,
+        &hidden_viewer,
+        None,
+        false,
+    );
     c.record(
         "e7.a_team_short_circuits_f1_and_is_vehicle",
         teamed.0 && !unteamed.0,
@@ -1031,8 +1170,14 @@ fn check_teams(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         .map_err(|e| format!("team parse: {e}"))?;
     let parsed_own = parse_set_player_team(&team_body("red", V_HIDE_OWN, 0, &[]))
         .map_err(|e| format!("team parse: {e}"))?;
-    let vis_never = parsed_never.parameters.as_ref().map(|p| p.name_tag_visibility);
-    let vis_own = parsed_own.parameters.as_ref().map(|p| p.name_tag_visibility);
+    let vis_never = parsed_never
+        .parameters
+        .as_ref()
+        .map(|p| p.name_tag_visibility);
+    let vis_own = parsed_own
+        .parameters
+        .as_ref()
+        .map(|p| p.name_tag_visibility);
     c.record(
         "e9.the_parameters_block_carries_the_visibility_id",
         vis_never == Some(rewo_net::teams::Visibility::Never)
@@ -1225,11 +1370,10 @@ fn check_pick(c: &mut Checker, paths: &DataPaths, jar: &std::path::Path) -> Resu
     // is itself a `+2.0` modifier on this attribute, not a special case.
     let far = p.table_with("minecraft:zombie", 1, 4.0, -1.0);
     let before = p.pick(&far, None);
-    let entity_range = p
-        .f
-        .reg
-        .id_of("entity_interaction_range")
-        .ok_or("no entity_interaction_range attribute")?;
+    let entity_range =
+        p.f.reg
+            .id_of("entity_interaction_range")
+            .ok_or("no entity_interaction_range attribute")?;
     let stored = rewo_net::attributes::apply_local_attributes(
         &attrs_body(p.camera, &[(entity_range, 5.0)]),
         Some(p.camera),
@@ -1445,8 +1589,7 @@ fn check_pick(c: &mut Checker, paths: &DataPaths, jar: &std::path::Path) -> Resu
     let refused = entity_hit_result(EYE, [10.0, 0.0, 0.0], &search, &[inside_c], 100.0);
     c.record(
         "g10.an_entity_containing_the_eye_is_picked_from_inside_at_distance_zero",
-        from_inside.is_some_and(|h| h.location == EYE && h.distance_sq == 0.0)
-            && refused.is_none(),
+        from_inside.is_some_and(|h| h.location == EYE && h.distance_sq == 0.0) && refused.is_none(),
         format!(
             "{:?} then {:?} (want a hit at the eye itself with distance 0, then \
              None — AABB.clip only tests near faces, so a segment starting \
@@ -1538,7 +1681,10 @@ fn check_pick(c: &mut Checker, paths: &DataPaths, jar: &std::path::Path) -> Resu
     // Behind the eye, so the vehicle itself is never the answer — placed at
     // the origin it would *contain* the camera and be picked from inside,
     // which is a real rule (g10) and would mask this one.
-    shared.add(50, EntityState::new(0, zombie_id, -5.0, -1.0, 0.0, 0.0, 0.0));
+    shared.add(
+        50,
+        EntityState::new(0, zombie_id, -5.0, -1.0, 0.0, 0.0, 0.0),
+    );
     rewo_net::route_set_passengers(
         p.f.ids.cb_play_set_passengers,
         &passengers_body(50, &[1, p.camera]),
@@ -1549,7 +1695,10 @@ fn check_pick(c: &mut Checker, paths: &DataPaths, jar: &std::path::Path) -> Resu
     // The same roster with only the mob aboard: the camera's root is itself,
     // so the two differ and the mob is picked again.
     let mut alone = p.table_with("minecraft:zombie", 1, 2.0, -1.0);
-    alone.add(50, EntityState::new(0, zombie_id, -5.0, -1.0, 0.0, 0.0, 0.0));
+    alone.add(
+        50,
+        EntityState::new(0, zombie_id, -5.0, -1.0, 0.0, 0.0, 0.0),
+    );
     rewo_net::route_set_passengers(
         p.f.ids.cb_play_set_passengers,
         &passengers_body(50, &[1]),
@@ -1612,7 +1761,12 @@ fn label_verts(
     let mut d = crate::healthbarshot_cmd::neutral_draw();
     d.name = name;
     d.health = health;
-    wr.set_entities(std::slice::from_ref(&d), [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0);
+    wr.set_entities(
+        std::slice::from_ref(&d),
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        0.0,
+    );
     (
         wr.entity_pass().expect("entity pass").text_vert_count(),
         name.is_some(),
@@ -1656,7 +1810,8 @@ fn check_wiring(
     // quietly stopped testing their subject by reimplementing a slice of the
     // app's setup.
     let base = f.healthy_named_zombie();
-    let (shown, shown_name, shown_bar) = label_verts(&mut wr, &f, &base, &LabelViewer::default(), None, 4.0);
+    let (shown, shown_name, shown_bar) =
+        label_verts(&mut wr, &f, &base, &LabelViewer::default(), None, 4.0);
     c.record(
         "f1.a_visible_entity_emits_label_vertices",
         shown > 0 && shown_name && shown_bar,
@@ -1837,7 +1992,12 @@ fn check_wiring(
     let (off_verts, off_name, off_pick) = run(4.0);
     c.record(
         "f7.a_name_tagged_mob_shows_its_tag_only_under_the_crosshair",
-        on_pick == Some(1) && on_name && on_verts > 0 && off_pick.is_none() && !off_name && off_verts == 0,
+        on_pick == Some(1)
+            && on_name
+            && on_verts > 0
+            && off_pick.is_none()
+            && !off_name
+            && off_verts == 0,
         format!(
             "on the ray: pick={on_pick:?} name={on_name} verts={on_verts}; four \
              blocks to the side: pick={off_pick:?} name={off_name} \
@@ -1897,16 +2057,28 @@ fn check_name_flatten(c: &mut Checker, f: &Fixture, baked: &assets::BakedAssets)
     // `baked.lang` is `en_us.json` after M54's deprecation pass, and
     // `entity.minecraft.zombie` is what `Entity.getTypeName()` would name a
     // zombie with. If the jar ever renames it, this moves with it.
-    let expected = baked.lang.get("entity.minecraft.zombie").unwrap_or("").to_string();
+    let expected = baked
+        .lang
+        .get("entity.minecraft.zombie")
+        .unwrap_or("")
+        .to_string();
 
     let resolved = {
         let mut t = f.spawn(f.zombie);
-        f.send_meta_lang(&mut t, &named(&nbt_translate("entity.minecraft.zombie")), Some(&baked.lang));
+        f.send_meta_lang(
+            &mut t,
+            &named(&nbt_translate("entity.minecraft.zombie")),
+            Some(&baked.lang),
+        );
         t.custom_name(1).map(str::to_string)
     };
     let unresolved = {
         let mut t = f.spawn(f.zombie);
-        f.send_meta_lang(&mut t, &named(&nbt_translate("entity.minecraft.zombie")), None);
+        f.send_meta_lang(
+            &mut t,
+            &named(&nbt_translate("entity.minecraft.zombie")),
+            None,
+        );
         t.custom_name(1).map(str::to_string)
     };
     c.record(
@@ -1928,7 +2100,11 @@ fn check_name_flatten(c: &mut Checker, f: &Fixture, baked: &assets::BakedAssets)
     // here the TABLE EXISTS and simply does not hold the key.
     let missing = {
         let mut t = f.spawn(f.zombie);
-        f.send_meta_lang(&mut t, &named(&nbt_translate("plugin.example.boss")), Some(&baked.lang));
+        f.send_meta_lang(
+            &mut t,
+            &named(&nbt_translate("plugin.example.boss")),
+            Some(&baked.lang),
+        );
         t.custom_name(1).map(str::to_string)
     };
     c.record(

@@ -181,7 +181,12 @@ pub fn validate_name(name: &str, max_chars: usize) -> Result<&str, NameError> {
         return Err(NameError::Reserved);
     }
     // Windows reserves these device names, with or without an extension.
-    let stem = name.split('.').next().unwrap_or(name).trim_end().to_ascii_uppercase();
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || ((stem.starts_with("COM") || stem.starts_with("LPT"))
             && stem.len() == 4
@@ -206,12 +211,19 @@ mod tests {
 
     #[test]
     fn path_to_file_url_round_trips_through_file_url_to_path() {
-        let p = Path::new(if cfg!(windows) { "C:\\a b\\100%\\x#1.jar" } else { "/a b/100%/x#1.jar" });
+        let p = Path::new(if cfg!(windows) {
+            "C:\\a b\\100%\\x#1.jar"
+        } else {
+            "/a b/100%/x#1.jar"
+        });
         let url = path_to_file_url(p);
         assert!(url.starts_with("file:///"), "{url}");
         assert!(url.ends_with("/a%20b/100%25/x%231.jar"), "{url}");
         let back = file_url_to_path(&url).unwrap();
-        assert_eq!(back.to_string_lossy().replace('\\', "/"), p.to_string_lossy().replace('\\', "/"));
+        assert_eq!(
+            back.to_string_lossy().replace('\\', "/"),
+            p.to_string_lossy().replace('\\', "/")
+        );
     }
 
     #[test]
@@ -271,7 +283,10 @@ mod tests {
     #[test]
     fn validate_name_accepts_ordinary_names() {
         assert_eq!(validate_name("  Velvet Hours ", 48), Ok("Velvet Hours"));
-        assert_eq!(validate_name("käyttäjä's world 2", 48), Ok("käyttäjä's world 2"));
+        assert_eq!(
+            validate_name("käyttäjä's world 2", 48),
+            Ok("käyttäjä's world 2")
+        );
         assert_eq!(validate_name("v1.21", 48), Ok("v1.21"));
     }
 

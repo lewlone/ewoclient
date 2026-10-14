@@ -236,7 +236,10 @@ mod tests {
             additions: Vec::new(),
         });
         let r = AmbientSounds::resolve(&base, Some(&biome));
-        assert_eq!(r.loop_sound.as_deref(), Some("minecraft:ambient.nether_wastes.loop"));
+        assert_eq!(
+            r.loop_sound.as_deref(),
+            Some("minecraft:ambient.nether_wastes.loop")
+        );
         assert!(
             r.mood.is_none(),
             "a merge would leak the dimension's cave mood into a biome that declares none"

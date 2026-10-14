@@ -260,12 +260,11 @@ fn check_transcription(c: &mut Checker) {
     }) && (1..=40).all(|w| {
         rewo_gpu::hud::title_pos(GUI_W, GUI_H, w) == ref_title_pos(GUI_W, GUI_H, w)
             && rewo_gpu::hud::subtitle_pos(GUI_W, GUI_H, w) == ref_subtitle_pos(GUI_W, GUI_H, w)
-            && rewo_gpu::hud::action_bar_pos(GUI_W, GUI_H, w)
-                == ref_action_bar_pos(GUI_W, GUI_H, w)
-    }) && rewo_gpu::hud::experience_bar_pos(GUI_W, GUI_H) == ref_experience_bar_pos(GUI_W, GUI_H)
+            && rewo_gpu::hud::action_bar_pos(GUI_W, GUI_H, w) == ref_action_bar_pos(GUI_W, GUI_H, w)
+    }) && rewo_gpu::hud::experience_bar_pos(GUI_W, GUI_H)
+        == ref_experience_bar_pos(GUI_W, GUI_H)
         && (1..=120).all(|tt| {
-            rewo_gpu::hud::title_alpha(tt, 10, 70, 20, 0.3)
-                == ref_title_alpha(tt, 10, 70, 20, 0.3)
+            rewo_gpu::hud::title_alpha(tt, 10, 70, 20, 0.3) == ref_title_alpha(tt, 10, 70, 20, 0.3)
         });
     c.record(
         "m0.the_transcription_matches_its_literals_and_the_production_arithmetic",
@@ -316,7 +315,13 @@ fn component_styled(text: &str) -> Vec<u8> {
     out.extend_from_slice(b"text");
     out.extend_from_slice(&(text.len() as u16).to_be_bytes());
     out.extend_from_slice(text.as_bytes());
-    for k in ["bold", "italic", "underlined", "strikethrough", "obfuscated"] {
+    for k in [
+        "bold",
+        "italic",
+        "underlined",
+        "strikethrough",
+        "obfuscated",
+    ] {
         out.push(1); // TAG_Byte
         out.extend_from_slice(&(k.len() as u16).to_be_bytes());
         out.extend_from_slice(k.as_bytes());
@@ -423,10 +428,11 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
         "w1.the_seven_ids_resolve_and_are_distinct",
         distinct.len() == 7,
         seven
-                .iter()
-                .map(|(n, id)| format!("{n}={id}"))
-                .collect::<Vec<_>>()
-                .join(" ").to_string(),
+            .iter()
+            .map(|(n, id)| format!("{n}={id}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_string(),
     );
 
     let mut state = HudState::default();
@@ -450,7 +456,12 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w2 — a subtitle on its own arms no clock, so nothing shows.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_subtitle_text, &component_string("go"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_subtitle_text,
+        &component_string("go"),
+        ids,
+        &mut s,
+    );
     c.record(
         "w2.a_subtitle_alone_arms_no_clock",
         s.titles.subtitle.is_some() && s.titles.title_time == 0 && !s.titles.showing_title(),
@@ -462,7 +473,12 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
     );
 
     // w3 — the title that follows it shows both, at the full duration.
-    assert_route(ids.cb_play_set_title_text, &component_string("main"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_title_text,
+        &component_string("main"),
+        ids,
+        &mut s,
+    );
     c.record(
         "w3.the_title_that_follows_shows_both",
         s.titles.showing_title() && s.titles.title_time == 100 && s.titles.subtitle.is_some(),
@@ -474,9 +490,19 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w4 — a negative axis is a skip, per axis; zero is a legal set.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(-1, -1, 40), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(-1, -1, 40),
+        ids,
+        &mut s,
+    );
     let skipped = (s.titles.fade_in, s.titles.stay, s.titles.fade_out) == (10, 70, 40);
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(0, 0, 0), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(0, 0, 0),
+        ids,
+        &mut s,
+    );
     let zeroed = (s.titles.fade_in, s.titles.stay, s.titles.fade_out) == (0, 0, 0);
     c.record(
         "w4.a_negative_time_is_a_per_axis_skip_and_zero_is_not",
@@ -487,12 +513,22 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w5 — `setTimes` re-arms a LIVE title at its full duration.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_title_text, &component_string("hi"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_title_text,
+        &component_string("hi"),
+        ids,
+        &mut s,
+    );
     for _ in 0..50 {
         s.tick();
     }
     let halfway = s.titles.title_time;
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(10, 70, 20), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(10, 70, 20),
+        ids,
+        &mut s,
+    );
     c.record(
         "w5.set_times_re_arms_a_live_title",
         halfway == 50 && s.titles.title_time == 100,
@@ -505,7 +541,12 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w5b — …and does NOT arm one that is not showing.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(1, 2, 3), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(1, 2, 3),
+        ids,
+        &mut s,
+    );
     c.record(
         "w5b.set_times_does_not_arm_an_absent_title",
         s.titles.title_time == 0,
@@ -514,8 +555,18 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w6 — clear keeps the durations; only `resetTimes` restores them.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(5, 6, 7), ids, &mut s);
-    assert_route(ids.cb_play_set_title_text, &component_string("hi"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(5, 6, 7),
+        ids,
+        &mut s,
+    );
+    assert_route(
+        ids.cb_play_set_title_text,
+        &component_string("hi"),
+        ids,
+        &mut s,
+    );
     assert_route(ids.cb_play_clear_titles, &[0], ids, &mut s);
     let kept = (s.titles.fade_in, s.titles.stay, s.titles.fade_out) == (5, 6, 7)
         && s.titles.title.is_none()
@@ -531,9 +582,24 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w7 — the expiry drops the subtitle too, and neither counter goes negative.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(0, 1, 0), ids, &mut s);
-    assert_route(ids.cb_play_set_title_text, &component_string("t"), ids, &mut s);
-    assert_route(ids.cb_play_set_subtitle_text, &component_string("s"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(0, 1, 0),
+        ids,
+        &mut s,
+    );
+    assert_route(
+        ids.cb_play_set_title_text,
+        &component_string("t"),
+        ids,
+        &mut s,
+    );
+    assert_route(
+        ids.cb_play_set_subtitle_text,
+        &component_string("s"),
+        ids,
+        &mut s,
+    );
     s.tick();
     let dropped = s.titles.title.is_none() && s.titles.subtitle.is_none();
     s.tick();
@@ -545,15 +611,27 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w8 — the action bar's own clock, and the flag the packet always clears.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(0, 5, 0), ids, &mut s);
-    assert_route(ids.cb_play_set_action_bar_text, &component_string("bar"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(0, 5, 0),
+        ids,
+        &mut s,
+    );
+    assert_route(
+        ids.cb_play_set_action_bar_text,
+        &component_string("bar"),
+        ids,
+        &mut s,
+    );
     let fresh = s.titles.overlay_message_time;
     for _ in 0..60 {
         s.tick();
     }
     c.record(
         "w8.the_action_bar_lives_sixty_ticks_regardless_of_the_title_times",
-        fresh == 60 && s.titles.overlay_message_time == 0 && !s.titles.animate_overlay_message_color,
+        fresh == 60
+            && s.titles.overlay_message_time == 0
+            && !s.titles.animate_overlay_message_color,
         format!(
             "armed at {fresh} with title times 0/5/0, expired at 0, animate=false \
              (MUTATION: `setOverlayMessage(text, true)` gives the jukebox rainbow)"
@@ -589,10 +667,26 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
     for _ in 0..50 {
         s.tick();
     }
-    assert_route(ids.cb_play_set_experience, &experience_body(0.5, 3, 30), ids, &mut s);
-    let first = (s.experience.display_start_tick, s.experience.will_prioritize());
-    assert_route(ids.cb_play_set_experience, &experience_body(0.6, 3, 32), ids, &mut s);
-    let second = (s.experience.display_start_tick, s.experience.will_prioritize());
+    assert_route(
+        ids.cb_play_set_experience,
+        &experience_body(0.5, 3, 30),
+        ids,
+        &mut s,
+    );
+    let first = (
+        s.experience.display_start_tick,
+        s.experience.will_prioritize(),
+    );
+    assert_route(
+        ids.cb_play_set_experience,
+        &experience_body(0.6, 3, 32),
+        ids,
+        &mut s,
+    );
+    let second = (
+        s.experience.display_start_tick,
+        s.experience.will_prioritize(),
+    );
     c.record(
         "w10.the_first_experience_update_does_not_prioritise_the_bar",
         first == (i32::MIN + 1, false) && second == (50, true),
@@ -604,18 +698,29 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w11 — the re-arm keys on `progress` alone.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_experience, &experience_body(0.5, 1, 10), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_experience,
+        &experience_body(0.5, 1, 10),
+        ids,
+        &mut s,
+    );
     for _ in 0..200 {
         s.tick();
     }
-    assert_route(ids.cb_play_set_experience, &experience_body(0.5, 9, 400), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_experience,
+        &experience_body(0.5, 9, 400),
+        ids,
+        &mut s,
+    );
     c.record(
         "w11.a_level_only_change_does_not_re_arm_the_window",
         s.experience.display_start_tick == i32::MIN + 1
             && s.experience.level == 9
             && s.experience.total == 400,
         "start tick still the sentinel after a 1 -> 9 level change \
-             (MUTATION: keying the re-arm on any field makes it 200)".to_string(),
+             (MUTATION: keying the re-arm on any field makes it 200)"
+            .to_string(),
     );
 
     // w12 — duration 0 is a removal.
@@ -653,10 +758,25 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w14 — the respawn asymmetry.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_titles_animation, &animation_body(5, 6, 7), ids, &mut s);
-    assert_route(ids.cb_play_set_title_text, &component_string("welcome"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_titles_animation,
+        &animation_body(5, 6, 7),
+        ids,
+        &mut s,
+    );
+    assert_route(
+        ids.cb_play_set_title_text,
+        &component_string("welcome"),
+        ids,
+        &mut s,
+    );
     assert_route(ids.cb_play_cooldown, &cooldown_body("g", 40), ids, &mut s);
-    assert_route(ids.cb_play_set_experience, &experience_body(0.5, 30, 900), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_experience,
+        &experience_body(0.5, 30, 900),
+        ids,
+        &mut s,
+    );
     s.reset_for_respawn();
     c.record(
         "w14.a_respawn_keeps_the_title_and_drops_the_player_state",
@@ -674,11 +794,17 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
 
     // w15 — a malformed body changes nothing.
     let mut s = HudState::default();
-    assert_route(ids.cb_play_set_title_text, &component_string("kept"), ids, &mut s);
+    assert_route(
+        ids.cb_play_set_title_text,
+        &component_string("kept"),
+        ids,
+        &mut s,
+    );
     let before = s.clone();
-    let matched_anyway = rewo_net::route_hud_state(ids.cb_play_set_titles_animation, &[1, 2], ids, &mut s)
-        && rewo_net::route_hud_state(ids.cb_play_clear_titles, &[], ids, &mut s)
-        && rewo_net::route_hud_state(ids.cb_play_cooldown, &[], ids, &mut s);
+    let matched_anyway =
+        rewo_net::route_hud_state(ids.cb_play_set_titles_animation, &[1, 2], ids, &mut s)
+            && rewo_net::route_hud_state(ids.cb_play_clear_titles, &[], ids, &mut s)
+            && rewo_net::route_hud_state(ids.cb_play_cooldown, &[], ids, &mut s);
     c.record(
         "w15.a_decode_failure_matches_the_id_and_changes_nothing",
         matched_anyway && s == before,
@@ -732,7 +858,11 @@ fn assert_route(id: i32, body: &[u8], ids: &Ids, state: &mut HudState) {
 fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::items::Items) {
     let Some(font) = baked.font.as_ref() else {
         // Fail closed rather than silently skipping eleven witnesses.
-        c.record("m0.the_font_baked", false, "no baked font in the client jar");
+        c.record(
+            "m0.the_font_baked",
+            false,
+            "no baked font in the client jar",
+        );
         return;
     };
     let advance = &font.advance;
@@ -740,7 +870,8 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     let screen = (W as f32, H as f32);
 
     // m1 — nothing is emitted with no title and no action bar.
-    let quiet = crate::live_cmd::title_lines(&TitleOverlay::default(), advance, px, screen, 0.0, None);
+    let quiet =
+        crate::live_cmd::title_lines(&TitleOverlay::default(), advance, px, screen, 0.0, None);
     c.record(
         "m1.a_quiet_hud_emits_no_title_lines",
         quiet.is_empty(),
@@ -883,9 +1014,7 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     let bar_y = ref_action_bar_pos(GUI_W, GUI_H, 0).1;
     c.record(
         "m6.a_title_and_an_action_bar_show_at_once",
-        together.len() == 2
-            && together[1].y == bar_y as f32 * px
-            && together[1].px == px,
+        together.len() == 2 && together[1].y == bar_y as f32 * px && together[1].px == px,
         format!(
             "two lines; the bar at y={bar_y} GUI px, unscaled (MUTATION: an \
              `else` would drop one of them)"
@@ -1226,10 +1355,10 @@ fn check_pixels(
     // -- the title, in magenta ------------------------------------------------
 
     let shot = |gpu: &mut Gpu,
-                    off: &mut Offscreen,
-                    wr: &mut WorldRenderer,
-                    lines: Vec<rewo_gpu::world::OwnedTextLine>,
-                    gauges: HudGauges|
+                off: &mut Offscreen,
+                wr: &mut WorldRenderer,
+                lines: Vec<rewo_gpu::world::OwnedTextLine>,
+                gauges: HudGauges|
      -> Result<Vec<u8>, String> {
         wr.set_hud(
             0,
@@ -1245,7 +1374,13 @@ fn check_pixels(
         off.read_rgba(gpu)
     };
 
-    let empty = shot(&mut gpu, &mut off, &mut wr, Vec::new(), HudGauges::default())?;
+    let empty = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Vec::new(),
+        HudGauges::default(),
+    )?;
     c.record(
         "p1.a_frame_with_no_title_carries_no_magenta",
         magenta(&empty, 0, 0, W, H) == 0,
@@ -1254,7 +1389,8 @@ fn check_pixels(
     );
 
     let mut t = TitleOverlay::default();
-    let title = rewo_net::hud_state::read_component(&component_colored("TITLE", "#FF00FF")).unwrap();
+    let title =
+        rewo_net::hud_state::read_component(&component_colored("TITLE", "#FF00FF")).unwrap();
     t.set_title(title.clone());
     // titleTime 100 is the very start of the fade-in, where alpha is 0 — tick
     // into the hold so the title is at full opacity.
@@ -1463,7 +1599,6 @@ fn check_pixels(
         ),
     );
 
-
     // p7 — the action bar sits low, and is a separate draw.
     let mut bar = TitleOverlay::default();
     bar.set_overlay_message(
@@ -1488,7 +1623,13 @@ fn check_pixels(
 
     // -- the XP bar -----------------------------------------------------------
 
-    let bare = shot(&mut gpu, &mut off, &mut wr, Vec::new(), HudGauges::default())?;
+    let bare = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        Vec::new(),
+        HudGauges::default(),
+    )?;
     let (bar_left, bar_top) = ref_experience_bar_pos(GUI_W, GUI_H);
     // Rows 1..3 of the 5-row sprite: the interior, where the progress sprite's
     // green clears its background's by a wide margin. Rows 0 and 4 are both
@@ -1643,9 +1784,8 @@ fn check_pixels(
     /// brightest byte the hotbar sprite itself can put in a slot interior is
     /// well under 60.
     const WASH_MIN: u8 = 150;
-    let washed = |img: &[u8], col: u32, y: u32| -> bool {
-        img[((y * W + col) * 4) as usize] >= WASH_MIN
-    };
+    let washed =
+        |img: &[u8], col: u32, y: u32| -> bool { img[((y * W + col) * 4) as usize] >= WASH_MIN };
     let bare_max = (slot_top..slot_bottom)
         .flat_map(|y| [col0, col1].map(move |c| (c, y)))
         .map(|(c, y)| bare[((y * W + c) * 4) as usize])
@@ -1686,9 +1826,7 @@ fn check_pixels(
         // literal directly and consults nothing under test.
         let (want_top, want_bottom) = (icon_top_gui + want_off.0, icon_top_gui + want_off.1);
         let observed = (differs.first().copied(), differs.last().copied());
-        let contiguous = differs
-            .windows(2)
-            .all(|w| w[1] == w[0] + 1);
+        let contiguous = differs.windows(2).all(|w| w[1] == w[0] + 1);
         c.record(
             &format!("{name}.the_cooldown_wash_covers_the_bottom_of_the_slot_at_{cooldown}"),
             !differs.is_empty()
@@ -1746,9 +1884,8 @@ fn check_pixels(
     };
     let one_slot = shot(&mut gpu, &mut off, &mut wr, Vec::new(), g)?;
     let col5 = (slots[5].0 + slots[5].2 / 2.0) as u32;
-    let lit = |img: &[u8], col: u32| -> bool {
-        (slot_top..slot_bottom).any(|y| washed(img, col, y))
-    };
+    let lit =
+        |img: &[u8], col: u32| -> bool { (slot_top..slot_bottom).any(|y| washed(img, col, y)) };
     c.record(
         "p16.the_sweep_lands_on_the_slot_it_was_indexed_by",
         lit(&one_slot, col5) && !lit(&one_slot, col0) && !lit(&one_slot, col1),

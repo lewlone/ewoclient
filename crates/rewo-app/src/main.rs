@@ -9,35 +9,33 @@
 
 #[cfg(feature = "gates")]
 mod abilityshot_cmd;
-mod audio_backend;
+mod advancements_view;
 #[cfg(feature = "gates")]
-mod bordershot_cmd;
-mod capture;
-mod os_clipboard;
-mod cem_pack;
-#[cfg(feature = "gates")]
-mod captureshot_cmd;
-mod bench_cmd;
+mod advshot_cmd;
 #[cfg(feature = "gates")]
 mod attributeshot_cmd;
+mod audio_backend;
+mod bench_cmd;
+#[cfg(feature = "gates")]
+mod blockentityshot_cmd;
+#[cfg(feature = "gates")]
+mod bookshot_cmd;
+#[cfg(feature = "gates")]
+mod bordershot_cmd;
+#[cfg(feature = "gates")]
+mod breakshot_cmd;
+#[cfg(feature = "gates")]
+mod capeshot_cmd;
+mod capture;
+#[cfg(feature = "gates")]
+mod captureshot_cmd;
+mod cem_pack;
+#[cfg(feature = "gates")]
+mod containershot_cmd;
 #[cfg(feature = "gates")]
 mod danceshot_cmd;
 #[cfg(feature = "gates")]
 mod deathshot_cmd;
-#[cfg(feature = "gates")]
-mod serverlinkshot_cmd;
-#[cfg(feature = "gates")]
-mod rideshot_cmd;
-#[cfg(feature = "gates")]
-mod healthbarshot_cmd;
-#[cfg(feature = "gates")]
-mod breakshot_cmd;
-#[cfg(feature = "gates")]
-mod hurtshot_cmd;
-#[cfg(feature = "gates")]
-mod labelshot_cmd;
-#[cfg(feature = "gates")]
-mod itemshot_cmd;
 mod demo_cmd;
 #[cfg(feature = "gates")]
 mod dimension_check;
@@ -46,66 +44,63 @@ mod dimension_json;
 #[cfg(feature = "gates")]
 mod dimensioncheck_cmd;
 #[cfg(feature = "gates")]
-mod blockentityshot_cmd;
-#[cfg(feature = "gates")]
 mod eventshot_cmd;
-#[cfg(feature = "gates")]
-mod lightmapshot_cmd;
-#[cfg(feature = "gates")]
-mod meshshot_cmd;
-#[cfg(feature = "gates")]
-mod tintshot_cmd;
-#[cfg(feature = "gates")]
-mod locatorshot_cmd;
-#[cfg(feature = "gates")]
-mod sidebarshot_cmd;
-#[cfg(feature = "gates")]
-mod titleshot_cmd;
-#[cfg(feature = "gates")]
-mod bookshot_cmd;
-#[cfg(feature = "gates")]
-mod signshot_cmd;
-#[cfg(feature = "gates")]
-mod optionshot_cmd;
 #[cfg(feature = "gates")]
 mod gaugeshot_cmd;
 #[cfg(feature = "gates")]
+mod handshot_cmd;
+#[cfg(feature = "gates")]
+mod healthbarshot_cmd;
+#[cfg(feature = "gates")]
+mod hudshot_cmd;
+#[cfg(feature = "gates")]
+mod hurtshot_cmd;
+#[cfg(feature = "gates")]
+mod inventoryshot_cmd;
+#[cfg(feature = "gates")]
+mod itemshot_cmd;
+mod knobs;
+#[cfg(feature = "gates")]
+mod labelshot_cmd;
+#[cfg(feature = "gates")]
 mod leashshot_cmd;
+#[cfg(feature = "gates")]
+mod lightmapshot_cmd;
+mod live_cmd;
+#[cfg(feature = "gates")]
+mod locatorshot_cmd;
+#[cfg(feature = "gates")]
+mod meshshot_cmd;
 #[cfg(feature = "gates")]
 mod mobshot_cmd;
 #[cfg(feature = "gates")]
 mod mobtexshot_cmd;
-mod knobs;
 mod modules;
-mod live_cmd;
 mod net_cmd;
 #[cfg(feature = "gates")]
-mod play_cmd;
-#[cfg(feature = "gates")]
-mod capeshot_cmd;
-#[cfg(feature = "gates")]
-mod handshot_cmd;
-#[cfg(feature = "gates")]
-mod containershot_cmd;
-#[cfg(feature = "gates")]
-mod inventoryshot_cmd;
+mod optionshot_cmd;
+mod os_clipboard;
 #[cfg(feature = "gates")]
 mod particleshot_cmd;
 #[cfg(feature = "gates")]
+mod play_cmd;
+#[cfg(feature = "gates")]
 mod portalshot_cmd;
+#[cfg(feature = "gates")]
+mod rideshot_cmd;
+#[cfg(feature = "gates")]
+mod serverlinkshot_cmd;
+#[cfg(feature = "gates")]
+mod sidebarshot_cmd;
+#[cfg(feature = "gates")]
+mod signshot_cmd;
 mod skin_fetch;
-mod uri_open;
 #[cfg(feature = "gates")]
 mod skyshot_cmd;
 #[cfg(feature = "gates")]
 mod soundshot_cmd;
 mod stats;
-#[cfg(feature = "gates")]
-mod witness_names;
 mod stats_view;
-mod advancements_view;
-#[cfg(feature = "gates")]
-mod advshot_cmd;
 #[cfg(feature = "gates")]
 mod statshot_cmd;
 #[cfg(feature = "gates")]
@@ -113,11 +108,16 @@ mod swingshot_cmd;
 mod tab_list_view;
 #[cfg(feature = "gates")]
 mod tablistshot_cmd;
+#[cfg(feature = "gates")]
+mod tintshot_cmd;
+#[cfg(feature = "gates")]
+mod titleshot_cmd;
+mod uri_open;
 mod view_cmd;
 #[cfg(feature = "gates")]
-mod hudshot_cmd;
-#[cfg(feature = "gates")]
 mod weathershot_cmd;
+#[cfg(feature = "gates")]
+mod witness_names;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -157,7 +157,10 @@ impl PresentPref {
 }
 
 #[derive(Parser)]
-#[command(name = "rewo", about = "Rewo native client — M0 renderer + M1 protocol")]
+#[command(
+    name = "rewo",
+    about = "Rewo native client — M0 renderer + M1 protocol"
+)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -510,8 +513,8 @@ fn main() {
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         #[cfg(feature = "gates")]
         Some(Command::Bookshot(b_args)) => bookshot_cmd::run(b_args),
-            #[cfg(feature = "gates")]
-            Some(Command::Signshot(s_args)) => signshot_cmd::run(s_args),
+        #[cfg(feature = "gates")]
+        Some(Command::Signshot(s_args)) => signshot_cmd::run(s_args),
         #[cfg(feature = "gates")]
         Some(Command::Optionshot(o_args)) => optionshot_cmd::run(o_args),
         #[cfg(feature = "gates")]
@@ -681,7 +684,11 @@ impl WinApp {
             origin: [16.0, 16.0],
             size: [560.0, 140.0],
         };
-        let State { window, gpu, renderer } = state;
+        let State {
+            window,
+            gpu,
+            renderer,
+        } = state;
         match renderer.render(gpu, None, &draw, CLEAR_WINE) {
             Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
             Ok(RenderOutcome::NeedsRecreate) => {
@@ -761,12 +768,7 @@ impl ApplicationHandler for WinApp {
         }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {

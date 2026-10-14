@@ -18,9 +18,7 @@ use std::path::PathBuf;
 
 use ewo_core::modules as catalog;
 use ewo_render::text::{draw_tracked_em, measure_tracked_em};
-use ewo_render::widgets::{
-    draw_liquid_glass, GlassBackdrop, LiquidGlassParams,
-};
+use ewo_render::widgets::{draw_liquid_glass, GlassBackdrop, LiquidGlassParams};
 use ewo_render::FontStore;
 use skia_safe::{
     gradient_shader, BlurStyle, Canvas, ClipOp, Color4f, Data, Font, Image, MaskFilter, Paint,
@@ -41,7 +39,12 @@ const CHAMP: (u8, u8, u8) = tok(VELVET.accent_champ); // --accent-champ
 const WINE: (u8, u8, u8) = tok(VELVET.bg_wine_b); // --bg-wine-b
 
 fn rgba(c: (u8, u8, u8), a: f32) -> Color4f {
-    Color4f::new(c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0, a)
+    Color4f::new(
+        c.0 as f32 / 255.0,
+        c.1 as f32 / 255.0,
+        c.2 as f32 / 255.0,
+        a,
+    )
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -167,8 +170,8 @@ pub(crate) mod off {
     pub const PLAYER_NAME: usize = 556;
     // PvP Utils (schema 4): two contiguous records — jump reset, then hit range.
     pub const PVP_JUMP: usize = 584; // i32 tier, i32 offset_ms, i32 age_ticks, i32 fade_total
-    pub const PVP_HIT: usize = 600;  // f32 distance, i32 color_rgb, i32 age_ticks, i32 fade_total
-    // Combat HUD additions (schema 5): CPS pair + four tracked item counts.
+    pub const PVP_HIT: usize = 600; // f32 distance, i32 color_rgb, i32 age_ticks, i32 fade_total
+                                    // Combat HUD additions (schema 5): CPS pair + four tracked item counts.
     pub const CPS_LEFT: usize = 616;
     pub const CPS_RIGHT: usize = 620;
     pub const ITEM_PEARLS: usize = 624;
@@ -204,7 +207,7 @@ pub(crate) const FLAG_ARMOR: i32 = 1 << 2; // at least one armor piece is worn
 pub(crate) const FLAG_TARGET: i32 = 1 << 3; // an entity is under the crosshair
 pub(crate) const FLAG_OVERLAY: i32 = 1 << 4; // the EwoClient overlay is open
 pub(crate) const FLAG_PVP_JUMP: i32 = 1 << 5; // a fresh jump-reset result is live
-pub(crate) const FLAG_PVP_HIT: i32 = 1 << 6;  // a fresh hit-range result is live
+pub(crate) const FLAG_PVP_HIT: i32 = 1 << 6; // a fresh hit-range result is live
 
 /// Jump-reset tier — wire-mirror of `EwoJumpReset.Tier` ordinal mapping in
 /// `EwoHudData.tierToInt`. The renderer dispatches on this.
@@ -774,25 +777,127 @@ impl HudLayout {
     fn defaults() -> Self {
         HudLayout {
             widgets: [
-                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0204, scale: 1.0 }, // fps
-                WidgetLayout { enabled: true, anchor: Anchor::Tl, x: 0.0135, y: 0.0620, scale: 1.0 }, // coords
-                WidgetLayout { enabled: true, anchor: Anchor::Br, x: 0.9865, y: 0.9759, scale: 1.0 }, // ping
-                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9759, scale: 1.0 }, // keystrokes
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.9330, scale: 1.0 }, // armor
-                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.3000, scale: 1.0 }, // potions
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.0593, scale: 1.0 }, // target
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8700, scale: 1.0 }, // jump_reset_text
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.8300, scale: 1.0 }, // jump_reset_bar
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.7500, scale: 1.0 }, // hit_range
-                WidgetLayout { enabled: true, anchor: Anchor::Tr, x: 0.9865, y: 0.0204, scale: 1.0 }, // cps
-                WidgetLayout { enabled: true, anchor: Anchor::Bl, x: 0.0135, y: 0.9000, scale: 1.0 }, // items
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.6800, scale: 1.0 }, // shield_cooldown
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1100, scale: 1.0 }, // reach
-                WidgetLayout { enabled: true, anchor: Anchor::Bc, x: 0.5000, y: 0.5800, scale: 1.0 }, // attack_charge
-                WidgetLayout { enabled: true, anchor: Anchor::Tc, x: 0.5000, y: 0.1800, scale: 1.0 }, // combo
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Tl,
+                    x: 0.0135,
+                    y: 0.0204,
+                    scale: 1.0,
+                }, // fps
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Tl,
+                    x: 0.0135,
+                    y: 0.0620,
+                    scale: 1.0,
+                }, // coords
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Br,
+                    x: 0.9865,
+                    y: 0.9759,
+                    scale: 1.0,
+                }, // ping
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bl,
+                    x: 0.0135,
+                    y: 0.9759,
+                    scale: 1.0,
+                }, // keystrokes
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bc,
+                    x: 0.5000,
+                    y: 0.9330,
+                    scale: 1.0,
+                }, // armor
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Tr,
+                    x: 0.9865,
+                    y: 0.3000,
+                    scale: 1.0,
+                }, // potions
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Tc,
+                    x: 0.5000,
+                    y: 0.0593,
+                    scale: 1.0,
+                }, // target
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bc,
+                    x: 0.5000,
+                    y: 0.8700,
+                    scale: 1.0,
+                }, // jump_reset_text
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bc,
+                    x: 0.5000,
+                    y: 0.8300,
+                    scale: 1.0,
+                }, // jump_reset_bar
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bc,
+                    x: 0.5000,
+                    y: 0.7500,
+                    scale: 1.0,
+                }, // hit_range
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Tr,
+                    x: 0.9865,
+                    y: 0.0204,
+                    scale: 1.0,
+                }, // cps
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bl,
+                    x: 0.0135,
+                    y: 0.9000,
+                    scale: 1.0,
+                }, // items
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bc,
+                    x: 0.5000,
+                    y: 0.6800,
+                    scale: 1.0,
+                }, // shield_cooldown
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Tc,
+                    x: 0.5000,
+                    y: 0.1100,
+                    scale: 1.0,
+                }, // reach
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Bc,
+                    x: 0.5000,
+                    y: 0.5800,
+                    scale: 1.0,
+                }, // attack_charge
+                WidgetLayout {
+                    enabled: true,
+                    anchor: Anchor::Tc,
+                    x: 0.5000,
+                    y: 0.1800,
+                    scale: 1.0,
+                }, // combo
                 // Media — default off (the user opts in) at top-right under the
                 // CPS chip. Once they enable + place it the layout is persisted.
-                WidgetLayout { enabled: false, anchor: Anchor::Tr, x: 0.9865, y: 0.1100, scale: 1.0 }, // media
+                WidgetLayout {
+                    enabled: false,
+                    anchor: Anchor::Tr,
+                    x: 0.9865,
+                    y: 0.1100,
+                    scale: 1.0,
+                }, // media
             ],
             paint_rate: crate::HudPaintRate::Match,
             glass_strength: GLASS_DEFAULT,

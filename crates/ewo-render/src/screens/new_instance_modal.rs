@@ -37,7 +37,10 @@ pub const FALLBACK_MC_VERSIONS: &[&str] = &["loading…"];
 pub const LOADERS: &[&str] = &["Vanilla", "Ewo (development)", "Native · Rewo"];
 
 fn default_mc_versions() -> Vec<String> {
-    FALLBACK_MC_VERSIONS.iter().map(|s| (*s).to_string()).collect()
+    FALLBACK_MC_VERSIONS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
@@ -328,7 +331,12 @@ pub fn compute_layout(card_w: f32, card_h: f32, fonts: &FontStore) -> ModalLayou
     let name_label_baseline = y + (-lm.ascent);
     let input_top = name_label_baseline + 4.0 + FIELD_LABEL_TO_INPUT_GAP;
     let input_h = 50.0;
-    let name_input = Rect::from_xywh(content_left, input_top, content_right - content_left, input_h);
+    let name_input = Rect::from_xywh(
+        content_left,
+        input_top,
+        content_right - content_left,
+        input_h,
+    );
     let name_hint_baseline = input_top + input_h + 6.0 + (-hm.ascent);
     let name_field_bottom = name_hint_baseline + hm.descent;
 
@@ -356,8 +364,14 @@ pub fn compute_layout(card_w: f32, card_h: f32, fonts: &FontStore) -> ModalLayou
         row_h,
     );
     let ram_value_left = ram_slider.right + 18.0;
-    let ram_value_baseline = row_top + row_h * 0.5
-        + fonts.fraunces_axes(22.0, 50.0, 0.0, 300.0, None).metrics().1.cap_height * 0.5;
+    let ram_value_baseline = row_top
+        + row_h * 0.5
+        + fonts
+            .fraunces_axes(22.0, 50.0, 0.0, 300.0, None)
+            .metrics()
+            .1
+            .cap_height
+            * 0.5;
     let ram_hint_baseline = row_top + row_h + 6.0 + (-hm.ascent);
 
     // Footer — Cancel + Create
@@ -402,9 +416,18 @@ pub fn compute_layout(card_w: f32, card_h: f32, fonts: &FontStore) -> ModalLayou
 fn card_total_height() -> f32 {
     // Conservative: head 76 + section + name 95 + gap + dd row 61 + gap +
     // ram 65 + section + footer 58 + paddings.
-    CARD_PAD_TOP + 76.0 + SECTION_GAP
-        + 95.0 + FIELD_GAP + 61.0 + FIELD_GAP + 65.0
-        + SECTION_GAP + FOOTER_PAD_TOP + 38.0 + CARD_PAD_BOTTOM
+    CARD_PAD_TOP
+        + 76.0
+        + SECTION_GAP
+        + 95.0
+        + FIELD_GAP
+        + 61.0
+        + FIELD_GAP
+        + 65.0
+        + SECTION_GAP
+        + FOOTER_PAD_TOP
+        + 38.0
+        + CARD_PAD_BOTTOM
 }
 
 pub fn widget_bounds(card_w: f32, card_h: f32, fonts: &FontStore) -> Vec<(Slot, Rect)> {
@@ -464,11 +487,7 @@ pub fn draw_modal(
 
     let mut layer_paint = Paint::default();
     layer_paint.set_alpha_f(anim);
-    canvas.save_layer(
-        &SaveLayerRec::default()
-            .bounds(&card)
-            .paint(&layer_paint),
-    );
+    canvas.save_layer(&SaveLayerRec::default().bounds(&card).paint(&layer_paint));
 
     let cx = (card.left + card.right) * 0.5;
     let cy = (card.top + card.bottom) * 0.5;
@@ -559,7 +578,10 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
         if let Some(shader) = gradient_shader::linear(
-            (Point::new(card.left, card.top), Point::new(card.left, card.bottom)),
+            (
+                Point::new(card.left, card.top),
+                Point::new(card.left, card.bottom),
+            ),
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
                     Color4f::new(38.0 / 255.0, 18.0 / 255.0, 30.0 / 255.0, 0.92),
@@ -596,7 +618,6 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
         RRect::new_rect_xy(inset_rect, CARD_RADIUS - 0.5, CARD_RADIUS - 0.5),
         &rim,
     );
-
 }
 
 /// The form (text and widgets), clipped to the card. Never scaled.
@@ -711,7 +732,13 @@ fn draw_inner(
     let layout = compute_layout(card_w, card_h, fonts);
 
     // Head
-    draw_head(canvas, fonts, layout.content_left, layout.content_right, card.top + CARD_PAD_TOP);
+    draw_head(
+        canvas,
+        fonts,
+        layout.content_left,
+        layout.content_right,
+        card.top + CARD_PAD_TOP,
+    );
 
     // Body fields
     draw_name_field(
@@ -730,13 +757,7 @@ fn draw_inner(
     draw_footer(canvas, fonts, &layout, state, settings);
 }
 
-fn draw_head(
-    canvas: &Canvas,
-    fonts: &FontStore,
-    left: f32,
-    _right: f32,
-    top: f32,
-) -> f32 {
+fn draw_head(canvas: &Canvas, fonts: &FontStore, left: f32, _right: f32, top: f32) -> f32 {
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eb_paint = Paint::default();
     eb_paint.set_anti_alias(true);
@@ -760,7 +781,12 @@ fn draw_head(
     let (_, tm) = title_font.metrics();
     let title_top = eb_baseline + em.descent + 4.0;
     let title_baseline = title_top + (-tm.ascent);
-    canvas.draw_str("Begin a new world", (left, title_baseline), &title_font, &t_paint);
+    canvas.draw_str(
+        "Begin a new world",
+        (left, title_baseline),
+        &title_font,
+        &t_paint,
+    );
 
     // Subhead — italic Newsreader 14
     let sub_font = fonts.newsreader(14.0);
@@ -853,8 +879,24 @@ fn draw_dropdown_row(
         .unwrap_or("");
     let value_b = LOADERS.get(state.loader.selected).copied().unwrap_or("");
     let time = 0.0;
-    draw_vdrop_head(canvas, l.version_head, value_a, &state.version, time, settings, fonts);
-    draw_vdrop_head(canvas, l.loader_head, value_b, &state.loader, time, settings, fonts);
+    draw_vdrop_head(
+        canvas,
+        l.version_head,
+        value_a,
+        &state.version,
+        time,
+        settings,
+        fonts,
+    );
+    draw_vdrop_head(
+        canvas,
+        l.loader_head,
+        value_b,
+        &state.loader,
+        time,
+        settings,
+        fonts,
+    );
 }
 
 fn draw_ram_field(
@@ -889,7 +931,12 @@ fn draw_ram_field(
     let unit_advance = text::measure_tracked_em(&unit_font, unit_str, 0.16);
     let total = num_advance + 4.0 + unit_advance;
     let value_x_left = l.content_right - total;
-    canvas.draw_str(&num_str, (value_x_left, l.ram_value_baseline), &num_font, &num_paint);
+    canvas.draw_str(
+        &num_str,
+        (value_x_left, l.ram_value_baseline),
+        &num_font,
+        &num_paint,
+    );
     text::draw_tracked_em(
         canvas,
         unit_str,
@@ -1010,10 +1057,7 @@ fn draw_text_input(
             caret_paint.set_anti_alias(true);
             caret_paint.set_style(PaintStyle::Stroke);
             caret_paint.set_stroke_width(1.5);
-            caret_paint.set_color4f(
-                Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
-                None,
-            );
+            caret_paint.set_color4f(Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha), None);
             canvas.draw_line((caret_x, caret_top), (caret_x, caret_bottom), &caret_paint);
         }
     }
@@ -1052,9 +1096,20 @@ fn draw_footer(
         Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
         None,
     );
-    canvas.draw_line((l.content_left, border_y), (l.content_right, border_y), &div);
+    canvas.draw_line(
+        (l.content_left, border_y),
+        (l.content_right, border_y),
+        &div,
+    );
 
-    draw_vghost_btn(canvas, l.cancel_btn, "Cancel", &state.cancel_btn, GhostKind::Pearl, fonts);
+    draw_vghost_btn(
+        canvas,
+        l.cancel_btn,
+        "Cancel",
+        &state.cancel_btn,
+        GhostKind::Pearl,
+        fonts,
+    );
     draw_vbtn(
         canvas,
         l.create_btn,

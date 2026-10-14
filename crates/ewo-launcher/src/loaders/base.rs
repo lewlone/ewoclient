@@ -51,13 +51,21 @@ pub fn stored_marker(version_id: &str) -> String {
 /// Pure base selection (see the module doc for the order). `env` is the raw
 /// `EWO_LOADER_BASE` value, `bundled_dir` the bundle directory if it exists,
 /// `dev` the debug-only developer base. The result has no trailing `/`.
-pub fn pick_base(env: Option<&str>, bundled_dir: Option<&Path>, dev: Option<&str>) -> Option<String> {
+pub fn pick_base(
+    env: Option<&str>,
+    bundled_dir: Option<&Path>,
+    dev: Option<&str>,
+) -> Option<String> {
     let clean = |s: &str| s.trim().trim_end_matches('/').to_string();
     if let Some(e) = env.map(clean).filter(|s| !s.is_empty()) {
         return Some(e);
     }
     if let Some(dir) = bundled_dir {
-        return Some(crate::util::path_to_file_url(dir).trim_end_matches('/').to_string());
+        return Some(
+            crate::util::path_to_file_url(dir)
+                .trim_end_matches('/')
+                .to_string(),
+        );
     }
     dev.map(clean).filter(|s| !s.is_empty())
 }
@@ -87,7 +95,11 @@ pub fn manifest_url_for(version_id: &str, base: Option<&str>) -> Result<String, 
             BUNDLED_SUBDIR, BASE_ENV
         )
     })?;
-    Ok(format!("{}/{}.json", base.trim_end_matches('/'), version_line(version_id)))
+    Ok(format!(
+        "{}/{}.json",
+        base.trim_end_matches('/'),
+        version_line(version_id)
+    ))
 }
 
 /// The manifest URL to fetch for an Ewo instance on `version_id`, resolved
@@ -105,7 +117,11 @@ mod tests {
     fn env_wins_and_is_cleaned() {
         let bundle = Path::new("/opt/ewo/loader/0.1.0");
         assert_eq!(
-            pick_base(Some(" https://meta.example/m/ "), Some(bundle), Some("file:///dev")),
+            pick_base(
+                Some(" https://meta.example/m/ "),
+                Some(bundle),
+                Some("file:///dev")
+            ),
             Some("https://meta.example/m".to_string())
         );
     }
@@ -123,7 +139,10 @@ mod tests {
         let bundle = Path::new("/opt/ewo/loader/0.1.0");
         let got = pick_base(None, Some(bundle), Some("file:///dev/")).unwrap();
         assert!(got.ends_with("loader/0.1.0"), "{got}");
-        assert_eq!(pick_base(None, None, Some("file:///dev/")), Some("file:///dev".to_string()));
+        assert_eq!(
+            pick_base(None, None, Some("file:///dev/")),
+            Some("file:///dev".to_string())
+        );
     }
 
     #[test]
@@ -135,9 +154,15 @@ mod tests {
     #[test]
     fn manifest_url_is_keyed_by_version_line() {
         let b = Some("file:///b/");
-        assert_eq!(manifest_url_for("26.2.1", b).unwrap(), "file:///b/26.2.json");
+        assert_eq!(
+            manifest_url_for("26.2.1", b).unwrap(),
+            "file:///b/26.2.json"
+        );
         assert_eq!(manifest_url_for("26.1", b).unwrap(), "file:///b/26.1.json");
-        assert_eq!(manifest_url_for("1.21.4", b).unwrap(), "file:///b/1.21.json");
+        assert_eq!(
+            manifest_url_for("1.21.4", b).unwrap(),
+            "file:///b/1.21.json"
+        );
     }
 
     #[test]

@@ -54,11 +54,7 @@ pub trait PcmSource {
     ///
     /// `looping` selects `LoopingAudioStream` over a bare `JOrbisAudioStream`
     /// and belongs *here* rather than on the channel — see [`StreamHandle`].
-    fn open_stream(
-        &mut self,
-        key: &str,
-        looping: bool,
-    ) -> Result<Box<dyn PcmStream>, String> {
+    fn open_stream(&mut self, key: &str, looping: bool) -> Result<Box<dyn PcmStream>, String> {
         let _ = looping;
         Err(format!("{key}: this source cannot open streams"))
     }
@@ -399,7 +395,9 @@ mod tests {
     fn a_static_buffer_is_decoded_once_and_kept() {
         let mut lib = SoundBufferLibrary::new(Counting::default());
         for _ in 0..5 {
-            assert!(lib.complete_buffer("minecraft/sounds/step/grass1.ogg").is_ok());
+            assert!(lib
+                .complete_buffer("minecraft/sounds/step/grass1.ogg")
+                .is_ok());
         }
         assert_eq!(lib.cached(), 1);
         // The claim is about the SOURCE, not about the map: a cache that stored
@@ -524,7 +522,11 @@ mod tests {
             Ok(_) => panic!("a decoderless source opened a stream"),
             Err(e) => assert!(e.contains("calm1.ogg"), "got {e}"),
         }
-        assert_eq!(lib.cached(), 0, "and a stream never touches the buffer cache");
+        assert_eq!(
+            lib.cached(),
+            0,
+            "and a stream never touches the buffer cache"
+        );
     }
 
     #[test]

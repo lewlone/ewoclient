@@ -72,13 +72,7 @@ struct Box {
 
 /// A `Box` with every optional field at its vanilla default, so a model that
 /// needs none of them reads as the `addBox` call it transcribes.
-const fn plain(
-    tex: (f32, f32),
-    min: [f32; 3],
-    dims: [f32; 3],
-    offset: [f32; 3],
-    part: u8,
-) -> Box {
+const fn plain(tex: (f32, f32), min: [f32; 3], dims: [f32; 3], offset: [f32; 3], part: u8) -> Box {
     Box {
         tex,
         min,
@@ -112,9 +106,27 @@ pub const SHULKER_LID_PART: u8 = 1;
 
 /// `ChestModel.createSingleBodyLayer` — a closed single chest.
 const CHEST_SINGLE: &[Box] = &[
-    plain((0.0, 19.0), [1.0, 0.0, 1.0], [14.0, 10.0, 14.0], [0.0; 3], 0),
-    plain((0.0, 0.0), [1.0, 0.0, 0.0], [14.0, 5.0, 14.0], CHEST_LID_PIVOT, CHEST_LID_PART),
-    plain((0.0, 0.0), [7.0, -2.0, 14.0], [2.0, 4.0, 1.0], CHEST_LID_PIVOT, CHEST_LID_PART),
+    plain(
+        (0.0, 19.0),
+        [1.0, 0.0, 1.0],
+        [14.0, 10.0, 14.0],
+        [0.0; 3],
+        0,
+    ),
+    plain(
+        (0.0, 0.0),
+        [1.0, 0.0, 0.0],
+        [14.0, 5.0, 14.0],
+        CHEST_LID_PIVOT,
+        CHEST_LID_PART,
+    ),
+    plain(
+        (0.0, 0.0),
+        [7.0, -2.0, 14.0],
+        [2.0, 4.0, 1.0],
+        CHEST_LID_PIVOT,
+        CHEST_LID_PART,
+    ),
 ];
 
 /// `ChestModel.createDoubleBodyLeftLayer` — the LEFT half of a double chest.
@@ -129,16 +141,70 @@ const CHEST_SINGLE: &[Box] = &[
 /// The dropped face is the one that meets the other half: rendering it would
 /// put two coincident quads inside the seam, which z-fights.
 const CHEST_LEFT: &[Box] = &[
-    Box { hide: Some(Facing::West), ..plain((0.0, 19.0), [0.0, 0.0, 1.0], [15.0, 10.0, 14.0], [0.0; 3], 0) },
-    Box { hide: Some(Facing::West), ..plain((0.0, 0.0), [0.0, 0.0, 0.0], [15.0, 5.0, 14.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
-    Box { hide: Some(Facing::West), ..plain((0.0, 0.0), [0.0, -2.0, 14.0], [1.0, 4.0, 1.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
+    Box {
+        hide: Some(Facing::West),
+        ..plain(
+            (0.0, 19.0),
+            [0.0, 0.0, 1.0],
+            [15.0, 10.0, 14.0],
+            [0.0; 3],
+            0,
+        )
+    },
+    Box {
+        hide: Some(Facing::West),
+        ..plain(
+            (0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            [15.0, 5.0, 14.0],
+            CHEST_LID_PIVOT,
+            CHEST_LID_PART,
+        )
+    },
+    Box {
+        hide: Some(Facing::West),
+        ..plain(
+            (0.0, 0.0),
+            [0.0, -2.0, 14.0],
+            [1.0, 4.0, 1.0],
+            CHEST_LID_PIVOT,
+            CHEST_LID_PART,
+        )
+    },
 ];
 
 /// `ChestModel.createDoubleBodyRightLayer` — the RIGHT half, dropping EAST.
 const CHEST_RIGHT: &[Box] = &[
-    Box { hide: Some(Facing::East), ..plain((0.0, 19.0), [1.0, 0.0, 1.0], [15.0, 10.0, 14.0], [0.0; 3], 0) },
-    Box { hide: Some(Facing::East), ..plain((0.0, 0.0), [1.0, 0.0, 0.0], [15.0, 5.0, 14.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
-    Box { hide: Some(Facing::East), ..plain((0.0, 0.0), [15.0, -2.0, 14.0], [1.0, 4.0, 1.0], CHEST_LID_PIVOT, CHEST_LID_PART) },
+    Box {
+        hide: Some(Facing::East),
+        ..plain(
+            (0.0, 19.0),
+            [1.0, 0.0, 1.0],
+            [15.0, 10.0, 14.0],
+            [0.0; 3],
+            0,
+        )
+    },
+    Box {
+        hide: Some(Facing::East),
+        ..plain(
+            (0.0, 0.0),
+            [1.0, 0.0, 0.0],
+            [15.0, 5.0, 14.0],
+            CHEST_LID_PIVOT,
+            CHEST_LID_PART,
+        )
+    },
+    Box {
+        hide: Some(Facing::East),
+        ..plain(
+            (0.0, 0.0),
+            [15.0, -2.0, 14.0],
+            [1.0, 4.0, 1.0],
+            CHEST_LID_PIVOT,
+            CHEST_LID_PART,
+        )
+    },
 ];
 
 /// The face labels `cube_faces` returns, in order — so a `hide` can name one.
@@ -179,9 +245,21 @@ pub const CHESTS: &[(&str, &str, bool)] = &[
     ("rewo:be/trapped_chest", "entity/chest/trapped", true),
     ("rewo:be/ender_chest", "entity/chest/ender", false),
     ("rewo:be/copper_chest", "entity/chest/copper", true),
-    ("rewo:be/exposed_copper_chest", "entity/chest/copper_exposed", true),
-    ("rewo:be/weathered_copper_chest", "entity/chest/copper_weathered", true),
-    ("rewo:be/oxidized_copper_chest", "entity/chest/copper_oxidized", true),
+    (
+        "rewo:be/exposed_copper_chest",
+        "entity/chest/copper_exposed",
+        true,
+    ),
+    (
+        "rewo:be/weathered_copper_chest",
+        "entity/chest/copper_weathered",
+        true,
+    ),
+    (
+        "rewo:be/oxidized_copper_chest",
+        "entity/chest/copper_oxidized",
+        true,
+    ),
 ];
 
 /// The name suffix for a chest half. Appended to the single model's name and
@@ -213,8 +291,20 @@ const FACE_DIRS: [u8; 6] = [0, 1, 2, 5, 4, 3];
 /// and spins it, which is why the group's transform is a matrix rather than an
 /// angle. See [`crate::be_transform::shulker_lid`].
 const SHULKER_BOX: &[Box] = &[
-    plain((0.0, 0.0), [-8.0, -16.0, -8.0], [16.0, 12.0, 16.0], SHULKER_LID_PIVOT, SHULKER_LID_PART),
-    plain((0.0, 28.0), [-8.0, -8.0, -8.0], [16.0, 8.0, 16.0], [0.0, 24.0, 0.0], 0),
+    plain(
+        (0.0, 0.0),
+        [-8.0, -16.0, -8.0],
+        [16.0, 12.0, 16.0],
+        SHULKER_LID_PIVOT,
+        SHULKER_LID_PART,
+    ),
+    plain(
+        (0.0, 28.0),
+        [-8.0, -8.0, -8.0],
+        [16.0, 8.0, 16.0],
+        [0.0, 24.0, 0.0],
+        0,
+    ),
 ];
 
 /// `DyeColor.getTextureDiffuseColor()`, in the same order as [`DYE_COLORS`].
@@ -244,8 +334,22 @@ pub const DYE_DIFFUSE_COLORS: &[u32] = &[
 
 /// `ColorCollection.NAMES`, the dye order shulker box textures are named in.
 pub const DYE_COLORS: &[&str] = &[
-    "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
-    "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+    "white",
+    "orange",
+    "magenta",
+    "light_blue",
+    "yellow",
+    "lime",
+    "pink",
+    "gray",
+    "light_gray",
+    "cyan",
+    "purple",
+    "blue",
+    "brown",
+    "green",
+    "red",
+    "black",
 ];
 
 /// The undyed shulker box's model name and texture.
@@ -259,10 +363,8 @@ pub fn bake_shulker_boxes(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
 ) -> Vec<(String, HeldItemModel)> {
-    let mut variants: Vec<(String, String)> = vec![(
-        SHULKER_DEFAULT.0.to_string(),
-        SHULKER_DEFAULT.1.to_string(),
-    )];
+    let mut variants: Vec<(String, String)> =
+        vec![(SHULKER_DEFAULT.0.to_string(), SHULKER_DEFAULT.1.to_string())];
     for c in DYE_COLORS {
         variants.push((
             format!("rewo:be/{c}_shulker_box"),
@@ -282,14 +384,14 @@ pub fn bake_shulker_boxes(
                 left: DisplayTransform::default(),
                 ground: DisplayTransform::default(),
                 // A block entity is not an item and never renders in a
-            // hotbar or inventory slot, so it has no `display.gui`.
-            gui: DisplayTransform::IDENTITY,
+                // hotbar or inventory slot, so it has no `display.gui`.
+                gui: DisplayTransform::IDENTITY,
                 // Nor is it ever held, so the first-person poses are
                 // the identity for the same reason.
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
-            from_block: false,
-            gui_quads: None,
+                from_block: false,
+                gui_quads: None,
             },
         ));
     }
@@ -322,32 +424,32 @@ pub fn bake_chests(
             ));
         }
         for (model_name, tex_name, boxes) in variants {
-        let Some(tex) = pool.intern(&tex_name, || load(&tex_name)) else {
-            continue;
-        };
-        out.push((
-            model_name,
-            HeldItemModel {
-                quads: chest_quads(boxes, tex),
-                // A block entity is placed by its own transform, never by a
-                // display context — these exist only because the shape is
-                // shared with held items, and are the identity so that a
-                // mis-wired caller renders it at the block origin rather than
-                // somewhere plausible-looking.
-                right: DisplayTransform::default(),
-                left: DisplayTransform::default(),
-                ground: DisplayTransform::default(),
-                // A block entity is not an item and never renders in a
-            // hotbar or inventory slot, so it has no `display.gui`.
-            gui: DisplayTransform::IDENTITY,
-                // Nor is it ever held, so the first-person poses are
-                // the identity for the same reason.
-                first_right: DisplayTransform::IDENTITY,
-                first_left: DisplayTransform::IDENTITY,
-            from_block: false,
-            gui_quads: None,
-            },
-        ));
+            let Some(tex) = pool.intern(&tex_name, || load(&tex_name)) else {
+                continue;
+            };
+            out.push((
+                model_name,
+                HeldItemModel {
+                    quads: chest_quads(boxes, tex),
+                    // A block entity is placed by its own transform, never by a
+                    // display context — these exist only because the shape is
+                    // shared with held items, and are the identity so that a
+                    // mis-wired caller renders it at the block origin rather than
+                    // somewhere plausible-looking.
+                    right: DisplayTransform::default(),
+                    left: DisplayTransform::default(),
+                    ground: DisplayTransform::default(),
+                    // A block entity is not an item and never renders in a
+                    // hotbar or inventory slot, so it has no `display.gui`.
+                    gui: DisplayTransform::IDENTITY,
+                    // Nor is it ever held, so the first-person poses are
+                    // the identity for the same reason.
+                    first_right: DisplayTransform::IDENTITY,
+                    first_left: DisplayTransform::IDENTITY,
+                    from_block: false,
+                    gui_quads: None,
+                },
+            ));
         }
     }
     out
@@ -382,7 +484,13 @@ const SKULL_HUMANOID: &[Box] = &[
     SKULL_HEAD,
     Box {
         grow: 0.25,
-        ..plain((32.0, 0.0), [-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], [0.0; 3], 0)
+        ..plain(
+            (32.0, 0.0),
+            [-4.0, -8.0, -4.0],
+            [8.0, 8.0, 8.0],
+            [0.0; 3],
+            0,
+        )
     },
 ];
 
@@ -391,16 +499,40 @@ const SKULL_HUMANOID: &[Box] = &[
 /// The ears carry a rest rotation of ∓30° about Z, which is the first model
 /// here to need one.
 const SKULL_PIGLIN: &[Box] = &[
-    plain((0.0, 0.0), [-5.0, -8.0, -4.0], [10.0, 8.0, 8.0], [0.0; 3], 0),
-    plain((31.0, 1.0), [-2.0, -4.0, -5.0], [4.0, 4.0, 1.0], [0.0; 3], 0),
+    plain(
+        (0.0, 0.0),
+        [-5.0, -8.0, -4.0],
+        [10.0, 8.0, 8.0],
+        [0.0; 3],
+        0,
+    ),
+    plain(
+        (31.0, 1.0),
+        [-2.0, -4.0, -5.0],
+        [4.0, 4.0, 1.0],
+        [0.0; 3],
+        0,
+    ),
     plain((2.0, 4.0), [2.0, -2.0, -5.0], [1.0, 2.0, 1.0], [0.0; 3], 0),
     plain((2.0, 0.0), [-3.0, -2.0, -5.0], [1.0, 2.0, 1.0], [0.0; 3], 0),
     // The ears are animated groups, and their mesh `PartPose` rotations are
     // deliberately DROPPED: `PiglinHeadModel.setupAnim` assigns `zRot`
     // outright and always runs, so the mesh's +/-30 degrees never survives to
     // the screen. Baking it and then rotating again would double it (M29).
-    plain((51.0, 6.0), [0.0, 0.0, -2.0], [1.0, 5.0, 4.0], PIGLIN_LEFT_EAR_PIVOT, PIGLIN_LEFT_EAR_PART),
-    plain((39.0, 6.0), [-1.0, 0.0, -2.0], [1.0, 5.0, 4.0], PIGLIN_RIGHT_EAR_PIVOT, PIGLIN_RIGHT_EAR_PART),
+    plain(
+        (51.0, 6.0),
+        [0.0, 0.0, -2.0],
+        [1.0, 5.0, 4.0],
+        PIGLIN_LEFT_EAR_PIVOT,
+        PIGLIN_LEFT_EAR_PART,
+    ),
+    plain(
+        (39.0, 6.0),
+        [-1.0, 0.0, -2.0],
+        [1.0, 5.0, 4.0],
+        PIGLIN_RIGHT_EAR_PIVOT,
+        PIGLIN_RIGHT_EAR_PART,
+    ),
 ];
 
 /// The piglin ears' pose offsets, which are also their pivots.
@@ -428,11 +560,8 @@ pub const DRAGON_JAW_PART: u8 = 1;
 /// The jaw's pivot AFTER the head pose's 0.75 scale — `offset(0, 4, -8)`
 /// scaled, then shifted by the head's own y. Must match what `dragon_skull`
 /// bakes, or the jaw swings about a point it does not hang from.
-pub const DRAGON_JAW_PIVOT: [f32; 3] = [
-    0.0,
-    4.0 * DRAGON_SCALE + DRAGON_HEAD_Y,
-    -8.0 * DRAGON_SCALE,
-];
+pub const DRAGON_JAW_PIVOT: [f32; 3] =
+    [0.0, 4.0 * DRAGON_SCALE + DRAGON_HEAD_Y, -8.0 * DRAGON_SCALE];
 
 const DRAGON_SCALE: f32 = 0.75;
 const DRAGON_HEAD_Y: f32 = -7.986_666;
@@ -441,21 +570,57 @@ const DRAGON_HEAD_Y: f32 = -7.986_666;
 /// by [`dragon_skull`], which is a function rather than a const because the
 /// pose has to multiply through.
 const DRAGON_RAW: &[Box] = &[
-    plain((176.0, 44.0), [-6.0, -1.0, -24.0], [12.0, 5.0, 16.0], [0.0; 3], 0),
-    plain((112.0, 30.0), [-8.0, -8.0, -10.0], [16.0, 16.0, 16.0], [0.0; 3], 0),
+    plain(
+        (176.0, 44.0),
+        [-6.0, -1.0, -24.0],
+        [12.0, 5.0, 16.0],
+        [0.0; 3],
+        0,
+    ),
+    plain(
+        (112.0, 30.0),
+        [-8.0, -8.0, -10.0],
+        [16.0, 16.0, 16.0],
+        [0.0; 3],
+        0,
+    ),
     Box {
         mirror: true,
-        ..plain((0.0, 0.0), [-5.0, -12.0, -4.0], [2.0, 4.0, 6.0], [0.0; 3], 0)
+        ..plain(
+            (0.0, 0.0),
+            [-5.0, -12.0, -4.0],
+            [2.0, 4.0, 6.0],
+            [0.0; 3],
+            0,
+        )
     },
     Box {
         mirror: true,
-        ..plain((112.0, 0.0), [-5.0, -3.0, -22.0], [2.0, 2.0, 4.0], [0.0; 3], 0)
+        ..plain(
+            (112.0, 0.0),
+            [-5.0, -3.0, -22.0],
+            [2.0, 2.0, 4.0],
+            [0.0; 3],
+            0,
+        )
     },
     plain((0.0, 0.0), [3.0, -12.0, -4.0], [2.0, 4.0, 6.0], [0.0; 3], 0),
-    plain((112.0, 0.0), [3.0, -3.0, -22.0], [2.0, 2.0, 4.0], [0.0; 3], 0),
+    plain(
+        (112.0, 0.0),
+        [3.0, -3.0, -22.0],
+        [2.0, 2.0, 4.0],
+        [0.0; 3],
+        0,
+    ),
     // The jaw, whose own pose offset rides inside the head's scale. Its own
     // group, because `DragonHeadModel.setupAnim` swings it (M29).
-    plain((176.0, 65.0), [-6.0, 0.0, -16.0], [12.0, 4.0, 16.0], [0.0, 4.0, -8.0], DRAGON_JAW_PART),
+    plain(
+        (176.0, 65.0),
+        [-6.0, 0.0, -16.0],
+        [12.0, 4.0, 16.0],
+        [0.0, 4.0, -8.0],
+        DRAGON_JAW_PART,
+    ),
 ];
 
 /// The dragon skull's boxes with the head pose applied.
@@ -521,9 +686,9 @@ pub fn bake_skulls(
     for (name, tex_path) in SKULL_TEXTURES {
         let (boxes, size): (&[Box], (f32, f32)) = match *name {
             // `createMobHeadLayer` — head only, on a half-height sheet.
-            "rewo:be/skeleton_skull"
-            | "rewo:be/wither_skeleton_skull"
-            | "rewo:be/creeper_head" => (SKULL_MOB, (64.0, 32.0)),
+            "rewo:be/skeleton_skull" | "rewo:be/wither_skeleton_skull" | "rewo:be/creeper_head" => {
+                (SKULL_MOB, (64.0, 32.0))
+            }
             "rewo:be/piglin_head" => (SKULL_PIGLIN, TEX_64),
             "rewo:be/dragon_head" => (&dragon, (256.0, 256.0)),
             // `createHumanoidHeadLayer` — head + hat, full sheet.
@@ -540,14 +705,14 @@ pub fn bake_skulls(
                 left: DisplayTransform::default(),
                 ground: DisplayTransform::default(),
                 // A block entity is not an item and never renders in a
-            // hotbar or inventory slot, so it has no `display.gui`.
-            gui: DisplayTransform::IDENTITY,
+                // hotbar or inventory slot, so it has no `display.gui`.
+                gui: DisplayTransform::IDENTITY,
                 // Nor is it ever held, so the first-person poses are
                 // the identity for the same reason.
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
-            from_block: false,
-            gui_quads: None,
+                from_block: false,
+                gui_quads: None,
             },
         ));
     }
@@ -587,11 +752,15 @@ const END_PORTAL_CUBE: &[Box] = &[Box {
 /// The gateway draws every face its neighbour does not occlude. Rewo has no
 /// neighbour context at bake time, so all six are built — an over-draw that is
 /// invisible for a free-standing gateway, which is how they are always found.
-const END_GATEWAY_CUBE: &[Box] =
-    &[plain((0.0, 0.0), [0.0, 0.0, 0.0], [16.0, 16.0, 16.0], [0.0; 3], 0)];
+const END_GATEWAY_CUBE: &[Box] = &[plain(
+    (0.0, 0.0),
+    [0.0, 0.0, 0.0],
+    [16.0, 16.0, 16.0],
+    [0.0; 3],
+    0,
+)];
 
-pub const END_PORTAL_MODEL: (&str, &str) =
-    ("rewo:be/end_portal", "entity/end_portal/end_portal");
+pub const END_PORTAL_MODEL: (&str, &str) = ("rewo:be/end_portal", "entity/end_portal/end_portal");
 pub const END_GATEWAY_MODEL: &str = "rewo:be/end_gateway";
 
 /// The portal's or gateway's faces as **plain positions in block units**, for
@@ -605,7 +774,11 @@ pub const END_GATEWAY_MODEL: &str = "rewo:be/end_gateway";
 /// `portal` selects the Y-only face set and the slab transform; a gateway gets
 /// all six faces of the full block.
 pub fn end_portal_positions(portal: bool) -> Vec<[f32; 3]> {
-    let boxes: &[Box] = if portal { END_PORTAL_CUBE } else { END_GATEWAY_CUBE };
+    let boxes: &[Box] = if portal {
+        END_PORTAL_CUBE
+    } else {
+        END_GATEWAY_CUBE
+    };
     let mut out = Vec::new();
     for b in boxes {
         for (i, (verts, _uv)) in cube_faces(b.tex, b.min, b.dims, b.grow, b.mirror)
@@ -624,7 +797,6 @@ pub fn end_portal_positions(portal: bool) -> Vec<[f32; 3]> {
     }
     out
 }
-
 
 // The M28f textured bake is gone: M32 draws these through their own pass,
 // which needs positions rather than a UV-mapped model.
@@ -697,14 +869,14 @@ pub fn bake_copper_golem_statues(
                     left: DisplayTransform::default(),
                     ground: DisplayTransform::default(),
                     // A block entity is not an item and never renders in a
-            // hotbar or inventory slot, so it has no `display.gui`.
-            gui: DisplayTransform::IDENTITY,
-                // Nor is it ever held, so the first-person poses are
-                // the identity for the same reason.
-                first_right: DisplayTransform::IDENTITY,
-                first_left: DisplayTransform::IDENTITY,
-            from_block: false,
-            gui_quads: None,
+                    // hotbar or inventory slot, so it has no `display.gui`.
+                    gui: DisplayTransform::IDENTITY,
+                    // Nor is it ever held, so the first-person poses are
+                    // the identity for the same reason.
+                    first_right: DisplayTransform::IDENTITY,
+                    first_left: DisplayTransform::IDENTITY,
+                    from_block: false,
+                    gui_quads: None,
                 },
             ));
         }
@@ -788,13 +960,30 @@ fn apply_pose(pose: &crate::copper_golem_poses::Pose, p: [f32; 3]) -> [f32; 3] {
 /// bar with nothing beneath. The bar's own position also differs, which is why
 /// the two are separate layers rather than one model with a hidden part.
 const BANNER_STANDING_BODY: &[Box] = &[
-    plain((44.0, 0.0), [-1.0, -42.0, -1.0], [2.0, 42.0, 2.0], [0.0; 3], 0),
-    plain((0.0, 42.0), [-10.0, -44.0, -1.0], [20.0, 2.0, 2.0], [0.0; 3], 0),
+    plain(
+        (44.0, 0.0),
+        [-1.0, -42.0, -1.0],
+        [2.0, 42.0, 2.0],
+        [0.0; 3],
+        0,
+    ),
+    plain(
+        (0.0, 42.0),
+        [-10.0, -44.0, -1.0],
+        [20.0, 2.0, 2.0],
+        [0.0; 3],
+        0,
+    ),
 ];
 
 /// The wall variant: no pole, and the bar sits lower and further out.
-const BANNER_WALL_BODY: &[Box] =
-    &[plain((0.0, 42.0), [-10.0, -20.5, 9.5], [20.0, 2.0, 2.0], [0.0; 3], 0)];
+const BANNER_WALL_BODY: &[Box] = &[plain(
+    (0.0, 42.0),
+    [-10.0, -20.5, 9.5],
+    [20.0, 2.0, 2.0],
+    [0.0; 3],
+    0,
+)];
 
 /// `BannerFlagModel.createFlagLayer(standing)` — the cloth.
 ///
@@ -926,14 +1115,14 @@ pub fn bake_banners(
                         left: DisplayTransform::default(),
                         ground: DisplayTransform::default(),
                         // A block entity is not an item and never renders in a
-            // hotbar or inventory slot, so it has no `display.gui`.
-            gui: DisplayTransform::IDENTITY,
-                // Nor is it ever held, so the first-person poses are
-                // the identity for the same reason.
-                first_right: DisplayTransform::IDENTITY,
-                first_left: DisplayTransform::IDENTITY,
-            from_block: false,
-            gui_quads: None,
+                        // hotbar or inventory slot, so it has no `display.gui`.
+                        gui: DisplayTransform::IDENTITY,
+                        // Nor is it ever held, so the first-person poses are
+                        // the identity for the same reason.
+                        first_right: DisplayTransform::IDENTITY,
+                        first_left: DisplayTransform::IDENTITY,
+                        from_block: false,
+                        gui_quads: None,
                     },
                 ));
                 true
@@ -999,19 +1188,43 @@ const POT_BASE: &[Box] = &[
     Box {
         rot: [std::f32::consts::PI, 0.0, 0.0],
         grow: -0.1,
-        ..plain((0.0, 0.0), [4.0, 17.0, 4.0], [8.0, 3.0, 8.0], [0.0, 37.0, 16.0], 0)
+        ..plain(
+            (0.0, 0.0),
+            [4.0, 17.0, 4.0],
+            [8.0, 3.0, 8.0],
+            [0.0, 37.0, 16.0],
+            0,
+        )
     },
     Box {
         rot: [std::f32::consts::PI, 0.0, 0.0],
         grow: 0.2,
-        ..plain((0.0, 5.0), [5.0, 20.0, 5.0], [6.0, 1.0, 6.0], [0.0, 37.0, 16.0], 0)
+        ..plain(
+            (0.0, 5.0),
+            [5.0, 20.0, 5.0],
+            [6.0, 1.0, 6.0],
+            [0.0, 37.0, 16.0],
+            0,
+        )
     },
     // The plates are zero-height boxes, so four of their six faces are
     // degenerate and only the up/down pair has area. Their `texOffs(-14, 13)`
     // is genuinely negative: the u column that lands outside the sheet belongs
     // to one of those zero-area faces, so nothing samples it.
-    plain((-14.0, 13.0), [0.0, 0.0, 0.0], [14.0, 0.0, 14.0], [1.0, 16.0, 1.0], 0),
-    plain((-14.0, 13.0), [0.0, 0.0, 0.0], [14.0, 0.0, 14.0], [1.0, 0.0, 1.0], 0),
+    plain(
+        (-14.0, 13.0),
+        [0.0, 0.0, 0.0],
+        [14.0, 0.0, 14.0],
+        [1.0, 16.0, 1.0],
+        0,
+    ),
+    plain(
+        (-14.0, 13.0),
+        [0.0, 0.0, 0.0],
+        [14.0, 0.0, 14.0],
+        [1.0, 0.0, 1.0],
+        0,
+    ),
 ];
 
 /// `createSidesLayer`'s `sidePlane` — one 14×16 face, on a 16×16 sheet.
@@ -1124,14 +1337,14 @@ pub fn bake_decorated_pot(
                         left: DisplayTransform::default(),
                         ground: DisplayTransform::default(),
                         // A block entity is not an item and never renders in a
-            // hotbar or inventory slot, so it has no `display.gui`.
-            gui: DisplayTransform::IDENTITY,
-                // Nor is it ever held, so the first-person poses are
-                // the identity for the same reason.
-                first_right: DisplayTransform::IDENTITY,
-                first_left: DisplayTransform::IDENTITY,
-            from_block: false,
-            gui_quads: None,
+                        // hotbar or inventory slot, so it has no `display.gui`.
+                        gui: DisplayTransform::IDENTITY,
+                        // Nor is it ever held, so the first-person poses are
+                        // the identity for the same reason.
+                        first_right: DisplayTransform::IDENTITY,
+                        first_left: DisplayTransform::IDENTITY,
+                        from_block: false,
+                        gui_quads: None,
                     },
                 ));
                 true
@@ -1157,7 +1370,12 @@ pub fn bake_decorated_pot(
     );
     for stem in POT_SHERDS {
         let tex = format!("entity/decorated_pot/{stem}_pottery_pattern");
-        if !one(format!("rewo:be/pot_side/{stem}"), &tex, POT_SIDE, (16.0, 16.0)) {
+        if !one(
+            format!("rewo:be/pot_side/{stem}"),
+            &tex,
+            POT_SIDE,
+            (16.0, 16.0),
+        ) {
             log::error!(
                 "decorated pot: no texture {tex:?} for sherd {stem:?} — the \
                  item-name-to-pattern derivation drifted from the jar"
@@ -1177,21 +1395,36 @@ pub fn bake_decorated_pot(
 /// `texOffs(0, 0) addBox(-3, -3, -3, 6, 6, 6)` on a **32×16** sheet, centred
 /// on its own origin (the renderer translates to the block centre), so unlike
 /// a skull this one is symmetric about zero and needs no flip.
-const CONDUIT_SHELL: &[Box] =
-    &[plain((0.0, 0.0), [-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0; 3], 0)];
+const CONDUIT_SHELL: &[Box] = &[plain(
+    (0.0, 0.0),
+    [-3.0, -3.0, -3.0],
+    [6.0, 6.0, 6.0],
+    [0.0; 3],
+    0,
+)];
 
 /// `createCageLayer` — the open cage an ACTIVE conduit wears instead of its
 /// shell. Same 32×16 sheet, but 8 px where the shell is 6.
-const CONDUIT_CAGE: &[Box] =
-    &[plain((0.0, 0.0), [-4.0, -4.0, -4.0], [8.0, 8.0, 8.0], [0.0; 3], 0)];
+const CONDUIT_CAGE: &[Box] = &[plain(
+    (0.0, 0.0),
+    [-4.0, -4.0, -4.0],
+    [8.0, 8.0, 8.0],
+    [0.0; 3],
+    0,
+)];
 
 /// `createWindLayer` — the shroud, a full 16-px cube on a **64×32** sheet.
 ///
 /// Drawn twice: once upright and once at 0.875 scale turned a half-turn about
 /// X and Z, so the two shells counter-rotate and the wind reads as a churn
 /// rather than a spinning box.
-const CONDUIT_WIND: &[Box] =
-    &[plain((0.0, 0.0), [-8.0, -8.0, -8.0], [16.0, 16.0, 16.0], [0.0; 3], 0)];
+const CONDUIT_WIND: &[Box] = &[plain(
+    (0.0, 0.0),
+    [-8.0, -8.0, -8.0],
+    [16.0, 16.0, 16.0],
+    [0.0; 3],
+    0,
+)];
 
 /// `createEyeLayer` — a flat 8×8 plane on a 16×16 sheet, deformed 0.01.
 ///
@@ -1243,14 +1476,14 @@ pub fn bake_conduit(
                     left: DisplayTransform::default(),
                     ground: DisplayTransform::default(),
                     // A block entity is not an item and never renders in a
-            // hotbar or inventory slot, so it has no `display.gui`.
-            gui: DisplayTransform::IDENTITY,
-                // Nor is it ever held, so the first-person poses are
-                // the identity for the same reason.
-                first_right: DisplayTransform::IDENTITY,
-                first_left: DisplayTransform::IDENTITY,
-            from_block: false,
-            gui_quads: None,
+                    // hotbar or inventory slot, so it has no `display.gui`.
+                    gui: DisplayTransform::IDENTITY,
+                    // Nor is it ever held, so the first-person poses are
+                    // the identity for the same reason.
+                    first_right: DisplayTransform::IDENTITY,
+                    first_left: DisplayTransform::IDENTITY,
+                    from_block: false,
+                    gui_quads: None,
                 },
             ));
         } else {
@@ -1316,11 +1549,7 @@ fn model_quads(boxes: &[Box], tex: u16, tex_size: (f32, f32)) -> Vec<HeldQuad> {
                 // renderer's own transform supplies that flip, which is why
                 // the skull models below are authored the entity way up.
                 let r = rotate(*c);
-                v[k] = [
-                    r[0] + b.offset[0],
-                    r[1] + b.offset[1],
-                    r[2] + b.offset[2],
-                ];
+                v[k] = [r[0] + b.offset[0], r[1] + b.offset[1], r[2] + b.offset[2]];
             }
             let mut t = [[0f32; 2]; 4];
             for (k, c) in uv.iter().enumerate() {

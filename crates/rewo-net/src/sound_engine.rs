@@ -810,7 +810,12 @@ pub struct SoundEngine {
     /// the ramp a tickable needs. Vanilla stores none because its instance
     /// *is* its own ticker; Rewo splits the two, so a delayed tickable has to
     /// carry its ramp to the moment it plays.
-    queued: Vec<(InstanceId, SoundInstance, Option<crate::tickable::Ramp>, i32)>,
+    queued: Vec<(
+        InstanceId,
+        SoundInstance,
+        Option<crate::tickable::Ramp>,
+        i32,
+    )>,
     /// `queuedTickableSounds`.
     queued_tickable: Vec<(SoundInstance, Option<crate::tickable::Ramp>)>,
     /// `gainBySource`, `defaultReturnValue(1.0F)`.
@@ -926,7 +931,10 @@ impl SoundEngine {
     }
 
     pub fn live_identifiers(&self) -> Vec<&str> {
-        self.live.iter().map(|l| l.instance.identifier.as_str()).collect()
+        self.live
+            .iter()
+            .map(|l| l.instance.identifier.as_str())
+            .collect()
     }
 
     /// Where the live instance with this identifier is, in world coordinates.
@@ -976,11 +984,7 @@ impl SoundEngine {
     ///
     /// Vanilla does **not** stop a channel refreshed to zero — it just sets
     /// volume 0 and the channel keeps playing silently.
-    pub fn refresh_category_volume(
-        &mut self,
-        source: SoundSource,
-        device: &mut dyn AudioDevice,
-    ) {
+    pub fn refresh_category_volume(&mut self, source: SoundSource, device: &mut dyn AudioDevice) {
         let mut updates: Vec<(ChannelId, f32)> = Vec::new();
         for l in &self.live {
             if source == l.instance.source || source == SoundSource::Master {
@@ -1018,10 +1022,7 @@ impl SoundEngine {
         self.live.iter().any(|l| l.id == id)
     }
 
-    fn resolve(
-        instance: &SoundInstance,
-        sounds: &SoundsIndex,
-    ) -> Option<ResolvedSound> {
+    fn resolve(instance: &SoundInstance, sounds: &SoundsIndex) -> Option<ResolvedSound> {
         match instance.seed {
             Some(seed) => sounds.get_sound_seeded(&instance.identifier, seed),
             // `SoundInstance.createUnseededRandom()`. There is no wire seed to
@@ -1132,7 +1133,11 @@ impl SoundEngine {
 
         let looping = instance.should_loop_automatically();
         let streaming = resolved.stream;
-        let pool = if streaming { Pool::Streaming } else { Pool::Static };
+        let pool = if streaming {
+            Pool::Streaming
+        } else {
+            Pool::Static
+        };
         let Some(channel) = device.acquire(pool) else {
             return (id, PlayResult::NotStarted(NotStarted::NoChannel));
         };
@@ -1201,7 +1206,8 @@ impl SoundEngine {
     ) -> InstanceId {
         let id = InstanceId(self.next_id);
         self.next_id += 1;
-        self.queued.push((id, instance, ramp, self.tick_count + delay));
+        self.queued
+            .push((id, instance, ramp, self.tick_count + delay));
         id
     }
 
@@ -1430,19 +1436,23 @@ impl SoundEngine {
 
         // The reclaim loop: a stopped handle whose grace period has expired.
         let tick_count = self.tick_count;
-        let mut requeue: Vec<(InstanceId, SoundInstance, Option<crate::tickable::Ramp>, i32)> =
-            Vec::new();
+        let mut requeue: Vec<(
+            InstanceId,
+            SoundInstance,
+            Option<crate::tickable::Ramp>,
+            i32,
+        )> = Vec::new();
         self.live.retain(|l| {
             if !l.handle_stopped || l.delete_time > tick_count {
                 return true;
             }
             if l.instance.should_loop_manually() {
                 requeue.push((
-                l.id,
-                l.instance.clone(),
-                l.ramp,
-                tick_count + l.instance.delay,
-            ));
+                    l.id,
+                    l.instance.clone(),
+                    l.ramp,
+                    tick_count + l.instance.delay,
+                ));
             }
             false
         });
@@ -1780,10 +1790,7 @@ pub fn instance_and_ramp(
                 relative: true,
                 ..SoundInstance::bare(sound, SoundSource::Ambient)
             };
-            Ok((
-                inst,
-                crate::tickable::Ramp::UnderwaterSub { player },
-            ))
+            Ok((inst, crate::tickable::Ramp::UnderwaterSub { player }))
         }
         crate::sounds::TickableSound::BiomeLoop { sound } => {
             // `LoopSoundInstance`'s constructor: looping, delay 0, **volume
@@ -1868,7 +1875,10 @@ fn instance_from_positioned(
     p: &PositionedSound,
     registry: &rewo_data::sound_events::SoundEvents,
 ) -> Result<SoundInstance, NoInstance> {
-    let name = p.sound.resolve(registry).ok_or(NoInstance::UnknownSoundId)?;
+    let name = p
+        .sound
+        .resolve(registry)
+        .ok_or(NoInstance::UnknownSoundId)?;
     Ok(SoundInstance::simple(
         name, p.source, p.volume, p.pitch, p.seed, p.x, p.y, p.z,
     ))
@@ -1879,12 +1889,23 @@ fn instance_from_entity(
     registry: &rewo_data::sound_events::SoundEvents,
     world: &dyn SoundWorld,
 ) -> Result<SoundInstance, NoInstance> {
-    let name = e.sound.resolve(registry).ok_or(NoInstance::UnknownSoundId)?;
+    let name = e
+        .sound
+        .resolve(registry)
+        .ok_or(NoInstance::UnknownSoundId)?;
     let (x, y, z) = world
         .position(e.entity_id)
         .ok_or(NoInstance::UnknownEntity)?;
     Ok(SoundInstance::entity_bound(
-        name, e.source, e.volume, e.pitch, e.seed, e.entity_id, x, y, z,
+        name,
+        e.source,
+        e.volume,
+        e.pitch,
+        e.seed,
+        e.entity_id,
+        x,
+        y,
+        z,
     ))
 }
 
@@ -2106,7 +2127,8 @@ impl crate::tickable::RampWorld for EntityTableWorld<'_> {
     /// `entity_attachments` does not carry — it extracted seats, not
     /// dimensions.
     fn underwater(&self, entity_id: i32) -> bool {
-        self.local.is_some_and(|l| l.id == entity_id && l.underwater)
+        self.local
+            .is_some_and(|l| l.id == entity_id && l.underwater)
     }
 
     /// **Exact, not a stand-in** — see the type's doc.
@@ -2258,10 +2280,7 @@ impl SoundSystem {
             // Vanilla seeds from `RandomSource.create()`, which is a unique
             // seed per session; a fixed one here makes a run reproducible,
             // which is what the witnesses need and what a player never notices.
-            music: crate::music::MusicManager::new(
-                0,
-                crate::music::MusicFrequency::Default,
-            ),
+            music: crate::music::MusicManager::new(0, crate::music::MusicFrequency::Default),
             music_instance: None,
         }
     }
@@ -2368,7 +2387,8 @@ impl SoundSystem {
                 let needed = self.engine.apply_biome_loop_transition(current.as_deref());
                 self.stats.biome_transitions += 1;
                 if let Some(sound) = needed {
-                    let ev = SoundEvent::Tickable(crate::sounds::TickableSound::BiomeLoop { sound });
+                    let ev =
+                        SoundEvent::Tickable(crate::sounds::TickableSound::BiomeLoop { sound });
                     if let Ok((i, r)) = instance_and_ramp(
                         match &ev {
                             SoundEvent::Tickable(t) => t.clone(),
@@ -2398,12 +2418,13 @@ impl SoundSystem {
             // stop every `sound_entity` following its entity. The engine's own
             // follow test calls `play` directly and could not have seen it.
             let built = match ev {
-                SoundEvent::Tickable(t) => instance_and_ramp(t.clone(), world).map(|(i, r)| (i, Some(r))),
-                _ => instance_from_event(ev, registry, world)
-                    .map(|i| {
-                        let r = crate::tickable::Ramp::for_instance(&i);
-                        (i, r)
-                    }),
+                SoundEvent::Tickable(t) => {
+                    instance_and_ramp(t.clone(), world).map(|(i, r)| (i, Some(r)))
+                }
+                _ => instance_from_event(ev, registry, world).map(|i| {
+                    let r = crate::tickable::Ramp::for_instance(&i);
+                    (i, r)
+                }),
             };
             match built {
                 Ok((instance, ramp)) => {
@@ -2418,8 +2439,10 @@ impl SoundSystem {
                     // concern (`SoundEngine.java:318-320`), so routing this
                     // through the instance's `delay` field would also change
                     // how it loops.
-                    if matches!(ev, SoundEvent::Tickable(crate::sounds::TickableSound::EndFlash { .. }))
-                    {
+                    if matches!(
+                        ev,
+                        SoundEvent::Tickable(crate::sounds::TickableSound::EndFlash { .. })
+                    ) {
                         self.engine.play_delayed_ramped(
                             instance,
                             ramp,
@@ -2490,7 +2513,8 @@ impl SoundSystem {
             // earlier. As of M173 the put REFRESHES too (vanilla
             // `SoundEngine.java:152-155`), so the fade finally reaches the
             // channel that is already playing.
-            self.engine.update_category_volume(SoundSource::Music, gain, device);
+            self.engine
+                .update_category_volume(SoundSource::Music, gain, device);
         }
         if let Some(music) = outcome.start {
             let instance = SoundInstance::for_music(music.sound);
@@ -2686,10 +2710,7 @@ pub struct LiveSounds {
 }
 
 impl LiveSounds {
-    pub fn new(
-        sounds: SoundsIndex,
-        registry: rewo_data::sound_events::SoundEvents,
-    ) -> LiveSounds {
+    pub fn new(sounds: SoundsIndex, registry: rewo_data::sound_events::SoundEvents) -> LiveSounds {
         LiveSounds {
             system: SoundSystem::new(sounds),
             device: SilentDevice::default(),
@@ -2760,7 +2781,11 @@ impl LiveSounds {
     /// heard nothing from it.
     fn with_device<R>(
         &mut self,
-        f: impl FnOnce(&mut SoundSystem, &rewo_data::sound_events::SoundEvents, &mut dyn AudioDevice) -> R,
+        f: impl FnOnce(
+            &mut SoundSystem,
+            &rewo_data::sound_events::SoundEvents,
+            &mut dyn AudioDevice,
+        ) -> R,
     ) -> R {
         let LiveSounds {
             system,
@@ -3042,7 +3067,11 @@ mod tests {
         // get wrong by asserting the sum.
         let (statics, streaming) = pool_sizes(4);
         assert_eq!((statics, streaming), (8, 2));
-        assert_eq!(statics + streaming, 10, "ten channels from a four-source device");
+        assert_eq!(
+            statics + streaming,
+            10,
+            "ten channels from a four-source device"
+        );
         // And a huge device is under-subscribed by the 255 upper bound.
         let (statics, streaming) = pool_sizes(1000);
         assert_eq!((statics, streaming), (255, 8));
@@ -3069,7 +3098,11 @@ mod tests {
             assert!(b.acquire(Pool::Static));
         }
         assert!(!b.acquire(Pool::Static), "no voice stealing anywhere");
-        assert_eq!(b.used(Pool::Static), 25, "a refusal does not consume a slot");
+        assert_eq!(
+            b.used(Pool::Static),
+            25,
+            "a refusal does not consume a slot"
+        );
         // The other pool is unaffected — they are counted separately.
         assert!(b.acquire(Pool::Streaming));
         b.release(Pool::Static);
@@ -3299,13 +3332,19 @@ mod tests {
         assert!(calls.contains(&ChannelCall::SetPitch(1.5)), "{calls:?}");
         // And the *same* product feeds the attenuation distance: 0.4 is below
         // 1, so `max(_, 1)` holds the range at the entry's own 8.
-        assert!(calls.contains(&ChannelCall::LinearAttenuation(8.0)), "{calls:?}");
+        assert!(
+            calls.contains(&ChannelCall::LinearAttenuation(8.0)),
+            "{calls:?}"
+        );
 
         // Now push the product above 1 so the range moves: 4.0 * 0.5 = 2.0.
         dev.clear_calls();
         eng.play(stone(4.0, 1.0), &idx, &EmptyWorld, &mut dev);
         let calls = dev.calls_to(1);
-        assert!(calls.contains(&ChannelCall::SetVolume(1.0)), "gain saturates");
+        assert!(
+            calls.contains(&ChannelCall::SetVolume(1.0)),
+            "gain saturates"
+        );
         assert!(
             calls.contains(&ChannelCall::LinearAttenuation(16.0)),
             "range is 2.0 * 8 = 16, not 4.0 * 8 = 32: {calls:?}"
@@ -3365,7 +3404,16 @@ mod tests {
         let mut dev = RecordingDevice::default();
         // Nothing registered at all.
         let (_, r) = eng.play(
-            SoundInstance::simple("minecraft:nope", SoundSource::Blocks, 1.0, 1.0, 0, 0.0, 0.0, 0.0),
+            SoundInstance::simple(
+                "minecraft:nope",
+                SoundSource::Blocks,
+                1.0,
+                1.0,
+                0,
+                0.0,
+                0.0,
+                0.0,
+            ),
             &SoundsIndex::new(),
             &EmptyWorld,
             &mut dev,
@@ -3417,7 +3465,10 @@ mod tests {
             },
             &SoundFileSet::Only(Default::default()),
         );
-        assert!(idx.get("minecraft:block.stone.break").is_some(), "registered");
+        assert!(
+            idx.get("minecraft:block.stone.break").is_some(),
+            "registered"
+        );
         let (_, r) = eng.play(stone(1.0, 1.0), &idx, &EmptyWorld, &mut dev);
         assert_eq!(r, PlayResult::NotStarted(NotStarted::EmptySound));
 
@@ -3602,7 +3653,10 @@ mod tests {
             eng.tick(false, &idx, &EmptyWorld, &mut dev);
         }
         assert_eq!(eng.live_count(), 1);
-        assert!(dev.calls.iter().any(|(c, _)| *c == 1), "a second channel was taken");
+        assert!(
+            dev.calls.iter().any(|(c, _)| *c == 1),
+            "a second channel was taken"
+        );
     }
 
     // ---- ticking an entity-bound sound ------------------------------------
@@ -3832,15 +3886,13 @@ mod tests {
 
         // 29 ticks: still nothing. The 30th is the one.
         for _ in 0..29 {
-            sys.engine
-                .tick(false, &sys.sounds, &world, &mut dev);
+            sys.engine.tick(false, &sys.sounds, &world, &mut dev);
         }
         assert!(
             sys.engine.live_identifiers().is_empty(),
             "29 ticks in and it has already played — the delay is 30"
         );
-        sys.engine
-            .tick(false, &sys.sounds, &world, &mut dev);
+        sys.engine.tick(false, &sys.sounds, &world, &mut dev);
         assert_eq!(
             sys.engine.live_identifiers(),
             vec!["minecraft:weather.end_flash"]
@@ -3898,11 +3950,7 @@ mod tests {
         // convention, +Z at yaw 0 — scaled by ten, so exactly ten blocks from
         // wherever the listener now is.
         let d = crate::tickable::direction_from_rotation(0.0, 0.0);
-        let want = (
-            1000.0 + d.0 * 10.0,
-            64.0 + d.1 * 10.0,
-            -500.0 + d.2 * 10.0,
-        );
+        let want = (1000.0 + d.0 * 10.0, 64.0 + d.1 * 10.0, -500.0 + d.2 * 10.0);
         assert!(
             (placed.0 - want.0).abs() < 1e-6
                 && (placed.1 - want.1).abs() < 1e-6
@@ -3964,8 +4012,11 @@ mod tests {
         );
         // …and it is NOT silence-gated: it does not override `canPlaySound`.
         assert_eq!(
-            crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp { player: 42, time: 0 })
-                .silence_gated_entity(),
+            crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp {
+                player: 42,
+                time: 0
+            })
+            .silence_gated_entity(),
             None
         );
 
@@ -4031,7 +4082,10 @@ mod tests {
             );
         }
         sys.tick(false, &grounded, &mut dev);
-        assert!(dev.calls_to(0).contains(&ChannelCall::Stop), "tick 21 stops");
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::Stop),
+            "tick 21 stops"
+        );
     }
 
     /// **A silenced player does not silence their elytra**, because
@@ -4369,7 +4423,10 @@ mod tests {
         assert!(world.is_water_at_point(0.5, 64.5, 0.5, &water));
         // …the block below is not, and `floor` is what picks between them.
         assert!(!world.is_water_at_point(0.5, 63.5, 0.5, &water));
-        assert!(!world.is_water_at_point(1.5, 64.5, 0.5, &water), "next column");
+        assert!(
+            !world.is_water_at_point(1.5, 64.5, 0.5, &water),
+            "next column"
+        );
         // A negative coordinate floors AWAY from zero, which `as i32` alone
         // would not: -0.5 is in block -1, not block 0.
         world.set_block(-1, 64, 0, 1);
@@ -4579,11 +4636,17 @@ mod tests {
 
         dev.clear_calls();
         sys.tick(false, &world(&table), &mut dev);
-        assert!(!dev.calls_to(0).contains(&ChannelCall::Stop), "still digging");
+        assert!(
+            !dev.calls_to(0).contains(&ChannelCall::Stop),
+            "still digging"
+        );
 
         table.set_gesture_state(4, 0); // IDLING
         sys.tick(false, &world(&table), &mut dev);
-        assert!(dev.calls_to(0).contains(&ChannelCall::Stop), "stopped digging");
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::Stop),
+            "stopped digging"
+        );
     }
 
     // ---- M141f: the bee and the minecart ---------------------------------
@@ -4779,7 +4842,10 @@ mod tests {
             time: 0,
         });
         let mut i = SoundInstance::bare("minecraft:item.elytra.flying", SoundSource::Players);
-        assert!(r.tick(&mut i, &w).stopped, "an absent local view is a removal");
+        assert!(
+            r.tick(&mut i, &w).stopped,
+            "an absent local view is a removal"
+        );
     }
 
     /// **A remote entity's velocity reaches the ramps through the table**, and
@@ -4935,11 +5001,8 @@ mod tests {
             angry: vec![9],
             ..Default::default()
         };
-        let bee = crate::tickable::bee_instance(
-            crate::tickable::BeeLoop::Flying,
-            9,
-            (0.0, 64.0, 0.0),
-        );
+        let bee =
+            crate::tickable::bee_instance(crate::tickable::BeeLoop::Flying, 9, (0.0, 64.0, 0.0));
         eng.play_ramped(
             bee,
             Some(crate::tickable::Ramp::Bee(crate::tickable::BeeRamp {
@@ -4956,12 +5019,17 @@ mod tests {
         // Tick 1: the flying loop stops and queues the aggressive one. It has
         // NOT started yet — the queue is drained at the top of a tick.
         eng.tick(false, &idx, &world, &mut dev);
-        assert_eq!(eng.live_count(), 1, "still only the (now stopping) original");
+        assert_eq!(
+            eng.live_count(),
+            1,
+            "still only the (now stopping) original"
+        );
 
         // Tick 2: the queue drains and the replacement plays.
         eng.tick(false, &idx, &world, &mut dev);
         assert!(
-            eng.live_identifiers().contains(&"minecraft:entity.bee.loop_aggressive"),
+            eng.live_identifiers()
+                .contains(&"minecraft:entity.bee.loop_aggressive"),
             "the aggressive loop must have started, live: {:?}",
             eng.live_identifiers()
         );
@@ -4991,13 +5059,15 @@ mod tests {
         };
         eng.tick(false, &idx, &calm, &mut dev);
         assert!(
-            dev.calls_to(aggressive_channel).contains(&ChannelCall::Stop),
+            dev.calls_to(aggressive_channel)
+                .contains(&ChannelCall::Stop),
             "a tickable replacement stops itself when the bee calms; got {:?}",
             dev.calls_to(aggressive_channel)
         );
         eng.tick(false, &idx, &calm, &mut dev); // the queue drains
         assert!(
-            eng.live_identifiers().contains(&"minecraft:entity.bee.loop"),
+            eng.live_identifiers()
+                .contains(&"minecraft:entity.bee.loop"),
             "…and the flying loop comes back, live: {:?}",
             eng.live_identifiers()
         );
@@ -5160,7 +5230,10 @@ mod tests {
         dev.clear_calls();
         eng.stop(id, &mut dev);
         assert_eq!(dev.calls_to(0), vec![ChannelCall::Stop]);
-        assert!(eng.is_active(id), "still holding the channel until a tick reclaims it");
+        assert!(
+            eng.is_active(id),
+            "still holding the channel until a tick reclaims it"
+        );
     }
 
     #[test]
@@ -5285,7 +5358,11 @@ mod tests {
         // A refresh of an UNRELATED category touches nothing.
         let before = dev.calls_to(0).len();
         eng.refresh_category_volume(SoundSource::Weather, &mut dev);
-        assert_eq!(dev.calls_to(0).len(), before, "weather does not re-gain a blocks channel");
+        assert_eq!(
+            dev.calls_to(0).len(),
+            before,
+            "weather does not re-gain a blocks channel"
+        );
     }
 
     /// `source == MASTER` matches EVERY playing instance in the filter
@@ -5746,7 +5823,10 @@ mod tests {
         let mut idx = music_index();
         // Two more streamed events, to fill a deliberately tiny streaming pool
         // before the music asks for a channel.
-        for (i, name) in ["minecraft:ambient.a", "minecraft:ambient.b"].iter().enumerate() {
+        for (i, name) in ["minecraft:ambient.a", "minecraft:ambient.b"]
+            .iter()
+            .enumerate()
+        {
             let mut snd = Sound::file(format!("minecraft:filler/{i}"));
             snd.stream = true;
             idx.handle_registration(
@@ -5846,7 +5926,11 @@ mod tests {
             &EmptyWorld,
             &mut dev,
         );
-        assert_eq!(sys.stats.stops, stops_before + 1, "the game track was stopped");
+        assert_eq!(
+            sys.stats.stops,
+            stops_before + 1,
+            "the game track was stopped"
+        );
     }
 
     #[test]
@@ -5921,7 +6005,9 @@ mod tests {
         }
     }
 
-    fn live_with_sink(verdict: Option<bool>) -> (LiveSounds, std::rc::Rc<std::cell::RefCell<SinkLog>>) {
+    fn live_with_sink(
+        verdict: Option<bool>,
+    ) -> (LiveSounds, std::rc::Rc<std::cell::RefCell<SinkLog>>) {
         let log = std::rc::Rc::new(std::cell::RefCell::new(SinkLog::default()));
         let mut live = LiveSounds::new(plain_index(), registry());
         live.attach_sink(Box::new(FakeSink {
@@ -5960,7 +6046,11 @@ mod tests {
         let (mut live, log) = live_with_sink(Some(true));
         live.drive(&[positioned(3)], &entities, None, 0, 1.0);
         assert_eq!(live.stats().started, 1);
-        assert_eq!(log.borrow().releases.len(), 1, "a finished voice is released");
+        assert_eq!(
+            log.borrow().releases.len(),
+            1,
+            "a finished voice is released"
+        );
 
         // And the claim is about the tee rather than about the fixture: the
         // bookkeeping device really does answer `true` for that same channel,
@@ -5990,7 +6080,11 @@ mod tests {
         live.drive(&[positioned(3)], &EntityTable::default(), None, 0, 1.0);
 
         let log = log.borrow();
-        assert_eq!(log.submits.len(), 8, "SoundEngine.java:417-434 is eight calls");
+        assert_eq!(
+            log.submits.len(),
+            8,
+            "SoundEngine.java:417-434 is eight calls"
+        );
         // The order is the contract, not the set: a backend has to see the
         // pitch and the loop flag BEFORE the attach, or it cannot know how long
         // the sound will last (which is what `stopped()` needs).
@@ -6001,7 +6095,10 @@ mod tests {
             log.submits[6].1,
             ChannelCall::AttachStaticBuffer(_) | ChannelCall::AttachBufferStream(_, _)
         ));
-        assert!(matches!(log.submits[7].1, ChannelCall::Play), "play is last");
+        assert!(
+            matches!(log.submits[7].1, ChannelCall::Play),
+            "play is last"
+        );
         // …and the bookkeeping device counted the same calls, so attaching a
         // backend neither steals them nor doubles them.
         assert_eq!(live.device.calls_made, 8);
@@ -6062,7 +6159,12 @@ mod tests {
         if let Some(e) = t.get_mut(5) {
             e.set_target(30.0, 64.0, 0.0);
         }
-        let w = EntityTableWorld { table: &t, local: None, game_time: 0, music_volume: 1.0 };
+        let w = EntityTableWorld {
+            table: &t,
+            local: None,
+            game_time: 0,
+            music_volume: 1.0,
+        };
         let (x, _, _) = w.position(5).unwrap();
         assert_ne!(x, 30.0, "the target is not where the entity is yet");
         assert_eq!(w.position(6), None, "an untracked entity is gone");
@@ -6080,7 +6182,9 @@ mod tests {
             instance_from_event(&ev, &registry(), &EmptyWorld),
             Err(NoInstance::IsStop)
         );
-        let SoundEvent::Stop(s) = &ev else { unreachable!() };
+        let SoundEvent::Stop(s) = &ev else {
+            unreachable!()
+        };
         assert_eq!(stop_from_event(s), (None, Some(SoundSource::Records)));
     }
     /// **A tickable ambient instance must be born at volume 1.0.**
@@ -6152,7 +6256,10 @@ mod tests {
             "the SubSound is a ONE-SHOT — the loop beside it is the looping one"
         );
         assert!(sub.relative);
-        assert_eq!(sub.identifier, crate::ambient_handlers::UNDERWATER_ADDITIONS_RARE);
+        assert_eq!(
+            sub.identifier,
+            crate::ambient_handlers::UNDERWATER_ADDITIONS_RARE
+        );
         assert!(matches!(
             sub_ramp,
             crate::tickable::Ramp::UnderwaterSub { player: 1 }
@@ -6435,7 +6542,11 @@ mod listener_tests {
         for yaw in [-180.0f32, -135.0, -90.0, -45.0, 0.0, 30.0, 90.0, 179.0] {
             for pitch in [-90.0f32, -45.0, -12.5, 0.0, 17.0, 45.0, 90.0] {
                 let (fwd, _) = listener_basis(yaw, pitch);
-                close(fwd, view_vector(yaw, pitch), &format!("yaw {yaw} pitch {pitch}"));
+                close(
+                    fwd,
+                    view_vector(yaw, pitch),
+                    &format!("yaw {yaw} pitch {pitch}"),
+                );
             }
         }
     }
@@ -6507,7 +6618,11 @@ mod listener_tests {
             (f[2] - ListenerTransform::INITIAL.forward[2]).abs() > 1.5,
             "the pi in rotationYXZ is what separates them"
         );
-        close(u, ListenerTransform::INITIAL.up, "up does agree, at the horizon");
+        close(
+            u,
+            ListenerTransform::INITIAL.up,
+            "up does agree, at the horizon",
+        );
     }
 
     #[test]
@@ -6524,7 +6639,11 @@ mod listener_tests {
         });
         assert_eq!(d.listener_history.len(), 1);
         assert_eq!(d.listener_history[0].position, [1.0, 2.0, 3.0]);
-        close(d.listener_history[0].forward, [-1.0, 0.0, 0.0], "facing +yaw 90");
+        close(
+            d.listener_history[0].forward,
+            [-1.0, 0.0, 0.0],
+            "facing +yaw 90",
+        );
     }
 
     #[test]
@@ -6546,6 +6665,4 @@ mod listener_tests {
             "the listener push must reach the device"
         );
     }
-
-
 }

@@ -284,7 +284,12 @@ impl SoundInstance {
     /// `SimpleSoundInstance.forJukeboxSong(sound, pos)` — `RECORDS`, volume
     /// [`JUKEBOX_VOLUME`], **linear** attenuation and **not** relative, which
     /// is what makes a jukebox a thing in the world rather than in your head.
-    pub fn for_jukebox_song(identifier: impl Into<String>, x: f64, y: f64, z: f64) -> SoundInstance {
+    pub fn for_jukebox_song(
+        identifier: impl Into<String>,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> SoundInstance {
         SoundInstance {
             volume: JUKEBOX_VOLUME,
             x,
@@ -460,7 +465,12 @@ pub fn mth_clamp(value: f32, min: f32, max: f32) -> f32 {
 ///
 /// The third factor is deliberately not clamped here: vanilla clamps it on the
 /// way *in* (`updateCategoryVolume`) and reads it raw here.
-pub fn calculate_volume(volume: f32, source: SoundSource, options: &CategoryVolumes, gain: f32) -> f32 {
+pub fn calculate_volume(
+    volume: f32,
+    source: SoundSource,
+    options: &CategoryVolumes,
+    gain: f32,
+) -> f32 {
     mth_clamp(volume, VOLUME_MIN, VOLUME_MAX)
         * mth_clamp(options.final_volume(source), VOLUME_MIN, VOLUME_MAX)
         * gain
@@ -582,7 +592,10 @@ mod tests {
         assert_eq!(i.source, SoundSource::Records);
         assert_eq!(i.volume, 4.0);
         assert_eq!(i.attenuation, Attenuation::Linear);
-        assert!(!i.relative, "a jukebox is a thing in the world, not in your head");
+        assert!(
+            !i.relative,
+            "a jukebox is a thing in the world, not in your head"
+        );
     }
 
     #[test]
@@ -607,7 +620,8 @@ mod tests {
         // `this.x = (float)this.entity.getX();` into a `double` field. Pick a
         // coordinate that is not representable in f32 so the narrowing shows.
         let ex = 1_000_000.1_f64;
-        let i = SoundInstance::entity_bound("e", SoundSource::Neutral, 1.0, 1.0, 0, 7, ex, 0.0, 0.0);
+        let i =
+            SoundInstance::entity_bound("e", SoundSource::Neutral, 1.0, 1.0, 0, 7, ex, 0.0, 0.0);
         assert_eq!(i.x, ex as f32 as f64);
         assert_ne!(i.x, ex, "the f32 narrowing is real, not a no-op");
         assert_eq!(i.binding, Binding::Entity(7));
@@ -617,10 +631,14 @@ mod tests {
     #[test]
     fn only_an_entity_bound_instance_ticks_or_can_be_silenced() {
         let fixed = SoundInstance::simple("e", SoundSource::Blocks, 1.0, 1.0, 0, 0.0, 0.0, 0.0);
-        let bound = SoundInstance::entity_bound("e", SoundSource::Blocks, 1.0, 1.0, 0, 1, 0.0, 0.0, 0.0);
+        let bound =
+            SoundInstance::entity_bound("e", SoundSource::Blocks, 1.0, 1.0, 0, 1, 0.0, 0.0, 0.0);
         assert!(!fixed.is_tickable());
         assert!(bound.is_tickable());
-        assert!(fixed.can_play_sound(true), "a fixed sound has no entity to be silent");
+        assert!(
+            fixed.can_play_sound(true),
+            "a fixed sound has no entity to be silent"
+        );
         assert!(!bound.can_play_sound(true));
         assert!(bound.can_play_sound(false));
     }
@@ -730,7 +748,10 @@ mod tests {
     fn volume_above_one_extends_the_range_instead_of_raising_the_gain() {
         let v = CategoryVolumes::default();
         // A jukebox: gain saturates, range quadruples.
-        assert_eq!(calculate_volume(JUKEBOX_VOLUME, SoundSource::Records, &v, 1.0), 1.0);
+        assert_eq!(
+            calculate_volume(JUKEBOX_VOLUME, SoundSource::Records, &v, 1.0),
+            1.0
+        );
         assert_eq!(attenuation_distance(JUKEBOX_VOLUME, 16), 64.0);
     }
 

@@ -58,7 +58,8 @@ impl HandPass {
         atlas_w: u32,
         atlas_h: u32,
     ) -> Result<Self, String> {
-        let (img, alloc, view) = crate::entities::create_texture(gpu, atlas_rgba, atlas_w, atlas_h)?;
+        let (img, alloc, view) =
+            crate::entities::create_texture(gpu, atlas_rgba, atlas_w, atlas_h)?;
         let device = gpu.device.clone();
         // NEAREST: an item icon is pixel art shown near 1:1, and linear
         // filtering would blur the 16×16 sprites the whole look depends on.

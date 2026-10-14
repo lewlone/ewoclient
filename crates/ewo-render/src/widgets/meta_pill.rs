@@ -24,9 +24,7 @@
 //! dot indicator pulses opacity 0.55 ↔ 1.0 over 2.4s ease-in-out (CSS
 //! `meta-pulse`).
 
-use skia_safe::{
-    BlurStyle, Canvas, Color4f, MaskFilter, Paint, PaintStyle, RRect, Rect,
-};
+use skia_safe::{BlurStyle, Canvas, Color4f, MaskFilter, Paint, PaintStyle, RRect, Rect};
 
 use crate::text::{self, FontStore};
 
@@ -100,10 +98,7 @@ pub fn draw_meta_pill(
         None,
     );
     let inset = rect.with_inset((0.5, 0.5));
-    canvas.draw_rrect(
-        RRect::new_rect_xy(inset, RADIUS - 0.5, RADIUS - 0.5),
-        &rim,
-    );
+    canvas.draw_rrect(RRect::new_rect_xy(inset, RADIUS - 0.5, RADIUS - 0.5), &rim);
 
     // Layout: pad_x → [dot + gap if present] → label
     let cy = (rect.top + rect.bottom) * 0.5;
@@ -119,18 +114,17 @@ pub fn draw_meta_pill(
         let smooth = triangle * triangle * (3.0 - 2.0 * triangle);
         // Reduced motion (StyleSheet1 ~L1563): the loop stops and `.dot` rests
         // on its un-animated opacity of 1.
-        let opacity = if ewo_core::motion::is_reduced() { 1.0 } else { 0.55 + 0.45 * smooth };
+        let opacity = if ewo_core::motion::is_reduced() {
+            1.0
+        } else {
+            0.55 + 0.45 * smooth
+        };
 
         // Soft halo behind the dot — CSS `box-shadow: 0 0 6px rgba(229,184,197,0.9)`.
         let mut halo = Paint::default();
         halo.set_anti_alias(true);
         halo.set_color4f(
-            Color4f::new(
-                ACCENT_ROSE.r,
-                ACCENT_ROSE.g,
-                ACCENT_ROSE.b,
-                0.9 * opacity,
-            ),
+            Color4f::new(ACCENT_ROSE.r, ACCENT_ROSE.g, ACCENT_ROSE.b, 0.9 * opacity),
             None,
         );
         halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));

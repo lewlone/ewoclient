@@ -200,7 +200,11 @@ impl JsonDimension {
         );
         eq!("cloud_color", d.cloud_color, want.cloud_color);
         eq!("ambient_sounds", d.ambient_sounds, want.ambient_sounds);
-        eq!("background_music", d.background_music, want.background_music);
+        eq!(
+            "background_music",
+            d.background_music,
+            want.background_music
+        );
         eq!("cloud_height", d.cloud_height, want.cloud_height);
         eq!("fast_lava", d.fast_lava, want.fast_lava);
         eq!("default_clock", d.default_clock, want.default_clock);
@@ -718,7 +722,9 @@ fn json_ambient_sounds(v: Option<&Value>) -> Result<Option<AmbientSounds>, Strin
     // record* rather than failing. Rejecting it explicitly is the difference
     // between "inherit the base" and "this biome declares silence".
     if obj.contains_key("modifier") || obj.contains_key("argument") {
-        return Err(format!("{K_AMBIENT_SOUNDS} is a modifier form, not a value"));
+        return Err(format!(
+            "{K_AMBIENT_SOUNDS} is a modifier form, not a value"
+        ));
     }
     let sound = |x: &Value| -> Result<String, String> {
         x.as_str()
@@ -795,7 +801,9 @@ fn json_background_music(
         .as_object()
         .ok_or_else(|| "audio/background_music is not an object".to_string())?;
     let one = |key: &str| -> Result<Option<Music>, String> {
-        let Some(m) = obj.get(key) else { return Ok(None) };
+        let Some(m) = obj.get(key) else {
+            return Ok(None);
+        };
         let m = m
             .as_object()
             .ok_or_else(|| format!("background_music.{key} is not an object"))?;
@@ -840,16 +848,18 @@ mod tests {
             rewo_data::skip_test!("no local 26.2 decompile at {}", root.display());
             return None;
         }
-        Some(load(
-            &root,
-            &[
-                "minecraft:overworld",
-                "minecraft:overworld_caves",
-                "minecraft:the_end",
-                "minecraft:the_nether",
-            ],
+        Some(
+            load(
+                &root,
+                &[
+                    "minecraft:overworld",
+                    "minecraft:overworld_caves",
+                    "minecraft:the_end",
+                    "minecraft:the_nether",
+                ],
+            )
+            .expect("the decompiled dimension_type JSON must be readable"),
         )
-        .expect("the decompiled dimension_type JSON must be readable"))
     }
 
     /// Every raw field the client consumes, read out of the shipped files.

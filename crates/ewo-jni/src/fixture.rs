@@ -93,7 +93,10 @@ fn potion(b: &mut Block, slot: usize, ticks: i32, amp: i32, rgb: i32, name: &str
     const REC: usize = 44;
     const NAME_CAP: usize = 28;
     let at = off::POTIONS + slot * REC;
-    b.i32(at, ticks).i32(at + 4, amp).i32(at + 8, rgb).string(at + 12, NAME_CAP, name);
+    b.i32(at, ticks)
+        .i32(at + 4, amp)
+        .i32(at + 8, rgb)
+        .string(at + 12, NAME_CAP, name);
 }
 
 /// One indicator record — a world-anchored entity the overhead totem counter
@@ -157,7 +160,8 @@ pub fn block(scene: Scene, overlay_open: bool, w: f32, h: f32) -> Vec<u8> {
 
             // Fresh-ish gear: one worn helmet, the rest healthy.
             for (i, dura) in [0.41_f32, 0.97, 0.88, 0.93].iter().enumerate() {
-                b.i32(off::ARMOR + i * 8, 1).f32(off::ARMOR + i * 8 + 4, *dura);
+                b.i32(off::ARMOR + i * 8, 1)
+                    .f32(off::ARMOR + i * 8 + 4, *dura);
             }
 
             b.i32(off::POTION_COUNT, 1);
@@ -178,7 +182,12 @@ pub fn block(scene: Scene, overlay_open: bool, w: f32, h: f32) -> Vec<u8> {
         Scene::Combat => {
             b.i32(
                 off::FLAGS,
-                FLAG_WORLD | FLAG_PING | FLAG_ARMOR | FLAG_TARGET | FLAG_PVP_JUMP | FLAG_PVP_HIT
+                FLAG_WORLD
+                    | FLAG_PING
+                    | FLAG_ARMOR
+                    | FLAG_TARGET
+                    | FLAG_PVP_JUMP
+                    | FLAG_PVP_HIT
                     | overlay,
             );
             b.i32(off::FPS, 512);
@@ -190,7 +199,8 @@ pub fn block(scene: Scene, overlay_open: bool, w: f32, h: f32) -> Vec<u8> {
             // Deliberately spread across the durability range so every bar
             // state (healthy / worn / critical) appears in one shot.
             for (i, dura) in [0.92_f32, 0.64, 0.38, 0.11].iter().enumerate() {
-                b.i32(off::ARMOR + i * 8, 1).f32(off::ARMOR + i * 8 + 4, *dura);
+                b.i32(off::ARMOR + i * 8, 1)
+                    .f32(off::ARMOR + i * 8 + 4, *dura);
             }
 
             b.i32(off::POTION_COUNT, 3);
@@ -229,9 +239,45 @@ pub fn block(scene: Scene, overlay_open: bool, w: f32, h: f32) -> Vec<u8> {
             // Three tracked entities spread across the frame: a heavily-popped
             // totem user, a fresh-damaged one, and a distant full-health one.
             b.i32(off::INDICATORS, 3);
-            indicator(&mut b, 0, 101, w * 0.50, h * 0.42, 3.2, 4, 12.5, 20.0, 6.5, 0.25);
-            indicator(&mut b, 1, 102, w * 0.28, h * 0.55, 8.7, 0, 3.0, 20.0, 9.0, 0.60);
-            indicator(&mut b, 2, 103, w * 0.74, h * 0.48, 17.4, 1, 20.0, 20.0, 0.0, -1.0);
+            indicator(
+                &mut b,
+                0,
+                101,
+                w * 0.50,
+                h * 0.42,
+                3.2,
+                4,
+                12.5,
+                20.0,
+                6.5,
+                0.25,
+            );
+            indicator(
+                &mut b,
+                1,
+                102,
+                w * 0.28,
+                h * 0.55,
+                8.7,
+                0,
+                3.0,
+                20.0,
+                9.0,
+                0.60,
+            );
+            indicator(
+                &mut b,
+                2,
+                103,
+                w * 0.74,
+                h * 0.48,
+                17.4,
+                1,
+                20.0,
+                20.0,
+                0.0,
+                -1.0,
+            );
 
             b.f32(off::SHIELD_COOLDOWN, 0.42);
             b.i32(off::HIT_PRESENT, 1)

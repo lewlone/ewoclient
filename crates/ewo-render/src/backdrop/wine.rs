@@ -13,9 +13,7 @@
 //! the gradient's `100%` stop touches the corner farthest from the center.
 
 use ewo_core::Theme;
-use skia_safe::{
-    gradient_shader, Canvas, Color4f, Matrix, Paint, Point, Rect, TileMode,
-};
+use skia_safe::{gradient_shader, Canvas, Color4f, Matrix, Paint, Point, Rect, TileMode};
 
 pub fn draw(canvas: &Canvas, w: f32, h: f32, theme: &Theme) {
     let cx = 0.35 * w;
@@ -40,10 +38,7 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, theme: &Theme) {
     let shader = gradient_shader::radial(
         Point::new(cx, cy),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[wine_b, wine_a, black],
-            None,
-        ),
+        gradient_shader::GradientShaderColors::ColorsInSpace(&[wine_b, wine_a, black], None),
         Some(&[0.0_f32, 0.45, 0.80][..]),
         TileMode::Clamp,
         None,

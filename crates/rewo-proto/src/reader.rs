@@ -280,6 +280,9 @@ mod tests {
         // A supplementary char is two UTF-16 units.
         let emoji = "\u{1F600}\u{1F600}\u{1F600}";
         assert!(PacketReader::new(&wire_string(emoji)).string(5).is_err());
-        assert_eq!(PacketReader::new(&wire_string(emoji)).string(6).unwrap(), emoji);
+        assert_eq!(
+            PacketReader::new(&wire_string(emoji)).string(6).unwrap(),
+            emoji
+        );
     }
 }

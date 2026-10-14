@@ -60,11 +60,11 @@
 //! with only a `mined` count. Every vanilla `BlockItem` shares its block's
 //! name, so that is a narrow set.
 
+use crate::layout;
 use crate::screen::{
-    Backdrop, ScrollList, Screen, ScreenKind, Sprite, Widget, WidgetId, WidgetKind, WidgetSprites,
+    Backdrop, Screen, ScreenKind, ScrollList, Sprite, Widget, WidgetId, WidgetKind, WidgetSprites,
     BUTTON_HEIGHT, BUTTON_WIDTH,
 };
-use crate::layout;
 use crate::stats::{self, StatKey, StatsCounter};
 use rewo_data::stats::{Formatter, StatRegistries};
 
@@ -109,7 +109,11 @@ pub const SLOT_SIZE: i32 = 18;
 /// `-1` and `-4539718` — the alternating row colours, and `-8355712` for a
 /// mob line with a zero count.
 pub const ROW_WHITE: [f32; 3] = [1.0, 1.0, 1.0];
-pub const ROW_DIM: [f32; 3] = [0xBA as f32 / 255.0, 0xBA as f32 / 255.0, 0xBA as f32 / 255.0];
+pub const ROW_DIM: [f32; 3] = [
+    0xBA as f32 / 255.0,
+    0xBA as f32 / 255.0,
+    0xBA as f32 / 255.0,
+];
 pub const ROW_GREY: [f32; 3] = [0.5, 0.5, 0.5];
 
 /// `getColumnX(col)` — `75 + 40 * col`, the column's **right** edge, since
@@ -455,10 +459,7 @@ pub fn build_mobs(
             let died_text = if died == 0 {
                 lang.translate("stat_type.minecraft.killed_by.none", &[&mob])
             } else {
-                lang.translate(
-                    "stat_type.minecraft.killed_by",
-                    &[&mob, &died.to_string()],
-                )
+                lang.translate("stat_type.minecraft.killed_by", &[&mob, &died.to_string()])
             };
             Some(MobRow {
                 name: mob,
@@ -782,7 +783,11 @@ mod tests {
     fn the_tab_bar_rounds_its_widths_up_to_even_numbers() {
         // 320 GUI px: tabsWidth 292, 292/3 = 97 -> 98, x = roundToward(14, 2).
         assert_eq!(tab_bar_layout(320, 3), (14, 98));
-        assert_eq!(98 * 3 - 292, 2, "the three tabs are two pixels wider than the band");
+        assert_eq!(
+            98 * 3 - 292,
+            2,
+            "the three tabs are two pixels wider than the band"
+        );
         // Clamped at MAX_WIDTH: a 600-wide window still gets a 372-wide band.
         let (x, w) = tab_bar_layout(600, 3);
         assert_eq!(w, layout::round_toward(372 / 3, 2));
@@ -790,7 +795,11 @@ mod tests {
         // Round *up*, not to nearest: 97 -> 98 and 99 -> 100.
         assert_eq!(layout::round_toward(97, 2), 98);
         assert_eq!(layout::round_toward(99, 2), 100);
-        assert_eq!(layout::round_toward(98, 2), 98, "an exact multiple stays put");
+        assert_eq!(
+            layout::round_toward(98, 2),
+            98,
+            "an exact multiple stays put"
+        );
     }
 
     /// The float lerp truncates, so the button is a pixel above centre.
@@ -862,7 +871,10 @@ mod tests {
             "equal counts, descending → the ids reverse too"
         );
         m.sort_by_column(3);
-        assert_eq!(m.items.iter().map(|r| r.order).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            m.items.iter().map(|r| r.order).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 
     /// A row with no block sorts by **-1** in the block column, below a row
@@ -874,10 +886,7 @@ mod tests {
             ..Default::default()
         };
         m.sort_by_column(0);
-        assert_eq!(
-            m.items[0].name, "zero",
-            "descending: 0 above -1"
-        );
+        assert_eq!(m.items[0].name, "zero", "descending: 0 above -1");
         m.sort_by_column(0);
         assert_eq!(m.items[0].name, "noblock", "ascending: -1 first");
     }
@@ -894,7 +903,10 @@ mod tests {
         m.sort_by_column(3); // ascending → a, b
         m.sort_by_column(3); // cleared
         assert_eq!((m.sort_column, m.sort_order), (None, 0));
-        assert_eq!(m.items[0].name, "a", "the comparator is a no-op, not an undo");
+        assert_eq!(
+            m.items[0].name, "a",
+            "the comparator is a no-op, not an undo"
+        );
     }
 
     #[test]
