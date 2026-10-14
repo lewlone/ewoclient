@@ -97,6 +97,6 @@ caller-driven `Mixer::render`). Milestone reasoning: `docs/rewo/` and
   the final page's granule position and emits nothing for the first packet;
   symphonia's `gapless(true)` reproduces it (chicken `step1.ogg` is 1595
   frames, not 1728). `tools/vorbis_decode_oracle/` runs vanilla's own class and
-  its `vectors.tsv` pins 56 files (`decode.rs`
+  its `vectors.tsv` pins 55 files (`decode.rs`
   `rewo_decodes_the_same_frames_as_vanillas_own_decoder`). Don't add
   first-packet state by hand, and don't turn gapless off.

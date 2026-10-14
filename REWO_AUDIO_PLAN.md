@@ -811,13 +811,13 @@ read by `SoundBufferLibrary.getCompleteBuffer` and `getStream` alike):
 
 **Measured, not assumed.** `tools/vorbis_decode_oracle/` runs vanilla's own
 `JOrbisAudioStream.readAll()` (the real client jar, the manifest's classpath)
-over 56 files of the local store: the 14 smallest, a 40-point spread by size
-up to 2.5 MB, and the three anchors. In all 56, vanilla's frame count equals the
+over 55 files of the local store (the 14 smallest, a 40-point spread by size
+up to 2.5 MB and the three anchors, deduplicated: `vectors.tsv` has 55 rows). In all 55, vanilla's frame count equals the
 final page's granule position. `vectors.tsv` records frames, an FNV hash of the
 PCM, the sum, and the first and last 64 samples.
 
 **Rewo's result.** With `AudioDecoderOptions::gapless(true)` and no hand-rolled
-first-packet state, Rewo's frame count equals vanilla's in all 56, the first
+first-packet state, Rewo's frame count equals vanilla's in all 55, the first
 and last 64 samples are within 1 LSB (jorbis and symphonia differ in the last
 bit; Vorbis I does not promise otherwise), and whole-file sums agree to a few
 LSB (worst: 23 over 11.6 M samples). `decode.rs`
