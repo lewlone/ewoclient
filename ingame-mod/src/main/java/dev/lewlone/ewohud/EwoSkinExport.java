@@ -207,13 +207,24 @@ public final class EwoSkinExport {
     }
 
     /**
-     * The one host a texture URL may point at. This is vanilla's rule: authlib
-     * 9.0.75 ({@code com.mojang.authlib.yggdrasil.TextureUrlChecker
-     * .isAllowedTextureDomain}, the version 26.2's version json pins) accepts a
-     * URL only if it parses as a URI, has an http/https scheme and a host that
-     * is already lowercase after {@code IDN.toUnicode} and equals exactly
-     * {@code textures.minecraft.net} (no wildcard subdomains). We are stricter
-     * on the scheme: https only.
+     * The one host a texture URL may point at: vanilla's rule, tightened.
+     *
+     * <p>Vanilla is authlib's {@code com.mojang.authlib.yggdrasil
+     * .TextureUrlChecker.isAllowedTextureDomain}: a URI whose scheme is
+     * exactly {@code http} or {@code https}, whose host is present and already
+     * lowercase after {@code IDN.toUnicode}, and which is on the allow-list.
+     * The allow-list differs by authlib version (read from the jars with
+     * javap): 7.0.61 (1.21.x) takes any {@code *.minecraft.net} /
+     * {@code *.mojang.com} host except bugs.mojang.com, education.minecraft.net
+     * and feedback.minecraft.net; 7.0.63 (the 26.1 line) and 9.0.75 (26.2, as
+     * pinned by 26.2.json) accept exactly {@code textures.minecraft.net}. We
+     * use the 26.x rule, a subset of the 1.21.x one, so a URL passing here
+     * passes in every vanilla.
+     *
+     * <p>Also refused, matching the Rust side: userinfo, an explicit port,
+     * backslashes, percent escapes, non-ASCII or whitespace, and URLs over 512
+     * bytes. {@code http} is accepted but fetched over https (Mojang's profile
+     * property still carries {@code http://textures.minecraft.net/...}).
      *
      * <p>The URL comes from the {@code textures} property a <em>server</em>
      * sends in its GameProfile, so without this check a hostile server could
@@ -235,51 +246,71 @@ public final class EwoSkinExport {
                 return t;
             });
 
+    private static final int MAX_URL_LENGTH = 512;
+
     /** Whether {@code url} may be fetched as a texture (see {@link #ALLOWED_HOST}). */
     static boolean isAllowedTextureUrl(String url) {
-        if (url == null) {
-            return false;
+        return secureUri(url) != null;
+    }
+
+    /** The https URI to fetch for {@code url}, or {@code null} if it is refused. */
+    private static URI secureUri(String url) {
+        if (url == null || url.length() > MAX_URL_LENGTH) {
+            return null;
+        }
+        for (int i = 0; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c <= ' ' || c >= 0x7f || c == '\\' || c == '%') {
+                return null; // control/space/non-ASCII, backslash, percent escape
+            }
         }
         URI uri;
         try {
             uri = new URI(url).normalize();
         } catch (URISyntaxException e) {
-            return false;
+            return null;
         }
-        if (!"https".equals(uri.getScheme())) {
-            return false;
+        String scheme = uri.getScheme();
+        if (!"http".equals(scheme) && !"https".equals(scheme)) {
+            return null; // case-sensitive, as in vanilla
         }
         // userinfo ("https://textures.minecraft.net@evil/") parses with the
-        // right-hand host, but refuse the whole shape; and only the default port.
-        if (uri.getRawUserInfo() != null || (uri.getPort() != -1 && uri.getPort() != 443)) {
-            return false;
+        // right-hand host, but refuse the whole shape; no explicit port either.
+        if (uri.getRawUserInfo() != null || uri.getPort() != -1) {
+            return null;
         }
         String host = uri.getHost();
         if (host == null) {
-            return false;
+            return null;
         }
         String unicode = IDN.toUnicode(host);
-        if (!unicode.equals(unicode.toLowerCase(Locale.ROOT))) {
-            return false;
+        if (!unicode.equals(unicode.toLowerCase(Locale.ROOT)) || !ALLOWED_HOST.equals(unicode)) {
+            return null;
         }
-        return ALLOWED_HOST.equals(unicode);
+        try {
+            return new URI("https", null, host, -1, uri.getRawPath(), uri.getRawQuery(), null);
+        } catch (URISyntaxException e) {
+            return null;
+        }
     }
 
     /**
-     * Fetch a texture PNG into {@code dest}: allow-listed https host, 5 s
+     * Fetch a texture PNG into {@code dest}: allow-listed host (http upgraded
+     * to https), 5 s
      * connect / 10 s request timeouts, redirects never followed, body capped at
      * 1 MiB, and the bytes must start with the PNG signature before anything
      * touches the disk. Throws {@link IOException} on any rejection.
      */
     private static void download(String url, Path dest) throws IOException, InterruptedException {
-        if (!isAllowedTextureUrl(url)) {
-            throw new IOException("texture URL rejected (not https://" + ALLOWED_HOST + "/...)");
+        URI target = secureUri(url);
+        if (target == null) {
+            throw new IOException("texture URL rejected (not on " + ALLOWED_HOST + ")");
         }
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(CONNECT_TIMEOUT)
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+        HttpRequest req = HttpRequest.newBuilder(target)
                 .timeout(REQUEST_TIMEOUT)
                 .GET()
                 .build();
