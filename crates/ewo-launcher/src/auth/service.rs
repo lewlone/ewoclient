@@ -15,6 +15,7 @@
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Instant;
 
 use super::chain::{self, ChainStage};
 use super::loopback::{self, LoopbackResult};
@@ -45,6 +46,53 @@ pub enum AuthEvent {
     Failure(AuthError),
 }
 
+/// What the running worker is doing. At most one chain runs at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InFlight {
+    /// Interactive browser sign-in. `active_at_start` is the active
+    /// pointer when it began: the new account becomes active only if the
+    /// user hasn't picked another one meanwhile.
+    Interactive { active_at_start: Option<String> },
+    /// Silent refresh of the account `uuid`.
+    Refresh { uuid: String },
+}
+
+/// The active pointer after `job` succeeds with the account `signed_in`.
+/// A refresh never moves it (the user may have switched accounts while it
+/// ran, and a late `Success` must not switch them back). An interactive
+/// sign-in makes the new account active unless the user chose a different
+/// active account while the browser flow was open.
+fn active_after_success(job: &InFlight, current: Option<&str>, signed_in: &str) -> Option<String> {
+    match job {
+        InFlight::Refresh { .. } => current.map(str::to_string),
+        InFlight::Interactive { active_at_start } => {
+            if current == active_at_start.as_deref() {
+                Some(signed_in.to_string())
+            } else {
+                current.map(str::to_string)
+            }
+        }
+    }
+}
+
+/// Fold a chain's `Success` into the store (no disk I/O). Returns `false`
+/// when the result is dropped: a refresh for an account the user removed
+/// while it ran (or whose profile came back different) must not re-add it.
+fn apply_success(store: &mut AccountStore, job: &InFlight, account: MinecraftAccount) -> bool {
+    if let InFlight::Refresh { uuid } = job {
+        let known = store.accounts.iter().any(|a| &a.uuid == uuid);
+        if !known || &account.uuid != uuid {
+            log::info!("auth: dropped refresh result for {} (account gone)", uuid);
+            return false;
+        }
+    }
+    log::info!("auth: signed in as {} (uuid={})", account.name, account.uuid);
+    let new_active = active_after_success(job, store.active.as_deref(), &account.uuid);
+    store.upsert(account);
+    store.active = new_active;
+    true
+}
+
 pub struct AuthService {
     /// All signed-in accounts + the active pointer. Persisted to auth.toml.
     store: AccountStore,
@@ -52,9 +100,9 @@ pub struct AuthService {
     op: AuthOp,
     rx: Receiver<AuthEvent>,
     tx: Sender<AuthEvent>,
-    /// `true` while a worker thread is alive — guards against spawning
-    /// concurrent chains.
-    busy: bool,
+    /// `Some` while a worker thread is alive — guards against spawning
+    /// concurrent chains and records what the running chain is for.
+    in_flight: Option<InFlight>,
 }
 
 impl AuthService {
@@ -68,7 +116,7 @@ impl AuthService {
             op: AuthOp::Idle,
             rx,
             tx,
-            busy: false,
+            in_flight: None,
         };
         svc.refresh_active_token();
         svc
@@ -95,35 +143,90 @@ impl AuthService {
         &self.op
     }
 
+    /// How a launch right now should authenticate (see
+    /// [`super::launch_auth`]).
+    pub fn launch_auth(&self) -> super::LaunchAuth {
+        super::launch_auth(self.active(), Instant::now())
+    }
+
+    /// Whether any auth chain (sign-in or refresh) is running.
+    pub fn is_busy(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// Start a silent refresh of the active account's Minecraft token
+    /// when it is missing or within [`super::TOKEN_REFRESH_MARGIN`] of
+    /// expiry, ahead of a launch. Returns `true` if a refresh was started;
+    /// `false` if a chain is already running (wait for it), the token
+    /// doesn't need one, or there is no refresh token to use.
+    pub fn start_launch_refresh(&mut self) -> bool {
+        if self.in_flight.is_some() {
+            return false;
+        }
+        let Some(account) = self.store.active_account() else {
+            return false;
+        };
+        if account.ms_refresh_token.is_empty()
+            || !super::token_needs_refresh(
+                &account.minecraft_token,
+                account.minecraft_token_expires_at,
+                Instant::now(),
+            )
+        {
+            return false;
+        }
+        let (uuid, refresh) = (account.uuid.clone(), account.ms_refresh_token.clone());
+        self.spawn_refresh(uuid, refresh);
+        true
+    }
+
     /// Drain pending worker events. Call once per frame.
     pub fn poll(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 AuthEvent::Started => {
-                    self.op = AuthOp::Working(ChainStage::OpeningBrowser.label());
+                    let stage = match self.in_flight {
+                        Some(InFlight::Refresh { .. }) => ChainStage::RefreshingMicrosoft,
+                        _ => ChainStage::OpeningBrowser,
+                    };
+                    self.op = AuthOp::Working(stage.label());
                 }
                 AuthEvent::Progress(stage) => {
                     self.op = AuthOp::Working(stage.label());
                 }
                 AuthEvent::Success(account) => {
-                    log::info!(
-                        "auth: signed in as {} (uuid={})",
-                        account.name,
-                        account.uuid,
-                    );
-                    let uuid = account.uuid.clone();
-                    self.store.upsert(account);
-                    self.store.active = Some(uuid);
-                    persistence::save_store(&self.store);
                     self.op = AuthOp::Idle;
-                    self.busy = false;
+                    let Some(job) = self.in_flight.take() else {
+                        log::warn!("auth: stray Success with no chain running; ignored");
+                        continue;
+                    };
+                    if apply_success(&mut self.store, &job, account) {
+                        persistence::save_store(&self.store);
+                    }
+                    self.after_chain(&job);
                 }
                 AuthEvent::Failure(err) => {
                     log::warn!("auth: failed: {:?}", err);
                     self.op = AuthOp::Failed(err);
-                    self.busy = false;
+                    if let Some(job) = self.in_flight.take() {
+                        self.after_chain(&job);
+                    }
                 }
             }
+        }
+    }
+
+    /// A chain just finished. If the user switched to another account while
+    /// it ran (`set_active` can't start a refresh while busy), bring that
+    /// account's token live now. Never re-runs the chain that just ended,
+    /// so a failing refresh can't loop.
+    fn after_chain(&mut self, finished: &InFlight) {
+        let same = match finished {
+            InFlight::Refresh { uuid } => self.store.active.as_deref() == Some(uuid.as_str()),
+            InFlight::Interactive { .. } => false,
+        };
+        if !same {
+            self.refresh_active_token();
         }
     }
 
@@ -131,11 +234,13 @@ impl AuthService {
     /// or re-authenticates one the user already has. No-op if a chain is
     /// already running.
     pub fn start_interactive(&mut self) {
-        if self.busy {
+        if self.in_flight.is_some() {
             log::info!("auth: already working — ignoring sign-in request");
             return;
         }
-        self.busy = true;
+        self.in_flight = Some(InFlight::Interactive {
+            active_at_start: self.store.active.clone(),
+        });
         self.op = AuthOp::Working(ChainStage::OpeningBrowser.label());
         let tx = self.tx.clone();
         thread::Builder::new()
@@ -167,9 +272,10 @@ impl AuthService {
         self.store.remove(uuid);
         persistence::save_store(&self.store);
         log::info!("auth: removed account {}", uuid);
-        // A removed-but-running chain can't be cancelled; its eventual
-        // Success would re-add the account. Acceptable — the user can
-        // remove it again, and `busy` still gates a fresh op.
+        // A running chain can't be cancelled. A refresh for the removed
+        // account is dropped when it lands (see `poll`); an interactive
+        // sign-in that lands on it re-adds it, since the user just signed
+        // into it again.
         self.refresh_active_token();
     }
 
@@ -200,8 +306,10 @@ impl AuthService {
 
     /// Kick a silent refresh for the active account if it has a refresh
     /// token but no live Minecraft token yet, and no chain is running.
+    /// (A live token close to expiry is refreshed by the launch path,
+    /// [`Self::start_launch_refresh`].)
     fn refresh_active_token(&mut self) {
-        if self.busy {
+        if self.in_flight.is_some() {
             return;
         }
         let Some(account) = self.store.active_account() else {
@@ -210,8 +318,12 @@ impl AuthService {
         if !account.minecraft_token.is_empty() || account.ms_refresh_token.is_empty() {
             return;
         }
-        let refresh = account.ms_refresh_token.clone();
-        self.busy = true;
+        let (uuid, refresh) = (account.uuid.clone(), account.ms_refresh_token.clone());
+        self.spawn_refresh(uuid, refresh);
+    }
+
+    fn spawn_refresh(&mut self, uuid: String, refresh: String) {
+        self.in_flight = Some(InFlight::Refresh { uuid });
         self.op = AuthOp::Working(ChainStage::RefreshingMicrosoft.label());
         let tx = self.tx.clone();
         thread::Builder::new()
@@ -310,4 +422,69 @@ fn random_state() -> String {
     (0..32)
         .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(uuid: &str, token: &str) -> MinecraftAccount {
+        MinecraftAccount {
+            name: format!("name-{uuid}"),
+            uuid: uuid.into(),
+            minecraft_token: token.into(),
+            minecraft_token_expires_at: None,
+            ms_refresh_token: format!("refresh-{uuid}"),
+            social_token: None,
+        }
+    }
+
+    fn store(active: &str) -> AccountStore {
+        AccountStore {
+            active: Some(active.into()),
+            accounts: vec![account("a", ""), account("b", "")],
+        }
+    }
+
+    fn refresh(uuid: &str) -> InFlight {
+        InFlight::Refresh { uuid: uuid.into() }
+    }
+
+    #[test]
+    fn late_refresh_for_a_does_not_override_a_switch_to_b() {
+        // Refresh for A started while A was active; the user then chose B.
+        let mut s = store("b");
+        assert!(apply_success(&mut s, &refresh("a"), account("a", "fresh")));
+        assert_eq!(s.active.as_deref(), Some("b"));
+        let a = s.accounts.iter().find(|x| x.uuid == "a").unwrap();
+        assert_eq!(a.minecraft_token, "fresh", "A's token still lands");
+    }
+
+    #[test]
+    fn refresh_for_a_removed_account_is_dropped() {
+        let mut s = AccountStore { active: Some("b".into()), accounts: vec![account("b", "")] };
+        assert!(!apply_success(&mut s, &refresh("a"), account("a", "fresh")));
+        assert_eq!(s.accounts.len(), 1);
+        assert_eq!(s.active.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn interactive_sign_in_becomes_active_unless_user_switched() {
+        let job = InFlight::Interactive { active_at_start: Some("a".into()) };
+        let mut s = store("a");
+        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert_eq!(s.active.as_deref(), Some("c"));
+
+        // The user picked B while the browser flow was open.
+        let mut s = store("b");
+        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert_eq!(s.active.as_deref(), Some("b"));
+        assert!(s.accounts.iter().any(|x| x.uuid == "c"), "C is still added");
+
+        // First sign-in on an empty store.
+        let job = InFlight::Interactive { active_at_start: None };
+        let mut s = AccountStore::default();
+        assert!(apply_success(&mut s, &job, account("a", "t")));
+        assert_eq!(s.active.as_deref(), Some("a"));
+    }
 }

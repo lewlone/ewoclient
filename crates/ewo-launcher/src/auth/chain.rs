@@ -29,7 +29,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 fn ureq_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(HTTP_TIMEOUT)
-        .user_agent("EwoClient/0.1 (+https://github.com/valtterisaarinen/ewoclient)")
+        .user_agent("EwoClient/0.1 (+https://github.com/lewlone/ewoclient)")
         .build()
 }
 
@@ -51,12 +51,13 @@ pub fn build_auth_url(redirect_uri: &str, code_challenge: &str, state: &str) -> 
     )
 }
 
+/// The MS token's own `expires_in` isn't kept: the MS access token is
+/// spent immediately on Xbox Live, and only the Minecraft token's
+/// lifetime matters to a launch.
 #[derive(Deserialize, Debug)]
 struct MsTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
-    #[allow(dead_code)]
-    expires_in: Option<u64>,
 }
 
 /// Step 1a: exchange the auth code we caught at the loopback for an MS
@@ -188,7 +189,7 @@ fn xsts_authorize(agent: &ureq::Agent, xbl_token: &str) -> Result<XstsResponse, 
 #[derive(Deserialize, Debug)]
 struct McLoginResponse {
     access_token: String,
-    #[allow(dead_code)]
+    /// Seconds until `access_token` expires (86400 in practice).
     expires_in: Option<u64>,
 }
 
@@ -262,7 +263,7 @@ pub fn run_chain_from_auth_code(
     progress(ChainStage::ExchangingAuthCode);
     let ms = exchange_auth_code(&agent, code, redirect_uri, code_verifier)?;
 
-    finish_chain(&agent, &ms, progress)
+    finish_chain(&agent, &ms, "", progress)
 }
 
 /// Run the chain starting from a persisted refresh token (silent path on
@@ -276,12 +277,26 @@ pub fn run_chain_from_refresh(
     progress(ChainStage::RefreshingMicrosoft);
     let ms = refresh_ms_token(&agent, refresh_token)?;
 
-    finish_chain(&agent, &ms, progress)
+    finish_chain(&agent, &ms, refresh_token, progress)
 }
 
+/// The refresh token to store after a token response. Microsoft usually
+/// rolls it (prefer the new one), but a response may omit it, in which
+/// case the token we refreshed with stays valid and must be kept:
+/// storing `""` would sign the account out on the next start.
+fn next_refresh_token(response: Option<&str>, previous: &str) -> String {
+    match response {
+        Some(new) if !new.is_empty() => new.to_string(),
+        _ => previous.to_string(),
+    }
+}
+
+/// `previous_refresh` is the refresh token this chain started from
+/// (`""` for a fresh interactive sign-in).
 fn finish_chain(
     agent: &ureq::Agent,
     ms: &MsTokenResponse,
+    previous_refresh: &str,
     progress: impl Fn(ChainStage),
 ) -> Result<MinecraftAccount, AuthError> {
     progress(ChainStage::AuthenticatingXboxLive);
@@ -297,6 +312,7 @@ fn finish_chain(
     let xsts = xsts_authorize(agent, &xbl.token)?;
 
     progress(ChainStage::LoggingIntoMinecraft);
+    let issued_at = std::time::Instant::now();
     let mc = mc_login(agent, &xsts.token, &uhs)?;
 
     progress(ChainStage::FetchingProfile);
@@ -306,9 +322,11 @@ fn finish_chain(
         name: profile.name,
         uuid: profile.id,
         minecraft_token: mc.access_token,
+        // Measured from before the login request, so it errs early.
+        minecraft_token_expires_at: Some(super::token_expiry(issued_at, mc.expires_in)),
         // Refresh tokens roll on each refresh — prefer the new one if the
         // server gave us one, otherwise re-use the input refresh token.
-        ms_refresh_token: ms.refresh_token.clone().unwrap_or_default(),
+        ms_refresh_token: next_refresh_token(ms.refresh_token.as_deref(), previous_refresh),
         // social_token is managed by the Phase H link flow, not the auth
         // chain. `AccountStore::upsert` preserves any existing value when
         // we re-auth, so this stays None only for first-time sign-in.
@@ -390,5 +408,29 @@ fn post_json<T: serde::de::DeserializeOwned>(
             Err(AuthError::Other(format!("{} {}: {}", url, code, body)))
         }
         Err(e) => Err(AuthError::Network(e.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_keeps_the_input_token_when_the_response_omits_one() {
+        assert_eq!(next_refresh_token(None, "old"), "old");
+        assert_eq!(next_refresh_token(Some(""), "old"), "old");
+        assert_eq!(next_refresh_token(Some("new"), "old"), "new");
+        // Interactive sign-in has no previous token.
+        assert_eq!(next_refresh_token(Some("new"), ""), "new");
+    }
+
+    #[test]
+    fn token_response_parses_without_refresh_token() {
+        let ms: MsTokenResponse =
+            serde_json::from_str(r#"{"access_token":"a","expires_in":3600}"#).unwrap();
+        assert_eq!(ms.refresh_token, None);
+        let mc: McLoginResponse =
+            serde_json::from_str(r#"{"access_token":"m","expires_in":86400}"#).unwrap();
+        assert_eq!(mc.expires_in, Some(86_400));
     }
 }

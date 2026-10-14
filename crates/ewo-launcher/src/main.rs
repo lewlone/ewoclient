@@ -45,6 +45,25 @@ struct PendingRelaunch {
     waiting_for_major: u32,
 }
 
+/// A launch held back until the active account's Minecraft token has been
+/// refreshed (it was missing or close to expiry). `App::poll_auth_launch`
+/// starts the refresh, waits for it off the UI thread, then re-enters the
+/// launch, or fails it visibly; a signed-in account never drops to
+/// offline.
+#[derive(Debug, Clone)]
+struct PendingAuthLaunch {
+    idx: usize,
+    inst_name: String,
+    inst_meta: String,
+    /// The account the launch is for. A switch of the active account while
+    /// waiting cancels the launch rather than launching as someone else.
+    uuid: String,
+    /// Whether this launch has started its refresh yet (one attempt).
+    refresh_started: bool,
+    /// The auth stage label last mirrored into the launch log.
+    last_stage: &'static str,
+}
+
 /// What to do if a launch's background preparation fails.
 #[derive(Debug, Clone, Copy)]
 enum PrepareFail {
@@ -218,9 +237,9 @@ struct App {
     /// Microsoft auth service — owns the worker thread + auth state.
     /// Polled each frame via `auth.poll()` to drain the event channel.
     auth: AuthService,
-    /// ChickenedIn social state (Phase H). H1 caches per-account
-    /// "is this MC UUID linked to Discord?" probes. Polled each frame
-    /// the same way `auth` is.
+    /// Frogsy social state (Phase H): link redemption, presence, friends,
+    /// network status. Off unless `EWO_BOT_API_BASE` is configured.
+    /// Polled each frame the same way `auth` is.
     social: social::SocialState,
     /// Cached client-profile registry — names + the active name. Refreshed
     /// at startup and after any profile-management action (rare), so the
@@ -276,6 +295,16 @@ struct App {
     /// it here, kick off `runtime.start_fetch(major)`, and retry the
     /// launch automatically once the JRE is ready.
     pending_relaunch: Option<PendingRelaunch>,
+    /// A launch waiting on a Minecraft-token refresh. See
+    /// [`PendingAuthLaunch`].
+    pending_auth: Option<PendingAuthLaunch>,
+    /// After a bundled JRE lands, the JRE re-scan (`java -version` per
+    /// candidate, `where java`) runs on a worker; it reports the major it
+    /// was for here, and the pending relaunch retries then.
+    jre_rescan_rx: Option<std::sync::mpsc::Receiver<u32>>,
+    /// Last 10 % bucket of the runtime download logged to the launch log,
+    /// so each bucket is logged once.
+    runtime_log_bucket: u32,
     /// Wall-time seconds at which to clear the celebrate state. `None` when
     /// not celebrating. Set on Launch click; checked each tick.
     celebrate_until: Option<f32>,
@@ -354,9 +383,7 @@ impl App {
             // AuthService loads the persisted account store and kicks a
             // silent refresh for the active account itself (see `new`).
             auth: AuthService::new(),
-            // SocialState starts with no probes; we trigger them each
-            // frame for every signed-in account that hasn't been
-            // probed yet (in `drive_social_probes`).
+            // SocialState reads `EWO_BOT_API_BASE`; unset = disabled.
             social: social::SocialState::new(),
             profiles: profile::list(),
             active_profile: profile::active_name(),
@@ -373,6 +400,9 @@ impl App {
             pending_minimize: None,
             runtime: runtime::RuntimeService::new(),
             pending_relaunch: None,
+            pending_auth: None,
+            jre_rescan_rx: None,
+            runtime_log_bucket: 0,
             celebrate_until: None,
             active_server: None,
             server_widget_hover: false,
@@ -410,27 +440,35 @@ impl App {
         }
     }
 
-    /// Map the active account's chickenedin link probe state into the
-    /// renderer-side `LinkStatusView`. Returns `Hidden` when there's no
-    /// active account or the probe hasn't been triggered yet. When the
-    /// account is MC-linked but the launcher itself hasn't been linked
-    /// (Phase H2 social_token missing), returns the clickable variant.
+    /// Map the active account's Frogsy link state into the renderer-side
+    /// `LinkStatusView`. `Hidden` when social isn't configured or there's
+    /// no active account; otherwise the stored `social_token` alone
+    /// decides (no network probe, see `social`'s module docs): linked, or
+    /// the clickable line that opens the launcher-link modal.
     fn link_status_view(&self) -> LinkStatusView {
+        if !self.social.enabled() {
+            return LinkStatusView::Hidden;
+        }
         let Some(active) = self.auth.active() else {
             return LinkStatusView::Hidden;
         };
-        match self.social.link_status(&active.uuid) {
-            social::LinkStatus::Unknown | social::LinkStatus::Probing => LinkStatusView::Probing,
-            social::LinkStatus::Linked => {
-                if self.auth.social_token(&active.uuid).is_some() {
-                    LinkStatusView::Linked
-                } else {
-                    LinkStatusView::LinkedNeedsLauncherLink
-                }
-            }
-            social::LinkStatus::NotLinked => LinkStatusView::NotLinked,
-            social::LinkStatus::Failed(_) => LinkStatusView::Failed,
+        if self.auth.social_token(&active.uuid).is_some() {
+            LinkStatusView::Linked
+        } else {
+            LinkStatusView::LinkedNeedsLauncherLink
         }
+    }
+
+    /// The active account's `social_token`, if it has one.
+    fn active_social_token(&self) -> Option<String> {
+        let active = self.auth.active()?;
+        self.auth.social_token(&active.uuid).map(str::to_string)
+    }
+
+    /// The main-menu network widget exists only while its status poll can
+    /// run: social configured and the active account linked.
+    fn server_widget_visible(&self) -> bool {
+        self.social.enabled() && self.active_social_token().is_some()
     }
 
     /// Bounds of the active screen's Launch button (card-local). Returns
@@ -471,6 +509,40 @@ impl App {
                 inst.name
             );
             return false;
+        }
+        // A signed-in account launches with a live Minecraft token or not
+        // at all: refresh first when it is missing or near expiry, and
+        // fail visibly when none can be had. Only a launcher with no
+        // account launches offline.
+        match self.auth.launch_auth() {
+            auth::LaunchAuth::Ready | auth::LaunchAuth::Offline => {}
+            auth::LaunchAuth::NeedsRefresh => {
+                let Some(uuid) = self.auth.active().map(|a| a.uuid.clone()) else {
+                    return false;
+                };
+                self.launching.enter_real(time, inst_name, inst_meta);
+                self.launching.push_real_line(
+                    screens::RealSeverity::Info,
+                    "[ewo] refreshing your Microsoft session…".into(),
+                    time,
+                );
+                self.pending_auth = Some(PendingAuthLaunch {
+                    idx,
+                    inst_name: inst_name.to_string(),
+                    inst_meta: inst_meta.to_string(),
+                    uuid,
+                    refresh_started: false,
+                    // The line above already says this; don't repeat it.
+                    last_stage: auth::chain::ChainStage::RefreshingMicrosoft.label(),
+                });
+                self.poll_auth_launch(time);
+                return true;
+            }
+            auth::LaunchAuth::Unavailable(msg) => {
+                self.launching.enter_real(time, inst_name, inst_meta);
+                self.fail_launch_visibly(msg, time);
+                return true;
+            }
         }
         // E6: refresh the in-game MODS view's snapshot of the bundled mods.
         overlay_mods::write_catalog(&inst);
@@ -587,6 +659,131 @@ impl App {
         }
     }
 
+    /// After a bundled JRE landed: once the background JRE re-scan reports
+    /// back, retry the launch that was waiting for that Java major.
+    /// Called once per frame.
+    fn poll_jre_rescan(&mut self, time: f32) {
+        let major = match self.jre_rescan_rx.as_ref().map(|rx| rx.try_recv()) {
+            None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Ok(major)) => Some(major),
+            // The rescan thread couldn't start; the cache was invalidated
+            // instead, so the retry below rescans lazily.
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => None,
+        };
+        self.jre_rescan_rx = None;
+        let Some(p) = self.pending_relaunch.clone() else {
+            return;
+        };
+        if major.is_some_and(|m| m != p.waiting_for_major) {
+            return;
+        }
+        self.pending_relaunch = None;
+        let ok = self.try_real_launch(
+            p.instance_idx,
+            &p.instance_name,
+            &p.instance_meta,
+            time,
+            PrepareFail::Error("retry failed after JRE install"),
+        );
+        if !ok {
+            self.fail_launch_visibly("retry failed after JRE install", time);
+        }
+    }
+
+    /// End a real launch with an error line and the error exit, whatever
+    /// the launch's `PrepareFail` mode: an auth failure must never be
+    /// papered over by the synthetic animation.
+    fn fail_launch_visibly(&mut self, msg: &str, time: f32) {
+        log::warn!("launch: {}", msg);
+        self.launching.push_real_line(
+            screens::RealSeverity::Warn,
+            format!("[ewo] {}", msg),
+            time,
+        );
+        self.launching.set_real_exit(Some(127), time);
+    }
+
+    /// Drive a launch waiting on a Minecraft-token refresh (see
+    /// [`PendingAuthLaunch`]). Called once per frame; the refresh itself
+    /// runs on the auth service's worker thread.
+    fn poll_auth_launch(&mut self, time: f32) {
+        let Some(pending) = self.pending_auth.as_ref() else {
+            return;
+        };
+        let refresh_started = pending.refresh_started;
+        let same_account =
+            self.auth.active().map(|a| a.uuid.as_str()) == Some(pending.uuid.as_str());
+        if !same_account {
+            self.pending_auth = None;
+            self.fail_launch_visibly("the active account changed; launch again", time);
+            return;
+        }
+        // Any chain still running (ours, or an earlier one) — wait for it,
+        // mirroring its stage labels into the launch log.
+        if self.auth.is_busy() {
+            if let AuthOp::Working(stage) = self.auth.op() {
+                let stage: &'static str = stage;
+                let changed = self
+                    .pending_auth
+                    .as_mut()
+                    .is_some_and(|p| std::mem::replace(&mut p.last_stage, stage) != stage);
+                if changed {
+                    self.launching.push_real_line(
+                        screens::RealSeverity::Info,
+                        format!("[ewo] {}", stage),
+                        time,
+                    );
+                }
+            }
+            return;
+        }
+        match self.auth.launch_auth() {
+            auth::LaunchAuth::Ready | auth::LaunchAuth::Offline => {
+                let Some(p) = self.pending_auth.take() else {
+                    return;
+                };
+                log::info!("launch: Microsoft session ready, continuing");
+                // Re-enter the launch; the gate now passes. A failure
+                // past this point is a real launch failure, shown as one.
+                if !self.try_real_launch(
+                    p.idx,
+                    &p.inst_name,
+                    &p.inst_meta,
+                    time,
+                    PrepareFail::Error("launch failed"),
+                ) {
+                    self.fail_launch_visibly("could not start the game — see log", time);
+                }
+            }
+            auth::LaunchAuth::NeedsRefresh if !refresh_started => {
+                if let Some(p) = self.pending_auth.as_mut() {
+                    p.refresh_started = true;
+                }
+                if !self.auth.start_launch_refresh() {
+                    self.pending_auth = None;
+                    self.fail_launch_visibly("could not refresh your Microsoft session", time);
+                }
+            }
+            auth::LaunchAuth::NeedsRefresh => {
+                // Our refresh ran and the token is still unusable.
+                self.pending_auth = None;
+                let why = match self.auth.op() {
+                    AuthOp::Failed(e) => format!("{:?}", e),
+                    _ => "no token returned".to_string(),
+                };
+                log::warn!("launch: Microsoft session refresh failed: {}", why);
+                self.fail_launch_visibly(
+                    "could not refresh your Microsoft session; check your connection or sign in again in Settings → Account",
+                    time,
+                );
+            }
+            auth::LaunchAuth::Unavailable(msg) => {
+                self.pending_auth = None;
+                self.fail_launch_visibly(msg, time);
+            }
+        }
+    }
+
     fn fail_launch(&mut self, pending: &PendingPrepare, msg: &str, time: f32) {
         // A missing/unreadable EwoLoader manifest is always a visible launch
         // error, never the synthetic animation or a vanilla launch.
@@ -674,6 +871,7 @@ impl App {
                     ),
                     time,
                 );
+                self.runtime_log_bucket = 0;
                 self.runtime.start_fetch(required_major);
                 self.pending_relaunch = Some(PendingRelaunch {
                     instance_idx: pending.idx,
@@ -684,12 +882,15 @@ impl App {
                 return true;
             }
         };
-        // Use the signed-in Microsoft account's profile when available;
-        // fall back to offline mode (placeholder UUID + token) otherwise.
+        // Use the signed-in Microsoft account's profile; offline mode
+        // (placeholder UUID + token) only when no account is signed in.
         // Online mode unlocks multiplayer + skin sync; offline mode is
-        // singleplayer/LAN only.
-        let profile = match self.auth.active() {
-            Some(account) if !account.minecraft_token.is_empty() => {
+        // singleplayer/LAN only. `try_real_launch` already refreshed a
+        // stale token, so anything but Ready/Offline here means the token
+        // went stale during preparation (or a JRE download): fail visibly
+        // rather than launch a signed-in user offline.
+        let profile = match (self.auth.launch_auth(), self.auth.active()) {
+            (auth::LaunchAuth::Ready, Some(account)) => {
                 log::info!(
                     "launch: using signed-in profile {} (token live)",
                     account.name
@@ -701,9 +902,18 @@ impl App {
                     user_type: "msa".to_string(),
                 }
             }
-            _ => {
-                log::info!("launch: offline profile (no live MS token)");
+            (auth::LaunchAuth::Offline, _) => {
+                log::info!("launch: offline profile (no account signed in)");
                 launch::LaunchProfile::offline(&inst.name)
+            }
+            (decision, _) => {
+                let msg = match decision {
+                    auth::LaunchAuth::Unavailable(m) => m,
+                    _ => "your Microsoft session expired while the game was being prepared; launch again",
+                };
+                log::warn!("launch: no usable Minecraft token ({decision:?})");
+                self.fail_launch_visibly(msg, time);
+                return true;
             }
         };
         let mut plan = match launch::build(&pv, &inst.id, inst.ram, &profile, jvm_path) {
@@ -770,7 +980,10 @@ impl App {
         use launch_slot::{decide, SlotDecision, SlotInput};
         // Gather the input — the only place OS process state is read.
         let tracked = self.active_launch;
-        let input = if self.pending_prepare.is_some() || self.pending_relaunch.is_some() {
+        let input = if self.pending_prepare.is_some()
+            || self.pending_relaunch.is_some()
+            || self.pending_auth.is_some()
+        {
             SlotInput::Preparing
         } else if self.launch_rx.is_none() {
             SlotInput::NeverLaunched

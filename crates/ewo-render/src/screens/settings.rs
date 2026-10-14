@@ -101,25 +101,27 @@ pub enum AccountOpView<'a> {
     Failed { message: &'a str },
 }
 
-/// Whether the **active** account's MC UUID is linked to a ChickenedIn
-/// Discord account (Phase H1). Renders as a single status line between
-/// the account rows and the "Add account" button. The launcher's
-/// `crate::social::LinkStatus` flattens into this — the renderer doesn't
-/// need to know about probe-failure detail strings or threading state.
+/// Whether the **active** account's launcher is linked to Frogsy (Phase
+/// H2). Renders as a single status line between the account rows and the
+/// "Add account" button. The launcher derives it from the account's
+/// `social_token` alone (there is no link probe any more); `Probing`,
+/// `NotLinked` and `Failed` are kept for the renderer but the launcher no
+/// longer produces them.
 #[derive(Copy, Clone, Debug)]
 pub enum LinkStatusView {
-    /// Hide the link line entirely. Use when there's no active account.
+    /// Hide the link line entirely: no active account, or social isn't
+    /// configured.
     Hidden,
     /// Probe in flight (or about to be); show "Checking…".
     Probing,
-    /// MC linked + launcher linked. The "all set" state.
+    /// Launcher linked (a `social_token` is stored). The "all set" state.
     Linked,
-    /// MC linked, launcher NOT linked. The line is clickable — click
-    /// opens the launcher-link modal to redeem an in-game code.
+    /// Launcher NOT linked. The line is clickable — click opens the
+    /// launcher-link modal to redeem an in-game code.
     LinkedNeedsLauncherLink,
-    /// Not linked — show "ChickenedIn · Not linked" + a hint.
+    /// Not linked — show "Frogsy · Not linked" + a hint.
     NotLinked,
-    /// Probe failed — show "ChickenedIn · Could not check".
+    /// Probe failed — show "Frogsy · Could not check".
     Failed,
 }
 
@@ -129,7 +131,7 @@ pub enum LinkStatusView {
 pub struct AccountView<'a> {
     pub accounts: &'a [AccountRowView<'a>],
     pub op: AccountOpView<'a>,
-    /// Phase H1: linked-on-ChickenedIn status for the **active** account.
+    /// Phase H1: linked-on-Frogsy status for the **active** account.
     /// `Hidden` when no account is active, when the probe hasn't fired
     /// yet, or when the user shouldn't be bothered with the status.
     pub link_status: LinkStatusView,
@@ -1123,7 +1125,7 @@ pub struct AccountRowLayout {
 }
 
 /// Card-local layout of the whole Account tab — the body-copy anchor, the
-/// per-account rows, the optional ChickenedIn link-status line, and the
+/// per-account rows, the optional Frogsy link-status line, and the
 /// "Add account" button. `draw_account_tab` and the `main.rs` hit-testers
 /// both build this so visuals + input agree.
 pub struct AccountTabLayout {
@@ -1131,7 +1133,7 @@ pub struct AccountTabLayout {
     pub content_right: f32,
     pub header_top: f32,
     pub rows: Vec<AccountRowLayout>,
-    /// Y baseline for the ChickenedIn link-status line, or `None` when
+    /// Y baseline for the Frogsy link-status line, or `None` when
     /// the status is `Hidden` (no active account / suppressed).
     pub link_line_top: Option<f32>,
     /// Hit-test rect for the link line — only `Some` when the line is
@@ -1141,7 +1143,7 @@ pub struct AccountTabLayout {
     pub add_button: Rect,
 }
 
-/// Vertical block reserved for the ChickenedIn link-status line:
+/// Vertical block reserved for the Frogsy link-status line:
 /// top-gap (12) + one newsreader-13 line (~17) + bottom-gap (12).
 const LINK_LINE_BLOCK: f32 = 41.0;
 
@@ -1242,18 +1244,18 @@ fn draw_account_tab(
         draw_account_row(canvas, fonts, rl, row, hovered, remove_hovered);
     }
 
-    // ChickenedIn link-status line (Phase H1).
+    // Frogsy link-status line (Phase H1/H2).
     if let Some(link_top) = layout.link_line_top {
         let line_font = fonts.newsreader(13.0);
         let (_, lm) = line_font.metrics();
         let baseline = link_top + (-lm.ascent);
-        // Eyebrow label "CHICKENEDIN" in mono-tracked caps, then the
+        // Eyebrow label "FROGSY" in mono-tracked caps, then the
         // status text in newsreader.
         let eyebrow_font = fonts.jetbrains_mono(10.0);
         let mut eyebrow_paint = Paint::default();
         eyebrow_paint.set_anti_alias(true);
         eyebrow_paint.set_color(Color::from_argb(0xFF, 0x9A, 0x80, 0x87)); // mauve
-        let eyebrow = "CHICKENEDIN";
+        let eyebrow = "FROGSY";
         canvas.draw_str(
             eyebrow,
             (layout.content_left, baseline - 1.0),
@@ -1269,15 +1271,15 @@ fn draw_account_tab(
                 Color::from_argb(0xFF, 0x9A, 0x80, 0x87), // mauve
             ),
             LinkStatusView::Linked => (
-                "linked to Discord · launcher linked".to_string(),
+                "launcher linked".to_string(),
                 Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA), // pearl
             ),
             LinkStatusView::LinkedNeedsLauncherLink => (
-                "linked to Discord — click to link launcher".to_string(),
+                "not linked — click to link the launcher".to_string(),
                 Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5), // rose (clickable affordance)
             ),
             LinkStatusView::NotLinked => (
-                "not linked — run /link on chickenedin to enable social"
+                "not linked — run /link on Frogsy to enable social"
                     .to_string(),
                 Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5), // mid-pearl
             ),

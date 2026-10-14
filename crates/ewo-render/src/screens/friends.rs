@@ -1,4 +1,4 @@
-//! Phase H5 — Friends screen. Lists the active account's chickenedin
+//! Phase H5 — Friends screen. Lists the active account's Frogsy
 //! friends + pending requests, lets the user add/accept/decline/remove.
 //!
 //! State + HTTP live launcher-side in `social/`; this module is a
@@ -43,6 +43,10 @@ const BODY_PAD_X: f32 = 60.0;
 /// lifetime.
 #[derive(Copy, Clone, Debug)]
 pub enum FriendsViewState<'a> {
+    /// No social API is configured (`EWO_BOT_API_BASE` unset or
+    /// invalid), so the launcher makes no social calls. Show a neutral
+    /// notice with nothing to click.
+    Disabled,
     /// Active account has no launcher social_token. Show a "link your
     /// launcher" affordance + a button that opens the launcher-link
     /// modal (handled by main.rs in handle_friends_press).
@@ -65,7 +69,7 @@ pub struct FriendRowView {
     /// "Player <last-8-of-uuid>" otherwise).
     pub display_name: String,
     /// Short presence text — "in launcher · main_menu", "in-game ·
-    /// play.chickenedin.com", or "offline".
+    /// play.example.net", or "offline".
     pub presence: String,
     /// Whether `presence` is "online" enough to render the lit dot.
     pub online: bool,
@@ -302,7 +306,8 @@ pub fn draw_friends(
     let sub_baseline = layout.header_top + (-hm.ascent) + hm.descent + 8.0 + (-sm.ascent);
     canvas.draw_str(
         match view {
-            FriendsViewState::NotLinked => "link the launcher to chickenedin to see who's online.",
+            FriendsViewState::Disabled => "social features are off in this launcher.",
+            FriendsViewState::NotLinked => "link the launcher to Frogsy to see who's online.",
             FriendsViewState::Loading => "fetching your friend list…",
             FriendsViewState::Failed(_) => "couldn't reach the bot.",
             FriendsViewState::Loaded { .. } => "who's around right now.",
@@ -313,6 +318,16 @@ pub fn draw_friends(
     );
 
     match view {
+        FriendsViewState::Disabled => {
+            draw_centered_message(
+                canvas,
+                fonts,
+                card_w,
+                card_h,
+                "no social server is configured.",
+                TEXT_MAUVE,
+            );
+        }
         FriendsViewState::NotLinked => {
             draw_not_linked(canvas, fonts, &layout, prefs);
         }

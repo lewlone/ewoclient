@@ -311,6 +311,7 @@ mod tests {
             name: name.to_string(),
             uuid: uuid.to_string(),
             minecraft_token: String::new(),
+            minecraft_token_expires_at: None,
             ms_refresh_token: format!("refresh-{uuid}"),
             social_token: None,
         }
