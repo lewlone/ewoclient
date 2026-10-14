@@ -321,6 +321,13 @@ pub(super) fn pump_meshing(
     for (cx, cz) in session.take_removed() {
         world_renderer.remove_column(gpu, cx, cz);
     }
+    // Columns that did not fit the arena go back in once space frees; columns
+    // whose upload batch failed to submit are re-meshed.
+    world_renderer.retry_deferred_columns(gpu)?;
+    let lost = world_renderer.take_lost_columns();
+    if !lost.is_empty() {
+        session.requeue_dirty(lost);
+    }
 
     // Drain finished jobs — uploads are metered, removals are free.
     let mut uploaded = 0;

@@ -20,7 +20,7 @@
 //! stalls (removing M4's per-frame `wait_idle`). The dedicated async
 //! transfer queue + staging ring is the M5 follow-on.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
@@ -474,6 +474,91 @@ impl FreeList {
     }
 }
 
+/// Element counts of a column's four arena regions: opaque vertices, opaque
+/// indices, translucent vertices, translucent indices.
+type RegionCounts = [u64; 4];
+
+/// Allocate a column's four regions from the shared vertex / index
+/// free-lists, all or nothing: a partial success is rolled back before
+/// returning `None`, so a full arena never leaks the regions that did fit.
+fn alloc_regions(vfree: &mut FreeList, ifree: &mut FreeList, n: RegionCounts) -> Option<[u64; 4]> {
+    let v = vfree.alloc(n[0])?;
+    let Some(i) = ifree.alloc(n[1]) else {
+        vfree.free_region(v, n[0]);
+        return None;
+    };
+    let Some(tv) = vfree.alloc(n[2]) else {
+        vfree.free_region(v, n[0]);
+        ifree.free_region(i, n[1]);
+        return None;
+    };
+    let Some(ti) = ifree.alloc(n[3]) else {
+        vfree.free_region(v, n[0]);
+        ifree.free_region(i, n[1]);
+        vfree.free_region(tv, n[2]);
+        return None;
+    };
+    Some([v, i, tv, ti])
+}
+
+/// Return regions from [`alloc_regions`] that no command ever referenced.
+fn free_regions(vfree: &mut FreeList, ifree: &mut FreeList, off: [u64; 4], n: RegionCounts) {
+    vfree.free_region(off[0], n[0]);
+    ifree.free_region(off[1], n[1]);
+    vfree.free_region(off[2], n[2]);
+    ifree.free_region(off[3], n[3]);
+}
+
+/// Squared XZ distance from `eye` to a column's centre.
+fn column_dist2((cx, cz): (i32, i32), eye: [f32; 3]) -> f64 {
+    let dx = (cx as f64 * 16.0 + 8.0) - eye[0] as f64;
+    let dz = (cz as f64 * 16.0 + 8.0) - eye[2] as f64;
+    dx * dx + dz * dz
+}
+
+/// Order column keys nearest to `eye` first, ties by coordinate.
+fn sort_nearest_first(keys: &mut [(i32, i32)], eye: [f32; 3]) {
+    keys.sort_by(|a, b| {
+        column_dist2(*a, eye)
+            .total_cmp(&column_dist2(*b, eye))
+            .then(a.cmp(b))
+    });
+}
+
+/// The column metadata the cull shader sees, at most `max` of them. Under the
+/// cap the order is whatever `columns` yields (unchanged behaviour). Over it,
+/// the kept set is **the nearest `max` columns to `eye`** (XZ distance to the
+/// column centre, ties by coordinate), so which columns vanish is a property
+/// of where the camera is, not of `HashMap` iteration order.
+fn select_metas(
+    columns: impl Iterator<Item = ((i32, i32), ColumnMeta)>,
+    eye: [f32; 3],
+    max: usize,
+) -> Vec<ColumnMeta> {
+    let mut all: Vec<((i32, i32), ColumnMeta)> = columns.collect();
+    if all.len() > max {
+        all.sort_by(|a, b| {
+            column_dist2(a.0, eye)
+                .total_cmp(&column_dist2(b.0, eye))
+                .then(a.0.cmp(&b.0))
+        });
+        all.truncate(max);
+    }
+    all.into_iter().map(|(_, m)| m).collect()
+}
+
+/// A column whose geometry did not fit the mega-buffers, held (owned) until
+/// arena space frees, then re-uploaded by
+/// [`WorldRenderer::retry_deferred_columns`].
+struct DeferredColumn {
+    vertex_bytes: Vec<u8>,
+    indices: Vec<u32>,
+    tvertex_bytes: Vec<u8>,
+    tindices: Vec<u32>,
+    y_min: f32,
+    y_max: f32,
+}
+
 pub struct WorldRenderer {
     // -- graphics --
     tex_set_layout: vk::DescriptorSetLayout,
@@ -534,6 +619,19 @@ pub struct WorldRenderer {
     /// in-flight frame was drawing.
     pending_free: Vec<(u64, [(u64, u64); 2], [(u64, u64); 2])>,
     meta_warned: bool,
+    /// Columns that did not fit the arena, re-uploaded when space frees
+    /// (rather than silently never drawn). Keyed by coordinate, so a newer
+    /// mesh of the same column replaces the waiting one.
+    deferred: BTreeMap<(i32, i32), DeferredColumn>,
+    /// Arena ranges were released since the last retry of `deferred`.
+    space_freed: bool,
+    /// Columns registered whose copies are in the open, unsubmitted upload
+    /// batch. If that batch fails to submit, their arena data was never
+    /// written, so they are unregistered and reported via `lost_columns`.
+    batch_columns: Vec<(i32, i32)>,
+    /// Columns unregistered by a failed upload submit; the caller re-meshes
+    /// them ([`WorldRenderer::take_lost_columns`]).
+    lost_columns: Vec<(i32, i32)>,
     // -- compute cull --
     cull_set_layout: vk::DescriptorSetLayout,
     cull_layout: vk::PipelineLayout,
@@ -1215,6 +1313,10 @@ impl WorldRenderer {
                 column_count: 0,
                 pending_free: Vec::new(),
                 meta_warned: false,
+                deferred: BTreeMap::new(),
+                space_freed: false,
+                batch_columns: Vec::new(),
+                lost_columns: Vec::new(),
                 cull_set_layout,
                 cull_layout,
                 cull_pipeline,
@@ -2862,25 +2964,102 @@ impl WorldRenderer {
                 &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&vis)),
             );
         }
-        self.submit_slot(gpu, slot)
+        let submitted = self.submit_slot(gpu, slot);
+        let staged = std::mem::take(&mut self.batch_columns);
+        if submitted.is_err() {
+            // The batch never reached the queue, so every column registered
+            // with copies in it points at arena data that was never written.
+            // Unregister them (no submitted frame has drawn them: metadata is
+            // synced only after this flush) and hand them back for re-mesh.
+            for key in staged {
+                if self.columns.contains_key(&key) {
+                    self.unregister_column(gpu, key);
+                    self.lost_columns.push(key);
+                }
+            }
+        }
+        submitted
+    }
+
+    /// Columns whose upload batch failed to submit since the last call. They
+    /// are no longer drawn; the caller should mark them dirty to re-mesh.
+    pub fn take_lost_columns(&mut self) -> Vec<(i32, i32)> {
+        std::mem::take(&mut self.lost_columns)
+    }
+
+    /// Columns waiting for arena space (see [`Self::retry_deferred_columns`]).
+    pub fn deferred_column_count(&self) -> usize {
+        self.deferred.len()
+    }
+
+    /// Re-upload columns that did not fit the mega-buffers, nearest to the
+    /// camera first, once arena space has been released since the last try.
+    /// Call once per frame; cheap when nothing waits. Returns how many landed.
+    pub fn retry_deferred_columns(&mut self, gpu: &mut Gpu) -> Result<usize, String> {
+        self.reclaim_ranges(gpu);
+        if self.deferred.is_empty() || !self.space_freed {
+            return Ok(0);
+        }
+        self.space_freed = false;
+        let mut keys: Vec<(i32, i32)> = self.deferred.keys().copied().collect();
+        sort_nearest_first(&mut keys, self.camera_eye);
+        let mut landed = 0;
+        for key in keys {
+            let Some(d) = self.deferred.remove(&key) else {
+                continue;
+            };
+            let placed = self.place_column(
+                gpu,
+                key.0,
+                key.1,
+                &d.vertex_bytes,
+                &d.indices,
+                &d.tvertex_bytes,
+                &d.tindices,
+                d.y_min,
+                d.y_max,
+            );
+            match placed {
+                Ok(true) => landed += 1,
+                // Still no room for this one; a smaller one may fit.
+                Ok(false) => {
+                    self.deferred.insert(key, d);
+                }
+                Err(e) => {
+                    self.deferred.insert(key, d);
+                    return Err(e);
+                }
+            }
+        }
+        if landed > 0 {
+            log::info!(
+                "world: {landed} deferred column(s) uploaded, {} still waiting",
+                self.deferred.len()
+            );
+        }
+        Ok(landed)
     }
 
     /// Release arena ranges whose last possible reader has retired.
     fn reclaim_ranges(&mut self, gpu: &Gpu) {
         let done = gpu.frames_retired();
         let (vfree, ifree) = (&mut self.vfree, &mut self.ifree);
+        let mut freed = false;
         self.pending_free.retain(|(tag, vr, ir)| {
             if *tag > done {
                 return true;
             }
             for &(o, n) in vr {
                 vfree.free_region(o, n);
+                freed |= n > 0;
             }
             for &(o, n) in ir {
                 ifree.free_region(o, n);
+                freed |= n > 0;
             }
             false
         });
+        self.space_freed |= freed;
     }
 
     /// Suballocate + upload a column's geometry into the mega-buffers via
@@ -2903,38 +3082,71 @@ impl WorldRenderer {
         self.remove_column(gpu, cx, cz);
         self.reclaim_ranges(gpu);
         gpu.collect_garbage();
+        let placed = self.place_column(
+            gpu,
+            cx,
+            cz,
+            vertex_bytes,
+            indices,
+            tvertex_bytes,
+            tindices,
+            y_min,
+            y_max,
+        )?;
+        if !placed {
+            // Keep it rather than drop it: it is re-uploaded by
+            // `retry_deferred_columns` once removals free arena space.
+            if self.deferred.is_empty() {
+                log::warn!(
+                    "world: mega-buffer full — deferring column ({cx},{cz}) until space frees"
+                );
+            }
+            self.deferred.insert(
+                (cx, cz),
+                DeferredColumn {
+                    vertex_bytes: vertex_bytes.to_vec(),
+                    indices: indices.to_vec(),
+                    tvertex_bytes: tvertex_bytes.to_vec(),
+                    tindices: tindices.to_vec(),
+                    y_min,
+                    y_max,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Allocate arena space for a column (assumed not registered), stage its
+    /// copies into the open upload batch, and register it. `Ok(false)` is "the
+    /// arena is full" with nothing changed; an `Err` rolls back the
+    /// allocation, so neither path leaks arena space.
+    #[allow(clippy::too_many_arguments)]
+    fn place_column(
+        &mut self,
+        gpu: &mut Gpu,
+        cx: i32,
+        cz: i32,
+        vertex_bytes: &[u8],
+        indices: &[u32],
+        tvertex_bytes: &[u8],
+        tindices: &[u32],
+        y_min: f32,
+        y_max: f32,
+    ) -> Result<bool, String> {
         let vtx_count = (vertex_bytes.len() as u64) / VERTEX_STRIDE;
         let idx_count = indices.len() as u64;
         let tvtx_count = (tvertex_bytes.len() as u64) / VERTEX_STRIDE;
         let tidx_count = tindices.len() as u64;
         if idx_count == 0 && tidx_count == 0 {
-            return Ok(());
+            return Ok(true);
         }
         // Four regions from the two shared free-lists (zero-length allocs
-        // are free). Roll back everything on any failure.
-        let allocs = (|| {
-            let v = self.vfree.alloc(vtx_count)?;
-            let Some(i) = self.ifree.alloc(idx_count) else {
-                self.vfree.free_region(v, vtx_count);
-                return None;
-            };
-            let Some(tv) = self.vfree.alloc(tvtx_count) else {
-                self.vfree.free_region(v, vtx_count);
-                self.ifree.free_region(i, idx_count);
-                return None;
-            };
-            let Some(ti) = self.ifree.alloc(tidx_count) else {
-                self.vfree.free_region(v, vtx_count);
-                self.ifree.free_region(i, idx_count);
-                self.vfree.free_region(tv, tvtx_count);
-                return None;
-            };
-            Some((v, i, tv, ti))
-        })();
-        let Some((vtx_off, idx_off, tvtx_off, tidx_off)) = allocs else {
-            log::warn!("world: mega-buffer full — dropping column ({cx},{cz})");
-            return Ok(());
+        // are free), all or nothing.
+        let counts = [vtx_count, idx_count, tvtx_count, tidx_count];
+        let Some(offs) = alloc_regions(&mut self.vfree, &mut self.ifree, counts) else {
+            return Ok(false);
         };
+        let [vtx_off, idx_off, tvtx_off, tidx_off] = offs;
 
         // Stage all four spans contiguously, copy each non-empty one.
         let index_bytes: &[u8] = bytemuck::cast_slice(indices);
@@ -2945,32 +3157,12 @@ impl WorldRenderer {
             (tvertex_bytes, self.vbuf, tvtx_off * VERTEX_STRIDE),
             (tindex_bytes, self.ibuf, tidx_off * 4),
         ];
-        let total: usize = spans.iter().map(|(b, _, _)| b.len()).sum();
-        let (slot, base, cb) = self.stage(gpu, total as u64)?;
-        unsafe {
-            let alloc = self.upload_slots[slot].staging_alloc.as_mut().unwrap();
-            let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
-            let mut off = base as usize;
-            for (bytes, _, _) in &spans {
-                slice[off..off + bytes.len()].copy_from_slice(bytes);
-                off += bytes.len();
-            }
-            let staging = self.upload_slots[slot].staging;
-            let mut src = base;
-            for (bytes, dst_buf, dst_off) in &spans {
-                if !bytes.is_empty() {
-                    gpu.device.cmd_copy_buffer(
-                        cb,
-                        staging,
-                        *dst_buf,
-                        &[vk::BufferCopy::default()
-                            .src_offset(src)
-                            .dst_offset(*dst_off)
-                            .size(bytes.len() as u64)],
-                    );
-                }
-                src += bytes.len() as u64;
-            }
+        if let Err(e) = self.record_copies(gpu, &spans) {
+            // No copy for these regions was recorded, so nothing can read
+            // them: return them now rather than leak them.
+            free_regions(&mut self.vfree, &mut self.ifree, offs, counts);
+            self.space_freed = true;
+            return Err(e);
         }
 
         let meta = ColumnMeta {
@@ -2995,12 +3187,63 @@ impl WorldRenderer {
                 meta,
             },
         );
+        self.batch_columns.push((cx, cz));
         self.meta_dirty = true;
+        Ok(true)
+    }
+
+    /// Stage `spans` (bytes, destination buffer, destination byte offset)
+    /// contiguously into the open upload batch and record one copy per
+    /// non-empty span.
+    fn record_copies(
+        &mut self,
+        gpu: &mut Gpu,
+        spans: &[(&[u8], vk::Buffer, u64); 4],
+    ) -> Result<(), String> {
+        let total: usize = spans.iter().map(|(b, _, _)| b.len()).sum();
+        let (slot, base, cb) = self.stage(gpu, total as u64)?;
+        unsafe {
+            let alloc = self.upload_slots[slot]
+                .staging_alloc
+                .as_mut()
+                .ok_or("staging not allocated")?;
+            let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
+            let mut off = base as usize;
+            for (bytes, _, _) in spans {
+                slice[off..off + bytes.len()].copy_from_slice(bytes);
+                off += bytes.len();
+            }
+            let staging = self.upload_slots[slot].staging;
+            let mut src = base;
+            for (bytes, dst_buf, dst_off) in spans {
+                if !bytes.is_empty() {
+                    gpu.device.cmd_copy_buffer(
+                        cb,
+                        staging,
+                        *dst_buf,
+                        &[vk::BufferCopy::default()
+                            .src_offset(src)
+                            .dst_offset(*dst_off)
+                            .size(bytes.len() as u64)],
+                    );
+                }
+                src += bytes.len() as u64;
+            }
+        }
         Ok(())
     }
 
     pub fn remove_column(&mut self, gpu: &mut Gpu, cx: i32, cz: i32) {
-        if let Some(slot) = self.columns.remove(&(cx, cz)) {
+        // A column waiting for arena space is superseded too: the caller is
+        // either forgetting it or about to upload a newer mesh.
+        self.deferred.remove(&(cx, cz));
+        self.unregister_column(gpu, (cx, cz));
+    }
+
+    /// Drop a registered column, parking its arena ranges until every frame
+    /// that could still draw them has retired.
+    fn unregister_column(&mut self, gpu: &Gpu, key: (i32, i32)) {
+        if let Some(slot) = self.columns.remove(&key) {
             // Frames already submitted (and the one being built) may still
             // draw these ranges; park them until those frames retire.
             let tag = gpu.frame_serial() + 1;
@@ -3017,15 +3260,18 @@ impl WorldRenderer {
     /// map-write it into the host-visible SSBO.
     fn sync_meta(&mut self, slot: usize) {
         if self.meta_dirty {
-            self.metas = self.columns.values().map(|s| s.meta).collect();
-            if self.metas.len() > MAX_COLUMNS && !self.meta_warned {
+            if self.columns.len() > MAX_COLUMNS && !self.meta_warned {
                 self.meta_warned = true;
                 log::warn!(
-                    "world: {} columns exceed MAX_COLUMNS {MAX_COLUMNS} — the rest are not drawn",
-                    self.metas.len()
+                    "world: {} columns exceed MAX_COLUMNS {MAX_COLUMNS} — the farthest are not drawn",
+                    self.columns.len()
                 );
             }
-            self.metas.truncate(MAX_COLUMNS);
+            self.metas = select_metas(
+                self.columns.iter().map(|(k, s)| (*k, s.meta)),
+                self.camera_eye,
+                MAX_COLUMNS,
+            );
             self.column_count = self.metas.len() as u32;
             self.meta_version += 1;
             self.meta_dirty = false;
@@ -4884,6 +5130,68 @@ fn clear_depth_rect(gpu: &Gpu, cb: vk::CommandBuffer, rect: vk::Rect2D) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failure on any of the four regions returns every region that did
+    /// fit: the free-lists after a refused column are exactly what they were
+    /// before it.
+    #[test]
+    fn alloc_regions_is_all_or_nothing() {
+        for fail_at in 0..4 {
+            let mut vfree = FreeList::new(100);
+            let mut ifree = FreeList::new(100);
+            let mut n: RegionCounts = [10, 20, 30, 40];
+            n[fail_at] = 101; // only this region cannot fit
+            assert_eq!(alloc_regions(&mut vfree, &mut ifree, n), None);
+            assert_eq!(vfree.free, vec![(0, 100)], "fail at {fail_at}");
+            assert_eq!(ifree.free, vec![(0, 100)], "fail at {fail_at}");
+        }
+        let mut vfree = FreeList::new(100);
+        let mut ifree = FreeList::new(100);
+        let n = [10, 20, 30, 40];
+        let offs = alloc_regions(&mut vfree, &mut ifree, n).expect("fits");
+        assert_eq!(offs, [0, 0, 10, 20]);
+        free_regions(&mut vfree, &mut ifree, offs, n);
+        assert_eq!((vfree.free, ifree.free), (vec![(0, 100)], vec![(0, 100)]));
+    }
+
+    fn meta_at(cx: i32, cz: i32) -> ((i32, i32), ColumnMeta) {
+        let m = ColumnMeta {
+            aabb_min: [cx as f32 * 16.0, 0.0, cz as f32 * 16.0, 0.0],
+            ..Default::default()
+        };
+        ((cx, cz), m)
+    }
+
+    /// Over the cap, the kept columns are the nearest to the eye whatever
+    /// order the map yields them in; under it, nothing is dropped or moved.
+    #[test]
+    fn select_metas_truncates_nearest_first_and_deterministically() {
+        let keys: Vec<(i32, i32)> = (-4..=4)
+            .flat_map(|x| (-4..=4).map(move |z| (x, z)))
+            .collect();
+        let eye = [8.0, 70.0, 8.0]; // centre of column (0, 0)
+        let kept = |order: &[(i32, i32)]| -> Vec<[f32; 4]> {
+            select_metas(order.iter().map(|&(x, z)| meta_at(x, z)), eye, 5)
+                .iter()
+                .map(|m| m.aabb_min)
+                .collect()
+        };
+        let forward = kept(&keys);
+        let mut reversed = keys.clone();
+        reversed.reverse();
+        assert_eq!(forward, kept(&reversed), "input order must not matter");
+        let expect: Vec<[f32; 4]> = [(0, 0), (-1, 0), (0, -1), (0, 1), (1, 0)]
+            .iter()
+            .map(|&(x, z)| meta_at(x, z).1.aabb_min)
+            .collect();
+        assert_eq!(forward, expect, "the centre plus its four edge neighbours");
+
+        let few = [(3, 3), (-2, 1), (0, 0)];
+        let all = select_metas(few.iter().map(|&(x, z)| meta_at(x, z)), eye, 5);
+        let got: Vec<[f32; 4]> = all.iter().map(|m| m.aabb_min).collect();
+        let want: Vec<[f32; 4]> = few.iter().map(|&(x, z)| meta_at(x, z).1.aabb_min).collect();
+        assert_eq!(got, want, "under the cap the order is untouched");
+    }
 
     // These pin the CPU-side push layout only. The lightmap shader math is NOT
     // re-implemented here (that would be a proxy oracle) — it is a line-for-line
