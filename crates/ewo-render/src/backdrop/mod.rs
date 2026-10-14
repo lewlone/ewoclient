@@ -254,8 +254,12 @@ mod tests {
             let one = y0[i] - y1[i];
             let three = y1[i] - y2[i];
             assert!(one > 0.0);
+            // Motes spawn at y in [h, h + 80) = [640, 720), where one f32 ulp
+            // is ~6.1e-5; each difference carries up to an ulp of rounding,
+            // so `three - 3*one` can be off by ~4 ulp (2.4e-4). A wrong speed
+            // scale would be off by >= 2*one (~0.15), so 1e-3 still decides.
             assert!(
-                (three - 3.0 * one).abs() < 1e-4,
+                (three - 3.0 * one).abs() < 1e-3,
                 "mote {i}: {three} is not 3 x {one}"
             );
         }
