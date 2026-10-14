@@ -161,12 +161,18 @@ pub struct LiveArgs {
     /// them could see is that the windowed client never called into any of it.
     #[arg(long = "render-check", default_value_t = false)]
     render_check: bool,
+    /// The game directory, where `options.txt` is read and saved. Defaults
+    /// to the launcher's `REWO_GAME_DIR` handoff (the instance's folder),
+    /// then the current directory.
+    #[arg(long = "game-dir")]
+    game_dir: Option<PathBuf>,
 }
 
 pub fn run(args: LiveArgs) -> Result<(), String> {
     if args.render_check && !cfg!(feature = "gates") {
         return Err("--render-check needs a build with `--features gates`".into());
     }
+    crate::game_dir::init(args.game_dir.clone());
     // M13 camera-lightmap options — validate BEFORE loading/baking/connecting
     // so a bad value fails fast without any side effects.
     validate_unit("gamma", args.gamma)?;

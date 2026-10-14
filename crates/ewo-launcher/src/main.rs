@@ -611,6 +611,11 @@ impl App {
                 return false;
             };
             let mut envs = vec![("REWO_VERSION".to_string(), version_id.to_string())];
+            // The instance's game folder: rewo's options.txt lives there,
+            // and `spawn_native` makes it the child's working directory.
+            if let Some(dir) = downloads::paths::instance_dir(&inst.id) {
+                envs.push(("REWO_GAME_DIR".into(), dir.display().to_string()));
+            }
             if let Some(account) = self.auth.active() {
                 if !account.minecraft_token.is_empty() {
                     envs.push(("REWO_USERNAME".into(), account.name.clone()));

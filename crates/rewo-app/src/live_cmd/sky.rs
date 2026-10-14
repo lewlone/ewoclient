@@ -163,21 +163,18 @@ pub(super) fn end_flash_render(
     Some((s.intensity(partial), s.x_angle(), s.y_angle()))
 }
 
-/// Resolve one frame's [`EndFlash`] from the session.
-///
-/// The three gates are vanilla's, in vanilla's order: the level must *have* a
-/// flash state at all (only an END skybox does), the option must be off, and
-/// only then is the boss-fog divisor chosen.
 /// Read `options.txt` from the game directory (M157).
 ///
 /// **The GAME directory, not a config dir** (`Options.java:1468`:
 /// `new File(workingDirectory, "options.txt")`), which is what lets Rewo and a
 /// vanilla client share one — and is why saving MERGES rather than rewrites.
+/// The directory is resolved explicitly (`crate::game_dir`), never taken from
+/// the process's current directory, which is the launcher's.
 ///
 /// An absent or unreadable file is the defaults, not an error: vanilla's
 /// `load()` opens with `if (!this.optionsFile.exists()) return;`.
 pub(super) fn options_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("options.txt")
+    crate::game_dir::options_file(crate::game_dir::get())
 }
 
 pub(super) fn load_options() -> rewo_net::options::Options {
@@ -196,12 +193,19 @@ pub(super) fn load_options() -> rewo_net::options::Options {
 /// per click, the sliders on screen exit — vanilla's `OptionsSubScreen.
 /// removed()`).
 pub(super) fn save_options(o: rewo_net::options::Options) {
-    let existing = std::fs::read_to_string(options_path()).unwrap_or_default();
-    if let Err(e) = std::fs::write(options_path(), o.merge_into(&existing)) {
-        log::warn!("options: could not save: {e}");
+    let path = options_path();
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let merged = o.merge_into(&existing);
+    if let Err(e) = crate::game_dir::write_atomic(&path, merged.as_bytes()) {
+        log::warn!("options: could not save {}: {e}", path.display());
     }
 }
 
+/// Resolve one frame's [`EndFlash`] from the session.
+///
+/// The three gates are vanilla's, in vanilla's order: the level must *have* a
+/// flash state at all (only an END skybox does), the option must be off, and
+/// only then is the boss-fog divisor chosen.
 pub(super) fn end_flash_for(
     session: &rewo_net::play::PlaySession,
     partial: f32,

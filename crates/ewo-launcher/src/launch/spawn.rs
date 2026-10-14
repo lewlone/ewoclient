@@ -52,6 +52,16 @@ pub struct NativePlan {
     pub envs: Vec<(String, String)>,
 }
 
+/// The handoff variable naming a native instance's game folder.
+pub const REWO_GAME_DIR: &str = "REWO_GAME_DIR";
+
+/// The working directory for a native child: its `REWO_GAME_DIR`, if set.
+fn native_working_dir(envs: &[(String, String)]) -> Option<std::path::PathBuf> {
+    envs.iter()
+        .find(|(k, v)| k == REWO_GAME_DIR && !v.is_empty())
+        .map(|(_, v)| std::path::PathBuf::from(v))
+}
+
 /// Spawn the child on a worker thread + start the readers. Returns
 /// immediately. Caller should poll the receiver each frame.
 pub fn spawn(plan: LaunchPlan, tx: Sender<LaunchEvent>) -> thread::JoinHandle<()> {
@@ -80,6 +90,18 @@ pub fn spawn_native(plan: NativePlan, tx: Sender<LaunchEvent>) -> thread::JoinHa
             // The REWO_* contract is passed deliberately (after the scrub).
             for (key, value) in &plan.envs {
                 cmd.env(key, value);
+            }
+            // Run in the instance's game folder, as the JVM path does
+            // (`LaunchPlan::working_dir`), not in the launcher's own CWD.
+            // Rewo reads REWO_GAME_DIR itself; this covers anything else
+            // relative it touches.
+            if let Some(dir) = native_working_dir(&plan.envs) {
+                match std::fs::create_dir_all(&dir) {
+                    Ok(()) => {
+                        cmd.current_dir(&dir);
+                    }
+                    Err(e) => log::warn!("launch: game dir {}: {e}", dir.display()),
+                }
             }
             super::no_window(&mut cmd);
             run_child(cmd, tx, &plan.program.display().to_string());
@@ -285,6 +307,22 @@ mod tests {
         assert_eq!(r[2], "-Dfabric.debug.disableModIds=iris");
         assert_eq!(r[3], REDACTED);
         assert_eq!(r[5], "play.example.net");
+    }
+
+    #[test]
+    fn a_native_child_runs_in_its_game_dir() {
+        let envs = vec![
+            ("REWO_VERSION".to_string(), "26.2".to_string()),
+            (REWO_GAME_DIR.to_string(), "C:/inst/abc".to_string()),
+        ];
+        assert_eq!(
+            native_working_dir(&envs),
+            Some(std::path::PathBuf::from("C:/inst/abc"))
+        );
+        // Without the handoff (or with an empty one) the CWD is inherited.
+        assert_eq!(native_working_dir(&envs[..1]), None);
+        let empty = vec![(REWO_GAME_DIR.to_string(), String::new())];
+        assert_eq!(native_working_dir(&empty), None);
     }
 
     #[test]
