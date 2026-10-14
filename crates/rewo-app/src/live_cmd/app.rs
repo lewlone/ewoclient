@@ -571,7 +571,9 @@ impl ApplicationHandler for LiveApp {
                     // screens do not.
                     PhysicalKey::Code(KeyCode::Escape) if p => {
                         if self.screen.inventory_open() {
-                            self.set_screen_open(false);
+                            // `AbstractContainerScreen.onClose` →
+                            // `player.closeContainer()`.
+                            self.close_container_screen();
                         } else if self.session.is_some() {
                             self.open_pause_screen();
                         } else {
@@ -621,8 +623,14 @@ impl ApplicationHandler for LiveApp {
                     }
                     // E opens and closes the inventory (M35).
                     PhysicalKey::Code(KeyCode::KeyE) if p => {
-                        let open = !self.screen.inventory_open();
-                        self.set_screen_open(open);
+                        // The inventory key closes a container screen
+                        // through `onClose()` (`AbstractContainerScreen.java:
+                        // 489-491`) — a user close.
+                        if self.screen.inventory_open() {
+                            self.close_container_screen();
+                        } else {
+                            self.set_screen_open(true);
+                        }
                     }
                     // F3 is a **modifier** whose release toggles the overlay
                     // (M66). `keyDebugModifier` and `keyDebugOverlay` are the
@@ -1200,6 +1208,29 @@ impl LiveApp {
             .unwrap_or(&rewo_world::menu_layout::PLAYER)
     }
 
+    /// A USER-initiated close of the inventory / container screen
+    /// (`AbstractContainerScreen.onClose` → `LocalPlayer.closeContainer()`,
+    /// `LocalPlayer.java:333-341`): sends `container_close` for an open
+    /// container, drops the menu so the next inventory open shows the
+    /// player's own layout, then closes the screen.
+    ///
+    /// **Not for the server's close** (`handleContainerClose`, which is the
+    /// client half alone): that path, in `pump_screens`, calls
+    /// `set_screen_open(false)` and sends nothing.
+    ///
+    /// `container_shown` is reset with the menu: it is a watermark on
+    /// `menus.open()`, and left at `Some` it would read the next frame as a
+    /// server close and shut whatever screen the user opened in between.
+    pub(super) fn close_container_screen(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            if let Err(e) = session.container_close() {
+                log::warn!("live: container_close: {e}");
+            }
+        }
+        self.screen.container_shown = None;
+        self.set_screen_open(false);
+    }
+
     pub(super) fn set_screen_open(&mut self, open: bool) {
         // M104 — the which-of-these overlay does not survive the screen.
         // `RecipeBookComponent.setVisible(false)` calls
@@ -1590,6 +1621,11 @@ impl LiveApp {
     /// close). Without the send the frame-sync's watermark would re-open
     /// the menu the user just closed. The marker clears BEFORE the send so
     /// the send's own no-op guard can't loop.
+    ///
+    /// `container_close` also clears `menus` (`closeContainer()`'s
+    /// `clientSideCloseContainer`): the lectern sync keys on the open menu, so
+    /// leaving it would reopen the reader on the next frame. The
+    /// `container_shown` watermark is reset with it.
     pub(super) fn close_book(&mut self) {
         let was_lectern = self.lectern_shown.take().is_some();
         self.lectern_pages = None;
@@ -1602,6 +1638,7 @@ impl LiveApp {
                     log::warn!("live: lectern close: {e}");
                 }
             }
+            self.screen.container_shown = None;
         }
     }
 

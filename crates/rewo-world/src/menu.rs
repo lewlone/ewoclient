@@ -553,6 +553,36 @@ impl Menus {
     pub fn apply_close(&mut self) {
         self.open = None;
     }
+
+    /// The USER-initiated close: `LocalPlayer.closeContainer()`
+    /// (`LocalPlayer.java:333-341`), whose client half is
+    /// `clientSideCloseContainer()` (`Player.closeContainer` resets
+    /// `containerMenu = inventoryMenu`, then `setScreen(null)`).
+    ///
+    /// Clears the open menu and returns the container id the serverbound
+    /// `container_close` must carry, or `None` when nothing needs sending:
+    /// no menu open, or the player's own (id 0). (Vanilla sends even for id
+    /// 0, which the server treats as a no-op; Rewo skips it.)
+    ///
+    /// The server-initiated path is [`Self::apply_close`]
+    /// (`ClientPacketListener.handleContainerClose`, `:1516-1519`, which is
+    /// `clientSideCloseContainer()` ALONE and sends nothing). Calling this
+    /// after a server close is therefore inert, so a user close that races
+    /// the server's can never echo a second packet.
+    pub fn close_local(&mut self) -> Option<i32> {
+        let id = self.open.take()?.container_id;
+        (id != crate::inventory::PLAYER_CONTAINER_ID).then_some(id)
+    }
+
+    /// The layout of the menu the screen shows: the open container's, else
+    /// the player's own (`containerMenu` is `inventoryMenu` when nothing is
+    /// open). Mirrors `shown_menu` in rewo-net so a closed container cannot
+    /// leave its layout behind.
+    pub fn shown_layout(&self) -> &'static MenuLayout {
+        self.open
+            .as_ref()
+            .map_or(&crate::menu_layout::PLAYER, |m| m.layout)
+    }
 }
 
 #[cfg(test)]
@@ -625,6 +655,46 @@ mod tests {
             m.menu_for(0).is_none(),
             "id 0 is the PLAYER's menu and must never resolve to a container"
         );
+    }
+
+    /// `LocalPlayer.closeContainer()` (`LocalPlayer.java:333-341`): the user
+    /// close clears the menu AND reports the id to send.
+    #[test]
+    fn a_user_close_clears_the_menu_and_names_the_id_to_send() {
+        let mut m = Menus::new();
+        m.apply_open_screen(9, 2, "Chest".into());
+        assert_eq!(m.close_local(), Some(9));
+        assert!(m.open().is_none(), "the menu must not outlive the close");
+        assert_eq!(m.close_local(), None, "a second close sends nothing");
+    }
+
+    /// `handleContainerClose` is `clientSideCloseContainer()` alone
+    /// (`ClientPacketListener.java:1516-1519`): nothing to send, and a user
+    /// close racing it has nothing left to send either.
+    #[test]
+    fn a_server_close_leaves_nothing_for_the_user_close_to_send() {
+        let mut m = Menus::new();
+        m.apply_open_screen(9, 2, "Chest".into());
+        m.apply_close();
+        assert!(m.open().is_none());
+        assert_eq!(m.close_local(), None);
+    }
+
+    #[test]
+    fn closing_with_no_menu_open_sends_nothing() {
+        assert_eq!(Menus::new().close_local(), None);
+    }
+
+    /// The reported bug: the chest stayed in `menus`, so the next inventory
+    /// open showed the chest's layout.
+    #[test]
+    fn after_closing_a_chest_the_shown_layout_is_the_players() {
+        let mut m = Menus::new();
+        assert_eq!(m.shown_layout().name, crate::menu_layout::PLAYER.name);
+        m.apply_open_screen(9, 5, "Chest".into());
+        assert_eq!(m.shown_layout().name, "generic_9x6");
+        m.close_local();
+        assert_eq!(m.shown_layout().name, crate::menu_layout::PLAYER.name);
     }
 
     #[test]

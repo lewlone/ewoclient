@@ -776,6 +776,9 @@ struct LiveApp {
     /// not resurrect the reader while that menu lives.
     lectern_shown: Option<(i32, u64)>,
     lectern_superseded: Option<(i32, u64)>,
+    /// Consecutive failed swapchain/depth recreates; see
+    /// [`view::RecreateGuard`].
+    recreate_guard: view::RecreateGuard,
     /// The lectern's resolved pages, kept app-side so a per-frame page
     /// echo doesn't rebuild the reader on every frame — the book swaps
     /// only when the resolved pages actually change.
@@ -1021,6 +1024,7 @@ fn run_windowed(
         book: None,
         lectern_shown: None,
         lectern_superseded: None,
+        recreate_guard: Default::default(),
         lectern_pages: None,
         sign_edit: None,
         options_view: None,

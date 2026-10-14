@@ -1722,7 +1722,12 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   `CORRECTIONS` (the physics-parity meter — must stay ~0) + place/dig
   world-state verification + chat round-trip.
 - `rewo live --host … [--out png] [--run-seconds N] [--fif 1|2]` — the real
-  windowed client; `--out` renders the eye view headless.
+  windowed client; `--out` renders the eye view headless. **A `--host` with no
+  port anywhere (neither `host:port` nor `--port`) now means "look up the
+  `_minecraft._tcp` SRV record, then fall back to 25565"** (`server_address`
+  in `live_cmd/mod.rs`, `rewo_net::srv`), not the dev server's 25599: pass
+  `--port` (or `host:port`) for a local test server, or omit `--host` and
+  `--port` both for `127.0.0.1:25599`.
 - `rewo bench --replay FILE --frames N` — **the regression gate**: run it
   before/after any render change; a change that worsens the 0.1% low is a
   regression even if avg fps rises.

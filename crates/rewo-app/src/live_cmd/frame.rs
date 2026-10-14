@@ -105,17 +105,11 @@ impl LiveApp {
         }
         // M93m — a beacon button asked to close. Drained here rather than
         // closed from inside the press, so every close goes through the one
-        // path that owns the screen.
-        //
-        // **This closes the CLIENT's screen only.** Vanilla's
-        // `player.closeContainer()` also sends a serverbound
-        // `container_close`, and Rewo resolves no such packet — `ids.rs` has
-        // the clientbound one alone. So the server still believes the menu is
-        // open. That gap is older and wider than this milestone (it affects
-        // every screen close, not the beacon's), and is recorded rather than
-        // half-fixed here.
+        // path that owns the screen. The beacon's buttons call
+        // `player.closeContainer()` (a USER close), so it sends
+        // `container_close` and clears the menu like Esc does.
         if std::mem::take(&mut self.screen.close_beacon) {
-            self.set_screen_open(false);
+            self.close_container_screen();
         }
 
         // M89 — a container the server opened opens the client's screen.
@@ -183,7 +177,11 @@ impl LiveApp {
         match lectern_menu {
             Some((container_id, serial, page)) => {
                 let identity = (container_id, serial);
-                if self.lectern_shown.is_none() && self.lectern_superseded != Some(identity) {
+                if super::screens::lectern_should_open(
+                    identity,
+                    self.lectern_shown,
+                    self.lectern_superseded,
+                ) {
                     // `handleOpenScreen` IS the screen opening. `mayBuild`
                     // is not on the wire - vanilla's own setter makes it
                     // `!isSpectator()`, which is what decides the
@@ -581,7 +579,21 @@ impl LiveApp {
             let tab_open = self.keys.tab_list && !self.hud_hidden;
             let listed = &session.tab_players.listed;
             self.skins
-                .refetch_evicted(|u| loaded.contains(&u) || (tab_open && listed.contains(&u)));
+                .restore_evicted(&mut state.gpu, &mut state.world_renderer, |u| {
+                    loaded.contains(&u) || (tab_open && listed.contains(&u))
+                });
+            // Players who left: forget their texture state (bounded by
+            // whoever the session still tracks, not by how many ever joined).
+            // "Tracked" = anyone with a player-info entry (the listed set
+            // alone would miss unlisted ones) or a loaded entity.
+            if self.skins.prune_due() {
+                self.skins.retain_players(|u| {
+                    loaded.contains(&u)
+                        || listed.contains(&u)
+                        || session.gamemodes.contains_key(&u)
+                        || session.latency.contains_key(&u)
+                });
+            }
         }
         // The inventory preview draws the local player from its own atlas, so
         // it takes the pixels rather than the world pass's upload.
@@ -2063,14 +2075,34 @@ impl LiveApp {
         } else {
             gpu.collect_garbage();
             match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
-                Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
+                Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {
+                    self.recreate_guard.ok();
+                }
                 Ok(RenderOutcome::NeedsRecreate) => {
-                    if let Err(e) = renderer
+                    match renderer
                         .recreate(gpu, size.width, size.height)
                         .and_then(|()| renderer.ensure_depth(gpu))
                     {
-                        log::error!("live: swapchain/depth recreate failed: {e}");
-                        event_loop.exit();
+                        Ok(()) => self.recreate_guard.ok(),
+                        Err(e) => {
+                            // Retried on the next frame (`render` reports the
+                            // mismatch as NeedsRecreate again); the client
+                            // only exits when it keeps failing.
+                            let give_up = self
+                                .recreate_guard
+                                .failed(self.started.elapsed().as_secs_f32());
+                            log::error!(
+                                "live: swapchain/depth recreate failed: {e}{}",
+                                if give_up {
+                                    " - giving up"
+                                } else {
+                                    " - retrying"
+                                }
+                            );
+                            if give_up {
+                                event_loop.exit();
+                            }
+                        }
                     }
                 }
                 Err(e) => {

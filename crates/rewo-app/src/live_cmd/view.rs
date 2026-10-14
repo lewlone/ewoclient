@@ -305,6 +305,64 @@ pub(super) fn mesh_output_is_stale(out_generation: u64, current_generation: u64)
     out_generation != current_generation
 }
 
+/// How long swapchain/depth recreate failures are tolerated before the
+/// client gives up: this many in a row AND at least [`RECREATE_GIVE_UP_S`]
+/// since the first of them. A recreate fails transiently (a minimise or
+/// restore, a display or driver hiccup, a surface not yet ready) and the next
+/// frame's `render` asks again via `NeedsRecreate`, so exiting on the first
+/// failure closed the client for a recoverable glitch.
+pub(super) const RECREATE_GIVE_UP_FAILURES: u32 = 10;
+pub(super) const RECREATE_GIVE_UP_S: f32 = 2.0;
+
+/// Counts consecutive recreate failures. Pure: the caller supplies the clock.
+#[derive(Default, Debug)]
+pub(super) struct RecreateGuard {
+    failures: u32,
+    first_failure_s: f32,
+}
+
+impl RecreateGuard {
+    /// A recreate (or a clean frame) succeeded.
+    pub(super) fn ok(&mut self) {
+        self.failures = 0;
+    }
+
+    /// A recreate failed at `now_s`; `true` = give up and exit. Each failure
+    /// is the caller's to log.
+    pub(super) fn failed(&mut self, now_s: f32) -> bool {
+        if self.failures == 0 {
+            self.first_failure_s = now_s;
+        }
+        self.failures += 1;
+        self.failures >= RECREATE_GIVE_UP_FAILURES
+            && now_s - self.first_failure_s >= RECREATE_GIVE_UP_S
+    }
+}
+
+/// What to do with a finished, non-stale mesh job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MeshOutcome {
+    /// Upload the new mesh.
+    Upload,
+    /// The column baked to nothing, or is gone: free its GPU buffers.
+    Remove,
+    /// The mesher panicked: leave whatever the column already shows.
+    KeepExisting,
+}
+
+/// A panic is NOT "baked to nothing": `MeshOutput::mesh` is `None` for both,
+/// and treating them alike (`remove_column`) let one panic blank a column
+/// that was rendering fine.
+pub(super) fn classify_mesh_output(panicked: bool, has_mesh: bool, gone: bool) -> MeshOutcome {
+    if panicked {
+        MeshOutcome::KeepExisting
+    } else if has_mesh && !gone {
+        MeshOutcome::Upload
+    } else {
+        MeshOutcome::Remove
+    }
+}
+
 /// Per-frame mesh pump. Frees removed columns, uploads up to
 /// `upload_budget` finished meshes from the worker pool, then submits
 /// fresh snapshots for dirty columns. Returns how many meshes uploaded.
@@ -341,8 +399,18 @@ pub(super) fn pump_meshing(
         }
         // Column forgotten while its job was in flight → don't resurrect it.
         let gone = session.world.column(out.cx, out.cz).is_none();
-        match out.mesh {
-            Some(mesh) if !gone => {
+        let retry = pool.retry_after_panic(&out);
+        match classify_mesh_output(out.panicked, out.mesh.is_some(), gone) {
+            MeshOutcome::KeepExisting => {
+                // The mesher panicked: the column's previous mesh is still
+                // the best picture of it, so it stays. One retry (the pool
+                // decides), then nothing until the column changes.
+                if retry {
+                    session.requeue_dirty(vec![(out.cx, out.cz)]);
+                }
+            }
+            MeshOutcome::Upload => {
+                let Some(mesh) = out.mesh else { continue };
                 *carried_fluid_cells = (*carried_fluid_cells).max(mesh.carried_fluid_cells);
                 world_renderer.upload_column(
                     gpu,
@@ -357,7 +425,7 @@ pub(super) fn pump_meshing(
                 )?;
                 uploaded += 1;
             }
-            _ => world_renderer.remove_column(gpu, out.cx, out.cz),
+            MeshOutcome::Remove => world_renderer.remove_column(gpu, out.cx, out.cz),
         }
     }
 
@@ -519,6 +587,54 @@ mod tests {
             std::mem::size_of::<rewo_mesh::MeshVertex>() as u64,
             rewo_gpu::world::VERTEX_STRIDE
         );
+    }
+
+    /// A mesher panic keeps the column's existing mesh; only a real empty
+    /// bake (or a forgotten column) frees it.
+    #[test]
+    fn a_panic_keeps_the_existing_mesh_and_an_empty_bake_removes_it() {
+        assert_eq!(
+            classify_mesh_output(true, false, false),
+            MeshOutcome::KeepExisting
+        );
+        assert_eq!(
+            classify_mesh_output(false, false, false),
+            MeshOutcome::Remove
+        );
+        assert_eq!(classify_mesh_output(false, true, true), MeshOutcome::Remove);
+        assert_eq!(
+            classify_mesh_output(false, true, false),
+            MeshOutcome::Upload
+        );
+    }
+
+    #[test]
+    fn a_transient_recreate_failure_is_retried_not_fatal() {
+        let mut g = RecreateGuard::default();
+        // A burst of failures inside the grace window never gives up...
+        for i in 0..(RECREATE_GIVE_UP_FAILURES * 3) {
+            assert!(!g.failed(i as f32 * 0.001), "failure {i}");
+        }
+        // ...and one success forgets them all.
+        g.ok();
+        for i in 0..RECREATE_GIVE_UP_FAILURES - 1 {
+            assert!(!g.failed(100.0 + i as f32));
+        }
+    }
+
+    #[test]
+    fn a_persistent_recreate_failure_gives_up_after_the_count_and_the_time() {
+        let mut g = RecreateGuard::default();
+        let step = RECREATE_GIVE_UP_S / RECREATE_GIVE_UP_FAILURES as f32 * 1.5;
+        let mut gave_up_at = None;
+        for i in 0..(RECREATE_GIVE_UP_FAILURES * 2) {
+            if g.failed(5.0 + i as f32 * step) {
+                gave_up_at = Some(i + 1);
+                break;
+            }
+        }
+        let n = gave_up_at.expect("a persistent failure must end the client");
+        assert!(n >= RECREATE_GIVE_UP_FAILURES, "not before the count");
     }
 
     #[test]
