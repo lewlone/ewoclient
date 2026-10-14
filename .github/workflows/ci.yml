@@ -9,6 +9,8 @@
 #   test      the gates-feature build, tests and clippy (-D warnings), plus the
 #             pvp-feature half of ewo-core / ewo-jni the default build never compiles
 #   fmt       cargo fmt --check (rustfmt.toml pins LF, so run it on Linux)
+#   linux     cargo check of the launcher's renderer on Linux, so the glutin/GL
+#             backend (never built by the Windows jobs) at least compiles
 #   shipped   the configuration package.ps1 actually ships (default features);
 #             `test` only ever built with --features rewo-app/gates
 #   msrv      the declared rust-version (workspace Cargo.toml), not floating stable
@@ -93,6 +95,52 @@ jobs:
 
       - name: rustfmt
         run: cargo fmt --all --check
+
+  # The Windows jobs compile the D3D12 + DirectComposition backend only; the
+  # Linux/Hyprland path (Skia GL on glutin, gl_backend.rs `glutin_backend`) and
+  # every cfg(not(windows)) branch were never built by anything. This type-checks
+  # them. It runs `check`, not `build`: linking Skia needs a display stack the
+  # runner does not have, and compiling is the thing that rots.
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+
+      # skia-bindings downloads a prebuilt Skia (gl + textlayout) for
+      # x86_64-unknown-linux-gnu; fontconfig/EGL/GL/Wayland/xkbcommon are what
+      # its link line and the winit/glutin stack name.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             pkg-config libfontconfig1-dev libegl1-mesa-dev libgl1-mesa-dev             libwayland-dev libxkbcommon-dev libx11-dev
+
+      # The workspace enables skia-safe's `d3d` feature for the Windows
+      # backend. skia-bindings publishes no Linux binary with it, and its
+      # bindings need the Windows SDK, so drop it for this job only.
+      - name: Use the Linux Skia feature set
+        run: |
+          sed -i 's/, "d3d"//' Cargo.toml
+          grep -n '^skia-safe' Cargo.toml
+          if grep -q '^skia-safe.*d3d' Cargo.toml; then echo "d3d still enabled"; exit 1; fi
+
+      - name: Check ewo-render
+        run: cargo check -p ewo-render --all-targets --locked
+
+      # First time anything has compiled the launcher for Linux: report, don't
+      # block, until it has been seen green once. Flip this to required then.
+      - name: Check ewo-launcher
+        continue-on-error: true
+        run: cargo check -p ewo-launcher --locked
 
   # Build exactly what package.ps1 ships: default features, no `gates`.
   # rewo-app's gates feature pulls in render_check, the witness blocks and the
