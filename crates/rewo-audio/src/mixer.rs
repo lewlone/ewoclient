@@ -70,6 +70,40 @@ pub fn sanitize_pitch(pitch: f32) -> f32 {
     }
 }
 
+/// The largest coordinate or direction component the mixer accepts.
+///
+/// Minecraft's world is +-3e7 blocks, so 1e9 is generous. A bound rather than
+/// just `is_finite` because the mixer squares these in f32: a finite 1e30
+/// overflows to inf, `inf / inf` is a NaN pan, and the NaN poisons the mix.
+pub const MAX_ABS_COORD: f32 = 1.0e9;
+
+/// True when `v` is safe to feed the distance and pan arithmetic.
+fn sane3(v: [f64; 3]) -> bool {
+    v.iter()
+        .all(|c| c.is_finite() && c.abs() <= MAX_ABS_COORD as f64)
+}
+
+/// True when every component of a listener transform is [`sane3`].
+///
+/// A NaN or infinite listener position or orientation made every distance and
+/// pan NaN, and the NaN reached the device. The mixer keeps its previous
+/// listener instead.
+pub fn listener_is_sane(t: &ListenerTransform) -> bool {
+    sane3(t.position) && sane3(t.forward.map(f64::from)) && sane3(t.up.map(f64::from))
+}
+
+/// The output limiter of last resort: a hard clamp to full scale that maps NaN
+/// to silence (`f32::clamp` passes NaN through, and a NaN sample reaches the
+/// device as a click or worse).
+#[inline]
+fn limit(s: f32) -> f32 {
+    if s.is_nan() {
+        0.0
+    } else {
+        s.clamp(-1.0, 1.0)
+    }
+}
+
 /// Something the callback has let go of and must not free.
 ///
 /// Dropping the last `Arc<Pcm>` deallocates a buffer that can be megabytes,
@@ -314,7 +348,15 @@ impl Mixer {
     pub fn apply_owned(&mut self, cmd: Command) {
         use rewo_net::sound_engine::ChannelCall as C;
         match cmd {
-            Command::Listener(t) => self.listener = t,
+            Command::Listener(t) => {
+                if listener_is_sane(&t) {
+                    self.listener = t;
+                } else {
+                    // Keep the previous listener; counted, not logged (this
+                    // runs on the audio callback).
+                    self.ignored += 1;
+                }
+            }
             Command::Attach(id, pcm) => match self.ensure(id) {
                 Some(i) => {
                     let v = &mut self.voices[i].1;
@@ -366,11 +408,27 @@ impl Mixer {
                         // A NaN gain would reach the device as NaN samples: the
                         // final clamp passes NaN through.
                         C::SetVolume(g) => v.gain = if g.is_finite() { g.max(0.0) } else { 0.0 },
-                        C::LinearAttenuation(d) => v.max_distance = Some(d),
+                        C::LinearAttenuation(d) => {
+                            // A NaN range makes `linear_gain` NaN. Keep the
+                            // previous one.
+                            if d.is_finite() {
+                                v.max_distance = Some(d);
+                            } else {
+                                self.ignored += 1;
+                            }
+                        }
                         C::DisableAttenuation => v.max_distance = None,
                         C::SetLooping(l) => v.looping = l,
                         C::SetRelative(r) => v.relative = r,
-                        C::SetSelfPosition(x, y, z) => v.position = [x as f32, y as f32, z as f32],
+                        C::SetSelfPosition(x, y, z) => {
+                            // A NaN position makes the distance and the pan NaN.
+                            // Keep the previous position.
+                            if sane3([x, y, z]) {
+                                v.position = [x as f32, y as f32, z as f32];
+                            } else {
+                                self.ignored += 1;
+                            }
+                        }
                         C::Play => {
                             v.playing = true;
                             v.paused = false;
@@ -627,7 +685,7 @@ impl Mixer {
         }
 
         for s in out.iter_mut() {
-            *s = s.clamp(-1.0, 1.0);
+            *s = limit(*s);
         }
     }
 }
@@ -971,6 +1029,87 @@ mod tests {
         m.push(v);
         let _ = render(&mut m, 4096);
         assert!(m.voice(0).unwrap().finished);
+    }
+
+    /// **A non-finite position or listener cannot put NaN in the mix.** Only
+    /// gain was sanitised, so a NaN `SetSelfPosition` or listener made the
+    /// distance and pan NaN, and `f32::clamp` passes NaN through to the device.
+    /// The command boundary keeps the previous value and counts the refusal.
+    #[test]
+    fn non_finite_positions_and_listeners_are_refused_at_the_boundary() {
+        use crate::device::Command;
+        use rewo_net::sound_engine::ChannelCall as C;
+        let all_finite = |out: &[f32]| out.iter().all(|s| s.is_finite());
+        let bad = [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1.0e30, // finite, but squares to inf in f32
+        ];
+        for b in bad {
+            for axis in 0..3 {
+                let mut m = Mixer::new(44100);
+                m.apply(&Command::Attach(1, dc(44100, 4410, 1)));
+                m.apply(&Command::Channel(1, C::LinearAttenuation(16.0)));
+                m.apply(&Command::Channel(1, C::SetSelfPosition(1.0, 2.0, -3.0)));
+                let mut pos = [4.0, 5.0, 6.0];
+                pos[axis] = b;
+                m.apply(&Command::Channel(
+                    1,
+                    C::SetSelfPosition(pos[0], pos[1], pos[2]),
+                ));
+                assert_eq!(m.voice(1).unwrap().position, [1.0, 2.0, -3.0], "{b}");
+                assert_eq!(m.ignored, 1);
+                m.apply(&Command::Channel(1, C::Play));
+
+                let before = m.listener;
+                let mut t = ListenerTransform::INITIAL;
+                t.position[axis] = b;
+                m.apply(&Command::Listener(t));
+                let mut t = ListenerTransform::INITIAL;
+                t.forward[axis] = b as f32;
+                m.apply(&Command::Listener(t));
+                let mut t = ListenerTransform::INITIAL;
+                t.up[axis] = b as f32;
+                m.apply(&Command::Listener(t));
+                assert_eq!(m.listener, before);
+                assert_eq!(m.ignored, 4);
+
+                let out = render(&mut m, 512);
+                assert!(all_finite(&out), "{b} on axis {axis} reached the mix");
+                assert!(out.iter().any(|s| s.abs() > 0.0), "voice went silent");
+            }
+        }
+        // A NaN attenuation range is refused too.
+        let mut m = Mixer::new(44100);
+        m.apply(&Command::Channel(1, C::LinearAttenuation(16.0)));
+        m.apply(&Command::Channel(1, C::LinearAttenuation(f32::NAN)));
+        assert_eq!(m.voice(1).unwrap().max_distance, Some(16.0));
+        // A good listener is still accepted.
+        let mut t = ListenerTransform::INITIAL;
+        t.position = [100.5, 64.0, -3.25];
+        m.apply(&Command::Listener(t));
+        assert_eq!(m.listener, t);
+    }
+
+    /// The last line of defence: a NaN that got past the boundary (a witness
+    /// pushes voices directly) becomes silence, not a NaN sample.
+    #[test]
+    fn the_final_clamp_maps_nan_to_silence() {
+        assert_eq!(limit(f32::NAN), 0.0);
+        assert_eq!(limit(f32::INFINITY), 1.0);
+        assert_eq!(limit(f32::NEG_INFINITY), -1.0);
+        assert_eq!(limit(0.25), 0.25);
+        let mut m = Mixer::new(44100);
+        let mut v = Voice::new(dc(44100, 441, 1));
+        v.position = [f32::NAN, 0.0, 0.0];
+        v.max_distance = Some(16.0);
+        m.push(v);
+        let mut v = Voice::new(dc(44100, 441, 1));
+        v.gain = f32::NAN;
+        m.push(v);
+        let out = render(&mut m, 256);
+        assert!(out.iter().all(|s| s.is_finite()), "NaN reached the output");
     }
 
     /// A source at a different rate from the device is resampled, not replayed
