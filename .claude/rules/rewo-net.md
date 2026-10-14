@@ -70,6 +70,14 @@ Reasoning and examples for each rule: `docs/rewo/` and `REWO_PLAN.md` §15.
   server waiting on them stalls the login. A negative compression threshold
   disables compression.
 
+## Reports are file content
+
+`blocks.json`'s state ids are dense (`0..N`, each once). `Blocks::from_json`
+sizes its table by the number of states listed and rejects an id outside
+`0..N`, a repeat, or one past `u32`, so a corrupt report is a named error and
+never a `vec![..; max_id + 1]` allocation. Size anything built from a report by
+what the report contains, never by an id it claims.
+
 ## Metadata indices are polymorphic
 
 The same index means different things per class. `AgeableMob` declares
