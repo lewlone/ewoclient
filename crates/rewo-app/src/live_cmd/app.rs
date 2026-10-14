@@ -1205,6 +1205,32 @@ impl LiveApp {
     /// The window in GUI pixels — the space every screen lays its widgets out
     /// in. `(0, 0)` before the window exists, which no screen is ever built
     /// against.
+    /// The book reader's framework screen at this GUI size. A lectern's
+    /// reader gets the two-button footer (Done + Take Book) when the player
+    /// may build — vanilla's `LecternScreen` sets `mayBuild` from
+    /// `!isSpectator()`, it is not on the wire; a held book gets Done only.
+    /// The open and the resize rebuild both come through here, so a resize
+    /// cannot drop the Take Book button.
+    pub(super) fn book_view_screen_for(
+        &self,
+        gw: i32,
+        gh: i32,
+        lectern: bool,
+    ) -> rewo_world::screen::Screen {
+        let done = self.lang.get_or_default("gui.done", "Done").to_string();
+        let may_build = !self
+            .session
+            .as_ref()
+            .and_then(|s| s.own_game_mode())
+            .is_some_and(rewo_net::play::GameMode::is_spectator);
+        if lectern && may_build {
+            let take = self.lang.get_or_default("lectern.take_book", "Take Book").to_string();
+            rewo_world::book_view_screen::build_lectern_screen(gw, gh, &done, &take)
+        } else {
+            rewo_world::book_view_screen::build_screen(gw, gh, &done)
+        }
+    }
+
     pub(super) fn gui_size(&self) -> (i32, i32) {
         let Some(state) = self.state.as_ref() else {
             return (0, 0);

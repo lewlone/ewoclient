@@ -189,19 +189,7 @@ impl LiveApp {
                     // `!isSpectator()`, which is what decides the
                     // two-button footer.
                     let (gw, gh) = self.gui_size();
-                    let done = self.lang.get_or_default("gui.done", "Done").to_string();
-                    let take =
-                        self.lang.get_or_default("lectern.take_book", "Take Book").to_string();
-                    let may_build = !self
-                        .session
-                        .as_ref()
-                        .and_then(|s| s.own_game_mode())
-                        .is_some_and(rewo_net::play::GameMode::is_spectator);
-                    let screen = if may_build {
-                        rewo_world::book_view_screen::build_lectern_screen(gw, gh, &done, &take)
-                    } else {
-                        rewo_world::book_view_screen::build_screen(gw, gh, &done)
-                    };
+                    let screen = self.book_view_screen_for(gw, gh, true);
                     self.screen.screens.open(screen);
                     self.book =
                         Some(rewo_world::book_view_screen::BookViewScreen::new(Vec::new()));

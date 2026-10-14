@@ -184,10 +184,10 @@ impl LiveApp {
                         && (s.width != gw || s.height != gh)
                 });
                 if stale {
-                    let done = self.lang.get_or_default("gui.done", "Done").to_string();
-                    self.screen
-                        .screens
-                        .open(rewo_world::book_view_screen::build_screen(gw, gh, &done));
+                    // A lectern's reader keeps its two-button footer across
+                    // the rebuild (M184): the same builder the open used.
+                    let screen = self.book_view_screen_for(gw, gh, self.lectern_shown.is_some());
+                    self.screen.screens.open(screen);
                 }
             }
             return;
