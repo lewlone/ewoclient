@@ -141,14 +141,18 @@ jobs:
           grep -n '^skia-safe' Cargo.toml
           if grep -q '^skia-safe.*d3d' Cargo.toml; then echo "d3d still enabled"; exit 1; fi
 
+      # No --locked here: the step above edits Cargo.toml, which changes the
+      # resolved graph (the d3d feature's Windows-only deps drop out), so the
+      # lockfile must be allowed to follow for this job. Every other job
+      # builds the committed Cargo.lock unchanged.
       - name: Check ewo-render
-        run: cargo check -p ewo-render --all-targets --locked
+        run: cargo check -p ewo-render --all-targets
 
       # First time anything has compiled the launcher for Linux: report, don't
       # block, until it has been seen green once. Flip this to required then.
       - name: Check ewo-launcher
         continue-on-error: true
-        run: cargo check -p ewo-launcher --locked
+        run: cargo check -p ewo-launcher
 
   # Build exactly what package.ps1 ships: default features, no `gates`.
   # rewo-app's gates feature pulls in render_check, the witness blocks and the
