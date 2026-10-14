@@ -954,9 +954,19 @@ mod tests {
     }
     use super::*;
 
+    /// `None` after a loud `skip_test!` (a panic under `REWO_REQUIRE_ASSETS=1`)
+    /// when the datagen report is absent; a present-but-unloadable report fails.
     fn ids() -> Option<RecipeDisplayIds> {
-        let paths = rewo_data::DataPaths::for_version("26.2")?;
-        RecipeDisplayIds::load(&paths.registries_json()).ok()
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+            rewo_data::skip_test!("no config dir");
+            return None;
+        };
+        let reg = paths.registries_json();
+        if !reg.exists() {
+            rewo_data::skip_test!("no datagen report at {}", reg.display());
+            return None;
+        }
+        Some(RecipeDisplayIds::load(&reg).expect("registries.json is present but does not load"))
     }
 
     /// A stonecutter display: input, result, station — three slot displays.
@@ -1150,7 +1160,8 @@ mod tests {
     /// `SlotDisplay`s, so a body declaring zero of those never touches them —
     /// which means the property-set claims below run on **any** machine rather
     /// than self-skipping when the datagen store is absent. The rest of this
-    /// file's tests use `let Some(i) = ids() else { return }`, and a self-
+    /// file's tests use `let Some(i) = ids() else { return }` (whose `ids()` skips
+    /// loudly), and a self-
     /// skipping test proves nothing precisely on the machine where the data is
     /// missing (`REWO_AUDIO_PLAN.md` §5's trap, and `soundshot`'s s1b). Where a
     /// claim genuinely needs the registries, the test below says so and skips.

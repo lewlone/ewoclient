@@ -574,7 +574,10 @@ mod real_assets {
             return;
         };
         assert_eq!(s.format(), (1, 44100));
-        let Some(h) = stream(HORN_STEREO, false) else { return };
+        let Some(h) = stream(HORN_STEREO, false) else {
+            rewo_data::skip_test!("no unpacked asset store (goat horn call3)");
+            return;
+        };
         assert_eq!(h.format(), (2, 48000), "and it is per-variant, not per-event");
     }
 
@@ -654,7 +657,10 @@ mod real_assets {
 
         // And the audio really is continuous: the samples after the restart are
         // the start of the file again, not a gap and not a repeat of the tail.
-        let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else { return };
+        let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
+            rewo_data::skip_test!("no unpacked asset store");
+            return;
+        };
         let whole = super::decode_ogg_vorbis(&bytes).unwrap();
         let mut fresh = super::OggStream::open(bytes.into(), true).unwrap();
         let mut seen: Vec<i16> = Vec::new();

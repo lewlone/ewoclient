@@ -107,9 +107,20 @@ impl MobEffects {
 mod tests {
     use super::*;
 
+    /// `None` (after a loud `skip_test!`, which panics under
+    /// `REWO_REQUIRE_ASSETS=1`) when the datagen report is absent. A report that
+    /// is present but will not load is a real failure, not a skip.
     fn report() -> Option<MobEffects> {
-        let paths = crate::DataPaths::for_version("26.2")?;
-        MobEffects::load(&paths.registries_json()).ok()
+        let Some(paths) = crate::DataPaths::for_version("26.2") else {
+            crate::skip_test!("no config dir");
+            return None;
+        };
+        let reg = paths.registries_json();
+        if !reg.exists() {
+            crate::skip_test!("no datagen report at {}", reg.display());
+            return None;
+        }
+        Some(MobEffects::load(&reg).expect("registries.json is present but does not load"))
     }
 
     #[test]

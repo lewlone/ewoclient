@@ -162,11 +162,19 @@ impl RecipeKind {
 mod tests {
     use super::*;
 
-    /// `None` when the decompile is absent, as every report-backed test in
-    /// this crate does — the data is derived from the user's own download.
+    /// `None` (after a loud `skip_test!`) when the report is absent, as every
+    /// report-backed test in this crate does — the data is derived from the user's own download.
     fn ids() -> Option<RecipeDisplayIds> {
-        let paths = crate::DataPaths::for_version("26.2")?;
-        RecipeDisplayIds::load(&paths.registries_json()).ok()
+        let Some(paths) = crate::DataPaths::for_version("26.2") else {
+            crate::skip_test!("no config dir");
+            return None;
+        };
+        let reg = paths.registries_json();
+        if !reg.exists() {
+            crate::skip_test!("no datagen report at {}", reg.display());
+            return None;
+        }
+        Some(RecipeDisplayIds::load(&reg).expect("registries.json is present but does not load"))
     }
 
     #[test]

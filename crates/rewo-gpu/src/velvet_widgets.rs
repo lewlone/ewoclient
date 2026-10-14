@@ -294,7 +294,10 @@ mod tests {
             let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../assets/fonts")
                 .join(format!("{}.ttf", fam.file_stem(ital)));
-            let data = std::fs::read(p).ok()?;
+            // Committed repo asset: unreadable means a broken checkout, which
+            // must fail rather than silently skip every test below.
+            let data = std::fs::read(&p)
+                .unwrap_or_else(|e| panic!("committed font {} is unreadable: {e}", p.display()));
             c.load(fam, ital, data);
         }
         Some(c)
