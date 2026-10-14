@@ -136,22 +136,107 @@ pub fn copy_capped(
     }
 }
 
-/// [`atomic_write`] for a file holding credentials: on Unix the result is
-/// mode 0600. (On Windows the per-user `%APPDATA%` ACL already applies.)
-pub fn atomic_write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    atomic_write(path, contents)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
+/// [`atomic_write`] for a file holding credentials: on Unix the file is
+/// created mode 0600 (never briefly world-readable). On Windows the per-user
+/// `%APPDATA%` ACL already applies. The implementation lives in `ewo-core`.
+pub use ewo_core::util::atomic_write_private;
 
 /// Preserve a config file that failed to parse by copying it to
 /// `<name>.bak-<unix_ts>` before any save can overwrite it. Logs an error
 /// either way; returns the backup path on success.
 pub fn backup_unparseable(path: &Path, reason: &dyn std::fmt::Display) -> Option<PathBuf> {
+    backup_unparseable_with(path, reason, false)
+}
+
+/// What reading a config file at startup found.
+#[derive(Debug)]
+pub enum ConfigRead {
+    /// No such file: a fresh install, defaults are right.
+    Missing,
+    Text(String),
+    /// The file exists but is not valid UTF-8: treat it like a parse error
+    /// (back it up, then use defaults).
+    Corrupt(String),
+    /// The file exists but could not be read (locked by a scanner, ACL, I/O
+    /// error). Its content is unknown and may be perfectly good.
+    Unreadable,
+}
+
+/// Stops saves from overwriting a config file the launcher failed to *read*.
+///
+/// A read error is not a parse error: the file may hold every account or
+/// instance the user has. The in-memory state falls back to defaults, but if
+/// the next save then wrote those defaults over the file, a transient
+/// failure would destroy the data. Once a guard is blocked its owner's saves
+/// are skipped (loudly) for the rest of the session.
+pub struct SaveGuard(std::sync::atomic::AtomicBool);
+
+impl SaveGuard {
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub fn block(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether a save of `path` may proceed; logs an error when not.
+    pub fn allows_save(&self, path: &Path) -> bool {
+        if self.is_blocked() {
+            log::error!(
+                "NOT saving {}: it could not be read at startup, and saving defaults over it \
+                 would destroy it. Fix the file's permissions or restore it, then restart.",
+                path.display()
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Back up an unparseable file; if even the backup fails, block saves so
+    /// the original is not overwritten.
+    pub fn backup_or_block(&self, path: &Path, reason: &dyn std::fmt::Display, private: bool) {
+        if backup_unparseable_with(path, reason, private).is_none() {
+            self.block();
+        }
+    }
+}
+
+impl Default for SaveGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Read a config file, blocking `guard` on an error that isn't "not found".
+pub fn read_config(path: &Path, guard: &SaveGuard) -> ConfigRead {
+    match fs::read_to_string(path) {
+        Ok(s) => ConfigRead::Text(s),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => ConfigRead::Missing,
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => ConfigRead::Corrupt(e.to_string()),
+        Err(e) => {
+            log::error!(
+                "could not read {}: {e} — starting with defaults but NOT overwriting the file",
+                path.display()
+            );
+            guard.block();
+            ConfigRead::Unreadable
+        }
+    }
+}
+
+/// The copy of a file that may hold credentials (`private`) gets the same
+/// owner-only permissions as the original; a plain `fs::copy` of a plaintext
+/// `auth.toml` would make a looser duplicate.
+fn backup_unparseable_with(
+    path: &Path,
+    reason: &dyn std::fmt::Display,
+    private: bool,
+) -> Option<PathBuf> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -159,8 +244,13 @@ pub fn backup_unparseable(path: &Path, reason: &dyn std::fmt::Display) -> Option
     let mut name = path.file_name()?.to_os_string();
     name.push(format!(".bak-{ts}"));
     let backup = path.with_file_name(name);
-    match fs::copy(path, &backup) {
-        Ok(_) => {
+    let copied = if private {
+        fs::read(path).and_then(|bytes| atomic_write_private(&backup, &bytes))
+    } else {
+        fs::copy(path, &backup).map(|_| ())
+    };
+    match copied {
+        Ok(()) => {
             log::error!(
                 "could not parse {}: {} — preserved a copy at {}; using defaults",
                 path.display(),
@@ -261,6 +351,89 @@ mod tests {
         assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
         let bak = backup_unparseable(&path, &"test").unwrap();
         assert_eq!(fs::read_to_string(&bak).unwrap(), "two");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ewo-util-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_missing_file_is_a_fresh_install_not_a_read_error() {
+        let dir = scratch("cfg-missing");
+        let guard = SaveGuard::new();
+        let p = dir.join("auth.toml");
+        assert!(matches!(read_config(&p, &guard), ConfigRead::Missing));
+        assert!(!guard.is_blocked());
+        assert!(guard.allows_save(&p));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_error_blocks_saves_but_a_parse_class_failure_does_not() {
+        let dir = scratch("cfg-readerr");
+        // A directory where the file should be: `read` fails with something
+        // that is neither NotFound nor InvalidData, on every platform.
+        let as_dir = dir.join("instances.toml");
+        fs::create_dir_all(&as_dir).unwrap();
+        let guard = SaveGuard::new();
+        assert!(matches!(
+            read_config(&as_dir, &guard),
+            ConfigRead::Unreadable
+        ));
+        assert!(guard.is_blocked(), "an unreadable file must block saves");
+        assert!(!guard.allows_save(&as_dir));
+
+        // Invalid UTF-8 is corruption: handled by backup + defaults.
+        let bad = dir.join("bad.toml");
+        fs::write(&bad, [0xFF, 0xFE, 0x00, 0xFF]).unwrap();
+        let guard = SaveGuard::new();
+        assert!(matches!(read_config(&bad, &guard), ConfigRead::Corrupt(_)));
+        assert!(!guard.is_blocked());
+
+        // Good text reads fine and leaves saves enabled.
+        let ok = dir.join("ok.toml");
+        fs::write(&ok, "a = 1").unwrap();
+        assert!(matches!(read_config(&ok, &guard), ConfigRead::Text(t) if t == "a = 1"));
+        assert!(guard.allows_save(&ok));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failing_to_back_up_blocks_saves() {
+        let dir = scratch("cfg-nobackup");
+        let guard = SaveGuard::new();
+        // Nothing to copy: the backup fails, so the (absent/unknown) original
+        // must not be overwritten either.
+        guard.backup_or_block(&dir.join("gone.toml"), &"test", false);
+        assert!(guard.is_blocked());
+        let ok = dir.join("auth.toml");
+        fs::write(&ok, "x = 1").unwrap();
+        let guard = SaveGuard::new();
+        guard.backup_or_block(&ok, &"test", true);
+        assert!(!guard.is_blocked());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_private_backup_has_the_same_contents() {
+        let dir = scratch("cfg-private-bak");
+        let p = dir.join("auth.toml");
+        fs::write(&p, "ms_refresh_token = \"t\"").unwrap();
+        let bak = backup_unparseable_with(&p, &"test", true).unwrap();
+        assert_eq!(
+            fs::read_to_string(&bak).unwrap(),
+            "ms_refresh_token = \"t\""
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&bak).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the backup must not be looser than auth.toml");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

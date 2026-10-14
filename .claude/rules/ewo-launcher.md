@@ -113,6 +113,16 @@ Subsystems:
   (refresh/social tokens DPAPI-sealed on Windows by `auth/secret.rs`, legacy
   plaintext migrates on load; 0600 plaintext elsewhere). The Entra app
   `f901fc74-7e36-439d-80a8-c2e548f47fdc` is on Mojang's allowlist.
+- **Credential files fail closed.** If `auth.toml` or `instances.toml` exists
+  but can't be *read* (not NotFound, not a parse error), the launcher starts
+  with empty/default state and **skips every save of that file for the
+  session** (`util::SaveGuard`, logged as an error), so a transient lock
+  can't be saved over. A parse error is backed up to `.bak-<ts>` first (the
+  `auth.toml` backup is created `0600` too); if the backup fails, saves are
+  blocked as well. `atomic_write_private` creates the temp file `0600` on
+  Unix (no chmod-after window). Token response structs (`MsTokenResponse`,
+  XBL/XSTS/MC) have hand-written redacting `Debug`. `--mint-rewo-env` saves a
+  rotated refresh token back to `auth.toml`.
 - **Session lifetime** (`auth/mod.rs`): the Minecraft token's expiry is kept
   in memory (serde-skipped, like the token). `launch_auth` decides each
   launch: Offline (no account), Ready, NeedsRefresh (no token, or within

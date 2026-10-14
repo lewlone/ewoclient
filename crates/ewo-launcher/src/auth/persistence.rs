@@ -10,7 +10,6 @@
 //! machine can open them), plaintext in a `0600` file elsewhere. A pre-DPAPI
 //! plaintext file loads fine and is re-saved sealed.
 
-use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -145,19 +144,32 @@ pub fn load_store() -> AccountStore {
     let Some(path) = auth_path() else {
         return AccountStore::default();
     };
-    if !path.exists() {
-        return AccountStore::default();
-    }
-    let contents = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("auth: read {} failed: {}", path.display(), e);
+    load_store_from(&path, secret::platform_cipher(), &SAVE_GUARD)
+}
+
+/// Set when `auth.toml` exists but could not be read: saves are then
+/// skipped, so the empty in-memory store never replaces a file that still
+/// holds every account's refresh token.
+static SAVE_GUARD: crate::util::SaveGuard = crate::util::SaveGuard::new();
+
+fn load_store_from(
+    path: &std::path::Path,
+    cipher: &dyn secret::SecretCipher,
+    guard: &crate::util::SaveGuard,
+) -> AccountStore {
+    let contents = match crate::util::read_config(path, guard) {
+        crate::util::ConfigRead::Text(s) => s,
+        crate::util::ConfigRead::Missing => return AccountStore::default(),
+        crate::util::ConfigRead::Corrupt(reason) => {
+            guard.backup_or_block(path, &reason, true);
             return AccountStore::default();
         }
+        // Logged loudly already, and saves are blocked.
+        crate::util::ConfigRead::Unreadable => return AccountStore::default(),
     };
     match parse_store(&contents) {
         Some((mut store, migrated)) => {
-            let reseal = open_secrets(&mut store, secret::platform_cipher());
+            let reseal = open_secrets(&mut store, cipher);
             log::info!(
                 "auth: loaded {} account(s) from {}",
                 store.accounts.len(),
@@ -165,14 +177,16 @@ pub fn load_store() -> AccountStore {
             );
             if migrated || reseal {
                 log::info!("auth: rewriting auth.toml (schema v2, secrets sealed)");
-                save_store(&store);
+                save_store_at(path, &store, cipher, guard);
             }
             store
         }
         None => {
             // Keep the unreadable file (it may hold every refresh token) —
             // the next save would otherwise replace it with an empty store.
-            crate::util::backup_unparseable(&path, &"unparseable or unknown-version auth.toml");
+            // The copy is as private as the original; if even that fails,
+            // saves are blocked instead.
+            guard.backup_or_block(path, &"unparseable or unknown-version auth.toml", true);
             AccountStore::default()
         }
     }
@@ -233,9 +247,21 @@ pub fn save_store(store: &AccountStore) {
         log::warn!("auth: config dir unresolvable — not persisting");
         return;
     };
+    save_store_at(&path, store, secret::platform_cipher(), &SAVE_GUARD);
+}
+
+fn save_store_at(
+    path: &std::path::Path,
+    store: &AccountStore,
+    cipher: &dyn secret::SecretCipher,
+    guard: &crate::util::SaveGuard,
+) {
+    if !guard.allows_save(path) {
+        return;
+    }
     // Never fall back to writing plaintext on a platform that seals: a failed
     // seal keeps the previous file instead.
-    let sealed = match sealed_copy(store, secret::platform_cipher()) {
+    let sealed = match sealed_copy(store, cipher) {
         Ok(s) => s,
         Err(e) => {
             log::warn!("auth: sealing secrets failed ({e}) — not persisting");
@@ -249,7 +275,7 @@ pub fn save_store(store: &AccountStore) {
     };
     match toml::to_string_pretty(&file) {
         Ok(s) => {
-            if let Err(e) = crate::util::atomic_write_private(&path, s.as_bytes()) {
+            if let Err(e) = crate::util::atomic_write_private(path, s.as_bytes()) {
                 log::warn!("auth: write {} failed: {}", path.display(), e);
             } else {
                 log::info!("auth: saved {} account(s)", store.accounts.len());
@@ -264,6 +290,7 @@ mod tests {
     use super::*;
     use crate::auth::secret::tests::FakeCipher;
     use crate::auth::secret::{self, Plaintext};
+    use std::fs;
 
     fn two_accounts() -> AccountStore {
         let mut a = account("A", "uuid-a");
@@ -311,6 +338,73 @@ mod tests {
         assert_eq!(store.accounts[0].social_token, None);
         assert_eq!(store.accounts.len(), 2, "no account removed");
         assert_eq!(store.accounts[1].ms_refresh_token, "refresh-uuid-b");
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ewo-auth-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_unreadable_auth_file_is_never_overwritten_by_an_empty_store() {
+        let dir = scratch("unreadable");
+        // A directory where auth.toml should be stands in for a locked file.
+        let path = dir.join("auth.toml");
+        fs::create_dir_all(&path).unwrap();
+        let guard = crate::util::SaveGuard::new();
+        let store = load_store_from(&path, &FakeCipher, &guard);
+        assert!(store.accounts.is_empty());
+        assert!(guard.is_blocked(), "a read error blocks saves");
+
+        // A real file with this guard blocked is left byte-for-byte alone.
+        let real = dir.join("real-auth.toml");
+        fs::write(&real, "# tokens live here\n").unwrap();
+        save_store_at(&real, &two_accounts(), &FakeCipher, &guard);
+        assert_eq!(fs::read_to_string(&real).unwrap(), "# tokens live here\n");
+
+        // Unblocked, the same save goes through, sealed.
+        let ok = crate::util::SaveGuard::new();
+        save_store_at(&real, &two_accounts(), &FakeCipher, &ok);
+        let text = fs::read_to_string(&real).unwrap();
+        assert!(text.contains("dpapi:v1:") && !text.contains("refresh-uuid-a"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_auth_file_is_a_normal_empty_start_and_saves_work() {
+        let dir = scratch("missing");
+        let path = dir.join("auth.toml");
+        let guard = crate::util::SaveGuard::new();
+        assert!(load_store_from(&path, &FakeCipher, &guard)
+            .accounts
+            .is_empty());
+        assert!(!guard.is_blocked());
+        save_store_at(&path, &two_accounts(), &FakeCipher, &guard);
+        let back = load_store_from(&path, &FakeCipher, &guard);
+        assert_eq!(back.accounts.len(), 2);
+        assert_eq!(back.accounts[0].ms_refresh_token, "refresh-uuid-a");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unparseable_auth_file_is_backed_up_privately_then_replaceable() {
+        let dir = scratch("unparseable");
+        let path = dir.join("auth.toml");
+        fs::write(&path, "version = 99\nms_refresh_token = \"plaintext\"\n").unwrap();
+        let guard = crate::util::SaveGuard::new();
+        assert!(load_store_from(&path, &FakeCipher, &guard)
+            .accounts
+            .is_empty());
+        assert!(!guard.is_blocked(), "the backup succeeded");
+        let baks: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak-"))
+            .collect();
+        assert_eq!(baks.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
