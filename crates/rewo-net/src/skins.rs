@@ -38,7 +38,99 @@ impl SkinInfo {
     }
 }
 
+/// Longest texture URL accepted. Real ones are ~100 bytes
+/// (`http://textures.minecraft.net/texture/<64 hex>`); the cap only bounds
+/// what a hostile server can make the client hold per player.
+pub const MAX_TEXTURE_URL_LEN: usize = 512;
+
+/// Most players whose textures a session tracks or has queued at once. A
+/// proxy network's tab list is in the hundreds; this only stops a hostile
+/// server from growing the maps without bound.
+pub const MAX_TRACKED_SKINS: usize = 4096;
+
+/// Vanilla's texture-domain rule, applied to a server-supplied texture URL.
+///
+/// Returns the URL unchanged when it may be fetched, `None` otherwise.
+///
+/// Transcribed from authlib 7.0.61 `com.mojang.authlib.yggdrasil.TextureUrlChecker
+/// .isAllowedTextureDomain` (the jar the 26.2 client ships in its libraries; it
+/// is not part of the Vineflower decompile of the client jar, which only calls
+/// it through `SkinManager`). The vanilla rule is:
+///
+/// * scheme is exactly `http` or `https` (case-sensitive, via
+///   `ALLOWED_SCHEMES = Set.of("http", "https")`);
+/// * a host exists, and is already lower-case (`IDN.toUnicode(host)` must equal
+///   its own `toLowerCase(Locale.ROOT)`);
+/// * the host ends with `.minecraft.net` or `.mojang.com` (`ALLOWED_DOMAINS`,
+///   plain `String.endsWith`, so the bare apex and
+///   `textures.minecraft.net.evil.com` both fail), and
+/// * it does not end with `bugs.mojang.com`, `education.minecraft.net` or
+///   `feedback.minecraft.net` (`BLOCKED_DOMAINS`).
+///
+/// Vanilla then hands the string to `java.net.URI`, whose view of the host can
+/// differ from what an HTTP client resolves (`http://textures.minecraft.net@evil/`,
+/// backslashes). Rewo's HTTP client is not `java.net`, so this checker is
+/// deliberately **stricter** than vanilla and rejects every input where two
+/// parsers could disagree: userinfo (`@`), ports, backslashes, `%`/non-ASCII/
+/// control characters or whitespace in the authority, IP literals, empty labels
+/// and a trailing dot. Real texture URLs are plain `scheme://host/path`, so
+/// nothing legitimate is lost.
+pub fn allowed_texture_url(url: &str) -> Option<&str> {
+    const ALLOWED_DOMAINS: [&str; 2] = [".minecraft.net", ".mojang.com"];
+    const BLOCKED_DOMAINS: [&str; 3] = [
+        "bugs.mojang.com",
+        "education.minecraft.net",
+        "feedback.minecraft.net",
+    ];
+    if url.len() > MAX_TEXTURE_URL_LEN
+        || !url.bytes().all(|b| b.is_ascii_graphic())
+        || url.contains('\\')
+    {
+        return None;
+    }
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let host = &rest[..end];
+    // Lower-case letters, digits, `-` and `.` only: no `@`, `:` (port / IPv6),
+    // `[`, `%`, and no upper case (vanilla rejects it too).
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+    {
+        return None;
+    }
+    if host.starts_with('.') || host.contains("..") {
+        return None;
+    }
+    // An all-numeric dotted host is an IP literal; it cannot satisfy the
+    // suffix rule below, but say so explicitly rather than lean on it.
+    if host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    let on = |list: &[&str]| list.iter().any(|d| host.ends_with(d));
+    (on(&ALLOWED_DOMAINS) && !on(&BLOCKED_DOMAINS)).then_some(url)
+}
+
+/// Keep a decoded texture URL only if [`allowed_texture_url`] accepts it.
+fn vet(kind: &str, url: String) -> Option<String> {
+    if allowed_texture_url(&url).is_some() {
+        Some(url)
+    } else {
+        // Debug only: the server picks the text, so keep it out of warn-level
+        // logs, and cap what is echoed.
+        let shown: String = url.chars().take(80).collect();
+        log::debug!("skins: dropped disallowed {kind} texture URL {shown:?}");
+        None
+    }
+}
+
 /// Decode a base64 `textures` property value into its texture URLs + model.
+///
+/// Every URL must pass [`allowed_texture_url`]; one that does not is dropped
+/// (that texture falls back to the default) and logged at debug level.
 ///
 /// Returns `None` only when the blob is unreadable or names no texture at
 /// all. Hand-parsed off `serde_json::Value` — no typed schema, since the
@@ -54,7 +146,7 @@ pub fn decode_textures_property(value_b64: &str) -> Option<SkinInfo> {
             .get(key)
             .and_then(|t| t.get("url"))
             .and_then(|u| u.as_str())
-            .map(|s| s.to_string())
+            .and_then(|s| vet(key, s.to_string()))
     };
     // metadata.model == "slim" → Alex arms; absent/anything else → classic.
     let slim = textures
@@ -95,10 +187,10 @@ mod tests {
     #[test]
     fn classic_when_no_metadata() {
         // A minimal classic blob (no metadata → wide arms).
-        let blob = r#"{"textures":{"SKIN":{"url":"http://x/y"}}}"#;
+        let blob = r#"{"textures":{"SKIN":{"url":"http://textures.minecraft.net/y"}}}"#;
         let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
         let info = decode_textures_property(&b64).unwrap();
-        assert_eq!(info.url.as_deref(), Some("http://x/y"));
+        assert_eq!(info.url.as_deref(), Some("http://textures.minecraft.net/y"));
         assert!(!info.slim);
     }
 
@@ -108,22 +200,22 @@ mod tests {
     /// cape has to survive on its own.
     #[test]
     fn cape_only_profile_resolves_a_cape() {
-        let blob = r#"{"textures":{"CAPE":{"url":"http://x/c"}}}"#;
+        let blob = r#"{"textures":{"CAPE":{"url":"http://textures.minecraft.net/c"}}}"#;
         let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
         let info = decode_textures_property(&b64).expect("a cape is a texture");
-        assert_eq!(info.cape.as_deref(), Some("http://x/c"));
+        assert_eq!(info.cape.as_deref(), Some("http://textures.minecraft.net/c"));
         assert!(info.url.is_none(), "and it carries no skin");
         assert!(!info.slim, "no SKIN metadata → the classic default");
     }
 
     #[test]
     fn reads_skin_and_cape_together() {
-        let blob = r#"{"textures":{"SKIN":{"url":"http://x/s","metadata":{"model":"slim"}},"CAPE":{"url":"http://x/c"},"ELYTRA":{"url":"http://x/e"}}}"#;
+        let blob = r#"{"textures":{"SKIN":{"url":"http://textures.minecraft.net/s","metadata":{"model":"slim"}},"CAPE":{"url":"http://textures.minecraft.net/c"},"ELYTRA":{"url":"http://textures.minecraft.net/e"}}}"#;
         let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
         let info = decode_textures_property(&b64).unwrap();
-        assert_eq!(info.url.as_deref(), Some("http://x/s"));
-        assert_eq!(info.cape.as_deref(), Some("http://x/c"));
-        assert_eq!(info.elytra.as_deref(), Some("http://x/e"));
+        assert_eq!(info.url.as_deref(), Some("http://textures.minecraft.net/s"));
+        assert_eq!(info.cape.as_deref(), Some("http://textures.minecraft.net/c"));
+        assert_eq!(info.elytra.as_deref(), Some("http://textures.minecraft.net/e"));
         assert!(info.slim);
     }
 
@@ -137,5 +229,112 @@ mod tests {
     #[test]
     fn none_on_garbage() {
         assert!(decode_textures_property("not base64!!!").is_none());
+    }
+
+    const HASH: &str = "6f608526fa94df402e4ac167d0ccae3baa5795d7a5ffa4fe2480a0bc46111acd";
+
+    #[test]
+    fn allows_the_real_vanilla_urls_over_http_and_https() {
+        // Mojang's session server still hands out `http://`; vanilla accepts it.
+        for scheme in ["http", "https"] {
+            let u = format!("{scheme}://textures.minecraft.net/texture/{HASH}");
+            assert_eq!(allowed_texture_url(&u), Some(u.as_str()), "{u}");
+        }
+        assert!(allowed_texture_url("https://sub.domain.mojang.com/x").is_some());
+        assert!(allowed_texture_url("https://textures.minecraft.net").is_some());
+        assert!(allowed_texture_url("https://textures.minecraft.net?x=1").is_some());
+    }
+
+    #[test]
+    fn rejects_other_hosts_and_other_schemes() {
+        for u in [
+            "https://example.com/texture/x",
+            "https://minecraft.net/x",      // bare apex: vanilla needs the leading dot
+            "https://mojang.com/x",
+            "ftp://textures.minecraft.net/x",
+            "file:///etc/passwd",
+            "HTTP://textures.minecraft.net/x", // vanilla's scheme set is case-sensitive
+            "//textures.minecraft.net/x",
+            "textures.minecraft.net/x",
+            "",
+        ] {
+            assert!(allowed_texture_url(u).is_none(), "{u}");
+        }
+    }
+
+    #[test]
+    fn rejects_suffix_and_userinfo_tricks() {
+        for u in [
+            "https://textures.minecraft.net.evil.com/x",
+            "https://evil.com/textures.minecraft.net",
+            "https://eviltextures.minecraft.net.evil.com/x",
+            "https://textures.minecraft.net@evil.com/x",
+            "https://user:pw@textures.minecraft.net/x",
+            "https://evil.com#@textures.minecraft.net/x",
+            "https://evil.com\\@textures.minecraft.net/x",
+            "https://evil.com%2f.minecraft.net/x",
+            "https://textures.minecraft.net./x", // trailing dot
+            "https://.minecraft.net/x",
+            "https://a..minecraft.net/x",
+            "https://textures.minecraft.net:8080/x",
+            "https://textures.minecraft.net:443/x",
+            "https://textures.minecraft.net\n.evil.com/",
+            "https://textures.minecraft.net /x",
+            "https://t\u{435}xtures.minecraft.net/x", // Cyrillic e
+        ] {
+            assert!(allowed_texture_url(u).is_none(), "{u:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_ip_literals_and_localhost() {
+        for u in [
+            "http://127.0.0.1/x",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1.minecraft.net.evil/x",
+            "http://[::1]/x",
+            "http://[::ffff:127.0.0.1]/x",
+            "http://2130706433/x",
+            "http://localhost/x",
+            "http://localhost.minecraft.net.local/x",
+            "http://0x7f.0.0.1/x",
+        ] {
+            assert!(allowed_texture_url(u).is_none(), "{u}");
+        }
+    }
+
+    #[test]
+    fn rejects_uppercase_hosts_like_vanilla() {
+        assert!(allowed_texture_url("https://Textures.Minecraft.Net/x").is_none());
+        assert!(allowed_texture_url("https://textures.MINECRAFT.net/x").is_none());
+    }
+
+    #[test]
+    fn rejects_blocked_subdomains_and_overlong_urls() {
+        for u in [
+            "https://bugs.mojang.com/x",
+            "https://education.minecraft.net/x",
+            "https://feedback.minecraft.net/x",
+            "https://sub.education.minecraft.net/x",
+        ] {
+            assert!(allowed_texture_url(u).is_none(), "{u}");
+        }
+        let long = format!("https://textures.minecraft.net/{}", "a".repeat(MAX_TEXTURE_URL_LEN));
+        assert!(allowed_texture_url(&long).is_none());
+    }
+
+    #[test]
+    fn the_decoder_drops_a_disallowed_url_and_keeps_the_rest() {
+        let blob = format!(
+            r#"{{"textures":{{"SKIN":{{"url":"http://169.254.169.254/s"}},"CAPE":{{"url":"https://textures.minecraft.net/texture/{HASH}"}}}}}}"#
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
+        let info = decode_textures_property(&b64).expect("the cape survives");
+        assert!(info.url.is_none(), "hostile skin URL dropped");
+        assert!(info.cape.is_some());
+        // Nothing allowed at all -> no info at all.
+        let blob = r#"{"textures":{"SKIN":{"url":"http://127.0.0.1/s"}}}"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
+        assert!(decode_textures_property(&b64).is_none());
     }
 }
