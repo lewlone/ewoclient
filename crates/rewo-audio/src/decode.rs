@@ -16,13 +16,17 @@
 //! it is why the quantisation lives in its own module with its own tests rather
 //! than inline here where it would look like an implementation detail.
 //!
-//! **The end trim is symphonia's, not ours.** A Vorbis stream's final page
-//! carries a granule position that can be *less* than the samples the last
-//! packet decodes to, and the surplus must be discarded — otherwise every sound
-//! ends with a few milliseconds of whatever the encoder's lapping produced.
-//! Symphonia applies it; reimplementing it here would be a second, worse copy.
-//! It is named rather than left implicit because a decoder that ignored it
-//! sounds *almost* right, which is the hardest kind of wrong to notice.
+//! **The end trim is symphonia's, not ours — and it is currently OFF.** A
+//! Vorbis stream's final page carries a granule position that can be *less*
+//! than the samples the last packet decodes to, and the surplus should be
+//! discarded — otherwise every sound ends with a few milliseconds of whatever
+//! the encoder's lapping produced. Symphonia can apply it (its gapless mode);
+//! reimplementing it here would be a second, worse copy. Rewo has always
+//! decoded with gapless mode off, though (symphonia 0.5's default), so the
+//! surplus is kept: see `decoder_options` for the measured counts and why
+//! switching it on is a deliberate change rather than a bump side effect. It is
+//! named rather than left implicit because a decoder that ignored it sounds
+//! *almost* right, which is the hardest kind of wrong to notice.
 
 use crate::buffers::Pcm;
 use crate::quantise::quantise;
@@ -45,13 +49,11 @@ use crate::quantise::quantise;
 /// non-positionally; Rewo's own handling of that is a decision for the mixer
 /// and is recorded in `REWO_AUDIO_PLAN.md` rather than decided here.
 pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::errors::Error;
-    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     let cursor = std::io::Cursor::new(bytes.to_vec());
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
@@ -61,60 +63,61 @@ pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
     // wrong hint costs nothing while a right one skips a format guess.
     hint.with_extension("ogg");
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| format!("not an ogg stream: {e}"))?;
-    let mut format = probed.format;
 
     // `default_track` rather than "the first track": an Ogg container may
     // multiplex, and the first stream is not necessarily the audio one.
-    let track = format
-        .default_track()
-        .ok_or_else(|| "ogg stream has no default track".to_string())?;
-    let track_id = track.id;
+    let (track_id, params) = default_audio_track(format.default_track(TrackType::Audio))?;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(params, &decoder_options())
         .map_err(|e| format!("no vorbis decoder for this track: {e}"))?;
 
     let mut samples: Vec<i16> = Vec::new();
     let mut channels = 0u16;
     let mut sample_rate = 0u32;
-    let mut buf: Option<SampleBuffer<f32>> = None;
+    let mut buf: Vec<f32> = Vec::new();
+    let mut primed = false;
 
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
-            // End of stream. Symphonia reports it as an `UnexpectedEof` io
-            // error rather than a distinct variant, so this is the normal exit
-            // and not an error path — treating it as one would fail every
-            // successful decode at the last packet.
+            Ok(Some(p)) => p,
+            // End of stream. Symphonia 0.6 reports a clean end as `Ok(None)`;
+            // a stream cut short mid-page still surfaces as an `UnexpectedEof`
+            // io error, which ends the decode exactly as it did under 0.5
+            // (where that was also how the clean end arrived). Neither is an
+            // error path — treating one as such would fail every successful
+            // decode at the last packet.
+            Ok(None) => break,
             Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(Error::ResetRequired) => {
                 return Err("ogg stream requires a decoder reset (chained stream)".into())
             }
             Err(e) => return Err(format!("ogg read: {e}")),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(audio) => {
-                let spec = *audio.spec();
                 if channels == 0 {
-                    channels = spec.channels.count() as u16;
-                    sample_rate = spec.rate;
+                    channels = audio.spec().channels().count() as u16;
+                    sample_rate = audio.spec().rate();
                 }
-                let b = buf
-                    .get_or_insert_with(|| SampleBuffer::<f32>::new(audio.capacity() as u64, spec));
-                // Interleaved, which is what OpenAL wants and what the mixer
-                // will read: L R L R for stereo rather than two planes.
-                b.copy_interleaved_ref(audio);
-                samples.extend(b.samples().iter().copied().map(quantise));
+                // The priming packet yields nothing; see `decoder_options`.
+                if std::mem::replace(&mut primed, true) {
+                    // Interleaved, which is what OpenAL wants and what the
+                    // mixer will read: L R L R for stereo rather than two
+                    // planes.
+                    audio.copy_to_vec_interleaved(&mut buf);
+                    samples.extend(buf.iter().copied().map(quantise));
+                }
             }
             // A corrupt packet is skippable in Vorbis — vanilla's decoder does
             // the same rather than abandoning the file, and a sound with one
@@ -142,6 +145,42 @@ pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
     })
 }
 
+/// The container's default audio track: its id and its audio codec
+/// parameters. Symphonia 0.6 asks for the default track *of a type* and wraps
+/// the parameters in a per-media-type enum; a track that is not audio is
+/// "no default track" here, as an Ogg stream with no audio was under 0.5.
+fn default_audio_track(
+    track: Option<&symphonia::core::formats::Track>,
+) -> Result<(u32, &symphonia::core::codecs::audio::AudioCodecParameters), String> {
+    use symphonia::core::codecs::CodecParameters;
+    match track.map(|t| (t.id, &t.codec_params)) {
+        Some((id, Some(CodecParameters::Audio(params)))) => Ok((id, params)),
+        _ => Err("ogg stream has no default track".to_string()),
+    }
+}
+
+/// Decoder options that reproduce what symphonia 0.5 handed Rewo: **no
+/// gapless trimming**, plus (at the call sites) **nothing from the first
+/// decoded packet**.
+///
+/// 0.5's Vorbis decoder returned an empty buffer for the first packet after a
+/// reset (no previous block to overlap) and trimmed nothing else, because its
+/// Ogg reader only set packet trims under `FormatOptions::enable_gapless`,
+/// which defaulted to off. 0.6 moved gapless onto the decoder, defaulted it on
+/// (which also trims the stream's start and end by the granule positions), and
+/// with it off renders half a block for the first packet instead. Measured on
+/// the chicken fixture: 0.5 gave 1728 samples; 0.6 gives 1595 gapless and 1856
+/// without; 0.6 without gapless minus the first packet gives 1728 again, the
+/// count the real-asset tests and `soundshot`'s d3 witness pin.
+///
+/// Note for the module doc's "end trim" paragraph: with these semantics the
+/// granule-position end trim is **not** applied (it was not under 0.5
+/// either). Switching to gapless decoding is a behaviour change to make on
+/// purpose, against vanilla's decode, not as a side effect of a bump.
+fn decoder_options() -> symphonia::core::codecs::audio::AudioDecoderOptions {
+    symphonia::core::codecs::audio::AudioDecoderOptions::default().gapless(false)
+}
+
 /// One live Vorbis decode position — the state `JOrbisAudioStream` holds.
 ///
 /// Separate from [`OggStream`] because `LoopingAudioStream` **throws its inner
@@ -151,9 +190,11 @@ pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
 /// reports.
 struct VorbisReader {
     format: Box<dyn symphonia::core::formats::FormatReader>,
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
     track_id: u32,
-    buf: Option<symphonia::core::audio::SampleBuffer<f32>>,
+    buf: Vec<f32>,
+    /// Whether the decoder has seen its first packet; see `decoder_options`.
+    primed: bool,
 }
 
 impl VorbisReader {
@@ -167,47 +208,42 @@ impl VorbisReader {
     /// than inferring them from a decoded packet — a stream that could only
     /// answer after decoding could not be attached at all.
     fn open(bytes: std::sync::Arc<[u8]>) -> Result<(VorbisReader, u16, u32), String> {
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::formats::probe::Hint;
+        use symphonia::core::formats::{FormatOptions, TrackType};
         use symphonia::core::io::MediaSourceStream;
         use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
 
         let cursor = std::io::Cursor::new(bytes);
         let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
         let mut hint = Hint::new();
         hint.with_extension("ogg");
-        let probed = symphonia::default::get_probe()
-            .format(
+        let format = symphonia::default::get_probe()
+            .probe(
                 &hint,
                 mss,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
+                FormatOptions::default(),
+                MetadataOptions::default(),
             )
             .map_err(|e| format!("not an ogg stream: {e}"))?;
-        let format = probed.format;
-        let track = format
-            .default_track()
-            .ok_or_else(|| "ogg stream has no default track".to_string())?;
-        let track_id = track.id;
-        let channels = track
-            .codec_params
+        let (track_id, params) = default_audio_track(format.default_track(TrackType::Audio))?;
+        let channels = params
             .channels
+            .as_ref()
             .map(|c| c.count() as u16)
             .ok_or_else(|| "ogg stream declares no channel layout".to_string())?;
-        let sample_rate = track
-            .codec_params
+        let sample_rate = params
             .sample_rate
             .ok_or_else(|| "ogg stream declares no sample rate".to_string())?;
         let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())
+            .make_audio_decoder(params, &decoder_options())
             .map_err(|e| format!("no vorbis decoder for this track: {e}"))?;
         Ok((
             VorbisReader {
                 format,
                 decoder,
                 track_id,
-                buf: None,
+                buf: Vec::new(),
+                primed: false,
             },
             channels,
             sample_rate,
@@ -220,11 +256,11 @@ impl VorbisReader {
     /// decode to nothing — and is **not** the same as `None`. A caller that
     /// treated them alike would report every stream exhausted before it started.
     fn next(&mut self) -> Result<Option<Vec<i16>>, String> {
-        use symphonia::core::audio::SampleBuffer;
         use symphonia::core::errors::Error;
         loop {
             let packet = match self.format.next_packet() {
-                Ok(p) => p,
+                Ok(Some(p)) => p,
+                Ok(None) => return Ok(None),
                 Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Ok(None)
                 }
@@ -233,17 +269,16 @@ impl VorbisReader {
                 }
                 Err(e) => return Err(format!("ogg read: {e}")),
             };
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
             match self.decoder.decode(&packet) {
                 Ok(audio) => {
-                    let spec = *audio.spec();
-                    let b = self.buf.get_or_insert_with(|| {
-                        SampleBuffer::<f32>::new(audio.capacity() as u64, spec)
-                    });
-                    b.copy_interleaved_ref(audio);
-                    return Ok(Some(b.samples().iter().copied().map(quantise).collect()));
+                    if !std::mem::replace(&mut self.primed, true) {
+                        return Ok(Some(Vec::new()));
+                    }
+                    audio.copy_to_vec_interleaved(&mut self.buf);
+                    return Ok(Some(self.buf.iter().copied().map(quantise).collect()));
                 }
                 Err(Error::DecodeError(_)) => continue,
                 Err(e) => return Err(format!("vorbis decode: {e}")),

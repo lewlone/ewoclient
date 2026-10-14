@@ -166,9 +166,9 @@ struct DeviceFlags {
 }
 
 impl DeviceFlags {
-    fn record(&self, err: &cpal::StreamError) {
+    fn record(&self, err: &cpal::Error) {
         self.errors.fetch_add(1, Ordering::Relaxed);
-        if matches!(err, cpal::StreamError::DeviceNotAvailable) {
+        if err.kind() == cpal::ErrorKind::DeviceNotAvailable {
             self.last_kind.store(1, Ordering::Relaxed);
             self.lost.store(true, Ordering::Relaxed);
         } else {
@@ -206,6 +206,50 @@ struct Built {
     format: cpal::SampleFormat,
 }
 
+/// The device's human-readable name: what identifies "the default device" for
+/// the change check, and what the log prints. cpal 0.18 replaced
+/// `Device::name` with `description()` (the WASAPI FriendlyName) and `id()`.
+fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
+/// The device's default output config, keeping cpal 0.15's format preference.
+///
+/// cpal 0.18 ranks I32 and I24 above I16 when a device offers no f32, where
+/// 0.15 picked f32, then i16, then u16. The render callback converts to those
+/// three only, so a device that used to open as i16 would now be refused; this
+/// asks for i16, then u16, at the same channel count and rate before letting
+/// the caller refuse the format. (WASAPI's shared-mode mix format is f32, so on
+/// Windows the first return is the only one taken.)
+fn output_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
+    use cpal::SampleFormat;
+    let supported = device
+        .default_output_config()
+        .map_err(|e| format!("no default output config: {e}"))?;
+    if matches!(
+        supported.sample_format(),
+        SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16
+    ) {
+        return Ok(supported);
+    }
+    let Ok(ranges) = device.supported_output_configs() else {
+        return Ok(supported);
+    };
+    let ranges: Vec<_> = ranges
+        .filter(|r| r.channels() == supported.channels())
+        .collect();
+    for format in [SampleFormat::I16, SampleFormat::U16] {
+        if let Some(config) = ranges
+            .iter()
+            .filter(|r| r.sample_format() == format)
+            .find_map(|r| r.try_with_sample_rate(supported.sample_rate()))
+        {
+            return Ok(config);
+        }
+    }
+    Ok(supported)
+}
+
 /// Open the default device and start a stream over the state in `home`.
 ///
 /// On failure the state is back in `home`, because the closure that took it
@@ -214,10 +258,8 @@ fn build(host: &cpal::Host, home: &Home, flags: &Arc<DeviceFlags>) -> Result<Bui
     let device = host
         .default_output_device()
         .ok_or_else(|| "no default output device".to_string())?;
-    let device_name = device.name().ok();
-    let supported = device
-        .default_output_config()
-        .map_err(|e| format!("no default output config: {e}"))?;
+    let device_name = device_name(&device);
+    let supported = output_config(&device)?;
     // **Requires a stereo device.** The mixer renders interleaved stereo, and
     // silently playing a stereo mix into a mono or 5.1 device would come out
     // mangled rather than as an error. Supporting other layouts is a downmix
@@ -229,7 +271,7 @@ fn build(host: &cpal::Host, home: &Home, flags: &Arc<DeviceFlags>) -> Result<Bui
              a downmix is a decision rather than a fix"
         ));
     }
-    let out_rate = supported.sample_rate().0;
+    let out_rate = supported.sample_rate();
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
 
@@ -246,14 +288,14 @@ fn build(host: &cpal::Host, home: &Home, flags: &Arc<DeviceFlags>) -> Result<Bui
     let flags_cb = Arc::clone(flags);
     // **Counted, not logged.** A logger takes a lock and may allocate; the
     // engine's thread reads the flags and logs.
-    let on_error = move |err: cpal::StreamError| flags_cb.record(&err);
+    let on_error = move |err: cpal::Error| flags_cb.record(&err);
 
     // The device's own format, converted in the callback when it is not f32.
     // The conversion is per sample into a preallocated scratch buffer — see
     // `RenderCallback::render_into` — so the fallback allocates nothing either.
     let stream = match format {
         cpal::SampleFormat::F32 => device.build_output_stream(
-            &config,
+            config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| match homing.cb.as_mut() {
                 Some(cb) => cb.render_f32(data),
                 None => data.fill(0.0),
@@ -262,7 +304,7 @@ fn build(host: &cpal::Host, home: &Home, flags: &Arc<DeviceFlags>) -> Result<Bui
             None,
         ),
         cpal::SampleFormat::I16 => device.build_output_stream(
-            &config,
+            config,
             move |data: &mut [i16], _: &cpal::OutputCallbackInfo| match homing.cb.as_mut() {
                 Some(cb) => cb.render_into(data, f32_to_i16),
                 None => data.fill(0),
@@ -271,7 +313,7 @@ fn build(host: &cpal::Host, home: &Home, flags: &Arc<DeviceFlags>) -> Result<Bui
             None,
         ),
         cpal::SampleFormat::U16 => device.build_output_stream(
-            &config,
+            config,
             move |data: &mut [u16], _: &cpal::OutputCallbackInfo| match homing.cb.as_mut() {
                 Some(cb) => cb.render_into(data, f32_to_u16),
                 None => data.fill(32768),
@@ -415,7 +457,7 @@ impl CpalSink {
             let current = self
                 .host
                 .default_output_device()
-                .and_then(|d| d.name().ok());
+                .and_then(|d| device_name(&d));
             current != self.device_name
         };
         if lost {
