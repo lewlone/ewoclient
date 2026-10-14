@@ -29,7 +29,7 @@
 //! }
 //! ```
 
-use ewo_core::CubicBezier;
+use crate::tokens;
 use skia_safe::{
     gradient_shader, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point,
     RRect, Rect, TileMode,
@@ -88,7 +88,7 @@ pub fn draw_vtoggle(canvas: &Canvas, bounds: Rect, state: &VtoggleState) {
     let rrect = RRect::new_rect_xy(bounds, radius, radius);
 
     // Silk-eased animation for both color crossfade and pearl slide.
-    let anim = CubicBezier::SILK.eval(state.anim.clamp(0.0, 1.0));
+    let anim = tokens::silk().eval(state.anim.clamp(0.0, 1.0));
 
     draw_outer_glow(canvas, &rrect, anim);
     draw_pill_bg(canvas, &rrect, anim);
@@ -106,10 +106,7 @@ fn draw_outer_glow(canvas: &Canvas, rrect: &RRect, anim: f32) {
     glow.set_anti_alias(true);
     glow.set_style(PaintStyle::Stroke);
     glow.set_stroke_width(6.0);
-    glow.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.28 * anim),
-        None,
-    );
+    glow.set_color4f(tokens::accent_rose_a(0.28 * anim), None);
     glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 7.0, false));
     canvas.draw_rrect(*rrect, &glow);
 }
@@ -119,10 +116,7 @@ fn draw_pill_bg(canvas: &Canvas, rrect: &RRect, anim: f32) {
     let alpha = 0.08 + (0.22 - 0.08) * anim;
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, alpha),
-        None,
-    );
+    bg.set_color4f(tokens::accent_rose_a(alpha), None);
     canvas.draw_rrect(*rrect, &bg);
 }
 
@@ -133,10 +127,7 @@ fn draw_pill_border(canvas: &Canvas, rrect: &RRect, anim: f32) {
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, alpha),
-        None,
-    );
+    border.set_color4f(tokens::accent_rose_a(alpha), None);
     canvas.draw_rrect(*rrect, &border);
 }
 
@@ -159,10 +150,7 @@ fn draw_pearl(canvas: &Canvas, bounds: &Rect, anim: f32) {
     if anim > 0.001 {
         let mut halo = Paint::default();
         halo.set_anti_alias(true);
-        halo.set_color4f(
-            Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, 0.7 * anim),
-            None,
-        );
+        halo.set_color4f(tokens::text_pearl_hot_a(0.7 * anim), None);
         halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 5.0, false));
         canvas.draw_circle((pearl_cx, pearl_cy), pearl_r, &halo);
     }
@@ -174,9 +162,9 @@ fn draw_pearl(canvas: &Canvas, bounds: &Rect, anim: f32) {
         pearl_r * 1.6,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
-                Color4f::new(200.0 / 255.0, 164.0 / 255.0, 180.0 / 255.0, 1.0),
+                tokens::text_pearl_hot_a(1.0),
+                tokens::accent_rose_a(1.0),
+                tokens::accent_rose_edge_a(1.0),
             ],
             None,
         ),

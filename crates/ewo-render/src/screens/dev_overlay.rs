@@ -16,10 +16,11 @@
 //! via `Backdrop::resize`; everything else is read every frame so it
 //! takes effect immediately.
 
+use crate::tokens;
 use ewo_core::Settings;
 use skia_safe::{
-    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color,
-    Color4f, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
+    MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 use crate::screens::launching::LaunchError;
@@ -36,10 +37,6 @@ const ROW_GAP: f32 = 16.0;
 const LABEL_TO_SLIDER_GAP: f32 = 6.0;
 const SLIDER_HEIGHT: f32 = 28.0;
 const RESET_BUTTON_HEIGHT: f32 = 32.0;
-
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MID_PEARL: Color = Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Slot {
@@ -279,10 +276,7 @@ fn draw_chrome(canvas: &Canvas, panel: &Rect, rrect: &RRect) {
         canvas.save_layer(&rec);
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
-        fill.set_color4f(
-            Color4f::new(10.0 / 255.0, 0.0 / 255.0, 6.0 / 255.0, 0.72),
-            None,
-        );
+        fill.set_color4f(tokens::bg_wine_a_a(0.72), None);
         canvas.draw_rrect(*rrect, &fill);
         canvas.restore();
         canvas.restore_to_count(saved);
@@ -294,10 +288,7 @@ fn draw_chrome(canvas: &Canvas, panel: &Rect, rrect: &RRect) {
         Point::new(cx, panel.top - panel.height() * 0.2),
         panel.width() * 0.7,
         gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
-            ],
+            &[tokens::accent_rose_a(0.06), tokens::accent_rose_a(0.0)],
             None,
         ),
         Some(&[0.0_f32, 1.0][..]),
@@ -316,10 +307,7 @@ fn draw_chrome(canvas: &Canvas, panel: &Rect, rrect: &RRect) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.20),
-        None,
-    );
+    rim.set_color4f(tokens::accent_rose_a(0.20), None);
     let inset = panel.with_inset((0.5, 0.5));
     canvas.draw_rrect(
         RRect::new_rect_xy(inset, PANEL_RADIUS - 0.5, PANEL_RADIUS - 0.5),
@@ -344,7 +332,7 @@ fn draw_inner(
     let title_font = fonts.jetbrains_mono(10.0);
     let mut title_paint = Paint::default();
     title_paint.set_anti_alias(true);
-    title_paint.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+    title_paint.set_color(tokens::accent_rose());
     let (_, tm) = title_font.metrics();
     let title_baseline = content_top + (-tm.ascent);
     text::draw_tracked_em(
@@ -369,11 +357,11 @@ fn draw_inner(
     // Color the stats by frame budget — green-tinted pearl when under
     // 16.6ms (60fps), warm champagne when 16.6-33ms, ember when >33ms.
     let stats_color = if stats.frame_ms == 0.0 || stats.frame_ms <= 16.7 {
-        Color::from_argb(0xFF, 0xC9, 0xA5, 0xD4)
+        tokens::accent_lav()
     } else if stats.frame_ms <= 33.4 {
-        Color::from_argb(0xFF, 0xE8, 0xD4, 0xA8)
+        tokens::accent_champ()
     } else {
-        Color::from_argb(0xFF, 0xC9, 0x6A, 0x7A)
+        tokens::accent_ember()
     };
     let mut stats_paint = Paint::default();
     stats_paint.set_anti_alias(true);
@@ -393,7 +381,7 @@ fn draw_inner(
         let worst_font = fonts.jetbrains_mono(9.0);
         let mut worst_paint = Paint::default();
         worst_paint.set_anti_alias(true);
-        worst_paint.set_color(Color::from_argb(0xFF, 0x6B, 0x55, 0x5C));
+        worst_paint.set_color(tokens::text_mauve_deep());
         let (_, wm) = worst_font.metrics();
         let worst_baseline = title_baseline + tm.descent + 2.0 + (-wm.ascent);
         let worst_str = format!("worst {:.1} ms", stats.worst_ms);
@@ -414,10 +402,7 @@ fn draw_inner(
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.10), None);
     canvas.draw_line((content_left, div_y), (content_right, div_y), &div);
 
     // Rows
@@ -441,7 +426,7 @@ fn draw_inner(
         let label_baseline = label_top + (-lm.ascent);
         let mut label_paint = Paint::default();
         label_paint.set_anti_alias(true);
-        label_paint.set_color(TEXT_MID_PEARL);
+        label_paint.set_color(tokens::text_mid_pearl());
         canvas.draw_str(
             *label,
             (content_left, label_baseline),
@@ -453,7 +438,7 @@ fn draw_inner(
         let (slider_state, value_str) = state_and_value_for(*slot, state);
         let mut value_paint = Paint::default();
         value_paint.set_anti_alias(true);
-        value_paint.set_color(TEXT_PEARL);
+        value_paint.set_color(tokens::text_pearl());
         let (advance, _) = value_font.measure_str(&value_str, Some(&value_paint));
         let (_, vm) = value_font.metrics();
         let value_baseline = label_top + (-vm.ascent) + 1.0;
@@ -510,7 +495,7 @@ fn draw_inner(
         draw_vghost_btn(canvas, *sim_rect, label, &state.sim_error_btn, kind, fonts);
     }
 
-    let _ = TEXT_MAUVE;
+    let _ = tokens::text_mauve();
 }
 
 fn state_and_value_for(slot: Slot, state: &DevOverlayState) -> (&VsliderState, String) {

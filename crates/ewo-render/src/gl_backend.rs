@@ -39,6 +39,36 @@ fn bump_gpu_generation() {
     GPU_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Tell the user the launcher cannot start, where they will see it.
+///
+/// The release launcher is a windowed app (`windows_subsystem = "windows"`), so
+/// a `panic!` or a `log::error!` on a machine with no usable GPU is invisible:
+/// the process just vanishes. A native message box is the one channel that
+/// always reaches the user. Elsewhere there is a terminal, so stderr will do.
+pub fn show_fatal_error(title: &str, message: &str) {
+    log::error!("{title}: {message}");
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+        };
+        let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() };
+        let (title, message) = (wide(title), wide(message));
+        // SAFETY: both buffers are NUL-terminated and outlive the call.
+        unsafe {
+            MessageBoxW(
+                None,
+                PCWSTR(message.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    eprintln!("{title}: {message}");
+}
+
 #[cfg(target_os = "windows")]
 pub use dcomp_backend::GlBackend;
 #[cfg(not(target_os = "windows"))]
@@ -114,7 +144,7 @@ mod dcomp_backend {
         unsafe fn create(hwnd: HWND, width: u32, height: u32) -> Result<Self, String> {
             let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))
                 .map_err(werr("CreateDXGIFactory2"))?;
-            let (adapter, device) = hardware_adapter(&factory)?;
+            let (adapter, device) = pick_adapter(&factory)?;
             let queue: ID3D12CommandQueue = device
                 .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())
                 .map_err(werr("CreateCommandQueue"))?;
@@ -217,12 +247,33 @@ mod dcomp_backend {
     }
 
     impl GlBackend {
-        pub fn new(_event_loop: &ActiveEventLoop, window: Arc<Window>) -> Self {
+        /// Create the backend, or show a native error box and exit if no
+        /// Direct3D 12 device (not even WARP) can be created: the launcher has
+        /// nothing to draw with, and a windowed release build would otherwise
+        /// vanish without a word. Use [`Self::try_new`] to handle the error.
+        pub fn new(event_loop: &ActiveEventLoop, window: Arc<Window>) -> Self {
+            match Self::try_new(event_loop, window) {
+                Ok(backend) => backend,
+                Err(e) => {
+                    super::show_fatal_error(
+                        "EwoClient can't start",
+                        &format!(
+                            "EwoClient could not set up graphics.\n\n{e}\n\n\
+                             Update your graphics driver, or run it on a machine with \
+                             Direct3D 12 support."
+                        ),
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        pub fn try_new(_event_loop: &ActiveEventLoop, window: Arc<Window>) -> Result<Self, String> {
             let size = window.inner_size();
             let width = size.width.max(1);
             let height = size.height.max(1);
             let stack = unsafe { DeviceStack::create(hwnd_of(&window), width, height) }
-                .unwrap_or_else(|e| panic!("dcomp backend: initial device creation failed: {e}"));
+                .map_err(|e| format!("initial device creation failed: {e}"))?;
             log::info!(
                 "dcomp backend: D3D12 + DirectComposition swapchain {}×{}, {} buffers, premultiplied alpha",
                 width, height, BUFFER_COUNT
@@ -234,7 +285,7 @@ mod dcomp_backend {
             } else {
                 None
             };
-            Self {
+            Ok(Self {
                 window,
                 stack: Some(stack),
                 lost: None,
@@ -243,7 +294,14 @@ mod dcomp_backend {
                 height,
                 frames: 0,
                 simulate_loss_at,
-            }
+            })
+        }
+
+        /// While the device is lost: when the next recreation attempt is due.
+        /// The event loop should sleep until then instead of polling (there
+        /// is nothing to draw), and `None` means rendering is healthy.
+        pub fn retry_deadline(&self) -> Option<Instant> {
+            self.lost.as_ref().map(|l| l.next_try)
         }
 
         pub fn resize(&mut self, width: u32, height: u32) {
@@ -256,8 +314,16 @@ mod dcomp_backend {
             let Some(stack) = self.stack.as_mut() else {
                 return;
             };
+            // The device can die between two frames without `Present` having
+            // said so yet (a driver reset during a window drag). Waiting on a
+            // removed device's fence is undefined, so find out first.
+            if let Err(reason) = unsafe { stack.device.GetDeviceRemovedReason() } {
+                log::error!("dcomp backend: device already removed at resize ({reason})");
+                self.device_lost("resize (device removed)");
+                return;
+            }
             // The wrapped surfaces reference the swapchain buffers, which
-            // ResizeBuffers invalidates — drop them and let the GPU finish
+            // ResizeBuffers invalidates: drop them and let the GPU finish
             // first, then re-wrap the new buffers.
             stack.surfaces.clear();
             stack.gr_context.flush_submit_and_sync_cpu();
@@ -401,9 +467,30 @@ mod dcomp_backend {
         }
     }
 
-    /// Pick the first hardware (non-WARP) adapter that can create a D3D12
-    /// device at feature level 11.0. Mirrors the skia-safe d3d-window example.
-    fn hardware_adapter(factory: &IDXGIFactory4) -> Result<(IDXGIAdapter1, ID3D12Device), String> {
+    /// The first hardware adapter that can create a D3D12 device at feature
+    /// level 11.0 (mirrors the skia-safe d3d-window example), else the WARP
+    /// software adapter with a warning: slow, but a machine with no D3D12 GPU
+    /// (a VM, a broken driver, Remote Desktop) can still show the launcher.
+    fn pick_adapter(factory: &IDXGIFactory4) -> Result<(IDXGIAdapter1, ID3D12Device), String> {
+        if let Some(found) = enumerate_adapter(factory, false) {
+            return Ok(found);
+        }
+        if let Some(found) = enumerate_adapter(factory, true) {
+            log::warn!(
+                "dcomp backend: no D3D12 hardware adapter, falling back to WARP \
+                 (software rendering, expect a low frame rate)"
+            );
+            return Ok(found);
+        }
+        Err("no Direct3D 12 adapter, hardware or WARP, could create a device".into())
+    }
+
+    /// The first adapter whose software flag equals `software` that creates a
+    /// D3D12 device.
+    fn enumerate_adapter(
+        factory: &IDXGIFactory4,
+        software: bool,
+    ) -> Option<(IDXGIAdapter1, ID3D12Device)> {
         for i in 0.. {
             // EnumAdapters1 fails (DXGI_ERROR_NOT_FOUND) past the last adapter.
             let Ok(adapter) = (unsafe { factory.EnumAdapters1(i) }) else {
@@ -412,19 +499,19 @@ mod dcomp_backend {
             let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
                 continue;
             };
-            if (DXGI_ADAPTER_FLAG(desc.Flags as _) & DXGI_ADAPTER_FLAG_SOFTWARE)
-                != DXGI_ADAPTER_FLAG_NONE
-            {
-                continue; // skip the Basic Render Driver (WARP).
+            let is_software = (DXGI_ADAPTER_FLAG(desc.Flags as _) & DXGI_ADAPTER_FLAG_SOFTWARE)
+                != DXGI_ADAPTER_FLAG_NONE;
+            if is_software != software {
+                continue; // the Basic Render Driver (WARP) is the fallback pass.
             }
             let mut device: Option<ID3D12Device> = None;
             if unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device) }.is_ok() {
                 if let Some(device) = device {
-                    return Ok((adapter, device));
+                    return Some((adapter, device));
                 }
             }
         }
-        Err("no D3D12-capable hardware adapter found".into())
+        None
     }
 
     /// Wrap each swapchain back buffer as a Skia surface. Called at creation
@@ -467,6 +554,44 @@ mod dcomp_backend {
                 )
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn factory() -> IDXGIFactory4 {
+            unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }.expect("DXGI factory")
+        }
+
+        /// The fallback the launcher relies on when there is no D3D12 GPU:
+        /// Windows' software adapter must be enumerable and able to make a
+        /// device, and must be flagged as software (so the hardware pass
+        /// skips it and the fallback pass finds it).
+        #[test]
+        fn warp_is_the_software_fallback_adapter() {
+            let (adapter, _device) = enumerate_adapter(&factory(), true)
+                .expect("no WARP adapter: the no-GPU fallback would fail");
+            let desc = unsafe { adapter.GetDesc1() }.expect("adapter desc");
+            assert!(
+                (DXGI_ADAPTER_FLAG(desc.Flags as _) & DXGI_ADAPTER_FLAG_SOFTWARE)
+                    != DXGI_ADAPTER_FLAG_NONE
+            );
+        }
+
+        /// The hardware pass never returns a software adapter, and
+        /// `pick_adapter` succeeds on any machine that has either kind.
+        #[test]
+        fn hardware_pass_skips_software_and_pick_adapter_succeeds() {
+            if let Some((adapter, _)) = enumerate_adapter(&factory(), false) {
+                let desc = unsafe { adapter.GetDesc1() }.expect("adapter desc");
+                assert!(
+                    (DXGI_ADAPTER_FLAG(desc.Flags as _) & DXGI_ADAPTER_FLAG_SOFTWARE)
+                        == DXGI_ADAPTER_FLAG_NONE
+                );
+            }
+            assert!(pick_adapter(&factory()).is_ok());
+        }
     }
 }
 
@@ -678,6 +803,12 @@ mod glutin_backend {
                 self.gr_context
                     .perform_deferred_cleanup(std::time::Duration::from_secs(3), None);
             }
+        }
+
+        /// GL has no device-loss recovery to wait for (see the Windows
+        /// backend's `retry_deadline`).
+        pub fn retry_deadline(&self) -> Option<std::time::Instant> {
+            None
         }
 
         pub fn set_vsync(&self, enabled: bool) {

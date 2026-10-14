@@ -165,6 +165,7 @@ fn ambient_frame(backdrop: &Backdrop, fonts: &FontStore, time: f32) -> Vec<u8> {
         0.02,
         time,
         8.0,
+        1.0,
     );
     pixels(&mut s)
 }

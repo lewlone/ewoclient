@@ -111,6 +111,31 @@ pub fn ambient_dt(dt: f32) -> f32 {
     }
 }
 
+/// Floor for `--motion-speed`, so `period / speed` stays finite.
+pub const MIN_SPEED: f32 = 0.0001;
+
+/// Pure core of [`scaled_time`].
+pub fn scaled_time_for(time: f32, speed: f32, reduced: bool) -> f32 {
+    ambient_time_for(time, reduced) * speed.max(MIN_SPEED)
+}
+
+/// Clock for an ambient loop whose CSS period is `calc(Ns / var(--motion-speed))`.
+///
+/// A loop with period `N / speed` at clock `t` is at phase `t * speed / N`,
+/// so every ambient layer divides *this* by its fixed design period `N` and
+/// the user's `Settings::motion_speed` lands the same way everywhere
+/// (backdrop, glass, text, particles). Frozen at 0 under reduced motion, like
+/// [`ambient_time`]; at speed 1 it is exactly `time`.
+pub fn scaled_time(time: f32, speed: f32) -> f32 {
+    scaled_time_for(time, speed, is_reduced())
+}
+
+/// Per-frame step for the particle layers with `--motion-speed` applied:
+/// [`ambient_dt`] scaled by the speed.
+pub fn scaled_dt(dt: f32, speed: f32) -> f32 {
+    ambient_dt(dt) * speed.max(MIN_SPEED)
+}
+
 /// Rate-limited poller that feeds the OS setting into the flag. The probe is
 /// a parameter so tests (and non-Windows builds) can stub it.
 #[derive(Debug, Default)]
@@ -174,6 +199,17 @@ mod tests {
     fn ambient_time_freezes_only_when_reduced() {
         assert_eq!(ambient_time_for(12.5, false), 12.5);
         assert_eq!(ambient_time_for(12.5, true), 0.0);
+    }
+
+    #[test]
+    fn motion_speed_scales_the_clock_and_reduced_motion_still_wins() {
+        assert_eq!(scaled_time_for(12.5, 1.0, false), 12.5);
+        assert_eq!(scaled_time_for(10.0, 2.0, false), 20.0);
+        assert_eq!(scaled_time_for(10.0, 0.5, false), 5.0);
+        // Never a zero clock rate, never NaN.
+        assert!(scaled_time_for(10.0, 0.0, false) > 0.0);
+        // Reduced motion freezes the loop whatever the speed.
+        assert_eq!(scaled_time_for(10.0, 3.0, true), 0.0);
     }
 
     #[test]

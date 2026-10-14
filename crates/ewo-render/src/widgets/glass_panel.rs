@@ -27,6 +27,7 @@
 //! `settings.rs` tab changes) or animate the chrome layers separately, as
 //! the modals do; the inner content is never scaled.
 
+use crate::tokens;
 use ewo_core::{motion, Settings};
 use skia_safe::{
     canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
@@ -100,10 +101,7 @@ fn draw_refract(canvas: &Canvas, rrect: &RRect, bounds: &Rect) {
     // Dark fill on top of the now-blurred backdrop.
     let mut fill = Paint::default();
     fill.set_anti_alias(true);
-    fill.set_color4f(
-        Color4f::new(28.0 / 255.0, 10.0 / 255.0, 20.0 / 255.0, 0.52),
-        None,
-    );
+    fill.set_color4f(tokens::bg_glass_fill_a(0.52), None);
     canvas.draw_rrect(*rrect, &fill);
 
     canvas.restore();
@@ -149,9 +147,9 @@ fn draw_tint(
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.18),
-                Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.12),
-                Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 0.16),
+                tokens::accent_rose_a(0.18),
+                tokens::accent_berry_a(0.12),
+                tokens::accent_lav_a(0.16),
             ],
             None,
         ),
@@ -181,10 +179,7 @@ fn draw_tint(
         Point::new(cx, cy),
         base_r,
         gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.14),
-                Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.0),
-            ],
+            &[tokens::text_pearl_a(0.14), tokens::text_pearl_a(0.0)],
             None,
         ),
         Some(&[0.0_f32, 1.0][..]),
@@ -225,10 +220,10 @@ fn draw_rims(canvas: &Canvas, bounds: &Rect, time: f32, motion_speed: f32) {
         }
     };
 
-    let trans = Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0);
-    let rose = Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0);
-    let lav = Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 1.0);
-    let champ = Color4f::new(232.0 / 255.0, 212.0 / 255.0, 168.0 / 255.0, 1.0);
+    let trans = tokens::accent_rose_a(0.0);
+    let rose = tokens::accent_rose_a(1.0);
+    let lav = tokens::accent_lav_a(1.0);
+    let champ = tokens::accent_champ_a(1.0);
 
     // Top: rose, lav, champ, rose
     draw_horizontal_rim(
@@ -325,9 +320,6 @@ fn draw_hairline(canvas: &Canvas, bounds: &Rect) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.18),
-        None,
-    );
+    rim.set_color4f(tokens::accent_rose_a(0.18), None);
     canvas.draw_rrect(rrect, &rim);
 }

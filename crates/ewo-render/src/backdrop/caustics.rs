@@ -32,7 +32,9 @@
 
 use std::cell::RefCell;
 
-use ewo_core::OkLch;
+use ewo_core::{motion, OkLch};
+
+use crate::tokens;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
     gradient_shader, image_filters, BlendMode, Canvas, Color4f, ImageFilter, Matrix, Paint, Point,
@@ -96,7 +98,7 @@ const LAYER_B: &[CausticBlob] = &[
     },
 ];
 
-pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
+pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32, motion_speed: f32) {
     // Reduced motion (StyleSheet1 ~L1563): both loops stop and the layers rest
     // on their base style, which has no transform (phase 0). Layer B's
     // `reverse` direction would otherwise land on the `to` keyframe.
@@ -105,12 +107,15 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
         draw_layer(canvas, w, h, LAYER_B, 0.0);
         return;
     }
+    // `animation: caustic-drift Ns linear infinite`, period 38 s / 52 s at
+    // `--motion-speed` 1 (the clock below is already scaled by it).
+    let t = motion::scaled_time(time, motion_speed);
     // Layer A: 38s linear period.
-    draw_layer(canvas, w, h, LAYER_A, (time / 38.0).fract());
+    draw_layer(canvas, w, h, LAYER_A, (t / 38.0).fract());
     // Layer B: 52s, reversed direction (CSS `animation-direction: reverse`
     // means the keyframe is played from `to` → `from`, equivalent to negating
     // the phase).
-    draw_layer(canvas, w, h, LAYER_B, 1.0 - (time / 52.0).fract());
+    draw_layer(canvas, w, h, LAYER_B, 1.0 - (t / 52.0).fract());
 }
 
 fn draw_layer(canvas: &Canvas, w: f32, h: f32, blobs: &[CausticBlob], phase: f32) {
@@ -169,7 +174,7 @@ fn draw_blob(canvas: &Canvas, layer_rect: &Rect, blob: &CausticBlob) {
     // sRGB-encoded floats for Skia's default Color4f interpretation. Passing
     // raw linear-sRGB values here makes the caustics render visibly darker
     // than the browser does.
-    let srgb = blob.color.to_srgb_f32();
+    let srgb = tokens::shift_oklch(blob.color).to_srgb_f32();
     let inner = Color4f::new(srgb[0], srgb[1], srgb[2], srgb[3]);
     let outer = Color4f::new(srgb[0], srgb[1], srgb[2], 0.0);
 

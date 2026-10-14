@@ -19,10 +19,11 @@
 //! CSS reference: `.vdrop`, `.vdrop-head`, `.vdrop-caret`, `.vdrop-portal-menu`,
 //! `.vdrop-panel-solid`, `.vdrop-row`, `.vdrop-dot` in `StyleSheet1`.
 
-use ewo_core::{motion, CubicBezier, Settings};
+use crate::tokens;
+use ewo_core::{motion, Settings};
 use skia_safe::{
-    gradient_shader, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint, PaintStyle,
-    Path, Point, RRect, Rect, TileMode,
+    gradient_shader, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Path,
+    Point, RRect, Rect, TileMode,
 };
 
 /// Per-row stagger delay (CSS `animation-delay: calc(var(--row-i) * 50ms)`).
@@ -241,7 +242,7 @@ fn draw_head_label_and_caret(
     let font = fonts.newsreader(14.0);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+    paint.set_color(tokens::text_pearl());
     let (_, m) = font.metrics();
     let cy = (bounds.top + bounds.bottom) * 0.5;
     let baseline = cy + m.cap_height * 0.5;
@@ -260,7 +261,7 @@ fn draw_head_label_and_caret(
     let to = -3.0 * std::f32::consts::FRAC_PI_4; // -135°
                                                  // `anim` already tracks the open/close direction, so the easing is
                                                  // the same expression regardless of the menu's open state.
-    let eased = CubicBezier::SILK.eval(anim.clamp(0.0, 1.0));
+    let eased = tokens::silk().eval(anim.clamp(0.0, 1.0));
     let angle = from + (to - from) * eased;
 
     let saved = canvas.save();
@@ -271,15 +272,7 @@ fn draw_head_label_and_caret(
     p.set_anti_alias(true);
     p.set_style(PaintStyle::Stroke);
     p.set_stroke_width(1.5);
-    p.set_color4f(
-        Color4f::new(
-            0xF4 as f32 / 255.0,
-            0xE8 as f32 / 255.0,
-            0xEA as f32 / 255.0,
-            0.7,
-        ),
-        None,
-    );
+    p.set_color4f(tokens::text_pearl_a(0.7), None);
     let half = size * 0.5;
     // Two strokes: right edge and bottom edge of a small square.
     canvas.draw_line((half, -half), (half, half), &p);
@@ -361,7 +354,7 @@ pub fn draw_vdrop_menu(
     if state.anim <= 0.001 {
         return;
     }
-    let anim = CubicBezier::SILK.eval(state.anim.clamp(0.0, 1.0));
+    let anim = tokens::silk().eval(state.anim.clamp(0.0, 1.0));
 
     // Portal-in (CSS `vdrop-portal-in`): scale 0.98 → 1, translateY(-4 → 0),
     // opacity 0 → 1 (the CSS blur is skipped, non-negotiable #3). For flip-up
@@ -431,10 +424,7 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
 
     let mut bloom = Paint::default();
     bloom.set_anti_alias(true);
-    bloom.set_color4f(
-        Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.12),
-        None,
-    );
+    bloom.set_color4f(tokens::accent_berry_a(0.12), None);
     bloom.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 16.0, true));
     canvas.draw_rrect(rrect, &bloom);
 
@@ -447,10 +437,7 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
             Point::new(bounds.left, bounds.bottom),
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(38.0 / 255.0, 18.0 / 255.0, 30.0 / 255.0, 1.0),
-                Color4f::new(28.0 / 255.0, 12.0 / 255.0, 22.0 / 255.0, 1.0),
-            ],
+            &[tokens::bg_card_top_a(1.0), tokens::bg_card_bottom_a(1.0)],
             None,
         ),
         Some(&[0.0_f32, 1.0][..]),
@@ -472,10 +459,7 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
         Point::new(cx, cy),
         bounds.width() * 0.6,
         gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
-            ],
+            &[tokens::accent_rose_a(0.10), tokens::accent_rose_a(0.0)],
             None,
         ),
         Some(&[0.0_f32, 1.0][..]),
@@ -494,10 +478,7 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.16),
-        None,
-    );
+    rim.set_color4f(tokens::accent_rose_a(0.16), None);
     let inset = bounds.with_inset((0.5, 0.5));
     canvas.draw_rrect(
         RRect::new_rect_xy(inset, MENU_RADIUS - 0.5, MENU_RADIUS - 0.5),
@@ -508,10 +489,7 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
     // approximated as a 1px line just inside the top edge.
     let mut top_line = Paint::default();
     top_line.set_anti_alias(true);
-    top_line.set_color4f(
-        Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.06),
-        None,
-    );
+    top_line.set_color4f(tokens::text_pearl_a(0.06), None);
     canvas.draw_line(
         (bounds.left + MENU_RADIUS, bounds.top + 1.0),
         (bounds.right - MENU_RADIUS, bounds.top + 1.0),
@@ -562,7 +540,7 @@ fn draw_menu_rows(
         let local = state.time_open - (i as f32) * motion::dur(ROW_STAGGER_S);
         let row_layer_handle = if state.open && local < reveal_s {
             let t = (local / reveal_s).clamp(0.0, 1.0);
-            let eased = CubicBezier::SILK.eval(t.max(0.0));
+            let eased = tokens::silk().eval(t.max(0.0));
             let alpha = if local < 0.0 { 0.0 } else { eased };
             let dy = (1.0 - eased) * -4.0; // -4 → 0
             let bounds_for_layer = Rect::from_xywh(
@@ -582,10 +560,7 @@ fn draw_menu_rows(
         if state.hovered_row == Some(i) {
             let mut hp = Paint::default();
             hp.set_anti_alias(true);
-            hp.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.05),
-                None,
-            );
+            hp.set_color4f(tokens::accent_rose_a(0.05), None);
             canvas.draw_rrect(row_rrect, &hp);
         }
 
@@ -594,10 +569,7 @@ fn draw_menu_rows(
             let dy = y;
             let mut div_paint = Paint::default();
             div_paint.set_anti_alias(true);
-            div_paint.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.15),
-                None,
-            );
+            div_paint.set_color4f(tokens::accent_rose_a(0.15), None);
             // Faux gradient fade-in/out via a clip + alpha — close enough at
             // this scale that a flat low-alpha line reads correctly.
             canvas.draw_line((row_left + 8.0, dy), (row_right - 8.0, dy), &div_paint);
@@ -609,10 +581,7 @@ fn draw_menu_rows(
         if i == state.selected {
             let mut glow = Paint::default();
             glow.set_anti_alias(true);
-            glow.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.8),
-                None,
-            );
+            glow.set_color4f(tokens::accent_rose_a(0.8), None);
             glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
             canvas.draw_circle((dot_cx, dot_cy), 3.0, &glow);
 
@@ -623,8 +592,8 @@ fn draw_menu_rows(
                 3.0,
                 gradient_shader::GradientShaderColors::ColorsInSpace(
                     &[
-                        Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 1.0),
-                        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
+                        tokens::text_pearl_highlight_a(1.0),
+                        tokens::accent_rose_a(1.0),
                     ],
                     None,
                 ),
@@ -641,7 +610,7 @@ fn draw_menu_rows(
         // Label
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+        paint.set_color(tokens::text_pearl());
         let baseline = dot_cy + m.cap_height * 0.5;
         canvas.draw_str(
             *opt,

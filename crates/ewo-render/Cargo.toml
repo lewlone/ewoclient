@@ -8,17 +8,20 @@ rust-version.workspace = true
 
 [dependencies]
 ewo-core.workspace = true
-glam.workspace = true
-bytemuck.workspace = true
 skia-safe.workspace = true
-glutin.workspace = true
-glutin-winit.workspace = true
 raw-window-handle.workspace = true
 winit.workspace = true
-gl.workspace = true
 log.workspace = true
 rand.workspace = true
 serde.workspace = true
+
+# Linux/Hyprland: Skia GL on a glutin window surface (gl_backend.rs). Windows
+# presents through D3D12 + DirectComposition instead, so none of these are
+# compiled there.
+[target.'cfg(not(windows))'.dependencies]
+gl.workspace = true
+glutin.workspace = true
+glutin-winit.workspace = true
 
 # Windows-only: DirectComposition presentation backend (see gl_backend.rs).
 # Skia's D3D12 backend + a composition swapchain give true per-pixel-alpha

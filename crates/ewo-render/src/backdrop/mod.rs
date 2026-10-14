@@ -8,7 +8,7 @@
 //!   2. velvet folds — 3 oklch radial layers, blurred 40px, screen 85%
 //!   3. caustics     — 5 oklch radials on 2 layers, blurred 30px, screen
 //!   4. bokeh        — single huge soft pearl crossing every 60s, screen
-//!   5. pearl dust   — 90 airborne + 60 settled motes, screen
+//!   5. pearl dust   — 110 airborne + 80 settled motes at density 1, screen
 //!   6. vignette     — radial dim at corners
 //!
 //! `Backdrop` owns the stateful subsystems (`PearlDust`, `Petals`) plus a
@@ -39,8 +39,10 @@ pub mod wine;
 use std::cell::RefCell;
 
 use ewo_core::{Settings, Theme};
-use skia_safe::{AlphaType, Canvas, Color, ColorType, Image, ImageInfo};
+use skia_safe::{Canvas, Image};
 
+use crate::offscreen::{self, LayerSize};
+use crate::tokens;
 use pearl_dust::PearlDust;
 use petals::Petals;
 
@@ -54,8 +56,11 @@ struct SlowCache {
     image: Image,
     /// `gl_backend::gpu_generation` the image was rendered under.
     generation: u64,
-    w: i32,
-    h: i32,
+    /// Physical size of `image`: the logical card size times the canvas's
+    /// device scale, so one cache pixel is one screen pixel (see `offscreen`).
+    size: LayerSize,
+    /// `accent_hue_shift` the image was painted with; a change repaints it.
+    hue_shift: f32,
     /// Wall-clock seconds at which `image` was rendered.
     last_refresh: f32,
 }
@@ -91,21 +96,30 @@ impl Backdrop {
         *self.slow_cache.borrow_mut() = None;
     }
 
-    pub fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, dt: f32, settings: &Settings) {
         // Reduced motion: dust and petals hold still (`dt = 0`). The prototype
         // drives them from `requestAnimationFrame`, which its
         // `prefers-reduced-motion` CSS cannot reach; as ambient motion they
         // are frozen here anyway (non-negotiable #6, see `ewo_core::motion`).
-        let dt = ewo_core::motion::ambient_dt(dt);
+        // `--motion-speed` scales their clock like every other ambient loop's.
+        let dt = ewo_core::motion::scaled_dt(dt, settings.motion_speed);
         self.pearl_dust.update(dt);
         self.petals.update(dt);
+    }
+
+    /// Device-pixel size of the cached slow-layer image, if one is built
+    /// (tests use it to check the cache is not logical-sized under a scale).
+    pub fn cached_layer_size(&self) -> Option<(i32, i32)> {
+        self.slow_cache
+            .borrow()
+            .as_ref()
+            .map(|c| (c.size.px_w, c.size.px_h))
     }
 
     pub fn disturb(&mut self) {
         self.pearl_dust.disturb();
     }
 
-    #[allow(dead_code)]
     pub fn celebrate(&mut self, on: bool) {
         // The petal burst is pure motion; under reduced motion it never starts.
         self.petals.celebrate(on && !ewo_core::motion::is_reduced());
@@ -120,6 +134,10 @@ impl Backdrop {
         theme: &Theme,
         settings: &Settings,
     ) {
+        // Publish the frame's palette (accent hue shift included) before any
+        // layer paints; `draw_frame` does this too, standalone callers rely
+        // on this one.
+        tokens::set_active(theme, settings);
         self.draw_slow_layers_cached(canvas, w, h, time, theme, settings);
         self.pearl_dust.draw(canvas);
         self.petals.draw(canvas);
@@ -139,16 +157,14 @@ impl Backdrop {
         theme: &Theme,
         settings: &Settings,
     ) {
-        let wi = w.round() as i32;
-        let hi = h.round() as i32;
-        if wi <= 0 || hi <= 0 {
+        let Some(size) = offscreen::layer_size(canvas, w, h) else {
             return;
-        }
+        };
 
         let need_refresh = match self.slow_cache.borrow().as_ref() {
             Some(c)
-                if c.w == wi
-                    && c.h == hi
+                if c.size == size
+                    && c.hue_shift == settings.accent_hue_shift
                     && c.generation == crate::gl_backend::gpu_generation() =>
             {
                 // Under reduced motion the layers are static, so the cached
@@ -160,22 +176,21 @@ impl Backdrop {
         };
 
         if need_refresh {
-            let info = ImageInfo::new((wi, hi), ColorType::RGBA8888, AlphaType::Premul, None);
-            match canvas.new_surface(&info, None) {
+            match offscreen::new_layer(canvas, size) {
                 Some(mut surface) => {
                     {
                         let oc = surface.canvas();
                         // Match the card body fill so the opaque blit is
                         // bit-identical to drawing the layers in place.
-                        oc.clear(Color::BLACK);
+                        oc.clear(tokens::bg_core());
                         draw_slow_layers_direct(oc, w, h, time, theme, settings);
                     }
                     let image = surface.image_snapshot();
                     *self.slow_cache.borrow_mut() = Some(SlowCache {
                         image,
                         generation: crate::gl_backend::gpu_generation(),
-                        w: wi,
-                        h: hi,
+                        size,
+                        hue_shift: settings.accent_hue_shift,
                         last_refresh: time,
                     });
                 }
@@ -188,9 +203,10 @@ impl Backdrop {
         }
 
         if let Some(c) = self.slow_cache.borrow().as_ref() {
-            // 1:1 blit (the cache is exactly card-sized), so default nearest
-            // sampling reproduces every pixel; no resampling.
-            canvas.draw_image(&c.image, (0.0, 0.0), None);
+            // 1:1 blit: the cache is exactly the card's size in device
+            // pixels, drawn with the scale undone, so nearest sampling
+            // reproduces every pixel and a HiDPI display is not upscaled.
+            offscreen::blit_layer(canvas, &c.image);
         }
     }
 }
@@ -206,6 +222,42 @@ fn draw_slow_layers_direct(
 ) {
     wine::draw(canvas, w, h, theme);
     velvet_folds::draw(canvas, w, h, time, settings);
-    caustics::draw(canvas, w, h, time);
-    bokeh::draw(canvas, w, h, time);
+    caustics::draw(canvas, w, h, time, settings.motion_speed);
+    bokeh::draw(canvas, w, h, time, settings.motion_speed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--motion-speed` scales how far the dust drifts per frame, live: it is
+    /// not baked into a mote when it spawns.
+    #[test]
+    fn pearl_dust_drift_follows_motion_speed_per_frame() {
+        // (This test binary never sets reduced motion: the flag stays off.)
+        let at = |speed: f32| Settings {
+            motion_speed: speed,
+            ..Settings::default()
+        };
+        let mut b = Backdrop::new(960.0, 640.0, &at(1.0));
+        let dt = 1.0 / 60.0;
+
+        let y0 = b.pearl_dust.airborne_ys();
+        b.update(dt, &at(1.0));
+        let y1 = b.pearl_dust.airborne_ys();
+        b.update(dt, &at(3.0));
+        let y2 = b.pearl_dust.airborne_ys();
+
+        // Spawned at y >= h, so nothing leaves the screen or respawns in two
+        // frames; vertical velocity is constant per mote.
+        for i in 0..y0.len() {
+            let one = y0[i] - y1[i];
+            let three = y1[i] - y2[i];
+            assert!(one > 0.0);
+            assert!(
+                (three - 3.0 * one).abs() < 1e-4,
+                "mote {i}: {three} is not 3 x {one}"
+            );
+        }
+    }
 }

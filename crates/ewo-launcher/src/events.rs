@@ -1492,7 +1492,7 @@ impl App {
         }
 
         if let Some(backdrop) = self.backdrop.as_mut() {
-            backdrop.update(dt);
+            backdrop.update(dt, &self.settings);
         }
 
         // Tick widget hover animations.

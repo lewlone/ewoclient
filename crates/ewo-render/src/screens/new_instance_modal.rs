@@ -12,10 +12,11 @@
 //! after every screen so it can spill outside any panel clips, and closes
 //! on shroud click / Cancel button / Esc / tab switch.
 
-use ewo_core::{motion, CubicBezier, Settings};
+use crate::tokens;
+use ewo_core::{motion, Settings};
 use skia_safe::{
-    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color,
-    Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
+    Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 use crate::text::{self, FontStore};
@@ -42,13 +43,6 @@ fn default_mc_versions() -> Vec<String> {
         .map(|s| (*s).to_string())
         .collect()
 }
-
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MAUVE_DEEP: Color = Color::from_argb(0xFF, 0x6B, 0x55, 0x5C);
-const TEXT_MID_PEARL: Color = Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5);
-const ACCENT_BERRY: Color = Color::from_argb(0xFF, 0xB4, 0x74, 0x91);
-const ACCENT_PEARL_HOT: Color = Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0);
 
 const CARD_RADIUS: f32 = 22.0;
 const CARD_MAX_W: f32 = 560.0;
@@ -464,7 +458,7 @@ pub fn draw_modal(
     if !state.open && state.anim <= 0.001 {
         return;
     }
-    let anim = CubicBezier::SILK.eval(state.anim.clamp(0.0, 1.0));
+    let anim = tokens::silk().eval(state.anim.clamp(0.0, 1.0));
 
     // Layer 1 — shroud (160ms opacity ramp; we share the 240ms anim and
     // clamp to >= ~67% when the card is at its peak so the shroud finishes
@@ -539,8 +533,8 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
             radius,
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(8.0 / 255.0, 2.0 / 255.0, 6.0 / 255.0, 0.55 * alpha),
-                    Color4f::new(8.0 / 255.0, 2.0 / 255.0, 6.0 / 255.0, 0.85 * alpha),
+                    tokens::bg_scrim_a(0.55 * alpha),
+                    tokens::bg_scrim_a(0.85 * alpha),
                 ],
                 None,
             ),
@@ -583,10 +577,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
                 Point::new(card.left, card.bottom),
             ),
             gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    Color4f::new(38.0 / 255.0, 18.0 / 255.0, 30.0 / 255.0, 0.92),
-                    Color4f::new(28.0 / 255.0, 12.0 / 255.0, 22.0 / 255.0, 0.95),
-                ],
+                &[tokens::bg_card_top_a(0.92), tokens::bg_card_bottom_a(0.95)],
                 None,
             ),
             Some(&[0.0_f32, 1.0][..]),
@@ -609,10 +600,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.18),
-        None,
-    );
+    rim.set_color4f(tokens::accent_rose_a(0.18), None);
     let inset_rect = card.with_inset((0.5, 0.5));
     canvas.draw_rrect(
         RRect::new_rect_xy(inset_rect, CARD_RADIUS - 0.5, CARD_RADIUS - 0.5),
@@ -658,10 +646,7 @@ fn draw_card_shadows(canvas: &Canvas, card: &Rect, rrect: &RRect) {
     // Berry bloom
     let mut s3 = Paint::default();
     s3.set_anti_alias(true);
-    s3.set_color4f(
-        Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.12),
-        None,
-    );
+    s3.set_color4f(tokens::accent_berry_a(0.12), None);
     s3.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 30.0, false));
     canvas.draw_rrect(*rrect, &s3);
 }
@@ -675,9 +660,9 @@ fn draw_card_tint(canvas: &Canvas, card: &Rect, rrect: &RRect) {
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
-                Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.06),
-                Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 0.10),
+                tokens::accent_rose_a(0.10),
+                tokens::accent_berry_a(0.06),
+                tokens::accent_lav_a(0.10),
             ],
             None,
         ),
@@ -698,10 +683,7 @@ fn draw_card_tint(canvas: &Canvas, card: &Rect, rrect: &RRect) {
         Point::new(cx, cy),
         card.width() * 0.7,
         gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.14),
-                Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.0),
-            ],
+            &[tokens::text_pearl_a(0.14), tokens::text_pearl_a(0.0)],
             None,
         ),
         Some(&[0.0_f32, 1.0][..]),
@@ -761,7 +743,7 @@ fn draw_head(canvas: &Canvas, fonts: &FontStore, left: f32, _right: f32, top: f3
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eb_paint = Paint::default();
     eb_paint.set_anti_alias(true);
-    eb_paint.set_color(ACCENT_BERRY);
+    eb_paint.set_color(tokens::accent_berry());
     let (_, em) = eyebrow_font.metrics();
     let eb_baseline = top + (-em.ascent);
     text::draw_tracked_em(
@@ -777,7 +759,7 @@ fn draw_head(canvas: &Canvas, fonts: &FontStore, left: f32, _right: f32, top: f3
     let title_font = fonts.fraunces_axes(36.0, 50.0, 1.0, 300.0, None);
     let mut t_paint = Paint::default();
     t_paint.set_anti_alias(true);
-    t_paint.set_color(ACCENT_PEARL_HOT);
+    t_paint.set_color(tokens::text_pearl_hot());
     let (_, tm) = title_font.metrics();
     let title_top = eb_baseline + em.descent + 4.0;
     let title_baseline = title_top + (-tm.ascent);
@@ -792,7 +774,7 @@ fn draw_head(canvas: &Canvas, fonts: &FontStore, left: f32, _right: f32, top: f3
     let sub_font = fonts.newsreader(14.0);
     let mut sub_paint = Paint::default();
     sub_paint.set_anti_alias(true);
-    sub_paint.set_color(TEXT_MAUVE);
+    sub_paint.set_color(tokens::text_mauve());
     let (_, sm) = sub_font.metrics();
     let sub_top = title_baseline + tm.descent + 4.0;
     let sub_baseline = sub_top + (-sm.ascent);
@@ -831,7 +813,7 @@ fn draw_name_field(
         // Replace the gentle hint with an ember-tinted error message.
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_color(Color::from_argb(0xFF, 0xD4, 0x88, 0x9A));
+        paint.set_color(tokens::accent_ember_text());
         let font = fonts.newsreader(12.0);
         canvas.draw_str(
             "name required",
@@ -920,10 +902,10 @@ fn draw_ram_field(
     let unit_font = fonts.jetbrains_mono(12.0);
     let mut num_paint = Paint::default();
     num_paint.set_anti_alias(true);
-    num_paint.set_color(TEXT_PEARL);
+    num_paint.set_color(tokens::text_pearl());
     let mut unit_paint = Paint::default();
     unit_paint.set_anti_alias(true);
-    unit_paint.set_color(TEXT_MAUVE);
+    unit_paint.set_color(tokens::text_mauve());
 
     let num_str = format!("{}", state.value as i32);
     let (num_advance, _) = num_font.measure_str(&num_str, Some(&num_paint));
@@ -971,18 +953,15 @@ fn draw_text_input(
     let bg_alpha = if focused { 0.08 } else { 0.05 };
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, bg_alpha),
-        None,
-    );
+    bg.set_color4f(tokens::accent_rose_a(bg_alpha), None);
     canvas.draw_rrect(rrect, &bg);
 
     // Focus / error glow.
     if focused || error {
         let glow_color = if error {
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.20)
+            tokens::accent_ember_a(0.20)
         } else {
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.12)
+            tokens::accent_rose_a(0.12)
         };
         let mut focus_glow = Paint::default();
         focus_glow.set_anti_alias(true);
@@ -1003,16 +982,10 @@ fn draw_text_input(
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
     if error {
-        border.set_color4f(
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.70),
-            None,
-        );
+        border.set_color4f(tokens::accent_ember_a(0.70), None);
     } else {
         let border_alpha = if focused { 0.50 } else { 0.16 };
-        border.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, border_alpha),
-            None,
-        );
+        border.set_color4f(tokens::accent_rose_a(border_alpha), None);
     }
     canvas.draw_rrect(rrect, &border);
 
@@ -1025,9 +998,9 @@ fn draw_text_input(
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
     if show_placeholder {
-        paint.set_color(Color::from_argb(0x59, 0xC4, 0xAF, 0xB5));
+        paint.set_color(tokens::text_mid_pearl().with_a(89));
     } else {
-        paint.set_color(ACCENT_PEARL_HOT);
+        paint.set_color(tokens::text_pearl_hot());
     }
     let (_, m) = font.metrics();
     let cy = (bounds.top + bounds.bottom) * 0.5;
@@ -1057,7 +1030,7 @@ fn draw_text_input(
             caret_paint.set_anti_alias(true);
             caret_paint.set_style(PaintStyle::Stroke);
             caret_paint.set_stroke_width(1.5);
-            caret_paint.set_color4f(Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha), None);
+            caret_paint.set_color4f(tokens::text_pearl_hot_a(alpha), None);
             canvas.draw_line((caret_x, caret_top), (caret_x, caret_bottom), &caret_paint);
         }
     }
@@ -1067,7 +1040,7 @@ fn draw_field_label_at(canvas: &Canvas, fonts: &FontStore, left: f32, baseline: 
     let font = fonts.newsreader(13.0);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color(TEXT_MID_PEARL);
+    paint.set_color(tokens::text_mid_pearl());
     canvas.draw_str(text, (left, baseline), &font, &paint);
 }
 
@@ -1075,7 +1048,7 @@ fn draw_field_hint_at(canvas: &Canvas, fonts: &FontStore, left: f32, baseline: f
     let font = fonts.newsreader(12.0);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color(TEXT_MAUVE_DEEP);
+    paint.set_color(tokens::text_mauve_deep());
     canvas.draw_str(text, (left, baseline), &font, &paint);
 }
 
@@ -1092,10 +1065,7 @@ fn draw_footer(
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line(
         (l.content_left, border_y),
         (l.content_right, border_y),

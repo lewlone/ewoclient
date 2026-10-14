@@ -1,4 +1,5 @@
-//! `ewo-core` — pure logic. State, types, theme tokens, easing, animation engine.
+//! `ewo-core` — pure logic. State, types, theme tokens, easing and the
+//! motion clock (reduced motion, `--motion-speed`).
 //!
 //! Zero rendering dependencies on purpose. This crate compiles in seconds and is
 //! the safe place to iterate on app behavior without paying Skia compile times.

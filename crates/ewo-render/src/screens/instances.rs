@@ -13,20 +13,16 @@
 //! .inst-detail         { padding: 28px 44px; }
 //! ```
 
+use crate::tokens;
 use ewo_core::Settings;
 use serde::{Deserialize, Serialize};
-use skia_safe::{Canvas, Color, Color4f, Paint, PaintStyle, Rect};
+use skia_safe::{Canvas, Color4f, Paint, PaintStyle, Rect};
 
 use crate::text::{self, FontStore};
 use crate::widgets::{
     draw_glass_panel, draw_scrollbar, draw_vbtn, draw_vdrop_head, draw_vdrop_menu, draw_vslider,
     menu_layout, VbtnState, VdropState, VsliderState,
 };
-
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MAUVE_DEEP: Color = Color::from_argb(0xFF, 0x6B, 0x55, 0x5C);
-const TEXT_MID_PEARL: Color = Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5);
 
 const HEADER_BOTTOM: f32 = 84.0; // tab bar takes 20-44, header content under it
 const LIST_WIDTH: f32 = 320.0;
@@ -647,9 +643,9 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
     // isn't in the serif display font (it renders as a tofu box). Brightens to
     // pearl + glows on hover.
     let back_color = if hover {
-        Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA)
+        tokens::text_pearl()
     } else {
-        TEXT_MID_PEARL
+        tokens::text_mid_pearl()
     };
     let back_font = fonts.fraunces_axes(20.0, 50.0, 0.0, 300.0, None);
     let mut back_paint = Paint::default();
@@ -693,7 +689,7 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eyebrow_paint = Paint::default();
     eyebrow_paint.set_anti_alias(true);
-    eyebrow_paint.set_color(TEXT_MAUVE);
+    eyebrow_paint.set_color(tokens::text_mauve());
     let label = "INSTANCES";
     let advance = text::measure_tracked_em(&eyebrow_font, label, 0.35);
     let (_, em) = eyebrow_font.metrics();
@@ -712,10 +708,7 @@ fn draw_screen_head(canvas: &Canvas, fonts: &FontStore, w: f32, hover: bool) {
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line((0.0, HEADER_BOTTOM), (w, HEADER_BOTTOM), &div);
 }
 
@@ -750,7 +743,7 @@ fn draw_list(
     let head_font = fonts.fraunces_axes(18.0, 50.0, 0.0, 300.0, None);
     let mut head_paint = Paint::default();
     head_paint.set_anti_alias(true);
-    head_paint.set_color(TEXT_PEARL);
+    head_paint.set_color(tokens::text_pearl());
     let (_, hm) = head_font.metrics();
     let head_baseline = list_top + (-hm.ascent);
     canvas.draw_str(
@@ -772,10 +765,7 @@ fn draw_list(
         glow.set_anti_alias(true);
         glow.set_style(PaintStyle::Stroke);
         glow.set_stroke_width(4.0);
-        glow.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.20),
-            None,
-        );
+        glow.set_color4f(tokens::accent_rose_a(0.20), None);
         glow.set_mask_filter(skia_safe::MaskFilter::blur(
             skia_safe::BlurStyle::Normal,
             6.0,
@@ -789,19 +779,16 @@ fn draw_list(
     add_border.set_style(PaintStyle::Stroke);
     add_border.set_stroke_width(1.0);
     let border_alpha = if add_hover { 0.60 } else { 0.20 };
-    add_border.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, border_alpha),
-        None,
-    );
+    add_border.set_color4f(tokens::accent_rose_a(border_alpha), None);
     canvas.draw_rrect(add_rrect, &add_border);
 
     let plus_font = fonts.fraunces_axes(20.0, 50.0, 0.0, 300.0, None);
     let mut plus_paint = Paint::default();
     plus_paint.set_anti_alias(true);
     plus_paint.set_color(if add_hover {
-        Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0)
+        tokens::text_pearl_hot()
     } else {
-        Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5)
+        tokens::accent_rose()
     });
     let (plus_advance, _) = plus_font.measure_str("+", Some(&plus_paint));
     let (_, pm) = plus_font.metrics();
@@ -832,10 +819,7 @@ fn draw_list(
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line(
         (LIST_LEFT_PAD, head_div_y),
         (LIST_WIDTH - 24.0, head_div_y),
@@ -855,10 +839,7 @@ fn draw_list(
     let mut y = rows_top;
     let mut row_div_paint = Paint::default();
     row_div_paint.set_anti_alias(true);
-    row_div_paint.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
-        None,
-    );
+    row_div_paint.set_color4f(tokens::accent_rose_a(0.06), None);
     for (display_idx, &underlying_idx) in order.iter().enumerate() {
         let inst = &instances[underlying_idx];
         let is_selected = underlying_idx == selected;
@@ -908,10 +889,7 @@ fn draw_list(
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    border.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line((LIST_WIDTH, HEADER_BOTTOM), (LIST_WIDTH, h - 28.0), &border);
 }
 
@@ -938,7 +916,7 @@ fn draw_list_row(
     // row drawing — alpha + translate compose cleanly without needing
     // every paint to know about it.
     let saved_count = if let Some(p) = anim {
-        let eased = ewo_core::CubicBezier::SILK.eval(p.clamp(0.0, 1.0));
+        let eased = tokens::silk().eval(p.clamp(0.0, 1.0));
         let alpha = eased;
         let dy = (1.0 - eased) * -14.0;
         let row_layer_bounds = Rect::from_xywh(0.0, y - 16.0, LIST_WIDTH, h + 32.0);
@@ -953,10 +931,7 @@ fn draw_list_row(
             let halo_rrect = skia_safe::RRect::new_rect_xy(halo_rect, 12.0, 12.0);
             let mut halo = Paint::default();
             halo.set_anti_alias(true);
-            halo.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, halo_alpha),
-                None,
-            );
+            halo.set_color4f(tokens::accent_rose_a(halo_alpha), None);
             halo.set_mask_filter(skia_safe::MaskFilter::blur(
                 skia_safe::BlurStyle::Normal,
                 10.0,
@@ -978,10 +953,7 @@ fn draw_list_row(
     if hovered && !selected {
         let mut hover_bg = Paint::default();
         hover_bg.set_anti_alias(true);
-        hover_bg.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.04),
-            None,
-        );
+        hover_bg.set_color4f(tokens::accent_rose_a(0.04), None);
         let hover_rect = Rect::from_xywh(12.0, y + 3.0, LIST_WIDTH - 24.0, h - 6.0);
         let hover_rrect = skia_safe::RRect::new_rect_xy(hover_rect, 10.0, 10.0);
         canvas.draw_rrect(hover_rrect, &hover_bg);
@@ -992,10 +964,7 @@ fn draw_list_row(
     if selected {
         let mut mark = Paint::default();
         mark.set_anti_alias(true);
-        mark.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.85),
-            None,
-        );
+        mark.set_color4f(tokens::accent_rose_a(0.85), None);
         canvas.draw_rect(
             Rect::from_xywh(LIST_LEFT_PAD - 16.0, label_top + 4.0, 3.0, 32.0),
             &mark,
@@ -1003,10 +972,7 @@ fn draw_list_row(
     } else if hovered {
         let mut mark = Paint::default();
         mark.set_anti_alias(true);
-        mark.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.30),
-            None,
-        );
+        mark.set_color4f(tokens::accent_rose_a(0.30), None);
         canvas.draw_rect(
             Rect::from_xywh(LIST_LEFT_PAD - 16.0, label_top + 8.0, 2.0, 24.0),
             &mark,
@@ -1019,9 +985,9 @@ fn draw_list_row(
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
     name_paint.set_color(if selected {
-        Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0)
+        tokens::text_pearl_hot()
     } else {
-        TEXT_PEARL
+        tokens::text_pearl()
     });
     if !selected && !hovered {
         name_paint.set_alpha_f(0.85);
@@ -1050,7 +1016,7 @@ fn draw_list_row(
     let meta_font = fonts.jetbrains_mono(10.0);
     let mut meta_paint = Paint::default();
     meta_paint.set_anti_alias(true);
-    meta_paint.set_color(TEXT_MAUVE);
+    meta_paint.set_color(tokens::text_mauve());
     let (_, mm) = meta_font.metrics();
     let meta_top = name_baseline + nm.descent + 6.0;
     let meta_baseline = meta_top + (-mm.ascent);
@@ -1071,7 +1037,7 @@ fn draw_list_row(
         let dl_font = fonts.jetbrains_mono(9.0);
         let mut dl_paint = Paint::default();
         dl_paint.set_anti_alias(true);
-        dl_paint.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+        dl_paint.set_color(tokens::accent_rose());
         let owned;
         let label: &str = match download_pct {
             Some(p) => {
@@ -1095,7 +1061,7 @@ fn draw_list_row(
         let ts_font = fonts.newsreader(11.0);
         let mut ts_paint = Paint::default();
         ts_paint.set_anti_alias(true);
-        ts_paint.set_color(TEXT_MAUVE_DEEP);
+        ts_paint.set_color(tokens::text_mauve_deep());
         let (ts_advance, _) = ts_font.measure_str(&inst.last_played, Some(&ts_paint));
         let (_, tm) = ts_font.metrics();
         let ts_baseline = meta_top + (-tm.ascent);
@@ -1115,17 +1081,11 @@ fn draw_list_row(
     let mut x_paint = Paint::default();
     x_paint.set_anti_alias(true);
     if delete_hover {
-        x_paint.set_color(Color::from_argb(0xFF, 0xC9, 0x6A, 0x7A));
+        x_paint.set_color(tokens::accent_ember());
     } else if hovered || selected {
-        x_paint.set_color4f(
-            Color4f::new(196.0 / 255.0, 175.0 / 255.0, 181.0 / 255.0, 0.50),
-            None,
-        );
+        x_paint.set_color4f(tokens::text_mid_pearl_a(0.50), None);
     } else {
-        x_paint.set_color4f(
-            Color4f::new(196.0 / 255.0, 175.0 / 255.0, 181.0 / 255.0, 0.20),
-            None,
-        );
+        x_paint.set_color4f(tokens::text_mid_pearl_a(0.20), None);
     }
     let glyph = "×";
     let (glyph_advance, _) = x_font.measure_str(glyph, Some(&x_paint));
@@ -1199,7 +1159,7 @@ fn draw_detail(
 
         // Selection animation layer — wraps everything below.
         let layer_count = if let Some(p) = select_anim {
-            let eased = ewo_core::CubicBezier::SILK.eval(p.clamp(0.0, 1.0));
+            let eased = tokens::silk().eval(p.clamp(0.0, 1.0));
             let alpha = eased;
             let dy = (1.0 - eased) * 12.0;
             let s = canvas.save_layer_alpha_f(panel, alpha);
@@ -1313,7 +1273,7 @@ fn draw_head(
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eyebrow_paint = Paint::default();
     eyebrow_paint.set_anti_alias(true);
-    eyebrow_paint.set_color(TEXT_MAUVE);
+    eyebrow_paint.set_color(tokens::text_mauve());
     let (_, em) = eyebrow_font.metrics();
     let eyebrow_baseline = content_top + (-em.ascent);
     text::draw_tracked_em(
@@ -1343,10 +1303,7 @@ fn draw_head(
 
         let mut bg = Paint::default();
         bg.set_anti_alias(true);
-        bg.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
-            None,
-        );
+        bg.set_color4f(tokens::accent_rose_a(0.06), None);
         canvas.draw_rrect(input_rrect, &bg);
 
         // Focus glow + border.
@@ -1354,10 +1311,7 @@ fn draw_head(
         glow.set_anti_alias(true);
         glow.set_style(PaintStyle::Stroke);
         glow.set_stroke_width(3.0);
-        glow.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.12),
-            None,
-        );
+        glow.set_color4f(tokens::accent_rose_a(0.12), None);
         glow.set_mask_filter(skia_safe::MaskFilter::blur(
             skia_safe::BlurStyle::Normal,
             7.0,
@@ -1369,16 +1323,13 @@ fn draw_head(
         border.set_anti_alias(true);
         border.set_style(PaintStyle::Stroke);
         border.set_stroke_width(1.0);
-        border.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.50),
-            None,
-        );
+        border.set_color4f(tokens::accent_rose_a(0.50), None);
         canvas.draw_rrect(input_rrect, &border);
 
         // Buffer text (or empty placeholder dim).
         let mut text_paint = Paint::default();
         text_paint.set_anti_alias(true);
-        text_paint.set_color(TEXT_PEARL);
+        text_paint.set_color(tokens::text_pearl());
         let display = &prefs.rename_buffer;
         canvas.draw_str(
             display,
@@ -1403,14 +1354,14 @@ fn draw_head(
             caret.set_anti_alias(true);
             caret.set_style(PaintStyle::Stroke);
             caret.set_stroke_width(2.0);
-            caret.set_color4f(Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha), None);
+            caret.set_color4f(tokens::text_pearl_hot_a(alpha), None);
             canvas.draw_line((caret_x, caret_top), (caret_x, caret_bottom), &caret);
         }
     } else {
         // Plain name + ✎ icon next to it.
         let mut name_paint = Paint::default();
         name_paint.set_anti_alias(true);
-        name_paint.set_color(TEXT_PEARL);
+        name_paint.set_color(tokens::text_pearl());
         canvas.draw_str(
             &selected.name,
             (content_left, name_baseline),
@@ -1424,9 +1375,9 @@ fn draw_head(
         // the top-right + a tiny tip mark at the bottom-left. Faint by
         // default, warm-white on hover.
         let icon_color = if prefs.rename_hover {
-            Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 1.0)
+            tokens::text_pearl_a(1.0)
         } else {
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.40)
+            tokens::accent_rose_a(0.40)
         };
         let (name_advance, _) = name_font.measure_str(&selected.name, Some(&name_paint));
         let icon_cx = content_left + name_advance + 18.0;
@@ -1506,10 +1457,7 @@ fn draw_head_divider(canvas: &Canvas, left: f32, right: f32, y: f32) {
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line((left, y), (right, y), &div);
 }
 
@@ -1574,10 +1522,7 @@ fn draw_config_rows(
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line((left, div_y), (right, div_y), &div);
     div_y + 28.0 // CSS `.inst-config { margin-bottom: 28 }` before the mods section
 }
@@ -1639,7 +1584,7 @@ fn draw_config_label(
     let label_font = fonts.newsreader(14.0);
     let mut label_paint = Paint::default();
     label_paint.set_anti_alias(true);
-    label_paint.set_color(TEXT_MID_PEARL);
+    label_paint.set_color(tokens::text_mid_pearl());
     let (_, lm) = label_font.metrics();
     let label_baseline = top + (-lm.ascent);
     canvas.draw_str(label, (left, label_baseline), &label_font, &label_paint);
@@ -1648,7 +1593,7 @@ fn draw_config_label(
         let value_font = fonts.jetbrains_mono(11.0);
         let mut value_paint = Paint::default();
         value_paint.set_anti_alias(true);
-        value_paint.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+        value_paint.set_color(tokens::accent_rose());
         let advance = text::measure_tracked_em(&value_font, value_text, 0.12);
         let (_, vm) = value_font.metrics();
         // Align the mono baseline to the italic label's baseline so the row
@@ -1704,7 +1649,7 @@ fn draw_mod_section(
     let title_font = fonts.fraunces_axes(18.0, 50.0, 0.0, 300.0, None);
     let mut title_paint = Paint::default();
     title_paint.set_anti_alias(true);
-    title_paint.set_color(TEXT_PEARL);
+    title_paint.set_color(tokens::text_pearl());
     let (_, tm) = title_font.metrics();
     let title_baseline = top + (-tm.ascent);
     canvas.draw_str("Mods", (left, title_baseline), &title_font, &title_paint);
@@ -1713,7 +1658,7 @@ fn draw_mod_section(
     let count_font = fonts.jetbrains_mono(10.0);
     let mut count_paint = Paint::default();
     count_paint.set_anti_alias(true);
-    count_paint.set_color(TEXT_MAUVE);
+    count_paint.set_color(tokens::text_mauve());
     let count_str = format!("{} OF {} ENABLED", on_count, mods.len());
     let advance = text::measure_tracked_em(&count_font, &count_str, 0.18);
     // Right-align with the title's baseline (CSS uses `align-items: baseline`).
@@ -1749,7 +1694,7 @@ fn draw_mod_section(
 
         let row_rect = Rect::from_xywh(left, y, right - left, MOD_ROW_HEIGHT + 4.0);
         let layer_handle = if let Some(t) = reveal_t {
-            let eased = ewo_core::CubicBezier::SILK.eval(t.clamp(0.0, 1.0));
+            let eased = tokens::silk().eval(t.clamp(0.0, 1.0));
             // 0.4 → 1.0 opacity, 4 → 0 translateY.
             let alpha = 0.4 + 0.6 * eased;
             let dy = (1.0 - eased) * 4.0;
@@ -1765,10 +1710,7 @@ fn draw_mod_section(
             div.set_anti_alias(true);
             div.set_style(PaintStyle::Stroke);
             div.set_stroke_width(1.0);
-            div.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
-                None,
-            );
+            div.set_color4f(tokens::accent_rose_a(0.06), None);
             canvas.draw_line((left, y), (right, y), &div);
         }
         draw_mod_row(canvas, fonts, left, right, y, m, on);
@@ -1798,10 +1740,7 @@ fn draw_mod_row(
     toggle_border.set_anti_alias(true);
     toggle_border.set_style(PaintStyle::Stroke);
     toggle_border.set_stroke_width(1.0);
-    toggle_border.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.20),
-        None,
-    );
+    toggle_border.set_color4f(tokens::accent_rose_a(0.20), None);
     canvas.draw_circle((toggle_cx, cy), MOD_TOGGLE_SIZE * 0.5, &toggle_border);
 
     if on {
@@ -1810,10 +1749,7 @@ fn draw_mod_row(
         // Outer halo
         let mut halo = Paint::default();
         halo.set_anti_alias(true);
-        halo.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.7),
-            None,
-        );
+        halo.set_color4f(tokens::accent_rose_a(0.7), None);
         halo.set_mask_filter(skia_safe::MaskFilter::blur(
             skia_safe::BlurStyle::Normal,
             4.0,
@@ -1827,9 +1763,9 @@ fn draw_mod_row(
             pearl_r * 1.6,
             skia_safe::gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
-                    Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
-                    Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 1.0),
+                    tokens::text_pearl_hot_a(1.0),
+                    tokens::accent_rose_a(1.0),
+                    tokens::accent_lav_a(1.0),
                 ],
                 None,
             ),
@@ -1849,7 +1785,7 @@ fn draw_mod_row(
     let name_font = fonts.fraunces_axes(15.0, 50.0, 0.0, 400.0, None);
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
-    name_paint.set_color(TEXT_PEARL);
+    name_paint.set_color(tokens::text_pearl());
     if !on {
         name_paint.set_alpha_f(0.4);
     }
@@ -1862,7 +1798,7 @@ fn draw_mod_row(
     let version_font = fonts.jetbrains_mono(11.0);
     let mut version_paint = Paint::default();
     version_paint.set_anti_alias(true);
-    version_paint.set_color(TEXT_MID_PEARL);
+    version_paint.set_color(tokens::text_mid_pearl());
     if !on {
         version_paint.set_alpha_f(0.4);
     }
@@ -1880,7 +1816,7 @@ fn draw_mod_row(
     let cat_font = fonts.jetbrains_mono(9.0);
     let mut cat_paint = Paint::default();
     cat_paint.set_anti_alias(true);
-    cat_paint.set_color(TEXT_MAUVE);
+    cat_paint.set_color(tokens::text_mauve());
     if !on {
         cat_paint.set_alpha_f(0.5);
     }
@@ -2179,9 +2115,9 @@ fn draw_sort_label(canvas: &Canvas, fonts: &FontStore, baseline: f32, mode: Sort
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
     paint.set_color(if hover {
-        Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5)
+        tokens::accent_rose()
     } else {
-        Color::from_argb(0xFF, 0x9A, 0x80, 0x87)
+        tokens::text_mauve()
     });
     let prefix = "SORT · ";
     text::draw_tracked_em(
@@ -2196,9 +2132,9 @@ fn draw_sort_label(canvas: &Canvas, fonts: &FontStore, baseline: f32, mode: Sort
     let mut value_paint = Paint::default();
     value_paint.set_anti_alias(true);
     value_paint.set_color(if hover {
-        Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0)
+        tokens::text_pearl_hot()
     } else {
-        Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5)
+        tokens::text_mid_pearl()
     });
     let label = mode.label();
     canvas.draw_str(

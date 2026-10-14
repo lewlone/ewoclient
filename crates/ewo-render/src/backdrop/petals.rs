@@ -14,6 +14,8 @@
 //! contributors.
 
 use ewo_core::OkLch;
+
+use crate::tokens;
 use rand::Rng;
 use skia_safe::{gradient_shader, BlendMode, Canvas, Color4f, Paint, Path, Point, TileMode};
 use std::f32::consts::PI;
@@ -75,7 +77,6 @@ impl Petals {
         self.density = density;
     }
 
-    #[allow(dead_code)]
     pub fn celebrate(&mut self, on: bool) {
         self.celebrating = on;
     }
@@ -154,9 +155,11 @@ impl Petals {
             path.close();
 
             // 3-stop linear gradient across the petal (left→right).
-            let c0 = OkLch::new(0.75, 0.09, p.hue, p.alpha).to_srgb_f32();
-            let c1 = OkLch::new(0.82, 0.10, p.hue + 10.0, p.alpha).to_srgb_f32();
-            let c2 = OkLch::new(0.68, 0.08, p.hue - 10.0, p.alpha * 0.6).to_srgb_f32();
+            let c0 = tokens::shift_oklch(OkLch::new(0.75, 0.09, p.hue, p.alpha)).to_srgb_f32();
+            let c1 =
+                tokens::shift_oklch(OkLch::new(0.82, 0.10, p.hue + 10.0, p.alpha)).to_srgb_f32();
+            let c2 = tokens::shift_oklch(OkLch::new(0.68, 0.08, p.hue - 10.0, p.alpha * 0.6))
+                .to_srgb_f32();
 
             let shader = gradient_shader::linear(
                 (Point::new(-p.size, 0.0), Point::new(p.size, 0.0)),

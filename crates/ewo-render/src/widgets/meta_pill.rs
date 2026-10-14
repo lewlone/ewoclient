@@ -24,7 +24,8 @@
 //! dot indicator pulses opacity 0.55 ↔ 1.0 over 2.4s ease-in-out (CSS
 //! `meta-pulse`).
 
-use skia_safe::{BlurStyle, Canvas, Color4f, MaskFilter, Paint, PaintStyle, RRect, Rect};
+use crate::tokens;
+use skia_safe::{BlurStyle, Canvas, MaskFilter, Paint, PaintStyle, RRect, Rect};
 
 use crate::text::{self, FontStore};
 
@@ -36,19 +37,6 @@ const RADIUS: f32 = 8.0;
 const DOT_SIZE: f32 = 5.0;
 const DOT_GAP: f32 = 8.0;
 const PULSE_PERIOD_S: f32 = 2.4;
-
-const TEXT_MAUVE: Color4f = Color4f {
-    r: 0x9A as f32 / 255.0,
-    g: 0x80 as f32 / 255.0,
-    b: 0x87 as f32 / 255.0,
-    a: 1.0,
-};
-const ACCENT_ROSE: Color4f = Color4f {
-    r: 0xE5 as f32 / 255.0,
-    g: 0xB8 as f32 / 255.0,
-    b: 0xC5 as f32 / 255.0,
-    a: 1.0,
-};
 
 /// Compute the visual bounds of a meta pill given its label + dot flag.
 /// Width = horizontal padding × 2 + (dot + gap if present) + tracked label width.
@@ -82,10 +70,7 @@ pub fn draw_meta_pill(
     // Background fill — `rgba(229,184,197,0.04)`.
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.04),
-        None,
-    );
+    bg.set_color4f(tokens::accent_rose_a(0.04), None);
     canvas.draw_rrect(rrect, &bg);
 
     // Inset hairline rim — `box-shadow: inset 0 0 0 1px rgba(229,184,197,0.10)`.
@@ -93,10 +78,7 @@ pub fn draw_meta_pill(
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
-        None,
-    );
+    rim.set_color4f(tokens::accent_rose_a(0.10), None);
     let inset = rect.with_inset((0.5, 0.5));
     canvas.draw_rrect(RRect::new_rect_xy(inset, RADIUS - 0.5, RADIUS - 0.5), &rim);
 
@@ -123,20 +105,14 @@ pub fn draw_meta_pill(
         // Soft halo behind the dot — CSS `box-shadow: 0 0 6px rgba(229,184,197,0.9)`.
         let mut halo = Paint::default();
         halo.set_anti_alias(true);
-        halo.set_color4f(
-            Color4f::new(ACCENT_ROSE.r, ACCENT_ROSE.g, ACCENT_ROSE.b, 0.9 * opacity),
-            None,
-        );
+        halo.set_color4f(tokens::accent_rose_a(0.9 * opacity), None);
         halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
         canvas.draw_circle((dot_cx, dot_cy), DOT_SIZE * 0.5 + 1.0, &halo);
 
         // Solid rose dot.
         let mut dot = Paint::default();
         dot.set_anti_alias(true);
-        dot.set_color4f(
-            Color4f::new(ACCENT_ROSE.r, ACCENT_ROSE.g, ACCENT_ROSE.b, opacity),
-            None,
-        );
+        dot.set_color4f(tokens::accent_rose_a(opacity), None);
         canvas.draw_circle((dot_cx, dot_cy), DOT_SIZE * 0.5, &dot);
 
         text_x += DOT_SIZE + DOT_GAP;
@@ -146,7 +122,7 @@ pub fn draw_meta_pill(
     let font = fonts.jetbrains_mono(PIPE_FONT_SIZE);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color4f(TEXT_MAUVE, None);
+    paint.set_color4f(tokens::text_mauve_a(1.0), None);
     let (_, m) = font.metrics();
     // Center vertically on cap-mid: baseline = cy + cap_height*0.5.
     let baseline = cy + m.cap_height * 0.5;
