@@ -483,7 +483,7 @@ const AIR_STATE: u32 = 0;
 /// The paced command stream `--swing-check` issues after spawn. `say` lines are
 /// deliberate no-ops that keep the 250 ms pacing honest while the server
 /// applies the previous command and the tracker broadcasts its equipment
-/// update (see the AGENT_LOOP_BRIEF pacing trap).
+/// update (see the pacing trap in docs/history/AGENT_LOOP_BRIEF.md).
 fn swing_check_commands() -> Vec<String> {
     // Every selector is tag-scoped: `kill` removes only this gate's own
     // fixture, never "all zombies", so an unrelated mob standing nearby (or a

@@ -4,7 +4,7 @@
 
 Written down because the recipe is the expensive part, not the gate: every trap
 below has cost a previous session a run or an hour, and they are all recorded in
-AGENT_LOOP_BRIEF.md's "Test server" section.
+docs/history/AGENT_LOOP_BRIEF.md's "Test server" section.
 
 * **A fresh DIRECTORY, not a shared one.** Unlocked recipes persist into the
   save, and r25 needs a multi-page recipe book — 2026-08-07's M105b looked green

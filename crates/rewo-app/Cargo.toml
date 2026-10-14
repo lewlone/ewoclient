@@ -13,7 +13,7 @@ path = "src/main.rs"
 [features]
 # **M143 — audio, off by default, and the default is the point.**
 #
-# `rewo` is one binary and all 34 gates are subcommands of it, so anything this
+# `rewo` is one binary and every gate is a subcommand of it, so anything this
 # crate depends on is linked into every one of them. cpal and symphonia are an
 # audio stack none of those gates exercises and none of them can grade, so the
 # dependency is optional and a plain `cargo build -p rewo-app` pulls in neither.

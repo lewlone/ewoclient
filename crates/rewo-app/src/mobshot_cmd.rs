@@ -4,7 +4,7 @@
 //! Two modes:
 //! - **Contact sheet** (default): render every available mob with its real
 //!   texture into one PNG — the eyeball artifact.
-//! - **`--check`**: the facelabel gate (REWO_MOB_REDO_HANDOFF §6). Every
+//! - **`--check`**: the facelabel gate (docs/history/REWO_MOB_REDO_HANDOFF.md §6). Every
 //!   mob texture is replaced by per-face solid colors
 //!   (`REWO_MOB_DEBUG_TEX`), each mob renders from front/left/top, and the
 //!   dominant rendered color must match the dominant face *predicted from

@@ -20,12 +20,12 @@ symphonia = { version = "0.5", default-features = false, features = ["ogg", "vor
 
 # **The direction that is allowed.** rewo-audio may depend on rewo-net, for
 # ListenerTransform and the OpenAL gain curve M131 transcribed; rewo-net must
-# never depend on this, or 34 gates link a codec to decode a packet.
+# never depend on this, or every gate links a codec to decode a packet.
 rewo-net = { path = "../rewo-net" }
 
 # **The device, and the only dependency that can make a noise.** Reached from
 # rewo-app only under its `audio` feature, which is off by default: a default
-# build links no audio stack, so all 34 gates are unchanged. See
+# build links no audio stack, so every gate is unchanged. See
 # `live_sink::LiveSink` and `rewo-app`'s `audio_backend`.
 cpal = "0.15"
 

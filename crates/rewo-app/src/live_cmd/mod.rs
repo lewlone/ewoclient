@@ -138,7 +138,7 @@ pub struct LiveArgs {
     wavy_cape: bool,
     /// Open an audio device and actually play sounds (M143). Off by default,
     /// and a no-op unless the binary was built `--features audio` — a default
-    /// build links no audio stack at all, which is what keeps the 34 gates
+    /// build links no audio stack at all, which is what keeps the gates
     /// free of one. Also read from `REWO_AUDIO=1`.
     ///
     /// **A successful open does not mean anything is audible.** Absent, muted,

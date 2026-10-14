@@ -11,7 +11,7 @@
 //!
 //! **It reaches `rewo-app` only under that crate's `audio` feature, which is
 //! off by default** (M143). A default build links no audio stack at all, so the
-//! 34 gates are unchanged and none of them can open a device by accident; a
+//! gates are unchanged and none of them can open a device by accident; a
 //! build with `--features audio` and a run with `rewo live --audio` is the only
 //! path from the client to a noise. `cargo run -p rewo-audio --example listen`
 //! is the other one. **Either way the listening pass is a human's job** — a

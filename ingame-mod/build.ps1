@@ -26,8 +26,7 @@
 #
 # The cdylib step exists so changes to ewo-core (e.g. modules::REGISTRY) or
 # ewo-jni are picked up automatically. Skipping it stranded Auto Totem +
-# Legit Elytra Swap behind a stale dll for a session - see CLAUDE.md "stale
-# file:// jar gotcha" for the parallel jar-side cache trap.
+# Legit Elytra Swap behind a stale dll for a session.
 #
 # This toolchain runs mods in Minecraft's mapped namespace with no remapping
 # step, so a Fabric mod here is just javac + jar. The mod reads Minecraft
@@ -210,10 +209,11 @@ if ($NoDeploy) {
     exit 0
 }
 
-# Deploy into the launcher's shared library cache. The loader manifest points
-# at this jar via a file:// URL, but the launcher copies file:// libraries into
-# shared/libraries once and never refreshes them - so an in-place rebuild must
-# redeploy here itself, or the next launch silently runs the stale jar.
+# Deploy into the launcher's shared library cache, so the very next launch
+# runs this build. (The launcher re-copies every file:// library from its
+# source at each launch; the source the manifests name is the dev drop below,
+# which this script also writes - a manifest pointing anywhere else is what
+# used to resurrect a stale jar.)
 $deploy = Join-Path $ewo "shared\libraries\dev\lewlone\ewo-hud\0.1.0\ewo-hud-0.1.0.jar"
 New-Item -ItemType Directory -Force (Split-Path $deploy) | Out-Null
 Copy-Item -Force $jar $deploy

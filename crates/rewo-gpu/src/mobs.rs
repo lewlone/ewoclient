@@ -5,7 +5,7 @@
 //! approximate**. The previous hand-rolled unwrap (`box_uv_faces`) had the
 //! face→rect assignment, the per-face vertex→UV-corner order, and the mirror
 //! handling all subtly wrong — silhouettes looked right while every texture
-//! was scrambled (see REWO_MOB_REDO_HANDOFF.md). This port reproduces
+//! was scrambled (see docs/history/REWO_MOB_REDO_HANDOFF.md). This port reproduces
 //! `ModelPart.Cube` + `Polygon` verbatim: the 8 corners, the per-face vertex
 //! arrays, the UV column table, the UP-face vertical flip, and the mirror
 //! vertex reversal.

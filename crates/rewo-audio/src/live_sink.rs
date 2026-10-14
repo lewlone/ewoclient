@@ -211,7 +211,7 @@ pub struct LiveSink<S: PcmSource> {
     ///
     /// **Optional, exactly as M156's static worker is**, and for the same
     /// reason: with `None` every read happens inline on the caller's thread, so
-    /// all 36 gates and every witness in this crate stay synchronous and
+    /// every gate and every witness in this crate stay synchronous and
     /// deterministic. A milestone that made it mandatory would have made every
     /// existing test a race.
     streams: Option<crate::stream_worker::StreamWorker>,

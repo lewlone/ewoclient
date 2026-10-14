@@ -9,7 +9,7 @@
 //!
 //! **This is the only code path in Rewo that makes a noise**, and it is an
 //! example rather than a `rewo` subcommand on purpose: wiring cpal into the
-//! client binary would link an audio stack into all 34 gates for a subsystem
+//! client binary would link an audio stack into every gate for a subsystem
 //! none of them exercises.
 //!
 //! # Why this is staged, and what the first cut could not reach

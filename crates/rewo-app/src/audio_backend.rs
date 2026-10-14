@@ -1,7 +1,7 @@
 //! Opening an audio device — the only file in `rewo-app` with a `#[cfg]` in it.
 //!
 //! **The whole feature gate is contained here on purpose.** `rewo` is one
-//! binary and all 34 gates are subcommands of it, so a dependency of this crate
+//! binary and every gate is a subcommand of it, so a dependency of this crate
 //! is linked into every one of them; `rewo-audio` is therefore optional and a
 //! default build pulls in neither cpal nor symphonia. The price of that is a
 //! real hazard — code behind a `#[cfg]` that is off by default is **not
@@ -97,7 +97,7 @@ pub fn open(_version: &str) -> Result<Box<dyn ChannelSink>, String> {
 mod tests {
     /// **The default build must be unable to open a device, and must say so.**
     ///
-    /// This is the build the 34 gates run, and the claim it pins is the one the
+    /// This is the build the gates run, and the claim it pins is the one the
     /// feature exists for: a default `rewo` links no audio stack, so `--audio`
     /// cannot quietly half-work. Asserting the *message* rather than just the
     /// `Err` is what makes it useful — someone who passed `--audio` and heard
