@@ -57,6 +57,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// " (N similar message(s) held back)" for a rate-limited recovery log line.
+fn held_note(held: u32) -> String {
+    if held == 0 {
+        String::new()
+    } else {
+        format!(" ({held} similar message(s) held back)")
+    }
+}
+
 /// Retired values the callback can hand back between two drains.
 ///
 /// A drain happens every engine tick (50 ms, several periods). One period can
@@ -75,8 +84,24 @@ pub const DEVICE_CHECK: Duration = Duration::from_secs(1);
 pub const BACKOFF_MIN: Duration = Duration::from_millis(500);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
+/// A rebuilt stream must have its callbacks flowing this long before the
+/// backoff is forgiven. Without it a device that builds fine and never calls
+/// back is rebuilt every ~2.5 s forever, each rebuild a blocking build on the
+/// engine thread.
+pub const STABLE: Duration = Duration::from_secs(10);
+/// While rebuilds are flapping (not yet proven stable), recovery log lines
+/// appear at most this often; the rest are counted and reported with the next.
+pub const LOG_INTERVAL: Duration = Duration::from_secs(30);
+
 /// When to rebuild the stream. Pure, so the schedule is testable without a
 /// device.
+///
+/// **The backoff is only forgiven by a stream that has run.** A rebuild that
+/// succeeds (`rebuilt(ok)`) does not reset it: the next failure waits out the
+/// escalated delay, and the delay is reset to [`BACKOFF_MIN`] only once the
+/// heartbeat has been advancing for [`STABLE`] after a rebuild. Resetting at
+/// "build ok" or at every healthy-to-unhealthy edge (the old rule) could not
+/// tell a device that works from one that builds and then stays silent.
 #[derive(Debug)]
 pub struct Recovery {
     healthy: bool,
@@ -85,6 +110,13 @@ pub struct Recovery {
     next_attempt: Instant,
     backoff: Duration,
     next_device_check: Instant,
+    /// When the heartbeat first advanced since the last (re)build; `None` until
+    /// it does, and again after an unhealthy edge.
+    flowing_since: Option<Instant>,
+    /// A rebuild has succeeded and its stream has not yet run for [`STABLE`].
+    unproven: bool,
+    log_last: Option<Instant>,
+    log_suppressed: u32,
 }
 
 impl Recovery {
@@ -96,6 +128,10 @@ impl Recovery {
             next_attempt: now,
             backoff: BACKOFF_MIN,
             next_device_check: now + DEVICE_CHECK,
+            flowing_since: None,
+            unproven: false,
+            log_last: None,
+            log_suppressed: 0,
         }
     }
 
@@ -120,28 +156,46 @@ impl Recovery {
         if heartbeat != self.last_heartbeat {
             self.last_heartbeat = heartbeat;
             self.last_progress = now;
+            if self.healthy && self.flowing_since.is_none() {
+                self.flowing_since = Some(now);
+            }
         }
         if self.healthy {
             let stalled = now.duration_since(self.last_progress) >= STALL;
             if lost || stalled || default_changed {
                 self.healthy = false;
-                self.next_attempt = now;
-                self.backoff = BACKOFF_MIN;
+                self.flowing_since = None;
+                // Not `now` and not a reset backoff: an unproven stream's
+                // failure waits out the delay `rebuilt` set.
+                self.next_attempt = self.next_attempt.max(now);
+            } else if self.flapping() {
+                if let Some(since) = self.flowing_since {
+                    if now.duration_since(since) >= STABLE {
+                        self.unproven = false;
+                        self.backoff = BACKOFF_MIN;
+                        self.next_attempt = now;
+                        self.log_last = None;
+                    }
+                }
             }
         }
         !self.healthy && now >= self.next_attempt
     }
 
     /// Record the outcome of a rebuild attempt.
+    ///
+    /// Either way the next attempt is `backoff` away and the backoff doubles;
+    /// success only restores the healthy flag. [`Self::observe`] forgives the
+    /// backoff once the stream has run for [`STABLE`].
     pub fn rebuilt(&mut self, now: Instant, ok: bool) {
+        self.next_attempt = now + self.backoff;
+        self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
         if ok {
             self.healthy = true;
+            self.unproven = true;
             self.last_progress = now;
-            self.backoff = BACKOFF_MIN;
+            self.flowing_since = None;
             self.next_device_check = now + DEVICE_CHECK;
-        } else {
-            self.next_attempt = now + self.backoff;
-            self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
         }
     }
 
@@ -149,9 +203,35 @@ impl Recovery {
         self.healthy
     }
 
+    /// Rebuilds are recurring: one has not yet been followed by [`STABLE`] of
+    /// callbacks, or a failure has escalated the backoff.
+    pub fn flapping(&self) -> bool {
+        self.unproven || self.backoff > BACKOFF_MIN
+    }
+
     /// How long until the next attempt may run.
     pub fn retry_in(&self, now: Instant) -> Duration {
         self.next_attempt.saturating_duration_since(now)
+    }
+
+    /// Whether a recovery log line may be printed now. `Some(n)` means yes, and
+    /// `n` lines were held back since the last one; `None` means hold it back.
+    /// Everything prints while not [`Self::flapping`]; while flapping, one line
+    /// per [`LOG_INTERVAL`].
+    pub fn log_gate(&mut self, now: Instant) -> Option<u32> {
+        if !self.flapping() {
+            return Some(std::mem::take(&mut self.log_suppressed));
+        }
+        let due = self
+            .log_last
+            .is_none_or(|t| now.duration_since(t) >= LOG_INTERVAL);
+        if due {
+            self.log_last = Some(now);
+            Some(std::mem::take(&mut self.log_suppressed))
+        } else {
+            self.log_suppressed += 1;
+            None
+        }
     }
 }
 
@@ -460,12 +540,23 @@ impl CpalSink {
                 .and_then(|d| device_name(&d));
             current != self.device_name
         };
-        if lost {
-            log::warn!("audio: the output device is no longer available");
-        } else if default_changed {
-            log::info!("audio: the default output device changed; moving the stream");
+        let was_healthy = self.recovery.healthy();
+        let rebuild = self.recovery.observe(now, heartbeat, lost, default_changed);
+        // Said once per healthy-to-unhealthy edge, and rate-limited while
+        // rebuilds are flapping (see `Recovery::log_gate`).
+        if was_healthy && !self.recovery.healthy() {
+            let cause = if lost {
+                "the output device is no longer available"
+            } else if default_changed {
+                "the default output device changed; moving the stream"
+            } else {
+                "the output stream stalled (no callbacks)"
+            };
+            if let Some(held) = self.recovery.log_gate(now) {
+                log::warn!("audio: {cause}{}", held_note(held));
+            }
         }
-        if self.recovery.observe(now, heartbeat, lost, default_changed) {
+        if rebuild {
             return self.rebuild(now);
         }
         None
@@ -537,24 +628,30 @@ impl CpalSink {
         }
         match build(&self.host, &self.home, &self.flags) {
             Ok(b) => {
-                log::info!(
-                    "audio: output stream rebuilt on {} at {} Hz, {:?}",
-                    b.device_name.as_deref().unwrap_or("<unnamed device>"),
-                    b.out_rate,
-                    b.format
-                );
+                self.recovery.rebuilt(now, true);
+                if let Some(held) = self.recovery.log_gate(now) {
+                    log::info!(
+                        "audio: output stream rebuilt on {} at {} Hz, {:?}{}",
+                        b.device_name.as_deref().unwrap_or("<unnamed device>"),
+                        b.out_rate,
+                        b.format,
+                        held_note(held)
+                    );
+                }
                 self.out_rate = b.out_rate;
                 self.device_name = b.device_name;
                 self.stream = Some(b.stream);
                 self.flags.lost.store(false, Ordering::Relaxed);
-                self.recovery.rebuilt(now, true);
             }
             Err(e) => {
                 self.recovery.rebuilt(now, false);
-                log::warn!(
-                    "audio: could not rebuild the output stream ({e}); next attempt in {:?}",
-                    self.recovery.retry_in(now)
-                );
+                if let Some(held) = self.recovery.log_gate(now) {
+                    log::warn!(
+                        "audio: could not rebuild the output stream ({e}); next attempt in {:?}{}",
+                        self.recovery.retry_in(now),
+                        held_note(held)
+                    );
+                }
             }
         }
         let producer = fresh?;
@@ -758,9 +855,9 @@ mod tests {
         let mut waits = Vec::new();
         for _ in 0..10 {
             r.rebuilt(now, false);
-            // Not before the backoff…
+            // Not before the backoff...
             assert!(!r.observe(now + Duration::from_millis(1), 0, false, false));
-            // …and exactly at it.
+            // ...and exactly at it.
             let wait = r.next_attempt.duration_since(now);
             waits.push(wait);
             now = r.next_attempt;
@@ -770,10 +867,139 @@ mod tests {
         assert_eq!(waits[1], BACKOFF_MIN * 2);
         assert!(waits.windows(2).all(|w| w[1] >= w[0]), "{waits:?}");
         assert_eq!(*waits.last().unwrap(), BACKOFF_MAX, "{waits:?}");
-        // A success resets everything.
+        // A success restores the healthy flag but does NOT forgive the backoff.
         r.rebuilt(now, true);
         assert!(r.healthy());
         assert!(!r.observe(now + Duration::from_millis(5), 1, false, false));
+        assert_eq!(r.backoff, BACKOFF_MAX);
+    }
+
+    /// Drive `r` with a heartbeat that `beats(ms)` says is advancing or not,
+    /// rebuilding (successfully) whenever asked. Returns the rebuild times.
+    fn simulate(
+        r: &mut Recovery,
+        t0: Instant,
+        from_ms: u64,
+        to_ms: u64,
+        beats: impl Fn(u64) -> bool,
+    ) -> Vec<u64> {
+        let mut rebuilds = Vec::new();
+        let mut hb = r.last_heartbeat;
+        let mut ms = from_ms;
+        while ms <= to_ms {
+            if beats(ms) {
+                hb += 1;
+            }
+            let now = at(t0, ms);
+            if r.observe(now, hb, false, false) {
+                rebuilds.push(ms);
+                r.rebuilt(now, true);
+            }
+            ms += 100;
+        }
+        rebuilds
+    }
+
+    /// Silent time forward from `from_ms` until a rebuild is due; performs it
+    /// (successfully) and returns its time.
+    fn until_rebuilt(r: &mut Recovery, t0: Instant, from_ms: u64) -> u64 {
+        let mut ms = from_ms;
+        loop {
+            let now = at(t0, ms);
+            if r.observe(now, r.last_heartbeat, false, false) {
+                r.rebuilt(now, true);
+                return ms;
+            }
+            ms += 100;
+            assert!(ms < from_ms + 120_000, "no rebuild ever came due");
+        }
+    }
+
+    /// A device that builds but never calls back is not rebuilt every ~2.5 s
+    /// forever. The backoff used to reset on every healthy-to-unhealthy edge
+    /// and on `rebuilt(ok)`, so the cadence never grew.
+    #[test]
+    fn a_stream_that_builds_but_stays_silent_backs_off_to_the_cap() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        let rebuilds = simulate(&mut r, t0, 0, 300_000, |_| false);
+        let gaps: Vec<u64> = rebuilds.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            gaps.windows(2).all(|g| g[1] >= g[0]),
+            "gaps must not shrink: {gaps:?}"
+        );
+        assert_eq!(
+            *gaps.last().unwrap(),
+            BACKOFF_MAX.as_millis() as u64,
+            "{gaps:?}"
+        );
+        // The old behaviour was ~120 rebuilds in 300 s.
+        assert!(
+            rebuilds.len() < 20,
+            "{} rebuilds: {rebuilds:?}",
+            rebuilds.len()
+        );
+    }
+
+    /// A stream whose callbacks flow for STABLE is proven, and only then is
+    /// the backoff forgiven: the next outage rebuilds at once.
+    #[test]
+    fn a_stream_that_ran_for_the_stable_window_is_forgiven() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        // Silent for a while, so the backoff has escalated.
+        let rebuilds = simulate(&mut r, t0, 0, 30_000, |_| false);
+        assert!(rebuilds.len() >= 3, "{rebuilds:?}");
+        assert!(r.backoff > BACKOFF_MIN);
+        let last = until_rebuilt(&mut r, t0, 30_100);
+        // It starts calling back and keeps doing so for STABLE.
+        let stable_ms = STABLE.as_millis() as u64;
+        let flowing_until = last + stable_ms + 2_000;
+        let more = simulate(&mut r, t0, last + 100, flowing_until, |_| true);
+        assert!(more.is_empty(), "a flowing stream was rebuilt: {more:?}");
+        assert_eq!(r.backoff, BACKOFF_MIN);
+        assert!(!r.flapping());
+        // Now it dies: the rebuild is immediate (loss), not a stale backoff away.
+        let now = at(t0, flowing_until + 100);
+        assert!(r.observe(now, r.last_heartbeat, true, false));
+    }
+
+    /// Callbacks that flow for less than STABLE and then stop earn nothing.
+    #[test]
+    fn a_stream_that_dies_before_the_stable_window_keeps_its_backoff() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        let _ = simulate(&mut r, t0, 0, 30_000, |_| false);
+        let last = until_rebuilt(&mut r, t0, 30_100);
+        let backoff = r.backoff;
+        let stable_ms = STABLE.as_millis() as u64;
+        // Flows for 3 s short of STABLE, then the loss is reported.
+        let flow_end = last + stable_ms - 3_000;
+        let _ = simulate(&mut r, t0, last + 100, flow_end, |_| true);
+        assert_eq!(r.backoff, backoff, "forgiven too early");
+        assert!(r.flapping());
+        // A lost device right now still waits out the backoff.
+        let now = at(t0, flow_end + 100);
+        assert!(!r.observe(now, r.last_heartbeat, true, false));
+        assert!(r.retry_in(now) > Duration::ZERO);
+    }
+
+    #[test]
+    fn recovery_logs_are_rate_limited_only_while_flapping() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        // A healthy, never-rebuilt recovery logs everything.
+        assert_eq!(r.log_gate(t0), Some(0));
+        assert_eq!(r.log_gate(at(t0, 1)), Some(0));
+        // After an unproven rebuild: first line passes, the rest are held back.
+        r.rebuilt(at(t0, 2_000), true);
+        assert!(r.flapping());
+        assert_eq!(r.log_gate(at(t0, 2_000)), Some(0));
+        assert_eq!(r.log_gate(at(t0, 4_000)), None);
+        assert_eq!(r.log_gate(at(t0, 6_000)), None);
+        let later = at(t0, 2_000) + LOG_INTERVAL;
+        assert_eq!(r.log_gate(later), Some(2));
+        assert_eq!(r.log_gate(later), None);
     }
 
     #[test]

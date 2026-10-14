@@ -62,7 +62,9 @@ caller-driven `Mixer::render`). Milestone reasoning: `docs/rewo/` and
 - **Device recovery.** The error callback only sets flags; `service` logs and
   rebuilds the stream on the current default device on `DeviceNotAvailable`, a
   heartbeat stalled for 2 s, or a changed default device (checked once a
-  second), with 0.5 s to 30 s backoff (`Recovery`). The render state survives a
+  second), with 0.5 s to 30 s backoff (`Recovery`). The backoff is forgiven
+  only after the heartbeat has flowed for 10 s (`STABLE`), not on a successful
+  build, and recovery logs are rate-limited while rebuilds flap. The render state survives a
   rebuild (a `Drop` impl hands it back). Examples must call `service()` to get
   this; `examples/listen.rs` does not yet.
 - Sample formats: f32 renders directly; i16 and u16 render into a preallocated
