@@ -1154,7 +1154,7 @@ impl EntityPass {
 
         // Facelabel verification mode: replace every mob texture with per-
         // face solid colors so a render proves texture-face correspondence.
-        let debug_tex = std::env::var("REWO_MOB_DEBUG_TEX").is_ok_and(|v| v == "1");
+        let debug_tex = crate::knobs::var("REWO_MOB_DEBUG_TEX").is_ok_and(|v| v == "1");
 
         // Build each registry mob whose textures are all present.
         let mut models: Vec<Option<MobModel>> = (0..EntityModelKind::COUNT).map(|_| None).collect();
@@ -5448,7 +5448,7 @@ fn mat_apply(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 /// animation bugs. Read once.
 fn cem_noanim() -> bool {
     static NOANIM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *NOANIM.get_or_init(|| std::env::var("REWO_CEM_NOANIM").is_ok_and(|v| v == "1"))
+    *NOANIM.get_or_init(|| crate::knobs::var("REWO_CEM_NOANIM").is_ok_and(|v| v == "1"))
 }
 
 /// Wrap to [−180, 180) — vanilla `Mth.wrapDegrees` for the net head yaw.

@@ -69,7 +69,7 @@ impl StatsAccum {
             return 0.0;
         }
         let mut sorted = self.ms.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.sort_by(|a, b| a.total_cmp(b));
         let rank = (q * sorted.len() as f32).ceil() as usize;
         sorted[rank.clamp(1, sorted.len()) - 1]
     }
@@ -90,7 +90,7 @@ impl StatsAccum {
             return 0.0;
         }
         let mut sorted = self.ms.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.sort_by(|a, b| a.total_cmp(b));
         let n = ((sorted.len() as f32) * q).ceil() as usize;
         let n = n.clamp(1, sorted.len());
         let tail = &sorted[sorted.len() - n..];

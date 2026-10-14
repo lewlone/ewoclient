@@ -13,6 +13,7 @@
 //!   load-bearing and implicit drops hide it. `Gpu` itself is the one Drop
 //!   (device → surface → debug → instance, after a wait_idle).
 
+pub(crate) mod knobs;
 pub mod border;
 pub(crate) mod buf_ring;
 pub(crate) mod deferred;
@@ -175,7 +176,7 @@ impl Gpu {
             let mut validation_features =
                 vk::ValidationFeaturesEXT::default().enabled_validation_features(&sync_features);
             let sync_validation =
-                validation_active && std::env::var_os("REWO_NO_SYNC_VALIDATION").is_none();
+                validation_active && crate::knobs::var_os("REWO_NO_SYNC_VALIDATION").is_none();
             let mut instance_ci = vk::InstanceCreateInfo::default()
                 .application_info(&app_info)
                 .enabled_layer_names(&layers)

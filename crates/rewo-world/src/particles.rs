@@ -1335,7 +1335,7 @@ mod tests {
         }
         // The 4×4×4 cell centres are the eighths: 0.125, 0.375, 0.625, 0.875.
         let mut xs: Vec<f64> = sys.particles.iter().map(|p| p.x - 10.0).collect();
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        xs.sort_by(|a, b| a.total_cmp(b));
         xs.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
         assert_eq!(xs.len(), 4, "expected 4 distinct x planes, got {xs:?}");
         for (got, want) in xs.iter().zip([0.125, 0.375, 0.625, 0.875]) {

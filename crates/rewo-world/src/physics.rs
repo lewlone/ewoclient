@@ -1907,7 +1907,7 @@ fn step_up_candidates(bx: &Aabb, colliders: &[Vec<Aabb>], max_step: f32, skip: f
     let mut out: Vec<f32> = Vec::new();
     for shape in colliders {
         let mut coords: Vec<f64> = shape.iter().flat_map(|b| [b[1], b[4]]).collect();
-        coords.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        coords.sort_by(|a, b| a.total_cmp(b));
         coords.dedup();
         for c in coords {
             let rel = (c - bx[1]) as f32;
@@ -1921,7 +1921,7 @@ fn step_up_candidates(bx: &Aabb, colliders: &[Vec<Aabb>], max_step: f32, skip: f
             }
         }
     }
-    out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    out.sort_by(|a, b| a.total_cmp(b));
     out
 }
 

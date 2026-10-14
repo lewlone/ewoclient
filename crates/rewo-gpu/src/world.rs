@@ -3648,7 +3648,7 @@ impl WorldRenderer {
         if cols.is_empty() {
             return;
         }
-        cols.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        cols.sort_by(|a, b| b.0.total_cmp(&a.0));
 
         let device = &gpu.device;
         unsafe {
@@ -4055,7 +4055,7 @@ fn create_host_buffer(
 /// a fixed default + override is the current compromise.
 fn parse_fog_env() -> [f32; 2] {
     let default = [80.0, 180.0];
-    std::env::var("REWO_FOG")
+    crate::knobs::var("REWO_FOG")
         .ok()
         .and_then(|s| {
             let mut it = s.split(',');

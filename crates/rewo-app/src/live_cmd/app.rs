@@ -1059,10 +1059,11 @@ impl ApplicationHandler for LiveApp {
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        if self.screen.any_open() {
-            // The cursor is free and driving the screen; the camera holds
-            // still. `CursorMoved` supplies the position, so this raw delta is
-            // simply dropped rather than accumulated.
+        if self.screen.any_open() || self.chat_screen.is_some() {
+            // The cursor is free and driving the screen (the chat screen is
+            // not in `self.screen`, so it is checked on its own); the camera
+            // holds still. `CursorMoved` supplies the position, so this raw
+            // delta is simply dropped rather than accumulated.
             return;
         }
         if let (DeviceEvent::MouseMotion { delta }, Some(session)) = (&event, self.session.as_mut())

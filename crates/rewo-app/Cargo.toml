@@ -31,7 +31,23 @@ audio = ["dep:rewo-audio"]
 # The `*shot` verification gates, `live --render-check`, and the REWO_* test
 # knobs (see src/knobs.rs). Off by default so a shipped `rewo` contains none of
 # them; `tools/gates.py` and `tools/render_check.py` build with it.
-gates = []
+gates = ["rewo-gpu/gates", "rewo-mesh/oracle"]
+
+# The Tracy frame profiler. Off by default: `tracy_client::Client::start()`
+# spawns a profiler thread that listens on a TCP port and broadcasts the
+# process's presence over UDP, which a shipped client has no business doing.
+# Without the feature the `tracy_client` calls compile to no-ops. Mirrors
+# tracy-client's own default feature set.
+profile = [
+    "tracy-client/enable",
+    "tracy-client/system-tracing",
+    "tracy-client/context-switch-tracing",
+    "tracy-client/sampling",
+    "tracy-client/code-transfer",
+    "tracy-client/broadcast",
+    "tracy-client/callstack-inlines",
+    "tracy-client/crash-handler",
+]
 
 [dependencies]
 # Optional; see the `audio` feature above.
@@ -40,7 +56,7 @@ rewo-gpu = { workspace = true }
 rewo-net = { workspace = true }
 rewo-data = { workspace = true }
 rewo-world = { workspace = true }
-rewo-mesh = { workspace = true, features = ["oracle"] }
+rewo-mesh = { workspace = true }
 rewo-proto = { workspace = true }
 # M52 module port: the module CATALOG only (`ewo_core::modules`), which is
 # plain &'static data. rewo-gpu deliberately does NOT get this dep -- the
