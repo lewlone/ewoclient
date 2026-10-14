@@ -44,8 +44,12 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   and `rewo-gpu` cannot see each other, so `live_cmd/view.rs`
   (`mesh_vertex_size_is_the_world_vertex_stride`) pins the pair.
 - **`Renderer::render` checks the depth extent against the swapchain** and
-  returns `NeedsRecreate` on a mismatch. Never discard a `recreate` /
-  `ensure_depth` error with `let _ =`: log it, and exit when a recreate fails.
+  returns `NeedsRecreate` on a mismatch, and also when a failed recreate left
+  no swapchain (null handle, 0x0 extent). Never discard a `recreate` /
+  `ensure_depth` error with `let _ =`: log it and let the next frame retry
+  through `NeedsRecreate`; the app's `RecreateGuard` exits only after 10
+  consecutive failures spanning 2 s. Reporting the lost-swapchain state as
+  `Skipped` once left a blank window that never retried.
 - **Terrain lighting is vanilla's** (`rewo-mesh/src/smooth_light.rs`, a port of
   `BlockModelLighter`): the mesher writes the finished 8-bit vertex colour and
   smooth light coordinates, and `world.vert` samples the lightmap per vertex.

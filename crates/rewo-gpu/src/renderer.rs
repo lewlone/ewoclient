@@ -212,6 +212,15 @@ impl Renderer {
         if world.is_some() && self.depth.is_none() {
             return Err("render: world pass requires ensure_depth() first".into());
         }
+        // A recreate that failed leaves no swapchain at all: a null handle and
+        // a 0x0 extent (`Swapchain::recreate`'s error arm). That is not a
+        // minimised window (callers skip those frames before calling here),
+        // so report it as needing a recreate. Reporting it as Skipped meant
+        // the caller never retried and its RecreateGuard never counted the
+        // failure: the window stayed blank for the rest of the session.
+        if self.swapchain.handle == vk::SwapchainKHR::null() {
+            return Ok(RenderOutcome::NeedsRecreate);
+        }
         if self.swapchain.extent.width == 0 || self.swapchain.extent.height == 0 {
             return Ok(RenderOutcome::Skipped);
         }
