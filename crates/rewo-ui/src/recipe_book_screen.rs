@@ -1347,6 +1347,70 @@ impl BookState {
     }
 }
 
+// ── the recipe-book button (M187) ─────────────────────────────────────────
+//
+// `AbstractRecipeBookScreen.initButton`:
+//
+// ```java
+// ScreenPosition buttonPos = this.getRecipeBookButtonPosition();
+// this.addRenderableWidget(new ImageButton(buttonPos.x(), buttonPos.y(), 20, 18,
+//       RecipeBookComponent.RECIPE_BUTTON_SPRITES, button -> {
+//    this.recipeBookComponent.toggleVisibility();
+//    this.leftPos = this.recipeBookComponent.updateScreenPosition(this.width, this.imageWidth);
+//    button.setPosition(this.getRecipeBookButtonPosition());
+//    this.onRecipeBookButtonClick();
+// }));
+// ```
+//
+// Before M187 Rewo had no such button: the book opened only when the server's
+// saved `RecipeBookSettings` already said so, so a player who had never opened
+// it in a vanilla client could not open it at all.
+
+/// The green book's size, `new ImageButton(x, y, 20, 18, …)`.
+pub const BOOK_BUTTON_W: i32 = 20;
+pub const BOOK_BUTTON_H: i32 = 18;
+
+/// Which `AbstractRecipeBookScreen` subclass the button sits on — each
+/// overrides `getRecipeBookButtonPosition`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BookButtonHost {
+    /// `InventoryScreen`: `(leftPos + 104, height / 2 - 22)`.
+    Inventory,
+    /// `CraftingScreen`: `(leftPos + 5, height / 2 - 49)`.
+    Crafting,
+    /// `AbstractFurnaceScreen` (furnace, blast furnace, smoker):
+    /// `(leftPos + 20, height / 2 - 49)`.
+    Furnace,
+}
+
+/// The button's top-left **relative to the menu panel** (`leftPos`, `topPos`).
+///
+/// Vanilla's y is window-relative (`height / 2 - k`), but every host is
+/// 166 tall, and `topPos = (height - 166) / 2` with Java's integer division
+/// makes `height / 2 - k - topPos` equal `83 - k` for an even *and* an odd
+/// `height` (the two floors move together). So the button is a fixed offset
+/// from the panel, and drawing and hit-testing it through the panel's own
+/// placement (which already knows the book's 77 px shift) puts it where
+/// vanilla's `setPosition(getRecipeBookButtonPosition())` does.
+/// `book_button_y_is_panel_relative_for_every_height` checks the identity.
+pub fn book_button_origin(host: BookButtonHost) -> (i32, i32) {
+    match host {
+        BookButtonHost::Inventory => (104, 83 - 22),
+        BookButtonHost::Crafting => (5, 83 - 49),
+        BookButtonHost::Furnace => (20, 83 - 49),
+    }
+}
+
+/// Whether panel-relative `(x, y)` is on the button —
+/// `AbstractWidget.areCoordinatesInRectangle`, half-open on the far edges.
+pub fn book_button_hit(host: BookButtonHost, x: f64, y: f64) -> bool {
+    let (bx, by) = book_button_origin(host);
+    x >= bx as f64
+        && y >= by as f64
+        && x < (bx + BOOK_BUTTON_W) as f64
+        && y < (by + BOOK_BUTTON_H) as f64
+}
+
 /// What a press that [`BookState::press`] accepted plays (M186): every book
 /// widget is an `AbstractWidget` that clicks in `mouseClicked` — the page
 /// arrows, each `RecipeButton`, the filter, and the `RecipeBookTabButton`s
@@ -1791,6 +1855,42 @@ mod tests {
                 right: true
             })
         );
+    }
+
+    /// M187 — vanilla positions the button at `height / 2 - k`, the panel at
+    /// `(height - 166) / 2`; the difference is the same for every height, odd
+    /// or even, which is what lets the button ride the panel's placement.
+    #[test]
+    fn book_button_y_is_panel_relative_for_every_height() {
+        for (host, k) in [
+            (BookButtonHost::Inventory, 22),
+            (BookButtonHost::Crafting, 49),
+            (BookButtonHost::Furnace, 49),
+        ] {
+            let (_, dy) = book_button_origin(host);
+            for height in 166..=1080 {
+                let top_pos = (height - 166) / 2;
+                assert_eq!(height / 2 - k - top_pos, dy, "{host:?} at height {height}");
+            }
+        }
+        assert_eq!(book_button_origin(BookButtonHost::Inventory).0, 104);
+        assert_eq!(book_button_origin(BookButtonHost::Crafting).0, 5);
+        assert_eq!(book_button_origin(BookButtonHost::Furnace).0, 20);
+    }
+
+    #[test]
+    fn book_button_hit_is_half_open() {
+        let (x, y) = book_button_origin(BookButtonHost::Inventory);
+        let (x, y) = (x as f64, y as f64);
+        assert!(book_button_hit(BookButtonHost::Inventory, x, y));
+        assert!(book_button_hit(
+            BookButtonHost::Inventory,
+            x + 19.9,
+            y + 17.9
+        ));
+        assert!(!book_button_hit(BookButtonHost::Inventory, x + 20.0, y));
+        assert!(!book_button_hit(BookButtonHost::Inventory, x, y + 18.0));
+        assert!(!book_button_hit(BookButtonHost::Inventory, x - 0.1, y));
     }
 
     /// M186 — every book widget clicks except the search `EditBox`.

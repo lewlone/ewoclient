@@ -2864,13 +2864,17 @@ impl LiveSounds {
     /// and on the disconnect screen, where there is no world.
     pub fn play_ui(&mut self, event: &str, pitch: f32) {
         let instance = crate::sound_instance::SoundInstance::for_ui(event, pitch);
+        self.play_now(SoundEvent::Instance(instance));
+    }
+
+    /// Play one client-side sound NOW, outside the tick drain (M188): the
+    /// render path's sounds, which vanilla plays from inside a frame's
+    /// extraction. Only for events that read nothing from the world — a UI
+    /// instance, or a [`SoundEvent::Local`] at a fixed position (no entity
+    /// binding, no distance delay) — because [`EmptyWorld`] stands in for one.
+    pub fn play_now(&mut self, event: SoundEvent) {
         self.with_device(|system, registry, device| {
-            system.accept(
-                &[SoundEvent::Instance(instance)],
-                registry,
-                &EmptyWorld,
-                device,
-            );
+            system.accept(&[event], registry, &EmptyWorld, device);
         });
     }
 

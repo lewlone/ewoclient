@@ -90,6 +90,12 @@ pub struct ScreenState {
     /// press site queues here, because none of them owns the sound engine;
     /// `LiveApp::flush_ui_sounds` plays them once per frame.
     pub ui_sounds: rewo_ui::ui_sound::UiSounds,
+    /// The recipe-book button's focus (M187): the shown container id of the
+    /// screen whose button was last pressed, so it stays lit after a press
+    /// (vanilla's `setFocused`) and only on that screen. Cleared when the
+    /// book takes a click and whenever no inventory or container is shown —
+    /// vanilla builds a new screen, with nothing focused, on every open.
+    pub book_button_focus: Option<i32>,
 }
 
 impl Default for ScreenState {
@@ -114,6 +120,7 @@ impl Default for ScreenState {
             close_beacon: Default::default(),
             container_shown: Default::default(),
             ui_sounds: Default::default(),
+            book_button_focus: Default::default(),
         }
     }
 }
@@ -550,6 +557,9 @@ pub(super) fn apply_screen(
     // reach, and supplying it is what lets a gate drive the render path the
     // live client takes rather than a copy of it (M45/M93q).
     book_overlay: Option<&rewo_ui::recipe_overlay::Open>,
+    // M187 — whether the recipe-book button holds focus (it stays lit after
+    // a press), supplied for the same reason: screen-local state.
+    book_button_focused: bool,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -652,6 +662,29 @@ pub(super) fn apply_screen(
         book.as_ref()
             .and_then(|b| recipe_book_panel(b, &book_field_fills, book_overlay, book_mouse)),
     );
+    // M187 — the recipe-book button, through the SAME placement the panel
+    // uses, so the drawn button and the pressed one cannot disagree.
+    let panel_mouse = rewo_gpu::container::screen_to_gui_placed(
+        mouse,
+        w,
+        h,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
+    );
+    let gui_w = (w / rewo_gpu::container::recipe_book_origin(w, h).2) as i32;
+    wr.set_container_widgets(book_button_widgets(
+        book_button_host(
+            layout,
+            session.own_game_mode().is_some_and(|g| g.is_creative()),
+        ),
+        book_open,
+        rewo_ui::recipe_book_screen::width_too_narrow(gui_w),
+        Some(panel_mouse),
+        book_button_focused,
+    ));
     wr.set_container_panel(container_panel(
         layout,
         session.menus.shown_open(),

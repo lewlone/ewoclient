@@ -73,6 +73,77 @@ pub(super) fn book_type_of(
     }
 }
 
+/// Which `AbstractRecipeBookScreen` hosts the recipe-book button for this
+/// menu (M187), or `None` for a screen with no button.
+///
+/// The four book menus of [`book_type_of`], split three ways because the
+/// button's position is per screen class, not per book type: the player's
+/// inventory and the crafting table share the CRAFTING book and put the
+/// button in different places.
+///
+/// `creative` is the local player's: vanilla opens `CreativeModeInventoryScreen`
+/// instead of `InventoryScreen` for a creative player, and that screen has no
+/// recipe book. Rewo draws the survival inventory for everyone, so the button
+/// is withheld there rather than offered where vanilla offers none.
+pub(crate) fn book_button_host(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    creative: bool,
+) -> Option<rewo_ui::recipe_book_screen::BookButtonHost> {
+    use rewo_ui::recipe_book_screen::BookButtonHost;
+    if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+        return (!creative).then_some(BookButtonHost::Inventory);
+    }
+    match layout.name {
+        "crafting" => Some(BookButtonHost::Crafting),
+        "furnace" | "blast_furnace" | "smoker" => Some(BookButtonHost::Furnace),
+        _ => None,
+    }
+}
+
+/// The recipe-book button's sprite and blit for this frame (M187), or nothing.
+///
+/// - `WidgetSprites.get(isActive(), isHoveredOrFocused())`: the button is
+///   always active, so the pair is plain / highlighted, highlighted while the
+///   cursor is over it **or it holds focus**. A press focuses it
+///   (`ContainerEventHandler.mouseClicked` → `setFocused`), and only a click
+///   the book takes moves focus away (`AbstractRecipeBookScreen.mouseClicked`
+///   → `setFocused(recipeBookComponent)`) — a slot click does not, so the
+///   button stays lit after a press, as it does in vanilla.
+/// - Nothing at all while the window is too narrow and the book is open:
+///   `AbstractRecipeBookScreen.extractRenderState` then draws
+///   `extractBackground` alone, without the screen's widgets.
+pub(crate) fn book_button_widgets(
+    host: Option<rewo_ui::recipe_book_screen::BookButtonHost>,
+    book_open: bool,
+    narrow: bool,
+    mouse_gui: Option<(f64, f64)>,
+    focused: bool,
+) -> Vec<(usize, rewo_gpu::container::PanelBlit)> {
+    use rewo_ui::recipe_book_screen as rb;
+    let Some(host) = host else {
+        return Vec::new();
+    };
+    if narrow && book_open {
+        return Vec::new();
+    }
+    let hovered = mouse_gui.is_some_and(|(x, y)| rb::book_button_hit(host, x, y));
+    let (dx, dy) = rb::book_button_origin(host);
+    vec![(
+        rewo_data::assets::BOOK_BUTTON + usize::from(hovered || focused),
+        rewo_gpu::container::PanelBlit {
+            dx: dx as f32,
+            dy: dy as f32,
+            w: rb::BOOK_BUTTON_W as f32,
+            h: rb::BOOK_BUTTON_H as f32,
+            sx: 0.0,
+            sy: 0.0,
+            sw: rb::BOOK_BUTTON_W as f32,
+            sh: rb::BOOK_BUTTON_H as f32,
+            tint: [1.0; 4],
+        },
+    )]
+}
+
 /// An item's `getMaxStackSize`, for `accountStack`'s `min` (M96).
 ///
 /// Falls back to 64, which is the default `Item.Properties` value and so the

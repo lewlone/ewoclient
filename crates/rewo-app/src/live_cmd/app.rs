@@ -871,6 +871,17 @@ impl ApplicationHandler for LiveApp {
                     ) {
                         return;
                     }
+                    // M187 — the recipe-book button: a screen widget, so it is
+                    // `super.mouseClicked`'s first act once the book declined.
+                    if book_button_press(
+                        session,
+                        &mut self.screen,
+                        b == 0,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
                     // M92f — an enchanting row is pressed BEFORE the slot
                     // logic, and only then. `EnchantmentScreen.mouseClicked`
                     // runs its three-row loop first and calls

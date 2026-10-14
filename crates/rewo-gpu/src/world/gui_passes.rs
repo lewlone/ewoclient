@@ -56,6 +56,8 @@ pub(super) struct GuiFrame {
     /// The recipe book (M94). Beside the panel, not inside it: the player's
     /// own inventory has no `ContainerPanel` and still has a book.
     pub(super) recipe_book: Option<crate::container::RecipeBookPanel>,
+    /// The open screen's widgets on its panel (M187), panel-relative.
+    pub(super) container_widgets: Vec<(usize, crate::container::PanelBlit)>,
     /// This frame's tooltip: the text block's GUI-space top-left and size,
     /// both measured by the caller (M40), plus the bundle grid inside it if the
     /// hovered stack produced one (M58). The pass owns no font.
@@ -406,6 +408,19 @@ impl WorldRenderer {
         self.gui.recipe_book = book;
     }
 
+    /// The open screen's widgets on its panel (M187: the recipe-book button),
+    /// as sprite indices into `MENU_OVERLAY_SPRITES` and panel-relative blits.
+    pub fn set_container_widgets(&mut self, widgets: Vec<(usize, crate::container::PanelBlit)>) {
+        self.gui.container_widgets = widgets;
+    }
+
+    /// The widgets the renderer holds this frame, read back for witnesses —
+    /// M88's rule: ask the renderer, not the model, whether the frame loop
+    /// reached the builder.
+    pub fn container_widgets(&self) -> &[(usize, crate::container::PanelBlit)] {
+        &self.gui.container_widgets
+    }
+
     pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
         self.gui.container_open = open.then_some(hovered);
     }
@@ -641,6 +656,7 @@ impl WorldRenderer {
                 &self.gui.item_bars,
                 self.gui.container_panel.as_ref(),
                 self.gui.recipe_book.as_ref(),
+                &self.gui.container_widgets,
             );
         }
         if let (Some(hud), Some((slot, gauges))) = (self.hud.as_mut(), self.gui.hud_state) {

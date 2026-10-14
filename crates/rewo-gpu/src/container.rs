@@ -1061,6 +1061,12 @@ impl ContainerPass {
         // caught and no headless witness could: `containershot` only ever
         // drives an open container.
         book: Option<&RecipeBookPanel>,
+        // The screen's own widgets that sit on the panel (M187: the
+        // recipe-book button), panel-relative and drawn right after the
+        // panel and its overlays. Separate from `panel` for the book's
+        // reason: the player's inventory has no `ContainerPanel` and is one
+        // of the screens that carries the button.
+        widgets: &[(usize, PanelBlit)],
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         // A container's panel is its own size, so the origin that centres it —
@@ -1145,6 +1151,25 @@ impl ContainerPass {
                         );
                     }
                 }
+            }
+            // 2a. The screen's widgets on the panel (M187) — `Screen`'s
+            //     renderables, which vanilla draws after `extractBackground`
+            //     and before the slots.
+            for &(sprite, b) in widgets {
+                if b.w <= 0.0 || b.h <= 0.0 {
+                    continue;
+                }
+                let r = self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh);
+                quad(
+                    &mut v,
+                    left + b.dx * scale,
+                    top + b.dy * scale,
+                    b.w * scale,
+                    b.h * scale,
+                    r,
+                    b.tint,
+                    b.tint,
+                );
             }
             // 2b. The recipe book, on its own window-anchored origin (M94).
             //

@@ -346,9 +346,12 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   reads the bottom row of the nearest stored layer above (`fill_sky_gaps`),
 >   as `SkyLightSectionStorage` does. See the M14-era light entry in §15 and
 >   commit `edb6f8e`.
+> - **Done 2026-10-15:** the UI-sound family (**M186**: button click, page
+>   turn, stonecutter and loom select; plus the loom's missing pattern click),
+>   the recipe-book button (**M187**) and the HUD's air-bubble pop (**M188**).
 > - **Still open from the box:** `sub-map` (`map_item_data` is class C in
->   `REWO_PACKET_COVERAGE.md`), `render-misc [INTERP]` and `[FLOW]`, the
->   UI-sound family (page turn, button click, bubble pop), the live
+>   `REWO_PACKET_COVERAGE.md`), `render-misc [INTERP]` and `[FLOW]`, the loom's
+>   scrollbar, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -2019,7 +2022,8 @@ this shape once.
 | M179 — advancement clicks *(claimed 2026-08-25 at session start)* | ~~**r65**~~ (the claim COLLIDED: the 2026-09-26 play-test fix took r65 without reading this row; the M179 live witnesses never landed and take the next free id when they do) | — | extends `advshot`; live witnesses for tab clicks + CLOSED_SCREEN |
 | Play-test fix, `1da1b41` (2026-09-26) — the windowed client builds the text and container passes | **r65, r66** | — | (live only) |
 | Link prompt (2026-10, `ConfirmLinkScreen` for a clicked chat `open_url`) | **r67** | — | `confirmlinkshot` m1-m6, p0-p7 (14) |
-| *(next free)* | **r68** | — | — |
+| M187 — the recipe-book button (2026-10-15) | **r68** | `MENU_OVERLAY_SPRITES` 127..=128 (`recipe_book/button`, `button_highlighted`; `BOOK_BUTTON`) | `inventoryshot` gb1-gb3 |
+| *(next free)* | **r69** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3844,6 +3848,79 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M188 — the HUD's air-bubble pop (2026-10-15)
+
+`Hud.extractAirBubbles` plays `ui.hud.bubble_pop` as each air bubble bursts
+underwater (`playAirBubblePoppedSound`, deduplicated per bubble by
+`lastBubblePopSoundPlayed`, which surfacing resets); the pops grow louder
+after the third empty bubble and higher after the fifth. `survival_hud::
+BubblePopper` is that state machine, fed the same `SurvivalInputs` the bars
+are laid out from, once per drawn frame; the HUD pass plays the result
+through the new `LiveSounds::play_now` as `LocalPlayer.playSound` does
+(`playLocalSound` at the player, `PLAYERS`, no distance delay). A whole
+drowning pops each of the ten bubbles exactly once, (0.5, 1.0) first and
+(1.2, 1.5) last (unit test, arithmetic from the decompile); the event
+resolves in the real `sounds.json`. Not heard by any gate.
+
+### M187 — the recipe-book button (2026-10-15)
+
+Rewo never had `AbstractRecipeBookScreen`'s `ImageButton`, so the book opened
+only when the server's saved `RecipeBookSettings` already said so: a player
+who had never opened it in a vanilla client could not open it at all. Now the
+inventory, the crafting table and the three furnaces carry the 20x18 green
+book (`MENU_OVERLAY_SPRITES` 127..=128, `BOOK_BUTTON`), drawn and pressed
+through the panel's own `Placement`, so it moves with the book's 77 px shift
+as `setPosition(getRecipeBookButtonPosition())` does. Vanilla's y is
+`height / 2 - k`, and `height / 2 - k - topPos` is `83 - k` for every height
+(Java's two floors move together), so the button is a fixed panel offset:
+(104, 61), (5, 34), (20, 34). A press clicks, toggles the open flag, shuts the
+overlay when closing and sends `recipe_book_change_settings`; the button stays
+lit after a press (vanilla's `setFocused`) until the book takes a click, and
+is not drawn while the window is too narrow and the book is open
+(`extractRenderState` draws the background alone then). Withheld on a
+creative player's inventory: vanilla shows `CreativeModeInventoryScreen`,
+which has no book; Rewo draws the survival inventory for everyone.
+
+The container pass gained a panel-relative widget list
+(`set_container_widgets`), because the player's inventory has no
+`ContainerPanel`. Graded by `inventoryshot` gb1-gb3 (the jar's own
+`button.png` / `button_highlighted.png` texels at vanilla's literal (104, 61),
+the hover sprite, and byte-identical removal) and render-check **r68** (the
+crafting table's button at (5, 34) in the windowed client; **not yet run**:
+a Geometry Dash recording held the desktop that night, so no windowed run was
+made). A one-pixel origin mutant first SURVIVED gb1, because the witness read
+the position from the builder's own constant; it now uses vanilla's literal
+and kills it.
+
+### M186 — client-side UI sounds, and the loom's pattern click (2026-10-15)
+
+Rewo's screens played none of vanilla's `SimpleSoundInstance.forUI` sounds.
+`rewo_ui::ui_sound` lists the sites from the decompile; every press site
+queues into `ScreenState::ui_sounds` and `LiveApp::flush_ui_sounds` plays them
+at the top of each frame through `LiveSounds::play_ui`, which runs the same
+`SoundSystem::accept` as packet sounds with `EmptyWorld` (a UI instance is
+fixed, relative and unattenuated, so it reads nothing from a world, and the
+disconnect screen has none). What clicks: every framework widget press by
+mouse or Enter/Space (not the link prompt's Esc, which is the callback's
+"No"), a tab only when it changes (`TabManager.setCurrentTab`), a slider on
+release (`AbstractSliderButton.onRelease`), the beacon's live buttons, a
+merchant trade, every recipe-book widget except the search field, the
+overlay's buttons. The held book plays `item.book.page_turn`; the lectern
+plays nothing client-side (`LecternScreen` builds its reader with the
+no-argument `BookViewScreen()`, `playTurnSound = false`). The stonecutter and
+loom play their select sounds. `every_ui_sound_resolves_in_the_real_index`
+checks all four ids against the real 26.2 `sounds.json` (a mistyped id
+mutant fails it). As with all audio, **no gate hears them**; they join the
+listening pass.
+
+Fixed on the way: the loom's pattern grid had been drawn since M93q and was
+never pressed, so a loom could not stamp a pattern (`loom_press`, one
+`loom_view` accessor for draw and press; the scrollbar is still unwired, so
+only the first 16 patterns are reachable); a press on the already-selected
+beacon power button fell through to the slots (`BeaconPress::Inert`; vanilla
+consumes it); and a right click turned recipe-book pages and switched tabs
+(only `RecipeButton` widens `isValidClickButton` to the right button).
 
 ### M182, M184, M185 — the rescued 2026-08 work, ported (2026-10)
 

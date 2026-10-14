@@ -568,6 +568,9 @@ pub(super) fn book_press(
     // the page's arrows, on the search box, on the tabs, or on the menu's own
     // slots underneath all reach the overlay and nothing else.
     if let Some(open) = screen.book_overlay.as_ref() {
+        // M187 — the book took the click: `setFocused(recipeBookComponent)`
+        // moves focus off the recipe-book button.
+        screen.book_button_focus = None;
         match open.click_at(bx, by, right) {
             rewo_ui::recipe_overlay::Click::Select(i) => {
                 // M186 — an `OverlayRecipeButton` is an `AbstractWidget`.
@@ -595,6 +598,10 @@ pub(super) fn book_press(
     };
     let hit = rb::book_hit(bx, by, view, view.tabs);
     let action = screen.book.press(hit, right);
+    if action.is_some() {
+        // M187 — as above: the book has focus now, not the button.
+        screen.book_button_focus = None;
+    }
     // M186 — the widget's `playDownSound`, played inside its `mouseClicked`
     // and so only for a press the widget accepted.
     if let (Some(_), Some(h)) = (action, hit) {
@@ -722,6 +729,70 @@ pub(super) fn place_from_book(
             log::warn!("rewo: recipe book settings: {e}");
         }
     }
+    true
+}
+
+/// The recipe-book button's press (M187) — `AbstractRecipeBookScreen`'s
+/// `ImageButton`, reached through `AbstractContainerScreen.mouseClicked`'s
+/// `super.mouseClicked` (the widgets) once the book itself has declined the
+/// click, and before any slot.
+///
+/// `toggleVisibility()` is `setVisible(!isVisible())`, which writes the
+/// book's open flag, shuts the which-of-these overlay when closing
+/// (`recipeBookPage.setInvisible()`) and ends in `sendUpdateSettings()`. The
+/// menu's move (`updateScreenPosition`) and the button's own move
+/// (`setPosition(getRecipeBookButtonPosition())`) need nothing here: both are
+/// derived from the open flag through `Placement` every frame. `initVisuals`
+/// keeps the selected tab, the page and the search text, which is what
+/// `BookState` and `book_search` already do by living on `ScreenState`.
+///
+/// Left button only (`AbstractWidget.isValidClickButton`). Returns whether
+/// the press was consumed.
+pub(super) fn book_button_press(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    left: bool,
+    w: f32,
+    h: f32,
+) -> bool {
+    if !left {
+        return false;
+    }
+    let layout = session.shown_menu().layout();
+    let creative = session.own_game_mode().is_some_and(|g| g.is_creative());
+    let Some(host) = book_button_host(layout, creative) else {
+        return false;
+    };
+    let Some(book) = book_type_of(layout).map(|b| b.index()) else {
+        return false;
+    };
+    let open = book_visible(session);
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
+        screen.mouse,
+        w,
+        h,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            open,
+        ),
+    );
+    if !rewo_ui::recipe_book_screen::book_button_hit(host, gx, gy) {
+        return false;
+    }
+    // `AbstractWidget.mouseClicked`: the click, then `onPress`.
+    screen
+        .ui_sounds
+        .play(rewo_ui::ui_sound::UiSound::ButtonClick);
+    session.set_recipe_book_open(book, !open);
+    if open {
+        screen.book_overlay = None;
+    }
+    if let Err(e) = session.recipe_book_change_settings(book) {
+        log::warn!("rewo: recipe book settings: {e}");
+    }
+    // `ContainerEventHandler.mouseClicked` → `setFocused(button)`.
+    screen.book_button_focus = Some(session.shown_container_id());
     true
 }
 

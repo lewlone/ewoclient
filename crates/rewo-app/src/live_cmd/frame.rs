@@ -945,6 +945,10 @@ impl LiveApp {
                     .hovered(session.shown_menu().layout(), sw, sh, book_visible(session))
             })
             .flatten();
+        // M187 — every open is a fresh vanilla screen with nothing focused.
+        if !self.screen.inventory_open() {
+            self.screen.book_button_focus = None;
+        }
         if let Some(baked) = self.baked.as_ref() {
             #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
@@ -1026,6 +1030,7 @@ impl LiveApp {
                     &self.screen.book_search,
                     self.started.elapsed().as_millis() as u64,
                     self.screen.book_overlay.as_ref(),
+                    self.screen.book_button_focus == Some(session.shown_container_id()),
                 );
                 // M105 — the page counter is a LABEL, so it is counted here
                 // rather than among the book's quads. Matched on the
@@ -1051,6 +1056,19 @@ impl LiveApp {
                 #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     let overlay_up = self.screen.book_overlay.is_some();
+                    if session.shown_menu().layout().name == "crafting"
+                        && state
+                            .world_renderer
+                            .container_widgets()
+                            .iter()
+                            .any(|(sp, b)| {
+                                (*sp == rewo_data::assets::BOOK_BUTTON
+                                    || *sp == rewo_data::assets::BOOK_BUTTON + 1)
+                                    && (b.dx, b.dy) == (5.0, 34.0)
+                            })
+                    {
+                        c.book_button_frames += 1;
+                    }
                     let q = state.world_renderer.container_panel_book_quads();
                     if overlay_up {
                         c.book_overlay_quads_max = c.book_overlay_quads_max.max(q);
@@ -1191,16 +1209,33 @@ impl LiveApp {
     fn hud_pass(&mut self, view: &FrameView, session: &mut PlaySession, state: &mut LiveState) {
         let (alpha, extent) = (view.alpha, view.extent);
         let contextual = contextual_info(session);
+        let survival_inputs = resolve_survival_inputs(
+            session,
+            &self.etypes,
+            self.started.elapsed().as_millis() as u64,
+            contextual,
+        );
         let survival = rewo_gpu::survival_hud::layout_for_screen(
-            &resolve_survival_inputs(
-                session,
-                &self.etypes,
-                self.started.elapsed().as_millis() as u64,
-                contextual,
-            ),
+            &survival_inputs,
             extent.width as f32,
             extent.height as f32,
         );
+        // M188 — `Hud.playAirBubblePoppedSound`, from the same inputs the
+        // bars were laid out from: `LocalPlayer.playSound` is
+        // `level.playLocalSound(getX(), getY(), getZ(), sound, PLAYERS, ...)`.
+        if let Some(pop) = self.bubble_popper.frame(&survival_inputs) {
+            self.sounds.play_now(rewo_net::sounds::SoundEvent::Local(
+                rewo_net::sounds::LocalSound {
+                    name: rewo_gpu::survival_hud::BubblePopper::EVENT.to_string(),
+                    source: rewo_net::sounds::SoundSource::Players,
+                    x: session.player.x,
+                    y: session.player.y,
+                    z: session.player.z,
+                    volume: pop.volume,
+                    pitch: pop.pitch,
+                },
+            ));
+        }
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             use rewo_gpu::hud::HudIcon;
