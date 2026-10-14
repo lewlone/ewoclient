@@ -47,6 +47,7 @@ profile = [
     "tracy-client/broadcast",
     "tracy-client/callstack-inlines",
     "tracy-client/crash-handler",
+    "tracy-client/wait-stacks",
 ]
 
 [dependencies]

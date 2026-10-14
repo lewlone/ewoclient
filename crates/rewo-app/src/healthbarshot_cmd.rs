@@ -871,7 +871,7 @@ fn check_emitter(c: &mut Checker, baked: &assets::BakedAssets, check: bool) -> R
         let (r, u) = crate::live_cmd::camera_basis(az, 0.0);
         let dir = Vec3::new(-az.to_radians().sin(), 0.0, az.to_radians().cos());
         let eye = target - dir * R;
-        let vp = proj * Mat4::look_to_rh(eye, dir, Vec3::Y);
+        let vp = proj * crate::view_math::look_to_rh(eye, dir, Vec3::Y);
         let mut d = neutral_draw();
         d.health = hb(7.0, 20.0);
         let pass = wr.entity_pass().expect("entity pass");

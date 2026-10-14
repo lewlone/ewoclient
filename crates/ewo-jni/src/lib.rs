@@ -1892,15 +1892,17 @@ unsafe fn register_direct_buffer(
         return;
     }
     let jni = &**env;
-    let (Some(get_addr), Some(get_cap), Some(new_ref), Some(del_ref)) = (
-        jni.GetDirectBufferAddress,
-        jni.GetDirectBufferCapacity,
-        jni.NewGlobalRef,
-        jni.DeleteGlobalRef,
-    ) else {
+    // jni-sys 0.4 namespaces the function table by the JNI version that added
+    // each entry and no longer wraps the pointers in `Option`. The direct-buffer
+    // functions are JNI 1.4, so the guard is the JVM's reported version.
+    if (jni.v1_1.GetVersion)(env) < jni_sys::JNI_VERSION_1_4 {
         log(&format!("{what}: JNI direct-buffer functions unavailable"));
         return;
-    };
+    }
+    let get_addr = jni.v1_4.GetDirectBufferAddress;
+    let get_cap = jni.v1_4.GetDirectBufferCapacity;
+    let new_ref = jni.v1_4.NewGlobalRef;
+    let del_ref = jni.v1_4.DeleteGlobalRef;
     let addr = get_addr(env, buf);
     let cap = get_cap(env, buf);
     if addr.is_null() || cap < 0 {

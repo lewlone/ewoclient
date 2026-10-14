@@ -13,7 +13,7 @@
 //! code — without the verifier, the code is useless.
 
 use base64::Engine;
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 /// One PKCE pair generated for a single auth attempt. Drop it after the
@@ -41,9 +41,9 @@ fn generate_verifier(len: usize) -> String {
     // RFC 7636 §4.1: code_verifier = high-entropy ASCII from
     // [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..len)
-        .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
+        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
         .collect()
 }
 

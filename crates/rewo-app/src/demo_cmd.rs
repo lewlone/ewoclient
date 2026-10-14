@@ -145,7 +145,7 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
     let eye = Vec3::new(n as f32 / 2.0 - 2.0, 3.7, -4.5);
     wr.set_camera(eye.to_array());
     let dir = (center - eye).normalize();
-    let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+    let view = crate::view_math::look_to_rh(eye, dir, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         55f32.to_radians(),
         1280.0 / 720.0,

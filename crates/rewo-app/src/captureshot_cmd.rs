@@ -224,7 +224,7 @@ fn sky_renderer(gpu: &mut Gpu, format: vk::Format) -> Result<WorldRenderer, Stri
 /// A view-projection at the origin looking down −Z, level with the horizon.
 fn view_proj() -> [[f32; 4]; 4] {
     let proj = perspective_reverse_z(70f32.to_radians(), W as f32 / H as f32, 0.05);
-    let view = glam::Mat4::look_at_rh(
+    let view = crate::view_math::look_at_rh(
         glam::Vec3::ZERO,
         glam::Vec3::new(0.0, 0.0, -1.0),
         glam::Vec3::Y,

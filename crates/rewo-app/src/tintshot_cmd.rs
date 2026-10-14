@@ -1282,7 +1282,7 @@ fn render_terrain_fog(
                                              // Fog band ends at 5 (< the ~32u camera→plane distance) → fog = 1.0 → the
                                              // terrain fragment output is exactly fog_col, whatever the texture was.
     wr.set_fog(0.0, 5.0);
-    let view = Mat4::look_to_rh(eye, Vec3::new(0.0, -1.0, 0.0), Vec3::Z);
+    let view = crate::view_math::look_to_rh(eye, Vec3::new(0.0, -1.0, 0.0), Vec3::Z);
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(60f32.to_radians(), 1.0, 0.05));
     let vp = (proj * view).to_cols_array_2d();
     off.render(gpu, Some((&mut *wr, vp)), draw, [0.0, 0.0, 0.0, 1.0])?;
@@ -1334,7 +1334,7 @@ fn render_plane(
     wr.set_camera([eye.x, eye.y, eye.z]);
     wr.set_sky_tint([1.0; 3], [1.0; 3]); // noon; the plane covers the patch
     wr.set_sky_fog_base([0.0; 3], [0.0; 3]); // black sky, geometry covers it
-    let view = Mat4::look_to_rh(eye, Vec3::new(0.0, -1.0, 0.0), Vec3::Z);
+    let view = crate::view_math::look_to_rh(eye, Vec3::new(0.0, -1.0, 0.0), Vec3::Z);
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(60f32.to_radians(), 1.0, 0.05));
     let vp = (proj * view).to_cols_array_2d();
     off.render(gpu, Some((&mut *wr, vp)), draw, [0.0, 0.0, 0.0, 1.0])?;
@@ -1366,7 +1366,7 @@ fn render_sky(
     // is the sky base color.
     let eye = Vec3::new(0.0, 8.0, 0.0);
     wr.set_camera([eye.x, eye.y, eye.z]);
-    let view = Mat4::look_to_rh(eye, Vec3::X, Vec3::Y);
+    let view = crate::view_math::look_to_rh(eye, Vec3::X, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(60f32.to_radians(), 1.0, 0.05));
     let vp = (proj * view).to_cols_array_2d();
     off.render(gpu, Some((&mut *wr, vp)), draw, [0.0, 0.0, 0.0, 1.0])?;

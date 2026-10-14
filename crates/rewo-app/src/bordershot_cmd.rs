@@ -725,7 +725,7 @@ fn state(tint: u32, alpha: f64) -> rewo_gpu::border::BorderState {
 fn view_proj() -> [[f32; 4]; 4] {
     let proj = perspective_reverse_z(70f32.to_radians(), W as f32 / H as f32, 0.05);
     let eye = glam::Vec3::new(CAM[0] as f32, CAM[1] as f32, CAM[2] as f32);
-    let view = glam::Mat4::look_at_rh(eye, eye - glam::Vec3::Z, glam::Vec3::Y);
+    let view = crate::view_math::look_at_rh(eye, eye - glam::Vec3::Z, glam::Vec3::Y);
     (glam::Mat4::from_cols_array_2d(&proj) * view).to_cols_array_2d()
 }
 

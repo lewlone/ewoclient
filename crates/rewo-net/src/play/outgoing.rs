@@ -111,7 +111,7 @@ impl PlaySession {
         let (salt, signature) = match self.signer.as_mut() {
             Some(signer) => {
                 let mut salt_bytes = [0u8; 8];
-                rand::Rng::fill(&mut rand::thread_rng(), &mut salt_bytes);
+                rand::RngExt::fill(&mut rand::rng(), &mut salt_bytes);
                 let salt = i64::from_be_bytes(salt_bytes);
                 let sig = signer.sign(message, salt, now.as_secs() as i64, &last_seen.last_seen);
                 (salt, Some(sig))
@@ -259,7 +259,7 @@ impl PlaySession {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let salt: i64 = rand::Rng::gen(&mut rand::thread_rng());
+        let salt: i64 = rand::RngExt::random(&mut rand::rng());
         let last_seen = self.last_seen.generate_and_apply_update();
         let signatures: Vec<(String, Vec<u8>)> = match self.signer.as_mut() {
             Some(signer) => signable

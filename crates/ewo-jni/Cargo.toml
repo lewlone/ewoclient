@@ -27,7 +27,7 @@ skia-safe.workspace = true
 gl.workspace = true
 # Raw JNI type definitions — used once, in `nativeInit`, to resolve a direct
 # `ByteBuffer`'s address via `GetDirectBufferAddress`. Just bindings, no logic.
-jni-sys = "0.3"
+jni-sys = "0.4"
 
 [features]
 default = []
@@ -45,8 +45,7 @@ pvp = ["ewo-core/pvp"]
 # with "now playing" / thumbnail / transport state. Polled from a background
 # thread (see `media.rs`).
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
-    "implement",
+windows = { version = "0.62", features = [
     "Foundation",
     "Foundation_Collections",
     "Media",
@@ -57,6 +56,8 @@ windows = { version = "0.58", features = [
     "Win32_Media_Audio",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    # PROPVARIANT-taking audio activation is gated on Variant too since 0.59.
+    "Win32_System_Variant",
     # CreateEventW takes a SECURITY_ATTRIBUTES pointer, so it is gated behind
     # the Security feature even though we always pass null.
     "Win32_Security",
@@ -66,8 +67,8 @@ windows = { version = "0.58", features = [
 ] }
 # `#[implement]` expands to absolute `::windows_core::` paths, so the core
 # crate has to be a direct dependency rather than reached through `windows`.
-# Same 0.58 release, so cargo unifies it with the one `windows` already pulls.
-windows-core = "0.58"
+# Same 0.62 release, so cargo unifies it with the one `windows` already pulls.
+windows-core = "0.62"
 
 [lints]
 workspace = true

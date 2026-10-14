@@ -415,11 +415,11 @@ fn run_refresh(tx: Sender<AuthEvent>, refresh_token: String) {
 /// 32 chars is more than enough — the OAuth spec only requires
 /// "non-guessable", typical implementations use 8-32 alphanumerics.
 fn random_state() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..32)
-        .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
+        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
         .collect()
 }
 

@@ -1296,6 +1296,7 @@ pub fn jar_item_ids(client_jar: &Path) -> Result<Vec<String>, String> {
     let zip = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| format!("zip: {e}"))?;
     let mut out: Vec<String> = zip
         .file_names()
+        .filter_map(Result::ok)
         .filter_map(|p| {
             p.strip_prefix("assets/minecraft/items/")
                 .and_then(|r| r.strip_suffix(".json"))
@@ -1336,7 +1337,7 @@ pub fn blocks_without_geometry(client_jar: &Path) -> Result<Vec<String>, String>
 
     const STATES: &str = "assets/minecraft/blockstates/";
     let names: Vec<String> = (0..jar.len())
-        .filter_map(|i| jar.by_index(i).ok().map(|f| f.name().to_string()))
+        .filter_map(|i| jar.by_index(i).ok()?.name().ok().map(|n| n.into_owned()))
         .filter(|n| n.starts_with(STATES) && n.ends_with(".json"))
         .collect();
 
@@ -2727,6 +2728,7 @@ fn bake_item_names(jar: Jar, lang: &crate::lang::Language) -> HashMap<String, St
     let mut out = HashMap::new();
     let names: Vec<String> = jar
         .file_names()
+        .filter_map(Result::ok)
         .filter_map(|p| {
             p.strip_prefix("assets/minecraft/items/")
                 .and_then(|r| r.strip_suffix(".json"))
@@ -3191,6 +3193,7 @@ fn bake_locator(jar: Jar) -> Option<LocatorSprites> {
 
     let names: Vec<String> = jar
         .file_names()
+        .filter_map(Result::ok)
         .filter_map(|p| {
             p.strip_prefix("assets/minecraft/waypoint_style/")
                 .and_then(|r| r.strip_suffix(".json"))
@@ -3773,6 +3776,7 @@ impl<'a> Baker<'a> {
         let mut names: Vec<String> = self
             .jar
             .file_names()
+            .filter_map(Result::ok)
             .filter_map(|p| {
                 p.strip_prefix("assets/minecraft/items/")
                     .and_then(|r| r.strip_suffix(".json"))

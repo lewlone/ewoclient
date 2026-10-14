@@ -468,7 +468,7 @@ fn orbit(center: Vec3, frame: u32, total: u32) -> ([[f32; 4]; 4], Vec3) {
     let angle = t * std::f32::consts::TAU * 3.0;
     let radius = 90.0;
     let eye = center + Vec3::new(angle.cos() * radius, 40.0, angle.sin() * radius);
-    let view = Mat4::look_at_rh(eye, center, Vec3::Y);
+    let view = crate::view_math::look_at_rh(eye, center, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         70f32.to_radians(),
         1280.0 / 720.0,

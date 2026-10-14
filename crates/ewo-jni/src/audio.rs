@@ -454,7 +454,7 @@ mod backend {
 
     const _: () = assert!(
         core::mem::size_of::<BlobPropVariant>()
-            == core::mem::size_of::<windows::core::PROPVARIANT>(),
+            == core::mem::size_of::<windows::Win32::System::Com::StructuredStorage::PROPVARIANT>(),
         "PROPVARIANT layout changed — the hand-built activation blob is no longer valid"
     );
 
@@ -468,7 +468,7 @@ mod backend {
     impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationHandler_Impl {
         fn ActivateCompleted(
             &self,
-            _op: Option<&IActivateAudioInterfaceAsyncOperation>,
+            _op: windows::core::Ref<'_, IActivateAudioInterfaceAsyncOperation>,
         ) -> windows::core::Result<()> {
             unsafe {
                 let _ = SetEvent(self.done);
@@ -637,7 +637,10 @@ mod backend {
         let op = ActivateAudioInterfaceAsync(
             PCWSTR(device.as_ptr()),
             &IAudioClient::IID as *const GUID,
-            Some((&blob) as *const _ as *const windows::core::PROPVARIANT),
+            Some(
+                (&blob) as *const _
+                    as *const windows::Win32::System::Com::StructuredStorage::PROPVARIANT,
+            ),
             &handler,
         )?;
 
@@ -645,7 +648,7 @@ mod backend {
         // thread to do until it lands. On timeout the handle is deliberately
         // leaked: the callback may still fire and `SetEvent` it later.
         if WaitForSingleObject(done, 3_000) != WAIT_OBJECT_0 {
-            return Err(windows::core::Error::from_win32());
+            return Err(windows::core::Error::from_thread());
         }
         drop(Event(done));
 
@@ -654,7 +657,7 @@ mod backend {
         op.GetActivateResult(&mut hr, &mut unknown)?;
         hr.ok()?;
         unknown
-            .ok_or_else(windows::core::Error::from_win32)?
+            .ok_or_else(windows::core::Error::from_thread)?
             .cast::<IAudioClient>()
     }
 

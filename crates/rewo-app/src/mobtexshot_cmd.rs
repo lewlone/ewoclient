@@ -1365,7 +1365,10 @@ fn count_jar_baby_sheets(jar: &Path) -> Result<usize, String> {
     let mut n = 0usize;
     for i in 0..z.len() {
         let name = match z.by_index(i) {
-            Ok(e) => e.name().to_string(),
+            Ok(e) => match e.name() {
+                Ok(n) => n.into_owned(),
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
         if name.starts_with("assets/minecraft/textures/entity/")
@@ -1426,7 +1429,7 @@ fn stage_from(
     )?;
     let dir = (center - eye).normalize();
     wr.set_camera(eye.to_array());
-    let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+    let view = crate::view_math::look_to_rh(eye, dir, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         55f32.to_radians(),
         w as f32 / h as f32,

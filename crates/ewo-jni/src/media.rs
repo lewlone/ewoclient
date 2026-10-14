@@ -330,7 +330,7 @@ fn smtc_thread(shared: Arc<Shared>, rx_actions: Receiver<MediaAction>) {
     // exits and the widget stays in the empty state. Wrapped in a fn to use
     // `?` for early-return on any error.
     fn get_manager() -> windows::core::Result<Manager> {
-        Manager::RequestAsync()?.get()
+        Manager::RequestAsync()?.join()
     }
     let manager = match get_manager() {
         Ok(m) => m,
@@ -379,25 +379,25 @@ fn smtc_thread(shared: Arc<Shared>, rx_actions: Receiver<MediaAction>) {
                         .and_then(|p| p.PlaybackStatus())
                         .unwrap_or(PlaybackStatus(0));
                     if status == PlaybackStatus(4) {
-                        session.TryPauseAsync().and_then(|op| op.get())
+                        session.TryPauseAsync().and_then(|op| op.join())
                     } else {
-                        session.TryPlayAsync().and_then(|op| op.get())
+                        session.TryPlayAsync().and_then(|op| op.join())
                     }
                     .map(|_| ())
                 }
                 MediaAction::Next => session
                     .TrySkipNextAsync()
-                    .and_then(|op| op.get())
+                    .and_then(|op| op.join())
                     .map(|_| ()),
                 MediaAction::Previous => session
                     .TrySkipPreviousAsync()
-                    .and_then(|op| op.get())
+                    .and_then(|op| op.join())
                     .map(|_| ()),
             };
         }
 
         fn capture_snapshot(session: &Session) -> Option<MediaSnapshot> {
-            let props = session.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
+            let props = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
             let title = props
                 .Title()
                 .map(|h| h.to_string_lossy())
@@ -462,13 +462,13 @@ fn smtc_thread(shared: Arc<Shared>, rx_actions: Receiver<MediaAction>) {
             props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
         ) -> Option<Vec<u8>> {
             let thumb = props.Thumbnail().ok()?;
-            let stream = thumb.OpenReadAsync().ok()?.get().ok()?;
+            let stream = thumb.OpenReadAsync().ok()?.join().ok()?;
             let size = stream.Size().ok()? as u32;
             if size == 0 {
                 return None;
             }
             let reader = DataReader::CreateDataReader(&stream).ok()?;
-            reader.LoadAsync(size).ok()?.get().ok()?;
+            reader.LoadAsync(size).ok()?.join().ok()?;
             let mut bytes = vec![0u8; size as usize];
             reader.ReadBytes(&mut bytes).ok()?;
             Some(bytes)

@@ -116,7 +116,9 @@ pub(crate) fn is_contained_relative(path: &Path) -> bool {
 
 /// The destination-relative path for a zip entry, or `None` for anything
 /// that could escape `dest` or isn't a plain file (symlinks, dirs).
-pub(crate) fn safe_zip_entry_path(entry: &zip::read::ZipFile<'_>) -> Option<PathBuf> {
+pub(crate) fn safe_zip_entry_path<R: io::Read + ?Sized>(
+    entry: &zip::read::ZipFile<'_, R>,
+) -> Option<PathBuf> {
     if entry.is_dir() || entry.is_symlink() {
         return None;
     }
@@ -134,7 +136,10 @@ fn extract_one(jar: &Path, dest: &Path, excludes: &[String]) -> Result<(), Extra
         let mut entry = archive
             .by_index(i)
             .map_err(|e| ExtractError::Zip(e.to_string()))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| ExtractError::Zip(e.to_string()))?
+            .into_owned();
         if entry.is_dir() {
             continue;
         }
@@ -216,13 +221,23 @@ mod tests {
                 w.start_file(name, opts).unwrap();
                 w.write_all(b"x").unwrap();
             }
+            // A symlink entry is never materialised, whatever it points at.
+            w.add_symlink("link.dll", "ok.dll", opts).unwrap();
             w.finish().unwrap();
+        }
+        // The writer stores the hostile names verbatim, so the guard below is
+        // what keeps them out (not a sanitising writer).
+        {
+            let mut r = zip::ZipArchive::new(fs::File::open(&jar).unwrap()).unwrap();
+            assert_eq!(r.by_index(1).unwrap().name_raw(), b"../escaped.dll");
+            assert!(r.by_name("link.dll").unwrap().is_symlink());
         }
         extract_one(&jar, &dest, &["META-INF/".to_string()]).unwrap();
         assert!(dest.join("ok.dll").exists());
         assert!(dest.join("sub").join("n.so").exists());
         assert!(!base.join("escaped.dll").exists());
         assert!(!dest.join("META-INF").exists());
+        assert!(fs::symlink_metadata(dest.join("link.dll")).is_err());
         let _ = fs::remove_dir_all(&base);
     }
 }

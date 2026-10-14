@@ -343,7 +343,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
                 continue;
             }
             let expected = FACES[pi];
-            let view = Mat4::look_to_rh(eye, dir, up);
+            let view = crate::view_math::look_to_rh(eye, dir, up);
             let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
                 55f32.to_radians(),
                 1.0,
@@ -699,7 +699,7 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     };
     let dir = (center - eye).normalize();
     wr.set_camera(eye.to_array());
-    let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+    let view = crate::view_math::look_to_rh(eye, dir, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         55f32.to_radians(),
         w as f32 / h as f32,
@@ -846,7 +846,7 @@ fn frame_kind(
         55f32.to_radians(),
         1.0,
         0.05,
-    )) * Mat4::look_to_rh(eye, dir, Vec3::Y))
+    )) * crate::view_math::look_to_rh(eye, dir, Vec3::Y))
     .to_cols_array_2d();
     let right = dir.cross(Vec3::Y).normalize_or_zero().to_array();
     Some((vp, right, [0.0, 1.0, 0.0], eye))
@@ -1387,7 +1387,7 @@ fn run_etf_check(
 fn write_etf_fixture(path: &std::path::Path) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| format!("etf fixture: {e}"))?;
     let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
-    let opts: zip::write::FileOptions<'_, ()> =
+    let opts: zip::write::SimpleFileOptions =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut put = |name: &str, bytes: &[u8]| -> Result<(), String> {
         use std::io::Write;

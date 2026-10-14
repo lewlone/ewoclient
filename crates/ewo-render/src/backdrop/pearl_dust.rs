@@ -15,7 +15,7 @@
 use crate::gradients;
 use crate::tokens;
 use ewo_core::Settings;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
     AlphaType, BlendMode, Canvas, Color, ColorType, FilterMode, Image, ImageInfo, Paint, Point,
@@ -80,7 +80,7 @@ pub struct PearlDust {
 
 impl PearlDust {
     pub fn new(width: f32, height: f32, settings: &Settings) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let air_count = ((AIR_BASE as f32) * settings.density).round() as usize;
         let settled_count = ((SETTLED_BASE as f32) * settings.density).round() as usize;
         let airborne = (0..air_count)
@@ -102,7 +102,7 @@ impl PearlDust {
     pub fn resize(&mut self, width: f32, height: f32, settings: &Settings) {
         // Cheap path: regenerate. Particles are short-lived (max ~1000 frames)
         // so the visual blip is brief.
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let air_count = ((AIR_BASE as f32) * settings.density).round() as usize;
         let settled_count = ((SETTLED_BASE as f32) * settings.density).round() as usize;
         self.airborne = (0..air_count)
@@ -132,7 +132,7 @@ impl PearlDust {
         let step = (dt * 60.0).clamp(0.0, 4.0); // cap big skips during stalls
         let h = self.height;
         let w = self.width;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for m in self.airborne.iter_mut() {
             m.x += (m.vx + (m.life * 0.01).sin() * 0.12) * step;
@@ -282,24 +282,24 @@ fn build_halo_sprite(canvas: &Canvas) -> Option<Image> {
 
 fn make_air<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32) -> Airborne {
     Airborne {
-        x: rng.gen::<f32>() * w,
-        y: h + rng.gen::<f32>() * 80.0,
-        vy: -(0.08 + rng.gen::<f32>() * 0.18),
-        vx: (rng.gen::<f32>() - 0.5) * 0.04,
-        r: 0.3 + rng.gen::<f32>() * 1.4,
+        x: rng.random::<f32>() * w,
+        y: h + rng.random::<f32>() * 80.0,
+        vy: -(0.08 + rng.random::<f32>() * 0.18),
+        vx: (rng.random::<f32>() - 0.5) * 0.04,
+        r: 0.3 + rng.random::<f32>() * 1.4,
         life: 0.0,
-        max_life: 400.0 + rng.gen::<f32>() * 600.0,
-        shine_phase: rng.gen::<f32>() * 2.0 * PI,
-        shine_freq: 0.003 + rng.gen::<f32>() * 0.004,
+        max_life: 400.0 + rng.random::<f32>() * 600.0,
+        shine_phase: rng.random::<f32>() * 2.0 * PI,
+        shine_freq: 0.003 + rng.random::<f32>() * 0.004,
     }
 }
 
 fn make_settled<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32) -> Settled {
     Settled {
-        x: rng.gen::<f32>() * w,
-        y: h - 6.0 - rng.gen::<f32>() * 28.0,
-        r: 0.5 + rng.gen::<f32>() * 1.2,
-        twinkle: rng.gen::<f32>() * 2.0 * PI,
-        jitter: rng.gen::<f32>() - 0.5,
+        x: rng.random::<f32>() * w,
+        y: h - 6.0 - rng.random::<f32>() * 28.0,
+        r: 0.5 + rng.random::<f32>() * 1.2,
+        twinkle: rng.random::<f32>() * 2.0 * PI,
+        jitter: rng.random::<f32>() - 0.5,
     }
 }

@@ -179,8 +179,9 @@ impl EquipmentAssets {
         };
         let names: Vec<String> = zip
             .file_names()
+            .filter_map(Result::ok)
             .filter(|p| p.starts_with("assets/minecraft/equipment/") && p.ends_with(".json"))
-            .map(str::to_string)
+            .map(|p| p.into_owned())
             .collect();
         // `(asset, layer) -> texture name`, gathered before any decode so the
         // same sheet named by two assets is decoded once.
@@ -408,11 +409,12 @@ impl TrimAssets {
         const PAL: &str = "assets/minecraft/textures/trims/color_palettes/";
         let names: Vec<String> = zip
             .file_names()
+            .filter_map(Result::ok)
             .filter(|p| {
                 (p.starts_with(SRC) || p.starts_with(ITEMS) || p.starts_with(PAL))
                     && p.ends_with(".png")
             })
-            .map(str::to_string)
+            .map(|p| p.into_owned())
             .collect();
         for path in names {
             let mut bytes = Vec::new();

@@ -46,7 +46,9 @@ pub fn load_pack(zip_path: &Path) -> Result<CemPack, String> {
             Ok(e) => e,
             Err(_) => continue,
         };
-        let name = entry.name().to_string();
+        let Ok(name) = entry.name().map(|n| n.into_owned()) else {
+            continue;
+        };
         let Some(rest) = name.strip_prefix(CEM_DIR) else {
             continue;
         };

@@ -195,7 +195,7 @@ fn facing_quad(z: f32, x_off: f32) -> Vec<PortalVertex> {
 /// its own view axis by tilting the up vector.
 fn view_proj(roll_x: f32) -> [[f32; 4]; 4] {
     let proj = perspective_reverse_z(70f32.to_radians(), W as f32 / H as f32, 0.05);
-    let view = glam::Mat4::look_at_rh(
+    let view = crate::view_math::look_at_rh(
         glam::Vec3::ZERO,
         glam::Vec3::new(0.0, 0.0, -1.0),
         glam::Vec3::new(roll_x, 1.0, 0.0).normalize(),
