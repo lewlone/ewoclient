@@ -2272,31 +2272,33 @@ fn decode_layer(c: &mut Checker) {
             let pcm = decode_ogg_vorbis(&bytes);
             let ok = match &pcm {
                 Ok(p) => {
-                    // Exact, and it is the end trim that makes it so: a Vorbis
-                    // stream's final page carries a granule position below what
-                    // the last packet decodes to, and the surplus is discarded.
+                    // Exact, and it is VANILLA's count: 1595, measured by
+                    // running `JOrbisAudioStream.readAll()` itself over this
+                    // file (`tools/vorbis_decode_oracle`). It caps the stream at
+                    // the final page's granule position and emits nothing for
+                    // the first packet.
                     //
-                    // **That trim is symphonia's, not Rewo's** (`decode.rs:19`
-                    // says so), so this half of the witness pins a dependency's
-                    // behaviour rather than a transcription — a symphonia that
-                    // stopped trimming would return MORE samples and sound
-                    // almost right, which is worth catching even though no
-                    // mutation of Rewo's own code can produce it.
-                    p.channels == 1 && p.sample_rate == 44100 && p.samples.len() == 1728
+                    // **That trim is symphonia's gapless mode, not Rewo's**
+                    // (`decode.rs`'s module doc says so), so this half of the
+                    // witness pins a dependency's behaviour rather than a
+                    // transcription: a decoder that stopped trimming returns
+                    // MORE samples (1856) and one that dropped the first packet
+                    // by hand returns 1728 (what this pinned before 2026-10, and
+                    // vanilla does not), both of which sound almost right.
+                    p.channels == 1 && p.sample_rate == 44100 && p.samples.len() == 1595
                 }
                 Err(_) => false,
             };
-            // **The SUM sees the quantisation and the peak does not.** Measured:
-            // -136 through `quantise`, and +676 with the bias dropped — a gap of
-            // 812 across 1728 samples. The peak moves by ONE over the same
-            // change (19988 against 19987), so a peak-only witness is blind.
+            // **The SUM sees the quantisation and the peak does not.** Vanilla's
+            // own decode of this file sums to -72; dropping the bias was
+            // measured at a gap of 812 across the old 1728-sample count (about
+            // 0.47 per sample, so roughly 750 over 1595). The peak moves by ONE
+            // over the same change, so a peak-only witness is blind.
             //
-            // The tolerance is wide on purpose and the bound is stated here
-            // rather than in a comment elsewhere: an aggregate shifts by a few
-            // when a symphonia bump moves a handful of samples by an LSB, and by
-            // hundreds when the bias goes missing. Pinning the exact value would
-            // pin symphonia's version rather than Rewo's arithmetic, which
-            // Vorbis I explicitly does not promise.
+            // The tolerance (+/-8) leaves room for a symphonia bump that moves
+            // a handful of samples by an LSB, and catches a missing bias by two
+            // orders of magnitude. Pinning more would pin symphonia's version
+            // rather than Rewo's arithmetic, which Vorbis I does not promise.
             let sum: i64 = pcm
                 .as_ref()
                 .map(|p| p.samples.iter().map(|s| *s as i64).sum())
@@ -2313,10 +2315,10 @@ fn decode_layer(c: &mut Checker) {
                 .unwrap_or(0);
             c.record(
                 "d3.a_real_ogg_decodes_to_its_exact_sample_count",
-                ok && (sum - -136).abs() < 200 && peak > 8000 && peak < 32767,
+                ok && (sum - -72).abs() <= 8 && peak > 8000 && peak < 32767,
                 format!(
-                    "1728 samples, 1ch, 44100 Hz; sum {sum} (expected -136 +/-200; \
-                     dropping the -0.5 bias gives +676), peak {peak}"
+                    "1595 samples (vanilla's), 1ch, 44100 Hz; sum {sum} (expected -72 +/-8; \
+                     dropping the -0.5 bias moves it by ~750), peak {peak}"
                 ),
             );
         }
@@ -2446,8 +2448,8 @@ fn decode_layer(c: &mut Checker) {
     // LENGTHS, not in the samples: a version that spliced across the boundary to
     // keep every buffer full would sound identical and would not be this.
     //
-    // The chicken is 1728 samples, so at 1000 the pattern is 1000, 728, 1000,
-    // 728 … — the fixture's own numbers rather than round by luck.
+    // The chicken is 1595 samples, so at 1000 the pattern is 1000, 595, 1000,
+    // 595 … — the fixture's own numbers rather than round by luck.
     match asset(CHICKEN) {
         None => c.record(
             "d7.a_looping_stream_restarts_one_read_after_it_runs_out",
@@ -2466,7 +2468,7 @@ fn decode_layer(c: &mut Checker) {
             }
             c.record(
                 "d7.a_looping_stream_restarts_one_read_after_it_runs_out",
-                lens == vec![1000, 728, 1000, 728, 1000] && once_lens == vec![1000, 728, 0, 0, 0],
+                lens == vec![1000, 595, 1000, 595, 1000] && once_lens == vec![1000, 595, 0, 0, 0],
                 format!("looping {lens:?} against non-looping {once_lens:?}"),
             );
         }

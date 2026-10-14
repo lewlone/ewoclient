@@ -228,7 +228,8 @@ Multiplier `32767.5`, bias applied **before** a C-style truncating cast. Reprodu
 >
 > **The peak cannot see the quantisation.** Dropping the `-0.5` bias moves a
 > real sound's peak by one (19988 -> 19987) and its SUM by 812 across 1728
-> samples; the witness is on the sum. Found by a mutation surviving, not by
+> samples (the count then; now 1595, see "Decode trim" at the end); the witness
+> is on the sum. Found by a mutation surviving, not by
 > reading. And the `channels == 0` guard is unreachable — symphonia's probe
 > rejects every truncated ogg before a track exists — so that mutation is
 > recorded as an expected survivor with the proof rather than left looking
@@ -658,7 +659,8 @@ on the windowed path) + **the human listening pass** (§4).
 > transcription.* `decode.rs:19` says "The end trim is symphonia's, not ours",
 > so the exact 1728-sample count pins symphonia rather than Rewo. Worth having
 > and worth labelling — no mutation of Rewo's own code can produce the failure
-> it excludes.
+> it excludes. *(Superseded 2026-10: the count is now 1595, vanilla's own, with
+> symphonia's gapless mode ON; see "Decode trim" at the end.)*
 >
 > **What the battery found is a fixture blind to its own subject, and it is a
 > new shape of §5's first trap.** `s6` asserts that dropping a variant whose
@@ -784,3 +786,47 @@ Plus `--render-check` r45/r46, and a mutation battery **with a no-op control tha
 - **`preload`.** Zero vanilla entries carry it **[concurring]**, so it is unreachable by any gate driven from vanilla data.
 
 **Scope honesty:** M138a–d is a new crate, a decoder, a buffer/stream library, a mixer, two sinks, a device with four threads, a fifth trait method, a camera-basis transcription, a five-layer gate with ~42 witnesses, a mutation battery, and two false-green fixes. Splitting it into four independently-gated steps is what keeps its gate from being written last and its witnesses shaped to pass.
+
+## 7. Decode trim: Rewo now yields vanilla's exact frame count (2026-10-14)
+
+**Done.** `decode.rs` used to decode with symphonia's gapless mode OFF and drop
+the first decoded packet by hand, which reproduced symphonia 0.5's output and
+not vanilla's: every sound came out a few hundred frames long (chicken
+`step1.ogg`: 1728, vanilla 1595).
+
+**What vanilla 26.2 does** (`net/minecraft/client/sounds/JOrbisAudioStream.java`,
+read by `SoundBufferLibrary.getCompleteBuffer` and `getStream` alike):
+
+- The END is trimmed to the final page's granule position. `readPage` (`:96-102`
+  region, the `case 1` branch) stores `totalSamplesInStream = page.granulepos()`
+  when it sees the end-of-stream page, and `getSamplesToWrite` clips the last
+  chunk to it. The count is therefore `granulepos` whenever the decode would
+  otherwise run over.
+- The START emits nothing for the first packet: `readChunk` decodes a packet,
+  `synthesis_blockin`s it and copies out whatever `synthesis_pcmout` offers, and
+  the first block has no previous block to overlap.
+- An undecodable packet THROWS ("Can't decode audio packet") and the sound
+  fails to load. Rewo skips the packet instead (a leniency on corrupt data
+  only; no shipped asset does it).
+
+**Measured, not assumed.** `tools/vorbis_decode_oracle/` runs vanilla's own
+`JOrbisAudioStream.readAll()` (the real client jar, the manifest's classpath)
+over 56 files of the local store: the 14 smallest, a 40-point spread by size
+up to 2.5 MB, and the three anchors. In all 56, vanilla's frame count equals the
+final page's granule position. `vectors.tsv` records frames, an FNV hash of the
+PCM, the sum, and the first and last 64 samples.
+
+**Rewo's result.** With `AudioDecoderOptions::gapless(true)` and no hand-rolled
+first-packet state, Rewo's frame count equals vanilla's in all 56, the first
+and last 64 samples are within 1 LSB (jorbis and symphonia differ in the last
+bit; Vorbis I does not promise otherwise), and whole-file sums agree to a few
+LSB (worst: 23 over 11.6 M samples). `decode.rs`
+`rewo_decodes_the_same_frames_as_vanillas_own_decoder` pins this (assets-gated,
+`skip_test!`), `a_stream_yields_vanillas_frame_count_too` pins the streamed
+path, and `soundshot` d3/d7 now pin 1595 and `1000, 595` for the chicken.
+Mutation check: `gapless(false)` fails six `real_assets` tests, the oracle
+test first (`big_dripleaf/break2.ogg`: vanilla 27589, 27968 without the trim).
+
+**Not done / still approximate.** Sample VALUES are not bit-identical (see
+`decode.rs`'s module doc); the oracle hash column is recorded for a future
+bit-exact attempt and is not asserted.

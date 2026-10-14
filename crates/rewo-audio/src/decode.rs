@@ -16,17 +16,24 @@
 //! it is why the quantisation lives in its own module with its own tests rather
 //! than inline here where it would look like an implementation detail.
 //!
-//! **The end trim is symphonia's, not ours — and it is currently OFF.** A
-//! Vorbis stream's final page carries a granule position that can be *less*
-//! than the samples the last packet decodes to, and the surplus should be
-//! discarded — otherwise every sound ends with a few milliseconds of whatever
-//! the encoder's lapping produced. Symphonia can apply it (its gapless mode);
-//! reimplementing it here would be a second, worse copy. Rewo has always
-//! decoded with gapless mode off, though (symphonia 0.5's default), so the
-//! surplus is kept: see `decoder_options` for the measured counts and why
-//! switching it on is a deliberate change rather than a bump side effect. It is
-//! named rather than left implicit because a decoder that ignored it sounds
-//! *almost* right, which is the hardest kind of wrong to notice.
+//! **The sample COUNT is exact, and it is vanilla's.** `JOrbisAudioStream`
+//! (26.2) emits nothing for the first packet (no previous block to overlap) and
+//! caps the stream at the final page's granule position: `readPage` stores
+//! `totalSamplesInStream = page.granulepos()` on the end-of-stream page and
+//! `getSamplesToWrite` clips the last chunk to it. So a file decodes to
+//! exactly `granulepos` frames. Symphonia 0.6's gapless mode produces the same
+//! count, and `decoder_options` turns it on; reimplementing the trim here would
+//! be a second, worse copy. This was measured, not assumed:
+//! `tools/vorbis_decode_oracle` runs vanilla's own class over 56 files of the
+//! local store (the 14 smallest, a spread by size, the anchors), and
+//! `real_assets::rewo_decodes_the_same_frames_as_vanillas_own_decoder` pins
+//! the frame counts exactly and the first and last 64 samples to within one
+//! LSB. Until 2026-10 Rewo decoded without the trim and dropped the first
+//! packet by hand, which gave a different count in every file (chicken
+//! `step1.ogg`: 1728 against vanilla's 1595), so every sound was a few
+//! milliseconds long and the stream-chunk arithmetic drifted. A decoder that
+//! ignores the trim sounds *almost* right, which is the hardest kind of wrong
+//! to notice.
 
 use crate::buffers::Pcm;
 use crate::quantise::quantise;
@@ -83,7 +90,6 @@ pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
     let mut channels = 0u16;
     let mut sample_rate = 0u32;
     let mut buf: Vec<f32> = Vec::new();
-    let mut primed = false;
 
     loop {
         let packet = match format.next_packet() {
@@ -110,18 +116,19 @@ pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
                     channels = audio.spec().channels().count() as u16;
                     sample_rate = audio.spec().rate();
                 }
-                // The priming packet yields nothing; see `decoder_options`.
-                if std::mem::replace(&mut primed, true) {
-                    // Interleaved, which is what OpenAL wants and what the
-                    // mixer will read: L R L R for stereo rather than two
-                    // planes.
-                    audio.copy_to_vec_interleaved(&mut buf);
-                    samples.extend(buf.iter().copied().map(quantise));
-                }
+                // Interleaved, which is what OpenAL wants and what the mixer
+                // will read: L R L R for stereo rather than two planes. The
+                // decoder has already trimmed the start and the end; see
+                // `decoder_options`.
+                audio.copy_to_vec_interleaved(&mut buf);
+                samples.extend(buf.iter().copied().map(quantise));
             }
-            // A corrupt packet is skippable in Vorbis — vanilla's decoder does
-            // the same rather than abandoning the file, and a sound with one
-            // bad page is better than no sound.
+            // A corrupt packet is skippable in Vorbis, and a sound with one bad
+            // packet is better than no sound. **A deliberate leniency over
+            // vanilla**: `JOrbisAudioStream.readChunk` throws "Can't decode
+            // audio packet" and the whole sound fails to load. Only reachable
+            // on corrupt data (no shipped asset does it), so the frame count
+            // above is unaffected.
             Err(Error::DecodeError(_)) => continue,
             Err(e) => return Err(format!("vorbis decode: {e}")),
         }
@@ -159,26 +166,24 @@ fn default_audio_track(
     }
 }
 
-/// Decoder options that reproduce what symphonia 0.5 handed Rewo: **no
-/// gapless trimming**, plus (at the call sites) **nothing from the first
-/// decoded packet**.
+/// Decoder options that reproduce **vanilla's** trim: gapless ON.
 ///
-/// 0.5's Vorbis decoder returned an empty buffer for the first packet after a
-/// reset (no previous block to overlap) and trimmed nothing else, because its
-/// Ogg reader only set packet trims under `FormatOptions::enable_gapless`,
-/// which defaulted to off. 0.6 moved gapless onto the decoder, defaulted it on
-/// (which also trims the stream's start and end by the granule positions), and
-/// with it off renders half a block for the first packet instead. Measured on
-/// the chicken fixture: 0.5 gave 1728 samples; 0.6 gives 1595 gapless and 1856
-/// without; 0.6 without gapless minus the first packet gives 1728 again, the
-/// count the real-asset tests and `soundshot`'s d3 witness pin.
+/// Gapless mode trims the stream's start (the first packet's missing overlap)
+/// and its end (to the final page's granule position), which is exactly what
+/// `JOrbisAudioStream` does (see the module doc). Measured on the chicken
+/// fixture: vanilla yields 1595 samples; symphonia 0.6 gapless yields 1595;
+/// without gapless it yields 1856 (half a block for the first packet plus the
+/// end surplus), and 1728 once the first packet is dropped by hand (the old
+/// Rewo behaviour, which matched symphonia 0.5's non-gapless output and not
+/// vanilla's).
 ///
-/// Note for the module doc's "end trim" paragraph: with these semantics the
-/// granule-position end trim is **not** applied (it was not under 0.5
-/// either). Switching to gapless decoding is a behaviour change to make on
-/// purpose, against vanilla's decode, not as a side effect of a bump.
+/// **There is no hand-rolled "first packet" state anywhere.** The decoder
+/// applies the trims per packet, so a packet that fails to decode with a
+/// `DecodeError` (skipped; see the call site) cannot make the next good
+/// packet be mistaken for the first. The old `primed` flag keyed the drop on
+/// the first *successful* decode, which did exactly that.
 fn decoder_options() -> symphonia::core::codecs::audio::AudioDecoderOptions {
-    symphonia::core::codecs::audio::AudioDecoderOptions::default().gapless(false)
+    symphonia::core::codecs::audio::AudioDecoderOptions::default().gapless(true)
 }
 
 /// One live Vorbis decode position — the state `JOrbisAudioStream` holds.
@@ -193,8 +198,6 @@ struct VorbisReader {
     decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
     track_id: u32,
     buf: Vec<f32>,
-    /// Whether the decoder has seen its first packet; see `decoder_options`.
-    primed: bool,
 }
 
 impl VorbisReader {
@@ -243,7 +246,6 @@ impl VorbisReader {
                 decoder,
                 track_id,
                 buf: Vec::new(),
-                primed: false,
             },
             channels,
             sample_rate,
@@ -274,9 +276,6 @@ impl VorbisReader {
             }
             match self.decoder.decode(&packet) {
                 Ok(audio) => {
-                    if !std::mem::replace(&mut self.primed, true) {
-                        return Ok(Some(Vec::new()));
-                    }
                     audio.copy_to_vec_interleaved(&mut self.buf);
                     return Ok(Some(self.buf.iter().copied().map(quantise).collect()));
                 }
@@ -496,7 +495,7 @@ mod real_assets {
         std::fs::read(p).ok()
     }
 
-    /// `mob/chicken/step1.ogg` — mono, 44.1 kHz, 1728 samples.
+    /// `mob/chicken/step1.ogg` — mono, 44.1 kHz, 1595 samples (vanilla's count).
     const CHICKEN: (&str, &str) = ("e1", "e16352150262ab49686f6c0aeaffa7532d3157ea");
     /// `item/goat_horn/call0.ogg` — mono, 48 kHz.
     const HORN_MONO: (&str, &str) = ("ce", "ce8a2675cc2c9ac986851d2c5139d5c9ad3eeee1");
@@ -512,11 +511,14 @@ mod real_assets {
         let pcm = super::decode_ogg_vorbis(&bytes).expect("chicken step1 must decode");
         assert_eq!(pcm.channels, 1);
         assert_eq!(pcm.sample_rate, 44100);
-        // **Exact, and it is the end trim that makes it so.** A Vorbis stream's
-        // final page carries a granule position below what the last packet
-        // decodes to, and the surplus is discarded; a decoder that ignored it
-        // returns MORE samples here and sounds almost right.
-        assert_eq!(pcm.samples.len(), 1728);
+        // **Exact, and it is vanilla's count.** `JOrbisAudioStream` caps the
+        // stream at the final page's granule position
+        // (`JOrbisAudioStream.java:96-102`, `:150-162`), and measured against
+        // the real class this file is 1595 samples (`vorbis_decode_oracle`). A
+        // decoder that kept the surplus returned 1856 here, and one that
+        // dropped the first packet by hand 1728 (what Rewo shipped before it
+        // trimmed like vanilla): both sound almost right.
+        assert_eq!(pcm.samples.len(), 1595);
 
         // Content, loosely: exact sample values would pin symphonia's version
         // rather than anything about Rewo, since Vorbis I does not mandate
@@ -528,23 +530,23 @@ mod real_assets {
         assert!(peak < 32767, "decoded clipped: peak {peak}");
 
         // **The SUM is what sees the quantisation, and the peak is not.**
-        // Measured: -136 through `quantise`, and +676 with the `-0.5` bias
-        // dropped for a naive `(s * 32767.0) as i16` — a gap of 812 across 1728
-        // samples, which is the half-step showing up once per sample. The peak
+        // Vanilla's own decode of this file sums to -72 (`vectors.tsv`). A naive
+        // `(s * 32767.0) as i16`, with the `-0.5` bias dropped, was measured at
+        // a gap of 812 across the old 1728-sample count (about 0.47 per sample,
+        // so roughly 750 over these 1595): the half-step showing up once per
+        // sample. The peak
         // moves by ONE over the same change (19988 against 19987), so a
         // peak-only witness cannot see it; a mutation battery is how that was
         // established rather than assumed.
         //
-        // The tolerance is wide on purpose. An aggregate over 1728 samples
-        // shifts by a few when a symphonia bump changes a few samples by an LSB,
-        // and by hundreds when the bias goes missing, so +/-200 is robust
-        // against the first and catches the second with room to spare. Pinning
-        // the exact value would pin symphonia's version instead of Rewo's
-        // arithmetic, which Vorbis I explicitly does not promise.
+        // Rewo's float output is not bit-identical to jorbis (Vorbis I does not
+        // promise it), but it matched this sum exactly when measured, and
+        // elsewhere in the sample to within a few LSB; +/-8 leaves room for a
+        // symphonia bump and still catches a missing bias with a wide margin.
         let sum: i64 = pcm.samples.iter().map(|s| *s as i64).sum();
         assert!(
-            (sum - -136).abs() < 200,
-            "sum {sum}: expected about -136 (a naive scale without the -0.5 bias gives +676)"
+            (sum - -72).abs() <= 8,
+            "sum {sum}: expected -72 (a naive scale without the -0.5 bias is ~750 higher)"
         );
     }
 
@@ -590,6 +592,153 @@ mod real_assets {
         );
     }
     // ── the incremental stream (M144) ─────────────────────────────────────
+
+    /// `tools/vorbis_decode_oracle/vectors.tsv`: vanilla 26.2's
+    /// `JOrbisAudioStream.readAll()` run over a fixed sample of this store.
+    const VANILLA: &str = include_str!("../../../tools/vorbis_decode_oracle/vectors.tsv");
+
+    struct Row {
+        name: String,
+        hash: String,
+        channels: u16,
+        rate: u32,
+        frames: usize,
+        granule: usize,
+        sum: i64,
+        head: Vec<i16>,
+        tail: Vec<i16>,
+    }
+
+    fn vanilla_rows() -> Vec<Row> {
+        let list = |s: &str| -> Vec<i16> { s.split(',').map(|v| v.parse().unwrap()).collect() };
+        VANILLA
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                assert_eq!(c.len(), 10, "{l}");
+                Row {
+                    name: c[0].to_string(),
+                    hash: c[1].to_string(),
+                    channels: c[2].parse().unwrap(),
+                    rate: c[3].parse().unwrap(),
+                    frames: c[4].parse().unwrap(),
+                    granule: c[6].parse().unwrap(),
+                    sum: c[7].parse().unwrap(),
+                    head: list(c[8]),
+                    tail: list(c[9]),
+                }
+            })
+            .collect()
+    }
+
+    /// Largest per-sample difference tolerated between Rewo's samples and
+    /// vanilla's at either end of a file. Vorbis I does not mandate identical
+    /// float output, so jorbis and symphonia may disagree in the last bit of a
+    /// quantised sample; measured over the whole sample the worst was ONE LSB.
+    /// A start or end that is off by even a sample or two breaks this on any
+    /// file whose edge is not silent (a missing first-block trim moves the
+    /// waveform by hundreds of LSB).
+    const EDGE_TOLERANCE: i32 = 1;
+
+    /// **Rewo decodes what vanilla decodes: the same frames, aligned the same.**
+    ///
+    /// Ground truth is `tools/vorbis_decode_oracle`, which runs vanilla 26.2's
+    /// own `JOrbisAudioStream.readAll()` (the `SoundBufferLibrary` path) over 56
+    /// files of this store: the 14 smallest, an even spread by size, and the
+    /// three anchors. Vanilla's count is the final page's granule position in
+    /// every one of them (`frames == last_granule`), i.e. `JOrbisAudioStream`
+    /// trims the END to the granule position and emits nothing for the first
+    /// packet's missing overlap.
+    ///
+    /// Three claims per file: channels and rate; the frame count exactly; the
+    /// first and last 64 samples within [`EDGE_TOLERANCE`] of vanilla's, which
+    /// is what makes the count an alignment and not a coincidence; and the
+    /// whole-file sum within a small bound. The sample VALUES are not bit-exact
+    /// (see the module doc), and are not asserted to be.
+    #[test]
+    fn rewo_decodes_the_same_frames_as_vanillas_own_decoder() {
+        let rows = vanilla_rows();
+        assert!(
+            rows.len() >= 50,
+            "the oracle sample shrank to {}",
+            rows.len()
+        );
+        let mut checked = 0;
+        for r in &rows {
+            let Some(bytes) = asset(&r.hash[..2], &r.hash) else {
+                rewo_data::skip_test!("{} is not in the asset store", r.name);
+                return;
+            };
+            let pcm = super::decode_ogg_vorbis(&bytes)
+                .unwrap_or_else(|e| panic!("{} must decode: {e}", r.name));
+            let ch = r.channels as usize;
+            assert_eq!(pcm.channels, r.channels, "{} channels", r.name);
+            assert_eq!(pcm.sample_rate, r.rate, "{} rate", r.name);
+            assert_eq!(pcm.samples.len() % ch, 0, "{} interleaving", r.name);
+            let frames = pcm.samples.len() / ch;
+            assert_eq!(
+                frames, r.frames,
+                "{}: vanilla yields {} frames, Rewo {}",
+                r.name, r.frames, frames
+            );
+            // Vanilla's count is the granule position, so this also pins that
+            // the oracle's premise still holds for the file.
+            assert_eq!(r.frames, r.granule, "{}: vanilla != granule", r.name);
+
+            let n = pcm.samples.len();
+            let k = r.head.len();
+            let worst = |a: &[i16], b: &[i16]| {
+                a.iter()
+                    .zip(b)
+                    .map(|(x, y)| (*x as i32 - *y as i32).abs())
+                    .max()
+                    .unwrap_or(0)
+            };
+            let head = worst(&pcm.samples[..k], &r.head);
+            let tail = worst(&pcm.samples[n - k..], &r.tail);
+            assert!(
+                head <= EDGE_TOLERANCE && tail <= EDGE_TOLERANCE,
+                "{}: start/end off vanilla's by {head}/{tail} LSB (misaligned trim?)",
+                r.name
+            );
+
+            let sum: i64 = pcm.samples.iter().map(|s| *s as i64).sum();
+            let bound = 8 + (n as i64) / 10_000;
+            assert!(
+                (sum - r.sum).abs() <= bound,
+                "{}: sum {sum} vs vanilla {} (bound {bound})",
+                r.name,
+                r.sum
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, rows.len());
+    }
+
+    /// The streamed path (`getStream`) is the same `JOrbisAudioStream`, so it
+    /// trims the same: read to the end in uneven chunks, it yields vanilla's
+    /// frame count too, and a corrupt-free file ends the same way both ways.
+    #[test]
+    fn a_stream_yields_vanillas_frame_count_too() {
+        use crate::buffers::PcmStream;
+        for r in vanilla_rows().iter().take(14) {
+            let Some(bytes) = asset(&r.hash[..2], &r.hash) else {
+                rewo_data::skip_test!("{} is not in the asset store", r.name);
+                return;
+            };
+            let mut s = super::OggStream::open(bytes.into(), false).expect("open");
+            let mut total = 0;
+            loop {
+                let chunk = s.read(777).expect("read");
+                if chunk.is_empty() {
+                    break;
+                }
+                total += chunk.len();
+            }
+            assert_eq!(total, r.frames * r.channels as usize, "{}", r.name);
+        }
+    }
 
     use crate::buffers::PcmStream;
 
@@ -694,8 +843,8 @@ mod real_assets {
     /// either way, so a version that spliced across the boundary to keep every
     /// buffer full would sound identical and would not be this.
     ///
-    /// The chicken is 1728 samples, so at 1000 the pattern is 1000, 728, 1000,
-    /// 728 … and the numbers are the fixture's rather than round by luck.
+    /// The chicken is 1595 samples, so at 1000 the pattern is 1000, 595, 1000,
+    /// 595 … and the numbers are the fixture's rather than round by luck.
     #[test]
     fn a_looping_stream_restarts_with_a_short_buffer_at_the_boundary() {
         let Some(mut s) = stream(CHICKEN, true) else {
@@ -703,7 +852,7 @@ mod real_assets {
             return;
         };
         let lens: Vec<usize> = (0..5).map(|_| s.read(1000).unwrap().len()).collect();
-        assert_eq!(lens, vec![1000, 728, 1000, 728, 1000], "got {lens:?}");
+        assert_eq!(lens, vec![1000, 595, 1000, 595, 1000], "got {lens:?}");
 
         // And the audio really is continuous: the samples after the restart are
         // the start of the file again, not a gap and not a repeat of the tail.
@@ -717,10 +866,10 @@ mod real_assets {
         for _ in 0..4 {
             seen.extend(fresh.read(1000).unwrap());
         }
-        assert_eq!(seen.len(), 1728 * 2, "two full passes");
-        assert_eq!(&seen[..1728], &whole.samples[..]);
+        assert_eq!(seen.len(), 1595 * 2, "two full passes");
+        assert_eq!(&seen[..1595], &whole.samples[..]);
         assert_eq!(
-            &seen[1728..],
+            &seen[1595..],
             &whole.samples[..],
             "the second pass is the first"
         );
@@ -787,9 +936,9 @@ mod real_assets {
         for _ in 0..3 {
             all.extend(l.read(1_000).unwrap());
         }
-        assert_eq!(all.len(), 2_728, "1000 + 728 + 1000 across the loop point");
+        assert_eq!(all.len(), 2_595, "1000 + 595 + 1000 across the loop point");
         assert_eq!(
-            &all[..1_728],
+            &all[..1_595],
             &whole.samples[..],
             "the first pass is the file"
         );

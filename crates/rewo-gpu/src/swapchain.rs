@@ -33,6 +33,15 @@ impl Swapchain {
 
     /// Recreate in place (resize / OUT_OF_DATE). Caller ensures the GPU is
     /// idle enough (we `wait_idle` here for M0 simplicity).
+    ///
+    /// Passing `self.handle` as `oldSwapchain` RETIRES it, and that holds even
+    /// when `create_swapchain` or a later step fails (the spec: "even if
+    /// creation of the new swapchain fails"). A retired swapchain must not be
+    /// passed as `oldSwapchain` again (VUID-VkSwapchainCreateInfoKHR-
+    /// oldSwapchain-01933), so on failure the old one is destroyed here and
+    /// `self` becomes an empty 0x0 swapchain (null handle, no images):
+    /// [`crate::Renderer::render`] skips it, and the next `recreate` passes a
+    /// null `oldSwapchain`.
     pub fn recreate(
         &mut self,
         gpu: &Gpu,
@@ -41,15 +50,19 @@ impl Swapchain {
         preferred: vk::PresentModeKHR,
     ) -> Result<(), String> {
         gpu.wait_idle();
-        let next = Self::create(gpu, width, height, preferred, self.handle)?;
-        unsafe {
-            for &v in self.views.iter().chain(&self.views_unorm) {
-                gpu.device.destroy_image_view(v, None);
+        match Self::create(gpu, width, height, preferred, self.handle) {
+            Ok(next) => {
+                let old = self.take_retired();
+                old.destroy(gpu, &self.fns);
+                *self = next;
+                Ok(())
             }
-            self.fns.destroy_swapchain(self.handle, None);
+            Err(e) => {
+                let old = self.take_retired();
+                old.destroy(gpu, &self.fns);
+                Err(e)
+            }
         }
-        *self = next;
-        Ok(())
     }
 
     fn create(
@@ -228,6 +241,66 @@ impl Swapchain {
     }
 }
 
+/// What `recreate` takes out of a [`Swapchain`] once its handle has been
+/// passed as `oldSwapchain`: the retired handle and the views onto its images.
+struct Retired {
+    handle: vk::SwapchainKHR,
+    views: Vec<vk::ImageView>,
+}
+
+impl Retired {
+    /// The device must be idle with respect to these images.
+    fn destroy(self, gpu: &Gpu, fns: &khr::swapchain::Device) {
+        unsafe {
+            for &v in &self.views {
+                gpu.device.destroy_image_view(v, None);
+            }
+            if self.handle != vk::SwapchainKHR::null() {
+                fns.destroy_swapchain(self.handle, None);
+            }
+        }
+    }
+}
+
+impl Swapchain {
+    /// The state transition after this swapchain's handle has been passed as
+    /// `oldSwapchain`: move the handle and views out, leaving a null handle,
+    /// no images and a 0x0 extent. Whatever the create call returned, the old
+    /// handle is never reachable from `self` again, so it cannot be passed as
+    /// `oldSwapchain` twice.
+    fn take_retired(&mut self) -> Retired {
+        take_retired(
+            &mut self.handle,
+            &mut self.images,
+            &mut self.views,
+            &mut self.views_unorm,
+            &mut self.extent,
+        )
+    }
+}
+
+/// [`Swapchain::take_retired`] on the bare fields (a `Swapchain` cannot be
+/// built without a device, and this is the part worth testing).
+fn take_retired(
+    handle: &mut vk::SwapchainKHR,
+    images: &mut Vec<vk::Image>,
+    views: &mut Vec<vk::ImageView>,
+    views_unorm: &mut Vec<vk::ImageView>,
+    extent: &mut vk::Extent2D,
+) -> Retired {
+    let mut all_views = std::mem::take(views);
+    all_views.append(views_unorm);
+    images.clear();
+    *extent = vk::Extent2D {
+        width: 0,
+        height: 0,
+    };
+    Retired {
+        handle: std::mem::replace(handle, vk::SwapchainKHR::null()),
+        views: all_views,
+    }
+}
+
 /// The `*_SRGB` formats a swapchain is likely to offer: the ones whose
 /// attachment stores encode linear shader output, which every pass assumes.
 fn is_srgb_format(f: vk::Format) -> bool {
@@ -285,5 +358,44 @@ mod tests {
             color_space: vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT,
         };
         assert_eq!(pick_surface_format(&[hdr, rgba]), Some(rgba));
+    }
+
+    #[test]
+    fn retiring_leaves_no_reusable_old_handle() {
+        use ash::vk::Handle;
+        let mut handle = vk::SwapchainKHR::from_raw(0xABCD);
+        let mut images = vec![vk::Image::from_raw(1), vk::Image::from_raw(2)];
+        let mut views = vec![vk::ImageView::from_raw(10), vk::ImageView::from_raw(11)];
+        let mut unorm = vec![vk::ImageView::from_raw(20), vk::ImageView::from_raw(21)];
+        let mut extent = vk::Extent2D {
+            width: 800,
+            height: 600,
+        };
+        let r = take_retired(
+            &mut handle,
+            &mut images,
+            &mut views,
+            &mut unorm,
+            &mut extent,
+        );
+        // The retired handle and every view went to the destroyer ...
+        assert_eq!(r.handle.as_raw(), 0xABCD);
+        assert_eq!(r.views.len(), 4);
+        // ... and nothing left behind can be passed as `oldSwapchain` again
+        // (VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933): the next create
+        // gets a null old handle, and `render` skips the 0x0 extent.
+        assert_eq!(handle, vk::SwapchainKHR::null());
+        assert!(images.is_empty() && views.is_empty() && unorm.is_empty());
+        assert_eq!((extent.width, extent.height), (0, 0));
+        // A second retire (a failed retry) hands out nothing to destroy twice.
+        let r2 = take_retired(
+            &mut handle,
+            &mut images,
+            &mut views,
+            &mut unorm,
+            &mut extent,
+        );
+        assert_eq!(r2.handle, vk::SwapchainKHR::null());
+        assert!(r2.views.is_empty());
     }
 }
