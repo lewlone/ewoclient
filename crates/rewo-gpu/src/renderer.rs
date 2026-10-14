@@ -215,6 +215,25 @@ impl Renderer {
         if self.swapchain.extent.width == 0 || self.swapchain.extent.height == 0 {
             return Ok(RenderOutcome::Skipped);
         }
+        // The world pass renders over the swapchain's extent with this depth
+        // attachment; a stale one (an `ensure_depth` that failed or was never
+        // called after a resize) would not match the render area. Ask the
+        // caller to recreate, which re-runs `ensure_depth`.
+        if world.is_some() {
+            if let Some(d) = &self.depth {
+                let s = self.swapchain.extent;
+                if d.extent.width != s.width || d.extent.height != s.height {
+                    log::warn!(
+                        "render: depth {}x{} != swapchain {}x{}; recreating",
+                        d.extent.width,
+                        d.extent.height,
+                        s.width,
+                        s.height
+                    );
+                    return Ok(RenderOutcome::NeedsRecreate);
+                }
+            }
+        }
         let frame = &self.frames[self.cursor];
         let device = &gpu.device;
         unsafe {

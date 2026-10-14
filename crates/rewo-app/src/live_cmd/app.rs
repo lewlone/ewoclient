@@ -126,8 +126,14 @@ impl ApplicationHandler for LiveApp {
             WindowEvent::Resized(size) => {
                 if let Some(LiveState { gpu, renderer, .. }) = self.state.as_mut() {
                     if size.width > 0 && size.height > 0 {
-                        let _ = renderer.resize(gpu, size.width, size.height);
-                        let _ = renderer.ensure_depth(gpu);
+                        // A failure here is retried: `render` reports a
+                        // depth/swapchain mismatch as NeedsRecreate.
+                        if let Err(e) = renderer
+                            .resize(gpu, size.width, size.height)
+                            .and_then(|()| renderer.ensure_depth(gpu))
+                        {
+                            log::error!("live: resize failed: {e}");
+                        }
                     }
                 }
             }

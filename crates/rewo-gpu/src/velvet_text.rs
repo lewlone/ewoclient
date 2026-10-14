@@ -54,6 +54,10 @@ use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
+
+// The pipeline's vertex stride and every byte count handed to the ring use
+// this constant, so the struct written into the ring must be exactly it.
+const _: () = assert!(std::mem::size_of::<Vertex>() as u64 == VERTEX_STRIDE);
 const MAX_VERTS: usize = 65_536;
 /// Set once this pass has dropped geometry past its budget.
 static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

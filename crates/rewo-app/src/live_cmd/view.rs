@@ -509,6 +509,18 @@ pub(super) fn wants_audio(args: &LiveArgs) -> bool {
 mod tests {
     use super::*;
 
+    /// `pump_meshing` hands `rewo-mesh`'s vertices to `rewo-gpu` as bytes, and
+    /// the terrain arena counts vertices as `bytes / world::VERTEX_STRIDE`
+    /// with a pipeline stride of the same constant. The two crates cannot see
+    /// each other, so the size contract is pinned here, where both meet.
+    #[test]
+    fn mesh_vertex_size_is_the_world_vertex_stride() {
+        assert_eq!(
+            std::mem::size_of::<rewo_mesh::MeshVertex>() as u64,
+            rewo_gpu::world::VERTEX_STRIDE
+        );
+    }
+
     #[test]
     fn nearest_first_orders_finite_positions() {
         let mut v = vec![(5, 5), (0, 0), (-1, 0), (3, -3)];

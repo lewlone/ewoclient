@@ -16,6 +16,10 @@ use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
+
+// The pipeline's vertex stride and every byte count handed to the ring use
+// this constant, so the struct written into the ring must be exactly it.
+const _: () = assert!(std::mem::size_of::<Vertex>() as u64 == VERTEX_STRIDE);
 /// M168 raised this 4096 -> 16384. The survival gauges add up to ~120
 /// quads on their own, and the overflow guard below is SILENT — a
 /// truncated frame simply loses its last blits — so the budget is sized

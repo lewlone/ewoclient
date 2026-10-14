@@ -44,6 +44,10 @@ use crate::Gpu;
 pub use crate::mobs::EntityModelKind;
 
 const VERTEX_STRIDE: u64 = 52; // 3 pos + 2 uv + 4 rgba + 3 light + 1 hurt f32s
+
+// The pipeline's vertex stride and every byte count handed to the ring use
+// this constant, so the struct written into the ring must be exactly it.
+const _: () = assert!(std::mem::size_of::<Vertex>() as u64 == VERTEX_STRIDE);
 /// ~500 capsules' worth (a flat-world slime herd alone reaches 129
 /// entities ≈ 65k verts). 13.6 MB per ring slot — cheap; the CPU soup
 /// build is the real ceiling long before this is.

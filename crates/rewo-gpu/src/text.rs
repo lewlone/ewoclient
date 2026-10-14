@@ -15,6 +15,10 @@ use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
+
+// The pipeline's vertex stride and every byte count handed to the ring use
+// this constant, so the struct written into the ring must be exactly it.
+const _: () = assert!(std::mem::size_of::<Vertex>() as u64 == VERTEX_STRIDE);
 const MAX_VERTS: usize = 24_576; // ~1000 glyphs × 2 (shadow) × 6 verts / ~2
 /// Set once this pass has dropped geometry past its budget.
 static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -323,8 +327,9 @@ impl TextPass {
             self.push_line(&mut v, line, 0.0, 0.0, line.color_linear, line.alpha);
         }
         self.verts = v.len() as u32;
-        let bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 32) };
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * VERTEX_STRIDE as usize)
+        };
 
         let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
         self.verts = (kept / VERTEX_STRIDE as usize) as u32;

@@ -4385,10 +4385,10 @@ fn build_leash_pipeline(
                 .module(frag)
                 .name(entry),
         ];
-        // pos vec3 @0, color vec3 @12; stride 24.
+        // pos vec3 @0, color vec3 @12: one `LeashVertex`.
         let bindings = [vk::VertexInputBindingDescription::default()
             .binding(0)
-            .stride(24)
+            .stride(std::mem::size_of::<crate::leash::LeashVertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)];
         let attrs = [
             vk::VertexInputAttributeDescription::default()
@@ -4489,7 +4489,7 @@ fn build_line_pipeline(
         ];
         let bindings = [vk::VertexInputBindingDescription::default()
             .binding(0)
-            .stride(12)
+            .stride(std::mem::size_of::<[f32; 3]>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)];
         let attrs = [vk::VertexInputAttributeDescription::default()
             .location(0)

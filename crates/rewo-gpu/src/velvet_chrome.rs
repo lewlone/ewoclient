@@ -48,6 +48,9 @@ use crate::Gpu;
 
 /// vec4 rect + vec4 params.
 const INSTANCE_STRIDE: u64 = 32;
+// The pipeline's vertex stride and every byte count handed to the ring use
+// this constant, so the struct written into the ring must be exactly it.
+const _: () = assert!(std::mem::size_of::<Shell>() as u64 == INSTANCE_STRIDE);
 const MAX_SHELLS: usize = 256;
 /// Set once this pass has dropped geometry past its budget.
 static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
