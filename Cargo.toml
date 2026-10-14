@@ -39,7 +39,7 @@ env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }
 
 # Settings persistence
-dirs = "5"
+dirs = "7"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
@@ -65,8 +65,8 @@ gl = "0.14"
 # PKCE, `urlencoding` for query-string assembly.
 ureq = { version = "2", features = ["json", "tls"] }
 tiny_http = "0.12"
-opener = "0.7"
-base64 = "0.22"
+opener = "0.9"
+base64 = "0.23"
 sha2 = "0.10"
 sha1 = "0.10"
 urlencoding = "2"
