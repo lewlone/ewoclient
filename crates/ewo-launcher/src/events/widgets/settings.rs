@@ -1,5 +1,6 @@
-//! Settings-screen pointer input: slider drags and hover (`drive_settings_sliders`) and
-//! press routing (`handle_settings_press`). Moved out of `main.rs` unchanged.
+//! Settings-screen pointer input: slider drags and hover (`drive_settings_sliders`)
+//! and press routing (`handle_settings_press`), each a dispatcher over one
+//! function per tab.
 
 use super::super::*;
 
@@ -26,100 +27,166 @@ pub(crate) fn drive_settings_sliders(
     let Some(fonts) = fonts else {
         return false;
     };
-    // Account tab — custom layout. Update row / remove / add-button hover.
     if tab == SettingsTab::Account {
-        let layout =
-            screens::settings::account_tab_layout(fonts, card_w, account_uuids.len(), link_status);
-        prefs.account_hover = None;
-        for rl in &layout.rows {
-            if rect_contains(&rl.remove, mouse) {
-                prefs.account_hover = Some(AccountHover::Remove(rl.index));
-            } else if rect_contains(&rl.row, mouse) {
-                prefs.account_hover = Some(AccountHover::Row(rl.index));
-            }
-        }
-        prefs.account_add.handle(mouse, layout.add_button, false);
-        return false;
+        return drive_account_tab(prefs, fonts, mouse, card_w, account_uuids, link_status);
     }
-    // Profiles tab — update row / delete / button hover.
     if tab == SettingsTab::Profiles {
-        let layout = screens::settings::profiles_tab_layout(fonts, card_w, profile_names.len());
-        let can_delete = profile_names.len() > 1;
-        prefs.profile_hover = None;
-        for rl in &layout.rows {
-            if can_delete && rect_contains(&rl.delete, mouse) {
-                prefs.profile_hover = Some(ProfileHover::Delete(rl.index));
-            } else if rect_contains(&rl.rename, mouse) {
-                prefs.profile_hover = Some(ProfileHover::Rename(rl.index));
-            } else if rect_contains(&rl.row, mouse) {
-                prefs.profile_hover = Some(ProfileHover::Row(rl.index));
-            }
-        }
-        prefs.profile_new.handle(mouse, layout.new_button, false);
-        prefs.profile_dup.handle(mouse, layout.dup_button, false);
-        return false;
+        return drive_profiles_tab(prefs, fonts, mouse, card_w, profile_names);
     }
-    // Keybinds tab — update chord + reset hover within the scrolled list.
     if tab == SettingsTab::Keybinds {
-        let layout = screens::settings::keybinds_tab_layout(
-            fonts,
-            card_w,
-            card_h,
-            keybind::REGISTRY.len(),
-            prefs.settings_scroll,
-        );
-        let max = (layout.content_h - layout.list_region.height()).max(0.0);
-        prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
-        let in_list = rect_contains(&layout.list_region, mouse);
-        prefs.keybind_hover = None;
-        if in_list {
-            for rl in &layout.rows {
-                if rect_contains(&rl.chord, mouse) {
-                    prefs.keybind_hover = Some(rl.index);
-                }
-            }
-        }
-        let probe = if in_list { mouse } else { (-1.0, -1.0) };
-        prefs
-            .keybind_reset
-            .handle(probe, layout.reset_button, false);
-        return false;
+        return drive_keybinds_tab(prefs, fonts, mouse, card_w, card_h);
     }
-    // Modules tab — toggle hover + the FOV slider, within the scrolled list.
     if tab == SettingsTab::Modules {
-        let layout =
-            screens::settings::modules_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
-        let max = (layout.content_h - layout.list_region.height()).max(0.0);
-        prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
-        let in_list = rect_contains(&layout.list_region, mouse);
-        let probe = if in_list { mouse } else { (-1.0, -1.0) };
-        for rl in &layout.rows {
-            if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
-                toggle.handle(probe, rl.toggle, false);
-            }
-            if let Some(slider) = rl.slider {
-                if prefs.module_fov.drive(mouse, slider, mouse_down) {
-                    prefs.modules_changed = true;
-                }
-            }
-        }
-        return false;
+        return drive_modules_tab(prefs, fonts, mouse, mouse_down, card_w, card_h);
     }
-    // PvP-Utils tab — slider drag and release. Press dispatch (toggles + chip
-    // cycles + drag start) lives in the MouseInput Pressed branch.
     if tab == SettingsTab::PvpUtils {
-        let layout =
-            screens::settings::pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
-        let max = (layout.content_h - layout.list_region.height()).max(0.0);
-        prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
-        if prefs.pvp_drag.is_some() {
-            screens::settings::drive_pvp_drag(prefs, fonts, card_w, card_h, mouse.0);
-            if !mouse_down {
-                screens::settings::end_pvp_drag(prefs);
+        return drive_pvp_tab(prefs, fonts, mouse, mouse_down, card_w, card_h);
+    }
+    drive_general_tab(prefs, tab, fonts, mouse, mouse_down, card_w, card_h)
+}
+
+/// Account tab — custom layout. Update row / remove / add-button hover.
+fn drive_account_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    account_uuids: &[String],
+    link_status: LinkStatusView,
+) -> bool {
+    let layout =
+        screens::settings::account_tab_layout(fonts, card_w, account_uuids.len(), link_status);
+    prefs.account_hover = None;
+    for rl in &layout.rows {
+        if rect_contains(&rl.remove, mouse) {
+            prefs.account_hover = Some(AccountHover::Remove(rl.index));
+        } else if rect_contains(&rl.row, mouse) {
+            prefs.account_hover = Some(AccountHover::Row(rl.index));
+        }
+    }
+    prefs.account_add.handle(mouse, layout.add_button, false);
+    false
+}
+
+/// Profiles tab — update row / delete / button hover.
+fn drive_profiles_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    profile_names: &[String],
+) -> bool {
+    let layout = screens::settings::profiles_tab_layout(fonts, card_w, profile_names.len());
+    let can_delete = profile_names.len() > 1;
+    prefs.profile_hover = None;
+    for rl in &layout.rows {
+        if can_delete && rect_contains(&rl.delete, mouse) {
+            prefs.profile_hover = Some(ProfileHover::Delete(rl.index));
+        } else if rect_contains(&rl.rename, mouse) {
+            prefs.profile_hover = Some(ProfileHover::Rename(rl.index));
+        } else if rect_contains(&rl.row, mouse) {
+            prefs.profile_hover = Some(ProfileHover::Row(rl.index));
+        }
+    }
+    prefs.profile_new.handle(mouse, layout.new_button, false);
+    prefs.profile_dup.handle(mouse, layout.dup_button, false);
+    false
+}
+
+/// Keybinds tab — update chord + reset hover within the scrolled list.
+fn drive_keybinds_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> bool {
+    let layout = screens::settings::keybinds_tab_layout(
+        fonts,
+        card_w,
+        card_h,
+        keybind::REGISTRY.len(),
+        prefs.settings_scroll,
+    );
+    let max = (layout.content_h - layout.list_region.height()).max(0.0);
+    prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
+    let in_list = rect_contains(&layout.list_region, mouse);
+    prefs.keybind_hover = None;
+    if in_list {
+        for rl in &layout.rows {
+            if rect_contains(&rl.chord, mouse) {
+                prefs.keybind_hover = Some(rl.index);
             }
         }
-        return false;
     }
+    let probe = if in_list { mouse } else { (-1.0, -1.0) };
+    prefs
+        .keybind_reset
+        .handle(probe, layout.reset_button, false);
+    false
+}
+
+/// Modules tab — toggle hover + the FOV slider, within the scrolled list.
+fn drive_modules_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    mouse_down: bool,
+    card_w: f32,
+    card_h: f32,
+) -> bool {
+    let layout =
+        screens::settings::modules_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
+    let max = (layout.content_h - layout.list_region.height()).max(0.0);
+    prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
+    let in_list = rect_contains(&layout.list_region, mouse);
+    let probe = if in_list { mouse } else { (-1.0, -1.0) };
+    for rl in &layout.rows {
+        if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
+            toggle.handle(probe, rl.toggle, false);
+        }
+        if let Some(slider) = rl.slider {
+            if prefs.module_fov.drive(mouse, slider, mouse_down) {
+                prefs.modules_changed = true;
+            }
+        }
+    }
+    false
+}
+
+/// PvP-Utils tab — slider drag and release. Press dispatch (toggles + chip
+/// cycles + drag start) lives in the MouseInput Pressed branch.
+fn drive_pvp_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    mouse_down: bool,
+    card_w: f32,
+    card_h: f32,
+) -> bool {
+    let layout = screens::settings::pvp_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
+    let max = (layout.content_h - layout.list_region.height()).max(0.0);
+    prefs.settings_scroll = prefs.settings_scroll.clamp(0.0, max);
+    if prefs.pvp_drag.is_some() {
+        screens::settings::drive_pvp_drag(prefs, fonts, card_w, card_h, mouse.0);
+        if !mouse_down {
+            screens::settings::end_pvp_drag(prefs);
+        }
+    }
+    false
+}
+
+/// The row-grid tabs (Graphics, Audio, Paths, Advanced): slider drags, path-field
+/// and button hover, and the open dropdown's menu-row hover.
+fn drive_general_tab(
+    prefs: &mut Prefs,
+    tab: SettingsTab,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    mouse_down: bool,
+    card_w: f32,
+    card_h: f32,
+) -> bool {
     let mut changed = false;
     for (slot, rect) in screens::settings::widget_bounds(tab, fonts, card_w, card_h) {
         match slot {
@@ -210,161 +277,225 @@ pub(crate) fn handle_settings_press(
         return (false, false);
     };
 
-    // Account tab — custom layout, handled outside the row-grid dispatch.
-    // Remove buttons are nested inside row rects, so test them first.
     if tab == SettingsTab::Account {
-        let layout =
-            screens::settings::account_tab_layout(fonts, card_w, account_uuids.len(), link_status);
-        for rl in &layout.rows {
-            if rect_contains(&rl.remove, mouse) {
-                if let Some(uuid) = account_uuids.get(rl.index) {
-                    log::info!("account: remove {}", uuid);
-                    prefs.account_request = Some(AccountRequest::Remove(uuid.clone()));
-                }
-                return (true, false);
-            }
-        }
-        for rl in &layout.rows {
-            if rect_contains(&rl.row, mouse) {
-                if let Some(uuid) = account_uuids.get(rl.index) {
-                    prefs.account_request = Some(AccountRequest::SetActive(uuid.clone()));
-                }
-                return (true, false);
-            }
-        }
-        // Phase H2: clickable link-status line (only when status is
-        // `LinkedNeedsLauncherLink`, in which case `link_line_bounds`
-        // is `Some`).
-        if let Some(bounds) = layout.link_line_bounds {
-            if rect_contains(&bounds, mouse) {
-                log::info!("account: link line clicked → open launcher-link modal");
-                prefs.account_request = Some(AccountRequest::OpenLauncherLink);
-                return (true, false);
-            }
-        }
-        if prefs.account_add.handle(mouse, layout.add_button, true) {
-            log::info!("account: add-account button clicked");
-            prefs.account_request = Some(AccountRequest::Add);
-            return (true, false);
-        }
-        return (false, false);
+        return press_account_tab(prefs, fonts, mouse, card_w, account_uuids, link_status);
     }
 
-    // Profiles tab — custom layout. Delete buttons nest inside rows, so
-    // test them first; then row clicks (switch); then the action buttons.
     if tab == SettingsTab::Profiles {
-        let layout = screens::settings::profiles_tab_layout(fonts, card_w, profile_names.len());
-        // A click anywhere while renaming commits the in-progress rename.
-        if let Some(idx) = prefs.profile_renaming {
-            prefs.profile_request = Some(ProfileRequest::Rename {
-                index: idx,
-                new_name: prefs.profile_rename_buffer.clone(),
-            });
-            prefs.profile_renaming = None;
-            return (true, false);
-        }
-        let can_delete = profile_names.len() > 1;
-        // Rename buttons nest inside rows — test them before row clicks.
-        for rl in &layout.rows {
-            if rect_contains(&rl.rename, mouse) {
-                if let Some(name) = profile_names.get(rl.index) {
-                    log::info!("profile: rename \"{}\" — entering edit", name);
-                    prefs.profile_renaming = Some(rl.index);
-                    prefs.profile_rename_buffer = name.clone();
-                    prefs.profile_rename_focus_time = 0.0;
-                }
-                return (true, false);
-            }
-        }
-        if can_delete {
-            for rl in &layout.rows {
-                if rect_contains(&rl.delete, mouse) {
-                    if let Some(name) = profile_names.get(rl.index) {
-                        log::info!("profile: delete \"{}\"", name);
-                        prefs.profile_request = Some(ProfileRequest::Delete(name.clone()));
-                    }
-                    return (true, false);
-                }
-            }
-        }
-        for rl in &layout.rows {
-            if rect_contains(&rl.row, mouse) {
-                if let Some(name) = profile_names.get(rl.index) {
-                    prefs.profile_request = Some(ProfileRequest::Switch(name.clone()));
-                }
-                return (true, false);
-            }
-        }
-        if prefs.profile_new.handle(mouse, layout.new_button, true) {
-            prefs.profile_request = Some(ProfileRequest::New);
-            return (true, false);
-        }
-        if prefs.profile_dup.handle(mouse, layout.dup_button, true) {
-            prefs.profile_request = Some(ProfileRequest::Duplicate);
-            return (true, false);
-        }
-        return (false, false);
+        return press_profiles_tab(prefs, fonts, mouse, card_w, profile_names);
     }
 
-    // Keybinds tab — custom layout. A chord button arms a rebind; the reset
-    // button restores every registry default. Only acts inside the viewport.
     if tab == SettingsTab::Keybinds {
-        let layout = screens::settings::keybinds_tab_layout(
-            fonts,
-            card_w,
-            card_h,
-            keybind::REGISTRY.len(),
-            prefs.settings_scroll,
-        );
-        if rect_contains(&layout.list_region, mouse) {
-            for rl in &layout.rows {
-                if rect_contains(&rl.chord, mouse) {
-                    prefs.keybind_request = Some(KeybindRequest::Capture(rl.index));
-                    return (true, false);
-                }
+        return press_keybinds_tab(prefs, fonts, mouse, card_w, card_h);
+    }
+
+    if tab == SettingsTab::Modules {
+        return press_modules_tab(prefs, fonts, mouse, card_w, card_h);
+    }
+
+    if tab == SettingsTab::PvpUtils {
+        return press_pvp_tab(prefs, fonts, mouse, card_w, card_h);
+    }
+
+    press_general_tab(prefs, tab, fonts, mouse, card_w, card_h)
+}
+
+/// Account tab — custom layout, handled outside the row-grid dispatch.
+/// Remove buttons are nested inside row rects, so test them first.
+fn press_account_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    account_uuids: &[String],
+    link_status: LinkStatusView,
+) -> (bool, bool) {
+    let layout =
+        screens::settings::account_tab_layout(fonts, card_w, account_uuids.len(), link_status);
+    for rl in &layout.rows {
+        if rect_contains(&rl.remove, mouse) {
+            if let Some(uuid) = account_uuids.get(rl.index) {
+                log::info!("account: remove {}", uuid);
+                prefs.account_request = Some(AccountRequest::Remove(uuid.clone()));
             }
-            if prefs.keybind_reset.handle(mouse, layout.reset_button, true) {
-                prefs.keybind_request = Some(KeybindRequest::ResetAll);
+            return (true, false);
+        }
+    }
+    for rl in &layout.rows {
+        if rect_contains(&rl.row, mouse) {
+            if let Some(uuid) = account_uuids.get(rl.index) {
+                prefs.account_request = Some(AccountRequest::SetActive(uuid.clone()));
+            }
+            return (true, false);
+        }
+    }
+    // Phase H2: clickable link-status line (only when status is
+    // `LinkedNeedsLauncherLink`, in which case `link_line_bounds`
+    // is `Some`).
+    if let Some(bounds) = layout.link_line_bounds {
+        if rect_contains(&bounds, mouse) {
+            log::info!("account: link line clicked → open launcher-link modal");
+            prefs.account_request = Some(AccountRequest::OpenLauncherLink);
+            return (true, false);
+        }
+    }
+    if prefs.account_add.handle(mouse, layout.add_button, true) {
+        log::info!("account: add-account button clicked");
+        prefs.account_request = Some(AccountRequest::Add);
+        return (true, false);
+    }
+    (false, false)
+}
+
+/// Profiles tab — custom layout. Delete buttons nest inside rows, so
+/// test them first; then row clicks (switch); then the action buttons.
+fn press_profiles_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    profile_names: &[String],
+) -> (bool, bool) {
+    let layout = screens::settings::profiles_tab_layout(fonts, card_w, profile_names.len());
+    // A click anywhere while renaming commits the in-progress rename.
+    if let Some(idx) = prefs.profile_renaming {
+        prefs.profile_request = Some(ProfileRequest::Rename {
+            index: idx,
+            new_name: prefs.profile_rename_buffer.clone(),
+        });
+        prefs.profile_renaming = None;
+        return (true, false);
+    }
+    let can_delete = profile_names.len() > 1;
+    // Rename buttons nest inside rows — test them before row clicks.
+    for rl in &layout.rows {
+        if rect_contains(&rl.rename, mouse) {
+            if let Some(name) = profile_names.get(rl.index) {
+                log::info!("profile: rename \"{}\" — entering edit", name);
+                prefs.profile_renaming = Some(rl.index);
+                prefs.profile_rename_buffer = name.clone();
+                prefs.profile_rename_focus_time = 0.0;
+            }
+            return (true, false);
+        }
+    }
+    if can_delete {
+        for rl in &layout.rows {
+            if rect_contains(&rl.delete, mouse) {
+                if let Some(name) = profile_names.get(rl.index) {
+                    log::info!("profile: delete \"{}\"", name);
+                    prefs.profile_request = Some(ProfileRequest::Delete(name.clone()));
+                }
                 return (true, false);
             }
         }
-        return (false, false);
     }
+    for rl in &layout.rows {
+        if rect_contains(&rl.row, mouse) {
+            if let Some(name) = profile_names.get(rl.index) {
+                prefs.profile_request = Some(ProfileRequest::Switch(name.clone()));
+            }
+            return (true, false);
+        }
+    }
+    if prefs.profile_new.handle(mouse, layout.new_button, true) {
+        prefs.profile_request = Some(ProfileRequest::New);
+        return (true, false);
+    }
+    if prefs.profile_dup.handle(mouse, layout.dup_button, true) {
+        prefs.profile_request = Some(ProfileRequest::Duplicate);
+        return (true, false);
+    }
+    (false, false)
+}
 
-    // Modules tab — a toggle click flips the module; a slider press is
-    // consumed here (the drag itself runs in `drive_settings_sliders`).
-    if tab == SettingsTab::Modules {
-        let layout =
-            screens::settings::modules_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
-        if rect_contains(&layout.list_region, mouse) {
-            for rl in &layout.rows {
-                if rect_contains(&rl.toggle, mouse) {
-                    if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
-                        if toggle.handle(mouse, rl.toggle, true) {
-                            prefs.modules_changed = true;
-                        }
+/// Keybinds tab — custom layout. A chord button arms a rebind; the reset
+/// button restores every registry default. Only acts inside the viewport.
+fn press_keybinds_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> (bool, bool) {
+    let layout = screens::settings::keybinds_tab_layout(
+        fonts,
+        card_w,
+        card_h,
+        keybind::REGISTRY.len(),
+        prefs.settings_scroll,
+    );
+    if rect_contains(&layout.list_region, mouse) {
+        for rl in &layout.rows {
+            if rect_contains(&rl.chord, mouse) {
+                prefs.keybind_request = Some(KeybindRequest::Capture(rl.index));
+                return (true, false);
+            }
+        }
+        if prefs.keybind_reset.handle(mouse, layout.reset_button, true) {
+            prefs.keybind_request = Some(KeybindRequest::ResetAll);
+            return (true, false);
+        }
+    }
+    (false, false)
+}
+
+/// Modules tab — a toggle click flips the module; a slider press is
+/// consumed here (the drag itself runs in `drive_settings_sliders`).
+fn press_modules_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> (bool, bool) {
+    let layout =
+        screens::settings::modules_tab_layout(fonts, card_w, card_h, prefs.settings_scroll);
+    if rect_contains(&layout.list_region, mouse) {
+        for rl in &layout.rows {
+            if rect_contains(&rl.toggle, mouse) {
+                if let Some(toggle) = prefs.module_toggles.get_mut(rl.index) {
+                    if toggle.handle(mouse, rl.toggle, true) {
+                        prefs.modules_changed = true;
                     }
-                    return (true, false);
                 }
-                if let Some(slider) = rl.slider {
-                    if rect_contains(&slider, mouse) {
-                        return (true, false);
-                    }
+                return (true, false);
+            }
+            if let Some(slider) = rl.slider {
+                if rect_contains(&slider, mouse) {
+                    return (true, false);
                 }
             }
         }
-        return (false, false);
     }
+    (false, false)
+}
 
-    // PvP-Utils tab — full press dispatch lives in `pvp_tab_press`. It returns
-    // `true` when the press was consumed (toggle/cycle/drag start). The drag
-    // itself runs through `drive_settings_sliders`.
-    if tab == SettingsTab::PvpUtils {
-        let consumed =
-            screens::settings::pvp_tab_press(prefs, fonts, card_w, card_h, mouse.0, mouse.1);
-        return (consumed, false);
-    }
+/// PvP-Utils tab — full press dispatch lives in `pvp_tab_press`. It returns
+/// `true` when the press was consumed (toggle/cycle/drag start). The drag
+/// itself runs through `drive_settings_sliders`.
+fn press_pvp_tab(
+    prefs: &mut Prefs,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> (bool, bool) {
+    let consumed = screens::settings::pvp_tab_press(prefs, fonts, card_w, card_h, mouse.0, mouse.1);
+    (consumed, false)
+}
 
+/// The row-grid tabs (Graphics, Audio, Paths, Advanced). Resolution order:
+/// an open dropdown's menu row commits and consumes the press; a press outside
+/// an open dropdown closes it and falls through; then the tab's widgets.
+fn press_general_tab(
+    prefs: &mut Prefs,
+    tab: SettingsTab,
+    fonts: &FontStore,
+    mouse: (f32, f32),
+    card_w: f32,
+    card_h: f32,
+) -> (bool, bool) {
     let mut changed = false;
 
     // (1) and (2): handle any open dropdown menu first.
