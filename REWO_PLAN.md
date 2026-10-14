@@ -2012,7 +2012,8 @@ this shape once.
 | M178 — advancements render + gate | — (planned r65/r66 NOT taken; the gate is serverless and no live witness landed) | screen-pass atlas 512 -> **1024 tall**; below y=512: `AdvWindow` (252x140 crop) at (0,512), `AdvTab(0..23)` rows y=656/692, `AdvFrame(0..5)` y=724, boxes y=754/782/810, `AdvBackground(0..4)` y=840; `SHEET_COUNT` 58 -> 97 | `advshot` a*/m*/p* (14), battery `tools/m178_mutate.py` |
 | M179 — advancement clicks *(claimed 2026-08-25 at session start)* | ~~**r65**~~ (the claim COLLIDED: the 2026-09-26 play-test fix took r65 without reading this row; the M179 live witnesses never landed and take the next free id when they do) | — | extends `advshot`; live witnesses for tab clicks + CLOSED_SCREEN |
 | Play-test fix, `1da1b41` (2026-09-26) — the windowed client builds the text and container passes | **r65, r66** | — | (live only) |
-| *(next free)* | **r67** | — | — |
+| Link prompt (2026-10, `ConfirmLinkScreen` for a clicked chat `open_url`) | **r67** | — | `confirmlinkshot` m1-m6, p0-p7 (14) |
+| *(next free)* | **r68** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table

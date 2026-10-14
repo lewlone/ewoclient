@@ -453,10 +453,18 @@ impl ApplicationHandler for LiveApp {
                     if p {
                         let shift = self.shift;
                         let result = glfw_key(event.physical_key).and_then(|k| {
-                            self.screen
-                                .screens
-                                .current_mut()
-                                .map(|s| (s.kind, s.key_pressed(k, shift)))
+                            self.screen.screens.current_mut().map(|s| {
+                                // `ConfirmScreen.keyPressed`: Esc is the "No"
+                                // answer, ahead of `Screen.keyPressed`.
+                                if s.kind == rewo_ui::screen::ScreenKind::ConfirmLink {
+                                    (
+                                        s.kind,
+                                        rewo_ui::confirm_link_screen::key_pressed(s, k, shift),
+                                    )
+                                } else {
+                                    (s.kind, s.key_pressed(k, shift))
+                                }
+                            })
                         });
                         match result {
                             Some((kind, rewo_ui::screen::KeyResult::Pressed(id))) => {
@@ -1421,8 +1429,89 @@ impl LiveApp {
                 };
                 rewo_ui::disconnect_screen::build(labels, details, gw, gh, &width_of)
             }
+            ScreenView::ConfirmLink(prompt) => {
+                let width_of = move |t: &str| match &advance {
+                    Some(a) => rewo_gpu::text::width(t, a),
+                    None => 0,
+                };
+                rewo_ui::confirm_link_screen::build(prompt, gw, gh, &width_of)
+            }
         };
         self.screen.screens.open(screen);
+    }
+
+    /// `Screen.clickUrlAction` for a link clicked on the chat screen.
+    ///
+    /// The two options are read from `options.txt` (`chatLinks`,
+    /// `chatLinksPrompt`, both default on). Off, the click does nothing and the
+    /// chat stays as it was; prompt off, the link opens at once; otherwise a
+    /// [`rewo_ui::confirm_link_screen`] REPLACES the chat screen.
+    pub(super) fn chat_click_url(&mut self, uri: &str) {
+        use rewo_ui::confirm_link_screen::{click_url_action, UrlClick};
+        match click_url_action(self.options.chat_links, self.options.chat_links_prompt) {
+            UrlClick::Refused => log::info!("chat: link ignored (chatLinks is off)"),
+            UrlClick::OpenDirect => {
+                crate::uri_open::open_uri(uri);
+            }
+            UrlClick::Prompt => {
+                // `Gui.setScreen(new ConfirmLinkScreen(..))` calls the chat
+                // screen's `removed()` on the way out — draft, scroll reset —
+                // and the callback gives the same instance back.
+                self.link_return_chat = self.take_chat_screen();
+                self.open_confirm_link(uri);
+            }
+        }
+    }
+
+    /// `new ConfirmLinkScreen(callback, uri.toString(), false)`.
+    pub(super) fn open_confirm_link(&mut self, uri: &str) {
+        let prompt = rewo_ui::confirm_link_screen::ConfirmLinkScreen::new(&self.lang, uri, false);
+        log::info!("live: link prompt (chat link)");
+        self.view = ScreenView::ConfirmLink(prompt);
+        self.rebuild_view_screen();
+        self.grab_for_screen(true);
+    }
+
+    /// The prompt's `BooleanConsumer`, and what follows it in
+    /// `clickUrlAction`'s lambda: open on yes, then `setScreen(screen)`.
+    ///
+    /// The copy button runs `copyToClipboard()` (the system clipboard, through
+    /// `KeyboardHandler.setClipboard`) and then `callback.accept(false)`.
+    pub(super) fn confirm_link_decide(
+        &mut self,
+        decision: rewo_ui::confirm_link_screen::LinkDecision,
+    ) {
+        use rewo_ui::confirm_link_screen::LinkDecision;
+        let ScreenView::ConfirmLink(prompt) = &self.view else {
+            return;
+        };
+        let url = prompt.url.clone();
+        match decision {
+            LinkDecision::Open => {
+                crate::uri_open::open_uri(&url);
+            }
+            // Through the edit boxes' buffer: `pump_screens` pushes a changed
+            // buffer to the system clipboard next frame.
+            LinkDecision::CopyThenCancel => self.clipboard = url,
+            LinkDecision::Cancel => {}
+        }
+        self.view = ScreenView::None;
+        self.screen.screens.close();
+        match self.link_return_chat.take() {
+            // `setScreen(screen)` on a screen that was shown before: `init()`
+            // again, with `initial` = what was in the field. The cursor is
+            // still free — chat never gave it back.
+            Some(mut chat) => {
+                let recent_len = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.chat.recent_chat().len())
+                    .unwrap_or(0);
+                chat.reinit(recent_len);
+                self.chat_screen = Some(chat);
+            }
+            None => self.grab_for_screen(false),
+        }
     }
 
     /// Close whichever of M85's screens is up and hand the cursor back.

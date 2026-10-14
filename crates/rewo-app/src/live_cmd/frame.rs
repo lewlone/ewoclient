@@ -1894,6 +1894,21 @@ impl LiveApp {
                         text.extend(screen_text_lines(screen, advance, px));
                     }
                 }
+                // r67 — the link prompt, as drawn: three buttons, each
+                // caption, and the URL, with the chat out of the slot.
+                #[cfg(feature = "gates")]
+                if let (ScreenView::ConfirmLink(p), Some(c)) = (&self.view, self.check.as_mut()) {
+                    let drawn = |s: &str| text.iter().any(|l| l.text == s);
+                    if chrome.buttons.len() == 3
+                        && drawn(&p.labels.yes)
+                        && drawn(&p.labels.copy)
+                        && drawn(&p.labels.no)
+                        && text.iter().any(|l| l.text.contains(&p.url))
+                        && self.chat_screen.is_none()
+                    {
+                        c.link_prompt_frames += 1;
+                    }
+                }
             }
             state.world_renderer.set_screen(chrome);
             // M178 — the advancements screen's icons, when its arm collected

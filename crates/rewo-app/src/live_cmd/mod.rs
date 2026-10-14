@@ -574,6 +574,14 @@ struct LiveApp {
     /// screen instance rather than a mode — `ChatComponent.isChatFocused()` is
     /// `gui.screen() instanceof ChatScreen`.
     chat_screen: Option<rewo_ui::chat_screen::ChatScreen>,
+    /// The chat screen a link prompt replaced, waiting to come back.
+    ///
+    /// `Screen.clickUrlAction`'s callback ends in `setScreen(screen)` with the
+    /// `ChatScreen` instance it captured, so a prompt opened from chat returns
+    /// to chat — typed text and all — whichever button was pressed. Vanilla's
+    /// closure holds the instance; Rewo's one-slot screen model has nowhere to
+    /// hold it but here. Set only while a [`ScreenView::ConfirmLink`] is up.
+    link_return_chat: Option<rewo_ui::chat_screen::ChatScreen>,
     /// `ChatComponent.latestDraft`, which outlives the screen that made it.
     chat_draft: Option<rewo_ui::chat_screen::Draft>,
     /// The slot the last left click landed on and when, for the double click
@@ -950,6 +958,7 @@ fn run_windowed(
         clipboard: String::new(),
         clipboard_synced: String::new(),
         chat_screen: None,
+        link_return_chat: None,
         chat_draft: None,
         #[cfg(feature = "gates")]
         chat_injected: false,

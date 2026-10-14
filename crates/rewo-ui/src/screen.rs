@@ -82,6 +82,10 @@ pub enum ScreenKind {
     /// (vanilla default L). The tab strip, contents and tooltip are the
     /// app-side model's; this framework slot carries the footer's Done.
     Advancements,
+    /// `ConfirmLinkScreen` — the prompt in front of a clicked chat link
+    /// (`Screen.clickUrlAction`). Opened over whatever screen the click was
+    /// on, which it returns to; see [`crate::confirm_link_screen`].
+    ConfirmLink,
 }
 
 /// A widget's identity within its screen. The screen's own module owns the
@@ -305,6 +309,10 @@ pub struct Widget {
     pub visible: bool,
     pub message: String,
     pub kind: WidgetKind,
+    /// A text colour override (`Component.withColor`) for a label or
+    /// multi-line label; `None` is the default white. Buttons ignore it: their
+    /// colour is the active/inactive pair.
+    pub color: Option<[f32; 3]>,
 }
 
 impl Widget {
@@ -342,6 +350,7 @@ impl Widget {
             visible: true,
             message: message.into(),
             kind: WidgetKind::Button,
+            color: None,
         }
     }
 
@@ -357,6 +366,7 @@ impl Widget {
             visible: true,
             message: message.into(),
             kind: WidgetKind::Label { centered: false },
+            color: None,
         }
     }
 
@@ -380,6 +390,7 @@ impl Widget {
             visible: true,
             message: lines.join(" "),
             kind: WidgetKind::MultiLabel { lines, centered },
+            color: None,
         }
     }
 
@@ -412,6 +423,7 @@ impl Widget {
             visible: true,
             message: String::new(),
             kind: WidgetKind::Reserved,
+            color: None,
         }
     }
 
@@ -419,6 +431,12 @@ impl Widget {
     /// `widget/button` family (M84).
     pub fn with_kind(mut self, kind: WidgetKind) -> Self {
         self.kind = kind;
+        self
+    }
+
+    /// `Component.withColor(..)` on a label's text (RGB, `0..=1`).
+    pub fn with_color(mut self, color: [f32; 3]) -> Self {
+        self.color = Some(color);
         self
     }
 
@@ -519,7 +537,9 @@ impl Widget {
     /// witnesses went red — the first bug had been hiding the second.
     pub fn label_color(&self) -> [f32; 3] {
         match self.kind {
-            WidgetKind::Label { .. } | WidgetKind::MultiLabel { .. } => DEFAULT_LABEL,
+            WidgetKind::Label { .. } | WidgetKind::MultiLabel { .. } => {
+                self.color.unwrap_or(DEFAULT_LABEL)
+            }
             _ if self.active => DEFAULT_LABEL,
             _ => INACTIVE_LABEL,
         }
@@ -611,7 +631,7 @@ pub enum KeyResult {
 }
 
 /// GLFW key codes, which are what `KeyEvent.key()` carries.
-mod keys {
+pub(crate) mod keys {
     pub const ESCAPE: i32 = 256;
     pub const ENTER: i32 = 257;
     pub const TAB: i32 = 258;
