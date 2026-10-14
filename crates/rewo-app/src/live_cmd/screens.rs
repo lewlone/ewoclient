@@ -1229,9 +1229,7 @@ pub(super) fn close_lectern_reader(
     container_shown: &mut Option<i32>,
     menus: Option<&mut rewo_world::menu::Menus>,
 ) -> Option<i32> {
-    if lectern_shown.take().is_none() {
-        return None;
-    }
+    lectern_shown.take()?;
     *container_shown = None;
     menus.and_then(|m| m.close_local())
 }
