@@ -101,6 +101,10 @@ pub struct Gpu {
     pub device_name: String,
     /// Nanoseconds per timestamp tick (`limits.timestamp_period`).
     pub timestamp_period_ns: f64,
+    /// `timestampValidBits` of the graphics queue family: 0 means the queue
+    /// does not support timestamps at all (writing one is then invalid), and
+    /// below 64 the counter wraps at `2^bits`.
+    pub timestamp_valid_bits: u32,
     pub device: ash::Device,
     pub graphics_family: u32,
     pub graphics_queue: vk::Queue,
@@ -123,6 +127,15 @@ pub struct Gpu {
     pub(crate) clock: deferred::FrameClock,
     /// Debug-utils device functions for object names; `None` without validation.
     debug_device: Option<ext::debug_utils::Device>,
+}
+
+/// The mask of a timestamp's meaningful bits, `None` for no timestamps.
+fn timestamp_mask(valid_bits: u32) -> Option<u64> {
+    match valid_bits {
+        0 => None,
+        b if b >= 64 => Some(u64::MAX),
+        b => Some((1u64 << b) - 1),
+    }
 }
 
 impl Gpu {
@@ -262,6 +275,10 @@ impl Gpu {
                 .to_string_lossy()
                 .into_owned();
             let timestamp_period_ns = props.limits.timestamp_period as f64;
+            let timestamp_valid_bits = instance
+                .get_physical_device_queue_family_properties(physical)
+                .get(graphics_family as usize)
+                .map_or(0, |f| f.timestamp_valid_bits);
             log::info!(
                 "vk: device \"{}\" (api {}.{}.{}, driver {:#x}), graphics family {}, validation {}{}",
                 device_name,
@@ -347,6 +364,7 @@ impl Gpu {
                 physical,
                 device_name,
                 timestamp_period_ns,
+                timestamp_valid_bits,
                 device,
                 graphics_family,
                 graphics_queue,
@@ -361,6 +379,20 @@ impl Gpu {
 
     /// Teardown/resize only — never on a per-frame or gameplay path; retire
     /// resources with [`Self::defer_destroy`] instead.
+    /// Whether the graphics queue can write timestamps.
+    pub fn timestamps_supported(&self) -> bool {
+        self.timestamp_valid_bits > 0
+    }
+
+    /// Milliseconds between two raw timestamps from the graphics queue,
+    /// honouring `timestampValidBits` (only the low bits are meaningful, and
+    /// the difference wraps there). `None` when timestamps are unsupported.
+    pub fn timestamp_delta_ms(&self, t0: u64, t1: u64) -> Option<f32> {
+        let mask = timestamp_mask(self.timestamp_valid_bits)?;
+        let ticks = t1.wrapping_sub(t0) & mask;
+        Some((ticks as f64 * self.timestamp_period_ns / 1.0e6) as f32)
+    }
+
     pub fn wait_idle(&self) {
         unsafe {
             let _ = self.device.device_wait_idle();
@@ -470,4 +502,19 @@ pub unsafe fn image_barrier(
         .subresource_range(color_range());
     let dep = vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
     device.cmd_pipeline_barrier2(cb, &dep);
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::timestamp_mask;
+
+    #[test]
+    fn timestamp_mask_follows_valid_bits() {
+        assert_eq!(timestamp_mask(0), None);
+        assert_eq!(timestamp_mask(36), Some((1 << 36) - 1));
+        assert_eq!(timestamp_mask(64), Some(u64::MAX));
+        // A 36-bit counter that wrapped between the two writes.
+        let m = timestamp_mask(36).unwrap();
+        assert_eq!(5u64.wrapping_sub(m - 4) & m, 10);
+    }
 }
