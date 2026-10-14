@@ -8,7 +8,7 @@
 //! token into the serverbound `key`, and from the next byte on the whole
 //! TCP stream is AES-128-CFB8 in both directions (key = IV = the secret).
 
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use aes::Aes128;
 
 /// The launcher's account handoff (`REWO_ACCESS_TOKEN` / `REWO_UUID` /
