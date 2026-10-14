@@ -38,17 +38,15 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 120 of them. 21
-   are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
-   `cb_play_*` field set and the dispatch chain agree exactly, which is a real
-   (and slightly surprising) property of this codebase — see §1.
-   **These two numbers live in §2, which is machine-checked; this paragraph is
-   not.** It has now been stale twice (M104 and M124 both had to correct it),
-   which is the same asymmetry CLAUDE.md records — trust §2, and fix §0 when
-   you notice it disagreeing.
-2. **Class A and class B are both empty.** The 21 gaps split 0 / 0 / 10 / 11
-   across pure state, needs-rendering, needs-a-missing-subsystem and
-   not-applicable — so every packet Rewo can render *is* rendered, and what is
+1. **141 clientbound-play packets; how many Rewo resolves and consumes, and how
+   many are not in `ids.rs` at all, is §2's machine-checked table.** No packet
+   is resolved-but-ignored: the `cb_play_*` field set and the dispatch chain
+   agree exactly, which is a real (and slightly surprising) property of this
+   codebase — see §1. This paragraph used to restate §2's counts and was stale
+   three times (M104, M124, and 120/21 against §2's 124/17 at the 2026-10
+   audit), so it no longer carries them.
+2. **Class A and class B are both empty** (§2's class table has the C and D
+   split) — so every packet Rewo can render *is* rendered, and what is
    left needs a subsystem it has not got or is a reply to something it never
    sends. What the seven B milestones established is worth keeping:
    **the class letter changes the gate, not the standard.** M79's seven (title
@@ -134,9 +132,10 @@ and M65 stayed hidden:
    incoming packet id is actually tested against.
 
 **Both instruments give the same answer, and it is a negative finding: the
-resolved-but-unreferenced set is empty.** Every one of the 120 resolved ids
-reaches a dispatch arm in `play.rs` or a `route_*` in `lib.rs`. So the gap is
-entirely in question (2) — 36 names that were never resolved.
+resolved-but-unreferenced set is empty.** Every resolved id reaches a dispatch
+arm in `play/` (`dispatch.rs`, `mod.rs`) or a `route_*` in `lib.rs`. So the
+gap is entirely in question (2): names that were never resolved (§2 counts
+them).
 
 That is still a coarser instrument than it sounds, and §4 is the correction:
 a dispatch arm proves a field is *tested*, not that the body is fully consumed.
@@ -174,7 +173,7 @@ belongs in the note column; the status column has two values.
 
 ### Classification
 
-Each of the 23 gaps carries one class. The classes are about **what it would
+Each gap carries one class. The classes are about **what it would
 take**, not about how much anyone wants it:
 
 | Class | Meaning |

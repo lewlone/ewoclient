@@ -90,10 +90,33 @@ Backdrop layer order in code is wine → folds → caustics → bokeh → dust �
   source rrect (Skia's mask blur has no spread).
 - Inner velvet-fold layers screen-blend **each** layer (`mix-blend-mode: screen`
   per `.vf-layer`); alpha-blending them first reads visibly dimmer.
-- Glass panels: `SaveLayerRec::backdrop` blur (sigma 16) + dark fill, 135° tint +
-  top radial with an 8 s breath on the **tint only**, 4 rims on a 12 s cycle
-  (+0/+3/+6/+9 s offsets), 1 px hairline last. Entrance animations target chrome
-  layers only (non-negotiables #2/#3).
+- Glass panels (`widgets/glass_panel.rs`), in draw order: refract
+  (`SaveLayerRec::backdrop` blur, CSS 32 px → sigma 16, + dark-mauve fill),
+  tint (135° gradient + top radial, optional 8 s breath on the **tint only**),
+  the four rims (12 s linear slide, delays 0/−3/−6/−9 s; drawn **under** the
+  content, CSS z=3 vs z=4), the caller's content, then the 1 px hairline. The
+  panel itself never scales or blurs; the prototype's `panel-mount` keyframe
+  (scale 0.98 + blur 8 px) is deliberately not implemented.
+- **No scaled text (non-negotiable #2).** The modal cards (about, new
+  instance, launcher link), the dropdown and the pressed button are each two
+  layers: the chrome (shadows, refract, tint, rims, menu body) keeps the
+  prototype's scale-in so the silhouette still settles, and the text layer only
+  fades and translates by **whole pixels**. At rest the layers coincide.
+  `crates/ewo-render/tests/text_not_scaled.rs` measures the text bounding box
+  of entrance and press frames against the settled frame.
+- **Reduced motion (non-negotiable #6)** lives in `ewo-core/src/motion.rs`.
+  The launcher reads `SPI_GETCLIENTAREAANIMATION` at startup, re-reads it at
+  most once a second and on every focus gain (Windows only; Linux keeps
+  animations on), and drops the backdrop cache when it flips. When reduced,
+  every transition divides by `motion::dur(..)` and lands in 0.01 ms (stagger
+  delays collapse too), and the ambient loops freeze on their CSS **base
+  style**, as `StyleSheet1`'s `prefers-reduced-motion` block (~L1563) implies:
+  `motion::ambient_time` returns phase 0, and the layers whose base style
+  differs from the 0 % keyframe (bokeh, folds, button rim, firefly, meta dot)
+  branch on `motion::is_reduced`. Pearl dust and petals freeze; the celebrate
+  burst is skipped. New animation code must go through `motion::dur` /
+  `ambient_time`; `tests/reduced_motion.rs` checks every tick completes in one
+  frame and that frames are byte-identical across clock values.
 - Blurring text during a *transient* crossfade (vstatus) is allowed.
   Non-negotiable #3 forbids blur on entrance of text-bearing surfaces.
 - Tofu: the serif fonts lack arrow glyphs. Use vector chevrons
