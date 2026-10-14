@@ -22,6 +22,33 @@ For Rewo, `REWO_PLAN.md` §15 is the maintained per-milestone log; these files
 are the `CLAUDE.md`-side record of the same work, often with different emphasis
 (process lessons, cross-milestone findings).
 
+## Other retired documents in `history/`
+
+Moved out of the repo root and `.claude/` when they stopped being current.
+They are records: their numbers, paths and "next" lists are as of when they
+were written, and relative links inside them may point at their old location.
+
+| File | What it was |
+|---|---|
+| [`history/HANDOFF.md`](history/HANDOFF.md) | The last session-to-session continuation prompt for Rewo (post-M179/M180) |
+| [`history/NEXT_SESSION_PROMPT.md`](history/NEXT_SESSION_PROMPT.md) | An earlier (M157-era) handoff prompt |
+| [`history/AGENT_LOOP_BRIEF.md`](history/AGENT_LOOP_BRIEF.md) | Process rules for the headless two-agent loop (still sound; the durable ones are in `.claude/rules/rewo.md`) |
+| [`history/REWO_MOB_REDO_HANDOFF.md`](history/REWO_MOB_REDO_HANDOFF.md) | The mob-model redo brief, completed 2026-07-22 |
+| [`history/MEMORY.md`](history/MEMORY.md) | An orientation snapshot from 2026-08-23/25 |
+| [`history/PHASE_E_PLAN.md`](history/PHASE_E_PLAN.md) | Phase E (in-game HUD) build plan |
+| [`history/PHASE_F_PLAN.md`](history/PHASE_F_PLAN.md) | Phase F (profiles and dashboard) plan |
+| [`history/PHASE_G_PLAN.md`](history/PHASE_G_PLAN.md) | Phase G (modules) plan |
+| [`history/PHASE_H_PLAN.md`](history/PHASE_H_PLAN.md) | Phase H (social) plan |
+
+## Reviews and audits (current)
+
+- [`REVIEW-2026-09.md`](REVIEW-2026-09.md): the September 2026 independent
+  review and its fix ledger.
+- [`AUDIT-2026-10.md`](AUDIT-2026-10.md): the October 2026 full audit, which
+  re-grades that review, with a status column for its own findings.
+
+Retired mutation batteries are in `tools/history/mutations/`.
+
 ## Where new material goes
 
 - A milestone's narrative goes to `REWO_PLAN.md` §15 (Rewo) or a new file here.
