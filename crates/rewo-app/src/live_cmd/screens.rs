@@ -86,6 +86,18 @@ pub struct ScreenState {
     /// server re-opening the same slot gets a fresh menu, and comparing
     /// against the screen state would miss it.
     pub container_shown: Option<i32>,
+    /// The client-side UI sounds pressed since the last frame (M186). Every
+    /// press site queues here, because none of them owns the sound engine;
+    /// `LiveApp::flush_ui_sounds` plays them once per frame.
+    pub ui_sounds: rewo_ui::ui_sound::UiSounds,
+    /// The recipe-book button's focus (M187): the shown container id of the
+    /// screen whose button was last pressed, so it stays lit after a press
+    /// (vanilla's `setFocused`) and only on that screen. Cleared when the
+    /// book takes a click and whenever no inventory or container is shown —
+    /// vanilla builds a new screen, with nothing focused, on every open.
+    pub book_button_focus: Option<i32>,
+    /// The loom's screen-local scroll (M189), the stonecutter's shape.
+    pub loom: Option<LoomLocal>,
 }
 
 impl Default for ScreenState {
@@ -109,6 +121,9 @@ impl Default for ScreenState {
             merchant: Default::default(),
             close_beacon: Default::default(),
             container_shown: Default::default(),
+            ui_sounds: Default::default(),
+            book_button_focus: Default::default(),
+            loom: Default::default(),
         }
     }
 }
@@ -545,6 +560,11 @@ pub(super) fn apply_screen(
     // reach, and supplying it is what lets a gate drive the render path the
     // live client takes rather than a copy of it (M45/M93q).
     book_overlay: Option<&rewo_ui::recipe_overlay::Open>,
+    // M187 — whether the recipe-book button holds focus (it stays lit after
+    // a press), supplied for the same reason: screen-local state.
+    book_button_focused: bool,
+    // M189 — the loom's `(scrollOffs, startRow)`, screen-local like the rest.
+    loom_scroll: (f32, i32),
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -562,29 +582,10 @@ pub(super) fn apply_screen(
     };
     // M93q — the loom's grid, resolved here because it keys off the pattern
     // slot's item NAME and only this side holds the registry.
-    let loom = session.menus.shown_open().and_then(|m| {
-        if m.layout.protocol_id != rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID {
-            return None;
-        }
-        // Slots: banner 0, dye 1, pattern 2.
-        let name = |slot: usize| m.menu.menu_slot(slot).and_then(|s| items.name(s.item_id));
-        let patterns = rewo_data::loom_pattern_table::selectable_patterns(name(2));
-        Some(LoomView {
-            patterns,
-            // The scrollbar's drag is not wired; see `LoomView::start_row`.
-            start_row: 0,
-            selected: m.loom_selected_pattern(),
-            display: rewo_ui::menu_screen::loom_display_patterns(
-                m.menu.menu_slot(0).is_some(),
-                m.menu.menu_slot(1).is_some(),
-                // `hasMaxPatterns` needs the banner's own layer count, which
-                // lives in a component Rewo does not read — so the grid stays
-                // visible on a full banner where vanilla hides it.
-                false,
-                patterns.len(),
-            ),
-        })
-    });
+    let loom = session
+        .menus
+        .shown_open()
+        .and_then(|m| super::menus::loom_view(m, items, loom_scroll));
     // M94 — the recipe book, if the server says it is open for this menu's
     // book type. It is built here rather than inside `container_panel` because
     // its presence has to reach `screen_to_gui_placed` below as well: an open
@@ -666,6 +667,29 @@ pub(super) fn apply_screen(
         book.as_ref()
             .and_then(|b| recipe_book_panel(b, &book_field_fills, book_overlay, book_mouse)),
     );
+    // M187 — the recipe-book button, through the SAME placement the panel
+    // uses, so the drawn button and the pressed one cannot disagree.
+    let panel_mouse = rewo_gpu::container::screen_to_gui_placed(
+        mouse,
+        w,
+        h,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
+    );
+    let gui_w = (w / rewo_gpu::container::recipe_book_origin(w, h).2) as i32;
+    wr.set_container_widgets(book_button_widgets(
+        book_button_host(
+            layout,
+            session.own_game_mode().is_some_and(|g| g.is_creative()),
+        ),
+        book_open,
+        rewo_ui::recipe_book_screen::width_too_narrow(gui_w),
+        Some(panel_mouse),
+        book_button_focused,
+    ));
     wr.set_container_panel(container_panel(
         layout,
         session.menus.shown_open(),

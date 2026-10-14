@@ -106,7 +106,7 @@ a self-check path.
 - Market-leader client mods (Sodium, EntityCulling, Xaero's, JourneyMap, Jade,
   WTHIT) are non-open-source. **Don't read their source as reference.**
 - Public servers are out of scope (ban risk). Staging is the user's Frogsy network.
-- **`cargo fmt` is enforced** (CI `fmt` job; `rustfmt.toml` pins LF; the 23
+- **`cargo fmt` is enforced** (CI `fmt` job; `rustfmt.toml` pins LF; the
   generated modules are `#[rustfmt::skip]`). Claim render-check witness ids (`rNN`) and atlas
   rows in §0.0's allocation table **before** writing code, and check the code
   too (`grep -oE '"r[0-9]+ ' crates/rewo-app/src/live_cmd/render_check.rs`):

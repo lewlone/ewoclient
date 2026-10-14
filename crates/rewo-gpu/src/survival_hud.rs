@@ -665,9 +665,79 @@ pub fn air_bubble_y_line(vehicle_hearts: i32, y_line_air: i32) -> i32 {
     y_line_air - row_offset * 10
 }
 
+/// The air-bubble pop sound `extractAirBubbles` plays as a bubble bursts
+/// (M188) — `Hud.lastBubblePopSoundPlayed` and `playAirBubblePoppedSound`
+/// (`Hud.java:920-929, 946-953`), kept apart from [`layout`] because a layout
+/// has no sound channel and this has state.
+///
+/// Call once per drawn frame with the same inputs the layout used: vanilla
+/// runs it inside the frame's extraction, and the per-bubble memory is what
+/// stops a bubble that stays mid-burst for several frames from playing twice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BubblePopper {
+    /// `lastBubblePopSoundPlayed`: the bubble last popped, 0 for none.
+    last: i32,
+}
+
+/// One `ui.hud.bubble_pop`: `player.playSound(BUBBLE_POP, volume, pitch)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BubblePop {
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+impl BubblePopper {
+    /// `ui.hud.bubble_pop`, the event `SoundEvents.BUBBLE_POP` registers.
+    pub const EVENT: &'static str = "minecraft:ui.hud.bubble_pop";
+
+    /// This frame's pop, if a bubble starts bursting.
+    ///
+    /// ```java
+    /// if (isUnderWater || currentAirSupplyTicks < maxAirSupplyTicks) {
+    ///    ...
+    ///    if (!isUnderWater) this.lastBubblePopSoundPlayed = 0;
+    ///    for (airBubble 1..10) {
+    ///       if (airBubble <= fullAirBubbles) ...
+    ///       else if (isPoppingBubble && airBubble == poppingAirBubblePosition && isUnderWater)
+    ///          this.playAirBubblePoppedSound(airBubble, player, emptyAirBubbles);
+    /// ```
+    /// with `volume = 0.5 + 0.1 * max(0, empty - 3 + 1)` and
+    /// `pitch = 1.0 + 0.1 * max(0, empty - 5 + 1)`: the pops grow louder
+    /// after the third empty bubble and higher after the fifth. Nothing at
+    /// all when `canHurtPlayer()` is false (creative, spectator), because
+    /// `extractPlayerHealth` is never reached.
+    pub fn frame(&mut self, inp: &SurvivalInputs) -> Option<BubblePop> {
+        if !inp.can_hurt {
+            return None;
+        }
+        let max = inp.max_air;
+        let current = inp.air_supply.clamp(0, max);
+        let under_water = inp.eye_in_water;
+        if !(under_water || current < max) {
+            return None;
+        }
+        if !under_water {
+            self.last = 0;
+        }
+        let full = air_bubble_count(current, max, -2);
+        let popping_pos = air_bubble_count(current, max, 0);
+        let empty = 10 - air_bubble_count(current, max, empty_bubble_delay(current, under_water));
+        // The loop only reaches the popping branch for a bubble in 1..=10
+        // that is not full, which `popping_pos > full` already guarantees.
+        let pops = full != popping_pos && under_water && (1..=10).contains(&popping_pos);
+        if !pops || self.last == popping_pos {
+            return None;
+        }
+        self.last = popping_pos;
+        Some(BubblePop {
+            volume: 0.5 + 0.1 * (empty - 3 + 1).max(0) as f32,
+            pitch: 1.0 + 0.1 * (empty - 5 + 1).max(0) as f32,
+        })
+    }
+}
+
 /// `extractAirBubbles` (`Hud.java:906-934`). The bubble-pop sound it also
-/// plays is not emitted here — a layout has no sound channel — and is
-/// recorded as open.
+/// plays is [`BubblePopper`] (M188).
 fn air_bubbles(
     inp: &SurvivalInputs,
     rng: &mut HudRandom,
@@ -1807,5 +1877,78 @@ mod tests {
         };
         let ranks: Vec<i32> = v.iter().map(|b| rank(&b.icon)).collect();
         assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "{ranks:?}");
+    }
+
+    /// M188 — a whole drowning, one frame per tick (air drops by one a tick
+    /// under water). `ceil(c * 10 / 300) != ceil((c - 2) * 10 / 300)` holds
+    /// for `c` in `30k+1 ..= 30k+2`, two frames per bubble, so each of the ten
+    /// bubbles bursts on two frames and pops ONCE. The first pop (c = 272,
+    /// `empty = 10 - ceil(273 * 10 / 300) = 0`) is (0.5, 1.0); the last
+    /// (c = 2, `empty = 10 - ceil(30 / 300) = 9`) is (0.5 + 0.7, 1.0 + 0.5).
+    #[test]
+    fn a_drowning_pops_each_bubble_once_growing_louder_and_higher() {
+        let mut p = BubblePopper::default();
+        let mut pops = Vec::new();
+        for air in (0..=300).rev() {
+            let inp = SurvivalInputs {
+                can_hurt: true,
+                air_supply: air,
+                max_air: 300,
+                eye_in_water: true,
+                ..Default::default()
+            };
+            if let Some(pop) = p.frame(&inp) {
+                pops.push((air, pop));
+            }
+            // A second frame on the same tick never pops again.
+            assert_eq!(p.frame(&inp), None, "air {air}");
+        }
+        assert_eq!(pops.len(), 10, "{pops:?}");
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        let (first_air, first) = pops[0];
+        assert_eq!(first_air, 272);
+        assert!(
+            close(first.volume, 0.5) && close(first.pitch, 1.0),
+            "{first:?}"
+        );
+        let (last_air, last) = pops[9];
+        assert_eq!(last_air, 2);
+        assert!(
+            close(last.volume, 1.2) && close(last.pitch, 1.5),
+            "{last:?}"
+        );
+        assert!(pops.windows(2).all(|w| w[1].1.volume >= w[0].1.volume));
+    }
+
+    /// Surfacing forgets the last bubble (`lastBubblePopSoundPlayed = 0` while
+    /// the bar shows and the eyes are dry), so diving again re-pops it; and a
+    /// player who cannot be hurt never reaches the sound at all.
+    #[test]
+    fn surfacing_resets_the_memory_and_creative_never_pops() {
+        let at = |air: i32, wet: bool, hurt: bool| SurvivalInputs {
+            can_hurt: hurt,
+            air_supply: air,
+            max_air: 300,
+            eye_in_water: wet,
+            ..Default::default()
+        };
+        let mut p = BubblePopper::default();
+        assert!(p.frame(&at(152, true, true)).is_some());
+        assert!(p.frame(&at(151, true, true)).is_none(), "same bubble");
+        assert!(p.frame(&at(152, false, true)).is_none(), "dry: no pop");
+        assert!(
+            p.frame(&at(152, true, true)).is_some(),
+            "re-dived: pops again"
+        );
+        let mut c = BubblePopper::default();
+        assert!(c.frame(&at(152, true, false)).is_none(), "creative");
+        // Full air above water: the bar is not drawn, the memory untouched.
+        let mut q = BubblePopper::default();
+        assert!(q.frame(&at(152, true, true)).is_some());
+        assert!(q.frame(&at(300, false, true)).is_none());
+        assert!(
+            q.frame(&at(152, true, true)).is_none(),
+            "full-air frame did not reset"
+        );
     }
 }

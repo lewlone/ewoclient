@@ -51,7 +51,7 @@ pub struct ContainershotArgs {
 /// The exact number of witnesses a passing `--check` records. Pinned with `!=`
 /// (like the other gates): a floor of `> 0` let a refactor drop most of them
 /// silently. Update it, and say why, when a witness is added or removed.
-const EXPECTED_WITNESSES: usize = 110;
+const EXPECTED_WITNESSES: usize = 111;
 
 struct Checker {
     witnessed: usize,
@@ -1644,6 +1644,7 @@ fn overlays(
                     display,
                     selected: 0,
                     start_row: 0,
+                    scroll_offs: 0.0,
                     patterns: one,
                 }),
                 None,
@@ -1691,6 +1692,89 @@ fn overlays(
                  {greys} are exactly it, and with the grid hidden none of them is grey \
                  ({control}) — swap the two pushes and the pattern vanishes under the fill",
                 on.len()
+            ),
+        );
+    }
+
+    // o29 — the loom's scroller (M189), through the production overlay
+    // builder: the jar's own `container/loom/scroller` texels at vanilla's
+    // literal `(leftPos + 119, topPos + 13 + (int)(41 * scrollOffs))` — 13 at
+    // the top, 54 at full scroll — and `scroller_disabled` when the grid is
+    // hidden. The positions are vanilla's numbers, not `loom_scroller_y`'s.
+    {
+        let loom_layout = rewo_world::menu_layout::layout_of(18).unwrap();
+        let at_loom = probe(loom_layout);
+        let all: &'static [&'static str] = rewo_data::loom_pattern_table::NO_ITEM_REQUIRED;
+        let mut frame = |display: bool,
+                         scroll_offs: f32,
+                         gpu: &mut Gpu,
+                         off: &mut Offscreen,
+                         wr: &mut WorldRenderer|
+         -> Result<Vec<u8>, String> {
+            let m = menu(18, &[]);
+            let open = m.open().expect("open");
+            wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+                open,
+                30,
+                false,
+                effects,
+                None,
+                None,
+                Some(crate::live_cmd::LoomView {
+                    display,
+                    selected: -1,
+                    start_row: 0,
+                    scroll_offs,
+                    patterns: all,
+                }),
+                None,
+                None,
+            ));
+            wr.set_container(true, None);
+            shot(gpu, off, wr)
+        };
+        let sprites = crate::live_cmd::container_sprites(baked)
+            .ok_or("containershot: container sprites missing from the jar")?;
+        let matches = |img: &[u8], sprite: usize, y0: i32| -> (usize, usize) {
+            let sp = &sprites.overlays[sprite];
+            let (mut ok, mut n) = (0, 0);
+            for y in 0..sp.h.min(15) as i32 {
+                for x in 0..sp.w.min(12) as i32 {
+                    let i = ((y as u32 * sp.w + x as u32) * 4) as usize;
+                    if sp.rgba[i + 3] != 255 {
+                        continue;
+                    }
+                    n += 1;
+                    if at_loom(img, 119 + x, y0 + y) == [sp.rgba[i], sp.rgba[i + 1], sp.rgba[i + 2]]
+                    {
+                        ok += 1;
+                    }
+                }
+            }
+            (ok, n)
+        };
+        let active = rewo_data::assets::LOOM_SCROLLER;
+        let top = frame(true, 0.0, gpu, off, wr)?;
+        let bottom = frame(true, 1.0, gpu, off, wr)?;
+        let hidden = frame(false, 0.0, gpu, off, wr)?;
+        let (top_ok, n) = matches(&top, active, 13);
+        let (bottom_ok, _) = matches(&bottom, active, 54);
+        let (moved_away, _) = matches(&bottom, active, 13);
+        let (dis_ok, dn) = matches(&hidden, active + 1, 13);
+        c.record(
+            "o29.the_looms_scroller_draws_moves_and_disables",
+            all.len() > 16
+                && n > 50
+                && top_ok == n
+                && bottom_ok == n
+                && moved_away < n
+                && dn > 50
+                && dis_ok == dn,
+            format!(
+                "{} patterns (more than the 16 a window shows); `scroller.png` {top_ok}/{n} \
+                 at y 13 and {bottom_ok}/{n} at y 54 at full scroll ({moved_away}/{n} still \
+                 at 13 there); with the grid hidden `scroller_disabled.png` {dis_ok}/{dn} at 13",
+                all.len()
             ),
         );
     }

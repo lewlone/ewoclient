@@ -679,6 +679,10 @@ pub(super) fn run_headless(
             // Headless never opens the which-of-these overlay: nothing can
             // right-click a recipe cell without a cursor.
             None,
+            // …nor press the recipe-book button, so it never holds focus.
+            false,
+            // …nor scroll a loom.
+            (0.0, 0),
         );
         headless_screen_labels = labels;
     } else {

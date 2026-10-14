@@ -1,0 +1,97 @@
+# Overnight push — 2026-10-15
+
+An autonomous overnight session (the owner asleep, told to push EwoClient
+toward a release without stopping for decisions). Branch
+`claude/overnight-push-a622f1`, on top of `main` at `5538315`. Nothing was
+pushed and nothing was released.
+
+## Where it started
+
+`docs/AUDIT-2026-10.md` §11 already marks every audit finding Fixed, apart
+from paths only a running game or a real device reaches. So no audit item was
+left that blocks a release in code; the night went to release packaging and to
+the open Rewo roadmap items in `REWO_PLAN.md` §0.0.
+
+Baseline, measured before any change: 4,200 tests passed, 0 failed, 0 skipped
+(`cargo test --workspace --no-fail-fast --features rewo-app/gates`).
+
+## What changed
+
+| Commit | What |
+|---|---|
+| `12776e6` | **M186** — Rewo plays vanilla's client-side UI sounds (button click, slider release, held-book page turn, stonecutter and loom select, beacon, merchant, recipe-book widgets). Fixed on the way: the loom's pattern grid could not be clicked at all; the selected beacon button let a click fall through to the slots; a right click turned recipe-book pages. Also drops a stray tracked `du.exe.stackdump`. |
+| `0d444da` | **Release packaging.** `package.ps1` now builds the HUD jar from the same checkout as `ewo_jni.dll` (before, it bundled whatever jar was last deployed to the dev drop), writes `BUILD.txt` (version, commit, dirty flag) and `LICENSE.txt`, runs the new `tools/check_bundle.py` (fails the build on a missing file, a non-self-contained or hash-wrong manifest, or gate code in `rewo.exe`), and has `-NoShortcut -Zip` for release builds. `docs/RELEASE.md` is the release procedure. A full `package.ps1 -NoShortcut -Zip` run produced a bundle and zip that pass the checker. |
+| `e645249` | **M187** — the recipe-book button. Rewo had none, so the book only opened if the server's saved settings said so. **M188** — the HUD's air-bubble pop sound underwater. |
+| `f130750` | Repaired 27 mojibake lines (`â€”` for `—`) in `rewo-ui/src/screen.rs`, left by the 2026-10 crate move. |
+| `4199b8d` | **M189** — the loom's scrollbar: with no pattern item the loom offers 32 patterns and only 16 were reachable. |
+
+Every milestone has its `REWO_PLAN.md` §15 entry; §0.0's open list is updated.
+
+## Decisions made (the owner asked for decisions, not questions)
+
+1. **No windowed runs tonight.** A Geometry Dash recording batch was running on
+   this desktop, and a Rewo window taking focus could have paused it. So
+   `tools/render_check.py` (which opens a window) was not run; everything else
+   was verified with the offscreen gates and tests. The new render-check row
+   **r68** is written and claimed but has never run.
+2. **The release bundle builds its own HUD jar** instead of taking the dev
+   drop's, so jar and DLL always share a commit (`package.ps1`,
+   `bundle-loader.ps1 -Override`).
+3. **The recipe-book button is withheld on a creative player's inventory.**
+   Vanilla shows creative players `CreativeModeInventoryScreen`, which has no
+   book; Rewo draws the survival inventory for everyone, so showing a button
+   there would offer something vanilla does not.
+4. **UI sounds play at the top of the next frame**, not inside the click
+   handler: the press sites are in `rewo-ui` and the input arms, which do not
+   own the sound engine. That is at most one frame later than vanilla.
+5. **The lectern's page arrows stay silent client-side**, matching vanilla
+   (`LecternScreen` builds its reader with `playTurnSound = false`; the server
+   plays the turn).
+6. **Gate witnesses use vanilla's literal positions**, not the builder's
+   constants. The first version of the recipe-book button's witness read the
+   builder's own origin, and a one-pixel mutant survived; both new pixel
+   witnesses (`inventoryshot` gb1, `containershot` o29) now use the decompile's
+   numbers and the mutant fails.
+7. **Branch, then merge.** Work was committed in small green steps on the
+   branch. See "How it reaches main" below.
+
+## Verification (measured, end of night)
+
+See the final numbers in the table at the bottom (filled in at the end of the
+session). Run so far after each milestone: `cargo fmt --check`, `cargo clippy
+--workspace --all-targets --features rewo-app/gates -- -D warnings` clean, the
+affected crates' tests green, and `python tools/gates.py` 49/49 after M186 +
+M187 (demo hash unchanged, `d7dc9e8985f0504f`).
+
+## Needs the owner (a playtest or a windowed run)
+
+- **`python tools/render_check.py`** — not run tonight (decision 1). It now
+  expects 68 witnesses; r68 is the crafting table's recipe-book button.
+- **Listen** (on a `--features audio` build, `rewo live --audio`): button
+  clicks on the pause/options/death screens, a slider's click on release (not
+  on press), the book's page turn, the stonecutter and loom select sounds, and
+  the air-bubble pops when drowning (louder and higher as air runs out).
+  No gate hears a sound.
+- **Recipe-book button, in a real game:** open the inventory as a survival
+  player and click the green book; it should open the book, move the
+  inventory right, and stay highlighted; clicking it again closes the book.
+  Same on a crafting table and a furnace.
+- **Loom:** banner + dye with no pattern item: scroll the 32 patterns with the
+  wheel and by dragging the thumb, and stamp one from the second half.
+- **A fresh-machine run of the release zip** (`docs/RELEASE.md` §3).
+- Still open from before tonight (`docs/AUDIT-2026-10.md` §11): the HUD's
+  Java changes and ABI handshake in a running Minecraft, the audio
+  device-rebuild paths, the Linux keyring and recycler, SRV on a real network.
+
+## Follow-ups found, not done
+
+- The loom's `hasMaxPatterns`: a banner with six layers still shows the grid
+  (needs the `banner_patterns` component read).
+- The recipe book's search field takes a right click like a left one
+  (vanilla's magnifier does; the box itself does not). Minor.
+- `sub-map` (map item data and rendering) is the largest remaining Rewo
+  roadmap item.
+
+## How it reaches main
+
+(Filled in at the end of the session.)

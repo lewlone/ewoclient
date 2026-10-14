@@ -598,6 +598,8 @@ pub struct PlaySession {
     /// (`handleOpenSignEditor` warns and ignores otherwise — it does NOT
     /// construct a fresh one; that was the ≤1.19 shape).
     pub open_sign_editor_request: Option<((i32, i32, i32), bool)>,
+    /// M190 — the level's maps (`ClientLevel.getMapData`), by `MapId`.
+    pub maps: rewo_world::maps::MapStore,
     /// The unlocked recipes, by `RecipeDisplayId` (M93y). Decoded and held;
     /// nothing renders a recipe book yet.
     pub recipe_book: std::collections::BTreeMap<i32, crate::recipe_book::Entry>,
@@ -1874,6 +1876,7 @@ impl<'a> Connection<'a> {
             merchant: None,
             open_book_request: None,
             open_sign_editor_request: None,
+            maps: Default::default(),
             recipe_book: Default::default(),
             recipe_book_settings: Default::default(),
             ghost_recipe: None,
@@ -3106,6 +3109,8 @@ impl PlaySession {
         self.dirty.clear();
         self.world = World::new(DimensionShape::OVERWORLD);
         self.light = rewo_world::light::LightEngine::new();
+        // M190 — maps live on the `ClientLevel`; the server resends.
+        self.maps.clear();
         self.day_ticks = None;
         self.clocks.clear();
         self.game_time = None;

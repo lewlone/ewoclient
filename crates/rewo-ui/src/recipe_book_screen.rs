@@ -1310,8 +1310,18 @@ impl BookState {
     /// The page is not clamped here: `book_hit` only reports an arrow that is
     /// **visible**, and `page_arrows_visible` is what gates that — so a
     /// forward press cannot arrive on the last page.
+    ///
+    /// **Only a recipe cell answers the right button** (M186): `RecipeButton`
+    /// overrides `isValidClickButton` to accept 0 and 1, while the page
+    /// arrows, the filter and the tab buttons keep `AbstractWidget`'s
+    /// `button == 0`. A right click on any of those is not a press — it falls
+    /// through exactly like a miss. Before M186 a right click turned pages
+    /// and switched tabs.
     pub fn press(&mut self, hit: Option<BookHit>, right: bool) -> Option<BookAction> {
         let hit = hit?;
+        if right && !matches!(hit, BookHit::Slot(_) | BookHit::Search) {
+            return None;
+        }
         Some(match hit {
             BookHit::PageForward => {
                 self.page += 1;
@@ -1334,6 +1344,87 @@ impl BookState {
                 BookAction::Navigated
             }
         })
+    }
+}
+
+// ── the recipe-book button (M187) ─────────────────────────────────────────
+//
+// `AbstractRecipeBookScreen.initButton`:
+//
+// ```java
+// ScreenPosition buttonPos = this.getRecipeBookButtonPosition();
+// this.addRenderableWidget(new ImageButton(buttonPos.x(), buttonPos.y(), 20, 18,
+//       RecipeBookComponent.RECIPE_BUTTON_SPRITES, button -> {
+//    this.recipeBookComponent.toggleVisibility();
+//    this.leftPos = this.recipeBookComponent.updateScreenPosition(this.width, this.imageWidth);
+//    button.setPosition(this.getRecipeBookButtonPosition());
+//    this.onRecipeBookButtonClick();
+// }));
+// ```
+//
+// Before M187 Rewo had no such button: the book opened only when the server's
+// saved `RecipeBookSettings` already said so, so a player who had never opened
+// it in a vanilla client could not open it at all.
+
+/// The green book's size, `new ImageButton(x, y, 20, 18, …)`.
+pub const BOOK_BUTTON_W: i32 = 20;
+pub const BOOK_BUTTON_H: i32 = 18;
+
+/// Which `AbstractRecipeBookScreen` subclass the button sits on — each
+/// overrides `getRecipeBookButtonPosition`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BookButtonHost {
+    /// `InventoryScreen`: `(leftPos + 104, height / 2 - 22)`.
+    Inventory,
+    /// `CraftingScreen`: `(leftPos + 5, height / 2 - 49)`.
+    Crafting,
+    /// `AbstractFurnaceScreen` (furnace, blast furnace, smoker):
+    /// `(leftPos + 20, height / 2 - 49)`.
+    Furnace,
+}
+
+/// The button's top-left **relative to the menu panel** (`leftPos`, `topPos`).
+///
+/// Vanilla's y is window-relative (`height / 2 - k`), but every host is
+/// 166 tall, and `topPos = (height - 166) / 2` with Java's integer division
+/// makes `height / 2 - k - topPos` equal `83 - k` for an even *and* an odd
+/// `height` (the two floors move together). So the button is a fixed offset
+/// from the panel, and drawing and hit-testing it through the panel's own
+/// placement (which already knows the book's 77 px shift) puts it where
+/// vanilla's `setPosition(getRecipeBookButtonPosition())` does.
+/// `book_button_y_is_panel_relative_for_every_height` checks the identity.
+pub fn book_button_origin(host: BookButtonHost) -> (i32, i32) {
+    match host {
+        BookButtonHost::Inventory => (104, 83 - 22),
+        BookButtonHost::Crafting => (5, 83 - 49),
+        BookButtonHost::Furnace => (20, 83 - 49),
+    }
+}
+
+/// Whether panel-relative `(x, y)` is on the button —
+/// `AbstractWidget.areCoordinatesInRectangle`, half-open on the far edges.
+pub fn book_button_hit(host: BookButtonHost, x: f64, y: f64) -> bool {
+    let (bx, by) = book_button_origin(host);
+    x >= bx as f64
+        && y >= by as f64
+        && x < (bx + BOOK_BUTTON_W) as f64
+        && y < (by + BOOK_BUTTON_H) as f64
+}
+
+/// What a press that [`BookState::press`] accepted plays (M186): every book
+/// widget is an `AbstractWidget` that clicks in `mouseClicked` — the page
+/// arrows, each `RecipeButton`, the filter, and the `RecipeBookTabButton`s
+/// (an `ImageButton`, so re-pressing the selected tab clicks too, unlike a
+/// `TabButton`). The search field is an `EditBox`, whose `playDownSound` is
+/// empty.
+pub fn press_sound(hit: BookHit) -> Option<crate::ui_sound::UiSound> {
+    match hit {
+        BookHit::Search => None,
+        BookHit::PageForward
+        | BookHit::PageBackward
+        | BookHit::Slot(_)
+        | BookHit::Filter
+        | BookHit::Tab(_) => Some(crate::ui_sound::UiSound::ButtonClick),
     }
 }
 
@@ -1736,6 +1827,86 @@ mod tests {
             st.press(Some(BookHit::Filter), false),
             Some(BookAction::ToggleFilter)
         );
+    }
+
+    /// M186 — only `RecipeButton` widens `isValidClickButton` to the right
+    /// button; a right click on an arrow, the filter or a tab is a miss and
+    /// changes nothing.
+    #[test]
+    fn only_a_recipe_cell_answers_the_right_button() {
+        let mut st = BookState {
+            page: 1,
+            ..BookState::default()
+        };
+        for hit in [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Filter,
+            BookHit::Tab(2),
+        ] {
+            assert_eq!(st.press(Some(hit), true), None, "{hit:?}");
+        }
+        assert_eq!(st.page, 1, "a right click turned no page");
+        assert_eq!(st.selected_tab, 0, "and switched no tab");
+        assert_eq!(
+            st.press(Some(BookHit::Slot(3)), true),
+            Some(BookAction::Recipe {
+                index: 3,
+                right: true
+            })
+        );
+    }
+
+    /// M187 — vanilla positions the button at `height / 2 - k`, the panel at
+    /// `(height - 166) / 2`; the difference is the same for every height, odd
+    /// or even, which is what lets the button ride the panel's placement.
+    #[test]
+    fn book_button_y_is_panel_relative_for_every_height() {
+        for (host, k) in [
+            (BookButtonHost::Inventory, 22),
+            (BookButtonHost::Crafting, 49),
+            (BookButtonHost::Furnace, 49),
+        ] {
+            let (_, dy) = book_button_origin(host);
+            for height in 166..=1080 {
+                let top_pos = (height - 166) / 2;
+                assert_eq!(height / 2 - k - top_pos, dy, "{host:?} at height {height}");
+            }
+        }
+        assert_eq!(book_button_origin(BookButtonHost::Inventory).0, 104);
+        assert_eq!(book_button_origin(BookButtonHost::Crafting).0, 5);
+        assert_eq!(book_button_origin(BookButtonHost::Furnace).0, 20);
+    }
+
+    #[test]
+    fn book_button_hit_is_half_open() {
+        let (x, y) = book_button_origin(BookButtonHost::Inventory);
+        let (x, y) = (x as f64, y as f64);
+        assert!(book_button_hit(BookButtonHost::Inventory, x, y));
+        assert!(book_button_hit(
+            BookButtonHost::Inventory,
+            x + 19.9,
+            y + 17.9
+        ));
+        assert!(!book_button_hit(BookButtonHost::Inventory, x + 20.0, y));
+        assert!(!book_button_hit(BookButtonHost::Inventory, x, y + 18.0));
+        assert!(!book_button_hit(BookButtonHost::Inventory, x - 0.1, y));
+    }
+
+    /// M186 — every book widget clicks except the search `EditBox`.
+    #[test]
+    fn every_book_widget_clicks_but_the_search_field() {
+        use crate::ui_sound::UiSound;
+        for hit in [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Slot(0),
+            BookHit::Filter,
+            BookHit::Tab(0),
+        ] {
+            assert_eq!(press_sound(hit), Some(UiSound::ButtonClick), "{hit:?}");
+        }
+        assert_eq!(press_sound(BookHit::Search), None);
     }
 
     #[test]

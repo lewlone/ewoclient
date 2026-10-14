@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 165;
+const EXPECTED_WITNESSES: usize = 168;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -4196,6 +4196,83 @@ fn pixels_inner(
         changed_bounds(&open, &open).is_none() && changed_box.is_some(),
         "with nothing under the cursor the frame is exactly the panel — the \
          highlight is not drawn somewhere harmless, it is not drawn",
+    );
+
+    // -- the recipe-book button (M187) ------------------------------------
+    //
+    // Through the PRODUCTION builder (`book_button_widgets`, the one
+    // `apply_screen` calls) into the renderer, graded against the jar's own
+    // `recipe_book/button*.png` texels — not against a constant the builder
+    // also reads. Only fully opaque texels are compared: the sprite's
+    // transparent edge, if any, shows the panel through it.
+    let host = crate::live_cmd::book_button_host(&rewo_world::menu_layout::PLAYER, false);
+    // The expected position is vanilla's literal, NOT `book_button_origin`:
+    // reading the builder's own constant here would move the expectation with
+    // any mistake in it (a one-pixel mutant of the origin survived exactly
+    // that way). `InventoryScreen.getRecipeBookButtonPosition` is
+    // `(leftPos + 104, height / 2 - 22)`, and `height / 2 - 22 - topPos` is
+    // `83 - 22` for every height.
+    let (bx, by) = (104, 61);
+    let button_matches = |img: &[u8], sprite: usize| -> (usize, usize, Option<String>) {
+        let sp = &sprites.overlays[sprite];
+        let (mut ok, mut n, mut first_bad) = (0, 0, None);
+        for y in 0..sp.h.min(18) as i32 {
+            for x in 0..sp.w.min(20) as i32 {
+                let i = ((y as u32 * sp.w + x as u32) * 4) as usize;
+                if sp.rgba[i + 3] != 255 {
+                    continue;
+                }
+                n += 1;
+                let want = [sp.rgba[i], sp.rgba[i + 1], sp.rgba[i + 2]];
+                let got = at(img, bx + x, by + y);
+                if got == want {
+                    ok += 1;
+                } else if first_bad.is_none() {
+                    first_bad = Some(format!("({x},{y}) rendered {got:?}, sprite {want:?}"));
+                }
+            }
+        }
+        (ok, n, first_bad)
+    };
+    let plain = rewo_data::assets::BOOK_BUTTON;
+    wr.set_container(true, None);
+    wr.set_container_widgets(crate::live_cmd::book_button_widgets(
+        host, false, false, None, false,
+    ));
+    let with_button = shot(gpu, off, wr, &[])?;
+    let (ok, n, bad) = button_matches(&with_button, plain);
+    c.record(
+        "gb1.the_recipe_book_button_draws_the_jars_sprite_at_104_61",
+        host.is_some() && n > 100 && ok == n,
+        format!(
+            "{ok}/{n} opaque texels of `recipe_book/button.png` reproduced at panel (104, 61) — `InventoryScreen.getRecipeBookButtonPosition` is `(leftPos + 104, height / 2 - 22)`, 61 below `topPos` at any height{}",
+            bad.map(|b| format!("; first miss {b}")).unwrap_or_default()
+        ),
+    );
+    wr.set_container_widgets(crate::live_cmd::book_button_widgets(
+        host,
+        false,
+        false,
+        Some((bx as f64 + 5.0, by as f64 + 5.0)),
+        false,
+    ));
+    let lit = shot(gpu, off, wr, &[])?;
+    let (ok_hl, n_hl, bad_hl) = button_matches(&lit, plain + 1);
+    let (ok_plain_on_lit, ..) = button_matches(&lit, plain);
+    c.record(
+        "gb2.hovering_the_button_draws_its_highlighted_sprite",
+        n_hl > 100 && ok_hl == n_hl && ok_plain_on_lit < n,
+        format!(
+            "{ok_hl}/{n_hl} texels of `button_highlighted.png` under the cursor, and only {ok_plain_on_lit}/{n} of the plain sprite still match there — so the two sprites differ and the hover picked the other one{}",
+            bad_hl.map(|b| format!("; first miss {b}")).unwrap_or_default()
+        ),
+    );
+    wr.set_container_widgets(Vec::new());
+    let cleared = shot(gpu, off, wr, &[])?;
+    c.record(
+        "gb3.no_widgets_is_the_bare_panel_again",
+        cleared == open && with_button != open,
+        "clearing the widget list restores the panel frame byte for byte, and the frame with the button differs from it — the button is the only thing the widget list added",
     );
 
     // And the closed screen is not merely a dimmer world: the panel is gone.

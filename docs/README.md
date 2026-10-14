@@ -46,6 +46,11 @@ were written, and relative links inside them may point at their old location.
   review and its fix ledger.
 - [`AUDIT-2026-10.md`](AUDIT-2026-10.md): the October 2026 full audit, which
   re-grades that review, with a status column for its own findings.
+- [`OVERNIGHT-2026-10-15.md`](OVERNIGHT-2026-10-15.md): the overnight push
+  of 2026-10-15 (M186–M189, release packaging), its decisions and what it
+  left for the owner to playtest.
+- [`RELEASE.md`](RELEASE.md): how to cut a release bundle and what a person
+  still has to check.
 
 Retired mutation batteries are in `tools/history/mutations/`.
 

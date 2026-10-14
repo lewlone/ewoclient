@@ -192,6 +192,10 @@ pub(super) struct RenderCheck {
     /// the two are comparable; r23's threshold is a floor, so its meaning is
     /// unchanged.
     pub(super) book_quads_max: usize,
+    /// M187 — frames on which the crafting table's screen carried the
+    /// recipe-book button at vanilla's position, read back out of the
+    /// renderer.
+    pub(super) book_button_frames: usize,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -673,7 +677,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 67;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 68;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -823,6 +827,18 @@ impl RenderCheck {
                 "{} quads at peak (panel + {} crafting tabs + filter = {min_quads} with an empty grid)",
                 self.book_quads_max,
                 rewo_ui::recipe_book_screen::CRAFTING_TABS.len()
+            ),
+        );
+        // M187 — the recipe-book button reached the windowed draw on the
+        // crafting table injected at 0.90. The position is vanilla's literal
+        // (`CraftingScreen`: `leftPos + 5`, `height / 2 - 49` = 34 below
+        // `topPos`), not the builder's constant, so a wrong origin fails here.
+        row(
+            "r68 the crafting table drew its recipe-book button in the windowed client",
+            self.book_button_frames >= 3,
+            format!(
+                "{} frames carried `recipe_book/button` at panel (5, 34)",
+                self.book_button_frames
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed

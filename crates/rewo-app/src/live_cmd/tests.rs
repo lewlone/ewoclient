@@ -3549,3 +3549,106 @@ fn only_an_address_with_no_port_anywhere_is_srv_eligible() {
     assert!(server_address(Some(""), None).is_err());
     assert!(server_address(Some("host:notaport"), None).is_err());
 }
+
+// -- the recipe-book button (M187) ----------------------------------------
+
+fn layout_named(name: &str) -> &'static rewo_world::menu_layout::MenuLayout {
+    rewo_world::menu_layout::REGISTRY
+        .iter()
+        .find(|l| l.name == name)
+        .unwrap_or_else(|| panic!("no layout named {name}"))
+}
+
+/// Exactly the four book screens carry the button, three positions between
+/// them, and a creative player's inventory (vanilla's creative screen) none.
+#[test]
+fn the_book_button_sits_on_the_four_book_screens_only() {
+    use rewo_ui::recipe_book_screen::BookButtonHost as H;
+    let player = &rewo_world::menu_layout::PLAYER;
+    assert_eq!(book_button_host(player, false), Some(H::Inventory));
+    assert_eq!(book_button_host(player, true), None, "creative inventory");
+    assert_eq!(
+        book_button_host(layout_named("crafting"), false),
+        Some(H::Crafting)
+    );
+    for f in ["furnace", "blast_furnace", "smoker"] {
+        assert_eq!(
+            book_button_host(layout_named(f), false),
+            Some(H::Furnace),
+            "{f}"
+        );
+    }
+    let with_button = rewo_world::menu_layout::REGISTRY
+        .iter()
+        .filter(|l| book_button_host(l, false).is_some())
+        .count();
+    assert_eq!(with_button, 4, "crafting + three furnaces");
+    // And every one of them has a book: a button over no book would open nothing.
+    for l in rewo_world::menu_layout::REGISTRY.iter() {
+        if book_button_host(l, false).is_some() {
+            assert!(book_type_of(l).is_some(), "{}", l.name);
+        }
+    }
+}
+
+#[test]
+fn the_book_button_lights_on_hover_or_focus_and_hides_when_narrow_and_open() {
+    use rewo_ui::recipe_book_screen as rb;
+    let host = Some(rb::BookButtonHost::Inventory);
+    let (x, y) = rb::book_button_origin(rb::BookButtonHost::Inventory);
+    let over = Some((x as f64 + 1.0, y as f64 + 1.0));
+    let away = Some((0.0, 0.0));
+    let sprite = |v: Vec<(usize, rewo_gpu::container::PanelBlit)>| {
+        assert_eq!(v.len(), 1);
+        assert_eq!((v[0].1.dx, v[0].1.dy), (x as f32, y as f32));
+        assert_eq!((v[0].1.w, v[0].1.h), (20.0, 18.0));
+        v[0].0
+    };
+    let plain = rewo_data::assets::BOOK_BUTTON;
+    assert_eq!(
+        sprite(book_button_widgets(host, false, false, away, false)),
+        plain
+    );
+    assert_eq!(
+        sprite(book_button_widgets(host, false, false, over, false)),
+        plain + 1
+    );
+    assert_eq!(
+        sprite(book_button_widgets(host, false, false, away, true)),
+        plain + 1
+    );
+    // Narrow with the book open: vanilla draws the background alone.
+    assert!(book_button_widgets(host, true, true, over, false).is_empty());
+    // Narrow with the book shut, or wide with it open: drawn.
+    assert_eq!(book_button_widgets(host, false, true, away, false).len(), 1);
+    assert_eq!(book_button_widgets(host, true, false, away, false).len(), 1);
+    assert!(book_button_widgets(None, false, false, over, false).is_empty());
+}
+
+// -- the air-bubble pop (M188) --------------------------------------------
+
+/// The pop's event resolves in the REAL 26.2 `sounds.json` and starts a
+/// channel through `play_now`, as the HUD pass plays it.
+#[test]
+fn the_bubble_pop_resolves_and_plays_through_play_now() {
+    let index = match rewo_data::sounds_json::load_for_version("26.2") {
+        Ok(idx) if !idx.is_empty() => idx,
+        _ => {
+            rewo_data::skip_test!("no unpacked 26.2 asset store (sounds.json)");
+            return;
+        }
+    };
+    let mut live = rewo_net::sound_engine::LiveSounds::new(index, Default::default());
+    live.play_now(rewo_net::sounds::SoundEvent::Local(
+        rewo_net::sounds::LocalSound {
+            name: rewo_gpu::survival_hud::BubblePopper::EVENT.to_string(),
+            source: rewo_net::sounds::SoundSource::Players,
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            volume: 0.5,
+            pitch: 1.0,
+        },
+    ));
+    assert_eq!(live.stats().started, 1, "{:?}", live.stats());
+}

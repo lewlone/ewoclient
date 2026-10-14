@@ -2519,6 +2519,15 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/recipe_book/furnace_overlay_highlighted.png",
     "gui/sprites/recipe_book/furnace_overlay_disabled.png",
     "gui/sprites/recipe_book/furnace_overlay_disabled_highlighted.png",
+    // 127..=128 — the recipe-book button (M187), `RECIPE_BUTTON_SPRITES`:
+    // plain, then highlighted (`WidgetSprites.get(active, hoveredOrFocused)`;
+    // it is never inactive, so the disabled pair aliases these two).
+    "gui/sprites/recipe_book/button.png",
+    "gui/sprites/recipe_book/button_highlighted.png",
+    // 129..=130 — the loom's scroller (M189), **active first**, the
+    // stonecutter's convention: `LOOM_SCROLLER + usize::from(!active)`.
+    "gui/sprites/container/loom/scroller.png",
+    "gui/sprites/container/loom/scroller_disabled.png",
 ];
 
 /// The search field's background pair, **plain first** —
@@ -2536,6 +2545,14 @@ pub const BOOK_PAGE_ARROW: usize = 104;
 /// The filter toggle's two families of four, crafting then furnace.
 pub const BOOK_FILTER: usize = 108;
 pub const BOOK_FILTER_FURNACE: usize = 112;
+
+/// The recipe-book button, **plain first** —
+/// `BOOK_BUTTON + usize::from(hovered_or_focused)` (M187).
+pub const BOOK_BUTTON: usize = 127;
+
+/// The loom's scroller, **active first** — `LOOM_SCROLLER + usize::from(!active)`
+/// (M189).
+pub const LOOM_SCROLLER: usize = 129;
 
 /// The which-of-these overlay's nine-sliced panel (M104).
 pub const BOOK_OVERLAY_PANEL: usize = 118;
@@ -5157,6 +5174,34 @@ fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M187 — the list is an append-only index contract (§0.0's allocation
+    /// table); pin the newest pair by path so a misplaced insert fails here
+    /// rather than drawing the overlay button's art on the book button.
+    #[test]
+    fn the_book_button_pair_is_where_its_constant_says() {
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[BOOK_BUTTON],
+            "gui/sprites/recipe_book/button.png"
+        );
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[BOOK_BUTTON + 1],
+            "gui/sprites/recipe_book/button_highlighted.png"
+        );
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[BOOK_OVERLAY_BUTTON + 7],
+            "gui/sprites/recipe_book/furnace_overlay_disabled_highlighted.png"
+        );
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[LOOM_SCROLLER],
+            "gui/sprites/container/loom/scroller.png"
+        );
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[LOOM_SCROLLER + 1],
+            "gui/sprites/container/loom/scroller_disabled.png"
+        );
+        assert_eq!(MENU_OVERLAY_SPRITES.len(), LOOM_SCROLLER + 2);
+    }
 
     // -- M164: the waterlogging rule ---------------------------------------
     //

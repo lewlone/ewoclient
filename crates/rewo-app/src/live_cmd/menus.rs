@@ -216,6 +216,7 @@ pub(super) fn beacon_press(
     h: f32,
 ) -> bool {
     use rewo_ui::menu_screen::BeaconPress;
+    use rewo_ui::ui_sound::UiSound;
     let Some(open) = session.menus.shown_open() else {
         return false;
     };
@@ -242,13 +243,22 @@ pub(super) fn beacon_press(
         // press on a dark button falls through to the slot logic exactly as a
         // disabled enchanting row does (M92f).
         BeaconPress::None => false,
+        // M186 — a live button was pressed: `AbstractWidget.mouseClicked`
+        // plays the click before `onPress` decides anything, so every arm
+        // below clicks, the already-selected one included.
+        BeaconPress::Inert => {
+            screen.ui_sounds.play(UiSound::ButtonClick);
+            true
+        }
         BeaconPress::Select(next) => {
+            screen.ui_sounds.play(UiSound::ButtonClick);
             if let Some(b) = screen.beacon.as_mut() {
                 b.choice = next;
             }
             true
         }
         BeaconPress::Confirm => {
+            screen.ui_sounds.play(UiSound::ButtonClick);
             let id =
                 |e: Option<rewo_ui::menu_screen::BeaconEffect>| e.and_then(|e| effect_ids.id_of(e));
             match session.set_beacon(id(choice.primary), id(choice.secondary)) {
@@ -258,6 +268,7 @@ pub(super) fn beacon_press(
             true
         }
         BeaconPress::Cancel => {
+            screen.ui_sounds.play(UiSound::ButtonClick);
             screen.close_beacon = true;
             true
         }
@@ -277,17 +288,162 @@ pub(super) const BEACON_MENU_PROTOCOL_ID: i32 = 9;
 pub struct LoomView {
     /// `getSelectablePatterns()`.
     pub patterns: &'static [&'static str],
-    /// `LoomScreen.startRow` — the first visible row.
-    ///
-    /// **Always 0 today**: the scrollbar's drag is not wired, so a loom with
-    /// more than 16 patterns shows the first sixteen and no more. The field
-    /// exists because the index arithmetic needs it and would otherwise have
-    /// a 0 baked in where a variable belongs.
+    /// `LoomScreen.startRow` — the first visible row, from the screen's own
+    /// scroll ([`LoomLocal`], M189).
     pub start_row: i32,
+    /// `LoomScreen.scrollOffs`, for the thumb's position (M189).
+    pub scroll_offs: f32,
     /// `getSelectedBannerPatternIndex()`, from data slot 0. `-1` for none.
     pub selected: i32,
     /// `displayPatterns` — the grid is hidden entirely when false.
     pub display: bool,
+}
+
+/// The loom's grid for the shown menu, or `None` when it is not a loom.
+///
+/// One accessor for the draw (`screens.rs`) and the press ([`loom_press`]),
+/// so the cell a click resolves is the cell that was drawn.
+pub(super) fn loom_view(
+    m: &rewo_world::menu::OpenMenu,
+    items: &rewo_data::items::Items,
+    // M189 — `(scrollOffs, startRow)`, the screen's own; see [`loom_local`].
+    scroll: (f32, i32),
+) -> Option<LoomView> {
+    if m.layout.protocol_id != rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID {
+        return None;
+    }
+    // Slots: banner 0, dye 1, pattern 2.
+    let name = |slot: usize| m.menu.menu_slot(slot).and_then(|s| items.name(s.item_id));
+    let patterns = rewo_data::loom_pattern_table::selectable_patterns(name(2));
+    Some(LoomView {
+        patterns,
+        start_row: scroll.1,
+        scroll_offs: scroll.0,
+        selected: m.loom_selected_pattern(),
+        display: rewo_ui::menu_screen::loom_display_patterns(
+            m.menu.menu_slot(0).is_some(),
+            m.menu.menu_slot(1).is_some(),
+            // `hasMaxPatterns` needs the banner's own layer count, which
+            // lives in a component Rewo does not read — so the grid stays
+            // visible on a full banner where vanilla hides it.
+            false,
+            patterns.len(),
+        ),
+    })
+}
+
+/// The loom screen's own scroll (M189) — `LoomScreen.scrollOffs`,
+/// `startRow` and `scrolling`, screen state that no packet carries.
+#[derive(Debug, Clone, Copy)]
+pub struct LoomLocal {
+    pub(super) container_id: i32,
+    pub(super) scroll_offs: f32,
+    pub(super) start_row: i32,
+    /// Whether the thumb is held. Cleared on any release.
+    pub scrolling: bool,
+}
+
+/// The loom's scroll for menu `m`, seeded at the top for a new container and
+/// put through `containerChanged`'s reset (`startRow >= totalRowCount()` →
+/// top) against the current pattern count. Applying the reset every frame is
+/// the same as applying it on every container change: the list only changes
+/// with the pattern slot, and the rule only ever moves the scroll to the top.
+pub(super) fn loom_local(
+    screen: &mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    selectable: usize,
+) -> LoomLocal {
+    let stale = screen.loom.is_none_or(|l| l.container_id != m.container_id);
+    if stale {
+        screen.loom = Some(LoomLocal {
+            container_id: m.container_id,
+            scroll_offs: 0.0,
+            start_row: 0,
+            scrolling: false,
+        });
+    }
+    let l = screen.loom.as_mut().expect("just seeded");
+    let (offs, row) =
+        rewo_ui::menu_screen::loom_scroll_after_change(l.scroll_offs, l.start_row, selectable);
+    l.scroll_offs = offs;
+    l.start_row = row;
+    *l
+}
+
+/// [`loom_view`] through the screen's scroll — the one call the draw, the
+/// press, the drag and the wheel share.
+pub(super) fn loom_view_scrolled(
+    screen: &mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    items: &rewo_data::items::Items,
+) -> Option<LoomView> {
+    let n = loom_view(m, items, (0.0, 0))?.patterns.len();
+    let l = loom_local(screen, m, n);
+    loom_view(m, items, (l.scroll_offs, l.start_row))
+}
+
+/// `LoomScreen.mouseClicked`'s pattern grid (M186).
+///
+/// ```java
+/// if (this.displayPatterns) {
+///    for (row, column in the 4x4 window) {
+///       if (inside the 14x14 cell && this.menu.clickMenuButton(player, index)) {
+///          play(UI_LOOM_SELECT_PATTERN);
+///          this.minecraft.gameMode.handleInventoryButtonClick(containerId, index);
+///          return true;
+///       }
+///    }
+///    ... the scrollbar grab, which does not return ...
+/// }
+/// return super.mouseClicked(event, doubleClick);
+/// ```
+///
+/// Before M186 the grid was drawn (M93q) and never pressed, so a loom in Rewo
+/// could not stamp a pattern at all. The range test is
+/// `LoomMenu.clickMenuButton`'s, run before the send exactly as vanilla runs
+/// it, so an out-of-range cell sends nothing and does not consume the press.
+/// The scrollbar's grab (M189) is tested after the grid and does not consume
+/// the press. Returns whether the press was consumed.
+pub(super) fn loom_press(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    items: &rewo_data::items::Items,
+    w: f32,
+    h: f32,
+) -> bool {
+    use rewo_ui::menu_screen as ms;
+    let Some(open) = session.menus.shown_open() else {
+        return false;
+    };
+    let Some(view) = loom_view_scrolled(screen, open, items).filter(|v| v.display) else {
+        return false;
+    };
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        screen.mouse,
+        w,
+        h,
+        open.layout.image_w as f32,
+        open.layout.image_h as f32,
+    );
+    // The cell loop first; a missed or rejected cell falls through to the
+    // scrollbar's grab, which does NOT consume the press (M189).
+    let index = ms::loom_cell_at(gx, gy, view.start_row)
+        .filter(|&i| ms::loom_button_accepted(i, view.patterns.len()));
+    let Some(index) = index else {
+        if ms::loom_scroller_grabbed(gx, gy) {
+            if let Some(l) = screen.loom.as_mut() {
+                l.scrolling = true;
+            }
+        }
+        return false;
+    };
+    screen
+        .ui_sounds
+        .play(rewo_ui::ui_sound::UiSound::LoomSelect);
+    if let Err(e) = session.container_button_click(index) {
+        log::warn!("loom pattern {index}: {e}");
+    }
+    true
 }
 
 /// `AnvilScreen.keyPressed` and `EditBox.charTyped` (M93t).
@@ -468,8 +624,15 @@ pub(super) fn book_press(
     // the page's arrows, on the search box, on the tabs, or on the menu's own
     // slots underneath all reach the overlay and nothing else.
     if let Some(open) = screen.book_overlay.as_ref() {
+        // M187 — the book took the click: `setFocused(recipeBookComponent)`
+        // moves focus off the recipe-book button.
+        screen.book_button_focus = None;
         match open.click_at(bx, by, right) {
             rewo_ui::recipe_overlay::Click::Select(i) => {
+                // M186 — an `OverlayRecipeButton` is an `AbstractWidget`.
+                screen
+                    .ui_sounds
+                    .play(rewo_ui::ui_sound::UiSound::ButtonClick);
                 let picked = open.buttons.get(i).map(|b| (b.recipe, b.craftable));
                 // **The overlay STAYS OPEN.** The selecting branch does not
                 // call `setVisible(false)` — only the else does — so picking a
@@ -491,6 +654,17 @@ pub(super) fn book_press(
     };
     let hit = rb::book_hit(bx, by, view, view.tabs);
     let action = screen.book.press(hit, right);
+    if action.is_some() {
+        // M187 — as above: the book has focus now, not the button.
+        screen.book_button_focus = None;
+    }
+    // M186 — the widget's `playDownSound`, played inside its `mouseClicked`
+    // and so only for a press the widget accepted.
+    if let (Some(_), Some(h)) = (action, hit) {
+        if let Some(sound) = rb::press_sound(h) {
+            screen.ui_sounds.play(sound);
+        }
+    }
     // The `EditBox` is the ONLY owner of "is the search focused" — see
     // `focus_change`'s docs for why the duplicate flag it replaced was a bug.
     if let Some(v) = rb::focus_change(hit) {
@@ -614,6 +788,70 @@ pub(super) fn place_from_book(
     true
 }
 
+/// The recipe-book button's press (M187) — `AbstractRecipeBookScreen`'s
+/// `ImageButton`, reached through `AbstractContainerScreen.mouseClicked`'s
+/// `super.mouseClicked` (the widgets) once the book itself has declined the
+/// click, and before any slot.
+///
+/// `toggleVisibility()` is `setVisible(!isVisible())`, which writes the
+/// book's open flag, shuts the which-of-these overlay when closing
+/// (`recipeBookPage.setInvisible()`) and ends in `sendUpdateSettings()`. The
+/// menu's move (`updateScreenPosition`) and the button's own move
+/// (`setPosition(getRecipeBookButtonPosition())`) need nothing here: both are
+/// derived from the open flag through `Placement` every frame. `initVisuals`
+/// keeps the selected tab, the page and the search text, which is what
+/// `BookState` and `book_search` already do by living on `ScreenState`.
+///
+/// Left button only (`AbstractWidget.isValidClickButton`). Returns whether
+/// the press was consumed.
+pub(super) fn book_button_press(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    left: bool,
+    w: f32,
+    h: f32,
+) -> bool {
+    if !left {
+        return false;
+    }
+    let layout = session.shown_menu().layout();
+    let creative = session.own_game_mode().is_some_and(|g| g.is_creative());
+    let Some(host) = book_button_host(layout, creative) else {
+        return false;
+    };
+    let Some(book) = book_type_of(layout).map(|b| b.index()) else {
+        return false;
+    };
+    let open = book_visible(session);
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
+        screen.mouse,
+        w,
+        h,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            open,
+        ),
+    );
+    if !rewo_ui::recipe_book_screen::book_button_hit(host, gx, gy) {
+        return false;
+    }
+    // `AbstractWidget.mouseClicked`: the click, then `onPress`.
+    screen
+        .ui_sounds
+        .play(rewo_ui::ui_sound::UiSound::ButtonClick);
+    session.set_recipe_book_open(book, !open);
+    if open {
+        screen.book_overlay = None;
+    }
+    if let Err(e) = session.recipe_book_change_settings(book) {
+        log::warn!("rewo: recipe book settings: {e}");
+    }
+    // `ContainerEventHandler.mouseClicked` → `setFocused(button)`.
+    screen.book_button_focus = Some(session.shown_container_id());
+    true
+}
+
 /// Which of the four `RecipeBookSettings` slots the shown menu reads (M98).
 pub(super) fn shown_book_index(session: &PlaySession) -> usize {
     book_type_of(session.shown_menu().layout()).map_or(0, |b| b.index())
@@ -658,6 +896,11 @@ pub(super) fn merchant_press(
     if offer as usize >= n {
         return false;
     }
+    // M186 — a `TradeOfferButton` is a `Button`: the click plays in
+    // `mouseClicked`, ahead of `onPress`.
+    screen
+        .ui_sounds
+        .play(rewo_ui::ui_sound::UiSound::ButtonClick);
     if let Some(l) = screen.merchant.as_mut() {
         // `postButtonClick` sets `shopItem` LOCALLY first — the trade's items
         // appear before the server answers.
@@ -972,6 +1215,11 @@ pub(super) fn cut_press(
         // calls `clickMenuButton` inside the hit test, so an out-of-range cell
         // does not consume the press either.
         if ms::cut_click_accepted(index, view.recipes.len()) {
+            // M186 — played between `clickMenuButton` and the send, in
+            // vanilla's order.
+            screen
+                .ui_sounds
+                .play(rewo_ui::ui_sound::UiSound::StonecutterSelect);
             if let Err(e) = session.container_button_click(index) {
                 log::warn!("stonecutter recipe {index}: {e}");
             }
@@ -1179,9 +1427,19 @@ pub(super) fn menu_overlays(
         // loom (M93q): for each visible cell, the button chrome then the
         // banner preview — a grey fill under an untinted pattern.
         rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID => {
-            let Some(l) = player.loom.filter(|l| l.display) else {
+            let Some(l) = player.loom else {
                 return out;
             };
+            // M189 — the scroller first (`extractBackground` draws it before
+            // the grid), and always: a loom with no grid shows it disabled.
+            let active = rewo_ui::menu_screen::loom_can_scroll(l.display, l.patterns.len());
+            out.push((
+                a::LOOM_SCROLLER + usize::from(!active),
+                to_blit(rewo_ui::menu_screen::loom_scroller_blit(l.scroll_offs)),
+            ));
+            if !l.display {
+                return out;
+            }
             for row in 0..rewo_ui::menu_screen::LOOM_ROWS {
                 for col in 0..rewo_ui::menu_screen::LOOM_COLS {
                     let index = (row + l.start_row) * rewo_ui::menu_screen::LOOM_COLS + col;

@@ -670,6 +670,8 @@ struct LiveApp {
     /// "the ring filled because the callback stopped" from "it all arrived and
     /// the speakers are muted" — which are indistinguishable to a listener.
     last_audio: rewo_net::sound_engine::SinkDiagnostics,
+    /// M188 — `Hud.lastBubblePopSoundPlayed`: the air-bubble pop's memory.
+    bubble_popper: rewo_gpu::survival_hud::BubblePopper,
     logged_spawn: bool,
     uploaded_total: usize,
     flood_logged: bool,
@@ -1066,6 +1068,7 @@ fn run_windowed(
         tick_accum: 0.0,
         sounds,
         last_audio: rewo_net::sound_engine::SinkDiagnostics::default(),
+        bubble_popper: Default::default(),
         logged_spawn: false,
         uploaded_total: 0,
         flood_logged: false,

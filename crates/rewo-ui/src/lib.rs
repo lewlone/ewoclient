@@ -33,3 +33,4 @@ pub mod screen;
 pub mod server_links_screen;
 pub mod sign_edit_screen;
 pub mod stats_screen;
+pub mod ui_sound;

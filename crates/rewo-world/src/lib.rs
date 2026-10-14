@@ -32,6 +32,7 @@ pub mod inventory;
 pub mod label;
 pub mod light;
 pub mod lightmap;
+pub mod maps;
 pub mod menu;
 pub mod menu_layout;
 pub mod minecart;

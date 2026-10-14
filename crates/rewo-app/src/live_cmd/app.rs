@@ -468,6 +468,16 @@ impl ApplicationHandler for LiveApp {
                         });
                         match result {
                             Some((kind, rewo_ui::screen::KeyResult::Pressed(id))) => {
+                                // M186 — `AbstractButton.keyPressed` plays the
+                                // click before `onPress`. Not for the link
+                                // prompt's Esc: `ConfirmScreen.keyPressed`
+                                // answers "No" through the callback, never
+                                // through the button.
+                                let esc_answer = kind == rewo_ui::screen::ScreenKind::ConfirmLink
+                                    && glfw_key(event.physical_key) == Some(256);
+                                if !esc_answer {
+                                    self.queue_down_sound(id);
+                                }
                                 self.press_widget(kind, id);
                                 return;
                             }
@@ -741,6 +751,9 @@ impl ApplicationHandler for LiveApp {
                     self.adv_drag.press(b);
                 }
                 if let Some((kind, rewo_ui::screen::MouseResult::Pressed(id))) = pressed {
+                    // M186 — `AbstractWidget.mouseClicked`: `playDownSound`,
+                    // then `onClick`.
+                    self.queue_down_sound(id);
                     self.press_widget(kind, id);
                 } else if let Some((_, rewo_ui::screen::MouseResult::Slider(id, v))) = pressed {
                     // M173: `onClick` -> `setValueFromMouse` — the press IS
@@ -788,7 +801,16 @@ impl ApplicationHandler for LiveApp {
                                 }
                             }
                         } else if let Some(book) = self.book.as_mut() {
-                            book.click(mx as i32, my as i32, gw);
+                            // M186 — a held book's `PageButton` has
+                            // `playTurnSound`; the lectern's (above) does not,
+                            // because `LecternScreen` builds its reader with
+                            // the no-argument `BookViewScreen()` and the
+                            // server plays the turn instead.
+                            if book.click(mx as i32, my as i32, gw) {
+                                self.screen
+                                    .ui_sounds
+                                    .play(rewo_ui::ui_sound::UiSound::PageTurn);
+                            }
                         }
                     }
                 } else if b == 0
@@ -849,6 +871,17 @@ impl ApplicationHandler for LiveApp {
                     ) {
                         return;
                     }
+                    // M187 — the recipe-book button: a screen widget, so it is
+                    // `super.mouseClicked`'s first act once the book declined.
+                    if book_button_press(
+                        session,
+                        &mut self.screen,
+                        b == 0,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
                     // M92f — an enchanting row is pressed BEFORE the slot
                     // logic, and only then. `EnchantmentScreen.mouseClicked`
                     // runs its three-row loop first and calls
@@ -877,6 +910,17 @@ impl ApplicationHandler for LiveApp {
                     // and DOES NOT consume the press — it falls through to
                     // `super.mouseClicked`, so a grab still reaches the slots.
                     if cut_press(
+                        session,
+                        &mut self.screen,
+                        &items,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
+                    // M186 — the loom's pattern grid, the stonecutter's
+                    // shape: a pattern consumes the press.
+                    if loom_press(
                         session,
                         &mut self.screen,
                         &items,
@@ -943,13 +987,17 @@ impl ApplicationHandler for LiveApp {
             }
             // M173 — releasing ends a slider drag, unconditionally (the
             // M93s rule: a screen that vanished mid-drag must not strand the
-            // grab). Vanilla's `onRelease` plays the click sound here; Rewo's
-            // screens play no UI sounds at all (recorded with that family).
+            // grab). M186: and `AbstractSliderButton.onRelease` plays the
+            // click here — a slider is the one widget that clicks on release
+            // rather than on press.
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
             } if self.options_drag.is_some() => {
                 self.options_drag = None;
+                self.screen
+                    .ui_sounds
+                    .play(rewo_ui::ui_sound::UiSound::ButtonClick);
             }
             // M179 — any release ends the advancements drag
             // (`AdvancementsScreen.mouseReleased`: `isScrolling = false`,
@@ -974,6 +1022,11 @@ impl ApplicationHandler for LiveApp {
                 // that vanishes mid-drag does not strand the grab (M93s).
                 if let Some(c) = self.screen.cut.as_mut() {
                     c.scrolling = false;
+                }
+                // M189 — `LoomScreen.mouseReleased`, the same unconditional
+                // clear.
+                if let Some(l) = self.screen.loom.as_mut() {
+                    l.scrolling = false;
                 }
                 if let Some(m) = self.screen.merchant.as_mut() {
                     m.dragging = false;
@@ -1053,6 +1106,7 @@ impl ApplicationHandler for LiveApp {
                 // Guarded on `isScrollBarActive` as well as `scrolling`, so a
                 // list that shrinks under a held thumb stops moving.
                 self.cut_drag();
+                self.loom_drag();
                 self.merchant_drag();
                 // M179 — the advancements drag. Every move feeds the machine
                 // (it tracks the previous sample whether or not it delivers,
@@ -1116,6 +1170,7 @@ impl ApplicationHandler for LiveApp {
                 // true whether or not the bar is active, so the screen
                 // swallows every notch; only an active bar moves.
                 self.cut_wheel(dy);
+                self.loom_wheel(dy);
                 self.merchant_wheel(dy);
                 // M179 — `AdvancementsScreen.mouseScrolled`: both axes scale
                 // by SCROLL_SPEED inside `wheel`, and the screen consumes the
@@ -1203,6 +1258,69 @@ impl LiveApp {
         }
         if let Some(c) = self.screen.cut.as_mut() {
             c.scroll_offs = ms::cut_scroll_offs_from_wheel(c.scroll_offs, dy, visible);
+        }
+    }
+
+    /// `LoomScreen.mouseScrolled` (M189): one notch is one row, only while
+    /// `displayPatterns && offscreenRows > 0`.
+    pub(super) fn loom_wheel(&mut self, dy: f64) {
+        let items = self.items.clone();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.shown_open() else {
+            return;
+        };
+        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items) else {
+            return;
+        };
+        if !rewo_ui::menu_screen::loom_can_scroll(view.display, view.patterns.len()) {
+            return;
+        }
+        if let Some(l) = self.screen.loom.as_mut() {
+            let (offs, row) = rewo_ui::menu_screen::loom_scroll_from_wheel(
+                l.scroll_offs,
+                dy,
+                view.patterns.len(),
+            );
+            l.scroll_offs = offs;
+            l.start_row = row;
+        }
+    }
+
+    /// `LoomScreen.mouseDragged` while the thumb is held (M189), guarded on
+    /// `scrolling && displayPatterns && offscreenRows > 0` like vanilla.
+    pub(super) fn loom_drag(&mut self) {
+        if !self.screen.loom.is_some_and(|l| l.scrolling) {
+            return;
+        }
+        let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) else {
+            return;
+        };
+        let items = self.items.clone();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.shown_open() else {
+            return;
+        };
+        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items) else {
+            return;
+        };
+        if !rewo_ui::menu_screen::loom_can_scroll(view.display, view.patterns.len()) {
+            return;
+        }
+        let (_, gy) = rewo_gpu::container::screen_to_gui_for(
+            self.screen.mouse,
+            ext.width as f32,
+            ext.height as f32,
+            open.layout.image_w as f32,
+            open.layout.image_h as f32,
+        );
+        if let Some(l) = self.screen.loom.as_mut() {
+            let (offs, row) = rewo_ui::menu_screen::loom_scroll_from_drag(gy, view.patterns.len());
+            l.scroll_offs = offs;
+            l.start_row = row;
         }
     }
 

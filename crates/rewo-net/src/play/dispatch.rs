@@ -821,6 +821,14 @@ impl PlaySession {
                 Ok(hand) => self.open_book_request = Some(hand),
                 Err(e) => self.decode_failed("open_book", e),
             }
+        } else if id == ids.cb_play_map_item_data {
+            // M190. `handleMapItemData`: create the map on first sight
+            // (scale and lock fixed then), apply decorations and the colour
+            // patch. A patch that would index past the map is refused whole.
+            match crate::maps::read_map_item_data(body) {
+                Ok(data) => self.maps.apply(&data),
+                Err(e) => self.decode_failed("map_item_data", e),
+            }
         } else if id == ids.cb_play_open_sign_editor {
             // M174. `ClientboundOpenSignEditorPacket` — one packed BlockPos
             // (8 bytes) then one bool. No var-ints anywhere in the body.

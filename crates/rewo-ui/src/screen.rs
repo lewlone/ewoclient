@@ -148,7 +148,7 @@ pub const LINE_HEIGHT: i32 = 9;
 /// a screen has arrived.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sprite {
-    /// `widget/tab` â€” an unselected tab.
+    /// `widget/tab` — an unselected tab.
     Tab,
     /// `widget/tab_highlighted`.
     TabHighlighted,
@@ -156,9 +156,9 @@ pub enum Sprite {
     TabSelected,
     /// `widget/tab_selected_highlighted`.
     TabSelectedHighlighted,
-    /// `statistics/header` â€” the sort button's resting background.
+    /// `statistics/header` — the sort button's resting background.
     StatHeader,
-    /// `container/slot` â€” an 18Ã—18 slot, and the sort button's *hovered*
+    /// `container/slot` — an 18×18 slot, and the sort button's *hovered*
     /// background (see [`WidgetSprites`]).
     Slot,
     /// The six `statistics/<column>` icons, in `ItemStatisticsList`'s own
@@ -178,12 +178,12 @@ pub enum Sprite {
 ///
 /// **The field names lie at one of its two call sites, and that is the point of
 /// modelling it rather than hard-coding each widget's four sprites.**
-/// `MenuTabBar.MenuTabButton` calls `SPRITES.get(this.isSelected(), â€¦)` â€” so
+/// `MenuTabBar.MenuTabButton` calls `SPRITES.get(this.isSelected(), …)` — so
 /// its `enabled` slot holds `tab_selected` and its `disabledFocused` slot holds
 /// `tab_highlighted`, a *brighter* sprite than `disabled`. That is the exact
 /// opposite of the death screen's three-argument case, where
 /// `disabledFocused == disabled` and hovering a dead button changes nothing.
-/// One record, two call sites, opposite meanings â€” [`WidgetKind::Sprites`]
+/// One record, two call sites, opposite meanings — [`WidgetKind::Sprites`]
 /// therefore carries the first argument explicitly instead of assuming it is
 /// `active`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -195,11 +195,11 @@ pub struct WidgetSprites {
 }
 
 impl WidgetSprites {
-    /// `WidgetSprites(sprite, focused)` â†’ `(sprite, sprite, focused, focused)`.
+    /// `WidgetSprites(sprite, focused)` → `(sprite, sprite, focused, focused)`.
     ///
     /// The two-argument overload, which is what the statistics sort buttons
     /// take: `new WidgetSprites(HEADER_SPRITE, SLOT_SPRITE)`. So hovering one
-    /// replaces `statistics/header` with the plain `container/slot` â€” the
+    /// replaces `statistics/header` with the plain `container/slot` — the
     /// hover state is the *less* decorated sheet, which reads backwards.
     pub const fn two(sprite: Sprite, focused: Sprite) -> Self {
         Self {
@@ -480,6 +480,34 @@ impl Widget {
     /// rather than being swallowed.
     pub fn is_mouse_over(&self, x: f64, y: f64) -> bool {
         self.is_active() && self.contains(x, y)
+    }
+
+    /// What a PRESS of this widget plays (M186): `playDownSound` as each
+    /// widget class overrides it. Only meaningful for a widget that was
+    /// pressed, which already means active and visible.
+    ///
+    /// - `Button` / an `ImageButton` (a [`WidgetKind::Sprites`] that draws no
+    ///   label, the statistics sort buttons): `AbstractWidget.playDownSound`,
+    ///   the click.
+    /// - A slider: nothing on press. `AbstractSliderButton.playDownSound` is
+    ///   empty and `onRelease` plays the click instead — the app's release arm.
+    /// - A tab (a `Sprites` widget that draws its label, `MenuTabButton`):
+    ///   `TabButton.playDownSound` is empty, and the click comes from
+    ///   `TabManager.setCurrentTab(tab, true)`, which plays **only when the
+    ///   tab changes** (`if (!Objects.equals(this.currentTab, tab))`). A tab's
+    ///   `first` is `isSelected()`, so a press on the selected tab is silent.
+    /// - Labels and reserved space are inactive and cannot be pressed.
+    pub fn down_sound(&self) -> Option<crate::ui_sound::UiSound> {
+        use crate::ui_sound::UiSound;
+        match &self.kind {
+            WidgetKind::Button => Some(UiSound::ButtonClick),
+            WidgetKind::Slider { .. } => None,
+            WidgetKind::Sprites {
+                label: true, first, ..
+            } => (!first).then_some(UiSound::ButtonClick),
+            WidgetKind::Sprites { label: false, .. } => Some(UiSound::ButtonClick),
+            WidgetKind::Label { .. } | WidgetKind::MultiLabel { .. } | WidgetKind::Reserved => None,
+        }
     }
 
     /// `AbstractWidget.isHovered`, as assigned in `extractRenderState`:
@@ -1080,14 +1108,14 @@ pub const CONTENT_PADDING: i32 = 2;
 /// `AbstractSelectionList` + `AbstractScrollArea`, as far as the geometry goes
 /// (M84).
 ///
-/// The rows themselves are the screen's business â€” this holds only their
+/// The rows themselves are the screen's business — this holds only their
 /// heights, because that is all the scroll model needs. Three lists share it on
 /// the statistics screen and they have nothing else in common.
 ///
 /// # The three constants that are not where they look
 ///
 /// * **`x` is always 0.** `AbstractSelectionList`'s constructor is
-///   `super(0, y, width, height, â€¦)` â€” a list spans the whole screen and the
+///   `super(0, y, width, height, …)` — a list spans the whole screen and the
 ///   *rows* are centred inside it by [`Self::row_left`]. Passing the screen's
 ///   own left edge would centre the rows over the wrong span at any width.
 /// * **The scroll rate is `defaultEntryHeight / 2`, an integer division**, from
@@ -1096,7 +1124,7 @@ pub const CONTENT_PADDING: i32 = 2;
 ///   4.5.
 /// * **The scrollbar is not at the list's right edge.**
 ///   `AbstractSelectionList` overrides `scrollBarX()` to
-///   `getRowRight() + scrollbarWidth() + 2` â€” beside the *rows*, with a gap of
+///   `getRowRight() + scrollbarWidth() + 2` — beside the *rows*, with a gap of
 ///   one whole scrollbar width plus two. `AbstractScrollArea`'s own
 ///   `getRight() - scrollbarWidth()` is what a container widget uses, and it
 ///   would put the bar hard against the window edge on a wide screen.
@@ -1132,7 +1160,7 @@ impl ScrollList {
         }
     }
 
-    /// `contentHeight()` â€” the rows plus **4**, which is
+    /// `contentHeight()` — the rows plus **4**, which is
     /// `getFirstEntryY()`'s 2 at the top and a matching 2 at the bottom.
     pub fn content_height(&self) -> i32 {
         self.rows.iter().sum::<i32>() + 4
@@ -1143,7 +1171,7 @@ impl ScrollList {
         (self.content_height() - self.height).max(0)
     }
 
-    /// `scrollable()` â€” strictly greater than zero, so a list that exactly
+    /// `scrollable()` — strictly greater than zero, so a list that exactly
     /// fills its box draws no scrollbar at all.
     pub fn scrollable(&self) -> bool {
         self.max_scroll() > 0
@@ -1153,12 +1181,12 @@ impl ScrollList {
         self.scroll
     }
 
-    /// `setScrollAmount` â€” `Mth.clamp(v, 0, maxScrollAmount())`.
+    /// `setScrollAmount` — `Mth.clamp(v, 0, maxScrollAmount())`.
     pub fn set_scroll(&mut self, v: f64) {
         self.scroll = v.clamp(0.0, self.max_scroll() as f64);
     }
 
-    /// `mouseScrolled` â€” `setScrollAmount(scrollAmount() - scrollY * scrollRate())`.
+    /// `mouseScrolled` — `setScrollAmount(scrollAmount() - scrollY * scrollRate())`.
     ///
     /// Note the **minus**: a positive `scrollY` (wheel away from you) moves the
     /// list *up*, toward row 0.
@@ -1174,7 +1202,7 @@ impl ScrollList {
     /// A row's top in screen space.
     ///
     /// `addEntry` sets `entry.y = getNextY()`, which is
-    /// `getFirstEntryY() - (int) scrollAmount + Î£ heights`. The cast is a
+    /// `getFirstEntryY() - (int) scrollAmount + Σ heights`. The cast is a
     /// **truncation**, and `scrollAmount` is clamped non-negative, so it floors.
     pub fn row_top(&self, row: usize) -> i32 {
         let above: i32 = self.rows.iter().take(row).sum();
@@ -1189,7 +1217,7 @@ impl ScrollList {
         self.row_top(row) + self.row_height(row)
     }
 
-    /// `getRowLeft()` â€” `getX() + width / 2 - getRowWidth() / 2`, with
+    /// `getRowLeft()` — `getX() + width / 2 - getRowWidth() / 2`, with
     /// `getX() == 0`.
     pub fn row_left(&self) -> i32 {
         self.width / 2 - self.row_width / 2
@@ -1205,13 +1233,13 @@ impl ScrollList {
 
     /// `AbstractWidget.isMouseOver` on the *list*, which
     /// `extractWidgetRenderState` gates the row search on. A row scrolled past
-    /// the list's own box is still `isMouseOver` itself â€” only this gate stops
+    /// the list's own box is still `isMouseOver` itself — only this gate stops
     /// it being hovered.
     pub fn contains(&self, x: f64, y: f64) -> bool {
         x >= 0.0 && y >= self.y as f64 && x < self.width as f64 && y < self.bottom() as f64
     }
 
-    /// `getEntryAtPosition` â€” the first row whose rectangle contains the
+    /// `getEntryAtPosition` — the first row whose rectangle contains the
     /// point, **without** the list gate. Half-open on the far edges, like every
     /// other hit rect here.
     pub fn row_at_unclipped(&self, x: f64, y: f64) -> Option<usize> {
@@ -1231,14 +1259,14 @@ impl ScrollList {
         self.row_at_unclipped(x, y)
     }
 
-    /// `scrollerHeight()` â€” `clamp(heightÂ² / contentHeight, 32, height - 8)`.
+    /// `scrollerHeight()` — `clamp(height² / contentHeight, 32, height - 8)`.
     pub fn scroller_height(&self) -> i32 {
         let ch = self.content_height().max(1);
         let raw = ((self.height as f32 * self.height as f32) / ch as f32) as i32;
         raw.clamp(SCROLLBAR_MIN_HEIGHT, self.height - 8)
     }
 
-    /// `AbstractSelectionList.scrollBarX()` â€” beside the rows, not at the
+    /// `AbstractSelectionList.scrollBarX()` — beside the rows, not at the
     /// right edge. See the type's docs.
     pub fn scroll_bar_x(&self) -> i32 {
         self.row_right() + SCROLLBAR_WIDTH + 2
@@ -1255,7 +1283,7 @@ impl ScrollList {
         }
     }
 
-    /// `isOverScrollbar` â€” **inclusive** on the right edge (`x <=`) where
+    /// `isOverScrollbar` — **inclusive** on the right edge (`x <=`) where
     /// every other hit test here is half-open, and half-open on the bottom.
     pub fn over_scrollbar(&self, x: f64, y: f64) -> bool {
         x >= self.scroll_bar_x() as f64
@@ -1264,7 +1292,7 @@ impl ScrollList {
             && y < self.bottom() as f64
     }
 
-    /// A row's content rect â€” `Entry.getContentX/Y/Width/Height`, inset by
+    /// A row's content rect — `Entry.getContentX/Y/Width/Height`, inset by
     /// [`CONTENT_PADDING`] on all four sides.
     pub fn content_rect(&self, row: usize) -> (i32, i32, i32, i32) {
         (
@@ -1512,13 +1540,13 @@ mod tests {
         assert_eq!(
             tab.get(false, true),
             Sprite::TabHighlighted,
-            "`disabledFocused` is a *highlight* here â€” the three-argument \
+            "`disabledFocused` is a *highlight* here — the three-argument \
              constructor's rule (disabledFocused == disabled) is not a \
              property of the record"
         );
     }
 
-    /// `new WidgetSprites(HEADER_SPRITE, SLOT_SPRITE)` â€” the hovered sheet is
+    /// `new WidgetSprites(HEADER_SPRITE, SLOT_SPRITE)` — the hovered sheet is
     /// the *plainer* one.
     #[test]
     fn the_sort_buttons_hover_sheet_is_the_bare_slot() {
@@ -1601,7 +1629,7 @@ mod tests {
         assert_eq!(
             l.scroll_bar_x(),
             300 + 6 + 2,
-            "getRowRight() + scrollbarWidth() + 2 â€” a whole bar width of gap"
+            "getRowRight() + scrollbarWidth() + 2 — a whole bar width of gap"
         );
         assert_ne!(
             l.scroll_bar_x(),
@@ -1642,7 +1670,7 @@ mod tests {
         );
     }
 
-    /// `isOverScrollbar` is `x <= scrollBarX() + width`, inclusive â€” the one
+    /// `isOverScrollbar` is `x <= scrollBarX() + width`, inclusive — the one
     /// hit test in this module that is not half-open.
     #[test]
     fn the_scrollbar_hit_test_is_inclusive_on_its_right_edge() {
@@ -1660,7 +1688,7 @@ mod tests {
     #[test]
     fn the_scroller_is_clamped_between_thirty_two_and_the_box_less_eight() {
         let l = general_list();
-        // 100Â² / 284 = 35
+        // 100² / 284 = 35
         assert_eq!(l.scroller_height(), 35);
         let mut tall = general_list();
         tall.rows = vec![14; 400];
@@ -1733,5 +1761,18 @@ mod tests {
             (v - (0.5 + 1.0 / 142.0)).abs() < 0.01,
             "step 1/142, got {v}"
         );
+    }
+
+    /// M186 — a button clicks on press, a slider does not (it clicks on
+    /// release, `AbstractSliderButton.onRelease`), and a label never can.
+    #[test]
+    fn down_sound_follows_each_widget_class_override() {
+        use crate::ui_sound::UiSound;
+        let b = Widget::button(1, 0, 0, 20, 20, "b");
+        assert_eq!(b.down_sound(), Some(UiSound::ButtonClick));
+        let s = Widget::slider(2, 0, 0, 150, 20, "s", 0.5);
+        assert_eq!(s.down_sound(), None);
+        let l = Widget::label(3, 0, 0, 20, "l");
+        assert_eq!(l.down_sound(), None);
     }
 }

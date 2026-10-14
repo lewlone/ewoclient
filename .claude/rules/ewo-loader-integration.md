@@ -45,7 +45,11 @@ only its version read. The base is resolved at launch, in order:
    through `tools/bundle-loader.ps1`, which copies every `file://` jar a
    manifest names into `libs/`, rewrites its url to the relative
    `libs/<jar>` and recomputes sha1/size (`package.ps1 -LoaderRepo <path>`
-   picks the EwoLoader checkout, default the sibling `..\EwoLoaderV1`);
+   picks the EwoLoader checkout, default the sibling `..\EwoLoaderV1`;
+   from a worktree pass it explicitly). The bundle's `ewo-hud` jar is the one
+   `package.ps1` builds from the same checkout (`build.ps1 -NoDeploy`, passed
+   as `bundle-loader.ps1 -Override`), never the dev drop the manifests name,
+   so the jar and `ewo_jni.dll` always share a commit;
 3. debug builds only: the developer's `EwoLoaderV1/manifest/0.1.0`;
 4. otherwise a hard launch error.
 
