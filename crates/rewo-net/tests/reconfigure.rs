@@ -312,3 +312,102 @@ fn login_answers_queries_and_cookies_and_honours_a_negative_threshold() {
     conn.login_offline("127.0.0.1", port, "Rewo").unwrap();
     server.join().expect("server script failed");
 }
+
+/// Every malformed body the 2026-10 audit found dropped or half-applied
+/// *without* a count now reaches `PlaySession::decode_failures`, once each,
+/// and the all-or-nothing ones apply nothing (vanilla decodes a packet whole
+/// before its handler runs). One configuration-phase `registry_data` fault is
+/// carried into the session's counter at `into_play`.
+#[test]
+fn malformed_bodies_are_counted_once_each() {
+    let Some(data) = load_data() else { return };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let sids = Ids::resolve(&data.packets).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut s = Server { stream, codec: FrameCodec::default() };
+        let ids = sids;
+        s.expect(ids.sb_login_hello, "hello");
+        let mut fin = PacketWriter::packet(ids.cb_login_finished);
+        fin.uuid(1).string("Rewo").varint(0);
+        s.send(fin);
+        s.expect(ids.sb_login_acknowledged, "login_acknowledged");
+
+        // registry_data claiming two entries and carrying one.
+        let mut reg = PacketWriter::packet(ids.cb_config_registry_data);
+        reg.string("minecraft:painting_variant").varint(2);
+        reg.string("minecraft:kebab").bool(false);
+        s.send(reg);
+        s.send(PacketWriter::packet(ids.cb_config_finish));
+        s.expect(ids.sb_config_finish, "finish_configuration ack");
+
+        let bodies: Vec<(i32, Vec<u8>)> = vec![
+            (ids.cb_play_update_mob_effect, vec![]),
+            (ids.cb_play_remove_mob_effect, vec![]),
+            // health present, food and saturation missing
+            (ids.cb_play_set_health.unwrap(), 5.0f32.to_be_bytes().to_vec()),
+            // no chunk coords at all
+            (ids.cb_play_light_update.unwrap(), vec![]),
+            // one entry promised: a ChunkPos, then no biome byte array
+            (ids.cb_play_chunks_biomes.unwrap(), {
+                let mut b = vec![1];
+                b.extend_from_slice(&0i64.to_be_bytes());
+                b
+            }),
+            // ADD_PLAYER mask, one entry, a uuid cut short
+            (ids.cb_play_player_info_update, vec![0x01, 0x01, 0, 0, 0]),
+            // a section, two changes promised, one sent
+            (ids.cb_play_section_blocks_update, {
+                let mut b = 0u64.to_be_bytes().to_vec();
+                b.extend_from_slice(&[2, 0x01]);
+                b
+            }),
+            // game time, one clock promised, its holder only
+            (ids.cb_play_set_time, {
+                let mut b = 1234i64.to_be_bytes().to_vec();
+                b.extend_from_slice(&[1, 0]);
+                b
+            }),
+        ];
+        for (id, body) in bodies {
+            let mut p = PacketWriter::packet(id);
+            p.raw(&body);
+            s.send(p);
+        }
+        // A keep-alive after them: its reply proves the eight were handled.
+        let mut ka = PacketWriter::packet(ids.cb_play_keep_alive);
+        ka.i64(77);
+        s.send(ka);
+        let body = s.expect(ids.sb_play_keep_alive, "keep_alive reply");
+        assert_eq!(PacketReader::new(&body).i64().unwrap(), 77);
+    });
+
+    let conn = Connection::connect("127.0.0.1", port, &data).unwrap();
+    let mut session = conn
+        .into_play(
+            "127.0.0.1",
+            port,
+            "Rewo",
+            None,
+            Vec::new(),
+            data.blocks.global_palette_bits,
+            rewo_world::biome::Colormaps::neutral(),
+        )
+        .unwrap();
+    // The configuration-phase fault, carried over at `into_play`.
+    assert_eq!(session.decode_failures, 1, "registry_data");
+    let (health, food) = (session.health, session.food);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !server.is_finished() && Instant::now() < deadline {
+        session.pump(PumpBudget::UNLIMITED).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    server.join().expect("server script failed");
+    session.pump(PumpBudget::UNLIMITED).unwrap();
+    // (The scripted server has hung up by now; that is not a failure.)
+    assert_eq!(session.decode_failures, 1 + 8);
+    // `set_health` without its food half applied nothing.
+    assert_eq!((session.health, session.food), (health, food));
+}

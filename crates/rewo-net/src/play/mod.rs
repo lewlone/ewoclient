@@ -1881,7 +1881,9 @@ impl<'a> Connection<'a> {
             tick_budget: None,
             reconfig: None,
             reconfigurations: 0,
-            decode_failures: 0,
+            // The login-time configuration phase counted its tolerated
+            // failures (`registry_data`, `update_tags`) on this thread.
+            decode_failures: crate::take_route_decode_failures(),
             logins: 0,
             last_seen: crate::chat_sign::LastSeenTracker::default(),
             auth: auth.cloned(),
@@ -2787,7 +2789,9 @@ impl PlaySession {
             };
             self.note_inbound(id, &packet, pos);
             if self.reconfig.is_some() {
-                self.handle_config(id, &packet[pos..])?;
+                let handled = self.handle_config(id, &packet[pos..]);
+                self.fold_route_decode_failures();
+                handled?;
                 continue;
             }
             // M78 — bundling, wrapped *around* the dispatch chain rather than
@@ -3889,8 +3893,10 @@ impl PlaySession {
     /// is a delta and an absent action means "unchanged".
     fn apply_player_info(&mut self, body: &[u8]) {
         let (entries, parse) = parse_player_info(body);
+        // The entries completed before the fault still apply (see
+        // `parse_player_info`); the fault itself is a counted failure.
         if let Err(e) = parse {
-            log::debug!("play: player_info_update parse: {e}");
+            self.decode_failed("player_info_update", e);
         }
         for e in entries {
             if let Some(ms) = e.latency {

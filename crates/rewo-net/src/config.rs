@@ -139,20 +139,24 @@ impl ConfigData {
     /// *must* understand exactly (a wrong vertical shape mis-decodes every
     /// chunk, a wrong `has_skylight` invents light), so `dimension_parse`
     /// returns a `Result` and it propagates. The remaining registries are
-    /// id-capture only and stay tolerant.
+    /// id-capture only and stay tolerant: a malformed body keeps what was
+    /// captured before the fault and returns `Ok`, but is **counted** through
+    /// [`crate::route_decode_failed`], which the play session folds into its
+    /// `decode_failures` (vanilla would fail the whole packet decode and
+    /// disconnect, so a silent drop here is never the right reading).
     pub fn parse_registry_data(&mut self, body: &[u8]) -> Result<(), String> {
         let mut r = PacketReader::new(body);
         let registry = match r.identifier() {
             Ok(v) => v,
             Err(e) => {
-                log::warn!("net: registry_data: bad registry id: {e}");
+                crate::route_decode_failed("registry_data: registry id", e);
                 return Ok(());
             }
         };
         let count = match r.count("registry entries", 1) {
             Ok(v) => v,
             Err(e) => {
-                log::warn!("net: registry_data {registry}: bad count: {e}");
+                crate::route_decode_failed(&format!("registry_data {registry}: count"), e);
                 return Ok(());
             }
         };
@@ -223,7 +227,7 @@ impl ConfigData {
             let entry_name = match r.identifier() {
                 Ok(v) => v,
                 Err(e) => {
-                    log::warn!("net: registry_data {registry}: entry {idx}: {e}");
+                    crate::route_decode_failed(&format!("registry_data {registry}: entry {idx}"), e);
                     return Ok(());
                 }
             };
@@ -264,7 +268,16 @@ impl ConfigData {
                     _ => {}
                 }
             }
-            let has_nbt = r.bool().unwrap_or(false);
+            // `RegistrySynchronization.PackedRegistryEntry`'s optional data is
+            // a present-flag then the tag; a missing flag is a truncated body,
+            // not "no data" (which kept reading garbage as the next entry).
+            let has_nbt = match r.bool() {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::route_decode_failed(&format!("registry_data {registry}: {entry_name}"), e);
+                    return Ok(());
+                }
+            };
             if !has_nbt {
                 if is_biome {
                     // A biome with no NBT is degenerate; keep raw order intact
@@ -277,7 +290,7 @@ impl ConfigData {
             let nbt = match r.nbt() {
                 Ok(v) => v,
                 Err(e) => {
-                    log::warn!("net: registry_data {registry}: {entry_name}: {e}");
+                    crate::route_decode_failed(&format!("registry_data {registry}: {entry_name}"), e);
                     return Ok(());
                 }
             };

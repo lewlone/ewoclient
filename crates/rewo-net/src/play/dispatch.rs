@@ -97,26 +97,40 @@ impl PlaySession {
             // column's biome palettes and remesh the 3×3 (tint reads neighbors).
             let shape = self.world.shape;
             let biome_bits = self.biome_global_bits;
+            //
+            // The packet decode reads the whole list
+            // (`ClientboundChunksBiomesPacket`'s `readList`) before
+            // `handleChunksBiomes` (`ClientPacketListener.java:868`) applies
+            // anything, so a truncated list is one counted failure that
+            // applies nothing, not a silent `break` that kept the entries
+            // before it. Each entry's containers are read at apply time, as
+            // vanilla's `replaceBiomes` does, and a bad one is counted alone.
             let mut r = PacketReader::new(body);
-            if let Ok(n) = r.count("chunk biomes", 12) {
+            let entries = (|| -> rewo_proto::Result<Vec<(i32, i32, &[u8])>> {
+                let n = r.count("chunk biomes", 12)?;
+                let mut entries = Vec::with_capacity(n.min(1024));
                 for _ in 0..n {
-                    let Ok(packed) = r.i64() else { break };
-                    let (cx, cz) = (packed as i32, (packed >> 32) as i32);
+                    let packed = r.i64()?;
                     // Cap = ClientboundChunksBiomesPacket's TWO_MEGABYTES.
-                    let Ok(buf) = r.byte_array(2_097_152) else {
-                        break;
-                    };
-                    let mut br = PacketReader::new(buf);
-                    match rewo_world::chunk::read_chunk_biomes(&mut br, &shape, biome_bits) {
-                        Ok(containers) => {
-                            self.world.apply_chunks_biomes(cx, cz, containers);
-                            self.mark_dirty_around(cx, cz);
+                    let buf = r.byte_array(2_097_152)?;
+                    entries.push((packed as i32, (packed >> 32) as i32, buf));
+                }
+                Ok(entries)
+            })();
+            match entries {
+                Ok(entries) => {
+                    for (cx, cz, buf) in entries {
+                        let mut br = PacketReader::new(buf);
+                        match rewo_world::chunk::read_chunk_biomes(&mut br, &shape, biome_bits) {
+                            Ok(containers) => {
+                                self.world.apply_chunks_biomes(cx, cz, containers);
+                                self.mark_dirty_around(cx, cz);
+                            }
+                            Err(e) => self.decode_failed("chunks_biomes", e),
                         }
-                        Err(e) => self.decode_failed("chunks_biomes", e),
                     }
                 }
-            } else {
-                self.decode_failed("chunks_biomes", "malformed body");
+                Err(e) => self.decode_failed("chunks_biomes", e),
             }
         } else if Some(id) == ids.cb_play_light_update {
             // Lighting changed without a chunk resend (torch placed, cave
@@ -128,7 +142,11 @@ impl PlaySession {
                 (Ok(cx), Ok(cz)) => {
                     if let Some(col) = self.world.column_mut(cx, cz) {
                         if let Err(e) = rewo_world::chunk::apply_light_update(&mut r, col) {
-                            log::error!("play: light_update decode failed: {e}");
+                            // Counted like every other play decode failure.
+                            // `apply_light_update` writes as it reads, so a
+                            // body that fails part-way may already have
+                            // replaced some sections' light.
+                            self.decode_failed("light_update", e);
                         } else {
                             // Re-light means re-mesh: vertex colours bake the
                             // light in, so the neighbourhood must remesh too.
@@ -137,7 +155,7 @@ impl PlaySession {
                     }
                     let _ = shape;
                 }
-                _ => log::error!("play: light_update: bad chunk coords"),
+                _ => self.decode_failed("light_update", "bad chunk coords"),
             }
         } else if id == ids.cb_play_forget_chunk {
             let mut r = PacketReader::new(body);
@@ -194,13 +212,26 @@ impl PlaySession {
             // Body (ClientboundSectionBlocksUpdatePacket): a packed section
             // position long, a VarInt count, then one VarLong per change
             // holding `stateId << 12 | posInSection`.
+            //
+            // Decoded whole before anything is applied, as the packet's
+            // constructor reads every entry before `handleChunkBlocksUpdate`
+            // (`ClientPacketListener.java:846`) runs: a truncated list is one
+            // counted failure, not a silently half-applied `/fill`.
             let mut r = PacketReader::new(body);
-            if let (Ok(section), Ok(count)) = (r.u64(), r.varint()) {
+            let decoded = (|| -> rewo_proto::Result<(u64, Vec<i64>)> {
+                let section = r.u64()?;
+                let count = r.count("section block updates", 1)?;
+                let mut packed = Vec::with_capacity(count.min(4096));
+                for _ in 0..count {
+                    packed.push(r.varlong()?);
+                }
+                Ok((section, packed))
+            })();
+            if let Ok((section, packed_changes)) = decoded {
                 let (sx, sy, sz) = unpack_section_pos(section);
                 let mut applied = 0;
                 let mut changes = Vec::new();
-                for _ in 0..count.max(0) {
-                    let Ok(packed) = r.varlong() else { break };
+                for packed in packed_changes {
                     let packed = packed as u64;
                     let state = (packed >> 12) as u32;
                     let (ox, oy, oz) = unpack_section_offset((packed & 4095) as i32);
@@ -247,7 +278,12 @@ impl PlaySession {
                     let (Ok(holder), Ok(total), Ok(partial), Ok(rate)) =
                         (holder, total, partial, rate)
                     else {
-                        break;
+                        // The packet decode reads the whole map before
+                        // `handleSetTime` (`ClientPacketListener.java:1132`)
+                        // runs, so a truncated map applies nothing: neither
+                        // the clocks read so far nor the game time.
+                        self.decode_failed("set_time", "truncated clock map");
+                        return Ok(());
                     };
                     entries.push((holder, total, partial, rate));
                 }
@@ -360,6 +396,13 @@ impl PlaySession {
         } else if id == ids.cb_play_respawn {
             self.apply_respawn(body)?;
         } else if id == ids.cb_play_update_mob_effect {
+            // Both appliers below re-parse and silently skip a bad body, so
+            // the failure is counted here, once (`handleUpdateMobEffect`,
+            // `ClientPacketListener.java:1794`, never sees an undecodable one).
+            if crate::effects::parse_update(body).is_none() {
+                self.decode_failed("update_mob_effect", "malformed body");
+                return Ok(());
+            }
             self.visual_effects.apply_update(body);
             // The same packet also carries any entity's haste / conduit power /
             // mining fatigue, which change how long its swing runs (M19).
@@ -371,6 +414,10 @@ impl PlaySession {
                 self.entity_classes.as_deref(),
             );
         } else if id == ids.cb_play_remove_mob_effect {
+            if crate::effects::parse_remove(body).is_none() {
+                self.decode_failed("remove_mob_effect", "malformed body");
+                return Ok(());
+            }
             self.visual_effects.apply_remove(body);
             crate::apply_swing_effect(
                 body,
@@ -1037,19 +1084,18 @@ impl PlaySession {
             }
         } else if Some(id) == ids.cb_play_set_health {
             let mut r = PacketReader::new(body);
-            if let Ok(h) = r.f32() {
+            // `ClientboundSetHealthPacket` reads health (f32), food (VarInt)
+            // and saturation (f32) before the handler runs, so a body missing
+            // the food half is a failed decode that applies nothing, not a
+            // health update with the food silently dropped.
+            if let (Ok(h), Ok(f), Ok(s)) = (r.f32(), r.varint(), r.f32()) {
                 // `handleSetHealth` is `player.hurtTo(health)` then the two
                 // food setters (`ClientPacketListener.java:1235-1240`); the
                 // hurt window is armed against the health we HAD (M168).
                 self.hud.local_hurt.hurt_to(self.health, h);
                 self.health = h;
-                // food (VarInt) + saturation (f32) follow.
-                if let Ok(f) = r.varint() {
-                    self.food = f;
-                    if let Ok(s) = r.f32() {
-                        self.saturation = s;
-                    }
-                }
+                self.food = f;
+                self.saturation = s;
                 // `Player.isDeadOrDying()`'s health half. **This used to send
                 // `PERFORM_RESPAWN` from here** (M3, so the headless bot could
                 // recover), and that is not what a vanilla client does:
