@@ -65,6 +65,14 @@ pub struct Options {
     /// `_blocks`), values a JSON double with a legacy BOOL alternative
     /// (`Codec.withAlternative(doubleRange(0,1), BOOL, b -> b ? 1 : 0)`).
     pub sound_volumes: [f32; 11],
+    /// `options.chat.links` ("Web Links", `Options.java:509`) — default ON.
+    /// Off, a clicked `open_url` does nothing at all (`Screen.clickUrlAction`
+    /// returns false before it looks at the prompt option).
+    pub chat_links: bool,
+    /// `options.chat.links.prompt` ("Prompt on Links", `:510`) — default ON.
+    /// On, a clicked link first shows the confirm-link screen; off, it opens
+    /// at once.
+    pub chat_links_prompt: bool,
 }
 
 impl Default for Options {
@@ -80,12 +88,20 @@ impl Default for Options {
             // `createSoundSliderOptionInstance(.., 1.0, ..)` — every slider
             // starts at full.
             sound_volumes: [1.0; 11],
+            // `createBoolean("options.chat.links", true)` and
+            // `("options.chat.links.prompt", true)` — both ON.
+            chat_links: true,
+            chat_links_prompt: true,
         }
     }
 }
 
 /// `options.music_frequency`'s key in the file.
 pub const KEY_MUSIC_FREQUENCY: &str = "musicFrequency";
+/// `options.chat.links`' key in the file (`Options.java:1550`).
+pub const KEY_CHAT_LINKS: &str = "chatLinks";
+/// `options.chat.links.prompt`'s key (`Options.java:1551`).
+pub const KEY_CHAT_LINKS_PROMPT: &str = "chatLinksPrompt";
 /// `options.hideLightningFlashes`' key in the file.
 pub const KEY_HIDE_LIGHTNING: &str = "hideLightningFlashes";
 /// `options.ambientOcclusion`'s key in the file — the two-letter `ao`, not
@@ -188,6 +204,29 @@ impl Options {
                 }
                 _ => false,
             },
+            // `chatLinks` / `chatLinksPrompt` are `Codec.BOOL` too.
+            KEY_CHAT_LINKS => match raw.trim() {
+                "true" => {
+                    self.chat_links = true;
+                    true
+                }
+                "false" => {
+                    self.chat_links = false;
+                    true
+                }
+                _ => false,
+            },
+            KEY_CHAT_LINKS_PROMPT => match raw.trim() {
+                "true" => {
+                    self.chat_links_prompt = true;
+                    true
+                }
+                "false" => {
+                    self.chat_links_prompt = false;
+                    true
+                }
+                _ => false,
+            },
             // `ao` is `Codec.BOOL` like the line above: bare JSON, so `TRUE`
             // is not a value (`LenientJsonParser` is lenient about quoting,
             // not about case).
@@ -250,6 +289,7 @@ impl Options {
 
     /// The lines this writes back, in `processOptions` order: `ao` leads (the
     /// first entry of `processDumpedOptions`, `Options.java:1503`), then
+    /// `chatLinks` and `chatLinksPrompt` (`:1550-1551`), then
     /// `hideLightningFlashes` (`:1565`), then `musicFrequency` (`:1616`) and
     /// the `soundCategory_*` sliders (`:1627`).
     ///
@@ -266,6 +306,8 @@ impl Options {
             // `encodeStart(JsonOps.INSTANCE, ..)` writes a boolean bare — no
             // quotes, unlike the string option below.
             format!("{KEY_AO}:{}", self.smooth_lighting),
+            format!("{KEY_CHAT_LINKS}:{}", self.chat_links),
+            format!("{KEY_CHAT_LINKS_PROMPT}:{}", self.chat_links_prompt),
             format!("{KEY_HIDE_LIGHTNING}:{}", self.hide_lightning_flash),
             format!(
                 "{KEY_MUSIC_FREQUENCY}:\"{}\"",
@@ -298,6 +340,8 @@ impl Options {
         // Same order as `to_lines`'s output — index `i` below pairs the two.
         let mut owned: Vec<String> = vec![
             KEY_AO.to_string(),
+            KEY_CHAT_LINKS.to_string(),
+            KEY_CHAT_LINKS_PROMPT.to_string(),
             KEY_HIDE_LIGHTNING.to_string(),
             KEY_MUSIC_FREQUENCY.to_string(),
         ];
@@ -414,7 +458,7 @@ mod tests {
     #[test]
     fn a_string_option_is_quoted_and_a_bare_word_is_still_read() {
         assert_eq!(
-            Options::default().to_lines()[2],
+            Options::default().to_lines()[4],
             "musicFrequency:\"DEFAULT\"",
             "encodeStart(JsonOps) quotes a string"
         );
@@ -435,6 +479,8 @@ mod tests {
                         hide_lightning_flash: hide,
                         smooth_lighting: smooth,
                         sound_volumes: [1.0; 11],
+                        chat_links: true,
+                        chat_links_prompt: true,
                     };
                     assert_eq!(Options::parse(&o.to_lines().join("\n")), o);
                 }
@@ -457,11 +503,13 @@ mod tests {
         assert_eq!(
             o.to_lines()
                 .iter()
-                .take(3)
+                .take(5)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             [
                 "ao:true",
+                "chatLinks:true",
+                "chatLinksPrompt:true",
                 "hideLightningFlashes:false",
                 "musicFrequency:\"DEFAULT\""
             ],
@@ -555,6 +603,36 @@ mod tests {
         assert_eq!(o.sound_volume(SoundSource::Voice), 0.0);
     }
 
+    /// **`chatLinks` and `chatLinksPrompt` default ON, are bare JSON booleans,
+    /// and a bad value leaves the default.** The prompt being on by default is
+    /// the whole point: a missing file must not turn a clicked link into an
+    /// immediate browser launch.
+    ///
+    /// MUTATION: a default of `false` for `chat_links_prompt` (the pre-prompt
+    /// behaviour) or reading `chatLinksPrompt` into `chat_links`.
+    #[test]
+    fn the_link_options_default_on_and_read_as_booleans() {
+        let d = Options::default();
+        assert!(d.chat_links && d.chat_links_prompt);
+        assert!(
+            Options::parse("").chat_links_prompt,
+            "no file: still prompts"
+        );
+        let o = Options::parse("chatLinks:false\nchatLinksPrompt:true\n");
+        assert!(!o.chat_links && o.chat_links_prompt);
+        let o = Options::parse("chatLinks:true\nchatLinksPrompt:false\n");
+        assert!(o.chat_links && !o.chat_links_prompt);
+        // `LenientJsonParser` is lenient about quoting, not about case or
+        // garbage: the later lines are not booleans, so the earlier ones stand.
+        let o = Options::parse(
+            "chatLinks:false\nchatLinks:TRUE\nchatLinksPrompt:false\nchatLinksPrompt:maybe\n",
+        );
+        assert!(
+            !o.chat_links && !o.chat_links_prompt,
+            "a bad line is skipped"
+        );
+    }
+
     #[test]
     fn saving_preserves_every_line_rewo_does_not_model() {
         let existing = "version:4189\n\
@@ -566,6 +644,8 @@ mod tests {
             hide_lightning_flash: true,
             smooth_lighting: true,
             sound_volumes: [1.0; 11],
+            chat_links: false,
+            chat_links_prompt: false,
         };
         let out = o.merge_into(existing);
         assert!(

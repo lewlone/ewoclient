@@ -71,14 +71,14 @@ VALIDATION = re.compile(r"VUID-|Validation Error")
 # this list is the check on it. Keep it sorted.
 EXPECTED_GATES = [
     "abilityshot", "advshot", "attributeshot", "blockentityshot", "bookshot",
-    "bordershot", "breakshot", "capeshot", "captureshot", "containershot",
-    "danceshot", "deathshot", "dimensioncheck", "eventshot", "gaugeshot",
-    "handshot", "healthbarshot", "hudshot", "hurtshot", "inventoryshot",
-    "itemshot", "labelshot", "leashshot", "lightmapshot", "locatorshot",
-    "meshshot", "mobshot", "mobtexshot", "optionshot", "particleshot",
-    "portalshot", "rideshot", "serverlinkshot", "sidebarshot", "signshot",
-    "skyshot", "soundshot", "statshot", "swingshot", "tablistshot",
-    "tintshot", "titleshot", "weathershot",
+    "bordershot", "breakshot", "capeshot", "captureshot", "confirmlinkshot",
+    "containershot", "danceshot", "deathshot", "dimensioncheck", "eventshot",
+    "gaugeshot", "handshot", "healthbarshot", "hudshot", "hurtshot",
+    "inventoryshot", "itemshot", "labelshot", "leashshot", "lightmapshot",
+    "locatorshot", "meshshot", "mobshot", "mobtexshot", "optionshot",
+    "particleshot", "portalshot", "rideshot", "serverlinkshot", "sidebarshot",
+    "signshot", "skyshot", "soundshot", "statshot", "swingshot",
+    "tablistshot", "tintshot", "titleshot", "weathershot",
 ]
 
 # Extra rows: (row label, parent gate, argv after the binary). They are modes of

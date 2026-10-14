@@ -28,6 +28,12 @@ impl LiveApp {
                 view.model.cause_of_death.as_deref().unwrap_or("")
             );
             self.death = Some(view);
+            // `setScreen(DeathScreen)` replaces whatever was up. The app-side
+            // view state of a replaced screen must go with it, or a resize
+            // would rebuild it over the death screen; a link prompt's chat
+            // is dropped too (vanilla's callback never runs).
+            self.view = ScreenView::None;
+            self.link_return_chat = None;
             self.screen.screens.open(screen);
             self.grab_for_screen(true);
             return;

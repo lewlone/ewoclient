@@ -15,6 +15,7 @@ pub mod book_view_screen;
 pub mod chat;
 pub mod chat_screen;
 pub mod command_suggestions;
+pub mod confirm_link_screen;
 pub mod death_screen;
 pub mod disconnect_screen;
 pub mod edit_box;

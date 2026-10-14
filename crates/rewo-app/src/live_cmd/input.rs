@@ -193,7 +193,8 @@ impl LiveApp {
         match &outcome {
             ChatClick::NotHandled | ChatClick::Handled => {}
             ChatClick::OpenUrl(uri) => {
-                crate::uri_open::open_uri(uri);
+                // `Screen.clickUrlAction` — the options, then the prompt.
+                self.chat_click_url(uri);
             }
             ChatClick::RunCommand(command) => {
                 let command = command.clone();
@@ -583,20 +584,28 @@ impl LiveApp {
         }
     }
 
-    /// `Gui.setScreen(null)` — and `ChatScreen.removed`, which is where the
-    /// draft is decided and the chat scroll goes back to the bottom.
-    pub(super) fn close_chat_screen(&mut self) {
+    /// `ChatScreen.removed` — where the draft is decided and the chat scroll
+    /// goes back to the bottom — for a chat screen that is leaving the slot,
+    /// whether for good (`setScreen(null)`) or for a screen that will hand it
+    /// back (the link prompt). Returns the screen so the second case can keep
+    /// it.
+    pub(super) fn take_chat_screen(&mut self) -> Option<rewo_ui::chat_screen::ChatScreen> {
         use rewo_ui::chat_screen::DraftOutcome;
-        if let Some(s) = self.chat_screen.take() {
-            match s.removed(true) {
-                DraftOutcome::Discard => self.chat_draft = None,
-                DraftOutcome::Save(d) => self.chat_draft = Some(d),
-                DraftOutcome::Keep => {}
-            }
-            if let Some(session) = self.session.as_mut() {
-                session.chat.reset_chat_scroll();
-            }
+        let s = self.chat_screen.take()?;
+        match s.removed(true) {
+            DraftOutcome::Discard => self.chat_draft = None,
+            DraftOutcome::Save(d) => self.chat_draft = Some(d),
+            DraftOutcome::Keep => {}
         }
+        if let Some(session) = self.session.as_mut() {
+            session.chat.reset_chat_scroll();
+        }
+        Some(s)
+    }
+
+    /// `Gui.setScreen(null)` over the chat screen.
+    pub(super) fn close_chat_screen(&mut self) {
+        let _ = self.take_chat_screen();
         // Another screen still up (a death screen that opened over the chat)
         // owns the cursor: do not re-grab it from under that screen.
         if let Some(open) = chat_cursor_arg(false, self.screen.any_open()) {
@@ -616,6 +625,11 @@ impl LiveApp {
         use rewo_ui::death_screen as ds;
         use rewo_ui::screen::ScreenKind;
         match (kind, id) {
+            (ScreenKind::ConfirmLink, id) => {
+                if let Some(d) = rewo_ui::confirm_link_screen::decision_for(id) {
+                    self.confirm_link_decide(d);
+                }
+            }
             // M84: the statistics screen. `Done` is `onClose()`, a tab press is
             // `selectTab`, and a sort button is `sortByColumn` — the last two
             // rebuild, because a tab change moves the six sort widgets and

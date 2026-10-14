@@ -36,11 +36,20 @@
 //!
 //! Vanilla's `Screen.clickUrlAction` adds two option gates on top —
 //! `chatLinks()` (default on) refuses outright, and `chatLinksPrompt()`
-//! (default **on**) puts a `ConfirmLinkScreen` in front. Rewo has no options
-//! file and no confirm screen, so it takes the `chatLinks` default and **skips
-//! the prompt**, which is a real divergence in the user's favour only if you
-//! think a confirmation is noise. It is named here rather than silently
-//! absent; the prompt is a screen, and a screen is its own milestone.
+//! (default **on**) puts a `ConfirmLinkScreen` in front. Both live outside this
+//! file: [`rewo_ui::confirm_link_screen`] owns the screen and the decision
+//! ([`rewo_ui::confirm_link_screen::click_url_action`]), `rewo_net::options`
+//! reads the two booleans from `options.txt`, and the live client only calls
+//! [`open_uri`] once the player has said yes (or has turned the prompt off).
+//!
+//! # The child does not inherit the session's secrets
+//!
+//! The opener is a child of the client, and the launcher gives the client
+//! `REWO_ACCESS_TOKEN`. `Runtime.exec` in vanilla inherits the environment too,
+//! but vanilla's environment holds no Minecraft token; Rewo's does, and a
+//! browser launcher (or whatever a `xdg-open` handler chain ends up running)
+//! has no business with it. [`scrub_env`] removes every `REWO_*` variable and
+//! anything whose name says it is a token, secret or password.
 
 /// `Util.OS.getOpenUriArguments` for the platform this binary was built for.
 ///
@@ -58,6 +67,44 @@ pub fn open_uri_args(uri: &str) -> Vec<String> {
     }
 }
 
+/// Whether an environment variable must not reach the opener child.
+///
+/// `REWO_*` is every knob and credential the launcher hands the client
+/// (`REWO_ACCESS_TOKEN` among them). The substring rule catches the rest of the
+/// shapes a session accumulates (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`,
+/// `DB_PASSWORD`), case-insensitively because Windows folds variable names.
+pub fn is_secret_env(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.starts_with("REWO_")
+        || upper.contains("TOKEN")
+        || upper.contains("SECRET")
+        || upper.contains("PASSWORD")
+}
+
+/// Remove every variable [`is_secret_env`] names from `cmd`'s environment —
+/// the inherited ones and any set explicitly on it.
+pub fn scrub_env(cmd: &mut std::process::Command) {
+    let explicit: Vec<std::ffi::OsString> = cmd.get_envs().map(|(k, _)| k.to_owned()).collect();
+    let doomed: Vec<std::ffi::OsString> = std::env::vars_os()
+        .map(|(k, _)| k)
+        .chain(explicit)
+        .filter(|k| k.to_str().is_some_and(is_secret_env))
+        .collect();
+    for k in doomed {
+        cmd.env_remove(k);
+    }
+}
+
+/// The opener process for `uri`, environment scrubbed, not yet spawned.
+fn opener_command(uri: &str) -> std::process::Command {
+    let args = open_uri_args(uri);
+    let (program, rest) = args.split_first().expect("argv is never empty");
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(rest);
+    scrub_env(&mut cmd);
+    cmd
+}
+
 /// Open a clicked chat link, or refuse it.
 ///
 /// Returns whether the launch was attempted, so a caller can log the refusal
@@ -69,9 +116,7 @@ pub fn open_uri(uri: &str) -> bool {
         log::warn!("chat: refusing to open a non-http(s) uri");
         return false;
     }
-    let args = open_uri_args(uri);
-    let (program, rest) = args.split_first().expect("argv is never empty");
-    match std::process::Command::new(program).args(rest).spawn() {
+    match opener_command(uri).spawn() {
         Ok(_) => {
             log::info!("chat: opened a link");
             true
@@ -108,6 +153,85 @@ mod tests {
             open_uri_args("http://x"),
             ["rundll32", "url.dll,FileProtocolHandler", "http://x"]
         );
+    }
+
+    #[test]
+    fn secret_looking_names_are_recognised() {
+        for n in [
+            "REWO_ACCESS_TOKEN",
+            "rewo_game_dir",
+            "GITHUB_TOKEN",
+            "My_Api_Secret",
+            "DB_PASSWORD",
+            "ACCESS_TOKEN_FILE",
+        ] {
+            assert!(is_secret_env(n), "{n}");
+        }
+        for n in [
+            "PATH",
+            "HOME",
+            "APPDATA",
+            "DISPLAY",
+            "XDG_RUNTIME_DIR",
+            "REWORK",
+        ] {
+            assert!(!is_secret_env(n), "{n}");
+        }
+    }
+
+    /// **The child's environment, not a list of names.** An explicit variable
+    /// stands in for an inherited one (setting the test process's own
+    /// environment would race the other tests), and the child prints what it
+    /// received. `REWO_ACCESS_TOKEN` and a token-named variable must be gone
+    /// and an unrelated one must survive — the last assertion is what keeps a
+    /// scrub that clears everything from passing.
+    ///
+    /// MUTATION: `scrub_env` as a no-op, or `is_secret_env` without the
+    /// `REWO_` prefix arm.
+    #[test]
+    fn the_opener_child_does_not_receive_the_session_token() {
+        let mut cmd = if cfg!(target_os = "windows") {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "set"]);
+            c
+        } else {
+            std::process::Command::new("env")
+        };
+        cmd.env("REWO_ACCESS_TOKEN", "s3cr3t-session-value")
+            .env("SOME_OTHER_TOKEN", "t0ken-value")
+            .env("REWO_GAME_DIR", "/tmp/rewo-dir-value")
+            .env("HARMLESS_VAR", "harmless-value");
+        scrub_env(&mut cmd);
+        let out = cmd.output().expect("the environment dumper runs");
+        let text = String::from_utf8_lossy(&out.stdout);
+        for leaked in ["s3cr3t-session-value", "t0ken-value", "rewo-dir-value"] {
+            assert!(!text.contains(leaked), "{leaked} reached the child");
+        }
+        assert!(
+            text.contains("harmless-value"),
+            "an unrelated variable survives:\n{text}"
+        );
+    }
+
+    /// The real opener goes through the same scrub.
+    #[test]
+    fn the_opener_command_is_scrubbed() {
+        let cmd = opener_command("https://example.com");
+        // `get_envs` reports a removal as `(name, None)`.
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .filter_map(|(k, _)| k.to_str().map(str::to_owned))
+            .collect();
+        for k in &removed {
+            assert!(is_secret_env(k), "{k} was removed but is not secret");
+        }
+        // Whatever secret-shaped names this process really has are in the list.
+        for (k, _) in std::env::vars_os() {
+            if let Some(k) = k.to_str().filter(|k| is_secret_env(k)) {
+                assert!(removed.iter().any(|r| r == k), "{k} would be inherited");
+            }
+        }
     }
 
     /// The second gate. Nothing that reaches here should fail it, and it

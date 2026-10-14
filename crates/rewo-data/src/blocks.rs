@@ -41,12 +41,24 @@ pub struct Blocks {
 
 impl Blocks {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let json = read_json_file(path)?;
+        Self::from_json(&read_json_file(path)?)
+    }
+
+    /// [`Self::load`] over an already-parsed report.
+    ///
+    /// **The ids are file content, not a trusted index.** Sizing the table
+    /// from the largest id (`vec![..; max_id + 1]`) let one hand-edited or
+    /// corrupt `"id": 4000000000` ask for gigabytes before anything checked it.
+    /// The table is sized by the NUMBER OF STATES the file actually lists, and
+    /// each id must land inside it exactly once: that bounds the allocation by
+    /// the file's own size and makes a gap, a duplicate or a stray id a named
+    /// error instead of an empty-string hole that reads as a block with no
+    /// name. (A datagen report is dense: ids `0..N`, each once.)
+    pub fn from_json(json: &serde_json::Value) -> Result<Self, String> {
         let obj = json
             .as_object()
             .ok_or("blocks.json: root is not an object")?;
 
-        let mut max_id: i64 = -1;
         let mut entries: Vec<(u32, String, bool)> = Vec::new();
         let mut names: Vec<String> = Vec::new();
         let mut properties: HashMap<String, Vec<(String, Vec<String>)>> = HashMap::new();
@@ -82,29 +94,45 @@ impl Blocks {
                 let id = state
                     .get("id")
                     .and_then(|i| i.as_u64())
-                    .ok_or_else(|| format!("blocks.json: {block_name} state missing id"))?
-                    as u32;
+                    .ok_or_else(|| format!("blocks.json: {block_name} state missing id"))?;
+                let id = u32::try_from(id)
+                    .map_err(|_| format!("blocks.json: {block_name} state id {id} is not a u32"))?;
                 let is_default = state
                     .get("default")
                     .and_then(|d| d.as_bool())
                     .unwrap_or(false);
-                max_id = max_id.max(id as i64);
                 entries.push((id, block_name.clone(), is_default));
             }
         }
-        if max_id < 0 {
+        if entries.is_empty() {
             return Err("blocks.json: no block states found".into());
         }
 
-        let count = (max_id + 1) as usize;
-        let mut state_to_block = vec![String::new(); count];
+        // N states, N slots: every id must land in `0..N`, once.
+        let count = entries.len();
+        let mut slots: Vec<Option<String>> = vec![None; count];
         let mut default_state = HashMap::new();
         for (id, name, is_default) in entries {
+            let slot = slots.get_mut(id as usize).ok_or_else(|| {
+                format!(
+                    "blocks.json: state id {id} ({name}) is outside 0..{count}: the ids are \
+                     not dense (a gap below it, or a corrupt id)"
+                )
+            })?;
+            if let Some(first) = slot {
+                return Err(format!(
+                    "blocks.json: state id {id} appears twice ({first} and {name})"
+                ));
+            }
             if is_default {
                 default_state.insert(name.clone(), id);
             }
-            state_to_block[id as usize] = name;
+            *slot = Some(name);
         }
+        // N entries into N slots with no repeat and no overflow fills every
+        // slot, so there is no gap left to find.
+        let state_to_block: Vec<String> = slots.into_iter().flatten().collect();
+        debug_assert_eq!(state_to_block.len(), count);
 
         // Air must be state 0 — a cheap correctness assertion on the whole
         // table (the chunk decoder treats 0 as empty).
@@ -193,7 +221,8 @@ fn ceil_log2(v: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::ceil_log2;
+    use super::{ceil_log2, Blocks};
+    use serde_json::json;
 
     #[test]
     fn ceil_log2_matches_palette_widths() {
@@ -205,5 +234,105 @@ mod tests {
         assert_eq!(ceil_log2(32366), 15);
         assert_eq!(ceil_log2(32768), 15);
         assert_eq!(ceil_log2(32769), 16);
+    }
+
+    /// A tiny report: each block with the state ids it owns (the first is its
+    /// default).
+    fn report(states: &[(&str, &[u64])]) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        for (name, ids) in states {
+            let list: Vec<_> = ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| json!({ "id": id, "default": i == 0 }))
+                .collect();
+            m.insert((*name).to_string(), json!({ "states": list }));
+        }
+        serde_json::Value::Object(m)
+    }
+
+    #[test]
+    fn a_dense_report_loads() {
+        let b = Blocks::from_json(&report(&[
+            ("minecraft:air", &[0]),
+            ("minecraft:stone", &[1]),
+            ("minecraft:lever", &[2, 3]),
+        ]))
+        .unwrap();
+        assert_eq!(b.state_count(), 4);
+        assert_eq!(b.block_name(3), Some("minecraft:lever"));
+        assert_eq!(b.default_state("minecraft:lever"), Some(2));
+        assert_eq!(b.global_palette_bits, 2);
+    }
+
+    /// **A huge id is an error, not an allocation.** The old code built
+    /// `vec![String::new(); max_id + 1]`: four billion `String`s is ~96 GB, so
+    /// this report aborted the process (or the allocator) rather than failing
+    /// the load. Sized by the entry count, it is rejected at once.
+    ///
+    /// MUTATION: sizing the table from `max_id + 1` again.
+    #[test]
+    fn a_huge_id_is_rejected_without_allocating_for_it() {
+        let err = Blocks::from_json(&report(&[
+            ("minecraft:air", &[0]),
+            ("minecraft:stone", &[4_000_000_000]),
+        ]))
+        .err()
+        .expect("must fail");
+        assert!(
+            err.contains("4000000000") && err.contains("outside"),
+            "{err}"
+        );
+    }
+
+    /// An id past u32 does not wrap into a small one (`as u32` turned
+    /// 4294967297 into state 1).
+    #[test]
+    fn an_id_past_u32_is_not_truncated() {
+        let err = Blocks::from_json(&report(&[
+            ("minecraft:air", &[0]),
+            ("minecraft:stone", &[4_294_967_297]),
+        ]))
+        .err()
+        .expect("must fail");
+        assert!(err.contains("not a u32"), "{err}");
+    }
+
+    /// A gap shows as an id outside `0..N` (N entries cannot cover a hole),
+    /// and a repeated id is named.
+    #[test]
+    fn a_gap_and_a_duplicate_are_both_errors() {
+        // ids 0, 1, 3: three states, so 3 is outside 0..3 and 2 is the hole.
+        let gap = Blocks::from_json(&report(&[
+            ("minecraft:air", &[0]),
+            ("minecraft:stone", &[1]),
+            ("minecraft:dirt", &[3]),
+        ]))
+        .err()
+        .expect("gap");
+        assert!(gap.contains("not dense"), "{gap}");
+
+        let dup = Blocks::from_json(&report(&[
+            ("minecraft:air", &[0]),
+            ("minecraft:stone", &[1]),
+            ("minecraft:dirt", &[1]),
+        ]))
+        .err()
+        .expect("duplicate");
+        assert!(dup.contains("appears twice"), "{dup}");
+    }
+
+    /// Air must still be state 0, and an empty report is still an error.
+    #[test]
+    fn air_must_be_state_zero_and_an_empty_report_fails() {
+        let err = Blocks::from_json(&report(&[
+            ("minecraft:stone", &[0]),
+            ("minecraft:air", &[1]),
+        ]))
+        .err()
+        .expect("air first");
+        assert!(err.contains("expected minecraft:air"), "{err}");
+        assert!(Blocks::from_json(&json!({})).is_err());
+        assert!(Blocks::from_json(&json!([])).is_err());
     }
 }

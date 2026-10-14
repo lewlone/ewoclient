@@ -31,6 +31,8 @@ mod capture;
 mod captureshot_cmd;
 mod cem_pack;
 #[cfg(feature = "gates")]
+mod confirmlinkshot_cmd;
+#[cfg(feature = "gates")]
 mod containershot_cmd;
 #[cfg(feature = "gates")]
 mod danceshot_cmd;
@@ -343,6 +345,14 @@ enum Command {
     /// Vulkan required).
     #[cfg(feature = "gates")]
     Serverlinkshot(serverlinkshot_cmd::ServerLinkshotArgs),
+    /// Link-prompt oracle: the `ConfirmLinkScreen` a clicked chat `open_url`
+    /// opens, graded against the 26.2 decompile (strings, the 8/16-px
+    /// rhythm, the three 100-wide buttons, the 15-row cap, the Esc-is-No
+    /// rule, the `chatLinks` / `chatLinksPrompt` options), then rendered
+    /// offscreen over a pure-magenta clear with `--check` (no server; Vulkan
+    /// required). Nothing is ever opened in a browser.
+    #[cfg(feature = "gates")]
+    Confirmlinkshot(confirmlinkshot_cmd::ConfirmLinkshotArgs),
     /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
     /// `block_entity_data` body through the real decoders, prove the fail-closed
     /// type registry, and re-measure the invisible-block gap from the client
@@ -538,6 +548,8 @@ fn main() {
         Some(Command::Statshot(s_args)) => statshot_cmd::run(s_args),
         #[cfg(feature = "gates")]
         Some(Command::Serverlinkshot(sl_args)) => serverlinkshot_cmd::run(sl_args),
+        #[cfg(feature = "gates")]
+        Some(Command::Confirmlinkshot(cl_args)) => confirmlinkshot_cmd::run(cl_args),
         #[cfg(feature = "gates")]
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
         #[cfg(feature = "gates")]

@@ -41,9 +41,12 @@ Keep `build.ps1` ASCII-only: PowerShell 5.1 reads `.ps1` as ANSI.
 ## How the dll is found
 
 `EwoHudMod` loads `ewo_jni.dll` at client init, in order: `-Dewo.jni.path`
-(or the legacy `-Dewo.hud.nativePath`), beside the mod jar, the game
-(instance) directory, then the newest cargo build under
+(or the legacy `-Dewo.hud.nativePath`), then beside the mod jar. With
+`-Dewo.hud.dev=true` it also tries the newest cargo build under
 `<user.home>\Desktop\EwoClientV3\target\` (release, unless debug is newer).
+It never looks in the current directory. Whatever it loads must answer
+`nativeHello()` with the jar's `EwoHudNative.ABI_VERSION`, or the bridge stays
+off and one line says so.
 
 ## Hooks
 

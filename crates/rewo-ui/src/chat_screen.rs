@@ -288,6 +288,27 @@ impl ChatScreen {
         self.is_draft
     }
 
+    /// `Gui.setScreen(screen)` for a screen that was replaced and is now coming
+    /// back: the same instance runs `init()` again.
+    ///
+    /// This is the return trip of a nested screen. `ChatScreen.removed()` set
+    /// `initial = input.getValue()` on the way out, so `init()` builds a fresh
+    /// `EditBox` holding what the player had typed, a new suggestion popup, and
+    /// `historyPos = recentChat.size()`. What survives is every plain field:
+    /// `isDraft`, `exitReason` and `historyBuffer` are not reset by `init()`.
+    /// The caret lands at the end (`setValue`), not where it was.
+    pub fn reinit(&mut self, recent_len: usize) {
+        let initial = self.input.value();
+        let mut input = EditBox::new(MAX_CHAT_LENGTH);
+        input.set_value(&initial);
+        input.set_can_lose_focus(false);
+        input.set_focused(true);
+        self.input = input;
+        self.history_pos = recent_len;
+        self.suggestions = crate::command_suggestions::CommandSuggestions::for_chat();
+        self.command_request = None;
+    }
+
     pub fn exit_reason(&self) -> ExitReason {
         self.exit_reason
     }
@@ -831,6 +852,30 @@ mod tests {
     }
 
     // ── opening, and the draft ───────────────────────────────────────────
+
+    /// A nested screen (the link prompt) replaces the chat screen and gives it
+    /// back: the typed text survives, the history cursor goes back to the live
+    /// slot, and `isDraft` / `exitReason` are untouched, because `init()`
+    /// resets none of them.
+    ///
+    /// MUTATION: rebuilding with `open(..)` instead — the text would come back
+    /// as the bare prefix and the draft flag would reset.
+    #[test]
+    fn a_screen_that_comes_back_keeps_what_was_typed() {
+        let mut s = screen(3);
+        for ch in "hi there".chars() {
+            s.char_typed(ch, &env());
+        }
+        s.history_pos = 1;
+        s.is_draft = true;
+        s.close();
+        s.reinit(5);
+        assert_eq!(s.input.value(), "hi there");
+        assert_eq!(s.input.cursor_position(), 8, "setValue puts the caret last");
+        assert_eq!(s.history_pos(), 5);
+        assert!(s.is_draft());
+        assert_eq!(s.exit_reason(), ExitReason::Intentional);
+    }
 
     #[test]
     fn a_command_screen_starts_with_a_slash_and_a_message_screen_empty() {

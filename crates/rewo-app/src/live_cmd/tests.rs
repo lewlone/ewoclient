@@ -3485,3 +3485,35 @@ fn chat_frees_the_cursor_on_open_and_regrabs_on_close() {
     // A screen that opened over the chat keeps the cursor it freed.
     assert_eq!(chat_cursor_arg(false, true), None);
 }
+
+// -- the server address (SRV) ---------------------------------------------
+
+/// `--host` / `--port` decide whether the SRV lookup is eligible: only an
+/// address with **no port anywhere** is. Neither flag is the local dev server
+/// (explicit, so never looked up); `--port` always wins over a port written in
+/// the host.
+///
+/// MUTATION: defaulting the port to 25565 here instead of leaving it `None`
+/// (the lookup would never run), or letting a written `:25565` stay `None`.
+#[test]
+fn only_an_address_with_no_port_anywhere_is_srv_eligible() {
+    use rewo_net::srv::ServerAddress;
+    let a = |h: Option<&str>, p: Option<u16>| server_address(h, p).unwrap();
+    assert_eq!(a(None, None), ServerAddress::explicit("127.0.0.1", 25599));
+    assert_eq!(
+        a(None, Some(25570)),
+        ServerAddress::explicit("127.0.0.1", 25570)
+    );
+    let bare = a(Some("play.example.com"), None);
+    assert_eq!(bare.port, None, "typed without a port: eligible");
+    assert_eq!(a(Some("play.example.com:25565"), None).port, Some(25565));
+    assert_eq!(a(Some("play.example.com:25566"), None).port, Some(25566));
+    assert_eq!(a(Some("play.example.com"), Some(25577)).port, Some(25577));
+    assert_eq!(
+        a(Some("play.example.com:25566"), Some(25577)).port,
+        Some(25577),
+        "--port overrides a port written in --host"
+    );
+    assert!(server_address(Some(""), None).is_err());
+    assert!(server_address(Some("host:notaport"), None).is_err());
+}

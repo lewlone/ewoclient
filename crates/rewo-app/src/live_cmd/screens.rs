@@ -170,6 +170,9 @@ pub(crate) enum ScreenView {
         rewo_ui::disconnect_screen::DisconnectLabels,
         rewo_ui::disconnect_screen::DisconnectDetails,
     ),
+    /// `ConfirmLinkScreen` — the prompt in front of a clicked chat link. The
+    /// screen it returns to is [`LiveApp::link_return_chat`].
+    ConfirmLink(rewo_ui::confirm_link_screen::ConfirmLinkScreen),
 }
 
 /// Everything the death screen needs across frames (M82).

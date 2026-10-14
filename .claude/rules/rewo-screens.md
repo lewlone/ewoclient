@@ -70,3 +70,22 @@ book, chat) and `docs/history/claude-md-session-log.md` (M143–M180).
 - Chat: `wrapComponents` uses the `splitLines` overload with per-line
   `isWrapped`. `delete_chat` needs the `MessageSignatureCache` (move-to-front
   LRU). The width provider takes a style (bold adds 1.0 per character).
+
+## Link prompt
+
+- **A clicked chat `open_url` goes through `Screen.clickUrlAction`**, never
+  straight to the browser: `chatLinks` off ignores the click, `chatLinksPrompt`
+  off opens it, and the default is `rewo_ui::confirm_link_screen`'s prompt
+  ("Yes" / "Copy to Clipboard" / "No" plus the `chat.link.warning` line,
+  because `trusted` is false on this path). Both options are read from
+  `options.txt` (`rewo_net::options::Options::{chat_links, chat_links_prompt}`,
+  default true). `LiveApp::chat_click_url` is the one entry.
+- **The prompt replaces the chat screen** (one slot) and the callback hands the
+  *same* `ChatScreen` back (`LiveApp::link_return_chat`, `ChatScreen::reinit`):
+  typed text survives, and `removed()` runs on the way out (draft, scroll
+  reset). Esc on the prompt is "No" (`confirm_link_screen::key_pressed`), not
+  `close_on_esc`. Only chat links use it; the book reader and the server-links
+  dialog still do not open URLs.
+- **The opener child is scrubbed** (`uri_open::scrub_env`): no `REWO_*`, and
+  nothing named `*TOKEN*`, `*SECRET*` or `*PASSWORD*`.
+- Graded by `confirmlinkshot --check` (model + pixels) and render-check r67.

@@ -856,10 +856,11 @@ pub struct EntityTable {
     /// between vehicles would leave the old one reading as still ridden, and
     /// that vehicle's label would stay suppressed forever.
     vehicle_of: HashMap<i32, i32>,
-    /// `Bee.DATA_ANGER_END_TIME` (M141f), by entity id.
+    /// `Bee.DATA_ANGER_END_TIME` (M141f), by entity id. Cleared on removal and
+    /// on (re-)add.
     anger_end_time: HashMap<i32, i64>,
     /// `Guardian`'s synced attack target and the client counter it drives
-    /// (M141g).
+    /// (M141g). Cleared on removal and on (re-)add.
     guardian_attack: HashMap<i32, GuardianAttack>,
     /// The local player's entity id, if the session has told us (M141d).
     ///
@@ -887,7 +888,9 @@ pub struct EntityTable {
     /// count)`. Absent means the entity has sent no stack, which is
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
     item_stacks: HashMap<i32, (i32, i32, bool)>,
-    /// Worn armour item ids per entity, head first (M46).
+    /// Worn armour item ids per entity, head first (M46). Cleared on removal
+    /// and on (re-)add, so a reused id cannot wear the last occupant's
+    /// chestplate.
     armor: HashMap<i32, [Option<WornPiece>; 4]>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
@@ -1256,47 +1259,106 @@ const fn hand_slot(hand: InteractionHand) -> usize {
 
 impl EntityTable {
     pub fn add(&mut self, id: i32, state: EntityState) {
-        // A fresh entity at this id inherits no stale event timing — the
-        // packet stream sends `remove_entities` before reusing an id, but a
-        // dropped removal must not leave one warden's attack clock running on
-        // its replacement. The Allay dance clock dies with the entity too.
-        self.events.remove(&id);
-        self.dances.remove(&id);
-        self.wavy_capes.remove(&id);
-        // Same reason (M77): a schedule is a clock, and a fresh cart at a
-        // recycled id must not be dragged toward the previous one's rail.
-        self.minecarts.remove(&id);
-        self.clear_swing(id);
+        // A fresh entity at this id inherits nothing. The packet stream sends
+        // `remove_entities` before reusing an id, but a dropped removal must
+        // not leave the previous occupant's armour, anger clock, animation
+        // timing or passenger links on its replacement: vanilla's
+        // `ClientLevel.addEntity` runs `removeEntity(id, DISCARDED)` first, so
+        // a re-add is a removal followed by an add. Every per-id side map is
+        // therefore cleared here, by the same function `remove` uses.
+        self.clear_side_state(id);
         self.map.insert(id, state);
     }
 
     pub fn remove(&mut self, id: i32) {
         self.map.remove(&id);
-        self.custom_names.remove(&id);
-        self.poses.remove(&id);
-        self.gesture_states.remove(&id);
-        self.sizes.remove(&id);
-        self.babies.remove(&id);
-        self.events.remove(&id);
-        self.dances.remove(&id);
-        self.mob_state.remove(&id);
-        self.hurts.remove(&id);
+        self.clear_side_state(id);
+    }
+
+    /// Drop **every** per-entity side map's row for `id`.
+    ///
+    /// This is the one list of them, and it is exhaustive by construction:
+    /// the destructuring below names every field of [`EntityTable`], so adding
+    /// a map and forgetting to decide whether it is per-entity does not
+    /// compile. `names` (profile UUID -> name, list membership rather than
+    /// entity lifetime), the local player's id, the attachment table and the
+    /// wavy-cape switch are the fields that are *not* per-entity, and are
+    /// listed as such.
+    fn clear_side_state(&mut self, id: i32) {
+        // Every field, by name — see above. A per-entity one is cleared below.
+        let EntityTable {
+            map: _,
+            names: _,
+            custom_names,
+            poses,
+            gesture_states,
+            sizes,
+            babies,
+            uses,
+            deaths,
+            attributes,
+            shared_flags,
+            custom_name_visible,
+            silent,
+            passengers: _,
+            vehicle_of: _,
+            anger_end_time,
+            guardian_attack,
+            local_player: _,
+            attachments: _,
+            model_customisation,
+            item_stacks,
+            armor,
+            dances,
+            events,
+            swings: _,
+            hands: _,
+            main_arms: _,
+            swing_effects: _,
+            hurts,
+            hurt_dirs,
+            mob_state,
+            wavy_capes,
+            wavy_capes_enabled: _,
+            minecarts,
+            leash_data,
+            projectile_power,
+        } = self;
+        custom_names.remove(&id);
+        poses.remove(&id);
+        gesture_states.remove(&id);
+        sizes.remove(&id);
+        babies.remove(&id);
+        events.remove(&id);
+        dances.remove(&id);
+        mob_state.remove(&id);
+        hurts.remove(&id);
         // The direction outlives the *clock*, not the *entity*: vanilla's
         // `hurtDir` is a field on the Player object, and the object is gone.
-        self.hurt_dirs.remove(&id);
-        self.uses.remove(&id);
-        self.deaths.remove(&id);
-        self.item_stacks.remove(&id);
-        self.attributes.remove(&id);
-        self.shared_flags.remove(&id);
-        self.custom_name_visible.remove(&id);
-        self.silent.remove(&id);
+        hurt_dirs.remove(&id);
+        uses.remove(&id);
+        deaths.remove(&id);
+        item_stacks.remove(&id);
+        attributes.remove(&id);
+        shared_flags.remove(&id);
+        custom_name_visible.remove(&id);
+        silent.remove(&id);
+        model_customisation.remove(&id);
+        // A cape spine and a cart's schedule are clocks (M61, M77): a recycled
+        // id must not inherit a chain or be dragged toward the previous
+        // cart's rail.
+        wavy_capes.remove(&id);
+        minecarts.remove(&id);
+        leash_data.remove(&id);
+        projectile_power.remove(&id);
+        // The three the original `remove` forgot: worn armour (a reused id
+        // would render the last occupant's chestplate), the bee's anger end
+        // time and the guardian's beam target. Each also grew without bound
+        // over a long session, one row per entity ever seen.
+        armor.remove(&id);
+        anger_end_time.remove(&id);
+        guardian_attack.remove(&id);
         self.clear_riding(id);
-        self.model_customisation.remove(&id);
-        self.wavy_capes.remove(&id);
-        self.minecarts.remove(&id);
-        self.leash_data.remove(&id);
-        self.projectile_power.remove(&id);
         self.clear_swing(id);
     }
 
@@ -3959,5 +4021,214 @@ mod jump_vehicle_tests {
         t.set_saddled(9, true);
         assert!(t.saddled(9));
         assert!(!t.saddled(8));
+    }
+}
+
+/// The per-id side maps: a removed or re-added entity leaves nothing behind.
+#[cfg(test)]
+mod side_state_tests {
+    use super::*;
+
+    /// How many per-entity side maps hold a row for `id`.
+    ///
+    /// Exhaustive over [`EntityTable`]'s fields (no `..`), so a map added
+    /// later must be classified here as well as in `clear_side_state` — the
+    /// counting half cannot silently miss it.
+    fn side_rows(t: &EntityTable, id: i32) -> usize {
+        let EntityTable {
+            map: _,
+            names: _,
+            custom_names,
+            poses,
+            gesture_states,
+            sizes,
+            babies,
+            uses,
+            deaths,
+            attributes,
+            shared_flags,
+            custom_name_visible,
+            silent,
+            passengers,
+            vehicle_of,
+            anger_end_time,
+            guardian_attack,
+            local_player: _,
+            attachments: _,
+            model_customisation,
+            item_stacks,
+            armor,
+            dances,
+            events,
+            swings,
+            hands,
+            main_arms,
+            swing_effects,
+            hurts,
+            hurt_dirs,
+            mob_state,
+            wavy_capes,
+            wavy_capes_enabled: _,
+            minecarts,
+            leash_data,
+            projectile_power,
+        } = t;
+        [
+            custom_names.contains_key(&id),
+            poses.contains_key(&id),
+            gesture_states.contains_key(&id),
+            sizes.contains_key(&id),
+            babies.contains(&id),
+            uses.contains_key(&id),
+            deaths.contains_key(&id),
+            attributes.contains_key(&id),
+            shared_flags.contains_key(&id),
+            custom_name_visible.contains(&id),
+            silent.contains(&id),
+            passengers.contains_key(&id),
+            vehicle_of.contains_key(&id),
+            anger_end_time.contains_key(&id),
+            guardian_attack.contains_key(&id),
+            model_customisation.contains_key(&id),
+            item_stacks.contains_key(&id),
+            armor.contains_key(&id),
+            dances.contains_key(&id),
+            events.contains_key(&id),
+            swings.contains_key(&id),
+            hands.contains_key(&id),
+            main_arms.contains_key(&id),
+            swing_effects.contains_key(&id),
+            hurts.contains_key(&id),
+            hurt_dirs.contains_key(&id),
+            mob_state.contains_key(&id),
+            wavy_capes.contains_key(&id),
+            minecarts.contains_key(&id),
+            leash_data.contains_key(&id),
+            projectile_power.contains_key(&id),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+    }
+
+    fn spawned(t: &mut EntityTable, id: i32) {
+        t.add(id, EntityState::new(id as u128, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+    }
+
+    /// Give `id` a row in as many per-entity maps as the public setters and
+    /// the table's own fields allow, **including the three `remove` used to
+    /// forget**: armour, the bee's anger clock and the guardian's beam.
+    fn dress(t: &mut EntityTable, id: i32) {
+        t.set_armor(
+            id,
+            1,
+            Some(WornPiece {
+                item: 7,
+                dye: Some(0x00ff_0000),
+                trim: None,
+                foil: true,
+            }),
+        );
+        t.set_anger_end_time(id, 12_345);
+        t.set_guardian_attack_target(id, 99);
+        t.set_custom_name(id, Some("Jeb".into()));
+        t.set_pose(id, 3);
+        t.set_passengers(id, vec![id + 1000]);
+        t.silent.insert(id);
+        t.babies.insert(id);
+        t.sizes.insert(id, 4);
+        t.shared_flags.insert(id, 1);
+        t.leash_data.insert(id, 0);
+        t.projectile_power.insert(id, 1.5);
+        t.item_stacks.insert(id, (1, 1, false));
+        t.hurts.insert(id, HurtState::default());
+        t.hurt_dirs.insert(id, 45.0);
+        t.model_customisation.insert(id, 0x7f);
+        t.gesture_states.insert(id, 2);
+        t.custom_name_visible.insert(id);
+        t.mob_state.entry(id).or_default();
+        t.attributes.entry(id).or_default();
+        t.uses.entry(id).or_default();
+        t.main_arms.insert(id, HumanoidArm::Left);
+        t.minecarts.entry(id).or_default();
+    }
+
+    /// **`remove` leaves no row in any per-entity map.**
+    ///
+    /// MUTATION: dropping `armor.remove(&id)`, `anger_end_time.remove(&id)` or
+    /// `guardian_attack.remove(&id)` from `clear_side_state` — the three the
+    /// pre-fix `remove` never cleared — leaves a row behind, and `side_rows`
+    /// reports it.
+    #[test]
+    fn a_removed_entity_leaves_no_row_in_any_side_map() {
+        let mut t = EntityTable::default();
+        spawned(&mut t, 5);
+        dress(&mut t, 5);
+        assert!(
+            side_rows(&t, 5) >= 18,
+            "the fixture must populate the maps, or this test proves nothing: {}",
+            side_rows(&t, 5)
+        );
+        assert!(t.armor(5)[1].is_some());
+        assert_eq!(t.anger_end_time(5), Some(12_345));
+        assert!(t.guardian_has_attack_target(5));
+
+        t.remove(5);
+        assert_eq!(side_rows(&t, 5), 0);
+        assert_eq!(t.armor(5), [None; 4]);
+        assert_eq!(t.anger_end_time(5), None);
+        assert!(!t.guardian_has_attack_target(5));
+    }
+
+    /// **A reused id inherits nothing**, with no `remove` in between — the
+    /// dropped-removal case `add` exists for. The old occupant's chestplate is
+    /// the visible symptom; the anger clock and the guardian's beam would have
+    /// followed it.
+    ///
+    /// MUTATION: `add` back to clearing only events, dances, capes, carts and
+    /// swings.
+    #[test]
+    fn a_reused_id_does_not_inherit_the_previous_occupants_state() {
+        let mut t = EntityTable::default();
+        spawned(&mut t, 8);
+        dress(&mut t, 8);
+        // The server reuses id 8 for a new entity with no removal in between.
+        spawned(&mut t, 8);
+        assert_eq!(side_rows(&t, 8), 0, "every per-entity row is gone");
+        assert_eq!(t.armor(8), [None; 4], "no inherited armour");
+        assert_eq!(t.anger_end_time(8), None, "no inherited anger");
+        assert!(!t.guardian_has_attack_target(8), "no inherited beam");
+        assert_eq!(t.custom_name(8), None);
+        assert!(t.get(8).is_some(), "and the entity itself is there");
+    }
+
+    /// Churn does not grow the side maps: a thousand ids spawned, dressed and
+    /// removed leave every map empty (the unbounded growth the audit named).
+    #[test]
+    fn churning_a_thousand_entities_leaves_every_side_map_empty() {
+        let mut t = EntityTable::default();
+        for id in 0..1000 {
+            spawned(&mut t, id);
+            dress(&mut t, id);
+            t.remove(id);
+        }
+        let leaked: usize = (0..1000).map(|id| side_rows(&t, id)).sum();
+        assert_eq!(leaked, 0);
+        assert!(t.armor.is_empty() && t.anger_end_time.is_empty() && t.guardian_attack.is_empty());
+    }
+
+    /// The re-add of one entity does not touch another's rows.
+    #[test]
+    fn clearing_one_id_leaves_its_neighbours_alone() {
+        let mut t = EntityTable::default();
+        for id in [1, 2, 3] {
+            spawned(&mut t, id);
+            dress(&mut t, id);
+        }
+        let before = side_rows(&t, 3);
+        t.remove(2);
+        spawned(&mut t, 1);
+        assert_eq!(side_rows(&t, 3), before);
+        assert!(t.armor(3)[1].is_some());
     }
 }

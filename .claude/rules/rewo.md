@@ -89,6 +89,11 @@ a self-check path.
   section below the top reads the row above (`fill_sky_gaps`), and
   `Column::set_light` compares against the *effective* value. The
   incremental-vs-full property test covers a 2x2 column border and sparse sky.
+- **`EntityTable` side maps are cleared in one place.** `remove` and `add`
+  both call `clear_side_state`, which destructures every field of the table
+  (no `..`), so a new per-entity map must be classified there and in the test's
+  `side_rows`. A re-add is a removal then an add (vanilla's `addEntity` runs
+  `removeEntity` first), so a reused id inherits no armour, anger clock or beam.
 - **The local player is not in `EntityTable`.** Metadata and attributes
   addressed to it are dropped unless routed separately (M55, M73, M141e).
 - **One accessor per concept.** When two call sites each compute "which menu",

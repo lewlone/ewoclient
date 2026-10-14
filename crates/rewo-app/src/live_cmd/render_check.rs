@@ -522,6 +522,20 @@ pub(super) struct RenderCheck {
     /// The once-guard for the click above, so the gate sends one command
     /// rather than one per frame.
     pub(super) chat_click_fired: bool,
+    /// r67 — the link prompt's progress: 0 not started, 1 opened over chat
+    /// (frames are counted while it is up), 2 answered "No", 3 checked.
+    pub(super) link_prompt_stage: u8,
+    /// r67 — frames on which the prompt was up with its three buttons and
+    /// their captions and the URL all drawn, and the chat screen NOT in the
+    /// slot (vanilla has one slot: the prompt replaces the chat).
+    pub(super) link_prompt_frames: u64,
+    /// r67 — the chat field's text when the link was clicked, and the
+    /// `chatLinks` / `chatLinksPrompt` values to restore afterwards.
+    pub(super) link_prompt_text: String,
+    pub(super) link_prompt_options: (bool, bool),
+    /// r67 — after "No": the chat screen was back, with the same text, and
+    /// no prompt was left behind.
+    pub(super) link_prompt_returned: bool,
     /// Frames on which a drawn chat line still carried a raw translation key.
     ///
     /// Not redundant with the row above: that one would stay green if the
@@ -659,7 +673,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 66;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 67;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -947,6 +961,22 @@ impl RenderCheck {
             format!(
                 "{} clicks answered RunCommand at the drawn line's own                  position (0 means the injected `click_event` did not survive                  the wire, the wrap, the store or the hit test — or that the                  hit test and the draw disagree about where a row is)",
                 self.chat_click_ok
+            ),
+        );
+        // `Screen.clickUrlAction` — a clicked link must reach a CONFIRMATION,
+        // not the browser. Driven through the production entry
+        // (`chat_click_url`) with the stock option values, then answered "No"
+        // through the production press path (`press_widget`). Three claims in
+        // one row, because they are one round trip: the prompt drew (three
+        // buttons, their captions, the URL), the chat left the slot while it
+        // was up, and "No" gave the chat back with what had been typed.
+        // Nothing is opened: the witness never presses "Yes".
+        row(
+            "r67 a clicked chat link raised the confirm prompt and No returned to the chat",
+            self.link_prompt_frames >= 3 && self.link_prompt_returned,
+            format!(
+                "{} frames drew the prompt over an empty chat slot; the chat                  came back with its text: {}",
+                self.link_prompt_frames, self.link_prompt_returned
             ),
         );
         // M110 — the chat SCREEN, as distinct from r26's read-only box. A zero
@@ -2489,6 +2519,58 @@ impl LiveApp {
                     } else {
                         log::warn!("rendercheck: chat click answered {outcome:?}");
                     }
+                }
+            }
+            // r67 — the link prompt, between r42's click (0.4) and the command
+            // screen (0.55). Stage 0 clicks, stage 1 waits for frames, stage 2
+            // answers "No" and stage 3 grades the return.
+            if self.chat_injected && !self.command_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                let elapsed = self.started.elapsed().as_secs_f32();
+                let (stage, frames) = self
+                    .check
+                    .as_ref()
+                    .map_or((3, 0), |c| (c.link_prompt_stage, c.link_prompt_frames));
+                match stage {
+                    0 if elapsed >= limit * 0.45 && self.chat_screen.is_some() => {
+                        let text = self
+                            .chat_screen
+                            .as_ref()
+                            .map(|s| s.input.value())
+                            .unwrap_or_default();
+                        // The stock values, whatever this machine's
+                        // options.txt says; restored at stage 2.
+                        let saved = (self.options.chat_links, self.options.chat_links_prompt);
+                        self.options.chat_links = true;
+                        self.options.chat_links_prompt = true;
+                        self.chat_click_url("https://example.com/rewo-link-witness");
+                        if let Some(c) = self.check.as_mut() {
+                            c.link_prompt_text = text;
+                            c.link_prompt_options = saved;
+                            c.link_prompt_stage = 1;
+                        }
+                    }
+                    1 if frames >= 3 => {
+                        use rewo_ui::confirm_link_screen::NO;
+                        self.press_widget(rewo_ui::screen::ScreenKind::ConfirmLink, NO);
+                        if let Some(c) = self.check.as_mut() {
+                            self.options.chat_links = c.link_prompt_options.0;
+                            self.options.chat_links_prompt = c.link_prompt_options.1;
+                            c.link_prompt_stage = 2;
+                        }
+                    }
+                    2 => {
+                        let back = self.chat_screen.as_ref().map(|s| s.input.value());
+                        let ok = !self.screen.any_open()
+                            && matches!(self.view, ScreenView::None)
+                            && self.link_return_chat.is_none();
+                        if let Some(c) = self.check.as_mut() {
+                            c.link_prompt_returned =
+                                ok && back.as_deref() == Some(&c.link_prompt_text);
+                            c.link_prompt_stage = 3;
+                        }
+                    }
+                    _ => {}
                 }
             }
             // M116 — later, and as its own screen, so r29's frames stay

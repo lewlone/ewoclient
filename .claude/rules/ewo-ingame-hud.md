@@ -91,9 +91,19 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
   `EwoAssistEntry`.
 - `EwoHudMod` finds `ewo_jni.dll` in this order: `-Dewo.jni.path` /
   `-Dewo.hud.nativePath` (the launcher sets it when a dll ships beside its exe),
-  beside the mod jar (where `build.ps1` deploys it), the game dir, then
-  `Desktop/EwoClientV3/target/{release,debug}`. The log line
-  `[ewo-hud] using ewo_jni.dll from …` says which one won.
+  then beside the mod jar (where `build.ps1` deploys it). **There is no
+  current-directory fallback** (the game dir is writable by packs and plugins)
+  **and the `Desktop/EwoClientV3/target/{release,debug}` path is used only with
+  `-Dewo.hud.dev=true`.** The log line `[ewo-hud] using ewo_jni.dll from …` says
+  which one won.
+- **ABI handshake.** `nativeHello()` returns an `int`, `ewo_jni::ABI_VERSION`;
+  the mod compares it with `EwoHudNative.ABI_VERSION` right after
+  `System.load`, before any other native call, and on a mismatch logs once,
+  leaves the bridge off and does not arm the native kill path (the launcher's
+  reaper is the backstop). The value is a tagged number (`0x4557` + revision)
+  because a stale dll's `nativeHello` returned `void`, so a mismatch reads as
+  garbage. **Bump both constants together** when a native method or either data
+  block changes incompatibly; `abi_version_matches_the_java_mirror` pins them.
 - `ewo-*` crate tests run in CI's `cargo test --workspace`, but no gate
   exercises the HUD in a live game. Run `cargo test -p ewo-jni --lib` when you
   touch it. Its layout test once overflowed a 256-byte stack buffer and
