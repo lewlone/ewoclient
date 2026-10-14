@@ -104,6 +104,11 @@ M187 (demo hash unchanged, `d7dc9e8985f0504f`).
   (vanilla's magnifier does; the box itself does not). Minor.
 - Drawing maps (held in first person, item frames, decoration sprites) is the
   largest remaining Rewo roadmap item; M190 has the data ready for it.
+  **The next session should start with M192**, the held map, from
+  [`docs/rewo/M192-held-map-plan.md`](rewo/M192-held-map-plan.md): vanilla's
+  poses with source lines, the hand-atlas layout, the offscreen `handshot`
+  checks and the order of steps. It was planned, not started, because the
+  night's budget ran out.
 - A map's tooltip and store are tested against the decompile's arithmetic but
   have not seen a real server's `map_item_data`: hold a filled map on the test
   server and hover it (also a playtest item).
