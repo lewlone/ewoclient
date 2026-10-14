@@ -19,7 +19,7 @@ use crate::java_mirror::{accesses, between, get, int_constants, read_java};
 /// source (the module's items cannot be enumerated any other way), so a field
 /// added on the Rust side without a Java twin is caught too.
 fn rust_offsets() -> BTreeMap<String, i64> {
-    let src = include_str!("mod.rs");
+    let src = &crate::java_mirror::lf(include_str!("mod.rs"));
     let body = between(src, "pub(crate) mod off {", "\n}\n");
     let mut out = BTreeMap::new();
     for line in body.lines() {
@@ -194,7 +194,7 @@ fn hud_flags_tiers_and_key_bits_match_the_java_mirror() {
 
     // The keystroke widget declares its bit masks locally (`draw_keystrokes`);
     // read them back from its source.
-    let widgets = include_str!("widgets.rs");
+    let widgets = &crate::java_mirror::lf(include_str!("widgets.rs"));
     let body = between(widgets, "pub(super) fn draw_keystrokes(", "draw_key(");
     let mut seen = 0;
     for line in body.lines() {
@@ -220,7 +220,7 @@ fn hud_flags_tiers_and_key_bits_match_the_java_mirror() {
 
 #[test]
 fn hud_record_layouts_match_what_java_writes() {
-    let hud_src = include_str!("mod.rs");
+    let hud_src = &crate::java_mirror::lf(include_str!("mod.rs"));
     let calls_rust = [("i32_at(", "i32"), ("f32_at(", "f32"), ("str_at(", "str")];
     let calls_java = [
         ("putInt(", "i32"),

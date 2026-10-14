@@ -15,7 +15,15 @@ pub(crate) fn read_java(file: &str) -> String {
         "{}/../../ingame-mod/src/main/java/dev/lewlone/ewohud/{file}",
         env!("CARGO_MANIFEST_DIR")
     );
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"))
+    lf(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}")))
+}
+
+/// `src` with CRLF line endings turned into LF. The parsers here search for
+/// `"\n}\n"`-style delimiters, and a Windows checkout with `core.autocrlf=true`
+/// (GitHub's Windows runners) hands every source file over with CRLF, Rust
+/// included — `include_str!` embeds the checked-out bytes.
+pub(crate) fn lf(src: &str) -> String {
+    src.replace("\r\n", "\n")
 }
 
 /// Strip a trailing `//` comment and surrounding whitespace.
