@@ -83,6 +83,18 @@ fn active_after_success(
     }
 }
 
+/// Whether a finished chain should be followed by a silent refresh of the
+/// active account. Never after a failed or cancelled interactive sign-in
+/// (the refresh would replace the error the user has to see with a
+/// progress line), and never for the refresh that just ended on the still
+/// active account (a failing refresh must not loop).
+fn follow_up_refresh(finished: &InFlight, succeeded: bool, active: Option<&str>) -> bool {
+    match finished {
+        InFlight::Refresh { uuid } => active != Some(uuid.as_str()),
+        InFlight::Interactive { .. } => succeeded,
+    }
+}
+
 /// Fold a chain's `Success` into the store (no disk I/O). Returns `false`
 /// when the result is dropped: a refresh for an account the user removed
 /// while it ran (or whose profile came back different) must not re-add it.
@@ -221,13 +233,13 @@ impl AuthService {
                     if apply_success(&mut self.store, &job, account) {
                         persistence::save_store(&self.store);
                     }
-                    self.after_chain(&job);
+                    self.after_chain(&job, true);
                 }
                 AuthEvent::Failure(err) => {
                     log::warn!("auth: failed: {:?}", err);
                     self.op = AuthOp::Failed(err);
                     if let Some(job) = self.in_flight.take() {
-                        self.after_chain(&job);
+                        self.after_chain(&job, false);
                     }
                 }
             }
@@ -236,14 +248,9 @@ impl AuthService {
 
     /// A chain just finished. If the user switched to another account while
     /// it ran (`set_active` can't start a refresh while busy), bring that
-    /// account's token live now. Never re-runs the chain that just ended,
-    /// so a failing refresh can't loop.
-    fn after_chain(&mut self, finished: &InFlight) {
-        let same = match finished {
-            InFlight::Refresh { uuid } => self.store.active.as_deref() == Some(uuid.as_str()),
-            InFlight::Interactive { .. } => false,
-        };
-        if !same {
+    /// account's token live now (see [`follow_up_refresh`]).
+    fn after_chain(&mut self, finished: &InFlight, succeeded: bool) {
+        if follow_up_refresh(finished, succeeded, self.store.active.as_deref()) {
             self.refresh_active_token();
         }
     }
@@ -540,5 +547,21 @@ mod tests {
             Some("b"),
             "a deliberate switch to B stays"
         );
+    }
+
+    #[test]
+    fn a_failed_interactive_sign_in_leaves_its_error_alone() {
+        let interactive = InFlight::Interactive {
+            active_at_start: Some("a".into()),
+        };
+        // A failed or cancelled browser sign-in keeps its error on screen.
+        assert!(!follow_up_refresh(&interactive, false, Some("a")));
+        assert!(!follow_up_refresh(&interactive, false, None));
+        assert!(follow_up_refresh(&interactive, true, Some("a")));
+        // A refresh never re-runs for the account it just handled...
+        assert!(!follow_up_refresh(&refresh("a"), false, Some("a")));
+        assert!(!follow_up_refresh(&refresh("a"), true, Some("a")));
+        // ...but a switch to another account while it ran gets one.
+        assert!(follow_up_refresh(&refresh("a"), true, Some("b")));
     }
 }
