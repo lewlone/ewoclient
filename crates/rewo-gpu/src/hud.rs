@@ -166,10 +166,18 @@ pub enum HudIcon {
         ambient: bool,
     },
     /// A `mob_effect/<name>` icon by registry id. An id past the table
-    /// draws nothing — vanilla draws `MissingTextureAtlasSprite`, the
-    /// magenta checker, for an effect with no sprite; Rewo has no such
-    /// sprite and draws nothing, which is recorded rather than hidden.
+    /// emits [`HudIcon::MissingTexture`] instead (`survival_hud::effects`
+    /// owns the split); this arm is the in-table path.
     Effect(i32),
+    /// `MissingTextureAtlasSprite` — the 16×16 magenta/black quadrant
+    /// checker `generateMissingImage` builds, drawn when an effect id
+    /// has no sprite (`Hud.getMobEffectSprite`'s
+    /// `orElseGet(MissingTextureAtlasSprite::getLocation)`). Rendered as
+    /// four solid quads rather than an atlas entry: the checker is
+    /// generated at runtime in vanilla, and adding an atlas sprite here
+    /// would move every existing address (the M48/M172 lesson) for no
+    /// benefit — the white-fill primitive already paints solid colour.
+    MissingTexture,
     /// `Progress` is a sub-rectangle: the blit's `w` is the filled width
     /// and the UV is clipped to `w / 182`, `blitSprite(.., 182, 5, 0, 0,
     /// left, top, progress, 5)`'s ten-argument form.
@@ -814,6 +822,34 @@ impl HudPass {
         // takes. A jump-bar progress blit is the one sub-rectangle: its `w`
         // is the filled width against a 182 px sprite.
         for b in survival {
+            // `MissingTextureAtlasSprite` — see the variant's doc. The 16px
+            // sprite's rule is `y < h/2 ^ x < w/2 ? pink : black` with
+            // pink RGB (248, 0, 248); the 18px blit scales the 8px
+            // quadrants to exactly 9px, so the four quads below are the
+            // blit pixel-for-pixel. Drawn in the icon's slot in the same
+            // survival pass, so the background blit emitted just before
+            // it in the layout still sits underneath.
+            if matches!(b.icon, HudIcon::MissingTexture) {
+                // Pink RGB (248, 0, 248), linearised for the pass; the HUD
+                // fills want linear colour (M111's chat-backdrop lesson).
+                let pink = [
+                    super::entities::srgb_to_linear(248.0 / 255.0),
+                    0.0,
+                    super::entities::srgb_to_linear(248.0 / 255.0),
+                ];
+                let (x, y) = (b.x, b.y);
+                let wf = &self.white_fill;
+                let mut quad = |ox: f32, oy: f32, c: [f32; 3]| {
+                    tinted_quad(x + ox, y + oy, 9.0, 9.0, wf, 1.0, [c[0], c[1], c[2], b.alpha]);
+                };
+                // Top-left black, top-right pink, bottom-left pink,
+                // bottom-right black (`x < 8 ^ y < 8` picks pink).
+                quad(0.0, 0.0, [0.0; 3]);
+                quad(9.0, 0.0, pink);
+                quad(0.0, 9.0, pink);
+                quad(9.0, 9.0, [0.0; 3]);
+                continue;
+            }
             let Some(r) = self.icon_rect(b.icon) else {
                 continue;
             };
@@ -938,6 +974,9 @@ impl HudPass {
     fn icon_rect(&self, icon: HudIcon) -> Option<Rect> {
         use crate::survival_hud::{AirSprite, ArmorSprite, FoodSprite, JumpBarSprite, VehicleHeartSprite};
         Some(match icon {
+            // No atlas entry by design — the draw loop paints the checker
+            // from solid quads before asking for a rect.
+            HudIcon::MissingTexture => return None,
             HudIcon::Ping(i) => *self.ping.get(i as usize)?,
             HudIcon::Face { slot, hat, flip } => {
                 if u32::from(slot) >= FACE_SLOTS {

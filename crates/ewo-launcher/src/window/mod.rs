@@ -24,6 +24,8 @@ mod win32;
 #[cfg(target_os = "linux")]
 mod wayland;
 
+pub mod icon;
+
 /// Apply platform-specific custom-frame setup to a freshly created window.
 /// Called once after `Window::create_window` returns.
 pub fn configure(window: &Window) {
@@ -32,6 +34,28 @@ pub fn configure(window: &Window) {
 
     #[cfg(target_os = "linux")]
     wayland::configure(window);
+}
+
+/// Whether the OS asks for reduced motion (non-negotiable #6). On Windows
+/// this is `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)`, the "Show
+/// animations in Windows" toggle, inverted. Linux has no equivalent we read:
+/// animations stay on.
+pub fn prefers_reduced_motion() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win32::prefers_reduced_motion()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Pure decision behind [`prefers_reduced_motion`]: `call_ok` is whether the
+/// OS query succeeded, `animations_enabled` is the value it returned. A failed
+/// query leaves animations on, so a broken API never silently disables motion.
+pub fn reduced_from_animation_setting(call_ok: bool, animations_enabled: bool) -> bool {
+    call_ok && !animations_enabled
 }
 
 /// Whether the given window is the OS's foreground window. Used as a
@@ -48,5 +72,22 @@ pub fn is_foreground(window: &Window) -> bool {
     {
         let _ = window;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reduced_from_animation_setting;
+
+    #[test]
+    fn animations_off_means_reduced_motion() {
+        assert!(reduced_from_animation_setting(true, false));
+        assert!(!reduced_from_animation_setting(true, true));
+    }
+
+    #[test]
+    fn a_failed_query_keeps_animations_on() {
+        assert!(!reduced_from_animation_setting(false, false));
+        assert!(!reduced_from_animation_setting(false, true));
     }
 }

@@ -710,8 +710,9 @@ fn draw_list(
     // create is within the animation window; `None` once it's expired.
     let new_row_anim = prefs.created_at.and_then(|start| {
         let elapsed = (time - start).max(0.0);
-        if elapsed < NEW_ROW_ANIM_S {
-            Some(elapsed / NEW_ROW_ANIM_S)
+        let dur = ewo_core::motion::dur(NEW_ROW_ANIM_S);
+        if elapsed < dur {
+            Some(elapsed / dur)
         } else {
             None
         }
@@ -1132,8 +1133,9 @@ fn draw_detail(
     // as a deliberate transition rather than a hard snap.
     let select_anim = prefs.selected_at.and_then(|start| {
         let elapsed = (time - start).max(0.0);
-        if elapsed < SELECT_ANIM_S {
-            Some(elapsed / SELECT_ANIM_S)
+        let dur = ewo_core::motion::dur(SELECT_ANIM_S);
+        if elapsed < dur {
+            Some(elapsed / dur)
         } else {
             None
         }
@@ -1647,13 +1649,15 @@ fn draw_mod_section(
         // Per-row reveal interpolation. `Some(t)` with t∈[0,1) means animate;
         // `None` means past the end (render at rest) or no animation pending.
         let reveal_t: Option<f32> = reveal_age.and_then(|age| {
-            let local = age - (i as f32) * MOD_ROW_STAGGER_S;
+            // Reduced motion collapses the row stagger and reveal to 0.01 ms.
+            let reveal = ewo_core::motion::dur(MOD_ROW_REVEAL_S);
+            let local = age - (i as f32) * ewo_core::motion::dur(MOD_ROW_STAGGER_S);
             if local < 0.0 {
                 Some(0.0)
-            } else if local >= MOD_ROW_REVEAL_S {
+            } else if local >= reveal {
                 None
             } else {
-                Some(local / MOD_ROW_REVEAL_S)
+                Some(local / reveal)
             }
         });
 

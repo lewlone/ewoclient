@@ -1649,6 +1649,12 @@ pub(crate) fn survival_inputs_from(
         eye_in_water: src.underwater,
         vehicle,
         effects: effect_inputs(src.effects),
+        // The sprite table bakes exactly one icon per `MOB_EFFECTS` row in
+        // order and fails the bake on a missing file (assets.rs's `?`), so
+        // the table length IS the atlas's icon count — the split
+        // `survival_hud::effects` applies against it is the same test
+        // `Hud.getMobEffectSprite`'s keyless-holder fallback makes.
+        effect_table_len: fx::MOB_EFFECTS.len(),
         tick_count,
         jump: src.jump,
     }

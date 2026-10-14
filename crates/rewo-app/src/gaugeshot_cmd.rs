@@ -45,7 +45,7 @@ use rewo_proto::writer::PacketWriter;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 35;
+const EXPECTED_WITNESSES: usize = 37;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -341,6 +341,38 @@ fn check_transcription(c: &mut Checker) {
         format!(
             "{order:?}: `compareFalseFirst(ambient)` puts ambient LAST ascending, \
              `Ordering.natural().reverse()` puts it first; then duration descending"
+        ),
+    );
+
+    // t4b — the missing-texture split: an id at/past the table (or
+    // negative) becomes `HudIcon::MissingTexture`, which is
+    // `getMobEffectSprite`'s `orElseGet(MissingTextureAtlasSprite::
+    // getLocation)`; the boundary is half-open.
+    let split = |ids: Vec<i32>, len: usize| {
+        only(
+            &sh::layout(
+                &SurvivalInputs {
+                    can_hurt: false,
+                    effects: ids.into_iter().map(|id| e(id, true, false, 1000)).collect(),
+                    effect_table_len: len,
+                    ..Default::default()
+                },
+                GUI_W,
+                GUI_H,
+            ),
+            |i| matches!(i, HudIcon::Effect(_) | HudIcon::MissingTexture),
+        )
+    };
+    let in_table = split(vec![0, 2], 3);
+    let out_of_table = split(vec![3, 10, -1], 3);
+    c.record(
+        "t4b.effect_ids_at_or_past_the_table_and_negative_ones_fall_back_to_missingno",
+        in_table.iter().all(|b| matches!(b.icon, HudIcon::Effect(_)))
+            && out_of_table.len() == 3
+            && out_of_table.iter().all(|b| matches!(b.icon, HudIcon::MissingTexture)),
+        format!(
+            "len 3: ids 0,2 in-table; 3 (== len), 10, -1 all MissingTexture. An earlier \
+             cut drew nothing here — vanilla draws the checker"
         ),
     );
 
@@ -1063,6 +1095,45 @@ fn check_pixels(
             full.gui(xr - 9 + 4, yb + 4),
             food_full,
             armour_row
+        ),
+    );
+
+    // p-effect-missing — an id past the REAL sprite table renders vanilla's
+    // `MissingTextureAtlasSprite` checker, through the production
+    // layout+draw path: pink RGB (248, 0, 248) quadrants top-right and
+    // bottom-left (`y < 8 ^ x < 8`), black elsewhere, the 16px sprite's
+    // quadrants scaled to exactly 9px by the 18px blit. Colour readback is
+    // sRGB-encoded (the pipeline stores linear), so 248 comes back.
+    let len = sprites.effect_icons.len();
+    let miss = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        &SurvivalInputs {
+            can_hurt: false,
+            effects: vec![sh::EffectInput {
+                id: len as i32,
+                duration: 100_000,
+                ambient: false,
+                show_icon: true,
+                beneficial: true,
+                color: 1,
+            }],
+            effect_table_len: len,
+            ..Default::default()
+        },
+    )?;
+    let (gx, gy) = (GUI_W - 22, 4); // beneficial row 1's icon, at +3,+3 of the 24px cell
+    c.record(
+        "p_effect_missing.an_id_past_the_table_draws_the_quadrant_checker_at_the_icon_slot",
+        close(miss.gui(gx + 4, gy + 4), [0, 0, 0], 2)
+            && close(miss.gui(gx + 13, gy + 4), [248, 0, 248], 2)
+            && close(miss.gui(gx + 4, gy + 13), [248, 0, 248], 2)
+            && close(miss.gui(gx + 13, gy + 13), [0, 0, 0], 2),
+        format!(
+            "table len {len}; icon at ({gx},{gy}) 18x18; TL black / TR pink / BL pink / \
+             BR black at the quadrant centres — a pink==black or swapped-quadrant \
+             mutant flips one of the four probes"
         ),
     );
 

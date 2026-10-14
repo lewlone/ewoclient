@@ -54,6 +54,13 @@ pub struct OpenMenu {
     /// primary/secondary change does. A watermark on the *menu identity*
     /// alone would miss that; one on the effect slots alone would miss it too.
     pub data_writes: u64,
+    /// Which `open_screen` produced this menu (M184): a counter on
+    /// [`Menus`], stamped here. `data_writes` can't be the menu's
+    /// identity — it grows on every `container_set_data`, so a screen that
+    /// keys on `(container_id, data_writes)` loses its menu the moment the
+    /// first data echo lands. The serial changes only when the menu is
+    /// replaced, including a re-open of the same container id.
+    pub open_serial: u64,
     /// This menu's slots — the same [`crate::inventory::Inventory`] type the
     /// player's menu is, sized by `layout`.
     ///
@@ -462,6 +469,8 @@ impl OpenMenu {
 #[derive(Debug, Clone, Default)]
 pub struct Menus {
     open: Option<OpenMenu>,
+    /// Count of accepted `open_screen`s — see [`OpenMenu::open_serial`].
+    opens: u64,
 }
 
 impl Menus {
@@ -489,12 +498,14 @@ impl Menus {
         let Some(layout) = layout_of(menu_type) else {
             return false;
         };
+        self.opens = self.opens.wrapping_add(1);
         self.open = Some(OpenMenu {
             container_id,
             layout,
             title,
             data: [0; MAX_DATA_SLOTS],
             data_writes: 0,
+            open_serial: self.opens,
             menu: crate::inventory::Inventory::with_layout(layout),
         });
         true
@@ -640,6 +651,21 @@ mod tests {
         m.apply_open_screen(3, 2, "Chest".into());
         assert_eq!(m.open().unwrap().menu.state_id(), 0, "state id resets");
         assert_ne!(before, 0, "and the first open really had advanced it");
+    }
+
+    #[test]
+    fn open_serial_survives_data_writes_and_changes_on_reopen() {
+        // M184: a screen keying on the menu's identity must keep it across
+        // `container_set_data` (which bumps `data_writes`) and lose it on a
+        // re-open of the SAME container id.
+        let mut m = Menus::new();
+        m.apply_open_screen(7, 17, "Lectern".into());
+        let first = m.open().unwrap().open_serial;
+        assert!(m.apply_set_data(7, 0, 3));
+        assert_ne!(m.open().unwrap().data_writes, 0);
+        assert_eq!(m.open().unwrap().open_serial, first);
+        m.apply_open_screen(7, 17, "Lectern".into());
+        assert_ne!(m.open().unwrap().open_serial, first);
     }
 
     // -- M91: the furnace's derived progress -------------------------------

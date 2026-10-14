@@ -1103,6 +1103,19 @@ pub fn container_button_click_body(container_id: i32, button: i32) -> Vec<u8> {
     w.buf
 }
 
+/// `ServerboundContainerClosePacket` (M184) — one VarInt container id.
+///
+/// `ServerCommonPacketListener.handleContainerClose` reads exactly that;
+/// there is no state id and no slot payload. This is the client's half of
+/// a **lectern** close (`LecternScreen.onClose` → `player.closeContainer()`),
+/// which is what stops the frame-sync re-opening a menu the user just
+/// closed.
+pub fn container_close_body(container_id: i32) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.varint(container_id);
+    w.buf
+}
+
 /// `ServerboundRecipeBookChangeSettingsPacket` (M98).
 ///
 /// ```java
@@ -5400,6 +5413,16 @@ mod award_stats_tests {
     #[test]
     fn the_button_click_body_is_two_varints() {
         assert_eq!(container_button_click_body(3, 1), vec![3u8, 1]);
+    }
+
+    /// `container_close` is ONE var-int (M184). A sibling-shaped instinct
+    /// would add nothing — there is genuinely nothing else — but the
+    /// witness pins the length so a payload can never creep in.
+    #[test]
+    fn the_container_close_body_is_one_varint() {
+        assert_eq!(container_close_body(5), vec![5u8]);
+        // Two-byte var-int boundary.
+        assert_eq!(container_close_body(128), vec![0x80, 0x01]);
     }
 
     /// The book type is an ORDINAL, and both booleans always ride along.

@@ -159,7 +159,13 @@ fn draw_fold(canvas: &Canvas, w: f32, h: f32, time: f32, fold: &Fold, motion_spe
     let triangle = if phase < 1.0 { phase } else { 2.0 - phase };
     let eased = ease_in_out(triangle);
 
-    let (tx_pct, ty_pct, sc, rot_deg) = lerp_fold_drift(eased);
+    // Reduced motion (StyleSheet1 ~L1563): the `fold-drift` loop stops and
+    // `.vf-layer` falls back to its base style, which has no transform.
+    let (tx_pct, ty_pct, sc, rot_deg) = if ewo_core::motion::is_reduced() {
+        (0.0, 0.0, 1.0, 0.0)
+    } else {
+        lerp_fold_drift(eased)
+    };
 
     canvas.save();
     let cx = w * 0.5;

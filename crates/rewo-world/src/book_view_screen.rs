@@ -149,15 +149,34 @@ impl BookViewScreen {
     /// A click at `(mx, my)`. Turns the page if it lands on a VISIBLE button,
     /// and returns whether it did (so the caller can consume the click).
     pub fn click(&mut self, mx: i32, my: i32, width: i32) -> bool {
+        match self.arrow_at(mx, my, width) {
+            Some(BookArrow::Forward) => {
+                self.page_forward();
+                true
+            }
+            Some(BookArrow::Back) => {
+                self.page_back();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Which page arrow sits under the cursor, if a VISIBLE one does.
+    ///
+    /// The lectern's half of the seam (M184): its arrows are
+    /// `container_button_click` sends rather than local turns, and the
+    /// caller needs WHICH arrow without mutating — so the hit-test lives
+    /// here where the visibility rules are, instead of being re-derived
+    /// beside [`Self::click`] and drifting.
+    pub fn arrow_at(&self, mx: i32, my: i32, width: i32) -> Option<BookArrow> {
         if self.forward_visible() && in_rect(mx, my, Self::forward_rect(width)) {
-            self.page_forward();
-            return true;
+            Some(BookArrow::Forward)
+        } else if self.back_visible() && in_rect(mx, my, Self::back_rect(width)) {
+            Some(BookArrow::Back)
+        } else {
+            None
         }
-        if self.back_visible() && in_rect(mx, my, Self::back_rect(width)) {
-            self.page_back();
-            return true;
-        }
-        false
     }
 
     /// A key press. `PageUp`/`PageDown` turn the page; returns whether handled.
@@ -201,8 +220,120 @@ impl BookViewScreen {
 /// sits.
 pub const MENU_CONTROLS_TOP: i32 = BACKGROUND_TOP + IMAGE_H + 2; // 196
 
+/// Which of the reader's two page arrows [`BookViewScreen::arrow_at`] found.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BookArrow {
+    Back,
+    Forward,
+}
+
+#[cfg(test)]
+mod lectern_tests {
+    use super::*;
+
+    /// `LecternScreen`'s button codes, verbatim from the decompile:
+    /// back 1, forward 2, take-book 3, and `forcePage`'s `100 + page`
+    /// with the 0-based page (`handleClickEvent` already decremented the
+    /// one-based ChangePage).
+    #[test]
+    fn the_lectern_button_codes_are_the_decompiles() {
+        assert_eq!(LECTERN_PAGE_BACK, 1);
+        assert_eq!(LECTERN_PAGE_FORWARD, 2);
+        assert_eq!(LECTERN_TAKE_BOOK, 3);
+        assert_eq!(lectern_force_button(0), 100, "first page");
+        assert_eq!(lectern_force_button(4), 104, "fifth page, 0-based");
+    }
+
+    /// The `mayBuild` footer: two 98px buttons flanking the centre line,
+    /// both at `menuControlsTop`, with the two widget ids the click
+    /// router matches on. The not-mayBuild fallback is `build_screen`'s
+    /// single 200px Done — one centred widget, no Take Book.
+    #[test]
+    fn the_maybuild_footer_is_two_98px_buttons_and_the_fallback_is_one() {
+        let s = build_lectern_screen(320, 240, "Done", "Take Book");
+        assert_eq!(s.widgets.len(), 2);
+        let done = s.widget(DONE).expect("done widget");
+        let take = s.widget(TAKE_BOOK).expect("take widget");
+        assert_eq!(done.width, 98);
+        assert_eq!(take.width, 98);
+        // `pos(middle - 98 - 2)` and `pos(middle + 2)` — each button sits
+        // 2px from the centre LINE, so the gap BETWEEN them is 4.
+        let middle = 320 / 2;
+        assert_eq!(done.x, middle - 98 - 2);
+        assert_eq!(take.x, middle + 2);
+        assert_eq!(done.y, MENU_CONTROLS_TOP);
+        assert_eq!(take.y, MENU_CONTROLS_TOP);
+        let plain = build_screen(320, 240, "Done");
+        assert_eq!(plain.widgets.len(), 1);
+        assert!(plain.widget(TAKE_BOOK).is_none());
+    }
+}
+
 /// The Done button's widget id.
 pub const DONE: crate::screen::WidgetId = 0;
+
+/// The lectern footer's "Take Book" button (`TAKE_BOOK_LABEL`,
+/// `lectern.take_book`) — the second widget when the footer is the
+/// two-button `mayBuild` variant.
+pub const TAKE_BOOK: crate::screen::WidgetId = 1;
+
+// -- the lectern (M184) -------------------------------------------------------
+//
+// `LecternScreen extends BookViewScreen` and adds exactly three things: the
+// book comes from the MENU's slot 0, the page from container-data 0, and
+// every page turn is a `container_button_click` the server answers by
+// echoing the new page — the client never turns locally.
+
+/// `LecternScreen.pageBack` → `sendButtonClick(1)`.
+pub const LECTERN_PAGE_BACK: i32 = 1;
+/// `LecternScreen.pageForward` → `sendButtonClick(2)`.
+pub const LECTERN_PAGE_FORWARD: i32 = 2;
+/// `TAKE_BOOK_LABEL`'s button → `sendButtonClick(3)`.
+pub const LECTERN_TAKE_BOOK: i32 = 3;
+
+/// `LecternScreen.forcePage`: `sendButtonClick(100 + page)`. The page is
+/// **0-based** — `handleClickEvent` decrements the one-based ChangePage
+/// before calling (`BookViewScreen.java:235-237`), and the guard compares
+/// against `menu.getPage()`, which is the raw data slot.
+pub fn lectern_force_button(page: i32) -> i32 {
+    100 + page
+}
+
+/// `LecternScreen.createMenuControls`'s `mayBuild` branch: the one 200px
+/// Done becomes TWO 98px buttons, `Done` at `middle - 98 - 2` and "Take
+/// Book" at `middle + 2`, both at `menuControlsTop()`. The not-`mayBuild`
+/// fallback is [`build_screen`]'s single Done. `mayBuild` is not on the
+/// wire — vanilla's `Player.mayBuild()` reads `abilities.mayBuild`, which
+/// the abilities packet does not carry — and vanilla's own setter makes it
+/// equivalent to `!isSpectator()`, so the caller passes that.
+pub fn build_lectern_screen(
+    gui_w: i32,
+    gui_h: i32,
+    done_label: &str,
+    take_label: &str,
+) -> crate::screen::Screen {
+    let middle = gui_w / 2;
+    crate::screen::Screen::new(crate::screen::ScreenKind::BookView, gui_w, gui_h)
+        .with_backdrop(crate::screen::Backdrop::TRANSPARENT)
+        .with_widgets(vec![
+            crate::screen::Widget::button(
+                DONE,
+                middle - 98 - 2,
+                MENU_CONTROLS_TOP,
+                98,
+                crate::screen::BUTTON_HEIGHT,
+                done_label,
+            ),
+            crate::screen::Widget::button(
+                TAKE_BOOK,
+                middle + 2,
+                MENU_CONTROLS_TOP,
+                98,
+                crate::screen::BUTTON_HEIGHT,
+                take_label,
+            ),
+        ])
+}
 
 /// Build the framework [`crate::screen::Screen`] for the reader (M172): the
 /// transparent-gradient backdrop (`isInGameUi()` is true, so vanilla draws

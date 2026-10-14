@@ -97,6 +97,14 @@ const LAYER_B: &[CausticBlob] = &[
 ];
 
 pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
+    // Reduced motion (StyleSheet1 ~L1563): both loops stop and the layers rest
+    // on their base style, which has no transform (phase 0). Layer B's
+    // `reverse` direction would otherwise land on the `to` keyframe.
+    if ewo_core::motion::is_reduced() {
+        draw_layer(canvas, w, h, LAYER_A, 0.0);
+        draw_layer(canvas, w, h, LAYER_B, 0.0);
+        return;
+    }
     // Layer A: 38s linear period.
     draw_layer(canvas, w, h, LAYER_A, (time / 38.0).fract());
     // Layer B: 52s, reversed direction (CSS `animation-direction: reverse`

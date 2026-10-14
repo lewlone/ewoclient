@@ -195,6 +195,11 @@ struct App {
     backdrop: Option<Backdrop>,
     fonts: Option<FontStore>,
     clock: Clock,
+    /// Re-reads the OS "show animations" setting (non-negotiable #6); see
+    /// `ewo_core::motion` and `window::prefers_reduced_motion`.
+    motion_watch: ewo_core::motion::Watcher,
+    /// Force the next frame to re-read it (set on focus gain).
+    motion_recheck: bool,
     theme: Theme,
     settings: Settings,
     cursor: PhysicalPosition<f64>,
@@ -353,6 +358,8 @@ impl App {
             backdrop: None,
             fonts: None,
             clock: Clock::new(),
+            motion_watch: ewo_core::motion::Watcher::new(),
+            motion_recheck: false,
             theme: Theme::VELVET,
             settings,
             cursor: PhysicalPosition::new(0.0, 0.0),
@@ -1214,6 +1221,17 @@ impl ApplicationHandler for App {
             attrs.with_no_redirection_bitmap(true)
         };
 
+        // Runtime taskbar/alt-tab icon for the borderless window (the
+        // embedded .ico serves Explorer only). None → OS default icon;
+        // a missing asset never blocks startup.
+        let attrs = match window::icon::load_app_icon() {
+            Some(icon) => attrs.with_window_icon(Some(icon)),
+            None => {
+                log::warn!("app icon not found — taskbar shows the default icon");
+                attrs
+            }
+        };
+
         let win = Arc::new(
             event_loop
                 .create_window(attrs)
@@ -1313,6 +1331,9 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
                 if focused {
+                    // The user may have flipped Windows "Show animations"
+                    // while we were in the background.
+                    self.motion_recheck = true;
                     // Coming back from unfocused — kick off a fresh redraw
                     // so animations resume immediately, at full rate briefly.
                     self.last_activity = Instant::now();
@@ -2553,6 +2574,10 @@ fn main() {
     if args.mint_rewo_env {
         std::process::exit(mint_rewo_env());
     }
+    // Reduced motion must be known before the first frame is built.
+    let reduced = window::prefers_reduced_motion();
+    ewo_core::motion::set_reduced(reduced);
+    log::info!("reduced motion: {}", if reduced { "on" } else { "off" });
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(args.dev);
     event_loop.run_app(&mut app).expect("event loop error");

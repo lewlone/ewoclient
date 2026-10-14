@@ -85,7 +85,18 @@ impl Backdrop {
         *self.slow_cache.borrow_mut() = None;
     }
 
+    /// Drop the cached slow-layer composite so the next draw rebuilds it (used
+    /// when reduced motion flips and the layers change from drifting to still).
+    pub fn invalidate_cache(&self) {
+        *self.slow_cache.borrow_mut() = None;
+    }
+
     pub fn update(&mut self, dt: f32) {
+        // Reduced motion: dust and petals hold still (`dt = 0`). The prototype
+        // drives them from `requestAnimationFrame`, which its
+        // `prefers-reduced-motion` CSS cannot reach; as ambient motion they
+        // are frozen here anyway (non-negotiable #6, see `ewo_core::motion`).
+        let dt = ewo_core::motion::ambient_dt(dt);
         self.pearl_dust.update(dt);
         self.petals.update(dt);
     }
@@ -96,7 +107,8 @@ impl Backdrop {
 
     #[allow(dead_code)]
     pub fn celebrate(&mut self, on: bool) {
-        self.petals.celebrate(on);
+        // The petal burst is pure motion; under reduced motion it never starts.
+        self.petals.celebrate(on && !ewo_core::motion::is_reduced());
     }
 
     pub fn draw(
@@ -135,7 +147,10 @@ impl Backdrop {
 
         let need_refresh = match self.slow_cache.borrow().as_ref() {
             Some(c) if c.w == wi && c.h == hi && c.generation == crate::gl_backend::gpu_generation() => {
-                time - c.last_refresh >= 1.0 / CACHE_REFRESH_HZ
+                // Under reduced motion the layers are static, so the cached
+                // composite never goes stale (and the three full-screen blurs
+                // stop costing GPU time). Size/generation changes still rebuild.
+                !ewo_core::motion::is_reduced() && time - c.last_refresh >= 1.0 / CACHE_REFRESH_HZ
             }
             _ => true,
         };
