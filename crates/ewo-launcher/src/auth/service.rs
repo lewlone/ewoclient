@@ -61,12 +61,20 @@ enum InFlight {
 /// A refresh never moves it (the user may have switched accounts while it
 /// ran, and a late `Success` must not switch them back). An interactive
 /// sign-in makes the new account active unless the user chose a different
-/// active account while the browser flow was open.
-fn active_after_success(job: &InFlight, current: Option<&str>, signed_in: &str) -> Option<String> {
+/// active account while the browser flow was open. Removing the account
+/// that was active at the start is not a choice: with nothing active, or
+/// only the automatic fallback pointer left (`start_gone`), the new account
+/// becomes active.
+fn active_after_success(
+    job: &InFlight,
+    current: Option<&str>,
+    start_gone: bool,
+    signed_in: &str,
+) -> Option<String> {
     match job {
         InFlight::Refresh { .. } => current.map(str::to_string),
         InFlight::Interactive { active_at_start } => {
-            if current == active_at_start.as_deref() {
+            if current.is_none() || start_gone || current == active_at_start.as_deref() {
                 Some(signed_in.to_string())
             } else {
                 current.map(str::to_string)
@@ -91,7 +99,13 @@ fn apply_success(store: &mut AccountStore, job: &InFlight, account: MinecraftAcc
         account.name,
         account.uuid
     );
-    let new_active = active_after_success(job, store.active.as_deref(), &account.uuid);
+    let start_gone = match job {
+        InFlight::Interactive {
+            active_at_start: Some(start),
+        } => !store.accounts.iter().any(|a| &a.uuid == start),
+        _ => false,
+    };
+    let new_active = active_after_success(job, store.active.as_deref(), start_gone, &account.uuid);
     store.upsert(account);
     store.active = new_active;
     true
@@ -494,5 +508,37 @@ mod tests {
         let mut s = AccountStore::default();
         assert!(apply_success(&mut s, &job, account("a", "t")));
         assert_eq!(s.active.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn interactive_sign_in_after_the_active_account_was_removed_becomes_active() {
+        let job = InFlight::Interactive {
+            active_at_start: Some("a".into()),
+        };
+        // The only account was removed while the browser flow was open.
+        let mut s = AccountStore::default();
+        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert_eq!(s.active.as_deref(), Some("c"), "nothing active: take it");
+
+        // A (active at the start) was removed and the pointer fell back to B,
+        // which the user never chose.
+        let mut s = AccountStore {
+            active: Some("b".into()),
+            accounts: vec![account("b", "")],
+            ..Default::default()
+        };
+        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert_eq!(s.active.as_deref(), Some("c"));
+
+        // The pure rule, including the unchanged cases.
+        assert_eq!(
+            active_after_success(&job, None, true, "c").as_deref(),
+            Some("c")
+        );
+        assert_eq!(
+            active_after_success(&job, Some("b"), false, "c").as_deref(),
+            Some("b"),
+            "a deliberate switch to B stays"
+        );
     }
 }
