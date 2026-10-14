@@ -32,93 +32,44 @@ use crate::Gpu;
 mod arena;
 mod cull;
 mod entity_passes;
+mod frame;
 mod gamma;
 mod gui_passes;
 mod lightmap;
+mod lines;
 mod scene_passes;
 mod sky;
+mod terrain;
 mod textures;
 
 use arena::Arena;
 pub use arena::{MAX_COLUMNS, MAX_INDICES, MAX_VERTS, VERTEX_STRIDE};
-use cull::{frustum_planes, Culler};
+use cull::Culler;
 pub use entity_passes::PlayerTexture;
 pub use gamma::{unorm_of, GammaScope};
 use gui_passes::GuiFrame;
 pub use gui_passes::OwnedTextLine;
-use lightmap::{LightmapRing, WorldLightmapExtra, LIGHTMAP_UBO_RING};
+use lightmap::LightmapRing;
 pub use lightmap::{WorldLightmapState, BLOCK_LIGHT_FACTOR};
+use lines::{LeashRibbon, SelectOutline};
 use sky::{parse_fog_env, SkyGradient};
 pub use sky::{SkyMode, SKY_HORIZON};
+use terrain::TerrainPass;
 pub(crate) use textures::upload_texture_array;
 pub use textures::LayerAnimation;
 use textures::TextureArray;
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct WorldPush {
-    view_proj: [[f32; 4]; 4],
-    /// xyz camera world pos, w = fog start distance.
-    cam_fog: [f32; 4],
-    /// xyz fog color (linear = sky horizon), w = fog end distance.
-    fog_col: [f32; 4],
-    /// The scalar lightmap uniforms, packed to fill the spare push lanes:
-    /// x = SkyFactor (time of day), y = BlockFactor, z = BrightnessFactor
-    /// (gamma minus the darkness effect), w = DarknessScale. Vanilla scales
-    /// only the sky half by the time of day, so a sunrise is one push, not a
-    /// remesh.
-    light: [f32; 4],
-    /// xyz sky-light colour (white by day, blue at night); w = the
-    /// night-vision factor (the ambient seed `max(black, nvColor*w)`).
-    sky_col: [f32; 4],
-}
-// 128 bytes: exactly the push-constant size Vulkan guarantees. Anything
-// further has to move into a uniform buffer — which is what M16's dimension
-// ambient colour does (see `WorldLightmapExtra` / `LIGHTMAP_UBO_RING`).
-const _: () = assert!(std::mem::size_of::<WorldPush>() == 128);
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct LinePush {
-    view_proj: [[f32; 4]; 4],
-    color: [f32; 4],
-}
-
-/// The leash ribbon's push (M170) — colour is per-vertex, so only the camera.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct LeashPush {
-    view_proj: [[f32; 4]; 4],
-}
-
-/// Ribbon vertex budget: ~13 leashes at 294 verts each (98 triangles). A
-/// leash beyond the cap is dropped whole rather than torn.
-const LEASH_MAX_VERTS: usize = 4096;
 pub struct WorldRenderer {
     // -- graphics --
-    tex_set_layout: vk::DescriptorSetLayout,
-    graphics_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    /// Blended, depth-write-off variant for the water pass.
-    water_pipeline: vk::Pipeline,
+    /// The terrain pipelines (opaque + water) and their descriptor sets.
+    terrain: TerrainPass,
     /// Fullscreen gradient sky (no descriptor set, no vertex input).
     sky_gradient: SkyGradient,
     /// Block-selection outline (LINE_LIST, depth-tested against terrain).
-    select_layout: vk::PipelineLayout,
-    select_pipeline: vk::Pipeline,
-    select_ring: crate::buf_ring::BufRing,
-    /// Leash ribbons (M170): a TRIANGLE_LIST of position+colour verts, world
-    /// space, depth-tested against terrain and entities. Rebuilt each frame.
-    leash_layout: vk::PipelineLayout,
-    leash_pipeline: vk::Pipeline,
-    leash_ring: crate::buf_ring::BufRing,
-    leash_warned: bool,
-    leash_verts: Vec<crate::leash::LeashVertex>,
-    tex_pool: vk::DescriptorPool,
-    /// One set per frame in flight: identical texture binding, but each points
-    /// at its own `LightmapExtra` uniform slot (see [`LIGHTMAP_UBO_RING`]).
-    tex_sets: [vk::DescriptorSet; LIGHTMAP_UBO_RING],
+    select_outline: SelectOutline,
+    /// Leash ribbons (M170).
+    leash_ribbon: LeashRibbon,
     /// The `LightmapExtra` uniform buffers (one per ring slot, host-mapped)
     /// and the cursor naming the slot this frame writes and binds.
     lm: LightmapRing,
@@ -253,246 +204,98 @@ impl WorldRenderer {
         tex_size: u32,
         layers: &[Vec<u8>],
     ) -> Result<Self, String> {
-        unsafe {
-            let textures = TextureArray::create(gpu, tex_size, layers)?;
-            let device = gpu.device.clone();
+        let textures = TextureArray::create(gpu, tex_size, layers)?;
+        let device = gpu.device.clone();
 
-            // ---- graphics descriptor + pipeline ----
-            // Binding 0: the block texture array. Binding 1: the small
-            // `LightmapExtra` UBO carrying the dimension ambient colour — the
-            // push block is exactly full at 128 bytes, so this is where a new
-            // canonical lightmap input has to live.
-            let tex_bindings = [
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                // Read by world.vert, which samples the lightmap per vertex.
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-            ];
-            let tex_set_layout = device
-                .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&tex_bindings),
-                    None,
-                )
-                .map_err(|e| format!("tex set layout: {e}"))?;
-            let ring = LIGHTMAP_UBO_RING as u32;
-            let tex_pool_sizes = [
-                vk::DescriptorPoolSize::default()
-                    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(ring),
-                vk::DescriptorPoolSize::default()
-                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(ring),
-            ];
-            let tex_pool = device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(ring)
-                        .pool_sizes(&tex_pool_sizes),
-                    None,
-                )
-                .map_err(|e| format!("tex pool: {e}"))?;
-            let tex_layouts = [tex_set_layout];
-            let ring_layouts = [tex_set_layout; LIGHTMAP_UBO_RING];
-            let allocated = device
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(tex_pool)
-                        .set_layouts(&ring_layouts),
-                )
-                .map_err(|e| format!("tex set: {e}"))?;
-            let tex_sets: [vk::DescriptorSet; LIGHTMAP_UBO_RING] =
-                std::array::from_fn(|i| allocated[i]);
+        let terrain_descriptors = terrain::create_terrain_descriptors(&device)?;
 
-            let mut lm = LightmapRing::create(gpu)?;
+        let mut lm = LightmapRing::create(gpu)?;
 
-            let image_info = [vk::DescriptorImageInfo::default()
-                .sampler(textures.sampler)
-                .image_view(textures.view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            // `buffer_info` slices must outlive the update call, so build them
-            // all up front rather than inside the loop.
-            let buf_infos: [[vk::DescriptorBufferInfo; 1]; LIGHTMAP_UBO_RING] =
-                std::array::from_fn(|i| {
-                    [vk::DescriptorBufferInfo::default()
-                        .buffer(lm.bufs[i])
-                        .offset(0)
-                        .range(std::mem::size_of::<WorldLightmapExtra>() as u64)]
-                });
-            let mut writes: Vec<vk::WriteDescriptorSet> = Vec::new();
-            for i in 0..LIGHTMAP_UBO_RING {
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(tex_sets[i])
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&image_info),
-                );
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(tex_sets[i])
-                        .dst_binding(1)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(&buf_infos[i]),
-                );
-            }
-            device.update_descriptor_sets(&writes, &[]);
-            // Seed every slot with the default state so a first frame that
-            // never reaches `draw` still binds initialized memory.
-            lm.seed_defaults();
+        let terrain =
+            TerrainPass::create(&device, color_format, terrain_descriptors, &textures, &lm)?;
+        // Seed every slot with the default state so a first frame that
+        // never reaches `draw` still binds initialized memory.
+        lm.seed_defaults();
 
-            // view_proj is read in the vertex stage, the fog fields in the
-            // fragment stage — one range spanning both.
-            let pc_ranges = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
-                .offset(0)
-                .size(std::mem::size_of::<WorldPush>() as u32)];
-            let graphics_layout = device
-                .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(&tex_layouts)
-                        .push_constant_ranges(&pc_ranges),
-                    None,
-                )
-                .map_err(|e| format!("graphics layout: {e}"))?;
-            let pipeline = build_graphics_pipeline(&device, graphics_layout, color_format, false)?;
-            let water_pipeline =
-                build_graphics_pipeline(&device, graphics_layout, color_format, true)?;
+        let sky_gradient = SkyGradient::create(&device, color_format)?;
 
-            let sky_gradient = SkyGradient::create(&device, color_format)?;
+        // ---- selection outline (lines) + leash ribbon (M170) ----
+        let (select_outline, leash_ribbon) = lines::create_line_overlays(gpu, color_format)?;
 
-            // ---- selection outline (lines) ----
-            let line_pc = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
-                .offset(0)
-                .size(std::mem::size_of::<LinePush>() as u32)];
-            let select_layout = device
-                .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&line_pc),
-                    None,
-                )
-                .map_err(|e| format!("select layout: {e}"))?;
-            let select_pipeline = build_line_pipeline(&device, select_layout, color_format)?;
-            // ---- leash ribbon (M170) ----
-            let leash_pc = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
-                .offset(0)
-                .size(std::mem::size_of::<LeashPush>() as u32)];
-            let leash_layout = device
-                .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&leash_pc),
-                    None,
-                )
-                .map_err(|e| format!("leash layout: {e}"))?;
-            let leash_pipeline = build_leash_pipeline(&device, leash_layout, color_format)?;
-            // Both written from `draw`, so they cannot grow; sized for their
-            // budgets up front.
-            let leash_ring = crate::buf_ring::BufRing::with_capacity(
-                gpu,
-                "leash-ribbon",
-                vk::BufferUsageFlags::VERTEX_BUFFER,
-                (LEASH_MAX_VERTS * std::mem::size_of::<crate::leash::LeashVertex>()) as u64,
-            )?;
-            let select_ring = crate::buf_ring::BufRing::with_capacity(
-                gpu,
-                "selection-lines",
-                vk::BufferUsageFlags::VERTEX_BUFFER,
-                24 * 12, // 24 line verts × vec3
-            )?;
+        // ---- compute cull descriptor + pipeline ----
+        let cull_pipeline = cull::create_cull_pipeline(&device)?;
 
-            // ---- compute cull descriptor + pipeline ----
-            let cull_pipeline = cull::create_cull_pipeline(&device)?;
+        // ---- mega-buffers + metadata + indirect + count ----
+        let mega = arena::create_mega_buffers(gpu)?;
+        let cull_bufs = cull::create_cull_buffers(gpu)?;
 
-            // ---- mega-buffers + metadata + indirect + count ----
-            let mega = arena::create_mega_buffers(gpu)?;
-            let cull_bufs = cull::create_cull_buffers(gpu)?;
+        // Cull descriptor set (meta, indirect cmds, count).
+        let cull_descriptors = cull::create_cull_descriptors(&device, &cull_pipeline, &cull_bufs)?;
 
-            // Cull descriptor set (meta, indirect cmds, count).
-            let cull_descriptors =
-                cull::create_cull_descriptors(&device, &cull_pipeline, &cull_bufs)?;
+        // ---- async upload ring ----
+        let upload_ring = arena::create_upload_ring(gpu)?;
+        let (count_readback, count_readback_alloc) = create_host_buffer(
+            gpu,
+            16,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            "count-readback",
+        )?;
 
-            // ---- async upload ring ----
-            let upload_ring = arena::create_upload_ring(gpu)?;
-            let (count_readback, count_readback_alloc) = create_host_buffer(
-                gpu,
-                16,
-                vk::BufferUsageFlags::TRANSFER_DST,
-                "count-readback",
-            )?;
-
-            Ok(Self {
-                velvet_text: None,
-                gui: GuiFrame::default(),
-                scene: SceneFrame {
-                    camera_eye: [0.0; 3],
-                    lightmap: WorldLightmapState::default(),
-                    sky_tint: [1.0; 3],
-                    fog_tint: [1.0; 3],
-                    sky_base: SKY_HORIZON,
-                    fog_base: SKY_HORIZON,
-                    fog: parse_fog_env(),
-                    sky_mode: SkyMode::default(),
-                    celestial_state: crate::celestial::CelestialState::default(),
-                    end_flash: None,
-                    end_portal_time: 0.0,
-                    selection: None,
-                },
-                tex_set_layout,
-                graphics_layout,
-                pipeline,
-                water_pipeline,
-                sky_gradient,
-                select_layout,
-                select_pipeline,
-                select_ring,
-                leash_layout,
-                leash_pipeline,
-                leash_ring,
-                leash_warned: false,
-                leash_verts: Vec::new(),
-                tex_pool,
-                tex_sets,
-                lm,
-                textures,
-                arena: Arena::new(mega, upload_ring),
-                evicted_textures: Vec::new(),
-                culler: Culler::new(
-                    cull_pipeline,
-                    cull_bufs,
-                    cull_descriptors,
-                    (count_readback, count_readback_alloc),
-                ),
-                color_format,
-                gamma: None,
-                entities: None,
-                celestial: None,
-                end_sky: None,
-                end_portal: None,
-                clouds: None,
-                border: None,
-                weather: None,
-                gui_items: None,
-                gui_item_generation: 0,
-                hand_generation: 0,
-                container: None,
-                screen: None,
-                preview: None,
-                hand: None,
-                particles: None,
-                crumbling: None,
-                hud: None,
-                locator: None,
-                text: None,
-                drawn_last_frame: 0,
-                culled_last_frame: 0,
-            })
-        }
+        Ok(Self {
+            velvet_text: None,
+            gui: GuiFrame::default(),
+            scene: SceneFrame {
+                camera_eye: [0.0; 3],
+                lightmap: WorldLightmapState::default(),
+                sky_tint: [1.0; 3],
+                fog_tint: [1.0; 3],
+                sky_base: SKY_HORIZON,
+                fog_base: SKY_HORIZON,
+                fog: parse_fog_env(),
+                sky_mode: SkyMode::default(),
+                celestial_state: crate::celestial::CelestialState::default(),
+                end_flash: None,
+                end_portal_time: 0.0,
+                selection: None,
+            },
+            terrain,
+            sky_gradient,
+            select_outline,
+            leash_ribbon,
+            lm,
+            textures,
+            arena: Arena::new(mega, upload_ring),
+            evicted_textures: Vec::new(),
+            culler: Culler::new(
+                cull_pipeline,
+                cull_bufs,
+                cull_descriptors,
+                (count_readback, count_readback_alloc),
+            ),
+            color_format,
+            gamma: None,
+            entities: None,
+            celestial: None,
+            end_sky: None,
+            end_portal: None,
+            clouds: None,
+            border: None,
+            weather: None,
+            gui_items: None,
+            gui_item_generation: 0,
+            hand_generation: 0,
+            container: None,
+            screen: None,
+            preview: None,
+            hand: None,
+            particles: None,
+            crumbling: None,
+            hud: None,
+            locator: None,
+            text: None,
+            drawn_last_frame: 0,
+            culled_last_frame: 0,
+        })
     }
 
     /// Set the frame's eye position — drives translucent back-to-front
@@ -500,440 +303,6 @@ impl WorldRenderer {
     pub fn set_camera(&mut self, eye: [f32; 3]) {
         self.scene.camera_eye = eye;
     }
-    /// Set the targeted block for the selection outline (`None` = hidden).
-    pub fn set_selection(&mut self, block: Option<[i32; 3]>) {
-        self.scene.selection = block;
-    }
-
-    /// Push the world/fog constants (view_proj + camera + fog band).
-    fn push_world(&self, device: &ash::Device, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
-        let (light, sky_col) = self.scene.lightmap.push_words();
-        let push = WorldPush {
-            view_proj,
-            cam_fog: [
-                self.scene.camera_eye[0],
-                self.scene.camera_eye[1],
-                self.scene.camera_eye[2],
-                self.scene.fog[0],
-            ],
-            fog_col: [
-                self.scene.fog_base[0] * self.scene.fog_tint[0],
-                self.scene.fog_base[1] * self.scene.fog_tint[1],
-                self.scene.fog_base[2] * self.scene.fog_tint[2],
-                self.scene.fog[1],
-            ],
-            light,
-            sky_col,
-        };
-        unsafe {
-            device.cmd_push_constants(
-                cb,
-                self.graphics_layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                0,
-                std::slice::from_raw_parts(
-                    (&push as *const WorldPush) as *const u8,
-                    std::mem::size_of::<WorldPush>(),
-                ),
-            );
-        }
-    }
-
-    /// In-pass draws, in blend-correct order: gradient sky (background) →
-    /// opaque terrain (indirect) → opaque entity capsules/models →
-    /// translucent water (CPU-sorted back-to-front) → nametag text.
-    pub fn draw(
-        &mut self,
-        gpu: &Gpu,
-        cb: vk::CommandBuffer,
-        view_proj: [[f32; 4]; 4],
-        extent: vk::Extent2D,
-    ) {
-        // Advance the `LightmapExtra` ring once per frame and publish this
-        // frame's ambient colour into the slot the terrain/water draws will
-        // bind. Done here (not in `set_lightmap_state`) so exactly one slot is
-        // consumed per frame regardless of how often the state was set.
-        self.lm.advance(&self.scene.lightmap);
-
-        self.draw_sky_pass(gpu, cb, view_proj, extent);
-        self.draw_scene_passes(gpu, cb, view_proj, extent);
-        self.draw_gui_passes(gpu, cb, extent);
-    }
-
-    /// The world half of [`Self::draw`]: opaque terrain, the crack overlay,
-    /// leashes and the selection outline, solid entities and their glint, end
-    /// portals, clouds, translucent water, particles, weather, the world border
-    /// and nametags — in blend-correct order.
-    fn draw_scene_passes(
-        &mut self,
-        gpu: &Gpu,
-        cb: vk::CommandBuffer,
-        view_proj: [[f32; 4]; 4],
-        extent: vk::Extent2D,
-    ) {
-        if self.culler.column_count > 0 {
-            self.draw_terrain(gpu, cb, view_proj, extent);
-        }
-        // The block-break crack (M81), immediately after the terrain whose
-        // depth it re-tests against and whose colour it multiplies. Before the
-        // entities, so a mob standing in front of a cracked block covers the
-        // crack rather than being darkened by it. In gamma space, because
-        // `2·src·dst` is not invariant under the sRGB transfer function.
-        if let Some(pass) = &self.crumbling {
-            if !pass.is_empty() {
-                self.in_gamma_space(gpu, cb, extent, || pass.draw(gpu, cb, view_proj, extent));
-            }
-        }
-        // Selection outline over the terrain (depth-tested against it).
-        self.draw_leash(gpu, cb, view_proj, extent);
-        self.draw_selection(gpu, cb, view_proj, extent);
-        if let Some(pass) = &self.entities {
-            pass.draw_solid(gpu, cb, view_proj, extent);
-            // M52: the vanilla emissive mob layers (mob eyes, the warden's
-            // glow) ride straight on top of the solid models — that is where
-            // vanilla's `order(1)` layer submits land, under everything below.
-            pass.draw_emissive(gpu, cb, view_proj, extent);
-            // M50: the worn-armour foil, then the trim. All three depth-test
-            // `EQUAL` against the solid geometry just written, so all three
-            // must follow it — and the foil precedes the trim because
-            // `renderLayers` submits layer, foil, trim in that order and
-            // `SubmitNodeStorage` drains its phases in ascending `order`. A
-            // trim's opaque texels therefore paint over the foil.
-            // Both foils blend in gamma space; the trim between them is an
-            // ordinary alpha blend and stays in the sRGB scope.
-            self.in_gamma_space(gpu, cb, extent, || {
-                pass.draw_armor_glint(gpu, cb, view_proj, extent)
-            });
-            pass.draw_trim(gpu, cb, view_proj, extent);
-            // The glint sits on the solid geometry it just wrote — its depth
-            // test is `EQUAL`, so it has to follow, and it precedes the
-            // translucent passes because it is additive over opaque pixels.
-            self.in_gamma_space(gpu, cb, extent, || {
-                pass.draw_glint(gpu, cb, view_proj, extent)
-            });
-        }
-        // End portals (M32). After solid geometry and before the translucent
-        // pass: the shader writes opaque pixels and depth, so it belongs with
-        // the solids, and drawing it after them lets terrain in front occlude
-        // it exactly as vanilla's depth-tested pipeline does.
-        if let Some(pass) = &self.end_portal {
-            pass.draw(gpu, cb, view_proj, self.scene.end_portal_time, extent);
-        }
-        // Clouds (M33) sit between the solids and the translucent pass: they
-        // are translucent themselves and must blend over terrain, but they are
-        // also depth-writing, so water in front of them still sorts correctly.
-        if let Some(pass) = &self.clouds {
-            pass.draw(gpu, cb, view_proj, extent);
-        }
-        self.draw_translucent(gpu, cb, view_proj, extent);
-        // Particles (M37) sit with the other blended, depth-tested,
-        // non-depth-writing passes — after everything solid and translucent so
-        // terrain occludes them, before weather so rain layers over smoke.
-        if let Some(pass) = &self.particles {
-            let (light, sky_col) = self.scene.lightmap.push_words();
-            pass.draw(
-                gpu,
-                cb,
-                view_proj,
-                (light, sky_col, self.scene.lightmap.extra_words()),
-                extent,
-            );
-        }
-        // Rain and snow come after everything solid and translucent, blended
-        // and depth-tested but not depth-writing — vanilla's
-        // `WEATHER_NO_DEPTH_WRITE` branch.
-        if let Some(pass) = &self.weather {
-            let (light, sky_col) = self.scene.lightmap.push_words();
-            pass.draw(
-                gpu,
-                cb,
-                view_proj,
-                (light, sky_col, self.scene.lightmap.extra_words()),
-                extent,
-            );
-        }
-        // The world border (M80) draws in vanilla's `weather` frame-graph pass,
-        // immediately after the rain and snow — and unlike them it *writes*
-        // depth, so it must come after everything it should not be occluded by.
-        if let Some(pass) = &self.border {
-            pass.draw(gpu, cb, view_proj, extent);
-        }
-        if let Some(pass) = &self.entities {
-            pass.draw_text(gpu, cb, view_proj, extent);
-        }
-    }
-
-    /// The block-selection wireframe: the 12 edges of the targeted block,
-    /// slightly inflated to avoid z-fighting, depth-tested against terrain.
-    /// Replace this frame's leash ribbons. `verts` is a TRIANGLE_LIST already
-    /// folded (position + linear colour) by `leash::build_ribbon`, concatenated
-    /// across every visible leash. Truncated to the vertex budget.
-    pub fn set_leash(&mut self, verts: &[crate::leash::LeashVertex]) {
-        self.leash_verts.clear();
-        // Whole triangles only, so a truncated ribbon never draws a torn one.
-        let n = verts.len().min(LEASH_MAX_VERTS) / 3 * 3;
-        if n < verts.len() && !self.leash_warned {
-            self.leash_warned = true;
-            log::warn!(
-                "world: {} leash vertices exceed the {LEASH_MAX_VERTS}-vertex budget — truncating",
-                verts.len()
-            );
-        }
-        self.leash_verts.extend_from_slice(&verts[..n]);
-    }
-
-    /// This frame's leash-ribbon vertex count — the render-check's r60
-    /// observable (a leash gathered by `collect_leashes` reached the pass).
-    pub fn leash_vert_count(&self) -> usize {
-        self.leash_verts.len()
-    }
-
-    /// Draw this frame's leash ribbons, if any. Depth-tested against the
-    /// terrain and entities (GREATER, reversed-Z, no write) so a rope is
-    /// occluded by blocks and closer mobs but composites over the sky.
-    fn draw_leash(
-        &mut self,
-        gpu: &Gpu,
-        cb: vk::CommandBuffer,
-        view_proj: [[f32; 4]; 4],
-        extent: vk::Extent2D,
-    ) {
-        let count = self.leash_verts.len() as u32;
-        if count < 3 {
-            return;
-        }
-        let stride = std::mem::size_of::<crate::leash::LeashVertex>();
-        let bytes = self
-            .leash_ring
-            .write_fixed(bytemuck::cast_slice(&self.leash_verts), stride * 3);
-        let count = (bytes / stride) as u32;
-        let Some(vbuf) = self.leash_ring.bind() else {
-            return;
-        };
-        let push = LeashPush { view_proj };
-        let device = &gpu.device;
-        unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.leash_pipeline);
-            let viewport = vk::Viewport::default()
-                .y(extent.height as f32)
-                .width(extent.width as f32)
-                .height(-(extent.height as f32))
-                .max_depth(1.0);
-            device.cmd_set_viewport(cb, 0, &[viewport]);
-            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_push_constants(
-                cb,
-                self.leash_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                std::slice::from_raw_parts(
-                    (&push as *const LeashPush) as *const u8,
-                    std::mem::size_of::<LeashPush>(),
-                ),
-            );
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
-            device.cmd_draw(cb, count, 1, 0, 0);
-        }
-    }
-
-    fn draw_selection(
-        &mut self,
-        gpu: &Gpu,
-        cb: vk::CommandBuffer,
-        view_proj: [[f32; 4]; 4],
-        extent: vk::Extent2D,
-    ) {
-        let Some(b) = self.scene.selection else {
-            return;
-        };
-        let (x0, y0, z0) = (
-            b[0] as f32 - 0.002,
-            b[1] as f32 - 0.002,
-            b[2] as f32 - 0.002,
-        );
-        let (x1, y1, z1) = (
-            b[0] as f32 + 1.002,
-            b[1] as f32 + 1.002,
-            b[2] as f32 + 1.002,
-        );
-        // 8 corners → 12 edges → 24 line vertices.
-        let c = [
-            [x0, y0, z0],
-            [x1, y0, z0],
-            [x1, y0, z1],
-            [x0, y0, z1], // bottom
-            [x0, y1, z0],
-            [x1, y1, z0],
-            [x1, y1, z1],
-            [x0, y1, z1], // top
-        ];
-        let edges = [
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (3, 0), // bottom loop
-            (4, 5),
-            (5, 6),
-            (6, 7),
-            (7, 4), // top loop
-            (0, 4),
-            (1, 5),
-            (2, 6),
-            (3, 7), // verticals
-        ];
-        let mut verts = [[0f32; 3]; 24];
-        for (i, &(a, bb)) in edges.iter().enumerate() {
-            verts[i * 2] = c[a];
-            verts[i * 2 + 1] = c[bb];
-        }
-
-        self.select_ring
-            .write_fixed(bytemuck::cast_slice(&verts), std::mem::size_of_val(&verts));
-        let Some(vbuf) = self.select_ring.bind() else {
-            return;
-        };
-        let push = LinePush {
-            view_proj,
-            color: [0.0, 0.0, 0.0, 0.7], // black outline, like vanilla
-        };
-        let device = &gpu.device;
-        unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.select_pipeline);
-            let viewport = vk::Viewport::default()
-                .y(extent.height as f32)
-                .width(extent.width as f32)
-                .height(-(extent.height as f32))
-                .max_depth(1.0);
-            device.cmd_set_viewport(cb, 0, &[viewport]);
-            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_push_constants(
-                cb,
-                self.select_layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                0,
-                std::slice::from_raw_parts(
-                    (&push as *const LinePush) as *const u8,
-                    std::mem::size_of::<LinePush>(),
-                ),
-            );
-            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
-            device.cmd_draw(cb, 24, 1, 0, 0);
-        }
-    }
-
-    /// Water: per-column direct draws, CPU frustum-culled (mirroring
-    /// cull.comp's positive-vertex test) and sorted far→near — the plan's
-    /// "per-section back-to-front CPU sort; intra-section artifacts
-    /// accepted v1". Column counts with water are small; the indirect path
-    /// stays opaque-only.
-    fn draw_translucent(
-        &mut self,
-        gpu: &Gpu,
-        cb: vk::CommandBuffer,
-        view_proj: [[f32; 4]; 4],
-        extent: vk::Extent2D,
-    ) {
-        let planes = frustum_planes(&view_proj);
-        let visible = |mn: &[f32; 4], mx: &[f32; 4]| -> bool {
-            planes.iter().all(|p| {
-                let pv = [
-                    if p[0] >= 0.0 { mx[0] } else { mn[0] },
-                    if p[1] >= 0.0 { mx[1] } else { mn[1] },
-                    if p[2] >= 0.0 { mx[2] } else { mn[2] },
-                ];
-                p[0] * pv[0] + p[1] * pv[1] + p[2] * pv[2] + p[3] >= 0.0
-            })
-        };
-        let eye = self.scene.camera_eye;
-        let mut cols: Vec<(f32, u32, u32, i32)> = self
-            .arena
-            .columns
-            .values()
-            .filter(|s| s.tidx_len > 0 && visible(&s.meta.aabb_min, &s.meta.aabb_max))
-            .map(|s| {
-                let cx = (s.meta.aabb_min[0] + s.meta.aabb_max[0]) * 0.5 - eye[0];
-                let cy = (s.meta.aabb_min[1] + s.meta.aabb_max[1]) * 0.5 - eye[1];
-                let cz = (s.meta.aabb_min[2] + s.meta.aabb_max[2]) * 0.5 - eye[2];
-                (
-                    cx * cx + cy * cy + cz * cz,
-                    s.tidx_len as u32,
-                    s.tidx_off as u32,
-                    s.tvtx_off as i32,
-                )
-            })
-            .collect();
-        if cols.is_empty() {
-            return;
-        }
-        cols.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-        let device = &gpu.device;
-        unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.water_pipeline);
-            let viewport = vk::Viewport::default()
-                .y(extent.height as f32)
-                .width(extent.width as f32)
-                .height(-(extent.height as f32))
-                .max_depth(1.0);
-            device.cmd_set_viewport(cb, 0, &[viewport]);
-            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_bind_descriptor_sets(
-                cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.graphics_layout,
-                0,
-                &[self.tex_sets[self.lm.cursor]],
-                &[],
-            );
-            self.push_world(device, cb, view_proj);
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.arena.vbuf], &[0]);
-            device.cmd_bind_index_buffer(cb, self.arena.ibuf, 0, vk::IndexType::UINT32);
-            for (_, count, first, voff) in cols {
-                device.cmd_draw_indexed(cb, count, 1, first, voff, 0);
-            }
-        }
-    }
-
-    fn draw_terrain(
-        &mut self,
-        gpu: &Gpu,
-        cb: vk::CommandBuffer,
-        view_proj: [[f32; 4]; 4],
-        extent: vk::Extent2D,
-    ) {
-        let device = &gpu.device;
-        unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            let viewport = vk::Viewport::default()
-                .y(extent.height as f32)
-                .width(extent.width as f32)
-                .height(-(extent.height as f32))
-                .max_depth(1.0);
-            device.cmd_set_viewport(cb, 0, &[viewport]);
-            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
-            device.cmd_bind_descriptor_sets(
-                cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.graphics_layout,
-                0,
-                &[self.tex_sets[self.lm.cursor]],
-                &[],
-            );
-            self.push_world(device, cb, view_proj);
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.arena.vbuf], &[0]);
-            device.cmd_bind_index_buffer(cb, self.arena.ibuf, 0, vk::IndexType::UINT32);
-            device.cmd_draw_indexed_indirect_count(
-                cb,
-                self.culler.indirect_bufs[self.culler.cursor],
-                0,
-                self.culler.count_bufs[self.culler.cursor],
-                0,
-                self.culler.column_count,
-                std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
-            );
-        }
-    }
-
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
         if let Some(mut pass) = self.celestial.take() {
@@ -990,8 +359,8 @@ impl WorldRenderer {
         if let Some(mut text) = self.text.take() {
             text.destroy(gpu);
         }
-        self.select_ring.destroy(gpu);
-        self.leash_ring.destroy(gpu);
+        self.select_outline.destroy_ring(gpu);
+        self.leash_ribbon.destroy_ring(gpu);
         unsafe {
             let device = &gpu.device;
             for s in &mut self.arena.upload_slots {
@@ -1000,19 +369,14 @@ impl WorldRenderer {
             }
             device.destroy_command_pool(self.arena.upload_pool, None);
             self.culler.destroy_objects(device);
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline(self.water_pipeline, None);
+            self.terrain.destroy_pipelines(device);
             self.sky_gradient.destroy(device);
-            device.destroy_pipeline(self.select_pipeline, None);
-            device.destroy_pipeline_layout(self.select_layout, None);
-            device.destroy_pipeline(self.leash_pipeline, None);
-            device.destroy_pipeline_layout(self.leash_layout, None);
+            self.select_outline.destroy_objects(device);
+            self.leash_ribbon.destroy_objects(device);
             for b in self.lm.bufs {
                 device.destroy_buffer(b, None);
             }
-            device.destroy_pipeline_layout(self.graphics_layout, None);
-            device.destroy_descriptor_pool(self.tex_pool, None);
-            device.destroy_descriptor_set_layout(self.tex_set_layout, None);
+            self.terrain.destroy_layouts(device);
             self.textures.destroy_objects(device);
             for b in [self.arena.vbuf, self.arena.ibuf, self.culler.readback] {
                 device.destroy_buffer(b, None);
@@ -1114,318 +478,6 @@ fn create_host_buffer(
             .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
             .map_err(|e| format!("{name} bind: {e}"))?;
         Ok((buffer, alloc))
-    }
-}
-
-/// Line pipeline for the selection outline: LINE_LIST, depth-tested
-/// (reversed-Z GREATER) but no depth write, alpha-blended.
-fn build_leash_pipeline(
-    device: &ash::Device,
-    layout: vk::PipelineLayout,
-    color_format: vk::Format,
-) -> Result<vk::Pipeline, String> {
-    unsafe {
-        let vert = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/leash.vert.spv")),
-        )?;
-        let frag = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/leash.frag.spv")),
-        )?;
-        let entry = c"main";
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert)
-                .name(entry),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag)
-                .name(entry),
-        ];
-        // pos vec3 @0, color vec3 @12: one `LeashVertex`.
-        let bindings = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<crate::leash::LeashVertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)];
-        let attrs = [
-            vk::VertexInputAttributeDescription::default()
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(0),
-            vk::VertexInputAttributeDescription::default()
-                .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(12),
-        ];
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&bindings)
-            .vertex_attribute_descriptions(&attrs);
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-        // Cull NONE: the strip's winding alternates, and the ribbon is meant to
-        // be seen from both sides.
-        let raster = vk::PipelineRasterizationStateCreateInfo::default()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
-        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B,
-            )];
-        let blend =
-            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-        let color_formats = [color_format];
-        let mut rendering = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_formats)
-            .depth_attachment_format(DEPTH_FORMAT);
-        let ci = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport)
-            .rasterization_state(&raster)
-            .multisample_state(&multisample)
-            .depth_stencil_state(&depth)
-            .color_blend_state(&blend)
-            .dynamic_state(&dynamic)
-            .layout(layout)
-            .push_next(&mut rendering);
-        let pipeline = device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[ci], None)
-            .map_err(|(_, e)| format!("leash pipeline: {e}"))?[0];
-        device.destroy_shader_module(vert, None);
-        device.destroy_shader_module(frag, None);
-        Ok(pipeline)
-    }
-}
-
-fn build_line_pipeline(
-    device: &ash::Device,
-    layout: vk::PipelineLayout,
-    color_format: vk::Format,
-) -> Result<vk::Pipeline, String> {
-    unsafe {
-        let vert = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/line.vert.spv")),
-        )?;
-        let frag = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/line.frag.spv")),
-        )?;
-        let entry = c"main";
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert)
-                .name(entry),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag)
-                .name(entry),
-        ];
-        let bindings = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<[f32; 3]>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)];
-        let attrs = [vk::VertexInputAttributeDescription::default()
-            .location(0)
-            .format(vk::Format::R32G32B32_SFLOAT)
-            .offset(0)];
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&bindings)
-            .vertex_attribute_descriptions(&attrs);
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::LINE_LIST);
-        let viewport = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-        let raster = vk::PipelineRasterizationStateCreateInfo::default()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
-        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B,
-            )];
-        let blend =
-            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-        let color_formats = [color_format];
-        let mut rendering = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_formats)
-            .depth_attachment_format(DEPTH_FORMAT);
-        let ci = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport)
-            .rasterization_state(&raster)
-            .multisample_state(&multisample)
-            .depth_stencil_state(&depth)
-            .color_blend_state(&blend)
-            .dynamic_state(&dynamic)
-            .layout(layout)
-            .push_next(&mut rendering);
-        let pipeline = device
-            .create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&ci), None)
-            .map_err(|(_, e)| format!("line pipeline: {e}"))?[0];
-        device.destroy_shader_module(vert, None);
-        device.destroy_shader_module(frag, None);
-        Ok(pipeline)
-    }
-}
-
-fn build_graphics_pipeline(
-    device: &ash::Device,
-    layout: vk::PipelineLayout,
-    color_format: vk::Format,
-    translucent: bool,
-) -> Result<vk::Pipeline, String> {
-    unsafe {
-        let vert = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/world.vert.spv")),
-        )?;
-        let frag = crate::overlay::create_shader(
-            device,
-            if translucent {
-                include_bytes!(concat!(env!("OUT_DIR"), "/water.frag.spv")).as_slice()
-            } else {
-                include_bytes!(concat!(env!("OUT_DIR"), "/world.frag.spv")).as_slice()
-            },
-        )?;
-        let entry = c"main";
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert)
-                .name(entry),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag)
-                .name(entry),
-        ];
-        let bindings = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(VERTEX_STRIDE as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)];
-        let attrs = [
-            vk::VertexInputAttributeDescription::default()
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(0),
-            vk::VertexInputAttributeDescription::default()
-                .location(1)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(12),
-            vk::VertexInputAttributeDescription::default()
-                .location(2)
-                .format(vk::Format::R32_UINT)
-                .offset(20),
-            // The vertex color, read as vanilla's `Color` attribute is:
-            // UNORM bytes.
-            vk::VertexInputAttributeDescription::default()
-                .location(3)
-                .format(vk::Format::R8G8B8A8_UNORM)
-                .offset(24),
-        ];
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&bindings)
-            .vertex_attribute_descriptions(&attrs);
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-        let raster = vk::PipelineRasterizationStateCreateInfo::default()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(!translucent)
-            .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
-        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .blend_enable(translucent)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B,
-            )];
-        let blend =
-            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-        let color_formats = [color_format];
-        let mut rendering = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&color_formats)
-            .depth_attachment_format(DEPTH_FORMAT);
-        let ci = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport)
-            .rasterization_state(&raster)
-            .multisample_state(&multisample)
-            .depth_stencil_state(&depth)
-            .color_blend_state(&blend)
-            .dynamic_state(&dynamic)
-            .layout(layout)
-            .push_next(&mut rendering);
-        let pipeline = device
-            .create_graphics_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&ci), None)
-            .map_err(|(_, e)| format!("world pipeline: {e}"))?[0];
-        device.destroy_shader_module(vert, None);
-        device.destroy_shader_module(frag, None);
-        Ok(pipeline)
     }
 }
 

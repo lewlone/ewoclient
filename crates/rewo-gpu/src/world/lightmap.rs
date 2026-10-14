@@ -302,7 +302,7 @@ impl WorldRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::WorldPush;
+    use crate::world::terrain::WorldPush;
 
     // These pin the CPU-side push layout only. The lightmap shader math is NOT
     // re-implemented here (that would be a proxy oracle) — it is a line-for-line
