@@ -123,8 +123,27 @@ pub fn fonts() -> Option<FontStore> {
 
 /// Premultiplied RGBA bytes of one full `draw_frame`.
 pub fn render(fonts: &FontStore, scene: &Scene, theme: &Theme, settings: &Settings) -> Vec<u8> {
-    let mut surface = surfaces::raster_n32_premul((W, H)).expect("raster surface");
     let backdrop = Backdrop::new(W as f32, H as f32, settings);
+    render_scaled(fonts, scene, theme, settings, 1.0, &backdrop)
+}
+
+/// Like [`render`] on a display with `scale` device pixels per logical pixel,
+/// the way the launcher does it: the surface is `W x H` logical times `scale`
+/// physical pixels, the canvas carries a `scale` CTM, and `draw_frame` gets
+/// the logical size. Returns the physical pixels.
+pub fn render_scaled(
+    fonts: &FontStore,
+    scene: &Scene,
+    theme: &Theme,
+    settings: &Settings,
+    scale: f32,
+    backdrop: &Backdrop,
+) -> Vec<u8> {
+    let (pw, ph) = physical(scale);
+    let mut surface = surfaces::raster_n32_premul((pw, ph)).expect("raster surface");
+    if scale != 1.0 {
+        surface.canvas().scale((scale, scale));
+    }
 
     let mut about = AboutModalState::default();
     if scene.about {
@@ -161,7 +180,7 @@ pub fn render(fonts: &FontStore, scene: &Scene, theme: &Theme, settings: &Settin
 
     draw_frame(
         surface.canvas(),
-        &backdrop,
+        backdrop,
         fonts,
         W as u32,
         H as u32,
@@ -202,9 +221,17 @@ pub fn render(fonts: &FontStore, scene: &Scene, theme: &Theme, settings: &Settin
 
     // Explicit RGBA: `n32` is BGRA on Windows and RGBA on Linux, which would
     // make the golden hashes platform-specific.
-    let info = ImageInfo::new((W, H), ColorType::RGBA8888, AlphaType::Premul, None);
-    let stride = (W * 4) as usize;
-    let mut px = vec![0u8; stride * H as usize];
+    let info = ImageInfo::new((pw, ph), ColorType::RGBA8888, AlphaType::Premul, None);
+    let stride = (pw * 4) as usize;
+    let mut px = vec![0u8; stride * ph as usize];
     assert!(surface.read_pixels(&info, &mut px, stride, (0, 0)));
     px
+}
+
+/// Physical size of the `W x H` logical card at `scale`.
+pub fn physical(scale: f32) -> (i32, i32) {
+    (
+        (W as f32 * scale).round() as i32,
+        (H as f32 * scale).round() as i32,
+    )
 }

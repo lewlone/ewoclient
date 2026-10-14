@@ -114,6 +114,11 @@ impl PearlDust {
         self.height = height;
     }
 
+    #[cfg(test)]
+    pub(super) fn airborne_ys(&self) -> Vec<f32> {
+        self.airborne.iter().map(|m| m.y).collect()
+    }
+
     pub fn disturb(&mut self) {
         self.disturb_amount = 1.0;
     }

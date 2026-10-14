@@ -23,11 +23,11 @@ use std::cell::RefCell;
 
 use ewo_core::{Screen, Settings, Theme};
 use skia_safe::{
-    AlphaType, BlurStyle, Canvas, ClipOp, Color, ColorType, Image, ImageInfo, MaskFilter, Paint,
-    PaintStyle, RRect, Rect,
+    BlurStyle, Canvas, ClipOp, Color, Image, MaskFilter, Paint, PaintStyle, RRect, Rect,
 };
 
 use crate::backdrop::Backdrop;
+use crate::offscreen::{self, LayerSize};
 use crate::screens;
 use crate::text::{FontStore, HoverGlowState};
 use crate::widgets::VbtnState;
@@ -362,51 +362,71 @@ pub fn draw_chrome_inner(canvas: &Canvas, w: f32, h: f32) {
 }
 
 thread_local! {
-    /// Cached inner-glow image, keyed by window size. The glow never changes
-    /// for a given size, so a sigma-40 mask-blur per frame was pure waste.
-    /// Keyed by GPU generation too: after a device loss the old image is
-    /// unusable (see `gl_backend::gpu_generation`).
-    static GLOW_CACHE: RefCell<Option<(u64, i32, i32, Image)>> = const { RefCell::new(None) };
+    /// Cached inner-glow image, keyed by its device-pixel size (window size
+    /// times the display scale). The glow never changes for a given size, so
+    /// a sigma-40 mask-blur per frame was pure waste. Keyed by GPU generation
+    /// too: after a device loss the old image is unusable (see
+    /// `gl_backend::gpu_generation`) and the accent hue shift, which tints it.
+    static GLOW_CACHE: RefCell<Option<GlowCache>> = const { RefCell::new(None) };
+}
+
+struct GlowCache {
+    generation: u64,
+    size: LayerSize,
+    hue_shift: f32,
+    image: Image,
+}
+
+/// Device-pixel size of the cached inner glow, if one is baked (tests use it
+/// to check the cache is physical-sized under a HiDPI scale).
+pub fn glow_cache_size() -> Option<(i32, i32)> {
+    GLOW_CACHE.with(|c| c.borrow().as_ref().map(|g| (g.size.px_w, g.size.px_h)))
 }
 
 /// Blit the cached inner berry glow, (re)baking it when the size changes.
 fn draw_inner_glow(canvas: &Canvas, w: f32, h: f32) {
-    let wi = w.round() as i32;
-    let hi = h.round() as i32;
-    if wi <= 0 || hi <= 0 {
+    let Some(size) = offscreen::layer_size(canvas, w, h) else {
         return;
-    }
+    };
 
     let generation = crate::gl_backend::gpu_generation();
+    let hue_shift = tokens::hue_shift();
     let cached = GLOW_CACHE.with(|c| match c.borrow().as_ref() {
-        Some((g, cw, ch, img)) if *g == generation && *cw == wi && *ch == hi => Some(img.clone()),
+        Some(g) if g.generation == generation && g.size == size && g.hue_shift == hue_shift => {
+            Some(g.image.clone())
+        }
         _ => None,
     });
 
     let image = match cached {
         Some(img) => Some(img),
         None => {
-            let built = build_inner_glow(canvas, w, h, wi, hi);
+            let built = build_inner_glow(canvas, w, h, size);
             if let Some(ref img) = built {
-                GLOW_CACHE.with(|c| *c.borrow_mut() = Some((generation, wi, hi, img.clone())));
+                GLOW_CACHE.with(|c| {
+                    *c.borrow_mut() = Some(GlowCache {
+                        generation,
+                        size,
+                        hue_shift,
+                        image: img.clone(),
+                    })
+                });
             }
             built
         }
     };
 
     match image {
-        Some(img) => {
-            canvas.draw_image(&img, (0.0, 0.0), None);
-        }
+        Some(img) => offscreen::blit_layer(canvas, &img),
         // No offscreen available — draw straight (e.g. a non-GPU canvas).
         None => draw_inner_glow_direct(canvas, w, h),
     }
 }
 
-/// Bake the inner glow (clip included) into a transparent per-size sprite.
-fn build_inner_glow(canvas: &Canvas, w: f32, h: f32, wi: i32, hi: i32) -> Option<Image> {
-    let info = ImageInfo::new((wi, hi), ColorType::RGBA8888, AlphaType::Premul, None);
-    let mut surface = canvas.new_surface(&info, None)?;
+/// Bake the inner glow (clip included) into a transparent per-size sprite at
+/// device resolution.
+fn build_inner_glow(canvas: &Canvas, w: f32, h: f32, size: LayerSize) -> Option<Image> {
+    let mut surface = offscreen::new_layer(canvas, size)?;
     let c = surface.canvas();
     c.clear(Color::TRANSPARENT);
     draw_inner_glow_direct(c, w, h);
