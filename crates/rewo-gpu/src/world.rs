@@ -584,8 +584,6 @@ pub struct WorldRenderer {
     select_layout: vk::PipelineLayout,
     select_pipeline: vk::Pipeline,
     select_ring: crate::buf_ring::BufRing,
-    /// The targeted block (world coords), or `None` — set each frame.
-    selection: Option<[i32; 3]>,
     /// Leash ribbons (M170): a TRIANGLE_LIST of position+colour verts, world
     /// space, depth-tested against terrain and entities. Rebuilt each frame.
     leash_layout: vk::PipelineLayout,
@@ -681,12 +679,6 @@ pub struct WorldRenderer {
     /// Sun/moon/star pass (M12), drawn between the gradient sky and terrain.
     /// `None` when celestial textures were unavailable (degrade to bare sky).
     celestial: Option<crate::celestial::CelestialPass>,
-    /// Current clear-weather celestial state (set by `set_celestial`).
-    celestial_state: crate::celestial::CelestialState,
-    /// `(intensity, xAngle, yAngle)` for the End flash, or `None` where the
-    /// level has no `EndFlashState` at all — which is every dimension whose
-    /// skybox is not END.
-    end_flash: Option<(f32, f32, f32)>,
     /// The End skybox pass (M16). `None` until `init_end_sky` supplies
     /// `textures/environment/end_sky.png` — a missing asset degrades to no sky
     /// contribution at all, never to an invented flat colour.
@@ -721,6 +713,10 @@ pub struct WorldRenderer {
     /// This frame's GUI inputs — what the `set_*` calls stored for the
     /// GUI passes to draw at `render` (the passes themselves stay above).
     gui: GuiFrame,
+    /// This frame's scene inputs — camera, lightmap, sky and fog, celestial
+    /// and End state, the selection — what the `set_*` calls stored for the
+    /// world passes to draw at `render`.
+    scene: SceneFrame,
     /// A **second** entity pass, for the inventory screen's player preview
     /// (M36).
     ///
@@ -741,11 +737,6 @@ pub struct WorldRenderer {
     /// The block-break crack overlay (M81). `None` until `init_crumbling`
     /// supplies the ten stage textures.
     crumbling: Option<crate::crumbling::CrumblingPass>,
-    /// This frame's portal geometry, and the game time its shader scrolls on.
-    end_portal_time: f32,
-    /// Which sky `draw` renders (`DimensionType.Skybox`). Default
-    /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
-    sky_mode: SkyMode,
     hud: Option<HudPass>,
     locator: Option<crate::locator_bar::LocatorBarPass>,
     text: Option<TextPass>,
@@ -753,6 +744,24 @@ pub struct WorldRenderer {
     /// that need per-run styling the bitmap pass cannot express (tooltips
     /// first; chat and F3 next).
     velvet_text: Option<crate::velvet_text::VelvetTextPass>,
+    // -- animated texture layers (water/lava; `anim_tick`) --
+    tex_size: u32,
+    mip_levels: u32,
+    animations: Vec<LayerAnimation>,
+    /// Every animation frame's full mip chain, concatenated level by level —
+    /// built once in `set_animations` so a frame change is a memcpy.
+    anim_mips: Vec<Vec<Vec<u8>>>,
+    anim_last: Vec<Option<usize>>,
+
+    pub drawn_last_frame: usize,
+    pub culled_last_frame: usize,
+}
+
+/// One frame's scene inputs, separate from the renderer's GPU resources:
+/// what the world passes (sky, terrain, entities, celestial, End, selection)
+/// read when the frame is recorded. Each field is written by a
+/// `WorldRenderer::set_*` call. The counterpart of [`GuiFrame`].
+struct SceneFrame {
     /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
     /// The resolved lightmap uniforms (sky/block factors, sky colour, gamma,
@@ -769,17 +778,19 @@ pub struct WorldRenderer {
     fog_base: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
     fog: [f32; 2],
-    // -- animated texture layers (water/lava; `anim_tick`) --
-    tex_size: u32,
-    mip_levels: u32,
-    animations: Vec<LayerAnimation>,
-    /// Every animation frame's full mip chain, concatenated level by level —
-    /// built once in `set_animations` so a frame change is a memcpy.
-    anim_mips: Vec<Vec<Vec<u8>>>,
-    anim_last: Vec<Option<usize>>,
-
-    pub drawn_last_frame: usize,
-    pub culled_last_frame: usize,
+    /// Which sky `draw` renders (`DimensionType.Skybox`). Default
+    /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
+    sky_mode: SkyMode,
+    /// Current clear-weather celestial state (set by `set_celestial`).
+    celestial_state: crate::celestial::CelestialState,
+    /// `(intensity, xAngle, yAngle)` for the End flash, or `None` where the
+    /// level has no `EndFlashState` at all — which is every dimension whose
+    /// skybox is not END.
+    end_flash: Option<(f32, f32, f32)>,
+    /// The game time the end portal shader scrolls on (`set_end_portals`).
+    end_portal_time: f32,
+    /// The targeted block (world coords), or `None` — set each frame.
+    selection: Option<[i32; 3]>,
 }
 
 /// One frame's GUI inputs, separate from the renderer's GPU resources.
@@ -1287,6 +1298,20 @@ impl WorldRenderer {
             Ok(Self {
                 velvet_text: None,
                 gui: GuiFrame::default(),
+                scene: SceneFrame {
+                    camera_eye: [0.0; 3],
+                    lightmap: WorldLightmapState::default(),
+                    sky_tint: [1.0; 3],
+                    fog_tint: [1.0; 3],
+                    sky_base: SKY_HORIZON,
+                    fog_base: SKY_HORIZON,
+                    fog: parse_fog_env(),
+                    sky_mode: SkyMode::default(),
+                    celestial_state: crate::celestial::CelestialState::default(),
+                    end_flash: None,
+                    end_portal_time: 0.0,
+                    selection: None,
+                },
                 tex_set_layout,
                 graphics_layout,
                 pipeline,
@@ -1301,7 +1326,6 @@ impl WorldRenderer {
                 leash_ring,
                 leash_warned: false,
                 leash_verts: Vec::new(),
-                selection: None,
                 tex_pool,
                 tex_sets,
                 lm_bufs,
@@ -1352,11 +1376,8 @@ impl WorldRenderer {
                 gamma: None,
                 entities: None,
                 celestial: None,
-                celestial_state: crate::celestial::CelestialState::default(),
-                end_flash: None,
                 end_sky: None,
                 end_portal: None,
-                end_portal_time: 0.0,
                 clouds: None,
                 border: None,
                 weather: None,
@@ -1369,17 +1390,9 @@ impl WorldRenderer {
                 hand: None,
                 particles: None,
                 crumbling: None,
-                sky_mode: SkyMode::default(),
                 hud: None,
                 locator: None,
                 text: None,
-                camera_eye: [0.0; 3],
-                lightmap: WorldLightmapState::default(),
-                sky_tint: [1.0; 3],
-                fog_tint: [1.0; 3],
-                sky_base: SKY_HORIZON,
-                fog_base: SKY_HORIZON,
-                fog: parse_fog_env(),
                 tex_size,
                 mip_levels,
                 animations: Vec::new(),
@@ -1520,7 +1533,7 @@ impl WorldRenderer {
     /// Set the frame's eye position — drives translucent back-to-front
     /// column sorting. Callers that never render water can skip it.
     pub fn set_camera(&mut self, eye: [f32; 3]) {
-        self.camera_eye = eye;
+        self.scene.camera_eye = eye;
     }
 
     /// Set the time-of-day lightmap state: `sky_factor` scales the sky half
@@ -1529,8 +1542,8 @@ impl WorldRenderer {
     /// a torch is as bright at midnight as at noon, which is the whole point
     /// of keeping the two channels separate through to the shader.
     pub fn set_lightmap(&mut self, sky_factor: f32, sky_color: [f32; 3]) {
-        self.lightmap.sky_factor = sky_factor;
-        self.lightmap.sky_color = sky_color;
+        self.scene.lightmap.sky_factor = sky_factor;
+        self.scene.lightmap.sky_color = sky_color;
     }
 
     /// Set the full resolved lightmap state (sky/block factors, sky colour,
@@ -1538,7 +1551,7 @@ impl WorldRenderer {
     /// mirror of vanilla's `LightmapInfo`. `set_lightmap` is the day/night-only
     /// convenience that touches just the sky factor + colour.
     pub fn set_lightmap_state(&mut self, state: WorldLightmapState) {
-        self.lightmap = state;
+        self.scene.lightmap = state;
     }
 
     /// Multiply the sky gradient and the distance-fog colour by the time of
@@ -1546,8 +1559,8 @@ impl WorldRenderer {
     /// black at night). Without this the ground would darken at dusk while the
     /// sky stayed noon-blue.
     pub fn set_sky_tint(&mut self, sky: [f32; 3], fog: [f32; 3]) {
-        self.sky_tint = sky;
-        self.fog_tint = fog;
+        self.scene.sky_tint = sky;
+        self.scene.fog_tint = fog;
     }
 
     /// Set the camera biome sky/fog base color (LINEAR), M14. The horizon and
@@ -1556,8 +1569,8 @@ impl WorldRenderer {
     /// requires a remesh (it is a per-frame uniform). Passing `SKY_HORIZON`
     /// restores the pre-M14 fixed sky.
     pub fn set_sky_fog_base(&mut self, sky_linear: [f32; 3], fog_linear: [f32; 3]) {
-        self.sky_base = sky_linear;
-        self.fog_base = fog_linear;
+        self.scene.sky_base = sky_linear;
+        self.scene.fog_base = fog_linear;
     }
 
     // Re-initialising a pass (rare: asset reload, reconnect) destroys the old
@@ -1668,13 +1681,13 @@ impl WorldRenderer {
     /// Update the clear-weather celestial state for this frame (angles in
     /// radians, sunrise colour linear rgb + straight alpha).
     pub fn set_celestial(&mut self, state: crate::celestial::CelestialState) {
-        self.celestial_state = state;
+        self.scene.celestial_state = state;
     }
 
     /// `SkyRenderState.endFlash{Intensity,XAngle,YAngle}` — `None` when the
     /// level has no flash state, which is every non-END skybox.
     pub fn set_end_flash(&mut self, flash: Option<(f32, f32, f32)>) {
-        self.end_flash = flash;
+        self.scene.end_flash = flash;
     }
 
     /// The attached celestial pass, if any (`rewo skyshot` reports its
@@ -2279,7 +2292,7 @@ impl WorldRenderer {
         draws: &[crate::end_portal::PortalDraw],
         game_time: i64,
     ) -> Result<(), String> {
-        self.end_portal_time = crate::end_portal::game_time_fraction(game_time);
+        self.scene.end_portal_time = crate::end_portal::game_time_fraction(game_time);
         match self.end_portal.as_mut() {
             Some(p) => p.set_draws(gpu, draws),
             None => Ok(()),
@@ -2312,11 +2325,11 @@ impl WorldRenderer {
     /// `PlaySession::active_dimension_type`, so a dimension change or respawn
     /// takes effect on the next frame with no other bookkeeping.
     pub fn set_sky_mode(&mut self, mode: SkyMode) {
-        self.sky_mode = mode;
+        self.scene.sky_mode = mode;
     }
 
     pub fn sky_mode(&self) -> SkyMode {
-        self.sky_mode
+        self.scene.sky_mode
     }
 
     /// Attach the entity pass (mob models / capsules + nametags).
@@ -2835,7 +2848,7 @@ impl WorldRenderer {
                 cam_right,
                 cam_up,
                 time,
-                self.camera_eye,
+                self.scene.camera_eye,
             );
         }
     }
@@ -3051,7 +3064,7 @@ impl WorldRenderer {
         }
         self.space_freed = false;
         let mut keys: Vec<(i32, i32)> = self.deferred.keys().copied().collect();
-        sort_nearest_first(&mut keys, self.camera_eye);
+        sort_nearest_first(&mut keys, self.scene.camera_eye);
         let mut landed = 0;
         for key in keys {
             let Some(d) = self.deferred.remove(&key) else {
@@ -3318,7 +3331,7 @@ impl WorldRenderer {
             }
             self.metas = select_metas(
                 self.columns.iter().map(|(k, s)| (*k, s.meta)),
-                self.camera_eye,
+                self.scene.camera_eye,
                 MAX_COLUMNS,
             );
             self.column_count = self.metas.len() as u32;
@@ -3424,30 +3437,30 @@ impl WorldRenderer {
 
     /// Override the distance-fog band (defaults from `REWO_FOG`).
     pub fn set_fog(&mut self, start: f32, end: f32) {
-        self.fog = [start, end.max(start + 1.0)];
+        self.scene.fog = [start, end.max(start + 1.0)];
     }
 
     /// Set the targeted block for the selection outline (`None` = hidden).
     pub fn set_selection(&mut self, block: Option<[i32; 3]>) {
-        self.selection = block;
+        self.scene.selection = block;
     }
 
     /// Push the world/fog constants (view_proj + camera + fog band).
     fn push_world(&self, device: &ash::Device, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
-        let (light, sky_col) = self.lightmap.push_words();
+        let (light, sky_col) = self.scene.lightmap.push_words();
         let push = WorldPush {
             view_proj,
             cam_fog: [
-                self.camera_eye[0],
-                self.camera_eye[1],
-                self.camera_eye[2],
-                self.fog[0],
+                self.scene.camera_eye[0],
+                self.scene.camera_eye[1],
+                self.scene.camera_eye[2],
+                self.scene.fog[0],
             ],
             fog_col: [
-                self.fog_base[0] * self.fog_tint[0],
-                self.fog_base[1] * self.fog_tint[1],
-                self.fog_base[2] * self.fog_tint[2],
-                self.fog[1],
+                self.scene.fog_base[0] * self.scene.fog_tint[0],
+                self.scene.fog_base[1] * self.scene.fog_tint[1],
+                self.scene.fog_base[2] * self.scene.fog_tint[2],
+                self.scene.fog[1],
             ],
             light,
             sky_col,
@@ -3481,7 +3494,7 @@ impl WorldRenderer {
         // bind. Done here (not in `set_lightmap_state`) so exactly one slot is
         // consumed per frame regardless of how often the state was set.
         self.lm_cursor = (self.lm_cursor + 1) % LIGHTMAP_UBO_RING;
-        write_lightmap_extra(&mut self.lm_allocs[self.lm_cursor], &self.lightmap);
+        write_lightmap_extra(&mut self.lm_allocs[self.lm_cursor], &self.scene.lightmap);
 
         // `LevelRenderer.addSkyPass`: NONE adds no pass at all, END draws only
         // the textured cube, otherwise the gradient disc + celestials.
@@ -3489,9 +3502,9 @@ impl WorldRenderer {
         // translation so the sky sits at infinity. Terrain then overwrites it
         // via reversed-Z where it exists.
         let sky_vp = (glam::Mat4::from_cols_array_2d(&view_proj)
-            * glam::Mat4::from_translation(glam::Vec3::from_array(self.camera_eye)))
+            * glam::Mat4::from_translation(glam::Vec3::from_array(self.scene.camera_eye)))
         .to_cols_array_2d();
-        match self.sky_mode {
+        match self.scene.sky_mode {
             SkyMode::None => {}
             SkyMode::End => {
                 if let Some(end) = &self.end_sky {
@@ -3503,7 +3516,7 @@ impl WorldRenderer {
                 // `> 0`, which is what keeps the flash's ~1e-16 tail from
                 // costing a draw. The sun, moon and stars are NOT in this arm:
                 // the End has none.
-                if let (Some(celestial), Some(flash)) = (&self.celestial, self.end_flash) {
+                if let (Some(celestial), Some(flash)) = (&self.celestial, self.scene.end_flash) {
                     if flash.0 > 1.0e-5 {
                         celestial
                             .draw_end_flash(gpu, cb, sky_vp, extent, flash.0, flash.1, flash.2);
@@ -3515,7 +3528,7 @@ impl WorldRenderer {
                 // Sun/moon/stars/sunrise (M12), between the gradient sky and
                 // terrain.
                 if let Some(celestial) = &self.celestial {
-                    celestial.draw(gpu, cb, sky_vp, extent, &self.celestial_state);
+                    celestial.draw(gpu, cb, sky_vp, extent, &self.scene.celestial_state);
                 }
             }
         }
@@ -3565,7 +3578,7 @@ impl WorldRenderer {
         // the solids, and drawing it after them lets terrain in front occlude
         // it exactly as vanilla's depth-tested pipeline does.
         if let Some(pass) = &self.end_portal {
-            pass.draw(gpu, cb, view_proj, self.end_portal_time, extent);
+            pass.draw(gpu, cb, view_proj, self.scene.end_portal_time, extent);
         }
         // Clouds (M33) sit between the solids and the translucent pass: they
         // are translucent themselves and must blend over terrain, but they are
@@ -3578,12 +3591,12 @@ impl WorldRenderer {
         // non-depth-writing passes — after everything solid and translucent so
         // terrain occludes them, before weather so rain layers over smoke.
         if let Some(pass) = &self.particles {
-            let (light, sky_col) = self.lightmap.push_words();
+            let (light, sky_col) = self.scene.lightmap.push_words();
             pass.draw(
                 gpu,
                 cb,
                 view_proj,
-                (light, sky_col, self.lightmap.extra_words()),
+                (light, sky_col, self.scene.lightmap.extra_words()),
                 extent,
             );
         }
@@ -3591,12 +3604,12 @@ impl WorldRenderer {
         // and depth-tested but not depth-writing — vanilla's
         // `WEATHER_NO_DEPTH_WRITE` branch.
         if let Some(pass) = &self.weather {
-            let (light, sky_col) = self.lightmap.push_words();
+            let (light, sky_col) = self.scene.lightmap.push_words();
             pass.draw(
                 gpu,
                 cb,
                 view_proj,
-                (light, sky_col, self.lightmap.extra_words()),
+                (light, sky_col, self.scene.lightmap.extra_words()),
                 extent,
             );
         }
@@ -3821,7 +3834,9 @@ impl WorldRenderer {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        let Some(b) = self.selection else { return };
+        let Some(b) = self.scene.selection else {
+            return;
+        };
         let (x0, y0, z0) = (
             b[0] as f32 - 0.002,
             b[1] as f32 - 0.002,
@@ -3913,18 +3928,18 @@ impl WorldRenderer {
         let push = SkyPush {
             inv_view_proj: inv,
             horizon: [
-                self.sky_base[0] * self.sky_tint[0],
-                self.sky_base[1] * self.sky_tint[1],
-                self.sky_base[2] * self.sky_tint[2],
+                self.scene.sky_base[0] * self.scene.sky_tint[0],
+                self.scene.sky_base[1] * self.scene.sky_tint[1],
+                self.scene.sky_base[2] * self.scene.sky_tint[2],
                 1.0,
             ],
             // Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the whole sky disc.
             // Tinting only the horizon left a blue zenith at midnight. The zenith
             // keeps the fixed gradient ratio off the (biome) base color.
             zenith: [
-                self.sky_base[0] * ZENITH_RATIO[0] * self.sky_tint[0],
-                self.sky_base[1] * ZENITH_RATIO[1] * self.sky_tint[1],
-                self.sky_base[2] * ZENITH_RATIO[2] * self.sky_tint[2],
+                self.scene.sky_base[0] * ZENITH_RATIO[0] * self.scene.sky_tint[0],
+                self.scene.sky_base[1] * ZENITH_RATIO[1] * self.scene.sky_tint[1],
+                self.scene.sky_base[2] * ZENITH_RATIO[2] * self.scene.sky_tint[2],
                 1.0,
             ],
         };
@@ -3975,7 +3990,7 @@ impl WorldRenderer {
                 p[0] * pv[0] + p[1] * pv[1] + p[2] * pv[2] + p[3] >= 0.0
             })
         };
-        let eye = self.camera_eye;
+        let eye = self.scene.camera_eye;
         let mut cols: Vec<(f32, u32, u32, i32)> = self
             .columns
             .values()
