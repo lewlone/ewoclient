@@ -85,8 +85,8 @@ pub mod waypoints;
 
 use std::borrow::Cow;
 use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::time::Duration;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::{Duration, Instant};
 
 use rewo_data::packets::State;
 use rewo_data::GameData;
@@ -208,6 +208,33 @@ pub struct SessionStats {
     pub loaded_columns: usize,
 }
 
+/// Silence from the server that ends the connection: vanilla's
+/// `ReadTimeoutHandler(30)` (`Connection.java:432`).
+pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long one blocked write may take before the connection is given up.
+/// Writes are synchronous on the caller's thread (the frame thread in
+/// `rewo live`, see `play::write_packet`), so this is the longest a stalled
+/// peer can freeze a frame. A write only blocks once the kernel send buffer
+/// is full, which at the client's few KB/s outbound means the peer stopped
+/// reading long ago; 5 s is far past any legitimate stall and short enough
+/// not to read as a hang.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Connect + login + configuration, end to end. Every read before play is
+/// bounded by what is left of this, so a server that drips a byte every
+/// 29 s (each read inside the 30 s read timeout) cannot hold the pre-window
+/// phase forever. Vanilla has no client-side equivalent (its connect screen
+/// has a Cancel button, which a pre-window phase has not); its server gives
+/// a client 600 ticks, 30 s, to log in (`ServerLoginPacketListenerImpl.
+/// java:52,84`). 90 s leaves room for an online-mode session join and large
+/// registry/tag syncs.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// One TCP connect attempt: Netty's default `CONNECT_TIMEOUT_MILLIS`, which
+/// vanilla's `Connection.connect` (`Connection.java:424-436`) leaves unset.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The connection's byte stream: plain TCP until the login `key` packet,
 /// AES-128-CFB8 in both directions after. One type serves the synchronous
 /// connection AND the split halves (a half simply has one cipher `None`).
@@ -217,6 +244,9 @@ pub(crate) struct NetStream {
     dec: Option<crypt::Cfb8>,
     /// Encrypt scratch (Write::write must not mutate the caller's buffer).
     wbuf: Vec<u8>,
+    /// Login/configuration's overall deadline ([`HANDSHAKE_TIMEOUT`]); `None`
+    /// in play, where only the per-read [`READ_TIMEOUT`] applies.
+    deadline: Option<Instant>,
 }
 
 impl NetStream {
@@ -226,7 +256,24 @@ impl NetStream {
             enc: None,
             dec: None,
             wbuf: Vec::new(),
+            deadline: None,
         }
+    }
+
+    /// Before a read under a deadline: fail if it has passed, else cap the
+    /// socket's read timeout at what is left of it.
+    fn arm_deadline(&self) -> std::io::Result<()> {
+        let Some(deadline) = self.deadline else {
+            return Ok(());
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "login and configuration did not finish in time",
+            ));
+        }
+        self.inner.set_read_timeout(Some(left.min(READ_TIMEOUT)))
     }
 
     /// Turn on AES-128-CFB8 both ways (call right after sending `key` —
@@ -238,26 +285,64 @@ impl NetStream {
 
     /// Split into (read half, write half) for the play-phase reader thread.
     /// Each half carries its direction's cipher state.
+    /// The halves leave the handshake deadline behind: play has none, and the
+    /// socket's read timeout (which the deadline may have shortened, and which
+    /// both halves share) goes back to [`READ_TIMEOUT`].
     fn split(self) -> std::io::Result<(NetStream, NetStream)> {
+        self.inner.set_read_timeout(Some(READ_TIMEOUT))?;
         let read_inner = self.inner.try_clone()?;
         let read_half = Self {
             inner: read_inner,
             enc: None,
             dec: self.dec,
             wbuf: Vec::new(),
+            deadline: None,
         };
         let write_half = Self {
             inner: self.inner,
             enc: self.enc,
             dec: None,
             wbuf: self.wbuf,
+            deadline: None,
         };
         Ok((read_half, write_half))
     }
 }
 
+/// Resolve `host:port` and connect to the first address that answers, each
+/// attempt bounded by [`CONNECT_TIMEOUT`] and by `deadline`. (The DNS lookup
+/// itself is the OS resolver's and has no timeout of ours.)
+fn connect_tcp(host: &str, port: u16, deadline: Instant) -> Result<TcpStream, String> {
+    let addrs: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve {host}:{port}: {e}"))?
+        .collect();
+    connect_any(&addrs, deadline).map_err(|e| format!("connect {host}:{port}: {e}"))
+}
+
+/// Try each address in order; the first to connect wins. The error is the
+/// last attempt's, or a timeout if the deadline ran out first.
+fn connect_any(addrs: &[SocketAddr], deadline: Instant) -> Result<TcpStream, String> {
+    let mut last = String::from("no addresses resolved");
+    for addr in addrs {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(format!("timed out ({last})"));
+        }
+        match TcpStream::connect_timeout(addr, left.min(CONNECT_TIMEOUT)) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                log::debug!("net: connect {addr}: {e}");
+                last = format!("{addr}: {e}");
+            }
+        }
+    }
+    Err(last)
+}
+
 impl Read for NetStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.arm_deadline()?;
         let n = self.inner.read(buf)?;
         if let Some(d) = self.dec.as_mut() {
             d.decrypt(&mut buf[..n]);
@@ -309,21 +394,25 @@ pub struct Connection<'a> {
 }
 
 impl<'a> Connection<'a> {
+    /// Connect, starting the [`HANDSHAKE_TIMEOUT`] clock that bounds
+    /// everything up to play (see [`Self::set_handshake_timeout`]).
     pub fn connect(host: &str, port: u16, data: &'a GameData) -> Result<Self, String> {
-        let stream =
-            TcpStream::connect((host, port)).map_err(|e| format!("connect {host}:{port}: {e}"))?;
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        let stream = connect_tcp(host, port, deadline)?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
+            .set_read_timeout(Some(READ_TIMEOUT))
             .map_err(|e| format!("set timeout: {e}"))?;
         // A stalled peer must fail a write rather than block the send path
         // (and with it the render thread) forever.
         stream
-            .set_write_timeout(Some(Duration::from_secs(20)))
+            .set_write_timeout(Some(WRITE_TIMEOUT))
             .map_err(|e| format!("set timeout: {e}"))?;
         stream.set_nodelay(true).ok();
         let ids = Ids::resolve(&data.packets)?;
+        let mut stream = NetStream::new(stream);
+        stream.deadline = Some(deadline);
         Ok(Self {
-            stream: NetStream::new(stream),
+            stream,
             codec: FrameCodec::default(),
             state: State::Handshake,
             ids,
@@ -335,6 +424,12 @@ impl<'a> Connection<'a> {
             cfg: config::ConfigData::new(data),
             session: crate::session::SessionState::default(),
         })
+    }
+
+    /// Restart the login + configuration deadline at `timeout` from now
+    /// (normally [`HANDSHAKE_TIMEOUT`] from [`Self::connect`]).
+    pub fn set_handshake_timeout(&mut self, timeout: Duration) {
+        self.stream.deadline = Some(Instant::now() + timeout);
     }
 
     fn send(&mut self, packet: PacketWriter) -> Result<(), String> {
@@ -5740,5 +5835,90 @@ mod route_decode_failure_tests {
         // a decode failure.
         assert!(route_level_event(&body(1000)).is_none());
         assert_eq!(take_route_decode_failures(), 0);
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// A port with nothing listening: bind, read the port, close.
+    fn dead_addr() -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    }
+
+    #[test]
+    fn the_first_address_that_answers_wins() {
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addrs = [dead_addr(), live.local_addr().unwrap()];
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let stream = connect_any(&addrs, deadline).expect("the second address listens");
+        assert_eq!(stream.peer_addr().unwrap(), addrs[1]);
+    }
+
+    #[test]
+    fn every_address_refusing_reports_the_last_error() {
+        let addrs = [dead_addr()];
+        let err = connect_any(&addrs, Instant::now() + Duration::from_secs(20)).unwrap_err();
+        assert!(err.contains(&addrs[0].to_string()), "{err}");
+    }
+
+    #[test]
+    fn a_spent_deadline_tries_nothing() {
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let err = connect_any(&[live.local_addr().unwrap()], Instant::now()).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(connect_any(&[], Instant::now() + Duration::from_secs(1)).is_err());
+    }
+
+    /// The deadline bounds a read that the per-read timeout would let run:
+    /// a peer that sends nothing fails at the deadline, not at 30 s.
+    #[test]
+    fn a_read_under_a_deadline_times_out_at_the_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        client.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
+        let mut s = NetStream::new(client);
+        s.deadline = Some(Instant::now() + Duration::from_millis(300));
+        let start = Instant::now();
+        let mut buf = [0u8; 1];
+        let err = s.read(&mut buf).unwrap_err();
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "{err:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        // And once it has passed, a read fails without touching the socket.
+        std::thread::sleep(Duration::from_millis(50));
+        let err = s.read(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("did not finish in time"), "{err}");
+    }
+
+    /// Play has no deadline, and splitting restores the shared socket's
+    /// read timeout the deadline may have shortened.
+    #[test]
+    fn split_drops_the_deadline_and_restores_the_read_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let mut s = NetStream::new(client);
+        s.deadline = Some(Instant::now() + Duration::from_secs(10));
+        s.arm_deadline().unwrap();
+        let armed = s.inner.read_timeout().unwrap().unwrap();
+        assert!(armed <= Duration::from_secs(10), "{armed:?}");
+        let (r, w) = s.split().unwrap();
+        assert!(r.deadline.is_none() && w.deadline.is_none());
+        assert_eq!(r.inner.read_timeout().unwrap(), Some(READ_TIMEOUT));
     }
 }

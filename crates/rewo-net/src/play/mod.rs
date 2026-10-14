@@ -8,7 +8,6 @@
 //! player_input on change). Corrections received from the server are THE
 //! physics-parity meter (REWO_PLAN.md M3 DoD: "corrections rare").
 
-use std::io::Write as _;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -547,6 +546,9 @@ pub(crate) struct ReaderClosed {
 pub struct PlaySession {
     writer: crate::NetStream,
     codec: FrameCodec,
+    /// The first write that failed; every later write is refused (see
+    /// [`write_packet`]).
+    send_failed: Option<String>,
     rx: Receiver<Result<Vec<u8>, ReaderClosed>>,
     /// The queued-bytes budget the reader thread reserves against; each
     /// frame's bytes are released as [`Self::drain_inbound`] takes it.
@@ -1874,6 +1876,7 @@ impl<'a> Connection<'a> {
             advancements: crate::advancements::ClientAdvancements::default(),
             writer,
             codec,
+            send_failed: None,
             rx,
             inbound_budget,
             socket,
@@ -2082,6 +2085,42 @@ impl<'a> Connection<'a> {
     }
 }
 
+/// Write one packet on the play connection's write half.
+///
+/// **Synchronous on the caller's thread**, which in `rewo live` is the frame
+/// thread (the 20 Hz tick and every UI action). There is no writer thread:
+/// the only network thread is the reader. A write blocks only when the
+/// kernel send buffer is full, i.e. the peer has stopped draining its
+/// receive window, and is then bounded by the socket's write timeout
+/// ([`crate::WRITE_TIMEOUT`]); that bound is the worst frame freeze a
+/// stalled peer can cause, and it happens once, because a failed write is
+/// fatal.
+///
+/// Fatal because a write that times out may have put part of a frame on the
+/// wire, so anything written after it would be misframed (and, encrypted,
+/// would advance the CFB8 stream past bytes the server never saw). `failed`
+/// records the first failure and refuses every later write.
+fn write_packet(
+    codec: &FrameCodec,
+    writer: &mut impl std::io::Write,
+    failed: &mut Option<String>,
+    packet: &[u8],
+) -> Result<(), String> {
+    if let Some(first) = failed {
+        return Err(format!(
+            "send: the connection is unusable after an earlier failed write ({first})"
+        ));
+    }
+    let res = codec
+        .write_frame(writer, packet)
+        .map_err(|e| format!("send: {e}"))
+        .and_then(|()| writer.flush().map_err(|e| format!("send: {e}")));
+    if let Err(e) = &res {
+        *failed = Some(e.clone());
+    }
+    res
+}
+
 /// Classify a reader-thread failure.
 fn reader_closed(e: rewo_proto::ProtoError) -> ReaderClosed {
     use std::io::ErrorKind;
@@ -2135,10 +2174,24 @@ impl PlaySession {
             log::debug!("net: play packet dropped during configuration");
             return Ok(());
         }
-        self.codec
-            .write_frame(&mut self.writer, &packet.buf)
-            .map_err(|e| format!("send: {e}"))?;
-        self.writer.flush().map_err(|e| format!("send: {e}"))
+        let sent = write_packet(
+            &self.codec,
+            &mut self.writer,
+            &mut self.send_failed,
+            &packet.buf,
+        );
+        if let Err(e) = &sent {
+            // Many UI-driven callers ignore the result (`let _ =
+            // session.start_dig(..)`), so the failure is recorded as the
+            // disconnect here; the frame loop picks it up at its top.
+            if self.disconnect.is_none() {
+                log::warn!("net: connection lost: {e}");
+                self.disconnect = Some(e.clone());
+                self.disconnect_cause =
+                    Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+            }
+        }
+        sent
     }
 
     fn next_sequence(&mut self) -> i32 {
@@ -2917,13 +2970,8 @@ impl PlaySession {
             return Ok(());
         };
         let mut keepalives = 0u64;
-        let (codec, writer) = (&self.codec, &mut self.writer);
-        let mut send = |p: PacketWriter| -> Result<(), String> {
-            codec
-                .write_frame(writer, &p.buf)
-                .map_err(|e| format!("send: {e}"))?;
-            writer.flush().map_err(|e| format!("send: {e}"))
-        };
+        let (codec, writer, failed) = (&self.codec, &mut self.writer, &mut self.send_failed);
+        let mut send = |p: PacketWriter| write_packet(codec, writer, failed, &p.buf);
         let step = crate::config::handle_config_packet(
             crate::config::ConfigCtx {
                 ids: &self.ids,

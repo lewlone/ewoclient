@@ -458,3 +458,60 @@ fn malformed_bodies_are_counted_once_each() {
     // `set_health` without its food half applied nothing.
     assert_eq!((session.health, session.food), (health, food));
 }
+
+/// A server that drips one byte at a time, each well inside the 30 s
+/// per-read timeout, cannot hold the pre-window phase open: the overall
+/// login + configuration deadline ends it.
+#[test]
+fn a_dripping_server_fails_the_login_at_the_handshake_deadline() {
+    let Some(data) = load_data() else { return };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let sids = Ids::resolve(&data.packets).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut s = Server {
+            stream,
+            codec: FrameCodec::default(),
+        };
+        let (id, _) = s.recv();
+        assert_eq!(id, sids.sb_handshake_intention);
+        let (id, _) = s.recv();
+        assert_eq!(id, sids.sb_login_hello);
+        // A frame promising 1000 bytes, then one byte every 100 ms until the
+        // client hangs up (or 20 s pass, which the client must not allow).
+        s.stream.write_all(&[0xE8, 0x07]).unwrap();
+        for _ in 0..200 {
+            if s.stream
+                .write_all(&[0])
+                .and_then(|()| s.stream.flush())
+                .is_err()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let mut conn = Connection::connect("127.0.0.1", port, &data).unwrap();
+    conn.set_handshake_timeout(Duration::from_secs(1));
+    let start = Instant::now();
+    let err = conn
+        .into_play(
+            "127.0.0.1",
+            port,
+            "Rewo",
+            None,
+            Vec::new(),
+            data.blocks.global_palette_bits,
+            rewo_world::biome::Colormaps::neutral(),
+        )
+        .err()
+        .expect("the login must fail");
+    let took = start.elapsed();
+    assert!(err.contains("did not finish in time"), "{err}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    server.join().expect("server script failed");
+}
