@@ -507,8 +507,11 @@ pub struct MotionStats {
 
 /// Frames the reader thread may queue ahead of the consumer. Bounded so a
 /// server outrunning the client stalls on TCP backpressure instead of growing
-/// this process's memory without limit.
+/// this process's memory without limit. The count alone does not bound
+/// memory (a frame inflates to up to 8 MiB), so the queue is also bounded in
+/// bytes by [`INBOUND_QUEUE_BYTES`]; whichever binds first applies.
 pub const INBOUND_QUEUE_FRAMES: usize = 4096;
+pub use inbound::INBOUND_QUEUE_BYTES;
 
 /// How much inbound work one [`PlaySession::pump`] (or the drain inside
 /// [`PlaySession::tick`]) may do before yielding, so a backlog is spread over
@@ -545,6 +548,9 @@ pub struct PlaySession {
     writer: crate::NetStream,
     codec: FrameCodec,
     rx: Receiver<Result<Vec<u8>, ReaderClosed>>,
+    /// The queued-bytes budget the reader thread reserves against; each
+    /// frame's bytes are released as [`Self::drain_inbound`] takes it.
+    inbound_budget: std::sync::Arc<inbound::ByteBudget>,
     /// A handle on the socket, shut down on drop so the reader thread wakes
     /// and the connection closes promptly.
     socket: Option<std::net::TcpStream>,
@@ -1787,26 +1793,14 @@ impl<'a> Connection<'a> {
         let socket = writer.inner.try_clone().ok();
         let (tx, rx) =
             std::sync::mpsc::sync_channel::<Result<Vec<u8>, ReaderClosed>>(INBOUND_QUEUE_FRAMES);
-        std::thread::Builder::new()
-            .name("rewo-net-reader".into())
-            .spawn(move || {
-                let mut stream = reader_stream;
-                let mut scratch = Vec::new();
-                loop {
-                    let mut packet = Vec::new();
-                    if let Err(e) = reader_codec.read_frame(&mut stream, &mut scratch, &mut packet)
-                    {
-                        // The reason travels to the session, which turns it
-                        // into the disconnect; the channel then drops.
-                        let _ = tx.send(Err(reader_closed(e)));
-                        return;
-                    }
-                    if tx.send(Ok(packet)).is_err() {
-                        return;
-                    }
-                }
-            })
-            .map_err(|e| format!("spawn reader: {e}"))?;
+        let inbound_budget = inbound::ByteBudget::new(INBOUND_QUEUE_BYTES);
+        {
+            let budget = inbound_budget.clone();
+            std::thread::Builder::new()
+                .name("rewo-net-reader".into())
+                .spawn(move || inbound::run_reader(reader_codec, reader_stream, tx, budget))
+                .map_err(|e| format!("spawn reader: {e}"))?;
+        }
 
         // A plain Overworld placeholder, and deliberately *only* that: the
         // dimension registry is synced by now, but the login packet has not yet
@@ -1881,6 +1875,7 @@ impl<'a> Connection<'a> {
             writer,
             codec,
             rx,
+            inbound_budget,
             socket,
             tick_budget: None,
             reconfig: None,
@@ -2123,6 +2118,8 @@ fn reader_closed(e: rewo_proto::ProtoError) -> ReaderClosed {
 
 impl Drop for PlaySession {
     fn drop(&mut self) {
+        // A reader blocked on a full queue wakes and exits.
+        self.inbound_budget.close();
         if let Some(sock) = self.socket.take() {
             let _ = sock.shutdown(std::net::Shutdown::Both);
         }
@@ -2791,7 +2788,10 @@ impl PlaySession {
                 return Ok(applied);
             }
             let packet = match self.rx.try_recv() {
-                Ok(Ok(p)) => p,
+                Ok(Ok(p)) => {
+                    self.inbound_budget.release(p.len());
+                    p
+                }
                 Ok(Err(closed)) => {
                     self.reader_closed(Some(closed));
                     return Ok(applied);
@@ -6131,6 +6131,7 @@ impl PlaySession {
 }
 
 mod dispatch;
+mod inbound;
 mod outgoing;
 
 /// The local player's state a teleport is applied relative to.
