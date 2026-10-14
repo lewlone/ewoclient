@@ -76,14 +76,28 @@ def main():
                           for c, p in sorted(models[cls].items()))
         rows.append('    ("%s", &[%s]),' % (snake(cls), pairs))
 
-    with open(os.path.normpath(OUT), "w", encoding="utf8") as fh:
+    with open(os.path.normpath(OUT), "w", encoding="utf8", newline="\n") as fh:
         fh.write(HEADER)
         fh.write("pub const VANILLA_HIERARCHY: &[(&str, &[(&str, &str)])] = &[\n")
         fh.write("\n".join(rows))
         fh.write("\n];\n")
+        fh.write(PARENTS_FOR)
     print("wrote %s — %d models with nesting" % (os.path.normpath(OUT), len(models)))
     return 0
 
+
+# The lookup cem.rs calls. Emitted by the generator (it used to be
+# appended by hand, so a regeneration would have deleted it).
+PARENTS_FOR = '''
+/// Vanilla child→parent pairs for `entity` (`""`/unknown → empty, i.e. every
+/// top-level part sits at the model root, which is right for flat models).
+pub fn parents_for(entity: &str) -> &'static [(&'static str, &'static str)] {
+    VANILLA_HIERARCHY
+        .iter()
+        .find(|(k, _)| *k == entity)
+        .map_or(&[], |(_, v)| *v)
+}
+'''
 
 def snake(s):
     return re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()
