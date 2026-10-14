@@ -3,6 +3,21 @@
 use super::super::hit::lobby_join_target;
 use super::*;
 
+/// Action triggered by clicking a sidebar menu item on the main menu.
+#[derive(Copy, Clone, Debug)]
+enum MenuAction {
+    Navigate(Screen),
+    About,
+    Quit,
+}
+
+const MAIN_MENU_ACTIONS: [MenuAction; 4] = [
+    MenuAction::Navigate(Screen::Instances),
+    MenuAction::Navigate(Screen::Settings),
+    MenuAction::About,
+    MenuAction::Quit,
+];
+
 impl App {
     /// Step 2: the main-menu sidebar items, then the network widget. Returns
     /// whether the press landed on one of them.
@@ -70,5 +85,26 @@ impl App {
             self.start_launch(self.instance_prefs.selected, Some(lobby), c.time);
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `MAIN_MENU_ACTIONS[i]` is the action of the i-th sidebar item
+    /// `menu_item_bounds` lays out: Instances, Settings, About, Quit.
+    #[test]
+    fn menu_actions_follow_the_sidebar_order() {
+        assert!(matches!(
+            MAIN_MENU_ACTIONS[0],
+            MenuAction::Navigate(Screen::Instances)
+        ));
+        assert!(matches!(
+            MAIN_MENU_ACTIONS[1],
+            MenuAction::Navigate(Screen::Settings)
+        ));
+        assert!(matches!(MAIN_MENU_ACTIONS[2], MenuAction::About));
+        assert!(matches!(MAIN_MENU_ACTIONS[3], MenuAction::Quit));
     }
 }

@@ -30,6 +30,7 @@ use ewo_render::text::HoverGlowState;
 use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
 
 use auth::{AuthOp, AuthService};
+use cli::{mint_rewo_env, Args};
 use instance_ops::{delete_instance, loader_spec_for, sync_instance_config};
 use launch_flow::{
     persist_launch_log, PendingAuthLaunch, PendingPrepare, PendingRelaunch, PrepareFail,
@@ -44,10 +45,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
+mod app;
 mod auth;
 mod bundled;
+mod cli;
 mod downloads;
 mod events;
+mod frame_pacing;
 mod instance_ops;
 mod keybind;
 mod launch;
@@ -64,45 +68,7 @@ mod versions;
 mod view_models;
 mod window;
 mod window_hit;
-
-#[derive(Parser, Debug)]
-#[command(name = "ewolauncher", about = "EwoClient — Velvet & Pearl")]
-struct Args {
-    /// Show the developer overlay (state-picker, layout-picker, tweaks panel).
-    #[arg(long)]
-    dev: bool,
-    /// Headless dev tool: refresh the active account's Minecraft token and
-    /// print the `REWO_USERNAME` / `REWO_UUID` / `REWO_ACCESS_TOKEN` env
-    /// handoff lines, then exit (no window). Used by Rewo's M7 online-mode
-    /// verification harness.
-    #[arg(long)]
-    mint_rewo_env: bool,
-}
-
-/// Action triggered by clicking a sidebar menu item on the main menu.
-#[derive(Copy, Clone, Debug)]
-enum MenuAction {
-    Navigate(Screen),
-    About,
-    Quit,
-}
-
-const MAIN_MENU_ACTIONS: [MenuAction; 4] = [
-    MenuAction::Navigate(Screen::Instances),
-    MenuAction::Navigate(Screen::Settings),
-    MenuAction::About,
-    MenuAction::Quit,
-];
-
-/// Seconds of no user input before the focused redraw loop throttles down.
-/// Long enough that transient interactions (ripples, sheen sweeps, modal
-/// entrances) finish at full rate; short enough that an idle launcher stops
-/// burning the full monitor rate quickly.
-const IDLE_THRESHOLD_SECS: f32 = 0.5;
-/// Frame rate the focused loop drops to while idle. Ambient motion (folds,
-/// caustics, breathing, drifting motes) runs on multi-second periods, so it's
-/// fully smooth here; the eye can't resolve more on those layers.
-const IDLE_FPS: f32 = 120.0;
+mod window_init;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -261,284 +227,9 @@ struct App {
     dev: bool,
 }
 
-impl App {
-    fn new(dev: bool) -> Self {
-        // Phase F: settings live in the active client profile. `profile::load`
-        // reconstructs the unified SettingsConfig + the cosmetic tokens,
-        // migrating a pre-F settings.toml on first run.
-        let (settings_config, settings) = profile::load();
-        Self {
-            window: None,
-            backend: None,
-            backdrop: None,
-            fonts: None,
-            clock: Clock::new(),
-            motion_watch: ewo_core::motion::Watcher::new(),
-            motion_recheck: false,
-            theme: Theme::VELVET,
-            settings,
-            cursor: PhysicalPosition::new(0.0, 0.0),
-            mouse_down: false,
-            focused: true,
-            occluded: false,
-            last_activity: Instant::now(),
-            screen: Screen::default(),
-            settings_tab: SettingsTab::Graphics,
-            prefs: {
-                let mut p = Prefs::default();
-                p.apply_config(&settings_config);
-                let (mod_enabled, mod_fov) = profile::load_modules();
-                p.apply_modules(&mod_enabled, mod_fov);
-                // PvP-Utils config is shared with the in-game side via
-                // `<profile>/pvp.toml`; load it here so the Settings tab
-                // shows the user's current setup on first open.
-                p.pvp = profile::load_pvp_config();
-                p
-            },
-            // Try the persisted list first, fall back to the bundled
-            // defaults if missing or malformed. An Ewo instance's stored
-            // loader value is never used to fetch: the manifest URL is
-            // resolved from the version and this machine's loader base at
-            // launch (`loaders::base`), so there is nothing to re-key here.
-            instances: persistence::load_instances(),
-            instance_prefs: InstancePrefs::default(),
-            launching: LaunchingState::default(),
-            modal: NewInstanceModalState::default(),
-            about_modal: AboutModalState::default(),
-            launcher_link_modal: LauncherLinkModalState::default(),
-            friends_prefs: FriendsPrefs::default(),
-            dev_overlay: if dev {
-                Some(DevOverlayState::default())
-            } else {
-                None
-            },
-            launch_button: VbtnState::default(),
-            menu_items: [VbtnState::default(); 4],
-            heading_hover: HoverGlowState::default(),
-            // AuthService loads the persisted account store and kicks a
-            // silent refresh for the active account itself (see `new`).
-            auth: AuthService::new(),
-            // SocialState reads `EWO_BOT_API_BASE`; unset = disabled.
-            social: social::SocialState::new(),
-            profiles: profile::list(),
-            active_profile: profile::active_name(),
-            keybinds: profile::load_keybinds(),
-            keybind_capture: None,
-            versions: versions::VersionService::new(),
-            downloads: downloads::DownloadService::new(),
-            launch_rx: None,
-            active_launch: None,
-            active_launch_started_at: 0.0,
-            active_launch_window_seen: false,
-            active_launch_instance_id: None,
-            pending_prepare: None,
-            pending_minimize: None,
-            runtime: runtime::RuntimeService::new(),
-            pending_relaunch: None,
-            pending_auth: None,
-            jre_rescan_rx: None,
-            jre_labels: screens::instances::java_runtime_options(&[]),
-            jre_labels_rx: None,
-            runtime_log_bucket: 0,
-            celebrate_until: None,
-            active_server: None,
-            server_widget_hover: false,
-            hovered_tab: None,
-            // Start settled (no entrance on first paint); transitions animate.
-            prev_screen: Screen::default(),
-            screen_enter_at: -1.0,
-            back_link_hover: false,
-            min_btn_hover: false,
-            close_btn_hover: false,
-            dev,
-        }
-    }
-
-    /// Apply a freshly-loaded profile config — Settings widgets, cosmetic
-    /// tokens, vsync, and the backdrop particle density (a profile-scoped
-    /// token, so the pools re-spawn).
-    fn apply_loaded_config(&mut self, config: screens::SettingsConfig, settings: Settings) {
-        self.prefs.apply_config(&config);
-        // Modules are per-profile too — reload them for the switched-to profile.
-        let (mod_enabled, mod_fov) = profile::load_modules();
-        self.prefs.apply_modules(&mod_enabled, mod_fov);
-        // PvP-Utils is per-profile as well — reload pvp.toml.
-        self.prefs.pvp = profile::load_pvp_config();
-        self.settings = settings;
-        if let Some(b) = self.backend.as_ref() {
-            b.set_vsync(self.prefs.vsync.on);
-        }
-        if let (Some(window), Some(backdrop)) = (self.window.as_ref(), self.backdrop.as_mut()) {
-            let scale = window.scale_factor();
-            let size = window.inner_size();
-            let cw = card_content_width(size, scale);
-            let ch = card_content_height(size, scale);
-            backdrop.resize(cw, ch, &self.settings);
-        }
-    }
-
-    /// Map the active account's Frogsy link state into the renderer-side
-    /// `LinkStatusView`. `Hidden` when social isn't configured or there's
-    /// no active account; otherwise the stored `social_token` alone
-    /// decides (no network probe, see `social`'s module docs): linked, or
-    /// the clickable line that opens the launcher-link modal.
-    fn link_status_view(&self) -> LinkStatusView {
-        if !self.social.enabled() {
-            return LinkStatusView::Hidden;
-        }
-        let Some(active) = self.auth.active() else {
-            return LinkStatusView::Hidden;
-        };
-        if self.auth.social_token(&active.uuid).is_some() {
-            LinkStatusView::Linked
-        } else {
-            LinkStatusView::LinkedNeedsLauncherLink
-        }
-    }
-
-    /// The active account's `social_token`, if it has one.
-    fn active_social_token(&self) -> Option<String> {
-        let active = self.auth.active()?;
-        self.auth.social_token(&active.uuid).map(str::to_string)
-    }
-
-    /// Card-local bounds of the main-menu network widget, grown by the
-    /// online-name strip when there are names to show. One source for the
-    /// hover and click rects so they match what `draw_main_menu` paints.
-    fn server_widget_rect(&self, card_w: f32, card_h: f32) -> skia_safe::Rect {
-        let rows = self.social.server_status().map_or(0, |s| {
-            screens::server_widget_name_rows(s.online, s.players.len())
-        });
-        screens::server_widget_bounds(card_w, card_h, rows)
-    }
-
-    /// Arriving at Friends refetches the list immediately rather than
-    /// waiting for the next 30 s cadence tick. Goes through the same gate
-    /// as every social request: with social disabled, or no linked
-    /// account, `refresh_friends_now` issues nothing.
-    fn refresh_friends_on_arrival(&mut self) {
-        if let Some(token) = self.active_social_token() {
-            self.social.refresh_friends_now(&token);
-        }
-    }
-
-    /// The main-menu network widget exists only while its status poll can
-    /// run: social configured and the active account linked.
-    fn server_widget_visible(&self) -> bool {
-        self.social.enabled() && self.active_social_token().is_some()
-    }
-
-    /// Bounds of the active screen's Launch button (card-local). Returns
-    /// `None` for screens that don't have one.
-    fn launch_button_bounds(&self, card_w: f32) -> Option<skia_safe::Rect> {
-        match self.screen {
-            Screen::Instances => Some(screens::instances::launch_button_bounds(card_w)),
-            _ => None,
-        }
-    }
-}
-
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let attrs = Window::default_attributes()
-            .with_title("EwoClient")
-            .with_decorations(false)
-            // Per-pixel alpha: the rounded card floats with transparent corners
-            // (the desktop shows through) instead of an opaque black margin +
-            // painted bevel.
-            .with_transparent(true)
-            .with_inner_size(LogicalSize::new(1180.0, 720.0))
-            .with_min_inner_size(LogicalSize::new(800.0, 520.0));
-
-        // Windows: create the window WITHOUT a redirection bitmap. The render
-        // backend presents through a DirectComposition swapchain (see
-        // `ewo-render::gl_backend`), so there must be no opaque GDI/GL
-        // redirection surface behind it — otherwise the transparent corners
-        // composite against that surface (black) instead of the desktop. This
-        // MUST be set at creation time; it can't be added afterwards.
-        #[cfg(target_os = "windows")]
-        let attrs = {
-            use winit::platform::windows::WindowAttributesExtWindows;
-            attrs.with_no_redirection_bitmap(true)
-        };
-
-        // Runtime taskbar/alt-tab icon for the borderless window (the
-        // embedded .ico serves Explorer only). None → OS default icon;
-        // a missing asset never blocks startup.
-        let attrs = match window::icon::load_app_icon() {
-            Some(icon) => attrs.with_window_icon(Some(icon)),
-            None => {
-                log::warn!("app icon not found — taskbar shows the default icon");
-                attrs
-            }
-        };
-
-        let win = Arc::new(
-            event_loop
-                .create_window(attrs)
-                .expect("failed to create window"),
-        );
-
-        window::configure(&win);
-
-        // Warm the JRE-detection cache on a background thread. `pick_jre` on
-        // the Launch path calls `detect_all`, which shells `java -version` at
-        // every installed JDK — a 1-3s scan that, run cold on the UI thread at
-        // click time, froze the whole render loop. Kicking it off at window
-        // creation means the `OnceLock` cache is populated seconds before the
-        // user can reach the Launch button, so the click resolves instantly.
-        // (CREATE_NO_WINDOW — see `launch::no_window` — keeps the scan's
-        // subprocesses from flashing consoles here too.)
-        // The scan's side product, the label strings for the per-instance
-        // Java-runtime dropdown, comes back over a channel so the UI never
-        // calls `labels()` synchronously either.
-        let (jre_tx, jre_rx) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
-            .name("ewo-jre-warm".into())
-            .spawn(move || {
-                let n = launch::detect_jres().len();
-                log::info!("jre warm: {n} runtime(s) detected (cache primed)");
-                let _ = jre_tx.send(launch::jre::labels());
-            })
-            .expect("spawn jre-warm thread");
-        self.jre_labels_rx = Some(jre_rx);
-
-        let backend = GlBackend::new(event_loop, win.clone());
-        // Backdrop particle pools + layout sizes live in logical pixels —
-        // the same coord space `draw_frame` paints in. Inputs to
-        // `card_content_size` are logical, so divide physical by the DPI
-        // scale factor up-front. On 100% scale they're equal; on HiDPI
-        // (e.g. 125% on 1440p) they differ — and a physical-sized backdrop
-        // would put the particles in a coord space the renderer doesn't
-        // share, throwing off both density + bounds.
-        let size = win.inner_size();
-        let scale = win.scale_factor() as f32;
-        let logical_w = ((size.width as f32) / scale) as u32;
-        let logical_h = ((size.height as f32) / scale) as u32;
-        let (card_w, card_h) = app_window::card_content_size(logical_w, logical_h);
-        let backdrop = Backdrop::new(card_w, card_h, &self.settings);
-        let fonts = FontStore::new();
-
-        win.request_redraw();
-
-        self.window = Some(win);
-        self.backend = Some(backend);
-        self.backdrop = Some(backdrop);
-        self.fonts = Some(fonts);
-
-        // Initialize per-mod toggle state from the now-built instance list.
-        self.instance_prefs.sync_mods(&self.instances);
-
-        // Apply the persisted VSync preference to the GL backend that
-        // just came online. The backend defaults to vsync-on, so this is
-        // only meaningful when the user had it off last session.
-        if let Some(b) = self.backend.as_ref() {
-            b.set_vsync(self.prefs.vsync.on);
-        }
-
-        if self.dev {
-            log::info!("dev overlay enabled");
-        }
+        self.create_window(event_loop);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -648,65 +339,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Frame pacing. `request_redraw` only marks the window dirty; this
-        // ControlFlow decides *when* the loop wakes to service that redraw, so
-        // a WaitUntil here caps the effective frame rate even though the
-        // redraw is always pending.
-        //
-        //  1. Unfocused → ~10 FPS — GPU stays idle in another window.
-        //  2. Focused + idle (no input past IDLE_THRESHOLD, and not mid-launch)
-        //     → IDLE_FPS. Ambient motion is far slower than that, so it reads
-        //     identical while cutting GPU/heat/power on an untouched launcher.
-        //     Applies regardless of vsync — vsync alone caps at the monitor
-        //     rate (up to 500 Hz on the OLED), which is overkill at idle.
-        //  3. Focused + active, VSync off, `max_fps < 240` → cap to max_fps.
-        //  4. Focused + active otherwise → Poll (vsync caps at refresh; the
-        //     dev-overlay uncapped path validates the 500fps OLED target).
-        // GPU device lost: `GlBackend::render` can draw nothing until its
-        // recreation backoff (up to 30 s) elapses, so polling (or even the
-        // 100 ms unfocused cadence) would only burn a core. Sleep until the
-        // next attempt; input events still wake the loop.
-        if let Some(retry_at) = self.backend.as_ref().and_then(|b| b.retry_deadline()) {
-            if retry_at > Instant::now() {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(retry_at));
-                return;
-            }
-        }
-
-        if !self.focused {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(100),
-            ));
-            if let Some(w) = self.window.as_ref() {
-                w.request_redraw();
-            }
-            return;
-        }
-
-        let idle = self.last_activity.elapsed().as_secs_f32() >= IDLE_THRESHOLD_SECS
-            && self.screen != Screen::Launching;
-
-        let max_fps = self.prefs.max_fps.value;
-        let cap_fps: Option<f32> = if idle {
-            Some(IDLE_FPS)
-        } else if !self.prefs.vsync.on && max_fps > 0.0 && max_fps < 240.0 {
-            Some(max_fps)
-        } else {
-            None
-        };
-
-        match cap_fps {
-            Some(fps) => {
-                let target_ns = (1_000_000_000.0 / fps).max(1.0) as u64;
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + Duration::from_nanos(target_ns),
-                ));
-                if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
-                }
-            }
-            None => event_loop.set_control_flow(ControlFlow::Poll),
-        }
+        self.pace_frames(event_loop);
     }
 }
 
@@ -733,36 +366,4 @@ fn main() {
     // (settings / instances persist on change, not on exit), so we let the OS
     // reclaim the window, GL context, and detached background threads.
     std::process::exit(0);
-}
-
-/// `--mint-rewo-env`: refresh the active account's Minecraft token from
-/// the persisted MS refresh token and print the Rewo env handoff, one
-/// `KEY=value` per line on stdout (everything else goes to stderr via the
-/// logger). Returns a process exit code.
-fn mint_rewo_env() -> i32 {
-    let store = auth::persistence::load_store();
-    let Some(account) = store.active_account() else {
-        log::error!(
-            "mint-rewo-env: no active account in auth.toml — sign in via the launcher first"
-        );
-        return 1;
-    };
-    log::info!(
-        "mint-rewo-env: refreshing Minecraft token for {}…",
-        account.name
-    );
-    match auth::chain::run_chain_from_refresh(&account.ms_refresh_token, |stage| {
-        log::info!("mint-rewo-env: {}", stage.label());
-    }) {
-        Ok(fresh) => {
-            println!("REWO_USERNAME={}", fresh.name);
-            println!("REWO_UUID={}", fresh.uuid);
-            println!("REWO_ACCESS_TOKEN={}", fresh.minecraft_token);
-            0
-        }
-        Err(e) => {
-            log::error!("mint-rewo-env: auth chain failed: {e:?}");
-            1
-        }
-    }
 }
