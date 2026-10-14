@@ -52,12 +52,22 @@ const CONFIG_SLIDER_HEIGHT: f32 = 36.0;
 const CONFIG_DROPDOWN_HEIGHT: f32 = 40.0;
 const JAVA_RUNTIME_DROPDOWN_WIDTH: f32 = 320.0;
 
-pub const JAVA_RUNTIME_OPTIONS: &[&str] = &[
-    "Adoptium 21.0.4 (bundled)",
-    "Adoptium 17.0.10",
-    "Zulu 21.0.4",
-    "Custom path…",
-];
+/// Index 0 of the Java-runtime dropdown is always this pseudo-entry:
+/// "let the launcher pick" (its normal rule: exact major match, else the
+/// lowest installed major above the requirement). Indices >= 1 map onto
+/// the session's detected runtime list, which `App` refreshes from the
+/// JRE detector and mirrors into [`InstancePrefs::jre_runtime_labels`].
+pub const JAVA_RUNTIME_AUTO_LABEL: &str = "Auto (recommended)";
+
+/// The dropdown's full option list for a set of detected-runtime labels:
+/// the Auto entry, then one entry per runtime. Pure so the "index 0 is
+/// Auto, index N is runtime N-1" contract that launch relies on is
+/// tested in one place.
+pub fn java_runtime_options(detected: &[String]) -> Vec<String> {
+    std::iter::once(JAVA_RUNTIME_AUTO_LABEL.to_string())
+        .chain(detected.iter().cloned())
+        .collect()
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Slot {
@@ -207,6 +217,12 @@ pub struct InstancePrefs {
     /// without an entry render "DOWNLOADING…"; with an entry, "X%".
     /// Runtime-only — not persisted.
     pub download_pct: std::collections::HashMap<String, u32>,
+    /// The Java-runtime dropdown's live options: `[0]` is always
+    /// [`JAVA_RUNTIME_AUTO_LABEL`], then one entry per JRE detected on
+    /// this machine (mirrored from `App::jre_labels`, built with
+    /// [`java_runtime_options`]). A static list here would drift from
+    /// what actually launches. Runtime-only, not persisted.
+    pub jre_runtime_labels: Vec<String>,
 }
 
 /// Duration of the new-row drop-in animation. Silk-eased from 0 to 1.
@@ -238,6 +254,7 @@ impl Default for InstancePrefs {
             rename_focus_time: 0.0,
             rename_hover: false,
             download_pct: std::collections::HashMap::new(),
+            jre_runtime_labels: java_runtime_options(&[]),
         }
     }
 }
@@ -311,10 +328,24 @@ impl InstancePrefs {
     }
 }
 
-pub fn dropdown_options(slot: Slot) -> Option<&'static [&'static str]> {
+/// The Java-runtime dropdown's options for `slot`: a live view over
+/// [`InstancePrefs::jre_runtime_labels`]. The label at index N is what
+/// launches when the dropdown's selected index is N.
+pub fn dropdown_options(slot: Slot, prefs: &InstancePrefs) -> Option<Vec<&str>> {
     match slot {
-        Slot::JavaRuntime => Some(JAVA_RUNTIME_OPTIONS),
+        Slot::JavaRuntime => Some(prefs.jre_runtime_labels.iter().map(String::as_str).collect()),
         _ => None,
+    }
+}
+
+/// The currently-selected runtime's display label. A stale persisted
+/// index pointing past the live list shows Auto's entry, which is also
+/// what the launch path falls back to, so what's shown is what runs.
+pub fn java_runtime_label(prefs: &InstancePrefs) -> &str {
+    let sel = prefs.java_runtime.selected;
+    match prefs.jre_runtime_labels.get(sel) {
+        Some(l) => l.as_str(),
+        None => JAVA_RUNTIME_AUTO_LABEL,
     }
 }
 
@@ -346,7 +377,11 @@ pub struct Instance {
     pub ram: u32,
     #[serde(default = "default_render_distance")]
     pub render_distance: u32,
-    /// Index into `JAVA_RUNTIME_OPTIONS`.
+    /// Java-runtime pin. `0` = auto (the launcher picks exact-major, else
+    /// lowest-above); `N >= 1` = entry N-1 of the session's detected
+    /// runtime list (one behind the dropdown's own index). A stale value
+    /// past the current list, or one that no longer meets the version's
+    /// requirement, falls back to auto at launch.
     #[serde(default)]
     pub java_runtime: usize,
     #[serde(default)]
@@ -1188,10 +1223,10 @@ fn draw_detail(
     // Portal-draw any open Java-runtime dropdown after the panel returns.
     if let Some(slot) = prefs.open_dropdown() {
         if let Some(state) = prefs.dropdown_state(slot) {
-            if let Some(opts) = dropdown_options(slot) {
+            if let Some(opts) = dropdown_options(slot, prefs) {
                 if let Some(head) = dropdown_head_for_slot(slot, fonts, w, h, prefs, instances) {
                     let (menu, flip_up) = menu_layout(head, opts.len(), h);
-                    draw_vdrop_menu(canvas, menu, flip_up, opts, state, fonts);
+                    draw_vdrop_menu(canvas, menu, flip_up, &opts, state, fonts);
                 }
             }
         }
@@ -1439,7 +1474,7 @@ fn draw_config_rows(
     y = draw_dropdown_row(
         canvas, fonts, left, right, y,
         "Java runtime",
-        JAVA_RUNTIME_OPTIONS[prefs.java_runtime.selected.min(JAVA_RUNTIME_OPTIONS.len() - 1)],
+        java_runtime_label(prefs),
         &prefs.java_runtime,
         time,
         settings,
@@ -2096,4 +2131,51 @@ pub fn add_button_bounds() -> Rect {
     let size = 28.0;
     let cx_y = list_top - 5.0; // visually align with the "Worlds" title midline
     Rect::from_xywh(LIST_WIDTH - 24.0 - size, cx_y, size, size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prefs_with(detected: &[&str]) -> InstancePrefs {
+        let mut p = InstancePrefs::default();
+        let d: Vec<String> = detected.iter().map(|s| s.to_string()).collect();
+        p.jre_runtime_labels = java_runtime_options(&d);
+        p
+    }
+
+    #[test]
+    fn dropdown_is_just_auto_without_detected_runtimes() {
+        let p = prefs_with(&[]);
+        assert_eq!(
+            dropdown_options(Slot::JavaRuntime, &p).unwrap(),
+            vec![JAVA_RUNTIME_AUTO_LABEL]
+        );
+        assert!(dropdown_options(Slot::Ram, &p).is_none());
+    }
+
+    #[test]
+    fn dropdown_lists_auto_then_each_detected_runtime() {
+        let p = prefs_with(&["Java 17 · jdk-17", "Java 21 · jdk-21"]);
+        assert_eq!(
+            dropdown_options(Slot::JavaRuntime, &p).unwrap(),
+            vec![JAVA_RUNTIME_AUTO_LABEL, "Java 17 · jdk-17", "Java 21 · jdk-21"]
+        );
+    }
+
+    #[test]
+    fn selected_label_follows_the_dropdown_index() {
+        let mut p = prefs_with(&["Java 17 · jdk-17", "Java 21 · jdk-21"]);
+        p.java_runtime.selected = 2;
+        assert_eq!(java_runtime_label(&p), "Java 21 · jdk-21");
+        p.java_runtime.selected = 0;
+        assert_eq!(java_runtime_label(&p), JAVA_RUNTIME_AUTO_LABEL);
+    }
+
+    #[test]
+    fn stale_selection_past_the_list_shows_auto() {
+        let mut p = prefs_with(&["Java 21 · jdk-21"]);
+        p.java_runtime.selected = 5;
+        assert_eq!(java_runtime_label(&p), JAVA_RUNTIME_AUTO_LABEL);
+    }
 }

@@ -287,28 +287,38 @@ impl App {
                 // Instances dropdown
                 if !handled && self.screen == Screen::Instances {
                     if let Some(slot) = self.instance_prefs.open_dropdown() {
-                        if let Some(opts) = screens::instances::dropdown_options(slot) {
-                            if let Some(head) = screens::instances::dropdown_head_for_slot(
+                        // Immutable pass first (the options borrow
+                        // prefs), then the mutable scroll update.
+                        let prep = screens::instances::dropdown_options(
+                            slot,
+                            &self.instance_prefs,
+                        )
+                        .and_then(|opts| {
+                            screens::instances::dropdown_head_for_slot(
                                 slot,
                                 fonts,
                                 card_w,
                                 card_h,
                                 &self.instance_prefs,
                                 &self.instances,
-                            ) {
+                            )
+                            .map(|head| {
                                 let (menu_bounds, _flip) =
                                     ewo_render::widgets::menu_layout(
                                         head,
                                         opts.len(),
                                         card_h,
                                     );
-                                if let Some(state) =
-                                    self.instance_prefs.dropdown_state_mut(slot)
-                                {
-                                    state.scroll_by(dy, menu_bounds, opts.len());
-                                }
-                                handled = true;
+                                (menu_bounds, opts.len())
+                            })
+                        });
+                        if let Some((menu_bounds, n)) = prep {
+                            if let Some(state) =
+                                self.instance_prefs.dropdown_state_mut(slot)
+                            {
+                                state.scroll_by(dy, menu_bounds, n);
                             }
+                            handled = true;
                         }
                     }
                 }
@@ -1657,6 +1667,8 @@ impl App {
         // Retry a launch deferred on a JRE download once the background
         // re-scan that picks the new JRE up has finished.
         self.poll_jre_rescan(time);
+        // Java-runtime dropdown labels from the warm-up scan.
+        self.poll_jre_labels();
 
         // Drain runtime (bundled-JRE) events. Surface progress
         // as Info lines on the launching screen; on Done, kick

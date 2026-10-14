@@ -302,6 +302,15 @@ struct App {
     /// candidate, `where java`) runs on a worker; it reports the major it
     /// was for here, and the pending relaunch retries then.
     jre_rescan_rx: Option<std::sync::mpsc::Receiver<u32>>,
+    /// The Java-runtime dropdown's live option list (Auto first), mirrored
+    /// into `instance_prefs.jre_runtime_labels` each frame. Starts as just
+    /// the Auto entry; the `ewo-jre-warm` thread delivers the detected
+    /// list through `jre_labels_rx`, and a finished bundled-JRE rescan
+    /// refreshes it.
+    jre_labels: Vec<String>,
+    /// Delivery channel for the warm-up scan's label list. Drained once
+    /// (the scan is cached in a `OnceLock`); `None` after delivery.
+    jre_labels_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     /// Last 10 % bucket of the runtime download logged to the launch log,
     /// so each bucket is logged once.
     runtime_log_bucket: u32,
@@ -402,6 +411,8 @@ impl App {
             pending_relaunch: None,
             pending_auth: None,
             jre_rescan_rx: None,
+            jre_labels: screens::instances::java_runtime_options(&[]),
+            jre_labels_rx: None,
             runtime_log_bucket: 0,
             celebrate_until: None,
             active_server: None,
@@ -659,6 +670,28 @@ impl App {
         }
     }
 
+    /// Replace the Java-runtime dropdown's options with the detected
+    /// runtimes' labels (Auto is prepended here).
+    fn set_jre_labels(&mut self, detected: Vec<String>) {
+        self.jre_labels = screens::instances::java_runtime_options(&detected);
+    }
+
+    /// Deliver the warm-up scan's dropdown labels once, then mirror into
+    /// the renderer's prefs (guarded so a small Vec isn't cloned every
+    /// frame). Called once per frame.
+    fn poll_jre_labels(&mut self) {
+        if let Some(rx) = &self.jre_labels_rx {
+            if let Ok(detected) = rx.try_recv() {
+                log::info!("jre labels: {} runtime(s) listed", detected.len());
+                self.jre_labels_rx = None;
+                self.set_jre_labels(detected);
+            }
+        }
+        if self.instance_prefs.jre_runtime_labels != self.jre_labels {
+            self.instance_prefs.jre_runtime_labels = self.jre_labels.clone();
+        }
+    }
+
     /// After a bundled JRE landed: once the background JRE re-scan reports
     /// back, retry the launch that was waiting for that Java major.
     /// Called once per frame.
@@ -671,6 +704,12 @@ impl App {
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => None,
         };
         self.jre_rescan_rx = None;
+        if major.is_some() {
+            // The worker already swapped the fresh scan into the cache,
+            // so this is a cheap read. (A failed spawn invalidated the
+            // cache instead; skip, rather than scan on the UI thread.)
+            self.set_jre_labels(launch::jre::labels());
+        }
         let Some(p) = self.pending_relaunch.clone() else {
             return;
         };
@@ -839,7 +878,17 @@ impl App {
             .as_ref()
             .map(|j| j.major_version)
             .unwrap_or(8);
-        let jvm_path = match launch::pick_jre(required_major) {
+        // A per-instance pin (dropdown index >= 1) selects that exact
+        // runtime, but only while it still exists AND still satisfies the
+        // manifest's major requirement; a stale pin (JRE uninstalled, list
+        // reshuffled) falls back to auto with a warning rather than
+        // launching something wrong. `detect_jres` is the warmed cache.
+        let pinned = launch::jre::resolve_pin(
+            &launch::detect_jres(),
+            inst.java_runtime,
+            required_major,
+        );
+        let jvm_path = match pinned.or_else(|| launch::pick_jre(required_major)) {
             Some(j) => {
                 log::info!(
                     "launch: picked Java {} at {} (required ≥ {})",
@@ -1181,13 +1230,19 @@ impl ApplicationHandler for App {
         // user can reach the Launch button, so the click resolves instantly.
         // (CREATE_NO_WINDOW — see `launch::no_window` — keeps the scan's
         // subprocesses from flashing consoles here too.)
+        // The scan's side product, the label strings for the per-instance
+        // Java-runtime dropdown, comes back over a channel so the UI never
+        // calls `labels()` synchronously either.
+        let (jre_tx, jre_rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("ewo-jre-warm".into())
-            .spawn(|| {
+            .spawn(move || {
                 let n = launch::detect_jres().len();
                 log::info!("jre warm: {n} runtime(s) detected (cache primed)");
+                let _ = jre_tx.send(launch::jre::labels());
             })
             .expect("spawn jre-warm thread");
+        self.jre_labels_rx = Some(jre_rx);
 
         let backend = GlBackend::new(event_loop, win.clone());
         // Backdrop particle pools + layout sizes live in logical pixels —
@@ -1962,15 +2017,19 @@ fn drive_instance_widgets(
 
     // Update menu hover for any open dropdown.
     if let Some(slot) = prefs.open_dropdown() {
-        if let Some(opts) = screens::instances::dropdown_options(slot) {
-            if let Some(head) = screens::instances::dropdown_head_for_slot(
-                slot, fonts, card_w, card_h, prefs, instances,
-            ) {
-                let (menu_bounds, _flip) =
-                    ewo_render::widgets::menu_layout(head, opts.len(), card_h);
-                if let Some(state) = prefs.dropdown_state_mut(slot) {
-                    state.update_menu_hover(mouse, menu_bounds, opts.len());
-                }
+        // Immutable pass first (the options borrow prefs), then the
+        // mutable hover update.
+        let prep = screens::instances::dropdown_options(slot, prefs).and_then(|opts| {
+            screens::instances::dropdown_head_for_slot(slot, fonts, card_w, card_h, prefs, instances)
+                .map(|head| {
+                    let (menu_bounds, _flip) =
+                        ewo_render::widgets::menu_layout(head, opts.len(), card_h);
+                    (menu_bounds, opts.len())
+                })
+        });
+        if let Some((menu_bounds, n)) = prep {
+            if let Some(state) = prefs.dropdown_state_mut(slot) {
+                state.update_menu_hover(mouse, menu_bounds, n);
             }
         }
     }
@@ -1995,34 +2054,43 @@ fn handle_instances_press(
 
     // (1) and (2): handle any open dropdown menu first.
     if let Some(open_slot) = prefs.open_dropdown() {
-        if let Some(opts) = screens::instances::dropdown_options(open_slot) {
-            if let Some(head) = screens::instances::dropdown_head_for_slot(
+        // Immutable pass: head geometry + row count end before the
+        // mutable state updates below.
+        let prep = screens::instances::dropdown_options(open_slot, prefs).and_then(|opts| {
+            screens::instances::dropdown_head_for_slot(
                 open_slot, fonts, card_w, card_h, prefs, instances,
-            ) {
+            )
+            .map(|head| {
                 let (menu_bounds, _flip) =
                     ewo_render::widgets::menu_layout(head, opts.len(), card_h);
-                let in_menu = rect_contains(&menu_bounds, mouse);
-                let in_head = rect_contains(&head, mouse);
-                if in_menu {
-                    let mut commit = false;
-                    if let Some(state) = prefs.dropdown_state_mut(open_slot) {
-                        if let Some(idx) =
-                            state.handle_menu(mouse, menu_bounds, opts.len(), true)
-                        {
-                            log::info!("instance dropdown {:?} → {} ({})", open_slot, idx, opts[idx]);
-                            commit = true;
-                        }
+                (head, menu_bounds, opts.len())
+            })
+        });
+        if let Some((head, menu_bounds, n)) = prep {
+            let in_menu = rect_contains(&menu_bounds, mouse);
+            let in_head = rect_contains(&head, mouse);
+            if in_menu {
+                let mut commit = false;
+                if let Some(state) = prefs.dropdown_state_mut(open_slot) {
+                    if let Some(idx) = state.handle_menu(mouse, menu_bounds, n, true) {
+                        log::info!(
+                            "instance dropdown {:?} → {} ({})",
+                            open_slot,
+                            idx,
+                            prefs.jre_runtime_labels.get(idx).map_or("?", String::as_str)
+                        );
+                        commit = true;
                     }
-                    if commit {
-                        sync_instance_config(instances, prefs);
-                        persistence::save_instances(instances);
-                    }
-                    return true;
                 }
-                if !in_head {
-                    if let Some(state) = prefs.dropdown_state_mut(open_slot) {
-                        state.close();
-                    }
+                if commit {
+                    sync_instance_config(instances, prefs);
+                    persistence::save_instances(instances);
+                }
+                return true;
+            }
+            if !in_head {
+                if let Some(state) = prefs.dropdown_state_mut(open_slot) {
+                    state.close();
                 }
             }
         }
