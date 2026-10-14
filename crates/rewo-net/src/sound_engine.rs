@@ -3099,7 +3099,7 @@ mod tests {
         // The unclamped AL_LINEAR_DISTANCE model really does produce a
         // negative gain past `max`; AL_MIN_GAIN is what stops it.
         assert_eq!(openal::linear_gain(100.0, 16.0), 0.0);
-        assert!(1.0 - ROLLOFF_UNCLAMPED_AT_100 > 0.0);
+        const { assert!(1.0 - ROLLOFF_UNCLAMPED_AT_100 > 0.0) };
     }
     /// `1 - 100/16` — what the formula gives before the clamp.
     const ROLLOFF_UNCLAMPED_AT_100: f32 = 1.0 - 100.0 / 16.0;
@@ -4244,15 +4244,15 @@ mod tests {
     /// ramps and the nautilus's holds at its minimum.
     #[test]
     fn the_ghast_and_nautilus_specs_are_opposite() {
-        assert!(!crate::sounds::RIDING_HAPPY_GHAST.underwater_sound);
-        assert!(crate::sounds::RIDING_NAUTILUS.underwater_sound);
+        const { assert!(!crate::sounds::RIDING_HAPPY_GHAST.underwater_sound) };
+        const { assert!(crate::sounds::RIDING_NAUTILUS.underwater_sound) };
         // Same class, same amplifier, different sound and side.
         assert_eq!(
             crate::sounds::RIDING_HAPPY_GHAST.volume_amplifier,
             crate::sounds::RIDING_NAUTILUS.volume_amplifier
         );
-        assert!(!crate::sounds::RIDING_HAPPY_GHAST.is_minecart);
-        assert!(!crate::sounds::RIDING_NAUTILUS.is_minecart);
+        const { assert!(!crate::sounds::RIDING_HAPPY_GHAST.is_minecart) };
+        const { assert!(!crate::sounds::RIDING_NAUTILUS.is_minecart) };
         // …and the minecart's pair differs from both in max and amplifier.
         for r in crate::sounds::RIDING_MINECART {
             assert!(r.is_minecart);
@@ -5638,7 +5638,7 @@ mod tests {
             situational: Some(rewo_world::music::musics::game()),
         };
         for _ in 0..crate::music::STARTING_DELAY {
-            sys.accept(&[ev.clone()], &reg, &EmptyWorld, &mut dev);
+            sys.accept(std::slice::from_ref(&ev), &reg, &EmptyWorld, &mut dev);
         }
         assert_eq!(sys.stats.started, 1, "one track started");
         assert_eq!(sys.engine.live_count(), 1, "and it holds a channel");
@@ -5674,7 +5674,7 @@ mod tests {
             let mut sys = SoundSystem::new(music_index());
             let mut dev = RecordingDevice::default();
             for _ in 0..crate::music::STARTING_DELAY + 40 {
-                sys.accept(&[ev.clone()], &reg, world, &mut dev);
+                sys.accept(std::slice::from_ref(&ev), &reg, world, &mut dev);
             }
             assert_eq!(sys.stats.started, 1, "the track must actually start");
             // Before M173 this could ONLY be read off `category_gain` — the
@@ -5792,7 +5792,7 @@ mod tests {
             situational: Some(rewo_world::music::musics::game()),
         };
         for _ in 0..crate::music::STARTING_DELAY {
-            sys.accept(&[ev.clone()], &reg, &EmptyWorld, &mut dev);
+            sys.accept(std::slice::from_ref(&ev), &reg, &EmptyWorld, &mut dev);
         }
         assert_eq!(sys.stats.not_started, 1, "the budget refused the track");
         assert_eq!(
@@ -5832,7 +5832,7 @@ mod tests {
             situational: Some(rewo_world::music::musics::game()),
         };
         for _ in 0..crate::music::STARTING_DELAY {
-            sys.accept(&[game.clone()], &reg, &EmptyWorld, &mut dev);
+            sys.accept(std::slice::from_ref(&game), &reg, &EmptyWorld, &mut dev);
         }
         assert_eq!(sys.stats.started, 1);
         let stops_before = sys.stats.stops;
@@ -5876,7 +5876,7 @@ mod tests {
             pitch: 1.0,
             seed: 0,
         });
-        live.drive(&[ev.clone()], &entities, None, 0, 1.0);
+        live.drive(std::slice::from_ref(&ev), &entities, None, 0, 1.0);
         assert_eq!(live.stats().started, 2);
 
         // An entity the table does not have is dropped, not relocated.

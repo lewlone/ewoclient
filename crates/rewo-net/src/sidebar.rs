@@ -1207,7 +1207,7 @@ mod tests {
         // The header is the *more* opaque of the two -- 0.4 against 0.3.
         // True of the DEFAULT profile, which is the only one Rewo can be in;
         // see `HEADER_BACKGROUND`'s docs for the option that equalises them.
-        assert!(HEADER_BACKGROUND >> 24 > BODY_BACKGROUND >> 24);
+        const { assert!(HEADER_BACKGROUND >> 24 > BODY_BACKGROUND >> 24) };
     }
 
     #[test]

@@ -3478,21 +3478,21 @@ impl PlaySession {
         }
     }
 
-    /// `handleEntityEvent`'s two sound cases (M141g).
-    ///
-    /// ```java
-    /// case 21: play(new GuardianAttackSoundInstance((Guardian)entity)); break;
-    /// case 63: play(new SnifferSoundInstance((Sniffer)entity)); break;
-    /// ```
-    ///
-    /// **Both are `play`, not `queueTickingSound`** — the deferral is the
-    /// bee's alone. And both casts are unchecked in vanilla, which is only
-    /// safe because the server never sends those ids to another type; here the
-    /// kind is checked, so a mis-addressed event is inert rather than a sound
-    /// on the wrong mob.
-    ///
-    /// The body is `ClientboundEntityEventPacket`'s: a **fixed big-endian i32**
-    /// entity id and a signed byte event id, neither a VarInt (M17).
+    // `handleEntityEvent`'s two sound cases (M141g).
+    //
+    // ```java
+    // case 21: play(new GuardianAttackSoundInstance((Guardian)entity)); break;
+    // case 63: play(new SnifferSoundInstance((Sniffer)entity)); break;
+    // ```
+    //
+    // **Both are `play`, not `queueTickingSound`** — the deferral is the
+    // bee's alone. And both casts are unchecked in vanilla, which is only
+    // safe because the server never sends those ids to another type; here the
+    // kind is checked, so a mis-addressed event is inert rather than a sound
+    // on the wrong mob.
+    //
+    // The body is `ClientboundEntityEventPacket`'s: a **fixed big-endian i32**
+    // entity id and a signed byte event id, neither a VarInt (M17).
 
     /// `Minecraft.getMusicVolume()` — the `MUSIC_VOLUME` attribute at the
     /// camera (M154).

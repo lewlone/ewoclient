@@ -516,6 +516,8 @@ impl ClientAdvancements {
 
     /// `AdvancementTree.tryInsert` — `Err(holder)` means "parent not known
     /// yet"; the caller retries it in the next pass.
+    // `Err` hands the advancement back to the caller to retry, so it is large by design.
+    #[allow(clippy::result_large_err)]
     fn try_insert(&mut self, adv: WireAdvancement) -> Result<(), WireAdvancement> {
         if let Some(parent) = &adv.parent {
             if !self.nodes.contains_key(parent) {

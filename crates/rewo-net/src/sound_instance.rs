@@ -695,6 +695,8 @@ mod tests {
     }
 
     #[test]
+    // The naive `max(min).min(max)` form is the thing the test contrasts against.
+    #[allow(clippy::manual_clamp)]
     fn mth_clamp_passes_nan_through_where_a_naive_min_max_would_not() {
         // Java's `Mth.clamp` is `value < min ? min : value > max ? max : value`
         // — both comparisons are false for NaN, so NaN falls through.

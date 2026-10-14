@@ -612,12 +612,7 @@ mod tests {
     /// Drive `n` ticks at full volume with nothing playing, returning the tick
     /// on which a track started.
     fn ticks_until_start(m: &mut MusicManager, music: &Music, limit: i32) -> Option<i32> {
-        for t in 1..=limit {
-            if m.tick(1.0, Some(music), false, false).start.is_some() {
-                return Some(t);
-            }
-        }
-        None
+        (1..=limit).find(|_| m.tick(1.0, Some(music), false, false).start.is_some())
     }
 
     /// **The first track waits `STARTING_DELAY` ticks, and the pre-decrement

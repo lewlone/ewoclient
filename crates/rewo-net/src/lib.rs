@@ -5194,7 +5194,7 @@ mod baby_routing_tests {
     //! `DATA_BABY_ID` (M175). The Allay and Raider readings have their own
     //! tests; this one pins that an ORDINARY mob's slot-16 bool reaches
     //! [`EntityTable::set_baby`] at all, because the render side's whole-sheet
-    /// swap keys on exactly this and nothing else does.
+    //! swap keys on exactly this and nothing else does.
 
     use super::apply_set_entity_data;
     use rewo_world::entities::{EntityState, EntityTable};

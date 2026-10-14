@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn the_mood_sound_overshoots_the_block_it_sampled() {
         let mood = AmbientMood::legacy_cave();
-        struct At(i32, i32, i32);
+        struct At;
         impl MoodLight for At {
             fn brightness(&self, _: i32, _: i32, _: i32) -> (i32, i32) {
                 (0, 0)
@@ -1031,7 +1031,7 @@ mod tests {
         let mut s = BiomeMoodState { moodiness: 1.0 };
         let mut r = LegacyRandom::new(31337);
         let mut out = Vec::new();
-        s.tick(&mood, feet, eye, &At(bx, by, bz), &mut r, &mut out);
+        s.tick(&mood, feet, eye, &At, &mut r, &mut out);
         let SoundEvent::Instance(i) = &out[0] else {
             panic!("{:?}", out[0])
         };

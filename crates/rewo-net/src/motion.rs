@@ -43,8 +43,8 @@
 //!    `Vec3.ZERO` having consumed exactly one byte, so the body of a
 //!    `set_entity_motion` that stops an entity is *two* bytes total (VarInt id
 //!    + the sentinel). A reader that always takes six bytes overruns every
-//!    stop-moving packet — and "stop moving" is the single most common
-//!    velocity update a server sends.
+//!      stop-moving packet — and "stop moving" is the single most common
+//!      velocity update a server sends.
 //! 3. **`explode`'s `blockCount` is `ByteBufCodecs.INT`, a fixed big-endian
 //!    i32 — not a VarInt.** It sits between two fields this milestone needs
 //!    (`radius` and `playerKnockback`), so reading it as a VarInt misaligns

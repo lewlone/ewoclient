@@ -102,6 +102,8 @@ impl StringReader {
         }
     }
 
+    // Brigadier's `new StringReader(String)`; it cannot fail, so not `FromStr`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         Self::new(&s.encode_utf16().collect::<Vec<_>>())
     }
