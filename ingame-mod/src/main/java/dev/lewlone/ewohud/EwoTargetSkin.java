@@ -90,11 +90,17 @@ public final class EwoTargetSkin {
             if (b64 == null) {
                 return;
             }
-            busy = true;
             Path gameDir = mc.gameDirectory.toPath();
-            Thread t = new Thread(() -> export(b64, name, gameDir), "ewo-target-skin");
-            t.setDaemon(true);
-            t.start();
+            busy = true;
+            try {
+                Thread t = new Thread(() -> export(b64, name, gameDir), "ewo-target-skin");
+                t.setDaemon(true);
+                t.start();
+            } catch (Throwable e) {
+                // The worker's finally never runs if it never started.
+                busy = false;
+                throw e;
+            }
         } catch (Throwable e) {
             // Cosmetic — never take down the render thread for a face.
             System.err.println("[ewo-hud] target skin skipped: " + e);
@@ -108,11 +114,18 @@ public final class EwoTargetSkin {
                 return;
             }
             // Download to a temp file and move into place, so the renderer can
-            // never observe a partially-written PNG.
+            // never observe a partially-written PNG. The download is host-
+            // checked (EwoSkinExport.ALLOWED_HOST), size-capped, timed out and
+            // PNG-checked; a rejection throws, so the marker never advances
+            // onto a bad file.
             Path tmp = gameDir.resolve(PNG + ".part");
-            EwoSkinExport.downloadTo(url, tmp);
-            Files.move(tmp, gameDir.resolve(PNG),
-                    StandardCopyOption.REPLACE_EXISTING);
+            try {
+                EwoSkinExport.downloadTo(url, tmp);
+                Files.move(tmp, gameDir.resolve(PNG),
+                        StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(tmp);
+            }
             // Marker last: it is what makes the renderer trust the PNG.
             Files.write(gameDir.resolve(MARKER), name.getBytes(StandardCharsets.UTF_8));
             published = name;

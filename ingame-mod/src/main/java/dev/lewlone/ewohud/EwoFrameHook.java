@@ -17,10 +17,48 @@ public final class EwoFrameHook {
 
     private EwoFrameHook() {}
 
+    /** Consecutive frames that threw. Reset by any clean frame. */
+    private static int consecutiveFailures;
+    /** Failures logged so far, so a flapping fault cannot flood the log. */
+    private static int failuresLogged;
+
+    /** Consecutive failing frames after which the native bridge is switched off. */
+    private static final int MAX_CONSECUTIVE_FAILURES = 5;
+    private static final int MAX_FAILURES_LOGGED = 10;
+
+    /**
+     * Once per frame, from the version-specific frame mixins. Never throws:
+     * this runs inside Minecraft's render loop, and an escaping
+     * {@code UnsatisfiedLinkError} (a stale {@code ewo_jni.dll} — there is no
+     * ABI handshake) or NPE would crash the game. After
+     * {@link #MAX_CONSECUTIVE_FAILURES} bad frames in a row the native bridge
+     * is disabled for the rest of the session and that is logged once.
+     */
     public static void run() {
         if (!EwoHudMod.nativeReady) {
             return;
         }
+        try {
+            runFrame();
+            consecutiveFailures = 0;
+        } catch (Throwable t) {
+            consecutiveFailures++;
+            if (failuresLogged < MAX_FAILURES_LOGGED) {
+                failuresLogged++;
+                System.err.println("[ewo-hud] frame hook failed (" + consecutiveFailures
+                        + " in a row): " + t);
+                if (failuresLogged == 1) {
+                    t.printStackTrace();
+                }
+            }
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                EwoHudMod.disableNativeBridge("frame hook failed "
+                        + consecutiveFailures + " frames in a row; last: " + t);
+            }
+        }
+    }
+
+    private static void runFrame() {
         EwoSkinExport.tick();
         EwoTargetSkin.tick();
         // Before the cursor forward below: the mouse mixin gates on this, and

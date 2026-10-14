@@ -32,7 +32,8 @@ public class EwoMixinPlugin implements IMixinConfigPlugin {
 
     /** Mixins that must NOT apply on 26.2+ (their {@code 262} twin does). */
     private static final Set<String> LEGACY_ONLY =
-            Set.of("EwoHudMixin", "GuiCrosshairMixin", "FireOverlayMixin");
+            Set.of("EwoHudMixin", "GuiCrosshairMixin", "FireOverlayMixin",
+                    "MinecraftShutdownMixin");
 
     private boolean is262Plus;
 

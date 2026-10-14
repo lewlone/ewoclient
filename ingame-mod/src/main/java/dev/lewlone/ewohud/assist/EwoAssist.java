@@ -6,10 +6,11 @@ import dev.lewlone.ewohud.EwoKeybinds;
 /**
  * The assist (PvP / packet-touching) modules' per-frame driver + key router.
  *
- * <p>{@link EwoModules#tick} resolves this class via reflection at class-load
- * time; if it isn't on the classpath (legit build), the bridge is a no-op
- * and none of the assist code runs. Likewise {@link EwoModules#handleKeyPress}
- * delegates key-press routing here only for the assist-side modules.
+ * <p>{@link EwoAssistEntry} (a client entrypoint declared only in
+ * {@code fabric-pvp.mod.json}) registers {@link #tick} and
+ * {@link #handleKeyPress} into {@code EwoExtensionHook}, which
+ * {@code EwoModules} drives. In the legit build this package is absent and
+ * nothing is registered, so none of the assist code runs.
  *
  * <p>This split means the assist package can be excluded from the legit jar
  * wholesale — its class names, slot constants, and behaviour vanish from

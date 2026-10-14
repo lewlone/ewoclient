@@ -19,6 +19,23 @@ public final class EwoHudMod implements ClientModInitializer {
     /** True once the native library is loaded and {@code nativeHello()} returned. */
     public static volatile boolean nativeReady = false;
 
+    /** True once the dll is loaded, even if the HUD bridge was later switched
+     *  off by {@link #disableNativeBridge}: the exit watchdog's kill path
+     *  ({@code nativeForceExit}) is independent of the per-frame bridge. */
+    private static volatile boolean killPathLoaded = false;
+
+    /**
+     * Switch the per-frame native bridge off for the rest of the session
+     * (every mixin gates on {@link #nativeReady}). Logs exactly once. The exit
+     * watchdog stays armable.
+     */
+    public static void disableNativeBridge(String reason) {
+        if (nativeReady) {
+            nativeReady = false;
+            System.err.println("[ewo-hud] native bridge DISABLED for this session: " + reason);
+        }
+    }
+
     /** Ensures the exit watchdog's kill-timer is started at most once, no
      *  matter how many arm points fire (the teardown mixin + shutdown hook). */
     private static final AtomicBoolean watchdogArmed = new AtomicBoolean(false);
@@ -43,12 +60,14 @@ public final class EwoHudMod implements ClientModInitializer {
             // Allocate the JVM->Rust HUD block + the Rust->JVM module block.
             EwoHudNative.nativeInit(EwoHudData.allocate());
             EwoHudNative.nativeInitModules(EwoModuleData.allocate());
+            killPathLoaded = true;
             nativeReady = true;
             System.err.println("[ewo-hud] native bridge loaded: " + dll);
             // Fallback arm point: fires when the JVM begins orderly shutdown.
-            // The primary arm is MinecraftShutdownMixin (destroy() RETURN),
-            // which runs earlier — but a hang on an exit path that skips
-            // destroy() still gets caught here.
+            // The primary arm is the shutdown mixin (26.1: Minecraft.destroy()
+            // RETURN; 26.2: Minecraft.exitWorldAndClose() RETURN), which runs
+            // earlier — but a hang on an exit path that skips it still gets
+            // caught here.
             Runtime.getRuntime().addShutdownHook(
                     new Thread(EwoHudMod::armExitWatchdog, "ewo-exit-watchdog-arm"));
         } catch (Throwable t) {
@@ -77,17 +96,19 @@ public final class EwoHudMod implements ClientModInitializer {
      * <p>Idempotent and safe to call from multiple arm points — the earliest
      * caller wins. Arm points, earliest first:
      * <ol>
-     *   <li>{@link dev.lewlone.ewohud.mixin.MinecraftShutdownMixin} — at
-     *       {@code Minecraft.destroy()} RETURN, the game's final teardown,
-     *       just before the JVM's own native shutdown begins.</li>
+     *   <li>{@link dev.lewlone.ewohud.mixin.MinecraftShutdownMixin} (26.1,
+     *       {@code Minecraft.destroy()}) or {@code MinecraftShutdownMixin262}
+     *       (26.2+, {@code Minecraft.exitWorldAndClose()}, the renamed
+     *       {@code destroy}) at RETURN — the game's final teardown, just
+     *       before the JVM's own native shutdown begins.</li>
      *   <li>A JVM shutdown hook (see {@link #onInitializeClient}) — the
-     *       fallback for any exit path that doesn't run {@code destroy()}.</li>
+     *       fallback for any exit path that skips the mixin.</li>
      * </ol>
      * The launcher-side reaper ({@code launch::reaper}) is the final backstop
      * if the process still lingers.
      */
     public static void armExitWatchdog() {
-        if (!nativeReady) {
+        if (!killPathLoaded) {
             return; // no native kill path available — nothing to arm
         }
         if (!watchdogArmed.compareAndSet(false, true)) {

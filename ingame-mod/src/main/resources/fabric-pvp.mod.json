@@ -8,7 +8,7 @@
   "license": "Proprietary",
   "environment": "client",
   "entrypoints": {
-    "client": ["dev.lewlone.ewohud.EwoHudMod"]
+    "client": ["dev.lewlone.ewohud.EwoHudMod", "dev.lewlone.ewohud.assist.EwoAssistEntry"]
   },
   "mixins": ["ewohud.mixins.json", "ewohud-pvp.mixins.json"]
 }

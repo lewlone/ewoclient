@@ -4,7 +4,19 @@
 # game assets. Tests that need the decompile / client jar skip on a runner, and
 # the `rewo *shot --check` gates (which also need a Vulkan device) are not run
 # here — run `python tools/gates.py` locally for those.
+#
+# Jobs:
+#   test      the gates-feature build, tests and clippy, plus the pvp-feature
+#             half of ewo-core / ewo-jni that the default build never compiles
+#   shipped   the configuration package.ps1 actually ships (default features);
+#             `test` only ever built with --features rewo-app/gates
+#   msrv      the declared rust-version (workspace Cargo.toml), not floating stable
+#   audit     RustSec advisories against Cargo.lock
 name: ci
+
+# Least privilege: nothing here writes to the repo, issues or checks.
+permissions:
+  contents: read
 
 on:
   push:
@@ -22,6 +34,8 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -30,9 +44,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # rewo-gpu's build.rs compiles its GLSL with glslc from the Vulkan SDK.
+      # Pinned to the SDK the owner builds with locally (VULKAN_SDK=C:/VulkanSDK/1.3.296.0)
+      # so CI compiles the shaders with the same glslc.
       - uses: jakoch/install-vulkan-sdk-action@v1
         with:
-          vulkan_version: latest
+          vulkan_version: 1.3.296.0
           install_runtime: false
           cache: true
           stripdown: true
@@ -43,5 +59,96 @@ jobs:
       - name: Test
         run: cargo test --workspace --no-fail-fast --features rewo-app/gates
 
+      # The in-game mod's assist modules live behind `pvp`, which no default
+      # or workspace build turns on, so its Rust half (the extra REGISTRY
+      # slots in ewo-core and the cdylib that exposes them) was never compiled
+      # or tested in CI.
+      - name: Check ewo-jni (pvp)
+        run: cargo check -p ewo-jni --features pvp
+
+      - name: Test ewo-core (pvp)
+        run: cargo test -p ewo-core --features pvp
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features rewo-app/gates
+
+  # Build exactly what package.ps1 ships: default features, no `gates`.
+  # rewo-app's gates feature pulls in render_check, the witness blocks and the
+  # REWO_* test knobs, so a break that only exists without it (a cfg'd-out
+  # import, a default-only code path) was invisible to the job above.
+  shipped:
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: shipped
+
+      - uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.296.0
+          install_runtime: false
+          cache: true
+          stripdown: true
+
+      - name: Build rewo (default features)
+        run: cargo build -p rewo-app
+
+      - name: Build launcher
+        run: cargo build -p ewo-launcher
+
+  # The workspace declares rust-version = "1.89" but CI only ever ran stable.
+  # rust-toolchain.toml says `stable`, which would override the action's
+  # default toolchain, so RUSTUP_TOOLCHAIN pins the whole job.
+  msrv:
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: "1.89"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.89
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      - uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.296.0
+          install_runtime: false
+          cache: true
+          stripdown: true
+
+      - name: Check (MSRV)
+        run: cargo check --workspace --all-targets --features rewo-app/gates
+
+  # Known-vulnerable dependencies. Reads Cargo.lock only, so any runner works.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: audit
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit
+        run: cargo audit
