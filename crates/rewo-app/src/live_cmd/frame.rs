@@ -138,12 +138,117 @@ impl LiveApp {
         if opened != self.screen.container_shown {
             self.screen.container_shown = opened;
             match opened {
-                Some(_) => self.set_screen_open(true),
+                Some(id) => {
+                    // M184: a lectern's screen is the BOOK, not the container
+                    // panel - `LecternScreen extends BookViewScreen`. The
+                    // generic `set_screen_open(true)` opens the Inventory-kind
+                    // panel screen, which for a lectern paints nothing (m8)
+                    // and would fight the book screen for the one framework
+                    // slot. The reader opens below, via the lectern sync.
+                    let is_lectern = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.menus.open())
+                        .is_some_and(|m| m.container_id == id && m.layout.name == "lectern");
+                    if !is_lectern {
+                        self.set_screen_open(true);
+                    }
+                }
                 // The menu closing closes the screen with it — but only if a
                 // container was what put it up. Pressing E with no container
                 // open must not be closed by this.
                 None if self.screen.inventory_open() => self.set_screen_open(false),
                 None => {}
+            }
+        }
+
+        // M184 - the lectern's menu-backed reader. `LecternScreen extends
+        // BookViewScreen` (`LecternScreen.java:25`): the pages are the book
+        // in the menu's slot 0, the page is container-data 0, and every
+        // page turn is a `container_button_click` the server answers by
+        // echoing the new page - the client never turns locally
+        // (`LecternScreen.pageBack/Forward/forcePage` are ALL sends).
+        //
+        // The watermark mirrors the `opened` block above rather than
+        // comparing screen state, for the same reason that block does: a
+        // server re-opening the same container id is a fresh menu, and a
+        // replaced screen (a held book's `open_book` while the lectern menu
+        // lives) must not resurrect.
+        let lectern_menu = self
+            .session
+            .as_ref()
+            .and_then(|s| s.menus.open())
+            .filter(|m| m.layout.name == "lectern")
+            .map(|m| (m.container_id, m.open_serial, m.data(0) as i32));
+        match lectern_menu {
+            Some((container_id, serial, page)) => {
+                let identity = (container_id, serial);
+                if self.lectern_shown.is_none() && self.lectern_superseded != Some(identity) {
+                    // `handleOpenScreen` IS the screen opening. `mayBuild`
+                    // is not on the wire - vanilla's own setter makes it
+                    // `!isSpectator()`, which is what decides the
+                    // two-button footer.
+                    let (gw, gh) = self.gui_size();
+                    let done = self.lang.get_or_default("gui.done", "Done").to_string();
+                    let take =
+                        self.lang.get_or_default("lectern.take_book", "Take Book").to_string();
+                    let may_build = !self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.own_game_mode())
+                        .is_some_and(rewo_net::play::GameMode::is_spectator);
+                    let screen = if may_build {
+                        rewo_world::book_view_screen::build_lectern_screen(gw, gh, &done, &take)
+                    } else {
+                        rewo_world::book_view_screen::build_screen(gw, gh, &done)
+                    };
+                    self.screen.screens.open(screen);
+                    self.book =
+                        Some(rewo_world::book_view_screen::BookViewScreen::new(Vec::new()));
+                    self.lectern_pages = None;
+                    self.lectern_shown = Some(identity);
+                    self.grab_for_screen(true);
+                }
+                // The listener half - only while this identity's reader is
+                // the one up. Pages resolve from slot 0's book; the page
+                // number is data slot 0. `force_page` is a no-op when the
+                // echo agrees, so re-forcing each frame is the
+                // eventual-consistency the client actually has.
+                if self.lectern_shown == Some(identity) {
+                    let advance = self.advance();
+                    let pages: Option<Vec<Vec<rewo_world::chat_style::ChatLine>>> =
+                        self.session.as_ref().and_then(|s| {
+                            let m = s.menus.open()?;
+                            let stack = m.menu.menu_slot(0)?;
+                            let text = m.menu.text_of(stack)?;
+                            resolve_book_pages(text, advance.as_ref(), Some(&self.lang))
+                        });
+                    if self.lectern_pages.as_ref() != pages.as_ref() {
+                        if let Some(p) = pages.clone() {
+                            self.book =
+                                Some(rewo_world::book_view_screen::BookViewScreen::new(p));
+                        }
+                        self.lectern_pages = pages;
+                    }
+                    if let Some(b) = self.book.as_mut() {
+                        b.force_page(page);
+                    }
+                }
+            }
+            None => {
+                // The menu closed (the server's `container_close`, or an
+                // `open_screen` for something else). Vanilla's screen goes
+                // with its menu; no local send - the server already knows.
+                // Both markers clear: with the menu gone there is nothing
+                // left to not-resurrect.
+                let was_shown = self.lectern_shown.take().is_some();
+                let was_superseded = self.lectern_superseded.take().is_some();
+                if was_shown || was_superseded {
+                    self.lectern_pages = None;
+                    self.book = None;
+                    self.screen.screens.close();
+                    self.grab_for_screen(false);
+                }
             }
         }
 

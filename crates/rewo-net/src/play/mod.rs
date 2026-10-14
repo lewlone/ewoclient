@@ -4655,6 +4655,25 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `Minecraft.player.closeContainer()` (M184) — the lectern close's
+    /// server half. One VarInt container id, taken from the SHOWN menu on
+    /// M89's rule; container 0 means nothing is shown (the caller's menu
+    /// already went) and vanilla's `closeContainer` guards that case out
+    /// (`containerMenu != inventoryMenu`), so this no-ops rather than
+    /// closing the player's own menu.
+    pub fn container_close(&mut self) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_container_close else {
+            return Err("container_close unavailable".into());
+        };
+        let container = self.shown_container_id();
+        if container == rewo_world::inventory::PLAYER_CONTAINER_ID {
+            return Ok(());
+        }
+        let mut p = PacketWriter::packet(id);
+        p.buf.extend_from_slice(&crate::container_close_body(container));
+        self.send(p)
+    }
+
     /// `RecipeBookComponent.sendUpdateSettings` (M98).
     ///
     /// **Reads both flags out of the local settings rather than taking them**,
