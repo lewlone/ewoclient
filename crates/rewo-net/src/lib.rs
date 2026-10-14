@@ -52,6 +52,7 @@ pub mod merchant;
 pub mod recipe_book;
 pub mod menu;
 pub mod jump_riding;
+pub mod login;
 pub mod local_player_data;
 pub mod metadata;
 pub mod motion;
@@ -402,10 +403,27 @@ impl<'a> Connection<'a> {
             };
             match id {
                 x if x == self.ids.cb_login_compression => {
-                    let mut r = PacketReader::new(&self.packet[body..]);
-                    let threshold = r.varint().map_err(de)?;
-                    self.codec.compression_threshold = Some(threshold);
-                    log::info!("net: compression threshold {threshold}");
+                    // A negative threshold REMOVES compression
+                    // (`Connection.setupCompression`, see `login`).
+                    let threshold = login::compression_threshold(&self.packet[body..]).map_err(de)?;
+                    self.codec.compression_threshold = threshold;
+                    log::info!("net: compression threshold {threshold:?}");
+                }
+                x if x == self.ids.cb_login_custom_query => {
+                    let (answer, channel) =
+                        login::answer_custom_query(self.ids.sb_login_custom_query_answer, &self.packet[body..])
+                            .map_err(de)?;
+                    log::info!("net: login custom_query {channel} answered not-understood");
+                    self.send(answer)?;
+                }
+                x if Some(x) == self.ids.cb_login_cookie_request => {
+                    let answer = login::answer_cookie_request(
+                        self.ids.sb_login_cookie_response,
+                        &self.packet[body..],
+                        &self.session,
+                    )
+                    .map_err(de)?;
+                    self.send(answer)?;
                 }
                 x if x == self.ids.cb_login_finished => {
                     // GameProfile follows; we don't need it for M1.

@@ -246,3 +246,69 @@ fn pump_stops_at_its_packet_budget() {
     assert_eq!(total, 10);
     server.join().unwrap();
 }
+
+/// The login packets `ClientHandshakePacketListenerImpl` answers beyond the
+/// encryption handshake, end to end through `Connection::login`:
+///
+/// - `login_compression` 64 then **-1**: `Connection.setupCompression` removes
+///   compression for a negative threshold (`Connection.java:544-566`), so the
+///   client's next frames must be plain. Kept as `Some(-1)` they were not.
+/// - `custom_query`: answered `ServerboundCustomQueryAnswerPacket(id, null)`
+///   (`ClientHandshakePacketListenerImpl.java:232-235`) instead of dropped.
+/// - `cookie_request`: answered from the (empty, fresh-login) jar
+///   (`:242-244`).
+#[test]
+fn login_answers_queries_and_cookies_and_honours_a_negative_threshold() {
+    let Some(data) = load_data() else { return };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let sids = Ids::resolve(&data.packets).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut s = Server { stream, codec: FrameCodec::default() };
+        let ids = sids;
+        // Both are id 0 in their states, so read them in order rather than
+        // let `expect(hello)` stop at the handshake.
+        let (id, _) = s.recv();
+        assert_eq!(id, ids.sb_handshake_intention);
+        let (id, _) = s.recv();
+        assert_eq!(id, ids.sb_login_hello);
+
+        let mut c = PacketWriter::packet(ids.cb_login_compression);
+        c.varint(64);
+        s.send(c);
+        s.codec.compression_threshold = Some(64);
+        let mut c = PacketWriter::packet(ids.cb_login_compression);
+        c.varint(-1);
+        s.send(c); // still framed compressed: the switch is after the packet
+        s.codec.compression_threshold = None;
+
+        let mut q = PacketWriter::packet(ids.cb_login_custom_query);
+        q.varint(300).string("velocity:player_info").raw(&[1, 2, 3]);
+        s.send(q);
+        // Read with PLAIN framing: a client still compressing would prefix a
+        // data-length VarInt and this would not be the answer's id.
+        let (id, body) = s.recv();
+        assert_eq!(id, ids.sb_login_custom_query_answer, "custom_query answer");
+        assert_eq!(body, [0xAC, 0x02, 0x00], "VarInt 300, then null payload");
+
+        let mut q = PacketWriter::packet(ids.cb_login_cookie_request.unwrap());
+        q.string("minecraft:session");
+        s.send(q);
+        let (id, body) = s.recv();
+        assert_eq!(id, ids.sb_login_cookie_response, "cookie_response");
+        let mut want = vec![17u8];
+        want.extend_from_slice(b"minecraft:session");
+        want.push(0); // no cookie stored
+        assert_eq!(body, want);
+
+        let mut fin = PacketWriter::packet(ids.cb_login_finished);
+        fin.uuid(1).string("Rewo").varint(0);
+        s.send(fin);
+        s.expect(ids.sb_login_acknowledged, "login_acknowledged");
+    });
+    let mut conn = Connection::connect("127.0.0.1", port, &data).unwrap();
+    conn.login_offline("127.0.0.1", port, "Rewo").unwrap();
+    server.join().expect("server script failed");
+}

@@ -25,6 +25,16 @@ pub struct Ids {
     pub cb_login_finished: i32,
     pub cb_login_disconnect: i32,
     pub cb_login_hello: i32,
+    /// `ClientboundCustomQueryPacket`, answered "not understood" by
+    /// `crate::login::answer_custom_query`.
+    pub cb_login_custom_query: i32,
+    /// `ServerboundCustomQueryAnswerPacket`.
+    pub sb_login_custom_query_answer: i32,
+    /// `ClientboundCookieRequestPacket` in the **login** state; optional like
+    /// its configuration and play twins.
+    pub cb_login_cookie_request: Option<i32>,
+    /// `ServerboundCookieResponsePacket` in the **login** state.
+    pub sb_login_cookie_response: i32,
     // configuration
     pub sb_config_custom_payload: i32,
     pub sb_config_client_information: i32,
@@ -658,6 +668,10 @@ impl Ids {
             cb_login_finished: req!(p, L, C, "login_finished"),
             cb_login_disconnect: req!(p, L, C, "login_disconnect"),
             cb_login_hello: req!(p, L, C, "hello"),
+            cb_login_custom_query: req!(p, L, C, "custom_query"),
+            sb_login_custom_query_answer: req!(p, L, S, "custom_query_answer"),
+            cb_login_cookie_request: opt!(p, L, C, "cookie_request"),
+            sb_login_cookie_response: req!(p, L, S, "cookie_response"),
 
             sb_config_custom_payload: req!(p, Cfg, S, "custom_payload"),
             sb_config_client_information: req!(p, Cfg, S, "client_information"),
