@@ -359,11 +359,7 @@ pub(super) fn pump_meshing(
     let mut dirty = session.take_dirty();
     if !dirty.is_empty() {
         let (px, pz) = (session.player.x as f32, session.player.z as f32);
-        dirty.sort_by(|a, b| {
-            let da = col_dist(*a, px, pz);
-            let db = col_dist(*b, px, pz);
-            da.partial_cmp(&db).unwrap()
-        });
+        sort_columns_nearest_first(&mut dirty, px, pz);
         let mut deferred = Vec::new();
         for (cx, cz) in dirty {
             if session.world.column(cx, cz).is_none() {
@@ -378,6 +374,15 @@ pub(super) fn pump_meshing(
         session.requeue_dirty(deferred);
     }
     Ok(uploaded)
+}
+
+/// Order columns nearest-to-`(px, pz)` first. `total_cmp`, not
+/// `partial_cmp().unwrap()`: a non-finite player position (a hostile or
+/// corrupt teleport) makes every distance NaN, and a panic in the frame loop
+/// is the worst way to find that out. NaN distances order by their bits
+/// (all to one end), which is harmless.
+pub(super) fn sort_columns_nearest_first(cols: &mut [(i32, i32)], px: f32, pz: f32) {
+    cols.sort_by(|a, b| col_dist(*a, px, pz).total_cmp(&col_dist(*b, px, pz)));
 }
 
 pub(super) fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
@@ -486,4 +491,32 @@ pub(super) fn attach_backend(live: &mut LiveSounds, opened: Result<Box<dyn Chann
 /// per-session toggle has to arrive through the environment.
 pub(super) fn wants_audio(args: &LiveArgs) -> bool {
     args.audio || std::env::var("REWO_AUDIO").map(|v| v == "1").unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nearest_first_orders_finite_positions() {
+        let mut v = vec![(5, 5), (0, 0), (-1, 0), (3, -3)];
+        sort_columns_nearest_first(&mut v, 8.0, 8.0);
+        // Column (0,0) is centred on (8,8): distance 0.
+        assert_eq!(v[0], (0, 0));
+        let d: Vec<f32> = v.iter().map(|&c| col_dist(c, 8.0, 8.0)).collect();
+        assert!(d.windows(2).all(|w| w[0] <= w[1]), "{d:?}");
+    }
+
+    #[test]
+    fn nearest_first_tolerates_non_finite_player() {
+        // Every distance is NaN (or inf-inf): the old `partial_cmp().unwrap()`
+        // panicked here. Order is unspecified, but the sort must return and
+        // keep every column.
+        for (px, pz) in [(f32::NAN, 0.0), (0.0, f32::NAN), (f32::INFINITY, f32::NEG_INFINITY)] {
+            let mut v = vec![(5, 5), (0, 0), (-1, 0), (3, -3)];
+            sort_columns_nearest_first(&mut v, px, pz);
+            v.sort();
+            assert_eq!(v, vec![(-1, 0), (0, 0), (3, -3), (5, 5)]);
+        }
+    }
 }

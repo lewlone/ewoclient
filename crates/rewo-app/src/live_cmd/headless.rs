@@ -493,14 +493,14 @@ pub(super) fn run_headless(
             draws
                 .iter()
                 .filter(pref)
-                .max_by(|a, b| a.pos[1].partial_cmp(&b.pos[1]).unwrap())
+                .max_by(|a, b| a.pos[1].total_cmp(&b.pos[1]))
         } else {
             draws
                 .iter()
                 .filter(pref)
-                .min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap())
+                .min_by(|a, b| d(a).total_cmp(&d(b)))
         }
-        .or_else(|| draws.iter().min_by(|a, b| d(a).partial_cmp(&d(b)).unwrap()));
+        .or_else(|| draws.iter().min_by(|a, b| d(a).total_cmp(&d(b))));
         if let Some(t) = nearest {
             let d = Vec3::new(
                 t.pos[0] - eye.x,

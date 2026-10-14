@@ -558,6 +558,8 @@ pub struct PlaySession {
     pub reconfigurations: u32,
     /// Play packets that failed to decode and were dropped (logged at warn).
     pub decode_failures: u64,
+    /// A non-finite teleport component has been logged (log once, count always).
+    warned_non_finite_teleport: bool,
     /// Play logins seen; a login after the first follows a reconfiguration.
     logins: u32,
     /// The client's `LastSeenMessagesTracker` for signed chat.
@@ -1871,6 +1873,7 @@ impl<'a> Connection<'a> {
             reconfig: None,
             reconfigurations: 0,
             decode_failures: 0,
+            warned_non_finite_teleport: false,
             logins: 0,
             last_seen: crate::chat_sign::LastSeenTracker::default(),
             auth: auth.cloned(),
@@ -3050,45 +3053,41 @@ impl PlaySession {
         // movement packet until it is — a silent desync, not a recoverable one.
         let (teleport_id, vals, yaw, pitch, relatives) =
             parse.map_err(|e| format!("play player_position: {e}"))?;
-        let rel = |bit: i32| relatives & (1 << bit) != 0;
-        // Relative bits (decompiled Relative enum order): X=0 Y=1 Z=2
-        // Y_ROT=3 X_ROT=4, deltas 5..7, rotate-delta 8.
-        self.player.x = if rel(0) {
-            self.player.x + vals[0]
-        } else {
-            vals[0]
-        };
-        self.player.y = if rel(1) {
-            self.player.y + vals[1]
-        } else {
-            vals[1]
-        };
-        self.player.z = if rel(2) {
-            self.player.z + vals[2]
-        } else {
-            vals[2]
-        };
-        self.player.yaw = if rel(3) { self.player.yaw + yaw } else { yaw };
-        self.player.pitch = if rel(4) {
-            self.player.pitch + pitch
-        } else {
-            pitch
-        };
-        self.player.vx = if rel(5) {
-            self.player.vx + vals[3]
-        } else {
-            vals[3]
-        };
-        self.player.vy = if rel(6) {
-            self.player.vy + vals[4]
-        } else {
-            vals[4]
-        };
-        self.player.vz = if rel(7) {
-            self.player.vz + vals[5]
-        } else {
-            vals[5]
-        };
+        let (resolved, non_finite) = resolve_teleport(
+            &TeleportBase {
+                pos: [self.player.x, self.player.y, self.player.z],
+                vel: [self.player.vx, self.player.vy, self.player.vz],
+                yaw: self.player.yaw,
+                pitch: self.player.pitch,
+            },
+            vals,
+            yaw,
+            pitch,
+            relatives,
+        );
+        if non_finite {
+            // Vanilla's `handleMovePlayer` has no position guard, but its
+            // setters refuse non-finite deltas and rotations, and a NaN
+            // position would poison every distance sort and the physics step.
+            // Keep the previous values, still acknowledge (the server waits
+            // on it), and count it with the other malformed-packet drops.
+            self.decode_failures += 1;
+            if !self.warned_non_finite_teleport {
+                self.warned_non_finite_teleport = true;
+                log::warn!(
+                    "net: play player_position: non-finite component ignored \
+                     (further occurrences are counted, not logged)"
+                );
+            }
+        }
+        self.player.x = resolved.pos[0];
+        self.player.y = resolved.pos[1];
+        self.player.z = resolved.pos[2];
+        self.player.yaw = resolved.yaw;
+        self.player.pitch = resolved.pitch;
+        self.player.vx = resolved.vel[0];
+        self.player.vy = resolved.vel[1];
+        self.player.vz = resolved.vel[2];
 
         let mut ack = PacketWriter::packet(self.ids.sb_play_accept_teleport);
         ack.varint(teleport_id);
@@ -6053,6 +6052,63 @@ impl PlaySession {
 
 mod dispatch;
 mod outgoing;
+
+/// The local player's state a teleport is applied relative to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TeleportBase {
+    pub pos: [f64; 3],
+    pub vel: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+/// Resolve a `player_position` packet against the current state: the
+/// `PositionMoveRotation.calculateAbsolute` arithmetic, then vanilla's
+/// refusal of non-finite results.
+///
+/// Relative bits (decompiled `Relative` enum order): X=0 Y=1 Z=2 Y_ROT=3
+/// X_ROT=4, deltas 5..7, rotate-delta 8. `vals` is position then delta.
+///
+/// Vanilla's `Entity.setDeltaMovement` drops a non-finite vector whole and
+/// `setYRot`/`setXRot` drop a non-finite angle; its `setPos` has no guard, but
+/// Rewo cannot afford a NaN position (it panics the dirty-column sort and
+/// poisons physics), so the position is dropped whole too. Returns the new
+/// state and whether anything was dropped.
+pub(crate) fn resolve_teleport(
+    base: &TeleportBase,
+    vals: [f64; 6],
+    yaw: f32,
+    pitch: f32,
+    relatives: i32,
+) -> (TeleportBase, bool) {
+    let rel = |bit: i32| relatives & (1 << bit) != 0;
+    let axis = |bit: i32, old: f64, new: f64| if rel(bit) { old + new } else { new };
+    let pos = [
+        axis(0, base.pos[0], vals[0]),
+        axis(1, base.pos[1], vals[1]),
+        axis(2, base.pos[2], vals[2]),
+    ];
+    let vel = [
+        axis(5, base.vel[0], vals[3]),
+        axis(6, base.vel[1], vals[4]),
+        axis(7, base.vel[2], vals[5]),
+    ];
+    let new_yaw = if rel(3) { base.yaw + yaw } else { yaw };
+    let new_pitch = if rel(4) { base.pitch + pitch } else { pitch };
+    let all_finite = |v: &[f64; 3]| v.iter().all(|c| c.is_finite());
+    let mut dropped = false;
+    let mut keep = |ok: bool| {
+        dropped |= !ok;
+        ok
+    };
+    let out = TeleportBase {
+        pos: if keep(all_finite(&pos)) { pos } else { base.pos },
+        vel: if keep(all_finite(&vel)) { vel } else { base.vel },
+        yaw: if keep(new_yaw.is_finite()) { new_yaw } else { base.yaw },
+        pitch: if keep(new_pitch.is_finite()) { new_pitch } else { base.pitch },
+    };
+    (out, dropped)
+}
 
 #[cfg(test)]
 mod tests;

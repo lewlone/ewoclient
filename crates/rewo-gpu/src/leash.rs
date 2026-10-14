@@ -258,8 +258,7 @@ mod tests {
                 .min_by(|a, b| {
                     (a.pos[0] - 2.0)
                         .abs()
-                        .partial_cmp(&(b.pos[0] - 2.0).abs())
-                        .unwrap()
+                        .total_cmp(&(b.pos[0] - 2.0).abs())
                 })
                 .unwrap()
                 .pos[1]

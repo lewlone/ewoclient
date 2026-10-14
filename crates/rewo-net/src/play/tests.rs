@@ -2171,3 +2171,65 @@ mod entity_collider_tests {
         );
     }
 }
+
+mod teleport_tests {
+    use super::{resolve_teleport, TeleportBase};
+
+    fn base() -> TeleportBase {
+        TeleportBase {
+            pos: [10.0, 64.0, -5.0],
+            vel: [0.1, -0.2, 0.3],
+            yaw: 45.0,
+            pitch: 10.0,
+        }
+    }
+
+    /// Finite packets resolve exactly as `calculateAbsolute` does: absolute
+    /// fields replace, relative bits add to the current value.
+    #[test]
+    fn finite_teleport_applies_absolute_and_relative_fields() {
+        // X, Z and yaw relative (bits 0, 2, 3); delta Y relative (bit 6).
+        let rel = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 6);
+        let (got, dropped) =
+            resolve_teleport(&base(), [1.0, 70.0, 2.0, 0.5, 0.5, 0.5], 5.0, -30.0, rel);
+        assert!(!dropped);
+        assert_eq!(got.pos, [11.0, 70.0, -3.0]);
+        assert_eq!(got.vel, [0.5, 0.3, 0.5]);
+        assert_eq!((got.yaw, got.pitch), (50.0, -30.0));
+    }
+
+    /// A NaN or infinite component never reaches the player state: the group
+    /// it belongs to keeps its previous value, the rest of the packet applies.
+    #[test]
+    fn non_finite_components_are_dropped_not_applied() {
+        let b = base();
+        let (got, dropped) = resolve_teleport(
+            &b,
+            [f64::NAN, 70.0, 2.0, f64::INFINITY, 0.0, 0.0],
+            f32::NAN,
+            20.0,
+            0,
+        );
+        assert!(dropped);
+        assert_eq!(got.pos, b.pos, "position is dropped whole");
+        assert_eq!(got.vel, b.vel, "a non-finite delta vector is dropped whole");
+        assert_eq!(got.yaw, b.yaw);
+        assert_eq!(got.pitch, 20.0, "the finite pitch still applies");
+    }
+
+    /// Relative to a finite base, an infinite offset is as bad as a NaN one.
+    #[test]
+    fn infinite_relative_offset_is_dropped() {
+        let b = base();
+        let (got, dropped) = resolve_teleport(
+            &b,
+            [f64::NEG_INFINITY, 0.0, 0.0, 0.0, 0.0, 0.0],
+            0.0,
+            0.0,
+            1 << 0,
+        );
+        assert!(dropped);
+        assert_eq!(got.pos, b.pos);
+        assert!(got.pos.iter().chain(&got.vel).all(|c| c.is_finite()));
+    }
+}

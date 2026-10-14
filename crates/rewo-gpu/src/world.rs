@@ -3648,7 +3648,7 @@ impl WorldRenderer {
         if cols.is_empty() {
             return;
         }
-        cols.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        cols.sort_by(|a, b| b.0.total_cmp(&a.0));
 
         let device = &gpu.device;
         unsafe {
