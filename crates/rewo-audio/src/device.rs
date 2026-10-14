@@ -75,88 +75,193 @@ pub enum Command {
     Queue(ChannelId, Arc<crate::buffers::Pcm>),
 }
 
-/// A bounded single-producer / single-consumer ring.
+/// The shared storage behind one [`Producer`] / [`Consumer`] pair.
 ///
-/// Lock-free by construction rather than by a crate: one producer owns `tail`,
-/// one consumer owns `head`, and the two only ever *read* each other's index.
-/// That is the whole of the safety argument, and it is why the type is not
-/// `Sync` for more than one of each.
-pub struct CommandRing {
-    slots: Vec<std::cell::UnsafeCell<Option<Command>>>,
+/// Lock-free by construction rather than by a crate: the producer owns `tail`,
+/// the consumer owns `head`, and the two only ever *read* each other's index.
+/// **Private, and deliberately neither `Send` nor `Sync`** (the `UnsafeCell`s
+/// see to that): the only way to reach it is through the two handles, and the
+/// type system rather than a comment is what limits them to one of each.
+struct Ring<T> {
+    slots: Box<[std::cell::UnsafeCell<Option<T>>]>,
     /// Next slot to read. Owned by the consumer.
     head: AtomicUsize,
     /// Next slot to write. Owned by the producer.
     tail: AtomicUsize,
-    /// Commands refused because the ring was full. Never reset.
+    /// Values refused because the ring was full. Never reset.
     dropped: AtomicU64,
 }
 
-// SAFETY: exactly one producer touches `tail` and the slot it points at, and
-// exactly one consumer touches `head` and the slot it points at; the capacity
-// check keeps those from ever being the same slot. The `Arc<CommandRing>` split
-// below is what enforces "exactly one of each" at the call site.
-unsafe impl Send for CommandRing {}
-unsafe impl Sync for CommandRing {}
+/// The write end of a single-producer / single-consumer ring.
+///
+/// **Not `Clone` and not `Sync`**, which is the whole safety argument written
+/// into the type: [`ring`] makes exactly one producer and one consumer, a
+/// producer cannot be duplicated, and `&Producer` cannot cross a thread, so at
+/// most one thread is ever inside [`Producer::push`]. It is `Send`, so the end
+/// can be moved to whichever thread writes.
+///
+/// ```compile_fail
+/// let (p, _c) = rewo_audio::device::command_ring(4);
+/// let _second = p.clone(); // one producer only
+/// ```
+///
+/// ```compile_fail
+/// fn shared<T: Sync>(_: &T) {}
+/// let (p, _c) = rewo_audio::device::command_ring(4);
+/// shared(&p); // `&Producer` must not cross threads
+/// ```
+pub struct Producer<T> {
+    ring: Arc<Ring<T>>,
+}
 
-impl CommandRing {
-    /// One slot is always left empty, so `head == tail` means empty and there is
-    /// no ambiguity with full — the standard ring trade, and the reason
-    /// `capacity` is one less than the allocation.
-    pub fn with_capacity(capacity: usize) -> Arc<CommandRing> {
-        let n = capacity + 1;
-        Arc::new(CommandRing {
-            slots: (0..n).map(|_| std::cell::UnsafeCell::new(None)).collect(),
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            dropped: AtomicU64::new(0),
-        })
-    }
+/// The read end. Exactly as constrained as [`Producer`], for the same reason.
+///
+/// ```compile_fail
+/// let (_p, c) = rewo_audio::device::command_ring(4);
+/// let _second = c.clone(); // one consumer only
+/// ```
+///
+/// ```compile_fail
+/// fn shared<T: Sync>(_: &T) {}
+/// let (_p, c) = rewo_audio::device::command_ring(4);
+/// shared(&c);
+/// ```
+pub struct Consumer<T> {
+    ring: Arc<Ring<T>>,
+}
 
-    pub fn capacity(&self) -> usize {
+// SAFETY: a `Producer` touches only `tail` and the slot `tail` points at; a
+// `Consumer` only `head` and the slot `head` points at. The capacity check
+// keeps those from ever being the same slot, and the Release/Acquire pair on
+// the index hands a slot's contents from one side to the other. `ring()` makes
+// exactly one of each and neither is `Clone` or `Sync`, so "one thread per end"
+// holds by construction. Moving an end to another thread moves `T`s with it,
+// hence `T: Send`.
+unsafe impl<T: Send> Send for Producer<T> {}
+unsafe impl<T: Send> Send for Consumer<T> {}
+
+/// A bounded SPSC ring of `capacity` values, as its two ends.
+///
+/// One slot is always left empty, so `head == tail` means empty and there is no
+/// ambiguity with full — the standard ring trade, and the reason the allocation
+/// is one more than `capacity`. **This is the only allocation the ring ever
+/// makes**; neither end allocates afterwards.
+pub fn ring<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+    let n = capacity + 1;
+    let ring = Arc::new(Ring {
+        slots: (0..n).map(|_| std::cell::UnsafeCell::new(None)).collect(),
+        head: AtomicUsize::new(0),
+        tail: AtomicUsize::new(0),
+        dropped: AtomicU64::new(0),
+    });
+    (
+        Producer {
+            ring: Arc::clone(&ring),
+        },
+        Consumer { ring },
+    )
+}
+
+/// The engine-to-callback command ring.
+pub fn command_ring(capacity: usize) -> (CommandProducer, CommandConsumer) {
+    ring(capacity)
+}
+
+/// The engine's end of the command ring.
+pub type CommandProducer = Producer<Command>;
+/// The audio callback's end of the command ring.
+pub type CommandConsumer = Consumer<Command>;
+
+impl<T> Ring<T> {
+    fn capacity(&self) -> usize {
         self.slots.len() - 1
     }
 
-    /// Producer side. Returns `false` when the ring is full, having counted the
-    /// drop. **Never blocks and never allocates.**
-    pub fn push(&self, cmd: Command) -> bool {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let next = (tail + 1) % self.slots.len();
-        if next == self.head.load(Ordering::Acquire) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-        // SAFETY: the producer owns this slot until `tail` is published below.
-        unsafe { *self.slots[tail].get() = Some(cmd) };
-        self.tail.store(next, Ordering::Release);
-        true
+    fn is_empty(&self) -> bool {
+        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+    }
+}
+
+impl<T> Producer<T> {
+    pub fn capacity(&self) -> usize {
+        self.ring.capacity()
     }
 
-    /// Consumer side — the callback's end. **Never blocks and never allocates.**
-    pub fn pop(&self) -> Option<Command> {
-        let head = self.head.load(Ordering::Relaxed);
-        if head == self.tail.load(Ordering::Acquire) {
-            return None;
-        }
-        // SAFETY: the consumer owns this slot until `head` is published below.
-        let cmd = unsafe { (*self.slots[head].get()).take() };
-        self.head
-            .store((head + 1) % self.slots.len(), Ordering::Release);
-        cmd
+    /// Returns `false` when the ring is full, having counted the drop and
+    /// dropped `value` **on this thread**. **Never blocks and never allocates.**
+    pub fn push(&self, value: T) -> bool {
+        self.try_push(value).is_ok()
     }
 
-    /// How many commands have been refused for want of room.
+    /// [`Self::push`], handing a refused value back instead of dropping it.
     ///
-    /// **Non-zero means the device stopped consuming**, not that the engine got
-    /// busy: the producer writes about 240 commands on the busiest tick and the
-    /// consumer drains every callback, so a ring sized for one tick cannot fill
-    /// unless the far end has stalled. Surfacing it is the difference between a
-    /// diagnosable dead device and "audio sometimes misses sounds".
+    /// For a producer that must not free either — the audio callback writing
+    /// retired buffers out to a worker, where dropping the last `Arc<Pcm>` is
+    /// exactly the deallocation the ring exists to move.
+    pub fn try_push(&self, value: T) -> Result<(), T> {
+        let r = &*self.ring;
+        let tail = r.tail.load(Ordering::Relaxed);
+        let next = (tail + 1) % r.slots.len();
+        if next == r.head.load(Ordering::Acquire) {
+            r.dropped.fetch_add(1, Ordering::Relaxed);
+            return Err(value);
+        }
+        // SAFETY: the producer owns this slot until `tail` is published below,
+        // and there is only one producer (see the `Send` impl).
+        unsafe { *r.slots[tail].get() = Some(value) };
+        r.tail.store(next, Ordering::Release);
+        Ok(())
+    }
+
+    /// How many values have been refused for want of room.
+    ///
+    /// **Non-zero on the command ring means the device stopped consuming**, not
+    /// that the engine got busy: the producer writes about 240 commands on the
+    /// busiest tick and the consumer drains every callback, so a ring sized for
+    /// one tick cannot fill unless the far end has stalled. Surfacing it is the
+    /// difference between a diagnosable dead device and "audio sometimes misses
+    /// sounds".
     pub fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.ring.dropped.load(Ordering::Relaxed)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+        self.ring.is_empty()
+    }
+}
+
+impl<T> Consumer<T> {
+    pub fn capacity(&self) -> usize {
+        self.ring.capacity()
+    }
+
+    /// The consumer's end — the callback's, for commands. **Never blocks and
+    /// never allocates.**
+    ///
+    /// Moves the value out of its slot rather than copying it, so the slot is
+    /// left holding `None` and nothing is dropped here: whatever the value owns
+    /// is dropped wherever the caller lets go of it.
+    pub fn pop(&self) -> Option<T> {
+        let r = &*self.ring;
+        let head = r.head.load(Ordering::Relaxed);
+        if head == r.tail.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: the consumer owns this slot until `head` is published below,
+        // and there is only one consumer.
+        let value = unsafe { (*r.slots[head].get()).take() };
+        r.head.store((head + 1) % r.slots.len(), Ordering::Release);
+        value
+    }
+
+    /// Values the producer has had refused. The same counter as
+    /// [`Producer::dropped`], readable from this end too.
+    pub fn dropped(&self) -> u64 {
+        self.ring.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ring.is_empty()
     }
 }
 
@@ -179,15 +284,15 @@ mod tests {
 
     #[test]
     fn commands_come_out_in_order() {
-        let r = CommandRing::with_capacity(8);
+        let (r, c) = command_ring(8);
         for i in 0..5 {
             assert!(r.push(cmd(i)));
         }
         for i in 0..5 {
-            assert_eq!(r.pop(), Some(cmd(i)));
+            assert_eq!(c.pop(), Some(cmd(i)));
         }
-        assert_eq!(r.pop(), None);
-        assert!(r.is_empty());
+        assert_eq!(c.pop(), None);
+        assert!(r.is_empty() && c.is_empty());
     }
 
     #[test]
@@ -196,7 +301,7 @@ mod tests {
         // NEWEST command is refused, not the oldest evicted. A ring that
         // overwrote its tail would silently reorder a channel's eight-call
         // sequence, which is far worse than losing one sound.
-        let r = CommandRing::with_capacity(3);
+        let (r, c) = command_ring(3);
         assert!(r.push(cmd(0)));
         assert!(r.push(cmd(1)));
         assert!(r.push(cmd(2)));
@@ -204,10 +309,10 @@ mod tests {
         assert_eq!(r.dropped(), 1);
         // The three that fit are intact and in order — the drop did not disturb
         // them.
-        assert_eq!(r.pop(), Some(cmd(0)));
-        assert_eq!(r.pop(), Some(cmd(1)));
-        assert_eq!(r.pop(), Some(cmd(2)));
-        assert_eq!(r.pop(), None);
+        assert_eq!(c.pop(), Some(cmd(0)));
+        assert_eq!(c.pop(), Some(cmd(1)));
+        assert_eq!(c.pop(), Some(cmd(2)));
+        assert_eq!(c.pop(), None);
     }
 
     #[test]
@@ -215,12 +320,12 @@ mod tests {
         // It is a diagnostic, and one that must survive the device recovering:
         // a counter cleared on the next successful push would read zero exactly
         // when someone went looking after a glitch.
-        let r = CommandRing::with_capacity(1);
+        let (r, c) = command_ring(1);
         assert!(r.push(cmd(0)));
         assert!(!r.push(cmd(1)));
         assert!(!r.push(cmd(2)));
         assert_eq!(r.dropped(), 2);
-        assert_eq!(r.pop(), Some(cmd(0)));
+        assert_eq!(c.pop(), Some(cmd(0)));
         assert!(r.push(cmd(3)), "room again");
         assert_eq!(r.dropped(), 2, "still two");
     }
@@ -230,7 +335,7 @@ mod tests {
         // One slot is held back so empty and full are distinguishable, and the
         // reported capacity accounts for it rather than the caller having to.
         for n in [1usize, 3, 8, 1024] {
-            let r = CommandRing::with_capacity(n);
+            let (r, _c) = command_ring(n);
             assert_eq!(r.capacity(), n);
             for i in 0..n {
                 assert!(r.push(cmd(i as u32)), "slot {i} of {n}");
@@ -243,13 +348,13 @@ mod tests {
     fn it_wraps_rather_than_filling_up_permanently() {
         // Drain-and-refill many times over: an index that grew without the
         // modulo would work for the first lap and then never accept anything.
-        let r = CommandRing::with_capacity(4);
+        let (r, c) = command_ring(4);
         for round in 0..50u32 {
             for i in 0..4 {
                 assert!(r.push(cmd(round * 10 + i)), "round {round}");
             }
             for i in 0..4 {
-                assert_eq!(r.pop(), Some(cmd(round * 10 + i)));
+                assert_eq!(c.pop(), Some(cmd(round * 10 + i)));
             }
         }
         assert_eq!(r.dropped(), 0);
@@ -260,13 +365,13 @@ mod tests {
         // One ordered stream, so a listener move cannot overtake the channel
         // calls it should follow — two rings would let the ears arrive before
         // the sound they are meant to place.
-        let r = CommandRing::with_capacity(4);
+        let (r, c) = command_ring(4);
         r.push(cmd(0));
         r.push(Command::Listener(ListenerTransform::INITIAL));
         r.push(cmd(1));
-        assert_eq!(r.pop(), Some(cmd(0)));
-        assert_eq!(r.pop(), Some(Command::Listener(ListenerTransform::INITIAL)));
-        assert_eq!(r.pop(), Some(cmd(1)));
+        assert_eq!(c.pop(), Some(cmd(0)));
+        assert_eq!(c.pop(), Some(Command::Listener(ListenerTransform::INITIAL)));
+        assert_eq!(c.pop(), Some(cmd(1)));
     }
 
     #[test]
@@ -274,9 +379,8 @@ mod tests {
         // The claim the atomics exist for. A single-threaded test cannot see an
         // ordering bug, because there is nothing to reorder against.
         const N: u32 = 20_000;
-        let r = CommandRing::with_capacity(64);
+        let (r, c) = command_ring(64);
         let producer = {
-            let r = Arc::clone(&r);
             std::thread::spawn(move || {
                 let mut sent = 0u32;
                 let mut refused = 0u32;
@@ -288,12 +392,12 @@ mod tests {
                         std::thread::yield_now();
                     }
                 }
-                refused
+                (refused, r.dropped())
             })
         };
         let mut seen = 0u32;
         while seen < N {
-            if let Some(Command::Channel(id, _)) = r.pop() {
+            if let Some(Command::Channel(id, _)) = c.pop() {
                 // In order, with nothing lost and nothing duplicated — which is
                 // the whole contract, and what a torn index would break.
                 assert_eq!(id, seen, "out of order at {seen}");
@@ -302,7 +406,7 @@ mod tests {
                 std::thread::yield_now();
             }
         }
-        let refused = producer.join().unwrap();
+        let (refused, dropped) = producer.join().unwrap();
         assert_eq!(seen, N);
         // **Deliberately NOT asserting that the producer was ever refused.**
         // The first version did, to prove the run had exercised the full path,
@@ -315,6 +419,61 @@ mod tests {
         // What is asserted is what holds on EVERY interleaving: the counter and
         // the refusals agree exactly, so a torn count would fail here whether or
         // not the ring ever filled on this particular run.
-        assert_eq!(r.dropped() as u32, refused);
+        assert_eq!(dropped as u32, refused);
+        assert_eq!(c.dropped(), dropped, "both ends read one counter");
+    }
+
+    #[test]
+    fn the_handles_are_send_and_neither_clone_nor_sync() {
+        // The compile_fail doc tests on `Producer` and `Consumer` are the
+        // negative half; this is the positive half, so a change that made the
+        // ends unusable across threads fails here rather than in a caller.
+        fn sendable<T: Send>(_: &T) {}
+        let (p, c) = command_ring(4);
+        sendable(&p);
+        sendable(&c);
+        // The `impls`-crate probe: an inherent method with a bound wins over the
+        // trait's default only when the type satisfies the bound.
+        trait No {
+            fn is_clone(&self) -> bool {
+                false
+            }
+            fn is_sync(&self) -> bool {
+                false
+            }
+        }
+        struct CloneProbe<T>(std::marker::PhantomData<T>);
+        impl<T: Clone> CloneProbe<T> {
+            fn is_clone(&self) -> bool {
+                true
+            }
+        }
+        impl<T> No for CloneProbe<T> {}
+        struct SyncProbe<T>(std::marker::PhantomData<T>);
+        impl<T: Sync> SyncProbe<T> {
+            fn is_sync(&self) -> bool {
+                true
+            }
+        }
+        impl<T> No for SyncProbe<T> {}
+        assert!(!CloneProbe::<CommandProducer>(std::marker::PhantomData).is_clone());
+        assert!(!CloneProbe::<CommandConsumer>(std::marker::PhantomData).is_clone());
+        assert!(!SyncProbe::<CommandProducer>(std::marker::PhantomData).is_sync());
+        assert!(!SyncProbe::<CommandConsumer>(std::marker::PhantomData).is_sync());
+        // And the probe does see the traits when they are there.
+        assert!(CloneProbe::<u8>(std::marker::PhantomData).is_clone());
+        assert!(SyncProbe::<u8>(std::marker::PhantomData).is_sync());
+    }
+
+    #[test]
+    fn a_refused_value_comes_back_from_try_push() {
+        // The retire ring's contract: the callback must get a refused buffer
+        // back, because dropping it there is the free the ring exists to move.
+        let (p, c) = ring::<Box<u32>>(1);
+        assert!(p.try_push(Box::new(1)).is_ok());
+        let back = p.try_push(Box::new(2)).expect_err("full");
+        assert_eq!(*back, 2);
+        assert_eq!(p.dropped(), 1);
+        assert_eq!(c.pop().map(|b| *b), Some(1));
     }
 }
