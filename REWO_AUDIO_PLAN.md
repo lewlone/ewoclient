@@ -291,10 +291,13 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > opens a device still holds, and `audio_backend`'s enabled arm has deliberately
 > no test at all for that reason.
 >
-> **One stated deviation.** `retire_finished` runs in the callback, so dropping a
-> finished voice's last `Arc<Pcm>` deallocates there — the plan's design returns
-> retired buffers to a worker over a second ring and this cut has none. The
-> consequence is a possible dropout as a sound ends.
+> **One stated deviation (closed 2026-10, `d02808d`).** `retire_finished` used
+> to run in the callback, so dropping a finished voice's last `Arc<Pcm>`
+> deallocated there; the cut had no second ring. It now does what the plan
+> said: everything the mixer lets go of goes out as `Retired` over a second SPSC
+> ring and `CpalSink::service` drops it on the engine thread, and the callback
+> neither allocates nor frees (`rewo-audio/tests/rt_alloc.rs` counts both).
+> The text above is kept as the record of the original cut.
 >
 > **A voice is created SILENT and waits for its `Play`**, because
 > `alSourcePlay` before an attach is a no-op and vanilla's order is properties,

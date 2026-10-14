@@ -3196,7 +3196,10 @@ holds `name`, `uuid` (32 hex, undashed — join-call-ready), `minecraft_token`
 (serde-skipped, re-derived from the MS refresh token at launcher startup, so
 freshness is already the launcher's job). Rewo receives via **env vars at
 spawn** (matches the `EWO_LOADER_TOKEN` precedent): `REWO_ACCESS_TOKEN`,
-`REWO_UUID`, `REWO_USERNAME`, `REWO_SERVER` (host:port), `REWO_DATA_DIR`.
+`REWO_UUID`, `REWO_USERNAME`, `REWO_SERVER` (host:port), `REWO_DATA_DIR`, and
+(2026-10) `REWO_GAME_DIR` (the instance folder; also `rewo live --game-dir`,
+which wins; the launcher also makes it the child's working directory, and
+`options.txt` is read and written there, atomically).
 Threat-model honesty: a same-user process can read another process's env on
 Windows anyway; env vars buy "not in argv / process listings / logs," which
 is the realistic bar. No tokens on the command line, ever. Token expiry
