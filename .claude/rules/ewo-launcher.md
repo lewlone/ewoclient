@@ -276,8 +276,13 @@ Subsystems:
   `xdg-open` / `open` as a scrubbed child, no `opener` crate).
 - Release builds use `windows_subsystem = "windows"` (no console). The icon
   `assets/icon.ico` is embedded by `build.rs` via `winresource`. `package.ps1`
-  builds and stages a self-contained `dist/EwoClient/` and repoints the Desktop
-  shortcut. Re-run it after code changes.
+  builds and stages a self-contained `dist/EwoClient/` (with `BUILD.txt`:
+  version, commit, dirty flag) and repoints the Desktop shortcut; `-NoShortcut
+  -Zip` is the release form (no shortcut, plus
+  `dist/EwoClient-<version>-<commit>-windows-x64.zip`). It fails unless
+  `tools/check_bundle.py` passes (files present, manifests self-contained and
+  hash-correct, no gate code in `rewo.exe`). Re-run it after code changes.
+  The release procedure is `docs/RELEASE.md`.
 
 ## What NOT to do
 

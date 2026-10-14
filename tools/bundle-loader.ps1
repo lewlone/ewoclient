@@ -15,11 +15,18 @@
 # does not exist fails the whole run (non-zero exit, nothing half-written is
 # worth shipping).
 #
+# -Override maps a jar FILE NAME to a replacement source path. package.ps1
+# uses it to bundle the ewo-hud jar it just built from the same checkout as
+# ewo_jni.dll, instead of whatever was last deployed to the dev drop the
+# manifests name (a jar and a DLL from different commits fail the HUD's ABI
+# handshake and the HUD stays off).
+#
 # package.ps1 calls this; it is separate so it can be run (and tested) alone.
 
 param(
     [Parameter(Mandatory = $true)][string]$OutDir,
-    [string]$LoaderRepo = (Join-Path (Split-Path -Parent $PSScriptRoot) "..\EwoLoaderV1")
+    [string]$LoaderRepo = (Join-Path (Split-Path -Parent $PSScriptRoot) "..\EwoLoaderV1"),
+    [hashtable]$Override = @{}
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +61,11 @@ foreach ($m in $manifests) {
         $hit = $matches_[$i]
         $url = $hit.Groups[1].Value
         $src = ConvertFrom-FileUrl $url
+        $leaf = Split-Path -Leaf $src
+        if ($Override.ContainsKey($leaf)) {
+            $src = $Override[$leaf]
+            Write-Host "[bundle-loader] $($m.Name): $leaf <- $src (override)" -ForegroundColor Cyan
+        }
         if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
             throw "$($m.Name): referenced jar is missing: $src (from $url)"
         }
