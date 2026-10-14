@@ -1475,6 +1475,17 @@ impl ApplicationHandler for App {
         //  3. Focused + active, VSync off, `max_fps < 240` → cap to max_fps.
         //  4. Focused + active otherwise → Poll (vsync caps at refresh; the
         //     dev-overlay uncapped path validates the 500fps OLED target).
+        // GPU device lost: `GlBackend::render` can draw nothing until its
+        // recreation backoff (up to 30 s) elapses, so polling (or even the
+        // 100 ms unfocused cadence) would only burn a core. Sleep until the
+        // next attempt; input events still wake the loop.
+        if let Some(retry_at) = self.backend.as_ref().and_then(|b| b.retry_deadline()) {
+            if retry_at > Instant::now() {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(retry_at));
+                return;
+            }
+        }
+
         if !self.focused {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(100),
