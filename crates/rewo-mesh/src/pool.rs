@@ -368,7 +368,7 @@ mod tests {
             .map(|v| (v.pos, v.color_rgb()))
             .collect();
         assert_eq!(face.len(), 4, "exactly one up face in the box: {face:?}");
-        face.sort_by(|a, b| a.0.total_cmp(&b.0));
+        face.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         face
     }
 
