@@ -14,6 +14,9 @@ sha1 = { workspace = true }
 log = { workspace = true }
 dirs = { workspace = true }
 zip = { workspace = true }
+# Not used directly: it selects flate2's miniz_oxide backend for zip's
+# deflate (see the `zip` entry in the root Cargo.toml).
+flate2 = { workspace = true }
 png = { workspace = true }
 # `deprecated.json`'s rename map is applied in file order — see `lang.rs`.
 indexmap = { workspace = true }

@@ -362,7 +362,7 @@ pub fn load_pack(zip_path: &Path) -> Result<EtfPack, String> {
     // Every file in the zip, so texture references can be resolved (and
     // probed for the `_e` emissive suffix) without re-walking it.
     let names: Vec<String> = (0..zip.len())
-        .filter_map(|i| zip.by_index(i).ok().map(|e| e.name().to_string()))
+        .filter_map(|i| zip.by_index(i).ok()?.name().ok().map(|n| n.into_owned()))
         .collect();
 
     let mut pack = EtfPack::default();

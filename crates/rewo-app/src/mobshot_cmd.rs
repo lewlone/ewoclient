@@ -1387,7 +1387,7 @@ fn run_etf_check(
 fn write_etf_fixture(path: &std::path::Path) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| format!("etf fixture: {e}"))?;
     let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
-    let opts: zip::write::FileOptions<'_, ()> =
+    let opts: zip::write::SimpleFileOptions =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut put = |name: &str, bytes: &[u8]| -> Result<(), String> {
         use std::io::Write;

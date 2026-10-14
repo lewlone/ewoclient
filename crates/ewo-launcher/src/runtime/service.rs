@@ -354,7 +354,10 @@ fn extract_zip(file: fs::File, dest: &std::path::Path) -> Result<(), String> {
             continue;
         }
         let Some(rel) = crate::launch::natives::safe_zip_entry_path(&entry) else {
-            log::warn!("runtime: skipping unsafe zip entry {:?}", entry.name());
+            log::warn!(
+                "runtime: skipping unsafe zip entry {:?}",
+                entry.name().unwrap_or_default()
+            );
             continue;
         };
         let out_path = dest.join(rel);

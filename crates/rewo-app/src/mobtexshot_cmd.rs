@@ -1365,7 +1365,10 @@ fn count_jar_baby_sheets(jar: &Path) -> Result<usize, String> {
     let mut n = 0usize;
     for i in 0..z.len() {
         let name = match z.by_index(i) {
-            Ok(e) => e.name().to_string(),
+            Ok(e) => match e.name() {
+                Ok(n) => n.into_owned(),
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
         if name.starts_with("assets/minecraft/textures/entity/")

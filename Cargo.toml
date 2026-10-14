@@ -81,7 +81,11 @@ indexmap = { version = "2", features = ["serde"] }
 # v2 phase C — native extraction (unzip natives JARs into per-instance
 # natives/). `zip` is sync; pure Rust; no compression-only deps we don't
 # need (deflate/store cover Mojang's natives jars).
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# zip 9's `deflate` feature would switch flate2 workspace-wide (including
+# rewo-proto's packet compression) to the zlib-rs backend; `deflate-flate2`
+# leaves the backend to the `flate2` entry below (miniz_oxide), as zip 2 did,
+# so every crate that depends on zip also depends on flate2.
+zip = { version = "9", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = "0.4"
 
