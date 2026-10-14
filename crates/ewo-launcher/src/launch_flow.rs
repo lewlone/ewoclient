@@ -65,6 +65,67 @@ pub(crate) fn launch_meta(
     }
 }
 
+/// Shown on the launching screen when a Native (Rewo) launch goes ahead
+/// without a Microsoft session.
+pub(crate) const NATIVE_UNSIGNED_WARNING: &str =
+    "not signed in to Microsoft \u{2014} online servers will reject you";
+
+/// What the sign-in gate decides for a launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AuthGate {
+    /// Launch with the active account's live token, or offline (no account).
+    Proceed,
+    /// The token is missing or near expiry: refresh it first.
+    RefreshFirst,
+    /// Do not launch; show this error.
+    Fail(&'static str),
+    /// Launch a Native (Rewo) game without a token, with a visible warning.
+    ProceedUnsigned,
+}
+
+/// The message for a refresh that ran and left no usable token.
+pub(crate) const REFRESH_FAILED_MSG: &str = "could not refresh your Microsoft session; check your connection or sign in again in Settings \u{2192} Account";
+
+/// The sign-in gate. A signed-in account never launches a **Java** game
+/// offline: it launches with a live token, refreshes first, or fails
+/// visibly. A **Native** (Rewo) game targets offline servers (CLAUDE.md,
+/// "offline first"), so when no token can be had (`refresh_tried`: the
+/// refresh already ran and failed, or there is nothing to refresh with) it
+/// launches without one and warns instead of being blocked.
+pub(crate) fn auth_gate(
+    decision: &auth::LaunchAuth,
+    native: bool,
+    refresh_tried: bool,
+) -> AuthGate {
+    match decision {
+        auth::LaunchAuth::Ready | auth::LaunchAuth::Offline => AuthGate::Proceed,
+        auth::LaunchAuth::NeedsRefresh if !refresh_tried => AuthGate::RefreshFirst,
+        auth::LaunchAuth::NeedsRefresh if native => AuthGate::ProceedUnsigned,
+        auth::LaunchAuth::NeedsRefresh => AuthGate::Fail(REFRESH_FAILED_MSG),
+        auth::LaunchAuth::Unavailable(_) if native => AuthGate::ProceedUnsigned,
+        auth::LaunchAuth::Unavailable(msg) => AuthGate::Fail(msg),
+    }
+}
+
+/// The account handoff environment for a Native launch. A live token passes
+/// the profile (name, UUID, token); an unsigned launch passes only the
+/// display name (Rewo's offline handoff), never a stale token.
+fn native_account_envs(
+    account: Option<&auth::MinecraftAccount>,
+    unsigned: bool,
+) -> Vec<(String, String)> {
+    match account {
+        None => Vec::new(),
+        Some(a) if unsigned => vec![("REWO_USERNAME".into(), a.name.clone())],
+        Some(a) if a.minecraft_token.is_empty() => Vec::new(),
+        Some(a) => vec![
+            ("REWO_USERNAME".into(), a.name.clone()),
+            ("REWO_UUID".into(), a.uuid.clone()),
+            ("REWO_ACCESS_TOKEN".into(), a.minecraft_token.clone()),
+        ],
+    }
+}
+
 /// A launch whose blocking preparation runs on a worker thread; the result
 /// arrives on `rx` and the UI thread finishes the launch (JRE pick, plan,
 /// spawn) — see `App::poll_prepare`.
@@ -111,9 +172,16 @@ impl App {
         // at all: refresh first when it is missing or near expiry, and
         // fail visibly when none can be had. Only a launcher with no
         // account launches offline.
-        match self.auth.launch_auth() {
-            auth::LaunchAuth::Ready | auth::LaunchAuth::Offline => {}
-            auth::LaunchAuth::NeedsRefresh => {
+        let native = matches!(
+            inst.loader,
+            ewo_render::screens::instances::InstanceLoader::Native
+        );
+        // (A Native game is not blocked by a missing session: see `auth_gate`.)
+        let mut unsigned = false;
+        match auth_gate(&self.auth.launch_auth(), native, false) {
+            AuthGate::Proceed => {}
+            AuthGate::ProceedUnsigned => unsigned = true,
+            AuthGate::RefreshFirst => {
                 let Some(uuid) = self.auth.active().map(|a| a.uuid.clone()) else {
                     return false;
                 };
@@ -135,7 +203,7 @@ impl App {
                 self.poll_auth_launch(time);
                 return true;
             }
-            auth::LaunchAuth::Unavailable(msg) => {
+            AuthGate::Fail(msg) => {
                 self.launching.enter_real(time, inst_name, inst_meta);
                 self.fail_launch_visibly(msg, time);
                 return true;
@@ -154,54 +222,8 @@ impl App {
         // server join active this is `rewo live` — the real playable
         // client (M3+); without one there's nothing to connect to, so the
         // bare M0 window opens as a placeholder.
-        if matches!(
-            inst.loader,
-            ewo_render::screens::instances::InstanceLoader::Native
-        ) {
-            let Some(program) = launch::find_rewo_binary() else {
-                log::warn!("launch: rewo binary not found next to the launcher — falling back");
-                return false;
-            };
-            let mut envs = vec![("REWO_VERSION".to_string(), version_id.to_string())];
-            // The instance's game folder: rewo's options.txt lives there,
-            // and `spawn_native` makes it the child's working directory.
-            if let Some(dir) = downloads::paths::instance_dir(&inst.id) {
-                envs.push(("REWO_GAME_DIR".into(), dir.display().to_string()));
-            }
-            if let Some(account) = self.auth.active() {
-                if !account.minecraft_token.is_empty() {
-                    envs.push(("REWO_USERNAME".into(), account.name.clone()));
-                    envs.push(("REWO_UUID".into(), account.uuid.clone()));
-                    envs.push(("REWO_ACCESS_TOKEN".into(), account.minecraft_token.clone()));
-                }
-            }
-            let mut args: Vec<String> = Vec::new();
-            if let Some(addr) = self.active_server.clone() {
-                // No port typed stays `None`: the client then follows the
-                // `_minecraft._tcp` SRV record, as vanilla's resolver does.
-                let (host, port) = launch::split_server_address(&addr);
-                envs.push(("REWO_SERVER".into(), addr.clone()));
-                args = launch::native_client_args(&host, port, version_id);
-                log::info!("launch: rewo live → {}", addr);
-            }
-            let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
-            let _ = launch::spawn_native(
-                launch::NativePlan {
-                    program,
-                    args,
-                    envs,
-                },
-                tx,
-            );
-            self.launch_rx = Some(rx);
-            self.active_launch_instance_id = Some(inst.id.clone());
-            self.launching.enter_real(time, inst_name, inst_meta);
-            log::info!(
-                "launch: rewo spawned for \"{}\" ({})",
-                inst.name,
-                version_id
-            );
-            return true;
+        if native {
+            return self.launch_native(&inst, version_id, inst_name, inst_meta, unsigned, time);
         }
         let manifest = match self.versions.manifest() {
             Some(m) => m,
@@ -243,6 +265,67 @@ impl App {
             inst_meta: inst_meta.to_string(),
             fail,
         });
+        true
+    }
+
+    /// Spawn the Rewo binary for a Native instance. `unsigned`: the launch
+    /// goes ahead without a Microsoft token (see [`auth_gate`]); the
+    /// launching screen then says so, since an online server will reject
+    /// the player.
+    fn launch_native(
+        &mut self,
+        inst: &ewo_render::screens::instances::Instance,
+        version_id: &str,
+        inst_name: &str,
+        inst_meta: &str,
+        unsigned: bool,
+        time: f32,
+    ) -> bool {
+        let Some(program) = launch::find_rewo_binary() else {
+            log::warn!("launch: rewo binary not found next to the launcher — falling back");
+            return false;
+        };
+        let mut envs = vec![("REWO_VERSION".to_string(), version_id.to_string())];
+        // The instance's game folder: rewo's options.txt lives there,
+        // and `spawn_native` makes it the child's working directory.
+        if let Some(dir) = downloads::paths::instance_dir(&inst.id) {
+            envs.push(("REWO_GAME_DIR".into(), dir.display().to_string()));
+        }
+        envs.extend(native_account_envs(self.auth.active(), unsigned));
+        let mut args: Vec<String> = Vec::new();
+        if let Some(addr) = self.active_server.clone() {
+            // No port typed stays `None`: the client then follows the
+            // `_minecraft._tcp` SRV record, as vanilla's resolver does.
+            let (host, port) = launch::split_server_address(&addr);
+            envs.push(("REWO_SERVER".into(), addr.clone()));
+            args = launch::native_client_args(&host, port, version_id);
+            log::info!("launch: rewo live → {}", addr);
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
+        let _ = launch::spawn_native(
+            launch::NativePlan {
+                program,
+                args,
+                envs,
+            },
+            tx,
+        );
+        self.launch_rx = Some(rx);
+        self.active_launch_instance_id = Some(inst.id.clone());
+        self.launching.enter_real(time, inst_name, inst_meta);
+        if unsigned {
+            log::warn!("launch: rewo without a Microsoft session (unsigned)");
+            self.launching.push_real_line(
+                screens::RealSeverity::Warn,
+                format!("[ewo] {NATIVE_UNSIGNED_WARNING}"),
+                time,
+            );
+        }
+        log::info!(
+            "launch: rewo spawned for \"{}\" ({})",
+            inst.name,
+            version_id
+        );
         true
     }
 
@@ -375,7 +458,12 @@ impl App {
             }
             return;
         }
-        match self.auth.launch_auth() {
+        let decision = self.auth.launch_auth();
+        let native = self
+            .pending_auth
+            .as_ref()
+            .is_some_and(|p| self.is_native_instance(p.idx));
+        match decision {
             auth::LaunchAuth::Ready | auth::LaunchAuth::Offline => {
                 let Some(p) = self.pending_auth.take() else {
                     return;
@@ -404,22 +492,55 @@ impl App {
             }
             auth::LaunchAuth::NeedsRefresh => {
                 // Our refresh ran and the token is still unusable.
-                self.pending_auth = None;
+                let pending = self.pending_auth.take();
                 let why = match self.auth.op() {
                     AuthOp::Failed(e) => format!("{:?}", e),
                     _ => "no token returned".to_string(),
                 };
                 log::warn!("launch: Microsoft session refresh failed: {}", why);
-                self.fail_launch_visibly(
-                    "could not refresh your Microsoft session; check your connection or sign in again in Settings → Account",
-                    time,
-                );
+                self.after_failed_session(pending, &decision, native, time);
             }
-            auth::LaunchAuth::Unavailable(msg) => {
-                self.pending_auth = None;
-                self.fail_launch_visibly(msg, time);
+            auth::LaunchAuth::Unavailable(_) => {
+                let pending = self.pending_auth.take();
+                self.after_failed_session(pending, &decision, native, time);
             }
         }
+    }
+
+    /// A launch that waited on a session ended without a usable token: a
+    /// Java game fails visibly, a Native one launches unsigned with a
+    /// warning (see [`auth_gate`]).
+    fn after_failed_session(
+        &mut self,
+        pending: Option<PendingAuthLaunch>,
+        decision: &auth::LaunchAuth,
+        native: bool,
+        time: f32,
+    ) {
+        match (auth_gate(decision, native, true), pending) {
+            (AuthGate::ProceedUnsigned, Some(p)) => {
+                let Some(inst) = self.instances.get(p.idx).cloned() else {
+                    self.fail_launch_visibly("could not start the game — see log", time);
+                    return;
+                };
+                let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+                if !self.launch_native(&inst, version_id, &p.inst_name, &p.inst_meta, true, time) {
+                    self.fail_launch_visibly("could not start the game — see log", time);
+                }
+            }
+            (AuthGate::Fail(msg), _) => self.fail_launch_visibly(msg, time),
+            (_, _) => self.fail_launch_visibly("could not start the game — see log", time),
+        }
+    }
+
+    /// Whether the instance at `idx` is a Native (Rewo) one.
+    fn is_native_instance(&self, idx: usize) -> bool {
+        self.instances.get(idx).is_some_and(|i| {
+            matches!(
+                i.loader,
+                ewo_render::screens::instances::InstanceLoader::Native
+            )
+        })
     }
 
     pub(crate) fn fail_launch(&mut self, pending: &PendingPrepare, msg: &str, time: f32) {
@@ -947,5 +1068,69 @@ mod tests {
         let i = inst(InstanceLoader::Native);
         assert_eq!(launch_meta(&i, None, 4), "FABRIC · 1.21");
         assert_eq!(launch_meta(&i, Some(21), 4), "FABRIC · 1.21");
+    }
+
+    use auth::LaunchAuth::{NeedsRefresh, Offline, Ready, Unavailable};
+
+    #[test]
+    fn a_session_that_cannot_be_had_blocks_java_but_not_rewo() {
+        let gone = Unavailable("your Microsoft session has expired");
+        // Java keeps the strict behaviour: refresh first, then fail visibly.
+        assert_eq!(auth_gate(&Ready, false, false), AuthGate::Proceed);
+        assert_eq!(auth_gate(&Offline, false, false), AuthGate::Proceed);
+        assert_eq!(
+            auth_gate(&NeedsRefresh, false, false),
+            AuthGate::RefreshFirst
+        );
+        assert_eq!(
+            auth_gate(&NeedsRefresh, false, true),
+            AuthGate::Fail(REFRESH_FAILED_MSG)
+        );
+        assert_eq!(
+            auth_gate(&gone, false, false),
+            AuthGate::Fail("your Microsoft session has expired")
+        );
+        // Rewo still tries the refresh first...
+        assert_eq!(
+            auth_gate(&NeedsRefresh, true, false),
+            AuthGate::RefreshFirst
+        );
+        // ...and launches unsigned, with a warning, when it can't be had.
+        assert_eq!(
+            auth_gate(&NeedsRefresh, true, true),
+            AuthGate::ProceedUnsigned
+        );
+        assert_eq!(auth_gate(&gone, true, false), AuthGate::ProceedUnsigned);
+        assert_eq!(auth_gate(&Ready, true, false), AuthGate::Proceed);
+        assert_eq!(auth_gate(&Offline, true, false), AuthGate::Proceed);
+        assert!(NATIVE_UNSIGNED_WARNING.contains("online servers will reject you"));
+    }
+
+    #[test]
+    fn an_unsigned_rewo_launch_never_hands_over_a_token() {
+        let account = auth::MinecraftAccount {
+            name: "Steve".into(),
+            uuid: "uuid-1".into(),
+            minecraft_token: "stale-token".into(),
+            minecraft_token_expires_at: None,
+            ms_refresh_token: String::new(),
+            social_token: None,
+        };
+        let keys = |v: Vec<(String, String)>| v.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(
+            keys(native_account_envs(Some(&account), false)),
+            ["REWO_USERNAME", "REWO_UUID", "REWO_ACCESS_TOKEN"]
+        );
+        assert_eq!(
+            keys(native_account_envs(Some(&account), true)),
+            ["REWO_USERNAME"],
+            "a stale token is not sent"
+        );
+        let no_token = auth::MinecraftAccount {
+            minecraft_token: String::new(),
+            ..account
+        };
+        assert!(native_account_envs(Some(&no_token), false).is_empty());
+        assert!(native_account_envs(None, false).is_empty());
     }
 }

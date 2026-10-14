@@ -148,7 +148,11 @@ Subsystems:
   Unavailable. A NeedsRefresh launch waits for the refresh on the auth worker
   and re-enters; a failed refresh, nothing to refresh with, or an account
   switch mid-wait fails the launch visibly. **A signed-in account never
-  launches offline.** A refresh response without `refresh_token` keeps the old
+  launches a Java game offline.** The gate is `launch_flow::auth_gate`: a
+  **Native (Rewo)** instance targets offline servers, so when the refresh
+  fails or there is nothing to refresh with it launches *without* a token
+  (only `REWO_USERNAME` is handed over) and pushes the Warn line "not signed
+  in to Microsoft — online servers will reject you" on the launching screen. A refresh response without `refresh_token` keeps the old
   one, and a refresh never moves the active-account pointer.
 - `versions/`: master manifest (6 h cache) and per-version manifests (sha1,
   permanent cache). `manifest::is_supported` is a **curated allowlist**. Don't
