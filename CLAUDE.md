@@ -198,13 +198,12 @@ Every change ships with a self-check path: a PNG render harness, a
 ## Cross-cutting working rules
 
 - **Line endings: measure with a byte count, never a shell pattern containing
-  a raw CR.** `core.autocrlf` is false and there's no `.gitattributes`. The tree
-  is overwhelmingly LF; `rewo-gpu/src/cem.rs` is all-CRLF, and
-  `rewo-app/src/mobshot_cmd.rs`, `rewo-app/src/cem_pack.rs`,
-  `rewo-gpu/src/vanilla_hier.rs`, `rewo-world/src/chunk.rs`,
-  `rewo-world/src/light.rs`, `KeyboardHandlerMixin.java` and most
-  `ingame-mod` `assist/*.java` module files are mixed (measure before editing). Don't let an editor normalise them into a
-  whole-file diff.
+  a raw CR.** `core.autocrlf` is false and there's no `.gitattributes`. Every
+  `.rs` file is LF (`rustfmt.toml` pins `newline_style = "Unix"`; CI runs
+  `cargo fmt --check`). The exceptions are 14 `ingame-mod` Java files with two
+  stray CRLF lines each (`KeyboardHandlerMixin.java` and the `assist/*.java`
+  modules): measure before editing, and don't let an editor normalise them
+  into a whole-file diff.
 - **Don't keep the same number in two places.** Current Rewo counts live only in
   `REWO_PLAN.md` §0.0's generated block (`tools/numbers.py`). Prose beside a
   machine-checked number rots, and the number doesn't.
