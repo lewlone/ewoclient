@@ -119,14 +119,34 @@ impl LiveApp {
         } else {
             gpu.collect_garbage();
             match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
-                Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
+                Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {
+                    self.recreate_guard.ok();
+                }
                 Ok(RenderOutcome::NeedsRecreate) => {
-                    if let Err(e) = renderer
+                    match renderer
                         .recreate(gpu, size.width, size.height)
                         .and_then(|()| renderer.ensure_depth(gpu))
                     {
-                        log::error!("live: swapchain/depth recreate failed: {e}");
-                        event_loop.exit();
+                        Ok(()) => self.recreate_guard.ok(),
+                        Err(e) => {
+                            // Retried on the next frame (`render` reports the
+                            // mismatch as NeedsRecreate again); the client
+                            // only exits when it keeps failing.
+                            let give_up = self
+                                .recreate_guard
+                                .failed(self.started.elapsed().as_secs_f32());
+                            log::error!(
+                                "live: swapchain/depth recreate failed: {e}{}",
+                                if give_up {
+                                    " - giving up"
+                                } else {
+                                    " - retrying"
+                                }
+                            );
+                            if give_up {
+                                event_loop.exit();
+                            }
+                        }
                     }
                 }
                 Err(e) => {
