@@ -236,10 +236,15 @@ impl PlaySession {
     /// `chat_command_signed` with one signature per argument (none without a
     /// chat session, as vanilla); everything else as plain `chat_command`.
     pub fn send_command(&mut self, command: &str) -> Result<(), String> {
-        let units: Vec<u16> = command.encode_utf16().collect();
-        let ctx = crate::dispatcher::CommandCtx { names: &[], blocks: None, items: None };
-        let parsed = crate::dispatcher::parse(&self.commands, &units, 0, ctx);
-        let signable = crate::signed_command::signable_arguments(&self.commands, &parsed, &units);
+        // With the registries, as vanilla parses (see `signable_command`):
+        // without them a block or item argument stops the parse and a message
+        // argument after it goes out unsigned.
+        let signable = crate::signed_command::signable_command(
+            &self.commands,
+            command,
+            self.command_registries.blocks.as_deref(),
+            self.command_registries.items.as_deref(),
+        );
         if signable.is_empty() {
             let Some(id) = self.ids.sb_play_chat_command else {
                 return Err("chat_command unavailable".into());

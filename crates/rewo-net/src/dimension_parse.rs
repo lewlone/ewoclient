@@ -719,9 +719,11 @@ pub mod builtin {
     // the wire path end to end. Kept deliberately tiny: exactly the tags the
     // fixtures above use, in the layout `rewo_proto::nbt::read_payload` reads.
 
+    /// `DataOutput.writeUTF`: Java modified UTF-8, not UTF-8.
     fn write_string(out: &mut Vec<u8>, s: &str) {
-        out.extend_from_slice(&(s.len() as u16).to_be_bytes());
-        out.extend_from_slice(s.as_bytes());
+        let body = rewo_proto::nbt::encode_modified_utf8(s).expect("fixture string over 65535 bytes");
+        out.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        out.extend_from_slice(&body);
     }
 
     fn tag_id(n: &Nbt) -> u8 {

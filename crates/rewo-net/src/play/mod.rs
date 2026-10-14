@@ -960,6 +960,13 @@ pub struct PlaySession {
     /// table in `into_play`: the inventory stores ids and the prototype
     /// component table is keyed by name.
     glider_items: Vec<i32>,
+    /// The block and item registries [`Self::send_command`]'s parse resolves
+    /// `block_state` / `block_predicate` / `item_*` arguments against, as
+    /// vanilla's tree is built with `CommandBuildContext.simple(registryAccess,
+    /// ..)` (`ClientPacketListener.java:1688`). Cloned from `GameData` in
+    /// `into_play`; a caller that already holds an `Arc` of the same tables
+    /// may swap its own in.
+    pub command_registries: CommandRegistries,
     /// `UnderwaterAmbientSoundHandler`, and the previous tick's
     /// submersion that `LocalPlayer.updateIsUnderwater()` compares
     /// against (M142b). The handler itself is stateless; vanilla's
@@ -1113,10 +1120,11 @@ pub struct PlaySession {
     /// `LocalPlayer`'s client-side flight controller: the double-tap toggle and
     /// its `jumpTriggerTime` window.
     pub flight: rewo_world::abilities::FlightControl,
-    /// Every chat line as plain text, cumulative — vanilla's
+    /// The newest chat lines as plain text (at most `MAX_CHAT_HISTORY`, via
+    /// [`crate::chat_wire::push_chat_log`]) — vanilla's
     /// `LOGGER.info("[CHAT] {}")`, which `logChatMessage` writes beside the
-    /// `ChatComponent` rather than instead of it. Harnesses count it; the HUD
-    /// does not read it.
+    /// `ChatComponent` rather than instead of it. Harnesses read it; the HUD
+    /// does not. Not a running total: it was, and grew all session.
     pub chat_log: Vec<String>,
     /// The structured feed the chat HUD consumes, drained by
     /// [`Self::take_chat_events`]. Separate from `chat_log` for the reason
@@ -1846,6 +1854,10 @@ impl<'a> Connection<'a> {
         // the elytra take-off line can ask the inventory's chest slot without
         // a name round-trip. `minecraft:elytra` is one of them.
         let glider_items = glider_item_ids(&self.data.items);
+        let command_registries = CommandRegistries {
+            blocks: Some(std::sync::Arc::new(self.data.blocks.clone())),
+            items: Some(std::sync::Arc::new(self.data.items.clone())),
+        };
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -1872,7 +1884,9 @@ impl<'a> Connection<'a> {
             tick_budget: None,
             reconfig: None,
             reconfigurations: 0,
-            decode_failures: 0,
+            // The login-time configuration phase counted its tolerated
+            // failures (`registry_data`, `update_tags`) on this thread.
+            decode_failures: crate::take_route_decode_failures(),
             warned_non_finite_teleport: false,
             logins: 0,
             last_seen: crate::chat_sign::LastSeenTracker::default(),
@@ -1972,6 +1986,7 @@ impl<'a> Connection<'a> {
             local_fall_flying: false,
             was_jump: false,
             glider_items,
+            command_registries,
             ambient_underwater: Default::default(),
             ambient_bubble: Default::default(),
             ambient_biome: Default::default(),
@@ -2778,7 +2793,9 @@ impl PlaySession {
             };
             self.note_inbound(id, &packet, pos);
             if self.reconfig.is_some() {
-                self.handle_config(id, &packet[pos..])?;
+                let handled = self.handle_config(id, &packet[pos..]);
+                self.fold_route_decode_failures();
+                handled?;
                 continue;
             }
             // M78 — bundling, wrapped *around* the dispatch chain rather than
@@ -3876,8 +3893,10 @@ impl PlaySession {
     /// is a delta and an absent action means "unchanged".
     fn apply_player_info(&mut self, body: &[u8]) {
         let (entries, parse) = parse_player_info(body);
+        // The entries completed before the fault still apply (see
+        // `parse_player_info`); the fault itself is a counted failure.
         if let Err(e) = parse {
-            log::debug!("play: player_info_update parse: {e}");
+            self.decode_failed("player_info_update", e);
         }
         for e in entries {
             if let Some(ms) = e.latency {
@@ -5699,6 +5718,13 @@ fn unpack_section_pos(packed: u64) -> (i32, i32, i32) {
 /// low nibble, not x.
 fn unpack_section_offset(pos: i32) -> (i32, i32, i32) {
     ((pos >> 8) & 15, pos & 15, (pos >> 4) & 15)
+}
+
+/// See [`PlaySession::command_registries`].
+#[derive(Clone, Default)]
+pub struct CommandRegistries {
+    pub blocks: Option<std::sync::Arc<rewo_data::blocks::Blocks>>,
+    pub items: Option<std::sync::Arc<rewo_data::items::Items>>,
 }
 
 /// Item ids whose prototype carries `minecraft:glider` — the elytra, and

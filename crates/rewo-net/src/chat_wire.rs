@@ -695,9 +695,45 @@ pub fn apply_chat_events(
     overlay
 }
 
+/// Append one line to `PlaySession::chat_log`, keeping only the newest
+/// [`rewo_world::chat::MAX_CHAT_HISTORY`] (`ChatComponent.MAX_CHAT_HISTORY =
+/// 100`, `ChatComponent.java:45`).
+///
+/// The log is vanilla's `LOGGER.info("[CHAT] ..")` mirror and nothing in
+/// `live` drains it, so uncapped it grew for the whole session. Vanilla's own
+/// in-memory chat is bounded at 100 messages; the log keeps the same window.
+/// `drain` rather than a single `remove(0)` because other code appends to the
+/// public `Vec` directly, so it can be over the cap by more than one.
+pub fn push_chat_log(log: &mut Vec<String>, line: String) {
+    log.push(line);
+    let max = rewo_world::chat::MAX_CHAT_HISTORY;
+    if log.len() > max {
+        log.drain(..log.len() - max);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chat_log_keeps_the_newest_hundred_lines() {
+        let max = rewo_world::chat::MAX_CHAT_HISTORY;
+        assert_eq!(max, 100);
+        let mut log = Vec::new();
+        for i in 0..250 {
+            push_chat_log(&mut log, format!("line {i}"));
+            assert!(log.len() <= max);
+        }
+        assert_eq!(log.len(), max);
+        assert_eq!(log.first().map(String::as_str), Some("line 150"));
+        assert_eq!(log.last().map(String::as_str), Some("line 249"));
+        // Over-full from direct pushes elsewhere: one call trims it all.
+        log.extend((0..7).map(|i| format!("extra {i}")));
+        push_chat_log(&mut log, "newest".into());
+        assert_eq!(log.len(), max);
+        assert_eq!(log.last().map(String::as_str), Some("newest"));
+    }
 
     fn sig(byte: u8) -> Box<Signature> {
         Box::new([byte; SIGNATURE_BYTES])
