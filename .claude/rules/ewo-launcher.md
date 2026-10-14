@@ -67,6 +67,46 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
 
 ## Module map
 
+Top level of `crates/ewo-launcher/src/` (the app shell and event handling):
+
+- `main.rs`: the `App` struct, the `ApplicationHandler` dispatcher
+  (`window_event` hands each arm to a handler) and `main()`. Keep it a
+  dispatcher; new behaviour goes in the modules below.
+- `app.rs`: `App::new` (loads profile, instances, accounts), `apply_loaded_config`,
+  the Frogsy link-status and network-widget gating, widget geometry.
+- `window_init.rs` (`resumed`: window, backend, backdrop, fonts, JRE warm-up),
+  `frame_pacing.rs` (`about_to_wait`: idle/unfocused/`max_fps` caps),
+  `cli.rs` (`Args`, `--mint-rewo-env`).
+- `launch_flow.rs`: launch orchestration on `App` (`start_launch`,
+  `try_real_launch`, `poll_prepare`, `poll_auth_launch`, `finish_launch`, the
+  launch-slot check) plus the `Pending*` records and `launch_meta`.
+  `launch_slot.rs` is the pure busy/free decision.
+- `view_models.rs`: pure mappings (friend rows, heartbeat screen names,
+  auth-error text).
+- `events.rs` indexes `events/`, one module per `WindowEvent` arm:
+  - `click.rs` + `click/*.rs`: left mouse. A `Click` context, then layers
+    top to bottom: window buttons, dev overlay, About / launcher-link /
+    new-instance modals (each absorbs the click when open), then screen
+    handlers in priority order (tab bar, back-link, main menu, Settings
+    sidebar, Friends, Settings body, Instances, Launching footer, Launch
+    button) ending in the window drag/resize fallback.
+  - `hit.rs`: the **pure** "what was hit" rules (window buttons, tabs,
+    modal dismissal, Friends / Instances-list / Launching routing). Unit-test
+    a click rule here, not in the handler.
+  - `hover.rs` (cursor move + cursor icon), `keys.rs` (`key_target` focus
+    router + one method per owner), `wheel.rs` (scroll routing).
+  - `redraw.rs` + `redraw/*.rs`: one frame in phases: skip hidden, begin
+    (clock, reduced motion), animation, `pump` / `launch_events` (background
+    results), `requests` (UI requests), dev overlay, launching tick, then
+    `views` (per-frame view builders) and `paint` (draw). `on_redraw` captures
+    the frame's `screen` before the launching hand-off can change it.
+  - `widgets/*.rs`: per-screen slider/hover drivers and press routers shared
+    by click and hover (Settings per tab, Instances, new-instance modal, dev
+    overlay). `test_support.rs` (test-only) loads the real fonts for layout
+    tests.
+
+Subsystems:
+
 - `auth/`: Microsoft OAuth + PKCE → XBL → XSTS → Minecraft Services
   (`chain.rs`), loopback redirect on `127.0.0.1` (`loopback.rs`), background
   runner (`service.rs`), `AccountStore { active, accounts[] }` in `auth.toml`
@@ -116,7 +156,7 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
 - **Native · Rewo instances**: `InstanceLoader::Native` spawns `rewo.exe live`.
   `EWO_DEV_SERVER=host:port` is the dev-join knob. `package.ps1` stages
   `rewo.exe` into `dist/`. The native launch passes `REWO_GAME_DIR` = the
-  instance folder (the JVM path's `working_dir`; `main.rs` assembles the env)
+  instance folder (the JVM path's `working_dir`; `launch_flow.rs` assembles the env)
   and `spawn_native` makes it the child's `current_dir`, so Rewo's
   `options.txt` lives in the instance, not the launcher's CWD.
 
