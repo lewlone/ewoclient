@@ -1700,15 +1700,19 @@ mod tests {
     /// `udp_delay` and whose TCP side (same port number; TCP and UDP ports are
     /// separate) runs `tcp` on the first connection. `None` leaves TCP closed.
     fn tc_server(udp_delay: Duration, tcp: Option<TcpHandler>) -> SocketAddr {
+        // TCP first: Windows reserves large TCP port ranges (Hyper-V/WinNAT
+        // "excluded port ranges", e.g. on GitHub's runners) that the UDP
+        // ephemeral allocator does not avoid, so binding UDP first and then
+        // TCP on the same number failed 100 times in a row there. Letting
+        // the OS pick an allowed TCP port and pairing UDP with it does not.
         let (udp, listener) = (0..100)
-            .find_map(|_| {
-                let udp = UdpSocket::bind("127.0.0.1:0").ok()?;
-                let port = udp.local_addr().ok()?.port();
-                match tcp {
-                    None => Some((udp, None)),
-                    Some(_) => std::net::TcpListener::bind(("127.0.0.1", port))
-                        .ok()
-                        .map(|l| (udp, Some(l))),
+            .find_map(|_| match tcp {
+                None => Some((UdpSocket::bind("127.0.0.1:0").ok()?, None)),
+                Some(_) => {
+                    let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                    let port = l.local_addr().ok()?.port();
+                    let udp = UdpSocket::bind(("127.0.0.1", port)).ok()?;
+                    Some((udp, Some(l)))
                 }
             })
             .expect("a port free for both UDP and TCP");
