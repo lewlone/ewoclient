@@ -24,7 +24,6 @@ pub mod chat_screen;
 pub mod chat_style;
 pub mod chat_translate;
 pub mod chunk;
-pub mod chunk_cache;
 pub mod command_suggestions;
 pub mod conduit;
 pub mod daylight;

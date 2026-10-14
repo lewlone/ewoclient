@@ -951,7 +951,7 @@ fn main() {
         i += 1;
     }
 
-    let sink = match CpalSink::open() {
+    let mut sink = match CpalSink::open() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("no audio device: {e}");
@@ -968,6 +968,10 @@ fn main() {
             eprintln!("this needs an unpacked 26.2 asset store; see REWO_PLAN.md");
             std::process::exit(2);
         }
+        // Engine-thread housekeeping the live client does every tick: free
+        // the buffers the callback handed back, surface what it counted, and
+        // rebuild the stream if the device went away.
+        let _ = sink.service();
         report(&sink);
         return;
     }
@@ -1001,7 +1005,11 @@ fn main() {
         );
         println!("    GRADES: {}", s.grades);
         println!("    FAILS:  {}", s.fails);
-        if let Err(e) = (s.run)(&sink, &mut ids) {
+        let ran = (s.run)(&sink, &mut ids);
+        // Between stages: the same housekeeping as above. This example never
+        // takes the command producer, so a rebuild never hands one back.
+        let _ = sink.service();
+        if let Err(e) = ran {
             eprintln!("    !! stage {} could not run: {e}", s.n);
             eprintln!(
                 "       a listening pass that skipped a stage would read as a pass; stopping."
