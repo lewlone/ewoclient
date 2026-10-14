@@ -10,10 +10,10 @@
 //! cargo run -p ewo-render --example glass_shot -- --bg shot.png --crop 0,780,2560,660
 //! ```
 
+use ewo_render::gradients;
 use ewo_render::skia_safe::{
-    canvas::SrcRectConstraint, gradient_shader, image_filters, surfaces, BlurStyle, Canvas, Color,
-    Color4f, Data, EncodedImageFormat, Font, Image, MaskFilter, Paint, PaintStyle, Point, RRect,
-    Rect, TileMode,
+    canvas::SrcRectConstraint, image_filters, surfaces, BlurStyle, Canvas, Color, Color4f, Data,
+    EncodedImageFormat, Font, Image, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
 };
 use ewo_render::widgets::liquid_glass::{self, Params};
 use ewo_render::FontStore;
@@ -289,7 +289,7 @@ fn draw_media_content(canvas: &Canvas, b: Rect, fonts: &FontStore) {
     let art = Rect::from_xywh(b.left + pad, b.top + pad, 64.0, 64.0);
     let mut art_paint = Paint::default();
     art_paint.set_anti_alias(true);
-    art_paint.set_shader(gradient_shader::linear(
+    art_paint.set_shader(gradients::linear(
         (
             Point::new(art.left, art.top),
             Point::new(art.right, art.bottom),
@@ -300,7 +300,6 @@ fn draw_media_content(canvas: &Canvas, b: Rect, fonts: &FontStore) {
         ][..],
         None,
         TileMode::Clamp,
-        None,
         None,
     ));
     canvas.draw_rrect(RRect::new_rect_xy(art, 8.0, 8.0), &art_paint);

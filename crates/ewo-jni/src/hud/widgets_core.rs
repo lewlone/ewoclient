@@ -965,7 +965,7 @@ pub(super) fn draw_liquid_progress(
     // zero amplitude.
     let mid = bar.top + bar.height() * 0.42;
 
-    let mut path = skia_safe::Path::new();
+    let mut path = skia_safe::PathBuilder::new();
     path.move_to((bar.left, bar.bottom));
     // ~2px per segment: fine enough that the crest is smooth, coarse enough
     // that a full-width bar is still only a couple of hundred points.
@@ -984,21 +984,18 @@ pub(super) fn draw_liquid_progress(
     }
     path.line_to((bar.left + fill_w, bar.bottom));
     path.close();
+    let path = path.detach();
 
     let mut fp = Paint::default();
     fp.set_anti_alias(true);
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(bar.left, bar.top),
             Point::new(bar.right, bar.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
-            None,
-        ),
+        &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
         None,
         TileMode::Clamp,
-        None,
         None,
     ) {
         fp.set_shader(shader);

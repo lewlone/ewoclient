@@ -9,7 +9,11 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// Distinguishes the temp files of concurrent writes in one process.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Write `contents` to `path` atomically: write a temp file in the same
 /// directory, fsync it, then rename over the target. A crash mid-write leaves
@@ -21,6 +25,51 @@ use std::time::Duration;
 /// `FILE_SHARE_DELETE` (an editor, a virus scanner, a mod re-reading it). That
 /// is transient, so the rename is retried a few times before giving up.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+    atomic_write_with(path, contents, false)
+}
+
+/// [`atomic_write`] for a file holding credentials: on Unix the temp file is
+/// *created* with mode 0600, so the secrets are never readable by another
+/// user, not even between creation and a later `chmod`. (On Windows the
+/// per-user `%APPDATA%` ACL already applies.)
+pub fn atomic_write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+    atomic_write_with(path, contents, true)
+}
+
+/// The temp file's name, unique per write: two threads writing the same file
+/// must not share a temp name, or one's rename moves the other's
+/// half-written file.
+fn temp_name(file_name: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut name = file_name.to_os_string();
+    name.push(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    name
+}
+
+/// Create the temp file; `private` makes it owner-only from the start.
+#[cfg(unix)]
+fn create_temp(tmp: &Path, private: bool) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if private {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tmp)
+    } else {
+        fs::File::create(tmp)
+    }
+}
+
+#[cfg(not(unix))]
+fn create_temp(tmp: &Path, _private: bool) -> io::Result<fs::File> {
+    fs::File::create(tmp)
+}
+
+fn atomic_write_with(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -29,11 +78,9 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     let file_name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
-    let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(".tmp-{}", std::process::id()));
-    let tmp = parent.join(tmp_name);
+    let tmp = parent.join(temp_name(file_name));
     let result = (|| {
-        let mut f = fs::File::create(&tmp)?;
+        let mut f = create_temp(&tmp, private)?;
         f.write_all(contents)?;
         f.sync_all()?;
         drop(f);
@@ -130,6 +177,44 @@ mod tests {
             .filter(|e| e.file_name() != "cfg.toml")
             .collect();
         assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_write_gets_its_own_temp_name() {
+        use std::collections::HashSet;
+        let name = std::ffi::OsStr::new("pidfile");
+        let names: HashSet<_> = (0..1000).map(|_| temp_name(name)).collect();
+        assert_eq!(names.len(), 1000, "two writes shared a temp name");
+        assert!(names
+            .iter()
+            .all(|n| n.to_string_lossy().starts_with("pidfile.tmp-")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_write_is_owner_only_from_creation_and_after_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("atomic-private");
+        let path = dir.join("auth.toml");
+        atomic_write_private(&path, b"secret").unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        // A replacement of an (older, looser) file ends up private too.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write_private(&path, b"secret2").unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret2");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn private_write_round_trips_on_every_platform() {
+        let dir = scratch("atomic-private-rt");
+        let path = dir.join("auth.toml");
+        atomic_write_private(&path, b"one").unwrap();
+        atomic_write_private(&path, b"two").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "two");
         let _ = fs::remove_dir_all(&dir);
     }
 

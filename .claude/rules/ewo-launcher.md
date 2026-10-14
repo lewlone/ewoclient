@@ -111,8 +111,29 @@ Subsystems:
   (`chain.rs`), loopback redirect on `127.0.0.1` (`loopback.rs`), background
   runner (`service.rs`), `AccountStore { active, accounts[] }` in `auth.toml`
   (refresh/social tokens DPAPI-sealed on Windows by `auth/secret.rs`, legacy
-  plaintext migrates on load; 0600 plaintext elsewhere). The Entra app
+  plaintext migrates on load). On Linux they go into the desktop's Secret
+  Service through the blocking `keyring` backend (`auth/keyring_cipher.rs`;
+  `auth.toml` keeps a `keyring:v1:<slot>` marker per secret, slot
+  `<uuid>:ms_refresh_token` / `<uuid>:social_token`, service `EwoClient`);
+  an unopenable entry signs out only that account, clearing a field or
+  removing an account deletes its entry (`SecretCipher::discard`), and with
+  no Secret Service at startup it logs a warning and keeps the 0600
+  plaintext file. Every `SecretCipher` call takes the slot; DPAPI ignores
+  it. The Linux build needs `libdbus-1-dev` + `pkg-config` (CI installs it)
+  and `libdbus-1` at runtime; the keyring logic is unit-tested on every host
+  against keyring's mock store, the real D-Bus backend has never run here.
+  macOS and others stay 0600 plaintext. The Entra app
   `f901fc74-7e36-439d-80a8-c2e548f47fdc` is on Mojang's allowlist.
+- **Credential files fail closed.** If `auth.toml` or `instances.toml` exists
+  but can't be *read* (not NotFound, not a parse error), the launcher starts
+  with empty/default state and **skips every save of that file for the
+  session** (`util::SaveGuard`, logged as an error), so a transient lock
+  can't be saved over. A parse error is backed up to `.bak-<ts>` first (the
+  `auth.toml` backup is created `0600` too); if the backup fails, saves are
+  blocked as well. `atomic_write_private` creates the temp file `0600` on
+  Unix (no chmod-after window). Token response structs (`MsTokenResponse`,
+  XBL/XSTS/MC) have hand-written redacting `Debug`. `--mint-rewo-env` saves a
+  rotated refresh token back to `auth.toml`.
 - **Session lifetime** (`auth/mod.rs`): the Minecraft token's expiry is kept
   in memory (serde-skipped, like the token). `launch_auth` decides each
   launch: Offline (no account), Ready, NeedsRefresh (no token, or within
@@ -128,6 +149,11 @@ Subsystems:
 - `downloads/`: staged per-version → loader manifest → client → libraries →
   asset index → assets, all sha1-verified into Mojang's layout under
   `shared/`. **Don't break that layout**: vanilla-launcher interop is a feature.
+  An HTTP body is streamed through `util::copy_capped`: cut off at the
+  expected size + 64 KiB (1 GiB when the manifest has no size) and refused
+  up front on an oversized `Content-Length`; the same cap guards the JRE
+  archive. A panic in a download or JRE-fetch thread is caught and reported
+  as `Failed`, so a version never reads "in flight" forever.
 - `launch/`: `plan.rs` (token substitution), `natives.rs`, `spawn.rs` (stdout
   and stderr piped to the log panel), `jre.rs` (`pick_for_major`, `detect_all`,
   `resolve_pin`), `reaper.rs`, `prepare.rs` (launch preparation on a worker;
@@ -137,6 +163,17 @@ Subsystems:
   and recorded (PID **and** creation time, in memory and `last-launch.pid`),
   still running, exactly `java(w).exe` or `rewo.exe`, and owning no visible
   window (a zombie after shutdown never has one; a live game always does).
+  **A game is never reaped in its first `SPAWN_GRACE_SECS` (30 s).** "Its
+  window was seen" is an observation (`App::poll_game_window` asks
+  `reaper::state` about once a second while the game runs); the log markers
+  ("lwjgl version", …) are only a hint (`active_launch_marker_seen`) that
+  needs `MARKER_GRACE_SECS` (90 s) more before it can condemn a windowless
+  game, and with neither signal it takes `STARTUP_GRACE_SECS` (300 s). A
+  record left by an earlier launcher session is judged by process age
+  (`is_recorded_zombie`, from the recorded creation time). Every
+  read-modify-write of `last-launch.pid` goes through one in-process mutex,
+  and `ewo_core::util::atomic_write`'s temp name is unique per write
+  (`.tmp-<pid>-<seq>`), so concurrent saves can't collide.
 - **Java runtime per instance**: the Instances dropdown is "Auto" followed by
   the detected JREs. `Instance::java_runtime` is that index: `0` = auto
   (`pick_for_major`), `N >= 1` = `detect_all()[N-1]`. A pin that is gone or
@@ -147,7 +184,10 @@ Subsystems:
   the exe's embedded icon only serves Explorer and shortcuts).
 - `profile.rs`: client profiles (global, not per-instance): `profiles.toml` +
   `profiles/<name>/{client.toml,hud.toml,modules.toml,…}`; `settings.toml` is
-  global-only. `profile::is_valid_name` rejects path-unsafe names.
+  global-only. `profile::is_valid_name` rejects path-unsafe names. The
+  Settings rows "Game directory" / "Downloads" are display-only (the real
+  data dir and its `shared/`); `settings.toml` no longer stores them, and an
+  old file's `game_dir` / `downloads` keys are ignored.
   `atomic_write` and `validate_name` live in `ewo_core::util` (shared with the
   cdylib, which writes `pvp.toml`; `ewo-launcher/src/util.rs` re-exports them).
 - `keybind.rs`: `KeyChord` = GLFW key code + modifier mask (Minecraft's own key
@@ -180,7 +220,9 @@ Subsystems:
   `ewo-loader-integration.md`), `EWO_DEV_SERVER=host:port` (dev join for
   Native instances), `REWO_GAME_DIR` (set by the launcher for Native
   instances, see above). Child processes get the launcher env minus
-  `*TOKEN*`/`*SECRET*` variables.
+  `*TOKEN*`/`*SECRET*` variables, including the system-browser opener
+  (`util::open_url`: http(s) only; `rundll32 url.dll,FileProtocolHandler` /
+  `xdg-open` / `open` as a scrubbed child, no `opener` crate).
 - Release builds use `windows_subsystem = "windows"` (no console). The icon
   `assets/icon.ico` is embedded by `build.rs` via `winresource`. `package.ps1`
   builds and stages a self-contained `dist/EwoClient/` and repoints the Desktop

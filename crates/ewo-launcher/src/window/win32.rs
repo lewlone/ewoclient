@@ -90,7 +90,7 @@ pub fn is_foreground(window: &Window) -> bool {
 /// (`SPI_GETCLIENTAREAANIMATION`); reduced motion is its negation. Cheap
 /// enough (one syscall) to poll once a second.
 pub fn prefers_reduced_motion() -> bool {
-    use windows::Win32::Foundation::BOOL;
+    use windows::core::BOOL;
     use windows::Win32::UI::WindowsAndMessaging::{
         SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     };

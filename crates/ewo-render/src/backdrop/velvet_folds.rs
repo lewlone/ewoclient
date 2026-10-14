@@ -31,11 +31,12 @@ use std::cell::RefCell;
 
 use ewo_core::{OkLch, Settings};
 
+use crate::gradients;
 use crate::tokens;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, image_filters, shaders, BlendMode, Canvas, Color4f, ColorChannel, ImageFilter,
-    Matrix, Paint, Point, Rect, TileMode,
+    image_filters, shaders, BlendMode, Canvas, Color4f, ColorChannel, ImageFilter, Matrix, Paint,
+    Point, Rect, TileMode,
 };
 
 thread_local! {
@@ -200,13 +201,12 @@ fn draw_fold(canvas: &Canvas, w: f32, h: f32, time: f32, fold: &Fold, motion_spe
     let inner = Color4f::new(srgb[0], srgb[1], srgb[2], srgb[3]);
     let outer = Color4f::new(srgb[0], srgb[1], srgb[2], 0.0);
 
-    let shader = gradient_shader::radial(
+    let shader = gradients::radial(
         Point::new(cx2, cy2),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(&[inner, outer], None),
+        &[inner, outer],
         Some(&[0.0_f32, 0.70][..]),
         TileMode::Clamp,
-        None,
         Some(&local),
     )
     .expect("velvet-folds blob shader");

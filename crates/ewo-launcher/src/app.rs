@@ -93,6 +93,8 @@ impl App {
             active_launch: None,
             active_launch_started_at: 0.0,
             active_launch_window_seen: false,
+            active_launch_marker_seen: false,
+            active_launch_polled_at: 0.0,
             active_launch_instance_id: None,
             pending_prepare: None,
             pending_minimize: None,

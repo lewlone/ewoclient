@@ -17,6 +17,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # The ref of dtolnay/rust-toolchain IS the toolchain: `@1.89` is the MSRV
+      # job's pin (workspace rust-version), not an outdated action version.
+      # Dependabot "bumped" it to @1.120 in PR #4, which turned the MSRV
+      # check into a check against Rust 1.120.
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns: ["*"]

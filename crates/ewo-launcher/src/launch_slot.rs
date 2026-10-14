@@ -95,17 +95,22 @@ mod tests {
     fn a_non_zombie_running_game_is_always_busy() {
         for visible in [false, true] {
             for seen in [false, true] {
-                for elapsed in [0.0, 100.0, 300.0, 301.0, 10_000.0] {
-                    let zombie = crate::launch::reaper::is_zombie(visible, seen, elapsed);
-                    let decision = decide(Running { zombie });
-                    let at = format!("visible={visible} seen={seen} elapsed={elapsed}");
-                    if zombie {
-                        assert_eq!(decision, ReapThenFree, "{at}");
-                    } else {
-                        assert!(
-                            matches!(decision, Busy(_)),
-                            "live game must be Busy: {decision:?} ({at})"
+                for marker in [false, true] {
+                    for elapsed in [0.0, 29.0, 100.0, 300.0, 301.0, 10_000.0] {
+                        let zombie =
+                            crate::launch::reaper::is_zombie(visible, seen, marker, elapsed);
+                        let decision = decide(Running { zombie });
+                        let at = format!(
+                            "visible={visible} seen={seen} marker={marker} elapsed={elapsed}"
                         );
+                        if zombie {
+                            assert_eq!(decision, ReapThenFree, "{at}");
+                        } else {
+                            assert!(
+                                matches!(decision, Busy(_)),
+                                "live game must be Busy: {decision:?} ({at})"
+                            );
+                        }
                     }
                 }
             }

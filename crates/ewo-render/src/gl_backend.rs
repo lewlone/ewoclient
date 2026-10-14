@@ -84,14 +84,16 @@ mod dcomp_backend {
     use std::time::{Duration, Instant};
 
     use skia_safe::gpu::d3d::{BackendContext, TextureResourceInfo};
-    use skia_safe::gpu::{surfaces, BackendRenderTarget, DirectContext, Protected, SurfaceOrigin};
+    use skia_safe::gpu::{
+        backend_render_targets, direct_contexts, surfaces, DirectContext, Protected, SurfaceOrigin,
+    };
     use skia_safe::{Canvas, ColorType, Surface as SkSurface};
     use winit::event_loop::ActiveEventLoop;
     use winit::window::Window;
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows::core::Interface;
-    use windows::Win32::Foundation::{BOOL, HWND};
+    use windows::core::{Interface, BOOL};
+    use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
     use windows::Win32::Graphics::Direct3D12::{
         D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device, ID3D12Device5,
@@ -156,8 +158,8 @@ mod dcomp_backend {
                 memory_allocator: None,
                 protected_context: Protected::No,
             };
-            let mut gr_context = DirectContext::new_d3d(&backend_context, None)
-                .ok_or("DirectContext::new_d3d failed")?;
+            let mut gr_context = direct_contexts::make_d3d(&backend_context, None)
+                .ok_or("direct_contexts::make_d3d failed")?;
             gr_context.set_resource_cache_limit(super::GPU_RESOURCE_CACHE_BYTES);
 
             // Composition swapchain — premultiplied alpha is what lets the
@@ -193,7 +195,7 @@ mod dcomp_backend {
             let dcomp_device: IDCompositionDevice = DCompositionCreateDevice(None::<&IDXGIDevice>)
                 .map_err(werr("DCompositionCreateDevice"))?;
             let dcomp_target = dcomp_device
-                .CreateTargetForHwnd(hwnd, BOOL(1))
+                .CreateTargetForHwnd(hwnd, true)
                 .map_err(werr("CreateTargetForHwnd"))?;
             let dcomp_visual = dcomp_device.CreateVisual().map_err(werr("CreateVisual"))?;
             dcomp_visual
@@ -541,7 +543,7 @@ mod dcomp_backend {
                     sample_quality_pattern: DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN,
                     protected: Protected::No,
                 };
-                let target = BackendRenderTarget::new_d3d((width as i32, height as i32), &info);
+                let target = backend_render_targets::make_d3d((width as i32, height as i32), &info);
                 surfaces::wrap_backend_render_target(
                     gr_context,
                     &target,

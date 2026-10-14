@@ -4,7 +4,7 @@
 //! `is_leashable` -> `set_leash_holder`, graded by `rideshot`); nothing drew the
 //! rope. This is the geometry, pure and testable; the CPU inputs (which
 //! entities, where their endpoints are, the light at each end) live beside the
-//! session in `live_cmd`, and the Vulkan pass in `world.rs`.
+//! session in `live_cmd`, and the Vulkan pass in `world/lines.rs`.
 //!
 //! ```java
 //! // LeashFeatureRenderer.prepare / addVertexPair

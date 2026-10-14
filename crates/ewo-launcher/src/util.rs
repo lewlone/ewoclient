@@ -80,22 +80,205 @@ fn percent_decode(s: &str) -> Option<String> {
 // importing them from here.
 pub use ewo_core::util::{atomic_write, validate_name, NameError};
 
-/// [`atomic_write`] for a file holding credentials: on Unix the result is
-/// mode 0600. (On Windows the per-user `%APPDATA%` ACL already applies.)
-pub fn atomic_write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    atomic_write(path, contents)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
+/// Open `url` in the user's default browser.
+///
+/// The platform opener runs as a child process and the browser it starts
+/// would inherit the launcher's environment, so credential-looking variables
+/// (`*TOKEN*`, `*SECRET*`, e.g. `EWO_LOADER_TOKEN`) are removed first, as for
+/// the game process. Only `http(s)` URLs are opened: the opener would
+/// otherwise happily "open" a local path as a program.
+pub fn open_url(url: &str) -> io::Result<()> {
+    let mut child = open_url_command(url)?
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    // Reap the opener (xdg-open exits quickly) without blocking the caller.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
+
+/// The scrubbed opener command for `url`, not yet spawned.
+fn open_url_command(url: &str) -> io::Result<std::process::Command> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http(s) URLs are opened",
+        ));
+    }
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    cmd.arg(url);
+    crate::launch::spawn::scrub_inherited_secrets(&mut cmd);
+    Ok(cmd)
+}
+
+/// How far past the expected size a download body may run before it is cut
+/// off (a CDN adding a trailing newline is fine; a stream that never ends
+/// is not).
+pub const BODY_SLACK_BYTES: u64 = 64 * 1024;
+
+/// The most an HTTP body of *unknown* expected size may be (a manifest says
+/// `size: 0`). Larger than any single Mojang asset, library or client jar.
+pub const UNKNOWN_SIZE_BODY_CAP: u64 = 1 << 30;
+
+/// The most bytes to accept for a body whose expected size is `expected`
+/// (`0` = unknown).
+pub fn body_limit(expected: u64) -> u64 {
+    if expected == 0 {
+        UNKNOWN_SIZE_BODY_CAP
+    } else {
+        expected.saturating_add(BODY_SLACK_BYTES)
+    }
+}
+
+/// Fail early when the server's declared `Content-Length` is already past
+/// `limit`; an absent or unparseable header says nothing, the streaming cap
+/// in [`copy_capped`] still applies.
+pub fn check_declared_length(content_length: Option<&str>, limit: u64) -> Result<(), String> {
+    match content_length.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(n) if n > limit => Err(format!(
+            "server announced {n} bytes, over the {limit}-byte limit"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Stream `reader` into `sink` in chunks, failing as soon as more than
+/// `limit` bytes have arrived (at most one chunk past it is read). Returns
+/// the byte count. The sink's error aborts the copy.
+pub fn copy_capped(
+    reader: &mut dyn io::Read,
+    limit: u64,
+    mut sink: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<u64, String> {
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("read body: {e}"))?;
+        if n == 0 {
+            return Ok(total);
+        }
+        total += n as u64;
+        if total > limit {
+            return Err(format!("body is larger than the {limit}-byte limit"));
+        }
+        sink(&buf[..n])?;
+    }
+}
+
+/// [`atomic_write`] for a file holding credentials: on Unix the file is
+/// created mode 0600 (never briefly world-readable). On Windows the per-user
+/// `%APPDATA%` ACL already applies. The implementation lives in `ewo-core`.
+pub use ewo_core::util::atomic_write_private;
 
 /// Preserve a config file that failed to parse by copying it to
 /// `<name>.bak-<unix_ts>` before any save can overwrite it. Logs an error
 /// either way; returns the backup path on success.
 pub fn backup_unparseable(path: &Path, reason: &dyn std::fmt::Display) -> Option<PathBuf> {
+    backup_unparseable_with(path, reason, false)
+}
+
+/// What reading a config file at startup found.
+#[derive(Debug)]
+pub enum ConfigRead {
+    /// No such file: a fresh install, defaults are right.
+    Missing,
+    Text(String),
+    /// The file exists but is not valid UTF-8: treat it like a parse error
+    /// (back it up, then use defaults).
+    Corrupt(String),
+    /// The file exists but could not be read (locked by a scanner, ACL, I/O
+    /// error). Its content is unknown and may be perfectly good.
+    Unreadable,
+}
+
+/// Stops saves from overwriting a config file the launcher failed to *read*.
+///
+/// A read error is not a parse error: the file may hold every account or
+/// instance the user has. The in-memory state falls back to defaults, but if
+/// the next save then wrote those defaults over the file, a transient
+/// failure would destroy the data. Once a guard is blocked its owner's saves
+/// are skipped (loudly) for the rest of the session.
+pub struct SaveGuard(std::sync::atomic::AtomicBool);
+
+impl SaveGuard {
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub fn block(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether a save of `path` may proceed; logs an error when not.
+    pub fn allows_save(&self, path: &Path) -> bool {
+        if self.is_blocked() {
+            log::error!(
+                "NOT saving {}: it could not be read at startup, and saving defaults over it \
+                 would destroy it. Fix the file's permissions or restore it, then restart.",
+                path.display()
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Back up an unparseable file; if even the backup fails, block saves so
+    /// the original is not overwritten.
+    pub fn backup_or_block(&self, path: &Path, reason: &dyn std::fmt::Display, private: bool) {
+        if backup_unparseable_with(path, reason, private).is_none() {
+            self.block();
+        }
+    }
+}
+
+impl Default for SaveGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Read a config file, blocking `guard` on an error that isn't "not found".
+pub fn read_config(path: &Path, guard: &SaveGuard) -> ConfigRead {
+    match fs::read_to_string(path) {
+        Ok(s) => ConfigRead::Text(s),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => ConfigRead::Missing,
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => ConfigRead::Corrupt(e.to_string()),
+        Err(e) => {
+            log::error!(
+                "could not read {}: {e} — starting with defaults but NOT overwriting the file",
+                path.display()
+            );
+            guard.block();
+            ConfigRead::Unreadable
+        }
+    }
+}
+
+/// The copy of a file that may hold credentials (`private`) gets the same
+/// owner-only permissions as the original; a plain `fs::copy` of a plaintext
+/// `auth.toml` would make a looser duplicate.
+fn backup_unparseable_with(
+    path: &Path,
+    reason: &dyn std::fmt::Display,
+    private: bool,
+) -> Option<PathBuf> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -103,8 +286,13 @@ pub fn backup_unparseable(path: &Path, reason: &dyn std::fmt::Display) -> Option
     let mut name = path.file_name()?.to_os_string();
     name.push(format!(".bak-{ts}"));
     let backup = path.with_file_name(name);
-    match fs::copy(path, &backup) {
-        Ok(_) => {
+    let copied = if private {
+        fs::read(path).and_then(|bytes| atomic_write_private(&backup, &bytes))
+    } else {
+        fs::copy(path, &backup).map(|_| ())
+    };
+    match copied {
+        Ok(()) => {
             log::error!(
                 "could not parse {}: {} — preserved a copy at {}; using defaults",
                 path.display(),
@@ -206,6 +394,175 @@ mod tests {
         let bak = backup_unparseable(&path, &"test").unwrap();
         assert_eq!(fs::read_to_string(&bak).unwrap(), "two");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ewo-util-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_browser_opener_gets_no_credentials_and_only_http_urls() {
+        // Own variable names: tests share the process environment.
+        std::env::set_var("EWO_OPENER_TEST_TOKEN", "t0p-secret");
+        std::env::set_var("EWO_OPENER_TEST_PLAIN", "fine");
+        let url = "https://login.microsoftonline.com/x?a=1&b=2";
+        let cmd = open_url_command(url).unwrap();
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let removed = |name: &str| {
+            envs.iter()
+                .any(|(k, v)| k.to_str() == Some(name) && v.is_none())
+        };
+        assert!(removed("EWO_OPENER_TEST_TOKEN"), "{envs:?}");
+        assert!(
+            !removed("EWO_OPENER_TEST_PLAIN"),
+            "non-secret vars are kept"
+        );
+        assert_eq!(cmd.get_args().last().and_then(|a| a.to_str()), Some(url));
+        std::env::remove_var("EWO_OPENER_TEST_TOKEN");
+        std::env::remove_var("EWO_OPENER_TEST_PLAIN");
+
+        for bad in [
+            "file:///C:/Windows/System32/calc.exe",
+            "calc.exe",
+            "ftp://x/y",
+            "",
+        ] {
+            assert!(open_url_command(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_missing_file_is_a_fresh_install_not_a_read_error() {
+        let dir = scratch("cfg-missing");
+        let guard = SaveGuard::new();
+        let p = dir.join("auth.toml");
+        assert!(matches!(read_config(&p, &guard), ConfigRead::Missing));
+        assert!(!guard.is_blocked());
+        assert!(guard.allows_save(&p));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_error_blocks_saves_but_a_parse_class_failure_does_not() {
+        let dir = scratch("cfg-readerr");
+        // A directory where the file should be: `read` fails with something
+        // that is neither NotFound nor InvalidData, on every platform.
+        let as_dir = dir.join("instances.toml");
+        fs::create_dir_all(&as_dir).unwrap();
+        let guard = SaveGuard::new();
+        assert!(matches!(
+            read_config(&as_dir, &guard),
+            ConfigRead::Unreadable
+        ));
+        assert!(guard.is_blocked(), "an unreadable file must block saves");
+        assert!(!guard.allows_save(&as_dir));
+
+        // Invalid UTF-8 is corruption: handled by backup + defaults.
+        let bad = dir.join("bad.toml");
+        fs::write(&bad, [0xFF, 0xFE, 0x00, 0xFF]).unwrap();
+        let guard = SaveGuard::new();
+        assert!(matches!(read_config(&bad, &guard), ConfigRead::Corrupt(_)));
+        assert!(!guard.is_blocked());
+
+        // Good text reads fine and leaves saves enabled.
+        let ok = dir.join("ok.toml");
+        fs::write(&ok, "a = 1").unwrap();
+        assert!(matches!(read_config(&ok, &guard), ConfigRead::Text(t) if t == "a = 1"));
+        assert!(guard.allows_save(&ok));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failing_to_back_up_blocks_saves() {
+        let dir = scratch("cfg-nobackup");
+        let guard = SaveGuard::new();
+        // Nothing to copy: the backup fails, so the (absent/unknown) original
+        // must not be overwritten either.
+        guard.backup_or_block(&dir.join("gone.toml"), &"test", false);
+        assert!(guard.is_blocked());
+        let ok = dir.join("auth.toml");
+        fs::write(&ok, "x = 1").unwrap();
+        let guard = SaveGuard::new();
+        guard.backup_or_block(&ok, &"test", true);
+        assert!(!guard.is_blocked());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_private_backup_has_the_same_contents() {
+        let dir = scratch("cfg-private-bak");
+        let p = dir.join("auth.toml");
+        fs::write(&p, "ms_refresh_token = \"t\"").unwrap();
+        let bak = backup_unparseable_with(&p, &"test", true).unwrap();
+        assert_eq!(
+            fs::read_to_string(&bak).unwrap(),
+            "ms_refresh_token = \"t\""
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&bak).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the backup must not be looser than auth.toml");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn body_limit_is_expected_plus_slack_or_the_unknown_cap() {
+        assert_eq!(body_limit(1000), 1000 + BODY_SLACK_BYTES);
+        assert_eq!(body_limit(0), UNKNOWN_SIZE_BODY_CAP);
+        assert_eq!(body_limit(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn declared_length_is_checked_when_present() {
+        assert!(check_declared_length(Some("100"), 100).is_ok());
+        assert!(check_declared_length(Some(" 101 "), 100).is_err());
+        assert!(check_declared_length(Some("chunked?"), 100).is_ok());
+        assert!(check_declared_length(None, 100).is_ok());
+    }
+
+    /// A reader that never ends: the cap, not the source, stops the copy.
+    struct Endless(u64);
+    impl io::Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0 += buf.len() as u64;
+            buf.fill(7);
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn copy_capped_stops_an_endless_body_near_the_limit() {
+        let mut src = Endless(0);
+        let mut seen = 0u64;
+        let err = copy_capped(&mut src, 200_000, |c| {
+            seen += c.len() as u64;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(err.contains("larger than"), "{err}");
+        assert!(seen <= 200_000, "nothing past the limit reaches the sink");
+        assert!(src.0 <= 200_000 + 64 * 1024, "read at most one chunk past");
+    }
+
+    #[test]
+    fn copy_capped_passes_a_body_within_the_limit_and_sink_errors_abort() {
+        let data = vec![1u8; 100_000];
+        let mut out = Vec::new();
+        let n = copy_capped(&mut &data[..], 100_000, |c| {
+            out.extend_from_slice(c);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!((n, out.len()), (100_000, 100_000));
+        let err = copy_capped(&mut &data[..], 1 << 20, |_| Err("disk full".into())).unwrap_err();
+        assert_eq!(err, "disk full");
+        // An exact-fit body is accepted; one byte more is not.
+        assert!(copy_capped(&mut &data[..], 99_999, |_| Ok(())).is_err());
     }
 
     #[test]

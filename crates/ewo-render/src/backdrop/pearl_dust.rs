@@ -12,13 +12,14 @@
 //! Drawn under `mix-blend-mode: screen`, so all the colored alphas brighten
 //! whatever's beneath rather than alpha-blending.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::Settings;
 use rand::Rng;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, AlphaType, BlendMode, Canvas, Color, ColorType, FilterMode, Image, ImageInfo,
-    Paint, Point, Rect, TileMode,
+    AlphaType, BlendMode, Canvas, Color, ColorType, FilterMode, Image, ImageInfo, Paint, Point,
+    Rect, TileMode,
 };
 use std::cell::RefCell;
 use std::f32::consts::PI;
@@ -257,20 +258,16 @@ fn build_halo_sprite(canvas: &Canvas) -> Option<Image> {
 
     // 3-stop radial: warm-white core → rose mid → transparent edge, at the
     // reference alphas the old per-mote path multiplied by `alpha`.
-    let shader = gradient_shader::radial(
+    let shader = gradients::radial(
         Point::new(center, center),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::pearl_dust_core_a(0.55),
-                tokens::accent_rose_a(0.25),
-                tokens::accent_rose_a(0.0),
-            ],
-            None,
-        ),
+        &[
+            tokens::pearl_dust_core_a(0.55),
+            tokens::accent_rose_a(0.25),
+            tokens::accent_rose_a(0.0),
+        ],
         Some(&[0.0_f32, 0.40, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     )?;
 

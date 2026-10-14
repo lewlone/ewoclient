@@ -1024,7 +1024,7 @@ pub(super) fn draw_crosshair_swatch(
 /// square (solid pure hue → horizontal white→transparent → vertical
 /// transparent→black) plus a ring cursor at the current (S, V).
 pub(super) fn draw_sv_square(canvas: &Canvas, rect: Rect, pure_hue_rgb: [u8; 3], s: f32, v: f32) {
-    use skia_safe::{gradient_shader, Point, RRect, TileMode};
+    use skia_safe::{Point, RRect, TileMode};
     let rrect = RRect::new_rect_xy(rect, 6.0, 6.0);
     let saved = canvas.save();
     canvas.clip_rrect(rrect, Some(ClipOp::Intersect), Some(true));
@@ -1044,21 +1044,17 @@ pub(super) fn draw_sv_square(canvas: &Canvas, rect: Rect, pure_hue_rgb: [u8; 3],
 
     // 2. Horizontal white→transparent (saturation axis).
     let mut sat_paint = Paint::default();
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.right, rect.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(1.0, 1.0, 1.0, 1.0),
-                Color4f::new(1.0, 1.0, 1.0, 0.0),
-            ],
-            None,
-        ),
+        &[
+            Color4f::new(1.0, 1.0, 1.0, 1.0),
+            Color4f::new(1.0, 1.0, 1.0, 0.0),
+        ],
         None,
         TileMode::Clamp,
-        None,
         None,
     ) {
         sat_paint.set_shader(shader);
@@ -1067,21 +1063,17 @@ pub(super) fn draw_sv_square(canvas: &Canvas, rect: Rect, pure_hue_rgb: [u8; 3],
 
     // 3. Vertical transparent→black (value axis).
     let mut val_paint = Paint::default();
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.left, rect.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(0.0, 0.0, 0.0, 0.0),
-                Color4f::new(0.0, 0.0, 0.0, 1.0),
-            ],
-            None,
-        ),
+        &[
+            Color4f::new(0.0, 0.0, 0.0, 0.0),
+            Color4f::new(0.0, 0.0, 0.0, 1.0),
+        ],
         None,
         TileMode::Clamp,
-        None,
         None,
     ) {
         val_paint.set_shader(shader);
@@ -1116,7 +1108,7 @@ pub(super) fn draw_sv_square(canvas: &Canvas, rect: Rect, pure_hue_rgb: [u8; 3],
 /// Hue strip — vertical 6-stop rainbow gradient (red→yellow→green→cyan→
 /// blue→magenta→red). Cursor knob at y proportional to H/360.
 pub(super) fn draw_hue_strip(canvas: &Canvas, rect: Rect, h: f32) {
-    use skia_safe::{gradient_shader, Point, RRect, TileMode};
+    use skia_safe::{Point, RRect, TileMode};
     let rrect = RRect::new_rect_xy(rect, 6.0, 6.0);
     let saved = canvas.save();
     canvas.clip_rrect(rrect, Some(ClipOp::Intersect), Some(true));
@@ -1131,15 +1123,14 @@ pub(super) fn draw_hue_strip(canvas: &Canvas, rect: Rect, h: f32) {
         Color4f::new(1.0, 0.0, 0.0, 1.0), // 360°
     ];
     let mut paint = Paint::default();
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.left, rect.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(&stops, None),
+        &stops,
         None,
         TileMode::Clamp,
-        None,
         None,
     ) {
         paint.set_shader(shader);
@@ -1172,7 +1163,7 @@ pub(super) fn draw_hue_strip(canvas: &Canvas, rect: Rect, h: f32) {
 /// current colour (opaque, top) to the same colour (transparent, bottom).
 /// Cursor at y = (1 - alpha) * height.
 pub(super) fn draw_alpha_strip(canvas: &Canvas, rect: Rect, rgb: [u8; 3], a: f32) {
-    use skia_safe::{gradient_shader, Point, RRect, TileMode};
+    use skia_safe::{Point, RRect, TileMode};
     let rrect = RRect::new_rect_xy(rect, 6.0, 6.0);
     let saved = canvas.save();
     canvas.clip_rrect(rrect, Some(ClipOp::Intersect), Some(true));
@@ -1206,15 +1197,14 @@ pub(super) fn draw_alpha_strip(canvas: &Canvas, rect: Rect, rgb: [u8; 3], a: f32
     );
     let transparent = Color4f::new(opaque.r, opaque.g, opaque.b, 0.0);
     let mut paint = Paint::default();
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.left, rect.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(&[opaque, transparent], None),
+        &[opaque, transparent],
         None,
         TileMode::Clamp,
-        None,
         None,
     ) {
         paint.set_shader(shader);

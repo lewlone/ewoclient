@@ -209,7 +209,7 @@ fn is_secret_env(name: &str) -> bool {
 /// Stop the child inheriting credentials from the launcher's environment
 /// (e.g. `EWO_LOADER_TOKEN`, the GitHub PAT used for private loader
 /// downloads). Anything the child genuinely needs is set explicitly after.
-fn scrub_inherited_secrets(cmd: &mut Command) {
+pub(crate) fn scrub_inherited_secrets(cmd: &mut Command) {
     for (key, _) in std::env::vars_os() {
         if key.to_str().is_some_and(is_secret_env) {
             cmd.env_remove(&key);
