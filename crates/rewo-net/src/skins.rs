@@ -38,6 +38,64 @@ impl SkinInfo {
     }
 }
 
+/// The skins a session currently tracks, by profile UUID: a live-player bound,
+/// not a lifetime one. An entry leaves with its player (`Player Info Remove`)
+/// and with the whole level (a reconfiguration), so [`MAX_TRACKED_SKINS`] only
+/// ever counts players present at once; a hub with unbounded UUID churn keeps
+/// resolving skins for whoever is actually listed.
+#[derive(Debug, Default)]
+pub struct SkinTable {
+    map: std::collections::HashMap<u128, SkinInfo>,
+    /// The cap refused a new player and the log line was written; reset when
+    /// room reopens, so a later episode is reported once too.
+    refusal_logged: bool,
+}
+
+impl SkinTable {
+    /// Record `info` for `uuid`. Returns `true` when it is new or changed, so
+    /// the caller queues exactly one fetch. `queued` is the caller's count of
+    /// announced-but-undrained skins, bounded by the same cap.
+    pub fn note(&mut self, uuid: u128, info: &SkinInfo, queued: usize) -> bool {
+        let known = self.map.contains_key(&uuid);
+        if !known && self.map.len() >= MAX_TRACKED_SKINS {
+            if !self.refusal_logged {
+                self.refusal_logged = true;
+                log::warn!(
+                    "net: {MAX_TRACKED_SKINS} player skins are tracked at once; \
+                     further players keep the default skin until some leave"
+                );
+            }
+            return false;
+        }
+        if queued >= MAX_TRACKED_SKINS || self.map.get(&uuid) == Some(info) {
+            return false;
+        }
+        self.map.insert(uuid, info.clone());
+        true
+    }
+
+    /// A player left the list: free their slot.
+    pub fn remove(&mut self, uuid: u128) {
+        if self.map.remove(&uuid).is_some() && self.map.len() < MAX_TRACKED_SKINS {
+            self.refusal_logged = false;
+        }
+    }
+
+    /// Everything goes (the level and its tab list were dropped).
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.refusal_logged = false;
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
 /// Longest texture URL accepted. Real ones are ~100 bytes
 /// (`http://textures.minecraft.net/texture/<64 hex>`); the cap only bounds
 /// what a hostile server can make the client hold per player.
@@ -161,6 +219,62 @@ pub fn decode_textures_property(value_b64: &str) -> Option<SkinInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn skin(n: u128) -> SkinInfo {
+        SkinInfo {
+            url: Some(format!("http://textures.minecraft.net/texture/{n:064x}")),
+            ..SkinInfo::default()
+        }
+    }
+
+    /// A hub with churn: far more distinct UUIDs than the cap pass through, but
+    /// never more than a few at once. Every one must still get a skin.
+    #[test]
+    fn churn_past_the_cap_still_resolves_skins() {
+        let mut t = SkinTable::default();
+        for n in 0..(3 * MAX_TRACKED_SKINS as u128) {
+            assert!(t.note(n, &skin(n), 0), "player {n} was refused");
+            t.remove(n);
+        }
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn the_cap_bounds_live_players_and_reopens_on_removal() {
+        let mut t = SkinTable::default();
+        for n in 0..MAX_TRACKED_SKINS as u128 {
+            assert!(t.note(n, &skin(n), 0));
+        }
+        assert_eq!(t.len(), MAX_TRACKED_SKINS);
+        let extra = MAX_TRACKED_SKINS as u128;
+        assert!(!t.note(extra, &skin(extra), 0), "a live cap still refuses");
+        assert!(t.refusal_logged);
+        // A known player's change is still accepted at the cap.
+        assert!(t.note(0, &skin(9999), 0));
+        assert!(
+            !t.note(0, &skin(9999), 0),
+            "an unchanged skin is not requeued"
+        );
+        t.remove(1);
+        assert!(!t.refusal_logged, "room reopened, so the next episode logs");
+        assert!(t.note(extra, &skin(extra), 0));
+    }
+
+    #[test]
+    fn the_pending_queue_is_bounded_too() {
+        let mut t = SkinTable::default();
+        assert!(!t.note(1, &skin(1), MAX_TRACKED_SKINS));
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn clear_drops_every_entry() {
+        let mut t = SkinTable::default();
+        t.note(1, &skin(1), 0);
+        t.clear();
+        assert!(t.is_empty());
+        assert!(t.note(1, &skin(1), 0), "a returning player is queued again");
+    }
 
     /// A real `textures` value captured from a live profile (slim model).
     /// Guards the exact base64 → JSON → {url, slim} path against a wire

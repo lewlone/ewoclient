@@ -515,3 +515,82 @@ fn a_dripping_server_fails_the_login_at_the_handshake_deadline() {
     assert!(took < Duration::from_secs(5), "took {took:?}");
     server.join().expect("server script failed");
 }
+
+/// A network-NBT string component (a plain-text reason).
+fn text_component(text: &str) -> Vec<u8> {
+    let mut b = vec![0x08]; // TAG_String, unnamed root
+    b.extend_from_slice(&(text.len() as u16).to_be_bytes());
+    b.extend_from_slice(text.as_bytes());
+    b
+}
+
+/// The server sends a kick and closes; the client's next write then fails.
+/// Vanilla shows the server's reason, not the write error, so the already
+/// queued `disconnect` must win over the generic "send: ..." failure, whether
+/// the failure is noticed by `send` itself or by a later pump.
+#[test]
+fn a_queued_kick_wins_over_a_failed_write() {
+    let Some(data) = load_data() else { return };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let sids = Ids::resolve(&data.packets).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut s = Server {
+            stream,
+            codec: FrameCodec::default(),
+        };
+        let ids = sids;
+        s.expect(ids.sb_login_hello, "hello");
+        let mut fin = PacketWriter::packet(ids.cb_login_finished);
+        fin.uuid(1).string("Rewo").varint(0);
+        s.send(fin);
+        s.expect(ids.sb_login_acknowledged, "login_acknowledged");
+        s.send(PacketWriter::packet(ids.cb_config_finish));
+        s.expect(ids.sb_config_finish, "finish_configuration ack");
+        let mut kick = PacketWriter::packet(ids.cb_play_disconnect);
+        kick.buf
+            .extend_from_slice(&text_component("Kicked: flying"));
+        s.send(kick);
+        // A graceful close with nothing unread, so the client still receives
+        // the kick; its later writes are what fail.
+        s.stream.shutdown(std::net::Shutdown::Write).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+    });
+    let conn = Connection::connect("127.0.0.1", port, &data).unwrap();
+    let mut session = conn
+        .into_play(
+            "127.0.0.1",
+            port,
+            "Rewo",
+            None,
+            Vec::new(),
+            data.blocks.global_palette_bits,
+            rewo_world::biome::Colormaps::neutral(),
+        )
+        .unwrap();
+    // Let the reader thread queue the kick (and the EOF) without pumping them.
+    std::thread::sleep(Duration::from_millis(200));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.disconnect.is_none() && Instant::now() < deadline {
+        let _ = session.swing();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    server.join().unwrap();
+    // The write failure is what ended the session ...
+    let at_failure = session.disconnect.clone().expect("no disconnect");
+    // ... and the frame loop's next pump must not lose the reason either.
+    session.pump(PumpBudget::UNLIMITED).unwrap();
+    let reason = session.disconnect.clone().unwrap();
+    assert!(
+        reason.contains("Kicked: flying"),
+        "kick lost: at failure {at_failure:?}, after pump {reason:?}"
+    );
+    assert_eq!(
+        session.disconnect_cause,
+        Some(rewo_ui::disconnect_screen::DisconnectCause::ServerRequested)
+    );
+}

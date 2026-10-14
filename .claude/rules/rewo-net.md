@@ -147,8 +147,10 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
 - **SRV redirects** (`srv.rs`, `Connection::connect_address`): an address typed
   with **no port** (`ServerAddress::port` is `None`) asks the system's
   nameservers for `_minecraft._tcp.<host>` over a hand-written sync UDP query
-  (1 s per nameserver, three at most, no TCP retry; no async runtime, no new
-  dependency) and tries the target, then the typed host on 25565. A written
+  (1 s per nameserver, three at most; a truncated (`TC`) answer is asked again
+  over TCP to the same nameserver, length-prefixed, as the JDK's resolver does;
+  the whole lookup, TCP included, shares one deadline of 3 x the per-nameserver
+  timeout; no async runtime, no new dependency) and tries the target, then the typed host on 25565. A written
   port, even `:25565`, and an IP literal are never looked up (vanilla looks up
   any 25565; Rewo narrows it to "the player typed no port"). The handshake
   names `Connection::endpoint()`, the SRV target **with its trailing dot**, as
@@ -157,11 +159,18 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
   the player typed none. The answer is untrusted: id, question and owner (or
   its CNAME chain) must match, targets are hostname characters only, port 0 and
   the root target are skipped. Nameservers come from `/etc/resolv.conf` or
-  Windows' `GetNetworkParams` (a small hand-written FFI, the crate's only
-  `unsafe`). Tests use captured packets and a loopback fake nameserver.
+  Windows' `GetAdaptersAddresses` (operational non-loopback adapters, IPv4 and
+  IPv6; link-local IPv6 keeps its scope id, site-local `fec0::/10` and
+  scope-less link-local are skipped) merged with `GetNetworkParams` (a small
+  hand-written FFI with compile-time offset asserts and in-buffer pointer
+  checks, the crate's only `unsafe`). Tests use captured packets and loopback
+  fake nameservers (UDP, and TCP for the truncated retry).
 - **Recordings**: `record.rs` bounds each record's length by the bytes left in
   the file before allocating. `net soak` fails unless the session ended
   `Completed` (a server disconnect or client error mid-run is a failure).
+- **Skin table** (`skins::SkinTable`): `MAX_TRACKED_SKINS` bounds the players
+  present at once, not a lifetime count. An entry leaves on `player_info_remove`
+  and on `clear_level` (reconfiguration); the cap logs once when it refuses.
 - **Bounded logs**: `PlaySession::chat_log` keeps the newest
   `MAX_CHAT_HISTORY` (100) lines through `chat_wire::push_chat_log`.
 - **Non-finite teleports** are dropped field-group by field-group

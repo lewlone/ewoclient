@@ -549,6 +549,11 @@ pub struct PlaySession {
     /// The first write that failed; every later write is refused (see
     /// [`write_packet`]).
     send_failed: Option<String>,
+    /// Set while [`Self::disconnect`] is the generic "send: …" error from a
+    /// failed write rather than a server's reason: a server `disconnect`
+    /// packet already queued behind it still takes precedence (see
+    /// [`Self::salvage_server_disconnect`]).
+    disconnect_from_write: bool,
     rx: Receiver<Result<Vec<u8>, ReaderClosed>>,
     /// The queued-bytes budget the reader thread reserves against; each
     /// frame's bytes are released as [`Self::drain_inbound`] takes it.
@@ -1261,7 +1266,7 @@ pub struct PlaySession {
     signer: Option<crate::chat_sign::ChatSigner>,
     /// Resolved player skins by profile UUID (from the Player Info
     /// `textures` property). Online-mode only — offline servers send none.
-    player_skins: std::collections::HashMap<u128, crate::skins::SkinInfo>,
+    player_skins: crate::skins::SkinTable,
     /// Newly-announced skins the app hasn't fetched yet (drained each frame).
     pending_skins: Vec<(u128, crate::skins::SkinInfo)>,
     /// Local player's night-vision / darkness effects, driving the camera
@@ -1877,6 +1882,7 @@ impl<'a> Connection<'a> {
             writer,
             codec,
             send_failed: None,
+            disconnect_from_write: false,
             rx,
             inbound_budget,
             socket,
@@ -2048,7 +2054,7 @@ impl<'a> Connection<'a> {
             sequence: 0,
             ticks: 0,
             signer: None,
-            player_skins: std::collections::HashMap::new(),
+            player_skins: crate::skins::SkinTable::default(),
             pending_skins: Vec::new(),
             visual_effects,
             pending_biome_registry,
@@ -2189,9 +2195,60 @@ impl PlaySession {
                 self.disconnect = Some(e.clone());
                 self.disconnect_cause =
                     Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
+                self.disconnect_from_write = true;
+                // The kick that explains this dead socket may already be
+                // queued; take it now, as nothing may pump before the frame
+                // loop reads `disconnect`.
+                self.salvage_server_disconnect(PumpBudget::FRAME);
             }
         }
         sent
+    }
+
+    /// A write failed, so `disconnect` holds only the generic "send: …" error,
+    /// but the server may have sent its reason first (a kick, a shutdown) and
+    /// then closed the socket, which is what made the write fail. Vanilla shows
+    /// that reason: the `ClientboundDisconnectPacket` is handled from the
+    /// frames already read, before the channel's write exception closes the
+    /// connection. Scan the already-queued inbound frames (within `budget`) for
+    /// a play `disconnect` and let it replace the generic error. Every other
+    /// packet is discarded unapplied: the connection is dead and nothing
+    /// afterwards could be answered. Never blocks.
+    fn salvage_server_disconnect(&mut self, budget: PumpBudget) {
+        if !self.disconnect_from_write || self.reconfig.is_some() {
+            return;
+        }
+        let start = std::time::Instant::now();
+        let mut scanned = 0usize;
+        while scanned < budget.max_packets && (scanned == 0 || start.elapsed() < budget.max_time) {
+            match self.rx.try_recv() {
+                Ok(Ok(p)) => {
+                    self.inbound_budget.release(p.len());
+                    scanned += 1;
+                    let mut pos = 0;
+                    let Ok(id) = rewo_proto::varint::read_varint(&p, &mut pos) else {
+                        continue;
+                    };
+                    if id == self.ids.cb_play_disconnect {
+                        let (reason, cause) = rewo_ui::disconnect_screen::read_disconnect(
+                            &p[pos..],
+                            self.lang.as_deref(),
+                        );
+                        log::info!("net: server disconnect arrived before the write failure");
+                        self.disconnect = Some(reason);
+                        self.disconnect_cause = Some(cause);
+                        self.disconnect_from_write = false;
+                        return;
+                    }
+                }
+                // The reader is done and nothing queued was a disconnect.
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+                    self.disconnect_from_write = false;
+                    return;
+                }
+                Err(TryRecvError::Empty) => return,
+            }
+        }
     }
 
     fn next_sequence(&mut self) -> i32 {
@@ -2831,6 +2888,10 @@ impl PlaySession {
     }
 
     fn drain_inbound(&mut self, budget: PumpBudget) -> Result<usize, String> {
+        if self.disconnect_from_write {
+            self.salvage_server_disconnect(budget);
+            return Ok(0);
+        }
         let start = std::time::Instant::now();
         let mut applied = 0usize;
         loop {
@@ -3059,6 +3120,7 @@ impl PlaySession {
         // and advancements are fields of the old `ClientPacketListener`).
         // Chat survives: vanilla stores and restores its state across.
         self.tab_players = TabListPlayers::default();
+        self.player_skins.clear();
         self.latency.clear();
         self.gamemodes.clear();
         self.tab_list_orders.clear();
@@ -4002,13 +4064,14 @@ impl PlaySession {
                 .and_then(crate::skins::decode_textures_property)
             {
                 // Bounded: a hostile server can announce unlimited UUIDs, or
-                // flip one UUID's textures forever. Past the cap, new UUIDs and
-                // further changes are ignored (default skin), not queued.
-                let room = (self.player_skins.contains_key(&e.uuid)
-                    || self.player_skins.len() < crate::skins::MAX_TRACKED_SKINS)
-                    && self.pending_skins.len() < crate::skins::MAX_TRACKED_SKINS;
-                if room && self.player_skins.get(&e.uuid) != Some(&info) {
-                    self.player_skins.insert(e.uuid, info.clone());
+                // flip one UUID's textures forever. `SkinTable` caps the
+                // players present at once (entries leave with their player)
+                // and refuses the rest, logging once; they get the default
+                // skin.
+                if self
+                    .player_skins
+                    .note(e.uuid, &info, self.pending_skins.len())
+                {
                     self.pending_skins.push((e.uuid, info));
                 }
             }
