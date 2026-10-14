@@ -68,6 +68,99 @@ pub(crate) struct PreviewTextures {
     pub cape_origin: Option<(u32, u32)>,
 }
 
+/// How many decoded textures the CPU cache keeps. A skin is 16 KiB and a cape
+/// 8 KiB, so the cap is about 2 MiB.
+pub(super) const TEX_CACHE_CAP: usize = 128;
+/// The soonest a texture whose atlas slot was lost may be uploaded again from
+/// the CPU cache. With more players loaded than the atlas has slots, the
+/// least-recently-drawn ones are evicted for the ones on screen; without this
+/// they would swap back in every frame, evicting each other.
+pub(super) const REUPLOAD_COOLDOWN_S: f32 = 5.0;
+/// The soonest a texture that fell out of the CPU cache may be DOWNLOADED
+/// again. A network round trip, so a much longer leash.
+pub(super) const REFETCH_COOLDOWN_S: f32 = 60.0;
+/// Atlas re-uploads per frame (each is a region copy).
+pub(super) const MAX_REUPLOADS_PER_FRAME: usize = 2;
+/// Seconds between sweeps that forget players who left.
+pub(super) const PRUNE_INTERVAL_S: f32 = 5.0;
+
+/// Decoded player textures kept on the CPU so a lost atlas slot (evicted for
+/// a player on screen, or a claim the atlas refused) is restored by an upload
+/// rather than a second download. Bounded: the oldest-used entry goes first.
+#[derive(Default)]
+pub(super) struct TexCache {
+    map: std::collections::HashMap<(u128, TexKind), (Vec<u8>, bool, u64)>,
+    seq: u64,
+}
+
+impl TexCache {
+    pub(super) fn insert(&mut self, key: (u128, TexKind), rgba: Vec<u8>, slim: bool) {
+        self.seq += 1;
+        if !self.map.contains_key(&key) && self.map.len() >= TEX_CACHE_CAP {
+            if let Some(oldest) = self
+                .map
+                .iter()
+                .min_by_key(|(_, (_, _, used))| *used)
+                .map(|(k, _)| *k)
+            {
+                self.map.remove(&oldest);
+            }
+        }
+        self.map.insert(key, (rgba, slim, self.seq));
+    }
+
+    /// The pixels and model, marking the entry freshly used.
+    pub(super) fn get(&mut self, key: &(u128, TexKind)) -> Option<(Vec<u8>, bool)> {
+        self.seq += 1;
+        let seq = self.seq;
+        let (rgba, slim, used) = self.map.get_mut(key)?;
+        *used = seq;
+        Some((rgba.clone(), *slim))
+    }
+
+    pub(super) fn contains(&self, key: &(u128, TexKind)) -> bool {
+        self.map.contains_key(key)
+    }
+
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(u128) -> bool) {
+        self.map.retain(|(u, _), _| keep(*u));
+    }
+}
+
+/// What to do about a texture that has no atlas slot but is needed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Restore {
+    /// Upload the cached pixels again (no network).
+    Reupload,
+    /// The pixels are gone: download again.
+    Refetch,
+    /// Tried too recently.
+    Wait,
+}
+
+/// The restore decision as a pure function of "do we hold the pixels", when
+/// this texture was last attempted (seconds on the loader's clock) and now.
+pub(super) fn plan_restore(cached: bool, last_attempt: Option<f32>, now: f32) -> Restore {
+    let cooldown = if cached {
+        REUPLOAD_COOLDOWN_S
+    } else {
+        REFETCH_COOLDOWN_S
+    };
+    if last_attempt.is_some_and(|t| now - t < cooldown) {
+        return Restore::Wait;
+    }
+    if cached {
+        Restore::Reupload
+    } else {
+        Restore::Refetch
+    }
+}
+
 /// Async player-texture loader: a worker thread fetches + decodes skin and
 /// cape PNGs off the render/tick path; the main loop uploads each result
 /// into the entity atlas and records its slot. They arrive rarely (once per
@@ -81,7 +174,18 @@ pub(crate) struct SkinLoader {
     urls: std::collections::HashMap<(u128, TexKind), (String, bool)>,
     /// Textures whose slot was evicted (least recently drawn) and not yet
     /// re-requested. A tab face counts as `Skin`: it is cropped from the skin.
+    /// Also holds textures whose atlas claim was REFUSED (every slot drawn
+    /// this frame) - same remedy.
     evicted: std::collections::HashSet<(u128, TexKind)>,
+    /// Decoded pixels of everything fetched, bounded; see [`TexCache`].
+    cache: TexCache,
+    /// When each texture was last uploaded-again or re-requested (seconds on
+    /// [`Self::now`]), for the cooldowns.
+    attempts: std::collections::HashMap<(u128, TexKind), f32>,
+    /// The loader's clock.
+    born: std::time::Instant,
+    /// [`Self::now`] of the last [`Self::prune_due`] that fired.
+    last_prune: f32,
     pub(super) registry: SkinRegistry,
     /// The local player's UUID, set by the frame. Its textures are also kept
     /// as pixels, because the inventory's player preview has an atlas of its
@@ -122,6 +226,10 @@ impl SkinLoader {
             requested: std::collections::HashSet::new(),
             urls: std::collections::HashMap::new(),
             evicted: std::collections::HashSet::new(),
+            cache: TexCache::default(),
+            attempts: std::collections::HashMap::new(),
+            born: std::time::Instant::now(),
+            last_prune: 0.0,
             registry: SkinRegistry::new(),
             own: None,
             own_preview: PreviewTextures::default(),
@@ -146,7 +254,18 @@ impl SkinLoader {
         }
     }
 
+    /// Seconds on the loader's own clock.
+    fn now(&self) -> f32 {
+        self.born.elapsed().as_secs_f32()
+    }
+
     /// Upload any fetched textures into the atlas + record their slots.
+    ///
+    /// Every fetched texture is also kept in the bounded CPU [`TexCache`], and
+    /// one the atlas refuses (`claim` returns `None` when every slot was drawn
+    /// this frame) is queued in `evicted` instead of being lost: the pixels
+    /// are still here, so [`Self::restore_evicted`] can try again later with
+    /// no second download.
     pub(super) fn poll_uploads(&mut self, gpu: &mut Gpu, wr: &mut WorldRenderer) {
         while let Ok((uuid, kind, slim, rgba)) = self.res_rx.try_recv() {
             if Some(uuid) == self.own {
@@ -156,52 +275,78 @@ impl SkinLoader {
                 }
                 self.own_changed = true;
             }
-            match kind {
-                TexKind::Skin => {
-                    // M155 — crop the tab-list face while the full sheet is in
-                    // hand. This is the ONE place it is free: the 64x64 is
-                    // already decoded here and is dropped at the end of the
-                    // arm, so a later face would have to re-fetch it.
-                    //
-                    // 8x8 head at (8,8) beside 8x8 hat at (40,8). **The hat's u
-                    // is 40, not 32** — 32 is the hat cube's side face.
-                    if rgba.len() >= 64 * 64 * 4 {
-                        let mut strip = vec![0u8; 16 * 8 * 4];
-                        for row in 0..8usize {
-                            for (col_off, src_x) in [(0usize, 8usize), (8, 40)] {
-                                let src = ((8 + row) * 64 + src_x) * 4;
-                                let dst = (row * 16 + col_off) * 4;
-                                strip[dst..dst + 32].copy_from_slice(&rgba[src..src + 32]);
-                            }
-                        }
-                        if let Some(slot) = wr.upload_tab_face(gpu, uuid, &strip) {
-                            self.registry.entry(uuid).or_default().face = Some(slot);
+            let key = (uuid, kind);
+            if !self.upload_tex(gpu, wr, key, slim, &rgba) {
+                log::debug!("skin: atlas refused {uuid:032x} ({kind:?}); will retry from cache");
+                self.evicted.insert(key);
+                let now = self.now();
+                self.attempts.insert(key, now);
+            }
+            self.cache.insert(key, rgba, slim);
+        }
+    }
+
+    /// Put one decoded texture into the atlas and record its address.
+    /// `false` = the atlas refused (nothing evictable this frame).
+    fn upload_tex(
+        &mut self,
+        gpu: &mut Gpu,
+        wr: &mut WorldRenderer,
+        (uuid, kind): (u128, TexKind),
+        slim: bool,
+        rgba: &[u8],
+    ) -> bool {
+        match kind {
+            TexKind::Skin => {
+                // M155 - crop the tab-list face while the full sheet is in
+                // hand.
+                //
+                // 8x8 head at (8,8) beside 8x8 hat at (40,8). **The hat's u
+                // is 40, not 32** - 32 is the hat cube's side face.
+                let mut face_ok = true;
+                if rgba.len() >= 64 * 64 * 4 {
+                    let mut strip = vec![0u8; 16 * 8 * 4];
+                    for row in 0..8usize {
+                        for (col_off, src_x) in [(0usize, 8usize), (8, 40)] {
+                            let src = ((8 + row) * 64 + src_x) * 4;
+                            let dst = (row * 16 + col_off) * 4;
+                            strip[dst..dst + 32].copy_from_slice(&rgba[src..src + 32]);
                         }
                     }
-                    if let Some(uv) = wr.upload_player_skin(gpu, uuid, &rgba) {
+                    match wr.upload_tab_face(gpu, uuid, &strip) {
+                        Some(slot) => self.registry.entry(uuid).or_default().face = Some(slot),
+                        None => face_ok = false,
+                    }
+                }
+                match wr.upload_player_skin(gpu, uuid, rgba) {
+                    Some(uv) => {
                         let e = self.registry.entry(uuid).or_default();
                         e.uv = uv;
                         e.slim = slim;
-                        log::info!(
+                        log::debug!(
                             "skin: uploaded for {uuid:032x} ({} model)",
                             if slim { "slim" } else { "wide" }
                         );
+                        face_ok
                     }
-                }
-                TexKind::Cape => {
-                    if let Some(o) = wr.upload_player_cape(gpu, uuid, &rgba) {
-                        self.registry.entry(uuid).or_default().cape = Some(o);
-                        log::info!("cape: uploaded for {uuid:032x} at {o:?}");
-                    }
+                    None => false,
                 }
             }
+            TexKind::Cape => match wr.upload_player_cape(gpu, uuid, rgba) {
+                Some(o) => {
+                    self.registry.entry(uuid).or_default().cape = Some(o);
+                    log::debug!("cape: uploaded for {uuid:032x} at {o:?}");
+                    true
+                }
+                None => false,
+            },
         }
     }
 
     /// Forget the atlas addresses of players whose slot another upload took
     /// (the renderer evicts the least recently drawn, never one on screen this
-    /// frame). Their textures render as the default until re-fetched by
-    /// [`Self::refetch_evicted`].
+    /// frame). Their textures render as the default until restored by
+    /// [`Self::restore_evicted`].
     pub(super) fn drop_evicted(&mut self, wr: &mut WorldRenderer) {
         use rewo_gpu::world::PlayerTexture;
         for (uuid, tex) in wr.take_evicted_textures() {
@@ -222,27 +367,92 @@ impl SkinLoader {
                     TexKind::Skin
                 }
             };
-            log::info!("skin: atlas slot of {uuid:032x} reused ({tex:?})");
+            log::debug!("skin: atlas slot of {uuid:032x} reused ({tex:?})");
             self.evicted.insert((uuid, kind));
         }
     }
 
-    /// Fetch again, once, each evicted texture whose player `wanted` says is
-    /// needed now. The upload that follows claims a slot no one drew this
-    /// frame, or none at all, so this cannot evict a player on screen.
-    pub(super) fn refetch_evicted(&mut self, wanted: impl Fn(u128) -> bool) {
-        let due: Vec<(u128, TexKind)> = self
+    /// Restore each texture that lost its atlas slot and whose player
+    /// `wanted` says is needed now.
+    ///
+    /// The pixels are in the CPU cache in the normal case, so this is an
+    /// upload (at most [`MAX_REUPLOADS_PER_FRAME`] per frame, each texture at
+    /// most once per [`REUPLOAD_COOLDOWN_S`]) and never a download. Only a
+    /// texture that fell out of the cache is fetched again, and at most once
+    /// per [`REFETCH_COOLDOWN_S`]. Without the cooldowns, more loaded players
+    /// than atlas slots made eviction -> restore -> eviction cycles at frame
+    /// (once at network) speed.
+    pub(super) fn restore_evicted(
+        &mut self,
+        gpu: &mut Gpu,
+        wr: &mut WorldRenderer,
+        wanted: impl Fn(u128) -> bool,
+    ) {
+        let now = self.now();
+        let mut due: Vec<(u128, TexKind)> = self
             .evicted
             .iter()
             .copied()
             .filter(|(u, _)| wanted(*u))
             .collect();
+        // Deterministic order, so the per-frame cap doesn't starve by hash.
+        due.sort_by_key(|(u, k)| (*u, *k == TexKind::Cape));
+        let mut reuploads = 0;
         for key in due {
-            self.evicted.remove(&key);
-            if let Some((url, slim)) = self.urls.get(&key) {
-                let _ = self.req_tx.send((key.0, key.1, url.clone(), *slim));
+            let cached = self.cache.contains(&key);
+            match plan_restore(cached, self.attempts.get(&key).copied(), now) {
+                Restore::Wait => {}
+                Restore::Reupload => {
+                    if reuploads >= MAX_REUPLOADS_PER_FRAME {
+                        continue;
+                    }
+                    reuploads += 1;
+                    self.attempts.insert(key, now);
+                    if let Some((rgba, slim)) = self.cache.get(&key) {
+                        if self.upload_tex(gpu, wr, key, slim, &rgba) {
+                            self.evicted.remove(&key);
+                        }
+                    }
+                }
+                Restore::Refetch => {
+                    self.attempts.insert(key, now);
+                    self.evicted.remove(&key);
+                    if let Some((url, slim)) = self.urls.get(&key) {
+                        let _ = self.req_tx.send((key.0, key.1, url.clone(), *slim));
+                    }
+                }
             }
         }
+    }
+
+    /// Whether it is time for another [`Self::retain_players`] sweep.
+    pub(super) fn prune_due(&mut self) -> bool {
+        let now = self.now();
+        if now - self.last_prune < PRUNE_INTERVAL_S {
+            return false;
+        }
+        self.last_prune = now;
+        true
+    }
+
+    /// Forget every player `keep` rejects: the requested/URL/evicted/cache/
+    /// cooldown entries and the atlas addresses. Without it `requested` only
+    /// ever grew, so its cap (`2 * MAX_TRACKED_SKINS`) became a lifetime cap
+    /// that locked later joiners out after enough player churn. A departed
+    /// player's atlas slot is not freed here (the renderer's LRU recycles it);
+    /// it just stops being remembered, and a returning player is announced
+    /// again by the session and fetched fresh.
+    ///
+    /// The local player is always kept.
+    pub(super) fn retain_players(&mut self, keep: impl Fn(u128) -> bool) {
+        let own = self.own;
+        let keep = |u: u128| Some(u) == own || keep(u);
+        self.requested.retain(|(u, _)| keep(*u));
+        self.urls.retain(|(u, _), _| keep(*u));
+        self.evicted.retain(|(u, _)| keep(*u));
+        self.attempts.retain(|(u, _), _| keep(*u));
+        self.cache.retain(keep);
+        self.registry.retain(|u, _| keep(*u));
     }
 
     /// The local player's textures for the inventory preview, once per change
@@ -2527,4 +2737,85 @@ pub(crate) fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
         advance: &f.advance,
         white_texel: f.white_texel,
     })
+}
+
+#[cfg(test)]
+mod skin_policy_tests {
+    use super::*;
+
+    const K: fn(u128) -> (u128, TexKind) = |u| (u, TexKind::Skin);
+
+    /// A cached texture is uploaded again, not downloaded again; only a
+    /// texture the cache lost is fetched, and both are rate-limited.
+    #[test]
+    fn restore_prefers_the_cache_and_rate_limits_both_paths() {
+        assert_eq!(plan_restore(true, None, 0.0), Restore::Reupload);
+        assert_eq!(plan_restore(false, None, 0.0), Restore::Refetch);
+        // Just attempted: wait.
+        assert_eq!(plan_restore(true, Some(10.0), 11.0), Restore::Wait);
+        assert_eq!(plan_restore(false, Some(10.0), 11.0), Restore::Wait);
+        // A cache upload is allowed again after its short cooldown; a
+        // download only after the long one.
+        let after = 10.0 + REUPLOAD_COOLDOWN_S + 0.01;
+        assert_eq!(plan_restore(true, Some(10.0), after), Restore::Reupload);
+        assert_eq!(plan_restore(false, Some(10.0), after), Restore::Wait);
+        assert_eq!(
+            plan_restore(false, Some(10.0), 10.0 + REFETCH_COOLDOWN_S + 0.01),
+            Restore::Refetch
+        );
+    }
+
+    #[test]
+    fn the_cache_is_bounded_and_drops_the_least_recently_used() {
+        let mut c = TexCache::default();
+        for u in 0..TEX_CACHE_CAP as u128 {
+            c.insert(K(u), vec![u as u8], false);
+        }
+        assert_eq!(c.len(), TEX_CACHE_CAP);
+        // Touch 0, so 1 is now the oldest.
+        assert!(c.get(&K(0)).is_some());
+        c.insert(K(1_000), vec![9], true);
+        assert_eq!(c.len(), TEX_CACHE_CAP, "still bounded");
+        assert!(c.contains(&K(0)) && c.contains(&K(1_000)));
+        assert!(!c.contains(&K(1)), "the least recently used went");
+        // Re-inserting an existing key never evicts another.
+        c.insert(K(0), vec![7], false);
+        assert_eq!(c.len(), TEX_CACHE_CAP);
+        assert_eq!(c.get(&K(0)).unwrap().0, vec![7]);
+    }
+
+    /// Player churn must not turn the request cap into a lifetime cap: a
+    /// departed player's state is dropped everywhere, the local player's and
+    /// the still-present players' are not.
+    #[test]
+    fn departed_players_are_forgotten_everywhere_and_present_ones_are_not() {
+        let mut l = SkinLoader::new();
+        l.own = Some(1);
+        for u in 1u128..=6 {
+            for kind in [TexKind::Skin, TexKind::Cape] {
+                let key = (u, kind);
+                l.requested.insert(key);
+                l.urls
+                    .insert(key, ("http://example.invalid/x".into(), false));
+                l.evicted.insert(key);
+                l.attempts.insert(key, 1.0);
+                l.cache.insert(key, vec![0], false);
+            }
+            l.registry.insert(u, Default::default());
+        }
+        // Present: 3 and 4. 1 is the local player (kept regardless).
+        l.retain_players(|u| u == 3 || u == 4);
+        let mut left: Vec<u128> = l.requested.iter().map(|(u, _)| *u).collect();
+        left.sort_unstable();
+        left.dedup();
+        assert_eq!(left, vec![1, 3, 4]);
+        assert!(l.urls.keys().all(|(u, _)| [1, 3, 4].contains(u)));
+        assert!(l.evicted.iter().all(|(u, _)| [1, 3, 4].contains(u)));
+        assert!(l.attempts.keys().all(|(u, _)| [1, 3, 4].contains(u)));
+        assert_eq!(l.cache.len(), 6);
+        assert!(!l.cache.contains(&K(2)) && l.cache.contains(&K(3)));
+        assert_eq!(l.registry.len(), 3);
+        // And the freed room is usable: the cap is on live players.
+        assert!(l.requested.len() < 2 * rewo_net::skins::MAX_TRACKED_SKINS);
+    }
 }

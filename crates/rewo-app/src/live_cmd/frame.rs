@@ -579,7 +579,21 @@ impl LiveApp {
             let tab_open = self.keys.tab_list && !self.hud_hidden;
             let listed = &session.tab_players.listed;
             self.skins
-                .refetch_evicted(|u| loaded.contains(&u) || (tab_open && listed.contains(&u)));
+                .restore_evicted(&mut state.gpu, &mut state.world_renderer, |u| {
+                    loaded.contains(&u) || (tab_open && listed.contains(&u))
+                });
+            // Players who left: forget their texture state (bounded by
+            // whoever the session still tracks, not by how many ever joined).
+            // "Tracked" = anyone with a player-info entry (the listed set
+            // alone would miss unlisted ones) or a loaded entity.
+            if self.skins.prune_due() {
+                self.skins.retain_players(|u| {
+                    loaded.contains(&u)
+                        || listed.contains(&u)
+                        || session.gamemodes.contains_key(&u)
+                        || session.latency.contains_key(&u)
+                });
+            }
         }
         // The inventory preview draws the local player from its own atlas, so
         // it takes the pixels rather than the world pass's upload.
