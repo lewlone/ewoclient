@@ -205,6 +205,7 @@ mod tests {
                 account("A", "uuid-a", Some("social-a")),
                 account("B", "uuid-b", None),
             ],
+            ..Default::default()
         }
     }
 
@@ -358,6 +359,31 @@ mod tests {
         open_secrets(&mut loaded, &c);
         assert_eq!(loaded.accounts[0].ms_refresh_token, "");
         assert_eq!(loaded.accounts[1].ms_refresh_token, "refresh-uuid-b");
+    }
+
+    #[test]
+    fn a_locked_keyring_at_load_keeps_the_marker_and_the_entry_for_next_time() {
+        let c = mock_cipher();
+        let on_disk = sealed_copy(&store(), &c).unwrap();
+        let marker = on_disk.accounts[0].ms_refresh_token.clone();
+        assert!(marker.starts_with(KEYRING_PREFIX));
+
+        // Launch with the keyring locked, then a save for any reason.
+        fail_next(&c, REFRESH_A, Error::NoStorageAccess("locked".into()));
+        let mut loaded = on_disk;
+        open_secrets(&mut loaded, &c);
+        assert_eq!(
+            loaded.accounts[0].ms_refresh_token, "",
+            "signed out in memory"
+        );
+        let resaved = sealed_copy(&loaded, &c).unwrap();
+        assert_eq!(resaved.accounts[0].ms_refresh_token, marker, "marker kept");
+
+        // The entry was neither deleted nor orphaned: the next launch opens it.
+        let mut next = resaved;
+        open_secrets(&mut next, &c);
+        assert_eq!(next.accounts[0].ms_refresh_token, "refresh-uuid-a");
+        assert_eq!(next.accounts[0].social_token.as_deref(), Some("social-a"));
     }
 
     #[test]

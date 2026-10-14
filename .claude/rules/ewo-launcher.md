@@ -115,8 +115,12 @@ Subsystems:
   Service through the blocking `keyring` backend (`auth/keyring_cipher.rs`;
   `auth.toml` keeps a `keyring:v1:<slot>` marker per secret, slot
   `<uuid>:ms_refresh_token` / `<uuid>:social_token`, service `EwoClient`);
-  an unopenable entry signs out only that account, clearing a field or
-  removing an account deletes its entry (`SecretCipher::discard`), and with
+  an unopenable entry (locked keyring, no D-Bus, foreign DPAPI blob) signs
+  out only that account **in memory**: `AccountStore::unopened` keeps the
+  original stored string and every save writes it back unchanged, so a
+  transient failure never becomes a permanent sign-out (a re-sign-in, a
+  social relink or removing the account is what supersedes it); clearing a
+  field or removing an account deletes its entry (`SecretCipher::discard`), and with
   no Secret Service at startup it logs a warning and keeps the 0600
   plaintext file. Every `SecretCipher` call takes the slot; DPAPI ignores
   it. The Linux build needs `libdbus-1-dev` + `pkg-config` (CI installs it)

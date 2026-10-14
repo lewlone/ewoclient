@@ -442,6 +442,7 @@ mod tests {
         AccountStore {
             active: Some(active.into()),
             accounts: vec![account("a", ""), account("b", "")],
+            ..Default::default()
         }
     }
 
@@ -464,6 +465,7 @@ mod tests {
         let mut s = AccountStore {
             active: Some("b".into()),
             accounts: vec![account("b", "")],
+            ..Default::default()
         };
         assert!(!apply_success(&mut s, &refresh("a"), account("a", "fresh")));
         assert_eq!(s.accounts.len(), 1);
