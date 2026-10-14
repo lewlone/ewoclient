@@ -21,7 +21,6 @@
 //! transfer queue + staging ring is the M5 follow-on.
 
 use ash::vk;
-use bytemuck::{Pod, Zeroable};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
@@ -31,11 +30,13 @@ use crate::text::{TextLine, TextPass};
 use crate::Gpu;
 
 mod arena;
+mod cull;
 mod gamma;
 mod lightmap;
 
-use arena::{column_dist2, Arena};
+use arena::Arena;
 pub use arena::{MAX_COLUMNS, MAX_INDICES, MAX_VERTS, VERTEX_STRIDE};
+use cull::{frustum_planes, Culler};
 pub use gamma::{unorm_of, GammaScope};
 use lightmap::{LightmapRing, WorldLightmapExtra, LIGHTMAP_UBO_RING};
 pub use lightmap::{WorldLightmapState, BLOCK_LIGHT_FACTOR};
@@ -100,13 +101,6 @@ struct WorldPush {
 // further has to move into a uniform buffer — which is what M16's dimension
 // ambient colour does (see `WorldLightmapExtra` / `LIGHTMAP_UBO_RING`).
 const _: () = assert!(std::mem::size_of::<WorldPush>() == 128);
-/// One copy of the cull's inputs and outputs (column metadata, indirect
-/// commands, draw count) per frame that can be in flight. `cull` writes them
-/// inside `render`, after that frame's fence wait, so — like the lightmap UBO —
-/// `>= fif` slots suffice. A single shared set let frame N's `cmd_fill_buffer`
-/// and compute writes race frame N-1's `DrawIndexedIndirectCount` reads.
-const CULL_RING: usize = crate::MAX_FRAMES_IN_FLIGHT;
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SkyPush {
@@ -168,47 +162,6 @@ pub enum SkyMode {
     End,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Default)]
-struct ColumnMeta {
-    aabb_min: [f32; 4],
-    aabb_max: [f32; 4],
-    index_count: u32,
-    first_index: u32,
-    vertex_offset: i32,
-    _pad: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct CullPush {
-    planes: [[f32; 4]; 6],
-    column_count: u32,
-    _pad: [u32; 3],
-}
-
-/// The column metadata the cull shader sees, at most `max` of them. Under the
-/// cap the order is whatever `columns` yields (unchanged behaviour). Over it,
-/// the kept set is **the nearest `max` columns to `eye`** (XZ distance to the
-/// column centre, ties by coordinate), so which columns vanish is a property
-/// of where the camera is, not of `HashMap` iteration order.
-fn select_metas(
-    columns: impl Iterator<Item = ((i32, i32), ColumnMeta)>,
-    eye: [f32; 3],
-    max: usize,
-) -> Vec<ColumnMeta> {
-    let mut all: Vec<((i32, i32), ColumnMeta)> = columns.collect();
-    if all.len() > max {
-        all.sort_by(|a, b| {
-            column_dist2(a.0, eye)
-                .total_cmp(&column_dist2(b.0, eye))
-                .then(a.0.cmp(&b.0))
-        });
-        all.truncate(max);
-    }
-    all.into_iter().map(|(_, m)| m).collect()
-}
-
 /// Which per-player atlas pool an eviction came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerTexture {
@@ -255,33 +208,12 @@ pub struct WorldRenderer {
     /// The terrain arena: mega-buffers, free-lists, registered columns and the
     /// async upload ring (see `arena.rs`).
     arena: Arena,
-    // -- column metadata for the cull --
-    /// The compacted metadata array, and a version bumped when it changes;
-    /// each ring slot re-uploads it lazily when its copy is stale.
-    metas: Vec<ColumnMeta>,
-    meta_version: u64,
-    meta_versions: [u64; CULL_RING],
-    meta_bufs: [vk::Buffer; CULL_RING],
-    meta_allocs: [Option<Allocation>; CULL_RING],
-    column_count: u32,
-    meta_warned: bool,
     /// Players whose skin / cape / face slot an upload took since the last
     /// [`WorldRenderer::take_evicted_textures`].
     evicted_textures: Vec<(u128, PlayerTexture)>,
-    // -- compute cull --
-    cull_set_layout: vk::DescriptorSetLayout,
-    cull_layout: vk::PipelineLayout,
-    cull_pipeline: vk::Pipeline,
-    cull_pool: vk::DescriptorPool,
-    cull_sets: [vk::DescriptorSet; CULL_RING],
-    indirect_bufs: [vk::Buffer; CULL_RING],
-    indirect_allocs: [Option<Allocation>; CULL_RING],
-    count_bufs: [vk::Buffer; CULL_RING],
-    count_allocs: [Option<Allocation>; CULL_RING],
-    /// The ring slot the current frame's cull wrote and its draw reads.
-    cull_cursor: usize,
-    count_readback: vk::Buffer,
-    count_readback_alloc: Option<Allocation>,
+    /// GPU culling: the compute pipeline, its buffer rings and the column
+    /// metadata they are filled from (see `cull.rs`).
+    culler: Culler,
     // -- entities + HUD (optional passes; drawn after terrain in `draw`) --
     color_format: vk::Format,
     /// This frame's attachment views for the glint's gamma-space scope (M50).
@@ -697,111 +629,15 @@ impl WorldRenderer {
             )?;
 
             // ---- compute cull descriptor + pipeline ----
-            let cull_bindings = [storage_binding(0), storage_binding(1), storage_binding(2)];
-            let cull_set_layout = device
-                .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&cull_bindings),
-                    None,
-                )
-                .map_err(|e| format!("cull set layout: {e}"))?;
-            let cull_pc = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                .offset(0)
-                .size(std::mem::size_of::<CullPush>() as u32)];
-            let cull_layouts = [cull_set_layout];
-            let cull_layout = device
-                .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(&cull_layouts)
-                        .push_constant_ranges(&cull_pc),
-                    None,
-                )
-                .map_err(|e| format!("cull layout: {e}"))?;
-            let cull_module = crate::overlay::create_shader(
-                &device,
-                include_bytes!(concat!(env!("OUT_DIR"), "/cull.comp.spv")),
-            )?;
-            let cull_pipeline = device
-                .create_compute_pipelines(
-                    vk::PipelineCache::null(),
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(
-                            vk::PipelineShaderStageCreateInfo::default()
-                                .stage(vk::ShaderStageFlags::COMPUTE)
-                                .module(cull_module)
-                                .name(c"main"),
-                        )
-                        .layout(cull_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| format!("cull pipeline: {e}"))?[0];
-            device.destroy_shader_module(cull_module, None);
+            let cull_pipeline = cull::create_cull_pipeline(&device)?;
 
             // ---- mega-buffers + metadata + indirect + count ----
             let mega = arena::create_mega_buffers(gpu)?;
-            let mut meta_bufs = [vk::Buffer::null(); CULL_RING];
-            let mut meta_allocs: [Option<Allocation>; CULL_RING] = Default::default();
-            let mut indirect_bufs = [vk::Buffer::null(); CULL_RING];
-            let mut indirect_allocs: [Option<Allocation>; CULL_RING] = Default::default();
-            let mut count_bufs = [vk::Buffer::null(); CULL_RING];
-            let mut count_allocs: [Option<Allocation>; CULL_RING] = Default::default();
-            for i in 0..CULL_RING {
-                let (b, a) = create_host_buffer(
-                    gpu,
-                    (MAX_COLUMNS * std::mem::size_of::<ColumnMeta>()) as u64,
-                    vk::BufferUsageFlags::STORAGE_BUFFER,
-                    "column-meta",
-                )?;
-                gpu.name(b, &format!("column-meta[{i}]"));
-                (meta_bufs[i], meta_allocs[i]) = (b, Some(a));
-                let (b, a) = create_device_buffer(
-                    gpu,
-                    (MAX_COLUMNS * std::mem::size_of::<vk::DrawIndexedIndirectCommand>()) as u64,
-                    vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
-                    "indirect-cmds",
-                )?;
-                gpu.name(b, &format!("indirect-cmds[{i}]"));
-                (indirect_bufs[i], indirect_allocs[i]) = (b, Some(a));
-                let (b, a) = create_device_buffer(
-                    gpu,
-                    16,
-                    vk::BufferUsageFlags::INDIRECT_BUFFER
-                        | vk::BufferUsageFlags::STORAGE_BUFFER
-                        | vk::BufferUsageFlags::TRANSFER_DST
-                        | vk::BufferUsageFlags::TRANSFER_SRC, // readback for stats
-                    "indirect-count",
-                )?;
-                gpu.name(b, &format!("indirect-count[{i}]"));
-                (count_bufs[i], count_allocs[i]) = (b, Some(a));
-            }
+            let cull_bufs = cull::create_cull_buffers(gpu)?;
 
             // Cull descriptor set (meta, indirect cmds, count).
-            let cull_pool_sizes = [vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(3 * CULL_RING as u32)];
-            let cull_pool = device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(CULL_RING as u32)
-                        .pool_sizes(&cull_pool_sizes),
-                    None,
-                )
-                .map_err(|e| format!("cull pool: {e}"))?;
-            let cull_ring_layouts = [cull_layouts[0]; CULL_RING];
-            let cull_set_vec = device
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(cull_pool)
-                        .set_layouts(&cull_ring_layouts),
-                )
-                .map_err(|e| format!("cull set: {e}"))?;
-            let mut cull_sets = [vk::DescriptorSet::null(); CULL_RING];
-            for i in 0..CULL_RING {
-                cull_sets[i] = cull_set_vec[i];
-                write_storage(&device, cull_sets[i], 0, meta_bufs[i]);
-                write_storage(&device, cull_sets[i], 1, indirect_bufs[i]);
-                write_storage(&device, cull_sets[i], 2, count_bufs[i]);
-            }
+            let cull_descriptors =
+                cull::create_cull_descriptors(&device, &cull_pipeline, &cull_bufs)?;
 
             // ---- async upload ring ----
             let upload_ring = arena::create_upload_ring(gpu)?;
@@ -851,26 +687,13 @@ impl WorldRenderer {
                 image_alloc: Some(image_alloc),
                 view,
                 arena: Arena::new(mega, upload_ring),
-                metas: Vec::new(),
-                meta_version: 0,
-                meta_versions: [0; CULL_RING],
-                meta_bufs,
-                meta_allocs,
-                column_count: 0,
-                meta_warned: false,
                 evicted_textures: Vec::new(),
-                cull_set_layout,
-                cull_layout,
-                cull_pipeline,
-                cull_pool,
-                cull_sets,
-                indirect_bufs,
-                indirect_allocs,
-                count_bufs,
-                count_allocs,
-                cull_cursor: 0,
-                count_readback,
-                count_readback_alloc: Some(count_readback_alloc),
+                culler: Culler::new(
+                    cull_pipeline,
+                    cull_bufs,
+                    cull_descriptors,
+                    (count_readback, count_readback_alloc),
+                ),
                 color_format,
                 gamma: None,
                 entities: None,
@@ -2214,123 +2037,6 @@ impl WorldRenderer {
         std::mem::take(&mut self.evicted_textures)
     }
 
-    /// Rebuild the compacted metadata array (only when columns changed) and
-    /// map-write it into the host-visible SSBO.
-    fn sync_meta(&mut self, slot: usize) {
-        if self.arena.meta_dirty {
-            if self.arena.columns.len() > MAX_COLUMNS && !self.meta_warned {
-                self.meta_warned = true;
-                log::warn!(
-                    "world: {} columns exceed MAX_COLUMNS {MAX_COLUMNS} — the farthest are not drawn",
-                    self.arena.columns.len()
-                );
-            }
-            self.metas = select_metas(
-                self.arena.columns.iter().map(|(k, s)| (*k, s.meta)),
-                self.scene.camera_eye,
-                MAX_COLUMNS,
-            );
-            self.column_count = self.metas.len() as u32;
-            self.meta_version += 1;
-            self.arena.meta_dirty = false;
-        }
-        // Each slot's copy is written only when this frame uses it, i.e.
-        // after the fence that retired its previous reader.
-        if self.meta_versions[slot] != self.meta_version {
-            if let Some(slice) = self.meta_allocs[slot]
-                .as_mut()
-                .and_then(|a| a.mapped_slice_mut())
-            {
-                let bytes: &[u8] = bytemuck::cast_slice(&self.metas);
-                slice[..bytes.len()].copy_from_slice(bytes);
-            }
-            self.meta_versions[slot] = self.meta_version;
-        }
-    }
-
-    /// Pre-pass (OUTSIDE dynamic rendering): reset the draw count, dispatch
-    /// the compute cull, and barrier its writes for the indirect draw.
-    pub fn cull(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
-        if let Err(e) = self.arena.flush_uploads(gpu) {
-            log::error!("world: upload flush failed: {e}");
-        }
-        self.cull_cursor = (self.cull_cursor + 1) % CULL_RING;
-        let slot = self.cull_cursor;
-        self.sync_meta(slot);
-        let count_buf = self.count_bufs[slot];
-        let indirect_buf = self.indirect_bufs[slot];
-        let device = &gpu.device;
-        unsafe {
-            // Reset the atomic count to 0.
-            device.cmd_fill_buffer(cb, count_buf, 0, 4, 0);
-            let reset_barrier = vk::BufferMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .buffer(count_buf)
-                .offset(0)
-                .size(vk::WHOLE_SIZE);
-            device.cmd_pipeline_barrier2(
-                cb,
-                &vk::DependencyInfo::default()
-                    .buffer_memory_barriers(std::slice::from_ref(&reset_barrier)),
-            );
-
-            if self.column_count > 0 {
-                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.cull_pipeline);
-                device.cmd_bind_descriptor_sets(
-                    cb,
-                    vk::PipelineBindPoint::COMPUTE,
-                    self.cull_layout,
-                    0,
-                    &[self.cull_sets[slot]],
-                    &[],
-                );
-                let push = CullPush {
-                    planes: frustum_planes(&view_proj),
-                    column_count: self.column_count,
-                    _pad: [0; 3],
-                };
-                device.cmd_push_constants(
-                    cb,
-                    self.cull_layout,
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    bytemuck::bytes_of(&push),
-                );
-                let groups = self.column_count.div_ceil(64);
-                device.cmd_dispatch(cb, groups, 1, 1);
-
-                // Compute writes → indirect draw reads (cmds + count).
-                let barriers = [
-                    buf_barrier(
-                        indirect_buf,
-                        vk::PipelineStageFlags2::COMPUTE_SHADER,
-                        vk::AccessFlags2::SHADER_STORAGE_WRITE,
-                        vk::PipelineStageFlags2::DRAW_INDIRECT,
-                        vk::AccessFlags2::INDIRECT_COMMAND_READ,
-                    ),
-                    buf_barrier(
-                        count_buf,
-                        vk::PipelineStageFlags2::COMPUTE_SHADER,
-                        vk::AccessFlags2::SHADER_STORAGE_WRITE,
-                        vk::PipelineStageFlags2::DRAW_INDIRECT,
-                        vk::AccessFlags2::INDIRECT_COMMAND_READ,
-                    ),
-                ];
-                device.cmd_pipeline_barrier2(
-                    cb,
-                    &vk::DependencyInfo::default().buffer_memory_barriers(&barriers),
-                );
-            }
-        }
-        self.drawn_last_frame = self.column_count as usize; // pre-cull estimate
-        self.culled_last_frame = 0;
-    }
-
     /// Override the distance-fog band (defaults from `REWO_FOG`).
     pub fn set_fog(&mut self, start: f32, end: f32) {
         self.scene.fog = [start, end.max(start + 1.0)];
@@ -2427,7 +2133,7 @@ impl WorldRenderer {
                 }
             }
         }
-        if self.column_count > 0 {
+        if self.culler.column_count > 0 {
             self.draw_terrain(gpu, cb, view_proj, extent);
         }
         // The block-break crack (M81), immediately after the terrain whose
@@ -2965,72 +2671,13 @@ impl WorldRenderer {
             device.cmd_bind_index_buffer(cb, self.arena.ibuf, 0, vk::IndexType::UINT32);
             device.cmd_draw_indexed_indirect_count(
                 cb,
-                self.indirect_bufs[self.cull_cursor],
+                self.culler.indirect_bufs[self.culler.cursor],
                 0,
-                self.count_bufs[self.cull_cursor],
+                self.culler.count_bufs[self.culler.cursor],
                 0,
-                self.column_count,
+                self.culler.column_count,
                 std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
             );
-        }
-    }
-
-    /// Read back the GPU cull's draw count from the last frame (one-shot
-    /// copy + a blocking wait — for verification/stats, not per-frame use).
-    pub fn read_draw_count(&mut self, gpu: &mut Gpu) -> u32 {
-        if self.arena.flush_uploads(gpu).is_err() {
-            return 0;
-        }
-        let Ok(slot) = self.arena.acquire_slot(gpu, 0) else {
-            return 0;
-        };
-        let Ok(cb) = self.arena.begin_slot(gpu, slot) else {
-            return 0;
-        };
-        let count_buf = self.count_bufs[self.cull_cursor];
-        unsafe {
-            // The last frame's cull wrote (and its draw read) the count.
-            let before = buf_barrier(
-                count_buf,
-                vk::PipelineStageFlags2::COMPUTE_SHADER | vk::PipelineStageFlags2::DRAW_INDIRECT,
-                vk::AccessFlags2::SHADER_STORAGE_WRITE,
-                vk::PipelineStageFlags2::TRANSFER,
-                vk::AccessFlags2::TRANSFER_READ,
-            );
-            gpu.device.cmd_pipeline_barrier2(
-                cb,
-                &vk::DependencyInfo::default()
-                    .buffer_memory_barriers(std::slice::from_ref(&before)),
-            );
-            let after = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags2::HOST)
-                .dst_access_mask(vk::AccessFlags2::HOST_READ);
-            gpu.device.cmd_copy_buffer(
-                cb,
-                count_buf,
-                self.count_readback,
-                &[vk::BufferCopy::default().size(4)],
-            );
-            gpu.device.cmd_pipeline_barrier2(
-                cb,
-                &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&after)),
-            );
-        }
-        if self.arena.submit_slot(gpu, slot).is_err() {
-            return 0;
-        }
-        unsafe {
-            let fence = self.arena.upload_slots[slot].fence;
-            let _ = gpu.device.wait_for_fences(&[fence], true, u64::MAX);
-            let _ = gpu.device.reset_fences(&[fence]);
-            self.arena.upload_slots[slot].busy = false;
-            self.count_readback_alloc
-                .as_ref()
-                .and_then(|a| a.mapped_slice())
-                .map(|s| u32::from_ne_bytes(s[..4].try_into().unwrap()))
-                .unwrap_or(0)
         }
     }
 
@@ -3099,18 +2746,7 @@ impl WorldRenderer {
                 device.destroy_buffer(s.staging, None);
             }
             device.destroy_command_pool(self.arena.upload_pool, None);
-            device.destroy_pipeline(self.cull_pipeline, None);
-            device.destroy_pipeline_layout(self.cull_layout, None);
-            device.destroy_descriptor_pool(self.cull_pool, None);
-            for b in self
-                .meta_bufs
-                .iter()
-                .chain(&self.indirect_bufs)
-                .chain(&self.count_bufs)
-            {
-                device.destroy_buffer(*b, None);
-            }
-            device.destroy_descriptor_set_layout(self.cull_set_layout, None);
+            self.culler.destroy_objects(device);
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline(self.water_pipeline, None);
             device.destroy_pipeline(self.sky_pipeline, None);
@@ -3128,7 +2764,7 @@ impl WorldRenderer {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in [self.arena.vbuf, self.arena.ibuf, self.count_readback] {
+            for b in [self.arena.vbuf, self.arena.ibuf, self.culler.readback] {
                 device.destroy_buffer(b, None);
             }
         }
@@ -3145,13 +2781,13 @@ impl WorldRenderer {
             self.image_alloc.take(),
             self.arena.vbuf_alloc.take(),
             self.arena.ibuf_alloc.take(),
-            self.count_readback_alloc.take(),
+            self.culler.readback_alloc.take(),
         ]
         .into_iter()
         .chain(slot_allocs)
-        .chain(self.meta_allocs.iter_mut().map(|a| a.take()))
-        .chain(self.indirect_allocs.iter_mut().map(|a| a.take()))
-        .chain(self.count_allocs.iter_mut().map(|a| a.take()))
+        .chain(self.culler.meta_allocs.iter_mut().map(|a| a.take()))
+        .chain(self.culler.indirect_allocs.iter_mut().map(|a| a.take()))
+        .chain(self.culler.count_allocs.iter_mut().map(|a| a.take()))
         .flatten()
         {
             let _ = gpu.allocator.free(a);
@@ -3160,50 +2796,6 @@ impl WorldRenderer {
 }
 
 // -- helpers -----------------------------------------------------------------
-
-fn storage_binding(binding: u32) -> vk::DescriptorSetLayoutBinding<'static> {
-    vk::DescriptorSetLayoutBinding::default()
-        .binding(binding)
-        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-        .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::COMPUTE)
-}
-
-fn write_storage(device: &ash::Device, set: vk::DescriptorSet, binding: u32, buf: vk::Buffer) {
-    let info = [vk::DescriptorBufferInfo::default()
-        .buffer(buf)
-        .offset(0)
-        .range(vk::WHOLE_SIZE)];
-    unsafe {
-        device.update_descriptor_sets(
-            &[vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(binding)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&info)],
-            &[],
-        );
-    }
-}
-
-fn buf_barrier<'a>(
-    buf: vk::Buffer,
-    src_stage: vk::PipelineStageFlags2,
-    src_access: vk::AccessFlags2,
-    dst_stage: vk::PipelineStageFlags2,
-    dst_access: vk::AccessFlags2,
-) -> vk::BufferMemoryBarrier2<'a> {
-    vk::BufferMemoryBarrier2::default()
-        .src_stage_mask(src_stage)
-        .src_access_mask(src_access)
-        .dst_stage_mask(dst_stage)
-        .dst_access_mask(dst_access)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .buffer(buf)
-        .offset(0)
-        .size(vk::WHOLE_SIZE)
-}
 
 fn create_device_buffer(
     gpu: &mut Gpu,
@@ -4009,24 +3601,6 @@ impl DepthTarget {
 
 // -- frustum -----------------------------------------------------------------
 
-fn frustum_planes(m: &[[f32; 4]; 4]) -> [[f32; 4]; 6] {
-    let row = |i: usize| -> [f32; 4] { [m[0][i], m[1][i], m[2][i], m[3][i]] };
-    let r0 = row(0);
-    let r1 = row(1);
-    let r2 = row(2);
-    let r3 = row(3);
-    let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
-    let sub = |a: [f32; 4], b: [f32; 4]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
-    [
-        add(r3, r0),
-        sub(r3, r0),
-        add(r3, r1),
-        sub(r3, r1),
-        r2,
-        sub(r3, r2),
-    ]
-}
-
 /// Infinite reversed-Z perspective (RH, Y-up). Maps z=-near→1, z=-∞→0; pair
 /// with a 0.0 depth clear + `GREATER`. Column-major.
 pub fn perspective_reverse_z(fov_y_rad: f32, aspect: f32, near: f32) -> [[f32; 4]; 4] {
@@ -4065,45 +3639,6 @@ fn clear_depth_rect(gpu: &Gpu, cb: vk::CommandBuffer, rect: vk::Rect2D) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn meta_at(cx: i32, cz: i32) -> ((i32, i32), ColumnMeta) {
-        let m = ColumnMeta {
-            aabb_min: [cx as f32 * 16.0, 0.0, cz as f32 * 16.0, 0.0],
-            ..Default::default()
-        };
-        ((cx, cz), m)
-    }
-
-    /// Over the cap, the kept columns are the nearest to the eye whatever
-    /// order the map yields them in; under it, nothing is dropped or moved.
-    #[test]
-    fn select_metas_truncates_nearest_first_and_deterministically() {
-        let keys: Vec<(i32, i32)> = (-4..=4)
-            .flat_map(|x| (-4..=4).map(move |z| (x, z)))
-            .collect();
-        let eye = [8.0, 70.0, 8.0]; // centre of column (0, 0)
-        let kept = |order: &[(i32, i32)]| -> Vec<[f32; 4]> {
-            select_metas(order.iter().map(|&(x, z)| meta_at(x, z)), eye, 5)
-                .iter()
-                .map(|m| m.aabb_min)
-                .collect()
-        };
-        let forward = kept(&keys);
-        let mut reversed = keys.clone();
-        reversed.reverse();
-        assert_eq!(forward, kept(&reversed), "input order must not matter");
-        let expect: Vec<[f32; 4]> = [(0, 0), (-1, 0), (0, -1), (0, 1), (1, 0)]
-            .iter()
-            .map(|&(x, z)| meta_at(x, z).1.aabb_min)
-            .collect();
-        assert_eq!(forward, expect, "the centre plus its four edge neighbours");
-
-        let few = [(3, 3), (-2, 1), (0, 0)];
-        let all = select_metas(few.iter().map(|&(x, z)| meta_at(x, z)), eye, 5);
-        let got: Vec<[f32; 4]> = all.iter().map(|m| m.aabb_min).collect();
-        let want: Vec<[f32; 4]> = few.iter().map(|&(x, z)| meta_at(x, z).1.aabb_min).collect();
-        assert_eq!(got, want, "under the cap the order is untouched");
-    }
 
     // These pin the CPU-side push layout only. The lightmap shader math is NOT
     // re-implemented here (that would be a proxy oracle) — it is a line-for-line

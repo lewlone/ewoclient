@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, HashMap};
 use ash::vk;
 use gpu_allocator::vulkan::Allocation;
 
-use super::{create_device_buffer, create_host_buffer, ColumnMeta, WorldRenderer};
+use super::cull::ColumnMeta;
+use super::{create_device_buffer, create_host_buffer, WorldRenderer};
 use crate::Gpu;
 
 // -- Arena capacity facts (public so tooling can report utilization without
