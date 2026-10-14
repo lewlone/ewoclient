@@ -219,7 +219,7 @@ fn view_proj(eye: Vec3, yaw_deg: f32, pitch_deg: f32, aspect: f32) -> [[f32; 4];
         pitch.sin(),
         -yaw.cos() * pitch.cos(),
     );
-    let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+    let view = crate::view_math::look_to_rh(eye, dir, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         70f32.to_radians(),
         aspect,

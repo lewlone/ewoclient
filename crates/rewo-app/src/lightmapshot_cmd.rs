@@ -171,7 +171,7 @@ fn run_check(gpu: &mut Gpu, args: &LightmapshotArgs) -> Result<(), String> {
     // Stable straight-down camera: above the column centre looking −Y, up +Z.
     let eye = Vec3::new(8.0, 80.0, 8.0);
     wr.set_camera([eye.x, eye.y, eye.z]);
-    let view = Mat4::look_to_rh(eye, Vec3::new(0.0, -1.0, 0.0), Vec3::Z);
+    let view = crate::view_math::look_to_rh(eye, Vec3::new(0.0, -1.0, 0.0), Vec3::Z);
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(
         60f32.to_radians(),
         W as f32 / H as f32,
@@ -1052,7 +1052,7 @@ fn run_entity_case(
     let dir = Vec3::new(0.0, 0.0, -1.0);
     let up = Vec3::Y;
     wr.set_camera(eye.to_array());
-    let view = Mat4::look_to_rh(eye, dir, up);
+    let view = crate::view_math::look_to_rh(eye, dir, up);
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(
         60f32.to_radians(),
         W as f32 / H as f32,

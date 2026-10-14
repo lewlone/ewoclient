@@ -1658,7 +1658,7 @@ fn check_pixels(
         let eye = Vec3::new(0.0, 1.0, -2.6);
         let dir = Vec3::new(0.0, 0.0, 1.0);
         wr.set_camera(eye.to_array());
-        let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+        let view = crate::view_math::look_to_rh(eye, dir, Vec3::Y);
         let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(
             60f32.to_radians(),
             W as f32 / H as f32,

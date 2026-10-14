@@ -252,7 +252,7 @@ pub(super) fn eye_view(eye: Vec3, yaw_deg: f32, pitch_deg: f32) -> Mat4 {
         -pitch.sin(),
         yaw.cos() * pitch.cos(),
     );
-    Mat4::look_to_rh(eye, dir, Vec3::Y)
+    crate::view_math::look_to_rh(eye, dir, Vec3::Y)
 }
 
 /// `Camera.setup`'s fill of the camera entity's hurt fields (M81).

@@ -1429,7 +1429,7 @@ fn stage_from(
     )?;
     let dir = (center - eye).normalize();
     wr.set_camera(eye.to_array());
-    let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+    let view = crate::view_math::look_to_rh(eye, dir, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         55f32.to_radians(),
         w as f32 / h as f32,

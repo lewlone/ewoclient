@@ -1308,7 +1308,7 @@ fn pos_x_view(w: u32, h: u32) -> [[f32; 4]; 4] {
 
 fn view(w: u32, h: u32, dir: Vec3, up: Vec3) -> [[f32; 4]; 4] {
     let eye = Vec3::ZERO;
-    let view = Mat4::look_to_rh(eye, dir, up);
+    let view = crate::view_math::look_to_rh(eye, dir, up);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         70f32.to_radians(),
         w as f32 / h as f32,

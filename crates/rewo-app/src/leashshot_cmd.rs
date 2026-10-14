@@ -82,7 +82,7 @@ pub fn run(args: LeashshotArgs) -> Result<(), String> {
 /// convention the live path uses (`eye_view` in `live_cmd`).
 fn view_proj(dist: f32) -> [[f32; 4]; 4] {
     let eye = Vec3::new(0.0, 0.0, -dist);
-    let view = Mat4::look_to_rh(eye, Vec3::Z, Vec3::Y);
+    let view = crate::view_math::look_to_rh(eye, Vec3::Z, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         70f32.to_radians(),
         W as f32 / H as f32,

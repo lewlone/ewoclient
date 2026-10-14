@@ -117,6 +117,7 @@ mod tintshot_cmd;
 mod titleshot_cmd;
 mod uri_open;
 mod view_cmd;
+mod view_math;
 #[cfg(feature = "gates")]
 mod weathershot_cmd;
 #[cfg(feature = "gates")]

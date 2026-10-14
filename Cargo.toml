@@ -29,7 +29,7 @@ rust-version = "1.89"  # verified: `cargo +1.89 check --workspace --all-targets 
 winit = "0.30"
 
 # Math
-glam = "0.29"
+glam = "0.34"
 
 # Logging
 log = "0.4"

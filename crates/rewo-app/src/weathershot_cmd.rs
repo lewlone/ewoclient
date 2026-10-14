@@ -598,7 +598,7 @@ fn check_rain_fog(c: &mut Checker) {
 
 fn view_proj(eye: [f32; 3], target: [f32; 3]) -> [[f32; 4]; 4] {
     let proj = perspective_reverse_z(70f32.to_radians(), W as f32 / H as f32, 0.05);
-    let view = glam::Mat4::look_at_rh(
+    let view = crate::view_math::look_at_rh(
         glam::Vec3::from_array(eye),
         glam::Vec3::from_array(target),
         glam::Vec3::Y,
