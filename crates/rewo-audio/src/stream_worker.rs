@@ -55,7 +55,7 @@
 //! **Decoded chunks go back to [`crate::live_sink::LiveSink`] rather than
 //! straight to the device.** Vanilla's sound-engine thread calls
 //! `alSourceQueueBuffers` itself; this thread cannot, because
-//! [`crate::device::CommandRing`] is **single-producer by construction** — that
+//! [`crate::device::CommandProducer`] is **single-producer by construction** — that
 //! is the whole of its safety argument — and `LiveSink` is the producer. So a
 //! chunk waits for the next tick to be pushed. With four seconds queued and a
 //! 50 ms tick that is 1.25% of the slack.
@@ -140,6 +140,14 @@ pub struct StreamWorker {
     /// worker reads what it is told to; deciding *how many* is
     /// `updateStream`'s job and stays with the clock that computes `processed`.
     inflight: HashMap<StreamKey, usize>,
+    /// Every stream asked to open and not yet ended, failed or closed, and
+    /// whether its `Opened` has landed.
+    ///
+    /// **The backstop for a worker that dies.** Without it a channel waiting on
+    /// an open, or on a stream that will now never end, reports "not stopped"
+    /// for the rest of the session and its pool slot leaks; `drain` answers
+    /// every live key with `OpenFailed` or `Ended` instead.
+    live: HashMap<StreamKey, bool>,
 }
 
 impl StreamWorker {
@@ -166,9 +174,14 @@ impl StreamWorker {
                             key,
                             asset,
                             looping,
-                        } => match source.open_stream(&asset, looping) {
-                            Ok(st) => {
-                                let (channels, rate) = st.format();
+                        } => match crate::buffers::contained(|| {
+                            // The format read is inside the guard too: it is
+                            // the decoder's first look at the headers.
+                            let st = source.open_stream(&asset, looping)?;
+                            let format = st.format();
+                            Ok((st, format))
+                        }) {
+                            Ok((st, (channels, rate))) => {
                                 let per = crate::buffers::calculate_buffer_size(
                                     channels,
                                     rate,
@@ -188,7 +201,9 @@ impl StreamWorker {
                             let mut finished = false;
                             if let Some((st, per)) = open.get_mut(&key) {
                                 for _ in 0..buffers {
-                                    match st.read(*per) {
+                                    // A panicking read ends this stream (the
+                                    // `Err` arm), not the thread.
+                                    match crate::buffers::contained(|| st.read(*per)) {
                                         // Empty is exhaustion. A looping stream
                                         // never gets here.
                                         Ok(c) if c.is_empty() => {
@@ -238,18 +253,24 @@ impl StreamWorker {
             tx,
             rx,
             inflight: HashMap::new(),
+            live: HashMap::new(),
         }
     }
 
     /// `getStream` — ask for a stream to be opened.
     pub fn open(&mut self, key: StreamKey, asset: &str, looping: bool) -> bool {
-        self.tx
+        let sent = self
+            .tx
             .send(StreamRequest::Open {
                 key,
                 asset: asset.to_string(),
                 looping,
             })
-            .is_ok()
+            .is_ok();
+        if sent {
+            self.live.insert(key, false);
+        }
+        sent
     }
 
     /// `pumpBuffers(n)`. Records the request so the queue invariant can count
@@ -277,13 +298,42 @@ impl StreamWorker {
     /// Forget a stream: the worker drops it and its in-flight count goes.
     pub fn close(&mut self, key: StreamKey) {
         self.inflight.remove(&key);
+        self.live.remove(&key);
         let _ = self.tx.send(StreamRequest::Close { key });
     }
 
     /// Everything the worker has finished. Never blocks.
+    ///
+    /// **If the worker has gone**, every live stream is answered here — an
+    /// open that never landed with `OpenFailed`, an opened stream with `Ended`
+    /// — so no channel waits on a thread that no longer exists.
     pub fn drain(&mut self) -> Vec<StreamEvent> {
         let mut out = Vec::new();
-        while let Ok(ev) = self.rx.try_recv() {
+        loop {
+            let ev = match self.rx.try_recv() {
+                Ok(ev) => ev,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if !self.live.is_empty() {
+                        log::warn!(
+                            "audio: the stream worker exited with {} stream(s) live",
+                            self.live.len()
+                        );
+                    }
+                    self.inflight.clear();
+                    for (key, opened) in self.live.drain() {
+                        out.push(if opened {
+                            StreamEvent::Ended { key }
+                        } else {
+                            StreamEvent::OpenFailed {
+                                key,
+                                error: "the stream worker exited".to_string(),
+                            }
+                        });
+                    }
+                    break;
+                }
+            };
             match &ev {
                 StreamEvent::Chunk { key, .. } => {
                     if let Some(n) = self.inflight.get_mut(key) {
@@ -295,11 +345,97 @@ impl StreamWorker {
                 // counted would make a re-used key look permanently busy.
                 StreamEvent::Ended { key } | StreamEvent::OpenFailed { key, .. } => {
                     self.inflight.remove(key);
+                    self.live.remove(key);
                 }
-                StreamEvent::Opened { .. } => {}
+                StreamEvent::Opened { key, .. } => {
+                    // Not re-added if it was closed in the meantime.
+                    if let Some(opened) = self.live.get_mut(key) {
+                        *opened = true;
+                    }
+                }
             }
             out.push(ev);
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const A: StreamKey = StreamKey {
+        channel: 1,
+        epoch: 1,
+    };
+    const B: StreamKey = StreamKey {
+        channel: 2,
+        epoch: 2,
+    };
+
+    /// A worker body the test scripts: answer `Opened` for the first open and
+    /// then die, leaving the second open unanswered.
+    fn dying_worker() -> (StreamWorker, std::thread::JoinHandle<()>) {
+        let (tx, req_rx) = std::sync::mpsc::channel::<StreamRequest>();
+        let (ev_tx, rx) = std::sync::mpsc::channel::<StreamEvent>();
+        let t = std::thread::spawn(move || {
+            if let Ok(StreamRequest::Open { key, .. }) = req_rx.recv() {
+                let _ = ev_tx.send(StreamEvent::Opened {
+                    key,
+                    channels: 1,
+                    rate: 44_100,
+                });
+            }
+            let _ = req_rx.recv();
+        });
+        let w = StreamWorker {
+            tx,
+            rx,
+            inflight: HashMap::new(),
+            live: HashMap::new(),
+        };
+        (w, t)
+    }
+
+    /// **A worker that exits answers every live stream**: the one that opened
+    /// ends, the one that never opened fails — so neither channel waits on a
+    /// thread that is gone.
+    #[test]
+    fn a_dead_worker_ends_its_streams_and_fails_its_opens() {
+        let (mut w, t) = dying_worker();
+        assert!(w.open(A, "a", false));
+        assert!(w.open(B, "b", false));
+        t.join().unwrap();
+        let events = w.drain();
+        let opened = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Opened { key, .. } if *key == A));
+        let ended = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Ended { key } if *key == A));
+        let failed = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::OpenFailed { key, .. } if *key == B));
+        assert!(opened && ended && failed, "{} event(s)", events.len());
+        assert!(w.live.is_empty());
+        // A closed stream is not resurrected by the backstop.
+        assert!(w.drain().is_empty());
+    }
+
+    /// A closed stream is forgotten, so a dead worker does not answer it.
+    #[test]
+    fn a_closed_stream_is_not_answered_by_the_backstop() {
+        let (mut w, t) = dying_worker();
+        assert!(w.open(A, "a", false));
+        w.close(A);
+        t.join().unwrap();
+        let events = w.drain();
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                StreamEvent::Ended { .. } | StreamEvent::OpenFailed { .. }
+            )),
+            "a closed stream was answered"
+        );
     }
 }

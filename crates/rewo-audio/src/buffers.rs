@@ -149,6 +149,28 @@ pub const QUEUED_BUFFER_COUNT: usize = 4;
 /// `Channel.BUFFER_DURATION_SECONDS` — how much audio each one holds.
 pub const BUFFER_DURATION_SECONDS: i32 = 1;
 
+/// Run one decode job, turning a panic into an ordinary failure.
+///
+/// symphonia is a decoder fed by files on disk, and a malformed `.ogg` that
+/// trips a panic inside it must cost that one sound, not the thread: a dead
+/// decode worker leaves every channel parked on it unreclaimable, and a panic
+/// on the inline path takes the client tick down with it. The source is used
+/// again after a caught panic; it is a reader over an immutable store with no
+/// state worth distrusting.
+pub fn contained<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a non-string panic".to_string());
+            Err(format!("the decoder panicked: {msg}"))
+        }
+    }
+}
+
 /// So a caller whose source is a closure can still name the library's type.
 ///
 /// [`crate::decode::BytesSource`] wraps an `FnMut`, and a closure's type cannot
@@ -268,7 +290,15 @@ impl<S: PcmSource> SoundBufferLibrary<S> {
         match self.worker.as_mut() {
             Some(w) => {
                 w.request(key);
-                BufferState::Pending
+                // In flight is the only state worth parking a channel on. A
+                // worker that has gone away accepts nothing, and a channel
+                // parked on it would never be reclaimed; decode inline
+                // instead, which is the no-worker path every gate runs.
+                if w.is_inflight(key) {
+                    BufferState::Pending
+                } else {
+                    BufferState::Ready(self.complete_buffer(key))
+                }
             }
             None => BufferState::Ready(self.complete_buffer(key)),
         }
@@ -315,7 +345,8 @@ impl<S: PcmSource> SoundBufferLibrary<S> {
     /// a ring that lives beside this library.
     pub fn complete_buffer(&mut self, key: &str) -> Result<Arc<Pcm>, String> {
         if !self.cache.contains_key(key) {
-            let decoded = self.source.open(key).map(Arc::new);
+            let source = &mut self.source;
+            let decoded = contained(|| source.open(key)).map(Arc::new);
             self.cache.insert(key.to_string(), decoded);
         }
         self.cache[key].clone()
@@ -343,7 +374,8 @@ impl<S: PcmSource> SoundBufferLibrary<S> {
     /// Goes straight to the source and never near `cache`, so a stream opened
     /// twice really is two independent decode positions.
     pub fn open_stream(&mut self, key: &str, looping: bool) -> Result<Box<dyn PcmStream>, String> {
-        self.source.open_stream(key, looping)
+        let source = &mut self.source;
+        contained(|| source.open_stream(key, looping))
     }
 
     /// `clear()` — a resource reload. The only thing that empties the cache.

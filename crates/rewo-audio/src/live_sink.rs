@@ -3,9 +3,9 @@
 //! This is the implementor of [`rewo_net::sound_engine::ChannelSink`], and it
 //! is where the engine's model of a sound stops being a model. It resolves an
 //! attach into samples, hands the result to the audio callback through
-//! [`crate::device::CommandRing`], and answers `stopped()`.
+//! [`crate::device::CommandProducer`], and answers `stopped()`.
 //!
-//! **It opens nothing.** A [`CommandRing`] is all it holds; whoever built the
+//! **It opens nothing.** A [`CommandProducer`] is all it holds; whoever built the
 //! ring owns the device. That is what lets the whole of this module be graded
 //! on a machine with no sound card — every witness below drives it against a
 //! fake [`crate::buffers::PcmSource`] and a ring it pops by hand, and the
@@ -38,7 +38,7 @@
 //! `SoundBufferLibrary` never evicts.
 
 use crate::buffers::{PcmSource, PcmStream, SoundBufferLibrary, QUEUED_BUFFER_COUNT};
-use crate::device::{Command, CommandRing};
+use crate::device::{Command, CommandProducer};
 use rewo_net::sound_engine::{
     ChannelCall, ChannelId, ChannelSink, ListenerTransform, SinkDiagnostics,
 };
@@ -199,7 +199,7 @@ impl Default for ChannelState {
 
 /// The engine's backend.
 pub struct LiveSink<S: PcmSource> {
-    ring: Arc<CommandRing>,
+    ring: CommandProducer,
     buffers: SoundBufferLibrary<S>,
     channels: HashMap<ChannelId, ChannelState>,
     /// Engine ticks since this sink was built. Advanced by
@@ -221,6 +221,11 @@ pub struct LiveSink<S: PcmSource> {
     /// epoch exists for, and a number is what tells "it never happens" from "it
     /// happens and is handled".
     stale_chunks: u64,
+    /// The last stream epoch handed out. See `attach_stream`.
+    next_epoch: u64,
+    /// The consumer end, held only by witnesses that pop the ring by hand.
+    #[cfg(test)]
+    tap: Option<crate::device::CommandConsumer>,
 }
 
 impl<S: PcmSource> LiveSink<S> {
@@ -231,7 +236,7 @@ impl<S: PcmSource> LiveSink<S> {
 
     /// `ring` is the producer end of whatever is consuming commands — a real
     /// device in the client, and a hand-popped ring in every witness here.
-    pub fn new(ring: Arc<CommandRing>, source: S) -> LiveSink<S> {
+    pub fn new(ring: CommandProducer, source: S) -> LiveSink<S> {
         LiveSink {
             ring,
             buffers: SoundBufferLibrary::new(source),
@@ -241,7 +246,31 @@ impl<S: PcmSource> LiveSink<S> {
             streams_failed: 0,
             streams: None,
             stale_chunks: 0,
+            next_epoch: 0,
+            #[cfg(test)]
+            tap: None,
         }
+    }
+
+    /// Point the sink at a new command ring — the device was rebuilt and its
+    /// callback drains a different one. Commands still in the old ring went
+    /// with the old stream.
+    pub fn replace_ring(&mut self, ring: CommandProducer) {
+        self.ring = ring;
+    }
+
+    /// A sink over a fresh ring whose consumer it keeps, for witnesses.
+    #[cfg(test)]
+    pub(crate) fn tapped(capacity: usize, source: S) -> LiveSink<S> {
+        let (p, c) = crate::device::command_ring(capacity);
+        let mut sink = LiveSink::new(p, source);
+        sink.tap = Some(c);
+        sink
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tap(&self) -> &crate::device::CommandConsumer {
+        self.tap.as_ref().expect("built with LiveSink::tapped")
     }
 
     /// Move the streaming decode onto the sound-engine thread (M159).
@@ -273,7 +302,7 @@ impl<S: PcmSource> LiveSink<S> {
         // The return is deliberately dropped: the ring counts its own refusals
         // and `diagnostics()` reports them. Reacting here would mean retrying
         // or blocking, and a full ring means the callback has stopped — see
-        // `CommandRing::dropped`.
+        // `Producer::dropped`.
         let _ = self.ring.push(cmd);
     }
 
@@ -392,7 +421,21 @@ impl<S: PcmSource> LiveSink<S> {
         // reads rather than using a pool (see `stream_worker`'s module doc).
         if self.streams.is_some() {
             let state = self.channels.entry(channel).or_default();
-            state.epoch = state.epoch.wrapping_add(1);
+            // Sink-wide rather than per channel: `release` removes the whole
+            // state, so a per-channel counter restarted at 1 for a re-acquired
+            // channel and a late chunk from its previous stream carried a
+            // matching epoch.
+            self.next_epoch = self.next_epoch.wrapping_add(1);
+            let old = std::mem::replace(&mut state.epoch, self.next_epoch);
+            if old != 0 {
+                if let Some(w) = self.streams.as_mut() {
+                    w.close(crate::stream_worker::StreamKey {
+                        channel,
+                        epoch: old,
+                    });
+                }
+            }
+            let state = self.channels.entry(channel).or_default();
             let skey = crate::stream_worker::StreamKey {
                 channel,
                 epoch: state.epoch,
@@ -533,7 +576,8 @@ impl<S: PcmSource> LiveSink<S> {
             if stream.pushed_buffers - processed >= QUEUED_BUFFER_COUNT as u64 {
                 break;
             }
-            match stream.src.read(stream.buffer_samples) {
+            let (src, n) = (&mut stream.src, stream.buffer_samples);
+            match crate::buffers::contained(|| src.read(n)) {
                 Ok(chunk) if chunk.is_empty() => {
                     // Empty is exhaustion — and for a LOOPING stream it never
                     // happens, because `LoopingAudioStream` restarts instead of
@@ -691,7 +735,9 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
         let tick = self.tick;
         let state = self.channels.entry(channel).or_default();
         match call {
-            ChannelCall::SetPitch(p) => state.pitch = *p,
+            // The mixer's clamp, applied here too, so this side's model of the
+            // duration is the duration the mixer will actually play.
+            ChannelCall::SetPitch(p) => state.pitch = crate::mixer::sanitize_pitch(*p),
             ChannelCall::SetLooping(l) => state.looping = *l,
             // **`Play` is where a stream's clock starts**, not the attach: the
             // four primed buffers were queued before it, and consumption cannot
@@ -718,7 +764,19 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
 
     /// `Library.releaseChannel` — vanilla destroys the source, so this does.
     fn release(&mut self, channel: ChannelId) {
-        self.channels.remove(&channel);
+        // `Channel.destroy`'s `this.stream.close()`: the worker owns the
+        // source, so it has to be told, or a released looping bed stays open
+        // on the worker for the rest of the session.
+        if let Some(state) = self.channels.remove(&channel) {
+            // `epoch != 0` is "a stream was asked for", which covers an open
+            // still in flight; `Close` is idempotent and ordered behind it.
+            if let (Some(w), true) = (self.streams.as_mut(), state.epoch != 0) {
+                w.close(crate::stream_worker::StreamKey {
+                    channel,
+                    epoch: state.epoch,
+                });
+            }
+        }
         self.push(Command::Channel(channel, ChannelCall::Stop));
     }
 
@@ -894,8 +952,8 @@ mod tests {
 
     /// One second of mono 44.1k under a plain key.
     fn sink_with_one_second() -> LiveSink<Fake> {
-        LiveSink::new(
-            CommandRing::with_capacity(DEFAULT_RING_CAPACITY),
+        LiveSink::tapped(
+            DEFAULT_RING_CAPACITY,
             Fake::new().with(KEY, 44_100, 1, 44_100),
         )
     }
@@ -920,7 +978,7 @@ mod tests {
 
     fn drain(sink: &LiveSink<Fake>) -> Vec<Command> {
         let mut out = Vec::new();
-        while let Some(c) = sink.ring.pop() {
+        while let Some(c) = sink.tap().pop() {
             out.push(c);
         }
         out
@@ -984,10 +1042,7 @@ mod tests {
     fn the_lifetime_follows_the_buffers_own_sample_rate() {
         // 48000 frames at 48 kHz is one second; at an assumed 44.1 kHz it would
         // read as 1.088 s, which is 22 ticks rather than 20.
-        let mut sink = LiveSink::new(
-            CommandRing::with_capacity(64),
-            Fake::new().with(KEY, 48_000, 1, 48_000),
-        );
+        let mut sink = LiveSink::tapped(64, Fake::new().with(KEY, 48_000, 1, 48_000));
         play_sequence(&mut sink, 0, 1.0, false);
         for _ in 0..20 {
             sink.tick();
@@ -1003,10 +1058,7 @@ mod tests {
     /// count — the sample count is twice as large and the length is not.
     #[test]
     fn a_stereo_buffer_is_not_twice_as_long() {
-        let mut sink = LiveSink::new(
-            CommandRing::with_capacity(64),
-            Fake::new().with(KEY, 44_100, 2, 44_100),
-        );
+        let mut sink = LiveSink::tapped(64, Fake::new().with(KEY, 44_100, 2, 44_100));
         play_sequence(&mut sink, 0, 1.0, false);
         for _ in 0..20 {
             sink.tick();
@@ -1127,10 +1179,7 @@ mod tests {
     /// must answer differently. That holds whichever way the constant is set.
     #[test]
     fn a_missing_asset_is_counted_and_its_failure_reaches_stopped() {
-        let mut sink = LiveSink::new(
-            CommandRing::with_capacity(64),
-            Fake::new().with(KEY, 44_100, 1, 44_100),
-        );
+        let mut sink = LiveSink::tapped(64, Fake::new().with(KEY, 44_100, 1, 44_100));
         // Channel 3 asks for a key the store does not have.
         for call in [
             ChannelCall::SetPitch(1.0),
@@ -1322,10 +1371,7 @@ mod tests {
             MUSIC.to_string(),
             (channels, rate, frames, std::rc::Rc::clone(&reads)),
         );
-        (
-            LiveSink::new(CommandRing::with_capacity(DEFAULT_RING_CAPACITY), fake),
-            reads,
-        )
+        (LiveSink::tapped(DEFAULT_RING_CAPACITY, fake), reads)
     }
 
     const MUSIC: &str = "minecraft/sounds/music/game/calm1.ogg";
@@ -1350,7 +1396,7 @@ mod tests {
 
     fn queued(sink: &LiveSink<Fake>) -> Vec<usize> {
         let mut out = Vec::new();
-        while let Some(c) = sink.ring.pop() {
+        while let Some(c) = sink.tap().pop() {
             if let Command::Queue(_, pcm) = c {
                 out.push(pcm.samples.len());
             }
@@ -1552,10 +1598,7 @@ mod tests {
     #[test]
     fn a_stalled_consumer_shows_up_as_dropped_commands() {
         // Two slots: the eight-call sequence cannot fit, and nothing is popped.
-        let mut sink = LiveSink::new(
-            CommandRing::with_capacity(2),
-            Fake::new().with(KEY, 4_410, 1, 44_100),
-        );
+        let mut sink = LiveSink::tapped(2, Fake::new().with(KEY, 4_410, 1, 44_100));
         assert_eq!(sink.diagnostics().dropped, 0);
         play_sequence(&mut sink, 0, 1.0, false);
         assert!(
@@ -1565,8 +1608,8 @@ mod tests {
     }
     /// A sink whose Fake knows one key, for the M156 deferred-attach tests.
     fn worker_sink() -> LiveSink<Fake> {
-        LiveSink::new(
-            CommandRing::with_capacity(DEFAULT_RING_CAPACITY),
+        LiveSink::tapped(
+            DEFAULT_RING_CAPACITY,
             Fake::new().with(KEY, 44_100, 1, 44_100),
         )
     }
@@ -1823,6 +1866,135 @@ mod tests {
         assert_eq!(sink.unresolved, 1);
     }
 
+    // ── a decoder that panics ───────────────────────────────────────────────
+
+    /// A source whose decoder panics on one key, at open or on the first read.
+    struct Panicky;
+
+    struct PanickyStream;
+
+    impl crate::buffers::PcmStream for PanickyStream {
+        fn format(&self) -> (u16, u32) {
+            (1, 44_100)
+        }
+        fn read(&mut self, _samples: usize) -> Result<Vec<i16>, String> {
+            panic!("injected: a malformed packet mid-stream");
+        }
+    }
+
+    impl crate::buffers::PcmSource for Panicky {
+        fn open(&mut self, key: &str) -> Result<Pcm, String> {
+            if key == "boom" {
+                panic!("injected: a malformed header");
+            }
+            Ok(Pcm {
+                samples: vec![0i16; 64],
+                channels: 1,
+                sample_rate: 44100,
+            })
+        }
+        fn open_stream(
+            &mut self,
+            key: &str,
+            _looping: bool,
+        ) -> Result<Box<dyn crate::buffers::PcmStream>, String> {
+            match key {
+                "boom" => panic!("injected: a malformed stream header"),
+                _ => Ok(Box::new(PanickyStream)),
+            }
+        }
+    }
+
+    fn tick_until_stopped<S: PcmSource>(sink: &mut LiveSink<S>, ch: ChannelId) -> bool {
+        for _ in 0..2000 {
+            sink.tick();
+            if sink.stopped(ch) == Some(true) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        false
+    }
+
+    /// **A panic in a static decode costs that sound, not the worker, and its
+    /// channel comes back.** Before, the worker thread died, the key stayed
+    /// "in flight" forever, and every channel parked on it answered
+    /// `stopped() == Some(false)` for the session: a leaked pool slot per key.
+    #[test]
+    fn a_panicking_static_decode_releases_its_channel_and_the_worker_survives() {
+        let mut sink = worker_sink();
+        sink.buffers.with_worker(Panicky);
+        sink.attach_static(1, "boom");
+        sink.submit(1, &ChannelCall::Play);
+        assert_eq!(sink.channels[&1].pending.as_deref(), Some("boom"));
+        assert!(
+            tick_until_stopped(&mut sink, 1),
+            "the channel parked on a panicking decode was never reclaimed"
+        );
+        assert!(sink.channels[&1].dead);
+        assert_eq!(sink.unresolved, 1);
+
+        // The same worker still decodes.
+        sink.attach_static(2, "fine");
+        assert!(tick_until_attached(&mut sink, 2, 2000), "the worker died");
+        assert_eq!(sink.channels[&2].frames, Some(64));
+    }
+
+    /// The inline path (no worker) contains it too — there the panic would
+    /// take the client tick down.
+    #[test]
+    fn a_panicking_inline_decode_is_a_failed_attach() {
+        let mut sink = LiveSink::tapped(DEFAULT_RING_CAPACITY, Panicky);
+        sink.attach_static(1, "boom");
+        assert!(sink.channels[&1].dead);
+        assert_eq!(sink.stopped(1), Some(true));
+    }
+
+    /// A panicking stream open is a failed open, and a panicking read ends that
+    /// stream; either way the channel is reclaimed and the worker carries on.
+    #[test]
+    fn a_panicking_stream_is_reclaimed_and_the_worker_survives() {
+        let mut sink = LiveSink::tapped(DEFAULT_RING_CAPACITY, Panicky)
+            .with_stream_worker(crate::stream_worker::StreamWorker::spawn(Panicky));
+        sink.submit(1, &ChannelCall::AttachBufferStream("boom".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        assert!(tick_until_stopped(&mut sink, 1), "the failed open hung");
+        assert!(sink.channels[&1].dead);
+
+        // Opens fine, then its first read panics: `Ended`, not a hang.
+        sink.submit(2, &ChannelCall::AttachBufferStream("bad-read".into(), true));
+        sink.submit(2, &ChannelCall::Play);
+        assert!(tick_until_stopped(&mut sink, 2), "the panicking read hung");
+        assert!(sink.channels[&2]
+            .stream
+            .as_ref()
+            .is_some_and(|s| s.ended && s.pushed_buffers == 0));
+    }
+
+    /// **A released and re-acquired channel gets a NEW stream epoch.** The
+    /// counter used to live in the channel's state, which `release` removes,
+    /// so the re-acquired channel restarted at the same epoch and a late chunk
+    /// from its previous stream matched it.
+    #[test]
+    fn a_reacquired_channel_never_reuses_a_stream_epoch() {
+        let mut sink = LiveSink::tapped(DEFAULT_RING_CAPACITY, Panicky)
+            .with_stream_worker(crate::stream_worker::StreamWorker::spawn(Panicky));
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            sink.submit(1, &ChannelCall::AttachBufferStream("bad-read".into(), true));
+            seen.push(sink.channels[&1].epoch);
+            sink.release(1);
+        }
+        // And a re-attach without a release moves on too.
+        sink.submit(1, &ChannelCall::AttachBufferStream("bad-read".into(), true));
+        sink.submit(1, &ChannelCall::AttachBufferStream("bad-read".into(), true));
+        seen.push(sink.channels[&1].epoch);
+        let mut unique = seen.clone();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len(), "an epoch repeated: {seen:?}");
+        assert!(seen.iter().all(|&e| e != 0));
+    }
+
     // ── M159: the streaming decode on the sound-engine thread ───────────────
     //
     // These drive the REAL worker over a real thread. The source blocks on a
@@ -1914,9 +2086,8 @@ mod tests {
             gate: Arc::clone(&gate),
             readers: Arc::clone(&readers),
         });
-        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
-        let sink = LiveSink::new(
-            ring,
+        let sink = LiveSink::tapped(
+            DEFAULT_RING_CAPACITY,
             Watched {
                 gate: Arc::clone(&gate),
                 readers: Arc::clone(&readers),
@@ -1928,7 +2099,7 @@ mod tests {
 
     fn drain_ring(sink: &LiveSink<Watched>) -> Vec<Command> {
         let mut out = Vec::new();
-        while let Some(c) = sink.ring.pop() {
+        while let Some(c) = sink.tap().pop() {
             out.push(c);
         }
         out
@@ -1968,9 +2139,8 @@ mod tests {
     fn without_a_worker_the_decode_is_still_inline() {
         let gate = Arc::new(std::sync::Mutex::new(()));
         let readers: Readers = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
-        let mut sink = LiveSink::new(
-            ring,
+        let mut sink = LiveSink::tapped(
+            DEFAULT_RING_CAPACITY,
             Watched {
                 gate: Arc::clone(&gate),
                 readers: Arc::clone(&readers),
@@ -2150,7 +2320,7 @@ mod tests {
 /// This is `REWO_AUDIO_PLAN.md`'s r46 claim ("non-zero mixed samples") minus
 /// the one part no test can have. Everything between is production: the real
 /// `SoundEngine` through the real `LiveSounds` tee, into the real [`LiveSink`],
-/// across a real [`CommandRing`], into the real [`crate::mixer::Mixer`].
+/// across a real command ring, into the real [`crate::mixer::Mixer`].
 ///
 /// **It is still not evidence that this client makes a noise.** No device is
 /// opened here, and an absent, muted, exclusive-mode or unplugged one all look
@@ -2161,14 +2331,13 @@ mod tests {
 #[cfg(test)]
 mod end_to_end {
     use super::tests::*;
-    use crate::device::{Command, CommandRing, DEFAULT_RING_CAPACITY};
+    use crate::device::{command_ring, Command, CommandConsumer, DEFAULT_RING_CAPACITY};
     use crate::live_sink::LiveSink;
     use crate::mixer::{Mixer, NullSink};
     use rewo_data::sounds_json::{Sound, SoundEventRegistration, SoundFileSet, SoundsIndex};
     use rewo_net::sound_engine::LiveSounds;
     use rewo_net::sounds::{PositionedSound, SoundEvent, SoundRef, SoundSource};
     use rewo_world::entities::EntityTable;
-    use std::sync::Arc;
 
     const EVENT: &str = "minecraft:block.stone.break";
 
@@ -2207,9 +2376,9 @@ mod end_to_end {
 
     #[test]
     fn a_decoded_packet_reaches_the_mixer_as_audible_samples() {
-        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let (producer, ring) = command_ring(DEFAULT_RING_CAPACITY);
         let sink = LiveSink::new(
-            Arc::clone(&ring),
+            producer,
             // The key the event resolves to, at half a second of mono 44.1k.
             fake_source("minecraft/sounds/block/stone/break1.ogg", 22_050, 1, 44_100),
         );
@@ -2251,7 +2420,7 @@ mod end_to_end {
     /// this guards against is one of them silently going quiet again.
     #[test]
     fn a_streamed_event_reaches_the_mixer_as_audible_samples() {
-        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let (producer, ring) = command_ring(DEFAULT_RING_CAPACITY);
         let mut source = fake_source("minecraft/sounds/block/stone/break1.ogg", 22_050, 1, 44_100);
         // Ten seconds of mono 44.1 kHz behind the streamed key: long enough
         // that the four primed buffers are a fraction of it.
@@ -2264,7 +2433,7 @@ mod end_to_end {
                 std::rc::Rc::new(std::cell::Cell::new(0)),
             ),
         );
-        let sink = LiveSink::new(Arc::clone(&ring), source);
+        let sink = LiveSink::new(producer, source);
 
         let mut idx = SoundsIndex::new();
         idx.handle_registration(
@@ -2363,9 +2532,9 @@ mod end_to_end {
     /// tee can show which of the two this is.
     #[test]
     fn the_channel_comes_back_when_the_sound_ends_and_not_before() {
-        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let (producer, ring) = command_ring(DEFAULT_RING_CAPACITY);
         let sink = LiveSink::new(
-            Arc::clone(&ring),
+            producer,
             fake_source("minecraft/sounds/block/stone/break1.ogg", 22_050, 1, 44_100),
         );
         let mut live = LiveSounds::new(index(), rewo_data::sound_events::SoundEvents::default());
@@ -2373,7 +2542,7 @@ mod end_to_end {
         let entities = EntityTable::default();
 
         live.drive(&[break_packet()], &entities, None, 0, 1.0);
-        let stops_after = |ring: &CommandRing| {
+        let stops_after = |ring: &CommandConsumer| {
             let mut n = 0;
             while let Some(c) = ring.pop() {
                 if matches!(

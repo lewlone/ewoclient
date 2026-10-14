@@ -6,8 +6,9 @@
 //! process, and whether the result *sounds* like Minecraft is not a property a
 //! machine can read. `REWO_AUDIO_PLAN.md` §4 sets this out at length. What holds
 //! this module up is that everything beneath it — the ring, the mixer, the
-//! decode, the quantisation, the listener basis — is graded on its own, so the
-//! ungraded part is the thin binding rather than the behaviour.
+//! callback body, the decode, the quantisation, the listener basis, the
+//! recovery schedule — is graded on its own, so the ungraded part is the thin
+//! binding rather than the behaviour.
 //!
 //! **It reaches `rewo-app` only under that crate's `audio` feature, which is
 //! off by default** (M143). A default build links no audio stack at all, so the
@@ -17,115 +18,361 @@
 //! is the other one. **Either way the listening pass is a human's job** — a
 //! green suite says nothing about this module, by construction.
 //!
-//! ## Real-time discipline, and the one place this first cut breaks it
+//! ## Real-time discipline
 //!
-//! The callback may not allocate, lock, or make a syscall — a heap lock held by
-//! another thread turns into a dropout. Draining the ring and rendering obey
-//! that: the ring is fixed-capacity and `Mixer::render` writes into the caller's
-//! slice.
+//! The data callback may not allocate, free, lock, or make a syscall — a heap
+//! lock held by another thread turns into a dropout. Its whole body is
+//! [`crate::callback::RenderCallback`], which `tests/rt_alloc.rs` runs under a
+//! counting allocator. Retired buffers come back to [`CpalSink::service`] over
+//! a second ring and are dropped there, on the engine's thread. (Until this
+//! change the last `Arc<Pcm>` could be dropped in the callback; that deviation
+//! is gone.)
 //!
-//! **`retire_finished` is the exception, and it is a stated deviation.** Removing
-//! a finished voice drops its `Arc<Pcm>`, and if that was the last reference the
-//! deallocation happens *in the callback*. The plan's design sends retired
-//! buffers back to a worker over a second ring; this cut does not have one, so
-//! it takes the simpler path and says so. The consequence is a possible dropout
-//! at the moment a sound ends — worth fixing before anyone calls the audio
-//! smooth, and not worth pretending is absent.
+//! The *error* callback is cpal's, not the data path, and may drop the error it
+//! is handed (a `BackendSpecific` one owns a `String`). It only counts and sets
+//! flags; [`CpalSink::service`] does the logging.
+//!
+//! ## Device loss
+//!
+//! A stream is rebuilt on the **current default device** when the error
+//! callback reports `DeviceNotAvailable`, when the callback heartbeat stops for
+//! [`STALL`], or when the default output device changes (checked every
+//! [`DEVICE_CHECK`], vanilla's `SoundEngine` checks once a second too). The
+//! mixer — every voice, mid-sound — survives the rebuild: the closure hands its
+//! state back when cpal drops it. Failed attempts back off from
+//! [`BACKOFF_MIN`] to [`BACKOFF_MAX`].
 
 use crate::buffers::PcmSource;
-use crate::device::{Command, CommandRing, DEFAULT_RING_CAPACITY};
+use crate::callback::{f32_to_i16, f32_to_u16, CallbackStats, RenderCallback};
+use crate::device::{
+    command_ring, ring, Command, CommandProducer, Consumer, DEFAULT_RING_CAPACITY,
+};
 use crate::live_sink::LiveSink;
-use crate::mixer::Mixer;
+use crate::mixer::{Mixer, Retired};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rewo_net::sound_engine::{
     ChannelCall, ChannelId, ChannelSink, ListenerTransform, SinkDiagnostics,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// Retired values the callback can hand back between two drains.
+///
+/// A drain happens every engine tick (50 ms, several periods). One period can
+/// retire at most one buffer per command drained plus one per queue join,
+/// underrun and finished voice; the command ring is 1024, so 4096 covers a
+/// period that drains a full command ring of stops on streaming voices with
+/// room to spare. Overflow frees in place and is counted
+/// ([`CallbackStats::freed_in_place`]).
+pub const RETIRE_RING_CAPACITY: usize = 4096;
+
+/// No callback for this long, while a stream is supposed to be running, is a
+/// dead stream.
+pub const STALL: Duration = Duration::from_secs(2);
+/// How often the default output device is compared with the one in use.
+pub const DEVICE_CHECK: Duration = Duration::from_secs(1);
+pub const BACKOFF_MIN: Duration = Duration::from_millis(500);
+pub const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// When to rebuild the stream. Pure, so the schedule is testable without a
+/// device.
+#[derive(Debug)]
+pub struct Recovery {
+    healthy: bool,
+    last_heartbeat: u64,
+    last_progress: Instant,
+    next_attempt: Instant,
+    backoff: Duration,
+    next_device_check: Instant,
+}
+
+impl Recovery {
+    pub fn new(now: Instant) -> Recovery {
+        Recovery {
+            healthy: true,
+            last_heartbeat: 0,
+            last_progress: now,
+            next_attempt: now,
+            backoff: BACKOFF_MIN,
+            next_device_check: now + DEVICE_CHECK,
+        }
+    }
+
+    /// Whether the default device is due a comparison. Only while healthy: an
+    /// unhealthy stream is being rebuilt onto the default device anyway.
+    pub fn device_check_due(&mut self, now: Instant) -> bool {
+        if self.healthy && now >= self.next_device_check {
+            self.next_device_check = now + DEVICE_CHECK;
+            return true;
+        }
+        false
+    }
+
+    /// Feed one observation; `true` means rebuild now.
+    pub fn observe(
+        &mut self,
+        now: Instant,
+        heartbeat: u64,
+        lost: bool,
+        default_changed: bool,
+    ) -> bool {
+        if heartbeat != self.last_heartbeat {
+            self.last_heartbeat = heartbeat;
+            self.last_progress = now;
+        }
+        if self.healthy {
+            let stalled = now.duration_since(self.last_progress) >= STALL;
+            if lost || stalled || default_changed {
+                self.healthy = false;
+                self.next_attempt = now;
+                self.backoff = BACKOFF_MIN;
+            }
+        }
+        !self.healthy && now >= self.next_attempt
+    }
+
+    /// Record the outcome of a rebuild attempt.
+    pub fn rebuilt(&mut self, now: Instant, ok: bool) {
+        if ok {
+            self.healthy = true;
+            self.last_progress = now;
+            self.backoff = BACKOFF_MIN;
+            self.next_device_check = now + DEVICE_CHECK;
+        } else {
+            self.next_attempt = now + self.backoff;
+            self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
+        }
+    }
+
+    pub fn healthy(&self) -> bool {
+        self.healthy
+    }
+
+    /// How long until the next attempt may run.
+    pub fn retry_in(&self, now: Instant) -> Duration {
+        self.next_attempt.saturating_duration_since(now)
+    }
+}
+
+/// What the error callback leaves for the engine's thread.
+#[derive(Default)]
+struct DeviceFlags {
+    errors: AtomicU64,
+    /// Set by `DeviceNotAvailable`; taken by `service`.
+    lost: AtomicBool,
+    /// 1 = device not available, 2 = backend-specific.
+    last_kind: AtomicU8,
+}
+
+impl DeviceFlags {
+    fn record(&self, err: &cpal::StreamError) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+        if matches!(err, cpal::StreamError::DeviceNotAvailable) {
+            self.last_kind.store(1, Ordering::Relaxed);
+            self.lost.store(true, Ordering::Relaxed);
+        } else {
+            self.last_kind.store(2, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Where the render state goes when cpal drops the closure that owns it.
+type Home = Arc<Mutex<Option<RenderCallback>>>;
+
+/// Owns the [`RenderCallback`] inside cpal's closure and sends it home on drop.
+///
+/// That is what lets a rebuilt stream carry on every voice mid-sound: cpal
+/// drops the closure when the stream is dropped (or fails to build), on a
+/// thread where the callback can no longer run, and the lock is taken only
+/// then — never in the callback.
+struct Homing {
+    cb: Option<RenderCallback>,
+    home: Home,
+}
+
+impl Drop for Homing {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.home.lock() {
+            *slot = self.cb.take();
+        }
+    }
+}
+
+struct Built {
+    stream: cpal::Stream,
+    out_rate: u32,
+    device_name: Option<String>,
+    format: cpal::SampleFormat,
+}
+
+/// Open the default device and start a stream over the state in `home`.
+///
+/// On failure the state is back in `home`, because the closure that took it
+/// has been dropped.
+fn build(host: &cpal::Host, home: &Home, flags: &Arc<DeviceFlags>) -> Result<Built, String> {
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| "no default output device".to_string())?;
+    let device_name = device.name().ok();
+    let supported = device
+        .default_output_config()
+        .map_err(|e| format!("no default output config: {e}"))?;
+    // **Requires a stereo device.** The mixer renders interleaved stereo, and
+    // silently playing a stereo mix into a mono or 5.1 device would come out
+    // mangled rather than as an error. Supporting other layouts is a downmix
+    // decision, not a bug fix.
+    let channels = supported.channels();
+    if channels != 2 {
+        return Err(format!(
+            "the mixer renders stereo and this device wants {channels} channels; \
+             a downmix is a decision rather than a fix"
+        ));
+    }
+    let out_rate = supported.sample_rate().0;
+    let format = supported.sample_format();
+    let config: cpal::StreamConfig = supported.into();
+
+    let mut cb = home
+        .lock()
+        .map_err(|_| "audio render state lock poisoned".to_string())?
+        .take()
+        .ok_or_else(|| "audio render state is missing".to_string())?;
+    cb.set_out_rate(out_rate);
+    let mut homing = Homing {
+        cb: Some(cb),
+        home: Arc::clone(home),
+    };
+    let flags_cb = Arc::clone(flags);
+    // **Counted, not logged.** A logger takes a lock and may allocate; the
+    // engine's thread reads the flags and logs.
+    let on_error = move |err: cpal::StreamError| flags_cb.record(&err);
+
+    // The device's own format, converted in the callback when it is not f32.
+    // The conversion is per sample into a preallocated scratch buffer — see
+    // `RenderCallback::render_into` — so the fallback allocates nothing either.
+    let stream = match format {
+        cpal::SampleFormat::F32 => device.build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| match homing.cb.as_mut() {
+                Some(cb) => cb.render_f32(data),
+                None => data.fill(0.0),
+            },
+            on_error,
+            None,
+        ),
+        cpal::SampleFormat::I16 => device.build_output_stream(
+            &config,
+            move |data: &mut [i16], _: &cpal::OutputCallbackInfo| match homing.cb.as_mut() {
+                Some(cb) => cb.render_into(data, f32_to_i16),
+                None => data.fill(0),
+            },
+            on_error,
+            None,
+        ),
+        cpal::SampleFormat::U16 => device.build_output_stream(
+            &config,
+            move |data: &mut [u16], _: &cpal::OutputCallbackInfo| match homing.cb.as_mut() {
+                Some(cb) => cb.render_into(data, f32_to_u16),
+                None => data.fill(32768),
+            },
+            on_error,
+            None,
+        ),
+        other => {
+            // `homing` drops on the way out and the state goes home.
+            return Err(format!(
+                "the device's default format is {other:?}; only f32, i16 and u16 are supported"
+            ));
+        }
+    }
+    .map_err(|e| format!("could not build the output stream: {e}"))?;
+    stream
+        .play()
+        .map_err(|e| format!("could not start the stream: {e}"))?;
+    Ok(Built {
+        stream,
+        out_rate,
+        device_name,
+        format,
+    })
+}
 
 /// An open output stream, with the ring the engine pushes into.
 ///
 /// Dropping it stops the stream — `cpal::Stream` is not `Send`, so this must
-/// live on the thread that built it.
+/// live on the thread that built it. [`Self::service`] must be called
+/// regularly (the backend does it every engine tick): it frees what the
+/// callback retired, logs device trouble and rebuilds a lost stream.
 pub struct CpalSink {
-    ring: Arc<CommandRing>,
-    errors: Arc<AtomicU64>,
+    /// The producer end, unless a [`CpalBackend`] took it for its `LiveSink`.
+    ring: Option<CommandProducer>,
+    graveyard: Consumer<Retired>,
+    flags: Arc<DeviceFlags>,
+    stats: Arc<CallbackStats>,
+    home: Home,
+    host: cpal::Host,
     out_rate: u32,
-    _stream: cpal::Stream,
+    device_name: Option<String>,
+    stream: Option<cpal::Stream>,
+    recovery: Recovery,
+    logged_errors: u64,
+    logged: [u64; 4],
 }
 
 impl CpalSink {
     /// Open the default output device and start the stream.
     ///
-    /// **Requires a stereo device.** The mixer renders interleaved stereo, and
-    /// silently playing a stereo mix into a mono or 5.1 device would come out as
-    /// mangled rather than as an error, so an unexpected channel count is
-    /// refused with the number in the message. Supporting other layouts is a
-    /// downmix decision, not a bug fix.
+    /// Takes the device's default sample format: `f32` natively, `i16` and
+    /// `u16` converted in the callback. Anything else, or a channel count other
+    /// than two, is refused with the reason in the message.
     pub fn open() -> Result<CpalSink, String> {
+        let (producer, commands) = command_ring(DEFAULT_RING_CAPACITY);
+        let (grave_tx, graveyard) = ring::<Retired>(RETIRE_RING_CAPACITY);
+        let stats = Arc::new(CallbackStats::default());
+        let flags = Arc::new(DeviceFlags::default());
+        // 48 kHz until a device says otherwise; `build` sets the real rate
+        // before the first callback.
+        let cb = RenderCallback::new(Mixer::new(48_000), commands, grave_tx, Arc::clone(&stats));
+        let home: Home = Arc::new(Mutex::new(Some(cb)));
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| "no default output device".to_string())?;
-        let supported = device
-            .default_output_config()
-            .map_err(|e| format!("no default output config: {e}"))?;
-        let channels = supported.channels();
-        if channels != 2 {
-            return Err(format!(
-                "the mixer renders stereo and this device wants {channels} channels; \
-                 a downmix is a decision rather than a fix"
-            ));
-        }
-        let out_rate = supported.sample_rate().0;
-        let config: cpal::StreamConfig = supported.into();
-
-        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
-        let errors = Arc::new(AtomicU64::new(0));
-
-        let ring_cb = Arc::clone(&ring);
-        let errors_cb = Arc::clone(&errors);
-        let mut mixer = Mixer::new(out_rate);
-        let stream = device
-            .build_output_stream(
-                &config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    // Drain everything queued since the last period. Bounded by
-                    // the ring's capacity, so this cannot run long.
-                    while let Some(cmd) = ring_cb.pop() {
-                        mixer.apply(&cmd);
-                    }
-                    mixer.render(data);
-                    // The stated deviation: this can drop an `Arc<Pcm>` here.
-                    mixer.retire_finished();
-                },
-                move |err| {
-                    // **Counted, not logged.** A logger takes a lock and may
-                    // allocate, and this runs on cpal's error path which is
-                    // close enough to the callback to matter. A caller reads the
-                    // count; the alternative is a stream that has died with
-                    // nothing to show for it.
-                    let _ = &err;
-                    errors_cb.fetch_add(1, Ordering::Relaxed);
-                },
-                None,
-            )
-            .map_err(|e| format!("could not build the output stream: {e}"))?;
-        stream
-            .play()
-            .map_err(|e| format!("could not start the stream: {e}"))?;
-
+        let built = build(&host, &home, &flags)?;
+        log::info!(
+            "audio: output stream on {} at {} Hz, {:?}",
+            built.device_name.as_deref().unwrap_or("<unnamed device>"),
+            built.out_rate,
+            built.format
+        );
         Ok(CpalSink {
-            ring,
-            errors,
-            out_rate,
-            _stream: stream,
+            ring: Some(producer),
+            graveyard,
+            flags,
+            stats,
+            home,
+            host,
+            out_rate: built.out_rate,
+            device_name: built.device_name,
+            stream: Some(built.stream),
+            recovery: Recovery::new(Instant::now()),
+            logged_errors: 0,
+            logged: [0; 4],
         })
     }
 
     /// The producer end. One `push` per `ChannelCall`, and it never blocks.
-    pub fn ring(&self) -> &Arc<CommandRing> {
-        &self.ring
+    ///
+    /// # Panics
+    /// If a [`CpalBackend`] has taken it (see [`Self::take_ring`]).
+    pub fn ring(&self) -> &CommandProducer {
+        self.ring
+            .as_ref()
+            .expect("the command ring was taken by a CpalBackend")
+    }
+
+    /// Take the producer end, for a `LiveSink`. After a rebuild that could not
+    /// recover the old ring, [`Self::service`] returns the new one.
+    pub fn take_ring(&mut self) -> Option<CommandProducer> {
+        self.ring.take()
     }
 
     /// The device's sample rate. Sources are resampled into it.
@@ -140,7 +387,141 @@ impl CpalSink {
     /// device, while drops alone with no errors is a callback that is simply not
     /// keeping up.
     pub fn errors(&self) -> u64 {
-        self.errors.load(Ordering::Relaxed)
+        self.flags.errors.load(Ordering::Relaxed)
+    }
+
+    /// The callback's counters.
+    pub fn stats(&self) -> &CallbackStats {
+        &self.stats
+    }
+
+    /// Engine-thread housekeeping, once per tick: free retired buffers, log
+    /// what the callback could not, and rebuild a lost stream.
+    ///
+    /// Returns a new producer if the stream was rebuilt over a fresh command
+    /// ring and the old producer had been taken — the caller must hand it to
+    /// whoever pushes commands. `None` otherwise.
+    pub fn service(&mut self) -> Option<CommandProducer> {
+        // The frees the callback was not allowed to do.
+        while let Some(r) = self.graveyard.pop() {
+            drop(r);
+        }
+        self.log_counters();
+
+        let now = Instant::now();
+        let heartbeat = self.stats.heartbeat.load(Ordering::Relaxed);
+        let lost = self.flags.lost.swap(false, Ordering::Relaxed);
+        let default_changed = self.recovery.device_check_due(now) && {
+            let current = self
+                .host
+                .default_output_device()
+                .and_then(|d| d.name().ok());
+            current != self.device_name
+        };
+        if lost {
+            log::warn!("audio: the output device is no longer available");
+        } else if default_changed {
+            log::info!("audio: the default output device changed; moving the stream");
+        }
+        if self.recovery.observe(now, heartbeat, lost, default_changed) {
+            return self.rebuild(now);
+        }
+        None
+    }
+
+    fn log_counters(&mut self) {
+        let errors = self.flags.errors.load(Ordering::Relaxed);
+        if errors > self.logged_errors {
+            let kind = match self.flags.last_kind.load(Ordering::Relaxed) {
+                1 => "device not available",
+                _ => "backend error",
+            };
+            log::warn!(
+                "audio: {} stream error(s) from the device (last: {kind}); {errors} in total",
+                errors - self.logged_errors
+            );
+            self.logged_errors = errors;
+        }
+        let s = &self.stats;
+        let now = [
+            s.ignored.load(Ordering::Relaxed),
+            s.refused.load(Ordering::Relaxed),
+            s.queue_overflow.load(Ordering::Relaxed),
+            s.freed_in_place.load(Ordering::Relaxed),
+        ];
+        const WHAT: [&str; 4] = [
+            "unresolved attach command(s) reached the mixer",
+            "command(s) refused: every voice slot was taken",
+            "stream buffer(s) dropped: a voice's queue was full",
+            "buffer(s) freed on the audio thread: the retire ring was full",
+        ];
+        for i in 0..4 {
+            // `>` rather than `!=`: a fresh mixer after a rebuild restarts at 0.
+            if now[i] > self.logged[i] {
+                log::warn!("audio: {} {}", now[i] - self.logged[i], WHAT[i]);
+            }
+            self.logged[i] = now[i];
+        }
+    }
+
+    fn rebuild(&mut self, now: Instant) -> Option<CommandProducer> {
+        // Dropping the stream drops cpal's closure, which sends the render
+        // state — every voice — back into `home`.
+        self.stream = None;
+        let came_home = self.home.lock().map(|h| h.is_some()).unwrap_or(false);
+        let mut fresh = None;
+        if !came_home {
+            // The backend did not hand the closure back. Start over with an
+            // empty mixer on a new pair of rings; what was playing is lost,
+            // which is also what vanilla's `SoundEngine.reload` does.
+            log::warn!("audio: the old stream's state was not recovered; starting a fresh mixer");
+            let (producer, commands) = command_ring(DEFAULT_RING_CAPACITY);
+            let (grave_tx, graveyard) = ring::<Retired>(RETIRE_RING_CAPACITY);
+            while let Some(r) = self.graveyard.pop() {
+                drop(r);
+            }
+            self.graveyard = graveyard;
+            let cb = RenderCallback::new(
+                Mixer::new(self.out_rate),
+                commands,
+                grave_tx,
+                Arc::clone(&self.stats),
+            );
+            match self.home.lock() {
+                Ok(mut slot) => *slot = Some(cb),
+                Err(poisoned) => *poisoned.into_inner() = Some(cb),
+            }
+            fresh = Some(producer);
+        }
+        match build(&self.host, &self.home, &self.flags) {
+            Ok(b) => {
+                log::info!(
+                    "audio: output stream rebuilt on {} at {} Hz, {:?}",
+                    b.device_name.as_deref().unwrap_or("<unnamed device>"),
+                    b.out_rate,
+                    b.format
+                );
+                self.out_rate = b.out_rate;
+                self.device_name = b.device_name;
+                self.stream = Some(b.stream);
+                self.flags.lost.store(false, Ordering::Relaxed);
+                self.recovery.rebuilt(now, true);
+            }
+            Err(e) => {
+                self.recovery.rebuilt(now, false);
+                log::warn!(
+                    "audio: could not rebuild the output stream ({e}); next attempt in {:?}",
+                    self.recovery.retry_in(now)
+                );
+            }
+        }
+        let producer = fresh?;
+        if self.ring.is_some() {
+            self.ring = Some(producer);
+            None
+        } else {
+            Some(producer)
+        }
     }
 
     /// Convenience for a caller that has a decoded buffer and wants it heard.
@@ -155,17 +536,16 @@ impl CpalSink {
         pcm: Arc<crate::buffers::Pcm>,
     ) -> bool {
         use rewo_net::sound_engine::ChannelCall as C;
+        let ring = self.ring();
         let mut ok = true;
-        ok &= self.ring.push(Command::Channel(id, C::SetPitch(1.0)));
-        ok &= self.ring.push(Command::Channel(id, C::SetVolume(1.0)));
-        ok &= self.ring.push(Command::Channel(id, C::DisableAttenuation));
-        ok &= self.ring.push(Command::Channel(id, C::SetLooping(false)));
-        ok &= self
-            .ring
-            .push(Command::Channel(id, C::SetSelfPosition(0.0, 0.0, 0.0)));
-        ok &= self.ring.push(Command::Channel(id, C::SetRelative(true)));
-        ok &= self.ring.push(Command::Attach(id, pcm));
-        ok &= self.ring.push(Command::Channel(id, C::Play));
+        ok &= ring.push(Command::Channel(id, C::SetPitch(1.0)));
+        ok &= ring.push(Command::Channel(id, C::SetVolume(1.0)));
+        ok &= ring.push(Command::Channel(id, C::DisableAttenuation));
+        ok &= ring.push(Command::Channel(id, C::SetLooping(false)));
+        ok &= ring.push(Command::Channel(id, C::SetSelfPosition(0.0, 0.0, 0.0)));
+        ok &= ring.push(Command::Channel(id, C::SetRelative(true)));
+        ok &= ring.push(Command::Attach(id, pcm));
+        ok &= ring.push(Command::Channel(id, C::Play));
         ok
     }
 }
@@ -184,7 +564,6 @@ impl CpalSink {
 /// own doc, and [`crate::live_sink`] for the part that is.
 pub struct CpalBackend {
     sink: LiveSink<Box<dyn PcmSource>>,
-    /// Held, not used. Dropping it stops the stream.
     device: CpalSink,
 }
 
@@ -234,8 +613,11 @@ impl CpalBackend {
     }
 
     pub fn open(source: Box<dyn PcmSource>) -> Result<CpalBackend, String> {
-        let device = CpalSink::open()?;
-        let sink = LiveSink::new(Arc::clone(device.ring()), source);
+        let mut device = CpalSink::open()?;
+        let ring = device
+            .take_ring()
+            .ok_or_else(|| "the device's command ring was already taken".to_string())?;
+        let sink = LiveSink::new(ring, source);
         Ok(CpalBackend { sink, device })
     }
 
@@ -257,6 +639,11 @@ impl ChannelSink for CpalBackend {
         self.sink.set_listener(transform);
     }
     fn tick(&mut self) {
+        // Before the sink's own tick, so a ring replaced by a rebuild is the
+        // one this tick's commands go into.
+        if let Some(ring) = self.device.service() {
+            self.sink.replace_ring(ring);
+        }
         self.sink.tick();
     }
     fn stopped(&self, channel: ChannelId) -> Option<bool> {
@@ -269,5 +656,94 @@ impl ChannelSink for CpalBackend {
             device_errors: self.device.errors(),
             ..self.sink.diagnostics()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(t0: Instant, ms: u64) -> Instant {
+        t0 + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_running_stream_is_left_alone() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        for i in 1..100u64 {
+            assert!(!r.observe(at(t0, i * 100), i, false, false));
+        }
+        assert!(r.healthy());
+    }
+
+    #[test]
+    fn device_loss_rebuilds_at_once() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        assert!(r.observe(at(t0, 10), 1, true, false));
+        assert!(!r.healthy());
+    }
+
+    #[test]
+    fn a_changed_default_device_rebuilds() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        assert!(r.observe(at(t0, 10), 1, false, true));
+    }
+
+    #[test]
+    fn a_stalled_heartbeat_rebuilds_after_the_stall_window_and_not_before() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        assert!(!r.observe(at(t0, 100), 5, false, false));
+        // Five callbacks, then silence.
+        assert!(!r.observe(
+            at(t0, 100) + STALL - Duration::from_millis(1),
+            5,
+            false,
+            false
+        ));
+        assert!(r.observe(at(t0, 100) + STALL, 5, false, false));
+    }
+
+    #[test]
+    fn failed_rebuilds_back_off_and_cap() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        let mut now = at(t0, 10);
+        assert!(r.observe(now, 0, true, false));
+        let mut waits = Vec::new();
+        for _ in 0..10 {
+            r.rebuilt(now, false);
+            // Not before the backoff…
+            assert!(!r.observe(now + Duration::from_millis(1), 0, false, false));
+            // …and exactly at it.
+            let wait = r.next_attempt.duration_since(now);
+            waits.push(wait);
+            now = r.next_attempt;
+            assert!(r.observe(now, 0, false, false));
+        }
+        assert_eq!(waits[0], BACKOFF_MIN);
+        assert_eq!(waits[1], BACKOFF_MIN * 2);
+        assert!(waits.windows(2).all(|w| w[1] >= w[0]), "{waits:?}");
+        assert_eq!(*waits.last().unwrap(), BACKOFF_MAX, "{waits:?}");
+        // A success resets everything.
+        r.rebuilt(now, true);
+        assert!(r.healthy());
+        assert!(!r.observe(now + Duration::from_millis(5), 1, false, false));
+    }
+
+    #[test]
+    fn the_default_device_is_checked_once_a_second_while_healthy() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(t0);
+        assert!(!r.device_check_due(at(t0, 500)));
+        assert!(r.device_check_due(at(t0, 1000)));
+        assert!(!r.device_check_due(at(t0, 1500)));
+        assert!(r.device_check_due(at(t0, 2000)));
+        // Not while a rebuild is pending: that targets the default anyway.
+        assert!(r.observe(at(t0, 2100), 1, true, false));
+        assert!(!r.device_check_due(at(t0, 5000)));
     }
 }

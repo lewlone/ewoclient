@@ -31,8 +31,92 @@
 //! Rewo against them rather than against vanilla.
 
 use crate::buffers::Pcm;
+use crate::device::{Command, Producer};
 use rewo_net::sound_engine::{openal, ChannelId, ListenerTransform};
+use std::collections::VecDeque;
 use std::sync::Arc;
+
+/// Voices the mixer can hold at once, preallocated so the callback never grows
+/// a `Vec`.
+///
+/// `Library`'s ceiling is 255 sources (247 static + 8 streaming at most), so
+/// 256 covers every channel the engine can have acquired. **Overflow is
+/// refused, not grown**: a command for a new channel past this is counted in
+/// [`Mixer::refused`] and its buffer retired, and the channel stays silent.
+/// The engine cannot get here without a pool larger than OpenAL's own.
+pub const MAX_VOICES: usize = 256;
+
+/// Buffers one streaming voice can hold queued behind the one playing.
+///
+/// The producer keeps `QUEUED_BUFFER_COUNT` (4) outstanding; four times that
+/// absorbs the drift between the engine's clock and the device's. **Overflow
+/// drops the NEWEST buffer** (counted in [`Mixer::queue_overflow`]), for the
+/// command ring's reason: the queue's order is the stream's order.
+pub const MAX_QUEUED: usize = 16;
+
+/// `SoundEngine.calculatePitch`'s clamp, enforced again at the mixer boundary.
+///
+/// The engine already clamps to `0.5..=2.0`, but `Mth.clamp` passes NaN through
+/// (`value < min ? min : Math.min(value, max)`), and a NaN or non-positive step
+/// leaves the cursor where it is: the voice never finishes and its channel is
+/// held for the session. NaN becomes 1.0, the only value that does not invent a
+/// pitch.
+pub fn sanitize_pitch(pitch: f32) -> f32 {
+    use rewo_net::sound_instance::{PITCH_MAX, PITCH_MIN};
+    if pitch.is_nan() {
+        1.0
+    } else {
+        pitch.clamp(PITCH_MIN, PITCH_MAX)
+    }
+}
+
+/// Something the callback has let go of and must not free.
+///
+/// Dropping the last `Arc<Pcm>` deallocates a buffer that can be megabytes,
+/// and the allocator may take a lock another thread holds; in a device callback
+/// that is a dropout. So everything the mixer releases travels out over a
+/// second SPSC ring (see [`Mixer::set_graveyard`]) and is dropped by whoever
+/// drains it, off the audio thread.
+pub enum Retired {
+    Pcm(Arc<Pcm>),
+    /// A command the callback could not use that owns heap memory — a
+    /// path-carrying attach that the producer should have resolved.
+    Command(Command),
+    /// A voice's queue storage that the spare pool had no room for. Only voices
+    /// added through [`Mixer::push`] (the witnesses' path) can produce one.
+    Queue(VecDeque<Arc<Pcm>>),
+}
+
+/// Where the mixer puts what it releases.
+struct Grave {
+    tx: Option<Producer<Retired>>,
+    /// Frees that happened in the callback anyway, because the retire ring was
+    /// full. Without a graveyard nothing is counted: that is the gates' and
+    /// witnesses' configuration, where no real-time thread exists.
+    freed_here: u64,
+    /// The one empty buffer every new or underrun voice points at, made once so
+    /// neither path allocates. Never retired: the mixer always holds a
+    /// reference, so dropping a clone of it is a count decrement and nothing
+    /// more.
+    empty: Arc<Pcm>,
+}
+
+impl Grave {
+    fn bury(&mut self, r: Retired) {
+        if let Some(tx) = &self.tx {
+            if let Err(back) = tx.try_push(r) {
+                self.freed_here += 1;
+                drop(back);
+            }
+        }
+    }
+
+    fn pcm(&mut self, pcm: Arc<Pcm>) {
+        if !Arc::ptr_eq(&pcm, &self.empty) {
+            self.bury(Retired::Pcm(pcm));
+        }
+    }
+}
 
 /// One sounding voice — a channel, in OpenAL's sense.
 #[derive(Clone)]
@@ -44,7 +128,8 @@ pub struct Voice {
     /// `Channel.setVolume` — the engine's already-computed gain
     /// (`calculateVolume`: instance x category x master, all clamped).
     pub gain: f32,
-    /// `Channel.setPitch`, clamped 0.5..2.0 by `SoundEngine.calculatePitch`.
+    /// `Channel.setPitch`, clamped 0.5..2.0 by `SoundEngine.calculatePitch`
+    /// and again by [`sanitize_pitch`] at the mixer.
     pub pitch: f32,
     /// `Channel.setSelfPosition`.
     pub position: [f32; 3],
@@ -60,7 +145,7 @@ pub struct Voice {
     /// Buffers waiting behind [`Self::pcm`], oldest first — an AL source's
     /// queued buffers (M144). **Empty for every static voice**, which is what
     /// makes the streaming path an addition rather than a change.
-    pub queue: std::collections::VecDeque<Arc<Pcm>>,
+    pub queue: VecDeque<Arc<Pcm>>,
     /// This voice is fed by a stream rather than holding its whole sound.
     ///
     /// The one thing it changes in the render is what happens when the buffers
@@ -99,7 +184,7 @@ impl Voice {
             relative: false,
             max_distance: None,
             looping: false,
-            queue: std::collections::VecDeque::new(),
+            queue: VecDeque::new(),
             streaming: false,
             consumed_buffers: 0,
             finished: false,
@@ -113,7 +198,12 @@ impl Voice {
     }
 }
 
-/// Stereo output at a fixed rate, fed by any number of voices.
+/// Stereo output at a fixed rate, fed by up to [`MAX_VOICES`] voices.
+///
+/// **Nothing on the command and render path allocates or frees** once a
+/// graveyard is attached: voice slots, queue storage and the empty buffer are
+/// made in [`Mixer::new`], and everything released goes out as a [`Retired`].
+/// `tests/rt_alloc.rs` holds that under a counting allocator.
 pub struct Mixer {
     /// The device's output rate. Sources are resampled into it, and the store
     /// is genuinely mixed-rate (44100 and 48000 inside one event family), so
@@ -123,12 +213,21 @@ pub struct Mixer {
     /// Keyed by channel, and a `Vec` rather than a map so the mix order is the
     /// order voices arrived. Float addition is not associative, so a `HashMap`
     /// would make the output depend on hashing and two identical scenes could
-    /// differ in the last bits.
+    /// differ in the last bits. Capacity [`MAX_VOICES`], reserved up front.
     voices: Vec<(ChannelId, Voice)>,
+    /// Queue storage for voices yet to be created, each with room for
+    /// [`MAX_QUEUED`] buffers. A removed voice's queue comes back here.
+    spare_queues: Vec<VecDeque<Arc<Pcm>>>,
+    grave: Grave,
     /// Commands that arrived for a channel the mixer has never heard of, or that
     /// the callback cannot honour. Counted rather than logged, because the
     /// callback must not take a lock or a syscall.
     pub ignored: u64,
+    /// Commands refused because every voice slot was taken. See [`MAX_VOICES`].
+    pub refused: u64,
+    /// Stream buffers refused because their voice's queue was full. See
+    /// [`MAX_QUEUED`].
+    pub queue_overflow: u64,
 }
 
 impl Mixer {
@@ -136,13 +235,49 @@ impl Mixer {
         Mixer {
             out_rate,
             listener: ListenerTransform::INITIAL,
-            voices: Vec::new(),
+            voices: Vec::with_capacity(MAX_VOICES),
+            spare_queues: (0..MAX_VOICES)
+                .map(|_| VecDeque::with_capacity(MAX_QUEUED))
+                .collect(),
+            grave: Grave {
+                tx: None,
+                freed_here: 0,
+                empty: Arc::new(Pcm {
+                    samples: Vec::new(),
+                    channels: 1,
+                    sample_rate: 44100,
+                }),
+            },
             ignored: 0,
+            refused: 0,
+            queue_overflow: 0,
         }
     }
 
+    /// Send everything this mixer releases to `tx` instead of dropping it.
+    ///
+    /// The real-time configuration: the device callback owns the mixer, and the
+    /// other end is drained (and the buffers freed) on the engine's thread.
+    /// Without one, a released buffer drops where it is released, which is
+    /// right for every caller that is not a device callback.
+    pub fn set_graveyard(&mut self, tx: Producer<Retired>) {
+        self.grave.tx = Some(tx);
+    }
+
+    /// Releases that freed in place because the graveyard ring was full.
+    pub fn freed_in_place(&self) -> u64 {
+        self.grave.freed_here
+    }
+
     /// Add a voice directly, outside the command path — what the witnesses use.
-    pub fn push(&mut self, v: Voice) {
+    ///
+    /// **Not real-time safe**, and it need not be: it may grow the voice list,
+    /// and it gives the voice's queue its [`MAX_QUEUED`] room up front so the
+    /// command path can later append to it without allocating.
+    pub fn push(&mut self, mut v: Voice) {
+        if v.queue.capacity() < MAX_QUEUED {
+            v.queue.reserve(MAX_QUEUED - v.queue.len());
+        }
         let id = self.voices.len() as ChannelId;
         self.voices.push((id, v));
     }
@@ -164,46 +299,78 @@ impl Mixer {
     /// and sends [`crate::device::Command::Attach`] with the PCM already in
     /// hand. Seeing a path-carrying attach here means the producer skipped that
     /// step, so it is counted where a silent ignore would hide it.
-    pub fn apply(&mut self, cmd: &crate::device::Command) {
-        use crate::device::Command;
+    ///
+    /// By reference, for the witnesses and gates. It clones the command, which
+    /// allocates for a path-carrying one; the callback uses
+    /// [`Self::apply_owned`].
+    pub fn apply(&mut self, cmd: &Command) {
+        self.apply_owned(cmd.clone());
+    }
+
+    /// [`Self::apply`] taking the command by value — the real-time path.
+    ///
+    /// Owning it is what lets every buffer it carries be moved into a voice or
+    /// out to the graveyard rather than dropped here.
+    pub fn apply_owned(&mut self, cmd: Command) {
         use rewo_net::sound_engine::ChannelCall as C;
         match cmd {
-            Command::Listener(t) => self.listener = *t,
-            Command::Attach(id, pcm) => {
-                let v = self.ensure(*id);
-                v.pcm = Arc::clone(pcm);
-                v.cursor = 0.0;
-                v.finished = false;
-            }
-            Command::Queue(id, pcm) => {
-                let v = self.ensure(*id);
-                v.streaming = true;
-                if v.pcm.samples.is_empty() {
-                    // The head of the stream, or the first chunk after an
-                    // underrun. Promoted rather than queued so the caller does
-                    // not have to know which it is.
-                    v.pcm = Arc::clone(pcm);
+            Command::Listener(t) => self.listener = t,
+            Command::Attach(id, pcm) => match self.ensure(id) {
+                Some(i) => {
+                    let v = &mut self.voices[i].1;
+                    let old = std::mem::replace(&mut v.pcm, pcm);
                     v.cursor = 0.0;
                     v.finished = false;
-                } else {
-                    v.queue.push_back(Arc::clone(pcm));
+                    self.grave.pcm(old);
                 }
-            }
+                None => self.grave.pcm(pcm),
+            },
+            Command::Queue(id, pcm) => match self.ensure(id) {
+                Some(i) => {
+                    let v = &mut self.voices[i].1;
+                    v.streaming = true;
+                    if v.pcm.samples.is_empty() {
+                        // The head of the stream, or the first chunk after an
+                        // underrun. Promoted rather than queued so the caller
+                        // does not have to know which it is.
+                        let old = std::mem::replace(&mut v.pcm, pcm);
+                        v.cursor = 0.0;
+                        v.finished = false;
+                        self.grave.pcm(old);
+                    } else if v.queue.len() < v.queue.capacity() {
+                        // Below capacity is exactly when `push_back` does not
+                        // reallocate.
+                        v.queue.push_back(pcm);
+                    } else {
+                        self.queue_overflow += 1;
+                        self.grave.pcm(pcm);
+                    }
+                }
+                None => self.grave.pcm(pcm),
+            },
             Command::Channel(id, call) => match call {
-                C::Stop => self.voices.retain(|(k, _)| k != id),
-                C::AttachStaticBuffer(_) | C::AttachBufferStream(_, _) => self.ignored += 1,
+                C::Stop => self.remove_channel(id),
+                C::AttachStaticBuffer(_) | C::AttachBufferStream(_, _) => {
+                    self.ignored += 1;
+                    // It owns a `String`; dropping it here would be a free.
+                    self.grave
+                        .bury(Retired::Command(Command::Channel(id, call)));
+                }
                 _ => {
-                    let v = self.ensure(*id);
+                    let Some(i) = self.ensure(id) else {
+                        return;
+                    };
+                    let v = &mut self.voices[i].1;
                     match call {
-                        C::SetPitch(p) => v.pitch = *p,
-                        C::SetVolume(g) => v.gain = *g,
-                        C::LinearAttenuation(d) => v.max_distance = Some(*d),
+                        C::SetPitch(p) => v.pitch = sanitize_pitch(p),
+                        // A NaN gain would reach the device as NaN samples: the
+                        // final clamp passes NaN through.
+                        C::SetVolume(g) => v.gain = if g.is_finite() { g.max(0.0) } else { 0.0 },
+                        C::LinearAttenuation(d) => v.max_distance = Some(d),
                         C::DisableAttenuation => v.max_distance = None,
-                        C::SetLooping(l) => v.looping = *l,
-                        C::SetRelative(r) => v.relative = *r,
-                        C::SetSelfPosition(x, y, z) => {
-                            v.position = [*x as f32, *y as f32, *z as f32]
-                        }
+                        C::SetLooping(l) => v.looping = l,
+                        C::SetRelative(r) => v.relative = r,
+                        C::SetSelfPosition(x, y, z) => v.position = [x as f32, y as f32, z as f32],
                         C::Play => {
                             v.playing = true;
                             v.paused = false;
@@ -219,31 +386,73 @@ impl Mixer {
         }
     }
 
-    /// The voice for a channel, created silent if it is new.
+    /// The index of the voice for a channel, created silent if it is new.
     ///
     /// **Silent, because the properties arrive before the `Play`.** A voice that
     /// started sounding on its first `SetPitch` would play the first few
     /// milliseconds at whatever position and volume had not yet been set.
-    fn ensure(&mut self, id: ChannelId) -> &mut Voice {
+    ///
+    /// `None`, counted, when every slot is taken — see [`MAX_VOICES`].
+    fn ensure(&mut self, id: ChannelId) -> Option<usize> {
         if let Some(i) = self.voices.iter().position(|(k, _)| *k == id) {
-            return &mut self.voices[i].1;
+            return Some(i);
         }
-        let mut v = Voice::new(Arc::new(Pcm {
-            samples: Vec::new(),
-            channels: 1,
-            sample_rate: 44100,
-        }));
+        if self.voices.len() == self.voices.capacity() {
+            self.refused += 1;
+            return None;
+        }
+        let Some(queue) = self.spare_queues.pop() else {
+            self.refused += 1;
+            return None;
+        };
+        let mut v = Voice::new(Arc::clone(&self.grave.empty));
+        v.queue = queue;
         v.playing = false;
         self.voices.push((id, v));
-        let n = self.voices.len();
-        &mut self.voices[n - 1].1
+        Some(self.voices.len() - 1)
+    }
+
+    /// `Stop`: the voice goes, and everything it held goes to the graveyard.
+    fn remove_channel(&mut self, id: ChannelId) {
+        // Every match rather than the first, as the `retain` this replaces did.
+        let mut i = 0;
+        while i < self.voices.len() {
+            if self.voices[i].0 == id {
+                self.remove_at(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Remove one voice, keeping the order of the rest, without freeing.
+    fn remove_at(&mut self, i: usize) {
+        let (_, v) = self.voices.remove(i);
+        let Voice { pcm, mut queue, .. } = v;
+        self.grave.pcm(pcm);
+        while let Some(p) = queue.pop_front() {
+            self.grave.pcm(p);
+        }
+        if self.spare_queues.len() < self.spare_queues.capacity() && queue.capacity() >= MAX_QUEUED
+        {
+            self.spare_queues.push(queue);
+        } else {
+            self.grave.bury(Retired::Queue(queue));
+        }
     }
 
     /// Drop every finished voice. Separate from [`Self::render`] so a caller can
     /// decide when a channel is reclaimable — vanilla's own reclaim is on a
     /// 20-tick grace period, not on the sound ending.
     pub fn retire_finished(&mut self) {
-        self.voices.retain(|(_, v)| !v.finished);
+        let mut i = 0;
+        while i < self.voices.len() {
+            if self.voices[i].1.finished {
+                self.remove_at(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Fill `out` with interleaved stereo. `out.len()` must be even.
@@ -266,8 +475,10 @@ impl Mixer {
         ];
         let right = self.listener.right();
         let right = [right[0] as f32, right[1] as f32, right[2] as f32];
+        let out_rate = self.out_rate;
+        let Mixer { voices, grave, .. } = self;
 
-        for (_, v) in self.voices.iter_mut() {
+        for (_, v) in voices.iter_mut() {
             if v.finished || v.pcm.samples.is_empty() || !v.playing || v.paused {
                 continue;
             }
@@ -276,7 +487,11 @@ impl Mixer {
             // Frames of source per frame of output: the rate conversion and the
             // pitch multiply into one step, because `AL_PITCH` *is* a playback
             // rate multiplier rather than a separate effect.
-            let step = (v.pcm.sample_rate as f64 / self.out_rate as f64) * v.pitch as f64;
+            //
+            // Sanitised here as well as at `apply`, because a witness can set
+            // `pitch` directly and a NaN or zero step holds the voice forever.
+            let pitch = sanitize_pitch(v.pitch);
+            let step = (v.pcm.sample_rate as f64 / out_rate as f64) * pitch as f64;
 
             // Distance and direction are per-BLOCK, not per-sample: vanilla
             // pushes a source's position once per call and lets the driver hold
@@ -380,11 +595,12 @@ impl Mixer {
                         // insert a sub-sample gap at every buffer boundary,
                         // which at one per second is an audible tick.
                         v.cursor -= src_frames as f64;
-                        v.pcm = next;
+                        let old = std::mem::replace(&mut v.pcm, next);
+                        grave.pcm(old);
                         v.consumed_buffers += 1;
                         channels = v.pcm.channels.max(1) as usize;
                         src_frames = v.pcm.samples.len() / channels;
-                        step = (v.pcm.sample_rate as f64 / self.out_rate as f64) * v.pitch as f64;
+                        step = (v.pcm.sample_rate as f64 / out_rate as f64) * pitch as f64;
                         let (l, r) = pan_gains(pan, channels);
                         l_gain = l;
                         r_gain = r;
@@ -400,11 +616,8 @@ impl Mixer {
                         // channel would be released before the next chunk
                         // arrived.
                         v.consumed_buffers += 1;
-                        v.pcm = Arc::new(Pcm {
-                            samples: Vec::new(),
-                            channels: v.pcm.channels,
-                            sample_rate: v.pcm.sample_rate,
-                        });
+                        let old = std::mem::replace(&mut v.pcm, Arc::clone(&grave.empty));
+                        grave.pcm(old);
                         v.cursor = 0.0;
                     } else {
                         v.finished = true;
@@ -724,6 +937,40 @@ mod tests {
         // one frame, for the boundary the fractional cursor lands on.
         assert!((sounding_frames(2.0) as i64 - (one as i64 / 2)).abs() <= 1);
         assert!((sounding_frames(0.5) as i64 - (one as i64 * 2)).abs() <= 1);
+    }
+
+    /// **A NaN, zero or negative pitch cannot hold a voice forever.**
+    ///
+    /// `Mth.clamp` passes NaN through, and a NaN or non-positive step left the
+    /// cursor where it was: the voice never finished and its channel was held
+    /// for the session. At the mixer boundary the pitch is clamped to
+    /// `calculatePitch`'s 0.5..2.0, with NaN as 1.0.
+    #[test]
+    fn a_degenerate_pitch_is_clamped_and_the_voice_still_ends() {
+        use crate::device::Command;
+        use rewo_net::sound_engine::ChannelCall as C;
+        for (bad, expect) in [
+            (f32::NAN, 1.0),
+            (0.0, 0.5),
+            (-3.0, 0.5),
+            (f32::INFINITY, 2.0),
+        ] {
+            let mut m = Mixer::new(44100);
+            m.apply(&Command::Channel(1, C::SetPitch(bad)));
+            m.apply(&Command::Attach(1, dc(44100, 441, 1)));
+            m.apply(&Command::Channel(1, C::Play));
+            assert_eq!(m.voice(1).unwrap().pitch, expect, "SetPitch({bad})");
+            let _ = render(&mut m, 4096);
+            assert!(m.voice(1).unwrap().finished, "SetPitch({bad}) never ended");
+        }
+        // A voice pushed directly with a NaN pitch bypasses `apply`; the render
+        // guards it too.
+        let mut m = Mixer::new(44100);
+        let mut v = Voice::new(dc(44100, 441, 1));
+        v.pitch = f32::NAN;
+        m.push(v);
+        let _ = render(&mut m, 4096);
+        assert!(m.voice(0).unwrap().finished);
     }
 
     /// A source at a different rate from the device is resampled, not replayed

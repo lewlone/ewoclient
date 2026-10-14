@@ -2496,9 +2496,12 @@ fn dc(amplitude: i16, frames: usize) -> std::sync::Arc<rewo_audio::buffers::Pcm>
 /// rendered output**, which is the whole point of layer (m).
 #[cfg(feature = "audio")]
 fn peak_lr(out: &[f32]) -> (f32, f32) {
-    out.chunks_exact(2).fold((0.0f32, 0.0f32), |(l, r), s| {
-        (l.max(s[0].abs()), r.max(s[1].abs()))
-    })
+    out.as_chunks::<2>()
+        .0
+        .iter()
+        .fold((0.0f32, 0.0f32), |(l, r), s| {
+            (l.max(s[0].abs()), r.max(s[1].abs()))
+        })
 }
 
 #[cfg(feature = "audio")]
@@ -2664,7 +2667,11 @@ fn mixer_layer(c: &mut Checker) {
         v.pitch = pitch;
         m.push(v);
         let out = render(&mut m, 24_000);
-        out.chunks_exact(2).filter(|s| s[0] != 0.0).count()
+        out.as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|s| s[0] != 0.0)
+            .count()
     };
     let (fast, slow, unit_pitch) = (
         sounding_frames(1.25),
