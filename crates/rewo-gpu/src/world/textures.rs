@@ -45,16 +45,11 @@ pub(super) fn generate_mips(tex_size: u32, mip_levels: u32, base: &[u8]) -> Vec<
     out
 }
 
-/// `pub(crate)` so the M37 particle pass can build its own layered texture
-/// through the same upload path rather than duplicating it.
-pub(crate) fn upload_texture_array(
-    gpu: &mut Gpu,
-    image: vk::Image,
-    tex_size: u32,
-    mip_levels: u32,
-    layers: &[Vec<u8>],
-) -> Result<(), String> {
-    let layer_count = layers.len().max(1);
+/// The CPU side of [`upload_texture_array`]: every layer's full mip chain laid
+/// out mip-major (all layers' mip 0, then all layers' mip 1, …) in one staging
+/// blob, with the byte offset each mip level starts at. An empty `layers` is
+/// one opaque-white layer.
+fn texture_staging(tex_size: u32, mip_levels: u32, layers: &[Vec<u8>]) -> (Vec<u8>, Vec<u64>) {
     let mut staging_data = Vec::new();
     let mut mip_offsets = Vec::new();
     let per_layer_mips: Vec<Vec<Vec<u8>>> = if layers.is_empty() {
@@ -75,6 +70,20 @@ pub(crate) fn upload_texture_array(
             staging_data.extend_from_slice(&layer_mips[mip]);
         }
     }
+    (staging_data, mip_offsets)
+}
+
+/// `pub(crate)` so the M37 particle pass can build its own layered texture
+/// through the same upload path rather than duplicating it.
+pub(crate) fn upload_texture_array(
+    gpu: &mut Gpu,
+    image: vk::Image,
+    tex_size: u32,
+    mip_levels: u32,
+    layers: &[Vec<u8>],
+) -> Result<(), String> {
+    let layer_count = layers.len().max(1);
+    let (staging_data, mip_offsets) = texture_staging(tex_size, mip_levels, layers);
 
     unsafe {
         let device = gpu.device.clone();

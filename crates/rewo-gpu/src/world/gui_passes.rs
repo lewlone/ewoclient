@@ -600,6 +600,13 @@ impl WorldRenderer {
         cb: vk::CommandBuffer,
         extent: vk::Extent2D,
     ) {
+        self.draw_hand(gpu, cb, extent);
+        self.draw_hud_and_container(gpu, cb, extent);
+        self.draw_chrome_and_text(gpu, cb, extent);
+    }
+
+    /// The first-person hand and its glint.
+    fn draw_hand(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
         // The first-person hand, after the world and before the HUD.
         //
         // Vanilla clears the depth buffer first, which is what stops a wall a
@@ -611,6 +618,10 @@ impl WorldRenderer {
             pass.draw(gpu, cb, vp, extent);
             self.in_gamma_space(gpu, cb, extent, || pass.draw_glint(gpu, cb, vp, extent));
         }
+    }
+
+    /// The HUD and the inventory / container screen over it.
+    fn draw_hud_and_container(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
         // HUD, then the inventory screen over it, then text — all screen
         // space. The item icons are one pass drawn once, so when the screen is
         // open they belong to it rather than to the hotbar: the caller feeds
@@ -683,6 +694,10 @@ impl WorldRenderer {
             // text follows in the text pass below, which is drawn last of all.
             pass.draw_tooltip(gpu, cb, extent);
         }
+    }
+
+    /// The screen framework's chrome, then the bitmap and Velvet text passes.
+    fn draw_chrome_and_text(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
         // The screen framework's chrome (M82), over the HUD and the inventory
         // and under the text pass — vanilla's own order is
         // `extractBackground` then the widgets then the deferred text, and the
