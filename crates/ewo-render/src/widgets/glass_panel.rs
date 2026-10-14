@@ -23,9 +23,10 @@
 //! doing so would re-rasterize the text glyphs above it. The prototype's
 //! `panel-mount` keyframe (scale 0.98 + blur 8px on the whole panel) is not
 //! implemented here for the same reason. Screens that want an entrance fade
-//! the panel with an alpha layer plus a whole-pixel translate (see
-//! `settings.rs` tab changes) or animate the chrome layers separately, as
-//! the modals do; the inner content is never scaled.
+//! the panel with an alpha layer plus a translate rounded to whole *device*
+//! pixels (`offscreen::snap_dy`; see the `settings.rs` tab changes) or
+//! animate the chrome layers separately, as the modals do; the inner content
+//! is never scaled and never sits on a fractional-pixel offset.
 
 use crate::gradients;
 use crate::tokens;

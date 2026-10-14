@@ -157,7 +157,7 @@ pub fn draw_modal(
     let card = card_rect(card_w, card_h);
     let cx = (card.left + card.right) * 0.5;
     let cy = (card.top + card.bottom) * 0.5;
-    let ty = ((1.0 - anim) * 10.0).round();
+    let ty = crate::offscreen::snap_dy(canvas, (1.0 - anim) * 10.0);
     let scale = 0.97 + 0.03 * anim;
     canvas.translate((0.0, ty));
 

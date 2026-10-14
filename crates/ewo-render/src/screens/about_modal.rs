@@ -100,7 +100,7 @@ pub fn draw_modal(
     // translates by a whole number of pixels, which keeps glyph rasterisation
     // pixel-aligned. At rest (anim = 1) both layers coincide exactly.
     let card = card_rect(card_w, card_h);
-    let ty = (10.0 * (1.0 - anim)).round();
+    let ty = crate::offscreen::snap_dy(canvas, 10.0 * (1.0 - anim));
     let scale = 0.97 + 0.03 * anim;
 
     let saved = canvas.save();

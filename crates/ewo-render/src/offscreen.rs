@@ -27,6 +27,22 @@ pub fn device_scale(canvas: &Canvas) -> (f32, f32) {
     (m.scale_x().hypot(m.skew_y()), m.skew_x().hypot(m.scale_y()))
 }
 
+/// `dy` (canvas-local units) rounded to a whole number of *device* pixels.
+///
+/// Text-bearing layers may fade and translate but must land on whole device
+/// pixels, or glyphs are resampled and soften for the duration of the move
+/// (non-negotiable #2). Rounding in logical units is not enough under a HiDPI
+/// scale (at 125 % a whole logical pixel is 1.25 device pixels), so round in
+/// physical pixels and convert back.
+pub fn snap_dy(canvas: &Canvas, dy: f32) -> f32 {
+    let (_, sy) = device_scale(canvas);
+    if sy > 0.0 && sy.is_finite() {
+        (dy * sy).round() / sy
+    } else {
+        dy.round()
+    }
+}
+
 /// The physical size of a layer covering logical `w` x `h` under `canvas`'s
 /// current transform, or `None` for a degenerate area.
 pub fn layer_size(canvas: &Canvas, w: f32, h: f32) -> Option<LayerSize> {
@@ -63,4 +79,28 @@ pub fn blit_layer(canvas: &Canvas, image: &Image) {
     canvas.reset_matrix();
     canvas.draw_image(image, (origin.x.round(), origin.y.round()), None);
     canvas.restore_to_count(saved);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skia_safe::surfaces;
+
+    #[test]
+    fn snap_dy_lands_on_whole_device_pixels() {
+        for scale in [1.0_f32, 1.25, 1.5, 2.0, 3.0] {
+            let mut s = surfaces::raster_n32_premul((64, 64)).expect("surface");
+            s.canvas().scale((scale, scale));
+            for i in 0..=140 {
+                let dy = i as f32 * 0.1;
+                let snapped = snap_dy(s.canvas(), dy);
+                let px = snapped * scale;
+                assert!(
+                    (px - px.round()).abs() < 1e-3,
+                    "scale {scale}: {dy} -> {snapped} is {px} device px"
+                );
+                assert!((snapped - dy).abs() <= 0.5 / scale + 1e-4);
+            }
+        }
+    }
 }

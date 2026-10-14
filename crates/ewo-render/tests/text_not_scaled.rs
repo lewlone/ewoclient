@@ -151,3 +151,99 @@ fn dropdown_rows_keep_their_size_while_opening() {
         assert_eq!(got.0, settled.0, "row text width changed at anim={anim}");
     }
 }
+
+// ── Fractional translates ─────────────────────────────────────────────────
+//
+// A text layer may fade and translate, but only by whole *device* pixels: a
+// fractional offset resamples every glyph. Skia can't report a layer's
+// offset afterwards, so the test works on pixels: over a black ground the
+// faded, translated frame must equal `alpha * settled frame shifted by a
+// whole number of device pixels`. A fractional translate leaves a residual
+// from the half-covered glyph edges.
+
+fn premul_rgb(surface: &mut Surface) -> Vec<u8> {
+    let info = ImageInfo::new_n32_premul((W, H), None);
+    let stride = (W * 4) as usize;
+    let mut px = vec![0u8; stride * H as usize];
+    assert!(surface.read_pixels(&info, &mut px, stride, (0, 0)));
+    px
+}
+
+/// Best whole-pixel vertical shift `k` in `0..=max_shift` (moving `settled`
+/// down) and the relative residual over the bright (text) pixels of the
+/// shifted settled frame, `sum|frame - a * shifted| / sum(a * shifted)`,
+/// with the least-squares `a` over those pixels.
+fn best_whole_shift(frame: &[u8], settled: &[u8], max_shift: i32) -> (i32, f32) {
+    let stride = (W * 4) as usize;
+    let mut best = (0, f32::MAX);
+    for k in 0..=max_shift {
+        let off = k as usize * stride;
+        // (BGRA/RGBA: the alpha byte is 255 on the opaque ground; skip it.)
+        let bright = |i: usize| i % 4 != 3 && settled[i - off] >= 140;
+        let (mut num, mut den) = (0.0_f64, 0.0_f64);
+        for i in off..frame.len() {
+            if bright(i) {
+                let (f, s) = (frame[i] as f64, settled[i - off] as f64);
+                num += f * s;
+                den += s * s;
+            }
+        }
+        let a = if den > 0.0 { num / den } else { 0.0 };
+        let (mut err, mut total) = (0.0_f64, 0.0_f64);
+        for i in off..frame.len() {
+            if bright(i) {
+                let s = a * settled[i - off] as f64;
+                err += (frame[i] as f64 - s).abs();
+                total += s;
+            }
+        }
+        let rel = (err / total.max(1.0)) as f32;
+        if rel < best.1 {
+            best = (k, rel);
+        }
+    }
+    best
+}
+
+#[test]
+fn main_menu_entrance_translates_by_whole_device_pixels() {
+    use ewo_render::screens::main_menu::{draw_main_menu, ServerWidgetView};
+    use ewo_render::text::HoverGlowState;
+
+    let Some(fonts) = fonts() else { return };
+    let menu_states = [VbtnState::default(); 4];
+    let frame = |anim: f32, scale: f32| {
+        let mut s = surface();
+        s.canvas().scale((scale, scale));
+        draw_main_menu(
+            s.canvas(),
+            &fonts,
+            W as f32 / scale,
+            H as f32 / scale,
+            3.0,
+            &menu_states,
+            HoverGlowState::default(),
+            ServerWidgetView {
+                hidden: true,
+                ..Default::default()
+            },
+            anim,
+            1.0,
+        );
+        premul_rgb(&mut s)
+    };
+    for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+        let settled = frame(1.0, scale);
+        // Early enough that the 14 px slide is far from done, with offsets
+        // that are fractional in both logical and device pixels.
+        for anim in [0.13_f32, 0.21, 0.29, 0.37] {
+            let got = frame(anim, scale);
+            let (k, residual) = best_whole_shift(&got, &settled, (16.0 * scale) as i32);
+            assert!(
+                residual < 0.01,
+                "scale {scale} anim {anim}: not a whole-pixel shift of the settled frame \
+                 (best k={k}, residual {residual:.3})"
+            );
+        }
+    }
+}
