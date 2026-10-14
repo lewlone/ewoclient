@@ -371,9 +371,6 @@ pub struct ScreenPass {
     /// `(first_vertex, vertex_count, ox, oy, w, h)` per scissored batch, in
     /// queue order. Rebuilt each `set_state`.
     scissor_batches: Vec<(u32, u32, i32, i32, u32, u32)>,
-    enabled: Rect,
-    disabled: Rect,
-    highlighted: Rect,
     white: Rect,
     /// Every sheet's atlas placement in **texels**, `(x, y, w, h)`, keyed the
     /// same way [`Sheet`] is. Texels rather than UVs because the nine-slice
@@ -660,9 +657,6 @@ impl ScreenPass {
             u1: (x + w) / ATLAS_W as f32,
             v1: (y + h) / ATLAS_H as f32,
         };
-        let enabled = uv(0.0, 0.0, SPRITE_W as f32, SPRITE_H as f32);
-        let disabled = uv(0.0, 20.0, SPRITE_W as f32, SPRITE_H as f32);
-        let highlighted = uv(0.0, 40.0, SPRITE_W as f32, SPRITE_H as f32);
         // Half a texel in, so filtering cannot reach a neighbour.
         let white = uv(500.5, 250.5, 0.0, 0.0);
 
@@ -767,9 +761,6 @@ impl ScreenPass {
             head_verts: 0,
             verts: 0,
             scissor_batches: Vec::new(),
-            enabled,
-            disabled,
-            highlighted,
             white,
             sheets,
         })

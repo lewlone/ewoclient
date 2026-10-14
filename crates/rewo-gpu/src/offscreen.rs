@@ -482,7 +482,7 @@ impl Offscreen {
     pub fn save_png(&mut self, gpu: &Gpu, path: &Path) -> Result<(), String> {
         let mut pixels = self.read_rgba(gpu)?;
         if self.is_bgra() {
-            for px in pixels.chunks_exact_mut(4) {
+            for px in pixels.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
             }
         }

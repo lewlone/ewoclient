@@ -189,7 +189,7 @@ impl VelvetTextPass {
         // through deferred destruction once every frame that could still bind
         // them has retired — no idle on a path any new glyph key reaches.
         let (pool, set) = unsafe { new_set(&gpu.device, self.set_layout)? };
-        unsafe { write_set(&gpu.device, set, self.sampler, view) };
+        write_set(&gpu.device, set, self.sampler, view);
         let (old_image, old_view, old_pool) = (self.image, self.view, self.pool);
         let old_alloc = self.image_alloc.take();
         gpu.defer_destroy(move |g| unsafe {

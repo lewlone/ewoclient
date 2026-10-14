@@ -4964,8 +4964,8 @@ mod tests {
         // Must cover the LARGEST frames-in-flight the M6 knob can select, not
         // just the default — `WorldRenderer` cannot see which one is in use.
         assert_eq!(LIGHTMAP_UBO_RING, crate::MAX_FRAMES_IN_FLIGHT);
-        assert!(LIGHTMAP_UBO_RING >= crate::FRAMES_IN_FLIGHT);
-        assert!(LIGHTMAP_UBO_RING >= 2);
+        const { assert!(LIGHTMAP_UBO_RING >= crate::FRAMES_IN_FLIGHT) };
+        const { assert!(LIGHTMAP_UBO_RING >= 2) };
 
         // The property itself, not just the constant: `draw` pre-increments the
         // cursor, so draw n binds slot (n + 1) % RING. When the driver records

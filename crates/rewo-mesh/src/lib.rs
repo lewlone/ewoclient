@@ -1694,27 +1694,6 @@ fn cube_face(
     Some(CubeFace { layer, lit })
 }
 
-/// Whether a model quad is a whole block face: axis-aligned on the block
-/// boundary of its direction and spanning the full face.
-#[cfg(test)]
-fn full_face(verts: &[[f32; 3]; 4], dir: usize) -> bool {
-    let (uu, vv, (nx, ny, nz)) = FACE_AXES[dir];
-    let n = [nx, ny, nz];
-    let an = 3 - uu - vv;
-    let plane = if n[an] > 0 { 1.0 } else { 0.0 };
-    let (mut umin, mut umax, mut vmin, mut vmax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-    for v in verts {
-        if (v[an] - plane).abs() > 1e-5 {
-            return false;
-        }
-        umin = umin.min(v[uu]);
-        umax = umax.max(v[uu]);
-        vmin = vmin.min(v[vv]);
-        vmax = vmax.max(v[vv]);
-    }
-    umin.abs() < 1e-5 && vmin.abs() < 1e-5 && (umax - 1.0).abs() < 1e-5 && (vmax - 1.0).abs() < 1e-5
-}
-
 /// Emit one resolved cube face as a unit quad.
 fn push_cube_face(
     vertices: &mut Vec<MeshVertex>,
@@ -2043,7 +2022,7 @@ mod tests {
         // y=62 either and so counted as tops.)
         let surface_at = |y: f32| {
             m.tvertices
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .filter(|q| q.iter().all(|v| (v.pos[1] - y).abs() < 1e-5))
                 .count()
         };
@@ -2097,7 +2076,7 @@ mod tests {
         let buried = mesh_at(Some(WL_WATER));
         let own_cell = buried
             .tvertices
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|q| q.iter().any(|v| v.pos[1] < 63.0 - 1e-5))
             .count();
         assert_eq!(own_cell, 0, "all six of the buried carrier's faces are suppressed");
@@ -3645,7 +3624,7 @@ mod occlusion_tests {
             let m = mesh(&w, &cull());
             // East-facing water quads sit on the x = 5 plane.
             m.tvertices
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .filter(|q| q.iter().all(|v| v.pos[0] == 5.0))
                 .count()
         };

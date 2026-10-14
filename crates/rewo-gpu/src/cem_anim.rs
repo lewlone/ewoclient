@@ -240,6 +240,9 @@ impl Slots {
     pub fn len(&self) -> usize {
         self.map.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 
     /// Every interned name. Anything here that isn't a `var.*`/`varb.*` user
     /// slot or a readable `bone.channel` is an identifier the interpreter
@@ -609,9 +612,11 @@ mod tests {
 
     #[test]
     fn builtins_and_bools() {
-        let mut c = AnimContext::default();
-        c.head_yaw = 120.0;
-        c.is_on_ground = true;
+        let c = AnimContext {
+            head_yaw: 120.0,
+            is_on_ground: true,
+            ..AnimContext::default()
+        };
         assert_eq!(run("clamp(head_yaw,-90,90)", &c), 90.0);
         assert_eq!(run("is_on_ground && !is_in_water", &c), 1.0);
         assert_eq!(run("if(is_on_ground, 5, 9)", &c), 5.0);
@@ -625,9 +630,11 @@ mod tests {
         let assign = Program::compile("age * 2", &mut slots).unwrap();
         let read = Program::compile("var.x + 1", &mut slots).unwrap();
         let xslot = slots.get_or_add("var.x");
-        let mut c = AnimContext::default();
-        c.age = 5.0;
-        c.user = vec![0.0; slots.len()];
+        let mut c = AnimContext {
+            age: 5.0,
+            user: vec![0.0; slots.len()],
+            ..AnimContext::default()
+        };
         c.user[xslot] = assign.eval(&c); // var.x = age*2 = 10
         assert_eq!(read.eval(&c), 11.0);
     }
