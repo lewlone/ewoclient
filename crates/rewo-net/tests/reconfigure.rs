@@ -409,13 +409,21 @@ fn malformed_bodies_are_counted_once_each() {
                 b.extend_from_slice(&[1, 0]);
                 b
             }),
+            // two entity ids promised, one sent
+            (ids.cb_play_remove_entities, vec![2, 7]),
+            // two UUIDs promised, one sent
+            (ids.cb_play_player_info_remove, {
+                let mut b = vec![2];
+                b.extend_from_slice(&[0xAB; 16]);
+                b
+            }),
         ];
         for (id, body) in bodies {
             let mut p = PacketWriter::packet(id);
             p.raw(&body);
             s.send(p);
         }
-        // A keep-alive after them: its reply proves the eight were handled.
+        // A keep-alive after them: its reply proves the ten were handled.
         let mut ka = PacketWriter::packet(ids.cb_play_keep_alive);
         ka.i64(77);
         s.send(ka);
@@ -446,7 +454,7 @@ fn malformed_bodies_are_counted_once_each() {
     server.join().expect("server script failed");
     session.pump(PumpBudget::UNLIMITED).unwrap();
     // (The scripted server has hung up by now; that is not a failure.)
-    assert_eq!(session.decode_failures, 1 + 8);
+    assert_eq!(session.decode_failures, 1 + 10);
     // `set_health` without its food half applied nothing.
     assert_eq!((session.health, session.food), (health, food));
 }
