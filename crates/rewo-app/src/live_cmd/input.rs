@@ -902,10 +902,15 @@ impl LiveApp {
                 }
             }
             // `RunCommand`: `closeContainerOnServer()` runs first — EMPTY in
-            // the plain reader (only LecternScreen overrides it, M87's
-            // finding) — then the command itself, which `send_command`
-            // already carries as the unsigned chat_command.
+            // the plain reader, but `LecternScreen` overrides it to
+            // `player.closeContainer()` (`LecternScreen.java:105-107`;
+            // `BookViewScreen.java:238-241`) — then the command itself,
+            // which `send_command` already carries as the unsigned
+            // chat_command.
             rewo_world::chat_events::ClickEvent::RunCommand(command) => {
+                if self.lectern_shown.is_some() {
+                    self.close_book();
+                }
                 if let Some(session) = self.session.as_mut() {
                     if let Err(e) = session.send_command(&command) {
                         log::warn!("live: book run_command({command}): {e}");
