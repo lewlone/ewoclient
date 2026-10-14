@@ -276,7 +276,9 @@ impl Offscreen {
                     .image_view(self.depth.view)
                     .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    // STORE: the gamma-space scope reopens with depth LOAD —
+                    // see the same attachment in `renderer.rs`.
+                    .store_op(vk::AttachmentStoreOp::STORE)
                     .clear_value(vk::ClearValue {
                         depth_stencil: vk::ClearDepthStencilValue {
                             depth: 0.0, // reversed-Z: 0 = far

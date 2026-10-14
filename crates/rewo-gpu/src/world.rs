@@ -2272,11 +2272,47 @@ impl WorldRenderer {
         };
         unsafe {
             gpu.device.cmd_end_rendering(cb);
+            Self::scope_barrier(gpu, cb);
             self.reopen_scope(gpu, cb, extent, g.color_unorm, g.depth);
             f();
             gpu.device.cmd_end_rendering(cb);
+            Self::scope_barrier(gpu, cb);
             self.reopen_scope(gpu, cb, extent, g.color_srgb, g.depth);
         }
+    }
+
+    /// Order one rendering instance's attachment writes before the next
+    /// instance's loads and writes of the same images.
+    ///
+    /// Two dynamic-rendering instances have no implicit dependency between
+    /// them: the first's store ops (colour: `COLOR_ATTACHMENT_OUTPUT` /
+    /// `COLOR_ATTACHMENT_WRITE`; depth: `LATE_FRAGMENT_TESTS` /
+    /// `DEPTH_STENCIL_ATTACHMENT_WRITE`) and the second's `LOAD`s (colour
+    /// read; depth read in `EARLY_FRAGMENT_TESTS`) are a read-after-write
+    /// hazard — on the colour image through a different (sRGB vs UNORM) view,
+    /// so the barrier is a global memory barrier rather than one per view. No
+    /// layout changes: both instances use the attachment-optimal layouts.
+    unsafe fn scope_barrier(gpu: &Gpu, cb: vk::CommandBuffer) {
+        let stages = vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+            | vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+            | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+        let barrier = vk::MemoryBarrier2::default()
+            .src_stage_mask(stages)
+            .src_access_mask(
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            )
+            .dst_stage_mask(stages)
+            .dst_access_mask(
+                vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                    | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            );
+        gpu.device.cmd_pipeline_barrier2(
+            cb,
+            &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&barrier)),
+        );
     }
 
     /// Run `f` inside the gamma-space scope — the public door onto

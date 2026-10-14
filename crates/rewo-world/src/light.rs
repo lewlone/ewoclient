@@ -113,8 +113,9 @@ const NEIGHBOURS: [(i32, i32, i32); 6] = [
 pub struct LightEngine {
     increase: VecDeque<(i32, i32, i32)>,
     decrease: VecDeque<(i32, i32, i32, u8)>,
-    /// Columns whose light changed during the current call — the caller
-    /// remeshes exactly these.
+    /// Loaded columns that can see a cell whose light changed during the
+    /// current call (its own column, plus the neighbour across any border the
+    /// cell touches) — the caller remeshes exactly these.
     touched: HashSet<(i32, i32)>,
 }
 
@@ -125,8 +126,10 @@ impl LightEngine {
 
     /// Relight around a block that just changed from `old` to `new`.
     ///
-    /// Returns the columns whose light changed, which the caller must remesh
-    /// — a light change is invisible until the mesh's baked light is rebuilt.
+    /// Returns the loaded columns whose meshes can see a changed cell — the
+    /// columns whose light changed plus any neighbour across a border such a
+    /// cell sits on — which the caller must remesh: a light change is
+    /// invisible until the mesh's baked light is rebuilt.
     /// The world must already hold `new` at `(x, y, z)`.
     pub fn on_block_change(
         &mut self,
@@ -460,8 +463,21 @@ impl LightEngine {
         let Some(col) = world.column_mut(cx, cz) else {
             return;
         };
-        if col.set_light(&shape, ch, x.rem_euclid(16), y, z.rem_euclid(16), level) {
-            self.touched.insert((cx, cz));
+        if !col.set_light(&shape, ch, x.rem_euclid(16), y, z.rem_euclid(16), level) {
+            return;
+        }
+        // Every column whose mesh can sample this cell, not just its own: a
+        // neighbour's face on the shared border (and its smooth-light corners)
+        // reads this cell's light. Vanilla marks the same box —
+        // `LayerLightSectionStorage.setStoredLevel` (:87-103) feeds
+        // `SectionPos.aroundAndAtBlockPos` (:273-291), every section holding a
+        // block within one of the changed cell — into `sectionsAffectedByLightUpdates`.
+        for ncx in (x - 1) >> 4..=(x + 1) >> 4 {
+            for ncz in (z - 1) >> 4..=(z + 1) >> 4 {
+                if (ncx, ncz) == (cx, cz) || world.column(ncx, ncz).is_some() {
+                    self.touched.insert((ncx, ncz));
+                }
+            }
         }
     }
 }
@@ -773,5 +789,207 @@ mod tests {
             assert_eq!(snapshot(&a), snapshot(&b), "round {round}");
             assert_matches_recompute(&mut b, round);
         }
+    }
+
+    // -- several columns, and the server's sparse sky -------------------------
+
+    /// A from-scratch recompute of every listed column at once.
+    /// `relight_column` reads its neighbours' current light as input, so run
+    /// one column at a time it would keep a neighbour's stale light; this
+    /// zeroes all of them first and floods once, which is the ground truth
+    /// an incremental run across column borders has to equal.
+    fn relight_all(w: &mut World, cols: &[(i32, i32)]) {
+        let t = p_tables();
+        let mut e = LightEngine::new();
+        let (y0, y1) = (w.shape.min_y, w.shape.min_y + w.shape.height);
+        for &(cx, cz) in cols {
+            for x in cx * 16..cx * 16 + 16 {
+                for z in cz * 16..cz * 16 + 16 {
+                    for y in y0..y1 {
+                        e.set(w, Channel::Block, x, y, z, 0);
+                        e.set(w, Channel::Sky, x, y, z, 0);
+                    }
+                    for y in e.sky_bottom(w, t, x, z)..y1 {
+                        e.set(w, Channel::Sky, x, y, z, 15);
+                        e.increase.push_back((x, y, z));
+                    }
+                    for y in y0..y1 {
+                        let emit = t.emission(w.block_state_at(x, y, z));
+                        if emit > 0 {
+                            e.set(w, Channel::Block, x, y, z, emit);
+                            e.increase.push_back((x, y, z));
+                        }
+                    }
+                }
+            }
+        }
+        let seeds: Vec<_> = e.increase.drain(..).collect();
+        for ch in [Channel::Block, Channel::Sky] {
+            e.increase.extend(seeds.iter().copied());
+            e.run_increase(w, t, ch);
+        }
+    }
+
+    fn snapshot_cols(w: &World, cols: &[(i32, i32)], ys: std::ops::Range<i32>) -> Vec<(i32, i32, i32, (u8, u8))> {
+        let mut v = Vec::new();
+        for &(cx, cz) in cols {
+            for y in ys.clone() {
+                for z in cz * 16..cz * 16 + 16 {
+                    for x in cx * 16..cx * 16 + 16 {
+                        v.push((x, y, z, w.light_at(x, y, z)));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    fn assert_cols_match_recompute(w: &mut World, cols: &[(i32, i32)], ys: std::ops::Range<i32>, what: &str) {
+        let inc = snapshot_cols(w, cols, ys.clone());
+        relight_all(w, cols);
+        let full = snapshot_cols(w, cols, ys);
+        if let Some(i) = (0..inc.len()).find(|&i| inc[i] != full[i]) {
+            let (x, y, z, a) = inc[i];
+            panic!("{what}: ({x},{y},{z}) incremental {a:?} != recompute {:?}", full[i].3);
+        }
+    }
+
+    /// Columns `(cx, cz)` for cx, cz in -1..=0: the borders run along x = 0
+    /// and z = 0, so the edits also cross negative coordinates.
+    const QUAD: [(i32, i32); 4] = [(-1, -1), (-1, 0), (0, -1), (0, 0)];
+
+    /// A stone floor (y 0..3) across `cols`, lit from scratch.
+    fn floored(cols: &[(i32, i32)]) -> World {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        for &(cx, cz) in cols {
+            w.ensure_column(cx, cz);
+            for x in cx * 16..cx * 16 + 16 {
+                for z in cz * 16..cz * 16 + 16 {
+                    for y in 0..3 {
+                        w.set_block(x, y, z, 1);
+                    }
+                }
+            }
+        }
+        relight_all(&mut w, cols);
+        w
+    }
+
+    /// Make every column look the way a server sends open sky: no array for
+    /// any section from `si` up, and `sky_full_above` there. Asserts first
+    /// that those sections are uniformly 15, so the reads do not change.
+    fn sparsify(w: &mut World, cols: &[(i32, i32)], si: usize) {
+        let before = snapshot_cols(w, cols, -64..320);
+        for &(cx, cz) in cols {
+            let col = w.column_mut(cx, cz).unwrap();
+            for s in &mut col.sections[si..] {
+                assert!(
+                    s.sky_light.as_ref().is_some_and(|a| a.iter().all(|b| *b == 0xFF)),
+                    "only all-15 sections can be omitted"
+                );
+                s.sky_light = None;
+            }
+            col.sky_full_above = si;
+        }
+        assert!(before == snapshot_cols(w, cols, -64..320), "sparsifying changed a read");
+    }
+
+    /// The incremental==full property across column borders, with and without
+    /// the server's sparse sky above the terrain. The single-column property
+    /// test keeps its edits two cells off every edge; these sit on them.
+    fn border_property(seed: u64, sparse: bool) {
+        let mut w = floored(&QUAD);
+        if sparse {
+            // y 16.. (section index 5) is open sky, as a server omits it.
+            sparsify(&mut w, &QUAD, 5);
+        }
+        let mut e = LightEngine::new();
+        let mut rng = Lcg(seed);
+        let states = [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 1, 1];
+        // Sparse runs reach well into the omitted sections.
+        let y_span = if sparse { 40 } else { 14 };
+        for step in 0..400 {
+            let x = rng.next(10) as i32 - 5;
+            let z = rng.next(10) as i32 - 5;
+            let y = 3 + rng.next(y_span) as i32;
+            let new = states[rng.next(states.len() as u32) as usize];
+            let old = w.block_state_at(x, y, z);
+            w.set_block(x, y, z, new);
+            e.on_block_change(&mut w, p_tables(), x, y, z, old, new);
+            if step % 40 == 39 {
+                let what = format!("seed {seed:#x} sparse {sparse} step {step}");
+                assert_cols_match_recompute(&mut w, &QUAD, -2..60, &what);
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_matches_full_recompute_across_column_borders() {
+        for seed in [0xB0_4D3E, 0x1, 0xC0FFEE, 0x5EED_0002] {
+            border_property(seed, false);
+        }
+    }
+
+    #[test]
+    fn incremental_matches_full_recompute_in_sparse_sky() {
+        for seed in [0xB0_4D3E, 0x2, 0xFACADE] {
+            border_property(seed, true);
+        }
+    }
+
+    /// The audited bug, directly: a roof built in the sections the server
+    /// omitted (open sky, no arrays, reading 15 through `sky_full_above`).
+    /// Before the fix `Column::set_light` compared against the raw nibble (0),
+    /// so every darkening write there was skipped and the roof cast no shadow.
+    #[test]
+    fn a_roof_in_omitted_sky_sections_darkens_what_is_under_it() {
+        let cols = [(0, 0), (1, 0)];
+        let mut w = floored(&cols);
+        sparsify(&mut w, &cols, 5);
+        let mut e = LightEngine::new();
+        // A 9×9 roof at y = 60 straddling the x = 16 border, and a tower.
+        for x in 12..21 {
+            for z in 3..12 {
+                let old = w.block_state_at(x, 60, z);
+                w.set_block(x, 60, z, 1);
+                e.on_block_change(&mut w, p_tables(), x, 60, z, old, 1);
+            }
+        }
+        for y in 30..70 {
+            w.set_block(6, y, 12, 1);
+            e.on_block_change(&mut w, p_tables(), 6, y, 12, 0, 1);
+        }
+        let under = w.light_at(16, 59, 7).1;
+        assert!(under < 15, "under the roof centre: sky {under}, not a source");
+        assert!(w.light_at(16, 20, 7).1 < 15, "the shade reaches down");
+        assert_eq!(w.light_at(16, 61, 7).1, 15, "above the roof is still open sky");
+        assert_eq!(w.light_at(6, 69, 12).1, 0, "inside the tower");
+        assert_cols_match_recompute(&mut w, &cols, -2..80, "roof");
+    }
+
+    /// A light change on a column's border cell must remesh the neighbour
+    /// across that border even when no cell of the neighbour changed: its
+    /// face against the border samples this cell (vanilla's
+    /// `SectionPos.aroundAndAtBlockPos` in `setStoredLevel`).
+    #[test]
+    fn a_border_cell_change_returns_the_neighbour_column() {
+        let cols = [(0, 0), (1, 0)];
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        for &(cx, cz) in &cols {
+            w.ensure_column(cx, cz);
+        }
+        for x in 0..32 {
+            for z in 0..16 {
+                w.set_block(x, 10, z, 1);
+            }
+        }
+        relight_all(&mut w, &cols);
+        let mut e = LightEngine::new();
+        // State 9 emits 7: from x = 9 it reaches x = 15 at level 1, and no further.
+        w.set_block(9, 5, 8, 9);
+        let touched = e.on_block_change(&mut w, p_tables(), 9, 5, 8, 0, 9);
+        assert_eq!(w.light_at(15, 5, 8).0, 1);
+        assert_eq!(w.light_at(16, 5, 8).0, 0, "the neighbour's own light is unchanged");
+        assert_eq!(touched, vec![(0, 0), (1, 0)], "only loaded columns, the neighbour included");
     }
 }

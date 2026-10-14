@@ -117,6 +117,13 @@ pub struct Column {
     /// Vanilla's `SkyLightSectionStorage` reads those as 15, so a client that
     /// defaults them to 0 renders the whole sky-lit volume above the terrain as
     /// pitch black. Set from the masks in `read_light_into`.
+    ///
+    /// Vanilla's equivalent is the column's `topSections` entry (one above
+    /// the highest stored sky layer, `SkyLightSectionStorage.onNodeAdded`).
+    /// After decode every section **below** it holds an array — gaps are
+    /// materialised the way vanilla reads them (`fill_sky_gaps`) — so a
+    /// missing array means 15 and nothing else. A `light_update` only names
+    /// the sections it changed, so it can raise this but never lower it.
     pub(crate) sky_full_above: usize,
     /// The `MOTION_BLOCKING` heightmap, as sent — one absolute Y per (x, z),
     /// where the value is the first **free** cell above the terrain
@@ -200,20 +207,31 @@ impl Column {
             return false;
         };
         let ly = y.rem_euclid(16);
+        let implicit_sky = Self::implicit_sky(self.sky_full_above, si);
         let Some(section) = self.sections.get_mut(si) else {
             return false;
         };
-        let before = match ch {
-            crate::light::Channel::Block => section.block_light(lx, ly, lz),
-            crate::light::Channel::Sky => section.sky_light(lx, ly, lz),
+        // What a section with no array reads as: block light is 0, sky light
+        // follows the `sky_full_above` rule. The comparison must use the value
+        // a reader sees (`light_at`), not the raw nibble: in an omitted sky
+        // section above the terrain the raw read is 0 while the cell reads 15,
+        // so a darkening `set(.., 0)` there used to be skipped as "unchanged".
+        let (arr, implicit) = match ch {
+            crate::light::Channel::Block => (&mut section.block_light, 0),
+            crate::light::Channel::Sky => (&mut section.sky_light, implicit_sky),
         };
+        let before = Section::nibble(arr, lx, ly, lz).unwrap_or(implicit);
         if before == level {
             return false;
         }
-        match ch {
-            crate::light::Channel::Block => section.set_block_light(lx, ly, lz, level),
-            crate::light::Channel::Sky => section.set_sky_light(lx, ly, lz, level),
+        if arr.is_none() {
+            // Materialise the layer holding what every cell already read, so
+            // the other 4095 cells keep their value. Vanilla does the same
+            // when a section gains storage (`SkyLightSectionStorage.
+            // createDataLayer`, :93-112: `new DataLayer(15)` above the top).
+            *arr = Some(vec![implicit * 0x11; 2048]);
         }
+        Section::set_nibble(arr, lx, ly, lz, level);
         true
     }
 
@@ -259,10 +277,18 @@ impl Column {
 
     /// Sky light, applying the "no array above the terrain means 15" rule.
     fn sky_light_in(&self, si: usize, section: &Section, x: i32, y: i32, z: i32) -> u8 {
-        match Section::nibble(&section.sky_light, x, y, z) {
-            Some(v) => v,
-            None if si >= self.sky_full_above => 15,
-            None => 0,
+        Section::nibble(&section.sky_light, x, y, z)
+            .unwrap_or_else(|| Self::implicit_sky(self.sky_full_above, si))
+    }
+
+    /// The sky level of a cell in section `si` when that section has no
+    /// array. The single source of the rule, shared by the reader and by
+    /// [`Self::set_light`]'s materialisation, so the two cannot drift.
+    fn implicit_sky(sky_full_above: usize, si: usize) -> u8 {
+        if si >= sky_full_above {
+            15
+        } else {
+            0
         }
     }
 
@@ -392,9 +418,12 @@ fn unpack_heightmap(data: &[i64], shape: &DimensionShape) -> Option<Box<[i32; 25
 /// byte-for-byte the same structure `level_chunk_with_light` carries, so the
 /// same reader handles it.
 pub fn apply_light_update(r: &mut PacketReader, col: &mut Column) -> Result<()> {
-    // A light update re-states the masks, so the sky boundary moves with it
-    // (building a roof pushes the topmost data section upward).
-    col.sky_full_above = read_light_into(r, &mut col.sections)?;
+    // The masks name only the sections whose light changed
+    // (`ClientboundLightUpdatePacketData`'s changed-section filters), so the
+    // packet's topmost bit is not the column's top: the boundary may rise
+    // (a roof built above the terrain) but a packet that names only low
+    // sections must not pull it down.
+    col.sky_full_above = read_light_into(r, &mut col.sections, Some(col.sky_full_above))?;
     Ok(())
 }
 
@@ -499,7 +528,7 @@ pub fn read_level_chunk_bits2(
     // Light data: 4 BitSets + 2 update lists. Distribute nibble arrays to
     // sections using the sky/block Y masks. The masks cover
     // `section_count + 2` bits (one below, one above the buildable range).
-    let sky_full_above = read_light_into(r, &mut sections)?;
+    let sky_full_above = read_light_into(r, &mut sections, None)?;
 
     Ok(Column {
         cx,
@@ -549,12 +578,18 @@ fn bitset_get(words: &[u64], i: usize) -> bool {
 /// Decode the four light bitsets + the nibble arrays into `sections`.
 ///
 /// Returns the section index at/above which a missing sky array means
-/// full-bright — see `Column::sky_full_above`.
-fn read_light_into(r: &mut PacketReader, sections: &mut [Section]) -> Result<usize> {
+/// full-bright — see `Column::sky_full_above`. `prev_top` is the column's
+/// current boundary for a `light_update` (`None` for a full chunk, whose
+/// masks describe every stored section).
+fn read_light_into(
+    r: &mut PacketReader,
+    sections: &mut [Section],
+    prev_top: Option<usize>,
+) -> Result<usize> {
     let sky_mask = read_bitset(r)?;
     let block_mask = read_bitset(r)?;
     let empty_sky = read_bitset(r)?;
-    let _empty_block = read_bitset(r)?;
+    let empty_block = read_bitset(r)?;
 
     // Sky updates, then block updates: VarInt count, each [VarInt 2048, bytes].
     let read_arrays = |r: &mut PacketReader| -> Result<Vec<Vec<u8>>> {
@@ -571,8 +606,8 @@ fn read_light_into(r: &mut PacketReader, sections: &mut [Section]) -> Result<usi
 
     // Mask bit `i` corresponds to section index `i - 1` (bit 0 = the section
     // below the world). Arrays appear in mask-bit order.
-    distribute(&sky_mask, &sky_arrays, sections, true);
-    distribute(&block_mask, &block_arrays, sections, false);
+    distribute(&sky_mask, &empty_sky, sky_arrays, sections, true);
+    distribute(&block_mask, &empty_block, block_arrays, sections, false);
 
     // Everything above the topmost section the server said anything about is
     // open sky. Bit `i` is section `i - 1`, so the highest mentioned section
@@ -581,7 +616,43 @@ fn read_light_into(r: &mut PacketReader, sections: &mut [Section]) -> Result<usi
         .filter(|b| bitset_get(&sky_mask, *b) || bitset_get(&empty_sky, *b))
         .max()
         .unwrap_or(0);
-    Ok(top_bit)
+    let top = prev_top.map_or(top_bit, |prev| prev.max(top_bit));
+    fill_sky_gaps(sections, top);
+    Ok(top)
+}
+
+/// Give every sky-less section below `top` the layer vanilla reads there.
+///
+/// `SkyLightSectionStorage.getLightValue` (decompile :26-54): below the
+/// column's top, a section with no stored layer reads the **bottom row** of
+/// the nearest stored layer above it (`BlockPos.getFlatIndex` drops the
+/// in-section y), or 15 if it reaches the top first. `createDataLayer`
+/// (:93-127) materialises exactly that with `repeatFirstLayer` when such a
+/// section gains storage. Doing it here keeps one rule for an absent array
+/// (`Column::implicit_sky`: 15) instead of a reader that has to scan, and is
+/// what lets the light engine materialise a layer without changing what any
+/// *other* section reads.
+///
+/// Such gaps are omitted air runs under a stored section higher up: a
+/// floating build, or a `light_update` that raised the top. A full chunk of
+/// ordinary terrain has none.
+fn fill_sky_gaps(sections: &mut [Section], top: usize) {
+    let end = top.min(sections.len());
+    // Top-down, so a gap under a gap copies the row the upper one copied.
+    for si in (0..end).rev() {
+        if sections[si].sky_light.is_some() {
+            continue;
+        }
+        let first_row = sections
+            .get(si + 1)
+            .filter(|_| si + 1 < end)
+            .and_then(|above| above.sky_light.as_ref())
+            .and_then(|above| above.get(..128));
+        sections[si].sky_light = Some(match first_row {
+            Some(row) => row.repeat(16),
+            None => vec![0xFF; 2048],
+        });
+    }
 }
 
 #[cfg(test)]
@@ -733,26 +804,41 @@ mod tests {
     }
 }
 
-fn distribute(mask: &[u64], arrays: &[Vec<u8>], sections: &mut [Section], sky: bool) {
-    let mut next = 0usize;
-    let total_bits = mask.len() * 64;
+/// Install one channel's layers: `ClientPacketListener.readSectionList`
+/// (decompile :2537-2560). A section in `mask` takes the next array; a
+/// section in `empty` takes `new DataLayer()` — an explicit all-zero layer
+/// that **replaces** whatever the section held (a removed torch's glow, a
+/// roofed-over sky). Sections in neither are left alone.
+///
+/// The zero sky layer is stored as a real array rather than dropped: an
+/// absent sky array reads 15 (see `Column::implicit_sky`), and vanilla's
+/// zero layer is *stored*, so it also stops `fill_sky_gaps` looking through
+/// it. An absent block array already reads 0, so that channel just drops it.
+fn distribute(mask: &[u64], empty: &[u64], arrays: Vec<Vec<u8>>, sections: &mut [Section], sky: bool) {
+    let mut arrays = arrays.into_iter();
+    let total_bits = mask.len().max(empty.len()) * 64;
     for bit in 0..total_bits {
-        if !bitset_get(mask, bit) {
+        let have_data = bitset_get(mask, bit);
+        if !have_data && !bitset_get(empty, bit) {
             continue;
         }
-        let Some(arr) = arrays.get(next) else {
-            break;
+        let layer = if have_data {
+            let Some(arr) = arrays.next() else {
+                break;
+            };
+            Some(arr)
+        } else {
+            None
         };
-        next += 1;
         // bit 0 is below the world; section index = bit - 1.
         if bit == 0 {
             continue;
         }
         if let Some(section) = sections.get_mut(bit - 1) {
             if sky {
-                section.sky_light = Some(arr.clone());
+                section.sky_light = Some(layer.unwrap_or_else(|| vec![0u8; 2048]));
             } else {
-                section.block_light = Some(arr.clone());
+                section.block_light = layer;
             }
         }
     }
@@ -813,5 +899,176 @@ mod heightmap_tests {
         let packed = pack(&heights, &nether);
         let got = unpack_heightmap(&packed, &nether).expect("well-formed");
         assert!(got.iter().all(|h| *h == nether.min_y + 5));
+    }
+}
+
+#[cfg(test)]
+mod light_mask_tests {
+    use super::*;
+    use crate::World;
+    use rewo_proto::writer::PacketWriter;
+
+    /// A `BitSet` on the wire: VarInt long count, then the longs.
+    fn bitset(w: &mut PacketWriter, bits: &[usize]) {
+        let mut words = vec![0u64; bits.iter().map(|b| b / 64 + 1).max().unwrap_or(0)];
+        for b in bits {
+            words[b / 64] |= 1 << (b % 64);
+        }
+        w.varint(words.len() as i32);
+        for word in words {
+            w.i64(word as i64);
+        }
+    }
+
+    /// The light half of a chunk / `light_update` packet, written the way
+    /// `ClientboundLightUpdatePacketData.write` lays it out. Each data entry
+    /// is `(mask bit, 2048-byte layer)`, in ascending bit order.
+    fn payload(
+        sky: &[(usize, Vec<u8>)],
+        block: &[(usize, Vec<u8>)],
+        empty_sky: &[usize],
+        empty_block: &[usize],
+    ) -> Vec<u8> {
+        let mut w = PacketWriter::default();
+        bitset(&mut w, &sky.iter().map(|(b, _)| *b).collect::<Vec<_>>());
+        bitset(&mut w, &block.iter().map(|(b, _)| *b).collect::<Vec<_>>());
+        bitset(&mut w, empty_sky);
+        bitset(&mut w, empty_block);
+        for list in [sky, block] {
+            w.varint(list.len() as i32);
+            for (_, layer) in list {
+                w.varint(layer.len() as i32);
+                w.raw(layer);
+            }
+        }
+        w.buf
+    }
+
+    fn filled(level: u8) -> Vec<u8> {
+        vec![level * 0x11; 2048]
+    }
+
+    fn update(col: &mut Column, bytes: &[u8]) {
+        let mut r = PacketReader::new(bytes);
+        apply_light_update(&mut r, col).unwrap();
+        assert!(r.is_empty(), "the whole payload is consumed");
+    }
+
+    const SHAPE: DimensionShape = DimensionShape::OVERWORLD;
+
+    /// `ClientPacketListener.readSectionList` (decompile :2547-2559) queues
+    /// `new DataLayer()` for a section in the empty mask, replacing its old
+    /// layer. Rewo used to discard the empty-block mask and use the empty-sky
+    /// one only for the boundary, so a removed torch's glow (or a roofed-over
+    /// sky) stayed in that section until the chunk was resent.
+    #[test]
+    fn an_empty_mask_zeroes_a_section_that_had_light() {
+        let mut w = World::new(SHAPE);
+        w.ensure_column(0, 0);
+        let col = w.column_mut(0, 0).unwrap();
+        // Sections 5 and 6 (bits 6 and 7) get light; y = 16 is section 5.
+        update(
+            col,
+            &payload(&[(6, filled(9)), (7, filled(8))], &[(6, filled(14)), (7, filled(13))], &[], &[]),
+        );
+        assert_eq!(w.light_at(3, 16, 4), (14, 9));
+        assert_eq!(w.light_at(3, 32, 4), (13, 8));
+
+        // The torch is gone and the section is roofed: both empty bits for
+        // section 5. Section 6 is named in neither mask and must keep its data.
+        update(w.column_mut(0, 0).unwrap(), &payload(&[], &[], &[6], &[6]));
+        for y in 16..32 {
+            assert_eq!(w.light_at(3, y, 4), (0, 0), "y {y} is explicitly dark");
+        }
+        assert_eq!(w.light_at(3, 32, 4), (13, 8), "an unnamed section is untouched");
+    }
+
+    /// An explicit zero sky layer in a column whose top was lower is still
+    /// dark: it is *stored*, unlike an absent array, which reads 15.
+    #[test]
+    fn an_empty_sky_section_above_the_old_top_reads_dark() {
+        let mut w = World::new(SHAPE);
+        w.ensure_column(0, 0);
+        let col = w.column_mut(0, 0).unwrap();
+        for s in &mut col.sections[8..] {
+            s.sky_light = None;
+        }
+        col.sky_full_above = 8;
+        assert_eq!(w.light_at(0, 80, 0).1, 15, "section 9 is omitted open sky");
+        update(w.column_mut(0, 0).unwrap(), &payload(&[], &[], &[10], &[]));
+        assert_eq!(w.column(0, 0).unwrap().sky_full_above, 10);
+        assert_eq!(w.light_at(0, 80, 0).1, 0, "section 9 named empty is dark");
+        // Section 8 sat between the old top and the new one with no array:
+        // it reads the bottom row of section 9 above it, as vanilla's
+        // `getLightValue` scan does — here that row is the explicit zero.
+        assert_eq!(w.light_at(0, 70, 0).1, 0, "the gap below reads the stored row above");
+        assert_eq!(w.light_at(0, 96, 0).1, 15, "above the new top is still open sky");
+    }
+
+    /// A `light_update` names only the sections whose light changed, so its
+    /// highest bit is not the column's top. One that names a low section must
+    /// leave the boundary where it was.
+    #[test]
+    fn a_light_update_naming_only_low_sections_keeps_the_sky_top() {
+        let mut w = World::new(SHAPE);
+        w.ensure_column(0, 0);
+        let col = w.column_mut(0, 0).unwrap();
+        for s in &mut col.sections[8..] {
+            s.sky_light = None;
+        }
+        col.sky_full_above = 8;
+        update(w.column_mut(0, 0).unwrap(), &payload(&[(3, filled(4))], &[], &[], &[]));
+        assert_eq!(w.column(0, 0).unwrap().sky_full_above, 8);
+        assert_eq!(w.light_at(0, -32, 0).1, 4, "section 2 took the data");
+        assert_eq!(w.light_at(0, 80, 0).1, 15, "section 9 is still open sky");
+    }
+
+    /// A gap in a full chunk — omitted sections under a stored one, as over a
+    /// floating build — reads the bottom row of the nearest stored layer
+    /// above it (`SkyLightSectionStorage.getLightValue`, :31-49), not 0.
+    #[test]
+    fn a_sky_gap_reads_the_bottom_row_of_the_layer_above() {
+        let mut sections: Vec<Section> = (0..SHAPE.section_count())
+            .map(|_| Section {
+                non_empty: 0,
+                states: Container::single(0),
+                biomes: Container::single(0),
+                block_light: None,
+                sky_light: None,
+                edited: false,
+            })
+            .collect();
+        // Section 6's bottom row varies by (x, z); its upper rows are 3.
+        let mut top_layer = filled(3);
+        for z in 0..16usize {
+            for x in 0..16usize {
+                let idx = (z << 4) | x; // y = 0
+                let v = ((x + z) % 16) as u8;
+                let b = &mut top_layer[idx / 2];
+                *b = if idx & 1 == 0 { (*b & 0xF0) | v } else { (*b & 0x0F) | (v << 4) };
+            }
+        }
+        let bytes = payload(&[(3, filled(0)), (7, top_layer)], &[], &[], &[]);
+        let mut r = PacketReader::new(&bytes);
+        let top = read_light_into(&mut r, &mut sections, None).unwrap();
+        assert_eq!(top, 7);
+        let col = Column {
+            cx: 0,
+            cz: 0,
+            sections,
+            sky_full_above: top,
+            motion_blocking: None,
+            block_entities: Vec::new(),
+        };
+        // Sections 3..=5 (y -16..32) are the gap; section 2 is dark data.
+        for (x, z) in [(0, 0), (5, 7), (15, 15), (9, 2)] {
+            for y in [-16, 0, 31] {
+                assert_eq!(col.light_at(&SHAPE, x, y, z).1, ((x + z) % 16) as u8, "({x},{y},{z})");
+            }
+            assert_eq!(col.light_at(&SHAPE, x, 33, z).1, 3, "section 6 itself");
+            assert_eq!(col.light_at(&SHAPE, x, 48, z).1, 15, "above the top");
+            assert_eq!(col.light_at(&SHAPE, x, -20, z).1, 0, "section 2's zero data");
+            assert_eq!(col.light_at(&SHAPE, x, -60, z).1, 0, "below the lowest stored layer");
+        }
     }
 }
