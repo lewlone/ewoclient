@@ -655,15 +655,25 @@ pub fn lookup_system(host: &str) -> Option<SrvTarget> {
     lookup_with(host, &system_nameservers(), QUERY_TIMEOUT)
 }
 
-/// Windows' nameservers: every operational adapter's DNS servers, IPv4 and
-/// IPv6, in adapter order (`GetAdaptersAddresses`), then anything only
-/// `GetNetworkParams` (IPv4, all adapters merged) knows. The first call is the
-/// one that sees IPv6; the second keeps the list as complete as before it
-/// existed, so a failure of the new call costs nothing.
+/// Windows' nameservers: what `GetNetworkParams` reports first (the system's
+/// effective IPv4 list), then every operational adapter's DNS server,
+/// IPv4 and IPv6, from `GetAdaptersAddresses`, that the first list lacks (see
+/// [`merge_nameservers`]). Only [`MAX_NAMESERVERS`] are ever asked, so the
+/// order decides which: the adapter list is in adapter order and includes
+/// VPN, WSL and Hyper-V virtual adapters whose resolvers may be unreachable,
+/// which must not push the working one out of the first three. The adapter
+/// call still contributes IPv6 and anything the other omits.
 #[cfg(windows)]
 fn windows_nameservers() -> Vec<SocketAddr> {
-    let mut out = adapter_nameservers();
-    for server in network_params_nameservers() {
+    merge_nameservers(network_params_nameservers(), adapter_nameservers())
+}
+
+/// `effective` (the system's own list, in its order) followed by each of
+/// `others` it does not already contain, order kept and no duplicates.
+#[cfg(any(windows, test))]
+fn merge_nameservers(effective: Vec<SocketAddr>, others: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let mut out = Vec::with_capacity(effective.len() + others.len());
+    for server in effective.into_iter().chain(others) {
         if !out.contains(&server) {
             out.push(server);
         }
@@ -1581,6 +1591,43 @@ mod tests {
             None,
             "unreachable without a scope"
         );
+    }
+
+    #[test]
+    fn the_systems_effective_nameservers_come_before_adapter_ones() {
+        let sa = |s: &str| -> SocketAddr { s.parse().unwrap() };
+        // GetNetworkParams: the resolver that actually works.
+        let effective = vec![sa("192.168.1.1:53"), sa("1.1.1.1:53")];
+        // GetAdaptersAddresses, in adapter order: a WSL and a Hyper-V virtual
+        // adapter first, an IPv6 resolver, and the working one again.
+        let adapters = vec![
+            sa("172.20.0.1:53"),
+            sa("172.30.0.1:53"),
+            sa("[2001:db8::1]:53"),
+            sa("192.168.1.1:53"),
+        ];
+        let got = merge_nameservers(effective, adapters);
+        assert_eq!(
+            got,
+            vec![
+                sa("192.168.1.1:53"),
+                sa("1.1.1.1:53"),
+                sa("172.20.0.1:53"),
+                sa("172.30.0.1:53"),
+                sa("[2001:db8::1]:53"),
+            ],
+            "effective first, adapter extras after in order, no duplicates"
+        );
+        // Of the three servers ever asked, the working one is first and the
+        // virtual adapters cannot starve it.
+        assert_eq!(&got[..MAX_NAMESERVERS][0], &sa("192.168.1.1:53"));
+
+        // A failed GetNetworkParams leaves the adapter list as it was; a
+        // failed adapter call leaves the effective list alone.
+        let a = vec![sa("10.0.0.1:53")];
+        assert_eq!(merge_nameservers(Vec::new(), a.clone()), a);
+        assert_eq!(merge_nameservers(a.clone(), Vec::new()), a);
+        assert!(merge_nameservers(Vec::new(), Vec::new()).is_empty());
     }
 
     #[test]
