@@ -27,7 +27,7 @@ skia-safe.workspace = true
 gl.workspace = true
 # Raw JNI type definitions — used once, in `nativeInit`, to resolve a direct
 # `ByteBuffer`'s address via `GetDirectBufferAddress`. Just bindings, no logic.
-jni-sys = "0.3"
+jni-sys = "0.4"
 
 [features]
 default = []
@@ -67,7 +67,7 @@ windows = { version = "0.58", features = [
 # `#[implement]` expands to absolute `::windows_core::` paths, so the core
 # crate has to be a direct dependency rather than reached through `windows`.
 # Same 0.58 release, so cargo unifies it with the one `windows` already pulls.
-windows-core = "0.58"
+windows-core = "0.62"
 
 [lints]
 workspace = true
