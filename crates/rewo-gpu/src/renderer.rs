@@ -311,7 +311,12 @@ impl Renderer {
                     .image_view(depth.view)
                     .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                     .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    // STORE, not DONT_CARE: `WorldRenderer::in_gamma_space`
+                    // ends this instance and reopens one that LOADs depth
+                    // (the glint tests EQUAL against it). After a DONT_CARE
+                    // store the contents are undefined (Vulkan spec, "Load
+                    // and Store Operations").
+                    .store_op(vk::AttachmentStoreOp::STORE)
                     .clear_value(vk::ClearValue {
                         depth_stencil: vk::ClearDepthStencilValue {
                             depth: 0.0, // reversed-Z: 0 = far
