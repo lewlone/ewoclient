@@ -59,7 +59,12 @@ class Check:
 
 @dataclass
 class Battery:
-    build: list[str] = field(default_factory=lambda: ["cargo", "build", "-p", "rewo-app"])
+    # `--features gates` is required: every `rewo X --check` subcommand is
+    # compiled out of a default build, so without it each gate-based check would
+    # fail on the unmutated control (CONTROL-RED) and the battery would abort.
+    build: list[str] = field(
+        default_factory=lambda: ["cargo", "build", "-p", "rewo-app", "--features", "gates"]
+    )
     strays: tuple[str, ...] = ("rewo.exe",)
 
 
