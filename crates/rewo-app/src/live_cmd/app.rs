@@ -1159,7 +1159,7 @@ impl LiveApp {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let Some(open) = session.menus.open() else {
+        let Some(open) = session.menus.shown_open() else {
             return;
         };
         if open.layout.protocol_id != ms::MERCHANT_MENU_PROTOCOL_ID {
@@ -1188,7 +1188,7 @@ impl LiveApp {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let Some(open) = session.menus.open() else {
+        let Some(open) = session.menus.shown_open() else {
             return;
         };
         if open.layout.protocol_id != ms::STONECUTTER_MENU_PROTOCOL_ID {

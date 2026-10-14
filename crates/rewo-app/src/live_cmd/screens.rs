@@ -562,7 +562,7 @@ pub(super) fn apply_screen(
     };
     // M93q — the loom's grid, resolved here because it keys off the pattern
     // slot's item NAME and only this side holds the registry.
-    let loom = session.menus.open().and_then(|m| {
+    let loom = session.menus.shown_open().and_then(|m| {
         if m.layout.protocol_id != rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID {
             return None;
         }
@@ -604,7 +604,7 @@ pub(super) fn apply_screen(
     let (ghost_under, ghost_over) = ghost_washes(
         &ghosts,
         session.shown_menu().layout(),
-        session.menus.open().is_none(),
+        session.menus.shown_open().is_none(),
     );
     let book = live_recipe_book(
         session,
@@ -620,11 +620,7 @@ pub(super) fn apply_screen(
     // same origin — and that origin depends on the menu's panel size. Picking
     // it per-consumer is how a chest ends up painted at one size with its
     // icons placed at another.
-    let menu = session
-        .menus
-        .open()
-        .map(|m| &m.menu)
-        .unwrap_or(&session.inventory);
+    let menu = session.shown_menu();
     let layout = menu.layout();
 
     // The container's own background sheet, or `None` for the player's
@@ -672,7 +668,7 @@ pub(super) fn apply_screen(
     );
     wr.set_container_panel(container_panel(
         layout,
-        session.menus.open(),
+        session.menus.shown_open(),
         EnchantPlayer {
             xp_level: session.hud.experience.level,
             creative: session.abilities.instabuild,
@@ -703,7 +699,7 @@ pub(super) fn apply_screen(
         &session.trim_materials,
         w,
         h,
-        session.menus.open(),
+        session.menus.shown_open(),
         cut,
         merchant,
         book.as_ref(),
@@ -720,7 +716,7 @@ pub(super) fn apply_screen(
     if let (Some(rows), Some(font)) = (
         enchant_rows_of(
             layout,
-            session.menus.open(),
+            session.menus.shown_open(),
             EnchantPlayer {
                 xp_level: session.hud.experience.level,
                 creative: session.abilities.instabuild,
@@ -826,7 +822,7 @@ pub(super) fn apply_screen(
                     mouse,
                     (w, h),
                     layout,
-                    session.menus.open(),
+                    session.menus.shown_open(),
                     session
                         .game_state
                         .game_mode()

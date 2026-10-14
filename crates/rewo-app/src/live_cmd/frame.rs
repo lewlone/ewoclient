@@ -960,13 +960,13 @@ impl LiveApp {
                 }
                 let beacon_override = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| m.layout.protocol_id == BEACON_MENU_PROTOCOL_ID)
                     .map(|m| beacon_live(&mut self.screen, m, &self.beacon_effects));
                 // M93s — likewise, resolved before the borrow of `state`.
                 let cut = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| {
                         m.layout.protocol_id == rewo_ui::menu_screen::STONECUTTER_MENU_PROTOCOL_ID
                     })
@@ -980,14 +980,14 @@ impl LiveApp {
                     rewo_ui::recipe_search::normalize(&self.screen.book_search.value());
                 let anvil_field = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| m.layout.protocol_id == ANVIL_MENU_PROTOCOL_ID)
                     .map(|m| anvil_local(&mut self.screen, m, &items).field.clone());
                 // M93u — the merchant's trade list, from the session's decoded
                 // offers plus the screen's own scroll.
                 let merchant = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| {
                         m.layout.protocol_id == rewo_ui::merchant_screen::MERCHANT_MENU_PROTOCOL_ID
                     })

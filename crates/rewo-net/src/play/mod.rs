@@ -4651,13 +4651,18 @@ impl PlaySession {
     /// while every click operated on `inventory`, so clicking a chest's slot 5
     /// picked up the player's crafting grid.
     pub fn shown_menu(&self) -> &rewo_world::inventory::Inventory {
-        if self.menus.player_inventory_shown() {
-            return &self.inventory;
-        }
-        self.menus
-            .open()
+        self.shown_open_menu()
             .map(|m| &m.menu)
             .unwrap_or(&self.inventory)
+    }
+
+    /// The open container behind [`Self::shown_menu`]: `None` when the
+    /// player's own menu is what is shown (nothing open, or the inventory key
+    /// opened it over a screenless menu). Use this wherever the code means
+    /// "the menu on screen"; `menus.open()` means "a server container is
+    /// open".
+    pub fn shown_open_menu(&self) -> Option<&rewo_world::menu::OpenMenu> {
+        self.menus.shown_open()
     }
 
     /// [`Self::shown_menu`], mutably.
@@ -4673,11 +4678,7 @@ impl PlaySession {
 
     /// The container id the shown menu is addressed by — 0 for the player's.
     pub fn shown_container_id(&self) -> i32 {
-        if self.menus.player_inventory_shown() {
-            return rewo_world::inventory::PLAYER_CONTAINER_ID;
-        }
-        self.menus
-            .open()
+        self.shown_open_menu()
             .map_or(rewo_world::inventory::PLAYER_CONTAINER_ID, |m| {
                 m.container_id
             })
@@ -4703,7 +4704,7 @@ impl PlaySession {
     ) -> rewo_world::menu::CrafterToggle {
         use rewo_world::menu::CrafterToggle;
         let none = CrafterToggle::None;
-        let Some(open) = self.menus.open() else {
+        let Some(open) = self.menus.shown_open() else {
             return none;
         };
         if !rewo_world::menu::is_crafter_grid_slot(open.layout.protocol_id, slot) {

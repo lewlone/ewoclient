@@ -33,7 +33,13 @@ book, chat) and `docs/history/claude-md-session-log.md` (M143–M180).
   one's state.
 - **One accessor for "the shown menu"** (`PlaySession::shown_menu{,_mut}`,
   `shown_container_id`). Clicks, prediction, hover, tooltip and the packet's
-  ids all go through it. `state_id` is **per menu**.
+  ids all go through it. `state_id` is **per menu**. The open container
+  behind it is `PlaySession::shown_open_menu` / `Menus::shown_open`, which is
+  `None` while the player's inventory is shown over a screenless menu
+  (`inventory_over`, the lectern case). Raw `menus.open()` is only for "is a
+  server container open" (the close watermark and the lectern reader's sync in
+  `frame.rs`); a draw, hover, click or slot read of "the menu on screen" that
+  uses it mixes the hidden container's slots in.
 - **One conversion for screen → panel space** (`Placement`), including the
   recipe book's 77 px displacement. Every consumer (click, double-click, drag,
   highlight, tooltip, icons) must ask it.

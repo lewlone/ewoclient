@@ -155,7 +155,7 @@ pub(super) fn enchant_press(
     w: f32,
     h: f32,
 ) -> bool {
-    let Some(open) = session.menus.open() else {
+    let Some(open) = session.menus.shown_open() else {
         return false;
     };
     if open.layout.protocol_id != 13 {
@@ -216,7 +216,7 @@ pub(super) fn beacon_press(
     h: f32,
 ) -> bool {
     use rewo_ui::menu_screen::BeaconPress;
-    let Some(open) = session.menus.open() else {
+    let Some(open) = session.menus.shown_open() else {
         return false;
     };
     if open.layout.protocol_id != BEACON_MENU_PROTOCOL_ID {
@@ -320,7 +320,7 @@ pub(super) fn anvil_key(
     input: rewo_ui::edit_box::Input,
     clipboard: &mut String,
 ) -> bool {
-    let Some(open) = session.menus.open() else {
+    let Some(open) = session.menus.shown_open() else {
         return false;
     };
     if open.layout.protocol_id != ANVIL_MENU_PROTOCOL_ID {
@@ -355,7 +355,7 @@ pub(super) fn anvil_char(
     baked: Option<&assets::BakedAssets>,
     ch: char,
 ) -> bool {
-    let Some(open) = session.menus.open() else {
+    let Some(open) = session.menus.shown_open() else {
         return false;
     };
     if open.layout.protocol_id != ANVIL_MENU_PROTOCOL_ID {
@@ -626,7 +626,7 @@ pub(super) fn merchant_press(
     h: f32,
 ) -> bool {
     use rewo_ui::merchant_screen as ms;
-    let Some(open) = session.menus.open() else {
+    let Some(open) = session.menus.shown_open() else {
         return false;
     };
     if open.layout.protocol_id != ms::MERCHANT_MENU_PROTOCOL_ID {
@@ -948,7 +948,7 @@ pub(super) fn cut_press(
     h: f32,
 ) -> bool {
     use rewo_ui::menu_screen as ms;
-    let Some(open) = session.menus.open() else {
+    let Some(open) = session.menus.shown_open() else {
         return false;
     };
     if open.layout.protocol_id != ms::STONECUTTER_MENU_PROTOCOL_ID {
