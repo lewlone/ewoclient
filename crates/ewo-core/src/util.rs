@@ -9,7 +9,11 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// Distinguishes the temp files of concurrent writes in one process.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Write `contents` to `path` atomically: write a temp file in the same
 /// directory, fsync it, then rename over the target. A crash mid-write leaves
@@ -29,8 +33,14 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     let file_name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    // Unique per write: two threads writing the same file must not share a
+    // temp name, or one's rename moves the other's half-written file.
     let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    tmp_name.push(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = parent.join(tmp_name);
     let result = (|| {
         let mut f = fs::File::create(&tmp)?;
@@ -130,6 +140,37 @@ mod tests {
             .filter(|e| e.file_name() != "cfg.toml")
             .collect();
         assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_file_never_collide_or_leave_temps() {
+        let dir = scratch("atomic-race");
+        let path = dir.join("shared.toml");
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40 {
+                        atomic_write(&path, format!("writer {t} round {i}").as_bytes()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for th in threads {
+            th.join().unwrap();
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("writer "), "{text}");
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name() != "shared.toml")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

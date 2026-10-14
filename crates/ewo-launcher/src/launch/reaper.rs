@@ -24,7 +24,8 @@
 //! `EnumWindows` for the tracked PID while the game runs), never inferred
 //! from the game's log text; a log marker is only a hint with a longer grace.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const PIDFILE: &str = "last-launch.pid";
 
@@ -141,44 +142,75 @@ fn format_records(records: &[Tracked]) -> String {
 /// hasn't been forgotten. Pre-creation-time pidfiles (a bare PID) yield
 /// nothing — such a PID can't be verified, so it is never reaped.
 pub fn recorded() -> Vec<Tracked> {
-    pidfile_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
+    pidfile_path().map(|p| read_records(&p)).unwrap_or_default()
+}
+
+fn read_records(path: &Path) -> Vec<Tracked> {
+    std::fs::read_to_string(path)
         .map(|t| parse_records(&t))
         .unwrap_or_default()
 }
 
-fn write_records(records: &[Tracked]) {
-    let Some(path) = pidfile_path() else { return };
+fn write_records(path: &Path, records: &[Tracked]) {
     let result = if records.is_empty() {
-        match std::fs::remove_file(&path) {
+        match std::fs::remove_file(path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }
     } else {
-        crate::util::atomic_write(&path, format_records(records).as_bytes())
+        crate::util::atomic_write(path, format_records(records).as_bytes())
     };
     if let Err(e) = result {
         log::debug!("launch: could not update pidfile {}: {e}", path.display());
     }
 }
 
+/// Serializes every read-modify-write of the pidfile: `record` runs on the UI
+/// thread and `forget` on the prepare worker, and without this one thread's
+/// write silently drops the other's record.
+static PIDFILE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Read-modify-write the pidfile at `path` under [`PIDFILE_LOCK`]. `edit`
+/// returns whether it changed anything (an unchanged list isn't rewritten).
+fn update_records(path: &Path, edit: impl FnOnce(&mut Vec<Tracked>) -> bool) {
+    // A panic elsewhere while holding the lock leaves the file consistent
+    // (writes are atomic), so a poisoned lock is safe to take over.
+    let _guard = PIDFILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = read_records(path);
+    if edit(&mut all) {
+        write_records(path, &all);
+    }
+}
+
 /// Persist a just-spawned game so it can be reaped later if it zombies,
 /// even across a launcher restart.
 pub fn record(tracked: Tracked) {
-    let mut all = recorded();
-    all.retain(|t| t.pid != tracked.pid);
-    all.push(tracked);
-    write_records(&all);
+    if let Some(path) = pidfile_path() {
+        record_at(&path, tracked);
+    }
+}
+
+fn record_at(path: &Path, tracked: Tracked) {
+    update_records(path, |all| {
+        all.retain(|t| t.pid != tracked.pid);
+        all.push(tracked);
+        true
+    });
 }
 
 /// Forget a record — called on a clean exit and after reaping.
 pub fn forget(tracked: &Tracked) {
-    let mut all = recorded();
-    let before = all.len();
-    all.retain(|t| t != tracked);
-    if all.len() != before {
-        write_records(&all);
+    if let Some(path) = pidfile_path() {
+        forget_at(&path, tracked);
     }
+}
+
+fn forget_at(path: &Path, tracked: &Tracked) {
+    update_records(path, |all| {
+        let before = all.len();
+        all.retain(|t| t != tracked);
+        all.len() != before
+    });
 }
 
 /// Reap every recorded game process that is a zombie (still running, no
@@ -485,6 +517,39 @@ mod tests {
     fn age_is_filetime_ticks_over_ten_million_and_survives_clock_skew() {
         assert_eq!(age_secs_between(100, 100 + 30 * 10_000_000), Some(30.0));
         assert_eq!(age_secs_between(200, 100), None);
+    }
+
+    #[test]
+    fn concurrent_record_and_forget_never_lose_a_record() {
+        let dir = std::env::temp_dir().join(format!("ewo-pidfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(PIDFILE);
+        // Eight "launches" recorded from different threads while the odd
+        // ones are forgotten from others: the even ones must all survive.
+        let threads: Vec<_> = (0..8u32)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let t = Tracked {
+                        pid: 1000 + i,
+                        created: 5000 + i as u64,
+                    };
+                    for _ in 0..25 {
+                        record_at(&path, t);
+                        if i % 2 == 1 {
+                            forget_at(&path, &t);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for th in threads {
+            th.join().unwrap();
+        }
+        let mut pids: Vec<u32> = read_records(&path).iter().map(|t| t.pid).collect();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![1000, 1002, 1004, 1006]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

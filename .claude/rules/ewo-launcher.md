@@ -144,7 +144,10 @@ Subsystems:
   needs `MARKER_GRACE_SECS` (90 s) more before it can condemn a windowless
   game, and with neither signal it takes `STARTUP_GRACE_SECS` (300 s). A
   record left by an earlier launcher session is judged by process age
-  (`is_recorded_zombie`, from the recorded creation time).
+  (`is_recorded_zombie`, from the recorded creation time). Every
+  read-modify-write of `last-launch.pid` goes through one in-process mutex,
+  and `ewo_core::util::atomic_write`'s temp name is unique per write
+  (`.tmp-<pid>-<seq>`), so concurrent saves can't collide.
 - **Java runtime per instance**: the Instances dropdown is "Auto" followed by
   the detected JREs. `Instance::java_runtime` is that index: `0` = auto
   (`pick_for_major`), `N >= 1` = `detect_all()[N-1]`. A pin that is gone or
