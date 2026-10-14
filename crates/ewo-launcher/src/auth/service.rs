@@ -275,6 +275,7 @@ impl AuthService {
     pub fn remove(&mut self, uuid: &str) {
         self.store.remove(uuid);
         persistence::save_store(&self.store);
+        persistence::forget_account_secrets(uuid);
         log::info!("auth: removed account {}", uuid);
         // A running chain can't be cancelled. A refresh for the removed
         // account is dropped when it lands (see `poll`); an interactive

@@ -111,7 +111,18 @@ Subsystems:
   (`chain.rs`), loopback redirect on `127.0.0.1` (`loopback.rs`), background
   runner (`service.rs`), `AccountStore { active, accounts[] }` in `auth.toml`
   (refresh/social tokens DPAPI-sealed on Windows by `auth/secret.rs`, legacy
-  plaintext migrates on load; 0600 plaintext elsewhere). The Entra app
+  plaintext migrates on load). On Linux they go into the desktop's Secret
+  Service through the blocking `keyring` backend (`auth/keyring_cipher.rs`;
+  `auth.toml` keeps a `keyring:v1:<slot>` marker per secret, slot
+  `<uuid>:ms_refresh_token` / `<uuid>:social_token`, service `EwoClient`);
+  an unopenable entry signs out only that account, clearing a field or
+  removing an account deletes its entry (`SecretCipher::discard`), and with
+  no Secret Service at startup it logs a warning and keeps the 0600
+  plaintext file. Every `SecretCipher` call takes the slot; DPAPI ignores
+  it. The Linux build needs `libdbus-1-dev` + `pkg-config` (CI installs it)
+  and `libdbus-1` at runtime; the keyring logic is unit-tested on every host
+  against keyring's mock store, the real D-Bus backend has never run here.
+  macOS and others stay 0600 plaintext. The Entra app
   `f901fc74-7e36-439d-80a8-c2e548f47fdc` is on Mojang's allowlist.
 - **Credential files fail closed.** If `auth.toml` or `instances.toml` exists
   but can't be *read* (not NotFound, not a parse error), the launcher starts

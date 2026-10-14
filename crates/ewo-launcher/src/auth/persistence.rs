@@ -196,10 +196,11 @@ fn load_store_from(
 /// by another user or machine, or corrupted) is dropped, which signs that
 /// account out rather than failing the whole load. Returns whether any value
 /// was plaintext that this platform would seal, so the caller re-saves it.
-fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::SecretCipher) -> bool {
+pub(super) fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::SecretCipher) -> bool {
     let mut had_plain = false;
     for a in &mut store.accounts {
-        match secret::open(cipher, &a.ms_refresh_token) {
+        let refresh_slot = secret::slot(&a.uuid, secret::KIND_REFRESH);
+        match secret::open(cipher, &refresh_slot, &a.ms_refresh_token) {
             Ok(opened) => {
                 had_plain |= matches!(opened, secret::Opened::Plain(ref v) if !v.is_empty());
                 a.ms_refresh_token = opened.into_inner();
@@ -213,7 +214,8 @@ fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::SecretCipher) -> 
             }
         }
         if let Some(tok) = a.social_token.take() {
-            match secret::open(cipher, &tok) {
+            let social_slot = secret::slot(&a.uuid, secret::KIND_SOCIAL);
+            match secret::open(cipher, &social_slot, &tok) {
                 Ok(opened) => {
                     had_plain |= matches!(opened, secret::Opened::Plain(_));
                     a.social_token = Some(opened.into_inner());
@@ -226,18 +228,31 @@ fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::SecretCipher) -> 
 }
 
 /// A copy of `store` with every secret sealed for writing.
-fn sealed_copy(
+pub(super) fn sealed_copy(
     store: &AccountStore,
     cipher: &dyn secret::SecretCipher,
 ) -> Result<AccountStore, String> {
     let mut out = store.clone();
     for a in &mut out.accounts {
-        a.ms_refresh_token = secret::seal(cipher, &a.ms_refresh_token)?;
-        if let Some(tok) = a.social_token.take() {
-            a.social_token = Some(secret::seal(cipher, &tok)?);
+        let refresh_slot = secret::slot(&a.uuid, secret::KIND_REFRESH);
+        a.ms_refresh_token = secret::seal(cipher, &refresh_slot, &a.ms_refresh_token)?;
+        let social_slot = secret::slot(&a.uuid, secret::KIND_SOCIAL);
+        match a.social_token.take() {
+            Some(tok) => a.social_token = Some(secret::seal(cipher, &social_slot, &tok)?),
+            // Unlinked: nothing may stay behind in a keyring.
+            None => cipher.discard(&social_slot),
         }
     }
     Ok(out)
+}
+
+/// Drop what the platform keeps outside `auth.toml` for a removed account
+/// (its Secret Service entries on Linux; nothing on Windows, where the
+/// ciphertext lives in the file).
+pub fn forget_account_secrets(uuid: &str) {
+    let cipher = secret::platform_cipher();
+    cipher.discard(&secret::slot(uuid, secret::KIND_REFRESH));
+    cipher.discard(&secret::slot(uuid, secret::KIND_SOCIAL));
 }
 
 /// Persist the account store. Best-effort — failures log a warning but

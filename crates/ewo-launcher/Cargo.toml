@@ -39,6 +39,20 @@ png.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 windows.workspace = true
 
+# Linux: refresh/social tokens live in the desktop's Secret Service (GNOME
+# Keyring, KWallet, ...), the Linux counterpart of the Windows DPAPI sealing
+# (`src/auth/keyring_cipher.rs`). `sync-secret-service` is the *blocking*
+# D-Bus backend (libdbus, so the build needs libdbus-1-dev + pkg-config and
+# the binary libdbus-1 at runtime); no async runtime is pulled in, which
+# CLAUDE.md forbids. `crypto-rust` keeps OpenSSL out of the tree.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+
+[dev-dependencies]
+# No platform backend: only the crate's in-memory mock store, so the keyring
+# cipher's logic is unit-tested on every host (Windows included).
+keyring = { version = "3.6", default-features = false }
+
 # Embeds the Windows app icon (assets/icon.ico) into the .exe via build.rs.
 # Only invoked when the .ico exists, so the build never depends on the art.
 [target.'cfg(target_os = "windows")'.build-dependencies]

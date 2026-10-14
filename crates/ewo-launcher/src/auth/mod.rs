@@ -22,6 +22,10 @@
 //! expiry ([`launch_auth`]).
 
 pub mod chain;
+// Linux Secret Service storage. Also built for tests, so its logic runs on
+// every host (against keyring's in-memory mock store).
+#[cfg(any(target_os = "linux", test))]
+mod keyring_cipher;
 pub mod loopback;
 pub mod persistence;
 pub mod pkce;
