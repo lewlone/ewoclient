@@ -53,14 +53,30 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
 - Rust→Java: **`EwoModuleData`**, the mirror image, for module state
   (`modules.rs`). **Bump both sides together.** The 2026-05-26
   bump reached Java only, and the drift guard sat inert for three months.
-  `schema_version_matches_the_java_mirror` only asserts the Rust literal (it
-  never reads the Java file), and the HUD schema has no pin at all, so the
-  pairing is still checked by hand.
+  The pairing is now pinned by tests that **read the Java source**
+  (`hud/schema_pin.rs` for `EwoHudData.java` / `EwoIndicators.java`;
+  `modules::module_layout_matches_the_java_mirror` for `EwoModuleData.java`;
+  parser in `java_mirror.rs`): schema versions, every `OFF_*` offset by name in
+  both directions, strides, capacities, flag bits and record layouts. A field
+  added on one side only fails a test. Still bump both sides together.
 - Overlay tab strip (`OverlayView::ALL`): HOME · HUD · CROSSHAIR · MODULES ·
   PVP · MODS · FRIENDS · SETTINGS. `hud::tab_layout` sizes from
   `ALL.len()`; it was once hardcoded to 6 and clipped a tab.
 - Layout persists per client profile in `profiles/<name>/hud.toml`. The
   crosshair lives in `crosshair.toml`.
+- **Every per-profile config path goes through `ewo_core::pvp::profile_file`
+  / `ewo_config_file`** (`hud.toml`, `modules.toml`, `crosshair.toml`,
+  `ewo-friends.txt`, `profiles.toml`, `pvp.toml`). They apply the launcher's
+  name rule and fall back to the `dirs` config dir off Windows. Never build a
+  path by hand: the active profile name comes from the user-editable
+  `profiles.toml`, and a `..` once escaped the folder. `PvpConfig::save`
+  writes atomically (`ewo_core::util::atomic_write`) and returns the error.
+- **Closing the overlay ends held drags.** Esc never delivers the mouse
+  release, so `EwoOverlayScreen.removed()` calls `nativeOverlayClosed`
+  (inside a `Throwable` catch: a stale dll has no such symbol), which runs
+  `Editor::on_overlay_closed` -> `end_drags()`. A new drag state must be
+  cleared there. Quick-edit presses are routed before the popover and
+  tab-strip handlers.
 
 ## Build, deploy, test
 
@@ -89,8 +105,17 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
   check per frame. Kept on purpose; it is not leftover leak-hunt code.
 - In-game crashes in `nvoglv64.dll` under load come from **NVIDIA Threaded
   Optimization** fighting the second GL context. Ask the user to disable it in
-  NVCP. The frame paths restore Minecraft's context through an RAII guard;
-  **`Hud::create`'s GL init does not yet** (2026-10 audit, open).
+  NVCP. The frame paths and `Hud::create` restore Minecraft's context through
+  the `OursCurrent` RAII guard: init runs in `Hud::build` under `catch_unwind`,
+  the guard is declared before the Skia context, and a failed init deletes our
+  context (`HudState::Failed` is never retried). Keep anything fallible and
+  CPU-only ahead of the GL scope. (Not yet exercised in a running Minecraft.)
+- **`fixture.rs`** (synthetic HUD blocks for the harness) is compiled only for
+  tests and `--features fixture`; the `hudshot` example needs it:
+  `cargo run -p ewo-jni --features fixture --example hudshot -- --all`. CI's
+  ewo-jni clippy steps pass `ewo-jni/fixture`.
+- The log (`%TEMP%\ewo-jni.log`) is opened once and rate-limited (identical
+  repeats within 5 s collapse); the frame clock and gate state are `f64`.
 
 ## Feature notes that invert if guessed
 

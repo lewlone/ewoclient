@@ -94,8 +94,15 @@ trusting it. Class and ancestry sets come from `tools/gen_entity_classes.py`
   `PlaySession::decode_failed`, configuration through `route_decode_failed`
   (folded into the session counter), once per packet, and a packet applies
   all-or-nothing as vanilla's decode-then-handle does. `net soak` fails on any
-  `decode_failures`. Known gap: `remove_entities` and `player_info_remove`
-  skip a truncated entry without counting it.
+  `decode_failures`. This includes `remove_entities` and `player_info_remove`:
+  the list is decoded whole and applied in full or counted (vanilla decodes the
+  entire list before the handler runs).
+- **The inbound queue is bounded in bytes** (`play/inbound.rs`,
+  `INBOUND_QUEUE_BYTES` = 64 MiB of decompressed frames). The reader reserves
+  each frame's bytes before queueing and **blocks** when the budget is spent,
+  so the kernel receive window closes (TCP backpressure); a frame is never
+  dropped, since that would desync the session. A frame bigger than the whole
+  budget is admitted on an empty queue; `PlaySession::drop` closes the budget.
 - `update_tags` overrides jar tags (a datapack retag otherwise yields a wrong
   swing duration or a missing tooltip line with no error). Jar-derived tables
   (`tools/gen_*.py`, "Do not edit" generated files) carry that datapack caveat.
@@ -119,6 +126,19 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
   characters. `rewo-app/src/skin_fetch.rs` re-checks at fetch time, upgrades
   http to https, uses timeouts and no redirects, caps the body at 1 MiB and
   checks PNG dimensions before decoding. The Java mod mirrors the rule.
+- **Deadlines and write failures** (`lib.rs`): `Connection::connect` tries every
+  resolved address with `CONNECT_TIMEOUT` (30 s each); everything up to play
+  (login, configuration) runs under `HANDSHAKE_TIMEOUT` (90 s) enforced by
+  `NetStream` capping each read at what is left, so a server dripping bytes
+  cannot hold the pre-window phase forever; `split()` drops it and restores the
+  30 s play read timeout. Play writes are synchronous on the caller's (frame)
+  thread, so `WRITE_TIMEOUT` is 5 s, the worst freeze a stalled peer can cause.
+  **A failed or timed-out write is fatal**: it may leave a torn frame, so
+  `write_packet` records the first failure and refuses every later write, and
+  `send` surfaces it as the `ClientError` disconnect.
+- **Recordings**: `record.rs` bounds each record's length by the bytes left in
+  the file before allocating. `net soak` fails unless the session ended
+  `Completed` (a server disconnect or client error mid-run is a failure).
 - **Bounded logs**: `PlaySession::chat_log` keeps the newest
   `MAX_CHAT_HISTORY` (100) lines through `chat_wire::push_chat_log`.
 - **Non-finite teleports** are dropped field-group by field-group

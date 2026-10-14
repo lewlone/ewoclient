@@ -113,6 +113,23 @@ a self-check path.
   `rewo-gpu/src/knobs.rs`): that includes `REWO_FOG`, `REWO_MOB_DEBUG_TEX`,
   `REWO_CEM_NOANIM` and `REWO_NO_SYNC_VALIDATION`. Read a new knob through
   `knobs::var`, never `std::env::var`.
+- **`live_cmd/render_check.rs`, its witness blocks and the injected-state
+  fields are `#[cfg(feature = "gates")]`**, not merely refused at runtime: a
+  byte search of the default-features `rewo.exe` finds none of the witness
+  strings, and the scripted packet injections are not in it. Anything
+  production needs (`wavy_cape_requested`, `validate_unit`) lives in
+  `live_cmd/mod.rs`. `--render-check` still exists and errors without the
+  feature.
+- **Pin what a graded comparison counted, not just that frames came back.**
+  `rewo-app/src/probes.rs` (`PROBES.bad(..)`) counts each comparison as it is
+  evaluated; `skyshot`, `lightmapshot` and `tintshot` pin that count beside
+  the frame count, so a section that renders but stops comparing fails.
+  `leashshot` records every witness unconditionally and compares against
+  `EXPECTED_WITNESSES` with `!=`. `tools/numbers.py` shows the pins.
+- **Game directory.** `options.txt` is `<game dir>/options.txt`, written
+  atomically. `rewo-app/src/game_dir.rs` resolves the directory once: `rewo
+  live --game-dir DIR`, then the launcher's `REWO_GAME_DIR`, then the current
+  directory (standalone runs). Never open `options.txt` by a bare relative path.
 - **Tracy** runs only with `--features profile`; the default build's
   `tracy_client` calls are no-ops (no profiler thread, no LAN broadcast).
 - The shipped client sends no test packets: the first-spawn dirt stack is

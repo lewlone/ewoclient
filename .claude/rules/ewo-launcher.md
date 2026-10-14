@@ -32,6 +32,13 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
   `configure()` does no DWM alpha hack. `WM_NCHITTEST` gives the resize edges
   (8 lp) and a 32 lp caption. Minimize/close rects are excluded from the caption
   and handled before modals.
+- **Startup and device loss.** Adapter selection is two passes: hardware
+  first, then the WARP software adapter (with a log warning). If even that
+  fails, `GlBackend::new` shows a native MessageBox and exits instead of
+  panicking (`try_new` returns the error). `resize` asks
+  `GetDeviceRemovedReason` before waiting on the GPU. While the device is lost
+  the loop must not spin: `about_to_wait` waits until
+  `GlBackend::retry_deadline()` (backoff up to 30 s); input still wakes it.
 - Consequence: **no uncapped frame rate on Windows** (DWM composites at refresh).
   The dev-overlay vsync toggle only uncaps on the GL path.
 - `wayland.rs` is a no-op stub and has never run on real Hyprland. No X11.
@@ -101,12 +108,17 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
 - `profile.rs`: client profiles (global, not per-instance): `profiles.toml` +
   `profiles/<name>/{client.toml,hud.toml,modules.toml,…}`; `settings.toml` is
   global-only. `profile::is_valid_name` rejects path-unsafe names.
+  `atomic_write` and `validate_name` live in `ewo_core::util` (shared with the
+  cdylib, which writes `pvp.toml`; `ewo-launcher/src/util.rs` re-exports them).
 - `keybind.rs`: `KeyChord` = GLFW key code + modifier mask (Minecraft's own key
   namespace). `REGISTRY` is generated from `ewo_core::modules`. The active
   profile's binds resolve to `<instance>/ewo-keybinds.txt` before each launch.
 - **Native · Rewo instances**: `InstanceLoader::Native` spawns `rewo.exe live`.
   `EWO_DEV_SERVER=host:port` is the dev-join knob. `package.ps1` stages
-  `rewo.exe` into `dist/`.
+  `rewo.exe` into `dist/`. The native launch passes `REWO_GAME_DIR` = the
+  instance folder (the JVM path's `working_dir`; `main.rs` assembles the env)
+  and `spawn_native` makes it the child's `current_dir`, so Rewo's
+  `options.txt` lives in the instance, not the launcher's CWD.
 
 ## Runtime conventions
 
@@ -126,7 +138,8 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
   `EWO_LOBBY_ADDR` (the network widget's join address; unset = no JOIN),
   `EWO_LOADER_BASE` (overrides the EwoLoader manifest base; see
   `ewo-loader-integration.md`), `EWO_DEV_SERVER=host:port` (dev join for
-  Native instances). Child processes get the launcher env minus
+  Native instances), `REWO_GAME_DIR` (set by the launcher for Native
+  instances, see above). Child processes get the launcher env minus
   `*TOKEN*`/`*SECRET*` variables.
 - Release builds use `windows_subsystem = "windows"` (no console). The icon
   `assets/icon.ico` is embedded by `build.rs` via `winresource`. `package.ps1`

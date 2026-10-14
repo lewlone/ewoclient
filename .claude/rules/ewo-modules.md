@@ -80,7 +80,11 @@ lightmap is GPU-driven (`LightmapRenderState` UBO; Full Bright cranks
 redirects `LocalPlayer.turn` in `MouseHandler.turnPlayer`, modifies
 `Camera.setRotation`, injects at `Camera.alignWithEntity` RETURN, forces the
 detached camera type, and freezes the body by forcing the movement
-`KeyMapping`s up.
+`KeyMapping`s up. Its fly keys (and the release-resync) follow the player's own
+key mappings (`keyUp/Down/Left/Right/Jump/Shift/Sprint`, resolved through
+`KeyMapping.saveString` and `InputConstants.getKey`, cached until a rebind),
+not physical W/A/S/D; an unbound action does nothing, and a failed lookup falls
+back to the vanilla default key.
 
 ## PvP Utils layer (separate from legit/pvp)
 
@@ -88,3 +92,12 @@ Launcher `SettingsTab::PvpUtils` + `ewo_core::pvp.rs` + per-profile `pvp.toml`;
 Java `dev.lewlone.ewohud.pvp.*` ships in **both** builds. `EwoHitRange` is
 called from the **legit** `PlayerAttackMixin` on purpose. **Do not "clean up"
 that call.**
+
+`pvp.toml` is written atomically (temp file, fsync, rename; `PvpConfig::save`
+returns the error) because `EwoPvpModule` polls it: every 250 ms of wall clock
+it stats the file once, and re-reads `profiles.toml` only when that file's
+(mtime, size) changes; a switch of the active profile reloads even if the two
+mtimes match. Paths and profile names go through `ewo_core::pvp::profile_file`
+(see `ewo-ingame-hud.md`). `EwoKeybinds` parses `ewo-keybinds.txt` per line, so
+one malformed line no longer loses the bindings after it (including the overlay
+key).
