@@ -30,5 +30,11 @@ indexmap = { workspace = true }
 # default-feature change cannot silently drop the rasterizer.
 swash = { version = "0.2.10", default-features = false, features = ["scale", "render", "std"] }
 
+# Test-only: the `MobDef::textures` pin reads the baked spec table
+# (mobs.rs::every_mob_texture_key_exists_in_the_baked_specs). Not a runtime
+# dep — rewo-gpu takes its baked assets as data from the caller.
+[dev-dependencies]
+rewo-data = { workspace = true }
+
 [lints]
 workspace = true
