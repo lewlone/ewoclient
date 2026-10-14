@@ -60,6 +60,32 @@ impl App {
         }
     }
 
+    /// While frames are skipped (minimised, occluded, not foreground),
+    /// nothing after `should_skip_frame` in `on_redraw` runs, and that
+    /// includes `pump_services`. So a game that exited while the launcher sat
+    /// minimised was never noticed (no exit log, no window restore), and
+    /// download, auth and social results waited in their channels until the
+    /// user brought the launcher back. `about_to_wait` (which still runs on
+    /// the unfocused wake cadence) calls this to keep those services moving
+    /// at a low rate without drawing anything.
+    pub(crate) fn pump_services_while_hidden(&mut self) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        if !self.should_skip_frame(&window) {
+            return;
+        }
+        let now = Instant::now();
+        if !hidden_pump_due(self.hidden_pump_at, now) {
+            return;
+        }
+        self.hidden_pump_at = Some(now);
+        self.clock.tick();
+        let time = self.clock.elapsed;
+        self.pump_services(time);
+        self.apply_ui_requests();
+    }
+
     /// Skip render + swap entirely when the window can't be
     /// shown. On Windows, `wglSwapBuffers` on an obscured /
     /// minimised window queues presentations in the GL driver
@@ -207,9 +233,27 @@ impl App {
     }
 }
 
+/// How often `pump_services_while_hidden` runs: often enough that a game
+/// exit restores the launcher promptly, rare enough to cost nothing.
+const HIDDEN_PUMP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether the hidden-state service pump is due at `now`.
+fn hidden_pump_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|t| now.saturating_duration_since(t) >= HIDDEN_PUMP_INTERVAL)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hidden_pump_runs_first_time_then_at_its_interval() {
+        let t0 = Instant::now();
+        assert!(hidden_pump_due(None, t0));
+        assert!(!hidden_pump_due(Some(t0), t0));
+        assert!(!hidden_pump_due(Some(t0), t0 + HIDDEN_PUMP_INTERVAL / 2));
+        assert!(hidden_pump_due(Some(t0), t0 + HIDDEN_PUMP_INTERVAL));
+    }
 
     #[test]
     fn a_frame_is_hidden_when_any_visibility_signal_says_so() {

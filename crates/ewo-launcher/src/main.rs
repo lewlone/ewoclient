@@ -177,6 +177,8 @@ struct App {
     active_launch_window_seen: bool,
     active_launch_marker_seen: bool,
     active_launch_polled_at: Option<Instant>,
+    /// Last time `pump_services_while_hidden` ran (see there).
+    hidden_pump_at: Option<Instant>,
     /// Folder id of the instance whose game is running (for its log dump).
     active_launch_instance_id: Option<String>,
     /// A launch whose blocking preparation (manifest/loader fetch, library
@@ -363,6 +365,7 @@ impl ApplicationHandler for App {
         // is minimised or in the background, which is exactly when the game
         // is being played.
         self.poll_game_window();
+        self.pump_services_while_hidden();
         self.pace_frames(event_loop);
     }
 }
