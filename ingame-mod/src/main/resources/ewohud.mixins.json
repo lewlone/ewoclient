@@ -8,6 +8,7 @@
     "EwoHudMixin",
     "EwoHudMixin262",
     "MinecraftShutdownMixin",
+    "MinecraftShutdownMixin262",
     "KeyboardHandlerMixin",
     "CameraMixin",
     "LightmapRenderStateExtractorMixin",

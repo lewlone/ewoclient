@@ -9,7 +9,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import dev.lewlone.ewohud.EwoHudMod;
 
 /**
- * Primary arm point for the exit watchdog.
+ * Primary arm point for the exit watchdog on 26.1. 26.2+ has no
+ * {@code destroy()}; {@link MinecraftShutdownMixin262} covers it there (the
+ * plugin applies exactly one of the two).
  *
  * <p>{@code Minecraft.destroy()} is the game's final resource teardown — it
  * runs after the render loop ends and just <em>before</em> the JVM begins
