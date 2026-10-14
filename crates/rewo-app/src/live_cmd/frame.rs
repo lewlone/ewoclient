@@ -105,17 +105,11 @@ impl LiveApp {
         }
         // M93m — a beacon button asked to close. Drained here rather than
         // closed from inside the press, so every close goes through the one
-        // path that owns the screen.
-        //
-        // **This closes the CLIENT's screen only.** Vanilla's
-        // `player.closeContainer()` also sends a serverbound
-        // `container_close`, and Rewo resolves no such packet — `ids.rs` has
-        // the clientbound one alone. So the server still believes the menu is
-        // open. That gap is older and wider than this milestone (it affects
-        // every screen close, not the beacon's), and is recorded rather than
-        // half-fixed here.
+        // path that owns the screen. The beacon's buttons call
+        // `player.closeContainer()` (a USER close), so it sends
+        // `container_close` and clears the menu like Esc does.
         if std::mem::take(&mut self.screen.close_beacon) {
-            self.set_screen_open(false);
+            self.close_container_screen();
         }
 
         // M89 — a container the server opened opens the client's screen.
@@ -183,7 +177,11 @@ impl LiveApp {
         match lectern_menu {
             Some((container_id, serial, page)) => {
                 let identity = (container_id, serial);
-                if self.lectern_shown.is_none() && self.lectern_superseded != Some(identity) {
+                if super::screens::lectern_should_open(
+                    identity,
+                    self.lectern_shown,
+                    self.lectern_superseded,
+                ) {
                     // `handleOpenScreen` IS the screen opening. `mayBuild`
                     // is not on the wire - vanilla's own setter makes it
                     // `!isSpectator()`, which is what decides the

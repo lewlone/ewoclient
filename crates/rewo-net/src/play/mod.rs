@@ -4752,20 +4752,28 @@ impl PlaySession {
         self.send(p)
     }
 
-    /// `Minecraft.player.closeContainer()` (M184) — the lectern close's
-    /// server half. One VarInt container id, taken from the SHOWN menu on
-    /// M89's rule; container 0 means nothing is shown (the caller's menu
-    /// already went) and vanilla's `closeContainer` guards that case out
-    /// (`containerMenu != inventoryMenu`), so this no-ops rather than
-    /// closing the player's own menu.
+    /// `LocalPlayer.closeContainer()` (`LocalPlayer.java:333-341`): the
+    /// USER-initiated close of a container-backed screen (Esc, the inventory
+    /// key, the lectern's Done, the beacon's buttons).
+    ///
+    /// Vanilla sends `ServerboundContainerClose` for the open menu and then
+    /// runs `clientSideCloseContainer()`, which resets `containerMenu`; here
+    /// that is [`rewo_world::menu::Menus::close_local`], which clears the
+    /// open menu (so [`Self::shown_menu`] falls back to the player's own) and
+    /// returns the id to send. The menu is cleared **before** the send so a
+    /// failing socket cannot leave a stale chest behind.
+    ///
+    /// A no-op when nothing but the player's own menu is open. The
+    /// SERVER-initiated close (`handleContainerClose`) is
+    /// `menus.apply_close()` from dispatch and never reaches this method, so
+    /// it sends nothing.
     pub fn container_close(&mut self) -> Result<(), String> {
+        let Some(container) = self.menus.close_local() else {
+            return Ok(());
+        };
         let Some(id) = self.ids.sb_play_container_close else {
             return Err("container_close unavailable".into());
         };
-        let container = self.shown_container_id();
-        if container == rewo_world::inventory::PLAYER_CONTAINER_ID {
-            return Ok(());
-        }
         let mut p = PacketWriter::packet(id);
         p.buf
             .extend_from_slice(&crate::container_close_body(container));

@@ -1201,3 +1201,90 @@ pub(super) fn click_screen(
     }
     session.shown_menu_mut().apply_prediction(&prediction);
 }
+
+/// A lectern menu's identity: `(container_id, open_serial)`, the pair
+/// `LiveApp::lectern_shown` / `lectern_superseded` hold.
+pub(super) type LecternId = (i32, u64);
+
+/// Whether the frame sync should open the lectern reader for the menu that is
+/// open right now: only when no reader is up for it and it was not superseded
+/// by a held book's reader (M184).
+///
+/// A USER close (`LocalPlayer.closeContainer()`) also clears the menu itself,
+/// so the sync never sees the closed lectern again; without that, the menu
+/// stayed open and this answered `true` on the very next frame.
+pub(super) fn lectern_should_open(
+    identity: LecternId,
+    shown: Option<LecternId>,
+    superseded: Option<LecternId>,
+) -> bool {
+    shown.is_none() && superseded != Some(identity)
+}
+
+/// The identity of the open lectern menu, if one is open.
+#[cfg(test)]
+pub(super) fn open_lectern_identity(menus: &rewo_world::menu::Menus) -> Option<LecternId> {
+    menus
+        .open()
+        .filter(|m| m.layout.name == "lectern")
+        .map(|m| (m.container_id, m.open_serial))
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+    use rewo_world::menu::Menus;
+
+    const LECTERN: i32 = 17;
+    const CHEST: i32 = 2;
+
+    /// The lectern reader after the user pressed Done: `close_book` takes
+    /// `lectern_shown`, and `PlaySession::container_close` runs
+    /// `Menus::close_local`.
+    #[test]
+    fn the_lectern_does_not_reopen_after_a_user_close() {
+        let mut menus = Menus::new();
+        menus.apply_open_screen(7, LECTERN, "Lectern".into());
+        let id = open_lectern_identity(&menus).expect("lectern open");
+        // First frame: the reader opens.
+        assert!(lectern_should_open(id, None, None));
+        // Done: the marker is taken, the menu is closed locally (and a
+        // `container_close` is owed to the server).
+        assert_eq!(menus.close_local(), Some(7));
+        // Next frame: no menu, so nothing is offered for opening.
+        assert_eq!(open_lectern_identity(&menus), None);
+    }
+
+    /// A held book's reader supersedes the lectern while its menu lives; that
+    /// stays vanilla, and the exact identity is what is remembered.
+    #[test]
+    fn a_superseded_lectern_stays_closed_but_a_fresh_menu_opens() {
+        let id = (7, 1);
+        assert!(!lectern_should_open(id, None, Some(id)));
+        assert!(lectern_should_open((7, 2), None, Some(id)));
+        assert!(!lectern_should_open(id, Some(id), None));
+    }
+
+    /// A server close sends nothing (the `container_shown` watermark then
+    /// closes the screen); a user close of a chest sends its id and the next
+    /// inventory open shows the player's layout.
+    #[test]
+    fn user_close_sends_once_and_server_close_never_does() {
+        let mut user = Menus::new();
+        user.apply_open_screen(3, CHEST, "Chest".into());
+        assert_eq!(user.close_local(), Some(3));
+        assert_eq!(
+            user.shown_layout().name,
+            rewo_world::menu_layout::PLAYER.name
+        );
+
+        let mut server = Menus::new();
+        server.apply_open_screen(3, CHEST, "Chest".into());
+        server.apply_close();
+        assert_eq!(server.close_local(), None, "nothing left to send");
+        assert_eq!(
+            server.shown_layout().name,
+            rewo_world::menu_layout::PLAYER.name
+        );
+    }
+}
