@@ -10,7 +10,19 @@
 #           excluded, and the cdylib's REGISTRY tops out at the 12 legit
 #           slots. Class fingerprint of "Triggerbot" / "AutoTotem" / etc. is
 #           not present in the legit jar at all. See CLAUDE.md "Legit / pvp
-#           split (post-ban refactor)".
+#           split (post-ban refactor)". The legit build ENFORCES this: after
+#           jarring it fails if any entry sits under dev/lewlone/ewohud/assist/
+#           or any entry's bytes mention that package (a Class.forName string
+#           would do it).
+#   -NoDeploy
+#           Compile + jar only (CI, audits, worktree experiments). Skips the
+#           cargo build of ewo_jni.dll and every copy into %APPDATA%\EwoClient
+#           (the shared-library cache and the dev drop), so it can run while
+#           Minecraft is open and never touches a live instance.
+#
+# A normal (deploying) build also drops the jar at
+# %APPDATA%\EwoClient\dev\ewo-hud-0.1.0.jar - the stable path the loader
+# manifests point at, independent of which worktree built it.
 #
 # The cdylib step exists so changes to ewo-core (e.g. modules::REGISTRY) or
 # ewo-jni are picked up automatically. Skipping it stranded Auto Totem +
@@ -28,7 +40,8 @@
 # config can keep compatibilityLevel JAVA_21.
 [CmdletBinding()]
 param(
-    [switch]$Pvp
+    [switch]$Pvp,
+    [switch]$NoDeploy
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +58,9 @@ if ($Pvp) {
 } else {
     Write-Host "[ewo-hud] building legit variant (assist module set excluded)"
 }
+if ($NoDeploy) {
+    Write-Host "[ewo-hud] -NoDeploy: compile + jar only, nothing is copied outside ingame-mod/build"
+}
 
 # Rebuild the Rust cdylib first. The pvp feature gates the assist half of
 # REGISTRY; without it, Rust writes only 12 module records into the shared
@@ -52,24 +68,26 @@ if ($Pvp) {
 # the feature, Rust writes 26 records and the assist classes are on the
 # classpath to consume them.
 $repoRoot = Split-Path -Parent $here
-Push-Location $repoRoot
-try {
-    $prevPref = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    if ($Pvp) {
-        Write-Host "cargo build -p ewo-jni --features pvp..."
-        & cargo build -p ewo-jni --features pvp --quiet
-    } else {
-        Write-Host "cargo build -p ewo-jni..."
-        & cargo build -p ewo-jni --quiet
+if (-not $NoDeploy) {
+    Push-Location $repoRoot
+    try {
+        $prevPref = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        if ($Pvp) {
+            Write-Host "cargo build -p ewo-jni --features pvp..."
+            & cargo build -p ewo-jni --features pvp --quiet
+        } else {
+            Write-Host "cargo build -p ewo-jni..."
+            & cargo build -p ewo-jni --quiet
+        }
+        $cargoExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevPref
+        if ($cargoExit -ne 0) {
+            throw "cargo build -p ewo-jni failed (is Minecraft still running? it holds ewo_jni.dll open)"
+        }
+    } finally {
+        Pop-Location
     }
-    $cargoExit = $LASTEXITCODE
-    $ErrorActionPreference = $prevPref
-    if ($cargoExit -ne 0) {
-        throw "cargo build -p ewo-jni failed (is Minecraft still running? it holds ewo_jni.dll open)"
-    }
-} finally {
-    Pop-Location
 }
 
 # Classpath: the Minecraft jar (Mojmap-named) plus every shared library.
@@ -140,6 +158,58 @@ $jar = Join-Path $build "ewo-hud-0.1.0.jar"
 if ($LASTEXITCODE -ne 0) { throw "jar failed" }
 Write-Host "built: $jar"
 
+# Fingerprint assertion for the legit jar (post-ban refactor goal: nothing in
+# it may name the assist package). Scans every entry's bytes, not only names:
+# a reflective Class.forName("dev.lewlone.ewohud.assist...") string in the
+# constant pool of a non-assist class is exactly what this once leaked. The
+# pvp jar gets the inverse check so a broken pvp build can't pass silently.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$assistPrefix  = "dev/lewlone/ewohud/assist/"
+$assistNeedles = @("dev.lewlone.ewohud.assist", "dev/lewlone/ewohud/assist")
+$zip = [System.IO.Compression.ZipFile]::OpenRead($jar)
+try {
+    $violations = New-Object System.Collections.Generic.List[string]
+    $assistEntries = 0
+    foreach ($entry in $zip.Entries) {
+        if ($entry.FullName.StartsWith($assistPrefix)) {
+            $assistEntries++
+            if (-not $Pvp) { $violations.Add("entry under assist package: $($entry.FullName)") }
+            continue
+        }
+        if ($Pvp -or $entry.Length -eq 0) { continue }
+        $ms = New-Object System.IO.MemoryStream
+        $es = $entry.Open()
+        try { $es.CopyTo($ms) } finally { $es.Dispose() }
+        $text = [System.Text.Encoding]::GetEncoding(28591).GetString($ms.ToArray())
+        $ms.Dispose()
+        foreach ($needle in $assistNeedles) {
+            if ($text.IndexOf($needle, [System.StringComparison]::Ordinal) -ge 0) {
+                $violations.Add("$($entry.FullName) contains the string '$needle'")
+            }
+        }
+    }
+    if ($Pvp) {
+        if (-not $zip.GetEntry($assistPrefix + "EwoAssistEntry.class")) {
+            throw "pvp jar is missing $($assistPrefix)EwoAssistEntry.class (assist driver not built in)"
+        }
+        Write-Host "verified: pvp jar carries the assist package ($assistEntries entries)"
+    } else {
+        if ($violations.Count -gt 0) {
+            $violations | ForEach-Object { Write-Host "FINGERPRINT: $_" }
+            throw "legit jar leaks the assist package ($($violations.Count) finding(s) above)"
+        }
+        Write-Host "verified: legit jar has no assist package, entries or strings"
+    }
+} finally {
+    $zip.Dispose()
+}
+
+if ($NoDeploy) {
+    Write-Host "-NoDeploy: not deploying. Done."
+    exit 0
+}
+
 # Deploy into the launcher's shared library cache. The loader manifest points
 # at this jar via a file:// URL, but the launcher copies file:// libraries into
 # shared/libraries once and never refreshes them - so an in-place rebuild must
@@ -148,6 +218,13 @@ $deploy = Join-Path $ewo "shared\libraries\dev\lewlone\ewo-hud\0.1.0\ewo-hud-0.1
 New-Item -ItemType Directory -Force (Split-Path $deploy) | Out-Null
 Copy-Item -Force $jar $deploy
 Write-Host "deployed: $deploy"
+
+# Stable dev drop: the loader manifests point their ewo-hud file:// URL here,
+# so the jar that runs is whichever build ran last, from any worktree.
+$devDrop = Join-Path $ewo "dev\ewo-hud-0.1.0.jar"
+New-Item -ItemType Directory -Force (Split-Path $devDrop) | Out-Null
+Copy-Item -Force $jar $devDrop
+Write-Host "deployed: $devDrop"
 
 # The native half goes beside it: EwoHudMod looks for ewo_jni.dll next to its
 # jar before any cargo output, so the jar and dll deployed together are the
