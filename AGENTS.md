@@ -69,7 +69,7 @@ Path-scoped rules (auto-loaded; read one directly if you need it early):
 
 | Rule | Covers |
 |---|---|
-| `ewo-visual.md` | Velvet tokens, render graph, reference materials, glossary, Skia perf rules |
+| `ewo-visual.md` | Velvet tokens (`Theme` is the one colour source), render graph, reference materials, glossary, Skia perf rules |
 | `ewo-launcher.md` | window model, lifecycle and leak fixes, module map, disk layout |
 | `ewo-loader-integration.md` | loader manifests, bundled mods, per-instance toggles, iteration loop, stale `file://` jar |
 | `ewo-ingame-hud.md` | Phase E architecture, shared buffers + schema versions, build/deploy, HUD feature gotchas |
@@ -123,8 +123,10 @@ python tools/regen_agents_mirror.py          # after editing this file: regenera
   `%APPDATA%/EwoClient/rewo/26.2/` (datagen reports + a Vineflower decompile of
   the user's own client jar) and a Vulkan device with the SDK's validation
   layers. Hosted CI (`ci.yml`, required check `test` on `main`) runs build +
-  `cargo test` + clippy with `--features rewo-app/gates`, the pvp half, a
-  default-features build of what ships, an MSRV check and `cargo audit`.
+  `cargo test` + clippy with `--features rewo-app/gates`, the pvp half, the
+  `audio` feature, a default-features build of what ships, an MSRV check,
+  `cargo audit` and a Linux `cargo check -p ewo-render` (launcher half
+  advisory, not yet seen green); Dependabot keeps Cargo and Actions current.
   `gates.yml` builds the mod (`-NoDeploy`, legit + pvp), runs
   `check_mixin_targets.py`, the tests with `REWO_REQUIRE_ASSETS=1`, `gates.py`
   and `render_check.py` on every push, on the owner's self-hosted runner
@@ -177,8 +179,9 @@ configured and the account is linked.
   on glutin. There's no uncapped frame rate on Windows.
 - **Renderer (Rewo): raw Vulkan via `ash`**, GLSL compiled by `glslc` from the
   Vulkan SDK.
-- **Layout:** hand-rolled (`taffy` is a workspace dependency but unused). **Window:** `winit` 0.30, custom frame, no native
-  titlebar. Wayland only on Linux, no X11, no macOS.
+- **Layout:** hand-rolled (no layout crate; `taffy` was removed). **Window:**
+  `winit` 0.30, custom frame, no native titlebar. Wayland only on Linux, no
+  X11, no macOS.
 - **Concurrency:** single-threaded plus `std::thread` + `mpsc`. **No
   tokio/smol.** Rayon only where profiling demands it (Rewo's mesh pool).
 - **HTTP:** `ureq` (sync). **Settings:** TOML under `<config>/EwoClient/`
