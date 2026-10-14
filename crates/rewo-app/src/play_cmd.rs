@@ -958,79 +958,89 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         }
     }
 
+    // Every check below is GRADED into `verdicts` rather than returned with
+    // `?`: an early return skipped the later requested checks and, worse,
+    // the cleanup (bot gamemode, test entities) the fly/motion/swing gates
+    // owe the next run. The verdicts are all printed and the run fails at
+    // the end if any of them did.
+    let mut verdicts: Vec<(&str, Result<(), String>)> = Vec::new();
     if args.stats_check {
-        let reg = &data.stat_registries;
-        let custom = reg.stat_type.id_of("minecraft:custom");
-        let held = session.stats.len();
-        let replies = session.stats.updates - stats_updates_at_ask;
-        println!(
-            "[rewo-m84] award_stats: asked at tick {stats_asked:?}, {replies} \
-             repl{}, {held} stat{} held",
-            if replies == 1 { "y" } else { "ies" },
-            if held == 1 { "" } else { "s" }
-        );
-        // Print a handful, resolved through the same tables the screen uses, so
-        // the run shows the *second* level of the dispatch actually resolving
-        // and not just a pile of integers.
-        if let Some(custom) = custom {
-            let mut named: Vec<(String, String)> = session
-                .stats
-                .of_type(custom)
-                .filter_map(|(value_id, count)| {
-                    let name = reg.custom_stat.name(value_id)?;
-                    Some((
-                        name.to_string(),
-                        rewo_world::stats::format_stat(
-                            rewo_data::stats::custom_formatter(name),
-                            count,
-                        ),
-                    ))
-                })
-                .collect();
-            named.sort();
-            for (name, value) in named.iter().take(8) {
-                println!("[rewo-m84]   {name} = {value}");
-            }
-            if stats_asked.is_some() && replies == 0 {
-                return Err(
-                    "--stats-check: REQUEST_STATS went out and no award_stats came \
-                     back. Either the serverbound ordinal is wrong or the reply was \
-                     not decoded — either way this run proved nothing."
-                        .into(),
-                );
-            }
-            if named.is_empty() {
-                return Err(
-                    "--stats-check: a reply arrived but held no `minecraft:custom` \
-                     stat, so the second level of the dispatch resolved nothing."
-                        .into(),
-                );
-            }
-            // The run walks and jumps, so `play_time` must be non-zero and its
-            // formatter must be TIME. A raw tick count here would mean the
-            // per-stat formatter table never fired.
-            let played = named.iter().find(|(n, _)| n == "minecraft:play_time");
-            match played {
-                Some((_, v)) if v.ends_with(" s") || v.ends_with(" min") => {
-                    println!("[rewo-m84] play_time formats as {v:?} (StatFormatter.TIME)")
-                }
-                other => {
-                    return Err(format!(
-                        "--stats-check: play_time is {other:?}, which is not a TIME \
-                         format — the per-stat formatter table did not fire."
-                    ))
-                }
-            }
-        } else {
-            return Err("--stats-check: no minecraft:custom stat type in the report".into());
-        }
-        if stats_asked.is_none() {
-            return Err(
-                "--stats-check: the request never went out (the session never \
-                 spawned in time), so nothing was tested."
-                    .into(),
+        let stats_verdict = (|| -> Result<(), String> {
+            let reg = &data.stat_registries;
+            let custom = reg.stat_type.id_of("minecraft:custom");
+            let held = session.stats.len();
+            let replies = session.stats.updates - stats_updates_at_ask;
+            println!(
+                "[rewo-m84] award_stats: asked at tick {stats_asked:?}, {replies} \
+                 repl{}, {held} stat{} held",
+                if replies == 1 { "y" } else { "ies" },
+                if held == 1 { "" } else { "s" }
             );
-        }
+            // Print a handful, resolved through the same tables the screen uses, so
+            // the run shows the *second* level of the dispatch actually resolving
+            // and not just a pile of integers.
+            if let Some(custom) = custom {
+                let mut named: Vec<(String, String)> = session
+                    .stats
+                    .of_type(custom)
+                    .filter_map(|(value_id, count)| {
+                        let name = reg.custom_stat.name(value_id)?;
+                        Some((
+                            name.to_string(),
+                            rewo_world::stats::format_stat(
+                                rewo_data::stats::custom_formatter(name),
+                                count,
+                            ),
+                        ))
+                    })
+                    .collect();
+                named.sort();
+                for (name, value) in named.iter().take(8) {
+                    println!("[rewo-m84]   {name} = {value}");
+                }
+                if stats_asked.is_some() && replies == 0 {
+                    return Err(
+                        "--stats-check: REQUEST_STATS went out and no award_stats came \
+                         back. Either the serverbound ordinal is wrong or the reply was \
+                         not decoded — either way this run proved nothing."
+                            .into(),
+                    );
+                }
+                if named.is_empty() {
+                    return Err(
+                        "--stats-check: a reply arrived but held no `minecraft:custom` \
+                         stat, so the second level of the dispatch resolved nothing."
+                            .into(),
+                    );
+                }
+                // The run walks and jumps, so `play_time` must be non-zero and its
+                // formatter must be TIME. A raw tick count here would mean the
+                // per-stat formatter table never fired.
+                let played = named.iter().find(|(n, _)| n == "minecraft:play_time");
+                match played {
+                    Some((_, v)) if v.ends_with(" s") || v.ends_with(" min") => {
+                        println!("[rewo-m84] play_time formats as {v:?} (StatFormatter.TIME)")
+                    }
+                    other => {
+                        return Err(format!(
+                            "--stats-check: play_time is {other:?}, which is not a TIME \
+                             format — the per-stat formatter table did not fire."
+                        ))
+                    }
+                }
+            } else {
+                return Err("--stats-check: no minecraft:custom stat type in the report".into());
+            }
+            if stats_asked.is_none() {
+                return Err(
+                    "--stats-check: the request never went out (the session never \
+                     spawned in time), so nothing was tested."
+                        .into(),
+                );
+            }
+            Ok(())
+        })();
+        verdicts.push(("stats-check", stats_verdict));
     }
 
     if args.waypoint_check {
@@ -1041,44 +1051,54 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         }
     }
 
-    report(
-        &mut session,
-        &acted,
-        &args,
-        baked.as_ref(),
-        &data,
-        clock_start,
-    )?;
+    // `report` prints the summary and carries the `--light-check` verdict; a
+    // red light check must not skip the checks and cleanup below.
+    verdicts.push((
+        "light-check",
+        report(
+            &mut session,
+            &acted,
+            &args,
+            baked.as_ref(),
+            &data,
+            clock_start,
+        ),
+    ));
 
     if args.waypoint_check {
         // Fail-closed on OBSERVATION: a command the server ignored leaves the
         // peak at zero, and a run that never saw the packet must be red rather
         // than quietly reporting that nothing broke.
-        if wp_peak == 0 {
-            return Err(
+        let verdict = if wp_peak == 0 {
+            Err(
                 "--waypoint-check: no waypoint was ever tracked. The `/attribute` \
                  either never landed or the packet was not decoded — either way \
                  this run proved nothing."
-                    .into(),
-            );
-        }
-        if !wp_untracked {
-            return Err(
+                    .to_string(),
+            )
+        } else if !wp_untracked {
+            Err(
                 "--waypoint-check: a waypoint was tracked but never untracked. \
                  Setting `waypoint_transmit_range` back to 0 must send \
                  `removeWaypoint`, so half the connection lifecycle went \
                  unexercised."
-                    .into(),
-            );
-        }
+                    .to_string(),
+            )
+        } else {
+            Ok(())
+        };
+        verdicts.push(("waypoint-check", verdict));
     }
     if !session.spawned {
-        return Err("never spawned (no initial position from server)".into());
+        verdicts.push((
+            "spawn",
+            Err("never spawned (no initial position from server)".to_string()),
+        ));
     }
     if let Some(dc) = dim_check.as_ref() {
         // Fails closed: an incomplete matrix is a failure, and `report` says so
         // in both the summary line and the exit code.
-        dc.report(&session)?;
+        verdicts.push(("dimension-check", dc.report(&session)));
     }
     // Build actions fail closed. A standard build-enabled play gate must prove
     // the requested placement and dig properties from the server's own world —
@@ -1088,7 +1108,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     // its own still/no-build path, so neither placement nor dig is ever
     // attempted there and there is nothing to prove.
     if !args.no_build && !args.dimension_check {
-        build_acceptance(&session, &acted, &data)?;
+        verdicts.push(("build-actions", build_acceptance(&session, &acted, &data)));
     }
     if let Some(f) = fly.as_ref() {
         // Grade first, then restore creative — the test world is a creative
@@ -1098,7 +1118,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
             Ok(()) => println!("[fly-check] restored /gamemode creative {username}"),
             Err(e) => log::warn!("play --fly-check: cleanup failed: {e}"),
         }
-        verdict?;
+        verdicts.push(("fly-check", verdict));
     }
     if args.motion_check {
         // Same shape as the swing gate: grade first, then tidy up whatever the
@@ -1114,7 +1134,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
             // used; pace it the same way rather than firing four at once.
             std::thread::sleep(Duration::from_millis(250));
         }
-        verdict?;
+        verdicts.push(("motion-check", verdict));
     }
     if args.swing_check {
         // Grade the client's snapshot first, then tidy up regardless of the
@@ -1125,9 +1145,34 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
             Ok(()) => println!("[swing-check] cleaned up /{}", swing_check_cleanup()),
             Err(e) => log::warn!("play --swing-check: cleanup failed: {e}"),
         }
-        verdict?;
+        verdicts.push(("swing-check", verdict));
     }
-    Ok(())
+    combine_verdicts(verdicts)
+}
+
+/// Fold every graded check into the run's result: all verdicts are printed,
+/// and the run fails (with each failure's message) if any did. A pure
+/// function so "a red check no longer hides the rest" is testable.
+fn combine_verdicts(verdicts: Vec<(&str, Result<(), String>)>) -> Result<(), String> {
+    let mut failed = Vec::new();
+    for (name, verdict) in verdicts {
+        match verdict {
+            Ok(()) => println!("[verdict] {name}: ok"),
+            Err(e) => {
+                println!("[verdict] {name}: FAILED");
+                failed.push(format!("{name}: {e}"));
+            }
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "play: {} check(s) failed:\n  - {}",
+            failed.len(),
+            failed.join("\n  - ")
+        ))
+    }
 }
 
 /// M68's live gate for the four packets that move the local player.
@@ -2462,9 +2507,27 @@ fn evaluate_build_actions(
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_build_actions, motion_check_commands, DigObservation, PlaceObservation,
-        MOTION_MOUNT_PHASE_COMMANDS,
+        combine_verdicts, evaluate_build_actions, motion_check_commands, DigObservation,
+        PlaceObservation, MOTION_MOUNT_PHASE_COMMANDS,
     };
+
+    /// A red `--light-check` used to `?` out of `run`, skipping every later
+    /// check and the cleanup. All verdicts now reach the result.
+    #[test]
+    fn a_failed_check_does_not_hide_the_others() {
+        assert!(combine_verdicts(vec![("a", Ok(())), ("b", Ok(()))]).is_ok());
+        assert!(combine_verdicts(Vec::new()).is_ok());
+        let e = combine_verdicts(vec![
+            ("light-check", Err("light differs".into())),
+            ("swing-check", Ok(())),
+            ("fly-check", Err("never flew".into())),
+        ])
+        .unwrap_err();
+        assert!(e.contains("light-check: light differs"), "{e}");
+        assert!(e.contains("fly-check: never flew"), "{e}");
+        assert!(!e.contains("swing-check"), "{e}");
+        assert!(e.contains("2 check(s) failed"), "{e}");
+    }
 
     // Dirt's default state on 26.2 is 10 (observed live); the exact value does
     // not matter to the logic, only that observed == expected.
