@@ -17,6 +17,12 @@ use rewo_proto::frame::FrameCodec;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::writer::PacketWriter;
 
+/// How long a scripted server waits for the client's next packet before
+/// failing the test. It only exists to stop a hung test, so it is generous: a
+/// full-workspace test run (hundreds of test threads plus the GPU tests) once
+/// starved a client past the old 10 s and failed a passing test.
+const SCRIPT_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
 struct Server {
     stream: TcpStream,
     codec: FrameCodec,
@@ -71,9 +77,7 @@ fn start_configuration_round_trips_back_to_play() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        stream.set_read_timeout(Some(SCRIPT_READ_TIMEOUT)).unwrap();
         let mut s = Server {
             stream,
             codec: FrameCodec::default(),
@@ -166,9 +170,7 @@ fn a_bad_frame_disconnects_with_its_reason() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        stream.set_read_timeout(Some(SCRIPT_READ_TIMEOUT)).unwrap();
         let mut s = Server {
             stream,
             codec: FrameCodec::default(),
@@ -220,9 +222,7 @@ fn pump_stops_at_its_packet_budget() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        stream.set_read_timeout(Some(SCRIPT_READ_TIMEOUT)).unwrap();
         let mut s = Server {
             stream,
             codec: FrameCodec::default(),
@@ -291,9 +291,7 @@ fn login_answers_queries_and_cookies_and_honours_a_negative_threshold() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        stream.set_read_timeout(Some(SCRIPT_READ_TIMEOUT)).unwrap();
         let mut s = Server {
             stream,
             codec: FrameCodec::default(),
@@ -357,9 +355,7 @@ fn malformed_bodies_are_counted_once_each() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        stream.set_read_timeout(Some(SCRIPT_READ_TIMEOUT)).unwrap();
         let mut s = Server {
             stream,
             codec: FrameCodec::default(),
@@ -470,9 +466,7 @@ fn a_dripping_server_fails_the_login_at_the_handshake_deadline() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        stream.set_read_timeout(Some(SCRIPT_READ_TIMEOUT)).unwrap();
         let mut s = Server {
             stream,
             codec: FrameCodec::default(),
@@ -536,9 +530,7 @@ fn a_queued_kick_wins_over_a_failed_write() {
     let sids = Ids::resolve(&data.packets).unwrap();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        stream.set_read_timeout(Some(SCRIPT_READ_TIMEOUT)).unwrap();
         let mut s = Server {
             stream,
             codec: FrameCodec::default(),
