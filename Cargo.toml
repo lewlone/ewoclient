@@ -67,8 +67,8 @@ ureq = { version = "2", features = ["json", "tls"] }
 tiny_http = "0.12"
 opener = "0.9"
 base64 = "0.23"
-sha2 = "0.10"
-sha1 = "0.10"
+sha2 = "0.11"
+sha1 = "0.11"
 urlencoding = "2"
 serde_json = "1"
 # Order-preserving map — used by rewo-gpu's CEM animation parser so an
