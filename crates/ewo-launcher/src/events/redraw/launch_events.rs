@@ -122,6 +122,26 @@ impl App {
         }
     }
 
+    /// Observe the tracked game for a visible window (about once a second):
+    /// the real "its window was seen" signal for the zombie decision, which
+    /// the log markers only hint at.
+    fn poll_game_window(&mut self, time: f32) {
+        const POLL_EVERY_SECS: f32 = 1.0;
+        let Some(t) = self.active_launch else { return };
+        if self.active_launch_window_seen || time - self.active_launch_polled_at < POLL_EVERY_SECS {
+            return;
+        }
+        self.active_launch_polled_at = time;
+        if matches!(
+            launch::reaper::state(&t),
+            launch::reaper::GameState::Running {
+                visible_window: true
+            }
+        ) {
+            self.active_launch_window_seen = true;
+        }
+    }
+
     /// Drain JVM launch events into the launching screen. Each line, every
     /// stage transition, and the exit code arrives via this channel. When
     /// the JVM exits we drop the receiver; the next launch creates a fresh
@@ -143,6 +163,8 @@ impl App {
                         // that exact process. See launch::reaper.
                         self.active_launch_started_at = time;
                         self.active_launch_window_seen = false;
+                        self.active_launch_marker_seen = false;
+                        self.active_launch_polled_at = time;
                         self.active_launch = created.map(|created| {
                             let t = launch::reaper::Tracked { pid, created };
                             launch::reaper::record(t);
@@ -159,7 +181,8 @@ impl App {
                     }
                     launch::LaunchEvent::Line { severity, text } => {
                         if is_window_ready_marker(&text) {
-                            self.active_launch_window_seen = true;
+                            // Only a hint: the window may not exist yet.
+                            self.active_launch_marker_seen = true;
                         }
                         // Minimize as soon as the game is visibly coming
                         // up. These markers are logged right as the client
@@ -208,6 +231,7 @@ impl App {
                 }
             }
         }
+        self.poll_game_window(time);
         // Fallback minimize: if the game has been starting for a while
         // but we never saw a window-ready marker (modded logs vary),
         // minimize once the armed deadline passes so the hand-off still

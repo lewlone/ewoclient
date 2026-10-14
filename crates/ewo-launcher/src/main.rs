@@ -155,11 +155,15 @@ struct App {
     /// `launch::reaper`) can be reaped before the next launch. Set on
     /// `Started`, cleared on exit.
     active_launch: Option<launch::reaper::Tracked>,
-    /// Wall-time the running game was spawned, and whether its window-ready
-    /// marker has been seen — together they tell a zombie from a game that
-    /// is still starting up.
+    /// Wall-time the running game was spawned, whether a visible window was
+    /// ever **observed** for it (`launch::reaper::state`, polled while it
+    /// runs), whether its log merely claimed one is coming (a hint), and when
+    /// it was last polled. Together they tell a zombie from a game that is
+    /// still starting up (see `launch::reaper::is_zombie`).
     active_launch_started_at: f32,
     active_launch_window_seen: bool,
+    active_launch_marker_seen: bool,
+    active_launch_polled_at: f32,
     /// Folder id of the instance whose game is running (for its log dump).
     active_launch_instance_id: Option<String>,
     /// A launch whose blocking preparation (manifest/loader fetch, library

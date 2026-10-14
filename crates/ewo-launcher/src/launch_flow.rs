@@ -646,13 +646,18 @@ impl App {
                 None => SlotInput::Starting,
                 Some(t) => match launch::reaper::state(&t) {
                     launch::reaper::GameState::Gone => SlotInput::Gone,
-                    launch::reaper::GameState::Running { visible_window } => SlotInput::Running {
-                        zombie: launch::reaper::is_zombie(
-                            visible_window,
-                            self.active_launch_window_seen,
-                            time - self.active_launch_started_at,
-                        ),
-                    },
+                    launch::reaper::GameState::Running { visible_window } => {
+                        // A window seen right now counts as observed too.
+                        self.active_launch_window_seen |= visible_window;
+                        SlotInput::Running {
+                            zombie: launch::reaper::is_zombie(
+                                visible_window,
+                                self.active_launch_window_seen,
+                                self.active_launch_marker_seen,
+                                time - self.active_launch_started_at,
+                            ),
+                        }
+                    }
                 },
             }
         };

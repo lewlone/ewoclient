@@ -137,6 +137,14 @@ Subsystems:
   and recorded (PID **and** creation time, in memory and `last-launch.pid`),
   still running, exactly `java(w).exe` or `rewo.exe`, and owning no visible
   window (a zombie after shutdown never has one; a live game always does).
+  **A game is never reaped in its first `SPAWN_GRACE_SECS` (30 s).** "Its
+  window was seen" is an observation (`App::poll_game_window` asks
+  `reaper::state` about once a second while the game runs); the log markers
+  ("lwjgl version", …) are only a hint (`active_launch_marker_seen`) that
+  needs `MARKER_GRACE_SECS` (90 s) more before it can condemn a windowless
+  game, and with neither signal it takes `STARTUP_GRACE_SECS` (300 s). A
+  record left by an earlier launcher session is judged by process age
+  (`is_recorded_zombie`, from the recorded creation time).
 - **Java runtime per instance**: the Instances dropdown is "Auto" followed by
   the detected JREs. `Instance::java_runtime` is that index: `0` = auto
   (`pick_for_major`), `N >= 1` = `detect_all()[N-1]`. A pin that is gone or
