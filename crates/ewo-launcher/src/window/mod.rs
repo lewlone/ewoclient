@@ -36,6 +36,22 @@ pub fn configure(window: &Window) {
     wayland::configure(window);
 }
 
+/// The launcher window's native handle as an integer, to own an OS dialog
+/// (e.g. the Recycle Bin's "permanently delete?" prompt) so it opens in
+/// front of the launcher instead of behind it. `None` off Windows or when
+/// the handle can't be read.
+pub fn owner_handle(window: &Window) -> Option<isize> {
+    #[cfg(target_os = "windows")]
+    {
+        win32::owner_handle(window)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        None
+    }
+}
+
 /// Whether the OS asks for reduced motion (non-negotiable #6). On Windows
 /// this is `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)`, the "Show
 /// animations in Windows" toggle, inverted. Linux has no equivalent we read:

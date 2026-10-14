@@ -222,7 +222,10 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         "no container -> Inventory::default(), container id 0",
     );
     session_menus.apply_open_screen(7, 2, "Chest".into());
-    let shown = session_menus.open().map(|m| &m.menu).unwrap_or(&player);
+    let shown = session_menus
+        .shown_open()
+        .map(|m| &m.menu)
+        .unwrap_or(&player);
     c.record(
         "s2.with_a_container_open_the_shown_menu_is_the_container",
         shown.slot_count() == 63 && shown.layout().name == "generic_9x3",

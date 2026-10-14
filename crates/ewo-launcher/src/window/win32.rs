@@ -86,6 +86,14 @@ pub fn is_foreground(window: &Window) -> bool {
     fg.0 == my_hwnd.0
 }
 
+/// The window's `HWND` as an integer (see `window::owner_handle`).
+pub fn owner_handle(window: &Window) -> Option<isize> {
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
+}
+
 /// Reads the Windows "Show animations in Windows" setting
 /// (`SPI_GETCLIENTAREAANIMATION`); reduced motion is its negation. Cheap
 /// enough (one syscall) to poll once a second.

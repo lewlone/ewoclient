@@ -48,14 +48,13 @@ impl App {
     fn busy_instance_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = Vec::new();
         ids.extend(self.active_launch_instance_id.clone());
-        let by_idx = |idx: usize| self.instances.get(idx).map(|i| i.id.clone());
-        ids.extend(self.pending_prepare.as_ref().and_then(|p| by_idx(p.idx)));
+        ids.extend(self.pending_prepare.as_ref().map(|p| p.instance_id.clone()));
         ids.extend(
             self.pending_relaunch
                 .as_ref()
-                .and_then(|p| by_idx(p.instance_idx)),
+                .map(|p| p.instance_id.clone()),
         );
-        ids.extend(self.pending_auth.as_ref().and_then(|p| by_idx(p.idx)));
+        ids.extend(self.pending_auth.as_ref().map(|p| p.instance_id.clone()));
         ids
     }
 
@@ -83,13 +82,14 @@ impl App {
         log::info!("delete: moving instances/{id} to the Recycle Bin");
         let (tx, rx) = std::sync::mpsc::channel();
         let worker_id = id.clone();
+        let recycler = OsRecycler {
+            owner: self.window.as_ref().and_then(|w| window::owner_handle(w)),
+        };
         let spawned = std::thread::Builder::new()
             .name("ewo-delete-instance".into())
             .spawn(move || {
                 let _ = tx.send(recycle::recycle_instance_folder(
-                    &root,
-                    &worker_id,
-                    &OsRecycler,
+                    &root, &worker_id, &recycler,
                 ));
             });
         match spawned {

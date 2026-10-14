@@ -150,7 +150,10 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
   (1 s per nameserver, three at most; a truncated (`TC`) answer is asked again
   over TCP to the same nameserver, length-prefixed, as the JDK's resolver does;
   the whole lookup, TCP included, shares one deadline of 3 x the per-nameserver
-  timeout; no async runtime, no new dependency) and tries the target, then the typed host on 25565. A written
+  timeout; no async runtime, no new dependency; on Windows `GetNetworkParams`'
+  effective servers are asked before the per-adapter ones, `merge_nameservers`,
+  so unreachable VPN/WSL/Hyper-V adapter resolvers can't fill the three slots)
+  and tries the target, then the typed host on 25565. A written
   port, even `:25565`, and an IP literal are never looked up (vanilla looks up
   any 25565; Rewo narrows it to "the player typed no port"). The handshake
   names `Connection::endpoint()`, the SRV target **with its trailing dot**, as
@@ -171,6 +174,11 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
 - **Skin table** (`skins::SkinTable`): `MAX_TRACKED_SKINS` bounds the players
   present at once, not a lifetime count. An entry leaves on `player_info_remove`
   and on `clear_level` (reconfiguration); the cap logs once when it refuses.
+  The table is also the **single source of truth for "the session still tracks
+  this player"** (`PlaySession::tracks_player_skin`): rewo-app prunes its
+  per-player texture state against it, never against its own guess (listed /
+  gamemode / latency / loaded), because `note()` won't re-announce an unchanged
+  skin, so a player pruned while the table holds them keeps the default skin.
 - **Bounded logs**: `PlaySession::chat_log` keeps the newest
   `MAX_CHAT_HISTORY` (100) lines through `chat_wire::push_chat_log`.
 - **Non-finite teleports** are dropped field-group by field-group

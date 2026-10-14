@@ -2784,6 +2784,43 @@ mod skin_policy_tests {
         assert_eq!(c.get(&K(0)).unwrap().0, vec![7]);
     }
 
+    /// An NPC-style player (announced with a skin but no gamemode, latency or
+    /// list entry) is still tracked by the session's skin table, which will
+    /// never announce their unchanged skin again: pruning against that table
+    /// must keep their state, and forget exactly who the table forgot.
+    #[test]
+    fn pruning_follows_the_sessions_skin_table() {
+        use rewo_net::skins::{SkinInfo, SkinTable};
+        let info = |n: u32| SkinInfo {
+            url: Some(format!("http://textures.minecraft.net/texture/{n:064x}")),
+            ..SkinInfo::default()
+        };
+        let mut table = SkinTable::default();
+        assert!(table.note(10, &info(10), 0), "NPC announced");
+        assert!(table.note(11, &info(11), 0), "ordinary player announced");
+
+        let mut l = SkinLoader::new();
+        for u in [10u128, 11] {
+            l.requested.insert((u, TexKind::Skin));
+            l.registry.insert(u, Default::default());
+        }
+        // Nothing but the table says either is present (no entity, no tab
+        // entry, no latency): both stay.
+        l.retain_players(|u| table.contains(u));
+        assert_eq!(l.registry.len(), 2);
+        assert!(
+            !table.note(10, &info(10), 0),
+            "an unchanged skin is not re-announced"
+        );
+
+        // Player 11 leaves (Player Info Remove): only theirs goes.
+        table.remove(11);
+        l.retain_players(|u| table.contains(u));
+        assert!(l.registry.contains_key(&10) && !l.registry.contains_key(&11));
+        assert!(l.requested.contains(&(10, TexKind::Skin)));
+        assert!(!l.requested.contains(&(11, TexKind::Skin)));
+    }
+
     /// Player churn must not turn the request cap into a lifetime cap: a
     /// departed player's state is dropped everywhere, the local player's and
     /// the still-present players' are not.

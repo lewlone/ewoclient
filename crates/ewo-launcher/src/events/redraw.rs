@@ -69,17 +69,23 @@ impl App {
     /// the unfocused wake cadence) calls this to keep those services moving
     /// at a low rate without drawing anything.
     pub(crate) fn pump_services_while_hidden(&mut self) {
+        // The cheap interval gate comes first: `should_skip_frame` makes
+        // Win32 calls (`IsIconic`, `GetForegroundWindow`) and this runs on
+        // every loop iteration, which at a visible launcher's uncapped rate
+        // is thousands of times a second. The visibility check therefore
+        // runs at most once per interval, whether or not it finds the
+        // launcher hidden.
+        let now = Instant::now();
+        if !hidden_pump_due(self.hidden_pump_at, now) {
+            return;
+        }
+        self.hidden_pump_at = Some(now);
         let Some(window) = self.window.clone() else {
             return;
         };
         if !self.should_skip_frame(&window) {
             return;
         }
-        let now = Instant::now();
-        if !hidden_pump_due(self.hidden_pump_at, now) {
-            return;
-        }
-        self.hidden_pump_at = Some(now);
         self.clock.tick();
         let time = self.clock.elapsed;
         self.pump_services(time);

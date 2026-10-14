@@ -9,7 +9,9 @@ use super::*;
 /// fetch and will retry once it lands.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingRelaunch {
-    pub(crate) instance_idx: usize,
+    /// The instance's stable folder id, never its list index: the list can
+    /// shift (delete, create, reorder) while the launch waits.
+    pub(crate) instance_id: String,
     pub(crate) instance_name: String,
     pub(crate) instance_meta: String,
     /// Major version the missing JRE is for. The retry only fires when
@@ -24,7 +26,8 @@ pub(crate) struct PendingRelaunch {
 /// offline.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingAuthLaunch {
-    pub(crate) idx: usize,
+    /// Stable instance id (see [`PendingRelaunch::instance_id`]).
+    pub(crate) instance_id: String,
     pub(crate) inst_name: String,
     pub(crate) inst_meta: String,
     /// The account the launch is for. A switch of the active account while
@@ -34,6 +37,21 @@ pub(crate) struct PendingAuthLaunch {
     pub(crate) refresh_started: bool,
     /// The auth stage label last mirrored into the launch log.
     pub(crate) last_stage: &'static str,
+}
+
+/// Shown when the instance a waiting launch belongs to left the list.
+pub(crate) const INSTANCE_GONE_MSG: &str =
+    "the instance was removed while the launch was waiting; launch cancelled";
+
+/// The list index of the instance with folder id `id`. Launches that wait
+/// (token refresh, file preparation, a JRE download) hold the id and
+/// resolve it here at every step, because the list shifts when any other
+/// instance is deleted, created or reordered.
+pub(crate) fn index_of_instance(
+    instances: &[ewo_render::screens::instances::Instance],
+    id: &str,
+) -> Option<usize> {
+    instances.iter().position(|i| i.id == id)
 }
 
 /// What to do if a launch's background preparation fails.
@@ -131,7 +149,8 @@ fn native_account_envs(
 /// spawn) — see `App::poll_prepare`.
 pub(crate) struct PendingPrepare {
     pub(crate) rx: std::sync::mpsc::Receiver<Result<launch::prepare::Prepared, String>>,
-    pub(crate) idx: usize,
+    /// Stable instance id (see [`PendingRelaunch::instance_id`]).
+    pub(crate) instance_id: String,
     pub(crate) inst_name: String,
     pub(crate) inst_meta: String,
     pub(crate) fail: PrepareFail,
@@ -192,7 +211,7 @@ impl App {
                     time,
                 );
                 self.pending_auth = Some(PendingAuthLaunch {
-                    idx,
+                    instance_id: inst.id.clone(),
                     inst_name: inst_name.to_string(),
                     inst_meta: inst_meta.to_string(),
                     uuid,
@@ -260,7 +279,7 @@ impl App {
         );
         self.pending_prepare = Some(PendingPrepare {
             rx,
-            idx,
+            instance_id: inst.id.clone(),
             inst_name: inst_name.to_string(),
             inst_meta: inst_meta.to_string(),
             fail,
@@ -342,6 +361,13 @@ impl App {
         let Some(pending) = self.pending_prepare.take() else {
             return;
         };
+        // The instance was removed while its files were being prepared:
+        // cancel visibly (never the synthetic fallback, never another
+        // instance's launch).
+        if self.instance_index(&pending.instance_id).is_none() {
+            self.fail_launch_visibly(INSTANCE_GONE_MSG, time);
+            return;
+        }
         let prepared = match result {
             Ok(p) => p,
             Err(msg) => {
@@ -409,8 +435,12 @@ impl App {
             return;
         }
         self.pending_relaunch = None;
+        let Some(idx) = self.instance_index(&p.instance_id) else {
+            self.fail_launch_visibly(INSTANCE_GONE_MSG, time);
+            return;
+        };
         let ok = self.try_real_launch(
-            p.instance_idx,
+            idx,
             &p.instance_name,
             &p.instance_meta,
             time,
@@ -469,7 +499,7 @@ impl App {
         let native = self
             .pending_auth
             .as_ref()
-            .is_some_and(|p| self.is_native_instance(p.idx));
+            .is_some_and(|p| self.is_native_instance(&p.instance_id));
         match decision {
             auth::LaunchAuth::Ready | auth::LaunchAuth::Offline => {
                 let Some(p) = self.pending_auth.take() else {
@@ -478,8 +508,12 @@ impl App {
                 log::info!("launch: Microsoft session ready, continuing");
                 // Re-enter the launch; the gate now passes. A failure
                 // past this point is a real launch failure, shown as one.
+                let Some(idx) = self.instance_index(&p.instance_id) else {
+                    self.fail_launch_visibly(INSTANCE_GONE_MSG, time);
+                    return;
+                };
                 if !self.try_real_launch(
-                    p.idx,
+                    idx,
                     &p.inst_name,
                     &p.inst_meta,
                     time,
@@ -526,8 +560,8 @@ impl App {
     ) {
         match (auth_gate(decision, native, true), pending) {
             (AuthGate::ProceedUnsigned, Some(p)) => {
-                let Some(inst) = self.instances.get(p.idx).cloned() else {
-                    self.fail_launch_visibly("could not start the game — see log", time);
+                let Some(inst) = self.instance_by_id(&p.instance_id).cloned() else {
+                    self.fail_launch_visibly(INSTANCE_GONE_MSG, time);
                     return;
                 };
                 let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
@@ -540,9 +574,19 @@ impl App {
         }
     }
 
-    /// Whether the instance at `idx` is a Native (Rewo) one.
-    fn is_native_instance(&self, idx: usize) -> bool {
-        self.instances.get(idx).is_some_and(|i| {
+    /// The list index of the instance with folder id `id`, if it is still
+    /// in the list.
+    pub(crate) fn instance_index(&self, id: &str) -> Option<usize> {
+        index_of_instance(&self.instances, id)
+    }
+
+    fn instance_by_id(&self, id: &str) -> Option<&ewo_render::screens::instances::Instance> {
+        self.instance_index(id).and_then(|i| self.instances.get(i))
+    }
+
+    /// Whether the instance with folder id `id` is a Native (Rewo) one.
+    fn is_native_instance(&self, id: &str) -> bool {
+        self.instance_by_id(id).is_some_and(|i| {
             matches!(
                 i.loader,
                 ewo_render::screens::instances::InstanceLoader::Native
@@ -594,7 +638,7 @@ impl App {
         prepared: launch::prepare::Prepared,
         time: f32,
     ) -> bool {
-        let Some(inst) = self.instances.get(pending.idx).cloned() else {
+        let Some(inst) = self.instance_by_id(&pending.instance_id).cloned() else {
             return false;
         };
         let (inst_name, inst_meta) = (pending.inst_name.as_str(), pending.inst_meta.as_str());
@@ -656,7 +700,7 @@ impl App {
                 self.runtime_log_bucket = 0;
                 self.runtime.start_fetch(required_major);
                 self.pending_relaunch = Some(PendingRelaunch {
-                    instance_idx: pending.idx,
+                    instance_id: pending.instance_id.clone(),
                     instance_name: inst_name.to_string(),
                     instance_meta: inst_meta.to_string(),
                     waiting_for_major: required_major,
@@ -1078,6 +1122,33 @@ mod tests {
         let i = inst(InstanceLoader::Native);
         assert_eq!(launch_meta(&i, None, 4), "FABRIC · 1.21");
         assert_eq!(launch_meta(&i, Some(21), 4), "FABRIC · 1.21");
+    }
+
+    #[test]
+    fn a_waiting_launch_follows_its_instance_when_the_list_shifts() {
+        let mk = |name: &str| {
+            let mut i = Instance::new(
+                name.into(),
+                "FABRIC · 1.21".into(),
+                "never".into(),
+                Vec::new(),
+            );
+            i.id = format!("id-{name}");
+            i
+        };
+        let mut list = vec![mk("a"), mk("b"), mk("c")];
+        let launching = list[2].id.clone();
+        assert_eq!(index_of_instance(&list, &launching), Some(2));
+        // An earlier instance is deleted mid-prepare: the id still finds
+        // the same instance (a stored index 2 would now be out of range,
+        // and index 1 would have been another instance).
+        let removed = list.remove(0);
+        assert_eq!(index_of_instance(&list, &launching), Some(1));
+        assert_eq!(list[1].name, "c");
+        // The launching instance itself gone: nothing resolves.
+        assert_eq!(index_of_instance(&list, &removed.id), None);
+        list.retain(|i| i.id != launching);
+        assert_eq!(index_of_instance(&list, &launching), None);
     }
 
     use auth::LaunchAuth::{NeedsRefresh, Offline, Ready, Unavailable};

@@ -171,9 +171,7 @@ impl LiveApp {
         let lectern_menu = self
             .session
             .as_ref()
-            .and_then(|s| s.menus.open())
-            .filter(|m| m.layout.name == "lectern")
-            .map(|m| (m.container_id, m.open_serial, m.data(0) as i32));
+            .and_then(|s| super::screens::lectern_menu_state(&s.menus));
         match lectern_menu {
             Some((container_id, serial, page)) => {
                 let identity = (container_id, serial);
@@ -584,15 +582,13 @@ impl LiveApp {
                 });
             // Players who left: forget their texture state (bounded by
             // whoever the session still tracks, not by how many ever joined).
-            // "Tracked" = anyone with a player-info entry (the listed set
-            // alone would miss unlisted ones) or a loaded entity.
+            // "Tracked" is the session's own skin table: it is what decides
+            // whether an unchanged skin is announced again, so pruning on any
+            // other guess (listed, a gamemode or latency entry, a loaded
+            // entity) would drop an NPC-style player the table still holds
+            // and leave them on the default skin for good.
             if self.skins.prune_due() {
-                self.skins.retain_players(|u| {
-                    loaded.contains(&u)
-                        || listed.contains(&u)
-                        || session.gamemodes.contains_key(&u)
-                        || session.latency.contains_key(&u)
-                });
+                self.skins.retain_players(|u| session.tracks_player_skin(u));
             }
         }
         // The inventory preview draws the local player from its own atlas, so
@@ -962,13 +958,13 @@ impl LiveApp {
                 }
                 let beacon_override = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| m.layout.protocol_id == BEACON_MENU_PROTOCOL_ID)
                     .map(|m| beacon_live(&mut self.screen, m, &self.beacon_effects));
                 // M93s — likewise, resolved before the borrow of `state`.
                 let cut = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| {
                         m.layout.protocol_id == rewo_ui::menu_screen::STONECUTTER_MENU_PROTOCOL_ID
                     })
@@ -982,14 +978,14 @@ impl LiveApp {
                     rewo_ui::recipe_search::normalize(&self.screen.book_search.value());
                 let anvil_field = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| m.layout.protocol_id == ANVIL_MENU_PROTOCOL_ID)
                     .map(|m| anvil_local(&mut self.screen, m, &items).field.clone());
                 // M93u — the merchant's trade list, from the session's decoded
                 // offers plus the screen's own scroll.
                 let merchant = session
                     .menus
-                    .open()
+                    .shown_open()
                     .filter(|m| {
                         m.layout.protocol_id == rewo_ui::merchant_screen::MERCHANT_MENU_PROTOCOL_ID
                     })

@@ -49,10 +49,10 @@ pub enum AuthEvent {
 /// What the running worker is doing. At most one chain runs at a time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum InFlight {
-    /// Interactive browser sign-in. `active_at_start` is the active
-    /// pointer when it began: the new account becomes active only if the
-    /// user hasn't picked another one meanwhile.
-    Interactive { active_at_start: Option<String> },
+    /// Interactive browser sign-in. `picks_at_start` is the service's
+    /// explicit-pick generation when it began: the new account becomes
+    /// active unless the user picked an account (`set_active`) meanwhile.
+    Interactive { picks_at_start: u64 },
     /// Silent refresh of the account `uuid`.
     Refresh { uuid: String },
 }
@@ -60,21 +60,22 @@ enum InFlight {
 /// The active pointer after `job` succeeds with the account `signed_in`.
 /// A refresh never moves it (the user may have switched accounts while it
 /// ran, and a late `Success` must not switch them back). An interactive
-/// sign-in makes the new account active unless the user chose a different
-/// active account while the browser flow was open. Removing the account
-/// that was active at the start is not a choice: with nothing active, or
-/// only the automatic fallback pointer left (`start_gone`), the new account
-/// becomes active.
+/// sign-in makes the new account active unless the user deliberately picked
+/// an account while the browser flow was open (`picks_now` differs from the
+/// generation it started at: only `AuthService::set_active` bumps it). The
+/// pointer alone can't say whether it moved by choice: removing the active
+/// account makes it fall back to another one automatically, which is not a
+/// choice, so then (or with nothing active) the new account becomes active.
 fn active_after_success(
     job: &InFlight,
     current: Option<&str>,
-    start_gone: bool,
+    picks_now: u64,
     signed_in: &str,
 ) -> Option<String> {
     match job {
         InFlight::Refresh { .. } => current.map(str::to_string),
-        InFlight::Interactive { active_at_start } => {
-            if current.is_none() || start_gone || current == active_at_start.as_deref() {
+        InFlight::Interactive { picks_at_start } => {
+            if current.is_none() || picks_now == *picks_at_start {
                 Some(signed_in.to_string())
             } else {
                 current.map(str::to_string)
@@ -98,7 +99,14 @@ fn follow_up_refresh(finished: &InFlight, succeeded: bool, active: Option<&str>)
 /// Fold a chain's `Success` into the store (no disk I/O). Returns `false`
 /// when the result is dropped: a refresh for an account the user removed
 /// while it ran (or whose profile came back different) must not re-add it.
-fn apply_success(store: &mut AccountStore, job: &InFlight, account: MinecraftAccount) -> bool {
+/// `picks_now`: the service's explicit-pick generation (see
+/// [`active_after_success`]).
+fn apply_success(
+    store: &mut AccountStore,
+    job: &InFlight,
+    picks_now: u64,
+    account: MinecraftAccount,
+) -> bool {
     if let InFlight::Refresh { uuid } = job {
         let known = store.accounts.iter().any(|a| &a.uuid == uuid);
         if !known || &account.uuid != uuid {
@@ -111,13 +119,7 @@ fn apply_success(store: &mut AccountStore, job: &InFlight, account: MinecraftAcc
         account.name,
         account.uuid
     );
-    let start_gone = match job {
-        InFlight::Interactive {
-            active_at_start: Some(start),
-        } => !store.accounts.iter().any(|a| &a.uuid == start),
-        _ => false,
-    };
-    let new_active = active_after_success(job, store.active.as_deref(), start_gone, &account.uuid);
+    let new_active = active_after_success(job, store.active.as_deref(), picks_now, &account.uuid);
     store.upsert(account);
     store.active = new_active;
     true
@@ -133,6 +135,11 @@ pub struct AuthService {
     /// `Some` while a worker thread is alive — guards against spawning
     /// concurrent chains and records what the running chain is for.
     in_flight: Option<InFlight>,
+    /// Bumped by every deliberate `set_active` (a user pick), never by the
+    /// automatic fallback in `remove`. An interactive sign-in compares it
+    /// with the value it started at to learn whether the user chose an
+    /// account while the browser flow was open.
+    picks: u64,
 }
 
 impl AuthService {
@@ -147,6 +154,7 @@ impl AuthService {
             rx,
             tx,
             in_flight: None,
+            picks: 0,
         };
         svc.refresh_active_token();
         svc
@@ -230,7 +238,7 @@ impl AuthService {
                         log::warn!("auth: stray Success with no chain running; ignored");
                         continue;
                     };
-                    if apply_success(&mut self.store, &job, account) {
+                    if apply_success(&mut self.store, &job, self.picks, account) {
                         persistence::save_store(&self.store);
                     }
                     self.after_chain(&job, true);
@@ -264,7 +272,7 @@ impl AuthService {
             return;
         }
         self.in_flight = Some(InFlight::Interactive {
-            active_at_start: self.store.active.clone(),
+            picks_at_start: self.picks,
         });
         self.op = AuthOp::Working(ChainStage::OpeningBrowser.label());
         let tx = self.tx.clone();
@@ -278,10 +286,13 @@ impl AuthService {
     /// refreshes its token if it isn't already live. No-op if `uuid`
     /// isn't a known account or is already active.
     pub fn set_active(&mut self, uuid: &str) {
-        if self.store.active.as_deref() == Some(uuid) {
+        if !self.store.accounts.iter().any(|a| a.uuid == uuid) {
             return;
         }
-        if !self.store.accounts.iter().any(|a| a.uuid == uuid) {
+        // A deliberate pick, even of the account that is already active: a
+        // sign-in finishing later must not take the choice back.
+        self.picks += 1;
+        if self.store.active.as_deref() == Some(uuid) {
             return;
         }
         self.store.active = Some(uuid.to_string());
@@ -475,7 +486,12 @@ mod tests {
     fn late_refresh_for_a_does_not_override_a_switch_to_b() {
         // Refresh for A started while A was active; the user then chose B.
         let mut s = store("b");
-        assert!(apply_success(&mut s, &refresh("a"), account("a", "fresh")));
+        assert!(apply_success(
+            &mut s,
+            &refresh("a"),
+            1,
+            account("a", "fresh")
+        ));
         assert_eq!(s.active.as_deref(), Some("b"));
         let a = s.accounts.iter().find(|x| x.uuid == "a").unwrap();
         assert_eq!(a.minecraft_token, "fresh", "A's token still lands");
@@ -488,43 +504,43 @@ mod tests {
             accounts: vec![account("b", "")],
             ..Default::default()
         };
-        assert!(!apply_success(&mut s, &refresh("a"), account("a", "fresh")));
+        assert!(!apply_success(
+            &mut s,
+            &refresh("a"),
+            0,
+            account("a", "fresh")
+        ));
         assert_eq!(s.accounts.len(), 1);
         assert_eq!(s.active.as_deref(), Some("b"));
     }
 
     #[test]
     fn interactive_sign_in_becomes_active_unless_user_switched() {
-        let job = InFlight::Interactive {
-            active_at_start: Some("a".into()),
-        };
+        let job = InFlight::Interactive { picks_at_start: 4 };
         let mut s = store("a");
-        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert!(apply_success(&mut s, &job, 4, account("c", "t")));
         assert_eq!(s.active.as_deref(), Some("c"));
 
         // The user picked B while the browser flow was open.
         let mut s = store("b");
-        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert!(apply_success(&mut s, &job, 5, account("c", "t")));
         assert_eq!(s.active.as_deref(), Some("b"));
         assert!(s.accounts.iter().any(|x| x.uuid == "c"), "C is still added");
 
         // First sign-in on an empty store.
-        let job = InFlight::Interactive {
-            active_at_start: None,
-        };
+        let job = InFlight::Interactive { picks_at_start: 0 };
         let mut s = AccountStore::default();
-        assert!(apply_success(&mut s, &job, account("a", "t")));
+        assert!(apply_success(&mut s, &job, 0, account("a", "t")));
         assert_eq!(s.active.as_deref(), Some("a"));
     }
 
     #[test]
     fn interactive_sign_in_after_the_active_account_was_removed_becomes_active() {
-        let job = InFlight::Interactive {
-            active_at_start: Some("a".into()),
-        };
+        // No pick happened: the generation is unchanged.
+        let job = InFlight::Interactive { picks_at_start: 2 };
         // The only account was removed while the browser flow was open.
         let mut s = AccountStore::default();
-        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert!(apply_success(&mut s, &job, 2, account("c", "t")));
         assert_eq!(s.active.as_deref(), Some("c"), "nothing active: take it");
 
         // A (active at the start) was removed and the pointer fell back to B,
@@ -534,26 +550,46 @@ mod tests {
             accounts: vec![account("b", "")],
             ..Default::default()
         };
-        assert!(apply_success(&mut s, &job, account("c", "t")));
+        assert!(apply_success(&mut s, &job, 2, account("c", "t")));
         assert_eq!(s.active.as_deref(), Some("c"));
+    }
 
-        // The pure rule, including the unchanged cases.
+    #[test]
+    fn a_deliberate_pick_after_the_active_account_was_removed_is_kept() {
+        // A was removed (fallback to B), then the user explicitly picked B:
+        // the pointer looks the same as the fallback, but the pick bumped the
+        // generation, so the finishing sign-in must not steal active.
+        let job = InFlight::Interactive { picks_at_start: 2 };
+        let mut s = AccountStore {
+            active: Some("b".into()),
+            accounts: vec![account("b", "")],
+            ..Default::default()
+        };
+        assert!(apply_success(&mut s, &job, 3, account("c", "t")));
+        assert_eq!(s.active.as_deref(), Some("b"), "the user's pick stays");
+        assert!(s.accounts.iter().any(|x| x.uuid == "c"));
+
+        // The pure rule, all three cases.
         assert_eq!(
-            active_after_success(&job, None, true, "c").as_deref(),
-            Some("c")
+            active_after_success(&job, Some("b"), 2, "c").as_deref(),
+            Some("c"),
+            "fallback pointer, no pick"
         );
         assert_eq!(
-            active_after_success(&job, Some("b"), false, "c").as_deref(),
+            active_after_success(&job, Some("b"), 3, "c").as_deref(),
             Some("b"),
-            "a deliberate switch to B stays"
+            "deliberate pick"
+        );
+        assert_eq!(
+            active_after_success(&job, None, 3, "c").as_deref(),
+            Some("c"),
+            "nothing left"
         );
     }
 
     #[test]
     fn a_failed_interactive_sign_in_leaves_its_error_alone() {
-        let interactive = InFlight::Interactive {
-            active_at_start: Some("a".into()),
-        };
+        let interactive = InFlight::Interactive { picks_at_start: 0 };
         // A failed or cancelled browser sign-in keeps its error on screen.
         assert!(!follow_up_refresh(&interactive, false, Some("a")));
         assert!(!follow_up_refresh(&interactive, false, None));

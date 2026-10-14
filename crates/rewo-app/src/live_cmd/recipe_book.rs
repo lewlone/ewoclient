@@ -138,11 +138,7 @@ pub(crate) struct BookRender {
 /// session setup rather than off the wire, so they are present before any
 /// menu can open. A menu with no book at all answers `false`.
 pub(crate) fn book_visible(session: &rewo_net::play::PlaySession) -> bool {
-    let layout = session
-        .menus
-        .open()
-        .map(|m| m.menu.layout())
-        .unwrap_or_else(|| session.inventory.layout());
+    let layout = session.shown_menu().layout();
     book_visible_for(book_type_of(layout), &session.recipe_book_settings)
 }
 
@@ -184,11 +180,7 @@ pub(super) fn live_recipe_book(
     display: &std::collections::HashMap<String, String>,
 ) -> Option<BookRender> {
     use rewo_ui::recipe_book_screen as rb;
-    let layout = session
-        .menus
-        .open()
-        .map(|m| m.menu.layout())
-        .unwrap_or_else(|| session.inventory.layout());
+    let layout = session.shown_menu().layout();
     let book = book_type_of(layout)?;
     let st = match book {
         rb::BookType::Crafting => session.recipe_book_settings.crafting,
@@ -223,12 +215,9 @@ pub(super) fn live_recipe_book(
     // What the player is holding, for `hasCraftable` — see
     // [`crafting_contents`], which is where the rules live so a test can reach
     // them (M97's lesson, fourth application).
-    let mut held = crafting_contents(
-        &session.inventory,
-        session.menus.open().map(|m| &m.menu),
-        book,
-        &|id| max_stack_of(items, id),
-    );
+    let mut held = shown_crafting_contents(&session.inventory, &session.menus, book, &|id| {
+        max_stack_of(items, id)
+    });
     // `Mth.floor(time / 30)` — vanilla's `time` advances by the partial tick
     // each render, so this is the session's tick clock divided by the swap
     // period. Shared by every slot, which is why a page of several-recipe
@@ -441,6 +430,19 @@ pub(crate) fn crafting_contents(
         }
     }
     held
+}
+
+/// [`crafting_contents`] for the menu the screen is SHOWING: while the
+/// player's inventory is shown over a screenless open menu (a lectern), that
+/// menu's slots are not on screen and must not be counted as the book's
+/// craft slots. One function so a test can pin the choice.
+pub(crate) fn shown_crafting_contents(
+    player: &rewo_world::inventory::Inventory,
+    menus: &rewo_world::menu::Menus,
+    book: rewo_ui::recipe_book_screen::BookType,
+    max_stack: &dyn Fn(i32) -> i32,
+) -> rewo_world::stacked_contents::StackedContents {
+    crafting_contents(player, menus.shown_open().map(|m| &m.menu), book, max_stack)
 }
 
 /// One unlocked recipe, with everything already resolved (M97).

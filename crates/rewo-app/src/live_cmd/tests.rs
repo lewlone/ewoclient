@@ -1355,6 +1355,38 @@ fn an_open_menus_craft_slots_are_added_to_the_players_items() {
     assert!(!alone.try_pick(&ing, 1));
 }
 
+/// The recipe book counts the SHOWN menu's craft slots. With the player's
+/// inventory shown over a screenless open crafting menu, the table's grid is
+/// not on screen: counting it would mark recipes craftable from items the
+/// player cannot see (and then cannot place).
+#[test]
+fn the_book_does_not_count_the_slots_of_a_menu_the_inventory_is_shown_over() {
+    use rewo_world::menu::Menus;
+    let max = |_: i32| 64;
+    let ing = [Ingredient::of(&[1]), Ingredient::of(&[1])];
+    let table_type = (0..64)
+        .find(|&t| rewo_world::menu_layout::layout_of(t).is_some_and(|l| l.name == "crafting"))
+        .expect("a crafting menu type");
+    let mut menus = Menus::new();
+    assert!(menus.apply_open_screen(5, table_type, "Crafting".into()));
+    menus.open_mut().unwrap().menu.set_slot(5, 1, Some(dirt()));
+    // One in the player's hotbar, one on the open table's grid.
+    let player = inv_with(&[(36, dirt())]);
+
+    let mut shown = super::shown_crafting_contents(&player, &menus, rb96::BookType::Crafting, &max);
+    assert!(shown.try_pick(&ing, 1), "the table is the shown menu");
+
+    // The inventory key: the player's own menu is on screen, the table's
+    // grid is not.
+    menus.show_player_inventory();
+    assert!(menus.open().is_some(), "the container is still open");
+    let mut over = super::shown_crafting_contents(&player, &menus, rb96::BookType::Crafting, &max);
+    assert!(
+        !over.try_pick(&ing, 1),
+        "reading menus.open() would count the hidden table's grid"
+    );
+}
+
 /// A furnace contributes its whole container, RESULT INCLUDED, and
 /// ungated — where a crafting grid excludes its result and is gated.
 #[test]

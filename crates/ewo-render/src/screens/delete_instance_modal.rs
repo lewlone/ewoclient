@@ -197,6 +197,14 @@ pub fn explanation() -> String {
     )
 }
 
+/// The text layer's entrance offset (CSS `translateY(10 -> 0)`), snapped to
+/// whole *device* pixels under the canvas's current scale (non-negotiable
+/// #2: rounding in logical pixels lands between device pixels at 125 % / 150 %
+/// and softens the glyphs for the whole entrance).
+fn entrance_ty(canvas: &Canvas, anim: f32) -> f32 {
+    crate::offscreen::snap_dy(canvas, 10.0 * (1.0 - anim))
+}
+
 pub fn draw_modal(
     canvas: &Canvas,
     fonts: &FontStore,
@@ -214,7 +222,7 @@ pub fn draw_modal(
     // Chrome scales about the card centre; the text only fades and moves by
     // whole pixels (non-negotiable #2). At rest both layers coincide.
     let card = card_rect(card_w, card_h);
-    let ty = (10.0 * (1.0 - anim)).round();
+    let ty = entrance_ty(canvas, anim);
     let scale = 0.97 + 0.03 * anim;
 
     let saved = canvas.save();
@@ -353,6 +361,24 @@ mod tests {
     /// 10 units per character.
     fn m(s: &str) -> f32 {
         s.chars().count() as f32 * 10.0
+    }
+
+    #[test]
+    fn the_entrance_offset_is_a_whole_number_of_device_pixels() {
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let mut s = skia_safe::surfaces::raster_n32_premul((32, 32)).expect("surface");
+            s.canvas().scale((scale, scale));
+            for i in 0..=100 {
+                let anim = i as f32 / 100.0;
+                let ty = entrance_ty(s.canvas(), anim);
+                let px = ty * scale;
+                assert!(
+                    (px - px.round()).abs() < 1e-3,
+                    "scale {scale}, anim {anim}: {ty} logical px is {px} device px"
+                );
+                assert!((ty - 10.0 * (1.0 - anim)).abs() <= 0.5 / scale + 1e-4);
+            }
+        }
     }
 
     #[test]

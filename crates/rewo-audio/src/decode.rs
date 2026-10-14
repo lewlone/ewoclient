@@ -24,7 +24,7 @@
 //! exactly `granulepos` frames. Symphonia 0.6's gapless mode produces the same
 //! count, and `decoder_options` turns it on; reimplementing the trim here would
 //! be a second, worse copy. This was measured, not assumed:
-//! `tools/vorbis_decode_oracle` runs vanilla's own class over 56 files of the
+//! `tools/vorbis_decode_oracle` runs vanilla's own class over 55 files of the
 //! local store (the 14 smallest, a spread by size, the anchors), and
 //! `real_assets::rewo_decodes_the_same_frames_as_vanillas_own_decoder` pins
 //! the frame counts exactly and the first and last 64 samples to within one
@@ -644,7 +644,7 @@ mod real_assets {
     /// **Rewo decodes what vanilla decodes: the same frames, aligned the same.**
     ///
     /// Ground truth is `tools/vorbis_decode_oracle`, which runs vanilla 26.2's
-    /// own `JOrbisAudioStream.readAll()` (the `SoundBufferLibrary` path) over 56
+    /// own `JOrbisAudioStream.readAll()` (the `SoundBufferLibrary` path) over 55
     /// files of this store: the 14 smallest, an even spread by size, and the
     /// three anchors. Vanilla's count is the final page's granule position in
     /// every one of them (`frames == last_granule`), i.e. `JOrbisAudioStream`

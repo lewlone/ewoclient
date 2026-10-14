@@ -2419,6 +2419,14 @@ impl PlaySession {
         }
     }
 
+    /// Whether the session still tracks `uuid`'s skin (see
+    /// [`crate::skins::SkinTable::contains`]): the app prunes its per-player
+    /// texture state against this, so it forgets exactly the players the
+    /// session forgot and no one the session would not re-announce.
+    pub fn tracks_player_skin(&self, uuid: u128) -> bool {
+        self.player_skins.contains(uuid)
+    }
+
     /// Drain newly-announced player skins (UUID → skin) for the app to
     /// fetch + upload. Each skin is queued once (per value change).
     pub fn take_pending_skins(&mut self) -> Vec<(u128, crate::skins::SkinInfo)> {
@@ -4643,13 +4651,18 @@ impl PlaySession {
     /// while every click operated on `inventory`, so clicking a chest's slot 5
     /// picked up the player's crafting grid.
     pub fn shown_menu(&self) -> &rewo_world::inventory::Inventory {
-        if self.menus.player_inventory_shown() {
-            return &self.inventory;
-        }
-        self.menus
-            .open()
+        self.shown_open_menu()
             .map(|m| &m.menu)
             .unwrap_or(&self.inventory)
+    }
+
+    /// The open container behind [`Self::shown_menu`]: `None` when the
+    /// player's own menu is what is shown (nothing open, or the inventory key
+    /// opened it over a screenless menu). Use this wherever the code means
+    /// "the menu on screen"; `menus.open()` means "a server container is
+    /// open".
+    pub fn shown_open_menu(&self) -> Option<&rewo_world::menu::OpenMenu> {
+        self.menus.shown_open()
     }
 
     /// [`Self::shown_menu`], mutably.
@@ -4665,11 +4678,7 @@ impl PlaySession {
 
     /// The container id the shown menu is addressed by — 0 for the player's.
     pub fn shown_container_id(&self) -> i32 {
-        if self.menus.player_inventory_shown() {
-            return rewo_world::inventory::PLAYER_CONTAINER_ID;
-        }
-        self.menus
-            .open()
+        self.shown_open_menu()
             .map_or(rewo_world::inventory::PLAYER_CONTAINER_ID, |m| {
                 m.container_id
             })
@@ -4695,7 +4704,7 @@ impl PlaySession {
     ) -> rewo_world::menu::CrafterToggle {
         use rewo_world::menu::CrafterToggle;
         let none = CrafterToggle::None;
-        let Some(open) = self.menus.open() else {
+        let Some(open) = self.menus.shown_open() else {
             return none;
         };
         if !rewo_world::menu::is_crafter_grid_slot(open.layout.protocol_id, slot) {
@@ -4843,6 +4852,13 @@ impl PlaySession {
         let Some(container) = self.menus.close_local() else {
             return Ok(());
         };
+        self.send_container_close(container)
+    }
+
+    /// The serverbound `container_close` for `container`, for a caller that
+    /// already did the local half (`Menus::close_local`) through a seam a test
+    /// can reach (the lectern reader's `close_lectern_reader`).
+    pub fn send_container_close(&mut self, container: i32) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_container_close else {
             return Err("container_close unavailable".into());
         };

@@ -494,6 +494,20 @@ impl Menus {
         self.open.as_mut()
     }
 
+    /// The open menu **the screen is showing**: [`Self::open`], except `None`
+    /// while the player's own inventory is shown over it (`inventory_over`).
+    /// Anything that draws, hovers, clicks or reads slots of "the shown
+    /// menu" goes through this (or `PlaySession::shown_menu`), never
+    /// `open()`. `open()` stays for what genuinely asks "is a server
+    /// container open" (the close watermark, the lectern reader's sync).
+    pub fn shown_open(&self) -> Option<&OpenMenu> {
+        if self.inventory_over {
+            None
+        } else {
+            self.open.as_ref()
+        }
+    }
+
     /// Apply `open_screen`.
     ///
     /// Returns `false` and changes nothing when the menu type has no layout —
@@ -633,6 +647,22 @@ mod tests {
         // With nothing open it is a no-op.
         m.show_player_inventory();
         assert!(!m.player_inventory_shown());
+    }
+
+    #[test]
+    fn the_shown_open_menu_is_none_while_the_players_inventory_is_over_it() {
+        let mut m = Menus::new();
+        assert!(m.shown_open().is_none());
+        let any = (0..64).find(|&t| layout_of(t).is_some()).unwrap();
+        assert!(m.apply_open_screen(4, any, "A".into()));
+        assert_eq!(m.shown_open().map(|o| o.container_id), Some(4));
+        m.show_player_inventory();
+        assert!(m.shown_open().is_none(), "the player's menu is shown");
+        assert_eq!(
+            m.open().map(|o| o.container_id),
+            Some(4),
+            "but the server container is still open"
+        );
     }
 
     #[test]
