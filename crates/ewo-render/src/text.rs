@@ -284,8 +284,11 @@ pub fn draw_breathing(
 }
 
 /// Triangle wave 0 → 1 → 0 over `period_sec`, smoothstepped (≈ ease-in-out).
+///
+/// Reduced motion (StyleSheet1 ~L1563): `.bt-g` rests on `letter-spacing: 0`,
+/// which is phase 0, so the clock is frozen at 0.
 pub fn breath_envelope(time_sec: f32, period_sec: f32) -> f32 {
-    let phase = (time_sec / period_sec).rem_euclid(1.0);
+    let phase = (ewo_core::motion::ambient_time(time_sec) / period_sec).rem_euclid(1.0);
     let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
     triangle * triangle * (3.0 - 2.0 * triangle)
 }
@@ -383,8 +386,9 @@ pub fn draw_breathing_glow(
         let s: &str = ch.encode_utf8(&mut buf);
 
         // Per-glyph delayed transition toward `hover.hovering`.
-        let delay = nth_delay_seconds(idx + 1);
-        let raw = ((time_since_change - delay) / 0.22).clamp(0.0, 1.0);
+        // Reduced motion collapses the 220 ms transition and its nth-child delay.
+        let delay = ewo_core::motion::dur(nth_delay_seconds(idx + 1));
+        let raw = ((time_since_change - delay) / ewo_core::motion::dur(0.22)).clamp(0.0, 1.0);
         let eased = ewo_core::CubicBezier::SILK.eval(raw);
         let toward = if hover.hovering { eased } else { 1.0 - eased };
 

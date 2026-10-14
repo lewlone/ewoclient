@@ -5,9 +5,11 @@
 //!      like a velvet button. Renders the current value + a chevron caret
 //!      that flips when open.
 //!   2. **Menu** (`.vdrop-portal-menu`) — opens as a portaled overlay
-//!      anchored to the head. Animates in with a 220ms silk-eased
-//!      opacity/scale/blur entrance, plus a 50ms-per-row staggered fade for
-//!      list items. Flips up when there's not enough room below.
+//!      anchored to the head. Animates in over 220ms silk-eased: the
+//!      panel chrome fades and scales 0.98 → 1, the rows (text) fade and
+//!      translate only (never scaled, non-negotiable #2; no blur, #3), plus a
+//!      50ms-per-row staggered fade. Flips up when there's not enough room
+//!      below.
 //!
 //! Render path: caller draws the head with `draw_vdrop_head` while inside
 //! whatever screen layout owns the row; *after* the screen's glass panel
@@ -17,7 +19,7 @@
 //! CSS reference: `.vdrop`, `.vdrop-head`, `.vdrop-caret`, `.vdrop-portal-menu`,
 //! `.vdrop-panel-solid`, `.vdrop-row`, `.vdrop-dot` in `StyleSheet1`.
 
-use ewo_core::{CubicBezier, Settings};
+use ewo_core::{motion, CubicBezier, Settings};
 use skia_safe::{
     gradient_shader, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint,
     PaintStyle, Path, Point, RRect, Rect, TileMode,
@@ -85,7 +87,7 @@ impl VdropState {
             self.time_open = 0.0;
         }
         let target = if self.open { 1.0 } else { 0.0 };
-        let max_step = dt / 0.22; // 220ms portal-in
+        let max_step = dt / motion::dur(0.22); // 220ms portal-in
         let delta: f32 = target - self.anim;
         self.anim += delta.clamp(-max_step, max_step);
     }
@@ -340,20 +342,23 @@ pub fn draw_vdrop_menu(
     }
     let anim = CubicBezier::SILK.eval(state.anim.clamp(0.0, 1.0));
 
-    // Portal-in transform: scale 0.98 → 1, translateY(-4 → 0), opacity 0 → 1.
-    // For flip-up, translateY starts at +4 (sliding up) but transform-origin
-    // is at the bottom — Skia doesn't have transform-origin, so we approximate
-    // by translating relative to the appropriate anchor.
+    // Portal-in (CSS `vdrop-portal-in`): scale 0.98 → 1, translateY(-4 → 0),
+    // opacity 0 → 1 (the CSS blur is skipped, non-negotiable #3). For flip-up
+    // the translate starts at +4 and the transform-origin is the bottom edge.
+    //
+    // Non-negotiable #2: the option rows are text, so they are never scaled.
+    // Only the chrome (halo, body, rim) takes the 0.98 → 1 scale, about the
+    // anchored edge (Skia has no transform-origin, so we translate to it).
+    // Rows fade with the layer and translate by whole pixels; at rest both
+    // layers coincide exactly. The rows' own staggered reveal runs on top.
     let scale = 0.98 + 0.02 * anim;
-    let ty = if flip_up { 4.0 * (1.0 - anim) } else { -4.0 * (1.0 - anim) };
+    let ty = (if flip_up { 4.0 * (1.0 - anim) } else { -4.0 * (1.0 - anim) }).round();
 
     let cx = (bounds.left + bounds.right) * 0.5;
     let cy = if flip_up { bounds.bottom } else { bounds.top };
 
     let saved = canvas.save();
-    canvas.translate((cx, cy));
-    canvas.scale((scale, scale));
-    canvas.translate((-cx, -cy + ty));
+    canvas.translate((0.0, ty));
 
     let mut layer_paint = Paint::default();
     layer_paint.set_alpha_f(anim);
@@ -363,7 +368,13 @@ pub fn draw_vdrop_menu(
             .paint(&layer_paint),
     );
 
+    let chrome_saved = canvas.save();
+    canvas.translate((cx, cy));
+    canvas.scale((scale, scale));
+    canvas.translate((-cx, -cy));
     draw_menu_panel(canvas, bounds);
+    canvas.restore_to_count(chrome_saved);
+
     draw_menu_rows(canvas, bounds, options, state, fonts);
 
     // Scrollbar — only renders when content > visible bounds.
@@ -520,9 +531,11 @@ fn draw_menu_rows(
         // text-bearing surfaces during entrance, and the square-bounded
         // (Decal) blur layer left a visible boxy artifact on the lower rows
         // while the menu was still animating in.
-        let local = state.time_open - (i as f32) * ROW_STAGGER_S;
-        let row_layer_handle = if state.open && local < ROW_REVEAL_S {
-            let t = (local / ROW_REVEAL_S).clamp(0.0, 1.0);
+        // Reduced motion collapses the stagger delay and reveal to 0.01 ms.
+        let reveal_s = motion::dur(ROW_REVEAL_S);
+        let local = state.time_open - (i as f32) * motion::dur(ROW_STAGGER_S);
+        let row_layer_handle = if state.open && local < reveal_s {
+            let t = (local / reveal_s).clamp(0.0, 1.0);
             let eased = CubicBezier::SILK.eval(t.max(0.0));
             let alpha = if local < 0.0 { 0.0 } else { eased };
             let dy = (1.0 - eased) * -4.0; // -4 → 0

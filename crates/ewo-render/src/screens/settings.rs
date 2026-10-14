@@ -827,8 +827,9 @@ fn draw_panel(
     // switching tabs.
     let tab_anim = prefs.tab_changed_at.and_then(|start| {
         let elapsed = (time - start).max(0.0);
-        if elapsed < TAB_ANIM_S {
-            Some(elapsed / TAB_ANIM_S)
+        let dur = ewo_core::motion::dur(TAB_ANIM_S);
+        if elapsed < dur {
+            Some(elapsed / dur)
         } else {
             None
         }

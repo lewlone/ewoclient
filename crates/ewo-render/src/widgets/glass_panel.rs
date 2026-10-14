@@ -1,15 +1,16 @@
 //! `glass_panel` — the canonical surface primitive.
 //!
-//! Composite of four CSS layers, drawn in this order:
+//! Composite of five layers, drawn in this order (the CSS z-stack puts the rims
+//! at z=3, under the inner content at z=4, so the rims are drawn first):
 //!   1. **glass-refract** — captures the current canvas through a 32px blur
 //!      (CSS `backdrop-filter: blur(32px) saturate(1.45)`) and overlays a
 //!      dark-mauve tint (`rgba(28,10,20,0.52)`).
 //!   2. **glass-tint** — 135° linear gradient (rose → berry → lavender) plus
 //!      a top-edge warm-white radial fade. Optional 8s opacity breath.
-//!   3. **inner content** — caller-supplied via the `inner` closure, drawn
-//!      with the panel rrect already clipped.
-//!   4. **glass-rim** — four iridescent edge gradients (top/right/bottom/left)
+//!   3. **glass-rim** — four iridescent edge gradients (top/right/bottom/left)
 //!      sliding on a 12s linear cycle with 3-second-staggered delays.
+//!   4. **inner content** — caller-supplied via the `inner` closure, drawn
+//!      with the panel rrect already clipped.
 //!   5. **hairline rim** — 1px stroke at `rgba(229,184,197,0.18)` to crisp
 //!      the rounded corners.
 //!
@@ -18,13 +19,15 @@
 //! the prototype HTML.
 //!
 //! Design rule (CLAUDE.md non-negotiable #2/#3): the tint layer is the
-//! breath carrier — the panel itself never scales, never blurs as part of
-//! the breath/mount animation, because doing so would re-rasterize the text
-//! glyphs above it. The mount-in animation (panel-mount keyframe) is omitted
-//! in the static draw call for the same reason; if a screen needs an entrance
-//! animation we'll add it as opacity/scale on the chrome layers only.
+//! breath carrier — the panel itself never scales and never blurs, because
+//! doing so would re-rasterize the text glyphs above it. The prototype's
+//! `panel-mount` keyframe (scale 0.98 + blur 8px on the whole panel) is not
+//! implemented here for the same reason. Screens that want an entrance fade
+//! the panel with an alpha layer plus a whole-pixel translate (see
+//! `settings.rs` tab changes) or animate the chrome layers separately, as
+//! the modals do; the inner content is never scaled.
 
-use ewo_core::Settings;
+use ewo_core::{motion, Settings};
 use skia_safe::{
     canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
     MaskFilter, Matrix, Paint, PaintStyle, Point, RRect, Rect, TileMode,
@@ -121,7 +124,8 @@ fn draw_tint(
 ) {
     let breath_alpha = if breathing {
         let speed = settings.motion_speed.max(0.0001);
-        let phase = (time / (8.0 / speed)).rem_euclid(1.0);
+        // Reduced motion: `.glass-tint` rests on its base opacity 1 (phase 0).
+        let phase = (motion::ambient_time(time) / (8.0 / speed)).rem_euclid(1.0);
         let triangle = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
         let smooth = triangle * triangle * (3.0 - 2.0 * triangle);
         // CSS keyframe: 1.0 ↔ (1.0 - 0.10*breath_amp), peak depth at phase=0.5.
@@ -204,8 +208,17 @@ fn draw_rims(canvas: &Canvas, bounds: &Rect, time: f32, motion_speed: f32) {
 
     // CSS background-position animates 0 → 240% over 12s linear. Phase 0..1
     // tracks that sweep. Delays per CSS: top 0, right -3s, bottom -6s, left -9s.
+    //
+    // Reduced motion (StyleSheet1 ~L1563): the loops stop and every rim rests
+    // on its base `background-position: 0`; with no animation running, the
+    // per-edge `animation-delay` offsets no longer apply either.
+    let reduced = motion::is_reduced();
     let phase = |delay_sec: f32| {
-        ((time + delay_sec) / period).rem_euclid(1.0)
+        if reduced {
+            0.0
+        } else {
+            ((time + delay_sec) / period).rem_euclid(1.0)
+        }
     };
 
     let trans = Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0);

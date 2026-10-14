@@ -5,7 +5,7 @@
 //! tint + hairline rim) but smaller and with no form. Dismisses on
 //! Esc / outside-click / Close button.
 
-use ewo_core::CubicBezier;
+use ewo_core::{motion, CubicBezier};
 use skia_safe::{
     canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color,
     Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
@@ -50,7 +50,7 @@ impl AboutModalState {
 
     pub fn tick(&mut self, dt: f32) {
         if self.open && self.anim < 1.0 {
-            self.anim = (self.anim + dt / ANIM_DURATION).min(1.0);
+            self.anim = (self.anim + dt / motion::dur(ANIM_DURATION)).min(1.0);
         }
         self.close_btn.tick(dt);
     }
@@ -97,17 +97,18 @@ pub fn draw_modal(
     let shroud_alpha = (state.anim / 0.67).clamp(0.0, 1.0);
     draw_shroud(canvas, card_w, card_h, shroud_alpha);
 
-    // Card with entrance transform
+    // Card entrance (CSS `modal-card-in`: translateY(10 -> 0) + scale(0.97 -> 1)
+    // + opacity 0 -> 1). Non-negotiable #2: never transform anything that
+    // contains text, so the 0.97 -> 1 scale is applied to the *chrome* (shadow,
+    // refract, tint, rim) only. The text layer fades with the card and
+    // translates by a whole number of pixels, which keeps glyph rasterisation
+    // pixel-aligned. At rest (anim = 1) both layers coincide exactly.
     let card = card_rect(card_w, card_h);
-    let cx = (card.left + card.right) * 0.5;
-    let cy = (card.top + card.bottom) * 0.5;
+    let ty = (10.0 * (1.0 - anim)).round();
     let scale = 0.97 + 0.03 * anim;
-    let ty = 10.0 * (1.0 - anim);
 
     let saved = canvas.save();
-    canvas.translate((cx, cy + ty));
-    canvas.scale((scale, scale));
-    canvas.translate((-cx, -cy));
+    canvas.translate((0.0, ty));
 
     let mut layer_paint = Paint::default();
     layer_paint.set_alpha_f(anim);
@@ -117,7 +118,18 @@ pub fn draw_modal(
             .paint(&layer_paint),
     );
 
-    draw_card(canvas, fonts, &card, state);
+    // Chrome: scaled about the card centre.
+    let cx = (card.left + card.right) * 0.5;
+    let cy = (card.top + card.bottom) * 0.5;
+    let chrome_saved = canvas.save();
+    canvas.translate((cx, cy));
+    canvas.scale((scale, scale));
+    canvas.translate((-cx, -cy));
+    draw_card_chrome(canvas, &card);
+    canvas.restore_to_count(chrome_saved);
+
+    // Text: unscaled.
+    draw_card_content(canvas, fonts, &card, state);
 
     canvas.restore();
     canvas.restore_to_count(saved);
@@ -160,7 +172,8 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
     }
 }
 
-fn draw_card(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModalState) {
+/// Shadow, refract, tint and rim: everything without text (safe to scale).
+fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
     let rrect = RRect::new_rect_xy(*card, CARD_RADIUS, CARD_RADIUS);
 
     // Drop shadow
@@ -250,7 +263,11 @@ fn draw_card(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModal
         &rim,
     );
 
-    // Inner content
+}
+
+/// All text and widgets, clipped to the card. Never transformed by scale.
+fn draw_card_content(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModalState) {
+    let rrect = RRect::new_rect_xy(*card, CARD_RADIUS, CARD_RADIUS);
     let saved = canvas.save();
     canvas.clip_rrect(rrect, Some(ClipOp::Intersect), Some(true));
     draw_inner(canvas, fonts, card, state);

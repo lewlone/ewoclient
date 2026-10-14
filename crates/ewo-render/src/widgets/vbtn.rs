@@ -16,11 +16,15 @@
 //!   - hover  → translateY(-0.5)
 //!   - press  → scale(0.96)
 //!
+//! Both transforms move the chrome only (tint, rim, sheen, ripples, specks).
+//! The label is text and is never transformed (non-negotiable #2).
+//!
 //! State is owned by the caller (`VbtnState`); the `update` helper consumes a
 //! mouse position + button-down flag and returns `true` once on the click
 //! release frame.
 
 use crate::text::{self, FontStore};
+use ewo_core::motion;
 use skia_safe::{
     gradient_shader, BlendMode, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Matrix,
     Paint, PaintStyle, Point, RRect, Rect, TileMode,
@@ -129,14 +133,14 @@ impl VbtnState {
     /// reusable on the next spawn.
     pub fn tick(&mut self, dt: f32) {
         let target = if self.hover { 1.0 } else { 0.0 };
-        let max_step = dt / 0.4;
+        let max_step = dt / motion::dur(0.4);
         let delta: f32 = target - self.hover_anim;
         self.hover_anim += delta.clamp(-max_step, max_step);
 
         for r in self.ripples.iter_mut() {
             if r.active {
                 r.age += dt;
-                if r.age >= RIPPLE_LIFE_S {
+                if r.age >= motion::dur(RIPPLE_LIFE_S) {
                     r.active = false;
                 }
             }
@@ -144,7 +148,7 @@ impl VbtnState {
         for s in self.specks.iter_mut() {
             if s.active {
                 s.age += dt;
-                if s.age >= SPECK_LIFE_S {
+                if s.age >= motion::dur(SPECK_LIFE_S) {
                     s.active = false;
                 }
             }
@@ -222,7 +226,13 @@ pub fn draw_vbtn(
     fonts: &FontStore,
     primary: bool,
 ) {
-    // Hover lift + press scale, applied around the button's center.
+    // Hover lift (`translateY(-0.5px)`) + press scale (`scale(0.96)`, CSS
+    // `.vbtn.pressing`), applied around the button's center.
+    //
+    // Non-negotiable #2: the label is text, so it is never scaled. Both the
+    // press scale and the sub-pixel hover lift move the *chrome* (tint, rim,
+    // sheen, ripples, specks) only; the label stays on its whole-pixel
+    // position and reads as the button "sinking" under it.
     let lift_y = if state.hover { -0.5 } else { 0.0 };
     let scale = if state.pressing { 0.96 } else { 1.0 };
     let cx = (bounds.left + bounds.right) * 0.5;
@@ -251,20 +261,24 @@ pub fn draw_vbtn(
         canvas.restore_to_count(saved2);
     }
 
-    // Layer 4: label
+    canvas.restore_to_count(saved);
+
+    // Layer 4: label, outside the chrome transform (see above).
     draw_label(canvas, bounds, label, primary, fonts);
 
-    // Layer 5+6: ripples + cursor specks. Clipped to the button rrect so
+    // Layer 5+6: ripples + cursor specks, back inside the chrome transform so
+    // they stay registered with the rim. Clipped to the button rrect so
     // the expanding rings/dots can't bleed past the rounded corners.
     {
         let saved2 = canvas.save();
+        canvas.translate((cx, cy + lift_y));
+        canvas.scale((scale, scale));
+        canvas.translate((-cx, -cy));
         canvas.clip_rrect(rrect, None, Some(true));
         draw_ripples(canvas, bounds, &state.ripples);
         draw_specks(canvas, bounds, &state.specks);
         canvas.restore_to_count(saved2);
     }
-
-    canvas.restore_to_count(saved);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -276,7 +290,7 @@ fn draw_ripples(canvas: &Canvas, bounds: Rect, ripples: &[Ripple]) {
         if !r.active {
             continue;
         }
-        let t = (r.age / RIPPLE_LIFE_S).clamp(0.0, 1.0);
+        let t = (r.age / motion::dur(RIPPLE_LIFE_S)).clamp(0.0, 1.0);
         let eased = ewo_core::CubicBezier::SILK.eval(t);
         let diam = 6.0 + (RIPPLE_MAX_DIAM - 6.0) * eased;
         let opacity = 0.9 * (1.0 - eased);
@@ -313,7 +327,7 @@ fn draw_specks(canvas: &Canvas, bounds: Rect, specks: &[Speck]) {
         if !s.active {
             continue;
         }
-        let t = (s.age / SPECK_LIFE_S).clamp(0.0, 1.0);
+        let t = (s.age / motion::dur(SPECK_LIFE_S)).clamp(0.0, 1.0);
         let eased = ewo_core::CubicBezier::SILK.eval(t);
         // CSS @keyframes vbtn-speck:
         //   0%   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
@@ -435,11 +449,18 @@ fn draw_tint(canvas: &Canvas, rect: Rect, radius: f32, primary: bool) {
 fn draw_rim(canvas: &Canvas, rect: Rect, radius: f32, time: f32, motion_speed: f32, hover: bool) {
     // CSS rim-pulse: 7s ease-in-out, opacity 0.7 ↔ 1.0. Hover shortens to 2s
     // and brightens the gradient stops.
-    let period = if hover { 2.0 } else { 7.0 } / motion_speed.max(0.0001);
-    let phase = (time / period).rem_euclid(2.0);
-    let triangle = if phase < 1.0 { phase } else { 2.0 - phase };
-    let pulse = triangle * triangle * (3.0 - 2.0 * triangle);
-    let opacity = 0.7 + 0.3 * pulse;
+    //
+    // Reduced motion (StyleSheet1 ~L1563): the loop is stopped, so the rim
+    // rests on its un-animated style, `.vbtn-rim` base opacity 1.
+    let opacity = if motion::is_reduced() {
+        1.0
+    } else {
+        let period = if hover { 2.0 } else { 7.0 } / motion_speed.max(0.0001);
+        let phase = (time / period).rem_euclid(2.0);
+        let triangle = if phase < 1.0 { phase } else { 2.0 - phase };
+        let pulse = triangle * triangle * (3.0 - 2.0 * triangle);
+        0.7 + 0.3 * pulse
+    };
 
     let (a1, a2, a3) = if hover {
         (0.80, 0.45, 0.70)
@@ -483,8 +504,9 @@ fn draw_rim(canvas: &Canvas, rect: Rect, radius: f32, time: f32, motion_speed: f
 fn draw_sheen(canvas: &Canvas, rect: Rect, time: f32, motion_speed: f32, hover: bool) {
     // CSS: a 40%-wide skewed bar slides from left:-40% → 110% over 7s linear.
     // Hover speeds to 2.5s. transform: skewX(-18deg). filter: blur(2px).
+    // Reduced motion: frozen at the base `left: -40%`, i.e. parked off-button.
     let period = if hover { 2.5 } else { 7.0 } / motion_speed.max(0.0001);
-    let progress = (time / period).rem_euclid(1.0);
+    let progress = (motion::ambient_time(time) / period).rem_euclid(1.0);
 
     let btn_w = rect.width();
     let btn_h = rect.height();

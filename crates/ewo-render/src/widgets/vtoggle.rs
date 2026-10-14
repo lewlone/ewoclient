@@ -71,7 +71,7 @@ impl VtoggleState {
     /// Per-frame animation tick — 320ms approach to the target.
     pub fn tick(&mut self, dt: f32) {
         let target = if self.on { 1.0 } else { 0.0 };
-        let max_step = dt / 0.32;
+        let max_step = dt / ewo_core::motion::dur(0.32);
         let delta: f32 = target - self.anim;
         self.anim += delta.clamp(-max_step, max_step);
     }

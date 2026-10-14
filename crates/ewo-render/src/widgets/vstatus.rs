@@ -57,7 +57,7 @@ impl VstatusState {
 
     pub fn tick(&mut self, dt: f32) {
         if self.anim < 1.0 {
-            self.anim = (self.anim + dt / FADE_SECONDS).min(1.0);
+            self.anim = (self.anim + dt / ewo_core::motion::dur(FADE_SECONDS)).min(1.0);
             if self.anim >= 1.0 {
                 self.fading_out = None;
             }

@@ -85,3 +85,24 @@ pub fn is_foreground(window: &Window) -> bool {
     let fg = unsafe { GetForegroundWindow() };
     fg.0 == my_hwnd.0
 }
+
+/// Reads the Windows "Show animations in Windows" setting
+/// (`SPI_GETCLIENTAREAANIMATION`); reduced motion is its negation. Cheap
+/// enough (one syscall) to poll once a second.
+pub fn prefers_reduced_motion() -> bool {
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    let mut enabled = BOOL(1);
+    let res = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut enabled as *mut BOOL as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    super::reduced_from_animation_setting(res.is_ok(), enabled.as_bool())
+}
