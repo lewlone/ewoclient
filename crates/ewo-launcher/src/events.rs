@@ -1484,6 +1484,21 @@ impl App {
         self.clock.tick();
         let time = self.clock.elapsed;
         let dt = self.clock.dt;
+
+        // Reduced motion (non-negotiable #6): follow the OS setting, polled at
+        // most once a second plus on every focus gain. The first frame always
+        // reads it. Flipping it also drops the cached backdrop so the frozen
+        // (or resumed) ambient layers show on the very next frame.
+        let force = std::mem::take(&mut self.motion_recheck);
+        if let Some(reduced) = self
+            .motion_watch
+            .poll(time, force, window::prefers_reduced_motion)
+        {
+            log::info!("reduced motion: {}", if reduced { "on" } else { "off" });
+            if let Some(b) = self.backdrop.as_ref() {
+                b.invalidate_cache();
+            }
+        }
         let screen = self.screen;
 
         // Smooth screen entrance: stamp the wall-time the screen
@@ -2092,7 +2107,7 @@ impl App {
         let close_btn_hover = self.close_btn_hover;
         // 0..1 entrance progress for the main menu (fade + slide).
         let main_menu_enter = if screen == Screen::MainMenu {
-            ((time - self.screen_enter_at) / 0.34).clamp(0.0, 1.0)
+            ((time - self.screen_enter_at) / ewo_core::motion::dur(0.34)).clamp(0.0, 1.0)
         } else {
             1.0
         };

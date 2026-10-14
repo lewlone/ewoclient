@@ -5,7 +5,7 @@
 //! tint + hairline rim) but smaller and with no form. Dismisses on
 //! Esc / outside-click / Close button.
 
-use ewo_core::CubicBezier;
+use ewo_core::{motion, CubicBezier};
 use skia_safe::{
     canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color,
     Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
@@ -50,7 +50,7 @@ impl AboutModalState {
 
     pub fn tick(&mut self, dt: f32) {
         if self.open && self.anim < 1.0 {
-            self.anim = (self.anim + dt / ANIM_DURATION).min(1.0);
+            self.anim = (self.anim + dt / motion::dur(ANIM_DURATION)).min(1.0);
         }
         self.close_btn.tick(dt);
     }

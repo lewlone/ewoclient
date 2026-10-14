@@ -19,7 +19,7 @@
 //! CSS reference: `.vdrop`, `.vdrop-head`, `.vdrop-caret`, `.vdrop-portal-menu`,
 //! `.vdrop-panel-solid`, `.vdrop-row`, `.vdrop-dot` in `StyleSheet1`.
 
-use ewo_core::{CubicBezier, Settings};
+use ewo_core::{motion, CubicBezier, Settings};
 use skia_safe::{
     gradient_shader, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint,
     PaintStyle, Path, Point, RRect, Rect, TileMode,
@@ -87,7 +87,7 @@ impl VdropState {
             self.time_open = 0.0;
         }
         let target = if self.open { 1.0 } else { 0.0 };
-        let max_step = dt / 0.22; // 220ms portal-in
+        let max_step = dt / motion::dur(0.22); // 220ms portal-in
         let delta: f32 = target - self.anim;
         self.anim += delta.clamp(-max_step, max_step);
     }
@@ -531,9 +531,11 @@ fn draw_menu_rows(
         // text-bearing surfaces during entrance, and the square-bounded
         // (Decal) blur layer left a visible boxy artifact on the lower rows
         // while the menu was still animating in.
-        let local = state.time_open - (i as f32) * ROW_STAGGER_S;
-        let row_layer_handle = if state.open && local < ROW_REVEAL_S {
-            let t = (local / ROW_REVEAL_S).clamp(0.0, 1.0);
+        // Reduced motion collapses the stagger delay and reveal to 0.01 ms.
+        let reveal_s = motion::dur(ROW_REVEAL_S);
+        let local = state.time_open - (i as f32) * motion::dur(ROW_STAGGER_S);
+        let row_layer_handle = if state.open && local < reveal_s {
+            let t = (local / reveal_s).clamp(0.0, 1.0);
             let eased = CubicBezier::SILK.eval(t.max(0.0));
             let alpha = if local < 0.0 { 0.0 } else { eased };
             let dy = (1.0 - eased) * -4.0; // -4 → 0

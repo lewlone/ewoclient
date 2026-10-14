@@ -117,7 +117,9 @@ pub fn draw_meta_pill(
         let phase = (time / period).rem_euclid(2.0);
         let triangle = if phase < 1.0 { phase } else { 2.0 - phase };
         let smooth = triangle * triangle * (3.0 - 2.0 * triangle);
-        let opacity = 0.55 + 0.45 * smooth;
+        // Reduced motion (StyleSheet1 ~L1563): the loop stops and `.dot` rests
+        // on its un-animated opacity of 1.
+        let opacity = if ewo_core::motion::is_reduced() { 1.0 } else { 0.55 + 0.45 * smooth };
 
         // Soft halo behind the dot — CSS `box-shadow: 0 0 6px rgba(229,184,197,0.9)`.
         let mut halo = Paint::default();

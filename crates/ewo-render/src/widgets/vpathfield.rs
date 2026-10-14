@@ -46,7 +46,7 @@ impl VpathfieldState {
 
     pub fn tick(&mut self, dt: f32) {
         let target = if self.hover_input { 1.0 } else { 0.0 };
-        let max_step = dt / 0.24;
+        let max_step = dt / ewo_core::motion::dur(0.24);
         let delta: f32 = target - self.hover_anim;
         self.hover_anim += delta.clamp(-max_step, max_step);
         self.browse.tick(dt);

@@ -32,6 +32,8 @@ use skia_safe::{
 };
 
 const PERIOD_SEC: f32 = 60.0;
+/// `.bokeh-orb { opacity: 0.4 }`, the un-animated resting value.
+const REDUCED_REST_OPACITY: f32 = 0.4;
 
 thread_local! {
     /// The orb's 40px (sigma 20) blur never changes. Build once, clone the
@@ -59,8 +61,14 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     // Note: the CSS `.bokeh-orb { opacity: 0.4 }` is the *resting* value —
     // when the animation is running, the keyframes override it (most-specific
     // wins). Don't multiply by 0.4 here.
-    let (tx_pct, ty_pct, scale) = lerp_translate_scale(phase);
-    let opacity = lerp_opacity(phase);
+    //
+    // Reduced motion (StyleSheet1 ~L1563): the 60 s loop is stopped and
+    // `.bokeh-orb` falls back to its base style: no transform, `opacity: 0.4`.
+    let ((tx_pct, ty_pct, scale), opacity) = if ewo_core::motion::is_reduced() {
+        ((0.0, 0.0, 1.0), REDUCED_REST_OPACITY)
+    } else {
+        (lerp_translate_scale(phase), lerp_opacity(phase))
+    };
     if opacity <= 0.001 {
         return;
     }

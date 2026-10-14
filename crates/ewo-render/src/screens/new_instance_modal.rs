@@ -12,7 +12,7 @@
 //! after every screen so it can spill outside any panel clips, and closes
 //! on shroud click / Cancel button / Esc / tab switch.
 
-use ewo_core::{CubicBezier, Settings};
+use ewo_core::{motion, CubicBezier, Settings};
 use skia_safe::{
     canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color,
     Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
@@ -198,7 +198,7 @@ impl NewInstanceModalState {
 
     pub fn tick(&mut self, dt: f32) {
         if self.open && self.anim < 1.0 {
-            self.anim = (self.anim + dt / ANIM_DURATION).min(1.0);
+            self.anim = (self.anim + dt / motion::dur(ANIM_DURATION)).min(1.0);
         }
         if self.name_focused {
             self.name_focus_time += dt;

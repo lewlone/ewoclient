@@ -8,7 +8,7 @@
 //! widget vocabulary. Input is keyboard-only — digits typed by the user
 //! flow through `App`'s key handler into `LauncherLinkModalState::push_digit`.
 
-use ewo_core::{CubicBezier, Settings};
+use ewo_core::{motion, CubicBezier, Settings};
 use skia_safe::{
     canvas::SaveLayerRec, gradient_shader, image_filters, Canvas, Color, Color4f, Contains, Font,
     Paint, PaintStyle, Point, RRect, Rect, TileMode,
@@ -73,7 +73,7 @@ impl LauncherLinkModalState {
 
     pub fn tick(&mut self, dt: f32) {
         if self.open && self.anim < 1.0 {
-            self.anim = (self.anim + dt / ANIM_DURATION).min(1.0);
+            self.anim = (self.anim + dt / motion::dur(ANIM_DURATION)).min(1.0);
         }
         self.cancel_btn.tick(dt);
         self.submit_btn.tick(dt);

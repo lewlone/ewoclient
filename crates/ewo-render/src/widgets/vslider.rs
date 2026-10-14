@@ -224,7 +224,12 @@ fn draw_handle(
     let smooth = triangle * triangle * (3.0 - 2.0 * triangle);
     // Hover lights the handle up (brighter, larger halo); dragging more so.
     let halo_mult = if dragging { 1.3 } else if hover { 1.18 } else { 1.0 };
-    let halo_alpha = ((0.65 + 0.35 * smooth) * halo_mult).min(1.0);
+    // Reduced motion (StyleSheet1 ~L1563): the loop stops and `.vslider-halo`
+    // rests on its un-animated style: opacity 1, scale 1.
+    let reduced = ewo_core::motion::is_reduced();
+    let halo_base = if reduced { 1.0 } else { 0.65 + 0.35 * smooth };
+    let smooth = if reduced { 0.0 } else { smooth };
+    let halo_alpha = (halo_base * halo_mult).min(1.0);
     let halo_scale = (1.0 + 0.15 * smooth) * if dragging || hover { 1.18 } else { 1.0 };
     // Dragging / hover brightens the handle core.
     let drag_boost = if dragging { 1.2 } else if hover { 1.1 } else { 1.0 };

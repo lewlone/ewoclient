@@ -79,10 +79,11 @@ pub fn draw_pbar(
     // ErrorRecede animates fraction → 0 over RECEDE_DURATION.
     let f = if state == PbarState::ErrorRecede {
         let age = state_age_seconds.unwrap_or(0.0).max(0.0);
-        if age >= RECEDE_DURATION {
+        let recede = ewo_core::motion::dur(RECEDE_DURATION);
+        if age >= recede {
             0.0
         } else {
-            let t = age / RECEDE_DURATION;
+            let t = age / recede;
             let eased = ewo_core::CubicBezier::SILK.eval(t.clamp(0.0, 1.0));
             f_in * (1.0 - eased)
         }
@@ -245,7 +246,13 @@ fn draw_flow(
     // gradient stops (CSS `.pbar-err-rose .pbar-flow { opacity: 0.35 }`).
     let speed = motion_speed.max(0.0001);
     let period = period_seconds / speed;
-    let phase = (time / period).rem_euclid(1.0);
+    // Reduced motion (StyleSheet1 ~L1563): the loop stops and `.pbar-flow`
+    // rests on its base `background-position: 0`, the band at the fill's left.
+    let phase = if ewo_core::motion::is_reduced() {
+        0.40 / 1.80
+    } else {
+        (time / period).rem_euclid(1.0)
+    };
     let flow_w = rect.width() * 0.40;
     let pos_left = rect.left + (-0.40 + phase * 1.80) * rect.width();
     let pos_right = pos_left + flow_w;
@@ -362,7 +369,7 @@ fn draw_error_shimmer(
     let eased = ewo_core::CubicBezier::SILK.eval(raw);
     // Opacity envelope: 0→0, 0.2→1, 1→0. Linear ramp from 0.0..0.2, linear
     // fade from 0.2..1.0.
-    let opacity = if raw < 0.2 {
+    let mut opacity = if raw < 0.2 {
         raw / 0.2
     } else {
         1.0 - (raw - 0.2) / 0.8
@@ -371,7 +378,13 @@ fn draw_error_shimmer(
 
     let track_w = track_rect.width();
     let shim_w = track_w * 0.30;
-    let shim_left = track_rect.left + (-0.30 + eased * 1.60) * track_w;
+    let mut shim_left = track_rect.left + (-0.30 + eased * 1.60) * track_w;
+    // Reduced motion (StyleSheet1 ~L1563): the loop stops and `.pbar-err-shimmer`
+    // rests on its base style: `background-position: 0`, full opacity.
+    if ewo_core::motion::is_reduced() {
+        shim_left = track_rect.left;
+        opacity = 1.0;
+    }
     let shim_right = shim_left + shim_w;
 
     let saved = canvas.save();
@@ -409,10 +422,11 @@ fn draw_error_shimmer(
 /// fill, 1.4s silk easing, diameter 4px → 320px, opacity 0.9 → 0.0,
 /// border 2px → 1px.
 fn draw_complete_ring(canvas: &Canvas, fill_rect: &Rect, age: f32) {
-    if !(0.0..=RING_DURATION).contains(&age) {
+    let ring = ewo_core::motion::dur(RING_DURATION);
+    if !(0.0..=ring).contains(&age) {
         return;
     }
-    let t = age / RING_DURATION;
+    let t = age / ring;
     let eased = ewo_core::CubicBezier::SILK.eval(t.clamp(0.0, 1.0));
 
     let diameter = 4.0 + (RING_MAX_DIAMETER - 4.0) * eased;
