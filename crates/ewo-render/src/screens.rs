@@ -17,8 +17,8 @@ pub mod tab_bar;
 pub use about_modal::{draw_modal as draw_about_modal, AboutModalState};
 pub use dev_overlay::{draw_dev_overlay, DevOverlayState, FrameStats, Slot as DevSlot};
 pub use friends::{
-    draw_friends, friends_layout, FriendRowView, FriendsCounts, FriendsLayout, FriendsPrefs,
-    FriendsViewState, RowButton, RowButtonKind,
+    draw_friends, friends_layout, FriendActionToast, FriendRowView, FriendsCounts, FriendsLayout,
+    FriendsPrefs, FriendsViewState, RowButton, RowButtonKind,
 };
 pub use instances::{draw_instances, InstancePrefs, Slot as InstanceSlot};
 pub use launcher_link_modal::{
@@ -26,7 +26,8 @@ pub use launcher_link_modal::{
 };
 pub use launching::{draw_launching, LaunchError, LaunchingState, RealSeverity};
 pub use main_menu::{
-    draw_main_menu, server_widget_bounds, ServerWidgetData, ServerWidgetView,
+    draw_main_menu, server_widget_bounds, server_widget_height, server_widget_name_rows,
+    ServerWidgetData, ServerWidgetView,
 };
 pub use new_instance_modal::{
     draw_modal as draw_new_instance_modal, NewInstanceModalState, Slot as ModalSlot,

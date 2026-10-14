@@ -117,15 +117,75 @@ pub struct ServerWidgetData<'a> {
     pub online_count: u32,
     pub max_players: u32,
     pub tps: &'a str,
+    /// H6 — usernames currently online. Rendered as a one-line strip
+    /// under the status line while the network is up.
+    pub players: &'a [String],
 }
 
 /// Card-local bounds of the network widget — also its click target. Sits in
-/// the lower-left, above the footer.
-pub fn server_widget_bounds(card_w: f32, card_h: f32) -> Rect {
+/// the lower-left, above the footer. The card grows by one text row when
+/// there are online names to show; both this accessor and the renderer
+/// derive the height through [`server_widget_height`], so the drawn card
+/// and its hit-rect can't disagree.
+pub fn server_widget_bounds(card_w: f32, card_h: f32, name_rows: usize) -> Rect {
     let width = 300.0_f32.min(card_w * 0.45);
-    let height = 60.0;
+    let height = server_widget_height(name_rows);
     let bottom = card_h - PAD_BOTTOM - 36.0;
     Rect::from_xywh(PAD_LEFT, bottom - height, width, height)
+}
+
+/// Shared card-height source: `60` fits the two text rows; the name strip
+/// adds one mono-9 row (`16`).
+pub fn server_widget_height(name_rows: usize) -> f32 {
+    if name_rows > 0 {
+        76.0
+    } else {
+        60.0
+    }
+}
+
+/// How many name rows the widget shows. Names are only listed while the
+/// network is up, so an offline snapshot never grows the card. One rule
+/// for the launcher's hit-rects and for the renderer.
+pub fn server_widget_name_rows(online: bool, players: usize) -> usize {
+    if online && players > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+const NAME_STRIP_MAX_NAMES: usize = 5;
+const NAME_STRIP_NAME_MAX_CHARS: usize = 12;
+
+/// The online-name strip text: up to five names joined with a middot,
+/// each truncated to 12 characters, with a "+N" tail for the rest. Names
+/// are dropped from the end until `fits` accepts the text, so a row of
+/// long usernames can't run out of the card. `None` when nothing fits.
+fn name_strip(players: &[String], fits: impl Fn(&str) -> bool) -> Option<String> {
+    let names: Vec<String> = players
+        .iter()
+        .take(NAME_STRIP_MAX_NAMES)
+        .map(|n| {
+            if n.chars().count() > NAME_STRIP_NAME_MAX_CHARS {
+                let cut: String = n.chars().take(NAME_STRIP_NAME_MAX_CHARS - 1).collect();
+                format!("{}…", cut)
+            } else {
+                n.clone()
+            }
+        })
+        .collect();
+    for shown in (1..=names.len()).rev() {
+        let hidden = players.len() - shown;
+        let mut text = names[..shown].join(" · ");
+        if hidden > 0 {
+            text.push_str(&format!(" +{}", hidden));
+        }
+        if fits(&text) {
+            return Some(text);
+        }
+    }
+    None
 }
 
 fn draw_server_widget(
@@ -141,7 +201,11 @@ fn draw_server_widget(
     if view.hidden {
         return;
     }
-    let bounds = server_widget_bounds(card_w, card_h);
+    let name_rows = match view.data {
+        Some(d) => server_widget_name_rows(d.online, d.players.len()),
+        None => 0,
+    };
+    let bounds = server_widget_bounds(card_w, card_h, name_rows);
     let rrect = skia_safe::RRect::new_rect_xy(bounds, 12.0, 12.0);
     let online = matches!(view.data, Some(d) if d.online);
 
@@ -232,6 +296,23 @@ fn draw_server_widget(
         ),
     };
     canvas.draw_str(&status_text, (left, status_baseline), &status_font, &status_paint);
+
+    // Online-name strip: the reason the card grew.
+    if let Some(d) = view.data.filter(|_| name_rows > 0) {
+        let name_font = fonts.jetbrains_mono(9.0);
+        let mut name_paint = Paint::default();
+        name_paint.set_anti_alias(true);
+        name_paint.set_color(TEXT_MAUVE);
+        let max_w = bounds.right() - pad - left;
+        let strip = name_strip(d.players, |t| {
+            name_font.measure_str(t, Some(&name_paint)).0 <= max_w
+        });
+        if let Some(text) = strip {
+            let (_, nm) = name_font.metrics();
+            let baseline = bounds.top() + 58.0 + (-nm.ascent);
+            canvas.draw_str(&text, (left, baseline), &name_font, &name_paint);
+        }
+    }
 }
 
 /// Card-local bounds for the four sidebar menu items, in rendered order.
@@ -566,4 +647,52 @@ fn draw_tracked(
 
 fn measure_tracked_width(font: &Font, s: &str, tracking_em: f32) -> f32 {
     text::measure_tracked_em(font, s, tracking_em)
+}
+
+#[cfg(test)]
+mod server_widget_tests {
+    use super::*;
+
+    fn names(n: &[&str]) -> Vec<String> {
+        n.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn card_grows_by_one_row_only_when_names_show() {
+        assert_eq!(server_widget_height(0), 60.0);
+        assert_eq!(server_widget_height(1), 76.0);
+        assert_eq!(server_widget_name_rows(true, 3), 1);
+        assert_eq!(server_widget_name_rows(true, 0), 0);
+        assert_eq!(server_widget_name_rows(false, 3), 0);
+    }
+
+    #[test]
+    fn bounds_height_follows_name_rows_and_keeps_the_bottom_edge() {
+        let a = server_widget_bounds(1200.0, 800.0, 0);
+        let b = server_widget_bounds(1200.0, 800.0, 1);
+        assert_eq!(a.bottom(), b.bottom());
+        assert_eq!(b.height() - a.height(), 16.0);
+    }
+
+    #[test]
+    fn strip_lists_five_names_then_a_count() {
+        let p = names(&["a", "b", "c", "d", "e", "f", "g"]);
+        assert_eq!(name_strip(&p, |_| true).unwrap(), "a · b · c · d · e +2");
+        let p = names(&["a", "b"]);
+        assert_eq!(name_strip(&p, |_| true).unwrap(), "a · b");
+    }
+
+    #[test]
+    fn strip_truncates_long_names() {
+        let p = names(&["averyveryverylongname"]);
+        assert_eq!(name_strip(&p, |_| true).unwrap(), "averyveryve…");
+    }
+
+    #[test]
+    fn strip_drops_names_until_it_fits() {
+        let p = names(&["alpha", "bravo", "charlie", "delta"]);
+        let s = name_strip(&p, |t| t.chars().count() <= 20).unwrap();
+        assert_eq!(s, "alpha · bravo +2");
+        assert!(name_strip(&p, |_| false).is_none());
+    }
 }

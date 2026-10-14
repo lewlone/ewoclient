@@ -11,6 +11,7 @@
 //! back to the lowest installed major that's still ≥ the requirement.
 //! No match → caller surfaces a clear error.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -87,6 +88,65 @@ pub fn pick_for_major(required: u32) -> Option<DetectedJre> {
     all.into_iter()
         .filter(|j| j.major >= required)
         .min_by_key(|j| j.major)
+}
+
+/// One runtime's dropdown label. Pure so the UI string and its unit
+/// test can't drift (the versioned install dir reads better than "bin";
+/// anything unexpected degrades to the binary's own path).
+fn label_for(j: &DetectedJre) -> String {
+    let dir = j
+        .path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(|p| p.file_name())
+        .and_then(OsStr::to_str);
+    match dir {
+        Some(d) => format!("Java {} · {}", j.major, d),
+        None => format!("Java {} · {}", j.major, j.path.display()),
+    }
+}
+
+/// Dropdown-facing labels for every detected runtime, index-aligned with
+/// `detect_all()`'s output (sorted by major ascending). Index 0 of the
+/// UI's option list is the "Auto" pseudo-entry and lives caller-side;
+/// this starts at the first real runtime.
+///
+/// Reads the cached scan, so call it from a worker, or once the cache is
+/// warm: a cold `detect_all` shells `java -version` per candidate. The
+/// strings come from disk paths, so they are only stable while the
+/// installed-JRE set is. A persisted `Instance::java_runtime` pin that
+/// points past the current list, or at a runtime that no longer meets
+/// the version's requirement, falls back to auto at launch time (see
+/// [`resolve_pin`]).
+pub fn labels() -> Vec<String> {
+    detect_all().iter().map(label_for).collect()
+}
+
+/// Resolve a per-instance Java-runtime pin against a detected list.
+/// `pin` is the dropdown index: `0` = auto (returns `None`), `N >= 1`
+/// selects `all[N - 1]`. A pin is honoured only while it still exists
+/// and still satisfies `required`; otherwise `None`, so the caller falls
+/// back to [`pick_for_major`]. A stale pin logs a warning.
+pub fn resolve_pin(all: &[DetectedJre], pin: usize, required: u32) -> Option<DetectedJre> {
+    if pin == 0 {
+        return None;
+    }
+    let Some(j) = all.get(pin - 1) else {
+        log::warn!(
+            "launch: pinned Java runtime #{pin} is no longer installed ({} detected) - falling back to auto",
+            all.len()
+        );
+        return None;
+    };
+    if j.major < required {
+        log::warn!(
+            "launch: pinned Java {} can't satisfy required >= {} - falling back to auto",
+            j.major,
+            required
+        );
+        return None;
+    }
+    Some(j.clone())
 }
 
 fn scan() -> Vec<DetectedJre> {
@@ -271,7 +331,59 @@ fn scan_jre_root_recursive(root: &Path, out: &mut Vec<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_major;
+    use super::{label_for, parse_major, resolve_pin, DetectedJre};
+    use std::path::PathBuf;
+
+    fn jre(major: u32, dir: &str) -> DetectedJre {
+        DetectedJre {
+            path: PathBuf::from(format!(r"C:\jvm\{dir}\bin\java.exe")),
+            major,
+        }
+    }
+
+    #[test]
+    fn labels_use_the_versioned_install_dir() {
+        let j = DetectedJre {
+            path: PathBuf::from(r"C:\Program Files\Eclipse Adoptium\jdk-21.0.8+7\bin\java.exe"),
+            major: 21,
+        };
+        assert_eq!(label_for(&j), r"Java 21 · jdk-21.0.8+7");
+    }
+
+    #[test]
+    fn label_degrades_to_the_path_without_an_install_dir() {
+        let j = DetectedJre {
+            path: PathBuf::from("java"),
+            major: 17,
+        };
+        assert_eq!(label_for(&j), "Java 17 · java");
+    }
+
+    #[test]
+    fn pin_zero_is_auto() {
+        let all = [jre(17, "a"), jre(21, "b")];
+        assert!(resolve_pin(&all, 0, 17).is_none());
+    }
+
+    #[test]
+    fn pin_selects_the_list_entry_one_behind_the_dropdown_index() {
+        let all = [jre(17, "a"), jre(21, "b")];
+        assert_eq!(resolve_pin(&all, 1, 17).unwrap().major, 17);
+        assert_eq!(resolve_pin(&all, 2, 17).unwrap().major, 21);
+    }
+
+    #[test]
+    fn stale_pin_past_the_list_falls_back_to_auto() {
+        let all = [jre(21, "b")];
+        assert!(resolve_pin(&all, 3, 17).is_none());
+        assert!(resolve_pin(&[], 1, 8).is_none());
+    }
+
+    #[test]
+    fn pin_below_the_required_major_falls_back_to_auto() {
+        let all = [jre(17, "a"), jre(21, "b")];
+        assert!(resolve_pin(&all, 1, 21).is_none());
+    }
 
     #[test]
     fn parses_modern() {

@@ -287,28 +287,38 @@ impl App {
                 // Instances dropdown
                 if !handled && self.screen == Screen::Instances {
                     if let Some(slot) = self.instance_prefs.open_dropdown() {
-                        if let Some(opts) = screens::instances::dropdown_options(slot) {
-                            if let Some(head) = screens::instances::dropdown_head_for_slot(
+                        // Immutable pass first (the options borrow
+                        // prefs), then the mutable scroll update.
+                        let prep = screens::instances::dropdown_options(
+                            slot,
+                            &self.instance_prefs,
+                        )
+                        .and_then(|opts| {
+                            screens::instances::dropdown_head_for_slot(
                                 slot,
                                 fonts,
                                 card_w,
                                 card_h,
                                 &self.instance_prefs,
                                 &self.instances,
-                            ) {
+                            )
+                            .map(|head| {
                                 let (menu_bounds, _flip) =
                                     ewo_render::widgets::menu_layout(
                                         head,
                                         opts.len(),
                                         card_h,
                                     );
-                                if let Some(state) =
-                                    self.instance_prefs.dropdown_state_mut(slot)
-                                {
-                                    state.scroll_by(dy, menu_bounds, opts.len());
-                                }
-                                handled = true;
+                                (menu_bounds, opts.len())
+                            })
+                        });
+                        if let Some((menu_bounds, n)) = prep {
+                            if let Some(state) =
+                                self.instance_prefs.dropdown_state_mut(slot)
+                            {
+                                state.scroll_by(dy, menu_bounds, n);
                             }
+                            handled = true;
                         }
                     }
                 }
@@ -603,7 +613,7 @@ impl App {
             }
             // H6 — network widget hover (lower-left card). The widget
             // only exists once social is configured and linked.
-            let server_rect = screens::server_widget_bounds(card_w, card_h);
+            let server_rect = self.server_widget_rect(card_w, card_h);
             self.server_widget_hover =
                 self.server_widget_visible() && rect_contains(&server_rect, card_pos);
         } else {
@@ -914,6 +924,9 @@ impl App {
                         if self.screen != target {
                             log::info!("nav: {:?} → {:?}", self.screen, target);
                             self.screen = target;
+                            if target == Screen::Friends {
+                                self.refresh_friends_on_arrival();
+                            }
                             self.launch_button = VbtnState::default();
                             for s in self.menu_items.iter_mut() {
                                 *s = VbtnState::default();
@@ -993,6 +1006,9 @@ impl App {
                             MenuAction::Navigate(target) => {
                                 log::info!("nav (menu): {:?} → {:?}", self.screen, target);
                                 self.screen = target;
+                                if target == Screen::Friends {
+                                    self.refresh_friends_on_arrival();
+                                }
                             }
                             MenuAction::About => {
                                 log::info!("about: clicked → opening About modal");
@@ -1013,7 +1029,7 @@ impl App {
             // (only when the widget is shown, the network reports
             // online, and a lobby address is configured).
             if !handled && self.server_widget_visible() {
-                let server_rect = screens::server_widget_bounds(card_w, card_h);
+                let server_rect = self.server_widget_rect(card_w, card_h);
                 if rect_contains(&server_rect, card_pos) {
                     let online = matches!(
                         self.social.server_status(),
@@ -1549,7 +1565,7 @@ impl App {
         // inside `SocialState` on a configured base URL plus the
         // active account's social_token (see `social::call_allowed`),
         // so signed-out and unlinked launchers make no social calls.
-        self.social.poll();
+        self.social.poll(time);
         // FRIENDS overlay tab — when the friends list changes,
         // rewrite the per-profile `ewo-friends.txt` snapshot the
         // in-game cdylib reads. One tab-separated line per accepted
@@ -1628,6 +1644,13 @@ impl App {
             self.auth.set_social_token(&uuid, token);
             self.social.clear_link_redeem();
             self.launcher_link_modal.close();
+            // The fresh token is usable immediately: pull the friends
+            // list now (rather than on the 30 s cadence) so the screen
+            // has first content. Only for the active account, since the
+            // list cache belongs to it.
+            if self.auth.active().map(|a| a.uuid.as_str()) == Some(uuid.as_str()) {
+                self.refresh_friends_on_arrival();
+            }
         }
         // H6 — poll the network status only while it's on screen (the
         // main-menu widget) and only once the active account is linked.
@@ -1672,6 +1695,8 @@ impl App {
         // Retry a launch deferred on a JRE download once the background
         // re-scan that picks the new JRE up has finished.
         self.poll_jre_rescan(time);
+        // Java-runtime dropdown labels from the warm-up scan.
+        self.poll_jre_labels();
 
         // Drain runtime (bundled-JRE) events. Surface progress
         // as Info lines on the launching screen; on Done, kick
@@ -2143,6 +2168,29 @@ impl App {
             } else {
                 (vec![], vec![], vec![], None)
             };
+        // The friend-action toast, cloned to an owned String so its &str
+        // doesn't borrow self.social into `self.backend.as_mut()` below
+        // (same pattern as link_redeem_msg). A request only ever lands a
+        // status through the gated call path, so with social disabled or
+        // unlinked this is always None.
+        let friend_action_failed =
+            matches!(self.social.friend_action(), social::FriendActionStatus::Failed(_));
+        let friend_action_msg: Option<String> = match self.social.friend_action() {
+            social::FriendActionStatus::Idle => None,
+            social::FriendActionStatus::Submitting => Some("sending…".to_string()),
+            social::FriendActionStatus::Done(msg) | social::FriendActionStatus::Failed(msg) => {
+                Some(msg.clone())
+            }
+        };
+        let friend_action_age = self.social.friend_action_age(time);
+        let friend_toast = friend_action_msg.as_deref().map(|text| screens::FriendActionToast {
+            text,
+            failed: friend_action_failed,
+            // Submitting has no landing time: fully visible, no entrance.
+            age: friend_action_age.unwrap_or(f32::INFINITY),
+            remaining: friend_action_age
+                .map_or(f32::INFINITY, |a| (social::FRIEND_ACTION_TOAST_S - a).max(0.0)),
+        });
         let friends_view: FriendsViewState<'_> = if !self.social.enabled() {
             FriendsViewState::Disabled
         } else if !active_has_token {
@@ -2160,6 +2208,7 @@ impl App {
                 friends: &friends_rows,
                 incoming: &incoming_rows,
                 outgoing: &outgoing_rows,
+                action: friend_toast.as_ref(),
             }
         };
         // Phase H2: clone the Failed message into a local so the
@@ -2263,6 +2312,7 @@ impl App {
                 online_count: s.online_count,
                 max_players: s.max_players,
                 tps: &s.tps,
+                players: &s.players,
             }),
             hovered: self.server_widget_hover,
             hidden: !self.server_widget_visible(),

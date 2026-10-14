@@ -60,6 +60,10 @@ const HEARTBEAT_INTERVAL_S: f32 = 30.0;
 /// refetch; this is the idle cadence.
 const FRIENDS_REFRESH_INTERVAL_S: f32 = 30.0;
 
+/// How long a settled friend-action toast (Done / Failed) stays visible
+/// next to the Friends list before clearing itself.
+pub const FRIEND_ACTION_TOAST_S: f32 = 6.0;
+
 /// Phase H6 — poll the live network status (`/api/server-status`) at most
 /// this often (seconds). Only ticked while the user is on the main menu.
 const SERVER_STATUS_REFRESH_INTERVAL_S: f32 = 15.0;
@@ -296,6 +300,10 @@ pub struct SocialState {
     friends_in_flight: bool,
     /// Last mutation status (request/respond/remove) for the UI toast.
     friend_action: FriendActionStatus,
+    /// Wall-time the current settled `friend_action` landed. Drives the
+    /// toast auto-expire (a settled action message shouldn't sit next to
+    /// the list forever) and its fade.
+    friend_action_at: Option<f32>,
     /// Phase H6 — latest network status snapshot (or `None` until the first
     /// successful poll). A failed poll leaves the previous snapshot in place
     /// rather than blanking the widget.
@@ -347,6 +355,7 @@ impl SocialState {
             friends_last_fetch: None,
             friends_in_flight: false,
             friend_action: FriendActionStatus::Idle,
+            friend_action_at: None,
             server_status: None,
             server_status_last_fetch: None,
             server_status_in_flight: false,
@@ -383,8 +392,20 @@ impl SocialState {
         call_allowed(true, social_token, call).then(|| cfg.base.clone())
     }
 
-    /// Drain pending worker events. Call once per frame.
-    pub fn poll(&mut self) {
+    /// Drain pending worker events. Call once per frame with the current
+    /// wall-time (used for the friend-action toast's auto-expire).
+    pub fn poll(&mut self, now: f32) {
+        // A Done/Failed action message clears itself after a few seconds
+        // so the Friends screen doesn't accumulate stale statuses.
+        // In-flight actions are never expired.
+        if let Some(at) = self.friend_action_at {
+            if now - at >= FRIEND_ACTION_TOAST_S
+                && !matches!(self.friend_action, FriendActionStatus::Submitting)
+            {
+                self.friend_action = FriendActionStatus::Idle;
+                self.friend_action_at = None;
+            }
+        }
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 SocialEvent::LinkRedeemResult(status) => {
@@ -414,8 +435,14 @@ impl SocialState {
                     }
                 }
                 SocialEvent::FriendActionDone(status) => {
-                    log::info!("social: friend-action {:?}", status);
+                    match &status {
+                        FriendActionStatus::Failed(reason) => {
+                            log::warn!("social: friend-action failed: {}", reason);
+                        }
+                        other => log::info!("social: friend-action {:?}", other),
+                    }
                     self.friend_action = status;
+                    self.friend_action_at = Some(now);
                 }
                 SocialEvent::ServerStatusResult(result) => {
                     self.server_status_in_flight = false;
@@ -567,8 +594,11 @@ impl SocialState {
         &self.friend_action
     }
 
-    pub fn clear_friend_action(&mut self) {
-        self.friend_action = FriendActionStatus::Idle;
+    /// Seconds the current settled friend-action has been showing at
+    /// `now`, or `None` while idle / still submitting (a submitting
+    /// status has no landing time; callers draw it fully visible).
+    pub fn friend_action_age(&self, now: f32) -> Option<f32> {
+        self.friend_action_at.map(|at| (now - at).max(0.0))
     }
 
     // ── Phase H6: live network status ──────────────────────────────────
@@ -698,6 +728,7 @@ impl SocialState {
             return;
         }
         self.friend_action = FriendActionStatus::Submitting;
+        self.friend_action_at = None;
         // Pre-mark the friends list as in_flight so the per-frame
         // 30s tick doesn't kick its own GET while ours is in flight.
         self.friends_in_flight = true;
@@ -1183,6 +1214,54 @@ mod tests {
             s.base_for(Some("tok"), SocialCall::ServerStatus).as_deref(),
             Some("https://bot.example.invalid/bot")
         );
+    }
+
+    fn land(s: &mut SocialState, status: FriendActionStatus, now: f32) {
+        s.tx.send(SocialEvent::FriendActionDone(status)).unwrap();
+        s.poll(now);
+    }
+
+    #[test]
+    fn settled_friend_action_expires_after_the_toast_window() {
+        let mut s = SocialState::with_config(None);
+        land(&mut s, FriendActionStatus::Done("Request sent".into()), 10.0);
+        assert!(matches!(s.friend_action(), FriendActionStatus::Done(_)));
+        assert_eq!(s.friend_action_age(12.5), Some(2.5));
+        s.poll(10.0 + FRIEND_ACTION_TOAST_S - 0.01);
+        assert!(matches!(s.friend_action(), FriendActionStatus::Done(_)));
+        s.poll(10.0 + FRIEND_ACTION_TOAST_S);
+        assert!(matches!(s.friend_action(), FriendActionStatus::Idle));
+        assert_eq!(s.friend_action_age(99.0), None);
+    }
+
+    #[test]
+    fn failed_friend_action_expires_too() {
+        let mut s = SocialState::with_config(None);
+        land(&mut s, FriendActionStatus::Failed("nope".into()), 1.0);
+        assert!(matches!(s.friend_action(), FriendActionStatus::Failed(_)));
+        s.poll(1.0 + FRIEND_ACTION_TOAST_S + 1.0);
+        assert!(matches!(s.friend_action(), FriendActionStatus::Idle));
+    }
+
+    #[test]
+    fn submitting_friend_action_never_expires() {
+        let mut s = SocialState::with_config(None);
+        land(&mut s, FriendActionStatus::Done("old".into()), 0.0);
+        // A new action starts while the old toast is still up.
+        s.friend_action = FriendActionStatus::Submitting;
+        s.friend_action_at = None;
+        s.poll(1000.0);
+        assert!(matches!(s.friend_action(), FriendActionStatus::Submitting));
+        assert_eq!(s.friend_action_age(1000.0), None);
+    }
+
+    #[test]
+    fn a_new_result_restarts_the_toast_clock() {
+        let mut s = SocialState::with_config(None);
+        land(&mut s, FriendActionStatus::Done("a".into()), 0.0);
+        land(&mut s, FriendActionStatus::Done("b".into()), 5.0);
+        s.poll(FRIEND_ACTION_TOAST_S + 0.5);
+        assert!(matches!(s.friend_action(), FriendActionStatus::Done(m) if m == "b"));
     }
 
     #[test]
