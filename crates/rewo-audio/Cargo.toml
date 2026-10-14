@@ -1,7 +1,10 @@
 [package]
 name = "rewo-audio"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 # **Ogg and Vorbis only.** `default-features = false` drops the mp3/aac/flac/wav
