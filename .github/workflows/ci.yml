@@ -6,8 +6,9 @@
 # here — run `python tools/gates.py` locally for those.
 #
 # Jobs:
-#   test      the gates-feature build, tests and clippy, plus the pvp-feature
-#             half of ewo-core / ewo-jni that the default build never compiles
+#   test      the gates-feature build, tests and clippy (-D warnings), plus the
+#             pvp-feature half of ewo-core / ewo-jni the default build never compiles
+#   fmt       cargo fmt --check (rustfmt.toml pins LF, so run it on Linux)
 #   shipped   the configuration package.ps1 actually ships (default features);
 #             `test` only ever built with --features rewo-app/gates
 #   msrv      the declared rust-version (workspace Cargo.toml), not floating stable
@@ -69,8 +70,29 @@ jobs:
       - name: Test ewo-core (pvp)
         run: cargo test -p ewo-core --features pvp
 
+      # Warnings fail the build: the workspace reached zero on 2026-10-14, and
+      # an advisory-only clippy step is how 186 of them had piled up. Lints
+      # that would distort a vanilla transcription are allowed in the
+      # workspace [lints] table or at the item, with a reason.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --features rewo-app/gates
+        run: cargo clippy --workspace --all-targets --features rewo-app/gates -- -D warnings
+
+      - name: Clippy (pvp)
+        run: cargo clippy -p ewo-jni -p ewo-core --all-targets --features ewo-jni/pvp,ewo-core/pvp -- -D warnings
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: rustfmt
+        run: cargo fmt --all --check
 
   # Build exactly what package.ps1 ships: default features, no `gates`.
   # rewo-app's gates feature pulls in render_check, the witness blocks and the
@@ -86,6 +108,8 @@ jobs:
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -103,6 +127,9 @@ jobs:
 
       - name: Build launcher
         run: cargo build -p ewo-launcher
+
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The workspace declares rust-version = "1.89" but CI only ever ran stable.
   # rust-toolchain.toml says `stable`, which would override the action's
