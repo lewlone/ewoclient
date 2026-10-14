@@ -450,7 +450,8 @@ pub(crate) fn split_plain(
         match find_line_break(&chars, start, max_width, measure) {
             Some(break_i) => {
                 let had_space = chars.get(break_i) == Some(&' ');
-                let end = if had_space { break_i } else { break_i };
+                // The break index is the end either way; only the restart differs.
+                let end = break_i;
                 out.push(chars[start..end].iter().collect::<String>());
                 start = if had_space { break_i + 1 } else { break_i };
             }

@@ -309,11 +309,11 @@ pub(super) fn chat_input_lines(
 ///    more entries. These are per-pixel `fill` calls in vanilla and stay
 ///    per-pixel here; merging them into one rect would draw a solid line.
 /// 3. One **row fill** per visible line.
-/// **It takes no GUI scale, deliberately** — see [`chat_input_backdrop`].
-/// `SuggestionsList::rect` is already in GUI pixels, which is the unit
-/// [`rewo_gpu::hud::HudFill`] is in. Its screen-pixel sibling
-/// [`suggestion_popup_text`] does take one, because the text pass is the pass
-/// that wants screen pixels.
+///    **It takes no GUI scale, deliberately** — see [`chat_input_backdrop`].
+///    `SuggestionsList::rect` is already in GUI pixels, which is the unit
+///    [`rewo_gpu::hud::HudFill`] is in. Its screen-pixel sibling
+///    [`suggestion_popup_text`] does take one, because the text pass is the pass
+///    that wants screen pixels.
 pub(super) fn suggestion_popup_fills(
     list: &rewo_world::command_suggestions::SuggestionsList,
     cfg: rewo_world::command_suggestions::SuggestionsConfig,
@@ -1319,8 +1319,8 @@ pub(crate) fn srgb_bytes_to_linear(rgb: u32) -> [f32; 3] {
 ///   The text's multiplier has a 0.1 floor (`chatOpacity * 0.9 + 0.1`) and the
 ///   background's has none, so at "Text Background: 0" the fill vanishes
 ///   entirely while the text stays faintly visible.
-/// **Known wrong, and out of M132's scope: these are screen pixels where
-/// [`rewo_gpu::hud::HudFill`] is documented as GUI pixels.**
+///   **Known wrong, and out of M132's scope: these are screen pixels where
+///   [`rewo_gpu::hud::HudFill`] is documented as GUI pixels.**
 ///
 /// `HudPass::draw`'s `tinted_quad` multiplies every fill by the GUI scale, so
 /// a rect already multiplied by `px` here is scaled twice — at scale 2 a chat

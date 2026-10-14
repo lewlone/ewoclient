@@ -233,6 +233,8 @@ impl WaypointStore {
 }
 
 /// `TrackedWaypoint.read` — the identifier, the icon, the type tag, the body.
+// The only failure is a truncated/garbled read, which the caller handles by dropping the packet.
+#[allow(clippy::result_unit_err)]
 pub fn read_tracked_waypoint(r: &mut PacketReader<'_>) -> Result<TrackedWaypoint, ()> {
     // `byteBuf.readEither(UUIDUtil.STREAM_CODEC, FriendlyByteBuf::readUtf)`.
     // True is the LEFT alternative — the UUID.
@@ -282,6 +284,8 @@ pub fn read_tracked_waypoint(r: &mut PacketReader<'_>) -> Result<TrackedWaypoint
 }
 
 /// The whole packet: `Operation.STREAM_CODEC` then `TrackedWaypoint.STREAM_CODEC`.
+// The only failure is a truncated/garbled read, which the caller handles by dropping the packet.
+#[allow(clippy::result_unit_err)]
 pub fn read_waypoint_packet(body: &[u8]) -> Result<(WaypointOp, TrackedWaypoint), ()> {
     let mut r = PacketReader::new(body);
     let op = WaypointOp::by_id(r.varint().map_err(|_| ())?);

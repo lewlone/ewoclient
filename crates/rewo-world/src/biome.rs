@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn dark_forest_formula() {
         // `opaque(((base & 0xFEFEFE) + 2634762) >> 1)`.
-        let base = 0x00_7ABF_5B; // a green
+        let base = 0x007A_BF5B; // a green
         let got = GrassModifier::DarkForest.apply(0.0, 0.0, base, &BiomeInfoNoise::new());
         let expect = argb_opaque(((base & 16711422) + 2634762) >> 1);
         assert_eq!(got, expect);

@@ -1528,7 +1528,7 @@ mod tests {
         let v = full_view(20, 1, 0);
         assert_eq!(book_hit(MAGNIFIER_X, SEARCH_Y + 7, v, 5), Some(BookHit::Search));
         assert_eq!(book_hit(SEARCH_X + 40, SEARCH_Y + 7, v, 5), Some(BookHit::Search));
-        assert!(MAGNIFIER_X + MAGNIFIER_W > SEARCH_X, "they overlap by construction");
+        const { assert!(MAGNIFIER_X + MAGNIFIER_W > SEARCH_X, "they overlap by construction") };
         // Just left of the magnifier is nothing.
         assert_eq!(book_hit(MAGNIFIER_X - 1, SEARCH_Y + 7, v, 5), None);
     }

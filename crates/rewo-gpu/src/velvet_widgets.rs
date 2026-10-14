@@ -71,6 +71,8 @@ impl Anchor {
         }
     }
 
+    // Not `FromStr`: an unknown token is `None`, not an error type.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Anchor> {
         Some(match s {
             "tl" => Anchor::Tl,

@@ -741,7 +741,7 @@ fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
         // Each quad's face from its geometry: the axis all four corners share,
         // on the cube's low or high side.
         let mut got = [None::<u8>; 6];
-        for q in mesh.vertices.chunks_exact(4) {
+        for q in mesh.vertices.as_chunks::<4>().0 {
             let axis = (0..3)
                 .find(|&a| q.iter().all(|v| v.pos[a] == q[0].pos[a]))
                 .ok_or_else(|| format!("{name}: a quad is not axis-aligned"))?;

@@ -846,13 +846,13 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
 /// - **END** — `SkyRenderer.renderEndSky`: the ±100 textured cube at the
 ///   constant colour `-14145496` (`0xFF282828`). Two oracles:
 ///   (a) a **synthetic** solid texture, where every rendered pixel has one
-///       independently-computable exact value and the closed cube must cover
-///       100% of the frame from any heading; and
+///   independently-computable exact value and the closed cube must cover
+///   100% of the frame from any heading; and
 ///   (b) the **production jar** `end_sky.png`, where NEAREST sampling means
-///       every pixel must be exactly one of the texture's own texels scaled by
-///       the constant — an exact set-membership test that also proves the
-///       texture is really tiled (more than one distinct value appears) and
-///       really darkened (no pixel is the raw texel).
+///   every pixel must be exactly one of the texture's own texels scaled by
+///   the constant — an exact set-membership test that also proves the
+///   texture is really tiled (more than one distinct value appears) and
+///   really darkened (no pixel is the raw texel).
 ///
 /// End flashes are out of scope and are not rendered or checked.
 #[allow(clippy::too_many_arguments)]

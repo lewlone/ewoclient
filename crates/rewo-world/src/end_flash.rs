@@ -200,7 +200,7 @@ impl EndFlashState {
 /// `Mth.randomBetweenInclusive` (`Mth.java:690-692`) — `nextInt(max - min + 1)
 /// + min`, with **no** `min >= max` guard. Its neighbour `Mth.nextInt`
 /// (`Mth.java:146-148`) has one and does not draw; they are not
-/// interchangeable.
+///   interchangeable.
 fn random_between_inclusive(random: &mut LegacyRandom, min: i32, max_inclusive: i32) -> i32 {
     random.next_int(max_inclusive - min + 1) + min
 }
@@ -403,6 +403,8 @@ mod tests {
     /// narrows to `0` and `SIN[0]` is `0.0`. Platform `sin` would propagate
     /// the `NaN` into the lightmap and the flash quad's vertex colour.
     #[test]
+    // The `0.0 / 0.0` below is the point: it is the witness that the expression is NaN.
+    #[allow(clippy::zero_divided_by_zero)]
     fn tick_zero_is_finite_only_because_mth_sin_is_a_table() {
         let mut s = EndFlashState::default();
         s.tick(0);
@@ -560,11 +562,13 @@ mod tests {
     /// them.
     #[test]
     fn intensity_uses_javas_left_to_right_grouping() {
-        let mut s = EndFlashState::default();
-        // Any non-zero seed, so a `tick` would not redraw over these.
-        s.flash_seed = 1;
-        s.offset = 0;
-        s.duration = 112;
+        let s = EndFlashState {
+            // Any non-zero seed, so a `tick` would not redraw over these.
+            flash_seed: 1,
+            offset: 0,
+            duration: 112,
+            ..EndFlashState::default()
+        };
 
         let ours = s.calculate_intensity(35);
         let regrouped = mth_sin(35.0 * (std::f32::consts::PI / 112.0));
@@ -665,10 +669,12 @@ mod tests {
         // Separating them needs a window wide enough for `600 + within` to
         // land *inside*: at `clock_time = -200` truncation gives `-200` and
         // `rem_euclid` gives `400`, which is well within `[100, 480]`.
-        let mut wide = EndFlashState::default();
-        wide.flash_seed = 1; // non-zero, so `calculate_intensity` sees these
-        wide.offset = 100;
-        wide.duration = 380;
+        let wide = EndFlashState {
+            flash_seed: 1, // non-zero, so `calculate_intensity` sees these
+            offset: 100,
+            duration: 380,
+            ..EndFlashState::default()
+        };
         assert_eq!(
             wide.calculate_intensity(-200),
             0.0,

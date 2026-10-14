@@ -239,9 +239,9 @@ pub enum KeybindRequest {
 
 /// Identifies a control slot in the Settings screen — used for hit-testing
 /// + driving the right widget state from `main.rs`. Only the slots that
-/// have a concrete widget implementation today are listed; placeholder
-/// slots (Window mode dropdown, Theme dropdown, path fields, Reset
-/// preferences button) land when their primitives ship.
+///   have a concrete widget implementation today are listed; placeholder
+///   slots (Window mode dropdown, Theme dropdown, path fields, Reset
+///   preferences button) land when their primitives ship.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Slot {
     Vsync,

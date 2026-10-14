@@ -139,7 +139,8 @@ fn face_quad(
     // winding keeps the two faces distinguishable for the oracle.
     let front = dir == 3;
     let (a, b) = if front { (min[0], max[0]) } else { (max[0], min[0]) };
-    let (ua, ub) = if front { (u0, u1) } else { (u0, u1) };
+    // The u order does not follow the winding (the two faces share it).
+    let (ua, ub) = (u0, u1);
     ItemQuad {
         verts: [
             [a, min[1], z],

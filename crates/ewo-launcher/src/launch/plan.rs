@@ -27,7 +27,7 @@ use crate::versions::per_version::{Library, PerVersion};
 
 /// What the user is launching as. Offline mode for now (placeholder UUID
 /// + token); when Mojang approves the launcher, real values from
-/// `MinecraftAccount` get plugged in here.
+///   `MinecraftAccount` get plugged in here.
 #[derive(Debug, Clone)]
 pub struct LaunchProfile {
     pub username: String,

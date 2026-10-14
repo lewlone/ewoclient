@@ -782,7 +782,7 @@ mod tests {
     fn the_tab_bar_rounds_its_widths_up_to_even_numbers() {
         // 320 GUI px: tabsWidth 292, 292/3 = 97 -> 98, x = roundToward(14, 2).
         assert_eq!(tab_bar_layout(320, 3), (14, 98));
-        assert!(98 * 3 > 292, "the three tabs are two pixels wider than the band");
+        assert_eq!(98 * 3 - 292, 2, "the three tabs are two pixels wider than the band");
         // Clamped at MAX_WIDTH: a 600-wide window still gets a 372-wide band.
         let (x, w) = tab_bar_layout(600, 3);
         assert_eq!(w, layout::round_toward(372 / 3, 2));

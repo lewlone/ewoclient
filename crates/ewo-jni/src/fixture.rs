@@ -161,7 +161,7 @@ pub fn block(scene: Scene, overlay_open: bool, w: f32, h: f32) -> Vec<u8> {
             }
 
             b.i32(off::POTION_COUNT, 1);
-            potion(&mut b, 0, 3_180, 0, 0x33EB_FF, "Night Vision");
+            potion(&mut b, 0, 3_180, 0, 0x0033_EBFF, "Night Vision");
 
             b.i32(off::PLAYTIME, 4_127);
             b.string(off::SERVER, 48, "play.frogsy.net");
@@ -194,10 +194,10 @@ pub fn block(scene: Scene, overlay_open: bool, w: f32, h: f32) -> Vec<u8> {
             }
 
             b.i32(off::POTION_COUNT, 3);
-            potion(&mut b, 0, 1_684, 1, 0x7CAF_C6, "Speed");
-            potion(&mut b, 1, 947, 0, 0x9324_23, "Strength");
+            potion(&mut b, 0, 1_684, 1, 0x007C_AFC6, "Speed");
+            potion(&mut b, 1, 947, 0, 0x0093_2423, "Strength");
             // Negative duration = infinite — exercises the "∞" formatting path.
-            potion(&mut b, 2, -1, 0, 0xE49A_3A, "Fire Resistance");
+            potion(&mut b, 2, -1, 0, 0x00E4_9A3A, "Fire Resistance");
 
             b.i32(off::TARGET_PRESENT, 1)
                 .f32(off::TARGET_DIST, 3.24)
@@ -216,7 +216,7 @@ pub fn block(scene: Scene, overlay_open: bool, w: f32, h: f32) -> Vec<u8> {
                 .i32(off::PVP_JUMP + 12, 20);
             // Hit range: 3.04 blocks, green zone, a bit further into its fade.
             b.f32(off::PVP_HIT, 3.04)
-                .i32(off::PVP_HIT + 4, 0x8BE2_8B)
+                .i32(off::PVP_HIT + 4, 0x008B_E28B)
                 .i32(off::PVP_HIT + 8, 6)
                 .i32(off::PVP_HIT + 12, 20);
 

@@ -84,7 +84,7 @@ pub(crate) fn split_quads(v: &[MeshVertex], idx: &[u32]) -> Result<Vec<[MeshVert
             ));
         }
     }
-    Ok(v.chunks_exact(4)
+    Ok(v.as_chunks::<4>().0.iter()
         .map(|c| [c[0], c[1], c[2], c[3]])
         .collect())
 }
@@ -620,7 +620,7 @@ pub(crate) fn oracle_pool_beside(east: u32) -> World {
 /// four vertices on the block floor, a top face none, a side face two.
 pub(crate) fn fluid_face_counts(v: &[MeshVertex], floor: f32) -> (usize, usize, usize) {
     let (mut top, mut side, mut bottom) = (0, 0, 0);
-    for q in v.chunks_exact(4) {
+    for q in v.as_chunks::<4>().0 {
         match q.iter().filter(|x| (x.pos[1] - floor).abs() < 1e-6).count() {
             4 => bottom += 1,
             0 => top += 1,
@@ -632,7 +632,7 @@ pub(crate) fn fluid_face_counts(v: &[MeshVertex], floor: f32) -> (usize, usize, 
 
 /// Quads whose four vertices all sit on the plane `x`.
 pub(crate) fn quads_on_x_plane(v: &[MeshVertex], x: f32) -> usize {
-    v.chunks_exact(4)
+    v.as_chunks::<4>().0.iter()
         .filter(|q| q.iter().all(|p| (p.pos[0] - x).abs() < 1e-6))
         .count()
 }

@@ -406,7 +406,6 @@ struct Expect {
     /// The poses this expectation was built from — surfaced so a witness can
     /// name the pose it is asserting without recomputing the derivation.
     right: ArmPose,
-    left: ArmPose,
     body: [f32; 3],
     right_rot: [f32; 3],
     right_off: [f32; 3],
@@ -428,9 +427,10 @@ fn expect_attack(
     head_y_rot: f32,
 ) -> Expect {
     use std::f32::consts::PI;
-    let mut e = Expect::default();
-    e.right = poses.right;
-    e.left = poses.left;
+    let mut e = Expect {
+        right: poses.right,
+        ..Expect::default()
+    };
     // `setupAnim`: the walk swing, assigned before the attack runs.
     // rightArm.xRot = cos(pos·0.6662 + π)·2·amount·0.5 / speedValue (1.0)
     let f = walk_pos * 0.6662;

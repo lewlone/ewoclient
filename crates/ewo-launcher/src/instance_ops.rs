@@ -61,7 +61,7 @@ pub(crate) fn delete_instance(
 /// Mirror the prefs slider/dropdown values into the currently-selected
 /// instance. Called whenever those widgets fire a change event so the
 /// per-instance config follows the user's edits.
-pub(crate) fn sync_instance_config(instances: &mut Vec<Instance>, prefs: &InstancePrefs) {
+pub(crate) fn sync_instance_config(instances: &mut [Instance], prefs: &InstancePrefs) {
     if let Some(inst) = instances.get_mut(prefs.selected) {
         inst.ram = prefs.ram.value as u32;
         inst.render_distance = prefs.render_dist.value as u32;
@@ -118,9 +118,11 @@ mod tests {
     /// leaves it untouched.
     #[test]
     fn remove_instance_reanchors_the_selection() {
-        let mut prefs = InstancePrefs::default();
-        prefs.selected = 2;
-        prefs.detail_scroll = 40.0;
+        let mut prefs = InstancePrefs {
+            selected: 2,
+            detail_scroll: 40.0,
+            ..InstancePrefs::default()
+        };
         let mut below = three();
         assert_eq!(remove_instance(&mut below, &mut prefs, 0, 5.0), Some("a".to_string()));
         assert_eq!((prefs.selected, prefs.detail_scroll, prefs.selected_at), (1, 0.0, Some(5.0)));
@@ -139,8 +141,10 @@ mod tests {
     #[test]
     fn sync_instance_config_copies_prefs_into_selected() {
         let mut list = three();
-        let mut prefs = InstancePrefs::default();
-        prefs.selected = 1;
+        let mut prefs = InstancePrefs {
+            selected: 1,
+            ..InstancePrefs::default()
+        };
         prefs.ram.value = 12.0;
         prefs.render_dist.value = 24.0;
         prefs.java_runtime.selected = 2;

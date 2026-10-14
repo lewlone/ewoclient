@@ -803,7 +803,7 @@ pub struct RawQuad {
     pub uv: [[f32; 2]; 4],
     /// Vanilla face label of the source box face (drives the debug texture
     /// + shade). For mirrored cubes the label follows the texture rect, not
-    /// the geometric side — exactly like vanilla.
+    ///   the geometric side — exactly like vanilla.
     pub facing: Facing,
     /// Outward normal with all static folds applied (model space).
     pub normal: [f32; 3],
@@ -4315,11 +4315,11 @@ mod tests {
     }
 }
 
-/// The player model, for the first-person hand (M38).
-///
-/// Built once per variant and shared: the hand needs one named part out of it
-/// every frame, and rebuilding a whole humanoid mesh to read two cubes would
-/// be the same per-frame allocation the 2026-05-31 leak pass went looking for.
+// The player model, for the first-person hand (M38).
+//
+// Built once per variant and shared: the hand needs one named part out of it
+// every frame, and rebuilding a whole humanoid mesh to read two cubes would
+// be the same per-frame allocation the 2026-05-31 leak pass went looking for.
 // -- worn armour (M46) --------------------------------------------------------
 //
 // `HumanoidModel.createArmorMeshSet` builds four models from the same humanoid

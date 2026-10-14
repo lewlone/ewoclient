@@ -146,7 +146,7 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
         .libraries
         .iter()
         .filter(|l| rules::rules_pass(&l.rules))
-        .filter_map(|l| {
+        .map(|l| {
             let mut total = l.downloads.artifact.as_ref().map(|a| a.size).unwrap_or(0);
             // Add native classifier if present.
             if let Some(natives_key) = native_classifier_for(l) {
@@ -154,7 +154,7 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
                     total += c.size;
                 }
             }
-            Some(total)
+            total
         })
         .sum();
     let total_bytes =

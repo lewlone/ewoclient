@@ -1091,7 +1091,7 @@ mod advanced_tests {
         assert_eq!(TooltipFlag::of(false), TooltipFlag::NORMAL);
         assert_eq!(TooltipFlag::of(true), TooltipFlag::ADVANCED);
         // Advanced is not creative.
-        assert!(!TooltipFlag::ADVANCED.creative);
+        const { assert!(!TooltipFlag::ADVANCED.creative) };
     }
 
     #[test]

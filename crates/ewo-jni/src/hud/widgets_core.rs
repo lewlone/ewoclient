@@ -135,7 +135,7 @@ pub fn draw(
         if let Some(idx) = catalog::index_of("hit_indicator") {
             let st = editor.modules.get(idx);
             if st.enabled && data.hit_present() {
-                let radius_pct = st.settings[0].max(5.0).min(50.0);
+                let radius_pct = st.settings[0].clamp(5.0, 50.0);
                 let fade_secs = st.settings[1].max(0.1);
                 let age = data.hit_age();
                 if age >= 0.0 && age < fade_secs {
@@ -404,7 +404,7 @@ pub(super) fn draw_media_compact(
     };
     let (title_w, _) = title_font.measure_str(&title_str, Some(&probe));
     let artist_w = measure_tracked_em(&artist_font, &artist_str, 0.18);
-    let text_w = title_w.max(artist_w).min(180.0).max(140.0);
+    let text_w = title_w.max(artist_w).clamp(140.0, 180.0);
 
     let chip_w = pad_l + thumb + gap + text_w + gap + cluster_w + pad_r;
     let chip_h = pad_y * 2.0 + thumb;

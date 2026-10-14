@@ -230,7 +230,7 @@ impl Attachments {
         }
 
         let mut class = HashMap::new();
-        for (&id, _) in by_id.iter() {
+        for &id in by_id.keys() {
             // Most derived first: `Camel` before `AbstractHorse`, and the two
             // raft leaves before the `AbstractBoat` branch that reads them.
             let c = if boats.contains(&id) {

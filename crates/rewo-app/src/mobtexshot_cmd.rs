@@ -256,7 +256,7 @@ fn producible(rgba: &[u8]) -> HashSet<u32> {
     // Distinct opaque texels first: a mob sheet has a few dozen colours over
     // thousands of texels, so this makes the product tiny.
     let mut texels: HashSet<u32> = HashSet::new();
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         // `entity.frag` discards `a < 0.004`. Byte alpha 1 is 0.00392, which
         // is *also* below that, so the shader drops it too and this keeps it.
         // The mismatch only ever WIDENS the acceptance set, so it cannot
@@ -301,7 +301,7 @@ fn producible(rgba: &[u8]) -> HashSet<u32> {
 /// the rest, which is exactly what the second run of this gate reported.
 fn producible_linear(rgba: &[u8]) -> Vec<([f32; 3], f32)> {
     let mut texels: HashSet<u32> = HashSet::new();
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         if px[3] != 0 {
             texels.insert(pack(px[0], px[1], px[2]) | ((px[3] as u32) << 24));
         }
@@ -1096,7 +1096,7 @@ fn run_check(
     let trim_key = |i: usize| format!("rewo:mobtexshot/pool/{i}");
     let trim_sprite = |i: usize| -> Vec<u8> {
         let mut v = vec![0u8; (TRIM_W * TRIM_H * 4) as usize];
-        for (n, px) in v.chunks_exact_mut(4).enumerate() {
+        for (n, px) in v.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px[0] = (i & 0xFF) as u8;
             px[1] = (n & 0xFF) as u8;
             px[2] = 0x40;

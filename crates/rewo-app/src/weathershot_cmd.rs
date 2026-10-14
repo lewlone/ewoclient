@@ -607,7 +607,7 @@ fn view_proj(eye: [f32; 3], target: [f32; 3]) -> [[f32; 4]; 4] {
 }
 
 fn lit(img: &[u8]) -> usize {
-    img.chunks_exact(4).filter(|p| p[0] > 8 || p[1] > 8 || p[2] > 8).count()
+    img.as_chunks::<4>().0.iter().filter(|p| p[0] > 8 || p[1] > 8 || p[2] > 8).count()
 }
 
 fn overlay_offscreen(ring: &OverlayRing) -> OverlayDraw<'_> {
@@ -855,8 +855,8 @@ fn check_weather_pixels(
     );
 
     let faint = shot(gpu, off, columns.clone(), Vec::new(), 0.15)?;
-    let bright_sum: u64 = rain_img.chunks_exact(4).map(|p| p[0] as u64).sum();
-    let faint_sum: u64 = faint.chunks_exact(4).map(|p| p[0] as u64).sum();
+    let bright_sum: u64 = rain_img.as_chunks::<4>().0.iter().map(|p| p[0] as u64).sum();
+    let faint_sum: u64 = faint.as_chunks::<4>().0.iter().map(|p| p[0] as u64).sum();
     c.record(
         "g6.intensity_scales_what_reaches_the_screen",
         faint_sum * 2 < bright_sum,
@@ -903,7 +903,7 @@ fn check_weather_pixels(
         })
         .collect();
     let dark_img = shot(gpu, off, dark, Vec::new(), 1.0)?;
-    let dark_sum: u64 = dark_img.chunks_exact(4).map(|p| p[0] as u64).sum();
+    let dark_sum: u64 = dark_img.as_chunks::<4>().0.iter().map(|p| p[0] as u64).sum();
     c.record(
         "g9.weather_is_lit_by_the_same_lightmap_as_terrain",
         dark_sum * 4 < bright_sum,

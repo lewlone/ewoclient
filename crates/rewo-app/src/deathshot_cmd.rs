@@ -589,8 +589,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     // `Screen.resize` -> `repositionElements` -> `rebuildWidgets` -> `init()`,
     // and `init()`'s first line is `this.delayTicker = 0`.
     let (model, labels, _) = built(false);
-    let mut resized = s20.clone();
-    resized = model.build(&labels, GUI_W * 2, GUI_H);
+    let resized = model.build(&labels, GUI_W * 2, GUI_H);
     c.record(
         "m16.resizing_while_dead_restarts_the_one_second_guard",
         resized.ticks == 0

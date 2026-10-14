@@ -42,14 +42,15 @@ pub struct EnchantmentText {
 
 impl EnchantmentText {
     pub fn load(client_jar: &Path, lang: &crate::lang::Language) -> Self {
-        let mut out = Self::default();
-        out.names = lang
-            .iter()
-            .filter(|(k, _)| k.starts_with("enchantment."))
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        out.curse = Self::tag(client_jar, "curse");
-        out.order = Self::tag(client_jar, "tooltip_order");
+        let out = Self {
+            names: lang
+                .iter()
+                .filter(|(k, _)| k.starts_with("enchantment."))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            curse: Self::tag(client_jar, "curse"),
+            order: Self::tag(client_jar, "tooltip_order"),
+        };
         log::info!(
             "rewo-data: {} enchantment string(s), {} curse(s), {} in tooltip order",
             out.names.len(),

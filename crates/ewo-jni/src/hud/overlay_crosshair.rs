@@ -37,8 +37,8 @@ pub(super) struct CrosshairLayout {
 }
 
 pub(super) fn crosshair_layout(w: f32, h: f32) -> CrosshairLayout {
-    let card_w = (w - 240.0).min(1500.0).max(900.0);
-    let card_h = (h - 140.0).min(880.0).max(620.0);
+    let card_w = (w - 240.0).clamp(900.0, 1500.0);
+    let card_h = (h - 140.0).clamp(620.0, 880.0);
     let card_x = (w - card_w) * 0.5;
     let card_y = 100.0;
     let card = Rect::from_xywh(card_x, card_y, card_w, card_h);

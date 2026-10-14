@@ -34,7 +34,7 @@ pub const PAGE_FORWARD_BUTTON_X: i32 = 116;
 pub const PAGE_BUTTON_W: i32 = 23;
 pub const PAGE_BUTTON_H: i32 = 13;
 /// `PAGE_TEXT_STYLE` — black (`0xFF000000` → `0x000000` opaque), no shadow.
-pub const PAGE_TEXT_COLOR: u32 = 0x0000_00;
+pub const PAGE_TEXT_COLOR: u32 = 0x0000_0000;
 
 /// GLFW `GLFW_KEY_PAGE_UP` / `GLFW_KEY_PAGE_DOWN` — the two keys the screen
 /// binds (NOT the arrow keys).

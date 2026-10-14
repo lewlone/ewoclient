@@ -89,6 +89,9 @@ pub enum PatchOutcome {
 
 /// One decoded slot value.
 #[derive(Clone, Debug, PartialEq)]
+// A transient decode result; `Empty` is the cheap common case and boxing `Stack`
+// would add an allocation per non-empty slot.
+#[allow(clippy::large_enum_variant)]
 pub enum WireSlot {
     /// `count <= 0` → `ItemStack.EMPTY` (nothing else is encoded).
     Empty,

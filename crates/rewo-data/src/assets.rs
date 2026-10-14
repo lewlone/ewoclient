@@ -3265,7 +3265,7 @@ fn bake_font(jar: Jar) -> Option<BakedFont> {
 
 /// Per-glyph advances: rightmost column with any alpha + 2 (1 px glyph edge
 /// + 1 px spacing), matching vanilla's legacy provider; blank cells (space)
-/// advance 4.
+///   advance 4.
 fn font_advances(atlas: &[u8], size: u32, cell: u32) -> [u8; 256] {
     let mut advance = [0u8; 256];
     for cp in 0..256u32 {
@@ -4547,11 +4547,6 @@ fn resolve_texture_var<'a>(
     None
 }
 
-
-fn decode_png_rgba(bytes: &[u8]) -> Option<Vec<u8>> {
-    decode_png_rgba_frames(bytes)?.into_iter().next()
-}
-
 /// Decode a block texture into its 16×16 RGBA frames — one for a plain
 /// texture, N for an animation strip (width 16, height N×16).
 fn decode_png_rgba_frames(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
@@ -4659,7 +4654,7 @@ pub fn colormap_pixels(jar: Jar, name: &str) -> Option<Vec<i32>> {
 }
 
 fn tint_rgb(rgba: &mut [u8], color: [u8; 3]) {
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         for c in 0..3 {
             px[c] = ((px[c] as u16 * color[c] as u16) / 255) as u8;
         }

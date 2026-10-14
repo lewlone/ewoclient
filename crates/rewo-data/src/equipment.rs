@@ -356,21 +356,17 @@ pub fn apply_palette(src: &[u8], key: &[u8], value: &[u8]) -> Option<Vec<u8>> {
         );
     }
     let mut out = src.to_vec();
-    for px in out.chunks_exact_mut(4) {
+    for px in out.as_chunks_mut::<4>().0 {
         let pa = px[3];
         if pa == 0 {
             continue;
         }
-        match map.get(&[px[0], px[1], px[2]]) {
-            Some(v) => {
-                px[0] = v[0];
-                px[1] = v[1];
-                px[2] = v[2];
-                // `pixelAlpha * valueAlpha / 255`, integer.
-                px[3] = ((pa as u32 * v[3] as u32) / 255) as u8;
-            }
-            // `opaque(pixelRGB)` — alpha 255, so the pixel is unchanged.
-            None => {}
+        if let Some(v) = map.get(&[px[0], px[1], px[2]]) {
+            px[0] = v[0];
+            px[1] = v[1];
+            px[2] = v[2];
+            // `pixelAlpha * valueAlpha / 255`, integer.
+            px[3] = ((pa as u32 * v[3] as u32) / 255) as u8;
         }
     }
     Some(out)

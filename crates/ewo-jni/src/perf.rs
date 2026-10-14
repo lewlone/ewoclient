@@ -11,7 +11,7 @@
 //!     ("bypass" — the HUD blinks off). The frame-time delta between the two
 //!     modes is the HUD's **true end-to-end cost**: context switches + composite
 //!     + flush + any GPU-pipelining loss that per-section CPU timing can't see.
-//!     The HUD visibly blinks ~once a second while this runs; that's expected.
+//!       The HUD visibly blinks ~once a second while this runs; that's expected.
 //!
 //! The summary file is truncated at session start, so it always holds just the
 //! latest run. Each line is one window:

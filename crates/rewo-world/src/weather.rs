@@ -1032,11 +1032,7 @@ pub fn alpha_blend(destination: i32, source: i32) -> i32 {
     let a = sa + da * (255 - sa) / 255;
     let ch = |shift: u32| -> u32 {
         let (dc, sc) = ((d >> shift) & 0xFF, (s >> shift) & 0xFF);
-        if a == 0 {
-            0
-        } else {
-            (sc * sa + dc * da * (255 - sa) / 255) / a
-        }
+        (sc * sa + dc * da * (255 - sa) / 255).checked_div(a).unwrap_or(0)
     };
     ((a << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)) as i32
 }

@@ -117,11 +117,11 @@ impl DemoHint {
     /// Exact float equality, as vanilla writes it. `101.5` is not a hint.
     pub fn from_param(param: f32) -> Option<DemoHint> {
         Some(match param {
-            p if p == 0.0 => DemoHint::Intro,
-            p if p == 101.0 => DemoHint::Movement,
-            p if p == 102.0 => DemoHint::Jump,
-            p if p == 103.0 => DemoHint::Inventory,
-            p if p == 104.0 => DemoHint::Day6,
+            0.0 => DemoHint::Intro,
+            101.0 => DemoHint::Movement,
+            102.0 => DemoHint::Jump,
+            103.0 => DemoHint::Inventory,
+            104.0 => DemoHint::Day6,
             _ => return None,
         })
     }

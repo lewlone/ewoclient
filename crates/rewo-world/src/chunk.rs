@@ -856,7 +856,7 @@ mod heightmap_tests {
         let mut out = vec![0i64; 256usize.div_ceil(per_long)];
         for (i, h) in heights.iter().enumerate() {
             let v = (h - shape.min_y) as u64;
-            out[i / per_long] |= ((v << ((i % per_long) * bits)) as i64) as i64;
+            out[i / per_long] |= (v << ((i % per_long) * bits)) as i64;
         }
         out
     }

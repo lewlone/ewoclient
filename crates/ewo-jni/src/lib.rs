@@ -157,7 +157,7 @@ fn gl_get_proc(name: &str) -> *const c_void {
         if !p.is_null() && v != 1 && v != 2 && v != 3 && v != -1 {
             return p;
         }
-        let module = GetModuleHandleA(b"opengl32.dll\0".as_ptr());
+        let module = GetModuleHandleA(c"opengl32.dll".as_ptr() as *const u8);
         if module.is_null() {
             return ptr::null();
         }
@@ -277,6 +277,8 @@ fn elapsed_secs() -> f32 {
     START.get_or_init(Instant::now).elapsed().as_secs_f32()
 }
 
+// One instance, in a thread-local; the size difference costs nothing.
+#[allow(clippy::large_enum_variant)]
 enum HudState {
     Uninit,
     Failed,
@@ -516,8 +518,8 @@ unsafe fn build_composite_program() -> Option<(u32, i32, i32)> {
         gl::DeleteProgram(prog);
         return None;
     }
-    let tex = gl::GetUniformLocation(prog, b"u_tex\0".as_ptr() as *const i8);
-    let solid = gl::GetUniformLocation(prog, b"u_solid\0".as_ptr() as *const i8);
+    let tex = gl::GetUniformLocation(prog, c"u_tex".as_ptr());
+    let solid = gl::GetUniformLocation(prog, c"u_solid".as_ptr());
     Some((prog, tex, solid))
 }
 

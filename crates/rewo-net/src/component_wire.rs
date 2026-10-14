@@ -930,6 +930,8 @@ fn walk_item_template(r: &mut PacketReader, depth: u32) -> Result<bool, ()> {
 /// The outer patch is walked by [`crate::item_stack`], which needs the values;
 /// a patch inside a shulker box inside a stack does not, so it shares this
 /// simpler path.
+// The only failure is a truncated/garbled read, which the caller handles by dropping the packet.
+#[allow(clippy::result_unit_err)]
 pub fn walk_patch_opaque(r: &mut PacketReader, depth: u32) -> Result<bool, ()> {
     Ok(walk_patch_counted(r, depth)?.is_some())
 }

@@ -1020,7 +1020,7 @@ fn run_entity_case(
     // RGB is `light · Σshade`; normalizing by the max channel cancels `Σshade`.
     let mut sum = [0f64; 3];
     let mut lit_pixels = 0usize;
-    for px in img.chunks_exact(4) {
+    for px in img.as_chunks::<4>().0 {
         if *px[..3].iter().max().unwrap() <= 2 {
             continue;
         }

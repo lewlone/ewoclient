@@ -1797,7 +1797,7 @@ mod tests {
     /// A flat fill would look almost right, which is why this is pinned.
     #[test]
     fn the_backdrop_is_a_gradient_not_a_fill() {
-        assert!(BACKDROP_BOTTOM[3] > BACKDROP_TOP[3]);
+        const { assert!(BACKDROP_BOTTOM[3] > BACKDROP_TOP[3]) };
         assert_eq!(BACKDROP_TOP[3], 192.0 / 255.0);
         assert_eq!(BACKDROP_BOTTOM[3], 208.0 / 255.0);
     }

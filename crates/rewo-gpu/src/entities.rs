@@ -465,8 +465,9 @@ const ATLAS_H: u32 = 1600;
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
 /// above the dynamic bands so it never collides.
+///
 /// The most textures any one `mobs::MobDef` lists — the sheep's base + fleece
-/// + undercoat (M68). Only sizes the per-slot tint scratch in `emit_model`; a
+/// and undercoat (M68). Only sizes the per-slot tint scratch in `emit_model`; a
 /// mob with more slots than this simply leaves the extra ones untinted, which
 /// is why the bound is asserted in a test rather than enforced at runtime.
 const MAX_MOB_TEXTURES: usize = 4;
@@ -1008,10 +1009,6 @@ pub struct MobModel {
     /// Per-bone translation rest baseline for the CEM replace semantics
     /// (see `mobs::Model::cem_translate`). Empty for built-ins.
     cem_translate: Vec<[f32; 3]>,
-    /// Per-bone top-level flag — top-level parts and submodels state their
-    /// animated translation in different frames, so the runtime must know
-    /// which a bone is.
-    cem_top: Vec<bool>,
 }
 
 /// One entity's CEM variable slots, carried across frames.
@@ -1301,7 +1298,6 @@ impl EntityPass {
                 scale: m.scale / 16.0,
                 cem: m.cem,
                 cem_translate: m.cem_translate,
-                cem_top: m.cem_top,
             });
         }
         if debug_tex {
@@ -1472,11 +1468,11 @@ impl EntityPass {
         }
     }
 
-    /// Reserve the next dynamic skin slot, upload a 64×64 RGBA skin into it,
-    /// and return the normalized UV offset relocating the default player
-    /// quads onto it (feed to `EntityDraw::skin_uv`). `rgba` must be
-    /// `64*64*4` bytes. The upload is an ordered, asynchronous transfer
-    /// (see [`upload_region`]) — no idle.
+    // Reserve the next dynamic skin slot, upload a 64×64 RGBA skin into it,
+    // and return the normalized UV offset relocating the default player
+    // quads onto it (feed to `EntityDraw::skin_uv`). `rgba` must be
+    // `64*64*4` bytes. The upload is an ordered, asynchronous transfer
+    // (see [`upload_region`]) — no idle.
 
     /// Install the baked held-item models (M22). Textures are *not* uploaded
     /// here: 26.2 ships 1233 of them and the atlas band holds 1024 slots, so
@@ -1939,11 +1935,11 @@ impl EntityPass {
         self.emissive_verts = s5;
     }
 
-    /// Draw one mob model: per-part vanilla `setupAnim` rotation about the
-    /// part's pivot in model space, then vanilla's entity transform —
-    /// `rotY(180° − yaw) · scale(−1,−1,1) · translate(0,−1.501,0)` — scaled
-    /// px→blocks and placed at the entity's feet. Texels ride the
-    /// alpha-test (`discard`) path.
+    // Draw one mob model: per-part vanilla `setupAnim` rotation about the
+    // part's pivot in model space, then vanilla's entity transform —
+    // `rotY(180° − yaw) · scale(−1,−1,1) · translate(0,−1.501,0)` — scaled
+    // px→blocks and placed at the entity's feet. Texels ride the
+    // alpha-test (`discard`) path.
 
     /// `ItemInHandLayer.submitArmWithItem` for one arm (M22).
     ///
@@ -4079,16 +4075,6 @@ fn apply_pose_stage(rot: &mut [f32; 3], left: bool, c: &AnimCtx) {
 /// Vanilla *assigns* these rotations, and the humanoid arm's rest rotation is
 /// zero, so an assignment to the delta is the assignment — the same identity
 /// `setupAttackAnimation`'s body yaw relies on.
-fn apply_arm_pose(
-    rot: &mut [f32; 3],
-    pose: mobs::ArmPose,
-    pose_left: bool,
-    target_left: bool,
-    c: &AnimCtx,
-) {
-    apply_pose_effect(rot, pose, pose_left, target_left, c)
-}
-
 fn apply_pose_effect(
     rot: &mut [f32; 3],
     pose: mobs::ArmPose,
@@ -4431,7 +4417,7 @@ impl EntityPass {
     ///
     /// No drop shadow: vanilla's sign text has none (the screen-space overlay
     /// is what draws shadows), and adding one would be a visible invention.
-    pub fn emit_world_text(&self, verts: &mut Vec<Vertex>, draws: &[WorldTextDraw<'_>]) {
+    pub(crate) fn emit_world_text(&self, verts: &mut Vec<Vertex>, draws: &[WorldTextDraw<'_>]) {
         if !self.has_font {
             return;
         }
@@ -4509,7 +4495,7 @@ impl EntityPass {
     /// own space — a chest's lid rotating about its hinge, a shulker box's lid
     /// sliding and spinning off its base. Both animations run on the
     /// *interpolated* clock, so they advance per frame rather than per tick.
-    pub fn emit_block_entities(&self, verts: &mut Vec<Vertex>, draws: &[BlockEntityDraw<'_>]) {
+    pub(crate) fn emit_block_entities(&self, verts: &mut Vec<Vertex>, draws: &[BlockEntityDraw<'_>]) {
         let Some(items) = self.held_items.as_ref() else {
             return;
         };

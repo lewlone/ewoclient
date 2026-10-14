@@ -190,8 +190,6 @@ pub(super) fn effective_weather(session: &PlaySession) -> rewo_world::weather::W
     w
 }
 
-#[allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Particles (M37)
 // ---------------------------------------------------------------------------
@@ -201,10 +199,8 @@ pub(super) fn effective_weather(session: &PlaySession) -> rewo_world::weather::W
 /// The texture array the pass samples is the block textures followed by the
 /// particle sprites, so a terrain shard (which must sample the *block*
 /// texture, per `getParticleMaterial`) and a flame share one pipeline.
-/// `sprite_base` is where the sprites start.
 pub struct ParticleAssets {
     pub(super) sys: rewo_world::particles::ParticleSystem,
-    pub(super) sprite_base: u32,
     /// Per kind: first layer and frame count, resolved once from the bake.
     pub(super) sets: Vec<(rewo_world::particles::ParticleKind, u32, u32)>,
     /// Last session tick the system was advanced for, so the 20 Hz simulation
@@ -239,7 +235,6 @@ impl ParticleAssets {
             // M37 gate rests on. Vanilla's per-particle seeds are arbitrary, so
             // any seed is an equally valid vanilla outcome (REWO_PLAN §15, M37).
             sys: rewo_world::particles::ParticleSystem::new(0x5EED_1234),
-            sprite_base,
             sets,
             last_tick: None,
         })

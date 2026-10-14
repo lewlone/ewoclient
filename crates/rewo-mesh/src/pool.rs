@@ -356,7 +356,7 @@ mod tests {
     fn up_face(mesh: &ColumnMesh) -> Vec<([f32; 3], [u8; 3])> {
         let mut face: Vec<([f32; 3], [u8; 3])> = mesh
             .vertices
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|q| {
                 q.iter().all(|v| {
                     v.pos[1] == 11.0

@@ -57,6 +57,7 @@ impl PbarState {
 /// into `state`. Used by:
 ///   - `Complete` — drives the expanding pearl ring (`pbar-ring`, 1.4s).
 ///   - `ErrorRecede` — drives the fill-width recede (`pbar-recede`, 1.2s).
+///
 /// Other states ignore it. Pass `None` if the caller doesn't track timing
 /// (the animation is skipped).
 pub fn draw_pbar(

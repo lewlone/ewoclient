@@ -727,15 +727,6 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
 // The pixels.
 // ---------------------------------------------------------------------------
 
-fn srgb_decode(b: u8) -> f32 {
-    let s = b as f32 / 255.0;
-    if s <= 0.040_45 {
-        s / 12.92
-    } else {
-        ((s + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 fn srgb_encode(l: f32) -> u8 {
     let s = if l <= 0.003_130_8 {
         l * 12.92

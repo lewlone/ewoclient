@@ -317,11 +317,10 @@ mod respawn_tests {
             light: rewo_world::light::LightEngine::new(),
             day_ticks: Some(189_121),
             clocks: {
-                let mut m = ClockManager::default();
-                m.last_game_time = 138_341;
-                m.clocks
-                    .push((0, WorldClock::from_state(138_341, 189_121, 0.25, 1.0)));
-                m
+                ClockManager {
+                    last_game_time: 138_341,
+                    clocks: vec![(0, WorldClock::from_state(138_341, 189_121, 0.25, 1.0))],
+                }
             },
             game_time: Some(138_341),
             // Deliberately a live flash on a dimension that has none: a
