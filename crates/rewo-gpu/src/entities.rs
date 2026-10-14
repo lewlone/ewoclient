@@ -5631,6 +5631,146 @@ pub(crate) fn upload_region(
             rgba.len()
         ));
     }
+    submit_region_copy(gpu, image, rgba, x, y, width, height, false)
+}
+
+/// [`upload_region`] for a one-byte-per-texel (`R8_UNORM`) image: the Velvet
+/// glyph atlas's per-glyph updates. Same ordering argument, same no-wait
+/// submit.
+pub(crate) fn upload_region_r8(
+    gpu: &mut Gpu,
+    image: vk::Image,
+    data: &[u8],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let expect = (width * height) as usize;
+    if data.len() != expect {
+        return Err(format!(
+            "upload_region_r8: {} bytes, want {expect}",
+            data.len()
+        ));
+    }
+    submit_region_copy(gpu, image, data, x, y, width, height, false)
+}
+
+/// Create an `R8_UNORM` sampled image of `width`×`height` and upload `data`
+/// into it **without waiting**: the copy is a queue submission ordered before
+/// every later frame (submission order + the trailing barrier), and its
+/// staging buffer is released through deferred destruction. The
+/// Velvet glyph atlas (M52b) is the user, and it is on the gameplay path, so
+/// unlike [`create_texture`] this never waits on a fence. UNORM, not SRGB:
+/// the atlas is a coverage mask, and an sRGB decode would make every glyph
+/// edge wrong.
+pub(crate) fn create_texture_r8_async(
+    gpu: &mut Gpu,
+    data: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
+    let expect = (width * height) as usize;
+    if data.len() != expect {
+        return Err(format!(
+            "create_texture_r8_async: {} bytes, want {expect}",
+            data.len()
+        ));
+    }
+    let format = vk::Format::R8_UNORM;
+    unsafe {
+        let device = gpu.device.clone();
+        let image = device
+            .create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(format)
+                    .extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+                    .initial_layout(vk::ImageLayout::UNDEFINED),
+                None,
+            )
+            .map_err(|e| format!("r8 image: {e}"))?;
+        let req = device.get_image_memory_requirements(image);
+        let alloc = match gpu.allocator.allocate(&AllocationCreateDesc {
+            name: "glyph-atlas",
+            requirements: req,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        }) {
+            Ok(a) => a,
+            Err(e) => {
+                device.destroy_image(image, None);
+                return Err(format!("r8 alloc: {e}"));
+            }
+        };
+        let fail = |gpu: &mut Gpu, alloc: Allocation, view: Option<vk::ImageView>| {
+            if let Some(v) = view {
+                gpu.device.destroy_image_view(v, None);
+            }
+            gpu.device.destroy_image(image, None);
+            let _ = gpu.allocator.free(alloc);
+        };
+        if let Err(e) = device.bind_image_memory(image, alloc.memory(), alloc.offset()) {
+            fail(gpu, alloc, None);
+            return Err(format!("r8 bind: {e}"));
+        }
+        let view = match device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(format)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1),
+                ),
+            None,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                fail(gpu, alloc, None);
+                return Err(format!("r8 view: {e}"));
+            }
+        };
+        if let Err(e) = submit_region_copy(gpu, image, data, 0, 0, width, height, true) {
+            // Nothing was submitted that names the image unless the submit
+            // itself failed after recording, and then nothing executes.
+            fail(gpu, alloc, Some(view));
+            return Err(e);
+        }
+        Ok((image, alloc, view))
+    }
+}
+
+/// Record and submit one staged buffer→image copy of a `width`×`height`
+/// region at (x, y), tightly packed in `data`, with no fence wait.
+///
+/// `from_undefined` is a freshly created image: its leading barrier discards
+/// (UNDEFINED, no first scope). Otherwise the image is already sampled, so
+/// the leading barrier's first scope is every earlier fragment-shader read,
+/// which covers frames already submitted.
+#[allow(clippy::too_many_arguments)]
+fn submit_region_copy(
+    gpu: &mut Gpu,
+    image: vk::Image,
+    rgba: &[u8],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    from_undefined: bool,
+) -> Result<(), String> {
     gpu.collect_garbage();
     unsafe {
         let device = gpu.device.clone();
@@ -5685,15 +5825,21 @@ pub(crate) fn upload_region(
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
-        let to_dst = vk::ImageMemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-            .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .image(image)
-            .subresource_range(range);
+        let to_dst = if from_undefined {
+            vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+        } else {
+            vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        }
+        .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .image(image)
+        .subresource_range(range);
         device.cmd_pipeline_barrier2(
             cb,
             &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_dst)),
@@ -5759,21 +5905,6 @@ pub(crate) fn create_texture(
     height: u32,
 ) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
     create_texture_fmt(gpu, rgba, width, height, vk::Format::R8G8B8A8_SRGB)
-}
-
-/// Single-channel coverage texture — the Velvet glyph atlas (M52b).
-///
-/// `create_texture_fmt` sizes its staging buffer from `data.len()` rather than
-/// assuming four bytes per pixel, so it is already format-agnostic. UNORM, not
-/// SRGB: this is a mask, and pushing coverage through an sRGB decode would
-/// make every glyph edge wrong.
-pub(crate) fn create_texture_r8(
-    gpu: &mut Gpu,
-    data: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<(vk::Image, Allocation, vk::ImageView), String> {
-    create_texture_fmt(gpu, data, width, height, vk::Format::R8_UNORM)
 }
 
 /// A glint sheet, uploaded **UNORM** (M50).

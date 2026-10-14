@@ -12,6 +12,16 @@
 //!   out, which invalidates every cached rect, so the upload path has to
 //!   handle a size change rather than assuming a fixed texture.
 //!
+//! ## Uploads: region copies, never a queue wait
+//!
+//! A new glyph key can first appear mid-game (a new chat line, a new widget
+//! value), so `sync_atlas` is on the gameplay path. The atlas image is
+//! persistent: a write copies only the cache's dirty rect into it
+//! (`entities::upload_region_r8`, the skins' no-wait submit). Only a grow
+//! makes a new image, uploaded the same no-wait way, with the old image,
+//! view and descriptor pool released through deferred destruction once
+//! every frame that could bind them has retired.
+//!
 //! ## Sampling: LINEAR, and the deviation that buys
 //!
 //! Glyph quads land on fractional pen positions (`pen += advance + spacing`
@@ -98,7 +108,7 @@ impl VelvetTextPass {
     ) -> Result<Self, String> {
         let edge = cache.atlas_edge();
         let (image, image_alloc, view) =
-            crate::entities::create_texture_r8(gpu, cache.atlas(), edge, edge)?;
+            crate::entities::create_texture_r8_async(gpu, cache.atlas(), edge, edge)?;
         let device = gpu.device.clone();
         unsafe {
             let sampler = device
@@ -165,25 +175,37 @@ impl VelvetTextPass {
         }
     }
 
-    /// Re-upload the atlas if the cache has touched it.
+    /// Bring the GPU atlas up to date with the cache, without waiting on the
+    /// queue.
     ///
-    /// Must be called **outside** a render pass — it records a transfer. The
-    /// cache marks itself dirty on any blit and on a grow; a grow additionally
-    /// changes the edge, which is why the texture is rebuilt rather than
-    /// updated in place.
+    /// Must be called **outside** a rendering scope, before the frame that
+    /// draws with it is submitted. A blit copies only the cache's dirty rect
+    /// into the persistent image; a grow (the edge changed) builds a new image
+    /// at the new edge. Neither path idles the device or waits on a fence.
     pub fn sync_atlas(&mut self, gpu: &mut Gpu, cache: &mut GlyphCache) -> Result<(), String> {
-        if !cache.dirty() {
+        let Some((x, y, w, h)) = cache.dirty_rect() else {
+            return Ok(());
+        };
+        let edge = cache.atlas_edge();
+        if edge == self.uploaded_edge {
+            let atlas = cache.atlas();
+            let mut region = Vec::with_capacity((w * h) as usize);
+            for row in y..y + h {
+                let at = (row * edge + x) as usize;
+                region.extend_from_slice(&atlas[at..at + w as usize]);
+            }
+            crate::entities::upload_region_r8(gpu, self.image, &region, x, y, w, h)?;
+            cache.clear_dirty();
             return Ok(());
         }
-        let edge = cache.atlas_edge();
         let (image, alloc, view) =
-            crate::entities::create_texture_r8(gpu, cache.atlas(), edge, edge)?;
+            crate::entities::create_texture_r8_async(gpu, cache.atlas(), edge, edge)?;
         // The old texture and the descriptor set that names it may both still
         // be bound by frames in flight, so neither may be destroyed or
-        // rewritten now (sync validation grades this). The rebuild gets a
+        // rewritten now (sync validation grades this). The grown atlas gets a
         // fresh descriptor pool + set, and the old image, view and pool go
         // through deferred destruction once every frame that could still bind
-        // them has retired — no idle on a path any new glyph key reaches.
+        // them has retired.
         let (pool, set) = unsafe { new_set(&gpu.device, self.set_layout)? };
         write_set(&gpu.device, set, self.sampler, view);
         let (old_image, old_view, old_pool) = (self.image, self.view, self.pool);
