@@ -52,20 +52,20 @@ pub const MAX_TRACKED_SKINS: usize = 4096;
 ///
 /// Returns the URL unchanged when it may be fetched, `None` otherwise.
 ///
-/// Transcribed from authlib 7.0.61 `com.mojang.authlib.yggdrasil.TextureUrlChecker
-/// .isAllowedTextureDomain` (the jar the 26.2 client ships in its libraries; it
-/// is not part of the Vineflower decompile of the client jar, which only calls
-/// it through `SkinManager`). The vanilla rule is:
+/// Transcribed from authlib 9.0.75 `com.mojang.authlib.yggdrasil.TextureUrlChecker
+/// .isAllowedTextureDomain`, the authlib the 26.2 version json pins (26.1's
+/// 7.0.63 has the same rule; it is not part of the Vineflower decompile of the
+/// client jar, which only calls it through `SkinManager`). The vanilla rule is:
 ///
 /// * scheme is exactly `http` or `https` (case-sensitive, via
 ///   `ALLOWED_SCHEMES = Set.of("http", "https")`);
 /// * a host exists, and is already lower-case (`IDN.toUnicode(host)` must equal
 ///   its own `toLowerCase(Locale.ROOT)`);
-/// * the host ends with `.minecraft.net` or `.mojang.com` (`ALLOWED_DOMAINS`,
-///   plain `String.endsWith`, so the bare apex and
-///   `textures.minecraft.net.evil.com` both fail), and
-/// * it does not end with `bugs.mojang.com`, `education.minecraft.net` or
-///   `feedback.minecraft.net` (`BLOCKED_DOMAINS`).
+/// * the host is exactly `textures.minecraft.net` (`ALLOWED_DOMAINS.contains`,
+///   a one-element set).
+///
+/// Older authlib (7.0.61, 1.21.11's) allowed any `*.minecraft.net` /
+/// `*.mojang.com` host minus a block list; 26.x narrowed it to the one host.
 ///
 /// Vanilla then hands the string to `java.net.URI`, whose view of the host can
 /// differ from what an HTTP client resolves (`http://textures.minecraft.net@evil/`,
@@ -76,12 +76,7 @@ pub const MAX_TRACKED_SKINS: usize = 4096;
 /// and a trailing dot. Real texture URLs are plain `scheme://host/path`, so
 /// nothing legitimate is lost.
 pub fn allowed_texture_url(url: &str) -> Option<&str> {
-    const ALLOWED_DOMAINS: [&str; 2] = [".minecraft.net", ".mojang.com"];
-    const BLOCKED_DOMAINS: [&str; 3] = [
-        "bugs.mojang.com",
-        "education.minecraft.net",
-        "feedback.minecraft.net",
-    ];
+    const ALLOWED_DOMAINS: [&str; 1] = ["textures.minecraft.net"];
     if url.len() > MAX_TEXTURE_URL_LEN
         || !url.bytes().all(|b| b.is_ascii_graphic())
         || url.contains('\\')
@@ -106,12 +101,11 @@ pub fn allowed_texture_url(url: &str) -> Option<&str> {
         return None;
     }
     // An all-numeric dotted host is an IP literal; it cannot satisfy the
-    // suffix rule below, but say so explicitly rather than lean on it.
+    // host rule below, but say so explicitly rather than lean on it.
     if host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
         return None;
     }
-    let on = |list: &[&str]| list.iter().any(|d| host.ends_with(d));
-    (on(&ALLOWED_DOMAINS) && !on(&BLOCKED_DOMAINS)).then_some(url)
+    ALLOWED_DOMAINS.contains(&host).then_some(url)
 }
 
 /// Keep a decoded texture URL only if [`allowed_texture_url`] accepts it.
@@ -240,7 +234,6 @@ mod tests {
             let u = format!("{scheme}://textures.minecraft.net/texture/{HASH}");
             assert_eq!(allowed_texture_url(&u), Some(u.as_str()), "{u}");
         }
-        assert!(allowed_texture_url("https://sub.domain.mojang.com/x").is_some());
         assert!(allowed_texture_url("https://textures.minecraft.net").is_some());
         assert!(allowed_texture_url("https://textures.minecraft.net?x=1").is_some());
     }
@@ -249,8 +242,13 @@ mod tests {
     fn rejects_other_hosts_and_other_schemes() {
         for u in [
             "https://example.com/texture/x",
-            "https://minecraft.net/x",      // bare apex: vanilla needs the leading dot
+            "https://minecraft.net/x",
             "https://mojang.com/x",
+            // 26.x allows the one host; older authlib's *.minecraft.net and
+            // *.mojang.com wildcards are gone.
+            "https://sub.domain.mojang.com/x",
+            "https://skins.minecraft.net/x",
+            "https://textures.mojang.com/x",
             "ftp://textures.minecraft.net/x",
             "file:///etc/passwd",
             "HTTP://textures.minecraft.net/x", // vanilla's scheme set is case-sensitive
