@@ -358,7 +358,7 @@ fn run_interactive(tx: Sender<AuthEvent>) {
     log::debug!("auth: full auth URL = {}", auth_url);
 
     let _ = tx.send(AuthEvent::Progress(ChainStage::OpeningBrowser));
-    if let Err(e) = opener::open(&auth_url) {
+    if let Err(e) = crate::util::open_url(&auth_url) {
         log::warn!("auth: could not open browser ({}); URL is: {}", e, auth_url,);
         // Don't fail outright — print the URL so the user can paste it.
         // A separate error variant ("browser open failed, paste URL")

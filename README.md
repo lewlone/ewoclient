@@ -47,7 +47,7 @@ Requires Rust 1.89+ (`rust-version` in `Cargo.toml`; CI checks it). First build 
 - **Skia** (`skia-safe` 0.78) — all 2D rendering; D3D12 + DirectComposition on Windows, GL on Linux
 - **winit** 0.30 — windowing, custom frame
 - **glutin** 0.32 — GL context (Linux)
-- **ureq** + **tiny_http** + **opener** — Microsoft auth chain (loopback OAuth flow)
+- **ureq** + **tiny_http** — Microsoft auth chain (loopback OAuth flow)
 - Variable fonts: Fraunces (display), Newsreader (body), JetBrains Mono (mono)
 - **ash** 0.38 (Vulkan 1.3) — raw Vulkan, for the Rewo native client (`crates/rewo-*`)
 

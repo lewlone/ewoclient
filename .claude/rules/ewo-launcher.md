@@ -209,7 +209,9 @@ Subsystems:
   `ewo-loader-integration.md`), `EWO_DEV_SERVER=host:port` (dev join for
   Native instances), `REWO_GAME_DIR` (set by the launcher for Native
   instances, see above). Child processes get the launcher env minus
-  `*TOKEN*`/`*SECRET*` variables.
+  `*TOKEN*`/`*SECRET*` variables, including the system-browser opener
+  (`util::open_url`: http(s) only; `rundll32 url.dll,FileProtocolHandler` /
+  `xdg-open` / `open` as a scrubbed child, no `opener` crate).
 - Release builds use `windows_subsystem = "windows"` (no console). The icon
   `assets/icon.ico` is embedded by `build.rs` via `winresource`. `package.ps1`
   builds and stages a self-contained `dist/EwoClient/` and repoints the Desktop

@@ -80,6 +80,48 @@ fn percent_decode(s: &str) -> Option<String> {
 // importing them from here.
 pub use ewo_core::util::{atomic_write, validate_name, NameError};
 
+/// Open `url` in the user's default browser.
+///
+/// The platform opener runs as a child process and the browser it starts
+/// would inherit the launcher's environment, so credential-looking variables
+/// (`*TOKEN*`, `*SECRET*`, e.g. `EWO_LOADER_TOKEN`) are removed first, as for
+/// the game process. Only `http(s)` URLs are opened: the opener would
+/// otherwise happily "open" a local path as a program.
+pub fn open_url(url: &str) -> io::Result<()> {
+    let mut child = open_url_command(url)?
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    // Reap the opener (xdg-open exits quickly) without blocking the caller.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// The scrubbed opener command for `url`, not yet spawned.
+fn open_url_command(url: &str) -> io::Result<std::process::Command> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http(s) URLs are opened",
+        ));
+    }
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    cmd.arg(url);
+    crate::launch::spawn::scrub_inherited_secrets(&mut cmd);
+    Ok(cmd)
+}
+
 /// How far past the expected size a download body may run before it is cut
 /// off (a CDN adding a trailing newline is fine; a stream that never ends
 /// is not).
@@ -359,6 +401,37 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_browser_opener_gets_no_credentials_and_only_http_urls() {
+        // Own variable names: tests share the process environment.
+        std::env::set_var("EWO_OPENER_TEST_TOKEN", "t0p-secret");
+        std::env::set_var("EWO_OPENER_TEST_PLAIN", "fine");
+        let url = "https://login.microsoftonline.com/x?a=1&b=2";
+        let cmd = open_url_command(url).unwrap();
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let removed = |name: &str| {
+            envs.iter()
+                .any(|(k, v)| k.to_str() == Some(name) && v.is_none())
+        };
+        assert!(removed("EWO_OPENER_TEST_TOKEN"), "{envs:?}");
+        assert!(
+            !removed("EWO_OPENER_TEST_PLAIN"),
+            "non-secret vars are kept"
+        );
+        assert_eq!(cmd.get_args().last().and_then(|a| a.to_str()), Some(url));
+        std::env::remove_var("EWO_OPENER_TEST_TOKEN");
+        std::env::remove_var("EWO_OPENER_TEST_PLAIN");
+
+        for bad in [
+            "file:///C:/Windows/System32/calc.exe",
+            "calc.exe",
+            "ftp://x/y",
+            "",
+        ] {
+            assert!(open_url_command(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
