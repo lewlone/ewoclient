@@ -8,7 +8,7 @@
 //!   2. velvet folds — 3 oklch radial layers, blurred 40px, screen 85%
 //!   3. caustics     — 5 oklch radials on 2 layers, blurred 30px, screen
 //!   4. bokeh        — single huge soft pearl crossing every 60s, screen
-//!   5. pearl dust   — 90 airborne + 60 settled motes, screen
+//!   5. pearl dust   — 110 airborne + 80 settled motes at density 1, screen
 //!   6. vignette     — radial dim at corners
 //!
 //! `Backdrop` owns the stateful subsystems (`PearlDust`, `Petals`) plus a
@@ -39,8 +39,9 @@ pub mod wine;
 use std::cell::RefCell;
 
 use ewo_core::{Settings, Theme};
-use skia_safe::{AlphaType, Canvas, Color, ColorType, Image, ImageInfo};
+use skia_safe::{AlphaType, Canvas, ColorType, Image, ImageInfo};
 
+use crate::tokens;
 use pearl_dust::PearlDust;
 use petals::Petals;
 
@@ -56,6 +57,8 @@ struct SlowCache {
     generation: u64,
     w: i32,
     h: i32,
+    /// `accent_hue_shift` the image was painted with; a change repaints it.
+    hue_shift: f32,
     /// Wall-clock seconds at which `image` was rendered.
     last_refresh: f32,
 }
@@ -91,12 +94,13 @@ impl Backdrop {
         *self.slow_cache.borrow_mut() = None;
     }
 
-    pub fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, dt: f32, settings: &Settings) {
         // Reduced motion: dust and petals hold still (`dt = 0`). The prototype
         // drives them from `requestAnimationFrame`, which its
         // `prefers-reduced-motion` CSS cannot reach; as ambient motion they
         // are frozen here anyway (non-negotiable #6, see `ewo_core::motion`).
-        let dt = ewo_core::motion::ambient_dt(dt);
+        // `--motion-speed` scales their clock like every other ambient loop's.
+        let dt = ewo_core::motion::scaled_dt(dt, settings.motion_speed);
         self.pearl_dust.update(dt);
         self.petals.update(dt);
     }
@@ -105,7 +109,6 @@ impl Backdrop {
         self.pearl_dust.disturb();
     }
 
-    #[allow(dead_code)]
     pub fn celebrate(&mut self, on: bool) {
         // The petal burst is pure motion; under reduced motion it never starts.
         self.petals.celebrate(on && !ewo_core::motion::is_reduced());
@@ -120,6 +123,10 @@ impl Backdrop {
         theme: &Theme,
         settings: &Settings,
     ) {
+        // Publish the frame's palette (accent hue shift included) before any
+        // layer paints; `draw_frame` does this too, standalone callers rely
+        // on this one.
+        tokens::set_active(theme, settings);
         self.draw_slow_layers_cached(canvas, w, h, time, theme, settings);
         self.pearl_dust.draw(canvas);
         self.petals.draw(canvas);
@@ -149,6 +156,7 @@ impl Backdrop {
             Some(c)
                 if c.w == wi
                     && c.h == hi
+                    && c.hue_shift == settings.accent_hue_shift
                     && c.generation == crate::gl_backend::gpu_generation() =>
             {
                 // Under reduced motion the layers are static, so the cached
@@ -167,7 +175,7 @@ impl Backdrop {
                         let oc = surface.canvas();
                         // Match the card body fill so the opaque blit is
                         // bit-identical to drawing the layers in place.
-                        oc.clear(Color::BLACK);
+                        oc.clear(tokens::bg_core());
                         draw_slow_layers_direct(oc, w, h, time, theme, settings);
                     }
                     let image = surface.image_snapshot();
@@ -176,6 +184,7 @@ impl Backdrop {
                         generation: crate::gl_backend::gpu_generation(),
                         w: wi,
                         h: hi,
+                        hue_shift: settings.accent_hue_shift,
                         last_refresh: time,
                     });
                 }
@@ -206,6 +215,6 @@ fn draw_slow_layers_direct(
 ) {
     wine::draw(canvas, w, h, theme);
     velvet_folds::draw(canvas, w, h, time, settings);
-    caustics::draw(canvas, w, h, time);
-    bokeh::draw(canvas, w, h, time);
+    caustics::draw(canvas, w, h, time, settings.motion_speed);
+    bokeh::draw(canvas, w, h, time, settings.motion_speed);
 }

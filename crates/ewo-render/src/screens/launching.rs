@@ -14,20 +14,12 @@
 //! `.launching-progress-region`, `.launching-stage`, `.launching-log-panel`,
 //! `.launching-log-head`, `.launching-log`, `.log-line` in `StyleSheet2`.
 
+use crate::tokens;
 use ewo_core::Settings;
-use skia_safe::{Canvas, Color, Color4f, Paint, PaintStyle, Rect};
+use skia_safe::{Canvas, Paint, PaintStyle, Rect};
 
 use crate::text::{self, FontStore};
 use crate::widgets::{draw_glass_panel, draw_pbar, draw_vstatus, PbarState, VstatusState};
-
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MAUVE_DEEP: Color = Color::from_argb(0xFF, 0x6B, 0x55, 0x5C);
-const TEXT_MID_PEARL: Color = Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5);
-const ACCENT_ROSE: Color = Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5);
-const ACCENT_BERRY: Color = Color::from_argb(0xFF, 0xB4, 0x74, 0x91);
-const ACCENT_LAV: Color = Color::from_argb(0xFF, 0xC9, 0xA5, 0xD4);
-const ACCENT_CHAMP: Color = Color::from_argb(0xFF, 0xE8, 0xD4, 0xA8);
 
 /// Wall-clock seconds the synthetic launch takes end-to-end.
 pub const DURATION_SECONDS: f32 = 8.0;
@@ -678,7 +670,7 @@ fn draw_header(
     let pct_pct_font = fonts.fraunces_axes(24.0, 50.0, 0.0, 300.0, None);
     let mut pct_paint = Paint::default();
     pct_paint.set_anti_alias(true);
-    pct_paint.set_color(TEXT_PEARL);
+    pct_paint.set_color(tokens::text_pearl());
     let pct_str = format!("{}", percent.round() as i32);
     let (num_advance, _) = pct_num_font.measure_str(&pct_str, Some(&pct_paint));
     let (_, pct_m) = pct_num_font.metrics();
@@ -687,7 +679,7 @@ fn draw_header(
     // "%" sign (smaller, mauve)
     let mut pct_pct_paint = Paint::default();
     pct_pct_paint.set_anti_alias(true);
-    pct_pct_paint.set_color(TEXT_MAUVE);
+    pct_pct_paint.set_color(tokens::text_mauve());
     let (pct_pct_advance, _) = pct_pct_font.measure_str("%", Some(&pct_pct_paint));
 
     let pct_right = w - PAD_X;
@@ -710,7 +702,7 @@ fn draw_header(
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eb_paint = Paint::default();
     eb_paint.set_anti_alias(true);
-    eb_paint.set_color(ACCENT_ROSE);
+    eb_paint.set_color(tokens::accent_rose());
     let (_, em) = eyebrow_font.metrics();
     let eb_baseline = head_top + (-em.ascent);
     text::draw_tracked_em(
@@ -726,7 +718,7 @@ fn draw_header(
     let name_font = fonts.fraunces_axes(56.0, 50.0, 1.0, 300.0, None);
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
-    name_paint.set_color(TEXT_PEARL);
+    name_paint.set_color(tokens::text_pearl());
     let (_, nm) = name_font.metrics();
     let name_top = eb_baseline + em.descent + 8.0;
     let name_baseline = name_top + (-nm.ascent);
@@ -746,7 +738,7 @@ fn draw_header(
     let meta_font = fonts.jetbrains_mono(11.0);
     let mut meta_paint = Paint::default();
     meta_paint.set_anti_alias(true);
-    meta_paint.set_color(TEXT_MID_PEARL);
+    meta_paint.set_color(tokens::text_mid_pearl());
     let (_, mm) = meta_font.metrics();
     let meta_top = name_baseline + nm.descent + 10.0;
     let meta_baseline = meta_top + (-mm.ascent);
@@ -771,10 +763,7 @@ fn draw_header(
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line((0.0, head_bottom), (w, head_bottom), &div);
 
     head_bottom
@@ -797,7 +786,7 @@ fn draw_progress_region(
     let stage_font = fonts.newsreader(18.0);
     let mut stage_paint = Paint::default();
     stage_paint.set_anti_alias(true);
-    stage_paint.set_color(TEXT_MID_PEARL);
+    stage_paint.set_color(tokens::text_mid_pearl());
     let (_, sm) = stage_font.metrics();
     let stage_baseline = stage_top + (-sm.ascent);
     draw_vstatus(
@@ -836,10 +825,7 @@ fn draw_progress_region(
     div.set_anti_alias(true);
     div.set_style(PaintStyle::Stroke);
     div.set_stroke_width(1.0);
-    div.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-        None,
-    );
+    div.set_color4f(tokens::accent_rose_a(0.08), None);
     canvas.draw_line((0.0, region_bottom), (w, region_bottom), &div);
 
     region_bottom
@@ -872,10 +858,10 @@ fn draw_log_panel(
         let head_font = fonts.jetbrains_mono(10.0);
         let mut head_title_paint = Paint::default();
         head_title_paint.set_anti_alias(true);
-        head_title_paint.set_color(ACCENT_ROSE);
+        head_title_paint.set_color(tokens::accent_rose());
         let mut head_count_paint = Paint::default();
         head_count_paint.set_anti_alias(true);
-        head_count_paint.set_color(TEXT_MAUVE);
+        head_count_paint.set_color(tokens::text_mauve());
         let (_, hm) = head_font.metrics();
         let head_baseline = content_top + (-hm.ascent);
         text::draw_tracked_em(
@@ -908,10 +894,7 @@ fn draw_log_panel(
         div.set_anti_alias(true);
         div.set_style(PaintStyle::Stroke);
         div.set_stroke_width(1.0);
-        div.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-            None,
-        );
+        div.set_color4f(tokens::accent_rose_a(0.08), None);
         canvas.draw_line(
             (content_left, head_bottom),
             (content_right, head_bottom),
@@ -987,7 +970,7 @@ fn draw_log_lines(
         let t_str = format!("{:.2}s", entry.t / 100.0);
         let mut time_paint = Paint::default();
         time_paint.set_anti_alias(true);
-        time_paint.set_color(TEXT_MAUVE_DEEP);
+        time_paint.set_color(tokens::text_mauve_deep());
         time_paint.set_alpha_f(alpha);
         let (t_advance, _) = mono_font.measure_str(&t_str, Some(&time_paint));
         canvas.draw_str(
@@ -999,10 +982,10 @@ fn draw_log_lines(
 
         // Source column
         let src_color = match entry.level {
-            LogLevel::Info => ACCENT_BERRY,
-            LogLevel::Warn => ACCENT_CHAMP,
-            LogLevel::Ok => ACCENT_LAV,
-            LogLevel::Dim => TEXT_MAUVE,
+            LogLevel::Info => tokens::accent_berry(),
+            LogLevel::Warn => tokens::accent_champ(),
+            LogLevel::Ok => tokens::accent_lav(),
+            LogLevel::Dim => tokens::text_mauve(),
         };
         let mut src_paint = Paint::default();
         src_paint.set_anti_alias(true);
@@ -1019,15 +1002,15 @@ fn draw_log_lines(
             LogLevel::Dim => {
                 let mut msg_paint = Paint::default();
                 msg_paint.set_anti_alias(true);
-                msg_paint.set_color(TEXT_MAUVE_DEEP);
+                msg_paint.set_color(tokens::text_mauve_deep());
                 msg_paint.set_alpha_f(alpha);
                 canvas.draw_str(entry.message, (msg_x_left, baseline), &dim_font, &msg_paint);
             }
             _ => {
                 let msg_color = match entry.level {
-                    LogLevel::Warn => ACCENT_CHAMP,
-                    LogLevel::Ok => TEXT_PEARL,
-                    _ => TEXT_MID_PEARL,
+                    LogLevel::Warn => tokens::accent_champ(),
+                    LogLevel::Ok => tokens::text_pearl(),
+                    _ => tokens::text_mid_pearl(),
                 };
                 let mut msg_paint = Paint::default();
                 msg_paint.set_anti_alias(true);
@@ -1092,7 +1075,7 @@ fn draw_real_log_lines(
         let t_str = format!("{:.2}s", rel);
         let mut time_paint = Paint::default();
         time_paint.set_anti_alias(true);
-        time_paint.set_color(TEXT_MAUVE_DEEP);
+        time_paint.set_color(tokens::text_mauve_deep());
         let (t_advance, _) = mono_font.measure_str(&t_str, Some(&time_paint));
         canvas.draw_str(
             &t_str,
@@ -1105,8 +1088,8 @@ fn draw_real_log_lines(
         let mut msg_paint = Paint::default();
         msg_paint.set_anti_alias(true);
         msg_paint.set_color(match line.severity {
-            RealSeverity::Info => TEXT_MID_PEARL,
-            RealSeverity::Warn => ACCENT_CHAMP,
+            RealSeverity::Info => tokens::text_mid_pearl(),
+            RealSeverity::Warn => tokens::accent_champ(),
         });
         // Truncate visually long lines so we don't overflow the panel.
         let visible_w = (right - msg_x_left).max(0.0);
@@ -1191,7 +1174,11 @@ fn draw_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, state: &Launc
     };
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color(if done { TEXT_PEARL } else { TEXT_MAUVE });
+    paint.set_color(if done {
+        tokens::text_pearl()
+    } else {
+        tokens::text_mauve()
+    });
     let (advance, _) = font.measure_str(label, Some(&paint));
     let (_, m) = font.metrics();
     let cy = h - 32.0;
@@ -1213,24 +1200,18 @@ fn draw_error_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32) {
     let rrect_retry = skia_safe::RRect::new_rect_xy(retry, 999.0, 999.0);
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
-        None,
-    );
+    bg.set_color4f(tokens::accent_rose_a(0.06), None);
     canvas.draw_rrect(rrect_retry, &bg);
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.50),
-        None,
-    );
+    border.set_color4f(tokens::accent_rose_a(0.50), None);
     canvas.draw_rrect(rrect_retry, &border);
     let label = "Retry";
     let mut p = Paint::default();
     p.set_anti_alias(true);
-    p.set_color(Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5));
+    p.set_color(tokens::accent_rose());
     let (advance, _) = font.measure_str(label, Some(&p));
     let cx = (retry.left + retry.right) * 0.5;
     let cy = (retry.top + retry.bottom) * 0.5;
@@ -1245,24 +1226,18 @@ fn draw_error_footer(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32) {
     let rrect_back = skia_safe::RRect::new_rect_xy(back, 999.0, 999.0);
     let mut bg2 = Paint::default();
     bg2.set_anti_alias(true);
-    bg2.set_color4f(
-        Color4f::new(154.0 / 255.0, 128.0 / 255.0, 135.0 / 255.0, 0.04),
-        None,
-    );
+    bg2.set_color4f(tokens::text_mauve_a(0.04), None);
     canvas.draw_rrect(rrect_back, &bg2);
     let mut border2 = Paint::default();
     border2.set_anti_alias(true);
     border2.set_style(PaintStyle::Stroke);
     border2.set_stroke_width(1.0);
-    border2.set_color4f(
-        Color4f::new(154.0 / 255.0, 128.0 / 255.0, 135.0 / 255.0, 0.30),
-        None,
-    );
+    border2.set_color4f(tokens::text_mauve_a(0.30), None);
     canvas.draw_rrect(rrect_back, &border2);
     let label2 = "Back";
     let mut p2 = Paint::default();
     p2.set_anti_alias(true);
-    p2.set_color(Color::from_argb(0xFF, 0x9A, 0x80, 0x87));
+    p2.set_color(tokens::text_mauve());
     let (advance2, _) = font.measure_str(label2, Some(&p2));
     let cx2 = (back.left + back.right) * 0.5;
     let cy2 = (back.top + back.bottom) * 0.5;

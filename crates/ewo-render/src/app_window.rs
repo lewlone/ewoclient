@@ -18,12 +18,13 @@
 //! }
 //! ```
 
+use crate::tokens;
 use std::cell::RefCell;
 
 use ewo_core::{Screen, Settings, Theme};
 use skia_safe::{
-    AlphaType, BlurStyle, Canvas, ClipOp, Color, Color4f, ColorType, Image, ImageInfo, MaskFilter,
-    Paint, PaintStyle, RRect, Rect,
+    AlphaType, BlurStyle, Canvas, ClipOp, Color, ColorType, Image, ImageInfo, MaskFilter, Paint,
+    PaintStyle, RRect, Rect,
 };
 
 use crate::backdrop::Backdrop;
@@ -104,6 +105,10 @@ pub fn draw_frame(
     let w = viewport_w as f32;
     let h = viewport_h as f32;
 
+    // Every colour below comes from the theme tokens; publish this frame's
+    // (hue-shifted) palette first.
+    tokens::set_active(theme, settings);
+
     draw_chrome_outer(canvas, w, h);
 
     // Backdrop + screen content are drawn inside the card rrect, in card-local
@@ -134,6 +139,7 @@ pub fn draw_frame(
                 heading_hover,
                 server_widget,
                 main_menu_enter,
+                settings.motion_speed,
             );
         }
         Screen::Instances => {
@@ -249,17 +255,11 @@ fn draw_window_buttons(canvas: &Canvas, width: f32, min_hover: bool, close_hover
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
     if min_hover {
-        bg.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.14),
-            None,
-        );
+        bg.set_color4f(tokens::accent_rose_a(0.14), None);
         canvas.draw_rrect(RRect::new_rect_xy(minimize, 7.0, 7.0), &bg);
     }
     if close_hover {
-        bg.set_color4f(
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.20),
-            None,
-        );
+        bg.set_color4f(tokens::accent_ember_a(0.20), None);
         canvas.draw_rrect(RRect::new_rect_xy(close, 7.0, 7.0), &bg);
     }
 
@@ -270,12 +270,12 @@ fn draw_window_buttons(canvas: &Canvas, width: f32, min_hover: bool, close_hover
         p.set_stroke_width(1.5);
         p.set_color(if hover {
             if danger {
-                Color::from_argb(0xFF, 0xF4, 0xC8, 0xD0)
+                tokens::accent_ember_icon()
             } else {
-                Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA)
+                tokens::text_pearl()
             }
         } else {
-            Color::from_argb(0xFF, 0x9A, 0x80, 0x87)
+            tokens::text_mauve()
         });
         p
     };
@@ -331,7 +331,7 @@ pub fn draw_chrome_outer(canvas: &Canvas, w: f32, h: f32) {
     let card_rrect_ = RRect::new_rect_xy(card, CARD_RADIUS, CARD_RADIUS);
     let mut body = Paint::default();
     body.set_anti_alias(true);
-    body.set_color(Color::BLACK);
+    body.set_color(tokens::bg_core());
     canvas.draw_rrect(card_rrect_, &body);
 }
 
@@ -349,7 +349,7 @@ pub fn draw_chrome_inner(canvas: &Canvas, w: f32, h: f32) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color(Color::from_argb((0.08 * 255.0) as u8, 229, 184, 197));
+    rim.set_color(tokens::accent_rose().with_a((0.08 * 255.0) as u8));
     let inset_rect = card.with_inset((0.5, 0.5));
     let inset_rrect = RRect::new_rect_xy(inset_rect, CARD_RADIUS - 0.5, CARD_RADIUS - 0.5);
     canvas.draw_rrect(inset_rrect, &rim);
@@ -428,7 +428,7 @@ fn draw_inner_glow_direct(canvas: &Canvas, w: f32, h: f32) {
     inner_glow.set_anti_alias(true);
     inner_glow.set_style(PaintStyle::Stroke);
     inner_glow.set_stroke_width(40.0);
-    inner_glow.set_color(Color::from_argb((0.22 * 255.0) as u8, 180, 100, 140));
+    inner_glow.set_color(tokens::accent_berry_glow().with_a((0.22 * 255.0) as u8));
     inner_glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 40.0, false));
     canvas.draw_rrect(card_rrect_, &inner_glow);
     canvas.restore_to_count(saved);

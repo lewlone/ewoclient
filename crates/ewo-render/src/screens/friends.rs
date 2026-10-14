@@ -14,22 +14,12 @@
 //! Empty / not-linked / loading variants render a single centered
 //! message instead of the three-section layout.
 
-use ewo_core::{motion, CubicBezier};
+use crate::tokens;
+use ewo_core::motion;
 use skia_safe::{Canvas, Color, Color4f, Font, Paint, PaintStyle, Point, RRect, Rect};
 
 use crate::text::{self, FontStore};
 use crate::widgets::{draw_vbtn, draw_vghost_btn, GhostKind, VbtnState, VghostBtnState};
-
-const TEXT_PEARL_HOT: Color = Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0);
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MID_PEARL: Color = Color::from_argb(0xFF, 0xC4, 0xAF, 0xB5);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MAUVE_DEEP: Color = Color::from_argb(0xFF, 0x6B, 0x55, 0x5C);
-const ACCENT_ROSE: Color = Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5);
-const ACCENT_BERRY: Color = Color::from_argb(0xFF, 0xB4, 0x74, 0x91);
-const ACCENT_LAV: Color = Color::from_argb(0xFF, 0xC9, 0xA5, 0xD4);
-const ACCENT_CHAMP: Color = Color::from_argb(0xFF, 0xE8, 0xD4, 0xA8);
-const ACCENT_EMBER: Color = Color::from_argb(0xFF, 0xC9, 0x6A, 0x7A);
 
 const HEADER_TOP: f32 = 88.0;
 const BODY_PAD_X: f32 = 60.0;
@@ -94,7 +84,7 @@ const TOAST_DRIFT_PX: f32 = 4.0;
 /// at the next frame.
 fn toast_visual(age: f32, remaining: f32, fade_in: f32, fade_out: f32) -> (f32, f32) {
     let t_in = (age / fade_in).clamp(0.0, 1.0);
-    let eased = CubicBezier::SILK.eval(t_in);
+    let eased = tokens::silk().eval(t_in);
     let out = (remaining / fade_out).clamp(0.0, 1.0);
     (eased * out, ((1.0 - eased) * TOAST_DRIFT_PX).round())
 }
@@ -322,7 +312,7 @@ pub fn draw_friends(
     let head_font = fonts.fraunces_axes(46.0, 50.0, 0.0, 600.0, None);
     let mut head_paint = Paint::default();
     head_paint.set_anti_alias(true);
-    head_paint.set_color(TEXT_PEARL_HOT);
+    head_paint.set_color(tokens::text_pearl_hot());
     let (_, hm) = head_font.metrics();
     canvas.draw_str(
         "Friends",
@@ -335,7 +325,7 @@ pub fn draw_friends(
     let sub_font = Font::new(fonts.newsreader_italic_typeface().clone(), 15.0);
     let mut sub_paint = Paint::default();
     sub_paint.set_anti_alias(true);
-    sub_paint.set_color(TEXT_MAUVE);
+    sub_paint.set_color(tokens::text_mauve());
     let (_, sm) = sub_font.metrics();
     // Below the heading's full visual height (ascent + descent), not just its
     // descent — otherwise the subtitle is drawn ~one cap-height too high and
@@ -362,17 +352,24 @@ pub fn draw_friends(
                 card_w,
                 card_h,
                 "no social server is configured.",
-                TEXT_MAUVE,
+                tokens::text_mauve(),
             );
         }
         FriendsViewState::NotLinked => {
             draw_not_linked(canvas, fonts, &layout, prefs);
         }
         FriendsViewState::Loading => {
-            draw_centered_message(canvas, fonts, card_w, card_h, "loading…", TEXT_MAUVE);
+            draw_centered_message(
+                canvas,
+                fonts,
+                card_w,
+                card_h,
+                "loading…",
+                tokens::text_mauve(),
+            );
         }
         FriendsViewState::Failed(msg) => {
-            draw_centered_message(canvas, fonts, card_w, card_h, msg, ACCENT_EMBER);
+            draw_centered_message(canvas, fonts, card_w, card_h, msg, tokens::accent_ember());
         }
         FriendsViewState::Loaded {
             friends,
@@ -425,7 +422,7 @@ pub fn draw_friends(
                     card_w,
                     card_h,
                     "no friends yet — add one above.",
-                    TEXT_MAUVE,
+                    tokens::text_mauve(),
                 );
             }
         }
@@ -450,7 +447,7 @@ fn draw_not_linked(
     let msg_font = fonts.newsreader(15.0);
     let mut msg_paint = Paint::default();
     msg_paint.set_anti_alias(true);
-    msg_paint.set_color(TEXT_MID_PEARL);
+    msg_paint.set_color(tokens::text_mid_pearl());
     let (_, mm) = msg_font.metrics();
     let msg = "your launcher needs to be linked before social features unlock.";
     let advance = msg_font.measure_str(msg, Some(&msg_paint)).0;
@@ -492,9 +489,9 @@ fn draw_action_toast(
     // the row geometry the hit-rects depend on.
     let font = fonts.newsreader_italic_axes(12.0, 400.0);
     let base = if toast.failed {
-        ACCENT_EMBER
+        tokens::accent_ember()
     } else {
-        ACCENT_LAV
+        tokens::accent_lav()
     };
     let mut p = Paint::default();
     p.set_anti_alias(true);
@@ -520,14 +517,14 @@ fn draw_add_bar(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, pref
     let rrect = RRect::new_rect_xy(layout.add_input, 8.0, 8.0);
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(Color4f::new(0.90, 0.72, 0.77, 0.04), None);
+    bg.set_color4f(tokens::tint(0.90, 0.72, 0.77, 0.04), None);
     canvas.draw_rrect(rrect, &bg);
     let mut border = Paint::default();
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
     let border_alpha = if prefs.add_focused { 0.55 } else { 0.20 };
-    border.set_color4f(Color4f::new(0.90, 0.72, 0.77, border_alpha), None);
+    border.set_color4f(tokens::tint(0.90, 0.72, 0.77, border_alpha), None);
     canvas.draw_rrect(rrect, &border);
 
     let label_font = fonts.newsreader(14.0);
@@ -538,7 +535,7 @@ fn draw_add_bar(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, pref
         (layout.add_input.top + layout.add_input.bottom) * 0.5 + (-lm.ascent - lm.descent) * 0.5;
 
     if prefs.add_buffer.is_empty() && !prefs.add_focused {
-        label_paint.set_color(TEXT_MAUVE_DEEP);
+        label_paint.set_color(tokens::text_mauve_deep());
         canvas.draw_str(
             "type a Minecraft name…",
             (layout.add_input.left + 14.0, baseline),
@@ -546,7 +543,7 @@ fn draw_add_bar(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, pref
             &label_paint,
         );
     } else {
-        label_paint.set_color(TEXT_PEARL);
+        label_paint.set_color(tokens::text_pearl());
         canvas.draw_str(
             &prefs.add_buffer,
             (layout.add_input.left + 14.0, baseline),
@@ -562,7 +559,7 @@ fn draw_add_bar(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, pref
                     .0;
                 let mut caret = Paint::default();
                 caret.set_anti_alias(true);
-                caret.set_color(ACCENT_ROSE);
+                caret.set_color(tokens::accent_rose());
                 caret.set_stroke_width(1.0);
                 caret.set_style(PaintStyle::Stroke);
                 let x = layout.add_input.left + 14.0 + typed_w + 1.0;
@@ -601,7 +598,7 @@ fn draw_section(
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eyebrow_paint = Paint::default();
     eyebrow_paint.set_anti_alias(true);
-    eyebrow_paint.set_color(TEXT_MAUVE);
+    eyebrow_paint.set_color(tokens::text_mauve());
     let (_, em) = eyebrow_font.metrics();
     canvas.draw_str(
         title,
@@ -612,7 +609,7 @@ fn draw_section(
     // Hairline under the eyebrow
     let mut hl = Paint::default();
     hl.set_anti_alias(true);
-    hl.set_color4f(Color4f::new(0.90, 0.72, 0.77, 0.10), None);
+    hl.set_color4f(tokens::tint(0.90, 0.72, 0.77, 0.10), None);
     hl.set_stroke_width(0.5);
     hl.set_style(PaintStyle::Stroke);
     canvas.draw_line(
@@ -646,9 +643,9 @@ fn draw_friend_row(
     let mut dot = Paint::default();
     dot.set_anti_alias(true);
     dot.set_color(if view.online {
-        ACCENT_LAV
+        tokens::accent_lav()
     } else {
-        TEXT_MAUVE_DEEP
+        tokens::text_mauve_deep()
     });
     canvas.draw_circle((dot_x, dot_y), 4.0, &dot);
 
@@ -656,7 +653,7 @@ fn draw_friend_row(
     let name_font = fonts.fraunces_axes(20.0, 50.0, 0.0, 500.0, None);
     let mut name_paint = Paint::default();
     name_paint.set_anti_alias(true);
-    name_paint.set_color(TEXT_PEARL);
+    name_paint.set_color(tokens::text_pearl());
     let (_, nm) = name_font.metrics();
     canvas.draw_str(
         &view.display_name,
@@ -669,7 +666,7 @@ fn draw_friend_row(
     let pre_font = fonts.jetbrains_mono(10.0);
     let mut pre_paint = Paint::default();
     pre_paint.set_anti_alias(true);
-    pre_paint.set_color(TEXT_MAUVE);
+    pre_paint.set_color(tokens::text_mauve());
     let (_, pm) = pre_font.metrics();
     text::draw_tracked_em(
         canvas,
@@ -688,30 +685,30 @@ fn draw_friend_row(
         RowSection::Incoming => {
             let accept_rect = Rect::from_xywh(row.right - btn_w - 8.0, btn_y, btn_w, btn_h);
             let decline_rect = Rect::from_xywh(accept_rect.left - btn_w - 8.0, btn_y, btn_w, btn_h);
-            draw_compact_label(canvas, fonts, accept_rect, "Accept", ACCENT_LAV);
-            draw_compact_label(canvas, fonts, decline_rect, "Decline", TEXT_MAUVE);
+            draw_compact_label(canvas, fonts, accept_rect, "Accept", tokens::accent_lav());
+            draw_compact_label(canvas, fonts, decline_rect, "Decline", tokens::text_mauve());
         }
         RowSection::Friends => {
             let remove_rect = Rect::from_xywh(row.right - btn_w - 8.0, btn_y, btn_w, btn_h);
-            draw_compact_label(canvas, fonts, remove_rect, "Remove", ACCENT_EMBER);
+            draw_compact_label(canvas, fonts, remove_rect, "Remove", tokens::accent_ember());
             // H6 — Join button (left of Remove), only for in-game friends.
             if view.server_addr.is_some() {
                 let join_rect =
                     Rect::from_xywh(remove_rect.left - btn_w - 8.0, btn_y, btn_w, btn_h);
-                draw_compact_label(canvas, fonts, join_rect, "Join", ACCENT_LAV);
+                draw_compact_label(canvas, fonts, join_rect, "Join", tokens::accent_lav());
             }
         }
         RowSection::Outgoing => {
             // Outgoing requests are passive — show a "pending…" tag.
             let tag_rect = Rect::from_xywh(row.right - btn_w - 8.0, btn_y, btn_w, btn_h);
-            draw_compact_label(canvas, fonts, tag_rect, "pending", TEXT_MAUVE);
+            draw_compact_label(canvas, fonts, tag_rect, "pending", tokens::text_mauve());
         }
     }
 
     // Hairline at the bottom of each row
     let mut sep = Paint::default();
     sep.set_anti_alias(true);
-    sep.set_color4f(Color4f::new(0.90, 0.72, 0.77, 0.06), None);
+    sep.set_color4f(tokens::tint(0.90, 0.72, 0.77, 0.06), None);
     sep.set_stroke_width(0.5);
     sep.set_style(PaintStyle::Stroke);
     canvas.draw_line(
@@ -722,7 +719,7 @@ fn draw_friend_row(
 
     // Suppress unused-variable warnings for accent palette we keep
     // available for future variants (online sub-states, badge types).
-    let _ = (ACCENT_BERRY, ACCENT_CHAMP);
+    let _ = (tokens::accent_berry(), tokens::accent_champ());
 }
 
 fn draw_compact_label(canvas: &Canvas, fonts: &FontStore, rect: Rect, label: &str, color: Color) {
@@ -776,7 +773,7 @@ fn draw_vbtn_label_only(
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
     bg.set_color4f(
-        Color4f::new(0.90, 0.72, 0.77, if hover { 0.20 } else { 0.12 }),
+        tokens::tint(0.90, 0.72, 0.77, if hover { 0.20 } else { 0.12 }),
         None,
     );
     canvas.draw_rrect(rrect, &bg);
@@ -785,7 +782,7 @@ fn draw_vbtn_label_only(
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
     rim.set_color4f(
-        Color4f::new(0.90, 0.72, 0.77, if hover { 0.55 } else { 0.30 }),
+        tokens::tint(0.90, 0.72, 0.77, if hover { 0.55 } else { 0.30 }),
         None,
     );
     canvas.draw_rrect(rrect, &rim);
@@ -793,7 +790,7 @@ fn draw_vbtn_label_only(
     let font = fonts.newsreader(14.0);
     let mut p = Paint::default();
     p.set_anti_alias(true);
-    p.set_color(TEXT_PEARL_HOT);
+    p.set_color(tokens::text_pearl_hot());
     let (_, m) = font.metrics();
     let advance = font.measure_str(label, Some(&p)).0;
     let baseline = (rect.top + rect.bottom) * 0.5 + (-m.ascent - m.descent) * 0.5;
@@ -809,7 +806,6 @@ fn draw_vbtn_label_only(
     let _ = draw_vghost_btn;
     let _ = VghostBtnState::default();
     let _ = GhostKind::Pearl;
-    let _ = CubicBezier::SILK;
     let _ = Point::new(0.0, 0.0);
 }
 

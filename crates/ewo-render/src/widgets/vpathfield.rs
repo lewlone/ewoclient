@@ -9,10 +9,8 @@
 //! CSS reference (`StyleSheet2` `.settings-pathfield`, `.settings-pathinput`,
 //! `.settings-pathbtn`).
 
-use ewo_core::CubicBezier;
-use skia_safe::{
-    BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect,
-};
+use crate::tokens;
+use skia_safe::{BlurStyle, Canvas, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect};
 
 use crate::text::FontStore;
 use crate::widgets::vghost_btn::{draw_vghost_btn, GhostKind, VghostBtnState};
@@ -106,15 +104,12 @@ pub fn draw_vpathfield(canvas: &Canvas, bounds: Rect, state: &VpathfieldState, f
 
 fn draw_input(canvas: &Canvas, bounds: Rect, value: &str, hover_anim: f32, fonts: &FontStore) {
     let rrect = RRect::new_rect_xy(bounds, FIELD_RADIUS, FIELD_RADIUS);
-    let anim = CubicBezier::SILK.eval(hover_anim.clamp(0.0, 1.0));
+    let anim = tokens::silk().eval(hover_anim.clamp(0.0, 1.0));
 
     // Background fill `rgba(229, 184, 197, 0.04)`
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.04),
-        None,
-    );
+    bg.set_color4f(tokens::accent_rose_a(0.04), None);
     canvas.draw_rrect(rrect, &bg);
 
     // Hover/focus glow ramp — CSS focus state shows `0 0 0 3px rgba(229,184,197,0.08)`.
@@ -123,10 +118,7 @@ fn draw_input(canvas: &Canvas, bounds: Rect, value: &str, hover_anim: f32, fonts
         glow.set_anti_alias(true);
         glow.set_style(PaintStyle::Stroke);
         glow.set_stroke_width(3.0);
-        glow.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08 * anim),
-            None,
-        );
+        glow.set_color4f(tokens::accent_rose_a(0.08 * anim), None);
         glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 1.5, false));
         canvas.draw_rrect(rrect, &glow);
     }
@@ -137,10 +129,7 @@ fn draw_input(canvas: &Canvas, bounds: Rect, value: &str, hover_anim: f32, fonts
     border.set_anti_alias(true);
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(1.0);
-    border.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, border_alpha),
-        None,
-    );
+    border.set_color4f(tokens::accent_rose_a(border_alpha), None);
     canvas.draw_rrect(rrect, &border);
 
     // Value text (JetBrains Mono 12, pearl). Truncate from the left with an
@@ -149,7 +138,7 @@ fn draw_input(canvas: &Canvas, bounds: Rect, value: &str, hover_anim: f32, fonts
     let font = fonts.jetbrains_mono(12.0);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA));
+    paint.set_color(tokens::text_pearl());
     let max_width = bounds.width() - 2.0 * FIELD_PAD_X;
     let display = ellipsize_left(&font, value, max_width, &paint);
     let (_, m) = font.metrics();

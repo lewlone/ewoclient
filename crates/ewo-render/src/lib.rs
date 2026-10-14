@@ -9,6 +9,7 @@ pub mod frame;
 pub mod gl_backend;
 pub mod screens;
 pub mod text;
+pub mod tokens;
 pub mod widgets;
 
 pub use frame::Clock;

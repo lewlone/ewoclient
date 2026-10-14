@@ -8,7 +8,8 @@
 //! widget vocabulary. Input is keyboard-only — digits typed by the user
 //! flow through `App`'s key handler into `LauncherLinkModalState::push_digit`.
 
-use ewo_core::{motion, CubicBezier, Settings};
+use crate::tokens;
+use ewo_core::{motion, Settings};
 use skia_safe::{
     canvas::SaveLayerRec, gradient_shader, image_filters, Canvas, Color, Color4f, Contains, Font,
     Paint, PaintStyle, Point, RRect, Rect, TileMode,
@@ -25,15 +26,6 @@ const PAD_TOP: f32 = 30.0;
 const PAD_BOTTOM: f32 = 28.0;
 const ANIM_DURATION: f32 = 0.24;
 const CODE_DIGITS: usize = 6;
-
-const TEXT_PEARL_HOT: Color = Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0);
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MAUVE_DEEP: Color = Color::from_argb(0xFF, 0x6B, 0x55, 0x5C);
-const ACCENT_ROSE: Color = Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5);
-const ACCENT_EMBER: Color = Color::from_argb(0xFF, 0xD4, 0x88, 0x9A);
-const ACCENT_BERRY: Color = Color::from_argb(0xFF, 0xB4, 0x74, 0x91);
-const ACCENT_LAV: Color = Color::from_argb(0xFF, 0xC9, 0xA5, 0xD4);
 
 /// Renderer-side view of the in-flight redemption (mirror of the
 /// launcher's `social::LinkRedeemStatus` — we don't import that here
@@ -149,7 +141,7 @@ pub fn draw_modal(
     if !state.open && state.anim <= 0.001 {
         return;
     }
-    let anim = CubicBezier::SILK.eval(state.anim.clamp(0.0, 1.0));
+    let anim = tokens::silk().eval(state.anim.clamp(0.0, 1.0));
 
     // Shroud
     let shroud_alpha = (state.anim / 0.67).clamp(0.0, 1.0);
@@ -194,7 +186,7 @@ pub fn draw_modal(
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eyebrow_paint = Paint::default();
     eyebrow_paint.set_anti_alias(true);
-    eyebrow_paint.set_color(scale_color(TEXT_MAUVE, alpha));
+    eyebrow_paint.set_color(scale_color(tokens::text_mauve(), alpha));
     let eyebrow_y = card.top + PAD_TOP + 12.0;
     canvas.draw_str(
         "LINK LAUNCHER",
@@ -207,7 +199,7 @@ pub fn draw_modal(
     let title_font = fonts.fraunces_axes(28.0, 50.0, 0.0, 600.0, None);
     let mut title_paint = Paint::default();
     title_paint.set_anti_alias(true);
-    title_paint.set_color(scale_color(TEXT_PEARL_HOT, alpha));
+    title_paint.set_color(scale_color(tokens::text_pearl_hot(), alpha));
     let (_, tm) = title_font.metrics();
     let title_y = eyebrow_y + 26.0 + (-tm.ascent);
     canvas.draw_str(
@@ -221,7 +213,7 @@ pub fn draw_modal(
     let sub_font = Font::new(fonts.newsreader_italic_typeface().clone(), 13.0);
     let mut sub_paint = Paint::default();
     sub_paint.set_anti_alias(true);
-    sub_paint.set_color(scale_color(TEXT_MAUVE, alpha));
+    sub_paint.set_color(scale_color(tokens::text_mauve(), alpha));
     let (_, sm) = sub_font.metrics();
     let sub_y = title_y + tm.descent + 14.0 + (-sm.ascent);
     canvas.draw_str(
@@ -253,7 +245,7 @@ pub fn draw_modal(
     match redeem {
         LinkRedeemView::Idle => {}
         LinkRedeemView::Submitting => {
-            status_paint.set_color(scale_color(TEXT_MAUVE, alpha));
+            status_paint.set_color(scale_color(tokens::text_mauve(), alpha));
             canvas.draw_str(
                 "submitting…",
                 (content_left, status_y + (-statm.ascent)),
@@ -262,7 +254,7 @@ pub fn draw_modal(
             );
         }
         LinkRedeemView::Failed(msg) => {
-            status_paint.set_color(scale_color(ACCENT_EMBER, alpha));
+            status_paint.set_color(scale_color(tokens::accent_ember_text(), alpha));
             canvas.draw_str(
                 msg,
                 (content_left, status_y + (-statm.ascent)),
@@ -316,6 +308,7 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
         radius,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
+                // Dark wine, hand-rounded in the port: no 8-bit token reproduces it.
                 Color4f::new(0.10, 0.0, 0.04, 0.55 * alpha),
                 Color4f::new(0.0, 0.0, 0.0, 0.85 * alpha),
             ],
@@ -349,7 +342,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
             Color4f::new(0.0, 0.0, 0.0, 0.45 * alpha),
         ),
         (10.0, 14.0, Color4f::new(0.0, 0.0, 0.0, 0.35 * alpha)),
-        (0.0, 30.0, Color4f::new(0.71, 0.45, 0.57, 0.20 * alpha)),
+        (0.0, 30.0, tokens::accent_berry_a(0.20 * alpha)),
     ] {
         let mut sh = Paint::default();
         sh.set_anti_alias(true);
@@ -374,7 +367,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
         // Dark wine fill on top of the refract.
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
-        fill.set_color4f(Color4f::new(0.11, 0.04, 0.08, 0.92 * alpha), None);
+        fill.set_color4f(tokens::bg_glass_fill_a(0.92 * alpha), None);
         canvas.draw_rrect(rrect, &fill);
         canvas.restore();
     }
@@ -385,6 +378,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
         (card.width() * 0.6).max(card.height() * 0.5),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
+                // Warm-white, hand-rounded in the port (a hair off `text_pearl_hot`).
                 Color4f::new(1.0, 0.96, 0.94, 0.10 * alpha),
                 Color4f::new(1.0, 0.96, 0.94, 0.0),
             ],
@@ -406,7 +400,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(Color4f::new(0.90, 0.72, 0.77, 0.18 * alpha), None);
+    rim.set_color4f(tokens::tint(0.90, 0.72, 0.77, 0.18 * alpha), None);
     canvas.draw_rrect(rrect, &rim);
 }
 
@@ -423,7 +417,7 @@ fn draw_digit_slot(
     // Faint rose fill
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
-    bg.set_color4f(Color4f::new(0.90, 0.72, 0.77, 0.05 * alpha), None);
+    bg.set_color4f(tokens::tint(0.90, 0.72, 0.77, 0.05 * alpha), None);
     canvas.draw_rrect(rrect, &bg);
 
     // Border — rose, brighter on the active slot
@@ -432,7 +426,7 @@ fn draw_digit_slot(
     border.set_style(PaintStyle::Stroke);
     border.set_stroke_width(if active { 1.6 } else { 1.0 });
     let border_alpha = if active { 0.55 } else { 0.22 };
-    border.set_color4f(Color4f::new(0.90, 0.72, 0.77, border_alpha * alpha), None);
+    border.set_color4f(tokens::tint(0.90, 0.72, 0.77, border_alpha * alpha), None);
     canvas.draw_rrect(rrect, &border);
 
     // Digit (or empty marker)
@@ -443,14 +437,14 @@ fn draw_digit_slot(
     let baseline = (r.top + r.bottom) * 0.5 + (-gm.ascent - gm.descent) * 0.5;
     match digit {
         Some(d) => {
-            glyph_paint.set_color(scale_color(TEXT_PEARL_HOT, alpha));
+            glyph_paint.set_color(scale_color(tokens::text_pearl_hot(), alpha));
             let s = d.to_string();
             let (advance, _) = glyph_font.measure_str(&s, Some(&glyph_paint));
             let x = (r.left + r.right) * 0.5 - advance * 0.5;
             canvas.draw_str(&s, (x, baseline), &glyph_font, &glyph_paint);
         }
         None => {
-            glyph_paint.set_color(scale_color(TEXT_MAUVE_DEEP, alpha * 0.7));
+            glyph_paint.set_color(scale_color(tokens::text_mauve_deep(), alpha * 0.7));
             // A faint horizontal underline mid-slot as an empty marker.
             let mid_y = (r.top + r.bottom) * 0.5 + 8.0;
             let mut line = Paint::default();
@@ -461,12 +455,6 @@ fn draw_digit_slot(
             canvas.draw_line((r.left + 16.0, mid_y), (r.right - 16.0, mid_y), &line);
         }
     }
-    // Suppress unused-variable warnings on the rose accents we deliberately
-    // didn't end up needing at the slot level (the border carries the cue).
-    let _ = ACCENT_ROSE;
-    let _ = ACCENT_BERRY;
-    let _ = ACCENT_LAV;
-    let _ = TEXT_PEARL;
 }
 
 fn scale_color(c: Color, alpha: f32) -> Color {

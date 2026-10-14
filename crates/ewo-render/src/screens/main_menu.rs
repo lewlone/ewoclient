@@ -16,8 +16,8 @@
 //! See `EwoClient · Velvet & Pearl prototype.htm` and `style/mainMenu.png`
 //! for the visual ground truth.
 
-use ewo_core::CubicBezier;
-use skia_safe::{Canvas, Color, Color4f, Font, Paint, PaintStyle, Rect};
+use crate::tokens;
+use skia_safe::{Canvas, Color, Font, Paint, PaintStyle, Rect};
 
 use crate::text::{self, FontStore, HoverGlowState};
 use crate::widgets::VbtnState;
@@ -52,11 +52,6 @@ const PAD_BOTTOM: f32 = 60.0;
 const ASYM_MARK_MARGIN_TOP: f32 = 32.0;
 
 // Token colors
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MAUVE_DEEP: Color = Color::from_argb(0xFF, 0x6B, 0x55, 0x5C);
-const ACCENT_ROSE: Color = Color::from_argb(0xFF, 0xE5, 0xB8, 0xC5);
-const TAGLINE_GRAY: Color = Color::from_argb(0xFF, 0xA3, 0x8F, 0x95);
 
 pub fn draw_main_menu(
     canvas: &Canvas,
@@ -68,11 +63,12 @@ pub fn draw_main_menu(
     heading_hover: HoverGlowState,
     server: ServerWidgetView<'_>,
     enter_anim: f32,
+    motion_speed: f32,
 ) {
     // Smooth entrance — fade + slide-up when arriving at the main menu.
     // Alpha + translate only (never scale/blur text-bearing surfaces, per the
     // non-negotiables).
-    let eased = CubicBezier::SILK.eval(enter_anim.clamp(0.0, 1.0));
+    let eased = tokens::silk().eval(enter_anim.clamp(0.0, 1.0));
     let layer = if eased < 0.999 {
         let dy = (1.0 - eased) * 14.0;
         let s = canvas.save_layer_alpha_f(Rect::from_xywh(0.0, 0.0, w, h), eased);
@@ -81,7 +77,7 @@ pub fn draw_main_menu(
     } else {
         None
     };
-    draw_heading_block(canvas, fonts, time, heading_hover);
+    draw_heading_block(canvas, fonts, time, motion_speed, heading_hover);
     draw_menu_items(canvas, fonts, w, h, menu_states);
     draw_server_widget(canvas, fonts, w, h, server);
     if let Some(s) = layer {
@@ -195,9 +191,6 @@ fn draw_server_widget(
     card_h: f32,
     view: ServerWidgetView<'_>,
 ) {
-    const ACCENT_CHAMP: Color = Color::from_argb(0xFF, 0xE8, 0xD4, 0xA8);
-    const ACCENT_EMBER: Color = Color::from_argb(0xFF, 0xC9, 0x6A, 0x7A);
-
     if view.hidden {
         return;
     }
@@ -213,7 +206,7 @@ fn draw_server_widget(
     let mut fill = Paint::default();
     fill.set_anti_alias(true);
     let fill_alpha = if view.hovered { 0.10 } else { 0.055 };
-    fill.set_color4f(Color4f::new(0.71, 0.51, 0.62, fill_alpha), None);
+    fill.set_color4f(tokens::panel_glass_a(fill_alpha), None);
     canvas.draw_rrect(rrect, &fill);
 
     // Hairline rim.
@@ -221,7 +214,7 @@ fn draw_server_widget(
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color(ACCENT_ROSE);
+    rim.set_color(tokens::accent_rose());
     rim.set_alpha_f(if view.hovered { 0.32 } else { 0.16 });
     canvas.draw_rrect(rrect, &rim);
 
@@ -234,7 +227,11 @@ fn draw_server_widget(
     let dot_cy = bounds.top() + 20.0;
     let mut dot = Paint::default();
     dot.set_anti_alias(true);
-    dot.set_color(if online { ACCENT_CHAMP } else { ACCENT_EMBER });
+    dot.set_color(if online {
+        tokens::accent_champ()
+    } else {
+        tokens::accent_ember()
+    });
     dot.set_alpha_f(if view.data.is_some() { 1.0 } else { 0.4 });
     canvas.draw_circle((dot_cx, dot_cy), 3.5, &dot);
 
@@ -242,7 +239,7 @@ fn draw_server_widget(
     let eyebrow_font = fonts.jetbrains_mono(9.0);
     let mut eyebrow_paint = Paint::default();
     eyebrow_paint.set_anti_alias(true);
-    eyebrow_paint.set_color(TEXT_MAUVE);
+    eyebrow_paint.set_color(tokens::text_mauve());
     let (_, em) = eyebrow_font.metrics();
     let eyebrow_baseline = dot_cy + (-em.ascent + em.descent) / 2.0;
     draw_tracked(
@@ -260,7 +257,7 @@ fn draw_server_widget(
         let join_font = fonts.jetbrains_mono(9.0);
         let mut join_paint = Paint::default();
         join_paint.set_anti_alias(true);
-        join_paint.set_color(ACCENT_ROSE);
+        join_paint.set_color(tokens::accent_rose());
         join_paint.set_alpha_f(if view.hovered { 1.0 } else { 0.6 });
         // "JOIN" + a vector chevron (the "▸" glyph isn't in these fonts).
         let label = "JOIN";
@@ -283,7 +280,7 @@ fn draw_server_widget(
             eyebrow_baseline - 3.0,
             3.5,
             1.3,
-            ACCENT_ROSE,
+            tokens::accent_rose(),
             chev_alpha,
         );
     }
@@ -292,7 +289,11 @@ fn draw_server_widget(
     let status_font = fonts.jetbrains_mono(12.0);
     let mut status_paint = Paint::default();
     status_paint.set_anti_alias(true);
-    status_paint.set_color(if online { TEXT_PEARL } else { TEXT_MAUVE });
+    status_paint.set_color(if online {
+        tokens::text_pearl()
+    } else {
+        tokens::text_mauve()
+    });
     let (_, sm) = status_font.metrics();
     let status_baseline = bounds.top() + 42.0 + (-sm.ascent);
     let status_text = match view.data {
@@ -315,7 +316,7 @@ fn draw_server_widget(
         let name_font = fonts.jetbrains_mono(9.0);
         let mut name_paint = Paint::default();
         name_paint.set_anti_alias(true);
-        name_paint.set_color(TEXT_MAUVE);
+        name_paint.set_color(tokens::text_mauve());
         let max_w = bounds.right() - pad - left;
         let strip = name_strip(d.players, |t| {
             name_font.measure_str(t, Some(&name_paint)).0 <= max_w
@@ -360,6 +361,7 @@ fn draw_heading_block(
     canvas: &Canvas,
     fonts: &FontStore,
     time: f32,
+    motion_speed: f32,
     heading_hover: HoverGlowState,
 ) {
     let mark_top = PAD_TOP + ASYM_MARK_MARGIN_TOP; // 104
@@ -376,7 +378,7 @@ fn draw_heading_block(
 
     let mut heading_paint = Paint::default();
     heading_paint.set_anti_alias(true);
-    heading_paint.set_color(TEXT_PEARL);
+    heading_paint.set_color(tokens::text_pearl());
     text::draw_breathing_glow(
         canvas,
         "EwoClient",
@@ -387,6 +389,7 @@ fn draw_heading_block(
         0.02,
         time,
         8.0,
+        motion_speed,
         heading_hover,
     );
     let heading_bottom = heading_baseline + hm.descent;
@@ -397,7 +400,7 @@ fn draw_heading_block(
     let sub_font = fonts.jetbrains_mono(sub_size);
     let mut sub_paint = Paint::default();
     sub_paint.set_anti_alias(true);
-    sub_paint.set_color(TEXT_MAUVE);
+    sub_paint.set_color(tokens::text_mauve());
     sub_paint.set_alpha_f(0.7);
     let (_, sm) = sub_font.metrics();
     let sub_top = heading_bottom + 18.0;
@@ -420,7 +423,7 @@ fn draw_heading_block(
     let tag_font = newsreader_italic_axes(fonts, tag_size, 400.0);
     let mut tag_paint = Paint::default();
     tag_paint.set_anti_alias(true);
-    tag_paint.set_color(TAGLINE_GRAY);
+    tag_paint.set_color(tokens::text_tagline());
     let (_, tm) = tag_font.metrics();
     let tag_top = sub_bottom + 32.0;
     let tag_baseline = tag_top + (-tm.ascent);
@@ -542,7 +545,7 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
         let item_rect = layout.item_rects[i];
         let state = &states[i];
         // Silk-eased hover progress (0..1).
-        let hover = CubicBezier::SILK.eval(state.hover_anim.clamp(0.0, 1.0));
+        let hover = tokens::silk().eval(state.hover_anim.clamp(0.0, 1.0));
         let pad_left = 16.0 * hover; // CSS `:hover { padding-left: 16px }`
 
         let label_top = item_rect.top + ITEM_PAD_Y;
@@ -562,10 +565,7 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
             let rule_alpha = hover; // opacity 0 → 1
             let mut rule = Paint::default();
             rule.set_anti_alias(true);
-            rule.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, rule_alpha),
-                None,
-            );
+            rule.set_color4f(tokens::accent_rose_a(rule_alpha), None);
             // Gradient effect approximated with a single color; the prototype's
             // gradient is short and the color shift is subtle at this width.
             canvas.draw_rect(
@@ -575,15 +575,7 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
             // Subtle glow: a slightly larger softer rect underneath
             let mut glow = Paint::default();
             glow.set_anti_alias(true);
-            glow.set_color4f(
-                Color4f::new(
-                    229.0 / 255.0,
-                    184.0 / 255.0,
-                    197.0 / 255.0,
-                    0.15 * rule_alpha,
-                ),
-                None,
-            );
+            glow.set_color4f(tokens::accent_rose_a(0.15 * rule_alpha), None);
             canvas.draw_rect(
                 Rect::from_xywh(menu_left - 16.0 + pad_left, rule_y - 1.0, rule_w, 3.0),
                 &glow,
@@ -603,7 +595,7 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
             );
             let mut paint = Paint::default();
             paint.set_anti_alias(true);
-            paint.set_color(TEXT_MAUVE);
+            paint.set_color(tokens::text_mauve());
             canvas.draw_str(item.label, (baseline_x, baseline), &muted_font, &paint);
         } else {
             let baseline = label_top + (-lm.ascent);
@@ -618,11 +610,10 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
             paint.set_anti_alias(true);
             // Pearl → warm-white (#FFF0F4) as hover ramps.
             paint.set_color4f(
-                Color4f::new(
-                    (0xF4 as f32 + (0xFF - 0xF4) as f32 * hover) / 255.0,
-                    (0xE8 as f32 + (0xF0 - 0xE8) as f32 * hover) / 255.0,
-                    (0xEA as f32 + (0xF4 - 0xEA) as f32 * hover) / 255.0,
-                    1.0,
+                tokens::mix(
+                    tokens::active().text_pearl,
+                    tokens::active().text_pearl_highlight,
+                    hover,
                 ),
                 None,
             );
@@ -641,9 +632,9 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
         let mut sub_paint = Paint::default();
         sub_paint.set_anti_alias(true);
         sub_paint.set_color(if item.muted {
-            TEXT_MAUVE_DEEP
+            tokens::text_mauve_deep()
         } else {
-            TEXT_MAUVE
+            tokens::text_mauve()
         });
         draw_tracked(
             canvas,
@@ -659,7 +650,11 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
         // Drawn as a vector chevron rather than a "→" glyph: the serif
         // display fonts don't carry the arrow and render it as a tofu box.
         if hover > 0.001 {
-            let color = if item.muted { TEXT_MAUVE } else { ACCENT_ROSE };
+            let color = if item.muted {
+                tokens::text_mauve()
+            } else {
+                tokens::accent_rose()
+            };
             let translate_x = -6.0 * (1.0 - hover);
             let cy = item_rect.top + item_rect.height() * 0.5;
             let tip_x = menu_right - 5.0 + translate_x;
@@ -671,10 +666,7 @@ fn draw_menu_items(canvas: &Canvas, fonts: &FontStore, w: f32, h: f32, states: &
             let div_y = item_rect.bottom;
             let mut div = Paint::default();
             div.set_anti_alias(true);
-            div.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
-                None,
-            );
+            div.set_color4f(tokens::accent_rose_a(0.10), None);
             div.set_stroke_width(1.0);
             div.set_style(PaintStyle::Stroke);
             canvas.draw_line((menu_left, div_y), (menu_right, div_y), &div);

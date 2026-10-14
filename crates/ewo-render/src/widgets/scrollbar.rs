@@ -7,7 +7,8 @@
 //! region's right edge. Min thumb height is 24px so it stays grabbable
 //! visually even when content greatly overflows.
 
-use skia_safe::{Canvas, Color4f, Paint, RRect, Rect};
+use crate::tokens;
+use skia_safe::{Canvas, Paint, RRect, Rect};
 
 const TRACK_WIDTH: f32 = 3.0;
 const TRACK_INSET: f32 = 4.0;
@@ -42,9 +43,6 @@ pub fn draw_scrollbar(canvas: &Canvas, region: Rect, scroll: f32, content_h: f32
 
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.35),
-        None,
-    );
+    paint.set_color4f(tokens::accent_rose_a(0.35), None);
     canvas.draw_rrect(thumb_rrect, &paint);
 }

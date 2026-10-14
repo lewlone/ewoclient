@@ -24,10 +24,11 @@
 //! release frame.
 
 use crate::text::{self, FontStore};
+use crate::tokens;
 use ewo_core::motion;
 use skia_safe::{
-    gradient_shader, BlendMode, BlurStyle, Canvas, Color, Color4f, Contains, MaskFilter, Matrix,
-    Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    gradient_shader, BlendMode, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Matrix, Paint,
+    PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 const RIPPLE_LIFE_S: f32 = 0.62;
@@ -288,7 +289,7 @@ fn draw_ripples(canvas: &Canvas, bounds: Rect, ripples: &[Ripple]) {
             continue;
         }
         let t = (r.age / motion::dur(RIPPLE_LIFE_S)).clamp(0.0, 1.0);
-        let eased = ewo_core::CubicBezier::SILK.eval(t);
+        let eased = tokens::silk().eval(t);
         let diam = 6.0 + (RIPPLE_MAX_DIAM - 6.0) * eased;
         let opacity = 0.9 * (1.0 - eased);
         let cx = bounds.left + r.x;
@@ -299,9 +300,9 @@ fn draw_ripples(canvas: &Canvas, bounds: Rect, ripples: &[Ripple]) {
             (diam * 0.5).max(0.5),
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(1.0, 225.0 / 255.0, 230.0 / 255.0, 0.8 * opacity),
-                    Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.4 * opacity),
-                    Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
+                    tokens::pearl_ripple_a(0.8 * opacity),
+                    tokens::accent_rose_a(0.4 * opacity),
+                    tokens::accent_rose_a(0.0),
                 ],
                 None,
             ),
@@ -325,7 +326,7 @@ fn draw_specks(canvas: &Canvas, bounds: Rect, specks: &[Speck]) {
             continue;
         }
         let t = (s.age / motion::dur(SPECK_LIFE_S)).clamp(0.0, 1.0);
-        let eased = ewo_core::CubicBezier::SILK.eval(t);
+        let eased = tokens::silk().eval(t);
         // CSS @keyframes vbtn-speck:
         //   0%   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
         //   100% { opacity: 0; transform: translate(-50%, -90%) scale(0.4); }
@@ -335,10 +336,11 @@ fn draw_specks(canvas: &Canvas, bounds: Rect, specks: &[Speck]) {
         let drift_y = -0.40 * 4.0 * eased; // 4px speck size, drift -40% of size
         let cx = bounds.left + s.x;
         let cy = bounds.top + s.y + drift_y;
-        // Hue lerp rose (0xE5B8C5) ↔ champagne (0xE8D4A8). hue_t∈[0,1).
-        let r = lerp(229.0, 232.0, s.hue_t) / 255.0;
-        let g = lerp(184.0, 212.0, s.hue_t) / 255.0;
-        let b = lerp(197.0, 168.0, s.hue_t) / 255.0;
+        // Hue lerp rose ↔ champagne. hue_t∈[0,1).
+        let (rose, champ) = (tokens::active().accent_rose, tokens::active().accent_champ);
+        let r = lerp(rose.r as f32, champ.r as f32, s.hue_t) / 255.0;
+        let g = lerp(rose.g as f32, champ.g as f32, s.hue_t) / 255.0;
+        let b = lerp(rose.b as f32, champ.b as f32, s.hue_t) / 255.0;
         let radius = 2.0 * scale;
         if radius <= 0.0 {
             continue;
@@ -348,7 +350,7 @@ fn draw_specks(canvas: &Canvas, bounds: Rect, specks: &[Speck]) {
             radius,
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(0.95, 0.91, 0.93, 0.9 * opacity),
+                    tokens::pearl_speck_a(0.9 * opacity),
                     Color4f::new(r, g, b, 0.4 * opacity),
                     Color4f::new(r, g, b, 0.0),
                 ],
@@ -421,9 +423,9 @@ fn draw_tint(canvas: &Canvas, rect: Rect, radius: f32, primary: bool) {
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, a1),
-                Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, a2),
-                Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, a3),
+                tokens::accent_rose_a(a1),
+                tokens::accent_berry_a(a2),
+                tokens::accent_lav_a(a3),
             ],
             None,
         ),
@@ -473,9 +475,9 @@ fn draw_rim(canvas: &Canvas, rect: Rect, radius: f32, time: f32, motion_speed: f
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, a1),
-                Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, a2),
-                Color4f::new(232.0 / 255.0, 212.0 / 255.0, 168.0 / 255.0, a3),
+                tokens::accent_rose_a(a1),
+                tokens::accent_lav_a(a2),
+                tokens::accent_champ_a(a3),
             ],
             None,
         ),
@@ -521,9 +523,9 @@ fn draw_sheen(canvas: &Canvas, rect: Rect, time: f32, motion_speed: f32, hover: 
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
                 Color4f::new(0.0, 0.0, 0.0, 0.0),
-                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.18),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.35),
-                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.18),
+                tokens::text_pearl_highlight_a(0.18),
+                tokens::accent_rose_a(0.35),
+                tokens::text_pearl_highlight_a(0.18),
                 Color4f::new(0.0, 0.0, 0.0, 0.0),
             ],
             None,
@@ -566,7 +568,7 @@ fn draw_label(canvas: &Canvas, rect: Rect, label: &str, primary: bool, fonts: &F
     let font = fonts.newsreader(size);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color(Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA)); // text-pearl
+    paint.set_color(tokens::text_pearl()); // text-pearl
 
     // Center the label horizontally with 0.02em tracking applied.
     let tracking_em = 0.02;

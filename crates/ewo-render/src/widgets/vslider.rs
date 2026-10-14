@@ -22,6 +22,7 @@
 //! (`.vslider-value`) are deferred to step 16 polish — not load-bearing for
 //! visual parity at rest.
 
+use crate::tokens;
 use ewo_core::Settings;
 use skia_safe::{
     gradient_shader, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point,
@@ -167,9 +168,9 @@ fn draw_track(canvas: &Canvas, rect: &Rect, rrect: &RRect) {
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
-                Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 0.15),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
+                tokens::accent_rose_a(0.10),
+                tokens::accent_lav_a(0.15),
+                tokens::accent_rose_a(0.10),
             ],
             None,
         ),
@@ -195,9 +196,9 @@ fn draw_fill(canvas: &Canvas, rect: &Rect, rrect: &RRect) {
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(212.0 / 255.0, 168.0 / 255.0, 184.0 / 255.0, 1.0),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
-                Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 1.0),
+                tokens::accent_rose_dusk_a(1.0),
+                tokens::accent_rose_a(1.0),
+                tokens::accent_lav_a(1.0),
             ],
             None,
         ),
@@ -264,14 +265,9 @@ fn draw_handle(
         halo_r,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(1.0, 230.0 / 255.0, 238.0 / 255.0, 0.55 * drag_boost),
-                Color4f::new(
-                    229.0 / 255.0,
-                    184.0 / 255.0,
-                    197.0 / 255.0,
-                    0.20 * drag_boost,
-                ),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
+                tokens::pearl_bloom_a(0.55 * drag_boost),
+                tokens::accent_rose_a(0.20 * drag_boost),
+                tokens::accent_rose_a(0.0),
             ],
             None,
         ),
@@ -295,9 +291,9 @@ fn draw_handle(
         core_r * 1.6,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 1.0),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
-                Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 1.0),
+                tokens::text_pearl_highlight_a(1.0),
+                tokens::accent_rose_a(1.0),
+                tokens::accent_berry_a(1.0),
             ],
             None,
         ),
@@ -309,10 +305,7 @@ fn draw_handle(
         // Outer rose glow (CSS box-shadow: 0 0 6 rgba(229,184,197,0.9))
         let mut glow = Paint::default();
         glow.set_anti_alias(true);
-        glow.set_color4f(
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.9),
-            None,
-        );
+        glow.set_color4f(tokens::accent_rose_a(0.9), None);
         glow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0, false));
         canvas.draw_circle((cx, cy), core_r + 1.0, &glow);
 

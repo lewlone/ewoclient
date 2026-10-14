@@ -3,21 +3,22 @@
 //! Port of the prototype's `PearlDust` React component (`EwoClient · Velvet &
 //! Pearl prototype.htm` line ~6482). Two populations:
 //!
-//! - **Airborne** (default 90 motes at `density=1`): spawns at the bottom,
+//! - **Airborne** (110 motes at `density=1`, `AIR_BASE`): spawns at the bottom,
 //!   drifts up with sinusoidal sway, modulates alpha and radius via a per-
 //!   particle "shine" cycle, respawns when off-screen or at end-of-life.
-//! - **Settled** (default 60 motes): static near the bottom edge, twinkles in
+//! - **Settled** (80 motes, `SETTLED_BASE`): static near the bottom edge, twinkles in
 //!   place, gets pushed around briefly when the user clicks the backdrop.
 //!
 //! Drawn under `mix-blend-mode: screen`, so all the colored alphas brighten
 //! whatever's beneath rather than alpha-blending.
 
+use crate::tokens;
 use ewo_core::Settings;
 use rand::Rng;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, AlphaType, BlendMode, Canvas, Color, Color4f, ColorType, FilterMode, Image,
-    ImageInfo, Paint, Point, Rect, TileMode,
+    gradient_shader, AlphaType, BlendMode, Canvas, Color, ColorType, FilterMode, Image, ImageInfo,
+    Paint, Point, Rect, TileMode,
 };
 use std::cell::RefCell;
 use std::f32::consts::PI;
@@ -66,7 +67,6 @@ pub struct PearlDust {
     disturb_amount: f32,
     width: f32,
     height: f32,
-    motion_speed: f32,
     /// The airborne halo, baked once into a GPU sprite at reference alpha 1.0.
     /// Stamped per mote with a per-mote `set_alpha_f`, which is mathematically
     /// identical to building a fresh 3-stop radial gradient per mote (the old
@@ -83,7 +83,7 @@ impl PearlDust {
         let air_count = ((AIR_BASE as f32) * settings.density).round() as usize;
         let settled_count = ((SETTLED_BASE as f32) * settings.density).round() as usize;
         let airborne = (0..air_count)
-            .map(|_| make_air(&mut rng, width, height, settings.motion_speed))
+            .map(|_| make_air(&mut rng, width, height))
             .collect();
         let settled = (0..settled_count)
             .map(|_| make_settled(&mut rng, width, height))
@@ -94,7 +94,6 @@ impl PearlDust {
             disturb_amount: 0.0,
             width,
             height,
-            motion_speed: settings.motion_speed,
             halo_sprite: RefCell::new(None),
         }
     }
@@ -106,28 +105,27 @@ impl PearlDust {
         let air_count = ((AIR_BASE as f32) * settings.density).round() as usize;
         let settled_count = ((SETTLED_BASE as f32) * settings.density).round() as usize;
         self.airborne = (0..air_count)
-            .map(|_| make_air(&mut rng, width, height, settings.motion_speed))
+            .map(|_| make_air(&mut rng, width, height))
             .collect();
         self.settled = (0..settled_count)
             .map(|_| make_settled(&mut rng, width, height))
             .collect();
         self.width = width;
         self.height = height;
-        self.motion_speed = settings.motion_speed;
     }
 
     pub fn disturb(&mut self) {
         self.disturb_amount = 1.0;
     }
 
-    /// Per-frame state update. Time-step independent: the original JS uses a
+    /// Per-frame state update, `dt` already scaled by `--motion-speed` (see
+    /// `Backdrop::update`). Time-step independent: the original JS uses a
     /// fixed-step model (per-frame integer life ticks), so we approximate with
     /// `dt * 60` to keep behavior stable across refresh rates.
     pub fn update(&mut self, dt: f32) {
         let step = (dt * 60.0).clamp(0.0, 4.0); // cap big skips during stalls
         let h = self.height;
         let w = self.width;
-        let speed = self.motion_speed;
         let mut rng = rand::thread_rng();
 
         for m in self.airborne.iter_mut() {
@@ -137,7 +135,7 @@ impl PearlDust {
             m.shine_phase += m.shine_freq * step;
 
             if m.y < -10.0 || m.life > m.max_life {
-                *m = make_air(&mut rng, w, h, speed);
+                *m = make_air(&mut rng, w, h);
                 m.y = h + 5.0;
             }
         }
@@ -177,10 +175,7 @@ impl PearlDust {
 
             let mut paint = Paint::default();
             paint.set_anti_alias(true);
-            paint.set_color4f(
-                Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, alpha),
-                None,
-            );
+            paint.set_color4f(tokens::text_pearl_a(alpha), None);
             canvas.draw_circle((s.x + push, s.y + dy), s.r, &paint);
         }
 
@@ -232,10 +227,7 @@ impl PearlDust {
             }
 
             // Core: bright pearl
-            core.set_color4f(
-                Color4f::new(250.0 / 255.0, 240.0 / 255.0, 242.0 / 255.0, alpha),
-                None,
-            );
+            core.set_color4f(tokens::pearl_dust_core_a(alpha), None);
             canvas.draw_circle((m.x, m.y), r, &core);
         }
 
@@ -265,9 +257,9 @@ fn build_halo_sprite(canvas: &Canvas) -> Option<Image> {
         radius,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(250.0 / 255.0, 240.0 / 255.0, 242.0 / 255.0, 0.55),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.25),
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
+                tokens::pearl_dust_core_a(0.55),
+                tokens::accent_rose_a(0.25),
+                tokens::accent_rose_a(0.0),
             ],
             None,
         ),
@@ -286,11 +278,11 @@ fn build_halo_sprite(canvas: &Canvas) -> Option<Image> {
     Some(surface.image_snapshot())
 }
 
-fn make_air<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32, speed: f32) -> Airborne {
+fn make_air<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32) -> Airborne {
     Airborne {
         x: rng.gen::<f32>() * w,
         y: h + rng.gen::<f32>() * 80.0,
-        vy: -(0.08 + rng.gen::<f32>() * 0.18) * speed,
+        vy: -(0.08 + rng.gen::<f32>() * 0.18),
         vx: (rng.gen::<f32>() - 0.5) * 0.04,
         r: 0.3 + rng.gen::<f32>() * 1.4,
         life: 0.0,

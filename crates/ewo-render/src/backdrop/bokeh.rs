@@ -24,7 +24,7 @@
 
 use std::cell::RefCell;
 
-use ewo_core::Srgb;
+use crate::tokens;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
     gradient_shader, image_filters, BlendMode, Canvas, Color4f, ImageFilter, Paint, Point, Rect,
@@ -52,8 +52,8 @@ fn bokeh_blur() -> ImageFilter {
     })
 }
 
-pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
-    let phase = (time / PERIOD_SEC).fract();
+pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32, motion_speed: f32) {
+    let phase = (ewo_core::motion::scaled_time(time, motion_speed) / PERIOD_SEC).fract();
 
     // Three CSS keyframes for translate/scale: 0%, 50%, 100%.
     // Plus opacity stops at 0%, 15%, 50%, 85%, 100%.
@@ -95,10 +95,8 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32) {
     let radius = size * 0.5;
 
     // Pearl-pink (berry) tint — variant 0 from the prototype.
-    let inner = Srgb::from_hex(0xE5B8C5).to_f32(); // accent_rose
-    let mid = Srgb::from_hex(0xB47491).to_f32(); // accent_berry, used at 0.2 alpha
-    let inner_c = Color4f::new(inner[0], inner[1], inner[2], 1.0);
-    let mid_c = Color4f::new(mid[0], mid[1], mid[2], 0.2);
+    let inner_c = tokens::accent_rose_a(1.0);
+    let mid_c = tokens::accent_berry_a(0.2); // accent_berry, used at 0.2 alpha
     let outer_c = Color4f::new(0.0, 0.0, 0.0, 0.0);
 
     let Some(shader) = gradient_shader::radial(

@@ -20,7 +20,7 @@
 //! The widget is text-only — caller supplies the font + paint. Used by the
 //! Launching screen's stage label (and reusable elsewhere).
 
-use ewo_core::CubicBezier;
+use crate::tokens;
 use skia_safe::{canvas::SaveLayerRec, image_filters, Canvas, Font, Paint, TileMode};
 
 /// Crossfade duration in seconds.
@@ -72,7 +72,7 @@ pub fn draw_vstatus(
     paint: &Paint,
     state: &VstatusState,
 ) {
-    let eased = CubicBezier::SILK.eval(state.anim.clamp(0.0, 1.0));
+    let eased = tokens::silk().eval(state.anim.clamp(0.0, 1.0));
 
     // Outgoing — opacity 1→0, translateY(0 → -10), blur(0 → 3px).
     if let Some(prev) = state.fading_out.as_deref() {

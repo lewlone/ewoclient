@@ -5,10 +5,11 @@
 //! tint + hairline rim) but smaller and with no form. Dismisses on
 //! Esc / outside-click / Close button.
 
-use ewo_core::{motion, CubicBezier};
+use crate::tokens;
+use ewo_core::motion;
 use skia_safe::{
-    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color,
-    Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
+    Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 use crate::text::{self, FontStore};
@@ -21,12 +22,6 @@ const PAD_X: f32 = 40.0;
 const PAD_TOP: f32 = 36.0;
 const PAD_BOTTOM: f32 = 28.0;
 const ANIM_DURATION: f32 = 0.24;
-
-const TEXT_PEARL_HOT: Color = Color::from_argb(0xFF, 0xFF, 0xF6, 0xF0);
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
-const TEXT_MAUVE_DEEP: Color = Color::from_argb(0xFF, 0x6B, 0x55, 0x5C);
-const ACCENT_BERRY: Color = Color::from_argb(0xFF, 0xB4, 0x74, 0x91);
 
 #[derive(Debug, Clone, Default)]
 pub struct AboutModalState {
@@ -91,7 +86,7 @@ pub fn draw_modal(
     if !state.open && state.anim <= 0.001 {
         return;
     }
-    let anim = CubicBezier::SILK.eval(state.anim.clamp(0.0, 1.0));
+    let anim = tokens::silk().eval(state.anim.clamp(0.0, 1.0));
 
     // Shroud
     let shroud_alpha = (state.anim / 0.67).clamp(0.0, 1.0);
@@ -147,8 +142,8 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
             radius,
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(8.0 / 255.0, 2.0 / 255.0, 6.0 / 255.0, 0.55 * alpha),
-                    Color4f::new(8.0 / 255.0, 2.0 / 255.0, 6.0 / 255.0, 0.85 * alpha),
+                    tokens::bg_scrim_a(0.55 * alpha),
+                    tokens::bg_scrim_a(0.85 * alpha),
                 ],
                 None,
             ),
@@ -204,10 +199,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
                 Point::new(card.left, card.bottom),
             ),
             gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    Color4f::new(38.0 / 255.0, 18.0 / 255.0, 30.0 / 255.0, 0.92),
-                    Color4f::new(28.0 / 255.0, 12.0 / 255.0, 22.0 / 255.0, 0.95),
-                ],
+                &[tokens::bg_card_top_a(0.92), tokens::bg_card_bottom_a(0.95)],
                 None,
             ),
             Some(&[0.0_f32, 1.0][..]),
@@ -230,9 +222,9 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.10),
-                Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.06),
-                Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 0.10),
+                tokens::accent_rose_a(0.10),
+                tokens::accent_berry_a(0.06),
+                tokens::accent_lav_a(0.10),
             ],
             None,
         ),
@@ -252,10 +244,7 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(1.0);
-    rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.18),
-        None,
-    );
+    rim.set_color4f(tokens::accent_rose_a(0.18), None);
     let inset = card.with_inset((0.5, 0.5));
     canvas.draw_rrect(
         RRect::new_rect_xy(inset, CARD_RADIUS - 0.5, CARD_RADIUS - 0.5),
@@ -282,7 +271,7 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
     let eyebrow_font = fonts.jetbrains_mono(10.0);
     let mut eb_paint = Paint::default();
     eb_paint.set_anti_alias(true);
-    eb_paint.set_color(ACCENT_BERRY);
+    eb_paint.set_color(tokens::accent_berry());
     let (_, em) = eyebrow_font.metrics();
     let eb_baseline = content_top + (-em.ascent);
     let eb_label = "ABOUT";
@@ -300,7 +289,7 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
     let title_font = fonts.fraunces_axes(48.0, 50.0, 1.0, 300.0, None);
     let mut t_paint = Paint::default();
     t_paint.set_anti_alias(true);
-    t_paint.set_color(TEXT_PEARL_HOT);
+    t_paint.set_color(tokens::text_pearl_hot());
     let title = "EwoClient";
     let (t_advance, _) = title_font.measure_str(title, Some(&t_paint));
     let (_, tm) = title_font.metrics();
@@ -317,7 +306,7 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
     let ver_font = fonts.jetbrains_mono(10.0);
     let mut ver_paint = Paint::default();
     ver_paint.set_anti_alias(true);
-    ver_paint.set_color(TEXT_MAUVE);
+    ver_paint.set_color(tokens::text_mauve());
     let ver = "V0.1 · VELVET BUILD · OFFLINE";
     let ver_w = text::measure_tracked_em(&ver_font, ver, 0.30);
     let (_, vm) = ver_font.metrics();
@@ -336,7 +325,7 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
     let tag_font = fonts.newsreader(16.0);
     let mut tag_paint = Paint::default();
     tag_paint.set_anti_alias(true);
-    tag_paint.set_color(TEXT_PEARL);
+    tag_paint.set_color(tokens::text_pearl());
     let tag = "— a place to wait in the dark —";
     let (tag_advance, _) = tag_font.measure_str(tag, Some(&tag_paint));
     let (_, tagm) = tag_font.metrics();
@@ -353,7 +342,7 @@ fn draw_inner(canvas: &Canvas, fonts: &FontStore, card: &Rect, state: &AboutModa
     let cred_font = fonts.jetbrains_mono(10.0);
     let mut cred_paint = Paint::default();
     cred_paint.set_anti_alias(true);
-    cred_paint.set_color(TEXT_MAUVE_DEEP);
+    cred_paint.set_color(tokens::text_mauve_deep());
     let (_, cm) = cred_font.metrics();
     let cred_lines = [
         "BUILT WITH RUST + SKIA",

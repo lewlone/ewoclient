@@ -9,6 +9,7 @@
 //! and falls back to the system default if missing — so the app boots fine
 //! before fonts are dropped in, just with non-target typography.
 
+use crate::tokens;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -286,6 +287,9 @@ pub fn measure_tracked_em(font: &Font, text: &str, letter_spacing_em: f32) -> f3
 /// .bt-g { animation: bt-breath calc(8s / var(--motion-speed)) ease-in-out infinite; }
 /// ```
 ///
+/// `period_sec` is the design period (the `8s`); `motion_speed` is
+/// `Settings::motion_speed`, which divides it.
+///
 /// The base letter-spacing comes from the parent (`.launcher-title-xl`'s
 /// `-0.035em`); the amplitude is the bt-g animation's range.
 pub fn draw_breathing(
@@ -298,18 +302,21 @@ pub fn draw_breathing(
     amp_em: f32,
     time_sec: f32,
     period_sec: f32,
+    motion_speed: f32,
 ) {
-    let breath = breath_envelope(time_sec, period_sec);
+    let breath = breath_envelope(time_sec, period_sec, motion_speed);
     let total_em = base_em + amp_em * breath;
     draw_tracked_em(canvas, text, origin, font, paint, total_em);
 }
 
-/// Triangle wave 0 → 1 → 0 over `period_sec`, smoothstepped (≈ ease-in-out).
+/// Triangle wave 0 → 1 → 0 over `period_sec / motion_speed` (CSS
+/// `calc(8s / var(--motion-speed))`), smoothstepped (≈ ease-in-out).
 ///
 /// Reduced motion (StyleSheet1 ~L1563): `.bt-g` rests on `letter-spacing: 0`,
 /// which is phase 0, so the clock is frozen at 0.
-pub fn breath_envelope(time_sec: f32, period_sec: f32) -> f32 {
-    let phase = (ewo_core::motion::ambient_time(time_sec) / period_sec).rem_euclid(1.0);
+pub fn breath_envelope(time_sec: f32, period_sec: f32, motion_speed: f32) -> f32 {
+    let phase =
+        (ewo_core::motion::scaled_time(time_sec, motion_speed) / period_sec).rem_euclid(1.0);
     let triangle = if phase < 0.5 {
         phase * 2.0
     } else {
@@ -388,9 +395,10 @@ pub fn draw_breathing_glow(
     amp_em: f32,
     time_sec: f32,
     period_sec: f32,
+    motion_speed: f32,
     hover: HoverGlowState,
 ) {
-    let breath = breath_envelope(time_sec, period_sec);
+    let breath = breath_envelope(time_sec, period_sec, motion_speed);
     let total_em = base_em + amp_em * breath;
     let spacing = total_em * font.size();
     let (mut cur_x, baseline_y) = origin;
@@ -400,12 +408,7 @@ pub fn draw_breathing_glow(
 
     // Base paint color → at-rest pearl. Hover end color → warm-white #FFF0F4.
     let base_color = paint.color4f();
-    let hover_color = skia_safe::Color4f::new(
-        0xFF as f32 / 255.0,
-        0xF0 as f32 / 255.0,
-        0xF4 as f32 / 255.0,
-        base_color.a,
-    );
+    let hover_color = tokens::text_pearl_highlight_a(base_color.a);
 
     for (idx, ch) in text.chars().enumerate() {
         let s: &str = ch.encode_utf8(&mut buf);
@@ -414,7 +417,7 @@ pub fn draw_breathing_glow(
         // Reduced motion collapses the 220 ms transition and its nth-child delay.
         let delay = ewo_core::motion::dur(nth_delay_seconds(idx + 1));
         let raw = ((time_since_change - delay) / ewo_core::motion::dur(0.22)).clamp(0.0, 1.0);
-        let eased = ewo_core::CubicBezier::SILK.eval(raw);
+        let eased = tokens::silk().eval(raw);
         let toward = if hover.hovering { eased } else { 1.0 - eased };
 
         // Halo passes only fire when there's some glow to render.
@@ -422,10 +425,7 @@ pub fn draw_breathing_glow(
             // Far halo: 18px blur, berry rgba(180,116,145,0.35).
             let mut far = Paint::default();
             far.set_anti_alias(true);
-            far.set_color4f(
-                skia_safe::Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.35 * toward),
-                None,
-            );
+            far.set_color4f(tokens::accent_berry_a(0.35 * toward), None);
             far.set_mask_filter(skia_safe::MaskFilter::blur(
                 skia_safe::BlurStyle::Normal,
                 9.0,
@@ -436,10 +436,7 @@ pub fn draw_breathing_glow(
             // Near halo: 8px blur, rose rgba(229,184,197,0.65).
             let mut near = Paint::default();
             near.set_anti_alias(true);
-            near.set_color4f(
-                skia_safe::Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.65 * toward),
-                None,
-            );
+            near.set_color4f(tokens::accent_rose_a(0.65 * toward), None);
             near.set_mask_filter(skia_safe::MaskFilter::blur(
                 skia_safe::BlurStyle::Normal,
                 4.0,
@@ -489,15 +486,9 @@ pub fn draw_tracked_glow(
     // true so the blur is DPI-correct.
     for pass in 0..2 {
         let (color, blur) = if pass == 0 {
-            (
-                skia_safe::Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 0.35 * i),
-                9.0,
-            )
+            (tokens::accent_berry_a(0.35 * i), 9.0)
         } else {
-            (
-                skia_safe::Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.65 * i),
-                4.0,
-            )
+            (tokens::accent_rose_a(0.65 * i), 4.0)
         };
         let mut p = Paint::default();
         p.set_anti_alias(true);

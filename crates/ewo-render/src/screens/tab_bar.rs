@@ -27,8 +27,9 @@
 //! }
 //! ```
 
+use crate::tokens;
 use ewo_core::Screen;
-use skia_safe::{Canvas, Color, Color4f, Paint, PaintStyle, RRect, Rect};
+use skia_safe::{Canvas, Paint, PaintStyle, RRect, Rect};
 
 use crate::text::{self, FontStore};
 
@@ -41,9 +42,6 @@ const ITEM_RADIUS: f32 = 10.0;
 const ITEM_GAP: f32 = 4.0;
 const LABEL_SIZE: f32 = 10.0;
 const LABEL_TRACKING_EM: f32 = 0.18;
-
-const TEXT_PEARL: Color = Color::from_argb(0xFF, 0xF4, 0xE8, 0xEA);
-const TEXT_MAUVE: Color = Color::from_argb(0xFF, 0x9A, 0x80, 0x87);
 
 /// Compute hit-rects for each tab in card-local coords. Caller (main.rs)
 /// uses these to route mouse clicks to a `Screen` change.
@@ -100,17 +98,14 @@ pub fn draw_tab_bar(
     // Bar background pill.
     let mut bar_bg = Paint::default();
     bar_bg.set_anti_alias(true);
-    bar_bg.set_color4f(Color4f::new(10.0 / 255.0, 0.0, 6.0 / 255.0, 0.5), None);
+    bar_bg.set_color4f(tokens::bg_wine_a_a(0.5), None);
     canvas.draw_rrect(bar_rrect, &bar_bg);
 
     let mut bar_rim = Paint::default();
     bar_rim.set_anti_alias(true);
     bar_rim.set_style(PaintStyle::Stroke);
     bar_rim.set_stroke_width(1.0);
-    bar_rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.18),
-        None,
-    );
+    bar_rim.set_color4f(tokens::accent_rose_a(0.18), None);
     canvas.draw_rrect(bar_rrect, &bar_rim);
 
     let font = fonts.jetbrains_mono(LABEL_SIZE);
@@ -125,29 +120,23 @@ pub fn draw_tab_bar(
             let pill = RRect::new_rect_xy(*rect, ITEM_RADIUS, ITEM_RADIUS);
             let mut bg = Paint::default();
             bg.set_anti_alias(true);
-            bg.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.12),
-                None,
-            );
+            bg.set_color4f(tokens::accent_rose_a(0.12), None);
             canvas.draw_rrect(pill, &bg);
 
             let mut stroke = Paint::default();
             stroke.set_anti_alias(true);
             stroke.set_style(PaintStyle::Stroke);
             stroke.set_stroke_width(1.0);
-            stroke.set_color4f(
-                Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.3),
-                None,
-            );
+            stroke.set_color4f(tokens::accent_rose_a(0.3), None);
             canvas.draw_rrect(pill, &stroke);
         }
 
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
         paint.set_color(if active || is_hover {
-            TEXT_PEARL
+            tokens::text_pearl()
         } else {
-            TEXT_MAUVE
+            tokens::text_mauve()
         });
 
         let baseline = rect.top + ITEM_PAD_Y + (-metrics.ascent);

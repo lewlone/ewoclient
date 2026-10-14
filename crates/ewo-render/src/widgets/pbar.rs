@@ -17,6 +17,7 @@
 //! `.pbar-bloom`, `.pbar-state-complete`, `.pbar-state-error.pbar-err-rose`,
 //! `.pbar-state-error.pbar-err-recede`, `.pbar-err-shimmer` in `StyleSheet1`.
 
+use crate::tokens;
 use ewo_core::Settings;
 use skia_safe::{
     gradient_shader, BlendMode, BlurStyle, Canvas, Color4f, MaskFilter, Paint, PaintStyle, Point,
@@ -85,7 +86,7 @@ pub fn draw_pbar(
             0.0
         } else {
             let t = age / recede;
-            let eased = ewo_core::CubicBezier::SILK.eval(t.clamp(0.0, 1.0));
+            let eased = tokens::silk().eval(t.clamp(0.0, 1.0));
             f_in * (1.0 - eased)
         }
     } else {
@@ -181,14 +182,14 @@ fn draw_track(canvas: &Canvas, rect: &Rect, rrect: &RRect, state: PbarState) {
     // ember band so the bare track reads as "errored" once the fill recedes.
     let stops: &[Color4f] = match state {
         PbarState::ErrorRecede => &[
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.15),
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.06),
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.15),
+            tokens::accent_ember_a(0.15),
+            tokens::accent_rose_a(0.06),
+            tokens::accent_ember_a(0.15),
         ],
         _ => &[
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
-            Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 0.12),
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.08),
+            tokens::accent_rose_a(0.08),
+            tokens::accent_lav_a(0.12),
+            tokens::accent_rose_a(0.08),
         ],
     };
     if let Some(shader) = gradient_shader::linear(
@@ -212,34 +213,31 @@ fn draw_track(canvas: &Canvas, rect: &Rect, rrect: &RRect, state: PbarState) {
     rim.set_anti_alias(true);
     rim.set_style(PaintStyle::Stroke);
     rim.set_stroke_width(0.5);
-    rim.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.12),
-        None,
-    );
+    rim.set_color4f(tokens::accent_rose_a(0.12), None);
     canvas.draw_rrect(*rrect, &rim);
 }
 
 fn draw_fill(canvas: &Canvas, rect: &Rect, rrect: &RRect, state: PbarState) {
     let stops: &[Color4f] = match state {
         PbarState::Normal | PbarState::ErrorShimmer | PbarState::ErrorRecede => &[
-            Color4f::new(212.0 / 255.0, 168.0 / 255.0, 184.0 / 255.0, 1.0), // #D4A8B8
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0), // #E5B8C5
-            Color4f::new(244.0 / 255.0, 212.0 / 255.0, 222.0 / 255.0, 1.0), // #F4D4DE
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0), // #E5B8C5
-            Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 1.0), // #C9A5D4
+            tokens::accent_rose_dusk_a(1.0), // #D4A8B8
+            tokens::accent_rose_a(1.0),      // #E5B8C5
+            tokens::accent_rose_pale_a(1.0), // #F4D4DE
+            tokens::accent_rose_a(1.0),      // #E5B8C5
+            tokens::accent_lav_a(1.0),       // #C9A5D4
         ],
         PbarState::Complete => &[
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0), // #E5B8C5
-            Color4f::new(244.0 / 255.0, 212.0 / 255.0, 222.0 / 255.0, 1.0), // #F4D4DE
-            Color4f::new(232.0 / 255.0, 212.0 / 255.0, 168.0 / 255.0, 1.0), // #E8D4A8
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0), // #E5B8C5
+            tokens::accent_rose_a(1.0),      // #E5B8C5
+            tokens::accent_rose_pale_a(1.0), // #F4D4DE
+            tokens::accent_champ_a(1.0),     // #E8D4A8
+            tokens::accent_rose_a(1.0),      // #E5B8C5
         ],
         // CSS `.pbar-state-error.pbar-err-rose .pbar-fill`:
         // linear-gradient(90deg, #A35A6C 0%, #C96A7A 50%, #D4889A 100%)
         PbarState::ErrorRose => &[
-            Color4f::new(163.0 / 255.0, 90.0 / 255.0, 108.0 / 255.0, 1.0), // #A35A6C
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 1.0), // #C96A7A
-            Color4f::new(212.0 / 255.0, 136.0 / 255.0, 154.0 / 255.0, 1.0), // #D4889A
+            tokens::accent_ember_deep_a(1.0), // #A35A6C
+            tokens::accent_ember_a(1.0),      // #C96A7A
+            tokens::accent_ember_text_a(1.0), // #D4889A
         ],
     };
     let positions: &[f32] = match state {
@@ -302,11 +300,11 @@ fn draw_flow(
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.0),
-                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.35 * opacity),
+                tokens::text_pearl_highlight_a(0.0),
+                tokens::text_pearl_highlight_a(0.35 * opacity),
                 Color4f::new(1.0, 1.0, 1.0, 0.55 * opacity),
-                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.35 * opacity),
-                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.0),
+                tokens::text_pearl_highlight_a(0.35 * opacity),
+                tokens::text_pearl_highlight_a(0.0),
             ],
             None,
         ),
@@ -343,28 +341,13 @@ fn draw_bloom(canvas: &Canvas, rect: &Rect, state: PbarState) {
     let radius = 9.0; // ellipse approx
     let (c0, c1) = if ember {
         (
-            Color4f::new(
-                212.0 / 255.0,
-                136.0 / 255.0,
-                154.0 / 255.0,
-                0.9 * bloom_alpha,
-            ),
-            Color4f::new(
-                201.0 / 255.0,
-                106.0 / 255.0,
-                122.0 / 255.0,
-                0.4 * bloom_alpha,
-            ),
+            tokens::accent_ember_text_a(0.9 * bloom_alpha),
+            tokens::accent_ember_a(0.4 * bloom_alpha),
         )
     } else {
         (
-            Color4f::new(1.0, 230.0 / 255.0, 238.0 / 255.0, 0.9 * bloom_alpha),
-            Color4f::new(
-                229.0 / 255.0,
-                184.0 / 255.0,
-                197.0 / 255.0,
-                0.4 * bloom_alpha,
-            ),
+            tokens::pearl_bloom_a(0.9 * bloom_alpha),
+            tokens::accent_rose_a(0.4 * bloom_alpha),
         )
     };
     if let Some(shader) = gradient_shader::radial(
@@ -395,10 +378,7 @@ fn draw_error_glow(canvas: &Canvas, fill_rrect: &RRect) {
     g.set_anti_alias(true);
     g.set_style(PaintStyle::Stroke);
     g.set_stroke_width(2.0);
-    g.set_color4f(
-        Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.4),
-        None,
-    );
+    g.set_color4f(tokens::accent_ember_a(0.4), None);
     g.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 4.0, false));
     canvas.draw_rrect(*fill_rrect, &g);
 }
@@ -417,7 +397,7 @@ fn draw_error_shimmer(
     let period = ERR_SHIM_DURATION / speed;
     let raw = (time / period).rem_euclid(1.0);
     // Silk easing on the position (CSS `cubic-bezier(0.22, 1, 0.36, 1)`).
-    let eased = ewo_core::CubicBezier::SILK.eval(raw);
+    let eased = tokens::silk().eval(raw);
     // Opacity envelope: 0→0, 0.2→1, 1→0. Linear ramp from 0.0..0.2, linear
     // fade from 0.2..1.0.
     let mut opacity = if raw < 0.2 {
@@ -447,11 +427,11 @@ fn draw_error_shimmer(
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.0),
-                Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.5 * opacity),
-                Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 0.6 * opacity),
-                Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.5 * opacity),
-                Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.0),
+                tokens::accent_ember_a(0.0),
+                tokens::accent_ember_a(0.5 * opacity),
+                tokens::text_pearl_a(0.6 * opacity),
+                tokens::accent_ember_a(0.5 * opacity),
+                tokens::accent_ember_a(0.0),
             ],
             None,
         ),
@@ -478,7 +458,7 @@ fn draw_complete_ring(canvas: &Canvas, fill_rect: &Rect, age: f32) {
         return;
     }
     let t = age / ring;
-    let eased = ewo_core::CubicBezier::SILK.eval(t.clamp(0.0, 1.0));
+    let eased = tokens::silk().eval(t.clamp(0.0, 1.0));
 
     let diameter = 4.0 + (RING_MAX_DIAMETER - 4.0) * eased;
     let opacity = 0.9 * (1.0 - eased);
@@ -491,10 +471,7 @@ fn draw_complete_ring(canvas: &Canvas, fill_rect: &Rect, age: f32) {
     p.set_anti_alias(true);
     p.set_style(PaintStyle::Stroke);
     p.set_stroke_width(border_w.max(0.5));
-    p.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, opacity),
-        None,
-    );
+    p.set_color4f(tokens::accent_rose_a(opacity), None);
     canvas.draw_circle((cx, cy), diameter * 0.5, &p);
 }
 
@@ -504,10 +481,7 @@ fn draw_complete_glow(canvas: &Canvas, _rect: &Rect, rrect: &RRect) {
     g.set_anti_alias(true);
     g.set_style(PaintStyle::Stroke);
     g.set_stroke_width(2.5);
-    g.set_color4f(
-        Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.45),
-        None,
-    );
+    g.set_color4f(tokens::accent_rose_a(0.45), None);
     g.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 6.0, false));
     canvas.draw_rrect(*rrect, &g);
 }

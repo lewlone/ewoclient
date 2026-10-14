@@ -12,7 +12,7 @@
 //!
 //! CSS reference (`StyleSheet2` `.settings-pathbtn` and `.settings-danger`).
 
-use ewo_core::CubicBezier;
+use crate::tokens;
 use skia_safe::{
     BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect,
 };
@@ -61,7 +61,7 @@ pub fn draw_vghost_btn(
         GhostKind::Danger => bounds.height() * 0.5,
     };
     let rrect = RRect::new_rect_xy(bounds, radius, radius);
-    let anim = CubicBezier::SILK.eval(state.hover_anim.clamp(0.0, 1.0));
+    let anim = tokens::silk().eval(state.hover_anim.clamp(0.0, 1.0));
 
     if anim > 0.001 {
         draw_glow(canvas, &rrect, kind, anim);
@@ -69,17 +69,17 @@ pub fn draw_vghost_btn(
 
     let (border_off, border_on, label_off, label_on, font_size) = match kind {
         GhostKind::Pearl => (
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.18),
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
-            Color4f::new(196.0 / 255.0, 175.0 / 255.0, 181.0 / 255.0, 1.0),
-            Color4f::new(244.0 / 255.0, 232.0 / 255.0, 234.0 / 255.0, 1.0),
+            tokens::accent_rose_a(0.18),
+            tokens::accent_rose_a(1.0),
+            tokens::text_mid_pearl_a(1.0),
+            tokens::text_pearl_a(1.0),
             13.0,
         ),
         GhostKind::Danger => (
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.30),
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.70),
-            Color4f::new(212.0 / 255.0, 136.0 / 255.0, 154.0 / 255.0, 1.0),
-            Color4f::new(229.0 / 255.0, 176.0 / 255.0, 189.0 / 255.0, 1.0),
+            tokens::accent_ember_a(0.30),
+            tokens::accent_ember_a(0.70),
+            tokens::accent_ember_text_a(1.0),
+            tokens::accent_rose_soft_a(1.0),
             14.0,
         ),
     };
@@ -109,14 +109,8 @@ pub fn draw_vghost_btn(
 
 fn draw_glow(canvas: &Canvas, rrect: &RRect, kind: GhostKind, anim: f32) {
     let (color, sigma) = match kind {
-        GhostKind::Pearl => (
-            Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.20 * anim),
-            7.0,
-        ),
-        GhostKind::Danger => (
-            Color4f::new(201.0 / 255.0, 106.0 / 255.0, 122.0 / 255.0, 0.20 * anim),
-            8.0,
-        ),
+        GhostKind::Pearl => (tokens::accent_rose_a(0.20 * anim), 7.0),
+        GhostKind::Danger => (tokens::accent_ember_a(0.20 * anim), 8.0),
     };
     let mut g = Paint::default();
     g.set_anti_alias(true);
