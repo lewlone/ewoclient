@@ -484,10 +484,9 @@ pub const EMISSIVE_VARIANT: u32 = 1 << 16;
 
 /// A round-robin atlas-slot ring that says **whose slot it just took**.
 ///
-/// Every dynamic pool in this file hands out `next % cap` and increments, and
-/// the field comment on `skin_next` states the hazard as if it were the design:
-/// *"a small network never fills 32, and wrap-around just recycles the oldest
-/// slot."* Recycling is fine for a pool nothing remembers. It is a real
+/// The trim and item pools hand out `next % cap` and increment. (The skin,
+/// cape and face pools, whose addresses the app stores, are [`LruSlots`].)
+/// Recycling is fine for a pool nothing remembers. It is a real
 /// aliasing bug for one with a **key → slot cache**, which `upload_trim` and
 /// `prepare_held_items` both have: after `cap` distinct uploads, two keys
 /// resolve to one slot, the older key's entry is still in the map, and every
@@ -536,6 +535,76 @@ impl<K: PartialEq> SlotRing<K> {
         let evicted = self.owner[slot as usize].take();
         self.owner[slot as usize] = Some(key);
         (slot, evicted)
+    }
+}
+
+/// A per-player atlas pool with **least-recently-used** eviction: the skin,
+/// cape and tab-face pools.
+///
+/// These pools hand the slot's address *out* (a skin UV delta, a cape origin,
+/// a face slot) and the app stores it per player, so a recycled slot is not a
+/// stale cache entry here but another player's texture under a remembered
+/// address. The old round-robin cursor overwrote slot 0 at the 33rd distinct
+/// player even while player #1 was on screen. This pool instead:
+///
+/// * reuses the slot the same owner already holds (a changed skin overwrites
+///   its own slot);
+/// * otherwise takes a free slot, lowest first (so a fresh pool fills in the
+///   order the round-robin did);
+/// * otherwise evicts the slot drawn least recently, **never one drawn in the
+///   current frame** ([`Self::touch`] since the last [`Self::begin_frame`]),
+///   and names the evicted owner so the caller can drop its address.
+///
+/// When every slot was drawn this frame, `claim` refuses: the newcomer keeps
+/// the default texture rather than taking a visible player's.
+pub(crate) struct LruSlots<K> {
+    owner: Vec<Option<K>>,
+    last_used: Vec<u64>,
+    /// Bumped once per drawn frame; a slot whose `last_used` equals it was
+    /// drawn (or claimed) in the current frame.
+    frame: u64,
+}
+
+impl<K: Copy + PartialEq> LruSlots<K> {
+    pub(crate) fn new(cap: u32) -> Self {
+        Self {
+            owner: vec![None; cap as usize],
+            last_used: vec![0; cap as usize],
+            frame: 1,
+        }
+    }
+
+    /// Start a new frame: slots drawn in the previous one become evictable
+    /// unless touched again.
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame += 1;
+    }
+
+    /// Record that `slot` is drawn this frame. Out-of-range slots (an address
+    /// that did not come from this pool) are ignored.
+    pub(crate) fn touch(&mut self, slot: u32) {
+        if let Some(t) = self.last_used.get_mut(slot as usize) {
+            *t = self.frame;
+        }
+    }
+
+    /// A slot for `key`: `Some((slot, evicted))`, where `evicted` is the other
+    /// owner that slot held until now (the caller must forget that owner's
+    /// address), or `None` when every slot is in use this frame.
+    pub(crate) fn claim(&mut self, key: K) -> Option<(u32, Option<K>)> {
+        let slot = match self.owner.iter().position(|o| *o == Some(key)) {
+            Some(i) => i,
+            None => match self.owner.iter().position(Option::is_none) {
+                Some(i) => i,
+                None => (0..self.owner.len())
+                    .filter(|&i| self.last_used[i] < self.frame)
+                    .min_by_key(|&i| (self.last_used[i], i))?,
+            },
+        };
+        let evicted = self.owner[slot].filter(|o| *o != key);
+        self.owner[slot] = Some(key);
+        self.last_used[slot] = self.frame;
+        Some((slot as u32, evicted))
     }
 }
 
@@ -629,6 +698,52 @@ fn skin_slot_origin(i: u32) -> (u32, u32) {
         (i % SKIN_POOL_COLS) * SKIN_SLOT,
         SKIN_POOL_Y + (i / SKIN_POOL_COLS) * SKIN_SLOT,
     )
+}
+
+/// The skin slot whose origin is (x, y), the inverse of [`skin_slot_origin`];
+/// `None` for any other texel.
+fn skin_slot_at(x: u32, y: u32) -> Option<u32> {
+    let row = y.checked_sub(SKIN_POOL_Y)?;
+    if !x.is_multiple_of(SKIN_SLOT) || !row.is_multiple_of(SKIN_SLOT) {
+        return None;
+    }
+    let (col, row) = (x / SKIN_SLOT, row / SKIN_SLOT);
+    (col < SKIN_POOL_COLS && row < SKIN_POOL_ROWS).then_some(row * SKIN_POOL_COLS + col)
+}
+
+/// The `EntityDraw::skin_uv` delta for skin slot `slot`: its origin relative
+/// to the baked player texture at `player_origin`, in UV units.
+fn skin_uv_of_slot(player_origin: (u32, u32), slot: u32) -> [f32; 2] {
+    let (sx, sy) = skin_slot_origin(slot);
+    let (px, py) = player_origin;
+    [
+        (sx as f32 - px as f32) / ATLAS_W as f32,
+        (sy as f32 - py as f32) / ATLAS_H as f32,
+    ]
+}
+
+/// The skin slot a `skin_uv` delta addresses, the inverse of
+/// [`skin_uv_of_slot`] (rounded to the texel: the delta went through `f32`
+/// division by a non-power-of-two height); `None` for a delta this pool did
+/// not hand out.
+fn skin_slot_of_uv(player_origin: (u32, u32), uv: [f32; 2]) -> Option<u32> {
+    let (px, py) = player_origin;
+    let x = (px as f32 + uv[0] * ATLAS_W as f32).round();
+    let y = (py as f32 + uv[1] * ATLAS_H as f32).round();
+    if !(x >= 0.0 && y >= 0.0) {
+        return None;
+    }
+    skin_slot_at(x as u32, y as u32)
+}
+
+/// The cape slot whose origin is (x, y), the inverse of [`cape_slot_origin`].
+fn cape_slot_at(x: u32, y: u32) -> Option<u32> {
+    let row = y.checked_sub(CAPE_POOL_Y)?;
+    if !x.is_multiple_of(CAPE_SLOT_W) || !row.is_multiple_of(CAPE_SLOT_H) {
+        return None;
+    }
+    let (col, row) = (x / CAPE_SLOT_W, row / CAPE_SLOT_H);
+    (col < CAPE_POOL_COLS && row < CAPE_POOL_ROWS).then_some(row * CAPE_POOL_COLS + col)
 }
 
 /// Atlas origin of dynamic item slot `i` (0..ITEM_SLOTS).
@@ -947,24 +1062,15 @@ pub struct EntityPass {
     trim_ring: SlotRing<String>,
     /// Round-robin ring over the item pool, like `trim_ring`.
     item_ring: SlotRing<u16>,
-    /// Next free dynamic skin slot, wrapping at `SKIN_SLOTS` (32).
-    ///
-    /// **This still aliases, and the alias is the caller's to see.** Unlike the
-    /// trim and item pools — which cache key → slot here and so could be fixed
-    /// here, by [`SlotRing`] evicting the stale key — this pool hands the
-    /// address *out* and the app stores it per-uuid forever
-    /// (`live_cmd`'s skin registry). The 33rd distinct player of a session
-    /// therefore overwrites slot 0 while player #1's stored `skin_uv` still
-    /// points at it, and player #1 renders wearing player #33's skin with
-    /// nothing anywhere reporting it. Closing it needs the slot returned
-    /// alongside the UV and the app dropping the evicted uuid's entry, which is
-    /// an API change through `WorldRenderer` and two registries, so it is
-    /// recorded rather than half-done.
-    skin_next: u32,
-    /// Round-robin cursor into the cape pool (M60) — the same, at 32 slots,
-    /// and worse in kind: a cape origin is an absolute texel address rather
-    /// than a delta, so a recycled one samples a *fixed* wrong rectangle.
-    cape_next: u32,
+    /// The dynamic skin pool (`SKIN_SLOTS`), keyed by player UUID, LRU over
+    /// the frames that drew each slot. This pool hands the address *out* and
+    /// the app stores it per UUID, so an eviction is returned to the caller,
+    /// which must drop the evicted player's address (see [`LruSlots`]).
+    skin_lru: LruSlots<u128>,
+    /// The cape pool (M60), the same at `CAPE_SLOTS`. A cape origin is an
+    /// absolute texel address rather than a delta, so an unreported recycle
+    /// would sample a *fixed* wrong rectangle.
+    cape_lru: LruSlots<u128>,
     /// Per-entity CEM variable state, persisted across frames (see [`CemVars`]).
     cem_state: std::collections::HashMap<u64, CemVars>,
     /// Frame generation, bumped once per `set_draws`; entities not drawn for
@@ -1496,8 +1602,8 @@ impl EntityPass {
                     .filter(|(k, _)| k.starts_with("humanoid"))
                     .map(|(k, v)| ((*k).to_string(), *v))
                     .collect(),
-                skin_next: 0,
-                cape_next: 0,
+                skin_lru: LruSlots::new(SKIN_SLOTS),
+                cape_lru: LruSlots::new(CAPE_SLOTS),
                 held_items: None,
                 item_slots: std::collections::HashMap::new(),
                 item_ring: SlotRing::new(ITEM_SLOTS),
@@ -1655,16 +1761,23 @@ impl EntityPass {
         Some((sx, sy))
     }
 
-    pub fn upload_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<[f32; 2], String> {
-        let slot = self.skin_next % SKIN_SLOTS;
-        self.skin_next += 1;
+    /// Upload `owner`'s 64x64 skin into the skin pool. Returns the UV delta
+    /// for `EntityDraw::skin_uv` and the owner whose slot was taken, if any:
+    /// that owner's stored delta now addresses this skin and must be dropped.
+    /// Errs when every slot was drawn this frame (see [`LruSlots`]).
+    pub fn upload_skin(
+        &mut self,
+        gpu: &mut Gpu,
+        owner: u128,
+        rgba: &[u8],
+    ) -> Result<([f32; 2], Option<u128>), String> {
+        let (slot, evicted) = self
+            .skin_lru
+            .claim(owner)
+            .ok_or("every skin slot is drawn this frame")?;
         let (sx, sy) = skin_slot_origin(slot);
         upload_region(gpu, self.image, rgba, sx, sy, SKIN_SLOT, SKIN_SLOT)?;
-        let (px, py) = self.player_origin;
-        Ok([
-            (sx as f32 - px as f32) / ATLAS_W as f32,
-            (sy as f32 - py as f32) / ATLAS_H as f32,
-        ])
+        Ok((skin_uv_of_slot(self.player_origin, slot), evicted))
     }
 
     /// Claim a cape slot and upload one player's cape sheet into it (M60).
@@ -1675,9 +1788,14 @@ impl EntityPass {
     /// builds UVs from this origin directly, the way `emit_armor` does with a
     /// trim's.
     ///
-    /// Round-robin with no eviction bookkeeping, as the pools before it: past
-    /// 32 resident capes the oldest slot is overwritten.
-    pub fn upload_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<(u32, u32), String> {
+    /// LRU per owner, like the skin pool: the second value is the owner whose
+    /// slot was taken, whose stored origin must be dropped.
+    pub fn upload_cape(
+        &mut self,
+        gpu: &mut Gpu,
+        owner: u128,
+        rgba: &[u8],
+    ) -> Result<((u32, u32), Option<u128>), String> {
         let want = (CAPE_SLOT_W * CAPE_SLOT_H * 4) as usize;
         if rgba.len() != want {
             return Err(format!(
@@ -1685,11 +1803,13 @@ impl EntityPass {
                 rgba.len()
             ));
         }
-        let slot = self.cape_next % CAPE_SLOTS;
-        self.cape_next += 1;
+        let (slot, evicted) = self
+            .cape_lru
+            .claim(owner)
+            .ok_or("every cape slot is drawn this frame")?;
         let (sx, sy) = cape_slot_origin(slot);
         upload_region(gpu, self.image, rgba, sx, sy, CAPE_SLOT_W, CAPE_SLOT_H)?;
-        Ok((sx, sy))
+        Ok(((sx, sy), evicted))
     }
 
     /// Facelabel mode only: kinds whose textures paint conflicting face
@@ -1831,6 +1951,25 @@ impl EntityPass {
         self.frame_dt = if dt > 0.0 { dt.min(0.25) } else { 1.0 / 20.0 };
         self.frame_counter += 1.0;
         self.generation = self.generation.wrapping_add(1);
+        // Mark the skin and cape slots this frame draws, so an upload before
+        // the next frame cannot evict a player who is on screen.
+        self.skin_lru.begin_frame();
+        self.cape_lru.begin_frame();
+        for d in draws {
+            if let Some(slot) = d
+                .skin_uv
+                .and_then(|uv| skin_slot_of_uv(self.player_origin, uv))
+            {
+                self.skin_lru.touch(slot);
+            }
+            if let Some(slot) = d
+                .cape
+                .as_ref()
+                .and_then(|c| cape_slot_at(c.origin.0, c.origin.1))
+            {
+                self.cape_lru.touch(slot);
+            }
+        }
         // Taken out of `self` so `emit_model` can borrow it mutably alongside
         // the immutable model borrow; put back below.
         let mut cem_state = std::mem::take(&mut self.cem_state);
@@ -6334,6 +6473,81 @@ fn build_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh pool fills lowest-first (the order the round-robin it replaced
+    /// used, so the gates' slot addresses are unchanged), and the same owner
+    /// keeps its slot.
+    #[test]
+    fn lru_slots_fill_in_order_and_reuse_an_owners_slot() {
+        let mut p: LruSlots<u128> = LruSlots::new(3);
+        assert_eq!(p.claim(10), Some((0, None)));
+        assert_eq!(p.claim(11), Some((1, None)));
+        assert_eq!(p.claim(10), Some((0, None)), "same owner, same slot");
+        assert_eq!(p.claim(12), Some((2, None)));
+    }
+
+    /// Full pool: the least recently drawn slot goes and its owner is named;
+    /// a slot drawn this frame is never taken, and when all are, the claim is
+    /// refused rather than overwriting a visible player.
+    #[test]
+    fn lru_slots_evict_least_recently_drawn_never_this_frame() {
+        let mut p: LruSlots<u128> = LruSlots::new(3);
+        for k in [10, 11, 12] {
+            p.claim(k);
+        }
+        // Frame A draws 10 and 12; frame B draws only 12.
+        p.begin_frame();
+        p.touch(0);
+        p.touch(2);
+        p.begin_frame();
+        p.touch(2);
+        // 11 was last drawn longest ago (at its claim), then 10.
+        assert_eq!(p.claim(20), Some((1, Some(11))));
+        assert_eq!(p.claim(21), Some((0, Some(10))));
+        // Slot 2 (drawn this frame) and the two just claimed this frame are
+        // all protected: refuse.
+        assert_eq!(p.claim(22), None);
+        // Next frame nothing is drawn yet: all three were last used in the
+        // previous frame, so the lowest index breaks the tie.
+        p.begin_frame();
+        assert_eq!(p.claim(22), Some((0, Some(21))));
+        // Out-of-range touches (an address from elsewhere) are ignored.
+        p.touch(99);
+    }
+
+    /// `skin_slot_at` / `cape_slot_at` invert the origin functions for every
+    /// slot and reject any other texel, so `set_draws` touches exactly the
+    /// slot a draw's address came from.
+    #[test]
+    fn pool_slot_lookup_inverts_the_origin() {
+        for i in 0..SKIN_SLOTS {
+            let (x, y) = skin_slot_origin(i);
+            assert_eq!(skin_slot_at(x, y), Some(i));
+            assert_eq!(skin_slot_at(x + 1, y), None);
+            // Through the f32 UV delta `upload_skin` returns, from a few
+            // plausible baked-player origins.
+            for origin in [(0, 0), (64, 128), (960, 1536)] {
+                let uv = skin_uv_of_slot(origin, i);
+                assert_eq!(skin_slot_of_uv(origin, uv), Some(i), "{origin:?}");
+            }
+        }
+        // The default skin (delta 0) is not a pool slot.
+        assert_eq!(skin_slot_of_uv((64, 128), [0.0, 0.0]), None);
+        assert_eq!(skin_slot_at(0, SKIN_POOL_Y - 1), None);
+        assert_eq!(
+            skin_slot_at(0, SKIN_POOL_Y + SKIN_POOL_ROWS * SKIN_SLOT),
+            None
+        );
+        for i in 0..CAPE_SLOTS {
+            let (x, y) = cape_slot_origin(i);
+            assert_eq!(cape_slot_at(x, y), Some(i));
+            assert_eq!(cape_slot_at(x, y + 1), None);
+        }
+        assert_eq!(
+            cape_slot_at(0, CAPE_POOL_Y + CAPE_POOL_ROWS * CAPE_SLOT_H),
+            None
+        );
+    }
 
     #[test]
     fn capsule_stays_inside_the_unit_bounds() {

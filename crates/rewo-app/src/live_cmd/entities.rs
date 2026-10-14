@@ -76,6 +76,12 @@ pub(crate) struct SkinLoader {
     pub(super) req_tx: std::sync::mpsc::Sender<(u128, TexKind, String, bool)>,
     pub(super) res_rx: std::sync::mpsc::Receiver<(u128, TexKind, bool, Vec<u8>)>,
     pub(super) requested: std::collections::HashSet<(u128, TexKind)>,
+    /// Each requested texture's URL and model, kept so a texture whose atlas
+    /// slot was taken by another player can be fetched again.
+    urls: std::collections::HashMap<(u128, TexKind), (String, bool)>,
+    /// Textures whose slot was evicted (least recently drawn) and not yet
+    /// re-requested. A tab face counts as `Skin`: it is cropped from the skin.
+    evicted: std::collections::HashSet<(u128, TexKind)>,
     pub(super) registry: SkinRegistry,
     /// The local player's UUID, set by the frame. Its textures are also kept
     /// as pixels, because the inventory's player preview has an atlas of its
@@ -114,6 +120,8 @@ impl SkinLoader {
             req_tx,
             res_rx,
             requested: std::collections::HashSet::new(),
+            urls: std::collections::HashMap::new(),
+            evicted: std::collections::HashSet::new(),
             registry: SkinRegistry::new(),
             own: None,
             own_preview: PreviewTextures::default(),
@@ -132,6 +140,7 @@ impl SkinLoader {
             if self.requested.len() < 2 * rewo_net::skins::MAX_TRACKED_SKINS
                 && self.requested.insert((uuid, kind))
             {
+                self.urls.insert((uuid, kind), (url.clone(), info.slim));
                 let _ = self.req_tx.send((uuid, kind, url.clone(), info.slim));
             }
         }
@@ -165,11 +174,11 @@ impl SkinLoader {
                                 strip[dst..dst + 32].copy_from_slice(&rgba[src..src + 32]);
                             }
                         }
-                        if let Some(slot) = wr.upload_tab_face(gpu, &strip) {
+                        if let Some(slot) = wr.upload_tab_face(gpu, uuid, &strip) {
                             self.registry.entry(uuid).or_default().face = Some(slot);
                         }
                     }
-                    if let Some(uv) = wr.upload_player_skin(gpu, &rgba) {
+                    if let Some(uv) = wr.upload_player_skin(gpu, uuid, &rgba) {
                         let e = self.registry.entry(uuid).or_default();
                         e.uv = uv;
                         e.slim = slim;
@@ -180,11 +189,58 @@ impl SkinLoader {
                     }
                 }
                 TexKind::Cape => {
-                    if let Some(o) = wr.upload_player_cape(gpu, &rgba) {
+                    if let Some(o) = wr.upload_player_cape(gpu, uuid, &rgba) {
                         self.registry.entry(uuid).or_default().cape = Some(o);
                         log::info!("cape: uploaded for {uuid:032x} at {o:?}");
                     }
                 }
+            }
+        }
+    }
+
+    /// Forget the atlas addresses of players whose slot another upload took
+    /// (the renderer evicts the least recently drawn, never one on screen this
+    /// frame). Their textures render as the default until re-fetched by
+    /// [`Self::refetch_evicted`].
+    pub(super) fn drop_evicted(&mut self, wr: &mut WorldRenderer) {
+        use rewo_gpu::world::PlayerTexture;
+        for (uuid, tex) in wr.take_evicted_textures() {
+            let Some(e) = self.registry.get_mut(&uuid) else {
+                continue;
+            };
+            let kind = match tex {
+                PlayerTexture::Skin => {
+                    e.uv = [0.0, 0.0];
+                    TexKind::Skin
+                }
+                PlayerTexture::Cape => {
+                    e.cape = None;
+                    TexKind::Cape
+                }
+                PlayerTexture::Face => {
+                    e.face = None;
+                    TexKind::Skin
+                }
+            };
+            log::info!("skin: atlas slot of {uuid:032x} reused ({tex:?})");
+            self.evicted.insert((uuid, kind));
+        }
+    }
+
+    /// Fetch again, once, each evicted texture whose player `wanted` says is
+    /// needed now. The upload that follows claims a slot no one drew this
+    /// frame, or none at all, so this cannot evict a player on screen.
+    pub(super) fn refetch_evicted(&mut self, wanted: impl Fn(u128) -> bool) {
+        let due: Vec<(u128, TexKind)> = self
+            .evicted
+            .iter()
+            .copied()
+            .filter(|(u, _)| wanted(*u))
+            .collect();
+        for key in due {
+            self.evicted.remove(&key);
+            if let Some((url, slim)) = self.urls.get(&key) {
+                let _ = self.req_tx.send((key.0, key.1, url.clone(), *slim));
             }
         }
     }

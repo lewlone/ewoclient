@@ -547,6 +547,17 @@ fn select_metas(
     all.into_iter().map(|(_, m)| m).collect()
 }
 
+/// Which per-player atlas pool an eviction came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerTexture {
+    Skin,
+    Cape,
+    Face,
+}
+
+/// The owner key the inventory preview's single player uploads under.
+const PREVIEW_OWNER: u128 = 0;
+
 /// A column whose geometry did not fit the mega-buffers, held (owned) until
 /// arena space frees, then re-uploaded by
 /// [`WorldRenderer::retry_deferred_columns`].
@@ -632,6 +643,9 @@ pub struct WorldRenderer {
     /// Columns unregistered by a failed upload submit; the caller re-meshes
     /// them ([`WorldRenderer::take_lost_columns`]).
     lost_columns: Vec<(i32, i32)>,
+    /// Players whose skin / cape / face slot an upload took since the last
+    /// [`WorldRenderer::take_evicted_textures`].
+    evicted_textures: Vec<(u128, PlayerTexture)>,
     // -- compute cull --
     cull_set_layout: vk::DescriptorSetLayout,
     cull_layout: vk::PipelineLayout,
@@ -1317,6 +1331,7 @@ impl WorldRenderer {
                 space_freed: false,
                 batch_columns: Vec::new(),
                 lost_columns: Vec::new(),
+                evicted_textures: Vec::new(),
                 cull_set_layout,
                 cull_layout,
                 cull_pipeline,
@@ -2563,18 +2578,17 @@ impl WorldRenderer {
         self.entities.as_ref()
     }
 
-    /// Upload a player's 64×64 skin into the entity atlas and return the UV
-    /// offset for its `EntityDraw::skin_uv`. `None` if the entity pass isn't
-    /// initialized (view/demo/bench paths).
-    /// The same, into the **preview** pass (M36).
+    /// [`Self::upload_player_skin`], into the **preview** pass (M36).
     ///
     /// A separate call because the two passes hold separate atlases, so a UV
     /// from one means nothing in the other — uploading once and reusing the
     /// offset would put a slice of some mob's texture on the player.
     pub fn upload_preview_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
         let pass = self.preview.as_mut()?;
-        match pass.upload_skin(gpu, rgba) {
-            Ok(uv) => Some(uv),
+        // The preview draws one player, the local one: a fixed owner, so a
+        // re-upload reuses its slot and nothing is ever evicted.
+        match pass.upload_skin(gpu, PREVIEW_OWNER, rgba) {
+            Ok((uv, _)) => Some(uv),
             Err(e) => {
                 log::warn!("preview: skin upload failed: {e}");
                 None
@@ -2595,10 +2609,23 @@ impl WorldRenderer {
         self.entities.as_mut()?.upload_trim(gpu, key, rgba, w, h)
     }
 
-    pub fn upload_player_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
+    /// Upload player `owner`'s 64x64 skin into the entity atlas and return the
+    /// UV offset for its `EntityDraw::skin_uv`. `None` if the entity pass
+    /// isn't initialized, or every skin slot is drawn this frame. A player
+    /// whose slot this took is queued for [`Self::take_evicted_textures`].
+    pub fn upload_player_skin(
+        &mut self,
+        gpu: &mut Gpu,
+        owner: u128,
+        rgba: &[u8],
+    ) -> Option<[f32; 2]> {
         let pass = self.entities.as_mut()?;
-        match pass.upload_skin(gpu, rgba) {
-            Ok(uv) => Some(uv),
+        match pass.upload_skin(gpu, owner, rgba) {
+            Ok((uv, evicted)) => {
+                self.evicted_textures
+                    .extend(evicted.map(|o| (o, PlayerTexture::Skin)));
+                Some(uv)
+            }
             Err(e) => {
                 log::warn!("entities: skin upload failed: {e}");
                 None
@@ -2609,9 +2636,13 @@ impl WorldRenderer {
     /// Claim a tab-list face slot and upload one player's 16x8 face strip
     /// (M155). `None` when there is no HUD pass, matching the four uploads
     /// around it.
-    pub fn upload_tab_face(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<u8> {
-        match self.hud.as_mut()?.upload_face(gpu, rgba) {
-            Ok(slot) => Some(slot),
+    pub fn upload_tab_face(&mut self, gpu: &mut Gpu, owner: u128, rgba: &[u8]) -> Option<u8> {
+        match self.hud.as_mut()?.upload_face(gpu, owner, rgba) {
+            Ok((slot, evicted)) => {
+                self.evicted_textures
+                    .extend(evicted.map(|o| (o, PlayerTexture::Face)));
+                Some(slot)
+            }
             Err(e) => {
                 log::warn!("hud: tab face upload failed: {e}");
                 None
@@ -2622,10 +2653,19 @@ impl WorldRenderer {
     /// Claim a cape slot and upload one player's cape sheet (M60). Returns
     /// the slot's atlas origin in texels — see `EntityPass::upload_cape` for
     /// why this is an origin and not a UV delta.
-    pub fn upload_player_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<(u32, u32)> {
+    pub fn upload_player_cape(
+        &mut self,
+        gpu: &mut Gpu,
+        owner: u128,
+        rgba: &[u8],
+    ) -> Option<(u32, u32)> {
         let pass = self.entities.as_mut()?;
-        match pass.upload_cape(gpu, rgba) {
-            Ok(o) => Some(o),
+        match pass.upload_cape(gpu, owner, rgba) {
+            Ok((o, evicted)) => {
+                self.evicted_textures
+                    .extend(evicted.map(|o| (o, PlayerTexture::Cape)));
+                Some(o)
+            }
             Err(e) => {
                 log::warn!("entities: cape upload failed: {e}");
                 None
@@ -2643,8 +2683,8 @@ impl WorldRenderer {
     /// wrong place rather than merely a shifted one.
     pub fn upload_preview_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<(u32, u32)> {
         let pass = self.preview.as_mut()?;
-        match pass.upload_cape(gpu, rgba) {
-            Ok(o) => Some(o),
+        match pass.upload_cape(gpu, PREVIEW_OWNER, rgba) {
+            Ok((o, _)) => Some(o),
             Err(e) => {
                 log::warn!("preview: cape upload failed: {e}");
                 None
@@ -2979,6 +3019,15 @@ impl WorldRenderer {
             }
         }
         submitted
+    }
+
+    /// Players whose skin, cape or tab face lost its atlas slot to another
+    /// player's upload since the last call (least recently drawn first to go;
+    /// a slot drawn in the current frame is never taken). Each one's stored
+    /// address now points at someone else's texture: drop it, and upload that
+    /// player's texture again when it is next needed.
+    pub fn take_evicted_textures(&mut self) -> Vec<(u128, PlayerTexture)> {
+        std::mem::take(&mut self.evicted_textures)
     }
 
     /// Columns whose upload batch failed to submit since the last call. They

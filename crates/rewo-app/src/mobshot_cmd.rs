@@ -561,7 +561,7 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             let url = info.url.as_deref().ok_or("profile carries no skin")?;
             let rgba = crate::skin_fetch::fetch_rgba64(url)?;
             let uv = wr
-                .upload_player_skin(gpu, &rgba)
+                .upload_player_skin(gpu, 1, &rgba)
                 .ok_or("skin upload failed")?;
             println!(
                 "[mobshot] skin: {name} → {} model, uploaded",
