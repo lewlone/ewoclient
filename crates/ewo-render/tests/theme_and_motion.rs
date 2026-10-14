@@ -55,7 +55,12 @@ fn mean_hue_change(before: &[u8], after: &[u8]) -> (f32, usize) {
         })
     };
     let (mut sx, mut sy, mut n) = (0.0_f64, 0.0_f64, 0);
-    for (a, b) in before.chunks_exact(4).zip(after.chunks_exact(4)) {
+    for (a, b) in before
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.as_chunks::<4>().0)
+    {
         // Skip untouched pixels and 1-2 level ripples: only a repainted
         // pixel says anything about its hue.
         let dist: i32 = (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).sum();

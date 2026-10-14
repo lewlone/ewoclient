@@ -175,8 +175,10 @@ pub fn render_scaled(
     }
     let dev = scene.dev.then(|| DevOverlayState::from_settings(settings));
     let instances = screens::instances::default_instances();
-    let mut instance_prefs = InstancePrefs::default();
-    instance_prefs.mods_on = vec![true; 8];
+    let instance_prefs = InstancePrefs {
+        mods_on: vec![true; 8],
+        ..InstancePrefs::default()
+    };
 
     draw_frame(
         surface.canvas(),
