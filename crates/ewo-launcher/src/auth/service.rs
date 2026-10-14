@@ -15,7 +15,7 @@
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Instant;
+use std::time::SystemTime;
 
 use super::chain::{self, ChainStage};
 use super::loopback::{self, LoopbackResult};
@@ -176,7 +176,7 @@ impl AuthService {
     /// How a launch right now should authenticate (see
     /// [`super::launch_auth`]).
     pub fn launch_auth(&self) -> super::LaunchAuth {
-        super::launch_auth(self.active(), Instant::now())
+        super::launch_auth(self.active(), SystemTime::now())
     }
 
     /// Whether any auth chain (sign-in or refresh) is running.
@@ -200,7 +200,7 @@ impl AuthService {
             || !super::token_needs_refresh(
                 &account.minecraft_token,
                 account.minecraft_token_expires_at,
-                Instant::now(),
+                SystemTime::now(),
             )
         {
             return false;

@@ -139,7 +139,10 @@ Subsystems:
   XBL/XSTS/MC) have hand-written redacting `Debug`. `--mint-rewo-env` saves a
   rotated refresh token back to `auth.toml`.
 - **Session lifetime** (`auth/mod.rs`): the Minecraft token's expiry is kept
-  in memory (serde-skipped, like the token). `launch_auth` decides each
+  in memory (serde-skipped, like the token) as a `TokenExpiry` on the **wall
+  clock** (`SystemTime`, issued + `expires_in`): `Instant` would not count
+  suspend on Linux (`CLOCK_MONOTONIC`), and a clock set back before the issue
+  time counts as expired. `launch_auth` decides each
   launch: Offline (no account), Ready, NeedsRefresh (no token, or within
   `TOKEN_REFRESH_MARGIN` = 10 min of expiry, with a refresh token), or
   Unavailable. A NeedsRefresh launch waits for the refresh on the auth worker
