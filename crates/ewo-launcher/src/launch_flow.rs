@@ -356,9 +356,12 @@ impl App {
     }
 
     /// Replace the Java-runtime dropdown's options with the detected
-    /// runtimes' labels (Auto is prepended here).
-    pub(crate) fn set_jre_labels(&mut self, detected: Vec<String>) {
-        self.jre_labels = screens::instances::java_runtime_options(&detected);
+    /// runtimes (Auto is prepended here), and keep every instance's pin on
+    /// its runtime however the list re-sorted.
+    pub(crate) fn set_jre_labels(&mut self, detected: Vec<(String, screens::instances::JavaPin)>) {
+        let (labels, pins): (Vec<String>, Vec<_>) = detected.into_iter().unzip();
+        self.jre_labels = screens::instances::java_runtime_options(&labels);
+        self.jre_pins = pins;
     }
 
     /// Deliver the warm-up scan's dropdown labels once, then mirror into
@@ -372,8 +375,12 @@ impl App {
                 self.set_jre_labels(detected);
             }
         }
-        if self.instance_prefs.jre_runtime_labels != self.jre_labels {
+        if self.instance_prefs.jre_runtime_labels != self.jre_labels
+            || self.instance_prefs.jre_runtime_pins != self.jre_pins
+        {
             self.instance_prefs.jre_runtime_labels = self.jre_labels.clone();
+            self.instance_prefs.jre_runtime_pins = self.jre_pins.clone();
+            self.instance_prefs.reselect_java(&self.instances);
         }
     }
 
@@ -393,7 +400,7 @@ impl App {
             // The worker already swapped the fresh scan into the cache,
             // so this is a cheap read. (A failed spawn invalidated the
             // cache instead; skip, rather than scan on the UI thread.)
-            self.set_jre_labels(launch::jre::labels());
+            self.set_jre_labels(launch::jre::listing());
         }
         let Some(p) = self.pending_relaunch.clone() else {
             return;
@@ -605,13 +612,16 @@ impl App {
             .as_ref()
             .map(|j| j.major_version)
             .unwrap_or(8);
-        // A per-instance pin (dropdown index >= 1) selects that exact
-        // runtime, but only while it still exists AND still satisfies the
-        // manifest's major requirement; a stale pin (JRE uninstalled, list
-        // reshuffled) falls back to auto with a warning rather than
-        // launching something wrong. `detect_jres` is the warmed cache.
-        let pinned =
-            launch::jre::resolve_pin(&launch::detect_jres(), inst.java_runtime, required_major);
+        // A per-instance pin (the runtime's identity) selects that runtime,
+        // but only while it still exists AND still satisfies the manifest's
+        // major requirement; a stale pin (JRE uninstalled) falls back to
+        // auto with a warning rather than launching something wrong.
+        // `detect_jres` is the warmed cache.
+        let pinned = launch::jre::resolve_pin(
+            &launch::detect_jres(),
+            inst.java_pin.as_ref(),
+            required_major,
+        );
         let jvm_path = match pinned.or_else(|| launch::pick_jre(required_major)) {
             Some(j) => {
                 log::info!(

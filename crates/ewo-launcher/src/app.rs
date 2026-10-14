@@ -103,6 +103,7 @@ impl App {
             pending_auth: None,
             jre_rescan_rx: None,
             jre_labels: screens::instances::java_runtime_options(&[]),
+            jre_pins: Vec::new(),
             jre_labels_rx: None,
             runtime_log_bucket: 0,
             celebrate_until: None,

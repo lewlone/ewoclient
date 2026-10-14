@@ -69,7 +69,16 @@ pub(crate) fn sync_instance_config(instances: &mut [Instance], prefs: &InstanceP
     if let Some(inst) = instances.get_mut(prefs.selected) {
         inst.ram = prefs.ram.value as u32;
         inst.render_distance = prefs.render_dist.value as u32;
-        inst.java_runtime = prefs.java_runtime.selected;
+    }
+}
+
+/// Store the Java-runtime dropdown's choice in the selected instance as a
+/// stable pin (`None` for Auto). Only called when the user picks in that
+/// dropdown: the runtime list may not have arrived yet at startup, and a
+/// slider change must not turn an unresolved pin into Auto.
+pub(crate) fn sync_java_pin(instances: &mut [Instance], prefs: &InstancePrefs) {
+    if let Some(inst) = instances.get_mut(prefs.selected) {
+        inst.java_pin = prefs.java_pin_for_selection();
     }
 }
 
@@ -170,13 +179,37 @@ mod tests {
         };
         prefs.ram.value = 12.0;
         prefs.render_dist.value = 24.0;
-        prefs.java_runtime.selected = 2;
         sync_instance_config(&mut list, &prefs);
-        assert_eq!(
-            (list[1].ram, list[1].render_distance, list[1].java_runtime),
-            (12, 24, 2)
-        );
+        assert_eq!((list[1].ram, list[1].render_distance), (12, 24));
         assert_eq!((list[0].ram, list[2].ram), (8, 8));
+    }
+
+    #[test]
+    fn only_the_dropdown_writes_the_java_pin() {
+        use ewo_render::screens::instances::JavaPin;
+        let pin = JavaPin {
+            path: "p".into(),
+            major: 21,
+        };
+        let mut list = three();
+        list[1].java_pin = Some(pin.clone());
+        let mut prefs = InstancePrefs {
+            selected: 1,
+            ..InstancePrefs::default()
+        };
+        // The list has not arrived (dropdown shows Auto): a slider edit must
+        // leave the stored pin alone.
+        prefs.ram.value = 10.0;
+        sync_instance_config(&mut list, &prefs);
+        assert_eq!(list[1].java_pin, Some(pin.clone()));
+        // The user picks the runtime, then Auto.
+        prefs.jre_runtime_pins = vec![pin.clone()];
+        prefs.java_runtime.selected = 1;
+        sync_java_pin(&mut list, &prefs);
+        assert_eq!(list[1].java_pin, Some(pin));
+        prefs.java_runtime.selected = 0;
+        sync_java_pin(&mut list, &prefs);
+        assert_eq!(list[1].java_pin, None);
     }
 
     #[test]

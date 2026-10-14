@@ -250,7 +250,7 @@ pub(crate) fn commit_new_instance(
         "just now".to_string(),
         seeded_mods,
     )
-    .with_config(form.ram, 16, 0)
+    .with_config(form.ram, 16)
     .with_loader(loader);
     // A fresh folder id — never the name, so a new instance can't inherit
     // a deleted same-named instance's folder.

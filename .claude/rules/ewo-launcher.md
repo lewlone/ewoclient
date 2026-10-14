@@ -189,10 +189,18 @@ Subsystems:
   and `ewo_core::util::atomic_write`'s temp name is unique per write
   (`.tmp-<pid>-<seq>`), so concurrent saves can't collide.
 - **Java runtime per instance**: the Instances dropdown is "Auto" followed by
-  the detected JREs. `Instance::java_runtime` is that index: `0` = auto
-  (`pick_for_major`), `N >= 1` = `detect_all()[N-1]`. A pin that is gone or
-  below the version's required major falls back to auto at launch with a
-  warning (`launch::jre::resolve_pin`).
+  the detected JREs, but an instance stores a **stable identity**
+  (`Instance::java_pin: Option<JavaPin { path, major }>`), not a list
+  position, so installing or removing a JRE never re-pins anything.
+  `InstancePrefs::jre_runtime_pins` mirrors the list; `reselect_java` points
+  the dropdown at the pin whenever the list changes, and only the dropdown
+  commit writes the pin (`instance_ops::sync_java_pin`). `launch::jre::resolve_pin`
+  finds the same binary, else another install of the pinned **major** (never
+  a newer one in its place), and a pin that is gone or below the version's
+  required major falls back to auto (`pick_for_major`, exact major first)
+  with a warning. The old `java_runtime = N` index (read as
+  `legacy_java_runtime`, never written) is reset to Auto on load with a log
+  line.
 - `window/icon.rs` hands the largest PNG frame of `assets/icon.ico` to
   winit's `with_window_icon` (the borderless window's taskbar/alt-tab icon;
   the exe's embedded icon only serves Explorer and shortcuts).

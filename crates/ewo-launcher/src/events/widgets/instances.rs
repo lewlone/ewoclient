@@ -111,6 +111,7 @@ pub(crate) fn handle_instances_press(
                 }
                 if commit {
                     sync_instance_config(instances, prefs);
+                    crate::instance_ops::sync_java_pin(instances, prefs);
                     persistence::save_instances(instances);
                 }
                 return true;

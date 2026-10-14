@@ -203,9 +203,12 @@ struct App {
     /// list through `jre_labels_rx`, and a finished bundled-JRE rescan
     /// refreshes it.
     jre_labels: Vec<String>,
+    /// The identity behind each runtime in `jre_labels` (entry N-1 for
+    /// dropdown index N), mirrored into `instance_prefs.jre_runtime_pins`.
+    jre_pins: Vec<screens::instances::JavaPin>,
     /// Delivery channel for the warm-up scan's label list. Drained once
     /// (the scan is cached in a `OnceLock`); `None` after delivery.
-    jre_labels_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    jre_labels_rx: Option<std::sync::mpsc::Receiver<Vec<(String, screens::instances::JavaPin)>>>,
     /// Last 10 % bucket of the runtime download logged to the launch log,
     /// so each bucket is logged once.
     runtime_log_bucket: u32,

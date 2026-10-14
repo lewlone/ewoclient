@@ -16,12 +16,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+use ewo_render::screens::instances::JavaPin;
+
 /// One detected Java runtime — the absolute path to its `java` binary
 /// + the major version it reports.
 #[derive(Debug, Clone)]
 pub struct DetectedJre {
     pub path: PathBuf,
     pub major: u32,
+}
+
+impl DetectedJre {
+    /// This runtime's stable identity, as an instance stores it.
+    pub fn pin(&self) -> JavaPin {
+        JavaPin {
+            path: self.path.display().to_string(),
+            major: self.major,
+        }
+    }
 }
 
 /// Lazy-initialized + invalidatable list of JREs the host has installed.
@@ -106,38 +118,48 @@ fn label_for(j: &DetectedJre) -> String {
     }
 }
 
-/// Dropdown-facing labels for every detected runtime, index-aligned with
-/// `detect_all()`'s output (sorted by major ascending). Index 0 of the
-/// UI's option list is the "Auto" pseudo-entry and lives caller-side;
-/// this starts at the first real runtime.
+/// The dropdown's runtimes: for every detected runtime (sorted by major
+/// ascending, as `detect_all()` returns them) its label and its identity.
+/// Index 0 of the UI's option list is the "Auto" pseudo-entry and lives
+/// caller-side; this starts at the first real runtime.
 ///
 /// Reads the cached scan, so call it from a worker, or once the cache is
-/// warm: a cold `detect_all` shells `java -version` per candidate. The
-/// strings come from disk paths, so they are only stable while the
-/// installed-JRE set is. A persisted `Instance::java_runtime` pin that
-/// points past the current list, or at a runtime that no longer meets
-/// the version's requirement, falls back to auto at launch time (see
+/// warm: a cold `detect_all` shells `java -version` per candidate. An
+/// instance stores the [`JavaPin`], not a position in this list, so the
+/// list may re-sort freely; a pin whose runtime is gone, or that no longer
+/// meets the version's requirement, falls back to auto at launch time (see
 /// [`resolve_pin`]).
-pub fn labels() -> Vec<String> {
-    detect_all().iter().map(label_for).collect()
+pub fn listing() -> Vec<(String, JavaPin)> {
+    detect_all()
+        .iter()
+        .map(|j| (label_for(j), j.pin()))
+        .collect()
 }
 
 /// Resolve a per-instance Java-runtime pin against a detected list.
-/// `pin` is the dropdown index: `0` = auto (returns `None`), `N >= 1`
-/// selects `all[N - 1]`. A pin is honoured only while it still exists
-/// and still satisfies `required`; otherwise `None`, so the caller falls
-/// back to [`pick_for_major`]. A stale pin logs a warning.
-pub fn resolve_pin(all: &[DetectedJre], pin: usize, required: u32) -> Option<DetectedJre> {
-    if pin == 0 {
-        return None;
-    }
-    let Some(j) = all.get(pin - 1) else {
+/// `None` = auto (returns `None`). Otherwise the pinned runtime is looked up
+/// by identity (see [`JavaPin::find`]: the same binary, else another install
+/// of the pinned major, never a newer major in its place) and honoured only
+/// while it still satisfies `required`; otherwise `None`, so the caller falls
+/// back to [`pick_for_major`] (exact major first). A pin that cannot be
+/// honoured logs a warning.
+pub fn resolve_pin(
+    all: &[DetectedJre],
+    pin: Option<&JavaPin>,
+    required: u32,
+) -> Option<DetectedJre> {
+    let pin = pin?;
+    let installed: Vec<JavaPin> = all.iter().map(DetectedJre::pin).collect();
+    let Some(i) = pin.find(&installed) else {
         log::warn!(
-            "launch: pinned Java runtime #{pin} is no longer installed ({} detected) - falling back to auto",
+            "launch: pinned Java {} ({}) is no longer installed ({} detected) - falling back to auto",
+            pin.major,
+            pin.path,
             all.len()
         );
         return None;
     };
+    let j = &all[i];
     if j.major < required {
         log::warn!(
             "launch: pinned Java {} can't satisfy required >= {} - falling back to auto",
@@ -332,6 +354,7 @@ fn scan_jre_root_recursive(root: &Path, out: &mut Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::{label_for, parse_major, resolve_pin, DetectedJre};
+    use ewo_render::screens::instances::JavaPin;
     use std::path::PathBuf;
 
     fn jre(major: u32, dir: &str) -> DetectedJre {
@@ -360,29 +383,46 @@ mod tests {
     }
 
     #[test]
-    fn pin_zero_is_auto() {
+    fn no_pin_is_auto() {
         let all = [jre(17, "a"), jre(21, "b")];
-        assert!(resolve_pin(&all, 0, 17).is_none());
+        assert!(resolve_pin(&all, None, 17).is_none());
     }
 
     #[test]
-    fn pin_selects_the_list_entry_one_behind_the_dropdown_index() {
+    fn a_pin_selects_its_runtime_by_identity_whatever_the_list_order() {
         let all = [jre(17, "a"), jre(21, "b")];
-        assert_eq!(resolve_pin(&all, 1, 17).unwrap().major, 17);
-        assert_eq!(resolve_pin(&all, 2, 17).unwrap().major, 21);
+        let pin_b = jre(21, "b").pin();
+        assert_eq!(resolve_pin(&all, Some(&pin_b), 17).unwrap().major, 21);
+        // A Java 8 install is added and sorts first: the pin does not move.
+        let more = [jre(8, "c"), jre(17, "a"), jre(21, "b")];
+        let got = resolve_pin(&more, Some(&pin_b), 17).unwrap();
+        assert_eq!((got.major, got.path), (21, jre(21, "b").path));
     }
 
     #[test]
-    fn stale_pin_past_the_list_falls_back_to_auto() {
-        let all = [jre(21, "b")];
-        assert!(resolve_pin(&all, 3, 17).is_none());
-        assert!(resolve_pin(&[], 1, 8).is_none());
+    fn a_removed_runtime_falls_back_to_auto_unless_its_major_is_still_installed() {
+        let pin = jre(21, "gone").pin();
+        // Gone, and nothing else of that major: auto.
+        assert!(resolve_pin(&[jre(17, "a"), jre(25, "z")], Some(&pin), 17).is_none());
+        assert!(resolve_pin(&[], Some(&pin), 8).is_none());
+        // Updated into another folder: the same major is preferred, even with
+        // a newer one installed.
+        let all = [jre(21, "new"), jre(25, "z")];
+        let got = resolve_pin(&all, Some(&pin), 17).unwrap();
+        assert_eq!(got.major, 21);
     }
 
     #[test]
     fn pin_below_the_required_major_falls_back_to_auto() {
         let all = [jre(17, "a"), jre(21, "b")];
-        assert!(resolve_pin(&all, 1, 21).is_none());
+        assert!(resolve_pin(&all, Some(&jre(17, "a").pin()), 21).is_none());
+    }
+
+    #[test]
+    fn a_pin_is_the_binary_path_and_major() {
+        let p: JavaPin = jre(21, "b").pin();
+        assert_eq!(p.path, r"C:\jvm\b\bin\java.exe");
+        assert_eq!(p.major, 21);
     }
 
     #[test]
