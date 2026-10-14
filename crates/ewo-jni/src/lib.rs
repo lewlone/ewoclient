@@ -77,6 +77,8 @@ pub mod audio;
 pub mod crosshair;
 pub mod fixture;
 pub mod hud;
+#[cfg(test)]
+mod java_mirror;
 pub mod media;
 pub mod modules;
 mod perf;

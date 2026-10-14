@@ -213,19 +213,24 @@ mod tests {
     fn buffer_layout_matches_the_schema() {
         let cfg = ModuleConfig::defaults();
         // write_buffer's safety contract requires at least the Java side's
-        // `EwoModuleData.CAPACITY` (4096). The old 256-byte fixture overflowed
+        // `EwoModuleData.CAPACITY` (read from the Java source). The old 256-byte fixture overflowed
         // twice over — 12 legit records × 40 B + header = 488 bytes written,
         // and reads up to offset 448 — which corrupted the stack and killed
         // the test process abnormally rather than failing an assert.
-        const CAPACITY: usize = 4096;
-        let mut buf = [0u8; CAPACITY];
+        let capacity = crate::java_mirror::get(
+            &crate::java_mirror::int_constants(&crate::java_mirror::read_java(
+                "EwoModuleData.java",
+            )),
+            "CAPACITY",
+        ) as usize;
+        let mut buf = vec![0u8; capacity];
         unsafe { cfg.write_buffer(buf.as_mut_ptr()) };
         let needed = OFF_RECORDS + catalog::REGISTRY.len() * RECORD;
         assert!(
-            needed <= CAPACITY,
+            needed <= capacity,
             "registry outgrew the Java-side capacity: {} > {}",
             needed,
-            CAPACITY
+            capacity
         );
         let i32_at = |o: usize| i32::from_ne_bytes(buf[o..o + 4].try_into().unwrap());
         assert_eq!(i32_at(0), SCHEMA_VERSION);
@@ -236,14 +241,68 @@ mod tests {
         }
     }
 
-    /// The Java reader (`ingame-mod/src/main/java/dev/lewlone/ewohud/
-    /// EwoModuleData.java`) hard-codes the matching constant in `ready()`.
-    /// Bump BOTH sides together: this pin exists because the 2026-05-26
-    /// post-ban bump was applied Java-side only, and nothing failed for three
-    /// months — a unilateral bump here would silently do it again.
+    /// Pins this file's wire layout to `EwoModuleData.java`, by reading the
+    /// Java source. Bump BOTH sides together: the 2026-05-26 post-ban bump was
+    /// applied Java-side only and nothing failed for three months, because the
+    /// old check compared a Rust literal to a second Rust literal. Now a
+    /// one-sided edit to the schema, a stride, an offset, the capacity or a
+    /// slot index fails here.
     #[test]
-    fn schema_version_matches_the_java_mirror() {
-        assert_eq!(SCHEMA_VERSION, 3);
+    fn module_layout_matches_the_java_mirror() {
+        use crate::java_mirror::{get, int_constants, read_java};
+        let java = int_constants(&read_java("EwoModuleData.java"));
+
+        assert_eq!(
+            get(&java, "SCHEMA_VERSION"),
+            SCHEMA_VERSION as i64,
+            "EwoModuleData.SCHEMA_VERSION and modules::SCHEMA_VERSION must be bumped together"
+        );
+        assert_eq!(get(&java, "OFF_RECORDS"), OFF_RECORDS as i64);
+        assert_eq!(get(&java, "RECORD"), RECORD as i64);
+        assert_eq!(
+            get(&java, "MAX_SETTINGS_PER_MODULE"),
+            catalog::MAX_SETTINGS as i64
+        );
+        // The registry (the full pvp one under `--features pvp`) must fit both
+        // the Java buffer and its module-count ceiling.
+        assert!(
+            required_bytes() as i64 <= get(&java, "CAPACITY"),
+            "registry needs {} bytes, EwoModuleData.CAPACITY is {}",
+            required_bytes(),
+            get(&java, "CAPACITY")
+        );
+        assert!(
+            catalog::REGISTRY.len() as i64 <= get(&java, "MAX_MODULES"),
+            "registry has {} modules, EwoModuleData.MAX_MODULES is {}",
+            catalog::REGISTRY.len(),
+            get(&java, "MAX_MODULES")
+        );
+
+        // Legit slot constants (`FULLBRIGHT = 0`, …) are indices into the
+        // registry: each must name the module the registry has in that slot.
+        const NOT_SLOTS: [&str; 6] = [
+            "SCHEMA_VERSION",
+            "CAPACITY",
+            "MAX_MODULES",
+            "OFF_RECORDS",
+            "RECORD",
+            "MAX_SETTINGS_PER_MODULE",
+        ];
+        let mut slots = 0;
+        for (name, &slot) in &java {
+            if NOT_SLOTS.contains(&name.as_str()) {
+                continue;
+            }
+            let id = name.to_ascii_lowercase();
+            assert_eq!(
+                catalog::index_of(&id),
+                Some(slot as usize),
+                "EwoModuleData.{name} = {slot} but the registry has {id:?} at {:?}",
+                catalog::index_of(&id)
+            );
+            slots += 1;
+        }
+        assert_eq!(slots, 12, "the 12 legit slots, in registry order");
     }
 
     #[test]

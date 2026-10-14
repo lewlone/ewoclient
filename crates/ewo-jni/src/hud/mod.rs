@@ -1336,3 +1336,6 @@ mod overlay_modules;
 use overlay_modules::*;
 mod overlay_crosshair;
 use overlay_crosshair::*;
+
+#[cfg(test)]
+mod schema_pin;
