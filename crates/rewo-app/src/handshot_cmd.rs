@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 38;
+const EXPECTED_WITNESSES: usize = 39;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -1108,6 +1108,70 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 installs_before,
                 wr.hand_atlas_installs(),
                 wr.hand_region_updates()
+            ),
+        );
+        // gm5 — the two-handed map's arms, through `renderMapHand`'s chain
+        // and the arm quads, with a solid cyan skin: cyan must appear on
+        // both sides of the map's centre column (`renderMapHand(RIGHT)` and
+        // `(LEFT)`), and none without a skin.
+        let skin: Vec<u8> = (0..64 * 64).flat_map(|_| [0u8, 255, 255, 255]).collect();
+        let (atlas_skin, _, uv_skin) = crate::live_cmd::pack_hand_atlas(
+            &rewo_gpu::held::HeldItems::default(),
+            &[],
+            Some(&skin),
+            Some(&crate::live_cmd::HeldMapTextures {
+                pixels: Some(&map_px),
+                checker: &checker,
+                background: &plain_bg,
+            }),
+        );
+        wr.init_hand(&mut gpu, &atlas_skin, atlas_side, atlas_side)?;
+        let a = atlas_side as f32;
+        let geo = rewo_gpu::hand::ArmGeometry {
+            skin_uv: [
+                crate::live_cmd::HAND_SKIN_X as f32 / a,
+                crate::live_cmd::HAND_SKIN_Y as f32 / a,
+                64.0 / a,
+                64.0 / a,
+            ],
+            slim: false,
+        };
+        let armed = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                // Looking straight down (pitch 90, tilt 0): the map stands
+                // up in front of the camera with a hand on each side.
+                // Looking ahead it lies low and tilted and the hands are
+                // below the frame, as in vanilla.
+                &rewo_gpu::hand::MapDraw {
+                    x_rot: 90.0,
+                    ..map_draw(true, true, uv_skin.expect("packed"))
+                },
+                Some(&geo),
+            ),
+        )?;
+        if let Some(d) = &args.out_dir {
+            let _ = off.save_png(&gpu, &d.join("handshot-map-arms.png"));
+        }
+        let (mut left, mut right) = (0usize, 0usize);
+        for (i, p) in armed.as_chunks::<4>().0.iter().enumerate() {
+            if p[0] < 30 && p[1] > 40 && (p[1] as i32 - p[2] as i32).abs() < 12 {
+                if (i as u32 % W) < W / 2 {
+                    left += 1;
+                } else {
+                    right += 1;
+                }
+            }
+        }
+        c.record(
+            "gm5.a_two_handed_map_holds_an_arm_on_each_side",
+            left > 200 && right > 200 && count(&two, [0, 255, 255]) == 0,
+            format!(
+                "cyan skin px left of centre {left}, right {right}; none in the skinless frame ({})",
+                count(&two, [0, 255, 255])
             ),
         );
         let (atlas_none, _, uv_none) = pack(None);

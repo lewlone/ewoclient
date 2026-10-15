@@ -248,8 +248,8 @@ pub(super) fn preview_draw<'a>(
 /// pass — and one pass because they share a matrix chain up to the point where
 /// they diverge.
 pub(crate) const HAND_ATLAS: u32 = 512;
-pub(super) const HAND_SKIN_X: u32 = 0;
-pub(super) const HAND_SKIN_Y: u32 = HAND_ATLAS - 64;
+pub(crate) const HAND_SKIN_X: u32 = 0;
+pub(crate) const HAND_SKIN_Y: u32 = HAND_ATLAS - 64;
 
 /// M192 — a held map's three textures in the hand atlas, `(x, y, w, h)`
 /// (claimed in `REWO_PLAN.md` §0.0's allocation table). Present only while a
