@@ -531,6 +531,12 @@ pub struct BakedAssets {
     /// item one above, which is the first of the three things that separate a
     /// worn piece's foil from a held stack's. `None` means no armour glint.
     pub armor_glint: Option<DecodedImage>,
+    /// `textures/map/map_background.png` (64 x 64) and
+    /// `map_background_checkerboard.png` (128 x 128), the held map's two
+    /// backgrounds (M192, `ItemInHandRenderer.MAP_BACKGROUND*`). `None` draws
+    /// no held map rather than an invented frame.
+    pub map_background: Option<DecodedImage>,
+    pub map_background_checkerboard: Option<DecodedImage>,
     /// `misc/forcefield.png` — the world-border wall (M80). `None` means the
     /// wall is not drawn at all, rather than an invented sheet.
     pub forcefield: Option<DecodedImage>,
@@ -1532,6 +1538,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     // they are different images — the worn foil is not the item foil at a
     // different scale, it is a different texture at a different scale.
     let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
+    let map_background = bake_map_texture(&mut jar, "map_background.png");
+    let map_background_checkerboard = bake_map_texture(&mut jar, "map_background_checkerboard.png");
     let forcefield = bake_misc_texture(&mut jar, "forcefield.png");
     let equipment = crate::equipment::EquipmentAssets::load(client_jar);
     let trims = crate::equipment::TrimAssets::load(client_jar);
@@ -1987,6 +1995,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         enchantment_text,
         glint,
         armor_glint,
+        map_background,
+        map_background_checkerboard,
         forcefield,
         equipment,
         trims,
@@ -2146,6 +2156,17 @@ fn upscale_to_tex_size(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
 fn bake_misc_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {
     let mut bytes = Vec::new();
     jar.by_name(&format!("assets/minecraft/textures/misc/{rel}"))
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let (rgba, w, h) = decode_png_any(&bytes)?;
+    Some(DecodedImage { rgba, w, h })
+}
+
+/// A texture under `assets/minecraft/textures/map/` (M192).
+fn bake_map_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {
+    let mut bytes = Vec::new();
+    jar.by_name(&format!("assets/minecraft/textures/map/{rel}"))
         .ok()?
         .read_to_end(&mut bytes)
         .ok()?;
@@ -5433,6 +5454,23 @@ mod tests {
     /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
     /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
     /// `block/block`, none of which sets `"ambientocclusion"`.
+    /// M192 — the held map's two backgrounds come out of the real jar at
+    /// their PNG sizes (64 x 64 and 128 x 128, read off the headers).
+    #[test]
+    fn the_map_backgrounds_are_baked_at_their_sizes() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let bg = baked.map_background.as_ref().expect("map_background.png");
+        assert_eq!((bg.w, bg.h, bg.rgba.len()), (64, 64, 64 * 64 * 4));
+        let cb = baked
+            .map_background_checkerboard
+            .as_ref()
+            .expect("map_background_checkerboard.png");
+        assert_eq!((cb.w, cb.h, cb.rgba.len()), (128, 128, 128 * 128 * 4));
+    }
+
     #[test]
     fn stone_takes_every_default() {
         let Some((baked, raw)) = real() else {
