@@ -251,6 +251,52 @@ pub(super) const HAND_ATLAS: u32 = 512;
 pub(super) const HAND_SKIN_X: u32 = 0;
 pub(super) const HAND_SKIN_Y: u32 = HAND_ATLAS - 64;
 
+/// M192 — a held map's three textures in the hand atlas, `(x, y, w, h)`
+/// (claimed in `REWO_PLAN.md` §0.0's allocation table). Present only while a
+/// map is held; the items then start at [`HAND_MAP_ITEM_Y`] instead of 0.
+pub(super) const HAND_MAP_PIXELS: (u32, u32, u32, u32) = (0, 0, 128, 128);
+/// `textures/map/map_background_checkerboard.png`, 128 x 128.
+pub(super) const HAND_MAP_CHECKER: (u32, u32, u32, u32) = (128, 0, 128, 128);
+/// `textures/map/map_background.png`, 64 x 64.
+pub(super) const HAND_MAP_BACKGROUND: (u32, u32, u32, u32) = (256, 0, 64, 64);
+pub(super) const HAND_MAP_ITEM_Y: u32 = 128;
+
+/// The RGBA a held map needs packed (M192): its pixels (`None` while the
+/// level does not hold the map — vanilla then draws the plain background and
+/// no pixels) and the two backgrounds from the jar.
+pub(super) struct HeldMapTextures<'a> {
+    pub pixels: Option<&'a [u8]>,
+    pub checker: &'a [u8],
+    pub background: &'a [u8],
+}
+
+/// Where [`pack_hand_atlas`] put a held map's textures, as atlas UV rects
+/// `(u0, v0, du, dv)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct HeldMapUv {
+    pub pixels: [f32; 4],
+    pub checker: [f32; 4],
+    pub background: [f32; 4],
+}
+
+fn atlas_rect_uv((x, y, w, h): (u32, u32, u32, u32)) -> [f32; 4] {
+    let a = HAND_ATLAS as f32;
+    [x as f32 / a, y as f32 / a, w as f32 / a, h as f32 / a]
+}
+
+/// Copy a `w x h` RGBA image into the atlas at `(x, y)`; a short source is
+/// skipped rather than read past.
+fn blit_into_atlas(rgba: &mut [u8], src: &[u8], (x, y, w, h): (u32, u32, u32, u32)) {
+    if src.len() < (w * h * 4) as usize {
+        return;
+    }
+    for row in 0..h {
+        let s = (row * w * 4) as usize;
+        let d = (((y + row) * HAND_ATLAS + x) * 4) as usize;
+        rgba[d..d + (w * 4) as usize].copy_from_slice(&src[s..s + (w * 4) as usize]);
+    }
+}
+
 /// Everything the hand needs across frames.
 pub struct HandState {
     /// The item textures resident in the atlas, and where each landed.
@@ -366,14 +412,34 @@ pub(super) fn pack_hand_atlas(
     held: &rewo_gpu::held::HeldItems,
     wanted: &[u16],
     skin: Option<&[u8]>,
-) -> (Vec<u8>, std::collections::HashMap<u16, [f32; 4]>) {
+    // M192 — a held map's textures, which take the top band and push the
+    // items down to `HAND_MAP_ITEM_Y`.
+    map: Option<&HeldMapTextures<'_>>,
+) -> (
+    Vec<u8>,
+    std::collections::HashMap<u16, [f32; 4]>,
+    Option<HeldMapUv>,
+) {
     let mut rgba = vec![0u8; (HAND_ATLAS * HAND_ATLAS * 4) as usize];
     let mut uv = std::collections::HashMap::new();
     let cols = HAND_ATLAS / GUI_ATLAS_SLOT;
+    let item_y = if map.is_some() { HAND_MAP_ITEM_Y } else { 0 };
+    let map_uv = map.map(|m| {
+        if let Some(px) = m.pixels {
+            blit_into_atlas(&mut rgba, px, HAND_MAP_PIXELS);
+        }
+        blit_into_atlas(&mut rgba, m.checker, HAND_MAP_CHECKER);
+        blit_into_atlas(&mut rgba, m.background, HAND_MAP_BACKGROUND);
+        HeldMapUv {
+            pixels: atlas_rect_uv(HAND_MAP_PIXELS),
+            checker: atlas_rect_uv(HAND_MAP_CHECKER),
+            background: atlas_rect_uv(HAND_MAP_BACKGROUND),
+        }
+    });
     for (slot, &tex) in wanted.iter().enumerate() {
         let (ox, oy) = (
             (slot as u32 % cols) * GUI_ATLAS_SLOT,
-            (slot as u32 / cols) * GUI_ATLAS_SLOT,
+            item_y + (slot as u32 / cols) * GUI_ATLAS_SLOT,
         );
         // The bottom row is the skin's; an item that would land there is
         // dropped rather than overlapping it.
@@ -411,7 +477,7 @@ pub(super) fn pack_hand_atlas(
             }
         }
     }
-    (rgba, uv)
+    (rgba, uv, map_uv)
 }
 
 /// Build and upload this frame's hand.
@@ -446,10 +512,13 @@ pub(super) fn apply_hand(
         }
     }
     if wanted != state.resident || !state.skin_resident || !wr.hand_ready() {
-        let (rgba, uv) = pack_hand_atlas(
+        // M192: no held map is packed yet (the bake does not load the two
+        // map backgrounds yet); see docs/rewo/M192-held-map-plan.md.
+        let (rgba, uv, _map_uv) = pack_hand_atlas(
             &state.held,
             &wanted,
             state.skin.as_ref().map(|(px, _)| px.as_slice()),
+            None,
         );
         if let Err(e) = wr.init_hand(gpu, &rgba, HAND_ATLAS, HAND_ATLAS) {
             log::warn!("live: hand atlas upload failed: {e}");

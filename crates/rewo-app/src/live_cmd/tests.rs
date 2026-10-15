@@ -3711,3 +3711,46 @@ fn a_map_tooltip_follows_map_id_add_to_tooltip() {
         ["ID #7", "Locked", "Scaling at 1:4", "(Level 2/4)"]
     );
 }
+
+// -- the held map's atlas band (M192) ---------------------------------------
+
+/// The three map textures land where the allocation table says, the items
+/// move below them, and with no map the items still start at the top.
+#[test]
+fn a_held_map_takes_the_top_band_of_the_hand_atlas() {
+    let px = |rgba: &[u8], x: u32, y: u32| {
+        let i = ((y * HAND_ATLAS + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+    };
+    let pixels = vec![10u8; 128 * 128 * 4];
+    let checker = vec![20u8; 128 * 128 * 4];
+    let background = vec![30u8; 64 * 64 * 4];
+    let maps = HeldMapTextures {
+        pixels: Some(&pixels),
+        checker: &checker,
+        background: &background,
+    };
+    let held = rewo_gpu::held::HeldItems::default();
+    let (rgba, _, uv) = pack_hand_atlas(&held, &[], None, Some(&maps));
+    assert_eq!(px(&rgba, 0, 0), [10; 4]);
+    assert_eq!(px(&rgba, 127, 127), [10; 4]);
+    assert_eq!(px(&rgba, 128, 0), [20; 4]);
+    assert_eq!(px(&rgba, 255, 127), [20; 4]);
+    assert_eq!(px(&rgba, 256, 0), [30; 4]);
+    assert_eq!(px(&rgba, 319, 63), [30; 4]);
+    assert_eq!(px(&rgba, 320, 0), [0; 4], "nothing past the background");
+    let uv = uv.expect("a map was packed");
+    assert_eq!(uv.pixels, [0.0, 0.0, 0.25, 0.25]);
+    assert_eq!(uv.checker, [0.25, 0.0, 0.25, 0.25]);
+    assert_eq!(uv.background, [0.5, 0.0, 0.125, 0.125]);
+    // An unknown map packs no pixels: that band stays transparent.
+    let unknown = HeldMapTextures {
+        pixels: None,
+        ..maps
+    };
+    let (rgba, _, _) = pack_hand_atlas(&held, &[], None, Some(&unknown));
+    assert_eq!(px(&rgba, 0, 0), [0; 4]);
+    assert_eq!(px(&rgba, 128, 0), [20; 4]);
+    let (_, _, none) = pack_hand_atlas(&held, &[], None, None);
+    assert!(none.is_none());
+}
