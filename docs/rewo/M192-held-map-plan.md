@@ -31,21 +31,18 @@ green slices, each passing clippy `-D warnings` and its tests:
 | `01cb138` | `hand::MapDraw` + `build_map_vertices` (arms via `append_arm`, background quad with vanilla's backwards-looking texture choice, pixel quad when data is present). | 4 (geometry) |
 | `fd78676` | `apply_hand` wiring: map branch from the inventory (`has_map_id`; two-handed = main hand + empty off-hand), `session.maps` via `StackDetail::map_id`, repack key `(map id, version, data present)`, the map's hand filtered out of `build_vertices`. | 4 (wiring) |
 | *(slice 7)* | Region re-upload: `WorldRenderer::update_hand_region` (+ `hand_atlas_installs` / `hand_region_updates` counters); `apply_hand` re-uploads only the 128x128 band when `map_version_only_changed`. `handshot` gm4 (38 witnesses): a second patch reaches the frame by region update with no full install. | 3 (re-upload), 5.3 |
+| *(slice 8)* | `held_map_branch` (pure, tested): the map branch from each hand's stack AND the equip clock's visible item, so mid-dip the outgoing item still draws as in vanilla; two-handed reads the off-hand's visible item; with maps in both hands the main hand's wins (one atlas band; recorded deviation). | 2, 3 (deviation fixed) |
 | `0056380` | `handshot` gm1-gm3 (`EXPECTED_WITNESSES` 34 -> 37), production packer + geometry under validation: palette texels reach the frame, one-handed placement, unknown map = plain background only. | 5 (partly) |
 
 **Still to do, in order:**
 
 1. ~~Region re-upload~~ **done in slice 7.**
-2. **Pull the branch decision out of `apply_hand`** into a pure function
-   (`held_map_branch(main, off) -> Option<(Arm, two_handed)>`) and test it:
-   map + off-hand item = one-handed in the main hand, the item still drawn;
-   map in the off-hand = one-handed left; map + empty off-hand = two-handed.
-   Then the plan's §3 witness 4 (branch) and witness 3 (re-upload, counting
-   `init_hand` calls).
-3. **Known deviation to fix or record:** the map is resolved from the held
-   stack, not from the equip clock's visible item, so during the swap dip the
-   map appears at once where vanilla's `mainHandItem` lags. Route it through
-   `EquipHeight::visible_item` plus the stack.
+2. ~~Branch decision as a pure function~~ **done in slice 8**
+   (`held_map_branch`, unit-tested over the seven cases).
+3. ~~Equip-dip deviation~~ **fixed in slice 8.** Still open and recorded:
+   the outgoing map during a swap AWAY from a map draws as the flat item
+   (the old stack's map id is gone by then), and two maps at once draw only
+   the main hand's.
 4. **render-check r69** (claimed): count frames whose hand vertices include a
    map quad, read back from the renderer; the owner runs
    `tools/render_check.py` (it opens a window).

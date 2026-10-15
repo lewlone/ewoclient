@@ -500,6 +500,35 @@ pub(crate) fn pack_hand_atlas(
     (rgba, uv, map_uv)
 }
 
+/// `ItemInHandRenderer`'s map branch (M192, `:440-452`): which hand draws a
+/// map, and whether two-handed. Each argument is `(item id, has MAP_ID)` for
+/// the hand's held stack, beside the equip clock's visible item.
+///
+/// - Vanilla draws `this.mainHandItem` / `offHandItem`, the renderer's own
+///   fields, which keep the OLD stack until the swap dip bottoms out. So a
+///   hand draws its map only once the clock shows that item
+///   (`visible == Some(item)`); mid-dip the outgoing item is still drawn.
+/// - Two-handed is `isMainHand && offHandItem.isEmpty()`, the off-hand's
+///   VISIBLE item.
+/// - The main hand wins when both hands hold maps: the atlas carries one
+///   map, so the off-hand's falls back to its flat item model (a recorded
+///   deviation; vanilla draws two one-handed maps).
+pub(super) fn held_map_branch(
+    main: Option<(i32, bool)>,
+    main_visible: Option<i32>,
+    off: Option<(i32, bool)>,
+    off_visible: Option<i32>,
+) -> Option<(rewo_gpu::hand::Arm, bool)> {
+    use rewo_gpu::hand::Arm;
+    match (main, off) {
+        (Some((item, true)), _) if main_visible == Some(item) => {
+            Some((Arm::Right, off_visible.is_none()))
+        }
+        (_, Some((item, true))) if off_visible == Some(item) => Some((Arm::Left, false)),
+        _ => None,
+    }
+}
+
 /// Whether the held map moved only in its contents (M192): the same map id,
 /// held and present before and after, with a different version. That is the
 /// one change a region re-upload can serve.
@@ -542,13 +571,17 @@ pub(super) fn apply_hand(
     let main_stack = session.inventory.held();
     let off_stack = session.inventory.offhand();
     let held_map = state.map_backgrounds.as_ref().and_then(|_| {
-        let (stack, arm) = match (main_stack, off_stack) {
-            (Some(m), _) if m.has_map_id => (m, Arm::Right),
-            (_, Some(o)) if o.has_map_id => (o, Arm::Left),
-            _ => return None,
-        };
+        let (arm, two_handed) = held_map_branch(
+            main_stack.map(|s| (s.item_id, s.has_map_id)),
+            state.main_equip.visible_item(),
+            off_stack.map(|s| (s.item_id, s.has_map_id)),
+            state.off_equip.visible_item(),
+        )?;
+        let stack = match arm {
+            Arm::Right => main_stack,
+            Arm::Left => off_stack,
+        }?;
         let id = session.stack_details.get(stack.components)?.map_id?;
-        let two_handed = arm == Arm::Right && off_stack.is_none();
         Some((id, arm, two_handed))
     });
     let map_key = held_map.map(|(id, _, _)| {

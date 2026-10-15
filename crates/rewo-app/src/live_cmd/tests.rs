@@ -3773,3 +3773,44 @@ fn only_a_held_maps_new_version_is_a_region_upload() {
     assert!(!f(Some((3, 1, true)), None), "map put away");
     assert!(!f(None, Some((3, 1, true))), "map taken out");
 }
+
+/// M192 — `ItemInHandRenderer`'s map branch, with the renderer's lagging
+/// item fields modelled by the equip clock's visible item.
+#[test]
+fn the_held_map_branch_follows_the_renderers_own_stacks() {
+    use rewo_gpu::hand::Arm;
+    const MAP: i32 = 900;
+    const SWORD: i32 = 7;
+    let map = Some((MAP, true));
+    let sword = Some((SWORD, false));
+    // Main hand map, empty off-hand: two-handed.
+    assert_eq!(
+        held_map_branch(map, Some(MAP), None, None),
+        Some((Arm::Right, true))
+    );
+    // Main hand map, an item in the off-hand: one-handed right.
+    assert_eq!(
+        held_map_branch(map, Some(MAP), sword, Some(SWORD)),
+        Some((Arm::Right, false))
+    );
+    // Map in the off-hand only: one-handed left.
+    assert_eq!(
+        held_map_branch(sword, Some(SWORD), map, Some(MAP)),
+        Some((Arm::Left, false))
+    );
+    // Mid-dip: the map is held but the clock still shows the sword.
+    assert_eq!(held_map_branch(map, Some(SWORD), None, None), None);
+    // Two-handed reads the off-hand's VISIBLE item: an off-hand still
+    // dipping out keeps it one-handed.
+    assert_eq!(
+        held_map_branch(map, Some(MAP), None, Some(SWORD)),
+        Some((Arm::Right, false))
+    );
+    // No map anywhere.
+    assert_eq!(held_map_branch(sword, Some(SWORD), None, None), None);
+    // Both hands hold maps: the main hand's wins (one atlas band).
+    assert_eq!(
+        held_map_branch(map, Some(MAP), map, Some(MAP)),
+        Some((Arm::Right, false))
+    );
+}
