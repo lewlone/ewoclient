@@ -3729,6 +3729,7 @@ fn a_held_map_takes_the_top_band_of_the_hand_atlas() {
         pixels: Some(&pixels),
         checker: &checker,
         background: &background,
+        decorations: &[],
     };
     let held = rewo_gpu::held::HeldItems::default();
     let (rgba, _, uv) = pack_hand_atlas(&held, &[], None, Some(&maps));

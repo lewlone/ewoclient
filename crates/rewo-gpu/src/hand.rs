@@ -901,6 +901,27 @@ pub struct MapDraw {
     pub uv_background: [f32; 4],
 }
 
+/// One map decoration to draw on a held map (`MapRenderer.render`'s loop):
+/// its map-local position in half-pixels, its rotation in sixteenths, and its
+/// sprite's atlas UV rect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapDecoQuad {
+    pub x: i8,
+    pub y: i8,
+    pub rot: u8,
+    pub uv: [f32; 4],
+}
+
+/// A decoration's pose in the map's 0..128 units (`MapRenderer.java:47-53`):
+/// `translate(x / 2 + 64, y / 2 + 64, -0.02) rotZ(rot * 360 / 16) scale(4, 4,
+/// 3) translate(-0.125, 0.125, 0)`.
+pub fn map_decoration_pose(x: i8, y: i8, rot: u8) -> Mat4 {
+    translate(f32::from(x) / 2.0 + 64.0, f32::from(y) / 2.0 + 64.0, -0.02)
+        * rot_z(f32::from(rot) * 360.0 / 16.0)
+        * Mat4::from_scale(Vec3::new(4.0, 4.0, 3.0))
+        * translate(-0.125, 0.125, 0.0)
+}
+
 /// One frame's held-map vertices (M192): the arm(s), the background quad and,
 /// when the level holds the map, its pixels. The caller leaves the map's hand
 /// out of [`build_vertices`]' list (vanilla's map branch replaces the item
@@ -912,6 +933,10 @@ pub struct MapDraw {
 pub fn build_map_vertices(
     view: Mat4,
     map: &MapDraw,
+    // The map's decorations, drawn over its pixels only when the data is
+    // present (they are `MapRenderer.render`'s, which `renderMap` calls only
+    // then). Each is a sprite quad `(-1,1)..(1,-1)` at `z = count * -0.001`.
+    decorations: &[MapDecoQuad],
     arm_geometry: Option<&ArmGeometry>,
 ) -> Vec<GuiItemVertex> {
     let mut out = Vec::new();
@@ -953,6 +978,22 @@ pub fn build_map_vertices(
             &in_rect(&MAP_PIXELS_QUAD.1, map.uv_pixels),
             1.0,
         );
+        for (count, d) in decorations.iter().enumerate() {
+            let z = count as f32 * -0.001;
+            let (u0, v0, u1, v1) = (d.uv[0], d.uv[1], d.uv[0] + d.uv[2], d.uv[1] + d.uv[3]);
+            quad_verts(
+                &mut out,
+                &(m * map_decoration_pose(d.x, d.y, d.rot)),
+                &[
+                    [-1.0, 1.0, z],
+                    [1.0, 1.0, z],
+                    [1.0, -1.0, z],
+                    [-1.0, -1.0, z],
+                ],
+                &[[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
+                1.0,
+            );
+        }
     }
     out
 }
@@ -1414,7 +1455,7 @@ mod m192_held_map {
     /// with data and from the plain background without (vanilla's choice).
     #[test]
     fn the_map_quads_pick_their_textures_as_render_map_does() {
-        let with = build_map_vertices(Mat4::IDENTITY, &draw(true, true), None);
+        let with = build_map_vertices(Mat4::IDENTITY, &draw(true, true), &[], None);
         assert_eq!(with.len(), 12);
         let us: Vec<f32> = with[..6].iter().map(|v| v.uv[0]).collect();
         assert!(
@@ -1426,7 +1467,7 @@ mod m192_held_map {
             px.iter().all(|&u| (0.0..=0.25).contains(&u)),
             "pixels: {px:?}"
         );
-        let without = build_map_vertices(Mat4::IDENTITY, &draw(true, false), None);
+        let without = build_map_vertices(Mat4::IDENTITY, &draw(true, false), &[], None);
         assert_eq!(without.len(), 6, "no data: background only");
         assert!(without.iter().all(|v| (0.5..=0.625).contains(&v.uv[0])));
         // The pixel quad's centre is the pose's map centre.
@@ -1444,5 +1485,37 @@ mod m192_held_map {
         assert_eq!(MAP_PIXELS_QUAD.0[0][2], -0.01);
         assert_eq!(MAP_BACKGROUND_QUAD.0[0], [-7.0, 135.0, 0.0]);
         assert_eq!(MAP_BACKGROUND_QUAD.0[2], [135.0, -7.0, 0.0]);
+    }
+
+    /// A decoration at the map's centre (x = y = 0) lands on the map centre;
+    /// one at x = -128 sits 64 map units left of it; each is a 2 x 2 quad
+    /// scaled by 4, i.e. 8 map units wide, and rotation 4 is a quarter turn.
+    #[test]
+    fn decorations_sit_at_half_pixel_positions_eight_units_wide() {
+        let centre = map_decoration_pose(0, 0, 0).transform_point3(Vec3::new(0.0, 0.0, 0.0));
+        // translate(-0.125, 0.125) * 4 offsets the quad's own origin.
+        assert!(
+            close(centre, Vec3::new(64.0 - 0.5, 64.0 + 0.5, -0.02)),
+            "{centre:?}"
+        );
+        let left = map_decoration_pose(-128, 0, 0).transform_point3(Vec3::ZERO);
+        assert!((left.x - (64.0 - 64.0 - 0.5)).abs() < 1e-4, "{left:?}");
+        let a = map_decoration_pose(0, 0, 0).transform_point3(Vec3::new(-1.0, 1.0, 0.0));
+        let b = map_decoration_pose(0, 0, 0).transform_point3(Vec3::new(1.0, 1.0, 0.0));
+        assert!(((b.x - a.x) - 8.0).abs() < 1e-4);
+        let r = map_decoration_pose(0, 0, 4).transform_point3(Vec3::new(1.0, 0.0, 0.0))
+            - map_decoration_pose(0, 0, 4).transform_point3(Vec3::ZERO);
+        assert!(close(r, Vec3::new(0.0, 4.0, 0.0)), "quarter turn: {r:?}");
+        // Drawn only with data, after the pixels, six vertices each.
+        let mut d = draw(true, true);
+        let one = [MapDecoQuad {
+            x: 0,
+            y: 0,
+            rot: 0,
+            uv: [0.0, 0.0, 0.1, 0.1],
+        }];
+        assert_eq!(build_map_vertices(Mat4::IDENTITY, &d, &one, None).len(), 18);
+        d.data_present = false;
+        assert_eq!(build_map_vertices(Mat4::IDENTITY, &d, &one, None).len(), 6);
     }
 }
