@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 34;
+const EXPECTED_WITNESSES: usize = 37;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -953,6 +953,140 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             "g7.clearing_the_hand_restores_the_empty_frame",
             again == empty,
             "byte-identical, so no witness above read a stale buffer",
+        );
+
+        // -- the held map (M192) --------------------------------------------
+        //
+        // Through the production packer (`pack_hand_atlas`) and geometry
+        // (`build_map_vertices`), with the map's pixels from a `MapStore`
+        // patch run through `ClientMap::rgba` — GRASS at NORMAL brightness,
+        // (109, 153, 48), M190's hand-computed value. The backgrounds are
+        // synthetic solid colours (the real PNGs are checked by
+        // `the_map_backgrounds_are_baked_at_their_sizes`): yellow for the
+        // plain one, blue for the checkerboard.
+        let mut store = rewo_world::maps::MapStore::default();
+        store.apply(&rewo_world::maps::MapItemData {
+            map_id: 1,
+            scale: 0,
+            locked: false,
+            decorations: None,
+            patch: Some(rewo_world::maps::MapPatch {
+                start_x: 0,
+                start_y: 0,
+                width: 128,
+                height: 128,
+                colors: vec![1 << 2 | 1; 128 * 128],
+            }),
+        });
+        let map_px = store.get(1).expect("applied").rgba();
+        let plain_bg: Vec<u8> = (0..64 * 64).flat_map(|_| [255u8, 255, 0, 255]).collect();
+        let checker: Vec<u8> = (0..128 * 128).flat_map(|_| [0u8, 0, 255, 255]).collect();
+        let pack = |pixels: Option<&[u8]>| {
+            crate::live_cmd::pack_hand_atlas(
+                &rewo_gpu::held::HeldItems::default(),
+                &[],
+                None,
+                Some(&crate::live_cmd::HeldMapTextures {
+                    pixels,
+                    checker: &checker,
+                    background: &plain_bg,
+                }),
+            )
+        };
+        let count = |img: &[u8], want: [u8; 3]| -> usize {
+            img.as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| (0..3).all(|k| (p[k] as i32 - want[k] as i32).abs() <= 3))
+                .count()
+        };
+        let map_draw = |two_handed: bool, data: bool, uv: crate::live_cmd::HeldMapUv| {
+            rewo_gpu::hand::MapDraw {
+                arm: Arm::Right,
+                two_handed,
+                x_rot: 0.0,
+                inverse_height: 0.0,
+                attack: 0.0,
+                data_present: data,
+                uv_pixels: uv.pixels,
+                uv_checker: uv.checker,
+                uv_background: uv.background,
+            }
+        };
+        let atlas_side = crate::live_cmd::HAND_ATLAS;
+        let (atlas_with, _, uv_with) = pack(Some(&map_px));
+        let uv_with = uv_with.expect("a map was packed");
+        wr.init_hand(&mut gpu, &atlas_with, atlas_side, atlas_side)?;
+        let two = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(true, true, uv_with),
+                None,
+            ),
+        )?;
+        let grass = count(&two, [109, 153, 48]);
+        let blue = count(&two, [0, 0, 255]);
+        c.record(
+            "gm1.a_held_maps_pixels_reach_the_frame_in_the_palettes_colour",
+            grass > 5000 && blue > 0 && count(&two, [255, 255, 0]) == 0,
+            format!(
+                "{grass} px of GRASS-NORMAL (109,153,48) from the map patch, {blue} px of \
+                 the checkerboard around them (with data `renderMap` picks the \
+                 checkerboard) and no plain-background yellow"
+            ),
+        );
+        let one = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(false, true, uv_with),
+                None,
+            ),
+        )?;
+        let (mut sx, mut n1) = (0u64, 0u64);
+        for (i, p) in one.as_chunks::<4>().0.iter().enumerate() {
+            if (0..3).all(|k| (p[k] as i32 - [109, 153, 48][k]).abs() <= 3) {
+                sx += (i as u32 % W) as u64;
+                n1 += 1;
+            }
+        }
+        let mean_x = sx.checked_div(n1).unwrap_or(0);
+        c.record(
+            "gm2.a_one_handed_map_sits_on_its_hands_side_and_smaller",
+            n1 > 500 && (n1 as usize) < grass && mean_x > W as u64 / 2,
+            format!(
+                "one-handed in the right hand: {n1} map px (two-handed {grass}; \
+                 `renderTwoHandedMap` scales by 2), centred at x {mean_x} of {W}"
+            ),
+        );
+        let (atlas_none, _, uv_none) = pack(None);
+        wr.init_hand(&mut gpu, &atlas_none, atlas_side, atlas_side)?;
+        let unknown = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(true, false, uv_none.expect("packed")),
+                None,
+            ),
+        )?;
+        c.record(
+            "gm3.an_unknown_map_draws_the_plain_background_and_no_pixels",
+            count(&unknown, [109, 153, 48]) == 0
+                && count(&unknown, [255, 255, 0]) > 5000
+                && count(&unknown, [0, 0, 255]) == 0,
+            format!(
+                "with no data: {} px plain-background yellow, {} map px, {} checkerboard px",
+                count(&unknown, [255, 255, 0]),
+                count(&unknown, [109, 153, 48]),
+                count(&unknown, [0, 0, 255])
+            ),
         );
         Ok(())
     })();

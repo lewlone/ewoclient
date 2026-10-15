@@ -247,7 +247,7 @@ pub(super) fn preview_draw<'a>(
 /// One texture rather than two draws, because the arm and the item are one
 /// pass — and one pass because they share a matrix chain up to the point where
 /// they diverge.
-pub(super) const HAND_ATLAS: u32 = 512;
+pub(crate) const HAND_ATLAS: u32 = 512;
 pub(super) const HAND_SKIN_X: u32 = 0;
 pub(super) const HAND_SKIN_Y: u32 = HAND_ATLAS - 64;
 
@@ -264,7 +264,7 @@ pub(super) const HAND_MAP_ITEM_Y: u32 = 128;
 /// The RGBA a held map needs packed (M192): its pixels (`None` while the
 /// level does not hold the map — vanilla then draws the plain background and
 /// no pixels) and the two backgrounds from the jar.
-pub(super) struct HeldMapTextures<'a> {
+pub(crate) struct HeldMapTextures<'a> {
     pub pixels: Option<&'a [u8]>,
     pub checker: &'a [u8],
     pub background: &'a [u8],
@@ -273,7 +273,7 @@ pub(super) struct HeldMapTextures<'a> {
 /// Where [`pack_hand_atlas`] put a held map's textures, as atlas UV rects
 /// `(u0, v0, du, dv)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct HeldMapUv {
+pub(crate) struct HeldMapUv {
     pub pixels: [f32; 4],
     pub checker: [f32; 4],
     pub background: [f32; 4],
@@ -428,7 +428,7 @@ pub(super) fn hand_view_proj(aspect: f32) -> glam::Mat4 {
 }
 
 /// Pack the hand atlas: the item textures the two hands need, plus the skin.
-pub(super) fn pack_hand_atlas(
+pub(crate) fn pack_hand_atlas(
     held: &rewo_gpu::held::HeldItems,
     wanted: &[u16],
     skin: Option<&[u8]>,
