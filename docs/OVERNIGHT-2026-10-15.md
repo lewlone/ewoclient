@@ -65,10 +65,11 @@ Every milestone has its `REWO_PLAN.md` §15 entry; §0.0's open list is updated.
 
 ## Verification (measured, end of night)
 
-Final, on a clean tree at `9ce9023` (the code of `cb9dd4a`; `python tools/numbers.py` writes
-§0.0's block): **4,233 tests passed, 0 failed, 0 skipped; `tools/gates.py`
-49/49 rows** (the demo hash unchanged, `d7dc9e8985f0504f`). Baseline was
-4,200. Run after each milestone as well: `cargo fmt --check`, `cargo clippy
+Final, after M193 on branch `claude/map-decorations` (`python tools/numbers.py`
+writes §0.0's block): **4,244 tests passed, 0 failed, 0 skipped;
+`tools/gates.py` 49/49 rows** (the demo hash unchanged, `d7dc9e8985f0504f`);
+clippy `-D warnings` and `cargo fmt --check` clean. Baseline was 4,200.
+Run after each milestone as well: `cargo fmt --check`, `cargo clippy
 --workspace --all-targets --features rewo-app/gates -- -D warnings` clean, the
 affected crates' tests green, and `python tools/gates.py` 49/49 after M186 +
 M187 (demo hash unchanged, `d7dc9e8985f0504f`).
