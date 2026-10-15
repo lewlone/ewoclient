@@ -390,6 +390,24 @@ impl HandPass {
         Ok(true)
     }
 
+    /// Replace one `w x h` region of the atlas at `(x, y)` in place (M192:
+    /// a held map's 128 x 128 pixels when only its contents changed). The
+    /// same asynchronous copy [`Self::update_atlas`] uses, on a sub-rect.
+    pub(crate) fn update_atlas_region(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        (x, y, w, h): (u32, u32, u32, u32),
+    ) -> Result<(), String> {
+        if x + w > self.atlas_extent.0 || y + h > self.atlas_extent.1 {
+            return Err(format!(
+                "hand atlas region ({x}, {y}, {w}, {h}) exceeds {:?}",
+                self.atlas_extent
+            ));
+        }
+        crate::entities::upload_region(gpu, self.atlas.0, rgba, x, y, w, h)
+    }
+
     /// Destroy without idling — the caller guarantees no frame still uses
     /// the pass (deferred destruction, or after its own idle).
     pub(crate) fn destroy_now(&mut self, gpu: &mut Gpu) {

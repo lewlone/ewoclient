@@ -227,6 +227,7 @@ impl WorldRenderer {
         atlas_w: u32,
         atlas_h: u32,
     ) -> Result<(), String> {
+        self.hand_atlas_installs += 1;
         // Rebuildable, like the GUI-item atlas: the resident texture set
         // changes when the held item does. Same-size atlases update in place;
         // otherwise the old pass is retired through deferred destruction.
@@ -251,6 +252,31 @@ impl WorldRenderer {
 
     pub fn hand_ready(&self) -> bool {
         self.hand.is_some()
+    }
+
+    /// Replace one region of the resident hand atlas in place (M192), without
+    /// repacking or re-uploading the rest. Errors when there is no hand pass
+    /// or the rect does not fit.
+    pub fn update_hand_region(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        rect: (u32, u32, u32, u32),
+    ) -> Result<(), String> {
+        let p = self.hand.as_mut().ok_or("no hand pass")?;
+        p.update_atlas_region(gpu, rgba, rect)?;
+        self.hand_region_updates += 1;
+        Ok(())
+    }
+
+    /// How many [`Self::update_hand_region`] calls succeeded, for witnesses.
+    pub fn hand_region_updates(&self) -> u64 {
+        self.hand_region_updates
+    }
+
+    /// How many full hand-atlas installs (`init_hand`) ran, for witnesses.
+    pub fn hand_atlas_installs(&self) -> u64 {
+        self.hand_atlas_installs
     }
 
     /// Whether the vanilla-font text pass exists (`init_text`) — chat, the

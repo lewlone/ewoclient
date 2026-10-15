@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 37;
+const EXPECTED_WITNESSES: usize = 38;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -1062,6 +1062,52 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             format!(
                 "one-handed in the right hand: {n1} map px (two-handed {grass}; \
                  `renderTwoHandedMap` scales by 2), centred at x {mean_x} of {W}"
+            ),
+        );
+        // gm4 — a second patch (SAND at HIGH: 0xF7E9A3 x 255/255 =
+        // (247, 233, 163)) goes up as a region update, not a full install.
+        store.apply(&rewo_world::maps::MapItemData {
+            map_id: 1,
+            scale: 0,
+            locked: false,
+            decorations: None,
+            patch: Some(rewo_world::maps::MapPatch {
+                start_x: 0,
+                start_y: 0,
+                width: 128,
+                height: 128,
+                colors: vec![2 << 2 | 2; 128 * 128],
+            }),
+        });
+        let installs_before = wr.hand_atlas_installs();
+        wr.update_hand_region(
+            &mut gpu,
+            &store.get(1).expect("applied").rgba(),
+            crate::live_cmd::HAND_MAP_PIXELS,
+        )?;
+        let repatched = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(true, true, uv_with),
+                None,
+            ),
+        )?;
+        let sand = count(&repatched, [247, 233, 163]);
+        c.record(
+            "gm4.a_new_map_version_reaches_the_frame_through_a_region_update",
+            sand > 5000
+                && count(&repatched, [109, 153, 48]) == 0
+                && wr.hand_atlas_installs() == installs_before
+                && wr.hand_region_updates() >= 1,
+            format!(
+                "{sand} px of the new SAND-HIGH patch, {} of the old GRASS, full installs {} -> {}, region updates {}",
+                count(&repatched, [109, 153, 48]),
+                installs_before,
+                wr.hand_atlas_installs(),
+                wr.hand_region_updates()
             ),
         );
         let (atlas_none, _, uv_none) = pack(None);

@@ -3754,3 +3754,22 @@ fn a_held_map_takes_the_top_band_of_the_hand_atlas() {
     let (_, _, none) = pack_hand_atlas(&held, &[], None, None);
     assert!(none.is_none());
 }
+
+/// M192 — only a contents change of the same, present map is served by the
+/// region re-upload; a new map, a map arriving or leaving, or no map repacks.
+#[test]
+fn only_a_held_maps_new_version_is_a_region_upload() {
+    let f = map_version_only_changed;
+    assert!(f(Some((3, 1, true)), Some((3, 2, true))));
+    assert!(
+        !f(Some((3, 1, true)), Some((3, 1, true))),
+        "nothing changed"
+    );
+    assert!(!f(Some((3, 1, true)), Some((4, 2, true))), "another map");
+    assert!(
+        !f(Some((3, 0, false)), Some((3, 1, true))),
+        "data arrived: repack"
+    );
+    assert!(!f(Some((3, 1, true)), None), "map put away");
+    assert!(!f(None, Some((3, 1, true))), "map taken out");
+}

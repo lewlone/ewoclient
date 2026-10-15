@@ -30,15 +30,12 @@ green slices, each passing clippy `-D warnings` and its tests:
 | `823c0b3` | `rewo-data` bake: `BakedAssets::map_background` / `map_background_checkerboard`, tested on the real jar. | 3 (textures) |
 | `01cb138` | `hand::MapDraw` + `build_map_vertices` (arms via `append_arm`, background quad with vanilla's backwards-looking texture choice, pixel quad when data is present). | 4 (geometry) |
 | `fd78676` | `apply_hand` wiring: map branch from the inventory (`has_map_id`; two-handed = main hand + empty off-hand), `session.maps` via `StackDetail::map_id`, repack key `(map id, version, data present)`, the map's hand filtered out of `build_vertices`. | 4 (wiring) |
+| *(slice 7)* | Region re-upload: `WorldRenderer::update_hand_region` (+ `hand_atlas_installs` / `hand_region_updates` counters); `apply_hand` re-uploads only the 128x128 band when `map_version_only_changed`. `handshot` gm4 (38 witnesses): a second patch reaches the frame by region update with no full install. | 3 (re-upload), 5.3 |
 | `0056380` | `handshot` gm1-gm3 (`EXPECTED_WITNESSES` 34 -> 37), production packer + geometry under validation: palette texels reach the frame, one-handed placement, unknown map = plain background only. | 5 (partly) |
 
 **Still to do, in order:**
 
-1. **Region re-upload** (§2.1). Today a new map version repacks the whole
-   512x512 atlas and rebuilds the pass through `init_hand` (then re-installs
-   the glint). Replace that for a version-only change with
-   `rewo_gpu::entities::upload_region` on the 128x128 band; keep the full
-   repack for a new map id or a changed item set.
+1. ~~Region re-upload~~ **done in slice 7.**
 2. **Pull the branch decision out of `apply_hand`** into a pure function
    (`held_map_branch(main, off) -> Option<(Arm, two_handed)>`) and test it:
    map + off-hand item = one-handed in the main hand, the item still drawn;

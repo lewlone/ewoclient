@@ -102,6 +102,8 @@ impl WorldRenderer {
             gui_items: None,
             gui_item_generation: 0,
             hand_generation: 0,
+            hand_atlas_installs: 0,
+            hand_region_updates: 0,
             container: None,
             screen: None,
             preview: None,

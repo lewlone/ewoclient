@@ -254,7 +254,7 @@ pub(super) const HAND_SKIN_Y: u32 = HAND_ATLAS - 64;
 /// M192 — a held map's three textures in the hand atlas, `(x, y, w, h)`
 /// (claimed in `REWO_PLAN.md` §0.0's allocation table). Present only while a
 /// map is held; the items then start at [`HAND_MAP_ITEM_Y`] instead of 0.
-pub(super) const HAND_MAP_PIXELS: (u32, u32, u32, u32) = (0, 0, 128, 128);
+pub(crate) const HAND_MAP_PIXELS: (u32, u32, u32, u32) = (0, 0, 128, 128);
 /// `textures/map/map_background_checkerboard.png`, 128 x 128.
 pub(super) const HAND_MAP_CHECKER: (u32, u32, u32, u32) = (128, 0, 128, 128);
 /// `textures/map/map_background.png`, 64 x 64.
@@ -500,6 +500,19 @@ pub(crate) fn pack_hand_atlas(
     (rgba, uv, map_uv)
 }
 
+/// Whether the held map moved only in its contents (M192): the same map id,
+/// held and present before and after, with a different version. That is the
+/// one change a region re-upload can serve.
+pub(super) fn map_version_only_changed(
+    resident: Option<(i32, u64, bool)>,
+    now: Option<(i32, u64, bool)>,
+) -> bool {
+    matches!(
+        (resident, now),
+        (Some((a, va, true)), Some((b, vb, true))) if a == b && va != vb
+    )
+}
+
 /// Build and upload this frame's hand.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_hand(
@@ -552,7 +565,24 @@ pub(super) fn apply_hand(
             }
         }
     }
-    if wanted != state.resident
+    // M192 — a held map whose contents changed (same map, same presence,
+    // newer version) re-uploads only its 128 x 128 band; anything else that
+    // moved repacks the atlas.
+    let map_only_moved = wanted == state.resident
+        && state.skin_resident
+        && wr.hand_ready()
+        && state.map_uv.is_some()
+        && map_version_only_changed(state.map_resident, map_key);
+    if map_only_moved {
+        let pixels = map_key
+            .and_then(|k| session.maps.get(k.0))
+            .map(|d| d.rgba());
+        match pixels.map(|px| wr.update_hand_region(gpu, &px, HAND_MAP_PIXELS)) {
+            Some(Ok(())) => state.map_resident = map_key,
+            Some(Err(e)) => log::warn!("live: held map re-upload failed: {e}"),
+            None => {}
+        }
+    } else if wanted != state.resident
         || !state.skin_resident
         || !wr.hand_ready()
         || map_key != state.map_resident
