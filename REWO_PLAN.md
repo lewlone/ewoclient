@@ -2013,7 +2013,8 @@ this shape once.
 | Link prompt (2026-10, `ConfirmLinkScreen` for a clicked chat `open_url`) | **r67** | — | `confirmlinkshot` m1-m6, p0-p7 (14) |
 | M187 — the recipe-book button (2026-10-15) | **r68** | `MENU_OVERLAY_SPRITES` 127..=128 (`recipe_book/button`, `button_highlighted`; `BOOK_BUTTON`) | `inventoryshot` gb1-gb3 |
 | M189 — the loom's scrollbar (2026-10-15) | — | `MENU_OVERLAY_SPRITES` 129..=130 (`container/loom/scroller`, `scroller_disabled`; `LOOM_SCROLLER`) | `rewo-ui` `m189_loom_scroll` |
-| *(next free)* | **r69** | — | — |
+| M192 — the held map *(claimed 2026-10-15, in progress on `claude/m192-held-map`)* | **r69** | hand atlas (512x512, `live_cmd/gui.rs`) while a map is held: map pixels (0,0,128,128), checkerboard (128,0,128,128), plain background (256,0,64,64), items from y 128, skin row unchanged | `handshot` map witnesses (planned) |
+| *(next free)* | **r70** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table

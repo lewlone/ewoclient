@@ -579,6 +579,107 @@ pub fn player_arm(arm: Arm, inverse_height: f32, attack: f32) -> Mat4 {
 }
 
 // ---------------------------------------------------------------------------
+// The held map (M192) — `ItemInHandRenderer.renderOneHandedMap`,
+// `renderTwoHandedMap`, `renderMapHand`, `renderMap` and `calculateMapTilt`
+// (26.2 decompile, `ItemInHandRenderer.java:145-250`). Poses only; the quads
+// they place are `map_background_quad` and `map_pixels_quad` below, in the
+// map's own 0..128 units.
+// ---------------------------------------------------------------------------
+
+/// `calculateMapTilt(xRot)`: `tilt = clamp(1 - xRot / 45 + 0.1, 0, 1)`, then
+/// `-cos(tilt * PI) * 0.5 + 0.5`. 1 looking ahead or up, 0 looking down past
+/// about 50 degrees.
+pub fn map_tilt(x_rot: f32) -> f32 {
+    let tilt = (1.0 - x_rot / 45.0 + 0.1).clamp(0.0, 1.0);
+    -(tilt * std::f32::consts::PI).cos() * 0.5 + 0.5
+}
+
+/// `renderMap`'s prefix: `rotY(180) rotZ(180) scale(0.38) translate(-0.5,
+/// -0.5, 0) scale(1/128)`, so a map unit is 0.38/128 and (64, 64) is the
+/// pose's origin. The image's (0, 0) corner lands up and to the left.
+pub fn map_frame() -> Mat4 {
+    rot_y(180.0)
+        * rot_z(180.0)
+        * Mat4::from_scale(Vec3::splat(0.38))
+        * translate(-0.5, -0.5, 0.0)
+        * Mat4::from_scale(Vec3::splat(1.0 / 128.0))
+}
+
+/// `renderOneHandedMap` — `(arm pose, map pose)`. The arm pose is the bare
+/// arm's (`player_arm`) under the leading translate and `rotZ(invert * 10)`;
+/// the map pose ends in [`map_frame`].
+pub fn one_handed_map(arm: Arm, inverse_height: f32, attack: f32) -> (Mat4, Mat4) {
+    let invert = arm.invert();
+    let base = translate(invert * 0.125, -0.125, 0.0);
+    let arm_pose = base * rot_z(invert * 10.0) * player_arm(arm, inverse_height, attack);
+    let s = attack.sqrt();
+    let x_swing = (s * std::f32::consts::PI).sin();
+    let map_pose = base
+        * translate(invert * 0.51, -0.08 + inverse_height * -1.2, -0.75)
+        * translate(
+            invert * (-0.5 * x_swing),
+            0.4 * (s * std::f32::consts::TAU).sin() - 0.3 * x_swing,
+            -0.3 * (attack * std::f32::consts::PI).sin(),
+        )
+        * rot_x(x_swing * -45.0)
+        * rot_y(invert * x_swing * -30.0)
+        * map_frame();
+    (arm_pose, map_pose)
+}
+
+/// `renderMapHand(arm)`'s own chain, applied inside the two-handed map's
+/// `rotY(90)`: `rotY(92) rotX(45) rotZ(invert * -41) translate(invert * 0.3,
+/// -1.1, 0.45)`, then the avatar's `renderRightHand` / `renderLeftHand` at the
+/// arm's rest pose.
+pub fn map_hand(arm: Arm) -> Mat4 {
+    let invert = arm.invert();
+    rot_y(92.0) * rot_x(45.0) * rot_z(invert * -41.0) * translate(invert * 0.3, -1.1, 0.45)
+}
+
+/// `renderTwoHandedMap` — `(map pose, [right arm, left arm])`. `x_rot` is the
+/// camera pitch, the one `calculateMapTilt` reads.
+pub fn two_handed_map(x_rot: f32, inverse_height: f32, attack: f32) -> (Mat4, [Mat4; 2]) {
+    let pi = std::f32::consts::PI;
+    let s = attack.sqrt();
+    let y_swing = -0.2 * (attack * pi).sin();
+    let z_swing = -0.4 * (s * pi).sin();
+    let tilt = map_tilt(x_rot);
+    let held = translate(0.0, -y_swing / 2.0, z_swing)
+        * translate(0.0, 0.04 + inverse_height * -1.2 + tilt * -0.5, -0.72)
+        * rot_x(tilt * -85.0);
+    let arms = held * rot_y(90.0);
+    let map_pose =
+        held * rot_x((s * pi).sin() * 20.0) * Mat4::from_scale(Vec3::splat(2.0)) * map_frame();
+    (
+        map_pose,
+        [arms * map_hand(Arm::Right), arms * map_hand(Arm::Left)],
+    )
+}
+
+/// `renderMap`'s background quad, `(-7, -7)..(135, 135)` at z 0, UV 0..1, in
+/// the order vanilla adds the vertices: (-7,135) (135,135) (135,-7) (-7,-7).
+pub const MAP_BACKGROUND_QUAD: ([[f32; 3]; 4], [[f32; 2]; 4]) = (
+    [
+        [-7.0, 135.0, 0.0],
+        [135.0, 135.0, 0.0],
+        [135.0, -7.0, 0.0],
+        [-7.0, -7.0, 0.0],
+    ],
+    [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+);
+
+/// `MapRenderer.render`'s pixel quad, `(0, 0)..(128, 128)` at **z -0.01**.
+pub const MAP_PIXELS_QUAD: ([[f32; 3]; 4], [[f32; 2]; 4]) = (
+    [
+        [0.0, 128.0, -0.01],
+        [128.0, 128.0, -0.01],
+        [128.0, 0.0, -0.01],
+        [0.0, 0.0, -0.01],
+    ],
+    [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+);
+
+// ---------------------------------------------------------------------------
 // The geometry, and the pass that draws it (M38).
 // ---------------------------------------------------------------------------
 
@@ -1126,5 +1227,101 @@ mod tests {
         }
         let (settled, _) = bob.sway(40.0, 0.0, 1.0);
         assert!(settled.abs() < 1e-3, "settled to {settled}");
+    }
+}
+
+// The held map (M192). Expectations are derived here by hand from the
+// decompile's literals, not by calling the functions under test.
+#[cfg(test)]
+mod m192_held_map {
+    use super::*;
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (a - b).abs().max_element() < 1e-4
+    }
+
+    /// pitch 0 -> clamp(1.1) = 1 -> -cos(PI)/2 + 1/2 = 1; pitch 90 -> 0;
+    /// pitch -90 -> 1; pitch 45 -> tilt 0.1 -> 0.5 - cos(0.1 PI)/2.
+    #[test]
+    fn the_tilt_clamps_at_both_ends() {
+        assert_eq!(map_tilt(0.0), 1.0);
+        assert_eq!(map_tilt(-90.0), 1.0);
+        assert!(map_tilt(90.0).abs() < 1e-6);
+        let want = 0.5 - (0.1 * std::f32::consts::PI).cos() * 0.5;
+        assert!((map_tilt(45.0) - want).abs() < 1e-6);
+    }
+
+    /// The map's centre (64, 64) is the frame's origin, and its image corner
+    /// (0, 0) is 0.38 / 2 = 0.19 left and up of it (rotZ 180 then rotY 180
+    /// flip x twice and y once).
+    #[test]
+    fn the_frame_puts_the_image_corner_up_and_left() {
+        let f = map_frame();
+        assert!(close(
+            f.transform_point3(Vec3::new(64.0, 64.0, 0.0)),
+            Vec3::ZERO
+        ));
+        assert!(close(
+            f.transform_point3(Vec3::ZERO),
+            Vec3::new(-0.19, 0.19, 0.0)
+        ));
+    }
+
+    /// At rest, a right-hand map's centre is translate(0.125, -0.125, 0) +
+    /// translate(0.51, -0.08, -0.75) = (0.635, -0.205, -0.75); the left hand
+    /// mirrors x.
+    #[test]
+    fn a_one_handed_map_at_rest_sits_low_and_to_the_side() {
+        let (_, right) = one_handed_map(Arm::Right, 0.0, 0.0);
+        let (_, left) = one_handed_map(Arm::Left, 0.0, 0.0);
+        let c = Vec3::new(64.0, 64.0, 0.0);
+        assert!(close(
+            right.transform_point3(c),
+            Vec3::new(0.635, -0.205, -0.75)
+        ));
+        assert!(close(
+            left.transform_point3(c),
+            Vec3::new(-0.635, -0.205, -0.75)
+        ));
+        // Lowering by inverse height 1 drops it by 1.2.
+        let (_, low) = one_handed_map(Arm::Right, 1.0, 0.0);
+        assert!(close(
+            low.transform_point3(c),
+            Vec3::new(0.635, -1.405, -0.75)
+        ));
+    }
+
+    /// At rest looking ahead (tilt 1): centre at (0, 0.04 - 0.5, -0.72), and
+    /// the map lies flat-ish (rotX(-85)): its top edge (y 0 in map units,
+    /// +0.38 up after scale 2) swings back toward -z.
+    #[test]
+    fn a_two_handed_map_at_rest_is_centred_and_tilted() {
+        let (map, arms) = two_handed_map(0.0, 0.0, 0.0);
+        let c = Vec3::new(64.0, 64.0, 0.0);
+        assert!(close(map.transform_point3(c), Vec3::new(0.0, -0.46, -0.72)));
+        let top = map.transform_point3(Vec3::new(64.0, 0.0, 0.0));
+        let (s, co) = (-85f32).to_radians().sin_cos();
+        // (0, 0.38, 0) rotated about x by -85 degrees, plus the centre.
+        let want = Vec3::new(0.0, -0.46 + 0.38 * co, -0.72 + 0.38 * s);
+        assert!(close(top, want), "{top:?} vs {want:?}");
+        // Looking down past the clamp the map stands upright (tilt 0).
+        let (down, _) = two_handed_map(90.0, 0.0, 0.0);
+        assert!(close(
+            down.transform_point3(Vec3::new(64.0, 0.0, 0.0)),
+            Vec3::new(0.0, 0.04 + 0.38, -0.72)
+        ));
+        // The right arm lands on +x and the left on -x. Not mirror images:
+        // `renderMapHand`'s `rotY(92)` is the same for both arms, so a
+        // reflection would need -92 for one of them.
+        let r = arms[0].transform_point3(Vec3::ZERO);
+        let l = arms[1].transform_point3(Vec3::ZERO);
+        assert!(r.x > 0.3 && l.x < -0.3, "{r:?} {l:?}");
+    }
+
+    #[test]
+    fn the_pixels_sit_just_in_front_of_the_background() {
+        assert_eq!(MAP_PIXELS_QUAD.0[0][2], -0.01);
+        assert_eq!(MAP_BACKGROUND_QUAD.0[0], [-7.0, 135.0, 0.0]);
+        assert_eq!(MAP_BACKGROUND_QUAD.0[2], [135.0, -7.0, 0.0]);
     }
 }
