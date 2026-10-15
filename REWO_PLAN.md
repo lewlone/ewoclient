@@ -339,8 +339,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   the recipe-book button (**M187**), the HUD's air-bubble pop (**M188**) and
 >   the loom's scrollbar (**M189**).
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
->   the map store; the held map, item frames and decoration sprites are open;
->   **the held map is planned step by step in `docs/rewo/M192-held-map-plan.md`**), `render-misc [INTERP]` and `[FLOW]`, the live
+>   the map store, **M192 the held map**; item frames and decoration sprites
+>   are open), `render-misc [INTERP]` and `[FLOW]`, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -3839,6 +3839,35 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M192 — the held map in first person (2026-10-15)
+
+Built in nine slices on `claude/m192-held-map` from
+`docs/rewo/M192-held-map-plan.md` (which records each slice). Vanilla's map
+branch (`ItemInHandRenderer.java:440-452`): a stack with `MAP_ID` is drawn as
+a map, two-handed in the main hand with an empty off-hand, one-handed
+otherwise. `rewo_gpu::hand` transcribes `renderOneHandedMap`,
+`renderTwoHandedMap`, `renderMapHand`, `renderMap`'s frame and
+`calculateMapTilt`; `build_map_vertices` draws the arm(s) through the
+existing `renderRightHand`/`renderLeftHand` quads, the background
+(checkerboard WITH data, plain without, as `renderMap` writes it) and the
+map's pixels. The hand atlas gives a held map its top band (pixels
+0,0,128,128; checkerboard 128,0; plain background 256,0; items from y 128);
+the two backgrounds are baked from the jar; a new map version re-uploads only
+the 128 x 128 band (`update_hand_region`). `held_map_branch` decides from each
+hand's stack AND the equip clock's visible item, so the outgoing item still
+draws mid-dip as with vanilla's lagging `mainHandItem`.
+
+Graded by `handshot` gm1-gm5 (production packer and geometry under
+validation): the palette's GRASS texels reach the frame with the checkerboard
+around them; one-handed lands on its hand's side; an unknown map draws only
+the plain background; a new patch arrives by region update with no full
+install; a skin-bearing two-handed map looking down has an arm on each side
+(looking ahead the arms are below the frame, as in vanilla). Recorded
+deviations: two maps at once draw only the main hand's; a map being swapped
+AWAY draws as the flat item for the dip; no lightmap on the hand pass.
+render-check **r69** is claimed and deferred (no windowed run was possible
+that night). Later: item frames, decoration sprites.
 
 ### M191 — the map tooltip, and the tooltip's component order (2026-10-15)
 
