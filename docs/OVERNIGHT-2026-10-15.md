@@ -87,8 +87,10 @@ M187 (demo hash unchanged, `d7dc9e8985f0504f`).
   inventory right, and stay highlighted; clicking it again closes the book.
   Same on a crafting table and a furnace.
 - **Maps:** hold a filled map on a server and hover it in the inventory: "ID
-  #n" (and "Locked" for a locked one; scale lines with F3+H). Nothing draws a
-  map yet.
+  #n" (and "Locked" for a locked one; scale lines with F3+H). Hold it with an
+  empty off-hand and look down: it should fill the view held in both hands,
+  and update as you walk (M192); with something in the off-hand it is held
+  one-handed. Item frames do not draw maps yet.
 - **Loom:** banner + dye with no pattern item: scroll the 32 patterns with the
   wheel and by dragging the thumb, and stamp one from the second half.
 - **A fresh-machine run of the release zip** (`docs/RELEASE.md` §3).
@@ -107,10 +109,12 @@ M187 (demo hash unchanged, `d7dc9e8985f0504f`).
   **The next session should start with M192**, the held map, from
   [`docs/rewo/M192-held-map-plan.md`](rewo/M192-held-map-plan.md): vanilla's
   poses with source lines, the hand-atlas layout, the offscreen `handshot`
-  checks and the order of steps. **It was then started on branch
-  `claude/m192-held-map` (six green slices, not merged): poses, atlas band,
-  baked backgrounds, geometry, wiring, and `handshot` gm1-gm3 passing. The
-  plan file's "Where it stopped" lists the remaining steps.**
+  checks and the order of steps. **It was then built the same night on
+  branch `claude/m192-held-map` in nine green slices and merged into `main`
+  after the full gate (4,243 tests, 49/49 gate rows): the held map draws one-
+  and two-handed with its arms, background and pixels, graded by `handshot`
+  gm1-gm5. Still open from it: render-check r69 (needs a windowed run), item
+  frames and decoration sprites.**
 - A map's tooltip and store are tested against the decompile's arithmetic but
   have not seen a real server's `map_item_data`: hold a filled map on the test
   server and hover it (also a playtest item).

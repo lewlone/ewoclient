@@ -30,30 +30,26 @@ green slices, each passing clippy `-D warnings` and its tests:
 | `823c0b3` | `rewo-data` bake: `BakedAssets::map_background` / `map_background_checkerboard`, tested on the real jar. | 3 (textures) |
 | `01cb138` | `hand::MapDraw` + `build_map_vertices` (arms via `append_arm`, background quad with vanilla's backwards-looking texture choice, pixel quad when data is present). | 4 (geometry) |
 | `fd78676` | `apply_hand` wiring: map branch from the inventory (`has_map_id`; two-handed = main hand + empty off-hand), `session.maps` via `StackDetail::map_id`, repack key `(map id, version, data present)`, the map's hand filtered out of `build_vertices`. | 4 (wiring) |
+| *(slice 7)* | Region re-upload: `WorldRenderer::update_hand_region` (+ `hand_atlas_installs` / `hand_region_updates` counters); `apply_hand` re-uploads only the 128x128 band when `map_version_only_changed`. `handshot` gm4 (38 witnesses): a second patch reaches the frame by region update with no full install. | 3 (re-upload), 5.3 |
+| *(slice 8)* | `held_map_branch` (pure, tested): the map branch from each hand's stack AND the equip clock's visible item, so mid-dip the outgoing item still draws as in vanilla; two-handed reads the off-hand's visible item; with maps in both hands the main hand's wins (one atlas band; recorded deviation). | 2, 3 (deviation fixed) |
+| *(slice 9)* | `handshot` gm5 (39 witnesses): a skin-bearing two-handed map looking down (pitch 90) has an arm on each side of it; looking ahead the arms are below the frame, as in vanilla. `--out-dir` writes `handshot-map-arms.png`. | 5 (arms) |
 | `0056380` | `handshot` gm1-gm3 (`EXPECTED_WITNESSES` 34 -> 37), production packer + geometry under validation: palette texels reach the frame, one-handed placement, unknown map = plain background only. | 5 (partly) |
 
 **Still to do, in order:**
 
-1. **Region re-upload** (§2.1). Today a new map version repacks the whole
-   512x512 atlas and rebuilds the pass through `init_hand` (then re-installs
-   the glint). Replace that for a version-only change with
-   `rewo_gpu::entities::upload_region` on the 128x128 band; keep the full
-   repack for a new map id or a changed item set.
-2. **Pull the branch decision out of `apply_hand`** into a pure function
-   (`held_map_branch(main, off) -> Option<(Arm, two_handed)>`) and test it:
-   map + off-hand item = one-handed in the main hand, the item still drawn;
-   map in the off-hand = one-handed left; map + empty off-hand = two-handed.
-   Then the plan's §3 witness 4 (branch) and witness 3 (re-upload, counting
-   `init_hand` calls).
-3. **Known deviation to fix or record:** the map is resolved from the held
-   stack, not from the equip clock's visible item, so during the swap dip the
-   map appears at once where vanilla's `mainHandItem` lags. Route it through
-   `EquipHeight::visible_item` plus the stack.
-4. **render-check r69** (claimed): count frames whose hand vertices include a
-   map quad, read back from the renderer; the owner runs
-   `tools/render_check.py` (it opens a window).
-5. gm1-gm3 run without a skin, so the map arms are not pixel-checked; add a
-   skin-bearing witness that the two map arms land left and right of the map.
+1. ~~Region re-upload~~ **done in slice 7.**
+2. ~~Branch decision as a pure function~~ **done in slice 8**
+   (`held_map_branch`, unit-tested over the seven cases).
+3. ~~Equip-dip deviation~~ **fixed in slice 8.** Still open and recorded:
+   the outgoing map during a swap AWAY from a map draws as the flat item
+   (the old stack's map id is gone by then), and two maps at once draw only
+   the main hand's.
+4. **render-check r69: deferred by decision (2026-10-15).** It needs a held
+   map injected into the windowed run, and `tools/render_check.py` could not
+   be run that night (it opens a window; a Geometry Dash recording held the
+   desktop). An injection nobody has run could silently break the other
+   rows, so it waits for a session that can run it. r69 stays claimed.
+5. ~~Skin-bearing arm witness~~ **done in slice 9** (gm5).
 6. Full `cargo test`, `python tools/gates.py`, `tools/numbers.py`, a §15
    entry, then merge the branch into `main` (`--no-ff`) and note it in the
    overnight summary.

@@ -137,6 +137,9 @@ pub struct WorldRenderer {
     /// use-after-free. See [`Self::gui_item_generation`].
     gui_item_generation: u64,
     hand_generation: u64,
+    /// M192 — counters for the hand atlas: full installs and region updates.
+    hand_atlas_installs: u64,
+    hand_region_updates: u64,
     /// The inventory screen (M35). `None` until `init_container`; `Some` but
     /// closed draws nothing.
     container: Option<crate::container::ContainerPass>,

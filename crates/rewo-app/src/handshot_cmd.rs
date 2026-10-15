@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 34;
+const EXPECTED_WITNESSES: usize = 39;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -953,6 +953,250 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             "g7.clearing_the_hand_restores_the_empty_frame",
             again == empty,
             "byte-identical, so no witness above read a stale buffer",
+        );
+
+        // -- the held map (M192) --------------------------------------------
+        //
+        // Through the production packer (`pack_hand_atlas`) and geometry
+        // (`build_map_vertices`), with the map's pixels from a `MapStore`
+        // patch run through `ClientMap::rgba` — GRASS at NORMAL brightness,
+        // (109, 153, 48), M190's hand-computed value. The backgrounds are
+        // synthetic solid colours (the real PNGs are checked by
+        // `the_map_backgrounds_are_baked_at_their_sizes`): yellow for the
+        // plain one, blue for the checkerboard.
+        let mut store = rewo_world::maps::MapStore::default();
+        store.apply(&rewo_world::maps::MapItemData {
+            map_id: 1,
+            scale: 0,
+            locked: false,
+            decorations: None,
+            patch: Some(rewo_world::maps::MapPatch {
+                start_x: 0,
+                start_y: 0,
+                width: 128,
+                height: 128,
+                colors: vec![1 << 2 | 1; 128 * 128],
+            }),
+        });
+        let map_px = store.get(1).expect("applied").rgba();
+        let plain_bg: Vec<u8> = (0..64 * 64).flat_map(|_| [255u8, 255, 0, 255]).collect();
+        let checker: Vec<u8> = (0..128 * 128).flat_map(|_| [0u8, 0, 255, 255]).collect();
+        let pack = |pixels: Option<&[u8]>| {
+            crate::live_cmd::pack_hand_atlas(
+                &rewo_gpu::held::HeldItems::default(),
+                &[],
+                None,
+                Some(&crate::live_cmd::HeldMapTextures {
+                    pixels,
+                    checker: &checker,
+                    background: &plain_bg,
+                }),
+            )
+        };
+        let count = |img: &[u8], want: [u8; 3]| -> usize {
+            img.as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| (0..3).all(|k| (p[k] as i32 - want[k] as i32).abs() <= 3))
+                .count()
+        };
+        let map_draw = |two_handed: bool, data: bool, uv: crate::live_cmd::HeldMapUv| {
+            rewo_gpu::hand::MapDraw {
+                arm: Arm::Right,
+                two_handed,
+                x_rot: 0.0,
+                inverse_height: 0.0,
+                attack: 0.0,
+                data_present: data,
+                uv_pixels: uv.pixels,
+                uv_checker: uv.checker,
+                uv_background: uv.background,
+            }
+        };
+        let atlas_side = crate::live_cmd::HAND_ATLAS;
+        let (atlas_with, _, uv_with) = pack(Some(&map_px));
+        let uv_with = uv_with.expect("a map was packed");
+        wr.init_hand(&mut gpu, &atlas_with, atlas_side, atlas_side)?;
+        let two = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(true, true, uv_with),
+                None,
+            ),
+        )?;
+        let grass = count(&two, [109, 153, 48]);
+        let blue = count(&two, [0, 0, 255]);
+        c.record(
+            "gm1.a_held_maps_pixels_reach_the_frame_in_the_palettes_colour",
+            grass > 5000 && blue > 0 && count(&two, [255, 255, 0]) == 0,
+            format!(
+                "{grass} px of GRASS-NORMAL (109,153,48) from the map patch, {blue} px of \
+                 the checkerboard around them (with data `renderMap` picks the \
+                 checkerboard) and no plain-background yellow"
+            ),
+        );
+        let one = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(false, true, uv_with),
+                None,
+            ),
+        )?;
+        let (mut sx, mut n1) = (0u64, 0u64);
+        for (i, p) in one.as_chunks::<4>().0.iter().enumerate() {
+            if (0..3).all(|k| (p[k] as i32 - [109, 153, 48][k]).abs() <= 3) {
+                sx += (i as u32 % W) as u64;
+                n1 += 1;
+            }
+        }
+        let mean_x = sx.checked_div(n1).unwrap_or(0);
+        c.record(
+            "gm2.a_one_handed_map_sits_on_its_hands_side_and_smaller",
+            n1 > 500 && (n1 as usize) < grass && mean_x > W as u64 / 2,
+            format!(
+                "one-handed in the right hand: {n1} map px (two-handed {grass}; \
+                 `renderTwoHandedMap` scales by 2), centred at x {mean_x} of {W}"
+            ),
+        );
+        // gm4 — a second patch (SAND at HIGH: 0xF7E9A3 x 255/255 =
+        // (247, 233, 163)) goes up as a region update, not a full install.
+        store.apply(&rewo_world::maps::MapItemData {
+            map_id: 1,
+            scale: 0,
+            locked: false,
+            decorations: None,
+            patch: Some(rewo_world::maps::MapPatch {
+                start_x: 0,
+                start_y: 0,
+                width: 128,
+                height: 128,
+                colors: vec![2 << 2 | 2; 128 * 128],
+            }),
+        });
+        let installs_before = wr.hand_atlas_installs();
+        wr.update_hand_region(
+            &mut gpu,
+            &store.get(1).expect("applied").rgba(),
+            crate::live_cmd::HAND_MAP_PIXELS,
+        )?;
+        let repatched = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(true, true, uv_with),
+                None,
+            ),
+        )?;
+        let sand = count(&repatched, [247, 233, 163]);
+        c.record(
+            "gm4.a_new_map_version_reaches_the_frame_through_a_region_update",
+            sand > 5000
+                && count(&repatched, [109, 153, 48]) == 0
+                && wr.hand_atlas_installs() == installs_before
+                && wr.hand_region_updates() >= 1,
+            format!(
+                "{sand} px of the new SAND-HIGH patch, {} of the old GRASS, full installs {} -> {}, region updates {}",
+                count(&repatched, [109, 153, 48]),
+                installs_before,
+                wr.hand_atlas_installs(),
+                wr.hand_region_updates()
+            ),
+        );
+        // gm5 — the two-handed map's arms, through `renderMapHand`'s chain
+        // and the arm quads, with a solid cyan skin: cyan must appear on
+        // both sides of the map's centre column (`renderMapHand(RIGHT)` and
+        // `(LEFT)`), and none without a skin.
+        let skin: Vec<u8> = (0..64 * 64).flat_map(|_| [0u8, 255, 255, 255]).collect();
+        let (atlas_skin, _, uv_skin) = crate::live_cmd::pack_hand_atlas(
+            &rewo_gpu::held::HeldItems::default(),
+            &[],
+            Some(&skin),
+            Some(&crate::live_cmd::HeldMapTextures {
+                pixels: Some(&map_px),
+                checker: &checker,
+                background: &plain_bg,
+            }),
+        );
+        wr.init_hand(&mut gpu, &atlas_skin, atlas_side, atlas_side)?;
+        let a = atlas_side as f32;
+        let geo = rewo_gpu::hand::ArmGeometry {
+            skin_uv: [
+                crate::live_cmd::HAND_SKIN_X as f32 / a,
+                crate::live_cmd::HAND_SKIN_Y as f32 / a,
+                64.0 / a,
+                64.0 / a,
+            ],
+            slim: false,
+        };
+        let armed = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                // Looking straight down (pitch 90, tilt 0): the map stands
+                // up in front of the camera with a hand on each side.
+                // Looking ahead it lies low and tilted and the hands are
+                // below the frame, as in vanilla.
+                &rewo_gpu::hand::MapDraw {
+                    x_rot: 90.0,
+                    ..map_draw(true, true, uv_skin.expect("packed"))
+                },
+                Some(&geo),
+            ),
+        )?;
+        if let Some(d) = &args.out_dir {
+            let _ = off.save_png(&gpu, &d.join("handshot-map-arms.png"));
+        }
+        let (mut left, mut right) = (0usize, 0usize);
+        for (i, p) in armed.as_chunks::<4>().0.iter().enumerate() {
+            if p[0] < 30 && p[1] > 40 && (p[1] as i32 - p[2] as i32).abs() < 12 {
+                if (i as u32 % W) < W / 2 {
+                    left += 1;
+                } else {
+                    right += 1;
+                }
+            }
+        }
+        c.record(
+            "gm5.a_two_handed_map_holds_an_arm_on_each_side",
+            left > 200 && right > 200 && count(&two, [0, 255, 255]) == 0,
+            format!(
+                "cyan skin px left of centre {left}, right {right}; none in the skinless frame ({})",
+                count(&two, [0, 255, 255])
+            ),
+        );
+        let (atlas_none, _, uv_none) = pack(None);
+        wr.init_hand(&mut gpu, &atlas_none, atlas_side, atlas_side)?;
+        let unknown = shot(
+            &mut gpu,
+            &mut off,
+            &mut wr,
+            &rewo_gpu::hand::build_map_vertices(
+                glam::Mat4::IDENTITY,
+                &map_draw(true, false, uv_none.expect("packed")),
+                None,
+            ),
+        )?;
+        c.record(
+            "gm3.an_unknown_map_draws_the_plain_background_and_no_pixels",
+            count(&unknown, [109, 153, 48]) == 0
+                && count(&unknown, [255, 255, 0]) > 5000
+                && count(&unknown, [0, 0, 255]) == 0,
+            format!(
+                "with no data: {} px plain-background yellow, {} map px, {} checkerboard px",
+                count(&unknown, [255, 255, 0]),
+                count(&unknown, [109, 153, 48]),
+                count(&unknown, [0, 0, 255])
+            ),
         );
         Ok(())
     })();

@@ -3711,3 +3711,106 @@ fn a_map_tooltip_follows_map_id_add_to_tooltip() {
         ["ID #7", "Locked", "Scaling at 1:4", "(Level 2/4)"]
     );
 }
+
+// -- the held map's atlas band (M192) ---------------------------------------
+
+/// The three map textures land where the allocation table says, the items
+/// move below them, and with no map the items still start at the top.
+#[test]
+fn a_held_map_takes_the_top_band_of_the_hand_atlas() {
+    let px = |rgba: &[u8], x: u32, y: u32| {
+        let i = ((y * HAND_ATLAS + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+    };
+    let pixels = vec![10u8; 128 * 128 * 4];
+    let checker = vec![20u8; 128 * 128 * 4];
+    let background = vec![30u8; 64 * 64 * 4];
+    let maps = HeldMapTextures {
+        pixels: Some(&pixels),
+        checker: &checker,
+        background: &background,
+    };
+    let held = rewo_gpu::held::HeldItems::default();
+    let (rgba, _, uv) = pack_hand_atlas(&held, &[], None, Some(&maps));
+    assert_eq!(px(&rgba, 0, 0), [10; 4]);
+    assert_eq!(px(&rgba, 127, 127), [10; 4]);
+    assert_eq!(px(&rgba, 128, 0), [20; 4]);
+    assert_eq!(px(&rgba, 255, 127), [20; 4]);
+    assert_eq!(px(&rgba, 256, 0), [30; 4]);
+    assert_eq!(px(&rgba, 319, 63), [30; 4]);
+    assert_eq!(px(&rgba, 320, 0), [0; 4], "nothing past the background");
+    let uv = uv.expect("a map was packed");
+    assert_eq!(uv.pixels, [0.0, 0.0, 0.25, 0.25]);
+    assert_eq!(uv.checker, [0.25, 0.0, 0.25, 0.25]);
+    assert_eq!(uv.background, [0.5, 0.0, 0.125, 0.125]);
+    // An unknown map packs no pixels: that band stays transparent.
+    let unknown = HeldMapTextures {
+        pixels: None,
+        ..maps
+    };
+    let (rgba, _, _) = pack_hand_atlas(&held, &[], None, Some(&unknown));
+    assert_eq!(px(&rgba, 0, 0), [0; 4]);
+    assert_eq!(px(&rgba, 128, 0), [20; 4]);
+    let (_, _, none) = pack_hand_atlas(&held, &[], None, None);
+    assert!(none.is_none());
+}
+
+/// M192 — only a contents change of the same, present map is served by the
+/// region re-upload; a new map, a map arriving or leaving, or no map repacks.
+#[test]
+fn only_a_held_maps_new_version_is_a_region_upload() {
+    let f = map_version_only_changed;
+    assert!(f(Some((3, 1, true)), Some((3, 2, true))));
+    assert!(
+        !f(Some((3, 1, true)), Some((3, 1, true))),
+        "nothing changed"
+    );
+    assert!(!f(Some((3, 1, true)), Some((4, 2, true))), "another map");
+    assert!(
+        !f(Some((3, 0, false)), Some((3, 1, true))),
+        "data arrived: repack"
+    );
+    assert!(!f(Some((3, 1, true)), None), "map put away");
+    assert!(!f(None, Some((3, 1, true))), "map taken out");
+}
+
+/// M192 — `ItemInHandRenderer`'s map branch, with the renderer's lagging
+/// item fields modelled by the equip clock's visible item.
+#[test]
+fn the_held_map_branch_follows_the_renderers_own_stacks() {
+    use rewo_gpu::hand::Arm;
+    const MAP: i32 = 900;
+    const SWORD: i32 = 7;
+    let map = Some((MAP, true));
+    let sword = Some((SWORD, false));
+    // Main hand map, empty off-hand: two-handed.
+    assert_eq!(
+        held_map_branch(map, Some(MAP), None, None),
+        Some((Arm::Right, true))
+    );
+    // Main hand map, an item in the off-hand: one-handed right.
+    assert_eq!(
+        held_map_branch(map, Some(MAP), sword, Some(SWORD)),
+        Some((Arm::Right, false))
+    );
+    // Map in the off-hand only: one-handed left.
+    assert_eq!(
+        held_map_branch(sword, Some(SWORD), map, Some(MAP)),
+        Some((Arm::Left, false))
+    );
+    // Mid-dip: the map is held but the clock still shows the sword.
+    assert_eq!(held_map_branch(map, Some(SWORD), None, None), None);
+    // Two-handed reads the off-hand's VISIBLE item: an off-hand still
+    // dipping out keeps it one-handed.
+    assert_eq!(
+        held_map_branch(map, Some(MAP), None, Some(SWORD)),
+        Some((Arm::Right, false))
+    );
+    // No map anywhere.
+    assert_eq!(held_map_branch(sword, Some(SWORD), None, None), None);
+    // Both hands hold maps: the main hand's wins (one atlas band).
+    assert_eq!(
+        held_map_branch(map, Some(MAP), map, Some(MAP)),
+        Some((Arm::Right, false))
+    );
+}
