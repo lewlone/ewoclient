@@ -880,6 +880,83 @@ pub fn build_vertices(
     out
 }
 
+/// A held map to draw this frame (M192) — `ItemInHandRenderer`'s map branch,
+/// resolved by the caller (it alone knows stacks and the level's maps).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapDraw {
+    /// The hand holding it (one-handed); ignored when `two_handed`.
+    pub arm: Arm,
+    /// `isMainHand && offHandItem.isEmpty()`.
+    pub two_handed: bool,
+    /// The camera pitch, for `calculateMapTilt`.
+    pub x_rot: f32,
+    pub inverse_height: f32,
+    pub attack: f32,
+    /// Whether the level holds the map's data (`MapItem.getSavedData != null`).
+    pub data_present: bool,
+    /// Atlas UV rects `(u0, v0, du, dv)` of the map's pixels and the two
+    /// backgrounds.
+    pub uv_pixels: [f32; 4],
+    pub uv_checker: [f32; 4],
+    pub uv_background: [f32; 4],
+}
+
+/// One frame's held-map vertices (M192): the arm(s), the background quad and,
+/// when the level holds the map, its pixels. The caller leaves the map's hand
+/// out of [`build_vertices`]' list (vanilla's map branch replaces the item
+/// branch for that hand).
+///
+/// `renderMap` picks the background **backwards-looking but as written**: the
+/// plain `map_background` when there is NO data, the checkerboard when there
+/// is.
+pub fn build_map_vertices(
+    view: Mat4,
+    map: &MapDraw,
+    arm_geometry: Option<&ArmGeometry>,
+) -> Vec<GuiItemVertex> {
+    let mut out = Vec::new();
+    let map_pose = if map.two_handed {
+        let (pose, arms) = two_handed_map(map.x_rot, map.inverse_height, map.attack);
+        if let Some(geo) = arm_geometry {
+            append_arm(&mut out, &(view * arms[0]), Arm::Right, geo);
+            append_arm(&mut out, &(view * arms[1]), Arm::Left, geo);
+        }
+        pose
+    } else {
+        let (arm_pose, pose) = one_handed_map(map.arm, map.inverse_height, map.attack);
+        if let Some(geo) = arm_geometry {
+            append_arm(&mut out, &(view * arm_pose), map.arm, geo);
+        }
+        pose
+    };
+    let m = view * map_pose;
+    let in_rect = |uv: &[[f32; 2]; 4], r: [f32; 4]| -> [[f32; 2]; 4] {
+        std::array::from_fn(|i| [r[0] + uv[i][0] * r[2], r[1] + uv[i][1] * r[3]])
+    };
+    let background = if map.data_present {
+        map.uv_checker
+    } else {
+        map.uv_background
+    };
+    quad_verts(
+        &mut out,
+        &m,
+        &MAP_BACKGROUND_QUAD.0,
+        &in_rect(&MAP_BACKGROUND_QUAD.1, background),
+        1.0,
+    );
+    if map.data_present {
+        quad_verts(
+            &mut out,
+            &m,
+            &MAP_PIXELS_QUAD.0,
+            &in_rect(&MAP_PIXELS_QUAD.1, map.uv_pixels),
+            1.0,
+        );
+    }
+    out
+}
+
 /// The arm cuboid and its sleeve, from the player model's own mesh.
 ///
 /// Only the one named part, which is exactly what `renderRightHand` submits —
@@ -1316,6 +1393,50 @@ mod m192_held_map {
         let r = arms[0].transform_point3(Vec3::ZERO);
         let l = arms[1].transform_point3(Vec3::ZERO);
         assert!(r.x > 0.3 && l.x < -0.3, "{r:?} {l:?}");
+    }
+
+    fn draw(two_handed: bool, data_present: bool) -> MapDraw {
+        MapDraw {
+            arm: Arm::Right,
+            two_handed,
+            x_rot: 0.0,
+            inverse_height: 0.0,
+            attack: 0.0,
+            data_present,
+            uv_pixels: [0.0, 0.0, 0.25, 0.25],
+            uv_checker: [0.25, 0.0, 0.25, 0.25],
+            uv_background: [0.5, 0.0, 0.125, 0.125],
+        }
+    }
+
+    /// Without a skin: the background (6 vertices) plus the pixels (6) when
+    /// the data is present; the background's UVs come from the checkerboard
+    /// with data and from the plain background without (vanilla's choice).
+    #[test]
+    fn the_map_quads_pick_their_textures_as_render_map_does() {
+        let with = build_map_vertices(Mat4::IDENTITY, &draw(true, true), None);
+        assert_eq!(with.len(), 12);
+        let us: Vec<f32> = with[..6].iter().map(|v| v.uv[0]).collect();
+        assert!(
+            us.iter().all(|&u| (0.25..=0.5).contains(&u)),
+            "checker: {us:?}"
+        );
+        let px: Vec<f32> = with[6..].iter().map(|v| v.uv[0]).collect();
+        assert!(
+            px.iter().all(|&u| (0.0..=0.25).contains(&u)),
+            "pixels: {px:?}"
+        );
+        let without = build_map_vertices(Mat4::IDENTITY, &draw(true, false), None);
+        assert_eq!(without.len(), 6, "no data: background only");
+        assert!(without.iter().all(|v| (0.5..=0.625).contains(&v.uv[0])));
+        // The pixel quad's centre is the pose's map centre.
+        let (pose, _) = two_handed_map(0.0, 0.0, 0.0);
+        let c = pose.transform_point3(Vec3::new(64.0, 64.0, -0.01));
+        let mean = with[6..]
+            .iter()
+            .fold(Vec3::ZERO, |a, v| a + Vec3::from_array(v.pos))
+            / 6.0;
+        assert!(close(mean, c), "{mean:?} vs {c:?}");
     }
 
     #[test]
