@@ -266,6 +266,12 @@ pub struct EntityMeta {
     /// `(item id, count, hasFoil)` — the foil rides along because it
     /// exists only in the patch this decode already walked (M45).
     pub item_stack: Option<Option<(i32, i32, bool)>>,
+    /// M194 — DIRECTION at 8, `HangingEntity.DATA_DIRECTION`.
+    pub direction8: Option<u8>,
+    /// M194 — ITEM_STACK at 9, `ItemFrame.DATA_ITEM`; `Some(None)` = empty.
+    pub frame_item: Option<Option<rewo_world::entities::FrameItem>>,
+    /// M194 — INT at 10, `ItemFrame.DATA_ROTATION`.
+    pub int10: Option<i32>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -348,6 +354,24 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
                 }
                 _ => break,
             },
+            // M194 — `HangingEntity.DATA_DIRECTION` (DIRECTION = serializer
+            // 12) at 8, `ItemFrame.DATA_ITEM` (ITEM_STACK) at 9 and
+            // `DATA_ROTATION` (INT) at 10: Entity 8 slots, HangingEntity 1,
+            // BlockAttachedEntity 0. The caller gates them to the two frame
+            // types.
+            (8, 12) => meta.direction8 = r.varint().ok().map(|v| v as u8),
+            (9, 7) => match components.and_then(|c| crate::item_stack::read_optional(r, c).ok()) {
+                Some(crate::item_stack::WireSlot::Empty) => meta.frame_item = Some(None),
+                Some(crate::item_stack::WireSlot::Stack(s)) if s.aligned_stack() => {
+                    meta.frame_item = Some(Some(rewo_world::entities::FrameItem {
+                        item_id: s.item_id,
+                        map_id: s.components.map_id,
+                        foil: s.components.has_foil(),
+                    }))
+                }
+                _ => break,
+            },
+            (10, 1) => meta.int10 = r.varint().ok(),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),
@@ -557,6 +581,22 @@ mod tests {
         let m = parse(&mut r, MetaKinds::default());
         assert_eq!(m.size, Some(4));
         assert_eq!(m.bool16, None, "INT at 16 is size, not a BOOLEAN");
+    }
+
+    /// M194 — an item frame's facing (DIRECTION = serializer 12 at slot 8)
+    /// and rotation (INT at 10); a BYTE at 8 is the living flags, not a
+    /// facing, and an INT at 10 is read raw (the table applies `% 8`).
+    #[test]
+    fn reads_an_item_frames_facing_and_rotation() {
+        let b: Vec<u8> = vec![0x08, 12, 0x05, 0x0A, 1, 0x0B, 0xFF];
+        let m = parse(&mut PacketReader::new(&b), MetaKinds::default());
+        assert_eq!(m.direction8, Some(5), "east");
+        assert_eq!(m.int10, Some(11));
+        assert_eq!(m.living_flags, None);
+        let b: Vec<u8> = vec![0x08, 0, 0x02, 0xFF];
+        let m = parse(&mut PacketReader::new(&b), MetaKinds::default());
+        assert_eq!(m.direction8, None);
+        assert_eq!(m.living_flags, Some(2));
     }
 
     #[test]

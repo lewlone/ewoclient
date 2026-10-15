@@ -107,6 +107,11 @@ Branch `claude/item-frames` (not merged).
 | `c47dffe` | This plan. | — |
 | *(slice 1)* | `rewo-gpu/src/item_frame.rs`: `facing_step`, `frame_base`, `frame_model_pose`, `item_pose`, `map_pose` (the §1.2 chain, relative to the entity; the dispatcher's render offset and `submit`'s `-renderOffset` cancel), tests over all six facings (contents at `step/32`, a map `1/128` further out, flush when invisible; quarters vs eighths). | 2 |
 
-**Next, in order:** step 1 (the `item_frames` side map: facing from
-`add_entity` data and slot 8, item slot 9, rotation slot 10, cleared in
-`clear_side_state`), then steps 3-6.
+| *(slice 2)* | Step 1, the data: `EntityState::spawn_data` (add_entity's trailing VarInt, read in `read_add_entity`); metadata slots `(8, DIRECTION=12)`, `(9, ITEM_STACK)` -> `FrameItem { item_id, map_id, foil }`, `(10, INT)`; `EntityTable::item_frames` side map (cleared in `clear_side_state`, dressed in the side-row test) with `set_frame_*` and `item_frame(id) -> (facing, rotation, item)` (facing falls back to spawn data); `EntityClasses::is_item_frame` gates the slots to `item_frame`/`glow_item_frame`. Tests in `rewo-world` and `rewo-net`. Not yet calibrated against a real server's metadata. | 1 |
+
+**Next, in order:** step 3 (bake the frame block models `block/item_frame`,
+`glow_item_frame`, `item_frame_map`, `glow_item_frame_map` and draw them in
+the entity pass at `item_frame::frame_model_pose`), step 4 (the item, FIXED
+display transform, at `item_pose`), step 5 (map in frame), step 6 (gate,
+§15, full gate, merge). Calibrate slots 8-10 against a live server when one
+is available.
