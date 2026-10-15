@@ -130,6 +130,15 @@ M187 (demo hash unchanged, `d7dc9e8985f0504f`).
   sprites, graded by `handshot` gm6, on branch `claude/map-decorations`,
   merged the same way. Still open: render-check r69 (needs a windowed run),
   item frames, banner name labels.**
+- **Item frames (M194) are started, not merged:** branch `claude/item-frames`
+  holds the plan (`docs/rewo/M194-item-frames-plan.md`, on that branch, with
+  "Where it stopped") and two green slices: `ItemFrameRenderer`'s placement
+  for all six facings (`rewo-gpu/src/item_frame.rs`) and the entity data
+  (facing from the spawn packet and slot 8, item slot 9, rotation slot 10).
+  Next there: bake and draw the frame models, then the item, then a map in
+  the frame, then a gate. Stopped because the session's budget was nearly
+  spent; the branch merges only once M194 is complete and the full gate
+  passes.
 - A map's tooltip and store are tested against the decompile's arithmetic but
   have not seen a real server's `map_item_data`: hold a filled map on the test
   server and hover it (also a playtest item).
