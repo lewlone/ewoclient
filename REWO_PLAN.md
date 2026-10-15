@@ -339,8 +339,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   the recipe-book button (**M187**), the HUD's air-bubble pop (**M188**) and
 >   the loom's scrollbar (**M189**).
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
->   the map store, **M192 the held map**; item frames and decoration sprites
->   are open), `render-misc [INTERP]` and `[FLOW]`, the live
+>   the map store, **M192 the held map**, **M193 its decorations**; item
+>   frames and banner name labels are open), `render-misc [INTERP]` and `[FLOW]`, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -2013,7 +2013,7 @@ this shape once.
 | Link prompt (2026-10, `ConfirmLinkScreen` for a clicked chat `open_url`) | **r67** | — | `confirmlinkshot` m1-m6, p0-p7 (14) |
 | M187 — the recipe-book button (2026-10-15) | **r68** | `MENU_OVERLAY_SPRITES` 127..=128 (`recipe_book/button`, `button_highlighted`; `BOOK_BUTTON`) | `inventoryshot` gb1-gb3 |
 | M189 — the loom's scrollbar (2026-10-15) | — | `MENU_OVERLAY_SPRITES` 129..=130 (`container/loom/scroller`, `scroller_disabled`; `LOOM_SCROLLER`) | `rewo-ui` `m189_loom_scroll` |
-| M192 — the held map *(claimed 2026-10-15, in progress on `claude/m192-held-map`)* | **r69** | hand atlas (512x512, `live_cmd/gui.rs`) while a map is held: map pixels (0,0,128,128), checkerboard (128,0,128,128), plain background (256,0,64,64), items from y 128, skin row unchanged | `handshot` map witnesses (planned) |
+| M192 — the held map (r69 claimed, deferred: no windowed run yet) | **r69** | hand atlas (512x512, `live_cmd/gui.rs`) while a map is held: map pixels (0,0,128,128), checkerboard (128,0,128,128), plain background (256,0,64,64), items from y 128, skin row unchanged; **M193** decoration sprites (320,0)..(512,128), 8x8 by raw type id, 24 per row | `handshot` gm1-gm6 |
 | *(next free)* | **r70** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3839,6 +3839,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M193 — map decorations on the held map (2026-10-15)
+
+`MapRenderer.render`'s decoration loop (`MapRenderer.java:45-...`) for the
+held map: each decoration is an 8 x 8 sprite quad posed by
+`map_decoration_pose` (`translate(x/2 + 64, y/2 + 64, -0.02) rotZ(rot *
+360/16) scale(4, 4, 3) translate(-0.125, 0.125, 0)`) at `z = count * -0.001`,
+drawn after the pixels and only when the map's data is present. The sprite
+comes from the type's ASSET name, not its registry name (`mansion` draws
+`woodland_mansion`): `tools/gen_map_decorations.py` generates
+`rewo_data::map_decoration_table::TYPES` by raw protocol id from
+`MapDecorationTypes.java` and the registry report, and the bake loads all 35
+sprites. They take the hand atlas's (320,0)..(512,128) band, 24 to a row by
+raw id (`map_decoration_uv`). Graded by `handshot` gm6 (a decoration at
+half-pixel x -100 lands left of the map's centre, at x 0 on it, none without
+decorations) and unit tests of the pose. Open: banner NAME labels (scaled
+text at z -0.025, `MapRenderer.java:66-...`), and item frames, which still
+draw no map at all.
 
 ### M192 — the held map in first person (2026-10-15)
 
