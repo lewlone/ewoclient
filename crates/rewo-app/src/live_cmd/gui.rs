@@ -329,6 +329,15 @@ pub struct HandState {
     pub(super) started: std::time::Instant,
     /// `misc/enchanted_glint_item.png` as `(rgba, w, h)`; `None` draws none.
     pub(super) glint: Option<(Vec<u8>, u32, u32)>,
+    /// M192 — the held map's two backgrounds, `(map_background,
+    /// map_background_checkerboard)` RGBA from the bake; `None` (either
+    /// missing) draws no held map.
+    pub(super) map_backgrounds: Option<(Vec<u8>, Vec<u8>)>,
+    /// M192 — what the resident atlas holds of a held map: `(map id, the
+    /// map's version, whether the level held it)`, or `None` for no map. Part
+    /// of the repack key, so a new patch re-uploads the pixels.
+    pub(super) map_resident: Option<(i32, u64, bool)>,
+    pub(super) map_uv: Option<HeldMapUv>,
 }
 
 impl HandState {
@@ -352,6 +361,17 @@ impl HandState {
             forced_attack: None,
             started: std::time::Instant::now(),
             glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
+            map_backgrounds: match (
+                baked.map_background.as_ref(),
+                baked.map_background_checkerboard.as_ref(),
+            ) {
+                (Some(bg), Some(cb)) if (bg.w, bg.h, cb.w, cb.h) == (64, 64, 128, 128) => {
+                    Some((bg.rgba.clone(), cb.rgba.clone()))
+                }
+                _ => None,
+            },
+            map_resident: None,
+            map_uv: None,
         }
     }
 
@@ -502,6 +522,27 @@ pub(super) fn apply_hand(
     let main_item = model_of(state.main_equip.visible_item());
     let off_item = model_of(state.off_equip.visible_item());
 
+    // M192 — `ItemInHandRenderer`'s map branch: a stack that `has(MAP_ID)`
+    // is drawn as a map, two-handed in the main hand with an empty off-hand,
+    // one-handed otherwise. The held stacks come from the inventory, as the
+    // glint's do; the map's data from the level's store (M190).
+    let main_stack = session.inventory.held();
+    let off_stack = session.inventory.offhand();
+    let held_map = state.map_backgrounds.as_ref().and_then(|_| {
+        let (stack, arm) = match (main_stack, off_stack) {
+            (Some(m), _) if m.has_map_id => (m, Arm::Right),
+            (_, Some(o)) if o.has_map_id => (o, Arm::Left),
+            _ => return None,
+        };
+        let id = session.stack_details.get(stack.components)?.map_id?;
+        let two_handed = arm == Arm::Right && off_stack.is_none();
+        Some((id, arm, two_handed))
+    });
+    let map_key = held_map.map(|(id, _, _)| {
+        let data = session.maps.get(id);
+        (id, data.map_or(0, |d| d.version), data.is_some())
+    });
+
     // Every texture the two hands need this frame.
     let mut wanted: Vec<u16> = Vec::new();
     for m in [main_item, off_item].into_iter().flatten() {
@@ -511,14 +552,32 @@ pub(super) fn apply_hand(
             }
         }
     }
-    if wanted != state.resident || !state.skin_resident || !wr.hand_ready() {
-        // M192: no held map is packed yet (the bake does not load the two
-        // map backgrounds yet); see docs/rewo/M192-held-map-plan.md.
-        let (rgba, uv, _map_uv) = pack_hand_atlas(
+    if wanted != state.resident
+        || !state.skin_resident
+        || !wr.hand_ready()
+        || map_key != state.map_resident
+    {
+        // M192 — a held map's pixels and backgrounds take the top band. A
+        // new patch (version bump) repacks the whole atlas for now; the plan
+        // (docs/rewo/M192-held-map-plan.md §2.1) names the region re-upload
+        // that should replace this.
+        let pixels = map_key
+            .filter(|k| k.2)
+            .and_then(|k| session.maps.get(k.0))
+            .map(|d| d.rgba());
+        let textures =
+            map_key
+                .and(state.map_backgrounds.as_ref())
+                .map(|(bg, cb)| HeldMapTextures {
+                    pixels: pixels.as_deref(),
+                    checker: cb,
+                    background: bg,
+                });
+        let (rgba, uv, map_uv) = pack_hand_atlas(
             &state.held,
             &wanted,
             state.skin.as_ref().map(|(px, _)| px.as_slice()),
-            None,
+            textures.as_ref(),
         );
         if let Err(e) = wr.init_hand(gpu, &rgba, HAND_ATLAS, HAND_ATLAS) {
             log::warn!("live: hand atlas upload failed: {e}");
@@ -537,6 +596,8 @@ pub(super) fn apply_hand(
         state.uv = uv;
         state.resident = wanted;
         state.skin_resident = state.skin.is_some();
+        state.map_resident = map_key;
+        state.map_uv = map_uv;
     }
 
     let attack = state
@@ -645,12 +706,45 @@ pub(super) fn apply_hand(
             ],
             slim: *slim,
         });
-    let verts = rewo_gpu::hand::build_vertices(
+    // M192 — the map's hand leaves the ordinary list (the map branch
+    // replaces the item branch; two-handed, the off-hand is empty and draws
+    // nothing anyway) and the map's own geometry is appended.
+    let map_draw = held_map
+        .zip(state.map_uv)
+        .map(|((_, arm, two_handed), uv)| {
+            let (inverse_height, attack) = match arm {
+                Arm::Right => (state.main_equip.inverse(partial), attack),
+                Arm::Left => (state.off_equip.inverse(partial), 0.0),
+            };
+            rewo_gpu::hand::MapDraw {
+                arm,
+                two_handed,
+                x_rot: session.player.pitch,
+                inverse_height,
+                attack,
+                data_present: map_key.is_some_and(|k| k.2),
+                uv_pixels: uv.pixels,
+                uv_checker: uv.checker,
+                uv_background: uv.background,
+            }
+        });
+    let hands: Vec<HandDraw<'_>> = hands
+        .into_iter()
+        .filter(|h| map_draw.is_none_or(|m| m.arm != h.arm))
+        .collect();
+    let mut verts = rewo_gpu::hand::build_vertices(
         view,
         &hands,
         &|t| state.uv.get(&t).copied(),
         arm_geo.as_ref(),
     );
+    if let Some(m) = map_draw.as_ref() {
+        verts.extend(rewo_gpu::hand::build_map_vertices(
+            view,
+            m,
+            arm_geo.as_ref(),
+        ));
+    }
     // Wall-clock phase, exactly as the GUI glint uses — vanilla reads
     // `Util.getMillis()` for both.
     let millis = state.started.elapsed().as_secs_f64() * 1000.0;
