@@ -1,7 +1,7 @@
 # M192 plan — the held map in first person
 
 Written 2026-10-15 at the end of the overnight push, for a session that starts
-it cold. Nothing here is built yet. M190 (`6ff0640`) supplies the data:
+it cold. **Started the same night: see "Where it stopped" directly below.** M190 (`6ff0640`) supplies the data:
 `PlaySession::maps` (`rewo_world::maps::MapStore`), `ClientMap::rgba()`
 (128 x 128 RGBA, the vanilla palette) and `ClientMap::version` (bumped on every
 colour patch). M191 (`cb9dd4a`) put the stack's map id on
@@ -16,6 +16,50 @@ All line numbers are the 26.2 Vineflower decompile under
 `%APPDATA%/EwoClient/rewo/26.2/decompiled/net/minecraft/client/renderer/`.
 Re-check them before transcribing; the rule in `CLAUDE.md` is to verify a doc
 claim before acting on it.
+
+## Where it stopped (2026-10-15, end of the overnight session)
+
+Branch **`claude/m192-held-map`** (not merged into `main`; the orchestrator's
+rule is to merge only when M192 is complete and the full gate passes). Six
+green slices, each passing clippy `-D warnings` and its tests:
+
+| Commit | Slice | Plan step |
+|---|---|---|
+| `4b4a072` | `rewo-gpu/src/hand.rs`: `map_tilt`, `map_frame`, `one_handed_map`, `map_hand`, `two_handed_map`, `MAP_BACKGROUND_QUAD`, `MAP_PIXELS_QUAD`, tests `m192_held_map` (hand-derived literals). r69 and the atlas rows claimed in §0.0. | 1, 2 |
+| `5e58cc4` | `live_cmd/gui.rs`: `HAND_MAP_*` rects, `HeldMapTextures`, `HeldMapUv`, `pack_hand_atlas(.., map)` (items move to y 128). Test `a_held_map_takes_the_top_band_of_the_hand_atlas`. | 3 (layout) |
+| `823c0b3` | `rewo-data` bake: `BakedAssets::map_background` / `map_background_checkerboard`, tested on the real jar. | 3 (textures) |
+| `01cb138` | `hand::MapDraw` + `build_map_vertices` (arms via `append_arm`, background quad with vanilla's backwards-looking texture choice, pixel quad when data is present). | 4 (geometry) |
+| `fd78676` | `apply_hand` wiring: map branch from the inventory (`has_map_id`; two-handed = main hand + empty off-hand), `session.maps` via `StackDetail::map_id`, repack key `(map id, version, data present)`, the map's hand filtered out of `build_vertices`. | 4 (wiring) |
+| `0056380` | `handshot` gm1-gm3 (`EXPECTED_WITNESSES` 34 -> 37), production packer + geometry under validation: palette texels reach the frame, one-handed placement, unknown map = plain background only. | 5 (partly) |
+
+**Still to do, in order:**
+
+1. **Region re-upload** (§2.1). Today a new map version repacks the whole
+   512x512 atlas and rebuilds the pass through `init_hand` (then re-installs
+   the glint). Replace that for a version-only change with
+   `rewo_gpu::entities::upload_region` on the 128x128 band; keep the full
+   repack for a new map id or a changed item set.
+2. **Pull the branch decision out of `apply_hand`** into a pure function
+   (`held_map_branch(main, off) -> Option<(Arm, two_handed)>`) and test it:
+   map + off-hand item = one-handed in the main hand, the item still drawn;
+   map in the off-hand = one-handed left; map + empty off-hand = two-handed.
+   Then the plan's §3 witness 4 (branch) and witness 3 (re-upload, counting
+   `init_hand` calls).
+3. **Known deviation to fix or record:** the map is resolved from the held
+   stack, not from the equip clock's visible item, so during the swap dip the
+   map appears at once where vanilla's `mainHandItem` lags. Route it through
+   `EquipHeight::visible_item` plus the stack.
+4. **render-check r69** (claimed): count frames whose hand vertices include a
+   map quad, read back from the renderer; the owner runs
+   `tools/render_check.py` (it opens a window).
+5. gm1-gm3 run without a skin, so the map arms are not pixel-checked; add a
+   skin-bearing witness that the two map arms land left and right of the map.
+6. Full `cargo test`, `python tools/gates.py`, `tools/numbers.py`, a §15
+   entry, then merge the branch into `main` (`--no-ff`) and note it in the
+   overnight summary.
+
+Later, unchanged: item frames, decoration sprites, lighting (see the end of
+this file).
 
 ## 1. Vanilla, in the order it runs
 

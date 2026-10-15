@@ -107,8 +107,10 @@ M187 (demo hash unchanged, `d7dc9e8985f0504f`).
   **The next session should start with M192**, the held map, from
   [`docs/rewo/M192-held-map-plan.md`](rewo/M192-held-map-plan.md): vanilla's
   poses with source lines, the hand-atlas layout, the offscreen `handshot`
-  checks and the order of steps. It was planned, not started, because the
-  night's budget ran out.
+  checks and the order of steps. **It was then started on branch
+  `claude/m192-held-map` (six green slices, not merged): poses, atlas band,
+  baked backgrounds, geometry, wiring, and `handshot` gm1-gm3 passing. The
+  plan file's "Where it stopped" lists the remaining steps.**
 - A map's tooltip and store are tested against the decompile's arithmetic but
   have not seen a real server's `map_item_data`: hold a filled map on the test
   server and hover it (also a playtest item).
