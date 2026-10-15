@@ -62,6 +62,8 @@ Every milestone has its `REWO_PLAN.md` §15 entry; §0.0's open list is updated.
 8. **Maps are split in two.** The data half (decode, store, palette, tooltip)
    landed first because it is fully checkable headlessly; drawing a map (held
    in first person, in item frames) is a separate Vulkan job.
+9. **The tooltip's component order follows the decompile**, not the old code
+   comment that claimed the container preview came after the lore.
 10. **render-check r69 (the held map) is claimed but deferred.** It needs a
    map injected into the windowed run, and an injection nobody can run
    tonight could silently break the other rows.
@@ -69,8 +71,6 @@ Every milestone has its `REWO_PLAN.md` §15 entry; §0.0's open list is updated.
    hand's draws (the atlas holds one map); a map being swapped away shows as
    the flat item for the dip; the hand pass has no lightmap. Banner name
    labels on maps (M193) are not drawn.
-9. **The tooltip's component order follows the decompile**, not the old code
-   comment that claimed the container preview came after the lore.
 
 ## Verification (measured, end of night)
 
