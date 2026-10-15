@@ -100,4 +100,13 @@ draw. 4. Item in frame. 5. Map in frame (+ decorations with
 
 ## Where it stopped
 
-(Updated as slices land.) Nothing built yet beyond this plan.
+Branch `claude/item-frames` (not merged).
+
+| Commit | Slice | Plan step |
+|---|---|---|
+| `c47dffe` | This plan. | — |
+| *(slice 1)* | `rewo-gpu/src/item_frame.rs`: `facing_step`, `frame_base`, `frame_model_pose`, `item_pose`, `map_pose` (the §1.2 chain, relative to the entity; the dispatcher's render offset and `submit`'s `-renderOffset` cancel), tests over all six facings (contents at `step/32`, a map `1/128` further out, flush when invisible; quarters vs eighths). | 2 |
+
+**Next, in order:** step 1 (the `item_frames` side map: facing from
+`add_entity` data and slot 8, item slot 9, rotation slot 10, cleared in
+`clear_side_state`), then steps 3-6.
