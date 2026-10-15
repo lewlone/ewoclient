@@ -537,6 +537,10 @@ pub struct BakedAssets {
     /// no held map rather than an invented frame.
     pub map_background: Option<DecodedImage>,
     pub map_background_checkerboard: Option<DecodedImage>,
+    /// `textures/map/decorations/<asset>.png` (8 x 8) per map decoration
+    /// type, indexed by its raw registry id (`map_decoration_table::TYPES`).
+    /// `None` for a sprite the jar lacks, which then draws nothing.
+    pub map_decorations: Vec<Option<DecodedImage>>,
     /// `misc/forcefield.png` — the world-border wall (M80). `None` means the
     /// wall is not drawn at all, rather than an invented sheet.
     pub forcefield: Option<DecodedImage>,
@@ -1540,6 +1544,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
     let map_background = bake_map_texture(&mut jar, "map_background.png");
     let map_background_checkerboard = bake_map_texture(&mut jar, "map_background_checkerboard.png");
+    let map_decorations = crate::map_decoration_table::TYPES
+        .iter()
+        .map(|(_, asset, _)| bake_map_texture(&mut jar, &format!("decorations/{asset}.png")))
+        .collect();
     let forcefield = bake_misc_texture(&mut jar, "forcefield.png");
     let equipment = crate::equipment::EquipmentAssets::load(client_jar);
     let trims = crate::equipment::TrimAssets::load(client_jar);
@@ -1997,6 +2005,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         armor_glint,
         map_background,
         map_background_checkerboard,
+        map_decorations,
         forcefield,
         equipment,
         trims,
@@ -5469,6 +5478,18 @@ mod tests {
             .as_ref()
             .expect("map_background_checkerboard.png");
         assert_eq!((cb.w, cb.h, cb.rgba.len()), (128, 128, 128 * 128 * 4));
+        // Every decoration type's sprite, 8 x 8, by raw id.
+        let t = &crate::map_decoration_table::TYPES;
+        assert_eq!(baked.map_decorations.len(), t.len());
+        for (i, d) in baked.map_decorations.iter().enumerate() {
+            let d = d
+                .as_ref()
+                .unwrap_or_else(|| panic!("no sprite for {}", t[i].0));
+            assert_eq!((d.w, d.h), (8, 8), "{}", t[i].0);
+        }
+        // The registry name is not the sprite name.
+        let mansion = t.iter().position(|e| e.0 == "mansion").expect("mansion");
+        assert_eq!(t[mansion].1, "woodland_mansion");
     }
 
     #[test]

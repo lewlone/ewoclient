@@ -260,6 +260,25 @@ pub(super) const HAND_MAP_CHECKER: (u32, u32, u32, u32) = (128, 0, 128, 128);
 /// `textures/map/map_background.png`, 64 x 64.
 pub(super) const HAND_MAP_BACKGROUND: (u32, u32, u32, u32) = (256, 0, 64, 64);
 pub(super) const HAND_MAP_ITEM_Y: u32 = 128;
+/// The decoration sprites' band (8 x 8 each, by raw type id, 24 to a row)
+/// right of the plain background: `(320, 0)..(512, 128)`.
+pub(crate) const HAND_MAP_DECORATIONS: (u32, u32) = (320, 0);
+const HAND_MAP_DECO_COLS: u32 = 24;
+const HAND_MAP_DECO_ROWS: u32 = 16;
+
+/// Where decoration type `id`'s sprite sits in the hand atlas, as a UV rect,
+/// or `None` past the band.
+pub(crate) fn map_decoration_uv(id: i32) -> Option<[f32; 4]> {
+    let id = u32::try_from(id).ok()?;
+    if id >= HAND_MAP_DECO_COLS * HAND_MAP_DECO_ROWS {
+        return None;
+    }
+    let (x, y) = (
+        HAND_MAP_DECORATIONS.0 + (id % HAND_MAP_DECO_COLS) * 8,
+        HAND_MAP_DECORATIONS.1 + (id / HAND_MAP_DECO_COLS) * 8,
+    );
+    Some(atlas_rect_uv((x, y, 8, 8)))
+}
 
 /// The RGBA a held map needs packed (M192): its pixels (`None` while the
 /// level does not hold the map — vanilla then draws the plain background and
@@ -268,6 +287,8 @@ pub(crate) struct HeldMapTextures<'a> {
     pub pixels: Option<&'a [u8]>,
     pub checker: &'a [u8],
     pub background: &'a [u8],
+    /// Each decoration type's 8 x 8 sprite by raw id (`None` = missing).
+    pub decorations: &'a [Option<&'a [u8]>],
 }
 
 /// Where [`pack_hand_atlas`] put a held map's textures, as atlas UV rects
@@ -337,6 +358,8 @@ pub struct HandState {
     /// map's version, whether the level held it)`, or `None` for no map. Part
     /// of the repack key, so a new patch re-uploads the pixels.
     pub(super) map_resident: Option<(i32, u64, bool)>,
+    /// The decoration sprites by raw type id, from the bake.
+    pub(super) map_decoration_sprites: Vec<Option<Vec<u8>>>,
     pub(super) map_uv: Option<HeldMapUv>,
 }
 
@@ -372,6 +395,15 @@ impl HandState {
             },
             map_resident: None,
             map_uv: None,
+            map_decoration_sprites: baked
+                .map_decorations
+                .iter()
+                .map(|d| {
+                    d.as_ref()
+                        .filter(|d| (d.w, d.h) == (8, 8))
+                        .map(|d| d.rgba.clone())
+                })
+                .collect(),
         }
     }
 
@@ -450,6 +482,16 @@ pub(crate) fn pack_hand_atlas(
         }
         blit_into_atlas(&mut rgba, m.checker, HAND_MAP_CHECKER);
         blit_into_atlas(&mut rgba, m.background, HAND_MAP_BACKGROUND);
+        for (id, sprite) in m.decorations.iter().enumerate() {
+            let id32 = id as u32;
+            if let (Some(px), true) = (sprite, id32 < HAND_MAP_DECO_COLS * HAND_MAP_DECO_ROWS) {
+                let (x, y) = (
+                    HAND_MAP_DECORATIONS.0 + (id32 % HAND_MAP_DECO_COLS) * 8,
+                    HAND_MAP_DECORATIONS.1 + (id32 / HAND_MAP_DECO_COLS) * 8,
+                );
+                blit_into_atlas(&mut rgba, px, (x, y, 8, 8));
+            }
+        }
         HeldMapUv {
             pixels: atlas_rect_uv(HAND_MAP_PIXELS),
             checker: atlas_rect_uv(HAND_MAP_CHECKER),
@@ -628,6 +670,11 @@ pub(super) fn apply_hand(
             .filter(|k| k.2)
             .and_then(|k| session.maps.get(k.0))
             .map(|d| d.rgba());
+        let deco_sprites: Vec<Option<&[u8]>> = state
+            .map_decoration_sprites
+            .iter()
+            .map(|d| d.as_deref())
+            .collect();
         let textures =
             map_key
                 .and(state.map_backgrounds.as_ref())
@@ -635,6 +682,7 @@ pub(super) fn apply_hand(
                     pixels: pixels.as_deref(),
                     checker: cb,
                     background: bg,
+                    decorations: &deco_sprites,
                 });
         let (rgba, uv, map_uv) = pack_hand_atlas(
             &state.held,
@@ -802,9 +850,33 @@ pub(super) fn apply_hand(
         arm_geo.as_ref(),
     );
     if let Some(m) = map_draw.as_ref() {
+        // The map's decorations, in the store's order (vanilla's `count`).
+        let decos: Vec<rewo_gpu::hand::MapDecoQuad> = held_map
+            .and_then(|(id, _, _)| session.maps.get(id))
+            .map(|data| {
+                data.decorations
+                    .iter()
+                    .filter(|d| {
+                        state
+                            .map_decoration_sprites
+                            .get(d.type_id as usize)
+                            .is_some_and(|s| s.is_some())
+                    })
+                    .filter_map(|d| {
+                        Some(rewo_gpu::hand::MapDecoQuad {
+                            x: d.x,
+                            y: d.y,
+                            rot: d.rot,
+                            uv: map_decoration_uv(d.type_id)?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         verts.extend(rewo_gpu::hand::build_map_vertices(
             view,
             m,
+            &decos,
             arm_geo.as_ref(),
         ));
     }

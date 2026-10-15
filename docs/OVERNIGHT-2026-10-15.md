@@ -65,10 +65,11 @@ Every milestone has its `REWO_PLAN.md` §15 entry; §0.0's open list is updated.
 
 ## Verification (measured, end of night)
 
-Final, on a clean tree at `9ce9023` (the code of `cb9dd4a`; `python tools/numbers.py` writes
-§0.0's block): **4,233 tests passed, 0 failed, 0 skipped; `tools/gates.py`
-49/49 rows** (the demo hash unchanged, `d7dc9e8985f0504f`). Baseline was
-4,200. Run after each milestone as well: `cargo fmt --check`, `cargo clippy
+Final, after M193 on branch `claude/map-decorations` (`python tools/numbers.py`
+writes §0.0's block): **4,244 tests passed, 0 failed, 0 skipped;
+`tools/gates.py` 49/49 rows** (the demo hash unchanged, `d7dc9e8985f0504f`);
+clippy `-D warnings` and `cargo fmt --check` clean. Baseline was 4,200.
+Run after each milestone as well: `cargo fmt --check`, `cargo clippy
 --workspace --all-targets --features rewo-app/gates -- -D warnings` clean, the
 affected crates' tests green, and `python tools/gates.py` 49/49 after M186 +
 M187 (demo hash unchanged, `d7dc9e8985f0504f`).
@@ -89,8 +90,9 @@ M187 (demo hash unchanged, `d7dc9e8985f0504f`).
 - **Maps:** hold a filled map on a server and hover it in the inventory: "ID
   #n" (and "Locked" for a locked one; scale lines with F3+H). Hold it with an
   empty off-hand and look down: it should fill the view held in both hands,
-  and update as you walk (M192); with something in the off-hand it is held
-  one-handed. Item frames do not draw maps yet.
+  update as you walk (M192), and show your player arrow and any markers
+  (M193); with something in the off-hand it is held one-handed. Item frames
+  do not draw maps yet, and banner names on maps are not drawn.
 - **Loom:** banner + dye with no pattern item: scroll the 32 patterns with the
   wheel and by dragging the thumb, and stamp one from the second half.
 - **A fresh-machine run of the release zip** (`docs/RELEASE.md` §3).
@@ -113,8 +115,11 @@ M187 (demo hash unchanged, `d7dc9e8985f0504f`).
   branch `claude/m192-held-map` in nine green slices and merged into `main`
   after the full gate (4,243 tests, 49/49 gate rows): the held map draws one-
   and two-handed with its arms, background and pixels, graded by `handshot`
-  gm1-gm5. Still open from it: render-check r69 (needs a windowed run), item
-  frames and decoration sprites.**
+  gm1-gm5. Then **M193**, the map's decorations (player arrows, markers,
+  banners) drawn on the held map from a generated type table and the jar's
+  sprites, graded by `handshot` gm6, on branch `claude/map-decorations`,
+  merged the same way. Still open: render-check r69 (needs a windowed run),
+  item frames, banner name labels.**
 - A map's tooltip and store are tested against the decompile's arithmetic but
   have not seen a real server's `map_item_data`: hold a filled map on the test
   server and hover it (also a playtest item).

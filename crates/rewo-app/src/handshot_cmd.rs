@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 39;
+const EXPECTED_WITNESSES: usize = 40;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -980,6 +980,8 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
         });
         let map_px = store.get(1).expect("applied").rgba();
         let plain_bg: Vec<u8> = (0..64 * 64).flat_map(|_| [255u8, 255, 0, 255]).collect();
+        let red_sprite: Vec<u8> = (0..8 * 8).flat_map(|_| [255u8, 0, 0, 255]).collect();
+        let deco_sprites: Vec<Option<&[u8]>> = vec![Some(&red_sprite)];
         let checker: Vec<u8> = (0..128 * 128).flat_map(|_| [0u8, 0, 255, 255]).collect();
         let pack = |pixels: Option<&[u8]>| {
             crate::live_cmd::pack_hand_atlas(
@@ -990,6 +992,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                     pixels,
                     checker: &checker,
                     background: &plain_bg,
+                    decorations: &deco_sprites,
                 }),
             )
         };
@@ -1024,6 +1027,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             &rewo_gpu::hand::build_map_vertices(
                 glam::Mat4::IDENTITY,
                 &map_draw(true, true, uv_with),
+                &[],
                 None,
             ),
         )?;
@@ -1045,6 +1049,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             &rewo_gpu::hand::build_map_vertices(
                 glam::Mat4::IDENTITY,
                 &map_draw(false, true, uv_with),
+                &[],
                 None,
             ),
         )?;
@@ -1092,6 +1097,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             &rewo_gpu::hand::build_map_vertices(
                 glam::Mat4::IDENTITY,
                 &map_draw(true, true, uv_with),
+                &[],
                 None,
             ),
         )?;
@@ -1123,6 +1129,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 pixels: Some(&map_px),
                 checker: &checker,
                 background: &plain_bg,
+                decorations: &deco_sprites,
             }),
         );
         wr.init_hand(&mut gpu, &atlas_skin, atlas_side, atlas_side)?;
@@ -1150,6 +1157,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                     x_rot: 90.0,
                     ..map_draw(true, true, uv_skin.expect("packed"))
                 },
+                &[],
                 Some(&geo),
             ),
         )?;
@@ -1174,6 +1182,63 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 count(&two, [0, 255, 255])
             ),
         );
+        // gm6 — decorations (`MapRenderer.render`'s loop): a red 8x8 sprite
+        // for type 0 at half-pixel x -100 lands left of the map's centre, at
+        // x 0 on it, and with no decorations there is no red at all.
+        let (atlas_d, _, uv_d) = pack(Some(&map_px));
+        wr.init_hand(&mut gpu, &atlas_d, atlas_side, atlas_side)?;
+        let uv_d = uv_d.expect("packed");
+        let deco = |x: i8| rewo_gpu::hand::MapDecoQuad {
+            x,
+            y: 0,
+            rot: 0,
+            uv: crate::live_cmd::map_decoration_uv(0).expect("id 0 fits"),
+        };
+        let red_mean_x = |img: &[u8]| -> (usize, u64) {
+            let (mut n, mut sx) = (0usize, 0u64);
+            for (i, p) in img.as_chunks::<4>().0.iter().enumerate() {
+                if p[0] > 200 && p[1] < 40 && p[2] < 40 {
+                    n += 1;
+                    sx += (i as u32 % W) as u64;
+                }
+            }
+            (n, sx.checked_div(n as u64).unwrap_or(0))
+        };
+        let draw_with = |gpu: &mut Gpu,
+                         off: &mut Offscreen,
+                         wr: &mut WorldRenderer,
+                         d: &[rewo_gpu::hand::MapDecoQuad]|
+         -> Result<Vec<u8>, String> {
+            shot(
+                gpu,
+                off,
+                wr,
+                &rewo_gpu::hand::build_map_vertices(
+                    glam::Mat4::IDENTITY,
+                    &rewo_gpu::hand::MapDraw {
+                        x_rot: 90.0,
+                        ..map_draw(true, true, uv_d)
+                    },
+                    d,
+                    None,
+                ),
+            )
+        };
+        let bare = draw_with(&mut gpu, &mut off, &mut wr, &[])?;
+        let at_left = draw_with(&mut gpu, &mut off, &mut wr, &[deco(-100)])?;
+        let at_mid = draw_with(&mut gpu, &mut off, &mut wr, &[deco(0)])?;
+        let (n0, _) = red_mean_x(&bare);
+        let (nl, xl) = red_mean_x(&at_left);
+        let (nm, xm) = red_mean_x(&at_mid);
+        c.record(
+            "gm6.a_maps_decorations_draw_at_their_half_pixel_positions",
+            n0 == 0 && nl > 20 && nm > 20 && xl + 40 < xm && xm.abs_diff(W as u64 / 2) < 20,
+            format!(
+                "no decorations: {n0} red px; x -100: {nl} px centred at {xl}; x 0: {nm} px \
+                 centred at {xm} (frame centre {})",
+                W / 2
+            ),
+        );
         let (atlas_none, _, uv_none) = pack(None);
         wr.init_hand(&mut gpu, &atlas_none, atlas_side, atlas_side)?;
         let unknown = shot(
@@ -1183,6 +1248,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             &rewo_gpu::hand::build_map_vertices(
                 glam::Mat4::IDENTITY,
                 &map_draw(true, false, uv_none.expect("packed")),
+                &[],
                 None,
             ),
         )?;
