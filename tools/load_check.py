@@ -173,8 +173,14 @@ def run(args):
             srv.wait(60)
         except Exception:
             srv.kill()
+        # The server's log stays open in THIS process until closed, and
+        # Windows will not delete an open file: an ignore_errors removal left
+        # the directory and its log behind on every run (54 of them).
+        log.close()
         if not args.keep:
             shutil.rmtree(dest, ignore_errors=True)
+            if os.path.exists(dest):
+                print("could not remove %s" % dest)
 
 
 def grade_light(text, code, report):
