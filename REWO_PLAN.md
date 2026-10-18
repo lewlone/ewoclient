@@ -3908,7 +3908,11 @@ with a `
 finder return the newline's own index, `start` never moved, and the loop
 pushed empty lines until the allocator failed. So any player who opened the
 advancements screen once such an advancement was displayed would have crashed
-the client. Fixed, with `a_newline_breaks_and_is_dropped`.
+the client. Fixed, with `a_newline_breaks_and_is_dropped`. An audit of the
+other wrap paths (chat's `wrap_components`, the confirm-link and disconnect
+screens) found they all go through `rewo_world::string_splitter`, whose
+`split_lines` / `split_lines_wrapped` drop the newline as vanilla does; the
+advancements view held the only private copy of the loop.
 
 ### M213 — banner labels on a held map (2026-10-19)
 
