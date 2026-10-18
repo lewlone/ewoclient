@@ -3861,6 +3861,20 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M207 — `tools/load_check.py` (2026-10-18)
+
+The scratch load test that found M205 and M206, made a tool: a fresh vanilla
+server with `level-type=minecraft:normal`, seed 20261018, view distance
+`--rd` (16), a client game directory whose `options.txt` asks for the same,
+and `rewo live --run-seconds` (90). It passes only if the client exits 0
+with no validation message, the last `world: arena` line holds exactly
+`ChunkTrackingView`'s set at that distance (1,057 at 16) with 0 deferred,
+and the arena never refused to grow. Graded against synthetic logs of both
+bugs it found (473 columns at 16; 197 deferred) and a validation line, each
+of which fails it. First run: PASSED, 1,057 / 1,057, three growths to 32M
+vertices, 182 fps average in the debug build with validation on. Not in
+`gates.py` (a 3 GB server, minutes of world generation); takes the GPU lock.
+
 ### M206 — the render distance, end to end (2026-10-18)
 
 Found reading M205's load-test log: a server at view distance 16 sent 473

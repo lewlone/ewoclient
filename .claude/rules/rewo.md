@@ -58,7 +58,13 @@ a self-check path.
   adds a render path. Validation is `cfg!(debug_assertions)`-gated for `live`,
   so run a **debug** build. M86 found nine features that had never rendered in
   the windowed client while every headless gate was green.
-- `tools/gates.py` and `tools/render_check.py` take a machine-wide lock
+- **`tools/load_check.py`** loads normal (not flat) terrain at render distance
+  16 against a fresh server and fails on a column count other than the
+  server's tracking set, a deferred column, or a validation message. Run it
+  after touching the terrain arena, the mesher's output size, or what the
+  client tells the server (M205 and M206 were both found by it). Not in
+  `gates.py`: it needs a 3 GB server and minutes of world generation.
+- `tools/gates.py`, `tools/render_check.py` and `tools/load_check.py` take a machine-wide lock
   (`tools/gpu_lock.py`) so two GPU verifications never overlap: the
   self-hosted CI runner shares this desktop. A CI render check once read 65/66
   while another worktree's ran beside it.
