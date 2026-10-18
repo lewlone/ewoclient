@@ -46,6 +46,10 @@ released.
   world turned up thin dark lines along block edges, cracks from an old
   vertex-saving trick (merging faces), and the trick is now off. Terrain
   uses about 13% more GPU memory and has no cracks, as in vanilla.
+- **M209**: the sky is now drawn the way vanilla draws it. Before, a
+  distant ocean or plain ended in a hard line against the sky; now the world
+  fades into the sky with no edge. This changes the demo picture on purpose
+  (only its sky pixels).
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -75,6 +79,8 @@ released.
 | `af429b2` | **M207** — `tools/load_check.py`: a normal world at render distance 16; fails on a column count other than the server's tracking set (1,057), any deferred column, a refused arena growth or a validation message. |
 | `12e8d22`, `1dc1bc3`, `b719c12` | **M208** — greedy face merging off in production (`MERGE_FACES`): its rectangles left T-junction cracks. A new mesher test finds T-junctions geometrically (18 before, 0 after); the merge code stays tested. `b719c12` fixes two clippy errors `12e8d22` went in with. |
 | `9587057` | `live --out` is rejected beside `--run-seconds` / `--render-check` (it was silently ignored beside the first and replaced the windowed check beside the second). |
+| `11d4ba2`, `a5d4ee9` | This summary through M208. |
+| `98e720c` | **M209** — vanilla's sky disc: `SkyRenderer`'s octagonal fan evaluated per pixel with its interpolated fog distances, the uncovered sky in the fog colour, the dark disc below the horizon height; offscreen defaults are plains' sky/fog pair; new `REWO_EYE` / `REWO_YAW` knobs aim the headless shot; demo hash `748e5a1e...` to `e658532b...` (the diff is exactly the sky). |
 
 ## Decisions made
 
@@ -152,7 +158,11 @@ released.
    means emitting each rectangle's boundary at every block step, which is
    real work for a small saving. Reversible: one constant, with the merge
    path still covered by its tests and the `meshshot` oracle.
-19. **Not fixed, noted:** several older `containershot` witness messages have
+19. **M209 mixes the sky's fog in linear space** like the rest of Rewo's
+   fog (vanilla mixes in gamma space), so both sides of the world's edge
+   fade to the same colour. The dark disc is drawn inside the sky pass, i.e.
+   before the sunrise fan rather than after it (a recorded deviation).
+20. **Not fixed, noted:** several older `containershot` witness messages have
    runs of spaces where a shell joined a backslash line continuation (the
    same artifact this run hit and fixed in its own messages). Cosmetic, in
    gate output only.
@@ -181,6 +191,8 @@ released.
 - After M208 (at `1dc1bc3`): **4,277 tests passed, 0 failed; gates 51/51**
   (demo hash unchanged); render check **73/73**; `load_check.py` PASSED
   (1,057 / 1,057 columns, 0 deferred, 19.1M vertices in a 32M arena).
+- After M209 (at `98e720c`): **4,277 tests, 0 failed; gates 51/51** (demo
+  hash `e658532bcc8c2758`); render check **73/73**, validation-clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -202,7 +214,8 @@ released.
 - ~~A normal-terrain load test as a real check~~ (M207, `load_check.py`).
 - A crack-free greedy merge (rectangle boundaries tessellated at every unit
   step), if the 13% of vertices is ever worth it.
-- The headless `live --out` shot can't be aimed: vanilla spawns a new player
+- ~~The headless `live --out` shot can't be aimed~~ (M209's `REWO_EYE` /
+  `REWO_YAW` knobs). The original note: vanilla spawns a new player
   at a random spot. A console `tp` from the scratch script never reached
   the server (its log shows no command at all), so this is the script's
   stdin handling, not the client; a gates knob that stages the camera
