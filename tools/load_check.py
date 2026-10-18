@@ -70,6 +70,25 @@ def tracked_columns(vd):
     return n
 
 
+def free_memory_gb():
+    """Free physical memory in GB (Windows `GlobalMemoryStatusEx`), or None."""
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+    st = MemoryStatus()
+    st.dwLength = ctypes.sizeof(MemoryStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+        return None
+    return st.ullAvailPhys / 1e9
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -86,9 +105,22 @@ def main():
     ap.add_argument("--light", action="store_true",
                     help="run the play bot with --light-check instead of the windowed client")
     ap.add_argument("--seed", default=SEED, help="level seed (default %s)" % SEED)
+    ap.add_argument("--heavy", action="store_true",
+                    help="allow --rd above 16 (several GB of host memory; see below)")
     args = ap.parse_args()
     if not 2 <= args.rd <= 32:
         sys.exit("--rd must be 2..32 (vanilla's IntRange)")
+    # The desktop is shared (other agents, a self-hosted CI runner): an RD32
+    # run is a 3 GB server heap plus the client's world for 3,725 columns,
+    # several GB of host memory in all. Above 16 it must be asked for, and
+    # it refuses to start while free memory is short (2026-10-19: the PC ran
+    # out of RAM while several heavy jobs overlapped).
+    if args.rd > 16:
+        if not args.heavy:
+            sys.exit("--rd above 16 needs --heavy (several GB of host memory)")
+        free = free_memory_gb()
+        if free is not None and free < 10.0:
+            sys.exit("only %.1f GB of RAM free; an --rd %d run wants ~6 GB headroom" % (free, args.rd))
     b = subprocess.run(["cargo", "build", "-p", "rewo-app", "--features", "gates"], cwd=ROOT)
     if b.returncode != 0:
         sys.exit("cargo build failed -- nothing below would be about this tree")

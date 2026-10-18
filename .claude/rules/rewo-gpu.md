@@ -99,7 +99,7 @@ shows as `VUID-vkDestroyDevice-device-05137` with every witness green.
 - **Terrain arena** (mega-buffer, `world/arena.rs`): it grows when full (M205:
   drain, copy into a buffer of double size, extend the free lists) up to
   `ARENA_*_LIMIT` capped by the device's largest buffer (M210); size those
-  against `tools/load_check.py --rd 32`, not a flat world. `place_column` frees its regions on any
+  against `tools/load_check.py --rd 32 --heavy` (several GB of host RAM; not beside other heavy jobs), not a flat world. `place_column` frees its regions on any
   staging error; a failed `flush_uploads` unregisters the batch's columns and
   reports them via `take_lost_columns` (`pump_meshing` re-dirties them); a
   "mega-buffer full" column is kept in a retry queue and re-uploaded
