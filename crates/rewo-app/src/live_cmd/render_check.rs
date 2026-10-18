@@ -232,6 +232,13 @@ pub(super) struct RenderCheck {
     /// the client information's, the server's radius, the column count, the
     /// tracking set's size, and the fog band.
     pub(super) view_distance_seen: Option<(Option<i32>, u8, i32, usize, usize, [f32; 2])>,
+    /// M179 — r74: the tab the screen opened on and the tab the injected
+    /// click hit (root ids), and the frames on which the SERVER's
+    /// `select_advancements_tab` had set the clicked one.
+    pub(super) adv_click: Option<(String, String)>,
+    pub(super) adv_echo_frames: usize,
+    /// Why the click never happened, if it did not (fewer than two tabs).
+    pub(super) adv_click_skip: Option<String>,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -713,7 +720,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 73;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 74;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -934,6 +941,29 @@ impl RenderCheck {
                 "{} frames matched; last (staged, sent, server radius, columns, \
                  tracking set, fog) = {:?}",
                 self.view_distance_frames, self.view_distance_seen
+            ),
+        );
+        // M179 — the advancement tab click's send, graded by the real
+        // server: `opened_tab` for the tab the click hit came back as
+        // `select_advancements_tab` with the same id
+        // (`PlayerAdvancements.setSelectedTab` sends only on a change, and the
+        // screen had opened on the OTHER tab, so the echo is the click's).
+        row(
+            "r74 an advancement tab click reached the server, which selected that tab",
+            self.adv_echo_frames >= 3
+                && self
+                    .adv_click
+                    .as_ref()
+                    .is_some_and(|(opened, hit)| opened != hit),
+            format!(
+                "opened on / clicked {:?}; {} frames with the server's selection on the \
+                 clicked tab{}",
+                self.adv_click,
+                self.adv_echo_frames,
+                self.adv_click_skip
+                    .as_ref()
+                    .map(|s| format!(" (not clicked: {s})"))
+                    .unwrap_or_default()
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2099,6 +2129,81 @@ impl LiveApp {
                 // The ids are fixed and named in `CROWD_IDS` because the census
                 // below joins on them: without that, the count is a claim about
                 // whatever the world contains rather than about this injection.
+                // r74 — M179's tab click. `render_check.py` grants two root
+                // advancements, so the screen has two tabs: open it (the
+                // production `open_advancements`, which sends `opened_tab`
+                // for its selected tab), click the OTHER tab's cell through
+                // `advancements_tab_click` (hit-test, select, send), close it.
+                // Retried each frame until the server's update has delivered
+                // both tabs; the echo is counted below.
+                if !self.adv_click_injected
+                    && elapsed >= limit * 0.24
+                    && !self.screen.inventory_open()
+                {
+                    let tabs = self.session.as_ref().map(|s| {
+                        let b = self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.font.as_ref())
+                            .map(|f| f.advance);
+                        b.map(|adv| {
+                            crate::advancements_view::AdvancementsView::build(
+                                &s.advancements,
+                                &self.lang,
+                                &adv,
+                            )
+                            .screen
+                            .tabs
+                            .len()
+                        })
+                    });
+                    if tabs.flatten().unwrap_or(0) >= 2 {
+                        self.open_advancements();
+                        let (gw, gh) = self.gui_size();
+                        let pick = self.advancements.as_ref().and_then(|v| {
+                            let opened = v.selected_root_id()?.to_string();
+                            let (j, t) = v
+                                .screen
+                                .tabs
+                                .iter()
+                                .enumerate()
+                                .find(|(i, _)| v.root_id_at(*i) != Some(opened.as_str()))?;
+                            let (xo, yo) = rewo_ui::advancements_screen::window_origin(gw, gh);
+                            let (x, y, w, h) = t.kind.rect_at(t.index);
+                            let hit = v.root_id_at(j)?.to_string();
+                            Some((
+                                opened,
+                                hit,
+                                f64::from(xo + x) + f64::from(w) / 2.0,
+                                f64::from(yo + y) + f64::from(h) / 2.0,
+                            ))
+                        });
+                        if let Some((opened, hit, mx, my)) = pick {
+                            self.advancements_tab_click(mx, my);
+                            if let Some(c) = self.check.as_mut() {
+                                c.adv_click = Some((opened, hit));
+                            }
+                        }
+                        self.close_advancements();
+                        self.adv_click_injected = true;
+                    } else if elapsed >= limit * 0.6 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.adv_click_skip = Some(format!(
+                                "the client held {} advancement tab(s) by 0.6",
+                                tabs.flatten().unwrap_or(0)
+                            ));
+                        }
+                        self.adv_click_injected = true;
+                    }
+                }
+                if let (Some(c), Some(s)) = (self.check.as_mut(), self.session.as_ref()) {
+                    if c.adv_click
+                        .as_ref()
+                        .is_some_and(|(_, hit)| s.advancements.selected_tab() == Some(hit.as_str()))
+                    {
+                        c.adv_echo_frames += 1;
+                    }
+                }
                 if !self.crowd_injected && elapsed >= limit * 0.3 {
                     if let Some(session) = self.session.as_mut() {
                         let types = session.entity_types.clone();

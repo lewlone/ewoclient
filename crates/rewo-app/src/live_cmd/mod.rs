@@ -773,6 +773,9 @@ struct LiveApp {
     /// Whether the two-of-one-kind mob injection has happened (r54).
     #[cfg(feature = "gates")]
     crowd_injected: bool,
+    /// Whether r74's advancement tab click has been injected (M179).
+    #[cfg(feature = "gates")]
+    adv_click_injected: bool,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1037,6 +1040,8 @@ fn run_windowed(
         play_pack_injected: false,
         #[cfg(feature = "gates")]
         crowd_injected: false,
+        #[cfg(feature = "gates")]
+        adv_click_injected: false,
         #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,

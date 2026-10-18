@@ -76,6 +76,11 @@ PRECMD = (
     # than against the decompile's count. `Fixed` keeps it from popping off
     # with nothing behind it; facing 2 and rotation 3 are both non-default,
     # so the server must send all three slots.
+    # M179 -- r74. Two root advancements, so the advancements screen has two
+    # tabs and a click on the one it did not open on is a CHANGE, which is
+    # the only thing `PlayerAdvancements.setSelectedTab` echoes.
+    "advancement grant @s only minecraft:story/root;"
+    "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "
     "{Facing:2b,Fixed:1b,ItemRotation:3b,Item:{id:\"minecraft:diamond_sword\",count:1}}"
 )

@@ -65,6 +65,11 @@ released.
   (when lit) and the calibrated sculk sensor.
 - **M213**: a named banner's label now shows on a map held in the hand too
   (M204 did maps in item frames).
+- **M214, a crash fix**: opening the advancements screen would have
+  crashed Rewo (it ran out of memory) as soon as an advancement whose text
+  contains a line break was on display. A new live check of the advancement
+  tabs found it on its first run. Fixed, and the tab clicks are now checked
+  against the real server.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -248,8 +253,8 @@ released.
   cave one level brighter than the server, seed 20261018) is unexplained and
   did not recur in eleven reruns; the light check now prints the emitters
   around such a case, so the next sighting names its source.
-- Live witnesses for M179's tab clicks and M184's lectern page sends (the
-  render check's timeline is crowded; both have offscreen gates).
+- ~~A live witness for M179's tab clicks~~ (M214, r74). M184's lectern page
+  sends still have only their offscreen gate.
 - ~~A normal-terrain load test as a real check~~ (M207, `load_check.py`).
 - A crack-free greedy merge (rectangle boundaries tessellated at every unit
   step), if the 13% of vertices is ever worth it.

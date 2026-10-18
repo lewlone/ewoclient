@@ -447,7 +447,13 @@ pub(crate) fn split_plain(
     while start < chars.len() {
         match find_line_break(&chars, start, max_width, measure) {
             Some(break_i) => {
-                let had_space = chars.get(break_i) == Some(&' ');
+                // `adjustedBreak = firstTailChar != '\n' && firstTailChar != ' '
+                // ? lineBreak : lineBreak + 1`: a newline is dropped like a
+                // space. Restarting ON a newline found it again at the same
+                // index forever (M179's live witness r74 found it: a real
+                // advancement description with a `\n` sent `build` into an
+                // endless push until the allocator gave up).
+                let had_space = matches!(chars.get(break_i), Some(&' ') | Some(&'\n'));
                 // The break index is the end either way; only the restart differs.
                 let end = break_i;
                 out.push(chars[start..end].iter().collect::<String>());
@@ -916,6 +922,16 @@ pub fn icon_draws(view: &AdvancementsView, gui_w: i32, gui_h: i32, px: f32) -> V
 #[cfg(test)]
 mod tests {
     use super::AdvDrag;
+
+    /// A newline breaks the line and is dropped, like a space, and the split
+    /// ends (it used to restart on the newline forever).
+    #[test]
+    fn a_newline_breaks_and_is_dropped() {
+        let w6 = |t: &str| 6 * t.chars().count() as i32;
+        assert_eq!(super::split_plain("ab\ncd", 600, &w6), vec!["ab", "cd"]);
+        assert_eq!(super::split_plain("\nab", 600, &w6), vec!["ab"]);
+        assert_eq!(super::split_plain("ab\n\ncd", 600, &w6), vec!["ab", "cd"]);
+    }
 
     /// The dead-first-event rule: press → move latches WITHOUT scrolling;
     /// the next move delivers only ITS delta (the latch event's movement is
