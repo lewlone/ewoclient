@@ -46,6 +46,10 @@ pub(super) const HELD_MAP_WITNESS_ID: i32 = 0x7E57;
 /// r70 (M194) — the item frame `--render-check` injects (a sword in it).
 pub(super) const FRAME_WITNESS_EID: i32 = 0x00F7_0000;
 
+/// r72 (M185) — the `(horse, happy ghast)` pair `--render-check` injects, the
+/// horse leashed to the ghast.
+pub(super) const QUAD_LEASH_EIDS: (i32, i32) = (0x00C0_0010, 0x00C0_0011);
+
 /// M128 — the text of the one clickable message `--render-check` injects.
 ///
 /// Deliberately nothing a server would say, so the drawn-line scan that finds
@@ -216,6 +220,9 @@ pub(super) struct RenderCheck {
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
     pub(super) server_frame_frames: usize,
+    /// M185 — frames on which `collect_leashes` drew the injected horse's
+    /// leash to the happy ghast as the four-rope quad leash (r72).
+    pub(super) quad_leash_frames: usize,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -697,7 +704,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 71;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 72;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -893,6 +900,18 @@ impl RenderCheck {
             format!(
                 "{} frames saw a frame with facing 2, rotation 3, a diamond sword",
                 self.server_frame_frames
+            ),
+        );
+        // M185 — the quad leash: a horse leashed to a happy ghast, injected
+        // at 0.28 beside r60's cow, reached the windowed collector's quad
+        // branch (`supportQuadLeashAsHolder` on the ghast, the horse line's
+        // shoulder points).
+        row(
+            "r72 a horse leashed to a happy ghast drew the four-rope quad leash",
+            self.quad_leash_frames >= 3,
+            format!(
+                "{} frames drew {:?} as a quad leash",
+                self.quad_leash_frames, QUAD_LEASH_EIDS
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2185,6 +2204,7 @@ impl LiveApp {
                                 const COW_EID: i32 = 0x00C0_0000;
                                 const KNOT_EID: i32 = 0x00C0_0001;
                                 let p = &session.player;
+                                let quad_at = [p.x - 3.0, p.y, p.z + 2.0];
                                 let add = |eid: i32, tid: i32, x: f64, y: f64, z: f64| {
                                     let mut b: Vec<u8> = Vec::new();
                                     rewo_proto::varint::write_varint(&mut b, eid);
@@ -2207,6 +2227,24 @@ impl LiveApp {
                                 link.extend_from_slice(&COW_EID.to_be_bytes());
                                 link.extend_from_slice(&KNOT_EID.to_be_bytes());
                                 session.inject_packet(session.ids.cb_play_set_entity_link, &link);
+                                // M185 / r72 — a horse leashed to a happy
+                                // ghast hovering above it: the quad branch.
+                                if let (Some(horse), Some(ghast)) = (
+                                    types.id_of("minecraft:horse"),
+                                    types.id_of("minecraft:happy_ghast"),
+                                ) {
+                                    let (h, g) = QUAD_LEASH_EIDS;
+                                    let hb = add(h, horse, quad_at[0], quad_at[1], quad_at[2]);
+                                    let gb =
+                                        add(g, ghast, quad_at[0], quad_at[1] + 3.0, quad_at[2]);
+                                    session.inject_packet(session.ids.cb_play_add_entity, &hb);
+                                    session.inject_packet(session.ids.cb_play_add_entity, &gb);
+                                    let mut link: Vec<u8> = Vec::new();
+                                    link.extend_from_slice(&h.to_be_bytes());
+                                    link.extend_from_slice(&g.to_be_bytes());
+                                    session
+                                        .inject_packet(session.ids.cb_play_set_entity_link, &link);
+                                }
                             }
                         }
                     }

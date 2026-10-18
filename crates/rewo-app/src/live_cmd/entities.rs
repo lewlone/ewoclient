@@ -2119,12 +2119,14 @@ pub(crate) const GHAST_HOLDER_SHAPE: [f64; 4] = [-0.03125, 0.4375, 0.46875, 0.03
 /// carries per-type overrides (a player's is 1.62, not 1.53); the leashables
 /// are mobs where the default is exact or near it, so the divergence is a small
 /// vertical shift of one rope end, documented rather than tabulated.
+/// Every leash rope this frame draws, and the `(leashed, holder)` pairs that
+/// took M185's quad branch (four ropes; read by render-check r72).
 pub(super) fn collect_leashes(
     session: &PlaySession,
     etypes: &EntityTypes,
     alpha: f32,
     lightmap: &LightmapState,
-) -> Vec<rewo_gpu::leash::LeashVertex> {
+) -> (Vec<rewo_gpu::leash::LeashVertex>, Vec<(i32, i32)>) {
     // `Vec3.yRot(angle)`: x' = x·cos + z·sin, z' = z·cos - x·sin.
     fn yrot(v: [f64; 3], angle: f32) -> [f64; 3] {
         let (s, c) = (angle.sin() as f64, angle.cos() as f64);
@@ -2160,6 +2162,7 @@ pub(super) fn collect_leashes(
     };
 
     let mut verts: Vec<rewo_gpu::leash::LeashVertex> = Vec::new();
+    let mut quads: Vec<(i32, i32)> = Vec::new();
     for (id, e) in session.world.entities.iter() {
         let Some(holder) = session.world.entities.leash_holder(id) else {
             continue;
@@ -2226,6 +2229,7 @@ pub(super) fn collect_leashes(
                     &|b, s| rewo_world::lightmap::sample(b, s, lightmap),
                 ));
             }
+            quads.push((id, holder));
             continue;
         }
 
@@ -2241,7 +2245,7 @@ pub(super) fn collect_leashes(
             &|b, s| rewo_world::lightmap::sample(b, s, lightmap),
         ));
     }
-    verts
+    (verts, quads)
 }
 
 pub(super) fn collect_entities<'a>(

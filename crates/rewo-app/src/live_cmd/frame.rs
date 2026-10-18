@@ -964,9 +964,17 @@ impl LiveApp {
             REACH,
         );
         state.world_renderer.set_selection(hit.map(|h| h.block));
-        state
-            .world_renderer
-            .set_leash(&collect_leashes(session, &self.etypes, alpha, &lightmap));
+        let (leash_verts, quad_leashes) = collect_leashes(session, &self.etypes, alpha, &lightmap);
+        state.world_renderer.set_leash(&leash_verts);
+        // r72 — the injected happy ghast's horse took the quad branch.
+        #[cfg(feature = "gates")]
+        if let Some(c) = self.check.as_mut() {
+            if quad_leashes.contains(&(QUAD_LEASH_EIDS.0, QUAD_LEASH_EIDS.1)) {
+                c.quad_leash_frames += 1;
+            }
+        }
+        #[cfg(not(feature = "gates"))]
+        let _ = quad_leashes;
         // Camera + lightmap were already set above from the same eye/state this
         // frame — don't duplicate them. Celestial still tracks the world clock.
         state.world_renderer.set_celestial({

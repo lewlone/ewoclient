@@ -549,7 +549,7 @@ pub(super) fn run_headless(
         log::info!("live: targeting block {:?} face {:?}", h.block, h.face);
     }
     world_renderer.set_selection(hit.map(|h| h.block));
-    world_renderer.set_leash(&collect_leashes(&session, &etypes, 1.0, &lightmap));
+    world_renderer.set_leash(&collect_leashes(&session, &etypes, 1.0, &lightmap).0);
     let (cr, cu) = camera_basis(yaw, pitch);
     // Before `set_entities`: the entity pass reads the eye as the CEM
     // `player_pos_*`, which FA aims mob eyes/heads with.

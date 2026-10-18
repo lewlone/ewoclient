@@ -2019,7 +2019,8 @@ this shape once.
 | M194 — item frames (2026-10-18) | **r70** | entity atlas `ATLAS_H` 1600 -> 1728: the framed-map band at y 1600..1728 (seven 128 x 128 map slots, then the decoration sprites at (896, 1600), 8 x 8 by raw type id, 16 to a row); `CAPE_POOL_Y` re-anchored to it (still 1536) | `itemframeshot` b1-b5, d1-d7, p1-p9 |
 | M194 — the server's own item frame (`render_check.py` summons it) | **r71** | — | — |
 | M200 — the loom's full banner | — | `MENU_OVERLAY_SPRITES` 131 (`container/loom/error`; `LOOM_ERROR`) | `containershot` o30 |
-| *(next free)* | **r72** | — | — |
+| M185's live half (2026-10-18) — the happy-ghast quad leash | **r72** | — | — |
+| *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3844,6 +3845,15 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M203 — M185's live half: render-check r72 (2026-10-18)
+
+M185 (the happy-ghast quad leash) had no live witness. `collect_leashes`
+now also returns the `(leashed, holder)` pairs that took the quad branch,
+and `--render-check` injects a horse leashed to a happy ghast hovering
+above it at 0.28 (beside r60's cow and knot, through the production
+`add_entity` / `set_entity_link` route). r72 passes when the windowed frame
+draws that pair as a quad leash; 72/72 on the first run.
 
 ### M202 — F2 screenshots: vanilla's folder and the local clock (2026-10-18)
 
