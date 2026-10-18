@@ -5342,16 +5342,45 @@ impl PlaySession {
         self.swing()
     }
 
+    /// `MultiPlayerGameMode.attack` (M216): `ServerboundAttackPacket(entityId)`
+    /// — 26.2's own packet; the pre-26 `interact` with action ATTACK this
+    /// used to write (never called) no longer exists — then
+    /// `Minecraft.startAttack`'s main-hand swing.
     pub fn attack_entity(&mut self, entity_id: i32) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_attack else {
+            return Err("attack unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.varint(entity_id);
+        self.send(p)?;
+        self.swing()
+    }
+
+    /// `MultiPlayerGameMode.interact` (M216): `ServerboundInteractPacket(
+    /// entityId, hand, location, usingSecondaryAction)` — the hit location
+    /// RELATIVE to the entity's position (`hitResult.getLocation().subtract(
+    /// entity.getX(), getY(), getZ())`) as an `LpVec3`, and the shift key.
+    /// `hand` is `InteractionHand`'s id (0 main, 1 off).
+    pub fn interact_entity(
+        &mut self,
+        entity_id: i32,
+        hand: i32,
+        location: [f64; 3],
+        sneaking: bool,
+    ) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_interact else {
             return Err("interact unavailable".into());
         };
         let mut p = PacketWriter::packet(id);
         p.varint(entity_id);
-        p.varint(1); // ATTACK
-        p.bool(false); // not sneaking
-        self.send(p)?;
-        self.swing()
+        p.varint(hand);
+        p.raw(&crate::motion::write_lp_vec3(crate::motion::Vec3 {
+            x: location[0],
+            y: location[1],
+            z: location[2],
+        }));
+        p.bool(sneaking);
+        self.send(p)
     }
 
     /// Mirror the local player's two hands into the entity table.

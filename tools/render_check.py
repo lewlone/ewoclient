@@ -84,6 +84,14 @@ PRECMD = (
     "setblock ~2 ~ ~ minecraft:lectern[has_book=true]{Book:{id:\"minecraft:written_book\","
     "count:1,components:{\"minecraft:written_book_content\":{title:\"rc\",author:\"rc\","
     "pages:[\"one\",\"two\"]}}}};"
+    # M216 -- r76. A librarian that cannot wander (NoAI) three blocks from
+    # the bot, with two known trades: the client right-clicks it and the
+    # decoded `merchant_offers` must be exactly these.
+    "summon minecraft:villager ~ ~ ~3 {NoAI:1b,VillagerData:{profession:\"minecraft:librarian\","
+    "level:2,type:\"minecraft:plains\"},Offers:{Recipes:["
+    "{buy:{id:\"minecraft:emerald\",count:5},sell:{id:\"minecraft:book\",count:1},maxUses:12},"
+    "{buy:{id:\"minecraft:paper\",count:24},sell:{id:\"minecraft:emerald\",count:1},maxUses:16}"
+    "]}};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

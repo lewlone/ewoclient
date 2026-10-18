@@ -1570,6 +1570,16 @@ pub(crate) fn frame_crosshair_pick(
     etypes: &EntityTypes,
     alpha: f32,
 ) -> Option<i32> {
+    frame_crosshair_hit(session, etypes, alpha).map(|h| h.id)
+}
+
+/// [`frame_crosshair_pick`]'s whole hit (M216): the click paths need
+/// `getLocation()` as well as the entity.
+pub(crate) fn frame_crosshair_hit(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    alpha: f32,
+) -> Option<rewo_world::entity_pick::EntityHit> {
     let tables = PickTables {
         types: etypes,
         classes: session.entity_classes.as_deref()?,
@@ -1579,7 +1589,7 @@ pub(crate) fn frame_crosshair_pick(
     };
     let eye = eye_f64(session);
     let dir = look_dir(session.player.yaw, session.player.pitch);
-    resolve_crosshair_pick(session, tables, eye, dir, alpha).map(|h| h.id)
+    resolve_crosshair_pick(session, tables, eye, dir, alpha)
 }
 
 /// Convert the baked held-item models across the `rewo-data` → `rewo-gpu`

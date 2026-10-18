@@ -72,6 +72,12 @@ released.
   against the real server.
 - **M215**: the lectern (open, turn a page, close) is now checked against
   the real server in the windowed client; it worked as built.
+- **M216, a missing basic feature**: clicking a mob or villager did
+  nothing. Rewo could not attack entities or interact with them (no
+  trading, no riding by hand, no name tags or leads). Both now work with
+  26.2's packets and are checked against the real server: right-clicking a
+  villager opens its trades exactly as summoned, and left-clicking it is a
+  hit the server registers.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -261,6 +267,8 @@ released.
 - ~~A live witness for M179's tab clicks~~ (M214, r74). ~~M184's lectern page
   sends~~ (M215, r75).
 - ~~A normal-terrain load test as a real check~~ (M207, `load_check.py`).
+- `rewo-net`'s three `play::inbound` timing tests failed once under heavy
+  machine load (they passed alone and in every other full run).
 - More live witnesses for screens that only have offscreen gates. M214's
   first live run of the advancements screen found a crash that every
   offscreen gate had passed (they fed it synthetic text without a newline).

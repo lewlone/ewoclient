@@ -1038,6 +1038,13 @@ impl ApplicationHandler for LiveApp {
                 // Left-click digs the targeted block; right-click places
                 // against its hit face, or — with nothing to place against —
                 // starts *using* the held item (M38).
+                // M216 — `GameRenderer.pick`'s ENTITY result wins over the
+                // block when it is nearer (the M73 pick already reconciles
+                // the two), and the clicks take `startAttack` /
+                // `startUseItem`'s ENTITY arms.
+                if self.entity_click(button) {
+                    return;
+                }
                 if let Some(session) = self.session.as_mut() {
                     // The pick ray starts from the f64 eye (`eye_f64`), not the
                     // f32 render eye — at large coordinates the two disagree by
@@ -1997,6 +2004,56 @@ impl LiveApp {
                 }
             }
         }
+    }
+
+    /// A world click on an ENTITY under the crosshair (M216). Returns whether
+    /// it was one — the block/item paths then do not run.
+    ///
+    /// - Left: `Minecraft.startAttack`'s ENTITY arm → `MultiPlayerGameMode
+    ///   .attack`, `ServerboundAttackPacket` and the main-hand swing.
+    /// - Right: `startUseItem`'s ENTITY arm for the main hand →
+    ///   `MultiPlayerGameMode.interact`, `ServerboundInteractPacket` with the
+    ///   hit location relative to the entity and the shift key.
+    ///
+    /// Recorded deviations: vanilla continues to the off hand (and then to
+    /// `useItem`) when the LOCAL `interactOn` does not consume; that local
+    /// result is per-entity logic Rewo does not predict, so the main hand's
+    /// interact always ends the click. A held `PIERCING_WEAPON` (a spear)
+    /// takes `piercingAttack` in vanilla; here it attacks like any item, and
+    /// `AttackRange` is not consulted. The local `player.attack` effects
+    /// (crit and sweep particles) are not drawn.
+    pub(super) fn entity_click(&mut self, button: MouseButton) -> bool {
+        if !matches!(button, MouseButton::Left | MouseButton::Right) {
+            return false;
+        }
+        let sneaking = self.keys.sneak;
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let Some(hit) = super::entities::frame_crosshair_hit(session, &self.etypes, 1.0) else {
+            return false;
+        };
+        match button {
+            MouseButton::Left => {
+                if let Err(e) = session.attack_entity(hit.id) {
+                    log::warn!("live: attack: {e}");
+                }
+            }
+            _ => {
+                let Some(e) = session.world.entities.get(hit.id) else {
+                    return false;
+                };
+                let rel = [
+                    hit.location[0] - e.x,
+                    hit.location[1] - e.y,
+                    hit.location[2] - e.z,
+                ];
+                if let Err(e) = session.interact_entity(hit.id, 0, rel, sneaking) {
+                    log::warn!("live: interact: {e}");
+                }
+            }
+        }
+        true
     }
 
     /// Close the advancements screen. `removed()` sends CLOSED_SCREEN

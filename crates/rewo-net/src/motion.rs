@@ -142,6 +142,48 @@ fn unpack(value: u64) -> f64 {
     ((value & DATA_BITS_MASK) as f64).min(MAX_QUANTIZED_VALUE) * 2.0 / MAX_QUANTIZED_VALUE - 1.0
 }
 
+/// `LpVec3.write` (M216 — `ServerboundInteractPacket.location`).
+///
+/// Transcribed from the WRITER, independently of [`read_lp_vec3`] (it was the
+/// round-trip tests' encoder before the interact packet needed it), so a
+/// decoder bug the encoder shared would have to be made twice, in opposite
+/// directions.
+pub fn write_lp_vec3(v: Vec3) -> Vec<u8> {
+    fn sanitize(value: f64) -> f64 {
+        if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(-1.7179869183E10, 1.7179869183E10)
+        }
+    }
+    fn pack(value: f64) -> u64 {
+        // Java's `Math.round(double)` is floor(x + 0.5); the values here are
+        // always positive so `.round()` agrees.
+        ((value * 0.5 + 0.5) * 32766.0).round() as u64
+    }
+    let (x, y, z) = (sanitize(v.x), sanitize(v.y), sanitize(v.z));
+    let chessboard = x.abs().max(y.abs().max(z.abs()));
+    let mut out = Vec::new();
+    if chessboard < 3.051944088384301E-5 {
+        out.push(0u8);
+        return out;
+    }
+    let scale = chessboard.ceil() as u64;
+    let is_partial = (scale & 3) != scale;
+    let markers = if is_partial { (scale & 3) | 4 } else { scale };
+    let buffer = markers
+        | (pack(x / scale as f64) << 3)
+        | (pack(y / scale as f64) << 18)
+        | (pack(z / scale as f64) << 33);
+    out.push(buffer as u8);
+    out.push((buffer >> 8) as u8);
+    out.extend_from_slice(&((buffer >> 16) as u32).to_be_bytes());
+    if is_partial {
+        rewo_proto::varint::write_varint(&mut out, (scale >> 2) as i32);
+    }
+    out
+}
+
 /// `Vec3.LP_STREAM_CODEC` → `LpVec3.read`.
 ///
 /// The layout, from the decompiled reader: one unsigned byte (`0` ⇒
@@ -753,49 +795,6 @@ mod tests {
     }
 
     // ── LpVec3 ──────────────────────────────────────────────────────────
-
-    /// Encode a `Vec3` exactly as `LpVec3.write` does, so the round-trip
-    /// witnesses below drive the real decoder with real bodies.
-    ///
-    /// This is a transcription of the *writer*, which the client never runs —
-    /// so it is an independent statement of the format, not a mirror of
-    /// [`read_lp_vec3`]. A decoder bug that the encoder shared would have to
-    /// be made twice, in opposite directions.
-    fn write_lp_vec3(v: Vec3) -> Vec<u8> {
-        fn sanitize(value: f64) -> f64 {
-            if value.is_nan() {
-                0.0
-            } else {
-                value.clamp(-1.7179869183E10, 1.7179869183E10)
-            }
-        }
-        fn pack(value: f64) -> u64 {
-            // Java's `Math.round(double)` is floor(x + 0.5); the values here
-            // are always positive so `.round()` agrees.
-            ((value * 0.5 + 0.5) * 32766.0).round() as u64
-        }
-        let (x, y, z) = (sanitize(v.x), sanitize(v.y), sanitize(v.z));
-        let chessboard = x.abs().max(y.abs().max(z.abs()));
-        let mut out = Vec::new();
-        if chessboard < 3.051944088384301E-5 {
-            out.push(0u8);
-            return out;
-        }
-        let scale = chessboard.ceil() as u64;
-        let is_partial = (scale & 3) != scale;
-        let markers = if is_partial { (scale & 3) | 4 } else { scale };
-        let buffer = markers
-            | (pack(x / scale as f64) << 3)
-            | (pack(y / scale as f64) << 18)
-            | (pack(z / scale as f64) << 33);
-        out.push(buffer as u8);
-        out.push((buffer >> 8) as u8);
-        out.extend_from_slice(&((buffer >> 16) as u32).to_be_bytes());
-        if is_partial {
-            out.extend_from_slice(&varint((scale >> 2) as i32));
-        }
-        out
-    }
 
     fn roundtrip(v: Vec3) -> Vec3 {
         let bytes = write_lp_vec3(v);

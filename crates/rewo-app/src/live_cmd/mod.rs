@@ -780,6 +780,9 @@ struct LiveApp {
     /// 3 closed.
     #[cfg(feature = "gates")]
     lectern_stage: u8,
+    /// r76's stage (M216): 0 waiting, 1 clicked, 2 done.
+    #[cfg(feature = "gates")]
+    trade_stage: u8,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1048,6 +1051,8 @@ fn run_windowed(
         adv_click_injected: false,
         #[cfg(feature = "gates")]
         lectern_stage: 0,
+        #[cfg(feature = "gates")]
+        trade_stage: 0,
         #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,

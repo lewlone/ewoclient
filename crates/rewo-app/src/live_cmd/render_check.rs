@@ -248,6 +248,18 @@ pub(super) struct RenderCheck {
     pub(super) lectern_echo_frames: usize,
     pub(super) lectern_closed: bool,
     pub(super) lectern_skip: Option<String>,
+    /// M216 — r76: the villager the right-click hit, and the offers the
+    /// server's `merchant_offers` decoded to, as `(cost item, cost count,
+    /// result item, result count, max uses)`.
+    pub(super) trade_villager: Option<i32>,
+    pub(super) trade_offers: Vec<(i32, i32, i32, i32, i32)>,
+    pub(super) trade_expected: Vec<(i32, i32, i32, i32, i32)>,
+    pub(super) trade_skip: Option<String>,
+    /// M216 — r77: whether the villager was unhurt before the left-click,
+    /// and the frames after it on which the server's `damage_event` had armed
+    /// its hurt clock.
+    pub(super) attack_unhurt_before: bool,
+    pub(super) attack_hurt_frames: usize,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -729,7 +741,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 75;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 77;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -995,6 +1007,39 @@ impl RenderCheck {
                     .as_ref()
                     .map(|s| format!(" (stopped: {s})"))
                     .unwrap_or_default()
+            ),
+        );
+        // M216 — the right-click on an entity, end to end: the bot faces the
+        // librarian `render_check.py` summoned, `entity_click` sends 26.2's
+        // `interact` (hand, hit location as LpVec3, shift), the server opens
+        // the trade screen, and `merchant_offers` decodes to exactly the two
+        // trades the summon wrote.
+        row(
+            "r76 a right-click on a villager opened its trades, decoded as summoned",
+            self.trade_villager.is_some()
+                && !self.trade_expected.is_empty()
+                && self.trade_offers == self.trade_expected,
+            format!(
+                "villager {:?}; offers (cost, count, result, count, max uses) {:?} against \
+                 {:?}{}",
+                self.trade_villager,
+                self.trade_offers,
+                self.trade_expected,
+                self.trade_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
+            ),
+        );
+        // M216 — and the left-click: `entity_click` sends 26.2's
+        // `ServerboundAttackPacket`, and the server's `damage_event` for the
+        // same villager arms its hurt clock (it was unhurt before).
+        row(
+            "r77 a left-click on the villager was an attack the server answered with damage",
+            self.attack_unhurt_before && self.attack_hurt_frames >= 3,
+            format!(
+                "villager {:?} unhurt before the click: {}; {} frames with its hurt clock armed after",
+                self.trade_villager, self.attack_unhurt_before, self.attack_hurt_frames
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2262,6 +2307,125 @@ impl LiveApp {
                         {
                             c.lectern_closed = true;
                         }
+                    }
+                }
+                // r76 — M216's entity right-click, after r74 closes (0.24)
+                // and before the horse (0.28+). Face the summoned librarian,
+                // click through the production `entity_click`, read the
+                // decoded offers, close through `close_container_screen`.
+                if self.trade_stage == 0 && elapsed >= limit * 0.25 && !self.screen.inventory_open()
+                {
+                    let villager = self.session.as_ref().and_then(|s| {
+                        let tid = self.etypes.id_of("minecraft:villager")?;
+                        let (px, py, pz) = (s.player.x, s.player.y, s.player.z);
+                        s.world
+                            .entities
+                            .iter()
+                            .filter(|(id, e)| {
+                                e.type_id == tid
+                                    && !CROWD_IDS.contains(id)
+                                    && (e.x - px).abs() < 6.0
+                                    && (e.y - py).abs() < 3.0
+                                    && (e.z - pz).abs() < 6.0
+                            })
+                            .map(|(id, e)| (id, e.x, e.y, e.z))
+                            .next()
+                    });
+                    if let Some((id, vx, vy, vz)) = villager {
+                        if let Some(s) = self.session.as_mut() {
+                            let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                            let d = [vx - eye[0], vy + 1.0 - eye[1], vz - eye[2]];
+                            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                            s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                            s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        }
+                        let clicked = self.entity_click(winit::event::MouseButton::Right);
+                        let want = |n: &str| self.items.id(n).unwrap_or(-1);
+                        let expected = vec![
+                            (want("minecraft:emerald"), 5, want("minecraft:book"), 1, 12),
+                            (
+                                want("minecraft:paper"),
+                                24,
+                                want("minecraft:emerald"),
+                                1,
+                                16,
+                            ),
+                        ];
+                        if let Some(c) = self.check.as_mut() {
+                            c.trade_villager = clicked.then_some(id);
+                            c.trade_expected = expected;
+                            if !clicked {
+                                c.trade_skip =
+                                    Some("the crosshair pick did not hit the villager".into());
+                            }
+                        }
+                        self.trade_stage = if clicked { 1 } else { 2 };
+                    } else if elapsed >= limit * 0.27 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.trade_skip = Some("no villager near the bot".into());
+                        }
+                        self.trade_stage = 2;
+                    }
+                }
+                if self.trade_stage == 1 {
+                    let offers = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.merchant.as_ref())
+                        .map(|m| {
+                            m.offers
+                                .iter()
+                                .map(|o| {
+                                    let (ri, rc) = match &o.result {
+                                        rewo_net::item_stack::WireSlot::Stack(st) => {
+                                            (st.item_id, st.count)
+                                        }
+                                        rewo_net::item_stack::WireSlot::Empty => (-1, 0),
+                                    };
+                                    (o.cost_a.item_id, o.cost_a.count, ri, rc, o.max_uses)
+                                })
+                                .collect::<Vec<_>>()
+                        });
+                    if let Some(offers) = offers {
+                        if let Some(c) = self.check.as_mut() {
+                            c.trade_offers = offers;
+                        }
+                        self.close_container_screen();
+                        self.trade_stage = 3;
+                    } else if elapsed >= limit * 0.31 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.trade_skip = Some("no merchant_offers by 0.31".into());
+                        }
+                        self.trade_stage = 2;
+                    }
+                }
+                // r77 — the attack, once the trade screen is gone.
+                if self.trade_stage == 3 && !self.screen.inventory_open() {
+                    let target = self.check.as_ref().and_then(|c| c.trade_villager);
+                    if let (Some(id), Some(s)) = (target, self.session.as_mut()) {
+                        if let Some(e) = s.world.entities.get(id) {
+                            let (vx, vy, vz) = (e.x, e.y, e.z);
+                            let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                            let d = [vx - eye[0], vy + 1.0 - eye[1], vz - eye[2]];
+                            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                            s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                            s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        }
+                        let unhurt = s.world.entities.hurt_state(id).hurt_time == 0;
+                        if let Some(c) = self.check.as_mut() {
+                            c.attack_unhurt_before = unhurt;
+                        }
+                        self.entity_click(winit::event::MouseButton::Left);
+                    }
+                    self.trade_stage = 4;
+                }
+                if self.trade_stage == 4 {
+                    let target = self.check.as_ref().and_then(|c| c.trade_villager);
+                    let hurt = target
+                        .zip(self.session.as_ref())
+                        .is_some_and(|(id, s)| s.world.entities.hurt_state(id).hurt_time > 0);
+                    if let (true, Some(c)) = (hurt, self.check.as_mut()) {
+                        c.attack_hurt_frames += 1;
                     }
                 }
                 // r74 — M179's tab click. `render_check.py` grants two root

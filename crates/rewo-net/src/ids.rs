@@ -291,6 +291,9 @@ pub struct Ids {
     pub sb_play_player_action: i32,
     pub sb_play_use_item_on: Option<i32>,
     pub sb_play_interact: Option<i32>,
+    /// `ServerboundAttackPacket` (M216) — 26.2 split the attack out of
+    /// `interact`, which no longer carries an action enum.
+    pub sb_play_attack: Option<i32>,
     pub sb_play_swing: Option<i32>,
     pub sb_play_client_command: Option<i32>,
     /// `ServerboundPlayerCommandPacket` (M169) — `START_RIDING_JUMP` is the
@@ -780,6 +783,7 @@ impl Ids {
             sb_play_player_action: req!(p, P, S, "player_action"),
             sb_play_use_item_on: opt!(p, P, S, "use_item_on"),
             sb_play_interact: opt!(p, P, S, "interact"),
+            sb_play_attack: opt!(p, P, S, "attack"),
             sb_play_swing: opt!(p, P, S, "swing"),
             sb_play_client_command: opt!(p, P, S, "client_command"),
             sb_play_player_command: opt!(p, P, S, "player_command"),
