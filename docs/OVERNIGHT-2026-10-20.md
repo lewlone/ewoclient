@@ -109,6 +109,7 @@ released.
 | `f538b32` | **M212** — `load_check.py --light` (play bot on a normal world: CORRECTIONS 0 and the light check); `gen_block_light.py` follows `ofLegacyCopy` / `ofFullCopy` (lit deepslate redstone ore 9, calibrated sculk sensor 1; amethyst buds and filled cauldrons non-occluding). |
 | `ff07ab8` | `load_check.py` closes the server log before removing its directory (Windows had left 54 empty server folders). |
 | `99d32a5` | **M213** — banner labels on a held map: glyph cells and a translucent background cell in the hand atlas, a translucent path in `hand.frag` selected by a negative shade, `handshot` gm7. |
+| `e6ef088` | **M214** — render-check **r74** (an advancement tab click the real server echoes); the advancements screen no longer loops forever on a description with a newline (it crashed the client). |
 
 ## Decisions made
 
