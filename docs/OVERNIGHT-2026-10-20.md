@@ -60,6 +60,9 @@ released.
   leaves a few inconsistent cells at chunk borders), so it works on real
   worlds. Walking the bot over hills and shores on nine worlds: the server
   never had to correct its position.
+- **M212**: `tools/load_check.py --light` makes that light-and-walking check
+  repeatable. Two light sources had been missing: deepslate redstone ore
+  (when lit) and the calibrated sculk sensor.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -95,6 +98,8 @@ released.
 | `16f7eeb` | **M210** — arena ceilings 112M vertices / 168M indices, capped by the device's largest buffer; `load_check.py --rd 32` PASSED (3,725 / 3,725 columns; the run held 64.72M vertices and 97.08M indices, past M205's ceilings). |
 | `b34630e` | This summary through M210. |
 | `586e216` | **M211** — light dampening from the block's shape and fluid state (huge mushroom caps were sky-transparent; seagrass, kelp and waterlogged states let sky light through water); `play --light-check` classifies disagreements that trace to the server's own data (vanilla's chunk-border source order, stale light) and prints neighbours `server -> recomputed`. |
+| `86c8e4e` | §0.0 numbers after M211; this summary through M211. |
+| `f538b32` | **M212** — `load_check.py --light` (play bot on a normal world: CORRECTIONS 0 and the light check); `gen_block_light.py` follows `ofLegacyCopy` / `ofFullCopy` (lit deepslate redstone ore 9, calibrated sculk sensor 1; amethyst buds and filled cauldrons non-occluding). |
 
 ## Decisions made
 
@@ -235,6 +240,10 @@ released.
 
 - ~~Foil on framed items~~ (M198). ~~Banner labels on framed maps~~ (M204).
 - Banner labels on a HELD map: the hand pass has no font atlas.
+- One block-light disagreement on a normal world (571 cells of a deepslate
+  cave one level brighter than the server, seed 20261018) is unexplained and
+  did not recur in eleven reruns; the light check now prints the emitters
+  around such a case, so the next sighting names its source.
 - Live witnesses for M179's tab clicks and M184's lectern page sends (the
   render check's timeline is crowded; both have offscreen gates).
 - ~~A normal-terrain load test as a real check~~ (M207, `load_check.py`).
