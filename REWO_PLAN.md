@@ -3845,6 +3845,23 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M202 — F2 screenshots: vanilla's folder and the local clock (2026-10-18)
+
+Two recorded deviations in `capture.rs`, both from before `game_dir.rs`
+existed. **The folder**: vanilla's `Screenshot.grab(gameDirectory, ...)`
+writes `<gameDirectory>/screenshots`; Rewo wrote `<config>/EwoClient/
+screenshots` because it had no game directory. It now writes
+`game_dir::get()/screenshots` — the launcher's instance folder
+(`REWO_GAME_DIR`), `--game-dir`, or the current directory. **The clock**:
+file names were UTC because `local_offset_seconds` answered 0. On Windows it
+now asks `GetTimeZoneInformation` (a hand-written FFI over the documented
+172-byte layout, asserted at compile time) for `-(Bias + Standard/
+DaylightBias)`; other platforms still answer 0. `captureshot` points the game
+directory at a scratch folder before it grabs (so a gate never writes into
+the repo or an instance), b3 checks the file lands in `<game dir>/
+screenshots`, and a unit test holds the offset to a whole quarter hour in
+UTC-12..+14 (10800 s, EEST, on the run's machine).
+
 ### M201 — the recipe book's search field and the right button (2026-10-18)
 
 The other 10-15 follow-up. In `RecipeBookComponent.mouseClicked` the search

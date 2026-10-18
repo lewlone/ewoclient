@@ -288,6 +288,18 @@ fn largest_byte_delta(a: &[u8], b: &[u8]) -> u8 {
 // -- entry point --------------------------------------------------------------
 
 pub fn run(args: CaptureshotArgs) -> Result<(), String> {
+    // M202: screenshots go to `<game dir>/screenshots`, so point the game
+    // directory at a scratch folder first — F2's real path, never the repo
+    // or a real instance.
+    let game = std::env::temp_dir().join(format!("rewo-captureshot-game-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&game);
+    crate::game_dir::init(Some(game.clone()));
+    let result = run_inner(args);
+    let _ = std::fs::remove_dir_all(&game);
+    result
+}
+
+fn run_inner(args: CaptureshotArgs) -> Result<(), String> {
     // Validation is on in every build, debug AND release — `debug_assertions`
     // would silently drop it from the binary the gate actually ships as.
     let want_validation = !args.no_validation;
@@ -568,7 +580,9 @@ fn check_grab(
     wr.destroy(gpu);
     let path = grabbed?;
     let decoded = decode_png(&path);
-    let named = capture::screenshot_dir().is_some_and(|d| path.parent() == Some(d.as_path()));
+    let named = capture::screenshot_dir().is_some_and(|d| {
+        path.parent() == Some(d.as_path()) && d == crate::game_dir::get().join("screenshots")
+    });
     let stem_ok = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -608,14 +622,12 @@ fn check_grab(
         "b3.grab_names_the_file_the_way_vanilla_does",
         named && stem_ok,
         format!(
-            "the capture landed at {path:?} — under `screenshot_dir()`, named \
+            "the capture landed at {path:?} — under `<game dir>/screenshots`, named \
              `yyyy-MM-dd_HH.mm.ss[_N].png`. Vanilla's `Screenshot.grab` makes \
              `new File(workDir, \"screenshots\")` and takes its name from \
-             `Util.getFilenameFormattedDateTime()`; Rewo resolves the directory \
-             through `dirs::config_dir()/EwoClient` because it has no game-directory \
-             notion, which is the analogue rather than the literal path. The gate \
-             wrote this into the user's real screenshots directory, because that is \
-             what F2 does, and removed it again"
+             `Util.getFilenameFormattedDateTime()`; since M202 Rewo's directory is \
+             the game directory's, as vanilla's is (this gate points the game \
+             directory at a scratch folder first)"
         ),
     );
 
@@ -793,9 +805,8 @@ fn check_naming(c: &mut Checker, dir: &Path) -> Result<(), String> {
              24 of the same one. The offset is added BEFORE the day/second-of-day \
              split, which is the only arrangement that carries. MUTATION: apply it to \
              the hour field afterwards and a screenshot taken late in the evening is \
-             filed under yesterday. `local_offset_seconds()` currently returns \
-             {} — the recorded deviation is the clock source, not this arithmetic, \
-             which is why it is one function away",
+             filed under yesterday. `local_offset_seconds()` answers {} on this \
+             machine (the platform's zone on Windows since M202, 0 elsewhere)",
             capture::local_offset_seconds()
         ),
     );

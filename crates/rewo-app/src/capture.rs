@@ -54,17 +54,15 @@ pub fn next_free_path(dir: &Path, stem: &str) -> PathBuf {
     }
 }
 
-/// Where captures go: `<config>/EwoClient/screenshots/`.
-///
-/// Vanilla uses `<gameDirectory>/screenshots`. Rewo has no game-directory
-/// notion — every path in the client resolves through `dirs::config_dir()` +
-/// `EwoClient` — so this is the analogue rather than the literal path. Created
-/// on demand, as `Screenshot.grab` does with `picDir.mkdir()`.
+/// Where captures go: `<game directory>/screenshots/` — vanilla's
+/// `Screenshot.grab(gameDirectory, ...)` with `new File(workDir,
+/// "screenshots")` (M202). The game directory is `game_dir::get()`: the
+/// launcher's per-instance folder, or `--game-dir`, or the current directory
+/// for a standalone run. (Before M202 this was `<config>/EwoClient/
+/// screenshots`, written when Rewo had no game-directory notion.) Created on
+/// demand, as `Screenshot.grab` does with `picDir.mkdir()`.
 pub fn screenshot_dir() -> Option<PathBuf> {
-    let mut p = dirs::config_dir()?;
-    p.push("EwoClient");
-    p.push("screenshots");
-    Some(p)
+    Some(crate::game_dir::get().join("screenshots"))
 }
 
 /// Civil date-time in the **local** zone, as `(y, mo, d, h, mi, s)`.
@@ -111,12 +109,65 @@ pub fn civil_from_unix(secs: i64, offset_seconds: i32) -> (i32, u32, u32, u32, u
     )
 }
 
-/// The system's UTC offset in seconds.
+/// The system's UTC offset in seconds, right now (M202).
 ///
-/// Returns 0 — see the deviation note on [`civil_from_unix`]. Isolated so the
-/// platform call can land without touching the naming rule the gate pins.
+/// Windows: `GetTimeZoneInformation` — the offset is `-(Bias + StandardBias)`
+/// or `-(Bias + DaylightBias)` minutes, by which period the call reports
+/// (`TIME_ZONE_ID_DAYLIGHT` = 2). Other platforms still answer 0 (UTC file
+/// names; Rewo carries no time-zone database), the deviation
+/// [`civil_from_unix`]'s note records.
 pub fn local_offset_seconds() -> i32 {
-    0
+    #[cfg(windows)]
+    {
+        windows_offset_seconds()
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
+/// `TIME_ZONE_INFORMATION`, as `timezoneapi.h` lays it out: `LONG Bias;
+/// WCHAR StandardName[32]; SYSTEMTIME StandardDate; LONG StandardBias; WCHAR
+/// DaylightName[32]; SYSTEMTIME DaylightDate; LONG DaylightBias;` — 172 bytes.
+#[cfg(windows)]
+#[repr(C)]
+struct TimeZoneInformation {
+    bias: i32,
+    standard_name: [u16; 32],
+    standard_date: [u16; 8],
+    standard_bias: i32,
+    daylight_name: [u16; 32],
+    daylight_date: [u16; 8],
+    daylight_bias: i32,
+}
+
+#[cfg(windows)]
+const _: () = assert!(std::mem::size_of::<TimeZoneInformation>() == 172);
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetTimeZoneInformation(info: *mut TimeZoneInformation) -> u32;
+}
+
+#[cfg(windows)]
+fn windows_offset_seconds() -> i32 {
+    // SAFETY: the struct matches the documented layout (asserted above) and
+    // the call only writes into it.
+    let mut info: TimeZoneInformation = unsafe { std::mem::zeroed() };
+    let id = unsafe { GetTimeZoneInformation(&mut info) };
+    const TIME_ZONE_ID_INVALID: u32 = 0xFFFF_FFFF;
+    const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+    if id == TIME_ZONE_ID_INVALID {
+        return 0;
+    }
+    let extra = if id == TIME_ZONE_ID_DAYLIGHT {
+        info.daylight_bias
+    } else {
+        info.standard_bias
+    };
+    -(info.bias + extra) * 60
 }
 
 /// `(y, mo, d, h, mi, s)` for right now.
@@ -174,6 +225,15 @@ const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M202 — whatever the zone, the offset is a whole number of quarter
+    /// hours within the real range (UTC-12 to UTC+14).
+    #[test]
+    fn the_local_offset_is_a_real_zone_offset() {
+        let o = local_offset_seconds();
+        assert_eq!(o % 900, 0, "{o}");
+        assert!((-12 * 3600..=14 * 3600).contains(&o), "{o}");
+    }
 
     #[test]
     fn stem_matches_vanillas_pattern() {
