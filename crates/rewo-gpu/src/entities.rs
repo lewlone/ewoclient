@@ -2225,6 +2225,13 @@ impl EntityPass {
                 let Some(name) = d.name else { continue };
                 self.push_tag(&mut verts, d, name, cam_right, cam_up);
             }
+            // M204: framed maps' banner names — translucent backgrounds, so
+            // they ride the text range too.
+            for m in frame_maps {
+                for label in m.labels {
+                    self.push_map_label(&mut verts, m, label);
+                }
+            }
         }
         let total = verts.len();
         if total >= MAX_VERTS {
@@ -3225,6 +3232,100 @@ impl EntityPass {
             if b != b' ' {
                 let [u0, v0, u1, v1] = self.glyph_uv(b);
                 quad(pen, 0.0, pen + cell, cell, [u0, v0, u1, v1], [1.0; 4]);
+            }
+            pen += adv;
+        }
+    }
+
+    /// One framed map's banner label (M204), `MapRenderer.render`:
+    ///
+    /// ```text
+    /// float width = font.width(decoration.name);
+    /// float scale = Mth.clamp(25.0F / width, 0.0F, 6.0F / 9.0F);
+    /// translate(x / 2 + 64 - width * scale / 2, y / 2 + 64 + 4, -0.025F);
+    /// scale(scale, scale, -1.0F); translate(0, 0, 0.1F);
+    /// submitText(..., NORMAL, light, color -1, background Integer.MIN_VALUE, ...)
+    /// ```
+    ///
+    /// The background is `Font`'s effect rect, `(x - 1, y - 1)` to
+    /// `(x + width, y + 9)` at `z -0.01`, in `0x80000000` (black at half
+    /// alpha); the glyphs are white. Plain text: a styled name's colours are
+    /// not carried (a recorded deviation).
+    fn push_map_label(&self, verts: &mut Vec<Vertex>, m: &FrameMapDraw<'_>, label: &MapLabel) {
+        let width: f32 = label
+            .text
+            .bytes()
+            .map(|b| self.advance[b as usize] as f32)
+            .sum();
+        if width <= 0.0 {
+            return;
+        }
+        let scale = (25.0 / width).clamp(0.0, 6.0 / 9.0);
+        let base = glam::Mat4::from_cols_array_2d(&[
+            [m.transform[0][0], m.transform[1][0], m.transform[2][0], 0.0],
+            [m.transform[0][1], m.transform[1][1], m.transform[2][1], 0.0],
+            [m.transform[0][2], m.transform[1][2], m.transform[2][2], 0.0],
+            [m.transform[0][3], m.transform[1][3], m.transform[2][3], 1.0],
+        ]);
+        let pose =
+            base * glam::Mat4::from_translation(glam::Vec3::new(
+                f32::from(label.x) / 2.0 + 64.0 - width * scale / 2.0,
+                f32::from(label.y) / 2.0 + 64.0 + 4.0,
+                -0.025,
+            )) * glam::Mat4::from_scale(glam::Vec3::new(scale, scale, -1.0))
+                * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.1));
+        let place = |x: f32, y: f32, z: f32| -> [f32; 3] {
+            let p = pose.transform_point3(glam::Vec3::new(x, y, z));
+            [m.pos[0] + p.x, m.pos[1] + p.y, m.pos[2] + p.z]
+        };
+        let [lr, lg, lb] = m.light;
+        let mut quad =
+            |x0: f32, y0: f32, x1: f32, y1: f32, z: f32, uv: [f32; 4], color: [f32; 4]| {
+                if verts.len() + 6 > MAX_VERTS {
+                    return;
+                }
+                let [u0, v0, u1, v1] = uv;
+                let (p00, p10, p11, p01) = (
+                    place(x0, y0, z),
+                    place(x1, y0, z),
+                    place(x1, y1, z),
+                    place(x0, y1, z),
+                );
+                for (p, u, v) in [
+                    (p00, u0, v0),
+                    (p10, u1, v0),
+                    (p11, u1, v1),
+                    (p00, u0, v0),
+                    (p11, u1, v1),
+                    (p01, u0, v1),
+                ] {
+                    verts.push(Vertex {
+                        pos: p,
+                        uv: [u, v],
+                        color,
+                        light_hurt: [lr, lg, lb, 0.0],
+                    });
+                }
+            };
+        let wu = self.white_uv;
+        quad(
+            -1.0,
+            -1.0,
+            width,
+            9.0,
+            -0.01,
+            [wu[0], wu[1], wu[0], wu[1]],
+            [0.0, 0.0, 0.0, 128.0 / 255.0],
+        );
+        // Glyphs: an 8-px cell per byte from the pen, the font atlas's cells
+        // scaled as `emit_world_text` scales them. `glyph_uv` returns the
+        // cell's bottom as `v0`, so the y-down quad takes its V reversed.
+        let mut pen = 0.0;
+        for b in label.text.bytes() {
+            let adv = self.advance[b as usize] as f32;
+            if b != b' ' {
+                let [u0, v0, u1, v1] = self.glyph_uv(b);
+                quad(pen, 0.0, pen + 8.0, 8.0, 0.0, [u0, v1, u1, v0], [1.0; 4]);
             }
             pen += adv;
         }
@@ -4813,6 +4914,18 @@ pub struct FrameMapDraw<'a> {
     /// The decorations to draw, already filtered to `renderOnFrame`, in the
     /// map's order (the z step counts them).
     pub decorations: &'a [FrameMapDecoration],
+    /// The names among them (M204) — a named banner's label.
+    pub labels: &'a [MapLabel],
+}
+
+/// A map decoration's name label (M204), `MapRenderer.render`'s
+/// `decoration.name != null` branch: plain text (the component flattened),
+/// at the decoration's half-pixel position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapLabel {
+    pub x: i8,
+    pub y: i8,
+    pub text: String,
 }
 
 /// One decoration on a framed map.

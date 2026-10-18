@@ -39,8 +39,8 @@ use crate::live_cmd::{
 };
 use crate::stats::OverlayRing;
 
-/// b1-b5, d1-d7, p1-p10.
-const EXPECTED_WITNESSES: usize = 22;
+/// b1-b5, d1-d7, p1-p11.
+const EXPECTED_WITNESSES: usize = 23;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 512;
@@ -392,7 +392,7 @@ fn check_draws(
         .set_frame_item(1, frame_item(items, "minecraft:diamond_sword", None));
     world.entities.set_frame_rotation(1, 9);
     let maps = MapStore::default();
-    let inputs = collect_frame_inputs(&world, &maps, etypes, items, 1.0);
+    let inputs = collect_frame_inputs(&world, &maps, None, etypes, items, 1.0);
     let first = inputs.first();
     c.record(
         "d1.a_frame_reads_its_facing_item_and_rotation",
@@ -429,7 +429,7 @@ fn check_draws(
         .entities
         .set_frame_item(2, frame_item(items, "minecraft:filled_map", Some(8)));
     let maps = quadrant_map(7);
-    let inputs = collect_frame_inputs(&world, &maps, etypes, items, 1.0);
+    let inputs = collect_frame_inputs(&world, &maps, None, etypes, items, 1.0);
     let with_data = inputs.first().and_then(|f| f.map.as_ref());
     c.record(
         "d3.a_map_with_data_keeps_only_its_frame_decorations",
@@ -537,6 +537,7 @@ fn check_draws(
                 id: 1,
                 version: 1,
                 decorations: Vec::new(),
+                labels: Vec::new(),
             }),
         ),
         &lm,
@@ -977,7 +978,7 @@ fn check_pixels(
             .entities
             .set_frame_item(1, frame_item(items, "minecraft:filled_map", Some(7)));
         world.entities.set_frame_rotation(1, rotation);
-        let mut inputs = collect_frame_inputs(&world, &maps, etypes, items, 1.0);
+        let mut inputs = collect_frame_inputs(&world, &maps, None, etypes, items, 1.0);
         for f in &mut inputs {
             f.light = (15, 15);
         }
@@ -1042,6 +1043,77 @@ fn check_pixels(
         green_marker && nearest(arrow_spot, &quad) == Some(1),
         format!(
             "marker {marker:?} (want a green one), player-arrow spot {arrow_spot:?} (want blue)"
+        ),
+    );
+
+    // p11 (M204): a NAMED banner decoration (white banner, raw id 10,
+    // showOnItemFrame) at half-pixels (-64, 40) — map (32, 84), in the green
+    // quadrant — gets `MapRenderer`'s label: "Home" is about 23 font px wide,
+    // so `scale = clamp(25 / width, 0, 6/9)` = 2/3 and the label spans map u
+    // 24.5..39.5 from v 88 down six map px, on a half-black box with white
+    // glyphs. Sampled at v 89..93 (below the 8 px banner sprite); without the
+    // name the same spot is plain green.
+    let mut named = quadrant_map(7);
+    named.apply(&MapItemData {
+        map_id: 7,
+        scale: 0,
+        locked: false,
+        decorations: Some(vec![MapDecoration {
+            type_id: 10,
+            x: -64,
+            y: 40,
+            rot: 0,
+            name: Some(rewo_proto::nbt::Nbt::String("Home".into())),
+        }]),
+        patch: None,
+    });
+    let named_scene = {
+        let mut world = world_with(&[(1, frame_ty, [0.0, 0.0, 0.0], 2)]);
+        world
+            .entities
+            .set_frame_item(1, frame_item(items, "minecraft:filled_map", Some(7)));
+        let mut inputs = collect_frame_inputs(&world, &named, None, etypes, items, 1.0);
+        for f in &mut inputs {
+            f.light = (15, 15);
+        }
+        inputs
+    };
+    let labels = named_scene
+        .first()
+        .and_then(|f| f.map.as_ref())
+        .map(|m| m.labels.clone())
+        .unwrap_or_default();
+    let ml = render(gpu, &mut wr, &mut off, &named_scene, &named, 2, "map-label")?;
+    let (mut changed, mut white, mut points) = (0, 0, 0);
+    for v in [89.0f32, 90.5, 92.0] {
+        for i in 0..12 {
+            let u = 26.0 + i as f32;
+            let at_px = project(&vp, map_at(u, v, 0));
+            let (a, b) = (pixel(&ml, at_px), pixel(&m0, at_px));
+            points += 1;
+            if a != b {
+                changed += 1;
+            }
+            if a[0] > 150 && a[1] > 150 && a[2] > 150 {
+                white += 1;
+            }
+        }
+    }
+    let plain_white = (0..12)
+        .filter(|&i| {
+            let p = pixel(&m0, project(&vp, map_at(26.0 + i as f32, 90.5, 0)));
+            p[0] > 150 && p[1] > 150 && p[2] > 150
+        })
+        .count();
+    c.record(
+        "p11.a_named_banner_on_a_framed_map_is_labelled",
+        labels.len() == 1
+            && labels[0].text == "Home"
+            && changed * 2 >= points
+            && white >= 3
+            && plain_white == 0,
+        format!(
+            "labels {labels:?}; under the banner {changed}/{points} points changed, {white} white glyph points (the unnamed map: {plain_white})"
         ),
     );
 

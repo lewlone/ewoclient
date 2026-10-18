@@ -342,7 +342,7 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   the loom's scrollbar (**M189**).
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
 >   the map store, **M192 the held map**, **M193 its decorations**, **M194
->   item frames**; banner name labels are open), ~~`render-misc [INTERP]`~~
+>   item frames**, **M204** banner labels on framed maps; labels on the held map are open), ~~`render-misc [INTERP]`~~
 >   (**M195**) and ~~`[FLOW]`~~ (**M196** the sides, **M197** the flowing top), the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
@@ -3846,6 +3846,22 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M204 — banner name labels on framed maps (2026-10-18)
+
+`MapRenderer.render`'s `decoration.name != null` branch for a framed map:
+`width = font.width(name)`, `scale = clamp(25 / width, 0, 6/9)`,
+`translate(x/2 + 64 - width * scale / 2, y/2 + 64 + 4, -0.025) scale(scale,
+scale, -1) translate(0, 0, 0.1)`, then the text white on `Font`'s background
+effect (`(x - 1, y - 1)` to `(x + width, y + 9)`, `0x80000000`). The
+collector flattens each frame-shown decoration's name component with the
+language table (`FramedMap::labels`), and the entity pass draws
+`FrameMapDraw::labels` in its translucent text range (`push_map_label`).
+Graded by `itemframeshot` p11 (a named white-banner decoration labels the
+map under its sprite: every sampled point changes, white glyph pixels
+appear, none on the unnamed map). Recorded deviation: plain text, a styled
+name's colours are not carried. Still open: labels on the HELD map (the hand
+pass has no font).
 
 ### M203 — M185's live half: render-check r72 (2026-10-18)
 

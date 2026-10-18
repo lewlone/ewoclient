@@ -741,6 +741,7 @@ pub(super) fn run_headless(
     let frames = collect_item_frames(
         &session.world,
         &session.maps,
+        Some(&baked.lang),
         &etypes,
         &items,
         &lightmap,

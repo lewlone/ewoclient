@@ -67,6 +67,8 @@ pub(crate) struct FramedMap {
     /// `MapRenderer.render(..., showOnlyFrame = true, ...)`: only the
     /// decorations whose type is `showOnItemFrame`, in the map's order.
     pub decorations: Vec<rewo_gpu::entities::FrameMapDecoration>,
+    /// Their names (M204): a named banner's label, flattened.
+    pub labels: Vec<rewo_gpu::entities::MapLabel>,
 }
 
 /// A [`rewo_gpu::entities::FrameMapDraw`] that owns its decorations.
@@ -78,6 +80,7 @@ pub(crate) struct OwnedFrameMap {
     pub version: u64,
     pub light: [f32; 3],
     pub decorations: Vec<rewo_gpu::entities::FrameMapDecoration>,
+    pub labels: Vec<rewo_gpu::entities::MapLabel>,
 }
 
 impl OwnedFrameMap {
@@ -88,6 +91,7 @@ impl OwnedFrameMap {
             map_id: self.map_id,
             light: self.light,
             decorations: &self.decorations,
+            labels: &self.labels,
         }
     }
 }
@@ -165,6 +169,7 @@ pub(crate) fn frame_draws(f: &FrameInputs, lightmap: &LightmapState, out: &mut I
                 version: map.version,
                 light: lit(light),
                 decorations: map.decorations.clone(),
+                labels: map.labels.clone(),
             });
         }
     } else if let Some(item) = &f.item {
@@ -185,6 +190,8 @@ pub(crate) fn frame_draws(f: &FrameInputs, lightmap: &LightmapState, out: &mut I
 pub(crate) fn collect_frame_inputs(
     world: &rewo_world::World,
     maps: &rewo_world::maps::MapStore,
+    // M204 — the language table a banner name's component is flattened with.
+    lang: Option<&rewo_data::lang::Language>,
     etypes: &EntityTypes,
     item_names: &rewo_data::items::Items,
     alpha: f32,
@@ -213,6 +220,19 @@ pub(crate) fn collect_frame_inputs(
                         x: d.x,
                         y: d.y,
                         rot: d.rot,
+                    })
+                    .collect(),
+                labels: data
+                    .decorations
+                    .iter()
+                    .filter(|d| shows_on_frame(d.type_id))
+                    .filter_map(|d| {
+                        let text = rewo_world::chat_style::flatten(d.name.as_ref()?, lang);
+                        Some(rewo_gpu::entities::MapLabel {
+                            x: d.x,
+                            y: d.y,
+                            text,
+                        })
                     })
                     .collect(),
             })
@@ -251,13 +271,14 @@ pub(crate) fn collect_frame_inputs(
 pub(crate) fn collect_item_frames(
     world: &rewo_world::World,
     maps: &rewo_world::maps::MapStore,
+    lang: Option<&rewo_data::lang::Language>,
     etypes: &EntityTypes,
     item_names: &rewo_data::items::Items,
     lightmap: &LightmapState,
     alpha: f32,
 ) -> ItemFrameDraws {
     let mut out = ItemFrameDraws::default();
-    for f in collect_frame_inputs(world, maps, etypes, item_names, alpha) {
+    for f in collect_frame_inputs(world, maps, lang, etypes, item_names, alpha) {
         frame_draws(&f, lightmap, &mut out);
     }
     out
@@ -301,6 +322,7 @@ mod tests {
             id: 4,
             version: 2,
             decorations: Vec::new(),
+            labels: Vec::new(),
         }
     }
 

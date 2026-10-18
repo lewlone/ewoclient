@@ -774,6 +774,7 @@ impl LiveApp {
         let frames = collect_item_frames(
             &session.world,
             &session.maps,
+            Some(&self.lang),
             &self.etypes,
             &self.items,
             &lightmap,
@@ -793,6 +794,7 @@ impl LiveApp {
             let summoned = collect_frame_inputs(
                 &session.world,
                 &session.maps,
+                Some(&self.lang),
                 &self.etypes,
                 &self.items,
                 alpha,
