@@ -127,6 +127,8 @@ released.
 | `1ca048d` | **M215** — render-check **r75**: a lectern opened by the production right-click, page turned by the server's echo, closed with `container_close`; `lectern_arrow_click` extracted from the mouse handler. |
 | `13ca696`, `d9deb3d` | `load_check.py` refuses `--rd` above 16 without `--heavy` (and with under 10 GB free); M214's wrap-loop audit. |
 | `2cbd426` | **M216** — attacking and interacting with entities (26.2's `attack` and `interact` packets, the hit location as LpVec3); render-check **r76** (a villager's trades, decoded as summoned) and **r77** (an attack the server answers with damage). |
+| `c5e7510` | This summary through M216. |
+| `4c97c99` | **M217** — survival block breaking: generated block hardness (1,196 blocks) and item tool tables, vanilla's destroy progress and start/continue/stop machine, the held attack key; render-check **r78** (leaves broken in survival on vanilla's tick, the server agreeing). |
 
 ## Decisions made
 
