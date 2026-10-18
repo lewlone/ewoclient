@@ -120,11 +120,14 @@ pub struct LiveArgs {
     username: Option<String>,
     #[arg(long, default_value = "26.2")]
     version: String,
-    /// Auto-exit after N seconds (headless soak).
+    /// Windowed: auto-exit after N seconds (a soak).
     #[arg(long)]
     run_seconds: Option<f32>,
-    /// Write the final frame to this PNG (headless verification artifact).
-    #[arg(long)]
+    /// Headless: no window; pump the session until spawn plus a settle
+    /// window, write that frame to this PNG and exit. Rejected beside
+    /// `--run-seconds` or `--render-check`, which are windowed — it used to
+    /// be silently ignored beside the first and to replace the second.
+    #[arg(long, conflicts_with_all = ["run_seconds", "render_check"])]
     out: Option<PathBuf>,
     /// Frames in flight (M6 latency knob): 1 = lowest latency, 2 = default.
     #[arg(long, default_value_t = 2)]
