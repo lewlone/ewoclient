@@ -287,6 +287,9 @@ pub struct StackComponents {
     /// Its value (M191) — the tooltip's `ID #n` and the key into the level's
     /// maps. `has_map_id` stays the predicate the menus ask.
     pub map_id: Option<i32>,
+    /// `minecraft:banner_patterns`' layer count (M200), for the loom's
+    /// `hasMaxPatterns`. `None` when the patch does not add the component.
+    pub banner_layers: Option<u32>,
     /// Whether the patch removed `minecraft:dye` (M93g).
     ///
     /// `isDyeItem` is `is(#LOOM_DYES) && has(DYE)`, and `has()` is false for a
@@ -562,6 +565,8 @@ pub struct StackDetail {
     /// `minecraft:map_id`'s value (M191), for `MapId.addToTooltip`: which of
     /// the level's maps this stack names.
     pub map_id: Option<i32>,
+    /// `minecraft:banner_patterns`' layer count (M200), for the loom.
+    pub banner_layers: Option<u32>,
 }
 
 impl StackDetail {
@@ -575,6 +580,7 @@ impl StackDetail {
             && self.added.is_empty()
             && self.removed.is_empty()
             && self.map_id.is_none()
+            && self.banner_layers.is_none()
     }
 
     /// The occupied slots, in order — [`StackComponents::container_items`] for
@@ -592,6 +598,7 @@ impl StackComponents {
             added: self.added.clone(),
             removed: self.removed.clone(),
             map_id: self.map_id,
+            banner_layers: self.banner_layers,
         }
     }
 }
@@ -810,6 +817,24 @@ fn read_interpreted(
         // the level's maps, which the tooltip reads (M191).
         out.map_id = Some(r.varint().map_err(|_| ())?);
         out.has_map_id = true;
+        return Ok(true);
+    }
+    if ty == ids.banner_patterns {
+        // `BannerPatternLayers.STREAM_CODEC`: a list of layers. Walked through
+        // the table's own layer shape; the loom asks only how many (M200).
+        let crate::component_wire::Shape::List(layer) = shape else {
+            return Ok(false);
+        };
+        let n = r.varint().map_err(|_| ())?;
+        if !(0..=1024).contains(&n) {
+            return Err(());
+        }
+        for _ in 0..n {
+            if !walk(r, layer, 1)? {
+                return Ok(false);
+            }
+        }
+        out.banner_layers = Some(n as u32);
         return Ok(true);
     }
     if ty == ids.dyed_color {
@@ -1112,6 +1137,7 @@ mod tests {
         map_id: 19,
         dye: 20,
         provides_banner_patterns: 21,
+        banner_patterns: 24,
         bundle_contents: 16,
         container: 17,
         use_cooldown: 18,
@@ -1146,6 +1172,7 @@ mod tests {
             ("minecraft:map_id", 19),
             ("minecraft:dye", 20),
             ("minecraft:provides_banner_patterns", 21),
+            ("minecraft:banner_patterns", 24),
             ("minecraft:written_book_content", 22),
             ("minecraft:writable_book_content", 23),
         ]
@@ -1675,6 +1702,43 @@ mod tests {
         let c = components_of(&stack(1, 100, &[(IDS.map_id, id), (IDS.damage, dmg)], &[]));
         assert!(c.has_map_id);
         assert_eq!(c.damage, Some(37), "the component after map_id still reads");
+    }
+
+    /// M200 — `BannerPatternLayers.STREAM_CODEC` is a list of `(pattern
+    /// holder, dye)`; the count is kept and every layer consumed exactly, so a
+    /// component after it still decodes. The holder is a registry reference
+    /// (`id + 1`, here two bytes for 299) — and a detail with only layers is
+    /// not empty.
+    #[test]
+    fn a_banners_layer_count_is_recorded_and_the_layers_consumed() {
+        install_test_shapes();
+        let mut layers = Vec::new();
+        varint(6, &mut layers);
+        for i in 0..6 {
+            varint(300 + i, &mut layers); // holder: registry id + 1
+            varint(i % 16, &mut layers); // DyeColor id
+        }
+        let mut dmg = Vec::new();
+        varint(9, &mut dmg);
+        let c = components_of(&stack(
+            1,
+            100,
+            &[(IDS.banner_patterns, layers), (IDS.damage, dmg)],
+            &[],
+        ));
+        assert_eq!(c.banner_layers, Some(6));
+        assert_eq!(
+            c.damage,
+            Some(9),
+            "the component after the layers still reads"
+        );
+        let detail = StackComponents {
+            banner_layers: Some(6),
+            ..Default::default()
+        }
+        .detail();
+        assert!(!detail.is_empty() && detail.banner_layers == Some(6));
+        assert_eq!(components_of(&stack(1, 100, &[], &[])).banner_layers, None);
     }
 
     /// M93e — the decoder half of `isDamageableItem`'s removal term.

@@ -2620,6 +2620,23 @@ pub fn loom_can_scroll(display_patterns: bool, selectable: usize) -> bool {
 // recomputed from `scrollOffs` on every drag and wheel step.
 
 /// `LoomScreen.SCROLLER_WIDTH` / `SCROLLER_HEIGHT` / `SCROLLER_FULL_HEIGHT`.
+/// `LoomMenu`'s result slot, `new Slot(outputContainer, 0, 143, 57)`.
+pub const LOOM_RESULT_SLOT: (i32, i32) = (143, 57);
+
+/// `LoomScreen`'s full-banner `ERROR_SPRITE` (M200): 26 x 26 at the result
+/// slot less 5 on each axis.
+pub fn loom_error_blit() -> ProgressBlit {
+    ProgressBlit {
+        dx: LOOM_RESULT_SLOT.0 - 5,
+        dy: LOOM_RESULT_SLOT.1 - 5,
+        w: 26,
+        h: 26,
+        sx: 0,
+        sy: 0,
+        src: None,
+    }
+}
+
 pub const LOOM_SCROLLER_W: i32 = 12;
 pub const LOOM_SCROLLER_H: i32 = 15;
 pub const LOOM_SCROLLER_TRACK: i32 = 56;

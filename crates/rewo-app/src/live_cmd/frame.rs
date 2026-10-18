@@ -1039,7 +1039,9 @@ impl LiveApp {
                 let loom_scroll = session
                     .menus
                     .shown_open()
-                    .and_then(|m| loom_view_scrolled(&mut self.screen, m, &items))
+                    .and_then(|m| {
+                        loom_view_scrolled(&mut self.screen, m, &items, &session.stack_details)
+                    })
                     .map_or((0.0, 0), |v| (v.scroll_offs, v.start_row));
                 // M93t — likewise the anvil's field, seeded here so the render
                 // and the key handler see one box.

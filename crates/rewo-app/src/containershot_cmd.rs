@@ -51,7 +51,7 @@ pub struct ContainershotArgs {
 /// The exact number of witnesses a passing `--check` records. Pinned with `!=`
 /// (like the other gates): a floor of `> 0` let a refactor drop most of them
 /// silently. Update it, and say why, when a witness is added or removed.
-const EXPECTED_WITNESSES: usize = 111;
+const EXPECTED_WITNESSES: usize = 112;
 
 struct Checker {
     witnessed: usize,
@@ -1644,6 +1644,7 @@ fn overlays(
                 None,
                 None,
                 Some(crate::live_cmd::LoomView {
+                    has_max: false,
                     display,
                     selected: 0,
                     start_row: 0,
@@ -1724,6 +1725,7 @@ fn overlays(
                 None,
                 None,
                 Some(crate::live_cmd::LoomView {
+                    has_max: false,
                     display,
                     selected: -1,
                     start_row: 0,
@@ -1778,6 +1780,92 @@ fn overlays(
                  at y 13 and {bottom_ok}/{n} at y 54 at full scroll ({moved_away}/{n} still \
                  at 13 there); with the grid hidden `scroller_disabled.png` {dis_ok}/{dn} at 13",
                 all.len()
+            ),
+        );
+    }
+
+    // o30 — M200, `hasMaxPatterns`, through the PRODUCTION `loom_view`: a
+    // banner in slot 0 whose stack detail records six pattern layers hides the
+    // grid, and the overlays submit `container/loom/error` at vanilla's
+    // literal `(resultSlot.x - 5, resultSlot.y - 5)` = (138, 52), 26 x 26
+    // (26.2 ships that sprite fully transparent, so the hidden grid is the
+    // whole visible effect); with five layers the grid draws and no error is
+    // submitted.
+    {
+        let items = rewo_data::items::Items::load(
+            &rewo_data::DataPaths::for_version("26.2")
+                .ok_or("containershot: no data dir")?
+                .registries_json(),
+        )?;
+        let banner = items
+            .id("minecraft:white_banner")
+            .ok_or("no white_banner")?;
+        let dye = items.id("minecraft:red_dye").ok_or("no red_dye")?;
+        let loom_layout = rewo_world::menu_layout::layout_of(18).unwrap();
+        let at_loom = probe(loom_layout);
+        type Panel = rewo_gpu::container::ContainerPanel;
+        let mut frame = |layers: u32,
+                         gpu: &mut Gpu,
+                         off: &mut Offscreen,
+                         wr: &mut WorldRenderer|
+         -> Result<(Vec<u8>, Option<Panel>), String> {
+            let mut m = menu(18, &[]);
+            let inv = m.menu_for(1).expect("the loom");
+            let fingerprint = 0xBA77E5u64 + u64::from(layers);
+            let mut b = rewo_world::inventory::ItemSlot::plain(banner, 1);
+            b.has_components = true;
+            b.components = fingerprint;
+            assert!(inv.set_slot(0, 0, Some(b)));
+            assert!(inv.set_slot(0, 1, Some(rewo_world::inventory::ItemSlot::plain(dye, 1))));
+            let mut details = rewo_net::item_stack::StackDetails::default();
+            details.record(
+                fingerprint,
+                rewo_net::item_stack::StackDetail {
+                    container: Vec::new(),
+                    added: Vec::new(),
+                    removed: Vec::new(),
+                    map_id: None,
+                    banner_layers: Some(layers),
+                },
+            );
+            let open = m.open().expect("open");
+            let view = crate::live_cmd::loom_view(open, &items, &details, (0.0, 0));
+            let panel = crate::live_cmd::container_panel_for_open_menu(
+                open, 30, false, effects, None, None, view, None, None,
+            );
+            wr.set_container_panel(panel.clone());
+            wr.set_container(true, None);
+            Ok((shot(gpu, off, wr)?, panel))
+        };
+        let errors = |p: &Option<Panel>| -> Vec<(f32, f32, f32, f32)> {
+            p.iter()
+                .flat_map(|p| p.overlays.iter())
+                .filter(|(i, _)| *i == rewo_data::assets::LOOM_ERROR)
+                .map(|(_, b)| (b.dx, b.dy, b.w, b.h))
+                .collect()
+        };
+        let (full, full_panel) = frame(6, gpu, off, wr)?;
+        let (five, five_panel) = frame(5, gpu, off, wr)?;
+        let overlays = |p: &Option<Panel>| p.as_ref().map_or(0, |p| p.overlays.len());
+        // The first grid cell, sampled across its interior: drawn only when
+        // the grid shows.
+        let (cx, cy) = rewo_ui::menu_screen::loom_cell_origin(0, 0);
+        let cell_diff = (2..12)
+            .filter(|&d| at_loom(&full, cx + d, cy + d) != at_loom(&five, cx + d, cy + d))
+            .count();
+        c.record(
+            "o30.a_full_banner_hides_the_grid_and_submits_the_error",
+            errors(&full_panel) == [(138.0, 52.0, 26.0, 26.0)]
+                && errors(&five_panel).is_empty()
+                && overlays(&full_panel) == 2
+                && overlays(&five_panel) > 2
+                && cell_diff >= 5,
+            format!(
+                "six layers: errors {:?}, {} overlays (scroller + error); five layers: errors {:?}, {} overlays; the first cell differs at {cell_diff}/10 points",
+                errors(&full_panel),
+                overlays(&full_panel),
+                errors(&five_panel),
+                overlays(&five_panel)
             ),
         );
     }

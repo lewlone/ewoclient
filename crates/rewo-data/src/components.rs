@@ -76,6 +76,11 @@ pub struct DataComponentIds {
     /// **removal** can be spotted: the prototype answers the positive case.
     pub dye: i32,
     pub provides_banner_patterns: i32,
+    /// `minecraft:banner_patterns` (M200) — read for its LAYER COUNT, which
+    /// `LoomScreen.containerChanged`'s `hasMaxPatterns` (`>= 6`) asks of the
+    /// banner in the loom. A banner's prototype carries an empty list, so a
+    /// patch is the only way a stack has layers.
+    pub banner_patterns: i32,
     /// `minecraft:bundle_contents` (M61) — `ItemStackTemplate.STREAM_CODEC`
     /// under `ByteBufCodecs.list()`.
     ///
@@ -216,6 +221,7 @@ impl DataComponentIds {
             map_id: id("minecraft:map_id")?,
             dye: id("minecraft:dye")?,
             provides_banner_patterns: id("minecraft:provides_banner_patterns")?,
+            banner_patterns: id("minecraft:banner_patterns")?,
             bundle_contents: id("minecraft:bundle_contents")?,
             container: id("minecraft:container")?,
             use_cooldown: id("minecraft:use_cooldown")?,

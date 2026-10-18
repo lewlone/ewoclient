@@ -1271,7 +1271,8 @@ impl LiveApp {
         let Some(open) = session.menus.shown_open() else {
             return;
         };
-        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items) else {
+        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items, &session.stack_details)
+        else {
             return;
         };
         if !rewo_ui::menu_screen::loom_can_scroll(view.display, view.patterns.len()) {
@@ -1304,7 +1305,8 @@ impl LiveApp {
         let Some(open) = session.menus.shown_open() else {
             return;
         };
-        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items) else {
+        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items, &session.stack_details)
+        else {
             return;
         };
         if !rewo_ui::menu_screen::loom_can_scroll(view.display, view.patterns.len()) {

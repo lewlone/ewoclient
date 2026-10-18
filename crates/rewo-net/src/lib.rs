@@ -5083,6 +5083,7 @@ mod animate_tests {
             map_id: 19,
             dye: 20,
             provides_banner_patterns: 21,
+            banner_patterns: 1021,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

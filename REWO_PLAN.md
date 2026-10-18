@@ -2018,6 +2018,7 @@ this shape once.
 | M192 — the held map (r69 written 2026-10-18 with M194: an off-hand map injected at 0.2) | **r69** | hand atlas (512x512, `live_cmd/gui.rs`) while a map is held: map pixels (0,0,128,128), checkerboard (128,0,128,128), plain background (256,0,64,64), items from y 128, skin row unchanged; **M193** decoration sprites (320,0)..(512,128), 8x8 by raw type id, 24 per row | `handshot` gm1-gm6 |
 | M194 — item frames (2026-10-18) | **r70** | entity atlas `ATLAS_H` 1600 -> 1728: the framed-map band at y 1600..1728 (seven 128 x 128 map slots, then the decoration sprites at (896, 1600), 8 x 8 by raw type id, 16 to a row); `CAPE_POOL_Y` re-anchored to it (still 1536) | `itemframeshot` b1-b5, d1-d7, p1-p9 |
 | M194 — the server's own item frame (`render_check.py` summons it) | **r71** | — | — |
+| M200 — the loom's full banner | — | `MENU_OVERLAY_SPRITES` 131 (`container/loom/error`; `LOOM_ERROR`) | `containershot` o30 |
 | *(next free)* | **r72** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3843,6 +3844,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M200 — the loom's full banner (`hasMaxPatterns`, 2026-10-18)
+
+The 10-15 follow-up. `LoomScreen.containerChanged` sets `hasMaxPatterns =
+bannerStack.getOrDefault(BANNER_PATTERNS, EMPTY).layers().size() >= 6`, which
+hides the pattern grid (`displayPatterns` is false), drops the result
+preview and blits `ERROR_SPRITE` at `(resultSlot.x - 5, resultSlot.y - 5)`,
+26 x 26. Rewo hard-coded `false` because it did not read the component.
+
+- `rewo-net` reads `minecraft:banner_patterns`' layer count (walking each
+  `(pattern holder, dye)` layer through the table's own shape, so a later
+  component still decodes) into `StackComponents` and the `StackDetail`
+  side-channel (`banner_layers`; `is_empty` lists it).
+- `live_cmd::loom_has_max_patterns` reads slot 0's detail; `loom_view` takes
+  the session's `StackDetails`, and the overlays submit
+  `container/loom/error` (`MENU_OVERLAY_SPRITES` 131, `LOOM_ERROR`).
+  **26.2 ships that sprite fully transparent** (all 676 texels alpha 0), so
+  the hidden grid is the whole visible effect; the blit is kept because it is
+  what vanilla submits.
+- Graded by a decode test and `containershot` o30 (six layers: no grid, the
+  error submitted at (138, 52); five layers: the grid, no error; the first
+  cell's pixels differ between the two).
 
 ### M199 — the water overlay beside glass and leaves (2026-10-18)
 

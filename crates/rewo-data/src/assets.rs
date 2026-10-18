@@ -2694,6 +2694,8 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     // stonecutter's convention: `LOOM_SCROLLER + usize::from(!active)`.
     "gui/sprites/container/loom/scroller.png",
     "gui/sprites/container/loom/scroller_disabled.png",
+    // 131 — the loom's full-banner error (M200), `LoomScreen.ERROR_SPRITE`.
+    "gui/sprites/container/loom/error.png",
 ];
 
 /// The search field's background pair, **plain first** —
@@ -2719,6 +2721,10 @@ pub const BOOK_BUTTON: usize = 127;
 /// The loom's scroller, **active first** — `LOOM_SCROLLER + usize::from(!active)`
 /// (M189).
 pub const LOOM_SCROLLER: usize = 129;
+
+/// `LoomScreen.ERROR_SPRITE`, drawn over the result slot when the banner
+/// already has six layers (M200).
+pub const LOOM_ERROR: usize = 131;
 
 /// The which-of-these overlay's nine-sliced panel (M104).
 pub const BOOK_OVERLAY_PANEL: usize = 118;
@@ -5505,7 +5511,11 @@ mod tests {
             MENU_OVERLAY_SPRITES[LOOM_SCROLLER + 1],
             "gui/sprites/container/loom/scroller_disabled.png"
         );
-        assert_eq!(MENU_OVERLAY_SPRITES.len(), LOOM_SCROLLER + 2);
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[LOOM_ERROR],
+            "gui/sprites/container/loom/error.png"
+        );
+        assert_eq!(MENU_OVERLAY_SPRITES.len(), LOOM_ERROR + 1);
     }
 
     // -- M164: the waterlogging rule ---------------------------------------

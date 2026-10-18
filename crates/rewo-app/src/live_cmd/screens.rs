@@ -585,7 +585,7 @@ pub(super) fn apply_screen(
     let loom = session
         .menus
         .shown_open()
-        .and_then(|m| super::menus::loom_view(m, items, loom_scroll));
+        .and_then(|m| super::menus::loom_view(m, items, &session.stack_details, loom_scroll));
     // M94 — the recipe book, if the server says it is open for this menu's
     // book type. It is built here rather than inside `container_panel` because
     // its presence has to reach `screen_to_gui_placed` below as well: an open

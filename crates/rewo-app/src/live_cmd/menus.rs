@@ -297,15 +297,20 @@ pub struct LoomView {
     pub selected: i32,
     /// `displayPatterns` — the grid is hidden entirely when false.
     pub display: bool,
+    /// `hasMaxPatterns` (M200): the banner already has six layers, so the
+    /// grid is hidden and `ERROR_SPRITE` covers the result slot.
+    pub has_max: bool,
 }
 
 /// The loom's grid for the shown menu, or `None` when it is not a loom.
 ///
 /// One accessor for the draw (`screens.rs`) and the press ([`loom_press`]),
 /// so the cell a click resolves is the cell that was drawn.
-pub(super) fn loom_view(
+pub(crate) fn loom_view(
     m: &rewo_world::menu::OpenMenu,
     items: &rewo_data::items::Items,
+    // M200 — the banner's layer count rides its stack detail.
+    details: &rewo_net::item_stack::StackDetails,
     // M189 — `(scrollOffs, startRow)`, the screen's own; see [`loom_local`].
     scroll: (f32, i32),
 ) -> Option<LoomView> {
@@ -315,7 +320,9 @@ pub(super) fn loom_view(
     // Slots: banner 0, dye 1, pattern 2.
     let name = |slot: usize| m.menu.menu_slot(slot).and_then(|s| items.name(s.item_id));
     let patterns = rewo_data::loom_pattern_table::selectable_patterns(name(2));
+    let has_max = loom_has_max_patterns(m, details);
     Some(LoomView {
+        has_max,
         patterns,
         start_row: scroll.1,
         scroll_offs: scroll.0,
@@ -323,13 +330,24 @@ pub(super) fn loom_view(
         display: rewo_ui::menu_screen::loom_display_patterns(
             m.menu.menu_slot(0).is_some(),
             m.menu.menu_slot(1).is_some(),
-            // `hasMaxPatterns` needs the banner's own layer count, which
-            // lives in a component Rewo does not read — so the grid stays
-            // visible on a full banner where vanilla hides it.
-            false,
+            has_max,
             patterns.len(),
         ),
     })
+}
+
+/// `LoomScreen.containerChanged`'s `hasMaxPatterns` (M200): the banner in
+/// slot 0 already carries six or more pattern layers
+/// (`bannerStack.getOrDefault(BANNER_PATTERNS, EMPTY).layers().size() >= 6`).
+pub(super) fn loom_has_max_patterns(
+    m: &rewo_world::menu::OpenMenu,
+    details: &rewo_net::item_stack::StackDetails,
+) -> bool {
+    m.menu
+        .menu_slot(0)
+        .and_then(|s| details.get(s.components))
+        .and_then(|d| d.banner_layers)
+        .is_some_and(|n| n >= 6)
 }
 
 /// The loom screen's own scroll (M189) — `LoomScreen.scrollOffs`,
@@ -376,10 +394,11 @@ pub(super) fn loom_view_scrolled(
     screen: &mut ScreenState,
     m: &rewo_world::menu::OpenMenu,
     items: &rewo_data::items::Items,
+    details: &rewo_net::item_stack::StackDetails,
 ) -> Option<LoomView> {
-    let n = loom_view(m, items, (0.0, 0))?.patterns.len();
+    let n = loom_view(m, items, details, (0.0, 0))?.patterns.len();
     let l = loom_local(screen, m, n);
-    loom_view(m, items, (l.scroll_offs, l.start_row))
+    loom_view(m, items, details, (l.scroll_offs, l.start_row))
 }
 
 /// `LoomScreen.mouseClicked`'s pattern grid (M186).
@@ -415,7 +434,9 @@ pub(super) fn loom_press(
     let Some(open) = session.menus.shown_open() else {
         return false;
     };
-    let Some(view) = loom_view_scrolled(screen, open, items).filter(|v| v.display) else {
+    let Some(view) =
+        loom_view_scrolled(screen, open, items, &session.stack_details).filter(|v| v.display)
+    else {
         return false;
     };
     let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
@@ -1437,6 +1458,15 @@ pub(super) fn menu_overlays(
                 a::LOOM_SCROLLER + usize::from(!active),
                 to_blit(rewo_ui::menu_screen::loom_scroller_blit(l.scroll_offs)),
             ));
+            // M200 — `else if (this.hasMaxPatterns) blitSprite(ERROR_SPRITE,
+            // xo + resultSlot.x - 5, yo + resultSlot.y - 5, 26, 26)`, after
+            // the scroller and before the (hidden) grid.
+            if l.has_max {
+                out.push((
+                    a::LOOM_ERROR,
+                    to_blit(rewo_ui::menu_screen::loom_error_blit()),
+                ));
+            }
             if !l.display {
                 return out;
             }
