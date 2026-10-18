@@ -134,6 +134,8 @@ released.
 | `2cbd426` | **M216** — attacking and interacting with entities (26.2's `attack` and `interact` packets, the hit location as LpVec3); render-check **r76** (a villager's trades, decoded as summoned) and **r77** (an attack the server answers with damage). |
 | `c5e7510` | This summary through M216. |
 | `4c97c99` | **M217** — survival block breaking: generated block hardness (1,196 blocks) and item tool tables, vanilla's destroy progress and start/continue/stop machine, the held attack key; render-check **r78** (leaves broken in survival on vanilla's tick, the server agreeing). |
+| `485036b` | This summary through M217. |
+| `16921fd` | **M218** — Q drop (predicted), F swap hands, middle-click pick block/entity, sprint start/stop sent; `select_hotbar` now sets the client's held slot (it never did); render-check **r79-r82**. |
 
 ## Decisions made
 
