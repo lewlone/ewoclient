@@ -73,7 +73,7 @@ use lightmap::LightmapRing;
 pub use lightmap::{WorldLightmapState, BLOCK_LIGHT_FACTOR};
 use lines::{LeashRibbon, SelectOutline};
 use sky::SkyGradient;
-pub use sky::{SkyMode, SKY_HORIZON};
+pub use sky::{SkyMode, DEFAULT_FOG, DEFAULT_SKY, DEFAULT_SKY_END};
 use terrain::TerrainPass;
 pub(crate) use textures::upload_texture_array;
 use textures::TextureArray;
@@ -199,15 +199,19 @@ struct SceneFrame {
     lightmap: WorldLightmapState,
     sky_tint: [f32; 3],
     fog_tint: [f32; 3],
-    /// Biome sky/fog base color, LINEAR (M14). Defaults to the `SKY_HORIZON`
-    /// constant so the sky/demo/skyshot render exactly as before until the live
-    /// app supplies the camera biome color. The horizon = `sky_base`, the zenith
-    /// = `sky_base * ZENITH_RATIO`, both then multiplied by the day/night
-    /// `sky_tint`; fog = `fog_base * fog_tint`.
+    /// Biome sky/fog base color, LINEAR (M14). Defaults to [`DEFAULT_SKY`] /
+    /// [`DEFAULT_FOG`] (plains) until the live app supplies the camera biome
+    /// color. The sky disc = `sky_base *
+    /// sky_tint`; fog (terrain fade, sky-disc fog and the uncovered sky) =
+    /// `fog_base * fog_tint` (M209).
     sky_base: [f32; 3],
     fog_base: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
     fog: [f32; 2],
+    /// `FogSkyEnd` for the sky disc, blocks (M209, [`Self::set_sky_disc`]).
+    sky_end: f32,
+    /// Whether the sky pass draws vanilla's dark disc below the horizon.
+    dark_disc: bool,
     /// Which sky `draw` renders (`DimensionType.Skybox`). Default
     /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
     sky_mode: SkyMode,

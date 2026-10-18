@@ -391,7 +391,20 @@ pub(super) fn run_headless(
     // Look slightly down from the eye toward the horizon (or a debug
     // pitch) — unless REWO_LOOK_ENTITY=1, which aims at the nearest entity
     // so the verification PNG is guaranteed to frame it.
-    let eye = player_eye(&session);
+    // REWO_EYE="x,y,z" (a gates knob): render from a fixed world point
+    // instead of the player's eye — a vista over natural terrain, which the
+    // player's random spawn cannot aim (M208 found its cracks in such a shot).
+    let eye = crate::knobs::var("REWO_EYE")
+        .ok()
+        .and_then(|s| {
+            let mut it = s.split(',');
+            Some(Vec3::new(
+                it.next()?.trim().parse().ok()?,
+                it.next()?.trim().parse().ok()?,
+                it.next()?.trim().parse().ok()?,
+            ))
+        })
+        .unwrap_or_else(|| player_eye(&session));
     // Single-shot render: a fresh tracker sees every gesture at age 0 (use
     // REWO_FORCE_GESTURE for a specific rig time).
     let mut gestures = GestureTracker::default();
@@ -470,7 +483,10 @@ pub(super) fn run_headless(
         );
     }
     println!("[rewo-entities] {} tracked", draws.len());
-    let mut yaw = session.player.yaw;
+    let mut yaw = crate::knobs::var("REWO_YAW")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(session.player.yaw);
     let mut pitch = crate::knobs::var("REWO_PITCH")
         .ok()
         .and_then(|s| s.parse().ok())

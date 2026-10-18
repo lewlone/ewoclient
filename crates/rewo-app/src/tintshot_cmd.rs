@@ -1232,7 +1232,7 @@ fn gpu_render(
     // clean — the fog check narrowed the band and set custom bases.
     wr.set_fog(1.0e6, 1.0e6 + 1.0);
     wr.set_sky_tint([1.0; 3], [1.0; 3]);
-    wr.set_sky_fog_base(rewo_gpu::world::SKY_HORIZON, rewo_gpu::world::SKY_HORIZON);
+    wr.set_sky_fog_base(rewo_gpu::world::DEFAULT_SKY, rewo_gpu::world::DEFAULT_FOG);
     Ok(())
 }
 
@@ -1359,8 +1359,8 @@ fn render_sky(
     wr.set_sky_tint([1.0; 3], [1.0; 3]); // noon multiply = identity
     match base_argb {
         Some(c) => wr.set_sky_fog_base(argb_to_linear(c), argb_to_linear(c)),
-        // Restore the renderer default (SKY_HORIZON) by asking for it directly.
-        None => wr.set_sky_fog_base(rewo_gpu::world::SKY_HORIZON, rewo_gpu::world::SKY_HORIZON),
+        // Restore the renderer defaults (plains) by asking for them directly.
+        None => wr.set_sky_fog_base(rewo_gpu::world::DEFAULT_SKY, rewo_gpu::world::DEFAULT_FOG),
     }
     // Horizontal camera looking at the horizon (+X), up +Y — the horizon band
     // is the sky base color.

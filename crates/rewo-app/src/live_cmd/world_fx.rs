@@ -129,11 +129,32 @@ pub(super) fn render_distance_fog(render_distance_chunks: i32) -> (f32, f32) {
 /// effective distance changes with the server's `set_chunk_cache_radius`.
 /// `REWO_FOG` (a gates knob) still wins, so a debugging override holds.
 pub(super) fn apply_render_distance_fog(wr: &mut WorldRenderer, session: &PlaySession) {
+    let rd = session.effective_render_distance();
+    // M209 — the sky disc's inputs, from the same render distance.
+    wr.set_sky_disc(sky_fog_end(rd), dark_disc(session));
     if crate::knobs::var("REWO_FOG").is_ok() {
         return;
     }
-    let (start, end) = render_distance_fog(session.effective_render_distance());
+    let (start, end) = render_distance_fog(rd);
     wr.set_fog(start, end);
+}
+
+/// `EnvironmentAttributes.SKY_FOG_END_DISTANCE`'s default. Neither built-in
+/// dimension overrides it (the same caveat as [`ENV_FOG_END`]).
+const SKY_FOG_END_DISTANCE: f32 = 512.0;
+
+/// `fog.skyEnd = Math.min(renderDistance, SKY_FOG_END_DISTANCE)`
+/// (`AtmosphericFogEnvironment.setupFog`), `renderDistance` in blocks.
+pub(super) fn sky_fog_end(render_distance_chunks: i32) -> f32 {
+    ((render_distance_chunks * 16) as f32).min(SKY_FOG_END_DISTANCE)
+}
+
+/// `SkyRenderer.shouldRenderDarkDisc`: the eye below the level's horizon
+/// height, and not underwater.
+fn dark_disc(session: &PlaySession) -> bool {
+    let eye_y = session.player.eye_y();
+    let underwater = session.local_player_view().is_some_and(|v| v.underwater);
+    eye_y - session.horizon_height() < 0.0 && !underwater
 }
 
 /// This frame's world-border wall (M80).

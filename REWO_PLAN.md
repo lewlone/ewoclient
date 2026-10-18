@@ -3863,6 +3863,44 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M209 — vanilla's sky disc (2026-10-18)
+
+A vista over the normal world (new gates knobs `REWO_EYE="x,y,z"` and
+`REWO_YAW` for the headless `live --out` shot, beside `REWO_PITCH`) showed a
+hard line where the fogged ocean met the sky, well below the horizon. The
+sky shader was Rewo's own gradient, whose "horizon" since M14 was the biome
+**sky** colour while the terrain fades to the biome **fog** colour; below the
+horizon it darkened to 0.82 of that.
+
+`sky.frag` now evaluates vanilla's sky per pixel. `SkyRenderer.buildSkyDisc(16)`
+is an octagonal fan (centre (0, 16, 0), ring radius 512) centred on the
+camera; `sky.vsh`'s per-vertex fog distances interpolate across it, so a
+point a fraction `s` of the way to the edge chord has spherical `16 + 496.25 s`
+and cylindrical `16 + 496 s`, and `sky.fsh` mixes the sky colour toward the
+fog colour by `max(sph / skyEnd, cyl >= skyEnd)`. What the disc does not
+cover shows `LevelRenderer`'s clear colour, the fog colour, so the world's far
+edge meets the sky without a seam. `renderDarkDisc` (the mirrored fan at -4,
+black, fogged from its untranslated distances) draws when the eye is below
+`getHorizonHeight` (63, or the bottom of a flat world: `PlaySession::
+level_is_flat` now keeps `CommonPlayerSpawnInfo.isFlat`) and not underwater.
+`skyEnd = min(renderDistance * 16, SKY_FOG_END_DISTANCE 512)`, set per frame
+with M206's fog band (`WorldRenderer::set_sky_disc`). Colours mix in linear
+space, as the world pass's fog does (the project's convention; vanilla mixes
+in gamma space). Recorded deviation: the dark disc is part of the sky pass,
+so it draws before the sunrise fan instead of after it.
+
+The offscreen defaults were one pale colour serving as sky and fog
+(`SKY_HORIZON`); a disc in that colour is a washed-out zenith, so they are now
+plains' pair (`DEFAULT_SKY` `0x78A7FF`, `DEFAULT_FOG` `0xC0D8FF`, linearized).
+`skyshot`'s midnight row now compares the zenith against the disc centre
+computed from the gate's own tints (`16 / skyEnd` of the way from tinted sky to
+tinted fog, within 3 units) instead of "luma ≤ 10", which the old gradient had
+calibrated; the M11 regression it guards (an untinted zenith) misses by about
+a hundred. `captureshot`'s sky gets a distinct, darker fog colour so `b2`
+still sees a vertical spread and `b1` still reads R > G > B at the horizon.
+Demo hash `748e5a1e...` to `e658532bcc8c2758`: the diff against the pre-M209
+render is exactly the sky pixels (every terrain pixel identical).
+
 ### M208 — no greedy merge: T-junction cracks (2026-10-18)
 
 A headless shot of the normal world (`live --out`, seed 20261018) showed

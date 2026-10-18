@@ -106,6 +106,11 @@ const GRAB_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// A red-dominant sky base (LINEAR), so the frame `grab` captures is both
 /// spatially varying and strongly ordered in R over B.
 const SKY_BASE: [f32; 3] = [0.75, 0.16, 0.04];
+/// The fog colour beside it (M209): the same R > G > B order (b1 reads the
+/// centre pixel, which is at the horizon, where vanilla's sky shows the fog
+/// colour) but much darker, so the disc's fade toward it is a real vertical
+/// spread (b2).
+const FOG_BASE: [f32; 3] = [0.30, 0.06, 0.01];
 
 #[derive(ClapArgs, Debug)]
 pub struct CaptureshotArgs {
@@ -217,7 +222,9 @@ fn sky_renderer(gpu: &mut Gpu, format: vk::Format) -> Result<WorldRenderer, Stri
     let mut wr = WorldRenderer::new(gpu, format, rewo_data::assets::TEX_SIZE, &[])?;
     wr.set_camera([0.0, 0.0, 0.0]);
     wr.set_sky_tint([1.0, 1.0, 1.0], [1.0, 1.0, 1.0]);
-    wr.set_sky_fog_base(SKY_BASE, SKY_BASE);
+    // M209: the sky is vanilla's disc, which fades its colour toward the fog
+    // colour near the horizon; distinct colours keep the frame's vertical spread.
+    wr.set_sky_fog_base(SKY_BASE, FOG_BASE);
     Ok(wr)
 }
 

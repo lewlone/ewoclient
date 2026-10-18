@@ -12,7 +12,9 @@ use super::lines;
 use super::sky::{parse_fog_env, SkyGradient};
 use super::terrain::{self, TerrainPass};
 use super::textures::TextureArray;
-use super::{GuiFrame, SceneFrame, SkyMode, WorldLightmapState, WorldRenderer, SKY_HORIZON};
+use super::{
+    GuiFrame, SceneFrame, SkyMode, WorldLightmapState, WorldRenderer, DEFAULT_FOG, DEFAULT_SKY,
+};
 use crate::Gpu;
 
 impl WorldRenderer {
@@ -76,9 +78,11 @@ impl WorldRenderer {
                 lightmap: WorldLightmapState::default(),
                 sky_tint: [1.0; 3],
                 fog_tint: [1.0; 3],
-                sky_base: SKY_HORIZON,
-                fog_base: SKY_HORIZON,
+                sky_base: DEFAULT_SKY,
+                fog_base: DEFAULT_FOG,
                 fog: parse_fog_env(),
+                sky_end: super::sky::DEFAULT_SKY_END,
+                dark_disc: false,
                 sky_mode: SkyMode::default(),
                 celestial_state: crate::celestial::CelestialState::default(),
                 end_flash: None,

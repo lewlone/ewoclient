@@ -10,24 +10,26 @@ use crate::Gpu;
 #[derive(Clone, Copy)]
 struct SkyPush {
     inv_view_proj: [[f32; 4]; 4],
-    horizon: [f32; 4],
-    zenith: [f32; 4],
+    /// The sky colour (biome sky x `SKY_COLOR` tint), linear.
+    sky: [f32; 4],
+    /// The fog colour (biome fog x `FOG_COLOR` tint), linear — also what the
+    /// disc does not cover shows (vanilla clears the target to it).
+    fog: [f32; 4],
+    /// `x` = `FogSkyEnd`, `y` = 1.0 when the dark disc draws (M209).
+    params: [f32; 4],
 }
 
-/// Sky gradient colors (linear; sRGB pale-blue horizon / deeper zenith).
-/// The horizon is also the terrain's fog color for a seamless far edge.
-pub const SKY_HORIZON: [f32; 3] = [0.477, 0.638, 0.890];
+/// The default sky and fog base colours (linear) until the app supplies the
+/// camera biome's (M14): plains' `sky_color` `0x78A7FF` and `fog_color`
+/// `0xC0D8FF`, through the sRGB transfer (M209 — before it one pale colour,
+/// `SKY_HORIZON`, served as both, which the sky disc would draw as a washed-out
+/// zenith).
+pub const DEFAULT_SKY: [f32; 3] = [0.187_821, 0.386_429, 1.0];
+pub const DEFAULT_FOG: [f32; 3] = [0.527_115, 0.686_685, 1.0];
 
-const SKY_ZENITH: [f32; 3] = [0.147, 0.319, 0.890];
-
-/// The zenith-to-horizon gradient ratio (`SKY_ZENITH / SKY_HORIZON`). When the
-/// biome sky color drives the base (M14), the zenith keeps this fixed gradient
-/// shape: `zenith = sky_base * ZENITH_RATIO`. `[0.308, 0.5, 1.0]`.
-const ZENITH_RATIO: [f32; 3] = [
-    SKY_ZENITH[0] / SKY_HORIZON[0],
-    SKY_ZENITH[1] / SKY_HORIZON[1],
-    SKY_ZENITH[2] / SKY_HORIZON[2],
-];
+/// `FogSkyEnd` before the app supplies one (M209): `min(renderDistance * 16,
+/// SKY_FOG_END_DISTANCE 512)` at vanilla's default render distance, 12.
+pub const DEFAULT_SKY_END: f32 = 192.0;
 
 /// Which sky the world pass draws — `DimensionType.Skybox`, as consumed by
 /// `LevelRenderer.addSkyPass`.
@@ -132,11 +134,9 @@ fn build_sky_pipeline(
     }
 }
 
-/// Default fog band, overridable via `REWO_FOG=start,end`. The default
-/// end (~180) sits at the flat-world test's loaded radius so the far
-/// chunk boundary fully dissolves into the horizon (fog color = sky
-/// horizon) instead of ending hard. Ideally derived from render distance;
-/// a fixed default + override is the current compromise.
+/// Default fog band, overridable via `REWO_FOG=start,end`. The live client
+/// replaces it every frame with `FogRenderer.setupFog`'s band for the
+/// effective render distance (M206); the offscreen gates keep this default.
 pub(super) fn parse_fog_env() -> [f32; 2] {
     let default = [80.0, 180.0];
     crate::knobs::var("REWO_FOG")
@@ -204,6 +204,15 @@ impl WorldRenderer {
         self.scene.fog_base = fog_linear;
     }
 
+    /// The sky disc's per-frame inputs (M209): `FogSkyEnd`
+    /// (`AtmosphericFogEnvironment`: `min(renderDistance, SKY_FOG_END_DISTANCE)`,
+    /// in blocks) and whether `renderDarkDisc` runs (the eye below the level's
+    /// horizon height and not underwater, `SkyRenderer.shouldRenderDarkDisc`).
+    pub fn set_sky_disc(&mut self, sky_end: f32, dark_disc: bool) {
+        self.scene.sky_end = sky_end;
+        self.scene.dark_disc = dark_disc;
+    }
+
     /// Select the dimension's skybox (`DimensionType.Skybox` →
     /// `LevelRenderer.addSkyPass`). The live paths set this every frame from
     /// `PlaySession::active_dimension_type`, so a dimension change or respawn
@@ -241,20 +250,27 @@ impl WorldRenderer {
             .to_cols_array_2d();
         let push = SkyPush {
             inv_view_proj: inv,
-            horizon: [
+            // Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the whole sky disc
+            // (the M11 bug tinted only part of it, leaving a blue midnight).
+            sky: [
                 self.scene.sky_base[0] * self.scene.sky_tint[0],
                 self.scene.sky_base[1] * self.scene.sky_tint[1],
                 self.scene.sky_base[2] * self.scene.sky_tint[2],
                 1.0,
             ],
-            // Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the whole sky disc.
-            // Tinting only the horizon left a blue zenith at midnight. The zenith
-            // keeps the fixed gradient ratio off the (biome) base color.
-            zenith: [
-                self.scene.sky_base[0] * ZENITH_RATIO[0] * self.scene.sky_tint[0],
-                self.scene.sky_base[1] * ZENITH_RATIO[1] * self.scene.sky_tint[1],
-                self.scene.sky_base[2] * ZENITH_RATIO[2] * self.scene.sky_tint[2],
+            // The SAME fog colour the terrain fades to (`push_world`), so the
+            // world's far edge meets the sky without a seam.
+            fog: [
+                self.scene.fog_base[0] * self.scene.fog_tint[0],
+                self.scene.fog_base[1] * self.scene.fog_tint[1],
+                self.scene.fog_base[2] * self.scene.fog_tint[2],
                 1.0,
+            ],
+            params: [
+                self.scene.sky_end,
+                if self.scene.dark_disc { 1.0 } else { 0.0 },
+                0.0,
+                0.0,
             ],
         };
         let device = &gpu.device;

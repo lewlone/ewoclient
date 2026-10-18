@@ -220,10 +220,29 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         let midnight = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "zenith-midnight");
         let mz = center_avg(&midnight, w, h, 8);
-        if PROBES.bad(luma_f(mz) > 10.0) {
+        // M209: vanilla's sky disc straight up is its fan centre, `s = 0`, so
+        // both fog distances are 16 and the fog factor is `16 / skyEnd`: the
+        // zenith is the tinted sky colour moved that far toward the tinted fog
+        // colour. At midnight `SKY_COLOR` is ~0 and `FOG_COLOR` dark, so this
+        // is near black; the M11 bug (an untinted zenith) is bright blue and
+        // misses by a hundred units.
+        let want = {
+            let d = daylight::sky_lighting(MIDNIGHT);
+            let f = 16.0 / rewo_gpu::world::DEFAULT_SKY_END;
+            let (sky, fog) = (rewo_gpu::world::DEFAULT_SKY, rewo_gpu::world::DEFAULT_FOG);
+            std::array::from_fn::<f32, 3, _>(|i| {
+                let lin = sky[i] * d.sky_color[i] * (1.0 - f) + fog[i] * d.fog_color[i] * f;
+                let c = if lin <= 0.003_130_8 {
+                    lin * 12.92
+                } else {
+                    1.055 * lin.powf(1.0 / 2.4) - 0.055
+                };
+                c * 255.0
+            })
+        };
+        if PROBES.bad((0..3).any(|i| (mz[i] - want[i]).abs() > 3.0)) {
             failures.push(format!(
-                "Part A: midnight zenith not black — avg rgb {mz:?} (luma {:.1})",
-                luma_f(mz)
+                "Part A: midnight zenith {mz:?} is not vanilla's disc centre {want:?}                  (the tinted sky moved 16/skyEnd toward the tinted fog)"
             ));
         }
 

@@ -690,6 +690,10 @@ pub struct PlaySession {
     /// What configuration told the server about this client (M206): its
     /// render distance is the `local` half of [`Self::effective_render_distance`].
     pub client_info: crate::client_info::ClientInformation,
+    /// `CommonPlayerSpawnInfo.isFlat` from the latest login / respawn (M209):
+    /// `ClientLevelData.getHorizonHeight` is the level's bottom on a flat
+    /// world and 63 otherwise, which decides vanilla's dark sky disc.
+    pub level_is_flat: bool,
     /// The chunk-batch flow-control loop (M74). Rewo used to answer
     /// `chunk_batch_finished` with the literal `64.0`; vanilla answers this
     /// calculator, whose opening bid is `3.5`. See [`crate::chunk_batch`] —
@@ -1915,6 +1919,7 @@ impl<'a> Connection<'a> {
             tab_list_text: crate::tab_list_text::TabListText::new(),
             view_area: crate::view_area::ViewArea::default(),
             client_info: self.client_info,
+            level_is_flat: false,
             // Vanilla seeds `chunkBatchStartTime` in the calculator's
             // constructor, so a `chunk_batch_finished` that somehow arrives
             // before any `chunk_batch_start` still measures a finite interval.
@@ -2185,6 +2190,16 @@ impl PlaySession {
     pub fn effective_render_distance(&self) -> i32 {
         self.view_area
             .effective_render_distance(i32::from(self.client_info.view_distance))
+    }
+
+    /// `ClientLevelData.getHorizonHeight` (M209): `isFlat ? level.getMinY() :
+    /// 63.0`.
+    pub fn horizon_height(&self) -> f64 {
+        if self.level_is_flat {
+            f64::from(self.world.shape.min_y)
+        } else {
+            63.0
+        }
     }
 
     fn send(&mut self, packet: PacketWriter) -> Result<(), String> {
@@ -4323,6 +4338,7 @@ impl PlaySession {
         // only the *mid-session* change. This is the join-time truth.
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, &spawn);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
+        self.level_is_flat = spawn.is_flat;
         // M76. `handleLogin` builds the first `ClientLevel`, whose constructor
         // seeds the respawn data to `(8, 64, 8)` **of that level** — not to
         // `RespawnData.DEFAULT`, which no client ever holds. The server's
@@ -4391,6 +4407,7 @@ impl PlaySession {
         // the mode, and re-derives the abilities from it. Applied after the
         // parse succeeds, alongside everything else this packet establishes.
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, spawn);
+        self.level_is_flat = spawn.is_flat;
         let changed = WorldTransition {
             world: &mut self.world,
             dirty: &mut self.dirty,
