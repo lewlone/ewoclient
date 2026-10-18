@@ -225,7 +225,10 @@ impl LiveApp {
         };
         let advance = self.advance();
         let lang = self.lang.clone();
-        let hotbar = self.hotbar_slot as usize;
+        let hotbar = self
+            .session
+            .as_ref()
+            .map_or(0, |s| s.inventory.selected() as usize);
         let pages: Option<Vec<Vec<rewo_world::chat_style::ChatLine>>> =
             self.session.as_ref().and_then(|session| {
                 // Hand 0 reads the slot the server last heard

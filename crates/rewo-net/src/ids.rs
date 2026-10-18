@@ -320,6 +320,10 @@ pub struct Ids {
     /// `ServerboundPlaceRecipePacket` (M98) — click a recipe, ask the server to
     /// lay it out on the grid.
     pub sb_play_place_recipe: Option<i32>,
+    /// M218 — middle click: `ServerboundPickItemFromBlockPacket(pos,
+    /// includeData)` and `ServerboundPickItemFromEntityPacket(id, includeData)`.
+    pub sb_play_pick_item_from_block: Option<i32>,
+    pub sb_play_pick_item_from_entity: Option<i32>,
     /// `ServerboundSeenAdvancementsPacket` (M178) — the advancements screen's
     /// lifecycle packet: `OPENED_TAB` carries a tab id, `CLOSED_SCREEN` is
     /// bare. Optional like its siblings: a client that never opens the screen
@@ -792,6 +796,8 @@ impl Ids {
             sb_play_container_close: opt!(p, P, S, "container_close"),
             sb_play_recipe_book_change_settings: opt!(p, P, S, "recipe_book_change_settings"),
             sb_play_place_recipe: opt!(p, P, S, "place_recipe"),
+            sb_play_pick_item_from_block: opt!(p, P, S, "pick_item_from_block"),
+            sb_play_pick_item_from_entity: opt!(p, P, S, "pick_item_from_entity"),
             sb_play_seen_advancements: opt!(p, P, S, "seen_advancements"),
             sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),
             sb_play_set_beacon: opt!(p, P, S, "set_beacon"),

@@ -272,6 +272,20 @@ pub(super) struct RenderCheck {
     /// literals give for it.
     pub(super) mine_held: Option<String>,
     pub(super) mine_expected: Option<u64>,
+    /// M218 — r79: the dirt count before Q and after the server's slot
+    /// update, and whether an item entity appeared near the bot.
+    pub(super) drop_counts: Option<(i32, i32)>,
+    pub(super) drop_item_entity: bool,
+    /// r80: the off hand after F (item name, count).
+    pub(super) swap_offhand: Option<(String, i32)>,
+    /// r81: the held item after the pick key on the lectern.
+    pub(super) pick_held: Option<String>,
+    /// r82: the server's sprint flag after START, and after STOP, and how
+    /// many sprint commands went out.
+    pub(super) sprint_on: bool,
+    pub(super) sprint_off: bool,
+    pub(super) sprint_sent: u64,
+    pub(super) hands_skip: Option<String>,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -753,7 +767,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 78;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 82;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1077,6 +1091,42 @@ impl RenderCheck {
                     .as_ref()
                     .map(|s| format!(" (stopped: {s})"))
                     .unwrap_or_default()
+            ),
+        );
+        // M218 — the hand keys and the sprint state, each graded by what the
+        // real server did with it (run while the bot sits on r72's injected
+        // horse, which nothing moves).
+        let skip = self
+            .hands_skip
+            .as_ref()
+            .map(|s| format!(" (stopped: {s})"))
+            .unwrap_or_default();
+        row(
+            "r79 Q dropped one item: the predicted stack lost one and the server spawned it",
+            self.drop_counts.is_some_and(|(b, a)| a == b - 1) && self.drop_item_entity,
+            format!(
+                "dirt count before / after {:?}, an item entity near the bot {}{skip}",
+                self.drop_counts, self.drop_item_entity
+            ),
+        );
+        row(
+            "r80 F swapped the hands: the server moved the stack, at the predicted count, to the off hand",
+            self.swap_offhand.as_ref().is_some_and(|(n, c)| {
+                n == "minecraft:dirt" && self.drop_counts.is_some_and(|(_, a)| *c == a)
+            }),
+            format!("off hand after F {:?}{skip}", self.swap_offhand),
+        );
+        row(
+            "r81 the pick key on the lectern put a lectern in the hand (creative)",
+            self.pick_held.as_deref() == Some("minecraft:lectern"),
+            format!("held after the pick {:?}{skip}", self.pick_held),
+        );
+        row(
+            "r82 the sprint state reached the server: its flag echo set then cleared",
+            self.sprint_on && self.sprint_off && self.sprint_sent >= 2,
+            format!(
+                "server sprint flag after START {}, cleared after STOP {}, {} sprint command(s) sent{skip}",
+                self.sprint_on, self.sprint_off, self.sprint_sent
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2480,7 +2530,11 @@ impl LiveApp {
                             self.blocks.block_name(s.world.block_state_at(x, y, z))
                                 == Some("minecraft:air")
                         });
-                    if broken || elapsed >= limit * 0.25 {
+                    // A STOP the server judges early (`progress >= 0.7` over
+                    // ITS elapsed ticks) is finished by its own tick a few
+                    // ticks later, so the wait runs past r76's camera move
+                    // (which cannot matter: the key is released).
+                    if broken || elapsed >= limit * 0.28 {
                         if let Some(ch) = self.check.as_mut() {
                             ch.mine_broken = broken;
                         }
@@ -2489,6 +2543,187 @@ impl LiveApp {
                             let _ = s.send_command("gamemode creative");
                         }
                         self.mine_stage = 4;
+                    }
+                }
+                // r79-r82 — M218's hand keys and the sprint state, from 0.29
+                // (the bot rides r72's client-side horse, so W moves nothing
+                // and no screen is up until 0.46). One stage per server echo.
+                if self.hands_stage > 0 && self.hands_stage < 20 {
+                    self.hands_stage_frames += 1;
+                }
+                let hand_items = self.items.clone();
+                let hand_name =
+                    |s: &rewo_net::play::PlaySession, off: bool| -> Option<(String, i32)> {
+                        let slot = if off {
+                            s.inventory.offhand()
+                        } else {
+                            s.inventory.held()
+                        }?;
+                        Some((hand_items.name(slot.item_id)?.to_string(), slot.count))
+                    };
+                if self.hands_stage == 0 && elapsed >= limit * 0.29 && !self.screen.inventory_open()
+                {
+                    // Select the dirt (the digit-key path).
+                    let dirt_slot = self.session.as_ref().and_then(|s| {
+                        (0..9).find(|&i| {
+                            s.inventory
+                                .hotbar(i)
+                                .and_then(|st| self.items.name(st.item_id))
+                                == Some("minecraft:dirt")
+                        })
+                    });
+                    match dirt_slot {
+                        Some(n) => {
+                            if let Some(s) = self.session.as_mut() {
+                                let _ = s.select_hotbar(n as u8);
+                            }
+                            self.hands_stage = 1;
+                            self.hands_stage_frames = 0;
+                        }
+                        None => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.hands_skip = Some("no dirt in the hotbar".into());
+                            }
+                            self.hands_stage = 20;
+                        }
+                    }
+                }
+                let dirt_in_hand = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| hand_name(s, false))
+                    .is_some_and(|(n, _)| n == "minecraft:dirt");
+                if self.hands_stage == 1 && (dirt_in_hand || self.hands_stage_frames > 600) {
+                    let before = self.session.as_ref().and_then(|s| hand_name(s, false));
+                    if let (Some((n, count)), Some(c)) = (before, self.check.as_mut()) {
+                        if n == "minecraft:dirt" {
+                            c.drop_counts = Some((count, count));
+                        }
+                    }
+                    self.drop_key();
+                    self.hands_stage = 2;
+                    self.hands_stage_frames = 0;
+                }
+                if self.hands_stage == 2 {
+                    let now = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| hand_name(s, false))
+                        .map(|h| h.1);
+                    let item_type = self.etypes.id_of("minecraft:item");
+                    let near_item = self.session.as_ref().is_some_and(|s| {
+                        let (px, py, pz) = (s.player.x, s.player.y, s.player.z);
+                        s.world.entities.iter().any(|(_, e)| {
+                            Some(e.type_id) == item_type
+                                && (e.x - px).abs() < 4.0
+                                && (e.y - py).abs() < 4.0
+                                && (e.z - pz).abs() < 4.0
+                        })
+                    });
+                    if let Some(c) = self.check.as_mut() {
+                        if let (Some((b, _)), Some(a)) = (c.drop_counts, now) {
+                            c.drop_counts = Some((b, a));
+                        }
+                        c.drop_item_entity |= near_item;
+                    }
+                    let done = self.check.as_ref().is_some_and(|c| {
+                        c.drop_item_entity && c.drop_counts.is_some_and(|(b, a)| a == b - 1)
+                    });
+                    if done || self.hands_stage_frames > 600 {
+                        self.swap_hands_key();
+                        self.hands_stage = 3;
+                        self.hands_stage_frames = 0;
+                    }
+                }
+                if self.hands_stage == 3 {
+                    let off = self.session.as_ref().and_then(|s| hand_name(s, true));
+                    if off.as_ref().is_some_and(|(n, _)| n == "minecraft:dirt")
+                        || self.hands_stage_frames > 600
+                    {
+                        if let Some(c) = self.check.as_mut() {
+                            c.swap_offhand = off;
+                        }
+                        // And back, so the dirt is where later rows expect it.
+                        self.swap_hands_key();
+                        self.hands_stage = 4;
+                        self.hands_stage_frames = 0;
+                    }
+                }
+                if self.hands_stage == 4 {
+                    let back = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| hand_name(s, false))
+                        .is_some_and(|(n, _)| n == "minecraft:dirt");
+                    if back || self.hands_stage_frames > 600 {
+                        // Face the lectern r75 used and press the pick key.
+                        let target = self.check.as_ref().and_then(|c| c.lectern_pos);
+                        if let (Some((x, y, z)), Some(s)) = (target, self.session.as_mut()) {
+                            let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                            let d = [
+                                x as f64 + 0.5 - eye[0],
+                                y as f64 + 0.5 - eye[1],
+                                z as f64 + 0.5 - eye[2],
+                            ];
+                            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                            s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                            s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        }
+                        self.pick_key();
+                        self.hands_stage = 5;
+                        self.hands_stage_frames = 0;
+                    }
+                }
+                if self.hands_stage == 5 {
+                    let held = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| hand_name(s, false))
+                        .map(|h| h.0);
+                    if held.as_deref() == Some("minecraft:lectern") || self.hands_stage_frames > 600
+                    {
+                        if let Some(c) = self.check.as_mut() {
+                            c.pick_held = held;
+                        }
+                        // The sprint state: hold W + sprint (moves nothing on
+                        // the injected horse).
+                        self.keys.w = true;
+                        self.keys.sprint = true;
+                        self.hands_stage = 6;
+                        self.hands_stage_frames = 0;
+                    }
+                }
+                if self.hands_stage == 6 {
+                    let on = self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_shared_flags() & (1 << 3) != 0);
+                    if on || self.hands_stage_frames > 600 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.sprint_on = on;
+                        }
+                        self.keys.w = false;
+                        self.keys.sprint = false;
+                        self.hands_stage = 7;
+                        self.hands_stage_frames = 0;
+                    }
+                }
+                if self.hands_stage == 7 {
+                    let off = self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_shared_flags() & (1 << 3) == 0);
+                    if off || self.hands_stage_frames > 600 {
+                        let sent = self.session.as_ref().map_or(0, |s| s.sprint_commands_sent);
+                        if let Some(c) = self.check.as_mut() {
+                            c.sprint_off = off;
+                            c.sprint_sent = sent;
+                        }
+                        // Back to the sword slot for the rest of the run.
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.select_hotbar(0);
+                        }
+                        self.hands_stage = 20;
                     }
                 }
                 // r76 — M216's entity right-click, after r74 closes (0.24)

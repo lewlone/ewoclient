@@ -948,6 +948,11 @@ pub struct PlaySession {
     /// M169 — how many `START_RIDING_JUMP`s this session has sent; the
     /// render-check's witness that the whole chain reached the wire.
     riding_jumps_sent: u64,
+    /// `LocalPlayer.wasSprinting` (M218): the sprint state last told to the
+    /// server, for `sendIsSprintingIfNeeded`.
+    was_sprinting: bool,
+    /// How many sprint commands went out (render-check r82).
+    pub sprint_commands_sent: u64,
     /// The **local player's** `update_attributes` snapshots (M73).
     ///
     /// Kept beside the entity table rather than in it: the server sends no
@@ -1998,6 +2003,8 @@ impl<'a> Connection<'a> {
             mounts: crate::motion::Mounts::new(),
             jump_riding: Default::default(),
             riding_jumps_sent: 0,
+            was_sprinting: false,
+            sprint_commands_sent: 0,
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
             local_fall_flying: false,
@@ -5134,6 +5141,13 @@ impl PlaySession {
     }
 
     pub fn select_hotbar(&mut self, slot: u8) -> Result<(), String> {
+        // `Inventory.setSelectedSlot` runs LOCALLY first (vanilla's number
+        // keys, then `ensureHasSentCarriedItem` sends). The server never echoes
+        // `set_carried_item`, so without this the client kept treating the old
+        // slot as held after a number key — the first-person item, the mining
+        // tool, the glint — while the server had switched (found by M218's
+        // r79).
+        self.inventory.set_selected(i32::from(slot));
         let Some(id) = self.ids.sb_play_set_carried_item else {
             return Err("set_carried_item unavailable".into());
         };
@@ -5337,7 +5351,13 @@ impl PlaySession {
         z: i32,
         face: u8,
     ) -> Result<(), String> {
-        let seq = if action == 1 { 0 } else { self.next_sequence() };
+        // Only START (0) and STOP (2) run inside `startPrediction`; every other
+        // action is the three-argument constructor, sequence 0.
+        let seq = if action == 0 || action == 2 {
+            self.next_sequence()
+        } else {
+            0
+        };
         let mut p = PacketWriter::packet(self.ids.sb_play_player_action);
         p.varint(action);
         write_position(&mut p, x, y, z);
@@ -5359,6 +5379,62 @@ impl PlaySession {
         let dig = (haste.is_some() || conduit.is_some())
             .then(|| haste.unwrap_or(0).max(conduit.unwrap_or(0)));
         (dig, amp(ids.mining_fatigue))
+    }
+
+    /// The local player's shared flags byte as the server last set it
+    /// (`DATA_SHARED_FLAGS_ID`; bit 3 is `FLAG_SPRINTING`) — render-check r82.
+    pub fn local_shared_flags(&self) -> u8 {
+        self.local_player_data.shared_flags()
+    }
+
+    /// `LocalPlayer.drop` (M218, the drop key): predict
+    /// `removeFromSelected(all)` locally — the server sends no slot update for
+    /// it (see [`rewo_world::inventory::Inventory::remove_from_selected`]) —
+    /// then `DROP_ALL_ITEMS` (3) with Ctrl, else `DROP_ITEM` (4), at
+    /// `BlockPos.ZERO` facing DOWN. Returns whether anything was predicted
+    /// gone (vanilla's swing condition).
+    pub fn drop_item(&mut self, all: bool) -> Result<bool, String> {
+        let removed = self.inventory.remove_from_selected(all);
+        self.block_action(if all { 3 } else { 4 }, 0, 0, 0, 0)?;
+        Ok(removed)
+    }
+
+    /// `keySwapOffhand` (M218, F): `SWAP_ITEM_WITH_OFFHAND` (6). The server
+    /// swaps and sends both slots back.
+    pub fn swap_hands(&mut self) -> Result<(), String> {
+        self.block_action(6, 0, 0, 0, 0)
+    }
+
+    /// `MultiPlayerGameMode.handlePickItemFromBlock` (M218, middle click).
+    pub fn pick_item_from_block(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        include_data: bool,
+    ) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_pick_item_from_block else {
+            return Err("pick_item_from_block unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        write_position(&mut p, x, y, z);
+        p.bool(include_data);
+        self.send(p)
+    }
+
+    /// `MultiPlayerGameMode.handlePickItemFromEntity` (M218).
+    pub fn pick_item_from_entity(
+        &mut self,
+        entity_id: i32,
+        include_data: bool,
+    ) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_pick_item_from_entity else {
+            return Err("pick_item_from_entity unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.varint(entity_id);
+        p.bool(include_data);
+        self.send(p)
     }
 
     /// The local player's current value of attribute `name` (M217), or

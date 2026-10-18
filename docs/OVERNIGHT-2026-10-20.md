@@ -83,6 +83,11 @@ released.
   as in vanilla (block hardness, tools, efficiency, haste and so on) and is
   checked against the real server in survival. It went unnoticed because
   every test server runs in creative, where blocks break instantly.
+- **M218**: Q drops an item, F swaps hands, middle-click picks a block, and
+  sprinting is now told to the server; each is checked live. Building those
+  checks found a real bug: after pressing a number key, Rewo kept treating
+  the previous slot as the held item (in hand, for mining and attacking)
+  while the server had switched. Fixed.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -278,9 +283,9 @@ released.
 - ~~A normal-terrain load test as a real check~~ (M207, `load_check.py`).
 - Other everyday actions found unwired by the same sweep (each is a
   `player_action` or `player_command` the client never sends, or a packet it
-  has no id for): dropping items (Q), swapping hands (F), middle-click pick
-  block, sprint start/stop to the server, leaving a bed, the horse inventory,
-  and riding boats/horses (`move_vehicle`, `paddle_boat`).
+  has no id for): ~~dropping items (Q), swapping hands (F), middle-click
+  pick block, sprint start/stop~~ (M218); still open: leaving a bed, the
+  horse inventory, and riding boats/horses (`move_vehicle`, `paddle_boat`).
 - `rewo-net`'s three `play::inbound` timing tests failed once under heavy
   machine load (they passed alone and in every other full run).
 - More live witnesses for screens that only have offscreen gates. M214's

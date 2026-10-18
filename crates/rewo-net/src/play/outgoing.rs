@@ -15,6 +15,25 @@ impl PlaySession {
 
     /// Decompiled `LocalPlayer.sendPosition` cadence + tick_end + input.
     pub(super) fn send_movement(&mut self, input: &TickInput) -> Result<(), String> {
+        // M218 — `sendPosition` opens with `sendIsSprintingIfNeeded`: a sprint
+        // state that differs from the last one sent goes out as
+        // `START_SPRINTING` (1) / `STOP_SPRINTING` (2). Rewo's `isSprinting()`
+        // is `TickInput::sprint` (see `physics`). Never sent before M218, so
+        // the server never knew: no sprint hunger, no sprint knockback, and
+        // other players saw a walking player.
+        if input.sprint != self.was_sprinting {
+            if let (Some(id), Some(me)) = (self.ids.sb_play_player_command, self.player_id) {
+                let mut p = PacketWriter::packet(id);
+                p.raw(&crate::jump_riding::player_command_body(
+                    me,
+                    if input.sprint { 1 } else { 2 },
+                    0,
+                ));
+                self.send(p)?;
+            }
+            self.was_sprinting = input.sprint;
+            self.sprint_commands_sent += 1;
+        }
         // player_input on change (Input.STREAM_CODEC flag order).
         let flags = (input.forward > 0.0) as u8
             | (((input.forward < 0.0) as u8) << 1)

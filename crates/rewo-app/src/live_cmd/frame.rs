@@ -1413,7 +1413,7 @@ impl LiveApp {
             c.riding_jumps_sent = session.riding_jumps_sent();
         }
         state.world_renderer.set_hud(
-            self.hotbar_slot,
+            session.inventory.selected(),
             resolve_hud_gauges(
                 &session.hud,
                 &session.inventory,

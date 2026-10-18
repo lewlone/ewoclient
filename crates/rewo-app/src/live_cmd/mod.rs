@@ -686,8 +686,6 @@ struct LiveApp {
     logged_spawn: bool,
     uploaded_total: usize,
     flood_logged: bool,
-    /// Selected hotbar slot 0..8 (number keys), for the HUD selection frame.
-    hotbar_slot: u8,
     /// Dirt item id (for right-click place), resolved from the item table.
     dirt_item: Option<i32>,
     /// F3 debug overlay visible. Default on.
@@ -789,6 +787,11 @@ struct LiveApp {
     mine_stage: u8,
     #[cfg(feature = "gates")]
     mine_pressed_tick: u64,
+    /// r79-r82's stage (M218) and the frame it entered its current stage.
+    #[cfg(feature = "gates")]
+    hands_stage: u8,
+    #[cfg(feature = "gates")]
+    hands_stage_frames: u32,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1076,6 +1079,10 @@ fn run_windowed(
         #[cfg(feature = "gates")]
         mine_pressed_tick: 0,
         #[cfg(feature = "gates")]
+        hands_stage: 0,
+        #[cfg(feature = "gates")]
+        hands_stage_frames: 0,
+        #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
         lectern_shown: None,
@@ -1126,7 +1133,6 @@ fn run_windowed(
         logged_spawn: false,
         uploaded_total: 0,
         flood_logged: false,
-        hotbar_slot: 0,
         dirt_item,
         debug: true,
         // `Hud.isHidden` starts false — the HUD is showing (M70).

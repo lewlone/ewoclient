@@ -691,11 +691,14 @@ impl ApplicationHandler for LiveApp {
                     // GLFW key 291. Only the request is recorded here; the
                     // capture itself happens after the frame.
                     PhysicalKey::Code(KeyCode::F2) if p => self.capture_pending = true,
+                    // M218 — `keyDrop` (Q; with Ctrl the whole stack) and
+                    // `keySwapOffhand` (F), both refused to a spectator.
+                    PhysicalKey::Code(KeyCode::KeyQ) if p => self.drop_key(),
+                    PhysicalKey::Code(KeyCode::KeyF) if p => self.swap_hands_key(),
                     // Number keys 1..9 select the hotbar slot (HUD frame +
                     // sent to the server so the held item matches).
                     PhysicalKey::Code(code) if p => {
                         if let Some(n) = digit_key(code) {
-                            self.hotbar_slot = n;
                             if let Some(s) = self.session.as_mut() {
                                 let _ = s.select_hotbar(n);
                             }
@@ -1050,6 +1053,11 @@ impl ApplicationHandler for LiveApp {
                 // Left-click digs the targeted block; right-click places
                 // against its hit face, or — with nothing to place against —
                 // starts *using* the held item (M38).
+                // M218 — the pick key (middle button): `pickBlockOrEntity`.
+                if button == MouseButton::Middle {
+                    self.pick_key();
+                    return;
+                }
                 // M216 — `GameRenderer.pick`'s ENTITY result wins over the
                 // block when it is nearer (the M73 pick already reconciles
                 // the two), and the clicks take `startAttack` /
@@ -2178,6 +2186,71 @@ impl LiveApp {
             };
             if let Err(e) = r {
                 log::warn!("live: block action: {e}");
+            }
+        }
+    }
+
+    fn spectating(&self) -> bool {
+        self.session
+            .as_ref()
+            .and_then(|s| s.own_game_mode())
+            .is_some_and(|m| m == rewo_net::play::GameMode::Spectator)
+    }
+
+    /// `keyDrop` (M218): `LocalPlayer.drop(hasControlDown())`, and the
+    /// main-hand swing when something was held (vanilla swings when its local
+    /// prediction removed a non-empty stack).
+    pub(super) fn drop_key(&mut self) {
+        if self.spectating() {
+            return;
+        }
+        let all = self.ctrl;
+        if let Some(s) = self.session.as_mut() {
+            match s.drop_item(all) {
+                Ok(true) => {
+                    let _ = s.swing();
+                }
+                Ok(false) => {}
+                Err(e) => log::warn!("live: drop: {e}"),
+            }
+        }
+    }
+
+    /// `keySwapOffhand` (M218).
+    pub(super) fn swap_hands_key(&mut self) {
+        if self.spectating() {
+            return;
+        }
+        if let Some(s) = self.session.as_mut() {
+            if let Err(e) = s.swap_hands() {
+                log::warn!("live: swap hands: {e}");
+            }
+        }
+    }
+
+    /// `pickBlockOrEntity` (M218): the entity under the crosshair, else the
+    /// block, with `includeData` from Ctrl. The server answers (in creative it
+    /// puts the item in the hotbar; in survival it selects a matching stack).
+    pub(super) fn pick_key(&mut self) {
+        let include = self.ctrl;
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if let Some(hit) = super::entities::frame_crosshair_hit(session, &self.etypes, 1.0) {
+            if let Err(e) = session.pick_item_from_entity(hit.id, include) {
+                log::warn!("live: pick entity: {e}");
+            }
+            return;
+        }
+        let hit = session.target_block(
+            eye_f64(session),
+            look_dir(session.player.yaw, session.player.pitch),
+            REACH,
+        );
+        if let Some(h) = hit {
+            let [x, y, z] = h.block;
+            if let Err(e) = session.pick_item_from_block(x, y, z, include) {
+                log::warn!("live: pick block: {e}");
             }
         }
     }

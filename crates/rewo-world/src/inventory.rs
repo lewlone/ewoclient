@@ -409,6 +409,22 @@ impl Inventory {
         true
     }
 
+    /// `Inventory.removeFromSelected(all)` (M218) — the client's prediction
+    /// of a drop: one item, or the whole stack with `all`, off the selected
+    /// slot. Returns whether anything was removed. **The prediction is the
+    /// only update the client gets**: the server's `ServerPlayer.drop` calls
+    /// `containerMenu.setRemoteSlot` with the reduced stack, assuming the
+    /// client already applied it, and sends no slot packet.
+    pub fn remove_from_selected(&mut self, all: bool) -> bool {
+        let Some(mut stack) = self.held() else {
+            return false;
+        };
+        stack.count -= if all { stack.count } else { 1 };
+        let left = (stack.count > 0).then_some(stack);
+        self.set_inventory_index(i32::from(self.selected), left);
+        true
+    }
+
     /// The selected hotbar index, `0..9`.
     pub fn selected(&self) -> u8 {
         self.selected
@@ -3711,6 +3727,23 @@ mod tests {
         inv.set_carried(None);
         assert_eq!(inv.carried(), None);
         assert!(inv.is_empty());
+    }
+
+    /// M218 — a drop predicts the selected stack: one off, then the whole
+    /// stack with `all`, and nothing from an empty hand.
+    #[test]
+    fn remove_from_selected_takes_one_or_all() {
+        let mut inv = Inventory::default();
+        inv.set_selected(2);
+        inv.set_inventory_index(2, stack(7, 64));
+        assert!(inv.remove_from_selected(false));
+        assert_eq!(inv.held().map(|s| s.count), Some(63));
+        assert!(inv.remove_from_selected(true));
+        assert_eq!(inv.held(), None);
+        assert!(
+            !inv.remove_from_selected(false),
+            "an empty hand drops nothing"
+        );
     }
 
     /// `set_held_slot` speaks inventory indices, and an out-of-range one is
