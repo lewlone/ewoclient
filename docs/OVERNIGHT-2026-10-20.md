@@ -112,6 +112,8 @@ released.
 | `ff07ab8` | `load_check.py` closes the server log before removing its directory (Windows had left 54 empty server folders). |
 | `99d32a5` | **M213** — banner labels on a held map: glyph cells and a translucent background cell in the hand atlas, a translucent path in `hand.frag` selected by a negative shade, `handshot` gm7. |
 | `e6ef088` | **M214** — render-check **r74** (an advancement tab click the real server echoes); the advancements screen no longer loops forever on a description with a newline (it crashed the client). |
+| `3d50b1b` | This summary through M214. |
+| `1ca048d` | **M215** — render-check **r75**: a lectern opened by the production right-click, page turned by the server's echo, closed with `container_close`; `lectern_arrow_click` extracted from the mouse handler. |
 
 ## Decisions made
 
