@@ -1065,9 +1065,12 @@ pub enum BookHit {
     PageBackward,
     /// A visible recipe cell, by its index on the page.
     Slot(usize),
-    /// The search field, or the magnifier left of it — vanilla treats a click
-    /// on the icon as a click on the box.
+    /// The search field itself.
     Search,
+    /// The magnifier left of it (M201). A click here focuses the box with
+    /// ANY button (`clickedMagnifierIcon ||` short-circuits the box's
+    /// `isValidClickButton`), where the box itself takes only the left.
+    Magnifier,
     Filter,
     Tab(usize),
 }
@@ -1133,9 +1136,12 @@ pub fn book_hit(bx: i32, by: i32, view: BookView, tab_count: usize) -> Option<Bo
             return Some(BookHit::Slot(index));
         }
     }
-    if inside(bx, by, MAGNIFIER_X, SEARCH_Y, MAGNIFIER_W, SEARCH_H)
-        || inside(bx, by, SEARCH_X, SEARCH_Y, SEARCH_W, SEARCH_H)
-    {
+    // The magnifier first: `clickedMagnifierIcon || searchBox.mouseClicked`
+    // tests it first, and it overlaps the box (x 25..33).
+    if inside(bx, by, MAGNIFIER_X, SEARCH_Y, MAGNIFIER_W, SEARCH_H) {
+        return Some(BookHit::Magnifier);
+    }
+    if inside(bx, by, SEARCH_X, SEARCH_Y, SEARCH_W, SEARCH_H) {
         return Some(BookHit::Search);
     }
     if inside(bx, by, FILTER_X, FILTER_Y, FILTER_W, FILTER_H) {
@@ -1223,7 +1229,7 @@ pub fn widget_tooltip_key(
         }),
         // A tab is a `RecipeBookTabButton` and sets no tooltip; the search box
         // has a HINT (M100), which is a different mechanism and already drawn.
-        BookHit::Tab(_) | BookHit::Search | BookHit::Slot(_) => None,
+        BookHit::Tab(_) | BookHit::Search | BookHit::Magnifier | BookHit::Slot(_) => None,
     }
 }
 
@@ -1278,10 +1284,18 @@ pub struct BookState {
 /// `RecipeBookComponent.mouseClicked`, so they never reach the
 /// `setFocused(false)` in the else-branch — everything below it unfocuses,
 /// unconditionally, before the filter and the tabs are even tested.
-pub fn focus_change(hit: Option<BookHit>) -> Option<bool> {
+///
+/// **The button matters** (M201). The page returns early only for a press
+/// its widget accepts: a recipe cell takes the right button, the page arrows
+/// do not, so a right click on an arrow falls through to the unfocus. The
+/// magnifier focuses with any button; the box itself only with the left, so
+/// a right click on the box UNfocuses it.
+pub fn focus_change(hit: Option<BookHit>, right: bool) -> Option<bool> {
     match hit? {
-        BookHit::PageForward | BookHit::PageBackward | BookHit::Slot(_) => None,
-        BookHit::Search => Some(true),
+        BookHit::Slot(_) => None,
+        BookHit::PageForward | BookHit::PageBackward => right.then_some(false),
+        BookHit::Magnifier => Some(true),
+        BookHit::Search => Some(!right),
         BookHit::Filter | BookHit::Tab(_) => Some(false),
     }
 }
@@ -1319,7 +1333,7 @@ impl BookState {
     /// and switched tabs.
     pub fn press(&mut self, hit: Option<BookHit>, right: bool) -> Option<BookAction> {
         let hit = hit?;
-        if right && !matches!(hit, BookHit::Slot(_) | BookHit::Search) {
+        if right && !matches!(hit, BookHit::Slot(_) | BookHit::Magnifier) {
             return None;
         }
         Some(match hit {
@@ -1334,7 +1348,7 @@ impl BookState {
             BookHit::Slot(index) => BookAction::Recipe { index, right },
             // The focus itself is [`focus_change`]'s business, not this
             // method's — see its docs for why that split exists.
-            BookHit::Search => BookAction::Navigated,
+            BookHit::Search | BookHit::Magnifier => BookAction::Navigated,
             BookHit::Filter => BookAction::ToggleFilter,
             BookHit::Tab(i) => {
                 if i != self.selected_tab {
@@ -1419,7 +1433,7 @@ pub fn book_button_hit(host: BookButtonHost, x: f64, y: f64) -> bool {
 /// empty.
 pub fn press_sound(hit: BookHit) -> Option<crate::ui_sound::UiSound> {
     match hit {
-        BookHit::Search => None,
+        BookHit::Search | BookHit::Magnifier => None,
         BookHit::PageForward
         | BookHit::PageBackward
         | BookHit::Slot(_)
@@ -1670,14 +1684,19 @@ mod tests {
         assert_eq!(book_hit(f.0, f.1, one, 5), None, "one page, no arrows");
     }
 
-    /// The magnifier counts as the search box, and it OVERLAPS it — 8..33
-    /// against the box's 25..106.
+    /// The magnifier OVERLAPS the box — 8..33 against the box's 25..106 —
+    /// and wins the overlap, because vanilla tests it first (M201).
     #[test]
     fn the_magnifier_counts_as_the_search_box() {
         let v = full_view(20, 1, 0);
         assert_eq!(
             book_hit(MAGNIFIER_X, SEARCH_Y + 7, v, 5),
-            Some(BookHit::Search)
+            Some(BookHit::Magnifier)
+        );
+        assert_eq!(
+            book_hit(SEARCH_X + 2, SEARCH_Y + 7, v, 5),
+            Some(BookHit::Magnifier),
+            "inside the overlap"
         );
         assert_eq!(
             book_hit(SEARCH_X + 40, SEARCH_Y + 7, v, 5),
@@ -1780,15 +1799,44 @@ mod tests {
             BookHit::PageBackward,
             BookHit::Slot(0),
         ] {
-            assert_eq!(focus_change(Some(hit)), None, "{hit:?} leaves focus alone");
+            assert_eq!(
+                focus_change(Some(hit), false),
+                None,
+                "{hit:?} leaves focus alone"
+            );
         }
         for hit in [BookHit::Filter, BookHit::Tab(1)] {
-            assert_eq!(focus_change(Some(hit)), Some(false), "{hit:?} unfocuses");
+            assert_eq!(
+                focus_change(Some(hit), false),
+                Some(false),
+                "{hit:?} unfocuses"
+            );
         }
-        assert_eq!(focus_change(Some(BookHit::Search)), Some(true));
+        assert_eq!(focus_change(Some(BookHit::Search), false), Some(true));
+        assert_eq!(focus_change(Some(BookHit::Magnifier), false), Some(true));
         // A miss leaves it alone too — the whole method returns before the
         // else-branch when nothing in the book is hit.
-        assert_eq!(focus_change(None), None);
+        assert_eq!(focus_change(None, false), None);
+        assert_eq!(focus_change(None, true), None);
+    }
+
+    /// M201 — the right button: the box's `isValidClickButton` refuses it, so
+    /// a right click on the box unfocuses (and is not consumed), while the
+    /// magnifier's `containsPoint` test takes any button. A recipe cell takes
+    /// the right button (no change); a page arrow does not, so the click falls
+    /// through to the unfocus.
+    #[test]
+    fn a_right_click_focuses_only_through_the_magnifier() {
+        assert_eq!(focus_change(Some(BookHit::Search), true), Some(false));
+        assert_eq!(focus_change(Some(BookHit::Magnifier), true), Some(true));
+        assert_eq!(focus_change(Some(BookHit::Slot(3)), true), None);
+        assert_eq!(focus_change(Some(BookHit::PageForward), true), Some(false));
+        let mut st = BookState::default();
+        assert_eq!(st.press(Some(BookHit::Search), true), None, "falls through");
+        assert_eq!(
+            st.press(Some(BookHit::Magnifier), true),
+            Some(BookAction::Navigated)
+        );
     }
 
     #[test]

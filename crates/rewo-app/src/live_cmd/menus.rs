@@ -688,7 +688,7 @@ pub(super) fn book_press(
     }
     // The `EditBox` is the ONLY owner of "is the search focused" — see
     // `focus_change`'s docs for why the duplicate flag it replaced was a bug.
-    if let Some(v) = rb::focus_change(hit) {
+    if let Some(v) = rb::focus_change(hit, right) {
         screen.book_search.set_focused(v);
     }
     match action {

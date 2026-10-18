@@ -3845,6 +3845,20 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M201 — the recipe book's search field and the right button (2026-10-18)
+
+The other 10-15 follow-up. In `RecipeBookComponent.mouseClicked` the search
+focus is `clickedMagnifierIcon || searchBox.mouseClicked(event, ...)`: the
+magnifier is a `containsPoint` test that takes any button, while the box is
+an `EditBox` whose `isValidClickButton` takes only the left. So a right click
+on the box fails, the field is UNfocused (`setFocused(false)`), and the click
+is not consumed; a right click on a page arrow likewise falls through to the
+unfocus (the arrows take the left only, a recipe cell takes both). Rewo
+treated a right click on the box as a focusing press. `book_hit` now reports
+`BookHit::Magnifier` apart from `BookHit::Search` (the magnifier wins the
+x 25..33 overlap, being tested first), and `focus_change` takes the button.
+Unit tests; `inventoryshot` and `containershot` unchanged.
+
 ### M200 — the loom's full banner (`hasMaxPatterns`, 2026-10-18)
 
 The 10-15 follow-up. `LoomScreen.containerChanged` sets `hasMaxPatterns =
