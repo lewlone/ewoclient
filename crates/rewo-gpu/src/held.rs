@@ -66,6 +66,9 @@ pub struct HeldItemModel {
     /// [`crate::hand::display_transform`], not baked.
     pub first_right: DisplayTransform,
     pub first_left: DisplayTransform,
+    /// `display.fixed` — the context an item frame draws its item through
+    /// (M194; `ItemFrameRenderer` → `updateForNonLiving(..., FIXED, ...)`).
+    pub fixed: DisplayTransform,
     pub from_block: bool,
     /// Separate geometry for a slot, when the item's definition selects a
     /// different model in the `gui` context (M40) — the spears and bundles.

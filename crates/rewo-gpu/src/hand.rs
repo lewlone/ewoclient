@@ -1260,6 +1260,7 @@ mod tests {
             gui: DisplayTransform::default(),
             first_right,
             first_left: DisplayTransform::default(),
+            fixed: DisplayTransform::default(),
             from_block: true,
             gui_quads: None,
         }

@@ -133,6 +133,11 @@ pub enum ItemModel {
         /// declare their own left entry (`handheld` authors it pre-mirrored,
         /// so the two cancel to the same pose).
         first_person_left: DisplayTransform,
+        /// `display.fixed` — the context `ItemFrameRenderer` draws a framed
+        /// item through (`updateForNonLiving(..., FIXED, ...)`, M194).
+        /// `item/generated` declares `rotation [0, 180, 0]`; block items take
+        /// `block/block.json`'s `scale 0.5`.
+        fixed: DisplayTransform,
     },
     /// The definition is one of the five state-dependent / bespoke types.
     /// Carries the type name so the suppression is observable.
@@ -229,7 +234,9 @@ type ChainResult = (
     Vec<String>,
     // In order: `thirdperson_righthand`, `thirdperson_lefthand`, `ground`,
     // `gui` (M34), then `firstperson_righthand` and `firstperson_lefthand`
-    // (M38) — the last already through vanilla's absent-left fallback.
+    // (M38) — the last already through vanilla's absent-left fallback —
+    // and `fixed` (M194).
+    DisplayTransform,
     DisplayTransform,
     DisplayTransform,
     DisplayTransform,
@@ -250,6 +257,7 @@ fn resolve_chain(start: &str, read: &mut dyn FnMut(&str) -> Option<Value>) -> Op
     let mut gui: Option<DisplayTransform> = None;
     let mut first_right: Option<DisplayTransform> = None;
     let mut first_left: Option<DisplayTransform> = None;
+    let mut fixed: Option<DisplayTransform> = None;
     let mut cur = strip_ns(start).to_string();
 
     for _ in 0..MAX_PARENT_DEPTH {
@@ -280,6 +288,7 @@ fn resolve_chain(start: &str, read: &mut dyn FnMut(&str) -> Option<Value>) -> Op
                 // only the right hand, so this fallback fires for every
                 // extruded sprite that is not `handheld`.
                 first_left.or(first_right).unwrap_or_default(),
+                fixed.unwrap_or_default(),
             ));
         }
         let json = read(&cur)?;
@@ -309,6 +318,9 @@ fn resolve_chain(start: &str, read: &mut dyn FnMut(&str) -> Option<Value>) -> Op
             }
             if first_left.is_none() {
                 first_left = read_transform(d, "firstperson_lefthand");
+            }
+            if fixed.is_none() {
+                fixed = read_transform(d, "fixed");
             }
         }
         // No parent and no builtin: a bespoke model (shield, chest
@@ -660,11 +672,12 @@ pub fn resolve_definition(
             gui: BLOCK_GUI,
             first_person_right: BLOCK_FIRST_PERSON_RIGHT,
             first_person_left: BLOCK_FIRST_PERSON_LEFT,
+            fixed: BLOCK_FIXED,
         };
     }
 
     match resolve_chain(reference, read_model) {
-        Some((true, layers, right, left, ground, gui, first_right, first_left))
+        Some((true, layers, right, left, ground, gui, first_right, first_left, fixed))
             if !layers.is_empty() =>
         {
             ItemModel::Resolved {
@@ -675,6 +688,7 @@ pub fn resolve_definition(
                 gui,
                 first_person_right: first_right,
                 first_person_left: first_left,
+                fixed,
             }
         }
         // A chain that reaches no `builtin/generated`, or one with no layer0,
@@ -731,6 +745,15 @@ pub const BLOCK_GUI: DisplayTransform = DisplayTransform {
     rotation: [30.0, 225.0, 0.0],
     translation: [0.0; 3],
     scale: [0.625, 0.625, 0.625],
+};
+
+/// `block/block.json`'s `fixed`: `rotation [0, 0, 0], scale 0.5` — a block
+/// in an item frame (M194). Note 26.2's rotation is zero; `item/generated`'s
+/// `fixed` is the one with the half-turn.
+pub const BLOCK_FIXED: DisplayTransform = DisplayTransform {
+    rotation: [0.0; 3],
+    translation: [0.0; 3],
+    scale: [0.5, 0.5, 0.5],
 };
 
 pub const BLOCK_GROUND: DisplayTransform = DisplayTransform {
@@ -826,6 +849,7 @@ mod tests {
                 gui: BLOCK_GUI,
                 first_person_right: BLOCK_FIRST_PERSON_RIGHT,
                 first_person_left: BLOCK_FIRST_PERSON_LEFT,
+                fixed: BLOCK_FIXED,
             }
         );
     }

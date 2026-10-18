@@ -464,7 +464,10 @@ const ATLAS_W: u32 = 1024;
 /// is rebuilt at startup), and the *mob* shelf packing is still byte-for-byte
 /// what it was because the packer is sequential and the region only grew at
 /// its far end — which is what keeps `mobshot --check` at 243/243.
-const ATLAS_H: u32 = 1600;
+///
+/// M194 grew it by the framed-map band (128 rows at the bottom, M48's recipe
+/// again), so every earlier address is unchanged.
+const ATLAS_H: u32 = 1728;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -658,7 +661,51 @@ const CAPE_SLOT_H: u32 = 32;
 const CAPE_POOL_COLS: u32 = ATLAS_W / CAPE_SLOT_W; // 16
 const CAPE_POOL_ROWS: u32 = 2;
 const CAPE_SLOTS: u32 = CAPE_POOL_COLS * CAPE_POOL_ROWS; // 32
-const CAPE_POOL_Y: u32 = ATLAS_H - CAPE_POOL_ROWS * CAPE_SLOT_H; // 1536
+const CAPE_POOL_Y: u32 = MAP_POOL_Y - CAPE_POOL_ROWS * CAPE_SLOT_H; // 1536
+
+// -- the framed-map band (M194) -----------------------------------------------
+//
+// A map in an item frame samples its 128 x 128 pixels from this atlas (the
+// held map has the hand pass's own). Placed at the **bottom** with
+// `CAPE_POOL_Y` re-anchored to it — M48's and M60's recipe — so every mob,
+// item, skin, trim and cape address is numerically what it was.
+//
+// Seven map slots, LRU by map id (a frame on screen keeps its slot), and the
+// eighth 128 x 128 cell holds the map decoration sprites, 8 x 8 each by raw
+// type id, 16 to a row.
+const MAP_SLOT: u32 = 128;
+const MAP_POOL_COLS: u32 = ATLAS_W / MAP_SLOT; // 8
+/// The last cell is the decoration sprites.
+const MAP_SLOTS: u32 = MAP_POOL_COLS - 1; // 7
+const MAP_POOL_Y: u32 = ATLAS_H - MAP_SLOT; // 1600
+const MAP_DECO_ORIGIN: (u32, u32) = (MAP_SLOTS * MAP_SLOT, MAP_POOL_Y);
+const MAP_DECO_SPRITE: u32 = 8;
+const MAP_DECO_COLS: u32 = MAP_SLOT / MAP_DECO_SPRITE; // 16, so 256 type ids
+
+/// The framed-map band's geometry, for the gate: `(atlas w, atlas h, slot,
+/// slots, band y, decoration origin)`.
+pub fn map_pool_geometry() -> (u32, u32, u32, u32, u32, (u32, u32)) {
+    (
+        ATLAS_W,
+        ATLAS_H,
+        MAP_SLOT,
+        MAP_SLOTS,
+        MAP_POOL_Y,
+        MAP_DECO_ORIGIN,
+    )
+}
+
+/// Where decoration type `id`'s sprite sits in the band, as `(x, y)`, or
+/// `None` past it.
+fn map_deco_origin(id: i32) -> Option<(u32, u32)> {
+    let id = u32::try_from(id).ok()?;
+    (id < MAP_DECO_COLS * MAP_DECO_COLS).then(|| {
+        (
+            MAP_DECO_ORIGIN.0 + (id % MAP_DECO_COLS) * MAP_DECO_SPRITE,
+            MAP_DECO_ORIGIN.1 + (id / MAP_DECO_COLS) * MAP_DECO_SPRITE,
+        )
+    })
+}
 
 /// Atlas origin of dynamic cape slot `i` (0..CAPE_SLOTS).
 pub fn cape_slot_origin(i: u32) -> (u32, u32) {
@@ -1086,6 +1133,12 @@ pub struct EntityPass {
     /// Camera eye in world space — the interpreter's `player_pos_*`. FA aims
     /// eyes and heads by comparing it against the mob's own `pos_*`.
     cam_pos: [f32; 3],
+    /// The framed-map band's slots (M194), LRU by map id, and which map and
+    /// version each resident one holds.
+    map_lru: LruSlots<i32>,
+    map_resident: std::collections::HashMap<i32, (u32, u64)>,
+    /// Which decoration type ids have a sprite in the band.
+    map_deco_present: Vec<bool>,
 }
 
 /// Generations an unseen entity's CEM state survives before being pruned —
@@ -1613,6 +1666,9 @@ impl EntityPass {
                 frame_dt: 1.0 / 20.0,
                 prev_time: f32::NAN,
                 cam_pos: [0.0; 3],
+                map_lru: LruSlots::new(MAP_SLOTS),
+                map_resident: std::collections::HashMap::new(),
+                map_deco_present: Vec::new(),
             })
         }
     }
@@ -1684,6 +1740,95 @@ impl EntityPass {
         }
         self.held_items = Some(items);
         result
+    }
+
+    /// Install the map decoration sprites (M194; `textures/map/decorations`,
+    /// 8 x 8 RGBA each, by raw `map_decoration_type` id) into the framed-map
+    /// band. A `None` or wrongly sized sprite stays absent and its
+    /// decorations draw nothing, as vanilla's null `atlasSprite` does.
+    pub fn init_map_decorations(
+        &mut self,
+        gpu: &mut Gpu,
+        sprites: &[Option<&[u8]>],
+    ) -> Result<(), String> {
+        let mut present = vec![false; sprites.len()];
+        for (id, sprite) in sprites.iter().enumerate() {
+            let Some(rgba) = sprite.filter(|s| s.len() == (MAP_DECO_SPRITE.pow(2) * 4) as usize)
+            else {
+                continue;
+            };
+            let Some((x, y)) = map_deco_origin(id as i32) else {
+                continue;
+            };
+            upload_region(
+                gpu,
+                self.image,
+                rgba,
+                x,
+                y,
+                MAP_DECO_SPRITE,
+                MAP_DECO_SPRITE,
+            )?;
+            present[id] = true;
+        }
+        self.map_deco_present = present;
+        Ok(())
+    }
+
+    /// Page in this frame's framed maps (M194): each `(map id, version)`
+    /// keeps its slot if resident at that version, else claims the least
+    /// recently drawn one and uploads `rgba_of(id)` (128 x 128 RGBA,
+    /// `ClientMap::rgba`). Past [`MAP_SLOTS`] maps on screen at once the rest
+    /// draw no pixels (a recorded deviation: vanilla's `MapTextureManager`
+    /// has no cap).
+    pub fn prepare_frame_maps(
+        &mut self,
+        gpu: &mut Gpu,
+        maps: &[(i32, u64)],
+        rgba_of: &mut dyn FnMut(i32) -> Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        self.map_lru.begin_frame();
+        for &(id, version) in maps {
+            if let Some(&(slot, v)) = self.map_resident.get(&id) {
+                if v == version {
+                    self.map_lru.touch(slot);
+                    continue;
+                }
+            }
+            let Some((slot, evicted)) = self.map_lru.claim(id) else {
+                continue;
+            };
+            if let Some(old) = evicted {
+                self.map_resident.remove(&old);
+            }
+            self.map_resident.remove(&id);
+            let Some(rgba) = rgba_of(id).filter(|r| r.len() == (MAP_SLOT * MAP_SLOT * 4) as usize)
+            else {
+                continue;
+            };
+            upload_region(
+                gpu,
+                self.image,
+                &rgba,
+                slot * MAP_SLOT,
+                MAP_POOL_Y,
+                MAP_SLOT,
+                MAP_SLOT,
+            )?;
+            self.map_resident.insert(id, (slot, version));
+        }
+        Ok(())
+    }
+
+    /// The atlas UV rect `(u0, v0, du, dv)` of a resident framed map.
+    pub fn frame_map_uv(&self, map_id: i32) -> Option<[f32; 4]> {
+        let (slot, _) = *self.map_resident.get(&map_id)?;
+        Some([
+            (slot * MAP_SLOT) as f32 / ATLAS_W as f32,
+            MAP_POOL_Y as f32 / ATLAS_H as f32,
+            MAP_SLOT as f32 / ATLAS_W as f32,
+            MAP_SLOT as f32 / ATLAS_H as f32,
+        ])
     }
 
     /// Every `(texture id, slot)` the **item** pool currently addresses, and
@@ -1913,6 +2058,7 @@ impl EntityPass {
         &mut self,
         draws: &[EntityDraw<'_>],
         block_entities: &[BlockEntityDraw<'_>],
+        frame_maps: &[FrameMapDraw<'_>],
         world_text: &[WorldTextDraw<'_>],
         cam_right: [f32; 3],
         cam_up: [f32; 3],
@@ -2052,6 +2198,8 @@ impl EntityPass {
         // M25b: block entities. Solid geometry, so they belong with the mob
         // and item quads rather than after the transparent nametags.
         self.emit_block_entities(&mut verts, block_entities);
+        // M194: maps in item frames, beside the frames' own models.
+        self.emit_frame_maps(&mut verts, frame_maps);
         // M25e: world-space text (sign faces). Solid glyph quads, so they go
         // with the rest of the opaque geometry rather than after the tags.
         self.emit_world_text(&mut verts, world_text);
@@ -4628,6 +4776,39 @@ pub struct BlockEntityDraw<'a> {
     /// Sixteen dyes times forty-four patterns is why it is a tint and not
     /// seven hundred baked variants.
     pub tint: [f32; 3],
+    /// Run the model through its `display.fixed` transform before
+    /// [`Self::transform`] — an item in an item frame (M194), which
+    /// `ItemFrameRenderer` submits with `ItemDisplayContext.FIXED`. `false`
+    /// for every block entity and for the frame's own block model, which are
+    /// placed directly.
+    pub fixed_display: bool,
+}
+
+/// A map in an item frame (M194): `MapRenderer.render(state, pose, ...,
+/// showOnlyFrame = true, light)` — the pixel quad and the decorations whose
+/// type is `showOnItemFrame`.
+pub struct FrameMapDraw<'a> {
+    /// The frame entity's position.
+    pub pos: [f32; 3],
+    /// Map units (`0..128`) to entity-relative block units —
+    /// `item_frame::map_pose` as an affine.
+    pub transform: [[f32; 4]; 3],
+    /// Which framed-map slot to sample ([`EntityPass::prepare_frame_maps`]).
+    pub map_id: i32,
+    /// The map's light (`getLightCoords(isGlowFrame, 15728850, light)`).
+    pub light: [f32; 3],
+    /// The decorations to draw, already filtered to `renderOnFrame`, in the
+    /// map's order (the z step counts them).
+    pub decorations: &'a [FrameMapDecoration],
+}
+
+/// One decoration on a framed map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameMapDecoration {
+    pub type_id: i32,
+    pub x: i8,
+    pub y: i8,
+    pub rot: u8,
 }
 
 impl EntityPass {
@@ -4710,6 +4891,82 @@ impl EntityPass {
         &self.advance
     }
 
+    /// Framed maps (M194). `RenderTypes.text`: no directional shade, the
+    /// vertex colour white, light from the lightmap — so unlike the item
+    /// paths these quads are not shaded by their normal.
+    pub(crate) fn emit_frame_maps(&self, verts: &mut Vec<Vertex>, draws: &[FrameMapDraw<'_>]) {
+        let to_entity = |m: &[[f32; 4]; 3], pos: [f32; 3], p: [f32; 3]| {
+            let r = |i: usize| m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] + m[i][3];
+            [pos[0] + r(0), pos[1] + r(1), pos[2] + r(2)]
+        };
+        let quad = |verts: &mut Vec<Vertex>,
+                    d: &FrameMapDraw<'_>,
+                    m: &[[f32; 4]; 3],
+                    corners: &[[f32; 3]; 4],
+                    uv: &[[f32; 2]; 4]| {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let [lr, lg, lb] = d.light;
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                verts.push(Vertex {
+                    pos: to_entity(m, d.pos, corners[i]),
+                    uv: uv[i],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    light_hurt: [lr, lg, lb, 0.0],
+                });
+            }
+        };
+        for d in draws {
+            let Some([u0, v0, du, dv]) = self.frame_map_uv(d.map_id) else {
+                continue;
+            };
+            let (corners, uv01) = crate::hand::MAP_PIXELS_QUAD;
+            let uv: [[f32; 2]; 4] =
+                std::array::from_fn(|i| [u0 + uv01[i][0] * du, v0 + uv01[i][1] * dv]);
+            quad(verts, d, &d.transform, &corners, &uv);
+            let base = glam::Mat4::from_cols_array_2d(&[
+                [d.transform[0][0], d.transform[1][0], d.transform[2][0], 0.0],
+                [d.transform[0][1], d.transform[1][1], d.transform[2][1], 0.0],
+                [d.transform[0][2], d.transform[1][2], d.transform[2][2], 0.0],
+                [d.transform[0][3], d.transform[1][3], d.transform[2][3], 1.0],
+            ]);
+            // `count` steps for every decoration drawn, sprite or not.
+            for (count, deco) in d.decorations.iter().enumerate() {
+                let present = usize::try_from(deco.type_id)
+                    .ok()
+                    .and_then(|i| self.map_deco_present.get(i))
+                    .copied()
+                    .unwrap_or(false);
+                let Some((x, y)) = map_deco_origin(deco.type_id).filter(|_| present) else {
+                    continue;
+                };
+                let (aw, ah) = (ATLAS_W as f32, ATLAS_H as f32);
+                let (su0, sv0) = (x as f32 / aw, y as f32 / ah);
+                let (su1, sv1) = (
+                    (x + MAP_DECO_SPRITE) as f32 / aw,
+                    (y + MAP_DECO_SPRITE) as f32 / ah,
+                );
+                let z = count as f32 * -0.001;
+                let m = crate::item_frame::affine(
+                    base * crate::hand::map_decoration_pose(deco.x, deco.y, deco.rot),
+                );
+                quad(
+                    verts,
+                    d,
+                    &m,
+                    &[
+                        [-1.0, 1.0, z],
+                        [1.0, 1.0, z],
+                        [1.0, -1.0, z],
+                        [-1.0, -1.0, z],
+                    ],
+                    &[[su0, sv0], [su1, sv0], [su1, sv1], [su0, sv1]],
+                );
+            }
+        }
+    }
+
     /// `ChestRenderer.submit` — the block-entity models (M25b).
     ///
     /// ```text
@@ -4778,6 +5035,14 @@ impl EntityPass {
                     // written in block units, and `ModelPart.compile` is what
                     // divides by 16, so the scale comes first.
                     let p = [corner[0] / 16.0, corner[1] / 16.0, corner[2] / 16.0];
+                    // A framed item: `ItemTransform.apply` for the FIXED
+                    // context (centre, scale, rotate, translate), the same
+                    // derivation every other item path uses.
+                    let p = if d.fixed_display {
+                        crate::held::apply_display(&model.fixed, false, p)
+                    } else {
+                        p
+                    };
                     let p = [
                         m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
                         m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],

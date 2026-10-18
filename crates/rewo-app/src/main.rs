@@ -61,6 +61,8 @@ mod hurtshot_cmd;
 #[cfg(feature = "gates")]
 mod inventoryshot_cmd;
 #[cfg(feature = "gates")]
+mod itemframeshot_cmd;
+#[cfg(feature = "gates")]
 mod itemshot_cmd;
 mod knobs;
 #[cfg(feature = "gates")]
@@ -312,6 +314,10 @@ enum Command {
     /// The leash rope gate (M170).
     #[cfg(feature = "gates")]
     Leashshot(leashshot_cmd::LeashshotArgs),
+    /// The item frame gate (M194): the frame models, the framed item and a
+    /// framed map, through the production collector and the entity pass.
+    #[cfg(feature = "gates")]
+    Itemframeshot(itemframeshot_cmd::ItemframeshotArgs),
     /// M132 scoreboard-sidebar oracle: drive raw `set_objective`, `set_score`
     /// and `set_display_objective` bodies through the real parsers and the
     /// real `Scoreboard`, resolve the panel with the SAME `resolve_sidebar`
@@ -537,6 +543,8 @@ fn main() {
         Some(Command::Gaugeshot(g_args)) => gaugeshot_cmd::run(g_args),
         #[cfg(feature = "gates")]
         Some(Command::Leashshot(l_args)) => leashshot_cmd::run(l_args),
+        #[cfg(feature = "gates")]
+        Some(Command::Itemframeshot(a)) => itemframeshot_cmd::run(a),
         #[cfg(feature = "gates")]
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
         #[cfg(feature = "gates")]

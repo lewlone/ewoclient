@@ -3897,7 +3897,7 @@ impl<'a> Baker<'a> {
         let mut unsupported: std::collections::BTreeMap<String, usize> = Default::default();
         for (name, model, gui_geometry) in resolved {
             let full = format!("minecraft:{name}");
-            let (geometry, right, left, ground, gui, first_right, first_left) = match model {
+            let (geometry, right, left, ground, gui, first_right, first_left, fixed) = match model {
                 ItemModel::Resolved {
                     geometry,
                     third_person_right,
@@ -3906,6 +3906,7 @@ impl<'a> Baker<'a> {
                     gui,
                     first_person_right,
                     first_person_left,
+                    fixed,
                 } => (
                     geometry,
                     third_person_right,
@@ -3914,6 +3915,7 @@ impl<'a> Baker<'a> {
                     gui,
                     first_person_right,
                     first_person_left,
+                    fixed,
                 ),
                 ItemModel::Unsupported(kind) => {
                     let bucket = if kind.starts_with("model ") {
@@ -3950,6 +3952,7 @@ impl<'a> Baker<'a> {
                             gui,
                             first_right,
                             first_left,
+                            fixed,
                             from_block: matches!(geometry, ItemGeometry::Block(_)),
                             gui_quads,
                         },
@@ -4008,6 +4011,18 @@ impl<'a> Baker<'a> {
                     Some(crate::held_items::HeldTexture { w, h, rgba })
                 });
             be_models.append(&mut pots);
+        }
+        // M194: the item frame's block models, through the block bake (the
+        // jar's `block/template_item_frame*` elements, birch planks and the
+        // frame's back sprite).
+        for (block, name) in crate::block_entity_models::ITEM_FRAME_MODELS {
+            match self.bake_block_item(block, &mut pool) {
+                Some(quads) => be_models.push((
+                    name.to_string(),
+                    crate::block_entity_models::item_frame_held_model(quads),
+                )),
+                None => log::warn!("rewo-data: item frame model block/{block} baked no quads"),
+            }
         }
         let be_count = be_models.len();
         let block_entities: HashMap<String, HeldItemModel> = be_models.into_iter().collect();

@@ -1620,6 +1620,7 @@ pub(crate) fn to_gpu_held_items(
                             gui: conv_t(&m.gui),
                             first_right: conv_t(&m.first_right),
                             first_left: conv_t(&m.first_left),
+                            fixed: conv_t(&m.fixed),
                             from_block: m.from_block,
                             gui_quads: m.gui_quads.as_deref().map(conv_quads),
                         },
@@ -2313,6 +2314,12 @@ pub(super) fn collect_entities<'a>(
         });
     let mut out = Vec::new();
     for (id, e) in session.world.entities.iter() {
+        // M194: an item frame has no body — `ItemFrameRenderer` draws its
+        // frame model and item, which `collect_item_frames` emits. Without
+        // this it fell through to the capsule.
+        if frame_kind(etypes, e.type_id).is_some() {
+            continue;
+        }
         let p = e.render_pos(alpha);
         let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;
@@ -2615,6 +2622,14 @@ pub(crate) fn init_entities_maybe_cem(
     if let Some(g) = baked.armor_glint.as_ref() {
         wr.init_entity_armor_glint(gpu, &g.rgba, g.w, g.h)?;
     }
+    // M194: the map decoration sprites a framed map draws, into the entity
+    // atlas's map band (the held map has its own copy in the hand atlas).
+    let decorations: Vec<Option<&[u8]>> = baked
+        .map_decorations
+        .iter()
+        .map(|d| d.as_ref().map(|i| i.rgba.as_slice()))
+        .collect();
+    wr.init_map_decorations(gpu, &decorations)?;
     Ok(etf)
 }
 

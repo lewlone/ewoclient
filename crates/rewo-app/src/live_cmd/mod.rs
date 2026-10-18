@@ -56,6 +56,8 @@ use crate::stats::{OverlayRing, StatsAccum};
 
 mod app;
 mod block_entities;
+mod item_frames;
+pub(crate) use item_frames::*;
 mod frame;
 mod input;
 mod screen_pumps;

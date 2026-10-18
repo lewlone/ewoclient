@@ -390,6 +390,7 @@ pub fn bake_shulker_boxes(
                 // the identity for the same reason.
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
+                fixed: DisplayTransform::IDENTITY,
                 from_block: false,
                 gui_quads: None,
             },
@@ -446,6 +447,7 @@ pub fn bake_chests(
                     // the identity for the same reason.
                     first_right: DisplayTransform::IDENTITY,
                     first_left: DisplayTransform::IDENTITY,
+                    fixed: DisplayTransform::IDENTITY,
                     from_block: false,
                     gui_quads: None,
                 },
@@ -711,6 +713,7 @@ pub fn bake_skulls(
                 // the identity for the same reason.
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
+                fixed: DisplayTransform::IDENTITY,
                 from_block: false,
                 gui_quads: None,
             },
@@ -759,6 +762,42 @@ const END_GATEWAY_CUBE: &[Box] = &[plain(
     [0.0; 3],
     0,
 )];
+
+/// The item frame's four block models (M194), as `(block model, model
+/// name)`. They are not block entities: `ItemFrameRenderer` draws them from
+/// `BlockStateDefinitions`' fake `item_frame` / `glow_item_frame` states
+/// (`map=false` / `map=true`, `blockstates/item_frame.json`), but they are
+/// static quads at a pose, which is exactly what this map holds.
+pub const ITEM_FRAME_MODELS: [(&str, &str); 4] = [
+    ("item_frame", "rewo:be/item_frame"),
+    ("item_frame_map", "rewo:be/item_frame_map"),
+    ("glow_item_frame", "rewo:be/glow_item_frame"),
+    ("glow_item_frame_map", "rewo:be/glow_item_frame_map"),
+];
+
+/// `BlockModelResolver.updateForItemFrame(state, isGlowing, map)`'s model:
+/// the glow frame's own back texture, and the `_map` variant (a deeper
+/// recess) whenever the frame holds a map with data.
+pub fn item_frame_model(glow: bool, map: bool) -> &'static str {
+    ITEM_FRAME_MODELS[usize::from(glow) * 2 + usize::from(map)].1
+}
+
+/// A frame model's [`HeldItemModel`]: the quads at every context's
+/// identity, since `ItemFrameRenderer` places the block model directly.
+pub fn item_frame_held_model(quads: Vec<HeldQuad>) -> HeldItemModel {
+    HeldItemModel {
+        quads,
+        right: DisplayTransform::IDENTITY,
+        left: DisplayTransform::IDENTITY,
+        ground: DisplayTransform::IDENTITY,
+        gui: DisplayTransform::IDENTITY,
+        first_right: DisplayTransform::IDENTITY,
+        first_left: DisplayTransform::IDENTITY,
+        fixed: DisplayTransform::IDENTITY,
+        from_block: true,
+        gui_quads: None,
+    }
+}
 
 pub const END_PORTAL_MODEL: (&str, &str) = ("rewo:be/end_portal", "entity/end_portal/end_portal");
 pub const END_GATEWAY_MODEL: &str = "rewo:be/end_gateway";
@@ -875,6 +914,7 @@ pub fn bake_copper_golem_statues(
                     // the identity for the same reason.
                     first_right: DisplayTransform::IDENTITY,
                     first_left: DisplayTransform::IDENTITY,
+                    fixed: DisplayTransform::IDENTITY,
                     from_block: false,
                     gui_quads: None,
                 },
@@ -1121,6 +1161,7 @@ pub fn bake_banners(
                         // the identity for the same reason.
                         first_right: DisplayTransform::IDENTITY,
                         first_left: DisplayTransform::IDENTITY,
+                        fixed: DisplayTransform::IDENTITY,
                         from_block: false,
                         gui_quads: None,
                     },
@@ -1343,6 +1384,7 @@ pub fn bake_decorated_pot(
                         // the identity for the same reason.
                         first_right: DisplayTransform::IDENTITY,
                         first_left: DisplayTransform::IDENTITY,
+                        fixed: DisplayTransform::IDENTITY,
                         from_block: false,
                         gui_quads: None,
                     },
@@ -1482,6 +1524,7 @@ pub fn bake_conduit(
                     // the identity for the same reason.
                     first_right: DisplayTransform::IDENTITY,
                     first_left: DisplayTransform::IDENTITY,
+                    fixed: DisplayTransform::IDENTITY,
                     from_block: false,
                     gui_quads: None,
                 },

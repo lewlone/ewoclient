@@ -277,7 +277,7 @@ impl WorldRenderer {
         cam_up: [f32; 3],
         time: f32,
     ) {
-        self.set_entities_and_block_entities(draws, &[], &[], cam_right, cam_up, time);
+        self.set_entities_and_block_entities(draws, &[], &[], &[], cam_right, cam_up, time);
     }
 
     /// [`Self::set_entities`] plus the frame's block entities (M25b). They
@@ -287,6 +287,7 @@ impl WorldRenderer {
         &mut self,
         draws: &[EntityDraw<'_>],
         block_entities: &[crate::entities::BlockEntityDraw<'_>],
+        frame_maps: &[crate::entities::FrameMapDraw<'_>],
         world_text: &[crate::entities::WorldTextDraw<'_>],
         cam_right: [f32; 3],
         cam_up: [f32; 3],
@@ -296,12 +297,41 @@ impl WorldRenderer {
             pass.set_draws(
                 draws,
                 block_entities,
+                frame_maps,
                 world_text,
                 cam_right,
                 cam_up,
                 time,
                 self.scene.camera_eye,
             );
+        }
+    }
+
+    /// The map decoration sprites for framed maps (M194), by raw type id —
+    /// [`crate::entities::EntityPass::init_map_decorations`]. No-op until
+    /// `init_entities`.
+    pub fn init_map_decorations(
+        &mut self,
+        gpu: &mut Gpu,
+        sprites: &[Option<&[u8]>],
+    ) -> Result<(), String> {
+        match self.entities.as_mut() {
+            Some(p) => p.init_map_decorations(gpu, sprites),
+            None => Ok(()),
+        }
+    }
+
+    /// Page in this frame's framed maps (M194) —
+    /// [`crate::entities::EntityPass::prepare_frame_maps`].
+    pub fn prepare_frame_maps(
+        &mut self,
+        gpu: &mut Gpu,
+        maps: &[(i32, u64)],
+        rgba_of: &mut dyn FnMut(i32) -> Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        match self.entities.as_mut() {
+            Some(p) => p.prepare_frame_maps(gpu, maps, rgba_of),
+            None => Ok(()),
         }
     }
 
@@ -343,6 +373,7 @@ impl WorldRenderer {
                 // preview draws none, so any orthonormal pair will do.
                 pass.set_draws(
                     std::slice::from_ref(d),
+                    &[],
                     &[],
                     &[],
                     [1.0, 0.0, 0.0],

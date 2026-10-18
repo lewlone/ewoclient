@@ -93,6 +93,7 @@ pub(super) fn collect_block_entities(
                 part_transforms: xs,
                 part_pivots: ps,
                 tint,
+                fixed_display: false,
             };
             // The bare cloth, untinted — its own texture carries its colour.
             out.push(layer(flag.to_string(), [1.0; 3]));
@@ -137,6 +138,7 @@ pub(super) fn collect_block_entities(
                             rewo_gpu::entities::MAX_PARTS],
                         part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
                         tint: [1.0; 3],
+                        fixed_display: false,
                     });
                 };
                 piece(
@@ -192,6 +194,7 @@ pub(super) fn collect_block_entities(
                     .0,
                     part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
                     tint: [1.0; 3],
+                    fixed_display: false,
                 });
             }
         }
@@ -243,6 +246,7 @@ pub(super) fn collect_block_entities(
             // Only a banner's pattern layers are tinted; every other model's
             // texture already carries its colour.
             tint: [1.0; 3],
+            fixed_display: false,
         });
     }
     out
@@ -889,6 +893,8 @@ pub(crate) struct OwnedBlockEntityDraw {
     /// A linear tint multiplied into the vertex colour — `[1, 1, 1]` for
     /// everything but a banner's dyed pattern layers (M28c).
     pub tint: [f32; 3],
+    /// Apply the model's `display.fixed` first — a framed item (M194).
+    pub fixed_display: bool,
 }
 
 impl OwnedBlockEntityDraw {
@@ -901,6 +907,7 @@ impl OwnedBlockEntityDraw {
             part_transforms: self.part_transforms,
             part_pivots: self.part_pivots,
             tint: self.tint,
+            fixed_display: self.fixed_display,
         }
     }
 }

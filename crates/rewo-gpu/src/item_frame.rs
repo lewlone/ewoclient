@@ -92,9 +92,44 @@ pub fn map_pose(facing: u8, rotation: u8, invisible: bool) -> Option<Mat4> {
     )
 }
 
+/// A pose as the row-major 3x4 affine
+/// [`crate::entities::BlockEntityDraw::transform`] takes.
+pub fn affine(m: Mat4) -> [[f32; 4]; 3] {
+    let r = |i: usize| [m.x_axis[i], m.y_axis[i], m.z_axis[i], m.w_axis[i]];
+    [r(0), r(1), r(2)]
+}
+
+/// The framed item's transform for
+/// [`crate::entities::BlockEntityDraw::transform`]: [`item_pose`] as an
+/// [`affine`]. The item's FIXED display transform comes first, applied by the
+/// emitter from the model it draws (`BlockEntityDraw::fixed_display`).
+pub fn item_transform(facing: u8, rotation: u8, invisible: bool) -> Option<[[f32; 4]; 3]> {
+    Some(affine(item_pose(facing, rotation, invisible)?))
+}
+
+/// The frame model's transform, as [`affine`] of [`frame_model_pose`].
+pub fn frame_transform(facing: u8) -> Option<[[f32; 4]; 3]> {
+    Some(affine(frame_model_pose(facing)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `affine` is row-major: row r is `[m[0][r], m[1][r], m[2][r], m[3][r]]`
+    /// in column terms, so applying it by hand equals `transform_point3`.
+    #[test]
+    fn affine_rows_apply_like_the_matrix() {
+        let m = frame_model_pose(5).unwrap() * Mat4::from_scale(Vec3::new(1.0, 2.0, 3.0));
+        let a = affine(m);
+        let p = Vec3::new(0.25, -0.5, 0.75);
+        let by_hand = Vec3::new(
+            a[0][0] * p.x + a[0][1] * p.y + a[0][2] * p.z + a[0][3],
+            a[1][0] * p.x + a[1][1] * p.y + a[1][2] * p.z + a[1][3],
+            a[2][0] * p.x + a[2][1] * p.y + a[2][2] * p.z + a[2][3],
+        );
+        assert!(close(by_hand, m.transform_point3(p)));
+    }
 
     fn close(a: Vec3, b: Vec3) -> bool {
         (a - b).abs().max_element() < 1e-5

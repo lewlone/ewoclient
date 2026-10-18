@@ -74,6 +74,9 @@ pub struct HeldItemModel {
     /// and `rotation.z` at draw time for either hand's transform whenever the
     /// context is a left hand.
     pub first_left: DisplayTransform,
+    /// `display.fixed` — the context an item frame draws its item through
+    /// (M194; `ItemFrameRenderer` → `updateForNonLiving(..., FIXED, ...)`).
+    pub fixed: DisplayTransform,
     /// True when the geometry came from a block model — recorded so the
     /// renderer and the gate can tell the two sources apart without
     /// re-deriving it.
@@ -237,6 +240,7 @@ mod tests {
             ground: DisplayTransform::default(),
             first_right: DisplayTransform::default(),
             first_left: DisplayTransform::default(),
+            fixed: DisplayTransform::default(),
             from_block,
             gui_quads: None,
         };

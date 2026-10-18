@@ -760,7 +760,7 @@ impl LiveApp {
             },
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
-        let bes = collect_block_entities(
+        let mut bes = collect_block_entities(
             &session.world,
             &self.chest_states,
             &lightmap,
@@ -768,6 +768,25 @@ impl LiveApp {
             session.game_time(),
             (cr, cu),
         );
+        // M194: item frames — the frame model and the framed item ride the
+        // block-entity emitter (static quads at a pose); a framed map samples
+        // the entity pass's map band.
+        let frames = collect_item_frames(
+            &session.world,
+            &session.maps,
+            &self.etypes,
+            &self.items,
+            &lightmap,
+            alpha,
+        );
+        prepare_frame_maps(
+            &mut state.world_renderer,
+            &mut state.gpu,
+            &frames,
+            &session.maps,
+        );
+        bes.extend(frames.models);
+        let frame_maps = frames.maps;
         // A spawner's caged mob rides the ENTITY pass, mounted inside its
         // block (M31), so it joins the entity draws rather than these.
         let caged = collect_spawner_mobs(
@@ -810,6 +829,7 @@ impl LiveApp {
             log::warn!("live: held-item texture upload: {e}");
         }
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
+        let frame_map_draws: Vec<_> = frame_maps.iter().map(|m| m.as_draw()).collect();
         let sign_lines = match state.world_renderer.font_advance() {
             Some(a) => collect_session_sign_text(session, &self.sign_states, &lightmap, a),
             None => Vec::new(),
@@ -889,6 +909,7 @@ impl LiveApp {
         state.world_renderer.set_entities_and_block_entities(
             &draws,
             &be_draws,
+            &frame_map_draws,
             &sign_draws,
             cr,
             cu,

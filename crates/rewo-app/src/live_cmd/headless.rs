@@ -730,7 +730,7 @@ pub(super) fn run_headless(
             sw / sh,
         );
     }
-    let bes = collect_block_entities(
+    let mut bes = collect_block_entities(
         &session.world,
         &chest_states,
         &lightmap,
@@ -738,6 +738,17 @@ pub(super) fn run_headless(
         session.game_time(),
         (cr, cu),
     );
+    let frames = collect_item_frames(
+        &session.world,
+        &session.maps,
+        &etypes,
+        &items,
+        &lightmap,
+        1.0,
+    );
+    prepare_frame_maps(&mut world_renderer, &mut gpu, &frames, &session.maps);
+    bes.extend(frames.models);
+    let frame_maps = frames.maps;
     // A spawner's caged mob rides the ENTITY pass, mounted inside its block
     // (M31), so it joins the entity draws rather than the block-entity ones.
     let caged = collect_spawner_mobs(
@@ -773,6 +784,7 @@ pub(super) fn run_headless(
     held.extend(bes.iter().map(|b| b.model.as_str()));
     world_renderer.prepare_held_items(&mut gpu, &held)?;
     let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
+    let frame_map_draws: Vec<_> = frame_maps.iter().map(|m| m.as_draw()).collect();
     let sign_lines = match world_renderer.font_advance() {
         Some(a) => collect_session_sign_text(&session, &sign_states, &lightmap, a),
         None => Vec::new(),
@@ -792,6 +804,7 @@ pub(super) fn run_headless(
     world_renderer.set_entities_and_block_entities(
         &draws,
         &be_draws,
+        &frame_map_draws,
         &sign_draws,
         cr,
         cu,
