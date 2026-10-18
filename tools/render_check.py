@@ -79,6 +79,11 @@ PRECMD = (
     # M179 -- r74. Two root advancements, so the advancements screen has two
     # tabs and a click on the one it did not open on is a CHANGE, which is
     # the only thing `PlayerAdvancements.setSelectedTab` echoes.
+    # M184 -- r75. A lectern holding a two-page written book two blocks from
+    # the bot; the client right-clicks it, turns a page, and closes it.
+    "setblock ~2 ~ ~ minecraft:lectern[has_book=true]{Book:{id:\"minecraft:written_book\","
+    "count:1,components:{\"minecraft:written_book_content\":{title:\"rc\",author:\"rc\","
+    "pages:[\"one\",\"two\"]}}}};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

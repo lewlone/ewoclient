@@ -239,6 +239,15 @@ pub(super) struct RenderCheck {
     pub(super) adv_echo_frames: usize,
     /// Why the click never happened, if it did not (fewer than two tabs).
     pub(super) adv_click_skip: Option<String>,
+    /// M184 — r75: the staged lectern's position, the pages its reader
+    /// showed, the frames on which the server's data echo had moved the page
+    /// to 1 after the forward click (menu data AND the reader), and whether
+    /// the close left no menu behind.
+    pub(super) lectern_pos: Option<(i32, i32, i32)>,
+    pub(super) lectern_pages_seen: usize,
+    pub(super) lectern_echo_frames: usize,
+    pub(super) lectern_closed: bool,
+    pub(super) lectern_skip: Option<String>,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -720,7 +729,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 74;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 75;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -963,6 +972,28 @@ impl RenderCheck {
                 self.adv_click_skip
                     .as_ref()
                     .map(|s| format!(" (not clicked: {s})"))
+                    .unwrap_or_default()
+            ),
+        );
+        // M184 — the lectern against a real server: `render_check.py` places
+        // one holding a two-page book; the production right-click
+        // (`use_item_on`) opened its menu, the reader showed both pages, the
+        // forward arrow's `container_button_click(2)` came back as
+        // container-data page 1 (the client never turns a lectern locally),
+        // and `close_book`'s `container_close` left no menu open.
+        row(
+            "r75 a lectern opened, the server turned its page on the forward click, and it closed",
+            self.lectern_pages_seen == 2 && self.lectern_echo_frames >= 3 && self.lectern_closed,
+            format!(
+                "lectern at {:?}: reader showed {} page(s), {} frames on page 1 after the \
+                 forward click, closed cleanly: {}{}",
+                self.lectern_pos,
+                self.lectern_pages_seen,
+                self.lectern_echo_frames,
+                self.lectern_closed,
+                self.lectern_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
                     .unwrap_or_default()
             ),
         );
@@ -2129,6 +2160,110 @@ impl LiveApp {
                 // The ids are fixed and named in `CROWD_IDS` because the census
                 // below joins on them: without that, the count is a claim about
                 // whatever the world contains rather than about this injection.
+                // r75 — M184's lectern, between the options pages (closed by
+                // 0.16) and r74 (0.24). Stage 1: right-click the staged
+                // lectern through `use_item_on`, the production interaction.
+                // Stage 2: once the reader shows page 0 of both pages, click
+                // the forward arrow's centre through `lectern_arrow_click`.
+                // Stage 3: after the echo, close through `close_book`.
+                if self.lectern_stage == 0
+                    && elapsed >= limit * 0.17
+                    && !self.screen.inventory_open()
+                {
+                    let found = self.session.as_ref().and_then(|s| {
+                        let (px, py, pz) = (
+                            s.player.x.floor() as i32,
+                            s.player.y.floor() as i32,
+                            s.player.z.floor() as i32,
+                        );
+                        // By block state, not block entity: a lectern has no
+                        // client update packet, so a `setblock` after the chunk
+                        // loaded reaches the client as a bare block update.
+                        let mut hit = None;
+                        'scan: for dy in -3..=3 {
+                            for dx in -6..=6 {
+                                for dz in -6..=6 {
+                                    let (x, y, z) = (px + dx, py + dy, pz + dz);
+                                    let st = s.world.block_state_at(x, y, z);
+                                    if self.blocks.block_name(st) == Some("minecraft:lectern") {
+                                        hit = Some((x, y, z));
+                                        break 'scan;
+                                    }
+                                }
+                            }
+                        }
+                        hit
+                    });
+                    match found {
+                        Some((x, y, z)) => {
+                            if let Some(s) = self.session.as_mut() {
+                                let _ = s.use_item_on(x, y, z, 1);
+                            }
+                            if let Some(c) = self.check.as_mut() {
+                                c.lectern_pos = Some((x, y, z));
+                            }
+                            self.lectern_stage = 1;
+                        }
+                        None if elapsed >= limit * 0.2 => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.lectern_skip =
+                                    Some("no lectern block entity near the bot".into());
+                            }
+                            self.lectern_stage = 3;
+                        }
+                        None => {}
+                    }
+                }
+                if self.lectern_stage == 1 && self.lectern_shown.is_some() {
+                    let pages = self.lectern_pages.as_ref().map_or(0, |p| p.len());
+                    let page = self.book.as_ref().map(|b| b.current_page());
+                    if pages > 0 && page == Some(0) {
+                        if let Some(c) = self.check.as_mut() {
+                            c.lectern_pages_seen = pages;
+                        }
+                        let gw = self.gui_size().0;
+                        let (x, y, w, h) =
+                            rewo_ui::book_view_screen::BookViewScreen::forward_rect(gw);
+                        self.lectern_arrow_click(
+                            f64::from(x) + f64::from(w) / 2.0,
+                            f64::from(y) + f64::from(h) / 2.0,
+                            gw,
+                        );
+                        self.lectern_stage = 2;
+                    }
+                }
+                if self.lectern_stage == 2 {
+                    let menu_page = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| super::screens::lectern_menu_state(&s.menus))
+                        .map(|(_, _, page)| page);
+                    let reader_page = self.book.as_ref().map(|b| b.current_page());
+                    if menu_page == Some(1) && reader_page == Some(1) {
+                        if let Some(c) = self.check.as_mut() {
+                            c.lectern_echo_frames += 1;
+                        }
+                    }
+                    let echoed = self
+                        .check
+                        .as_ref()
+                        .is_some_and(|c| c.lectern_echo_frames >= 3);
+                    if echoed || elapsed >= limit * 0.23 {
+                        self.close_book();
+                        self.lectern_stage = 3;
+                    }
+                }
+                if self.lectern_stage == 3 {
+                    if let (Some(c), Some(s)) = (self.check.as_mut(), self.session.as_ref()) {
+                        if c.lectern_pos.is_some()
+                            && !c.lectern_closed
+                            && super::screens::lectern_menu_state(&s.menus).is_none()
+                            && self.lectern_shown.is_none()
+                        {
+                            c.lectern_closed = true;
+                        }
+                    }
+                }
                 // r74 — M179's tab click. `render_check.py` grants two root
                 // advancements, so the screen has two tabs: open it (the
                 // production `open_advancements`, which sends `opened_tab`

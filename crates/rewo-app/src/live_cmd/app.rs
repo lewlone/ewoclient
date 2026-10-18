@@ -782,24 +782,7 @@ impl ApplicationHandler for LiveApp {
                         // (`sendButtonClick(1/2)`), not local turns — the
                         // server's data echo moves the page.
                         if self.lectern_shown.is_some() {
-                            let send = self
-                                .book
-                                .as_ref()
-                                .and_then(|b| b.arrow_at(mx as i32, my as i32, gw));
-                            if let Some(button) = send.map(|a| match a {
-                                rewo_ui::book_view_screen::BookArrow::Back => {
-                                    rewo_ui::book_view_screen::LECTERN_PAGE_BACK
-                                }
-                                rewo_ui::book_view_screen::BookArrow::Forward => {
-                                    rewo_ui::book_view_screen::LECTERN_PAGE_FORWARD
-                                }
-                            }) {
-                                if let Some(session) = self.session.as_mut() {
-                                    if let Err(e) = session.container_button_click(button) {
-                                        log::warn!("live: lectern page turn: {e}");
-                                    }
-                                }
-                            }
+                            self.lectern_arrow_click(mx, my, gw);
                         } else if let Some(book) = self.book.as_mut() {
                             // M186 — a held book's `PageButton` has
                             // `playTurnSound`; the lectern's (above) does not,
@@ -1986,6 +1969,31 @@ impl LiveApp {
             if let Some(session) = self.session.as_mut() {
                 if let Err(e) = session.send_seen_advancements_opened_tab(&tab) {
                     log::warn!("live: opened_tab: {e}");
+                }
+            }
+        }
+    }
+
+    /// A left click on the lectern reader's arrows (M184): `LecternScreen`'s
+    /// `pageBack` / `pageForward` are `sendButtonClick(1 / 2)` — sends, not
+    /// local turns; the server's container-data echo moves the page. One
+    /// method for the mouse handler and render-check r75.
+    pub(super) fn lectern_arrow_click(&mut self, mx: f64, my: f64, gw: i32) {
+        let send = self
+            .book
+            .as_ref()
+            .and_then(|b| b.arrow_at(mx as i32, my as i32, gw));
+        if let Some(button) = send.map(|a| match a {
+            rewo_ui::book_view_screen::BookArrow::Back => {
+                rewo_ui::book_view_screen::LECTERN_PAGE_BACK
+            }
+            rewo_ui::book_view_screen::BookArrow::Forward => {
+                rewo_ui::book_view_screen::LECTERN_PAGE_FORWARD
+            }
+        }) {
+            if let Some(session) = self.session.as_mut() {
+                if let Err(e) = session.container_button_click(button) {
+                    log::warn!("live: lectern page turn: {e}");
                 }
             }
         }
