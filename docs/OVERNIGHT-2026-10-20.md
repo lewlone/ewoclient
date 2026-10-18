@@ -35,6 +35,12 @@ released.
   never drawn — holes in the world until something unloaded. None of the
   checks could see it because they all use a flat world. The buffer now
   grows as needed; the same load test went from 197 missing columns to 0.
+- **M206**: Rewo now uses the render distance from the instance's
+  `options.txt` (vanilla's default is 12). Before, it always asked servers
+  for 10 whatever was set, and the distance fog was a fixed band sized for
+  the flat test world. The fog now follows the render distance as vanilla's
+  does. Your skin-layer toggles and the "allow server listings" choice in
+  `options.txt` are now sent to servers as well.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -58,6 +64,8 @@ released.
 | `a3f7985` | **M204** — banner name labels on framed maps (`MapRenderer`'s `decoration.name` branch; `itemframeshot` p11). |
 | `3ce9381` | Fixes from an independent review of M194-M204: per-species quad-leash attach points (horse, chested, camel, sniffer, boat), the flow array installed in `view` / `bench`, animation-upload bookkeeping recorded only after success, an arena-fill log line. |
 | `5160a16` | **M205** — the terrain arena grows (4M vertices initially, up to 64M) instead of deferring columns; plus a clippy fix the review commit had let through. |
+| `029f454` | §0.0 numbers after M205; this summary through M205. |
+| `2463025` | **M206** — `renderDistance`, `modelPart_*` and `allowServerListing` from `options.txt` into `client_information` (was a hard-coded view distance 10); `FogRenderer.setupFog`'s band from the effective distance, measured cylindrically; render-check **r73** with a staged `renderDistance:6`. |
 
 ## Decisions made
 
@@ -122,7 +130,15 @@ released.
    buffer: simpler, and a hitch once is better than holes. Limits 64M
    vertices (1.79 GB) / 96M indices; past them, or if the GPU refuses the
    memory, columns wait as before.
-16. **Not fixed, noted:** several older `containershot` witness messages have
+16. **M206 reads three client-information fields and pins the rest.**
+   `mainHand`, `chatVisibility` and `particles` are sent as what Rewo draws
+   (right arm, full chat, all particles), not as the file says: reading
+   `mainHand:"left"` would make everyone else see a left-handed player while
+   Rewo draws a right arm. Reversible once Rewo draws the left-handed case.
+17. **The render check's client now has its own game directory** (a scratch
+   folder inside the test server's), so its `options.txt` is staged rather
+   than whatever sits in the repo root.
+18. **Not fixed, noted:** several older `containershot` witness messages have
    runs of spaces where a shell joined a backslash line continuation (the
    same artifact this run hit and fixed in its own messages). Cosmetic, in
    gate output only.
@@ -144,6 +160,10 @@ released.
   51/51** (demo hash `748e5a1e9bbfbf10`, unchanged since M197); render check
   **72/72**, validation-clean; clippy `-D warnings` and `cargo fmt --check`
   clean.
+- After M206 (at `2463025`): **4,276 tests passed, 0 failed; gates 51/51**
+  (demo hash unchanged); render check **73/73**, r73 matching on 5,605
+  frames (sent 6, server radius 8, 213 of 213 tracked columns, fog 86.4..96);
+  clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
