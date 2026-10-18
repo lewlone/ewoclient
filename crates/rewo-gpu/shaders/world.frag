@@ -5,6 +5,9 @@
 // horizon). Alpha-test keeps cutout blocks (plants/glass) honest.
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_tex;
+// M197: the fluid flow sprites' 32 px array. A layer with the high bit set
+// (`rewo_mesh::FLOW_LAYER_BIT`) indexes it — a flowing fluid top.
+layout(set = 0, binding = 2) uniform sampler2DArray u_flow;
 
 // The push block below is exactly 128 bytes — the guaranteed Vulkan budget —
 // so M16's dimension AmbientColor rides in this small per-frame uniform buffer
@@ -35,7 +38,14 @@ layout(location = 3) in vec3 v_worldpos;
 layout(location = 0) out vec4 out_color;
 
 void main() {
-    vec4 c = texture(u_tex, vec3(v_uv, float(v_layer)));
+    // `v_layer` is flat, so the branch is uniform over the primitive (and its
+    // quads): the implicit-LOD samples below stay well defined.
+    vec4 c;
+    if ((v_layer & 0x8000u) != 0u) {
+        c = texture(u_flow, vec3(v_uv, float(v_layer & 0x7FFFu)));
+    } else {
+        c = texture(u_tex, vec3(v_uv, float(v_layer)));
+    }
     if (c.a < 0.5) {
         discard;
     }

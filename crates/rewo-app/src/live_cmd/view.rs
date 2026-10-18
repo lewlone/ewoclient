@@ -123,17 +123,33 @@ pub(crate) fn hud_sprites(
 pub(crate) fn layer_animations(
     baked: &assets::BakedAssets,
 ) -> Vec<rewo_gpu::world::LayerAnimation> {
-    baked
-        .animations
-        .iter()
-        .map(|a| rewo_gpu::world::LayerAnimation {
-            layer: a.layer,
-            frames: a.frames.clone(),
-            order: a.order.clone(),
-            frametime: a.frametime,
-            interpolate: a.interpolate,
-        })
-        .collect()
+    baked.animations.iter().map(to_gpu_animation).collect()
+}
+
+fn to_gpu_animation(a: &assets::AnimatedLayer) -> rewo_gpu::world::LayerAnimation {
+    rewo_gpu::world::LayerAnimation {
+        layer: a.layer,
+        frames: a.frames.clone(),
+        order: a.order.clone(),
+        frametime: a.frametime,
+        interpolate: a.interpolate,
+    }
+}
+
+/// Install the bake's animated block layers AND the fluid flow array with its
+/// animations (M197). Every renderer that draws terrain calls this one, so a
+/// gate cannot install one half and miss the other.
+pub(crate) fn install_animations(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    baked: &assets::BakedAssets,
+) -> Result<(), String> {
+    wr.set_animations(layer_animations(baked));
+    wr.set_flow_textures(
+        gpu,
+        &baked.flow_layers,
+        baked.flow_animations.iter().map(to_gpu_animation).collect(),
+    )
 }
 
 /// MC-convention eye camera: yaw 0 faces +Z (south), yaw+ turns west,
@@ -582,6 +598,50 @@ mod tests {
     /// the terrain arena counts vertices as `bytes / world::VERTEX_STRIDE`
     /// with a pipeline stride of the same constant. The two crates cannot see
     /// each other, so the size contract is pinned here, where both meet.
+    /// M197: the flow array's contract, where the three crates meet — the
+    /// layer bit the mesher sets is the one both terrain shaders test, and the
+    /// bake's flow frame size is the renderer's array size.
+    #[test]
+    fn the_flow_layer_contract_holds_across_the_crates() {
+        assert_eq!(rewo_mesh::FLOW_LAYER_BIT, 0x8000);
+        for (name, src) in [
+            (
+                "world.frag",
+                include_str!("../../../rewo-gpu/shaders/world.frag"),
+            ),
+            (
+                "water.frag",
+                include_str!("../../../rewo-gpu/shaders/water.frag"),
+            ),
+        ] {
+            assert!(
+                src.contains("(v_layer & 0x8000u) != 0u") && src.contains("v_layer & 0x7FFFu"),
+                "{name} does not test the flow bit"
+            );
+        }
+        assert_eq!(
+            rewo_data::assets::FLOW_TEX_SIZE,
+            rewo_gpu::world::FLOW_TEX_SIZE
+        );
+    }
+
+    /// M197: `Mth.atan2` exists twice (rewo-world for the mesher, rewo-gpu for
+    /// the locator bar, which cannot see each other); they agree to the bit.
+    #[test]
+    fn the_two_mth_atan2_ports_agree() {
+        for i in -40..=40 {
+            for j in -40..=40 {
+                let (y, x) = (f64::from(i) / 7.0, f64::from(j) / 3.0);
+                let a = rewo_world::lightmap::mth_atan2(y, x);
+                let b = rewo_gpu::locator_bar::mth_atan2(y, x);
+                assert!(
+                    a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
+                    "{y} {x}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn mesh_vertex_size_is_the_world_vertex_stride() {
         assert_eq!(

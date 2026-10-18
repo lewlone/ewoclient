@@ -203,7 +203,7 @@ pub fn run(args: AnimshotArgs) -> Result<(), String> {
     }
     let mut off = Offscreen::new(&mut gpu, 16, 16)?;
     let mut wr = WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
-    wr.set_animations(crate::live_cmd::layer_animations(&baked));
+    crate::live_cmd::install_animations(&mut wr, &mut gpu, &baked)?;
     let mut at = |gpu: &mut Gpu, tick: u64, layer: u16, level: u32| -> Result<Vec<u8>, String> {
         wr.anim_tick(gpu, tick)?;
         wr.read_texture_layer(gpu, layer, level)

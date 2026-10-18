@@ -397,6 +397,79 @@ pub fn mth_cos(angle: f32) -> f32 {
     mth_sin_table((angle as f64 * MTH_SIN_SCALE + 16384.0) as i64)
 }
 
+/// `Mth.FRAC_BIAS` — `Double.longBitsToDouble(4805340802404319232L)`.
+const FRAC_BIAS: f64 = f64::from_bits(4_805_340_802_404_319_232u64);
+const ATAN_LUT: usize = 257;
+
+/// `Mth`'s `ASIN_TAB` / `COS_TAB`, built as its static block builds them.
+fn atan_tables() -> &'static ([f64; ATAN_LUT], [f64; ATAN_LUT]) {
+    static T: std::sync::OnceLock<([f64; ATAN_LUT], [f64; ATAN_LUT])> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut asin = [0.0; ATAN_LUT];
+        let mut cos = [0.0; ATAN_LUT];
+        for ind in 0..ATAN_LUT {
+            let asinv = (ind as f64 / 256.0).asin();
+            cos[ind] = asinv.cos();
+            asin[ind] = asinv;
+        }
+        (asin, cos)
+    })
+}
+
+/// `Mth.fastInvSqrt(double)` — the Quake seed plus one Newton step.
+fn fast_inv_sqrt(x: f64) -> f64 {
+    let xhalf = 0.5 * x;
+    let i = x.to_bits() as i64;
+    let i = 6_910_469_410_427_058_090i64 - (i >> 1);
+    let x = f64::from_bits(i as u64);
+    x * (1.5 - xhalf * x * x)
+}
+
+/// `Mth.atan2(double, double)` — vanilla's table-driven approximation, not
+/// `Math.atan2` (M197: `FluidRenderer`'s flow angle). The same transcription
+/// as `rewo_gpu::locator_bar::mth_atan2`, which this crate cannot see; a
+/// rewo-app test holds the two to the bit.
+pub fn mth_atan2(mut y: f64, mut x: f64) -> f64 {
+    let d2 = x * x + y * y;
+    if d2.is_nan() {
+        return f64::NAN;
+    }
+    let neg_y = y < 0.0;
+    if neg_y {
+        y = -y;
+    }
+    let neg_x = x < 0.0;
+    if neg_x {
+        x = -x;
+    }
+    let steep = y > x;
+    if steep {
+        std::mem::swap(&mut x, &mut y);
+    }
+    let rinv = fast_inv_sqrt(d2);
+    x *= rinv;
+    y *= rinv;
+    let yp = FRAC_BIAS + y;
+    // `(int)Double.doubleToRawLongBits(yp)`: the low 32 bits are the index.
+    let index = ((yp.to_bits() as u32) as usize).min(ATAN_LUT - 1);
+    let (asin, cos) = atan_tables();
+    let (phi, c_phi) = (asin[index], cos[index]);
+    let s_phi = yp - FRAC_BIAS;
+    let sd = y * c_phi - x * s_phi;
+    let d = (6.0 + sd * sd) * sd * 0.166_666_666_666_666_66;
+    let mut theta = phi + d;
+    if steep {
+        theta = std::f64::consts::FRAC_PI_2 - theta;
+    }
+    if neg_x {
+        theta = std::f64::consts::PI - theta;
+    }
+    if neg_y {
+        theta = -theta;
+    }
+    theta
+}
+
 // --- night vision + darkness lightmap terms ---
 
 /// `GameRenderer.nightVisionScale`. `duration` is the effect's remaining

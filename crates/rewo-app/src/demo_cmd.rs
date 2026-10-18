@@ -136,7 +136,7 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
     gpu.wait_idle();
     log::info!("demo: meshed {} vertices", total_verts);
 
-    wr.set_animations(crate::live_cmd::layer_animations(&baked));
+    crate::live_cmd::install_animations(&mut wr, &mut gpu, &baked)?;
     wr.anim_tick(&mut gpu, args.anim_tick)?;
 
     // -- camera: look along the row from a low front-left angle (aim point

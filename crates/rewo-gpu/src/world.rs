@@ -76,7 +76,7 @@ use sky::SkyGradient;
 pub use sky::{SkyMode, SKY_HORIZON};
 use terrain::TerrainPass;
 pub(crate) use textures::upload_texture_array;
-pub use textures::LayerAnimation;
+pub use textures::{LayerAnimation, FLOW_TEX_SIZE};
 use textures::TextureArray;
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
@@ -96,6 +96,8 @@ pub struct WorldRenderer {
     lm: LightmapRing,
     /// The block texture array, its sampler and the animated layers.
     textures: TextureArray,
+    /// The fluid flow sprites' 32 px array (M197), sampled by a flowing top.
+    flow_textures: TextureArray,
     /// The terrain arena: mega-buffers, free-lists, registered columns and the
     /// async upload ring (see `arena.rs`).
     arena: Arena,

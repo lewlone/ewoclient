@@ -36,7 +36,7 @@ pub(super) fn run_headless(
     let mut weather_assets = WeatherAssets::new(&baked);
     let mut gui_items = GuiItemState::new(&baked);
     let mut particle_assets = ParticleAssets::new(&baked);
-    world_renderer.set_animations(layer_animations(&baked));
+    install_animations(&mut world_renderer, &mut gpu, &baked)?;
     if let Some(hud) = hud_sprites(&baked) {
         world_renderer.init_hud(&mut gpu, &hud)?;
     }

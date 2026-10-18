@@ -60,7 +60,7 @@ impl ApplicationHandler for LiveApp {
             init_weather_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_particles_if_present(&mut world_renderer, &mut gpu, &baked)?;
             init_crumbling_if_present(&mut world_renderer, &mut gpu, &baked)?;
-            world_renderer.set_animations(layer_animations(&baked));
+            install_animations(&mut world_renderer, &mut gpu, &baked)?;
             if let Some(l) = locator_sprites(&baked) {
                 self.locator_styles = l.styles.clone();
                 world_renderer.init_locator_bar(&mut gpu, &l)?;

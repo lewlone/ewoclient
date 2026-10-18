@@ -1648,7 +1648,11 @@ impl Current {
 /// `FlowingFluid.getFlow` for one fluid cell: the unit vector of its flow —
 /// the horizontal own-height gradient, plus `(0, -6, 0)` for a falling column
 /// walled in by a solid face. Zero when nothing flows.
-fn fluid_flow(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32, lava: bool) -> [f64; 3] {
+///
+/// Public because the mesher reads the same flow for a fluid's top face
+/// (M197, `FluidRenderer`'s flowing-sprite angle): one transcription of
+/// `getFlow`, not two.
+pub fn fluid_flow(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32, lava: bool) -> [f64; 3] {
     let here = world.block(x, y, z);
     let own = fluid_own_height(here.fluid);
     let (mut fx, mut fz) = (0.0, 0.0);

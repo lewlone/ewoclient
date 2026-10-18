@@ -21,6 +21,15 @@ use crate::read_json_file;
 
 pub const TEX_SIZE: u32 = 16;
 
+/// The fluid flow sprites' frame size (M197): `block/water_flow` and
+/// `block/lava_flow` are 32 x 32 a frame, and a flowing top samples a rotated
+/// region about 23 px across, so they live in their own texture array.
+pub const FLOW_TEX_SIZE: u32 = 32;
+
+/// `RenderKind::Fluid::flow_layer` when the jar has no flow sprite: the top
+/// stays on the still sprite whatever the flow.
+pub const NO_FLOW_LAYER: u16 = u16::MAX;
+
 /// `BakedAssets::particle_layer` sentinel — this state has no particle sprite,
 /// so a block-break burst draws nothing rather than an arbitrary texture.
 pub const NO_PARTICLE_LAYER: u16 = u16::MAX;
@@ -160,6 +169,12 @@ pub enum RenderKind {
         side_layer: u16,
         /// The raw (untinted) side layer, for the biome water tint.
         raw_side_layer: u16,
+        /// The whole flow sprite's layer in the FLOW texture array
+        /// (`BakedAssets::flow_layers`, M197): what a flowing top samples,
+        /// rotated to the flow. [`NO_FLOW_LAYER`] without one.
+        flow_layer: u16,
+        /// The raw (untinted) flow layer, for the biome water tint.
+        raw_flow_layer: u16,
         level: u8,
         lava: bool,
     },
@@ -182,6 +197,11 @@ pub struct CarriedFluid {
     /// (M196; see `RenderKind::Fluid::side_layer`).
     pub side_layer: u16,
     pub raw_side_layer: u16,
+    /// `block/water_flow` whole, in the flow array (M197; see
+    /// `RenderKind::Fluid::flow_layer`) — a waterlogged source still flows
+    /// toward lower water beside it.
+    pub flow_layer: u16,
+    pub raw_flow_layer: u16,
     /// `FluidState.getAmount()` read the way `RenderKind::Fluid` reads it:
     /// 0 = source. **Every** carried fluid in 26.2 is a source — all 45
     /// `getFluidState` overrides call `Fluids.WATER.getSource(..)`, never
@@ -685,6 +705,12 @@ pub struct BakedAssets {
     /// the `.mcmeta` frame order + timing. The layer itself holds frame 0;
     /// the renderer re-uploads frames on the 20 Hz tick.
     pub animations: Vec<AnimatedLayer>,
+    /// The flow texture array's layers (M197): `FLOW_TEX_SIZE`-square RGBA,
+    /// frame 0 of each fluid's whole flow sprite (water pre-tinted, water raw,
+    /// lava).
+    pub flow_layers: Vec<Vec<u8>>,
+    /// Their animations, with `layer` indexing `flow_layers`.
+    pub flow_animations: Vec<AnimatedLayer>,
     /// Every mob skin the entity pass's model registry wants, keyed by the
     /// registry's texture names (`rewo_gpu::mobs::MobDef::textures`).
     /// Missing jar entries are simply absent — those mobs render as
@@ -1610,6 +1636,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         layers: Vec::new(),
         layer_names: Vec::new(),
         animations: Vec::new(),
+        flow_layers: Vec::new(),
+        flow_animations: Vec::new(),
+        flow_index: HashMap::new(),
         grass_tint,
         foliage_tint,
         forced_layers: std::collections::HashSet::new(),
@@ -1770,6 +1799,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                     // Replaced by the flow quadrant after the loop (M196).
                     side_layer: layer,
                     raw_side_layer: raw_layer,
+                    // And the whole flow sprite (M197).
+                    flow_layer: NO_FLOW_LAYER,
+                    raw_flow_layer: NO_FLOW_LAYER,
                     level,
                     lava,
                 };
@@ -1962,22 +1994,37 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         baker.flow_side_layer("block/water_flow", TintKind::None),
     );
     let lava_side = baker.flow_side_layer("block/lava_flow", TintKind::None);
+    // M197 — the whole flow sprites, in their own array.
+    let water_flow = (
+        baker.flow_layer("block/water_flow", TintKind::Water),
+        baker.flow_layer("block/water_flow", TintKind::None),
+    );
+    let lava_flow = baker.flow_layer("block/lava_flow", TintKind::None);
     for r in render.iter_mut() {
         if let RenderKind::Fluid {
             side_layer,
             raw_side_layer,
+            flow_layer,
+            raw_flow_layer,
             lava,
             ..
         } = r
         {
-            let pick = if *lava {
-                lava_side.map(|l| (l, l))
+            let (side, flow) = if *lava {
+                (lava_side.map(|l| (l, l)), lava_flow.map(|l| (l, l)))
             } else {
-                water_side.0.zip(water_side.1)
+                (
+                    water_side.0.zip(water_side.1),
+                    water_flow.0.zip(water_flow.1),
+                )
             };
-            if let Some((s, raw)) = pick {
+            if let Some((s, raw)) = side {
                 *side_layer = s;
                 *raw_side_layer = raw;
+            }
+            if let Some((f, raw)) = flow {
+                *flow_layer = f;
+                *raw_flow_layer = raw;
             }
         }
     }
@@ -1988,12 +2035,18 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     if let Some((layer, raw_layer)) = water_layers {
         let (side_layer, raw_side_layer) =
             water_side.0.zip(water_side.1).unwrap_or((layer, raw_layer));
+        let (flow_layer, raw_flow_layer) = water_flow
+            .0
+            .zip(water_flow.1)
+            .unwrap_or((NO_FLOW_LAYER, NO_FLOW_LAYER));
         for (id, falling, self_occludes) in carried {
             fluid[id] = Some(CarriedFluid {
                 layer,
                 raw_layer,
                 side_layer,
                 raw_side_layer,
+                flow_layer,
+                raw_flow_layer,
                 level: 0,
                 falling,
                 self_occludes,
@@ -2075,6 +2128,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         layer_names: baker.layer_names,
         particle_layer,
         animations: baker.animations,
+        flow_layers: baker.flow_layers,
+        flow_animations: baker.flow_animations,
         grass_tint,
         foliage_tint,
         grass_colormap,
@@ -3531,6 +3586,10 @@ struct Baker<'a> {
     layers: Vec<Vec<u8>>,
     layer_names: Vec<String>,
     animations: Vec<AnimatedLayer>,
+    /// The flow texture array (M197): its layers, animations and index.
+    flow_layers: Vec<Vec<u8>>,
+    flow_animations: Vec<AnimatedLayer>,
+    flow_index: HashMap<String, u16>,
     grass_tint: [u8; 3],
     foliage_tint: [u8; 3],
     /// Layers some model referenced through a `force_translucent` texture.
@@ -4332,6 +4391,55 @@ impl<'a> Baker<'a> {
         };
         self.layer_for(&name, TintKind::None)
             .unwrap_or(NO_PARTICLE_LAYER)
+    }
+
+    /// A fluid's whole flow sprite as a layer of the FLOW texture array
+    /// (M197): `FLOW_TEX_SIZE`-square frames, tinted like
+    /// [`Self::layer_for`], animated by the texture's own `.mcmeta`.
+    fn flow_layer(&mut self, tex_name: &str, apply_tint: TintKind) -> Option<u16> {
+        let key = format!("{tex_name}#{apply_tint:?}");
+        if let Some(&layer) = self.flow_index.get(&key) {
+            return Some(layer);
+        }
+        let short = tex_name.strip_prefix("minecraft:").unwrap_or(tex_name);
+        let path = format!("assets/minecraft/textures/{short}.png");
+        let mut bytes = Vec::new();
+        self.jar.by_name(&path).ok()?.read_to_end(&mut bytes).ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        let size = (FLOW_TEX_SIZE * FLOW_TEX_SIZE * 4) as usize;
+        if w != FLOW_TEX_SIZE || h % w != 0 {
+            log::warn!("rewo-data: {tex_name} is {w}x{h}, not {FLOW_TEX_SIZE}-wide square frames");
+            return None;
+        }
+        let mut frames: Vec<Vec<u8>> = rgba.chunks(size).map(<[u8]>::to_vec).collect();
+        let tint = match apply_tint {
+            TintKind::Grass => Some(self.grass_tint),
+            TintKind::Foliage => Some(self.foliage_tint),
+            TintKind::Water => Some([0x3F, 0x76, 0xE4]),
+            TintKind::None => None,
+        };
+        if let Some(color) = tint {
+            for f in &mut frames {
+                tint_rgb(f, color);
+            }
+        }
+        let layer = u16::try_from(self.flow_layers.len()).ok()?;
+        if frames.len() > 1 {
+            if let Some((order, frametime, interpolate)) =
+                read_mcmeta(self.jar, &path, frames.len() as u32)
+            {
+                self.flow_animations.push(AnimatedLayer {
+                    layer,
+                    frames: frames.clone(),
+                    order,
+                    frametime,
+                    interpolate,
+                });
+            }
+        }
+        self.flow_layers.push(frames.into_iter().next()?);
+        self.flow_index.insert(key, layer);
+        Some(layer)
     }
 
     /// The side faces' layer for a fluid's flow texture (M196): the top-left

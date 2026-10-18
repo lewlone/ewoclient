@@ -23,14 +23,23 @@ impl WorldRenderer {
         layers: &[Vec<u8>],
     ) -> Result<Self, String> {
         let textures = TextureArray::create(gpu, tex_size, layers)?;
+        // M197: the flow sprites' own array, one opaque-white placeholder layer
+        // until `set_flow_textures` installs the baked ones.
+        let flow_textures = TextureArray::create(gpu, super::textures::FLOW_TEX_SIZE, &[])?;
         let device = gpu.device.clone();
 
         let terrain_descriptors = terrain::create_terrain_descriptors(&device)?;
 
         let mut lm = LightmapRing::create(gpu)?;
 
-        let terrain =
-            TerrainPass::create(&device, color_format, terrain_descriptors, &textures, &lm)?;
+        let terrain = TerrainPass::create(
+            &device,
+            color_format,
+            terrain_descriptors,
+            &textures,
+            &flow_textures,
+            &lm,
+        )?;
         // Seed every slot with the default state so a first frame that
         // never reaches `draw` still binds initialized memory.
         lm.seed_defaults();
@@ -82,6 +91,7 @@ impl WorldRenderer {
             leash_ribbon,
             lm,
             textures,
+            flow_textures,
             arena: Arena::new(mega, upload_ring),
             evicted_textures: Vec::new(),
             culler: Culler::new(
@@ -193,6 +203,7 @@ impl WorldRenderer {
             }
             self.terrain.destroy_layouts(device);
             self.textures.destroy_objects(device);
+            self.flow_textures.destroy_objects(device);
             for b in [self.arena.vbuf, self.arena.ibuf, self.culler.readback] {
                 device.destroy_buffer(b, None);
             }
@@ -208,6 +219,7 @@ impl WorldRenderer {
         }
         for a in [
             self.textures.image_alloc.take(),
+            self.flow_textures.image_alloc.take(),
             self.arena.vbuf_alloc.take(),
             self.arena.ibuf_alloc.take(),
             self.culler.readback_alloc.take(),

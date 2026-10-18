@@ -382,6 +382,11 @@ pub struct MeshInputs<'a> {
     /// Vanilla's "Smooth Lighting" option (`Options.ambientOcclusion`, on by
     /// default): off, every block takes the flat path.
     pub smooth_lighting: bool,
+    /// Per-state movement facts (`BakedAssets::physics`) and collision boxes
+    /// (`::collide`) — what `FlowingFluid.getFlow` reads, for a fluid top's
+    /// flowing sprite (M197). Empty = no flow anywhere, every top still.
+    pub physics: &'a [rewo_data::block_physics::BlockPhysics],
+    pub collide: &'a [Vec<[f32; 6]>],
 }
 
 impl<'a> MeshInputs<'a> {
@@ -395,6 +400,8 @@ impl<'a> MeshInputs<'a> {
             emission: &b.emission,
             dampening: &b.dampening,
             smooth_lighting: true,
+            physics: &b.physics,
+            collide: &b.collide,
         }
     }
 
@@ -413,8 +420,72 @@ impl<'a> MeshInputs<'a> {
             emission: &[],
             dampening: &[],
             smooth_lighting: true,
+            physics: &[],
+            collide: &[],
         }
     }
+}
+
+/// The bit a [`MeshVertex`] layer carries when it indexes the FLOW texture
+/// array (M197) rather than the block array: a flowing fluid top samples
+/// the 32 px flow sprite, which the 16 px array cannot hold. `world.frag`
+/// and `water.frag` test the same bit; `live_cmd::view` pins the pair.
+pub const FLOW_LAYER_BIT: u16 = 0x8000;
+
+/// [`rewo_world::physics::PhysicsWorld`] over the mesh snapshot and the
+/// per-state physics tables — exactly what `fluid_flow` asks (M197).
+struct FlowWorld<'a> {
+    world: &'a World,
+    physics: &'a [rewo_data::block_physics::BlockPhysics],
+    collide: &'a [Vec<[f32; 6]>],
+}
+
+impl rewo_world::physics::PhysicsWorld for FlowWorld<'_> {
+    fn collision(&self, x: i32, y: i32, z: i32) -> &[[f32; 6]] {
+        let state = self.world.block_state_at(x, y, z) as usize;
+        self.collide.get(state).map_or(&[], Vec::as_slice)
+    }
+    fn block(&self, x: i32, y: i32, z: i32) -> rewo_data::block_physics::BlockPhysics {
+        let state = self.world.block_state_at(x, y, z) as usize;
+        self.physics
+            .get(state)
+            .copied()
+            .unwrap_or(rewo_data::block_physics::BlockPhysics::AIR)
+    }
+    fn has_chunk(&self, _x: i32, _z: i32) -> bool {
+        true
+    }
+    fn min_y(&self) -> i32 {
+        self.world.shape.min_y
+    }
+}
+
+/// `FluidRenderer.tesselate`'s top-face UVs for a flow (M197), in Rewo's
+/// vertex order `(x0, z0)`, `(x1, z0)`, `(x1, z1)`, `(x0, z1)` — vanilla's
+/// `u00/v00`, `u11/v11`, `u10/v10`, `u01/v01` — as fractions of the flow
+/// sprite. `None` when nothing flows horizontally (the still sprite):
+///
+/// ```text
+/// float angle = (float)Mth.atan2(flow.z, flow.x) - (float)(Math.PI / 2);
+/// float s = Mth.sin(angle) * 0.25F, c = Mth.cos(angle) * 0.25F;
+/// u00 = 0.5 + (-c - s)  v00 = 0.5 + (-c + s)
+/// u01 = 0.5 + (-c + s)  v01 = 0.5 + ( c + s)
+/// u10 = 0.5 + ( c + s)  v10 = 0.5 + ( c - s)
+/// u11 = 0.5 + ( c - s)  v11 = 0.5 + (-c - s)
+/// ```
+pub fn flow_top_uvs(flow: [f64; 3]) -> Option<[[f32; 2]; 4]> {
+    if flow[0] == 0.0 && flow[2] == 0.0 {
+        return None;
+    }
+    let angle = rewo_world::lightmap::mth_atan2(flow[2], flow[0]) as f32
+        - std::f64::consts::FRAC_PI_2 as f32;
+    let s = rewo_world::lightmap::mth_sin(angle) * 0.25;
+    let c = rewo_world::lightmap::mth_cos(angle) * 0.25;
+    let uv00 = [0.5 + (-c - s), 0.5 + (-c + s)];
+    let uv01 = [0.5 + (-c + s), 0.5 + (c + s)];
+    let uv10 = [0.5 + (c + s), 0.5 + (c - s)];
+    let uv11 = [0.5 + (c - s), 0.5 + (-c - s)];
+    Some([uv00, uv11, uv10, uv01])
 }
 
 /// The per-state lookups the emitters share.
@@ -425,6 +496,8 @@ struct Tables<'a> {
     emission: &'a [u8],
     dampening: &'a [u8],
     smooth_lighting: bool,
+    physics: &'a [rewo_data::block_physics::BlockPhysics],
+    collide: &'a [Vec<[f32; 6]>],
 }
 
 impl<'a> Tables<'a> {
@@ -435,6 +508,8 @@ impl<'a> Tables<'a> {
             emission: inputs.emission,
             dampening: inputs.dampening,
             smooth_lighting: inputs.smooth_lighting,
+            physics: inputs.physics,
+            collide: inputs.collide,
         }
     }
 
@@ -1225,6 +1300,9 @@ struct FluidHere {
     /// The side faces' flow-quadrant layers (M196).
     side_layer: u16,
     raw_side_layer: u16,
+    /// The flow sprite in the flow array (M197), or `NO_FLOW_LAYER`.
+    flow_layer: u16,
+    raw_flow_layer: u16,
     lava: bool,
     /// `isFaceOccludedBySelf`'s input, in the **mesher's** face order.
     self_occludes: u8,
@@ -1244,6 +1322,8 @@ fn fluid_at(
         raw_layer,
         side_layer,
         raw_side_layer,
+        flow_layer,
+        raw_flow_layer,
         level,
         lava,
     }) = table.get(state as usize)
@@ -1253,6 +1333,8 @@ fn fluid_at(
             raw_layer: *raw_layer,
             side_layer: *side_layer,
             raw_side_layer: *raw_side_layer,
+            flow_layer: *flow_layer,
+            raw_flow_layer: *raw_flow_layer,
             level: *level,
             lava: *lava,
             // Plain water never suppresses its own faces —
@@ -1288,6 +1370,8 @@ fn fluid_at(
         raw_layer: f.raw_layer,
         side_layer: f.side_layer,
         raw_side_layer: f.raw_side_layer,
+        flow_layer: f.flow_layer,
+        raw_flow_layer: f.raw_flow_layer,
         level: f.level,
         lava: false,
         self_occludes: mask,
@@ -1356,12 +1440,12 @@ fn emit_fluid(
     let lava = f.lava;
     // Water gets the biome water tint (raw layer + dynamic color); lava never.
     // The sides take the flow quadrant (M196), raw or pre-tinted alike.
-    let (fluid_layer, side_layer, tint_rgb) = if lava {
-        (f.layer, f.side_layer, TINT_WHITE)
+    let (fluid_layer, side_layer, flow_layer, tint_rgb) = if lava {
+        (f.layer, f.side_layer, f.flow_layer, TINT_WHITE)
     } else {
         match biome_tint(world, cache, wx, y, wz, TintSource::Water) {
-            Some(rgb) => (f.raw_layer, f.raw_side_layer, rgb),
-            None => (f.layer, f.side_layer, TINT_WHITE),
+            Some(rgb) => (f.raw_layer, f.raw_side_layer, f.raw_flow_layer, rgb),
+            None => (f.layer, f.side_layer, f.flow_layer, TINT_WHITE),
         }
     };
     let same =
@@ -1414,18 +1498,37 @@ fn emit_fluid(
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     };
 
-    // Top — unless the same fluid sits above.
+    // Top — unless the same fluid sits above. Still sprite, unless the fluid
+    // flows horizontally (`fluidState.getFlow`), when it is the flow sprite
+    // turned to the flow (M197).
     if !same(wx, y + 1, wz) {
+        let flowing = (flow_layer != rewo_data::assets::NO_FLOW_LAYER)
+            .then(|| {
+                let w = FlowWorld {
+                    world,
+                    physics: table.physics,
+                    collide: table.collide,
+                };
+                flow_top_uvs(rewo_world::physics::fluid_flow(&w, wx, y, wz, lava))
+            })
+            .flatten();
+        let (uv, layer) = match flowing {
+            Some(uv) => (uv, flow_layer | FLOW_LAYER_BIT),
+            None => (
+                [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                fluid_layer,
+            ),
+        };
         quad(
             [
-                ([x0, yf + h00, z0], [0.0, 0.0]),
-                ([x1, yf + h10, z0], [1.0, 0.0]),
-                ([x1, yf + h11, z1], [1.0, 1.0]),
-                ([x0, yf + h01, z1], [0.0, 1.0]),
+                ([x0, yf + h00, z0], uv[0]),
+                ([x1, yf + h10, z0], uv[1]),
+                ([x1, yf + h11, z1], uv[2]),
+                ([x0, yf + h01, z1], uv[3]),
             ],
             up,
             fluid_light(y),
-            fluid_layer,
+            layer,
         );
     }
     // Sides — skip against the same fluid or a full opaque cube.
@@ -1963,6 +2066,8 @@ mod tests {
                 raw_layer: POOL_RAW,
                 side_layer: POOL_TINTED,
                 raw_side_layer: POOL_RAW,
+                flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+                raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
                 level: 0,
                 lava: false,
             },
@@ -1975,6 +2080,8 @@ mod tests {
                 raw_layer: CARRIED_RAW,
                 side_layer: CARRIED_TINTED,
                 raw_side_layer: CARRIED_RAW,
+                flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+                raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
                 level: 0,
                 falling: false,
                 self_occludes: 0,
@@ -3029,6 +3136,8 @@ mod tests {
             raw_layer: 30,
             side_layer: 30,
             raw_side_layer: 30,
+            flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: false,
         }); // 3
@@ -3037,6 +3146,8 @@ mod tests {
             raw_layer: 31,
             side_layer: 31,
             raw_side_layer: 31,
+            flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: true,
         }); // 4
@@ -3323,6 +3434,8 @@ mod tests {
             raw_layer: 31,
             side_layer: 40,
             raw_side_layer: 41,
+            flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: false,
         }); // 3: water
@@ -3331,6 +3444,8 @@ mod tests {
             raw_layer: 32,
             side_layer: 42,
             raw_side_layer: 42,
+            flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: true,
         }); // 4: lava
@@ -3358,6 +3473,108 @@ mod tests {
                 assert_eq!(layer, want, "face {face}");
             }
         }
+    }
+
+    /// M197: `FluidRenderer`'s flowing-top UVs, worked by hand for a flow
+    /// due east. `Mth.atan2(0, 1)` is 0, so the angle is `-(float)(PI / 2)`;
+    /// `Mth.sin` of it reads `SIN[49152]` = -1 and `Mth.cos` reads `SIN[0]`
+    /// (the `+16384` lands at -0.0004, truncated to 0) = 0. So `s = -0.25`,
+    /// `c = 0`, and `u00/v00 = (0.75, 0.25)`, `u11/v11 = (0.75, 0.75)`,
+    /// `u10/v10 = (0.25, 0.75)`, `u01/v01 = (0.25, 0.25)`: V grows toward +x,
+    /// the way the water runs.
+    #[test]
+    fn a_flow_turns_the_top_uvs() {
+        assert_eq!(
+            flow_top_uvs([0.0, 0.0, 0.0]),
+            None,
+            "still: the still sprite"
+        );
+        assert_eq!(
+            flow_top_uvs([0.0, -1.0, 0.0]),
+            None,
+            "straight down: still too"
+        );
+        assert_eq!(
+            flow_top_uvs([1.0, 0.0, 0.0]),
+            Some([[0.75, 0.25], [0.75, 0.75], [0.25, 0.75], [0.25, 0.25]])
+        );
+        // Due north (-z): the angle is -PI, so V grows toward -z.
+        let n = flow_top_uvs([0.0, 0.0, -1.0]).unwrap();
+        let want = [[0.75, 0.75], [0.25, 0.75], [0.25, 0.25], [0.75, 0.25]];
+        for (g, w) in n.iter().zip(want) {
+            assert!(
+                (g[0] - w[0]).abs() < 1e-6 && (g[1] - w[1]).abs() < 1e-6,
+                "{n:?}"
+            );
+        }
+    }
+
+    /// M197 end to end in the mesher: a source beside lower water flows
+    /// toward it (`getFlow` through the physics tables), so its top takes the
+    /// flow array's layer, flagged, at the due-east UVs; with no physics
+    /// tables nothing flows and the top stays on the still layer.
+    #[test]
+    fn a_flowing_top_takes_the_flow_layer() {
+        use rewo_data::block_physics::{BlockPhysics, PhysFluid};
+        let mut table = cube_table(); // 0 air, 1 stone, 2 slate
+        let water = |level| RenderKind::Fluid {
+            layer: 30,
+            raw_layer: 31,
+            side_layer: 40,
+            raw_side_layer: 41,
+            flow_layer: 7,
+            raw_flow_layer: 8,
+            level,
+            lava: false,
+        };
+        table.push(water(0)); // 3: source
+        table.push(water(1)); // 4: flowing, one step down
+        let phys = |own_height| BlockPhysics {
+            fluid: PhysFluid::Water { own_height },
+            ..BlockPhysics::AIR
+        };
+        let physics = vec![
+            BlockPhysics::AIR,
+            BlockPhysics::default(),
+            BlockPhysics::default(),
+            phys(8.0 / 9.0),
+            phys(7.0 / 9.0),
+        ];
+        let full = vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        let collide = vec![Vec::new(), full.clone(), full, Vec::new(), Vec::new()];
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        for x in 2..9 {
+            for z in 2..7 {
+                w.set_block(x, 9, z, 1); // a stone floor
+            }
+        }
+        w.set_block(4, 10, 4, 3);
+        w.set_block(5, 10, 4, 4);
+        let tops = |inputs: MeshInputs<'_>| -> Vec<(u16, [[f32; 2]; 4])> {
+            let mesh = mesh_column_with(&w, inputs, 0, 0).expect("meshed");
+            mesh.tvertices
+                .chunks(4)
+                .filter(|q| q.iter().all(|v| v.pos[1] > 10.0))
+                .map(|q| (q[0].layer_index(), std::array::from_fn(|i| q[i].uv_f32())))
+                .collect()
+        };
+        let east = [[0.75, 0.25], [0.75, 0.75], [0.25, 0.75], [0.25, 0.25]];
+        let flowing = tops(MeshInputs {
+            physics: &physics,
+            collide: &collide,
+            ..MeshInputs::geometry(&table, &[], &[])
+        });
+        assert_eq!(flowing.len(), 2, "{flowing:?}");
+        for (layer, uv) in &flowing {
+            assert_eq!(*layer, 7 | FLOW_LAYER_BIT);
+            assert_eq!(*uv, east);
+        }
+        let still = tops(MeshInputs::geometry(&table, &[], &[]));
+        assert!(
+            still.iter().all(|(l, uv)| *l == 30 && uv[0] == [0.0, 0.0]),
+            "{still:?}"
+        );
     }
 
     fn fluid_face_of_quad(q: &[MeshVertex; 4], block: [i32; 3]) -> usize {
@@ -3633,6 +3850,8 @@ mod occlusion_tests {
                 raw_layer: 4,
                 side_layer: 4,
                 raw_side_layer: 4,
+                flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+                raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
                 level: 0,
                 lava: false,
             },

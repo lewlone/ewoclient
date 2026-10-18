@@ -703,6 +703,8 @@ fn cube_tables() -> MeshTables {
         emission: Vec::new(),
         dampening: Vec::new(),
         smooth_lighting: true,
+        physics: Vec::new(),
+        collide: Vec::new(),
     }
 }
 

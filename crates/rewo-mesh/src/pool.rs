@@ -61,6 +61,9 @@ pub struct MeshTables {
     pub dampening: Vec<u8>,
     /// Vanilla's "Smooth Lighting" option.
     pub smooth_lighting: bool,
+    /// What a fluid top's flow reads (M197; see [`MeshInputs::physics`]).
+    pub physics: Vec<rewo_data::block_physics::BlockPhysics>,
+    pub collide: Vec<Vec<[f32; 6]>>,
 }
 
 impl MeshTables {
@@ -76,6 +79,8 @@ impl MeshTables {
             emission: b.emission.clone(),
             dampening: b.dampening.clone(),
             smooth_lighting: inputs.smooth_lighting,
+            physics: b.physics.clone(),
+            collide: b.collide.clone(),
         }
     }
 
@@ -88,6 +93,8 @@ impl MeshTables {
             emission: &self.emission,
             dampening: &self.dampening,
             smooth_lighting: self.smooth_lighting,
+            physics: &self.physics,
+            collide: &self.collide,
         }
     }
 }
@@ -336,6 +343,8 @@ mod tests {
             emission: Vec::new(),
             dampening: Vec::new(),
             smooth_lighting: true,
+            physics: Vec::new(),
+            collide: Vec::new(),
         }
     }
 

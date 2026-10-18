@@ -10,6 +10,10 @@ use gpu_allocator::MemoryLocation;
 use super::WorldRenderer;
 use crate::Gpu;
 
+/// The flow texture array's layer size (M197) — mirrors
+/// `rewo_data::assets::FLOW_TEX_SIZE`; `live_cmd::view` pins the pair.
+pub const FLOW_TEX_SIZE: u32 = 32;
+
 /// One animated texture-array layer (mirror of rewo-data's
 /// `AnimatedLayer` — this crate stays free of a rewo-data dependency).
 pub struct LayerAnimation {
@@ -273,7 +277,7 @@ pub(crate) fn upload_texture_array(
 /// `anim_tick` advances.
 pub(super) struct TextureArray {
     pub(super) sampler: vk::Sampler,
-    image: vk::Image,
+    pub(super) image: vk::Image,
     pub(super) image_alloc: Option<Allocation>,
     pub(super) view: vk::ImageView,
     tex_size: u32,
@@ -381,6 +385,49 @@ impl TextureArray {
         }
     }
 
+    /// Register this array's animated layers, each frame's mip chain built
+    /// once so a frame change is a memcpy.
+    pub(super) fn set_animations(&mut self, animations: Vec<LayerAnimation>) {
+        self.anim_last = vec![None; animations.len()];
+        self.anim_mips = animations
+            .iter()
+            .map(|a| {
+                a.frames
+                    .iter()
+                    .map(|f| generate_mips(self.tex_size, self.mip_levels, f).concat())
+                    .collect()
+            })
+            .collect();
+        self.animations = animations;
+    }
+
+    /// The `(layer, mip chain)` uploads `tick` calls for: every animation
+    /// whose [`anim_sample`] moved since its last upload.
+    fn due_chains(&mut self, tick: u64) -> Vec<(u16, Vec<u8>)> {
+        let mut out = Vec::new();
+        for i in 0..self.animations.len() {
+            let a = &self.animations[i];
+            let Some(sample) = anim_sample(a, tick) else {
+                continue;
+            };
+            if self.anim_last[i] == Some(sample) {
+                continue;
+            }
+            self.anim_last[i] = Some(sample);
+            let (frame, next, progress) = sample;
+            let mips = &self.anim_mips[i];
+            out.push((
+                a.layer,
+                if progress == 0 {
+                    mips[frame].clone()
+                } else {
+                    blend_chain(&mips[frame], &mips[next], progress)
+                },
+            ));
+        }
+        out
+    }
+
     pub(super) fn destroy_objects(&self, device: &ash::Device) {
         unsafe {
             device.destroy_sampler(self.sampler, None);
@@ -394,44 +441,51 @@ impl WorldRenderer {
     /// Register animated texture layers (from the bake). Frames are
     /// re-uploaded into the texture array as `anim_tick` advances.
     pub fn set_animations(&mut self, animations: Vec<LayerAnimation>) {
-        self.textures.anim_last = vec![None; animations.len()];
-        self.textures.anim_mips = animations
-            .iter()
-            .map(|a| {
-                a.frames
-                    .iter()
-                    .map(|f| {
-                        generate_mips(self.textures.tex_size, self.textures.mip_levels, f).concat()
-                    })
-                    .collect()
-            })
-            .collect();
-        self.textures.animations = animations;
+        self.textures.set_animations(animations);
+    }
+
+    /// Install the fluid flow sprites (M197): a `FLOW_TEX_SIZE` texture array
+    /// of its own, sampled by a flowing fluid top through
+    /// `rewo_mesh::FLOW_LAYER_BIT`, with its animations. Replaces the
+    /// one-layer placeholder [`WorldRenderer::new`] built, so it waits for the
+    /// device — an init-time call, never a per-frame one.
+    pub fn set_flow_textures(
+        &mut self,
+        gpu: &mut Gpu,
+        layers: &[Vec<u8>],
+        animations: Vec<LayerAnimation>,
+    ) -> Result<(), String> {
+        if layers.is_empty() {
+            return Ok(());
+        }
+        unsafe {
+            gpu.device
+                .device_wait_idle()
+                .map_err(|e| format!("flow textures idle: {e}"))?;
+        }
+        let mut fresh = TextureArray::create(gpu, FLOW_TEX_SIZE, layers)?;
+        fresh.set_animations(animations);
+        let old = std::mem::replace(&mut self.flow_textures, fresh);
+        self.terrain.rebind_flow(&gpu.device, &self.flow_textures);
+        old.destroy_objects(&gpu.device);
+        let mut old = old;
+        if let Some(a) = old.image_alloc.take() {
+            let _ = gpu.allocator.free(a);
+        }
+        Ok(())
     }
 
     /// Advance texture animations to the given game tick (20 Hz), and
     /// re-upload any layer whose frame changed. A few KB per change —
     /// water/lava tick every `frametime` (2) ticks. An interpolating layer
-    /// (M195) changes on every tick of its frame, as vanilla redraws it.
+    /// (M195) changes on every tick of its frame, as vanilla redraws it. The
+    /// flow array's animations (M197) tick on the same clock.
     pub fn anim_tick(&mut self, gpu: &mut Gpu, tick: u64) -> Result<(), String> {
-        for i in 0..self.textures.animations.len() {
-            let a = &self.textures.animations[i];
-            let Some(sample) = anim_sample(a, tick) else {
-                continue;
-            };
-            if self.textures.anim_last[i] == Some(sample) {
-                continue;
-            }
-            self.textures.anim_last[i] = Some(sample);
-            let layer = a.layer;
-            let (frame, next, progress) = sample;
-            let mips = &self.textures.anim_mips[i];
-            let chain = if progress == 0 {
-                mips[frame].clone()
-            } else {
-                blend_chain(&mips[frame], &mips[next], progress)
-            };
-            self.upload_layer_chain(gpu, layer, &chain)?;
+        for (layer, chain) in self.textures.due_chains(tick) {
+            self.upload_layer_chain(gpu, false, layer, &chain)?;
+        }
+        for (layer, chain) in self.flow_textures.due_chains(tick) {
+            self.upload_layer_chain(gpu, true, layer, &chain)?;
         }
         Ok(())
     }
@@ -443,9 +497,16 @@ impl WorldRenderer {
     fn upload_layer_chain(
         &mut self,
         gpu: &mut Gpu,
+        flow: bool,
         layer: u16,
         chain: &[u8],
     ) -> Result<(), String> {
+        let tex = if flow {
+            &self.flow_textures
+        } else {
+            &self.textures
+        };
+        let (image, tex_size, mip_levels) = (tex.image, tex.tex_size, tex.mip_levels);
         let total = chain.len() as u64;
         let (slot, base, cb) = self.arena.stage(gpu, total)?;
         unsafe {
@@ -456,9 +517,9 @@ impl WorldRenderer {
             let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
             slice[base as usize..base as usize + chain.len()].copy_from_slice(chain);
             let mut off = base as usize;
-            let mut copies = Vec::with_capacity(self.textures.mip_levels as usize);
-            let mut size = self.textures.tex_size;
-            for level in 0..self.textures.mip_levels as usize {
+            let mut copies = Vec::with_capacity(mip_levels as usize);
+            let mut size = tex_size;
+            for level in 0..mip_levels as usize {
                 let len = (size * size * 4) as usize;
                 copies.push(
                     vk::BufferImageCopy::default()
@@ -485,7 +546,7 @@ impl WorldRenderer {
             let range = vk::ImageSubresourceRange::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
                 .base_mip_level(0)
-                .level_count(self.textures.mip_levels)
+                .level_count(mip_levels)
                 .base_array_layer(layer as u32)
                 .layer_count(1);
             let to_dst = vk::ImageMemoryBarrier2::default()
@@ -495,7 +556,7 @@ impl WorldRenderer {
                 .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
                 .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(self.textures.image)
+                .image(image)
                 .subresource_range(range);
             device.cmd_pipeline_barrier2(
                 cb,
@@ -504,7 +565,7 @@ impl WorldRenderer {
             device.cmd_copy_buffer_to_image(
                 cb,
                 staging,
-                self.textures.image,
+                image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &copies,
             );
@@ -515,7 +576,7 @@ impl WorldRenderer {
                 .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
                 .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.textures.image)
+                .image(image)
                 .subresource_range(range);
             device.cmd_pipeline_barrier2(
                 cb,
@@ -539,8 +600,38 @@ impl WorldRenderer {
         layer: u16,
         level: u32,
     ) -> Result<Vec<u8>, String> {
+        self.read_array_layer(gpu, false, layer, level)
+    }
+
+    /// [`Self::read_texture_layer`] for the flow array (M197).
+    pub fn read_flow_texture_layer(
+        &mut self,
+        gpu: &mut Gpu,
+        layer: u16,
+        level: u32,
+    ) -> Result<Vec<u8>, String> {
+        self.read_array_layer(gpu, true, layer, level)
+    }
+
+    fn read_array_layer(
+        &mut self,
+        gpu: &mut Gpu,
+        flow: bool,
+        layer: u16,
+        level: u32,
+    ) -> Result<Vec<u8>, String> {
         self.arena.flush_uploads(gpu)?;
-        let size = (self.textures.tex_size >> level).max(1);
+        let image = if flow {
+            self.flow_textures.image
+        } else {
+            self.textures.image
+        };
+        let tex_size = if flow {
+            self.flow_textures.tex_size
+        } else {
+            self.textures.tex_size
+        };
+        let size = (tex_size >> level).max(1);
         let len = u64::from(size * size * 4);
         unsafe {
             let device = gpu.device.clone();
@@ -604,7 +695,7 @@ impl WorldRenderer {
                 .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
                 .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .image(self.textures.image)
+                .image(image)
                 .subresource_range(range);
             device.cmd_pipeline_barrier2(
                 cb,
@@ -625,7 +716,7 @@ impl WorldRenderer {
                 });
             device.cmd_copy_image_to_buffer(
                 cb,
-                self.textures.image,
+                image,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 buffer,
                 &[region],
@@ -637,7 +728,7 @@ impl WorldRenderer {
                 .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
                 .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.textures.image)
+                .image(image)
                 .subresource_range(range);
             let host = vk::BufferMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)

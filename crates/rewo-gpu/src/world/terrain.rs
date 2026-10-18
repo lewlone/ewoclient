@@ -180,6 +180,12 @@ pub(super) fn create_terrain_descriptors(
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            // Binding 2 (M197): the fluid flow sprites' 32 px array.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let set_layout = device
             .create_descriptor_set_layout(
@@ -191,7 +197,7 @@ pub(super) fn create_terrain_descriptors(
         let tex_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(ring),
+                .descriptor_count(ring * 2),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(ring),
@@ -243,6 +249,7 @@ impl TerrainPass {
         color_format: vk::Format,
         descriptors: TerrainDescriptors,
         textures: &TextureArray,
+        flow: &TextureArray,
         lm: &LightmapRing,
     ) -> Result<Self, String> {
         unsafe {
@@ -255,6 +262,10 @@ impl TerrainPass {
             let image_info = [vk::DescriptorImageInfo::default()
                 .sampler(textures.sampler)
                 .image_view(textures.view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let flow_info = [vk::DescriptorImageInfo::default()
+                .sampler(flow.sampler)
+                .image_view(flow.view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             // `buffer_info` slices must outlive the update call, so build them
             // all up front rather than inside the loop.
@@ -280,6 +291,13 @@ impl TerrainPass {
                         .dst_binding(1)
                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                         .buffer_info(&buf_infos[i]),
+                );
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(sets[i])
+                        .dst_binding(2)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&flow_info),
                 );
             }
             device.update_descriptor_sets(&writes, &[]);
@@ -316,6 +334,27 @@ impl TerrainPass {
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline(self.water_pipeline, None);
         }
+    }
+
+    /// Point every set's binding 2 at a new flow array (M197). The caller has
+    /// waited for the device: no frame may still use the old one.
+    pub(super) fn rebind_flow(&self, device: &ash::Device, flow: &TextureArray) {
+        let info = [vk::DescriptorImageInfo::default()
+            .sampler(flow.sampler)
+            .image_view(flow.view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let writes: Vec<vk::WriteDescriptorSet> = self
+            .sets
+            .iter()
+            .map(|&set| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(2)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&info)
+            })
+            .collect();
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
     }
 
     pub(super) fn destroy_layouts(&self, device: &ash::Device) {
