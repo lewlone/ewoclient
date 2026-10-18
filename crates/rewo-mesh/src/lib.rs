@@ -2715,7 +2715,7 @@ mod tests {
     /// every position is a whole number.
     fn t_junctions(v: &[MeshVertex], idx: &[u32]) -> Vec<([f32; 3], [f32; 3], [f32; 3])> {
         let mut edges = std::collections::BTreeSet::new();
-        for t in idx.chunks_exact(3) {
+        for t in idx.as_chunks::<3>().0 {
             for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
                 let (a, b) = (v[a as usize].pos, v[b as usize].pos);
                 let key = |p: [f32; 3]| p.map(|c| c.to_bits());
@@ -2790,10 +2790,6 @@ mod tests {
             cz,
             true,
         )
-    }
-
-    fn merged_with(w: &World, inputs: MeshInputs<'_>, cx: i32, cz: i32) -> Option<ColumnMesh> {
-        mesh_column_merging(w, inputs, cx, cz, true)
     }
 
     /// Metrics that must hold for every optimized mesh.
