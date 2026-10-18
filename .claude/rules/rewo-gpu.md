@@ -36,8 +36,9 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   over the same geometry (glint, trims) use depth **EQUAL, no write**, and must
   reproduce the geometry *to the bit*: reuse the same pose derivation, don't
   re-derive it.
-- `MeshVertex` is a packed 28 bytes. Greedy meshing merges only uniform cube
-  faces and **never +Y**. Look for hardcoded `len * N` beside `VERTEX_STRIDE`
+- `MeshVertex` is a packed 28 bytes. **Greedy meshing is off in production**
+  (M208, `MERGE_FACES`): its rectangles left T-junction cracks. Any return
+  must pass `the_production_mesh_has_no_t_junctions`. Look for hardcoded `len * N` beside `VERTEX_STRIDE`
   whenever a vertex grows (M21, M109). Every pass's hand-written stride has a
   `const _: () = assert!(size_of::<Vertex>() == VERTEX_STRIDE)` beside it, so a
   struct that grows fails the build; add the same to a new pass. `rewo-mesh`

@@ -50,6 +50,9 @@ released.
   distant ocean or plain ended in a hard line against the sky; now the world
   fades into the sky with no edge. This changes the demo picture on purpose
   (only its sky pixels).
+- **M210**: at render distance 32 (the game's maximum) the outer ring of
+  the world would have been missing; the terrain buffer's ceiling is now
+  high enough, checked with a full RD32 load (3,725 of 3,725 columns).
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -81,6 +84,8 @@ released.
 | `9587057` | `live --out` is rejected beside `--run-seconds` / `--render-check` (it was silently ignored beside the first and replaced the windowed check beside the second). |
 | `11d4ba2`, `a5d4ee9` | This summary through M208. |
 | `98e720c` | **M209** — vanilla's sky disc: `SkyRenderer`'s octagonal fan evaluated per pixel with its interpolated fog distances, the uncovered sky in the fog colour, the dark disc below the horizon height; offscreen defaults are plains' sky/fog pair; new `REWO_EYE` / `REWO_YAW` knobs aim the headless shot; demo hash `748e5a1e...` to `e658532b...` (the diff is exactly the sky). |
+| `97bda97` | This summary through M209. |
+| `16f7eeb` | **M210** — arena ceilings 112M vertices / 168M indices, capped by the device's largest buffer; `load_check.py --rd 32` PASSED (3,725 / 3,725 columns; the run held 64.72M vertices and 97.08M indices, past M205's ceilings). |
 
 ## Decisions made
 
@@ -193,6 +198,8 @@ released.
   (1,057 / 1,057 columns, 0 deferred, 19.1M vertices in a 32M arena).
 - After M209 (at `98e720c`): **4,277 tests, 0 failed; gates 51/51** (demo
   hash `e658532bcc8c2758`); render check **73/73**, validation-clean.
+- M210: `load_check.py --rd 32 --seconds 240` PASSED, 3,725 / 3,725 columns,
+  0 deferred; 66 fps average, p99 31.9 ms in the debug build with validation.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
