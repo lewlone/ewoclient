@@ -785,6 +785,44 @@ impl LiveApp {
             &frames,
             &session.maps,
         );
+        // r70 — the injected frame's model and sword, at its position, and
+        // no entity body there (it used to fall through to the capsule).
+        // r71 — the server's own frame, read with the summoned values.
+        #[cfg(feature = "gates")]
+        if let Some(c) = self.check.as_mut() {
+            let summoned = collect_frame_inputs(
+                &session.world,
+                &session.maps,
+                &self.etypes,
+                &self.items,
+                alpha,
+            )
+            .iter()
+            .any(|f| {
+                f.facing == 2
+                    && f.rotation == 3
+                    && !f.glow
+                    && f.item.as_deref() == Some("minecraft:diamond_sword")
+                    && Some(f.pos) != c.item_frame_pos
+            });
+            if summoned {
+                c.server_frame_frames += 1;
+            }
+            if let Some(pos) = c.item_frame_pos {
+                let at = |m: &str, fixed: bool| {
+                    frames
+                        .models
+                        .iter()
+                        .any(|d| d.pos == pos && d.model == m && d.fixed_display == fixed)
+                };
+                if at("rewo:be/item_frame", false)
+                    && at("minecraft:diamond_sword", true)
+                    && !draws.iter().any(|d| d.pos == pos)
+                {
+                    c.item_frame_frames += 1;
+                }
+            }
+        }
         bes.extend(frames.models);
         let frame_maps = frames.maps;
         // A spawner's caged mob rides the ENTITY pass, mounted inside its
@@ -1172,7 +1210,7 @@ impl LiveApp {
                     .world_renderer
                     .set_hand(&mut state.gpu, &[], [[0.0; 4]; 4]);
             } else {
-                apply_hand(
+                let drawn = apply_hand(
                     &mut state.world_renderer,
                     &mut state.gpu,
                     session,
@@ -1181,6 +1219,16 @@ impl LiveApp {
                     alpha,
                     sw / sh,
                 );
+                // r69 — the injected off-hand map, with its data and its
+                // one decoration, reached the hand pass.
+                #[cfg(feature = "gates")]
+                if let Some(c) = self.check.as_mut() {
+                    if drawn == Some((HELD_MAP_WITNESS_ID, true, 1)) {
+                        c.held_map_frames += 1;
+                    }
+                }
+                #[cfg(not(feature = "gates"))]
+                let _ = drawn;
             }
         }
         // M33: the cloud deck and this frame's precipitation. The assets are

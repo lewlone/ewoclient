@@ -764,6 +764,9 @@ struct LiveApp {
     /// Whether the two-of-one-kind mob injection has happened (r54).
     #[cfg(feature = "gates")]
     crowd_injected: bool,
+    /// Whether r69's off-hand map and r70's item frame have been injected.
+    #[cfg(feature = "gates")]
+    frames_injected: bool,
     /// M172 — the open written-book reader, `None` when no book is up. The
     /// app-side view state the frame's render arm keys on (the M84 pattern);
     /// the framework `Screen` in `screens` carries only the Done button.
@@ -1025,6 +1028,8 @@ fn run_windowed(
         play_pack_injected: false,
         #[cfg(feature = "gates")]
         crowd_injected: false,
+        #[cfg(feature = "gates")]
+        frames_injected: false,
         book: None,
         lectern_shown: None,
         lectern_superseded: None,

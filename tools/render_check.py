@@ -70,7 +70,14 @@ PRECMD = (
     # -- so hiding the particles hides the ICON too. The first cut staged
     # `... 0 true` and r58 correctly measured zero icons.
     "item replace entity @s armor.chest with minecraft:iron_chestplate;"
-    "effect give @s minecraft:speed infinite 0"
+    "effect give @s minecraft:speed infinite 0;"
+    # M194 -- r71. A real item frame from the server, so its metadata slots
+    # (8 DIRECTION, 9 ITEM_STACK, 10 INT) are calibrated against 26.2 rather
+    # than against the decompile's count. `Fixed` keeps it from popping off
+    # with nothing behind it; facing 2 and rotation 3 are both non-default,
+    # so the server must send all three slots.
+    "summon minecraft:item_frame ~ ~1 ~ "
+    "{Facing:2b,Fixed:1b,ItemRotation:3b,Item:{id:\"minecraft:diamond_sword\",count:1}}"
 )
 
 # M166 -- the two BLOCKING configuration tasks, staged so the gate exercises the

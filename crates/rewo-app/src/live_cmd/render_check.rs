@@ -38,6 +38,14 @@ pub(super) const COLOR_EPS: f32 = 1e-4;
 /// render-check session's server will hand out, and far from any real profile.
 pub(super) const CROWD_IDS: [i32; 3] = [0x5A00, 0x5A01, 0x5A02];
 
+/// r69 (M192) — the map id `--render-check` injects into the off-hand, with
+/// its data and one decoration. Far above any id a short session's server
+/// hands out, so the witness is about this injection only.
+pub(super) const HELD_MAP_WITNESS_ID: i32 = 0x7E57;
+
+/// r70 (M194) — the item frame `--render-check` injects (a sword in it).
+pub(super) const FRAME_WITNESS_EID: i32 = 0x00F7_0000;
+
 /// M128 — the text of the one clickable message `--render-check` injects.
 ///
 /// Deliberately nothing a server would say, so the drawn-line scan that finds
@@ -196,6 +204,18 @@ pub(super) struct RenderCheck {
     /// recipe-book button at vanilla's position, read back out of the
     /// renderer.
     pub(super) book_button_frames: usize,
+    /// M192 — frames on which the first-person hand drew the injected
+    /// off-hand map WITH its data and its one decoration (r69).
+    pub(super) held_map_frames: usize,
+    /// M194 — where the injected item frame stands, once injected (r70).
+    pub(super) item_frame_pos: Option<[f32; 3]>,
+    /// M194 — frames on which the collector built the injected frame's model
+    /// and its sword at that position, and no body was drawn for it (r70).
+    pub(super) item_frame_frames: usize,
+    /// M194 — frames on which the collector read the SERVER's summoned frame
+    /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
+    /// metadata slots calibrated against a real 26.2 server.
+    pub(super) server_frame_frames: usize,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -677,7 +697,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 68;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 71;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -839,6 +859,40 @@ impl RenderCheck {
             format!(
                 "{} frames carried `recipe_book/button` at panel (5, 34)",
                 self.book_button_frames
+            ),
+        );
+        // M192 — the held map, injected into the off-hand at 0.2 with its
+        // data (one `player` decoration), drawn by the windowed hand pass
+        // until the 0.5 inventory force-open suppresses the hand.
+        row(
+            "r69 the off-hand map drew with its data and decoration in the windowed client",
+            self.held_map_frames >= 3,
+            format!(
+                "{} frames drew map {HELD_MAP_WITNESS_ID} with data and 1 decoration",
+                self.held_map_frames
+            ),
+        );
+        // M194 — the item frame injected at 0.2 (`add_entity` with facing 3
+        // in its data, then slot 9 ITEM_STACK and slot 10 INT through the
+        // production metadata route) reached the windowed collector as its
+        // frame model and its sword at FIXED, and fell through to no capsule.
+        row(
+            "r70 the injected item frame drew its model and sword in the windowed client",
+            self.item_frame_frames >= 3,
+            format!(
+                "{} frames carried the frame and its sword at {:?}",
+                self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M194 — the frame `render_check.py` summons on the real server:
+        // facing north, rotation 3, a diamond sword. Seen with exactly those
+        // values, slots 8 / 9 / 10 are the ones 26.2 sends.
+        row(
+            "r71 the server's item frame decoded its facing, rotation and item",
+            self.server_frame_frames >= 3,
+            format!(
+                "{} frames saw a frame with facing 2, rotation 3, a diamond sword",
+                self.server_frame_frames
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2157,6 +2211,93 @@ impl LiveApp {
                         }
                     }
                     self.leash_injected = true;
+                }
+                // M192 / M194 — r69 and r70, both at 0.2 through the
+                // production router: a filled map with its data into the
+                // OFF-hand (inventory slot 45, so the main-hand witnesses keep
+                // their sword; the map is drawn one-handed), and an item frame
+                // holding a sword, beside the bot.
+                if !self.frames_injected && elapsed >= limit * 0.2 {
+                    let items = self.items.clone();
+                    let mut frame_pos = None;
+                    if let Some(session) = self.session.as_mut() {
+                        let write = rewo_proto::varint::write_varint;
+                        // map_item_data: id, scale 0, unlocked, one `player`
+                        // decoration at the centre, the whole 128 x 128 patch.
+                        let mut data: Vec<u8> = Vec::new();
+                        write(&mut data, HELD_MAP_WITNESS_ID);
+                        data.push(0); // scale
+                        data.push(0); // locked
+                        data.push(1); // decorations present
+                        write(&mut data, 1);
+                        write(&mut data, 0); // `player`
+                        data.extend_from_slice(&[0, 0, 0, 0]); // x, y, rot, no name
+                        data.extend_from_slice(&[128, 128, 0, 0]); // w, h, x0, y0
+                        write(&mut data, 128 * 128);
+                        data.extend(std::iter::repeat_n(4u8 << 2 | 2, 128 * 128));
+                        session.inject_packet(session.ids.cb_play_map_item_data, &data);
+                        // container_set_slot: window 0, slot 45 (the off-hand),
+                        // a filled map whose patch carries `minecraft:map_id`.
+                        let map_item = items.id("minecraft:filled_map");
+                        let map_id_type = session
+                            .component_names
+                            .as_ref()
+                            .and_then(|c| c.ids().get("minecraft:map_id").copied());
+                        if let (Some(item), Some(ty)) = (map_item, map_id_type) {
+                            let mut slot: Vec<u8> = Vec::new();
+                            write(&mut slot, 0); // container
+                            write(&mut slot, 0); // state id
+                            slot.extend_from_slice(&45i16.to_be_bytes());
+                            write(&mut slot, 1); // count
+                            write(&mut slot, item);
+                            write(&mut slot, 1); // added
+                            write(&mut slot, 0); // removed
+                            write(&mut slot, ty);
+                            write(&mut slot, HELD_MAP_WITNESS_ID);
+                            session.inject_packet(session.ids.cb_play_container_set_slot, &slot);
+                        }
+                        // The frame: `add_entity` with facing 3 (south) in
+                        // its data, then the sword (slot 9) turned 3 (slot 10).
+                        let types = session.entity_types.clone();
+                        let frame_type =
+                            types.as_ref().and_then(|t| t.id_of("minecraft:item_frame"));
+                        let sword = items.id("minecraft:diamond_sword");
+                        if let (Some(tid), Some(sword)) = (frame_type, sword) {
+                            let p = &session.player;
+                            let (x, y, z) = (p.x + 1.5, p.y + 1.0, p.z);
+                            let mut add: Vec<u8> = Vec::new();
+                            write(&mut add, FRAME_WITNESS_EID);
+                            add.extend_from_slice(
+                                &0xC0D0_0000_0000_0000_0000_0000_00F7_0000u128.to_be_bytes(),
+                            );
+                            write(&mut add, tid);
+                            add.extend_from_slice(&x.to_be_bytes());
+                            add.extend_from_slice(&y.to_be_bytes());
+                            add.extend_from_slice(&z.to_be_bytes());
+                            add.push(0); // LpVec3 zero sentinel
+                            add.extend_from_slice(&[0, 0, 0]); // pitch, yaw, head yaw
+                            write(&mut add, 3); // data: the facing
+                            session.inject_packet(session.ids.cb_play_add_entity, &add);
+                            let mut meta: Vec<u8> = Vec::new();
+                            write(&mut meta, FRAME_WITNESS_EID);
+                            meta.push(9);
+                            write(&mut meta, 7); // ITEM_STACK
+                            write(&mut meta, 1); // count
+                            write(&mut meta, sword);
+                            write(&mut meta, 0); // added
+                            write(&mut meta, 0); // removed
+                            meta.push(10);
+                            write(&mut meta, 1); // INT
+                            write(&mut meta, 3);
+                            meta.push(0xFF);
+                            session.inject_packet(session.ids.cb_play_set_entity_data, &meta);
+                            frame_pos = Some([x as f32, y as f32, z as f32]);
+                        }
+                    }
+                    if let Some(c) = self.check.as_mut() {
+                        c.item_frame_pos = frame_pos;
+                    }
+                    self.frames_injected = true;
                 }
                 // M172 — a written book into hotbar slot 0 + an `open_book`,
                 // both through the production router. The window is

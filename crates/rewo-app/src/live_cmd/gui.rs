@@ -584,7 +584,11 @@ pub(super) fn map_version_only_changed(
     )
 }
 
-/// Build and upload this frame's hand.
+/// What [`apply_hand`] drew of a held map (M192), for the render check:
+/// the map id, whether its data was present, and how many decorations.
+pub(super) type HeldMapDrawn = (i32, bool, usize);
+
+/// Build and upload this frame's hand. Returns the held map it drew, if any.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_hand(
     wr: &mut WorldRenderer,
@@ -594,7 +598,7 @@ pub(super) fn apply_hand(
     state: &mut HandState,
     partial: f32,
     aspect: f32,
-) {
+) -> Option<HeldMapDrawn> {
     use rewo_gpu::hand::{Arm, HandDraw};
 
     // The item on screen is the one the equip clock says, which lags the held
@@ -692,7 +696,7 @@ pub(super) fn apply_hand(
         );
         if let Err(e) = wr.init_hand(gpu, &rgba, HAND_ATLAS, HAND_ATLAS) {
             log::warn!("live: hand atlas upload failed: {e}");
-            return;
+            return None;
         }
         // **After** `init_hand`, not before: that call destroys and rebuilds
         // the pass, so a glint installed first is thrown away with it. The
@@ -849,6 +853,7 @@ pub(super) fn apply_hand(
         &|t| state.uv.get(&t).copied(),
         arm_geo.as_ref(),
     );
+    let mut drawn = None;
     if let Some(m) = map_draw.as_ref() {
         // The map's decorations, in the store's order (vanilla's `count`).
         let decos: Vec<rewo_gpu::hand::MapDecoQuad> = held_map
@@ -879,6 +884,7 @@ pub(super) fn apply_hand(
             &decos,
             arm_geo.as_ref(),
         ));
+        drawn = held_map.map(|(id, _, _)| (id, m.data_present, decos.len()));
     }
     // Wall-clock phase, exactly as the GUI glint uses — vanilla reads
     // `Util.getMillis()` for both.
@@ -887,7 +893,9 @@ pub(super) fn apply_hand(
     let vp = hand_view_proj(aspect).to_cols_array_2d();
     if let Err(e) = wr.set_hand_with_glint(gpu, &verts, &glint, vp) {
         log::warn!("live: hand upload failed: {e}");
+        return None;
     }
+    drawn
 }
 
 /// State the hotbar icons need across frames: the atlas currently uploaded and

@@ -339,8 +339,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   the recipe-book button (**M187**), the HUD's air-bubble pop (**M188**) and
 >   the loom's scrollbar (**M189**).
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
->   the map store, **M192 the held map**, **M193 its decorations**; item
->   frames and banner name labels are open), `render-misc [INTERP]` and `[FLOW]`, the live
+>   the map store, **M192 the held map**, **M193 its decorations**, **M194
+>   item frames**; banner name labels are open), `render-misc [INTERP]` and `[FLOW]`, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -2013,8 +2013,10 @@ this shape once.
 | Link prompt (2026-10, `ConfirmLinkScreen` for a clicked chat `open_url`) | **r67** | — | `confirmlinkshot` m1-m6, p0-p7 (14) |
 | M187 — the recipe-book button (2026-10-15) | **r68** | `MENU_OVERLAY_SPRITES` 127..=128 (`recipe_book/button`, `button_highlighted`; `BOOK_BUTTON`) | `inventoryshot` gb1-gb3 |
 | M189 — the loom's scrollbar (2026-10-15) | — | `MENU_OVERLAY_SPRITES` 129..=130 (`container/loom/scroller`, `scroller_disabled`; `LOOM_SCROLLER`) | `rewo-ui` `m189_loom_scroll` |
-| M192 — the held map (r69 claimed, deferred: no windowed run yet) | **r69** | hand atlas (512x512, `live_cmd/gui.rs`) while a map is held: map pixels (0,0,128,128), checkerboard (128,0,128,128), plain background (256,0,64,64), items from y 128, skin row unchanged; **M193** decoration sprites (320,0)..(512,128), 8x8 by raw type id, 24 per row | `handshot` gm1-gm6 |
-| *(next free)* | **r70** | — | — |
+| M192 — the held map (r69 written 2026-10-18 with M194: an off-hand map injected at 0.2) | **r69** | hand atlas (512x512, `live_cmd/gui.rs`) while a map is held: map pixels (0,0,128,128), checkerboard (128,0,128,128), plain background (256,0,64,64), items from y 128, skin row unchanged; **M193** decoration sprites (320,0)..(512,128), 8x8 by raw type id, 24 per row | `handshot` gm1-gm6 |
+| M194 — item frames (2026-10-18) | **r70** | entity atlas `ATLAS_H` 1600 -> 1728: the framed-map band at y 1600..1728 (seven 128 x 128 map slots, then the decoration sprites at (896, 1600), 8 x 8 by raw type id, 16 to a row); `CAPE_POOL_Y` re-anchored to it (still 1536) | `itemframeshot` b1-b5, d1-d7, p1-p9 |
+| M194 — the server's own item frame (`render_check.py` summons it) | **r71** | — | — |
+| *(next free)* | **r72** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3839,6 +3841,57 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M194 — item frames (2026-10-18)
+
+`ItemFrameRenderer` (`client/renderer/entity/ItemFrameRenderer.java:44-145`)
+end to end, from `docs/rewo/M194-item-frames-plan.md` (started 2026-10-15 on
+`claude/item-frames`, finished on `claude/autonomous-run-1020-82937b`).
+
+- **Data** (slice 2, 2026-10-15): the facing from `add_entity`'s data and
+  `HangingEntity.DATA_DIRECTION` (slot 8), `ItemFrame.DATA_ITEM` (9) and
+  `DATA_ROTATION` (10, `% 8`), for the two frame types only.
+- **Poses** (`rewo_gpu::item_frame`): `submit`'s chain, the frame model at
+  `translate(step * 0.46875) rotX rotY translate(-0.5)`, the item a further
+  `translate(0, 0, 0.4375)` (0.5 when invisible) `rotZ(rotation * 45)
+  scale(0.5)`, a map `rotZ(rotation % 4 * 90) rotZ(180) scale(1/128)
+  translate(-64, -64, -1)` — quarters for a map, eighths for an item.
+- **The frame models**: `BlockModelResolver.updateForItemFrame` picks the
+  fake `item_frame` / `glow_item_frame` blockstate's `map=false/true` model;
+  the four block models bake through the block-item path into
+  `HeldItems::block_entities` as `rewo:be/item_frame{,_map}` and
+  `rewo:be/glow_item_frame{,_map}`.
+- **The item** at `ItemDisplayContext.FIXED`: every item model now carries
+  `display.fixed` (`item/generated`'s `rotation [0, 180, 0]`; a block item's
+  `block/block.json` `scale 0.5`, with rotation 0 in 26.2), applied in the
+  block-entity emitter when `BlockEntityDraw::fixed_display` is set.
+- **A map in a frame**: the entity atlas grew a 128-row band at its bottom
+  (`ATLAS_H` 1600 -> 1728, M48's recipe, every earlier address unchanged):
+  seven framed-map slots, LRU by map id and re-uploaded only when the map's
+  version moves, plus a cell for the 8 x 8 decoration sprites.
+  `FrameMapDraw` is emitted unshaded (`RenderTypes.text`), with only the
+  decorations whose type is `showOnItemFrame` (`MapRenderer.render(...,
+  showOnlyFrame = true)`), so the player arrow stays off a framed map.
+- **Light**: a glow frame's block light is at least 5
+  (`getBlockLightLevel`), its item `15728880` (full bright) and its map
+  `15728850`.
+- Item frames no longer fall through to the capsule in `collect_entities`.
+
+Graded by the new gate **`itemframeshot`** (b: the bake against the jar's
+`template_item_frame*` elements and the FIXED transforms in
+`item/generated` / `block/block`; d: the collector and `frame_draws` against
+the decompile; p: pixels at positions derived by hand from `submit`'s chain,
+colours judged against the jar's texels — every facing faces out, the sword
+turns in eighths, the quadrant map is upright and turns in quarters, only
+the frame marker draws), unit tests, and render-check **r69** (M192's held
+map, injected into the off-hand with its data) and **r70** (an injected
+frame holding a sword reaches the windowed collector with no capsule).
+
+Recorded deviations: no foil on a framed item (the block-entity emitter has
+no glint sink); past seven framed maps on screen at once the rest draw no
+pixels; the glow map light is taken at block level 13 rather than 13.125;
+no name tag for a framed item with a custom name (`shouldShowName`). Banner
+name labels on maps are still not drawn.
 
 ### M193 — map decorations on the held map (2026-10-15)
 

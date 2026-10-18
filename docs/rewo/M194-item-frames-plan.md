@@ -109,9 +109,9 @@ Branch `claude/item-frames` (not merged).
 
 | *(slice 2)* | Step 1, the data: `EntityState::spawn_data` (add_entity's trailing VarInt, read in `read_add_entity`); metadata slots `(8, DIRECTION=12)`, `(9, ITEM_STACK)` -> `FrameItem { item_id, map_id, foil }`, `(10, INT)`; `EntityTable::item_frames` side map (cleared in `clear_side_state`, dressed in the side-row test) with `set_frame_*` and `item_frame(id) -> (facing, rotation, item)` (facing falls back to spawn data); `EntityClasses::is_item_frame` gates the slots to `item_frame`/`glow_item_frame`. Tests in `rewo-world` and `rewo-net`. Not yet calibrated against a real server's metadata. | 1 |
 
-**Next, in order:** step 3 (bake the frame block models `block/item_frame`,
-`glow_item_frame`, `item_frame_map`, `glow_item_frame_map` and draw them in
-the entity pass at `item_frame::frame_model_pose`), step 4 (the item, FIXED
-display transform, at `item_pose`), step 5 (map in frame), step 6 (gate,
-§15, full gate, merge). Calibrate slots 8-10 against a live server when one
-is available.
+| `a7be406` (2026-10-18) | Steps 3-6: `display.fixed` on every item model; the four frame models baked as `rewo:be/*`; `BlockEntityDraw::fixed_display`; the entity atlas's framed-map band (`ATLAS_H` 1600 -> 1728) with LRU map slots and the decoration sprites; `FrameMapDraw`; `live_cmd/item_frames.rs` (collector + draw builder, glow lights); no capsule for frames; the `itemframeshot` gate (21 witnesses). | 3-6 |
+| *(next commit)* | render-check r69 (M192's held map, injected into the off-hand), r70 (an injected frame reaches the windowed collector, no capsule) and r71 (`render_check.py` summons a real frame: slots 8-10 calibrated against the server). | 6 |
+
+**M194 is complete**; see `REWO_PLAN.md` §15. Deviations recorded there: no
+foil on a framed item, seven framed maps on screen at most, the glow map's
+light taken at block level 13, no name tag for a named framed item.
