@@ -203,5 +203,7 @@ released.
 - A crack-free greedy merge (rectangle boundaries tessellated at every unit
   step), if the 13% of vertices is ever worth it.
 - The headless `live --out` shot can't be aimed: vanilla spawns a new player
-  at a random spot, and a console `tp` during the settle window did not land
-  in two tries (not investigated: the headless pump may not apply it).
+  at a random spot. A console `tp` from the scratch script never reached
+  the server (its log shows no command at all), so this is the script's
+  stdin handling, not the client; a gates knob that stages the camera
+  would be the clean way.
