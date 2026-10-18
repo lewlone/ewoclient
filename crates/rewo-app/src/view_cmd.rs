@@ -266,7 +266,7 @@ fn render_headless(
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     // The animated layers and, with them, the fluid flow array (M197): a
     // flowing top meshed from these tables samples it.
-    crate::live_cmd::install_animations(&mut world_renderer, &mut gpu, &baked)?;
+    crate::live_cmd::install_animations(&mut world_renderer, &mut gpu, baked)?;
     upload_all(&mut gpu, &mut world_renderer, meshes)?;
     world_renderer.set_camera(eye.to_array());
 

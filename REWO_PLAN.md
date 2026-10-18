@@ -2784,8 +2784,10 @@ a record, because what it teaches outlived it:
   on geometry: `container_set_content` / `container_set_slot` / `set_held_slot`
   are all clientbound in 26.2 and have **zero references** in `rewo-net`, so
   nothing knows what is in the nine slots.~~
-- **Mega-buffer has no resize** — over-cap columns are dropped with a log
-  (4M verts / 6M indices; high RD could hit this).
+- ~~**Mega-buffer has no resize** — over-cap columns are dropped with a log
+  (4M verts / 6M indices; high RD could hit this).~~ M205: it grows (to
+  64M vertices / 96M indices), and a column it cannot place waits in the
+  deferred queue.
 - `VK_NV_low_latency2` deferred **measure-first** — the benchmark shows GPU
   render (~0.2 ms) is far below the frame budget, so submission pacing isn't
   the current bottleneck. Revisit at high RD/complexity.
@@ -3846,6 +3848,37 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M205 — the terrain arena grows (2026-10-18)
+
+**A real hole found by a load test, not by a gate.** Every gate and the
+render check use a flat world, whose columns are a few hundred vertices
+each. A scratch load test (`rewo live` against a staged vanilla server with
+`level-type=minecraft:normal`, seed 20261018, render distance 16, 75 s)
+measured the fixed 4M-vertex / 6M-index arena at 94% after 276 columns,
+with **197 columns deferred**: holes in the world that only fill when
+something unloads. Normal terrain averaged ~13.6k vertices a column, about
+16.7k once all had arrived.
+
+`Arena::grow` now runs when `place_column` finds no room: it submits the
+open upload batch, drains the device, copies each full buffer into one of
+`grown_capacity` (double, or the request if larger, capped at
+`ARENA_VERTS_LIMIT` 64M / `ARENA_INDICES_LIMIT` 96M), destroys the old
+buffers and extends both free lists over the new tail (coalescing across the
+old end). Offsets survive the copy, so the column table, the cull metadata
+and the pending frees are untouched; the terrain pass binds `vbuf` / `ibuf`
+every frame. The mega-buffers gained `TRANSFER_SRC` for the copy. When both
+pools are at their limits, or the device refuses the allocation, the column
+is deferred as before (a refusal is logged). `create_device_buffer` no
+longer leaks the buffer when its allocation or bind fails, which growth
+makes a run-time path rather than a startup one.
+
+Measured on the same load test after the change: grown twice in the first
+ten seconds (8M then 16M vertices, 448 MB + 96 MB), **473 columns, 0
+deferred**, no validation messages. `WorldRenderer::arena_usage` reports
+the current capacities. Two unit tests pin the growth rule and the
+free-list seam. Growth blocks for one device drain plus one copy: a hitch
+at most twice per session at RD16, and an accepted cost against holes.
 
 ### M204 — banner name labels on framed maps (2026-10-18)
 

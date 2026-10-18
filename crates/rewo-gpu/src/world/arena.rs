@@ -34,9 +34,12 @@ use crate::Gpu;
 /// (`1 - k/9`) are not representable in f16 — see `rewo_mesh::MeshVertex`.
 pub const VERTEX_STRIDE: u64 = 28;
 
-/// Mega-buffer capacities. 4M verts (4M × 28 B = 112 MB) + 6M indices
-/// (6M × 4 B = 24 MB) covers a large render distance; over-cap columns are
-/// dropped with a log.
+/// The mega-buffers' INITIAL capacities. 4M verts (4M × 28 B = 112 MB) + 6M
+/// indices (6M × 4 B = 24 MB). They grow on demand (M205,
+/// [`Arena::grow`]) up to [`ARENA_VERTS_LIMIT`] / [`ARENA_INDICES_LIMIT`]:
+/// measured 2026-10-18 on a NORMAL-terrain world at render distance 16, the
+/// initial arena held 276 columns at ~13.6k vertices each and deferred 197 —
+/// holes in the world — where the flat test world never came close.
 ///
 /// **Opaque and translucent geometry share these pools** — both suballocate
 /// from the same vertex and index free lists — so any utilization figure must
@@ -48,6 +51,24 @@ pub const MAX_INDICES: u64 = 6_000_000;
 
 /// Per-column metadata slots (the third capacity pool: the cull/draw SSBO).
 pub const MAX_COLUMNS: usize = 8192;
+
+/// How far the arena may grow (M205): 64M vertices (1.79 GB) and 96M
+/// indices (384 MB) — render distance 32 of normal terrain at the measured
+/// ~14k vertices a column. Past it, or when the device refuses an
+/// allocation, columns wait in the deferred queue as before.
+pub const ARENA_VERTS_LIMIT: u64 = 64_000_000;
+pub const ARENA_INDICES_LIMIT: u64 = 96_000_000;
+
+/// The next capacity for a pool that needs `need` more units than its free
+/// space offers: double, or enough for the request if that is more, capped
+/// at `limit`. `None` when the pool is already at the limit.
+pub(super) fn grown_capacity(cap: u64, need: u64, limit: u64) -> Option<u64> {
+    let next = cap
+        .saturating_mul(2)
+        .max(cap.saturating_add(need))
+        .min(limit);
+    (next > cap).then_some(next)
+}
 
 pub(super) struct Slot {
     pub(super) vtx_off: u64, // in vertices
@@ -93,6 +114,12 @@ impl FreeList {
         Self {
             free: vec![(0, capacity)],
         }
+    }
+
+    /// The pool grew from `old` to `new` units: the new tail is free
+    /// (coalescing with a free range that ended at the old capacity).
+    fn extend(&mut self, old: u64, new: u64) {
+        self.free_region(old, new - old);
     }
 
     fn alloc(&mut self, n: u64) -> Option<u64> {
@@ -203,9 +230,13 @@ pub(super) struct Arena {
     pub(super) vbuf: vk::Buffer,
     pub(super) vbuf_alloc: Option<Allocation>,
     vfree: FreeList,
+    /// The vertex pool's current capacity, in vertices (M205: it grows).
+    vcap: u64,
     pub(super) ibuf: vk::Buffer,
     pub(super) ibuf_alloc: Option<Allocation>,
     ifree: FreeList,
+    /// The index pool's current capacity, in indices.
+    icap: u64,
     // -- columns --
     pub(super) columns: HashMap<(i32, i32), Slot>,
     /// `columns` changed since the cull metadata was last rebuilt.
@@ -252,25 +283,108 @@ pub(super) struct MegaBuffers {
     ibuf_alloc: Allocation,
 }
 
+/// The mega-buffers' usages: TRANSFER_SRC as well, so a growth (M205) can
+/// copy a full buffer into its larger successor.
+const VBUF_USAGE: vk::BufferUsageFlags = vk::BufferUsageFlags::from_raw(
+    vk::BufferUsageFlags::VERTEX_BUFFER.as_raw()
+        | vk::BufferUsageFlags::TRANSFER_DST.as_raw()
+        | vk::BufferUsageFlags::TRANSFER_SRC.as_raw(),
+);
+const IBUF_USAGE: vk::BufferUsageFlags = vk::BufferUsageFlags::from_raw(
+    vk::BufferUsageFlags::INDEX_BUFFER.as_raw()
+        | vk::BufferUsageFlags::TRANSFER_DST.as_raw()
+        | vk::BufferUsageFlags::TRANSFER_SRC.as_raw(),
+);
+
 pub(super) fn create_mega_buffers(gpu: &mut Gpu) -> Result<MegaBuffers, String> {
-    let (vbuf, vbuf_alloc) = create_device_buffer(
-        gpu,
-        MAX_VERTS * VERTEX_STRIDE,
-        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        "mega-vertices",
-    )?;
-    let (ibuf, ibuf_alloc) = create_device_buffer(
-        gpu,
-        MAX_INDICES * 4,
-        vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        "mega-indices",
-    )?;
+    let (vbuf, vbuf_alloc) =
+        create_device_buffer(gpu, MAX_VERTS * VERTEX_STRIDE, VBUF_USAGE, "mega-vertices")?;
+    let (ibuf, ibuf_alloc) =
+        create_device_buffer(gpu, MAX_INDICES * 4, IBUF_USAGE, "mega-indices")?;
     Ok(MegaBuffers {
         vbuf,
         vbuf_alloc,
         ibuf,
         ibuf_alloc,
     })
+}
+
+/// Copy each `(src, dst, bytes)` from offset 0, blocking until done (M205's
+/// growth). The caller has drained the device, so no barrier against earlier
+/// work is needed beyond the queue's own order; the closing one makes the
+/// copies visible to the vertex and index reads that follow.
+fn copy_buffers(gpu: &mut Gpu, copies: &[(vk::Buffer, vk::Buffer, u64)]) -> Result<(), String> {
+    unsafe {
+        let device = gpu.device.clone();
+        let pool = device
+            .create_command_pool(
+                &vk::CommandPoolCreateInfo::default().queue_family_index(gpu.graphics_family),
+                None,
+            )
+            .map_err(|e| format!("grow pool: {e}"))?;
+        let result = (|| {
+            let cb = device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(pool)
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        .command_buffer_count(1),
+                )
+                .map_err(|e| format!("grow cb: {e}"))?[0];
+            device
+                .begin_command_buffer(
+                    cb,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .map_err(|e| format!("grow begin: {e}"))?;
+            for &(src, dst, bytes) in copies {
+                if bytes > 0 {
+                    device.cmd_copy_buffer(cb, src, dst, &[vk::BufferCopy::default().size(bytes)]);
+                }
+            }
+            let vis = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(
+                    vk::PipelineStageFlags2::VERTEX_INPUT
+                        | vk::PipelineStageFlags2::INDEX_INPUT
+                        | vk::PipelineStageFlags2::TRANSFER,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags2::VERTEX_ATTRIBUTE_READ
+                        | vk::AccessFlags2::INDEX_READ
+                        | vk::AccessFlags2::TRANSFER_WRITE,
+                );
+            device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&vis)),
+            );
+            device
+                .end_command_buffer(cb)
+                .map_err(|e| format!("grow end: {e}"))?;
+            let fence = device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .map_err(|e| format!("grow fence: {e}"))?;
+            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(cb)];
+            let done = device
+                .queue_submit2(
+                    gpu.graphics_queue,
+                    &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+                    fence,
+                )
+                .map_err(|e| format!("grow submit: {e}"))
+                .and_then(|()| {
+                    device
+                        .wait_for_fences(&[fence], true, u64::MAX)
+                        .map_err(|e| format!("grow wait: {e}"))
+                });
+            device.destroy_fence(fence, None);
+            done
+        })();
+        device.destroy_command_pool(pool, None);
+        result
+    }
 }
 
 /// The upload ring's command pool and its slots (command buffer, fence and
@@ -334,9 +448,11 @@ impl Arena {
             vbuf: mega.vbuf,
             vbuf_alloc: Some(mega.vbuf_alloc),
             vfree: FreeList::new(MAX_VERTS),
+            vcap: MAX_VERTS,
             ibuf: mega.ibuf,
             ibuf_alloc: Some(mega.ibuf_alloc),
             ifree: FreeList::new(MAX_INDICES),
+            icap: MAX_INDICES,
             columns: HashMap::new(),
             meta_dirty: false,
             pending_free: Vec::new(),
@@ -583,6 +699,29 @@ impl Arena {
             y_min,
             y_max,
         )?;
+        // M205: a full arena grows (once per need) before a column waits.
+        let placed = placed || {
+            let need_v = ((vertex_bytes.len() + tvertex_bytes.len()) as u64) / VERTEX_STRIDE;
+            let need_i = (indices.len() + tindices.len()) as u64;
+            match self.grow(gpu, need_v, need_i) {
+                Ok(true) => self.place_column(
+                    gpu,
+                    cx,
+                    cz,
+                    vertex_bytes,
+                    indices,
+                    tvertex_bytes,
+                    tindices,
+                    y_min,
+                    y_max,
+                )?,
+                Ok(false) => false,
+                Err(e) => {
+                    log::warn!("world: arena growth failed ({e}) — deferring instead");
+                    false
+                }
+            }
+        };
         if !placed {
             // Keep it rather than drop it: it is re-uploaded by
             // `retry_deferred_columns` once removals free arena space.
@@ -604,6 +743,91 @@ impl Arena {
             );
         }
         Ok(())
+    }
+
+    /// Grow the mega-buffers so `need_v` more vertices and `need_i` more
+    /// indices fit (M205). `Ok(false)` when both pools are at their limits.
+    ///
+    /// Rare and blocking by design: the open upload batch is submitted, the
+    /// device drained, each full buffer copied into a successor of the
+    /// [`grown_capacity`], and the old one destroyed. Offsets stay valid
+    /// (the copy keeps every byte where it was), so the registered columns,
+    /// their draw metadata and the pending frees need no change; the terrain
+    /// pass binds `vbuf` / `ibuf` afresh every frame.
+    pub(super) fn grow(&mut self, gpu: &mut Gpu, need_v: u64, need_i: u64) -> Result<bool, String> {
+        let next_v = grown_capacity(self.vcap, need_v, ARENA_VERTS_LIMIT);
+        let next_i = grown_capacity(self.icap, need_i, ARENA_INDICES_LIMIT);
+        if next_v.is_none() && next_i.is_none() {
+            return Ok(false);
+        }
+        let (nv, ni) = (next_v.unwrap_or(self.vcap), next_i.unwrap_or(self.icap));
+        self.flush_uploads(gpu)?;
+        unsafe {
+            gpu.device
+                .device_wait_idle()
+                .map_err(|e| format!("arena grow idle: {e}"))?;
+        }
+        let (vbuf, valloc) = super::resources::create_device_buffer(
+            gpu,
+            nv * VERTEX_STRIDE,
+            VBUF_USAGE,
+            "mega-vertices",
+        )?;
+        let (ibuf, ialloc) =
+            match super::resources::create_device_buffer(gpu, ni * 4, IBUF_USAGE, "mega-indices") {
+                Ok(b) => b,
+                Err(e) => {
+                    unsafe { gpu.device.destroy_buffer(vbuf, None) };
+                    let _ = gpu.allocator.free(valloc);
+                    return Err(e);
+                }
+            };
+        let copied = copy_buffers(
+            gpu,
+            &[
+                (self.vbuf, vbuf, self.vcap * VERTEX_STRIDE),
+                (self.ibuf, ibuf, self.icap * 4),
+            ],
+        );
+        if let Err(e) = copied {
+            unsafe {
+                gpu.device.destroy_buffer(vbuf, None);
+                gpu.device.destroy_buffer(ibuf, None);
+            }
+            let _ = gpu.allocator.free(valloc);
+            let _ = gpu.allocator.free(ialloc);
+            return Err(e);
+        }
+        unsafe {
+            gpu.device.destroy_buffer(self.vbuf, None);
+            gpu.device.destroy_buffer(self.ibuf, None);
+        }
+        for a in [self.vbuf_alloc.take(), self.ibuf_alloc.take()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = gpu.allocator.free(a);
+        }
+        self.vbuf = vbuf;
+        self.vbuf_alloc = Some(valloc);
+        self.ibuf = ibuf;
+        self.ibuf_alloc = Some(ialloc);
+        if nv > self.vcap {
+            self.vfree.extend(self.vcap, nv);
+        }
+        if ni > self.icap {
+            self.ifree.extend(self.icap, ni);
+        }
+        log::info!(
+            "world: arena grown to {nv} vertices ({} MB) and {ni} indices ({} MB)",
+            nv * VERTEX_STRIDE / 1_000_000,
+            ni * 4 / 1_000_000
+        );
+        self.vcap = nv;
+        self.icap = ni;
+        // The deferred queue gets a try at the new space.
+        self.space_freed = true;
+        Ok(true)
     }
 
     /// Allocate arena space for a column (assumed not registered), stage its
@@ -851,12 +1075,13 @@ impl WorldRenderer {
 
     /// The arena's fill: `(vertices, indices)` held by registered columns,
     /// opaque and translucent summed (they share both pools; see
-    /// [`MAX_VERTS`]), against `(MAX_VERTS, MAX_INDICES)`.
+    /// [`MAX_VERTS`]), against the pools' current capacities (M205: they
+    /// grow).
     pub fn arena_usage(&self) -> ((u64, u64), (u64, u64)) {
         let (v, i) = self.arena.columns.values().fold((0, 0), |(v, i), s| {
             (v + s.vtx_len + s.tvtx_len, i + s.idx_len + s.tidx_len)
         });
-        ((v, MAX_VERTS), (i, MAX_INDICES))
+        ((v, self.arena.vcap), (i, self.arena.icap))
     }
 
     /// Re-upload columns that did not fit the mega-buffers, nearest to the
@@ -871,6 +1096,26 @@ impl WorldRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M205: double, or the request if it is bigger, capped at the limit.
+    #[test]
+    fn the_arena_grows_by_doubling_up_to_its_limit() {
+        assert_eq!(grown_capacity(4, 1, 100), Some(8));
+        assert_eq!(grown_capacity(4, 10, 100), Some(14));
+        assert_eq!(grown_capacity(60, 1, 100), Some(100));
+        assert_eq!(grown_capacity(100, 1, 100), None);
+    }
+
+    /// M205: the grown tail is free and coalesces with a free range that ran
+    /// to the old end, so one allocation can span the seam.
+    #[test]
+    fn a_grown_free_list_coalesces_across_the_old_end() {
+        let mut f = FreeList::new(10);
+        assert_eq!(f.alloc(6), Some(0));
+        f.extend(10, 20);
+        assert_eq!(f.alloc(14), Some(6), "4 old + 10 new, contiguous");
+        assert_eq!(f.alloc(1), None);
+    }
 
     /// A failure on any of the four regions returns every region that did
     /// fit: the free-lists after a refused column are exactly what they were

@@ -254,19 +254,28 @@ pub(super) fn create_device_buffer(
             )
             .map_err(|e| format!("{name}: {e}"))?;
         let req = gpu.device.get_buffer_memory_requirements(buffer);
-        let alloc = gpu
-            .allocator
-            .allocate(&AllocationCreateDesc {
-                name,
-                requirements: req,
-                location: MemoryLocation::GpuOnly,
-                linear: true,
-                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-            })
-            .map_err(|e| format!("{name} alloc: {e}"))?;
-        gpu.device
+        let alloc = match gpu.allocator.allocate(&AllocationCreateDesc {
+            name,
+            requirements: req,
+            location: MemoryLocation::GpuOnly,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        }) {
+            Ok(a) => a,
+            // Not leaked: the arena's growth (M205) meets a refusal at run time.
+            Err(e) => {
+                gpu.device.destroy_buffer(buffer, None);
+                return Err(format!("{name} alloc: {e}"));
+            }
+        };
+        if let Err(e) = gpu
+            .device
             .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-            .map_err(|e| format!("{name} bind: {e}"))?;
+        {
+            gpu.device.destroy_buffer(buffer, None);
+            let _ = gpu.allocator.free(alloc);
+            return Err(format!("{name} bind: {e}"));
+        }
         Ok((buffer, alloc))
     }
 }
