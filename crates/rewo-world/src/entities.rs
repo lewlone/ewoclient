@@ -374,6 +374,24 @@ impl AllayDance {
     }
 }
 
+/// What an item frame holds (M194): the item's protocol id, its `MAP_ID` if
+/// it is a filled map, and whether it has foil.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameItem {
+    pub item_id: i32,
+    pub map_id: Option<i32>,
+    pub foil: bool,
+}
+
+/// An item frame's synced fields (M194). `facing` is `None` until slot 8
+/// arrives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ItemFrameState {
+    pub facing: Option<u8>,
+    pub rotation: u8,
+    pub item: Option<FrameItem>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct EntityState {
     pub uuid: u128,
@@ -456,6 +474,9 @@ pub struct EntityState {
     /// `onSyncedDataUpdated`'s dash arming is gated on `!this.firstTick`,
     /// so the spawn-time metadata never arms a cooldown.
     ticked: bool,
+    /// `ClientboundAddEntityPacket.data` (M194) — per-type meaning; an item
+    /// frame's facing (`Direction.from3DDataValue`). 0 when absent.
+    pub spawn_data: i32,
 }
 
 /// `Sniffer.State.SEARCHING` — ordinal 4.
@@ -536,6 +557,7 @@ impl EntityState {
             dash_cooldown: 0,
             last_pose_change_tick: 0,
             ticked: false,
+            spawn_data: 0,
         }
     }
 
@@ -888,6 +910,11 @@ pub struct EntityTable {
     /// count)`. Absent means the entity has sent no stack, which is
     /// `ItemStack.EMPTY` and renders nothing. Cleared on removal.
     item_stacks: HashMap<i32, (i32, i32, bool)>,
+    /// M194 — an item frame's synced state (`HangingEntity.DATA_DIRECTION`,
+    /// slot 8; `ItemFrame.DATA_ITEM`, 9; `DATA_ROTATION`, 10), for the two
+    /// frame types only. Absent fields fall back to the spawn data / vanilla
+    /// defaults (see [`EntityTable::item_frame`]). Cleared on removal.
+    item_frames: HashMap<i32, ItemFrameState>,
     /// Worn armour item ids per entity, head first (M46). Cleared on removal
     /// and on (re-)add, so a reused id cannot wear the last occupant's
     /// chestplate.
@@ -1308,6 +1335,7 @@ impl EntityTable {
             attachments: _,
             model_customisation,
             item_stacks,
+            item_frames,
             armor,
             dances,
             events,
@@ -1339,6 +1367,7 @@ impl EntityTable {
         uses.remove(&id);
         deaths.remove(&id);
         item_stacks.remove(&id);
+        item_frames.remove(&id);
         attributes.remove(&id);
         shared_flags.remove(&id);
         custom_name_visible.remove(&id);
@@ -1982,6 +2011,40 @@ impl EntityTable {
     /// has sent no stack (or an empty one).
     pub fn item_stack(&self, id: i32) -> Option<(i32, i32, bool)> {
         self.item_stacks.get(&id).copied()
+    }
+
+    // -- item frames (M194) -------------------------------------------------
+
+    /// `HangingEntity.DATA_DIRECTION` (slot 8, DIRECTION) for a frame.
+    pub fn set_frame_facing(&mut self, id: i32, facing: u8) {
+        self.item_frames.entry(id).or_default().facing = Some(facing);
+    }
+
+    /// `ItemFrame.DATA_ITEM` (slot 9, ITEM_STACK); `None` is an empty frame.
+    pub fn set_frame_item(&mut self, id: i32, item: Option<FrameItem>) {
+        self.item_frames.entry(id).or_default().item = item;
+    }
+
+    /// `ItemFrame.DATA_ROTATION` (slot 10, INT), kept `% 8` as `setRotation`
+    /// does.
+    pub fn set_frame_rotation(&mut self, id: i32, rotation: i32) {
+        self.item_frames.entry(id).or_default().rotation = rotation.rem_euclid(8) as u8;
+    }
+
+    /// A frame's facing, rotation and item. The facing is the synced slot if
+    /// one arrived, else the spawn packet's data (`recreateFromPacket`), which
+    /// is what a frame whose facing equals the slot's default carries alone
+    /// (the server sends only non-default metadata).
+    pub fn item_frame(&self, id: i32) -> Option<(u8, u8, Option<FrameItem>)> {
+        let e = self.map.get(&id)?;
+        let st = self.item_frames.get(&id).cloned().unwrap_or_default();
+        let facing = st.facing.unwrap_or_else(|| {
+            u8::try_from(e.spawn_data)
+                .ok()
+                .filter(|d| *d < 6)
+                .unwrap_or(0)
+        });
+        Some((facing, st.rotation, st.item))
     }
 
     // -- item use (M23) ------------------------------------------------------
@@ -4057,6 +4120,7 @@ mod side_state_tests {
             attachments: _,
             model_customisation,
             item_stacks,
+            item_frames,
             armor,
             dances,
             events,
@@ -4105,6 +4169,7 @@ mod side_state_tests {
             minecarts.contains_key(&id),
             leash_data.contains_key(&id),
             projectile_power.contains_key(&id),
+            item_frames.contains_key(&id),
         ]
         .into_iter()
         .filter(|present| *present)
@@ -4119,6 +4184,7 @@ mod side_state_tests {
     /// the table's own fields allow, **including the three `remove` used to
     /// forget**: armour, the bee's anger clock and the guardian's beam.
     fn dress(t: &mut EntityTable, id: i32) {
+        t.set_frame_rotation(id, 3);
         t.set_armor(
             id,
             1,
@@ -4159,6 +4225,34 @@ mod side_state_tests {
     /// `guardian_attack.remove(&id)` from `clear_side_state` — the three the
     /// pre-fix `remove` never cleared — leaves a row behind, and `side_rows`
     /// reports it.
+    /// M194 — a frame's facing falls back to the spawn packet's data until
+    /// slot 8 arrives; rotation is kept `% 8`; an empty frame holds nothing.
+    #[test]
+    fn an_item_frame_reads_its_facing_from_spawn_data_then_metadata() {
+        let mut t = EntityTable::default();
+        let mut e = EntityState::new(1, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.spawn_data = 3; // south
+        t.add(9, e);
+        assert_eq!(t.item_frame(9), Some((3, 0, None)));
+        t.set_frame_facing(9, 4);
+        t.set_frame_rotation(9, 11);
+        let map = FrameItem {
+            item_id: 900,
+            map_id: Some(7),
+            foil: false,
+        };
+        t.set_frame_item(9, Some(map));
+        assert_eq!(t.item_frame(9), Some((4, 3, Some(map))));
+        t.set_frame_item(9, None);
+        assert_eq!(t.item_frame(9).unwrap().2, None);
+        // Out-of-range spawn data reads as down (0), not a panic.
+        let mut bad = EntityState::new(2, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        bad.spawn_data = 99;
+        t.add(10, bad);
+        assert_eq!(t.item_frame(10).unwrap().0, 0);
+        assert_eq!(t.item_frame(11), None, "no entity");
+    }
+
     #[test]
     fn a_removed_entity_leaves_no_row_in_any_side_map() {
         let mut t = EntityTable::default();

@@ -800,8 +800,12 @@ pub(crate) fn read_add_entity(
     let pitch = r.i8()? as f32 * (360.0 / 256.0);
     let yaw = r.i8()? as f32 * (360.0 / 256.0);
     let head_yaw = r.i8()? as f32 * (360.0 / 256.0);
+    // M194 — `data` (VarInt), per-type: an item frame's facing. Tolerated
+    // when absent (the headless harnesses build short bodies).
+    let data = r.varint().unwrap_or(0);
     let mut state = rewo_world::entities::EntityState::new(uuid, type_id, x, y, z, yaw, pitch);
     state.set_head_yaw(head_yaw);
+    state.spawn_data = data;
     world.entities.add(id, state);
     Ok((id, type_id))
 }
@@ -2697,6 +2701,19 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(flags) = meta.living_flags {
         if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
             entities.set_living_flags(eid, flags);
+        }
+    }
+    // Slots 8 DIRECTION, 9 ITEM_STACK, 10 INT → an item frame's facing, item
+    // and rotation (M194), for the two frame types only.
+    if kinds.classes.is_some_and(|c| c.is_item_frame(type_id)) {
+        if let Some(f) = meta.direction8 {
+            entities.set_frame_facing(eid, f);
+        }
+        if let Some(item) = meta.frame_item {
+            entities.set_frame_item(eid, item);
+        }
+        if let Some(r) = meta.int10 {
+            entities.set_frame_rotation(eid, r);
         }
     }
     // Slot 8 ITEM_STACK → `ItemEntity.DATA_ITEM` (M24b). No kind gate: the

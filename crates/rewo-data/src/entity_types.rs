@@ -213,6 +213,10 @@ pub struct EntityClasses {
     camel: std::collections::HashSet<i32>,
     /// M169 — `AbstractNautilus`: the 40-tick dash cooldown off index 20.
     nautilus: std::collections::HashSet<i32>,
+    /// M194 — `minecraft:item_frame` and `minecraft:glow_item_frame`, the two
+    /// `ItemFrame` types: they own metadata slots 8 (DIRECTION), 9
+    /// (ITEM_STACK) and 10 (INT).
+    item_frame: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -375,6 +379,10 @@ impl EntityClasses {
             rideable_jumping,
             camel,
             nautilus,
+            item_frame: ["minecraft:item_frame", "minecraft:glow_item_frame"]
+                .iter()
+                .filter_map(|n| types.id_of(n))
+                .collect(),
         })
     }
 
@@ -400,6 +408,7 @@ impl EntityClasses {
             rideable_jumping: Default::default(),
             camel: Default::default(),
             nautilus: Default::default(),
+            item_frame: Default::default(),
         }
     }
 
@@ -426,6 +435,7 @@ impl EntityClasses {
             rideable_jumping: Default::default(),
             camel: Default::default(),
             nautilus: Default::default(),
+            item_frame: Default::default(),
         }
     }
 
@@ -475,6 +485,11 @@ impl EntityClasses {
     /// the note on `rewo_net::route_move_minecart_along_track`.
     pub fn is_minecart(&self, type_id: i32) -> bool {
         self.minecart.contains(&type_id)
+    }
+
+    /// M194 — an `ItemFrame` (plain or glow).
+    pub fn is_item_frame(&self, type_id: i32) -> bool {
+        self.item_frame.contains(&type_id)
     }
 
     /// `entity instanceof AbstractHurtingProjectile` —

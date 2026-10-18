@@ -37,6 +37,7 @@ pub mod cem_anim;
 pub mod vanilla_hier;
 pub mod held;
 pub mod hud;
+pub mod item_frame;
 pub mod leash;
 pub mod locator_bar;
 pub mod mobs;
