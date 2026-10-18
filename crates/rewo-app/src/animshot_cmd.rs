@@ -23,8 +23,8 @@ use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::world::WorldRenderer;
 use rewo_gpu::Gpu;
 
-/// a1-a7.
-const EXPECTED_WITNESSES: usize = 7;
+/// a1-a8.
+const EXPECTED_WITNESSES: usize = 8;
 
 #[derive(ClapArgs)]
 pub struct AnimshotArgs {
@@ -297,6 +297,52 @@ pub fn run(args: AnimshotArgs) -> Result<(), String> {
             max_diff(&m1, &wantm)
         ),
     );
+
+    // a8 (M196): a lava SIDE samples `lava_flow`'s top-left quadrant, so the
+    // side layer is that quadrant of each 32 x 32 frame, stepping on the flow
+    // texture's own `.mcmeta` clock (frametime 3, sequential).
+    let side = baked.render.iter().find_map(|r| match r {
+        rewo_data::assets::RenderKind::Fluid {
+            side_layer,
+            lava: true,
+            ..
+        } => Some(*side_layer),
+        _ => None,
+    });
+    let flow = jar_bytes(&jar, "assets/minecraft/textures/block/lava_flow.png")
+        .and_then(|b| crate::skin_fetch::decode_png_rgba(&b, (32, 4096)).ok());
+    let (ftime, _, _) = jar_mcmeta(&jar, "block/lava_flow").ok_or("lava_flow mcmeta")?;
+    let quadrant = |rgba: &[u8], frame: usize| -> Vec<u8> {
+        (0..16)
+            .flat_map(|y| {
+                let row = (frame * 32 + y) * 32 * 4;
+                rgba[row..row + 16 * 4].to_vec()
+            })
+            .collect()
+    };
+    let (ok8, detail8) = match (side, flow) {
+        (Some(side), Some((rgba, 32, _))) => {
+            let s0 = at(&mut gpu, 0, side, 0)?;
+            let s1 = at(&mut gpu, u64::from(ftime), side, 0)?;
+            let (q0, q1) = (quadrant(&rgba, 0), quadrant(&rgba, 1));
+            (
+                max_diff(&s0, &q0) == 0 && max_diff(&s1, &q1) == 0 && max_diff(&q0, &q1) > 8,
+                format!(
+                    "side layer {side}: tick 0 {} from frame 0's quadrant, tick {ftime} {} from frame 1's",
+                    max_diff(&s0, &q0),
+                    max_diff(&s1, &q1)
+                ),
+            )
+        }
+        (side, flow) => (
+            false,
+            format!(
+                "no lava side layer ({side:?}) or no 32-wide lava_flow.png ({:?})",
+                flow.map(|f| (f.1, f.2))
+            ),
+        ),
+    };
+    c.record("a8.a_lava_side_animates_on_the_flow_quadrant", ok8, detail8);
 
     wr.destroy(&mut gpu);
     off.destroy(&mut gpu);

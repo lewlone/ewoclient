@@ -153,6 +153,13 @@ pub enum RenderKind {
         /// Raw (untinted) fluid layer for the biome water tint. Equals `layer`
         /// for lava (which is never tinted).
         raw_layer: u16,
+        /// The side faces' layer (M196): the top-left 16 x 16 quadrant of each
+        /// 32 x 32 frame of `block/water_flow` / `block/lava_flow`, which is all
+        /// `FluidRenderer` samples for a side (`getU(0)..getU(0.5)`,
+        /// `getV((1 - h) * 0.5)..getV(0.5)`). Pre-tinted like `layer`.
+        side_layer: u16,
+        /// The raw (untinted) side layer, for the biome water tint.
+        raw_side_layer: u16,
         level: u8,
         lava: bool,
     },
@@ -171,6 +178,10 @@ pub struct CarriedFluid {
     pub layer: u16,
     /// Raw (untinted) `block/water_still` layer for the M14 biome water tint.
     pub raw_layer: u16,
+    /// The side faces' `block/water_flow` quadrant, pre-tinted and raw
+    /// (M196; see `RenderKind::Fluid::side_layer`).
+    pub side_layer: u16,
+    pub raw_side_layer: u16,
     /// `FluidState.getAmount()` read the way `RenderKind::Fluid` reads it:
     /// 0 = source. **Every** carried fluid in 26.2 is a source — all 45
     /// `getFluidState` overrides call `Fluids.WATER.getSource(..)`, never
@@ -1756,6 +1767,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 render[id as usize] = RenderKind::Fluid {
                     layer,
                     raw_layer,
+                    // Replaced by the flow quadrant after the loop (M196).
+                    side_layer: layer,
+                    raw_side_layer: raw_layer,
                     level,
                     lava,
                 };
@@ -1940,14 +1954,46 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         }
     }
 
+    // M196 — the side faces' flow quadrants, interned AFTER the loop so that
+    // no texture already in the array is renumbered. A jar without a flow
+    // texture leaves the sides on the still layer (the pre-M196 look).
+    let water_side = (
+        baker.flow_side_layer("block/water_flow", TintKind::Water),
+        baker.flow_side_layer("block/water_flow", TintKind::None),
+    );
+    let lava_side = baker.flow_side_layer("block/lava_flow", TintKind::None);
+    for r in render.iter_mut() {
+        if let RenderKind::Fluid {
+            side_layer,
+            raw_side_layer,
+            lava,
+            ..
+        } = r
+        {
+            let pick = if *lava {
+                lava_side.map(|l| (l, l))
+            } else {
+                water_side.0.zip(water_side.1)
+            };
+            if let Some((s, raw)) = pick {
+                *side_layer = s;
+                *raw_side_layer = raw;
+            }
+        }
+    }
+
     // M164 — fill the carried-fluid table now that `block/water_still` has a
     // layer. A jar with no water texture leaves it empty, which is the same
     // outcome the `RenderKind::Fluid` path takes for the same reason.
     if let Some((layer, raw_layer)) = water_layers {
+        let (side_layer, raw_side_layer) =
+            water_side.0.zip(water_side.1).unwrap_or((layer, raw_layer));
         for (id, falling, self_occludes) in carried {
             fluid[id] = Some(CarriedFluid {
                 layer,
                 raw_layer,
+                side_layer,
+                raw_side_layer,
                 level: 0,
                 falling,
                 self_occludes,
@@ -4288,6 +4334,69 @@ impl<'a> Baker<'a> {
             .unwrap_or(NO_PARTICLE_LAYER)
     }
 
+    /// The side faces' layer for a fluid's flow texture (M196): the top-left
+    /// `TEX_SIZE` quadrant of each `2 * TEX_SIZE` square frame, tinted like
+    /// [`Self::layer_for`] and animated by the texture's own `.mcmeta`.
+    /// `FluidRenderer`'s side UVs are `getU(0)..getU(0.5)` and
+    /// `getV((1 - h) * 0.5)..getV(0.5)`, so that quadrant is every texel a side
+    /// face can sample; the rest of the sprite belongs to the flowing top.
+    fn flow_side_layer(&mut self, tex_name: &str, apply_tint: TintKind) -> Option<u16> {
+        let cache_key = format!("{tex_name}#{apply_tint:?}#flow_side");
+        if let Some(&layer) = self.layer_index.get(&cache_key) {
+            return Some(layer);
+        }
+        let short = tex_name.strip_prefix("minecraft:").unwrap_or(tex_name);
+        let path = format!("assets/minecraft/textures/{short}.png");
+        let mut bytes = Vec::new();
+        self.jar.by_name(&path).ok()?.read_to_end(&mut bytes).ok()?;
+        let (rgba, w, h) = decode_png_any(&bytes)?;
+        let t = TEX_SIZE as usize;
+        let (w, h) = (w as usize, h as usize);
+        if w != 2 * t || h % w != 0 {
+            log::warn!("rewo-data: {tex_name} is {w}x{h}, not 2*{t}-wide square frames");
+            return None;
+        }
+        let mut frames: Vec<Vec<u8>> = (0..h / w)
+            .map(|f| {
+                let mut out = Vec::with_capacity(t * t * 4);
+                for y in 0..t {
+                    let row = (f * w + y) * w * 4;
+                    out.extend_from_slice(&rgba[row..row + t * 4]);
+                }
+                out
+            })
+            .collect();
+        let tint = match apply_tint {
+            TintKind::Grass => Some(self.grass_tint),
+            TintKind::Foliage => Some(self.foliage_tint),
+            TintKind::Water => Some([0x3F, 0x76, 0xE4]),
+            TintKind::None => None,
+        };
+        if let Some(color) = tint {
+            for f in &mut frames {
+                tint_rgb(f, color);
+            }
+        }
+        let layer = self.layers.len() as u16;
+        if frames.len() > 1 {
+            if let Some((order, frametime, interpolate)) =
+                read_mcmeta(self.jar, &path, frames.len() as u32)
+            {
+                self.animations.push(AnimatedLayer {
+                    layer,
+                    frames: frames.clone(),
+                    order,
+                    frametime,
+                    interpolate,
+                });
+            }
+        }
+        self.layers.push(frames.into_iter().next()?);
+        self.layer_names.push(cache_key.clone());
+        self.layer_index.insert(cache_key, layer);
+        Some(layer)
+    }
+
     /// Texture-array layer for a texture name; `foliage` picks the tint
     /// colormap for grayscale grass/foliage textures.
     fn layer_for(&mut self, tex_name: &str, apply_tint: TintKind) -> Option<u16> {
@@ -5516,6 +5625,74 @@ mod tests {
         // The registry name is not the sprite name.
         let mansion = t.iter().position(|e| e.0 == "mansion").expect("mansion");
         assert_eq!(t[mansion].1, "woodland_mansion");
+    }
+
+    /// M196 — a fluid's side layer is the top-left quadrant of its flow
+    /// sprite's first 32 x 32 frame, read here straight off the jar's PNG, and
+    /// it animates with the flow `.mcmeta`; carried water shares water's.
+    #[test]
+    fn fluid_sides_bake_the_flow_quadrant() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let paths = crate::DataPaths::for_version("26.2").expect("paths");
+        let jar = paths
+            .root
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("config root")
+            .join("shared/versions/26.2/26.2.jar");
+        let png = |name: &str| {
+            let f = std::fs::File::open(&jar).expect("jar");
+            let mut z = zip::ZipArchive::new(f).expect("zip");
+            let mut bytes = Vec::new();
+            z.by_name(&format!("assets/minecraft/textures/block/{name}.png"))
+                .expect("png")
+                .read_to_end(&mut bytes)
+                .expect("read");
+            decode_png_any(&bytes).expect("decode")
+        };
+        let lava = states_where(raw, "minecraft:lava", &[])[0];
+        let RenderKind::Fluid {
+            layer, side_layer, ..
+        } = baked.render[lava]
+        else {
+            panic!("lava is a fluid");
+        };
+        assert_ne!(
+            side_layer, layer,
+            "the sides no longer draw the still sprite"
+        );
+        let (rgba, w, _) = png("lava_flow");
+        assert_eq!(w, 32);
+        let quadrant: Vec<u8> = (0..16)
+            .flat_map(|y| rgba[y * 32 * 4..y * 32 * 4 + 16 * 4].to_vec())
+            .collect();
+        assert_eq!(baked.layers[side_layer as usize], quadrant);
+        let anim = baked
+            .animations
+            .iter()
+            .find(|a| a.layer == side_layer)
+            .expect("the lava side layer animates");
+        assert_eq!(anim.frames.len(), rgba.len() / (32 * 32 * 4));
+        let water = states_where(raw, "minecraft:water", &[])[0];
+        let RenderKind::Fluid {
+            side_layer: ws,
+            raw_side_layer: wr,
+            ..
+        } = baked.render[water]
+        else {
+            panic!("water is a fluid");
+        };
+        assert_ne!(ws, wr, "pre-tinted and raw water sides are two layers");
+        let carried = baked
+            .fluid
+            .iter()
+            .flatten()
+            .next()
+            .expect("a carried fluid");
+        assert_eq!((carried.side_layer, carried.raw_side_layer), (ws, wr));
     }
 
     #[test]

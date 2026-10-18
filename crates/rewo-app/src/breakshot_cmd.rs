@@ -459,6 +459,8 @@ fn check_geometry(c: &mut Checker) {
         &[rewo_data::assets::RenderKind::Fluid {
             layer: 0,
             raw_layer: 0,
+            side_layer: 0,
+            raw_side_layer: 0,
             level: 0,
             lava: false,
         }],

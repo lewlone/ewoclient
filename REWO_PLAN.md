@@ -342,7 +342,7 @@ witnesses are mostly self-driven can look healthy against nothing.
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
 >   the map store, **M192 the held map**, **M193 its decorations**, **M194
 >   item frames**; banner name labels are open), ~~`render-misc [INTERP]`~~
->   (**M195**) and `[FLOW]`, the live
+>   (**M195**) and `[FLOW]` (the sides done, **M196**; the flowing top is open), the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -3843,6 +3843,31 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M196 — fluid sides draw the flowing sprite (`render-misc [FLOW]`, the side half, 2026-10-18)
+
+`FluidRenderer.tesselate` draws a fluid's four sides from the FLOWING sprite
+(`block/water_flow`, `block/lava_flow`, 32 x 32 frames) at `getU(0)..
+getU(0.5)` and `getV((1 - h) * 0.5)..getV(0.5)`: only the top-left 16 x 16
+quadrant of each frame, the same texel density as the 16 px still sprite.
+Rewo drew every face from the still sprite. The bake now interns a
+`flow_side_layer` per fluid (water pre-tinted and raw, lava) holding that
+quadrant of each frame, animated by the flow texture's own `.mcmeta` (lava
+frametime 3, water 1), AFTER the main loop so no existing layer index moves;
+`RenderKind::Fluid` and `CarriedFluid` carry `side_layer` /
+`raw_side_layer`, and `emit_fluid`'s sides use them with the V range they
+already had (`1 - h .. 1` is that quadrant's `(1 - h) * 0.5 .. 0.5`).
+Graded by a mesher unit test (sides on the side layer, top and bottom on the
+still one, water and lava), a jar-backed bake test (the layer IS the PNG's
+quadrant and animates), and `animshot` a8 (the uploaded side layer steps
+through the quadrants on the flow clock). The demo PNG shows no fluid side
+and its hash is unchanged.
+
+Still open, the half the plan called a decision: the flowing TOP face
+samples the flow sprite rotated about its centre (`0.5 +- 0.25 * (cos +-
+sin)`), a region about 23 px across that does not fit a 16 px layer.
+Also open: `water_overlay` on a side next to a `HalfTransparentBlock` or
+leaves.
 
 ### M195 — animated textures interpolate (`render-misc [INTERP]`, 2026-10-18)
 

@@ -412,12 +412,16 @@ pub(crate) fn oracle_fluid_table() -> Vec<RenderKind> {
         RenderKind::Fluid {
             layer: 1,
             raw_layer: 1,
+            side_layer: 1,
+            raw_side_layer: 1,
             level: 0,
             lava: false,
         },
         RenderKind::Fluid {
             layer: 2,
             raw_layer: 2,
+            side_layer: 2,
+            raw_side_layer: 2,
             level: 0,
             lava: true,
         },
@@ -584,6 +588,8 @@ pub(crate) fn oracle_waterlogged_carried() -> Vec<Option<CarriedFluid>> {
         Some(CarriedFluid {
             layer: 1,
             raw_layer: 1,
+            side_layer: 1,
+            raw_side_layer: 1,
             level: 0,
             falling: false,
             self_occludes,

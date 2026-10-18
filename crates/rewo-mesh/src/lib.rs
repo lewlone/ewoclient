@@ -1222,6 +1222,9 @@ struct FluidHere {
     layer: u16,
     raw_layer: u16,
     level: u8,
+    /// The side faces' flow-quadrant layers (M196).
+    side_layer: u16,
+    raw_side_layer: u16,
     lava: bool,
     /// `isFaceOccludedBySelf`'s input, in the **mesher's** face order.
     self_occludes: u8,
@@ -1239,6 +1242,8 @@ fn fluid_at(
     if let Some(RenderKind::Fluid {
         layer,
         raw_layer,
+        side_layer,
+        raw_side_layer,
         level,
         lava,
     }) = table.get(state as usize)
@@ -1246,6 +1251,8 @@ fn fluid_at(
         return Some(FluidHere {
             layer: *layer,
             raw_layer: *raw_layer,
+            side_layer: *side_layer,
+            raw_side_layer: *raw_side_layer,
             level: *level,
             lava: *lava,
             // Plain water never suppresses its own faces —
@@ -1279,6 +1286,8 @@ fn fluid_at(
     Some(FluidHere {
         layer: f.layer,
         raw_layer: f.raw_layer,
+        side_layer: f.side_layer,
+        raw_side_layer: f.raw_side_layer,
         level: f.level,
         lava: false,
         self_occludes: mask,
@@ -1346,12 +1355,13 @@ fn emit_fluid(
 ) {
     let lava = f.lava;
     // Water gets the biome water tint (raw layer + dynamic color); lava never.
-    let (fluid_layer, tint_rgb) = if lava {
-        (f.layer, TINT_WHITE)
+    // The sides take the flow quadrant (M196), raw or pre-tinted alike.
+    let (fluid_layer, side_layer, tint_rgb) = if lava {
+        (f.layer, f.side_layer, TINT_WHITE)
     } else {
         match biome_tint(world, cache, wx, y, wz, TintSource::Water) {
-            Some(rgb) => (f.raw_layer, rgb),
-            None => (f.layer, TINT_WHITE),
+            Some(rgb) => (f.raw_layer, f.raw_side_layer, rgb),
+            None => (f.layer, f.side_layer, TINT_WHITE),
         }
     };
     let same =
@@ -1395,11 +1405,11 @@ fn emit_fluid(
     // `up() * north()` / `up() * west()` on the Z / X sides.
     let cardinal = world.cardinal_light();
     let up = cardinal.by_mesh_face(0);
-    let mut quad = |p: [([f32; 3], [f32; 2]); 4], factor: f32, coords: i32| {
+    let mut quad = |p: [([f32; 3], [f32; 2]); 4], factor: f32, coords: i32, layer: u16| {
         let color = scale_rgb(tint_rgb, factor);
         let base = vertices.len() as u32;
         for (pos, uv) in p {
-            vertices.push(MeshVertex::new(pos, uv, fluid_layer as u32, coords, color));
+            vertices.push(MeshVertex::new(pos, uv, layer as u32, coords, color));
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     };
@@ -1415,6 +1425,7 @@ fn emit_fluid(
             ],
             up,
             fluid_light(y),
+            fluid_layer,
         );
     }
     // Sides — skip against the same fluid or a full opaque cube.
@@ -1478,7 +1489,10 @@ fn emit_fluid(
         }
         // `faceDir.getAxis() == Z ? north() : west()`.
         let side = cardinal.by_mesh_face(if face < 4 { 2 } else { 4 });
-        quad(corners, up * side, fluid_light(y));
+        // `FluidRenderer`: a side samples the FLOWING sprite (`getU(0)..
+        // getU(0.5)`, `getV((1 - h) * 0.5)..getV(0.5)` — the quadrant the
+        // side layer holds, so the `1 - h .. 1` V range above maps onto it).
+        quad(corners, up * side, fluid_light(y), side_layer);
     }
     // Bottom — against anything that isn't fluid, isn't covered by our own
     // shape, and isn't a full cube. Vanilla's `renderDown` has TWO neighbour
@@ -1499,6 +1513,7 @@ fn emit_fluid(
             ],
             cardinal.by_mesh_face(1),
             fluid_light(y - 1),
+            fluid_layer,
         );
     }
 }
@@ -1946,6 +1961,8 @@ mod tests {
             RenderKind::Fluid {
                 layer: POOL_TINTED,
                 raw_layer: POOL_RAW,
+                side_layer: POOL_TINTED,
+                raw_side_layer: POOL_RAW,
                 level: 0,
                 lava: false,
             },
@@ -1956,6 +1973,8 @@ mod tests {
             Some(CarriedFluid {
                 layer: CARRIED_TINTED,
                 raw_layer: CARRIED_RAW,
+                side_layer: CARRIED_TINTED,
+                raw_side_layer: CARRIED_RAW,
                 level: 0,
                 falling: false,
                 self_occludes: 0,
@@ -3008,12 +3027,16 @@ mod tests {
         table.push(RenderKind::Fluid {
             layer: 30,
             raw_layer: 30,
+            side_layer: 30,
+            raw_side_layer: 30,
             level: 0,
             lava: false,
         }); // 3
         table.push(RenderKind::Fluid {
             layer: 31,
             raw_layer: 31,
+            side_layer: 31,
+            raw_side_layer: 31,
             level: 0,
             lava: true,
         }); // 4
@@ -3288,6 +3311,55 @@ mod tests {
     /// relative to its own block. `emit_fluid` winds its four sides identically
     /// (unlike the cube emitter), so their normals cannot tell north from south
     /// — the plane can, and it is still independent of the shade code.
+    /// M196: `FluidRenderer` draws a fluid's four sides from the FLOWING
+    /// sprite and its top (still) and bottom from the still one, so the sides
+    /// take the flow-quadrant layer and the top and bottom keep the still
+    /// layer — for water (translucent) and lava (opaque) alike.
+    #[test]
+    fn fluid_sides_take_the_flow_layer() {
+        let mut table = cube_table();
+        table.push(RenderKind::Fluid {
+            layer: 30,
+            raw_layer: 31,
+            side_layer: 40,
+            raw_side_layer: 41,
+            level: 0,
+            lava: false,
+        }); // 3: water
+        table.push(RenderKind::Fluid {
+            layer: 32,
+            raw_layer: 32,
+            side_layer: 42,
+            raw_side_layer: 42,
+            level: 0,
+            lava: true,
+        }); // 4: lava
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        w.set_block(4, 10, 4, 3);
+        w.set_block(10, 10, 4, 4);
+        let mesh = mesh_column(&w, &table, &[], &[], 0, 0).expect("meshed");
+        let faces = |v: &[MeshVertex], block: [i32; 3]| -> Vec<(usize, u16)> {
+            v.chunks(4)
+                .map(|q| {
+                    let q: &[MeshVertex; 4] = q.try_into().unwrap();
+                    (fluid_face_of_quad(q, block), q[0].layer_index())
+                })
+                .collect()
+        };
+        for (verts, block, still, side) in [
+            (&mesh.tvertices, [4, 10, 4], 30u16, 40u16),
+            (&mesh.vertices, [10, 10, 4], 32, 42),
+        ] {
+            let got = faces(verts, block);
+            assert_eq!(got.len(), 6, "{got:?}: top, bottom and four sides");
+            for (face, layer) in got {
+                let want = if face < 2 { still } else { side };
+                assert_eq!(layer, want, "face {face}");
+            }
+        }
+    }
+
     fn fluid_face_of_quad(q: &[MeshVertex; 4], block: [i32; 3]) -> usize {
         let constant = |axis: usize| q.iter().all(|v| v.pos[axis] == q[0].pos[axis]);
         if constant(0) {
@@ -3559,6 +3631,8 @@ mod occlusion_tests {
             RenderKind::Fluid {
                 layer: 4,
                 raw_layer: 4,
+                side_layer: 4,
+                raw_side_layer: 4,
                 level: 0,
                 lava: false,
             },
