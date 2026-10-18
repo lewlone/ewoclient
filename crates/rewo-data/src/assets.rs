@@ -1317,6 +1317,18 @@ pub struct BakeStats {
     pub textures: usize,
 }
 
+/// The block classes whose `getFluidState` is water whatever the state
+/// (`BubbleColumnBlock`, `KelpBlock`, `KelpPlantBlock`, `SeagrassBlock`,
+/// `TallSeagrassBlock`): `propagatesSkylightDown`'s default is false for
+/// them (M211).
+const ALWAYS_WATER: [&str; 5] = [
+    "minecraft:bubble_column",
+    "minecraft:kelp",
+    "minecraft:kelp_plant",
+    "minecraft:seagrass",
+    "minecraft:tall_seagrass",
+];
+
 /// Light `(emission, dampening)` for a fluid state.
 ///
 /// Fluids are classified by name and `continue` before the shared per-state
@@ -1920,8 +1932,16 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // with propagatesSkylightDown = !fullCubeShape && no fluid. The
             // bake already knows the shape (`solid`) and the fluid-ness, so
             // the only imported fact is `canOcclude`.
-            let full_cube = solid[id as usize];
-            let fluid = matches!(render[id as usize], RenderKind::Fluid { .. });
+            // M211: vanilla reads the block's SHAPE (`getShape` /
+            // `getOcclusionShape`), not its model. A huge mushroom block is a
+            // multipart of single-face planes — not `solid` to the model bake —
+            // yet its shape is the full block, so vanilla's `isSolidRender`
+            // holds (dampening 15: a cap stops sky light) and a shulker box's
+            // or chorus flower's full shape means `propagatesSkylightDown` is
+            // false (dampening 1). The collision table carries the shape for
+            // these, so a full-cube collision counts as a full shape.
+            let full_cube =
+                solid[id as usize] || collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
             // `propagatesSkylightDown` defaults to "not a full cube and no
             // fluid", but 16 block classes override it — glass returns true so
             // sky passes it at full strength, fences return "not waterlogged".
@@ -1929,10 +1949,23 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 .and_then(|p| p.get("waterlogged"))
                 .and_then(|v| v.as_str())
                 == Some("true");
+            // The default's "no fluid" is `getFluidState().isEmpty()` (M211):
+            // false for a waterlogged state, and for the five classes whose
+            // `getFluidState` returns `Fluids.WATER.getSource(false)`
+            // unconditionally. Counting only rendered fluids left seagrass,
+            // kelp and every waterlogged slab or fence at dampening 0, so sky
+            // light fell through water at full strength.
+            let fluid = matches!(render[id as usize], RenderKind::Fluid { .. })
+                || waterlogged
+                || ALWAYS_WATER.contains(&block_name.as_str());
             let propagates = match sky_propagate.get(block_name.as_str()) {
                 Some(0) => false,
                 Some(1) => true,
-                Some(_) => !waterlogged,
+                // `SKY_PROPAGATE`'s 2 is "while the fluid state is empty"
+                // (`VegetationBlock`'s `getFluidState().isEmpty()`, fences'
+                // `!WATERLOGGED`), which the table words as "not waterlogged";
+                // seagrass has no such property and is never empty (M211).
+                Some(_) => !fluid,
                 None => !full_cube && !fluid,
             };
             dampening[id as usize] = if let Some(&d) = damp_override.get(block_name.as_str()) {
@@ -5748,6 +5781,71 @@ mod tests {
     /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
     /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
     /// `block/block`, none of which sets `"ambientocclusion"`.
+    /// M211 — light dampening follows the block's SHAPE and FLUID STATE, as
+    /// `BlockBehaviour.getLightDampening` / `propagatesSkylightDown` read them,
+    /// not its model. Found by `play --light-check` on a normal world: a huge
+    /// mushroom cap let sky light straight through (a multipart of face planes
+    /// is not a "solid" model), and seagrass let it through water.
+    #[test]
+    fn dampening_reads_the_shape_and_the_fluid_state() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let damp = |name: &str, props: &[(&str, &str)]| -> (u8, u8) {
+            let states = raw[name]["states"].as_array().expect(name);
+            let st = states
+                .iter()
+                .find(|st| {
+                    props
+                        .iter()
+                        .all(|(k, v)| st["properties"][k].as_str() == Some(*v))
+                })
+                .expect("state");
+            let id = st["id"].as_u64().expect("id") as usize;
+            (baked.dampening[id], baked.cull[id].occludes)
+        };
+        // `isSolidRender` (canOcclude, full shape): 15, and every face occludes.
+        for m in [
+            "minecraft:red_mushroom_block",
+            "minecraft:brown_mushroom_block",
+            "minecraft:mushroom_stem",
+        ] {
+            assert_eq!(damp(m, &[]), (15, 0b11_1111), "{m}");
+        }
+        // `getFluidState()` never empty: `propagatesSkylightDown` false, 1.
+        for w in [
+            "minecraft:seagrass",
+            "minecraft:tall_seagrass",
+            "minecraft:kelp",
+            "minecraft:kelp_plant",
+        ] {
+            assert_eq!(damp(w, &[]).0, 1, "{w}");
+        }
+        // A waterlogged slab has water in it; a dry one propagates.
+        assert_eq!(
+            damp(
+                "minecraft:oak_slab",
+                &[("type", "bottom"), ("waterlogged", "true")]
+            )
+            .0,
+            1
+        );
+        assert_eq!(
+            damp(
+                "minecraft:oak_slab",
+                &[("type", "bottom"), ("waterlogged", "false")]
+            )
+            .0,
+            0
+        );
+        // `noOcclusion` but a full shape: not 15, and not propagating either.
+        assert_eq!(damp("minecraft:shulker_box", &[]).0, 1);
+        // Leaves pin 1; glass propagates.
+        assert_eq!(damp("minecraft:oak_leaves", &[]).0, 1);
+        assert_eq!(damp("minecraft:glass", &[]).0, 0);
+    }
+
     /// M192 — the held map's two backgrounds come out of the real jar at
     /// their PNG sizes (64 x 64 and 128 x 128, read off the headers).
     #[test]

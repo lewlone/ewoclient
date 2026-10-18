@@ -2270,6 +2270,30 @@ fn light_parity_check(
         truth.push(col);
     }
 
+    // And the server's values over the checked columns plus a one-block ring,
+    // so a disagreement can show what the server had around it.
+    let rx0 = targets.iter().map(|t| t.0).min().unwrap_or(0) * 16 - 1;
+    let rz0 = targets.iter().map(|t| t.1).min().unwrap_or(0) * 16 - 1;
+    let rx1 = targets.iter().map(|t| t.0).max().unwrap_or(0) * 16 + 16;
+    let rz1 = targets.iter().map(|t| t.1).max().unwrap_or(0) * 16 + 16;
+    let (rw, rd) = ((rx1 - rx0 + 1) as usize, (rz1 - rz0 + 1) as usize);
+    let mut ring = vec![(0u8, 0u8); rw * rd * (y1 - y0) as usize];
+    let ring_at = |x: i32, y: i32, z: i32| -> Option<usize> {
+        ((rx0..=rx1).contains(&x) && (rz0..=rz1).contains(&z) && (y0..y1).contains(&y)).then(|| {
+            (((x - rx0) as usize * rd + (z - rz0) as usize) * (y1 - y0) as usize)
+                + (y - y0) as usize
+        })
+    };
+    for x in rx0..=rx1 {
+        for z in rz0..=rz1 {
+            for y in y0..y1 {
+                if let Some(i) = ring_at(x, y, z) {
+                    ring[i] = session.world.light_at(x, y, z);
+                }
+            }
+        }
+    }
+
     let mut engine = LightEngine::new();
     for &(cx, cz) in &targets {
         engine.relight_column(&mut session.world, tables, cx, cz);
@@ -2286,6 +2310,9 @@ fn light_parity_check(
     // brighter means a source is one too high, darker means a path is blocked
     // that should not be.
     let (mut brighter, mut darker, mut max_delta) = (0usize, 0usize, 0i32);
+    // Every sky disagreement, for the chunk-border classification below.
+    let mut sky_bad: std::collections::HashMap<(i32, i32, i32), (u8, u8)> =
+        std::collections::HashMap::new();
     // The brightest disagreeing cell is nearest whatever source is wrong.
     let mut worst: Option<(u8, String)> = None;
     for (ci, &(cx, cz)) in targets.iter().enumerate() {
@@ -2303,6 +2330,7 @@ fn light_parity_check(
                     }
                     if got_s != want_s {
                         bad_sky += 1;
+                        sky_bad.insert((x, y, z), (want_s, got_s));
                     }
                     if got_s != want_s {
                         let d = got_s as i32 - want_s as i32;
@@ -2330,8 +2358,34 @@ fn light_parity_check(
                             baked.emission.get(st as usize).copied().unwrap_or(0),
                             baked.dampening.get(st as usize).copied().unwrap_or(0),
                         );
+                        // The six neighbours' light, the server's value -> ours
+                        // after the relight: which one fed the wrong level.
+                        let around: Vec<String> = [
+                            (1, 0, 0, "+x"),
+                            (-1, 0, 0, "-x"),
+                            (0, 1, 0, "+y"),
+                            (0, -1, 0, "-y"),
+                            (0, 0, 1, "+z"),
+                            (0, 0, -1, "-z"),
+                        ]
+                        .iter()
+                        .map(|&(dx, dy, dz, tag)| {
+                            let (nx, ny, nz) = (x + dx, y + dy, z + dz);
+                            let ns = session.world.block_state_at(nx, ny, nz);
+                            let nn = data.blocks.block_name(ns).unwrap_or("?");
+                            let nn = nn.strip_prefix("minecraft:").unwrap_or(nn);
+                            let (nbl, nsk) = session.world.light_at(nx, ny, nz);
+                            match ring_at(nx, ny, nz).map(|i| ring[i]) {
+                                Some((wb, ws)) => {
+                                    format!("{tag} {nn} b{wb}->{nbl}/s{ws}->{nsk}")
+                                }
+                                None => format!("{tag} {nn} b?->{nbl}/s?->{nsk}"),
+                            }
+                        })
+                        .collect();
                         examples.push(format!(
-                            "({x},{y},{z}) {name} [emit {e} damp {d}]: want b{want_b}/s{want_s} got b{got_b}/s{got_s}"
+                            "({x},{y},{z}) {name} [emit {e} damp {d}]: want b{want_b}/s{want_s} got b{got_b}/s{got_s}; around: {}",
+                            around.join(", ")
                         ));
                     }
                 }
@@ -2358,12 +2412,111 @@ fn light_parity_check(
     for e in &examples {
         println!("[rewo-light]   {e}");
     }
-    if bad_block > 0 || bad_sky > 0 {
+    // Vanilla's sky light is order-dependent at chunk borders (M211):
+    // `SkyLightEngine.propagateLightSources` spreads a source sideways only
+    // toward a neighbour whose `lowestSourceY` is above it, and across a
+    // border it reads the NEIGHBOUR chunk's `ChunkSkyLightSources` — which may
+    // be empty, or predate that chunk's trees, when the chunk is lit. So the
+    // server can hold a cell darker than its own neighbour across the border
+    // permits (`neighbour - max(1, opacity)`), which no consistent flood fill
+    // reproduces. Such a cell, and the disagreements chained to it through
+    // adjacent disagreeing cells (their light descends from it), are explained;
+    // a disagreement with no such cell in its group — and every block-light
+    // one — still fails.
+    let damp_at = |x: i32, y: i32, z: i32| -> u8 {
+        let st = session.world.block_state_at(x, y, z) as usize;
+        baked.dampening.get(st).copied().unwrap_or(0)
+    };
+    let mut explained: std::collections::HashSet<(i32, i32, i32)> =
+        std::collections::HashSet::new();
+    let mut queue: Vec<(i32, i32, i32)> = Vec::new();
+    // The second class: STALE server light. A cell the server holds brighter
+    // than any of its own neighbours permits (`neighbour - max(1, opacity)`)
+    // while it is not a sky source (`ChunkSkyLightSources.isEdgeOccluded`:
+    // a block with nonzero dampening above it stops the source) was never
+    // relit after a change — e.g. leaves at sky 15 under open sky, which
+    // `isEdgeOccluded` rules out. No consistent flood fill reproduces it.
+    let server_at = |x: i32, y: i32, z: i32| ring_at(x, y, z).map(|i| ring[i].1);
+    let is_source = |x: i32, y: i32, z: i32| (y..y1).all(|yy| damp_at(x, yy, z) == 0);
+    let mut stale = 0usize;
+    for (&(x, y, z), &(want_s, got_s)) in &sky_bad {
+        if got_s >= want_s || is_source(x, y, z) {
+            continue;
+        }
+        let cost = damp_at(x, y, z).max(1);
+        let permitted = [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ]
+        .iter()
+        .filter_map(|&(dx, dy, dz)| server_at(x + dx, y + dy, z + dz))
+        .map(|n| n.saturating_sub(cost))
+        .max()
+        .unwrap_or(0);
+        if want_s > permitted {
+            stale += 1;
+            explained.insert((x, y, z));
+            queue.push((x, y, z));
+        }
+    }
+    for (&(x, y, z), &(want_s, got_s)) in &sky_bad {
+        if got_s <= want_s {
+            continue;
+        }
+        let cost = damp_at(x, y, z).max(1);
+        let border_violation = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dz)| {
+            let (nx, nz) = (x + dx, z + dz);
+            let other_chunk = (nx >> 4) != (x >> 4) || (nz >> 4) != (z >> 4);
+            other_chunk
+                && ring_at(nx, y, nz).is_some_and(|i| ring[i].1.saturating_sub(cost) > want_s)
+        });
+        if border_violation {
+            explained.insert((x, y, z));
+            queue.push((x, y, z));
+        }
+    }
+    let seeds = explained.len() - stale;
+    while let Some((x, y, z)) = queue.pop() {
+        for (dx, dy, dz) in [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let n = (x + dx, y + dy, z + dz);
+            if sky_bad.contains_key(&n) && explained.insert(n) {
+                queue.push(n);
+            }
+        }
+    }
+    let unexplained_sky = bad_sky - explained.len();
+    if bad_sky > 0 {
+        println!(
+            "[rewo-light]   sky: {} explained by the server's own data — {seeds} cells darker \
+             than a neighbour across a chunk border permits (vanilla's chunk-border source \
+             order), {stale} brighter than any neighbour permits and not a sky source (stale \
+             light), and the disagreements chained to them; {unexplained_sky} unexplained",
+            explained.len()
+        );
+    }
+    if bad_block > 0 || unexplained_sky > 0 {
         return Err(format!(
             "--light-check: recomputed light differs from the server's in {} of {cells} cells \
-             (block {bad_block}, sky {bad_sky})",
+             (block {bad_block}, sky {bad_sky}, of which {unexplained_sky} not explained by \
+             the server's own inconsistencies)",
             bad_block + bad_sky
         ));
+    }
+    if bad_sky > 0 {
+        println!(
+            "[rewo-light] LIGHT-CHECK passed: every disagreement traces to the server's own data"
+        );
     }
     Ok(())
 }

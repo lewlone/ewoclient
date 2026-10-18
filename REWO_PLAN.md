@@ -2723,6 +2723,11 @@ a record, because what it teaches outlived it:
 - **Physics parity verified only for the on-foot flat-world subset.** Water,
   cobwebs, stairs-vs-sneak, ladders, ice, slabs-as-steps, etc. untested —
   each will likely need decompile-derived constants (§13 risk).
+  *(2026-10-18: `rewo-world/src/physics.rs` has since ported fluids,
+  climbing, honey, bubble columns and cobwebs; `rewo play` on NORMAL worlds,
+  twelve runs over nine seeds, walked hills, trees and shores with
+  CORRECTIONS 0 every time. The ported paths are still not each exercised
+  by a witness.)*
 - **Entities are now world-lit** (2026-07-23, §15) — they were rendering at a
   fixed directional shade, identical in a cave and at noon.
 - ~~**Light decode beyond flat-world-full-skylight is unverified**~~ —
@@ -3862,6 +3867,54 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M211 — light on natural terrain: shapes, water, and a light check that can read a real world (2026-10-18)
+
+`rewo play --light-check` (M10's gate: relight the 3 x 3 columns around the bot
+from scratch and diff against the server's light) had only ever run on a flat
+world. On normal worlds (seeds 20261018, 1, 7, 42, 777, 1234, 9001, 31337, 5)
+CORRECTIONS stayed 0 throughout, but light disagreed in three distinct ways.
+
+**Two bake bugs, both in `getLightDampening` / `propagatesSkylightDown`'s
+inputs** (`assets.rs`):
+
+- The rule reads the block's **shape**, and the bake fed it "the model is one
+  full cube". A huge mushroom block is a multipart of single-face planes, so
+  all three mushroom blocks came out non-solid: dampening 0 (a cap let sky
+  light straight down, 1,126 cells off under one mushroom on seed 42, up to
+  10 levels) and no face occlusion. A full-cube collision now counts as a full
+  shape, which also gives shulker boxes and the chorus flower vanilla's 1.
+- The default's "no fluid" is `getFluidState().isEmpty()`, and the bake
+  counted only rendered fluids: every waterlogged state, and the five classes
+  that are always water (`ALWAYS_WATER`: bubble column, kelp, kelp plant,
+  seagrass, tall seagrass), had dampening 0, so sky light fell through water
+  at full strength. `SKY_PROPAGATE`'s code 2 ("not waterlogged" in the
+  generated table) now reads as "fluid state empty", which is what
+  `VegetationBlock` returns.
+
+`dampening_reads_the_shape_and_the_fluid_state` pins both against the real
+bake.
+
+**Two classes of disagreement are the server's own data, and the check now
+says so instead of failing on them.** Vanilla's sky light is order-dependent at
+chunk borders: `SkyLightEngine.propagateLightSources` spreads a source sideways
+only toward a neighbour whose `lowestSourceY` is above it, reading the
+NEIGHBOUR chunk's `ChunkSkyLightSources`, which may be empty or predate that
+chunk's trees when the chunk is lit. The server then holds cells darker than
+their own neighbour across the border permits: a leaf at 13 beside air at 15
+in the next chunk, where `15 - max(1, 1)` is 14. And stale light: cells
+brighter than any neighbour permits that `isEdgeOccluded` says are not sky
+sources (leaves at sky 15). No consistent flood fill reproduces either. The
+check snapshots the server's light over the region plus a one-block ring,
+classifies those cells and the disagreements chained to them, prints each
+class, and fails only on what is left, and on any block-light disagreement.
+A relight of a 5 x 5 region graded on its centre showed the same residue, so
+it is not the region edge. Each example now prints its six neighbours as
+`server -> recomputed`.
+
+After the fixes: seeds 7 and 9001 EXACT, the rest 0 unexplained sky cells.
+One block-light cell (seed 5, server 7 in an air cell in a deepslate cave,
+glow lichen's emission) did not recur on rerun; recorded, not explained.
 
 ### M210 — the arena reaches render distance 32 (2026-10-18)
 
