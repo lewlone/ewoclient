@@ -1,6 +1,7 @@
 //! The block texture array and its animated layers: creation, the blocking
 //! initial upload with mip generation, and the per-tick re-upload of animated
-//! frames (water / lava) through the arena's async upload ring.
+//! frames (water / lava) through the arena's async upload ring — blended into
+//! the next frame for the layers whose `.mcmeta` says `interpolate` (M195).
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
@@ -17,6 +18,50 @@ pub struct LayerAnimation {
     pub frames: Vec<Vec<u8>>,
     pub order: Vec<u32>,
     pub frametime: u32,
+    /// Blend each frame into the next (M195), as vanilla's
+    /// `ANIMATE_SPRITE_INTERPOLATE` pipeline does.
+    pub interpolate: bool,
+}
+
+/// What an animated layer shows at game tick `tick`: `(frame, next,
+/// progress)`, with `progress` in thousandths.
+///
+/// Rewo's clock is the session tick, so vanilla's per-sprite counters are
+/// derived from it: the frame is `order[(tick / frametime) % len]` and
+/// `subFrame` is `tick % frametime` (every interpolating block texture in
+/// 26.2 has one uniform `frametime`). `SpriteContents.AnimationState.
+/// drawToAtlas` then passes `(int)((float)subFrame / time * 1000.0F)` and the
+/// frame after the current one, wrapping (`(frame + 1) % frames.size()`). A
+/// layer that does not interpolate has `next == frame` and progress 0.
+pub fn anim_sample(a: &LayerAnimation, tick: u64) -> Option<(usize, usize, u32)> {
+    if a.order.is_empty() || a.frames.is_empty() {
+        return None;
+    }
+    let time = u64::from(a.frametime.max(1));
+    let step = (tick / time) as usize % a.order.len();
+    let frame = a.order[step] as usize % a.frames.len();
+    if !a.interpolate {
+        return Some((frame, frame, 0));
+    }
+    let next = a.order[(step + 1) % a.order.len()] as usize % a.frames.len();
+    let progress = (tick % time) as f32 / time as f32;
+    Some((frame, next, (progress * 1000.0) as u32))
+}
+
+/// `animate_sprite_interpolate.fsh` on bytes: `mix(current, next,
+/// progress / 1000.0)` per channel of each mip level, sampled from and
+/// written to RGBA8 UNORM, so the blend is in the stored (gamma) bytes and
+/// the store rounds to nearest.
+pub fn blend_chain(current: &[u8], next: &[u8], progress_milli: u32) -> Vec<u8> {
+    let p = progress_milli as f32 / 1000.0;
+    current
+        .iter()
+        .zip(next)
+        .map(|(&c, &n)| {
+            let v = f32::from(c) / 255.0 * (1.0 - p) + f32::from(n) / 255.0 * p;
+            (v * 255.0).round().clamp(0.0, 255.0) as u8
+        })
+        .collect()
 }
 
 pub(super) fn generate_mips(tex_size: u32, mip_levels: u32, base: &[u8]) -> Vec<Vec<u8>> {
@@ -237,7 +282,8 @@ pub(super) struct TextureArray {
     /// Every animation frame's full mip chain, concatenated level by level —
     /// built once in `set_animations` so a frame change is a memcpy.
     anim_mips: Vec<Vec<Vec<u8>>>,
-    anim_last: Vec<Option<usize>>,
+    /// What each animation last uploaded: [`anim_sample`]'s triple.
+    anim_last: Vec<Option<(usize, usize, u32)>>,
 }
 
 impl TextureArray {
@@ -264,7 +310,12 @@ impl TextureArray {
                         .array_layers(layer_count)
                         .samples(vk::SampleCountFlags::TYPE_1)
                         .tiling(vk::ImageTiling::OPTIMAL)
-                        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+                        // TRANSFER_SRC for the gates' readback (M195).
+                        .usage(
+                            vk::ImageUsageFlags::SAMPLED
+                                | vk::ImageUsageFlags::TRANSFER_DST
+                                | vk::ImageUsageFlags::TRANSFER_SRC,
+                        )
                         .initial_layout(vk::ImageLayout::UNDEFINED),
                     None,
                 )
@@ -360,21 +411,27 @@ impl WorldRenderer {
 
     /// Advance texture animations to the given game tick (20 Hz), and
     /// re-upload any layer whose frame changed. A few KB per change —
-    /// water/lava tick every `frametime` (2) ticks.
+    /// water/lava tick every `frametime` (2) ticks. An interpolating layer
+    /// (M195) changes on every tick of its frame, as vanilla redraws it.
     pub fn anim_tick(&mut self, gpu: &mut Gpu, tick: u64) -> Result<(), String> {
         for i in 0..self.textures.animations.len() {
             let a = &self.textures.animations[i];
-            if a.order.is_empty() || a.frames.is_empty() {
+            let Some(sample) = anim_sample(a, tick) else {
+                continue;
+            };
+            if self.textures.anim_last[i] == Some(sample) {
                 continue;
             }
-            let step = (tick / a.frametime as u64) as usize % a.order.len();
-            let frame = a.order[step] as usize % a.frames.len();
-            if self.textures.anim_last[i] == Some(frame) {
-                continue;
-            }
-            self.textures.anim_last[i] = Some(frame);
+            self.textures.anim_last[i] = Some(sample);
             let layer = a.layer;
-            self.upload_layer_frame(gpu, layer, i, frame)?;
+            let (frame, next, progress) = sample;
+            let mips = &self.textures.anim_mips[i];
+            let chain = if progress == 0 {
+                mips[frame].clone()
+            } else {
+                blend_chain(&mips[frame], &mips[next], progress)
+            };
+            self.upload_layer_chain(gpu, layer, &chain)?;
         }
         Ok(())
     }
@@ -383,14 +440,13 @@ impl WorldRenderer {
     /// async slot upload (no CPU wait — same-queue ordering keeps the
     /// frame's sampling safe, and the in-cb barriers order the layer's
     /// shader reads around the copy).
-    fn upload_layer_frame(
+    fn upload_layer_chain(
         &mut self,
         gpu: &mut Gpu,
         layer: u16,
-        anim: usize,
-        frame: usize,
+        chain: &[u8],
     ) -> Result<(), String> {
-        let total = self.textures.anim_mips[anim][frame].len() as u64;
+        let total = chain.len() as u64;
         let (slot, base, cb) = self.arena.stage(gpu, total)?;
         unsafe {
             let alloc = self.arena.upload_slots[slot]
@@ -398,7 +454,6 @@ impl WorldRenderer {
                 .as_mut()
                 .unwrap();
             let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
-            let chain = &self.textures.anim_mips[anim][frame];
             slice[base as usize..base as usize + chain.len()].copy_from_slice(chain);
             let mut off = base as usize;
             let mut copies = Vec::with_capacity(self.textures.mip_levels as usize);
@@ -469,5 +524,215 @@ impl WorldRenderer {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "gates")]
+impl WorldRenderer {
+    /// Read back one mip level of one texture-array layer as RGBA bytes —
+    /// for the gates only (M195's `animshot` grades what `anim_tick` actually
+    /// uploaded). Flushes the open upload batch first and waits for the
+    /// device, so it is never called on a live frame.
+    pub fn read_texture_layer(
+        &mut self,
+        gpu: &mut Gpu,
+        layer: u16,
+        level: u32,
+    ) -> Result<Vec<u8>, String> {
+        self.arena.flush_uploads(gpu)?;
+        let size = (self.textures.tex_size >> level).max(1);
+        let len = u64::from(size * size * 4);
+        unsafe {
+            let device = gpu.device.clone();
+            device
+                .device_wait_idle()
+                .map_err(|e| format!("readback idle: {e}"))?;
+            let buffer = device
+                .create_buffer(
+                    &vk::BufferCreateInfo::default()
+                        .size(len)
+                        .usage(vk::BufferUsageFlags::TRANSFER_DST)
+                        .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                    None,
+                )
+                .map_err(|e| format!("readback buffer: {e}"))?;
+            let req = device.get_buffer_memory_requirements(buffer);
+            let alloc = gpu
+                .allocator
+                .allocate(&AllocationCreateDesc {
+                    name: "texture-readback",
+                    requirements: req,
+                    location: MemoryLocation::GpuToCpu,
+                    linear: true,
+                    allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+                })
+                .map_err(|e| format!("readback alloc: {e}"))?;
+            device
+                .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
+                .map_err(|e| format!("readback bind: {e}"))?;
+            let pool = device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default().queue_family_index(gpu.graphics_family),
+                    None,
+                )
+                .map_err(|e| format!("readback pool: {e}"))?;
+            let cb = device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(pool)
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        .command_buffer_count(1),
+                )
+                .map_err(|e| format!("readback cb: {e}"))?[0];
+            device
+                .begin_command_buffer(
+                    cb,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .map_err(|e| format!("readback begin: {e}"))?;
+            let range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(level)
+                .level_count(1)
+                .base_array_layer(u32::from(layer))
+                .layer_count(1);
+            let to_src = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .image(self.textures.image)
+                .subresource_range(range);
+            device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_src)),
+            );
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(level)
+                        .base_array_layer(u32::from(layer))
+                        .layer_count(1),
+                )
+                .image_extent(vk::Extent3D {
+                    width: size,
+                    height: size,
+                    depth: 1,
+                });
+            device.cmd_copy_image_to_buffer(
+                cb,
+                self.textures.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer,
+                &[region],
+            );
+            let back = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(self.textures.image)
+                .subresource_range(range);
+            let host = vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::HOST)
+                .dst_access_mask(vk::AccessFlags2::HOST_READ)
+                .buffer(buffer)
+                .size(len);
+            device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&back))
+                    .buffer_memory_barriers(std::slice::from_ref(&host)),
+            );
+            device
+                .end_command_buffer(cb)
+                .map_err(|e| format!("readback end: {e}"))?;
+            let fence = device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .map_err(|e| format!("readback fence: {e}"))?;
+            let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(cb)];
+            let submitted = device
+                .queue_submit2(
+                    gpu.graphics_queue,
+                    &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+                    fence,
+                )
+                .map_err(|e| format!("readback submit: {e}"))
+                .and_then(|()| {
+                    device
+                        .wait_for_fences(&[fence], true, u64::MAX)
+                        .map_err(|e| format!("readback wait: {e}"))
+                });
+            let bytes = submitted.and_then(|()| {
+                alloc
+                    .mapped_slice()
+                    .map(|s| s[..len as usize].to_vec())
+                    .ok_or_else(|| "readback not mapped".to_string())
+            });
+            device.destroy_fence(fence, None);
+            device.destroy_command_pool(pool, None);
+            device.destroy_buffer(buffer, None);
+            let _ = gpu.allocator.free(alloc);
+            bytes
+        }
+    }
+}
+
+#[cfg(test)]
+mod m195_interpolate {
+    use super::*;
+
+    fn anim(order: Vec<u32>, frames: usize, frametime: u32, interpolate: bool) -> LayerAnimation {
+        LayerAnimation {
+            layer: 0,
+            frames: (0..frames).map(|f| vec![f as u8; 4]).collect(),
+            order,
+            frametime,
+            interpolate,
+        }
+    }
+
+    /// `drawToAtlas`: the frame on screen, the one after it (wrapping) and
+    /// `(int)((float)subFrame / time * 1000)` — magma's three frames at
+    /// frametime 8.
+    #[test]
+    fn the_sample_follows_the_sprite_counters() {
+        let magma = anim(vec![0, 1, 2], 3, 8, true);
+        assert_eq!(anim_sample(&magma, 0), Some((0, 1, 0)));
+        assert_eq!(anim_sample(&magma, 4), Some((0, 1, 500)));
+        assert_eq!(anim_sample(&magma, 7), Some((0, 1, 875)));
+        assert_eq!(anim_sample(&magma, 8), Some((1, 2, 0)));
+        assert_eq!(
+            anim_sample(&magma, 23),
+            Some((2, 0, 875)),
+            "wraps to frame 0"
+        );
+        // A third that does not divide evenly: 1/3 * 1000 truncates.
+        let three = anim(vec![0, 1], 2, 3, true);
+        assert_eq!(anim_sample(&three, 1), Some((0, 1, 333)));
+        assert_eq!(anim_sample(&three, 2), Some((0, 1, 666)));
+        // Without `interpolate` the next frame is the frame itself.
+        let water = anim(vec![0, 1], 2, 2, false);
+        assert_eq!(anim_sample(&water, 1), Some((0, 0, 0)));
+        assert_eq!(anim_sample(&water, 2), Some((1, 1, 0)));
+        assert_eq!(anim_sample(&anim(vec![], 2, 2, true), 5), None);
+    }
+
+    /// `mix(current, next, p)` on bytes, rounded to nearest on the store.
+    #[test]
+    fn the_blend_is_mix_on_the_stored_bytes() {
+        assert_eq!(blend_chain(&[0, 255, 10], &[255, 0, 10], 0), [0, 255, 10]);
+        assert_eq!(blend_chain(&[0, 255], &[255, 0], 1000), [255, 0]);
+        // 200 * 0.25 = 50; 100 + 100 * 0.25 = 125; 100 + 100 * 0.875 = 187.5.
+        assert_eq!(blend_chain(&[0, 100], &[200, 200], 250), [50, 125]);
+        assert_eq!(blend_chain(&[100], &[200], 875), [188]);
     }
 }

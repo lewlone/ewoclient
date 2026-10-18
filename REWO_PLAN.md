@@ -341,7 +341,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   the loom's scrollbar (**M189**).
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
 >   the map store, **M192 the held map**, **M193 its decorations**, **M194
->   item frames**; banner name labels are open), `render-misc [INTERP]` and `[FLOW]`, the live
+>   item frames**; banner name labels are open), ~~`render-misc [INTERP]`~~
+>   (**M195**) and `[FLOW]`, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -3842,6 +3843,39 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M195 — animated textures interpolate (`render-misc [INTERP]`, 2026-10-18)
+
+26.2 blends 25 of the 55 animated block-texture layers (magma, prismarine,
+sculk, the command blocks, the lit campfires, crimson and warped stems, the
+lit blast furnace...) from each frame into the next instead of cutting:
+`SpriteContents.AnimationState.drawToAtlas` draws `ANIMATE_SPRITE_INTERPOLATE`
+when the `.mcmeta` says `"interpolate": true`, i.e.
+`mix(current, next, (int)((float)subFrame / time * 1000) / 1000.0)`
+(`animate_sprite.vsh` / `animate_sprite_interpolate.fsh`) on RGBA8 UNORM,
+every tick, with `next` the frame after the current one in the order,
+wrapping. The 2026-07-21 texture-animation entry had deferred it.
+
+- The bake reads `interpolate` (`AnimatedLayer::interpolate`, through
+  `live_cmd::layer_animations` to `LayerAnimation`).
+- `rewo_gpu::world::textures::anim_sample` derives vanilla's counters from
+  the session tick (frame `order[(tick / frametime) % len]`, `subFrame =
+  tick % frametime`; every interpolating block texture has one uniform
+  `frametime`), and `blend_chain` is the shader on bytes, per mip level of
+  the two frames, rounded to nearest. An interpolating layer re-uploads on
+  every tick of its frame, a cutting one only when its frame changes, as
+  before.
+- `rewo animshot --check` (new gate) drives `anim_tick` and reads the layer
+  back from the texture array (`WorldRenderer::read_texture_layer`, gates
+  only): every baked animation carries its jar `.mcmeta`'s flag; magma at tick
+  0 is frame 0, at tick 4 the blend, at tick 8 frame 1, at tick 23 frame 2
+  blended back into frame 0; lava (no `interpolate`) still cuts; mip level 1
+  blends too. Expected bytes come from the jar's PNG frames and the shader
+  transcribed again in the gate.
+
+Open: `.mcmeta` frame objects (`{"index", "time"}`) are still dropped by the
+reader; no block texture in 26.2 uses them (only three GUI sprites, which
+take another path), but a resource pack could.
 
 ### M194 — item frames (2026-10-18)
 

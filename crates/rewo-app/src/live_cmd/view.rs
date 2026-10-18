@@ -131,6 +131,7 @@ pub(crate) fn layer_animations(
             frames: a.frames.clone(),
             order: a.order.clone(),
             frametime: a.frametime,
+            interpolate: a.interpolate,
         })
         .collect()
 }

@@ -1234,6 +1234,9 @@ pub struct AnimatedLayer {
     pub order: Vec<u32>,
     /// Game ticks per animation frame.
     pub frametime: u32,
+    /// The `.mcmeta`'s `interpolate` (M195): blend each frame into the next
+    /// over its frametime (`ANIMATE_SPRITE_INTERPOLATE`) instead of cutting.
+    pub interpolate: bool,
 }
 
 /// The legacy bitmap font: a 16×16 grid of glyph cells covering code points
@@ -4319,12 +4322,15 @@ impl<'a> Baker<'a> {
         // Multi-frame strip + .mcmeta → register the animation; the layer
         // itself holds frame 0 (also the static fallback).
         if frames.len() > 1 {
-            if let Some((order, frametime)) = read_mcmeta(self.jar, &path, frames.len() as u32) {
+            if let Some((order, frametime, interpolate)) =
+                read_mcmeta(self.jar, &path, frames.len() as u32)
+            {
                 self.animations.push(AnimatedLayer {
                     layer,
                     frames: frames.clone(),
                     order,
                     frametime,
+                    interpolate,
                 });
             }
         }
@@ -4337,7 +4343,7 @@ impl<'a> Baker<'a> {
 
 /// Parse `<texture>.png.mcmeta` → (frame order, frametime in ticks).
 /// Missing `frames` list = sequential; missing `frametime` = 1.
-fn read_mcmeta(jar: Jar, png_path: &str, frame_count: u32) -> Option<(Vec<u32>, u32)> {
+fn read_mcmeta(jar: Jar, png_path: &str, frame_count: u32) -> Option<(Vec<u32>, u32, bool)> {
     let mut bytes = Vec::new();
     jar.by_name(&format!("{png_path}.mcmeta"))
         .ok()?
@@ -4358,7 +4364,12 @@ fn read_mcmeta(jar: Jar, png_path: &str, frame_count: u32) -> Option<(Vec<u32>, 
             .collect(),
         None => (0..frame_count).collect(),
     };
-    Some((order, frametime))
+    // `AnimationMetadataSection.interpolatedFrames`, default false.
+    let interpolate = anim
+        .get("interpolate")
+        .and_then(|i| i.as_bool())
+        .unwrap_or(false);
+    Some((order, frametime, interpolate))
 }
 
 #[derive(Clone, Copy, Debug)]

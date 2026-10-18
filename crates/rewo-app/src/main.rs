@@ -13,6 +13,8 @@ mod advancements_view;
 #[cfg(feature = "gates")]
 mod advshot_cmd;
 #[cfg(feature = "gates")]
+mod animshot_cmd;
+#[cfg(feature = "gates")]
 mod attributeshot_cmd;
 mod audio_backend;
 mod bench_cmd;
@@ -318,6 +320,10 @@ enum Command {
     /// framed map, through the production collector and the entity pass.
     #[cfg(feature = "gates")]
     Itemframeshot(itemframeshot_cmd::ItemframeshotArgs),
+    /// The animated-texture gate (M195): frame steps and the `.mcmeta`
+    /// interpolation, read back from the block texture array.
+    #[cfg(feature = "gates")]
+    Animshot(animshot_cmd::AnimshotArgs),
     /// M132 scoreboard-sidebar oracle: drive raw `set_objective`, `set_score`
     /// and `set_display_objective` bodies through the real parsers and the
     /// real `Scoreboard`, resolve the panel with the SAME `resolve_sidebar`
@@ -545,6 +551,8 @@ fn main() {
         Some(Command::Leashshot(l_args)) => leashshot_cmd::run(l_args),
         #[cfg(feature = "gates")]
         Some(Command::Itemframeshot(a)) => itemframeshot_cmd::run(a),
+        #[cfg(feature = "gates")]
+        Some(Command::Animshot(a)) => animshot_cmd::run(a),
         #[cfg(feature = "gates")]
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
         #[cfg(feature = "gates")]

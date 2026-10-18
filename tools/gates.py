@@ -70,7 +70,8 @@ VALIDATION = re.compile(r"VUID-|Validation Error")
 # The pinned gate set. `rewo --help` is the source of truth for what exists;
 # this list is the check on it. Keep it sorted.
 EXPECTED_GATES = [
-    "abilityshot", "advshot", "attributeshot", "blockentityshot", "bookshot",
+    "abilityshot", "advshot", "animshot", "attributeshot", "blockentityshot",
+    "bookshot",
     "bordershot", "breakshot", "capeshot", "captureshot", "confirmlinkshot",
     "containershot", "danceshot", "deathshot", "dimensioncheck", "eventshot",
     "gaugeshot", "handshot", "healthbarshot", "hudshot", "hurtshot",
