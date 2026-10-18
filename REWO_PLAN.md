@@ -3844,6 +3844,18 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M198 — the glint on a framed enchanted item (2026-10-18)
+
+M194 recorded "no foil on a framed item". `ItemFrameRenderer` submits the
+framed stack like any item, and the item renderer adds
+`RenderTypes.entityGlint()` over a foil stack in a world context, so a
+framed enchanted sword shimmers. `BlockEntityDraw::glint` routes the framed
+item's quads through the same `GlintSink` the dropped-item path uses
+(`GLINT_SCALE_ENTITY`, the item glint's range and pipeline), set from the
+frame's `FrameItem::foil`; the frame model never glints. Graded by
+`itemframeshot` p10 (a foil sword changes every blade texel and no border
+pixel against the plain render) and a unit test.
+
 ### M197 — flowing fluid tops (`render-misc [FLOW]`, the top half, 2026-10-18)
 
 The half the plan had left as a decision. `FluidRenderer` draws a fluid's top

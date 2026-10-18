@@ -50,6 +50,8 @@ pub(crate) struct FrameInputs {
     pub glow: bool,
     /// The framed item's registry name; `None` for an empty frame.
     pub item: Option<String>,
+    /// `ItemStack.hasFoil()` for the framed stack (M198).
+    pub foil: bool,
     /// `state.mapId != null`: the item is a map AND the level holds its data —
     /// its id, its pixel version, and the decorations a frame shows.
     pub map: Option<FramedMap>,
@@ -125,7 +127,7 @@ pub(crate) fn frame_draws(f: &FrameInputs, lightmap: &LightmapState, out: &mut I
         }
         rgb
     };
-    let draw = |model: String, transform, light, fixed_display| OwnedBlockEntityDraw {
+    let draw = |model: String, transform, light, fixed_display, glint| OwnedBlockEntityDraw {
         pos: f.pos,
         model,
         transform,
@@ -134,6 +136,7 @@ pub(crate) fn frame_draws(f: &FrameInputs, lightmap: &LightmapState, out: &mut I
         part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
         tint: [1.0; 3],
         fixed_display,
+        glint,
     };
     if !f.invisible {
         if let Some(t) = item_frame::frame_transform(f.facing) {
@@ -142,6 +145,7 @@ pub(crate) fn frame_draws(f: &FrameInputs, lightmap: &LightmapState, out: &mut I
                     .to_string(),
                 t,
                 lit((frame_block, sky)),
+                false,
                 false,
             ));
         }
@@ -171,7 +175,8 @@ pub(crate) fn frame_draws(f: &FrameInputs, lightmap: &LightmapState, out: &mut I
             } else {
                 (frame_block, sky)
             };
-            out.models.push(draw(item.clone(), t, lit(light), true));
+            out.models
+                .push(draw(item.clone(), t, lit(light), true, f.foil));
         }
     }
 }
@@ -221,6 +226,7 @@ pub(crate) fn collect_frame_inputs(
             item: item
                 .and_then(|i| item_names.name(i.item_id))
                 .map(str::to_string),
+            foil: item.is_some_and(|i| i.foil),
             map,
             light: world.light_at(
                 p[0].floor() as i32,
@@ -284,6 +290,7 @@ mod tests {
             invisible,
             glow,
             item: Some("minecraft:stick".into()),
+            foil: false,
             map,
             light: (7, 9),
         }
@@ -333,6 +340,25 @@ mod tests {
             names,
             ["minecraft:stick"],
             "an invisible frame has no model"
+        );
+    }
+
+    /// M198: a foil stack's glint goes on the framed item, never on the frame.
+    #[test]
+    fn a_foil_item_glints_and_its_frame_does_not() {
+        let lm = LightmapState::default();
+        let mut f = inputs(false, false, None);
+        f.foil = true;
+        let mut out = ItemFrameDraws::default();
+        frame_draws(&f, &lm, &mut out);
+        let glints: Vec<(&str, bool)> = out
+            .models
+            .iter()
+            .map(|m| (m.model.as_str(), m.glint))
+            .collect();
+        assert_eq!(
+            glints,
+            [("rewo:be/item_frame", false), ("minecraft:stick", true)]
         );
     }
 

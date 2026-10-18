@@ -2197,7 +2197,15 @@ impl EntityPass {
         }
         // M25b: block entities. Solid geometry, so they belong with the mob
         // and item quads rather than after the transparent nametags.
-        self.emit_block_entities(&mut verts, block_entities);
+        {
+            // M198: a framed foil item's glint rides the item glint's range.
+            let mut sink = GlintSink {
+                verts: &mut glint_verts,
+                offsets: glint_offsets,
+                scale: crate::gui_item::GLINT_SCALE_ENTITY,
+            };
+            self.emit_block_entities(&mut verts, block_entities, &mut sink);
+        }
         // M194: maps in item frames, beside the frames' own models.
         self.emit_frame_maps(&mut verts, frame_maps);
         // M25e: world-space text (sign faces). Solid glyph quads, so they go
@@ -4782,6 +4790,11 @@ pub struct BlockEntityDraw<'a> {
     /// for every block entity and for the frame's own block model, which are
     /// placed directly.
     pub fixed_display: bool,
+    /// Draw the enchantment glint over it too (M198): a framed item whose
+    /// stack `hasFoil()` — `ItemFrameRenderer` submits the stack, and the
+    /// item renderer adds `RenderTypes.entityGlint()` for a foil stack in any
+    /// world context. `false` for every block entity.
+    pub glint: bool,
 }
 
 /// A map in an item frame (M194): `MapRenderer.render(state, pose, ...,
@@ -4988,6 +5001,7 @@ impl EntityPass {
         &self,
         verts: &mut Vec<Vertex>,
         draws: &[BlockEntityDraw<'_>],
+        glint: &mut GlintSink<'_>,
     ) {
         let Some(items) = self.held_items.as_ref() else {
             return;
@@ -5064,6 +5078,10 @@ impl EntityPass {
                         // a `LivingEntity` property.
                         light_hurt: [light_r, light_g, light_b, 0.0],
                     });
+                    // Same position, same moment — see [`GlintSink`].
+                    if d.glint {
+                        glint.push(p4[i], q.uv[i]);
+                    }
                 }
             }
         }

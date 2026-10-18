@@ -39,8 +39,8 @@ use crate::live_cmd::{
 };
 use crate::stats::OverlayRing;
 
-/// b1-b5, d1-d7, p1-p9.
-const EXPECTED_WITNESSES: usize = 21;
+/// b1-b5, d1-d7, p1-p10.
+const EXPECTED_WITNESSES: usize = 22;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 512;
@@ -477,6 +477,7 @@ fn check_draws(
         invisible: true,
         glow: false,
         item: Some("minecraft:diamond_sword".into()),
+        foil: false,
         map: None,
         light: (15, 15),
     };
@@ -505,6 +506,7 @@ fn check_draws(
         invisible: false,
         glow,
         item: Some("minecraft:diamond_sword".into()),
+        foil: false,
         map,
         light: (0, 0),
     };
@@ -745,6 +747,7 @@ fn check_pixels(
             invisible: false,
             glow: false,
             item: item.map(str::to_string),
+            foil: false,
             map,
             light: (15, 15),
         };
@@ -919,6 +922,44 @@ fn check_pixels(
         format!(
             "rotation 2 = rotation 0 turned (x, y) -> (-y, x) at {agree} of {compared} blade \
              texels (want >= 90%); rotation 1 differs at {differs45} (want >= 10)"
+        ),
+    );
+
+    // p10 (M198): a foil sword carries the entity glint over the item and
+    // nowhere else — the frame around it is the plain render's, pixel for
+    // pixel.
+    let mut foil_in = lit_frame(2, 0, Some("minecraft:diamond_sword"), None);
+    foil_in.foil = true;
+    let foil = render(
+        gpu,
+        &mut wr,
+        &mut off,
+        &[foil_in],
+        &MapStore::default(),
+        2,
+        "sword-foil",
+    )?;
+    let (mut lit_blade, mut blade_seen) = (0, 0);
+    for i in 0..16 {
+        for j in 0..16 {
+            let p = plane + Vec3::new(texel(i), texel(j), 0.0);
+            let at_px = project(&vp, p);
+            if blade(pixel(&sword, at_px)) {
+                blade_seen += 1;
+                if pixel(&foil, at_px) != pixel(&sword, at_px) {
+                    lit_blade += 1;
+                }
+            }
+        }
+    }
+    let frame_same = [a * 0.344, a * -0.344, b * 0.344, b * -0.344]
+        .into_iter()
+        .all(|v| pixel(&foil, project(&vp, v)) == pixel(&sword, project(&vp, v)));
+    c.record(
+        "p10.a_foil_item_glints_and_its_frame_does_not",
+        blade_seen >= 20 && lit_blade * 2 >= blade_seen && frame_same,
+        format!(
+            "{lit_blade} of {blade_seen} blade texels changed under the glint (want half or more); the frame's border unchanged: {frame_same}"
         ),
     );
 

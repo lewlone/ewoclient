@@ -94,6 +94,7 @@ pub(super) fn collect_block_entities(
                 part_pivots: ps,
                 tint,
                 fixed_display: false,
+                glint: false,
             };
             // The bare cloth, untinted — its own texture carries its colour.
             out.push(layer(flag.to_string(), [1.0; 3]));
@@ -139,6 +140,7 @@ pub(super) fn collect_block_entities(
                         part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
                         tint: [1.0; 3],
                         fixed_display: false,
+                        glint: false,
                     });
                 };
                 piece(
@@ -195,6 +197,7 @@ pub(super) fn collect_block_entities(
                     part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
                     tint: [1.0; 3],
                     fixed_display: false,
+                    glint: false,
                 });
             }
         }
@@ -247,6 +250,7 @@ pub(super) fn collect_block_entities(
             // texture already carries its colour.
             tint: [1.0; 3],
             fixed_display: false,
+            glint: false,
         });
     }
     out
@@ -895,6 +899,8 @@ pub(crate) struct OwnedBlockEntityDraw {
     pub tint: [f32; 3],
     /// Apply the model's `display.fixed` first — a framed item (M194).
     pub fixed_display: bool,
+    /// The enchantment glint over it (M198) — a framed foil item.
+    pub glint: bool,
 }
 
 impl OwnedBlockEntityDraw {
@@ -908,6 +914,7 @@ impl OwnedBlockEntityDraw {
             part_pivots: self.part_pivots,
             tint: self.tint,
             fixed_display: self.fixed_display,
+            glint: self.glint,
         }
     }
 }
