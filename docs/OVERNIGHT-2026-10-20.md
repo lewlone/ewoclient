@@ -53,6 +53,13 @@ released.
 - **M210**: at render distance 32 (the game's maximum) the outer ring of
   the world would have been missing; the terrain buffer's ceiling is now
   high enough, checked with a full RD32 load (3,725 of 3,725 columns).
+- **M211**: lighting on normal worlds. Huge mushroom caps let full
+  daylight through them, and so did water over seagrass, kelp and every
+  waterlogged block; both now match vanilla. The live light check can now
+  tell Rewo's mistakes from quirks in the server's own light data (vanilla
+  leaves a few inconsistent cells at chunk borders), so it works on real
+  worlds. Walking the bot over hills and shores on nine worlds: the server
+  never had to correct its position.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -86,6 +93,8 @@ released.
 | `98e720c` | **M209** — vanilla's sky disc: `SkyRenderer`'s octagonal fan evaluated per pixel with its interpolated fog distances, the uncovered sky in the fog colour, the dark disc below the horizon height; offscreen defaults are plains' sky/fog pair; new `REWO_EYE` / `REWO_YAW` knobs aim the headless shot; demo hash `748e5a1e...` to `e658532b...` (the diff is exactly the sky). |
 | `97bda97` | This summary through M209. |
 | `16f7eeb` | **M210** — arena ceilings 112M vertices / 168M indices, capped by the device's largest buffer; `load_check.py --rd 32` PASSED (3,725 / 3,725 columns; the run held 64.72M vertices and 97.08M indices, past M205's ceilings). |
+| `b34630e` | This summary through M210. |
+| `586e216` | **M211** — light dampening from the block's shape and fluid state (huge mushroom caps were sky-transparent; seagrass, kelp and waterlogged states let sky light through water); `play --light-check` classifies disagreements that trace to the server's own data (vanilla's chunk-border source order, stale light) and prints neighbours `server -> recomputed`. |
 
 ## Decisions made
 
@@ -167,7 +176,12 @@ released.
    fog (vanilla mixes in gamma space), so both sides of the world's edge
    fade to the same colour. The dark disc is drawn inside the sky pass, i.e.
    before the sunrise fan rather than after it (a recorded deviation).
-20. **Not fixed, noted:** several older `containershot` witness messages have
+20. **M211's light check excuses two classes of disagreement**, both
+   derived from the decompile and both checkable in the server's own data:
+   vanilla's order-dependent sky sources at chunk borders, and stale light
+   that `isEdgeOccluded` rules out. Everything else, and every block-light
+   disagreement, still fails. Each class is counted in the output.
+21. **Not fixed, noted:** several older `containershot` witness messages have
    runs of spaces where a shell joined a backslash line continuation (the
    same artifact this run hit and fixed in its own messages). Cosmetic, in
    gate output only.
@@ -200,6 +214,11 @@ released.
   hash `e658532bcc8c2758`); render check **73/73**, validation-clean.
 - M210: `load_check.py --rd 32 --seconds 240` PASSED, 3,725 / 3,725 columns,
   0 deferred; 66 fps average, p99 31.9 ms in the debug build with validation.
+- After M211 (at `586e216`): **4,278 tests, 0 failed; gates 51/51**;
+  render check **73/73**; `play --light-check` on nine normal-world seeds:
+  0 unexplained sky disagreements after the fixes (two seeds exact), and
+  CORRECTIONS 0 on every run. One block-light cell (seed 5) did not recur
+  on rerun; recorded, not explained.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
