@@ -17,6 +17,16 @@ the client an `options.txt` asking for the same distance, runs the debug
   column is a hole in the world);
 * the terrain arena never refused to grow.
 
+`--light` (M212) runs the headless `rewo play --no-build --light-check` bot
+instead, on a world of `--seed` at view distance `--rd` (8 is plenty): it
+passes only if the bot's position was never corrected by the server
+(`CORRECTIONS: 0`, the physics-parity meter, over natural terrain) and the
+light check found no disagreement it cannot trace to the server's own data
+(`play_cmd.rs` explains the two classes it excuses). It found M211's two
+light bugs (huge mushroom caps and water over seagrass let sky light through).
+A rare stale block-light cell can fail it (seen once in a dozen runs, not
+reproduced): rerun before believing a single block-light failure.
+
 Two bugs came from this check before it was a tool (2026-10-18): the fixed
 terrain arena deferred 197 of 473 columns (M205), and the client asked every
 server for view distance 10 whatever `options.txt` said (M206).
@@ -73,6 +83,9 @@ def main():
     ap.add_argument("--rd", type=int, default=16, help="server and client render distance")
     ap.add_argument("--seconds", type=int, default=90)
     ap.add_argument("--keep", action="store_true", help="leave the server dir behind")
+    ap.add_argument("--light", action="store_true",
+                    help="run the play bot with --light-check instead of the windowed client")
+    ap.add_argument("--seed", default=SEED, help="level seed (default %s)" % SEED)
     args = ap.parse_args()
     if not 2 <= args.rd <= 32:
         sys.exit("--rd must be 2..32 (vanilla's IntRange)")
@@ -99,7 +112,7 @@ def run(args):
         "server-port": str(port),
         "level-type": "minecraft\\:normal",
         "view-distance": str(args.rd),
-        "level-seed": SEED,
+        "level-seed": args.seed,
     }
     out, hits = [], {}
     for line in props.splitlines():
@@ -134,18 +147,24 @@ def run(args):
                 break
             if time.time() > deadline:
                 return "server never became ready"
-        print("server up; running rewo live for %d s" % args.seconds)
+        if args.light:
+            cmd = [REWO, "play", "--host", "127.0.0.1", "--port", str(port),
+                   "--username", "LoadBot", "--seconds", str(args.seconds),
+                   "--no-build", "--light-check"]
+        else:
+            cmd = [REWO, "live", "--host", "127.0.0.1", "--port", str(port),
+                   "--username", "LoadBot", "--run-seconds", str(args.seconds),
+                   "--game-dir", game]
+        print("server up; running rewo %s for %d s" % (cmd[1], args.seconds))
         try:
-            p = subprocess.run(
-                [REWO, "live", "--host", "127.0.0.1", "--port", str(port),
-                 "--username", "LoadBot", "--run-seconds", str(args.seconds),
-                 "--game-dir", game],
-                cwd=ROOT, capture_output=True, timeout=args.seconds + 240)
+            p = subprocess.run(cmd, cwd=ROOT, capture_output=True, timeout=args.seconds + 240)
         except subprocess.TimeoutExpired:
             return "the client did not exit within %d s -- it is hung" % (args.seconds + 240)
         text = (p.stdout + p.stderr).decode("utf-8", "replace")
         report = os.path.join(tempfile.gettempdir(), "rewo-load-check-%d.out" % os.getpid())
         io.open(report, "wb").write(text.encode("utf-8"))
+        if args.light:
+            return grade_light(text, p.returncode, report)
         return grade(text, p.returncode, args.rd, report)
     finally:
         try:
@@ -156,6 +175,34 @@ def run(args):
             srv.kill()
         if not args.keep:
             shutil.rmtree(dest, ignore_errors=True)
+
+
+def grade_light(text, code, report):
+    """`--light`: the bot's verdict, its corrections, and the light check."""
+    lines = text.splitlines()
+    for l in lines:
+        if "CORRECTIONS" in l or "[rewo-light]" in l or "[verdict]" in l:
+            shown = l.split("] ", 1)[-1] if l.startswith("[20") else l
+            sys.stdout.buffer.write(shown[:300].encode("utf-8", "replace") + b"\n")
+    fails = []
+    if code != 0:
+        fails.append("play exit %d" % code)
+    corr = [re.search(r"CORRECTIONS: (\d+)", l) for l in lines]
+    corr = [int(m.group(1)) for m in corr if m]
+    if not corr:
+        fails.append("no CORRECTIONS line")
+    elif corr[-1] != 0:
+        fails.append("%d server position corrections" % corr[-1])
+    if not any("[verdict] light-check: ok" in l for l in lines):
+        fails.append("the light check did not pass")
+    if any("VUID-" in l for l in lines):
+        fails.append("validation messages")
+    print("full output: %s" % report)
+    if fails:
+        print("LOAD CHECK FAILED: " + "; ".join(fails))
+        return 1
+    print("LOAD CHECK PASSED")
+    return 0
 
 
 def grade(text, code, rd, report):

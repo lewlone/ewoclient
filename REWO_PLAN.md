@@ -3868,6 +3868,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M212 — `load_check.py --light`, and light through property copies (2026-10-18)
+
+`tools/load_check.py --light [--seed S] [--rd 8]` runs `rewo play --no-build
+--light-check` on a fresh normal world instead of the windowed client, and
+passes only on `CORRECTIONS: 0` (the server never moved the bot over natural
+terrain) and the light check's own pass (M211's classification). The bot's
+spawn is random within the spawn radius, so one run checks one 3 x 3 region;
+rerun for more.
+
+Chasing one block-light disagreement (571 cells of a deepslate cave one level
+brighter than the server; not reproduced in eleven further runs, so its cause
+is still open) turned up a generator gap: `tools/gen_block_light.py` did not
+follow `Properties.ofLegacyCopy(FIELD)` / `ofFullCopy(FIELD)`, which copy the
+source's `lightEmission` and `canOcclude`. Regenerated: lit
+`deepslate_redstone_ore` now emits 9 and `calibrated_sculk_sensor` 1 (both
+were 0), and the amethyst buds and the three filled cauldrons are
+`noOcclusion` like the blocks they copy (no face occlusion, so no light or
+culling blocked across their faces). The play check prints, for the
+brightest block-light disagreement, the emitters within light range with our
+emission and the server's light at each.
+
 ### M211 — light on natural terrain: shapes, water, and a light check that can read a real world (2026-10-18)
 
 `rewo play --light-check` (M10's gate: relight the 3 x 3 columns around the bot

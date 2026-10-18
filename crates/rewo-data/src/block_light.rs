@@ -4,8 +4,8 @@
 //! Re-run after a version bump; see the script header for the
 //! extraction rules and why this cannot come from a datagen report.
 //!
-//! 49 constant emitters, 18 lit-conditional,
-//! 276 non-occluding, 188 sky-propagation
+//! 50 constant emitters, 19 lit-conditional,
+//! 282 non-occluding, 188 sky-propagation
 //! overrides, 12 dampening overrides,
 //! 24 property-driven emitters.
 //!
@@ -18,6 +18,7 @@ pub const EMISSION: &[(&str, u8)] = &[
     ("minecraft:beacon", 15),
     ("minecraft:brewing_stand", 1),
     ("minecraft:brown_mushroom", 1),
+    ("minecraft:calibrated_sculk_sensor", 1),
     ("minecraft:conduit", 15),
     ("minecraft:copper_lantern", 15),
     ("minecraft:copper_torch", 14),
@@ -71,6 +72,7 @@ pub const LIT_EMISSION: &[(&str, u8)] = &[
     ("minecraft:campfire", 15),
     ("minecraft:candle_cake", 3),
     ("minecraft:copper_bulb", 15),
+    ("minecraft:deepslate_redstone_ore", 9),
     ("minecraft:exposed_copper_bulb", 12),
     ("minecraft:furnace", 13),
     ("minecraft:oxidized_copper_bulb", 4),
@@ -436,6 +438,8 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:jungle_trapdoor",
     "minecraft:ladder",
     "minecraft:lantern",
+    "minecraft:large_amethyst_bud",
+    "minecraft:lava_cauldron",
     "minecraft:light",
     "minecraft:light_blue_bed",
     "minecraft:light_blue_candle",
@@ -463,6 +467,7 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:mangrove_leaves",
     "minecraft:mangrove_roots",
     "minecraft:mangrove_trapdoor",
+    "minecraft:medium_amethyst_bud",
     "minecraft:moving_piston",
     "minecraft:oak_door",
     "minecraft:oak_leaves",
@@ -531,6 +536,7 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:potted_white_tulip",
     "minecraft:potted_wither_rose",
     "minecraft:powder_snow",
+    "minecraft:powder_snow_cauldron",
     "minecraft:purple_bed",
     "minecraft:purple_candle",
     "minecraft:purple_shulker_box",
@@ -545,6 +551,7 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:shulker_box",
     "minecraft:skeleton_skull",
     "minecraft:slime_block",
+    "minecraft:small_amethyst_bud",
     "minecraft:sniffer_egg",
     "minecraft:soul_campfire",
     "minecraft:soul_lantern",
@@ -560,6 +567,7 @@ pub const NO_OCCLUDE: &[&str] = &[
     "minecraft:vault",
     "minecraft:warped_door",
     "minecraft:warped_trapdoor",
+    "minecraft:water_cauldron",
     "minecraft:waxed_copper_bars",
     "minecraft:waxed_copper_chain",
     "minecraft:waxed_copper_door",

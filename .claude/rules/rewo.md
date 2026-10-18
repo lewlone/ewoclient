@@ -64,6 +64,8 @@ a self-check path.
   after touching the terrain arena, the mesher's output size, or what the
   client tells the server (M205 and M206 were both found by it). Not in
   `gates.py`: it needs a 3 GB server and minutes of world generation.
+  `--light` runs the play bot there instead (CORRECTIONS 0 and
+  `--light-check`); run it after touching light tables or physics.
 - `tools/gates.py`, `tools/render_check.py` and `tools/load_check.py` take a machine-wide lock
   (`tools/gpu_lock.py`) so two GPU verifications never overlap: the
   self-hosted CI runner shares this desktop. A CI render check once read 65/66

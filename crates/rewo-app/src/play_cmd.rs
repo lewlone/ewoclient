@@ -2315,6 +2315,9 @@ fn light_parity_check(
         std::collections::HashMap::new();
     // The brightest disagreeing cell is nearest whatever source is wrong.
     let mut worst: Option<(u8, String)> = None;
+    // The brightest block-light disagreement, `(level, x, y, z)`: the emitters
+    // around it name the source that is off.
+    let mut worst_block: Option<(u8, i32, i32, i32)> = None;
     for (ci, &(cx, cz)) in targets.iter().enumerate() {
         let mut i = 0;
         for lx in 0..16 {
@@ -2327,6 +2330,10 @@ fn light_parity_check(
                     let (got_b, got_s) = session.world.light_at(x, y, z);
                     if got_b != want_b {
                         bad_block += 1;
+                        let lv = want_b.max(got_b);
+                        if worst_block.is_none_or(|w| lv > w.0) {
+                            worst_block = Some((lv, x, y, z));
+                        }
                     }
                     if got_s != want_s {
                         bad_sky += 1;
@@ -2411,6 +2418,35 @@ fn light_parity_check(
     }
     for e in &examples {
         println!("[rewo-light]   {e}");
+    }
+    // Block light comes from emitters, so list the ones within light range of
+    // the brightest block disagreement: our emission against the server's
+    // light AT the emitter (an emitter's own cell holds its emission).
+    if let Some((lv, wx, wy, wz)) = worst_block {
+        println!("[rewo-light]   block: brightest disagreement at ({wx},{wy},{wz}), level {lv}");
+        let mut emitters = Vec::new();
+        for dx in -15..=15 {
+            for dy in -15..=15 {
+                for dz in -15..=15 {
+                    let (x, y, z) = (wx + dx, wy + dy, wz + dz);
+                    let st = session.world.block_state_at(x, y, z);
+                    let e = baked.emission.get(st as usize).copied().unwrap_or(0);
+                    if e > 0 {
+                        let d = dx.abs() + dy.abs() + dz.abs();
+                        emitters.push((d, x, y, z, st, e));
+                    }
+                }
+            }
+        }
+        emitters.sort();
+        for &(d, x, y, z, st, e) in emitters.iter().take(6) {
+            let name = data.blocks.block_name(st).unwrap_or("?");
+            let server = ring_at(x, y, z).map(|i| ring[i].0);
+            println!(
+                "[rewo-light]     emitter {name} #{st} at ({x},{y},{z}), {d} away: our emission \
+                 {e}, server block light there {server:?}"
+            );
+        }
     }
     // Vanilla's sky light is order-dependent at chunk borders (M211):
     // `SkyLightEngine.propagateLightSources` spreads a source sideways only

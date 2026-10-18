@@ -89,6 +89,7 @@ python tools/gates.py                        # every `rewo *shot --check` gate (
 python tools/gates.py --only mobshot,itemshot
 python tools/render_check.py                 # stages a fresh vanilla server, runs `rewo live --render-check`
 python tools/load_check.py                   # NORMAL terrain at RD16: exact tracked column count, 0 deferred, no VUIDs
+python tools/load_check.py --light           # normal world: play bot, CORRECTIONS 0 + `--light-check` against the server
 python tools/numbers.py                      # regenerate REWO_PLAN.md §0.0's numbers block (--from-logs to skip re-running)
 cargo run -p ewo-launcher                    # launcher (add --dev for the tweaks overlay)
 cargo run -p rewo-app -- live --host HOST --port PORT

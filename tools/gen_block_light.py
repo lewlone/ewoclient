@@ -424,8 +424,33 @@ def main():
                 damp_over[name] = d
 
     # -- registrations (single fields, then families) ------------------------
-    for _field, name, parts, cls, state_idx in iter_registrations(src, helpers):
-        record(name, "\n".join(parts), cls, state_idx)
+    regs = list(iter_registrations(src, helpers))
+    by_field = {field: "\n".join(parts) for field, _n, parts, _c, idx in regs if idx is None}
+
+    def inherited(text, depth=0):
+        # `Properties.ofLegacyCopy(FIELD)` / `ofFullCopy(FIELD)` copy the
+        # source block's `lightEmission` and `canOcclude` (BlockBehaviour
+        # .Properties, `copyTo.lightEmission = copyFrom.lightEmission`), so a
+        # block that sets no light of its own emits what it copied: lit
+        # deepslate redstone ore 9, the calibrated sculk sensor 1. Followed
+        # through chains; the copying block's own calls still win.
+        m = re.search(r"of(?:Legacy|Full)Copy\(\s*([A-Z0-9_]+)\s*\)", text)
+        if not m or depth > 8 or m.group(1) not in by_field:
+            return ""
+        src_text = by_field[m.group(1)]
+        return src_text + "\n" + inherited(src_text, depth + 1)
+
+    for _field, name, parts, cls, state_idx in regs:
+        own = "\n".join(parts)
+        expanded = own
+        base = inherited(own)
+        if base:
+            if "lightLevel(" not in own and "lightLevel(" in base:
+                at = base.index("lightLevel(") + len("lightLevel")
+                expanded += "\n.lightLevel" + balanced(base, at)
+            if "noOcclusion()" in base and "noOcclusion()" not in own:
+                expanded += "\n.noOcclusion()"
+        record(name, expanded, cls, state_idx)
 
     if missing:
         print(
