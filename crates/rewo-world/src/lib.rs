@@ -36,6 +36,7 @@ pub mod maps;
 pub mod menu;
 pub mod menu_layout;
 pub mod minecart;
+pub mod mining;
 pub mod music;
 pub mod palette;
 pub mod particles;

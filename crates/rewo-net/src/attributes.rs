@@ -397,6 +397,9 @@ mod tests {
             slow_falling: Some(2),
             dolphins_grace: Some(3),
             levitation: Some(4),
+            haste: None,
+            conduit_power: None,
+            mining_fatigue: None,
         };
         let mut attrs = rewo_world::physics::MoveAttributes::default();
         apply_movement_effects(&mut attrs, &ids, |_| None);
@@ -410,6 +413,9 @@ mod tests {
             slow_falling: Some(2),
             dolphins_grace: Some(3),
             levitation: Some(4),
+            haste: None,
+            conduit_power: None,
+            mining_fatigue: None,
         };
         let mut attrs = rewo_world::physics::MoveAttributes::default();
         apply_movement_effects(&mut attrs, &ids, |id| match id {

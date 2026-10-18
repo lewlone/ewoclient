@@ -783,6 +783,12 @@ struct LiveApp {
     /// r76's stage (M216): 0 waiting, 1 clicked, 2 done.
     #[cfg(feature = "gates")]
     trade_stage: u8,
+    /// r78's stage (M217): 0 waiting, 1 survival asked, 2 pressed, 3 stopped,
+    /// 4 creative asked; and the client tick of the press.
+    #[cfg(feature = "gates")]
+    mine_stage: u8,
+    #[cfg(feature = "gates")]
+    mine_pressed_tick: u64,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -911,6 +917,14 @@ struct LiveApp {
     /// `minecraft:stat_type` / `custom_stat` / `block` (M84). Cloned out of the
     /// report because `self.baked` is a `LiveState` concern.
     stat_registries: std::sync::Arc<rewo_data::stats::StatRegistries>,
+    /// M217 — survival block breaking: the per-state / per-item tables (built
+    /// on first use), the destroy machine, and whether the attack key is held.
+    mining_tables: Option<std::sync::Arc<rewo_data::mining::MiningTables>>,
+    mining: rewo_world::mining::Mining,
+    attack_held: bool,
+    /// The client tick the machine last advanced on — once per tick, as
+    /// `Minecraft.handleKeybinds` calls `continueAttack`.
+    mining_tick_at: u64,
     /// The statistics screen's own state (M84) — `None` when it is shut.
     ///
     /// Opened by F6, because vanilla's only route to it is the pause menu's
@@ -1016,6 +1030,10 @@ fn run_windowed(
         gui_items: None,
         screen: ScreenState::default(),
         stat_registries: std::sync::Arc::new(stat_registries),
+        mining_tables: None,
+        mining: rewo_world::mining::Mining::default(),
+        attack_held: false,
+        mining_tick_at: 0,
         stats: None,
         advancements: None,
         hand: None,
@@ -1053,6 +1071,10 @@ fn run_windowed(
         lectern_stage: 0,
         #[cfg(feature = "gates")]
         trade_stage: 0,
+        #[cfg(feature = "gates")]
+        mine_stage: 0,
+        #[cfg(feature = "gates")]
+        mine_pressed_tick: 0,
         #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,

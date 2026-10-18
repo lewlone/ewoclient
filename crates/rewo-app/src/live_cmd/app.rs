@@ -1018,6 +1018,18 @@ impl ApplicationHandler for LiveApp {
                     finish_drag(session, &items, &mut self.drag);
                 }
             }
+            // M217 — releasing the attack key: `continueAttack(false)` →
+            // `stopDestroyBlock`, which aborts a block in progress.
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.attack_held = false;
+                if let Some(a) = self.mining.stop() {
+                    self.apply_mining(vec![a]);
+                }
+            }
             // Releasing the right button ends a use — eating stops, a bow
             // fires, a shield drops. Vanilla sends `RELEASE_USE_ITEM`, and the
             // pose ends locally at the same moment.
@@ -1064,16 +1076,17 @@ impl ApplicationHandler for LiveApp {
                     if let Some(h) = hit {
                         let [x, y, z] = h.block;
                         let face = face_index(h.face);
-                        match button {
-                            MouseButton::Left => {
-                                let _ = session.start_dig(x, y, z, face);
-                            }
-                            MouseButton::Right => {
-                                let _ = session.use_item_on(x, y, z, face);
-                            }
-                            _ => {}
+                        if button == MouseButton::Right {
+                            let _ = session.use_item_on(x, y, z, face);
                         }
                     }
+                }
+                // M217 — the attack key on a block: `startAttack`'s BLOCK arm
+                // (`startDestroyBlock`), and the key stays held for
+                // `continueAttack` each tick.
+                if button == MouseButton::Left {
+                    self.attack_held = true;
+                    self.mining_press();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -2002,6 +2015,169 @@ impl LiveApp {
                 if let Err(e) = session.container_button_click(button) {
                     log::warn!("live: lectern page turn: {e}");
                 }
+            }
+        }
+    }
+
+    /// The block the attack key works on this tick (M217): `GameRenderer
+    /// .pick`'s BLOCK result — none when an entity is nearer (the M73 pick
+    /// reconciles the two) — with its destroy progress for the held item.
+    fn mining_target(&mut self) -> Option<rewo_world::mining::Target> {
+        let tables = self
+            .mining_tables
+            .get_or_insert_with(|| {
+                std::sync::Arc::new(rewo_data::mining::MiningTables::build(
+                    &self.blocks,
+                    &self.stat_registries.block,
+                    &self.items,
+                ))
+            })
+            .clone();
+        let session = self.session.as_ref()?;
+        if super::entities::frame_crosshair_hit(session, &self.etypes, 1.0).is_some() {
+            return None;
+        }
+        let hit = session.target_block(
+            eye_f64(session),
+            look_dir(session.player.yaw, session.player.pitch),
+            REACH,
+        )?;
+        let [x, y, z] = hit.block;
+        let state = session.world.block_state_at(x, y, z);
+        let name = self.blocks.block_name(state).unwrap_or("minecraft:air");
+        let air =
+            name.ends_with(":air") || name.ends_with("cave_air") || name.ends_with("void_air");
+        let Some(block) = tables.block(state) else {
+            // Not in the hardness table: unbreakable rather than instant.
+            return Some(rewo_world::mining::Target {
+                pos: hit.block,
+                face: face_index(hit.face),
+                air,
+                progress: 0.0,
+            });
+        };
+        let in_tag = |tag: &str, id: i32| {
+            session
+                .tags
+                .contains("minecraft:block", tag, id)
+                .unwrap_or(false)
+        };
+        let held = session.inventory.held();
+        let tool = held.and_then(|s| tables.tool(s.item_id));
+        let (tool_speed, tool_correct) = match tool {
+            Some(t) => (
+                t.speed(name, block.block_id, &in_tag),
+                t.correct_for_drops(name, block.block_id, &in_tag),
+            ),
+            None => (1.0, false),
+        };
+        let (dig, fatigue) = session.mining_effects();
+        let attr = |n: &str, d: f64| session.local_attribute(n).unwrap_or(d) as f32;
+        let inputs = rewo_world::mining::MiningInputs {
+            destroy_time: block.destroy_time,
+            requires_correct_tool: block.requires_correct_tool,
+            tool_speed,
+            tool_correct,
+            mining_efficiency: attr("minecraft:mining_efficiency", 0.0),
+            dig_speed_amplifier: dig,
+            fatigue_amplifier: fatigue,
+            block_break_speed: attr("minecraft:block_break_speed", 1.0),
+            submerged_mining_speed: attr("minecraft:submerged_mining_speed", 0.2),
+            eye_in_water: session.local_player_view().is_some_and(|v| v.underwater),
+            on_ground: session.player.on_ground,
+        };
+        Some(rewo_world::mining::Target {
+            pos: hit.block,
+            face: face_index(hit.face),
+            air,
+            progress: rewo_world::mining::destroy_progress(&inputs),
+        })
+    }
+
+    /// The held main-hand stack's identity for `sameDestroyTarget`.
+    fn mining_item(&self) -> Option<(i32, u64)> {
+        let s = self.session.as_ref()?.inventory.held()?;
+        Some((s.item_id, s.components))
+    }
+
+    /// `startAttack`'s BLOCK arm: `startDestroyBlock`, then the swing.
+    pub(super) fn mining_press(&mut self) {
+        let Some(t) = self.mining_target() else {
+            return;
+        };
+        let creative = self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.abilities.instabuild);
+        let item = self.mining_item();
+        let sends = self.mining.start(t, creative, item);
+        self.apply_mining(sends);
+        if let Some(s) = self.session.as_mut() {
+            let _ = s.swing();
+        }
+    }
+
+    /// `continueAttack(true)`, once per client tick while the attack key is
+    /// held: `continueDestroyBlock` on a block (and the swing when it says
+    /// so), `stopDestroyBlock` when the crosshair is on anything else.
+    pub(super) fn mining_tick(&mut self) {
+        let Some(now) = self.session.as_ref().map(|s| s.ticks) else {
+            return;
+        };
+        if now == self.mining_tick_at {
+            return;
+        }
+        self.mining_tick_at = now;
+        if !self.attack_held || self.screen.inventory_open() {
+            return;
+        }
+        match self.mining_target() {
+            Some(t) => {
+                let creative = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.abilities.instabuild);
+                let item = self.mining_item();
+                let (sends, swing) = self.mining.tick(t, creative, item);
+                self.apply_mining(sends);
+                if swing {
+                    if let Some(s) = self.session.as_mut() {
+                        let _ = s.swing();
+                    }
+                }
+            }
+            None => {
+                if let Some(a) = self.mining.stop() {
+                    self.apply_mining(vec![a]);
+                }
+            }
+        }
+    }
+
+    /// Send what the machine asked for. A broken block is NOT predicted
+    /// locally (vanilla's `destroyBlock` in `startPrediction`): the server's
+    /// block update follows within the machine's five-tick delay on any sane
+    /// connection — a recorded deviation.
+    fn apply_mining(&mut self, sends: Vec<rewo_world::mining::MiningSend>) {
+        use rewo_world::mining::MiningSend;
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        for s in sends {
+            let r = match s {
+                MiningSend::Start {
+                    pos: [x, y, z],
+                    face,
+                    ..
+                } => session.block_action(0, x, y, z, face),
+                MiningSend::Stop {
+                    pos: [x, y, z],
+                    face,
+                } => session.block_action(2, x, y, z, face),
+                MiningSend::Abort { pos: [x, y, z] } => session.block_action(1, x, y, z, 0),
+            };
+            if let Err(e) = r {
+                log::warn!("live: block action: {e}");
             }
         }
     }

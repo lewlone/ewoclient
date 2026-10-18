@@ -92,6 +92,11 @@ PRECMD = (
     "{buy:{id:\"minecraft:emerald\",count:5},sell:{id:\"minecraft:book\",count:1},maxUses:12},"
     "{buy:{id:\"minecraft:paper\",count:24},sell:{id:\"minecraft:emerald\",count:1},maxUses:16}"
     "]}};"
+    # M217 -- r78. Persistent oak leaves two blocks from the bot (destroy time
+    # 0.2, no tool needed; leaves, unlike a carpet, survive the water r53's
+    # waterlogged slab spreads around spawn): the client mines them in
+    # survival.
+    "setblock ~ ~ ~-2 minecraft:oak_leaves[persistent=true];"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

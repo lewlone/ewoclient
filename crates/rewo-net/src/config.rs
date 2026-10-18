@@ -29,6 +29,10 @@ pub struct MovementEffectIds {
     pub slow_falling: Option<i32>,
     pub dolphins_grace: Option<i32>,
     pub levitation: Option<i32>,
+    /// M217 — the three effects `Player.getDestroySpeed` reads.
+    pub haste: Option<i32>,
+    pub conduit_power: Option<i32>,
+    pub mining_fatigue: Option<i32>,
 }
 
 /// What one configuration pass synced — the registries and tags a play
@@ -79,6 +83,9 @@ impl ConfigData {
             },
             movement_effect_ids: MovementEffectIds {
                 jump_boost: data.mob_effects.id_of("minecraft:jump_boost"),
+                haste: data.mob_effects.id_of("minecraft:haste"),
+                conduit_power: data.mob_effects.id_of("minecraft:conduit_power"),
+                mining_fatigue: data.mob_effects.id_of("minecraft:mining_fatigue"),
                 slow_falling: data.mob_effects.id_of("minecraft:slow_falling"),
                 dolphins_grace: data.mob_effects.id_of("minecraft:dolphins_grace"),
                 levitation: data.mob_effects.id_of("minecraft:levitation"),

@@ -159,6 +159,10 @@ impl LiveApp {
             }
         }
 
+        // M217 - `continueAttack`, once per client tick while the attack key
+        // is held (survival block breaking and creative's repeat).
+        self.mining_tick();
+
         // M184 - the lectern's menu-backed reader. `LecternScreen extends
         // BookViewScreen` (`LecternScreen.java:25`): the pages are the book
         // in the menu's slot 0, the page is container-data 0, and every

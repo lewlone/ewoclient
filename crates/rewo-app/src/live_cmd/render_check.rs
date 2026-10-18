@@ -260,6 +260,18 @@ pub(super) struct RenderCheck {
     /// its hurt clock.
     pub(super) attack_unhurt_before: bool,
     pub(super) attack_hurt_frames: usize,
+    /// M217 — r78: the leaves' position, whether the press happened in
+    /// survival, the client ticks from the press to the STOP, and whether the
+    /// server then turned them to air.
+    pub(super) mine_pos: Option<[i32; 3]>,
+    pub(super) mine_survival: bool,
+    pub(super) mine_ticks: Option<u64>,
+    pub(super) mine_broken: bool,
+    pub(super) mine_skip: Option<String>,
+    /// The main-hand item at the press, and the tick count vanilla's
+    /// literals give for it.
+    pub(super) mine_held: Option<String>,
+    pub(super) mine_expected: Option<u64>,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -741,7 +753,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 77;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 78;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1040,6 +1052,31 @@ impl RenderCheck {
             format!(
                 "villager {:?} unhurt before the click: {}; {} frames with its hurt clock armed after",
                 self.trade_villager, self.attack_unhurt_before, self.attack_hurt_frames
+            ),
+        );
+        // M217 — survival block breaking against the real server: in
+        // survival, the press on `render_check.py`'s oak leaves (destroy time
+        // 0.2, no tool needed: `1 / 0.2 / 30` a tick by hand, summed in f32 as
+        // vanilla sums it) STARTs, the held key accumulates progress, STOP goes
+        // on the tick the sum reaches 1, and the server turns the leaves to air
+        // — which it does only for a STOP that arrives late enough
+        // (`ServerPlayerGameMode.handleBlockBreakAction` checks the progress).
+        row(
+            "r78 a survival press broke the leaves: STOP on the vanilla tick, and the server agreed",
+            self.mine_survival && self.mine_expected.is_some() && self.mine_ticks == self.mine_expected && self.mine_broken,
+            format!(
+                "leaves at {:?}, held {:?}: pressed in survival {}, STOP {:?} ticks after the press (vanilla {:?}), \
+                 server turned it to air {}{}",
+                self.mine_pos,
+                self.mine_held,
+                self.mine_survival,
+                self.mine_ticks,
+                self.mine_expected,
+                self.mine_broken,
+                self.mine_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2307,6 +2344,151 @@ impl LiveApp {
                         {
                             c.lectern_closed = true;
                         }
+                    }
+                }
+                // r78 — M217's survival mining, between the lectern (closed
+                // by 0.23 at the latest) and r76 (0.25), before the horse
+                // mounts the bot at 0.28 (riding takes `onGround` away and
+                // divides the speed by five). The bot is op: it asks for
+                // survival itself, mines through the production press and
+                // `mining_tick`, then asks for creative again.
+                if self.mine_stage == 0
+                    && self.lectern_stage == 3
+                    && elapsed >= limit * 0.19
+                    && !self.screen.inventory_open()
+                {
+                    if let Some(s) = self.session.as_mut() {
+                        let _ = s.send_command("gamemode survival");
+                    }
+                    self.mine_stage = 1;
+                }
+                if self.mine_stage == 1 {
+                    let survival = self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| !s.abilities.instabuild);
+                    if survival {
+                        let carpet = self.session.as_ref().and_then(|s| {
+                            let (px, py, pz) = (
+                                s.player.x.floor() as i32,
+                                s.player.y.floor() as i32,
+                                s.player.z.floor() as i32,
+                            );
+                            let mut hit = None;
+                            'scan: for dy in -2..=2 {
+                                for dx in -4..=4 {
+                                    for dz in -4..=4 {
+                                        let (x, y, z) = (px + dx, py + dy, pz + dz);
+                                        let st = s.world.block_state_at(x, y, z);
+                                        if self.blocks.block_name(st)
+                                            == Some("minecraft:oak_leaves")
+                                        {
+                                            hit = Some([x, y, z]);
+                                            break 'scan;
+                                        }
+                                    }
+                                }
+                            }
+                            hit
+                        });
+                        match carpet {
+                            Some(c) => {
+                                if let Some(s) = self.session.as_mut() {
+                                    let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                                    let d = [
+                                        c[0] as f64 + 0.5 - eye[0],
+                                        c[1] as f64 + 0.5 - eye[1],
+                                        c[2] as f64 + 0.5 - eye[2],
+                                    ];
+                                    let len =
+                                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                                    s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                                    s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                                }
+                                self.attack_held = true;
+                                self.mining_press();
+                                self.mine_pressed_tick =
+                                    self.session.as_ref().map_or(0, |s| s.ticks);
+                                // The press's own tick has run: the next
+                                // `mining_tick` is the first continue.
+                                self.mining_tick_at = self.mine_pressed_tick;
+                                let held = self
+                                    .session
+                                    .as_ref()
+                                    .and_then(|s| s.inventory.held())
+                                    .and_then(|st| self.items.name(st.item_id))
+                                    .map(str::to_string);
+                                // Vanilla's literals: a sword's `sword_efficient`
+                                // rule (leaves are in the tag) mines at 1.5, a
+                                // bare hand or a non-tool item at 1.
+                                let speed = match held.as_deref() {
+                                    Some(n) if n.ends_with("_sword") => 1.5,
+                                    _ => 1.0,
+                                };
+                                if let Some(ch) = self.check.as_mut() {
+                                    ch.mine_pos = Some(c);
+                                    ch.mine_survival = true;
+                                    ch.mine_expected = Some(leaves_ticks(speed));
+                                    ch.mine_held = held;
+                                }
+                                self.mine_stage = 2;
+                            }
+                            None => {
+                                let what = self.session.as_ref().map(|s| {
+                                    let (px, py, pz) = (
+                                        s.player.x.floor() as i32,
+                                        s.player.y.floor() as i32,
+                                        s.player.z.floor() as i32,
+                                    );
+                                    let n = self.blocks.block_name(s.world.block_state_at(
+                                        px - 2,
+                                        py,
+                                        pz,
+                                    ));
+                                    format!("bot at ({px},{py},{pz}), block at x-2: {n:?}")
+                                });
+                                if let Some(ch) = self.check.as_mut() {
+                                    ch.mine_skip =
+                                        Some(format!("no oak leaves near the bot; {what:?}"));
+                                }
+                                self.mine_stage = 3;
+                            }
+                        }
+                    } else if elapsed >= limit * 0.24 {
+                        if let Some(ch) = self.check.as_mut() {
+                            ch.mine_skip = Some("the server never confirmed survival".into());
+                        }
+                        self.mine_stage = 3;
+                    }
+                }
+                if self.mine_stage == 2 && !self.mining.destroying() {
+                    // The machine finished (STOP sent) or never started.
+                    let now = self.session.as_ref().map_or(0, |s| s.ticks);
+                    if let Some(ch) = self.check.as_mut() {
+                        ch.mine_ticks = Some(now.saturating_sub(self.mine_pressed_tick));
+                    }
+                    self.attack_held = false;
+                    self.mine_stage = 3;
+                }
+                if self.mine_stage == 3 {
+                    let broken = self
+                        .check
+                        .as_ref()
+                        .and_then(|c| c.mine_pos)
+                        .zip(self.session.as_ref())
+                        .is_some_and(|([x, y, z], s)| {
+                            self.blocks.block_name(s.world.block_state_at(x, y, z))
+                                == Some("minecraft:air")
+                        });
+                    if broken || elapsed >= limit * 0.25 {
+                        if let Some(ch) = self.check.as_mut() {
+                            ch.mine_broken = broken;
+                        }
+                        self.attack_held = false;
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command("gamemode creative");
+                        }
+                        self.mine_stage = 4;
                     }
                 }
                 // r76 — M216's entity right-click, after r74 closes (0.24)
@@ -3600,4 +3782,17 @@ mod tracking_tests {
         assert!(s.contains(&(3 + 7, -2)) && !s.contains(&(3 + 8, -2)));
         assert!(s.contains(&(3 + 6, -2 + 6)) && !s.contains(&(3 + 7, -2 + 7)));
     }
+}
+
+/// r78's expected tick count, from vanilla's literals and its float
+/// arithmetic: oak leaves `strength(0.2F)`, no tool needed (modifier 30) —
+/// `speed / 0.2F / 30` added per tick until the sum reaches 1.
+pub(super) fn leaves_ticks(speed: f32) -> u64 {
+    let per_tick = speed / 0.2f32 / 30.0;
+    let (mut sum, mut n) = (0.0f32, 0u64);
+    while sum < 1.0 {
+        sum += per_tick;
+        n += 1;
+    }
+    n
 }

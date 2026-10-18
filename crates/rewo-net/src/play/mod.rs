@@ -5324,6 +5324,51 @@ impl PlaySession {
         self.swing()
     }
 
+    /// `ServerboundPlayerActionPacket` for a block action (M217): `0`
+    /// START_DESTROY_BLOCK, `1` ABORT_DESTROY_BLOCK, `2` STOP_DESTROY_BLOCK.
+    /// START and STOP run inside `startPrediction` and carry its sequence;
+    /// ABORT is the three-argument constructor, sequence 0. No swing: the
+    /// caller swings as `startAttack` / `continueAttack` do.
+    pub fn block_action(
+        &mut self,
+        action: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+        face: u8,
+    ) -> Result<(), String> {
+        let seq = if action == 1 { 0 } else { self.next_sequence() };
+        let mut p = PacketWriter::packet(self.ids.sb_play_player_action);
+        p.varint(action);
+        write_position(&mut p, x, y, z);
+        p.u8(face);
+        p.varint(seq);
+        self.send(p)
+    }
+
+    /// `MobEffectUtil.getDigSpeedAmplification` when `hasDigSpeed` (haste or
+    /// conduit power active: the larger amplifier), and mining fatigue's
+    /// amplifier — the two effect terms of `Player.getDestroySpeed` (M217).
+    pub fn mining_effects(&self) -> (Option<i32>, Option<i32>) {
+        let amp = |id: Option<i32>| {
+            id.and_then(|i| self.visual_effects.get(i))
+                .map(|e| e.amplifier)
+        };
+        let ids = &self.movement_effect_ids;
+        let (haste, conduit) = (amp(ids.haste), amp(ids.conduit_power));
+        let dig = (haste.is_some() || conduit.is_some())
+            .then(|| haste.unwrap_or(0).max(conduit.unwrap_or(0)));
+        (dig, amp(ids.mining_fatigue))
+    }
+
+    /// The local player's current value of attribute `name` (M217), or
+    /// `None` when the server has not sent it or the registry is missing.
+    pub fn local_attribute(&self, name: &str) -> Option<f64> {
+        let reg = self.attribute_registry.as_deref()?;
+        let id = reg.id_of(name)?;
+        Some(self.local_attributes.get(id)?.value(reg.def(id)?))
+    }
+
     /// Place the held item against (x,y,z)'s `face`.
     pub fn use_item_on(&mut self, x: i32, y: i32, z: i32, face: u8) -> Result<(), String> {
         let seq = self.next_sequence();

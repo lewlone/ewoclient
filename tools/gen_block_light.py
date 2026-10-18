@@ -238,6 +238,17 @@ def scan_id_tables():
         field, base = m.group(1), m.group(2)
         out[field] = [(prefix + base, st) for prefix, st in COPPER_PREFIXES]
 
+    # Block-only colour families live in `BlockIds` (no item): the wall
+    # banners and the dyed candle cakes. Missing them dropped 32 blocks,
+    # among them every lit candle cake's emission.
+    block_src = open(BLOCK_IDS, encoding="utf8", errors="replace").read()
+    for m in re.finditer(
+        r"ColorCollection<ResourceKey<Block>>\s+(\w+)\s*=\s*createSimpleColored\(\"(\w+)\"\)",
+        block_src,
+    ):
+        field, base = m.group(1), m.group(2)
+        out.setdefault(field, [(f"{c}_{base}", None) for c in DYE_COLORS])
+
     # The one hand-written copper table: `prefixWithState(same(ByState(a,b,c,d)))`
     # where the four ids differ — `copper_block` but `exposed_copper`.
     for m in re.finditer(
@@ -353,7 +364,7 @@ def iter_registrations(src, helpers):
         r"([A-Z0-9_]+)\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
     ):
         body = balanced(src, m.end() - 1)
-        ref = re.search(r"BlockItemIds\.(\w+)", body)
+        ref = re.search(r"(?:BlockItemIds|BlockIds)\.(\w+)", body)
         if not ref:
             continue
         names = id_tables.get(ref.group(1))
