@@ -261,6 +261,10 @@ released.
 - ~~A live witness for M179's tab clicks~~ (M214, r74). ~~M184's lectern page
   sends~~ (M215, r75).
 - ~~A normal-terrain load test as a real check~~ (M207, `load_check.py`).
+- More live witnesses for screens that only have offscreen gates. M214's
+  first live run of the advancements screen found a crash that every
+  offscreen gate had passed (they fed it synthetic text without a newline).
+  Candidates: anything whose input text or data comes from the server.
 - A crack-free greedy merge (rectangle boundaries tessellated at every unit
   step), if the 13% of vertices is ever worth it.
 - ~~The headless `live --out` shot can't be aimed~~ (M209's `REWO_EYE` /
