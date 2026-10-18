@@ -221,6 +221,11 @@ impl WorldRenderer {
         self.scene.fog = [start, end.max(start + 1.0)];
     }
 
+    /// The distance-fog band this frame draws with (render-check r73).
+    pub fn fog(&self) -> [f32; 2] {
+        self.scene.fog
+    }
+
     /// Fullscreen gradient sky — drawn first, no depth test/write, so the
     /// terrain (reversed-Z GREATER, cleared 0.0) draws over it and the fog
     /// fade meets a matching horizon color.

@@ -107,10 +107,34 @@ pub(super) fn init_weather_if_present(
     Ok(())
 }
 
-/// Rewo's own render distance, in chunks — the `local` half of
-/// `Options.getEffectiveRenderDistance`. The server's cap is the other half and
-/// arrives on `set_chunk_cache_radius`.
-pub(super) const LOCAL_RENDER_DISTANCE_CHUNKS: i32 = 12;
+/// The render-distance fog band (M206), `FogRenderer.setupFog`:
+///
+/// ```text
+/// float renderDistanceInBlocks = renderDistanceInChunks * 16;
+/// float renderDistanceFogSpan = Mth.clamp(renderDistanceInBlocks / 10.0F, 4.0F, 64.0F);
+/// fog.renderDistanceStart = renderDistanceInBlocks - renderDistanceFogSpan;
+/// fog.renderDistanceEnd = renderDistanceInBlocks;
+/// ```
+///
+/// with `options.getEffectiveRenderDistance()` for the chunks. Before M206 the
+/// live client kept the fixed 80..180 default `REWO_FOG` overrides, sized for
+/// the flat test world.
+pub(super) fn render_distance_fog(render_distance_chunks: i32) -> (f32, f32) {
+    let blocks = (render_distance_chunks * 16) as f32;
+    let span = (blocks / 10.0).clamp(4.0, 64.0);
+    (blocks - span, blocks)
+}
+
+/// Set this frame's render-distance fog band from the session (M206) — the
+/// effective distance changes with the server's `set_chunk_cache_radius`.
+/// `REWO_FOG` (a gates knob) still wins, so a debugging override holds.
+pub(super) fn apply_render_distance_fog(wr: &mut WorldRenderer, session: &PlaySession) {
+    if crate::knobs::var("REWO_FOG").is_ok() {
+        return;
+    }
+    let (start, end) = render_distance_fog(session.effective_render_distance());
+    wr.set_fog(start, end);
+}
 
 /// This frame's world-border wall (M80).
 ///
@@ -128,10 +152,7 @@ pub(super) fn apply_border(
         return;
     }
     let eye = eye_f64(session);
-    let render_distance = (session
-        .view_area
-        .effective_render_distance(LOCAL_RENDER_DISTANCE_CHUNKS)
-        * 16) as f64;
+    let render_distance = (session.effective_render_distance() * 16) as f64;
     let depth_far = (render_distance as f32 * 4.0).max((CLOUD_RANGE_CHUNKS * 16) as f32);
     let extracted = session
         .border

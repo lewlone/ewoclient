@@ -687,6 +687,9 @@ pub struct PlaySession {
     /// `WorldTransition` does to nearly everything else — would silently drop
     /// back to the pre-login defaults for the rest of the session.
     pub view_area: crate::view_area::ViewArea,
+    /// What configuration told the server about this client (M206): its
+    /// render distance is the `local` half of [`Self::effective_render_distance`].
+    pub client_info: crate::client_info::ClientInformation,
     /// The chunk-batch flow-control loop (M74). Rewo used to answer
     /// `chunk_batch_finished` with the literal `64.0`; vanilla answers this
     /// calculator, whose opening bid is `3.5`. See [`crate::chunk_batch`] —
@@ -1911,6 +1914,7 @@ impl<'a> Connection<'a> {
             boss_bars: crate::boss_bar::BossBars::new(),
             tab_list_text: crate::tab_list_text::TabListText::new(),
             view_area: crate::view_area::ViewArea::default(),
+            client_info: self.client_info,
             // Vanilla seeds `chunkBatchStartTime` in the calculator's
             // constructor, so a `chunk_batch_finished` that somehow arrives
             // before any `chunk_batch_start` still measures a finite interval.
@@ -2175,6 +2179,14 @@ impl Drop for PlaySession {
 }
 
 impl PlaySession {
+    /// `Options.getEffectiveRenderDistance` (M206): the render distance this
+    /// client asked for, capped by the server's `set_chunk_cache_radius` /
+    /// login radius once one arrived.
+    pub fn effective_render_distance(&self) -> i32 {
+        self.view_area
+            .effective_render_distance(i32::from(self.client_info.view_distance))
+    }
+
     fn send(&mut self, packet: PacketWriter) -> Result<(), String> {
         if self.reconfig.is_some() {
             // A play packet in the configuration state is a protocol error

@@ -977,6 +977,32 @@ impl LiveApp {
         }
         #[cfg(not(feature = "gates"))]
         let _ = quad_leashes;
+        // r73 — the staged render distance, read back from what the server
+        // sent: the loaded columns against the tracking set, and the fog.
+        #[cfg(feature = "gates")]
+        if let Some(c) = self.check.as_mut() {
+            let staged = crate::knobs::var("REWO_RC_VIEW_DISTANCE")
+                .ok()
+                .and_then(|v| v.parse::<i32>().ok());
+            let sent = session.client_info.view_distance;
+            let server = session.view_area.chunk_radius;
+            let want = super::render_check::server_tracked_columns(
+                (session.view_area.center_x, session.view_area.center_z),
+                i32::from(sent),
+            );
+            let coords = session.world.column_coords();
+            let fog = state.world_renderer.fog();
+            let (start, end) = render_distance_fog(i32::from(sent));
+            if staged == Some(i32::from(sent))
+                && server > i32::from(sent)
+                && coords.len() == want.len()
+                && coords.iter().all(|k| want.contains(k))
+                && fog == [start, end]
+            {
+                c.view_distance_frames += 1;
+            }
+            c.view_distance_seen = Some((staged, sent, server, coords.len(), want.len(), fog));
+        }
         // Camera + lightmap were already set above from the same eye/state this
         // frame — don't duplicate them. Celestial still tracks the world clock.
         state.world_renderer.set_celestial({
@@ -1263,6 +1289,7 @@ impl LiveApp {
                 Some(dt * 20.0),
             );
             apply_border(&mut state.world_renderer, &mut state.gpu, session, alpha);
+            apply_render_distance_fog(&mut state.world_renderer, session);
             if self.particles.is_none() {
                 self.particles = ParticleAssets::new(baked);
             }

@@ -223,6 +223,15 @@ pub(super) struct RenderCheck {
     /// M185 — frames on which `collect_leashes` drew the injected horse's
     /// leash to the happy ghast as the four-rope quad leash (r72).
     pub(super) quad_leash_frames: usize,
+    /// M206 — frames on which the loaded columns were exactly the set a
+    /// 26.2 server tracks for the client's own render distance (staged in
+    /// `options.txt` by `render_check.py`, below the server's), and the fog
+    /// band was vanilla's for it (r73).
+    pub(super) view_distance_frames: usize,
+    /// The last frame's reading, for the row's detail: the staged distance,
+    /// the client information's, the server's radius, the column count, the
+    /// tracking set's size, and the fog band.
+    pub(super) view_distance_seen: Option<(Option<i32>, u8, i32, usize, usize, [f32; 2])>,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -704,7 +713,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 72;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 73;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -912,6 +921,19 @@ impl RenderCheck {
             format!(
                 "{} frames drew {:?} as a quad leash",
                 self.quad_leash_frames, QUAD_LEASH_EIDS
+            ),
+        );
+        // M206 — options.txt's render distance reached the server: the
+        // columns it sent are exactly `ChunkTrackingView`'s set for the
+        // staged 6 (not for its own 8, which is larger), and the fog band is
+        // `FogRenderer.setupFog`'s for 6.
+        row(
+            "r73 options.txt's render distance set the columns the server sent and the fog",
+            self.view_distance_frames >= 3,
+            format!(
+                "{} frames matched; last (staged, sent, server radius, columns, \
+                 tracking set, fog) = {:?}",
+                self.view_distance_frames, self.view_distance_seen
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -3123,5 +3145,55 @@ mod witness_seam_tests {
         let owned = ["r1 a".to_string(), "not-a-witness".to_string()];
         let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
         assert!(witness_seam_faults(&refs, 1).is_empty());
+    }
+}
+
+/// The columns a 26.2 server keeps sent to a player whose chunk-cache centre
+/// is `center` at view distance `vd` (r73): `ChunkTrackingView.Positioned.
+/// contains(x, z)`, i.e. `isWithinDistance(.., includeNeighbors = true)`:
+///
+/// ```text
+/// int bufferRange = includeNeighbors ? 2 : 1;
+/// long deltaX = Math.max(0, Math.abs(chunkX - centerX) - bufferRange);
+/// long deltaZ = Math.max(0, Math.abs(chunkZ - centerZ) - bufferRange);
+/// return deltaX * deltaX + deltaZ * deltaZ < viewDistance * viewDistance;
+/// ```
+///
+/// `vd` is `ChunkMap.getPlayerViewDistance`: `clamp(requested, 2,
+/// serverViewDistance)`.
+pub(super) fn server_tracked_columns(
+    center: (i32, i32),
+    vd: i32,
+) -> std::collections::HashSet<(i32, i32)> {
+    let r = vd + 2;
+    let mut out = std::collections::HashSet::new();
+    for dx in -r..=r {
+        for dz in -r..=r {
+            let bx = i64::from((dx.abs() - 2).max(0));
+            let bz = i64::from((dz.abs() - 2).max(0));
+            if bx * bx + bz * bz < i64::from(vd) * i64::from(vd) {
+                out.insert((center.0 + dx, center.1 + dz));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tracking_tests {
+    use super::server_tracked_columns;
+
+    /// The sizes, against the 2026-10-18 normal-world load test's
+    /// measurement: a client asking for 10 from a server at 16 held exactly
+    /// 473 columns, which is the set at 10.
+    #[test]
+    fn the_tracking_set_matches_the_measured_column_count() {
+        assert_eq!(server_tracked_columns((0, 0), 10).len(), 473);
+        assert_eq!(server_tracked_columns((0, 0), 6).len(), 213);
+        assert_eq!(server_tracked_columns((0, 0), 8).len(), 329);
+        let s = server_tracked_columns((3, -2), 6);
+        // Along an axis `|dx| - 2 < vd`: the outermost ring is vd + 1.
+        assert!(s.contains(&(3 + 7, -2)) && !s.contains(&(3 + 8, -2)));
+        assert!(s.contains(&(3 + 6, -2 + 6)) && !s.contains(&(3 + 7, -2 + 7)));
     }
 }

@@ -21,6 +21,7 @@ pub mod border;
 pub mod boss_bar;
 pub mod bundle;
 pub mod chat_sign;
+pub mod client_info;
 pub mod music;
 pub mod options;
 // M126a — `chat_style` and `chat_translate` moved DOWN to `rewo-world`, because
@@ -417,6 +418,11 @@ pub struct Connection<'a> {
     /// The host and port the handshake names: the SRV target when a redirect
     /// was followed, the typed address otherwise. See [`Self::endpoint`].
     endpoint: (String, u16),
+    /// What configuration's `client_information` says (M206): vanilla's
+    /// defaults until [`Self::set_client_information`] passes the options
+    /// file's. Moved onto the `PlaySession` at `into_play`, where the local
+    /// render distance is read from it.
+    pub(crate) client_info: client_info::ClientInformation,
 }
 
 impl<'a> Connection<'a> {
@@ -486,6 +492,12 @@ impl<'a> Connection<'a> {
         (&self.endpoint.0, self.endpoint.1)
     }
 
+    /// The client information configuration will send (M206) — call before
+    /// `into_play`. Vanilla sends `Options.buildPlayerInformation()`.
+    pub fn set_client_information(&mut self, info: client_info::ClientInformation) {
+        self.client_info = info;
+    }
+
     fn from_stream(
         stream: TcpStream,
         endpoint: (String, u16),
@@ -517,6 +529,7 @@ impl<'a> Connection<'a> {
             cfg: config::ConfigData::new(data),
             session: crate::session::SessionState::default(),
             endpoint,
+            client_info: client_info::ClientInformation::default(),
         })
     }
 
@@ -702,19 +715,10 @@ impl<'a> Connection<'a> {
         brand.string("minecraft:brand").raw(&brand_payload.buf);
         self.send(brand)?;
 
-        // Client information (view distance etc.). Matches decompiled
-        // ServerboundClientInformation field order.
+        // Client information — the options file's render distance, model
+        // parts and server listing (M206; was a hard-coded view distance 10).
         let mut info = PacketWriter::packet(self.ids.sb_config_client_information);
-        info.string("en_us") // language
-            .u8(10) // view distance
-            .varint(0) // chat visibility: FULL
-            .bool(true) // chat colors
-            .u8(0x7f) // skin model parts
-            .varint(1) // main hand: right
-            .bool(false) // text filtering
-            .bool(true); // allow server listings
-                         // particle status enum (0 = all) — 26.x added field.
-        info.varint(0);
+        self.client_info.write(&mut info);
         self.send(info)
     }
 

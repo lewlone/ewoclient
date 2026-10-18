@@ -146,6 +146,11 @@ def main():
         run(args)
 
 
+# M206 -- r73: the client's staged render distance. Below the test server's
+# view-distance (8), so the server's tracking set is the CLIENT's choice.
+CLIENT_VIEW_DISTANCE = 6
+
+
 def run(args):
     port = free_port()
     dest = os.path.join(BASE, "testserver-rc-%d" % port)
@@ -153,6 +158,10 @@ def run(args):
         sys.exit("%s already exists; a reused directory is not a fresh one" % dest)
 
     os.makedirs(dest)
+    game_dir = os.path.join(dest, "client-game")
+    os.makedirs(game_dir)
+    io.open(os.path.join(game_dir, "options.txt"), "wb").write(
+        ("renderDistance:%d\n" % CLIENT_VIEW_DISTANCE).encode())
     for f in ("server.jar", "eula.txt"):
         shutil.copyfile(os.path.join(SRC, f), os.path.join(dest, f))
     for d in ("libraries", "versions"):
@@ -250,6 +259,14 @@ def run(args):
         # configured with. Two hard-coded copies would drift; this cannot.
         env["REWO_RC_PACK_ID"] = PACK_ID.replace("-", "")
         env["REWO_RC_COC"] = COC_TEXT
+        # M206 -- r73. The client's render distance comes from options.txt in
+        # its game directory (vanilla's `buildPlayerInformation`), so stage
+        # one, below the server's view-distance, and tell the witness the same
+        # literal. The game directory is a scratch folder inside the server's
+        # (removed with it), never the repo root, which was the client's game
+        # directory before -- an options save during the run would have
+        # written into the working tree.
+        env["REWO_RC_VIEW_DISTANCE"] = str(CLIENT_VIEW_DISTANCE)
         # TIMEOUT, because the client's worst failure mode is not a crash.
         # A configuration-state packet the client fails to answer leaves it
         # reading keep-alives forever (M166), and an untimed `run` inherits
@@ -262,7 +279,8 @@ def run(args):
             p = subprocess.run(
                 [REWO, "live", "--render-check",
                  "--host", "127.0.0.1", "--port", str(port),
-                 "--username", args.username],
+                 "--username", args.username,
+                 "--game-dir", game_dir],
                 cwd=ROOT,
                 env=env,
                 capture_output=True,

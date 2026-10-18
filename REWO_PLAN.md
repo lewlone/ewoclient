@@ -2032,6 +2032,7 @@ this shape once.
 | M194 — the server's own item frame (`render_check.py` summons it) | **r71** | — | — |
 | M200 — the loom's full banner | — | `MENU_OVERLAY_SPRITES` 131 (`container/loom/error`; `LOOM_ERROR`) | `containershot` o30 |
 | M185's live half (2026-10-18) — the happy-ghast quad leash | **r72** | — | — |
+| M206 (2026-10-18) — options.txt's render distance reaches the server | **r73** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3859,6 +3860,44 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M206 — the render distance, end to end (2026-10-18)
+
+Found reading M205's load-test log: a server at view distance 16 sent 473
+columns, which is exactly `ChunkTrackingView`'s set at **10**, because the
+configuration `client_information` hard-coded `view distance 10` while the
+client's own effects assumed 12 and `options.txt`'s `renderDistance` was
+never read. The terrain fog was a fixed 80..180 band, sized for the flat
+test world, so at render distance 16 it hid a third of what was loaded.
+
+- `Options` reads `renderDistance` (`IntRange(2, 32)`, default 12; outside
+  the range the codec fails and the default stands), the `modelPart_*` lines
+  (plain `"true".equals`, one bit each, default `0x7f`) and
+  `allowServerListing` (codec boolean, default on). All three are read-only:
+  `merge_into` copies their lines through.
+- `rewo_net::client_info::ClientInformation` writes the packet from them in
+  `ClientInformation.write`'s order; `Connection::set_client_information`
+  takes it before `into_play`, and `PlaySession::client_info` keeps it, so
+  `PlaySession::effective_render_distance` is vanilla's
+  `getEffectiveRenderDistance`. The main hand, chat visibility, chat colours
+  and particle status stay pinned to what Rewo draws (right arm, full chat,
+  all particles): reading `mainHand:"left"` would make every other client draw
+  a left-handed player Rewo itself does not. A recorded deviation.
+- The live frame sets `FogRenderer.setupFog`'s band from the effective
+  distance (`start = rd·16 − clamp(rd·16 / 10, 4, 64)`, `end = rd·16`), and
+  `world.frag` / `water.frag` measure the render-distance term with
+  `fog_cylindrical_distance` (`max(length(xz), |y|)`), keeping the spherical
+  one for the environmental term, as `fog.glsl` does. `REWO_FOG` still
+  overrides. The offscreen gates keep the old default band; the demo hash is
+  unchanged (the scene is inside 80 blocks, where the metrics agree).
+- `render_check.py` now runs the client with a staged game directory inside
+  the server's (it used to be the repo root, where an options save would
+  have landed in the working tree), holding `renderDistance:6` against the
+  server's 8. **r73** passes on a frame where the loaded columns are exactly
+  `server_tracked_columns(centre, 6)` (the decompile's
+  `isWithinDistance(.., includeNeighbors = true)`; its unit test reproduces
+  the load test's 473 at 10), the server's radius is larger than what was
+  sent, and the fog band is (86.4, 96): 73/73, 5,605 frames matched.
 
 ### M205 — the terrain arena grows (2026-10-18)
 

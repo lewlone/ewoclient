@@ -140,6 +140,8 @@ a self-check path.
   atomically. `rewo-app/src/game_dir.rs` resolves the directory once: `rewo
   live --game-dir DIR`, then the launcher's `REWO_GAME_DIR`, then the current
   directory (standalone runs). Never open `options.txt` by a bare relative path.
+  `tools/render_check.py` stages its own game directory (with an `options.txt`
+  holding r73's `renderDistance`) inside the server's scratch folder.
 - **Tracy** runs only with `--features profile`; the default build's
   `tracy_client` calls are no-ops (no profiler thread, no LAN broadcast).
 - The shipped client sends no test packets: the first-spawn dirt stack is

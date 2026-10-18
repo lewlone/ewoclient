@@ -73,7 +73,38 @@ pub struct Options {
     /// On, a clicked link first shows the confirm-link screen; off, it opens
     /// at once.
     pub chat_links_prompt: bool,
+    /// `options.renderDistance` (M206), in chunks — `IntRange(2, 32)`
+    /// (`Options.java:1470-1477`; the 32 is the `maxMemory >= 1 GB` branch,
+    /// which a native client always takes), default 12. Read-only here: no
+    /// Rewo screen sets it, so it is never written back (the line survives a
+    /// save untouched, like every option Rewo does not own).
+    pub render_distance: i32,
+    /// The `modelPart_<id>` lines (M206) as `PlayerModelPart`'s mask: bit `n`
+    /// for part `n` in [`MODEL_PARTS`] order. Default every part (`0x7f`,
+    /// `EnumSet.allOf`). Read-only, like `render_distance`.
+    pub model_parts: u8,
+    /// `options.allowServerListing` (M206), default ON. Read-only.
+    pub allow_server_listing: bool,
 }
+
+/// `options.renderDistance`'s key and range (`IntRange(2, 32)`, default 12).
+pub const KEY_RENDER_DISTANCE: &str = "renderDistance";
+pub const RENDER_DISTANCE_MIN: i32 = 2;
+pub const RENDER_DISTANCE_MAX: i32 = 32;
+pub const RENDER_DISTANCE_DEFAULT: i32 = 12;
+/// `options.allowServerListing`'s key.
+pub const KEY_ALLOW_SERVER_LISTING: &str = "allowServerListing";
+/// `PlayerModelPart`'s ids in bit order (`PlayerModelPart.java`: `CAPE(0,
+/// "cape")` .. `HAT(6, "hat")`); the file key is `modelPart_<id>`.
+pub const MODEL_PARTS: [&str; 7] = [
+    "cape",
+    "jacket",
+    "left_sleeve",
+    "right_sleeve",
+    "left_pants_leg",
+    "right_pants_leg",
+    "hat",
+];
 
 impl Default for Options {
     /// Vanilla's declared defaults: `MusicFrequency.DEFAULT`, `false` for
@@ -92,6 +123,10 @@ impl Default for Options {
             // `("options.chat.links.prompt", true)` — both ON.
             chat_links: true,
             chat_links_prompt: true,
+            render_distance: RENDER_DISTANCE_DEFAULT,
+            model_parts: 0x7f,
+            // `createBoolean("options.allowServerListing", .., true, ..)`.
+            allow_server_listing: true,
         }
     }
 }
@@ -227,6 +262,26 @@ impl Options {
                 }
                 _ => false,
             },
+            // `IntRange.codec()` is `Codec.intRange(2, 32)`: a value outside
+            // FAILS the parse (logged, the default stands), not clamped.
+            KEY_RENDER_DISTANCE => match raw.trim().parse::<i32>() {
+                Ok(v) if (RENDER_DISTANCE_MIN..=RENDER_DISTANCE_MAX).contains(&v) => {
+                    self.render_distance = v;
+                    true
+                }
+                _ => false,
+            },
+            KEY_ALLOW_SERVER_LISTING => match raw.trim() {
+                "true" => {
+                    self.allow_server_listing = true;
+                    true
+                }
+                "false" => {
+                    self.allow_server_listing = false;
+                    true
+                }
+                _ => false,
+            },
             // `ao` is `Codec.BOOL` like the line above: bare JSON, so `TRUE`
             // is not a value (`LenientJsonParser` is lenient about quoting,
             // not about case).
@@ -241,6 +296,25 @@ impl Options {
                 }
                 _ => false,
             },
+            // `modelPart_*` goes through the plain `process(String, boolean)`
+            // (`Options.java:1701-1704`): `"true".equals(value)`, so ANY other
+            // value hides the part — unlike the codec booleans above.
+            key if key.starts_with("modelPart_") => {
+                match MODEL_PARTS
+                    .iter()
+                    .position(|p| key["modelPart_".len()..] == **p)
+                {
+                    Some(bit) => {
+                        if raw == "true" {
+                            self.model_parts |= 1 << bit;
+                        } else {
+                            self.model_parts &= !(1 << bit);
+                        }
+                        true
+                    }
+                    None => false,
+                }
+            }
             key => match volume_source(key) {
                 Some(source) => {
                     // `Codec.withAlternative(Codec.doubleRange(0.0, 1.0),
@@ -384,6 +458,59 @@ impl Options {
 mod tests {
     use super::*;
 
+    /// M206: the render distance is an `IntRange(2, 32)` codec — in range it
+    /// is read, outside it (or not an integer) the default stands.
+    #[test]
+    fn the_render_distance_reads_in_range_and_keeps_the_default_outside() {
+        assert_eq!(Options::default().render_distance, 12);
+        for (line, want) in [
+            ("renderDistance:2", 2),
+            ("renderDistance:32", 32),
+            ("renderDistance:16", 16),
+            ("renderDistance:1", 12),
+            ("renderDistance:33", 12),
+            ("renderDistance:\"8\"", 12),
+            ("renderDistance:far", 12),
+        ] {
+            assert_eq!(Options::parse(line).render_distance, want, "{line}");
+        }
+    }
+
+    /// M206: `modelPart_*` is the plain boolean rule — anything but `true`
+    /// hides the part — and each part is its own bit.
+    #[test]
+    fn model_parts_are_one_bit_each_and_only_true_shows_one() {
+        assert_eq!(Options::default().model_parts, 0x7f);
+        assert_eq!(Options::parse("modelPart_cape:false").model_parts, 0x7e);
+        assert_eq!(Options::parse("modelPart_hat:false").model_parts, 0x3f);
+        assert_eq!(Options::parse("modelPart_jacket:TRUE").model_parts, 0x7d);
+        assert_eq!(
+            Options::parse("modelPart_hat:false\nmodelPart_hat:true").model_parts,
+            0x7f
+        );
+        assert!(!Options::default().apply_line("modelPart_tail:false"));
+    }
+
+    /// M206: `allowServerListing` is a codec boolean (bad values keep ON).
+    #[test]
+    fn server_listing_is_a_codec_boolean() {
+        assert!(Options::default().allow_server_listing);
+        assert!(!Options::parse("allowServerListing:false").allow_server_listing);
+        assert!(Options::parse("allowServerListing:nope").allow_server_listing);
+    }
+
+    /// M206: the three read-only options are never written by Rewo, so a
+    /// save leaves their lines as the file had them.
+    #[test]
+    fn a_save_leaves_the_read_only_options_alone() {
+        let existing = "renderDistance:20\nmodelPart_hat:false\nallowServerListing:false\n";
+        let o = Options::parse(existing);
+        let out = o.merge_into(existing);
+        for line in existing.lines() {
+            assert_eq!(out.matches(line).count(), 1, "{line}");
+        }
+    }
+
     /// **The serialized name is the UPPERCASE constructor argument.**
     ///
     /// Writing the translation key beside it — the mistake the two literals on
@@ -481,6 +608,7 @@ mod tests {
                         sound_volumes: [1.0; 11],
                         chat_links: true,
                         chat_links_prompt: true,
+                        ..Options::default()
                     };
                     assert_eq!(Options::parse(&o.to_lines().join("\n")), o);
                 }
@@ -646,6 +774,7 @@ mod tests {
             sound_volumes: [1.0; 11],
             chat_links: false,
             chat_links_prompt: false,
+            ..Options::default()
         };
         let out = o.merge_into(existing);
         assert!(

@@ -268,7 +268,13 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         baked.dry_foliage_colormap.clone(),
     );
     let address = server_address(args.host.as_deref(), args.port)?;
-    let conn = Connection::connect_address(&address, &data)?;
+    let mut conn = Connection::connect_address(&address, &data)?;
+    // M206: configuration's `client_information` carries the options file's
+    // render distance, model parts and server listing, as vanilla's
+    // `buildPlayerInformation` does.
+    conn.set_client_information(rewo_net::client_info::ClientInformation::from(
+        &load_options(),
+    ));
     // What the handshake names: the SRV target when one was followed.
     let (host, port) = {
         let (h, p) = conn.endpoint();

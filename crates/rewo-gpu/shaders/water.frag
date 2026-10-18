@@ -46,11 +46,16 @@ void main() {
     }
     // `v_color` already carries the lightmap (world.vert, per vertex).
     vec3 rgb = c.rgb * v_color;
-    float dist = distance(pc.cam_fog.xyz, v_worldpos);
+    vec3 rel = v_worldpos - pc.cam_fog.xyz;
+    // M206: vanilla's fog.glsl measures the environmental term with
+    // `fog_spherical_distance` and the render-distance one with
+    // `fog_cylindrical_distance`, max(length(xz), |y|).
+    float dist = length(rel);
+    float cyl = max(length(rel.xz), abs(rel.y));
     // `total_fog_value` — the MAX of the render-distance band (the push
     // block's, which dissolves the chunk edge into the sky) and the
     // environmental one (which rain thickens). Vanilla takes the same max.
-    float fog = clamp((dist - pc.cam_fog.w) / max(pc.fog_col.w - pc.cam_fog.w, 1.0), 0.0, 1.0);
+    float fog = clamp((cyl - pc.cam_fog.w) / max(pc.fog_col.w - pc.cam_fog.w, 1.0), 0.0, 1.0);
     float env = clamp((dist - lmx.env_fog.x) / max(lmx.env_fog.y - lmx.env_fog.x, 1.0), 0.0, 1.0);
     fog = max(fog, env);
     rgb = mix(rgb, pc.fog_col.rgb, fog);

@@ -582,6 +582,7 @@ pub(super) fn run_headless(
         None,
     );
     apply_border(&mut world_renderer, &mut gpu, &session, 1.0);
+    apply_render_distance_fog(&mut world_renderer, &session);
     // M35: `REWO_OPEN_INVENTORY=1` opens the screen for the headless shot, so
     // a PNG can show it without a windowed session and a keypress. The cursor
     // is parked at the window centre, which is where `set_screen_open` puts it.
