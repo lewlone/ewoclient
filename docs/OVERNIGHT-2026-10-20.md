@@ -120,6 +120,8 @@ released.
 | `e6ef088` | **M214** — render-check **r74** (an advancement tab click the real server echoes); the advancements screen no longer loops forever on a description with a newline (it crashed the client). |
 | `3d50b1b` | This summary through M214. |
 | `1ca048d` | **M215** — render-check **r75**: a lectern opened by the production right-click, page turned by the server's echo, closed with `container_close`; `lectern_arrow_click` extracted from the mouse handler. |
+| `13ca696`, `d9deb3d` | `load_check.py` refuses `--rd` above 16 without `--heavy` (and with under 10 GB free); M214's wrap-loop audit. |
+| `2cbd426` | **M216** — attacking and interacting with entities (26.2's `attack` and `interact` packets, the hit location as LpVec3); render-check **r76** (a villager's trades, decoded as summoned) and **r77** (an attack the server answers with damage). |
 
 ## Decisions made
 
