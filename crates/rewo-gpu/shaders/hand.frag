@@ -17,6 +17,16 @@ layout(location = 0) out vec4 out_color;
 
 void main() {
     vec4 c = texture(u_atlas, v_uv);
+    // M213: a NEGATIVE shade marks a translucent quad — a held map's banner
+    // label background, `Font`'s 0x80000000 effect rect — which blends with
+    // its texel's alpha instead of taking the cutout.
+    if (v_shade < 0.0) {
+        if (c.a <= 0.0) {
+            discard;
+        }
+        out_color = vec4(c.rgb * -v_shade, c.a);
+        return;
+    }
     if (c.a < 0.1) {
         discard;
     }

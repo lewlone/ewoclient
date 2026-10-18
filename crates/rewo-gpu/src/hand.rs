@@ -912,6 +912,33 @@ pub struct MapDecoQuad {
     pub uv: [f32; 4],
 }
 
+/// One banner label on a held map (M213), `MapRenderer.render`'s
+/// `decoration.name != null` branch: the decoration's half-pixel position,
+/// the text's width in font pixels, each glyph's atlas UV rect `(u0, v0, du,
+/// dv)` with its pen x, and the background texel's UV rect.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapLabelQuad {
+    pub x: i8,
+    pub y: i8,
+    pub width: f32,
+    pub glyphs: Vec<([f32; 4], f32)>,
+    pub background: [f32; 4],
+}
+
+/// A label's pose in the map's 0..128 units: `translate(x / 2 + 64 - width *
+/// scale / 2, y / 2 + 64 + 4, -0.025) scale(scale, scale, -1) translate(0, 0,
+/// 0.1)` with `scale = clamp(25 / width, 0, 6 / 9)` — the arithmetic M204's
+/// framed-map label uses.
+pub fn map_label_pose(x: i8, y: i8, width: f32) -> Mat4 {
+    let scale = (25.0 / width).clamp(0.0, 6.0 / 9.0);
+    translate(
+        f32::from(x) / 2.0 + 64.0 - width * scale / 2.0,
+        f32::from(y) / 2.0 + 64.0 + 4.0,
+        -0.025,
+    ) * Mat4::from_scale(Vec3::new(scale, scale, -1.0))
+        * translate(0.0, 0.0, 0.1)
+}
+
 /// A decoration's pose in the map's 0..128 units (`MapRenderer.java:47-53`):
 /// `translate(x / 2 + 64, y / 2 + 64, -0.02) rotZ(rot * 360 / 16) scale(4, 4,
 /// 3) translate(-0.125, 0.125, 0)`.
@@ -937,6 +964,10 @@ pub fn build_map_vertices(
     // present (they are `MapRenderer.render`'s, which `renderMap` calls only
     // then). Each is a sprite quad `(-1,1)..(1,-1)` at `z = count * -0.001`.
     decorations: &[MapDecoQuad],
+    // M213 — the decorations' names, drawn after them: `Font`'s effect rect
+    // `(-1, -1)..(width, 9)` at `z -0.01` in black at half alpha, then the
+    // white glyphs.
+    labels: &[MapLabelQuad],
     arm_geometry: Option<&ArmGeometry>,
 ) -> Vec<GuiItemVertex> {
     let mut out = Vec::new();
@@ -993,6 +1024,44 @@ pub fn build_map_vertices(
                 &[[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
                 1.0,
             );
+        }
+        for l in labels {
+            if l.width <= 0.0 {
+                continue;
+            }
+            let lm = m * map_label_pose(l.x, l.y, l.width);
+            let rect = |r: [f32; 4]| -> [[f32; 2]; 4] {
+                let (u0, v0, u1, v1) = (r[0], r[1], r[0] + r[2], r[1] + r[3]);
+                [[u0, v0], [u1, v0], [u1, v1], [u0, v1]]
+            };
+            // Translucent (negative shade): the background texel is black at
+            // alpha 128.
+            quad_verts(
+                &mut out,
+                &lm,
+                &[
+                    [-1.0, -1.0, -0.01],
+                    [l.width, -1.0, -0.01],
+                    [l.width, 9.0, -0.01],
+                    [-1.0, 9.0, -0.01],
+                ],
+                &rect(l.background),
+                -1.0,
+            );
+            for &(uv, pen) in &l.glyphs {
+                quad_verts(
+                    &mut out,
+                    &lm,
+                    &[
+                        [pen, 0.0, 0.0],
+                        [pen + 8.0, 0.0, 0.0],
+                        [pen + 8.0, 8.0, 0.0],
+                        [pen, 8.0, 0.0],
+                    ],
+                    &rect(uv),
+                    1.0,
+                );
+            }
         }
     }
     out
@@ -1456,7 +1525,7 @@ mod m192_held_map {
     /// with data and from the plain background without (vanilla's choice).
     #[test]
     fn the_map_quads_pick_their_textures_as_render_map_does() {
-        let with = build_map_vertices(Mat4::IDENTITY, &draw(true, true), &[], None);
+        let with = build_map_vertices(Mat4::IDENTITY, &draw(true, true), &[], &[], None);
         assert_eq!(with.len(), 12);
         let us: Vec<f32> = with[..6].iter().map(|v| v.uv[0]).collect();
         assert!(
@@ -1468,7 +1537,7 @@ mod m192_held_map {
             px.iter().all(|&u| (0.0..=0.25).contains(&u)),
             "pixels: {px:?}"
         );
-        let without = build_map_vertices(Mat4::IDENTITY, &draw(true, false), &[], None);
+        let without = build_map_vertices(Mat4::IDENTITY, &draw(true, false), &[], &[], None);
         assert_eq!(without.len(), 6, "no data: background only");
         assert!(without.iter().all(|v| (0.5..=0.625).contains(&v.uv[0])));
         // The pixel quad's centre is the pose's map centre.
@@ -1515,8 +1584,14 @@ mod m192_held_map {
             rot: 0,
             uv: [0.0, 0.0, 0.1, 0.1],
         }];
-        assert_eq!(build_map_vertices(Mat4::IDENTITY, &d, &one, None).len(), 18);
+        assert_eq!(
+            build_map_vertices(Mat4::IDENTITY, &d, &one, &[], None).len(),
+            18
+        );
         d.data_present = false;
-        assert_eq!(build_map_vertices(Mat4::IDENTITY, &d, &one, None).len(), 6);
+        assert_eq!(
+            build_map_vertices(Mat4::IDENTITY, &d, &one, &[], None).len(),
+            6
+        );
     }
 }

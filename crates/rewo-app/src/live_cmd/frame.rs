@@ -1252,6 +1252,7 @@ impl LiveApp {
                     &mut state.world_renderer,
                     &mut state.gpu,
                     session,
+                    Some(&self.lang),
                     &items,
                     h,
                     alpha,

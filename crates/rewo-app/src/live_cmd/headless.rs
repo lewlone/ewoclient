@@ -741,6 +741,7 @@ pub(super) fn run_headless(
             &mut world_renderer,
             &mut gpu,
             &session,
+            Some(&baked.lang),
             &items,
             &mut hand,
             1.0,

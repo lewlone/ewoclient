@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 40;
+const EXPECTED_WITNESSES: usize = 41;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -994,6 +994,8 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                     checker: &checker,
                     background: &plain_bg,
                     decorations: &deco_sprites,
+                    font: None,
+                    label_bytes: &[],
                 }),
             )
         };
@@ -1029,6 +1031,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 glam::Mat4::IDENTITY,
                 &map_draw(true, true, uv_with),
                 &[],
+                &[],
                 None,
             ),
         )?;
@@ -1050,6 +1053,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             &rewo_gpu::hand::build_map_vertices(
                 glam::Mat4::IDENTITY,
                 &map_draw(false, true, uv_with),
+                &[],
                 &[],
                 None,
             ),
@@ -1099,6 +1103,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 glam::Mat4::IDENTITY,
                 &map_draw(true, true, uv_with),
                 &[],
+                &[],
                 None,
             ),
         )?;
@@ -1131,6 +1136,8 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 checker: &checker,
                 background: &plain_bg,
                 decorations: &deco_sprites,
+                font: None,
+                label_bytes: &[],
             }),
         );
         wr.init_hand(&mut gpu, &atlas_skin, atlas_side, atlas_side)?;
@@ -1158,6 +1165,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                     x_rot: 90.0,
                     ..map_draw(true, true, uv_skin.expect("packed"))
                 },
+                &[],
                 &[],
                 Some(&geo),
             ),
@@ -1221,6 +1229,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                         ..map_draw(true, true, uv_d)
                     },
                     d,
+                    &[],
                     None,
                 ),
             )
@@ -1240,6 +1249,99 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 W / 2
             ),
         );
+        // gm7 — banner labels (M213, `MapRenderer.render`'s `decoration.name`
+        // branch): with an all-white font sheet, a label "AB" at the map's
+        // centre draws white glyph pixels over the map and a TRANSLUCENT
+        // background — the map's own colour at half strength (`Font`'s
+        // `0x80000000`), which an opaque quad (black) or the cutout path
+        // (nothing) would not give. No labels: neither.
+        let font_sheet = vec![255u8; 128 * 128 * 4];
+        let (atlas_l, _, uv_l) = crate::live_cmd::pack_hand_atlas(
+            &rewo_gpu::held::HeldItems::default(),
+            &[],
+            None,
+            Some(&crate::live_cmd::HeldMapTextures {
+                pixels: Some(&map_px),
+                checker: &checker,
+                background: &plain_bg,
+                decorations: &deco_sprites,
+                font: Some((&font_sheet, 128, 8)),
+                label_bytes: b"AB",
+            }),
+        );
+        wr.init_hand(&mut gpu, &atlas_l, atlas_side, atlas_side)?;
+        let uv_l = uv_l.expect("packed");
+        let label = rewo_gpu::hand::MapLabelQuad {
+            x: 0,
+            y: 0,
+            width: 12.0,
+            glyphs: vec![
+                (crate::live_cmd::map_glyph_uv(0), 0.0),
+                (crate::live_cmd::map_glyph_uv(1), 6.0),
+            ],
+            background: uv_l.label_background,
+        };
+        let draw_labels = |gpu: &mut Gpu,
+                           off: &mut Offscreen,
+                           wr: &mut WorldRenderer,
+                           l: &[rewo_gpu::hand::MapLabelQuad]|
+         -> Result<Vec<u8>, String> {
+            shot(
+                gpu,
+                off,
+                wr,
+                &rewo_gpu::hand::build_map_vertices(
+                    glam::Mat4::IDENTITY,
+                    &rewo_gpu::hand::MapDraw {
+                        x_rot: 90.0,
+                        ..map_draw(true, true, uv_l)
+                    },
+                    &[],
+                    l,
+                    None,
+                ),
+            )
+        };
+        let unlabelled = draw_labels(&mut gpu, &mut off, &mut wr, &[])?;
+        let labelled = draw_labels(&mut gpu, &mut off, &mut wr, std::slice::from_ref(&label))?;
+        // The map colour (sRGB 109, 153, 48) through the 128/255 background,
+        // blended in linear space as the attachment does.
+        let half = {
+            let lin = |c: u8| {
+                let c = c as f32 / 255.0;
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let enc = |c: f32| {
+                let s = if c <= 0.003_130_8 {
+                    c * 12.92
+                } else {
+                    1.055 * c.powf(1.0 / 2.4) - 0.055
+                };
+                (s * 255.0).round() as u8
+            };
+            let keep = 1.0 - 128.0 / 255.0;
+            [
+                enc(lin(109) * keep),
+                enc(lin(153) * keep),
+                enc(lin(48) * keep),
+            ]
+        };
+        let (w0, h0) = (
+            count(&unlabelled, [255, 255, 255]),
+            count(&unlabelled, half),
+        );
+        let (w1, h1) = (count(&labelled, [255, 255, 255]), count(&labelled, half));
+        c.record(
+            "gm7.a_maps_banner_label_draws_white_glyphs_on_a_translucent_background",
+            w0 == 0 && h0 == 0 && w1 > 20 && h1 > 20,
+            format!(
+                "unlabelled: {w0} white px, {h0} half-strength map px; labelled \"AB\": {w1} white px, {h1} px of {half:?} (the map colour through 128/255 black)"
+            ),
+        );
         let (atlas_none, _, uv_none) = pack(None);
         wr.init_hand(&mut gpu, &atlas_none, atlas_side, atlas_side)?;
         let unknown = shot(
@@ -1249,6 +1351,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             &rewo_gpu::hand::build_map_vertices(
                 glam::Mat4::IDENTITY,
                 &map_draw(true, false, uv_none.expect("packed")),
+                &[],
                 &[],
                 None,
             ),

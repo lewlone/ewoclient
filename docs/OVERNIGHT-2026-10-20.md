@@ -63,6 +63,8 @@ released.
 - **M212**: `tools/load_check.py --light` makes that light-and-walking check
   repeatable. Two light sources had been missing: deepslate redstone ore
   (when lit) and the calibrated sculk sensor.
+- **M213**: a named banner's label now shows on a map held in the hand too
+  (M204 did maps in item frames).
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -100,6 +102,8 @@ released.
 | `586e216` | **M211** — light dampening from the block's shape and fluid state (huge mushroom caps were sky-transparent; seagrass, kelp and waterlogged states let sky light through water); `play --light-check` classifies disagreements that trace to the server's own data (vanilla's chunk-border source order, stale light) and prints neighbours `server -> recomputed`. |
 | `86c8e4e` | §0.0 numbers after M211; this summary through M211. |
 | `f538b32` | **M212** — `load_check.py --light` (play bot on a normal world: CORRECTIONS 0 and the light check); `gen_block_light.py` follows `ofLegacyCopy` / `ofFullCopy` (lit deepslate redstone ore 9, calibrated sculk sensor 1; amethyst buds and filled cauldrons non-occluding). |
+| `ff07ab8` | `load_check.py` closes the server log before removing its directory (Windows had left 54 empty server folders). |
+| (next) | **M213** — banner labels on a held map: glyph cells and a translucent background cell in the hand atlas, a translucent path in `hand.frag` selected by a negative shade, `handshot` gm7. |
 
 ## Decisions made
 
@@ -239,7 +243,7 @@ released.
 ## Follow-ups found, not done
 
 - ~~Foil on framed items~~ (M198). ~~Banner labels on framed maps~~ (M204).
-- Banner labels on a HELD map: the hand pass has no font atlas.
+- ~~Banner labels on a held map~~ (M213).
 - One block-light disagreement on a normal world (571 cells of a deepslate
   cave one level brighter than the server, seed 20261018) is unexplained and
   did not recur in eleven reruns; the light check now prints the emitters

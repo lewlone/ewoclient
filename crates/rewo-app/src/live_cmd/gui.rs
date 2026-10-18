@@ -263,6 +263,13 @@ pub(super) const HAND_MAP_ITEM_Y: u32 = 128;
 /// The decoration sprites' band (8 x 8 each, by raw type id, 24 to a row)
 /// right of the plain background: `(320, 0)..(512, 128)`.
 pub(crate) const HAND_MAP_DECORATIONS: (u32, u32) = (320, 0);
+/// M213 — the banner labels' glyphs: an 8 x 8 grid of 8-px cells under the
+/// plain background, `(256, 64)..(320, 128)`. Cells 0..62 take the labels'
+/// distinct bytes in order; cell 63 is the background texel (black, alpha
+/// 128 — `Font`'s `0x80000000` effect colour).
+pub(crate) const HAND_MAP_GLYPHS: (u32, u32) = (256, 64);
+/// Glyph cells before the background cell.
+pub(crate) const HAND_MAP_GLYPH_CELLS: usize = 63;
 const HAND_MAP_DECO_COLS: u32 = 24;
 const HAND_MAP_DECO_ROWS: u32 = 16;
 
@@ -289,6 +296,10 @@ pub(crate) struct HeldMapTextures<'a> {
     pub background: &'a [u8],
     /// Each decoration type's 8 x 8 sprite by raw id (`None` = missing).
     pub decorations: &'a [Option<&'a [u8]>],
+    /// M213 — the bitmap font sheet `(rgba, size, cell)` and the distinct
+    /// bytes the map's labels draw (at most [`HAND_MAP_GLYPH_CELLS`]).
+    pub font: Option<(&'a [u8], u32, u32)>,
+    pub label_bytes: &'a [u8],
 }
 
 /// Where [`pack_hand_atlas`] put a held map's textures, as atlas UV rects
@@ -298,11 +309,54 @@ pub(crate) struct HeldMapUv {
     pub pixels: [f32; 4],
     pub checker: [f32; 4],
     pub background: [f32; 4],
+    /// M213 — the label background texel's cell.
+    pub label_background: [f32; 4],
 }
 
 fn atlas_rect_uv((x, y, w, h): (u32, u32, u32, u32)) -> [f32; 4] {
     let a = HAND_ATLAS as f32;
     [x as f32 / a, y as f32 / a, w as f32 / a, h as f32 / a]
+}
+
+/// The atlas pixel origin of label glyph cell `k` (M213).
+pub(crate) fn map_glyph_cell(k: usize) -> (u32, u32) {
+    let k = k as u32;
+    (
+        HAND_MAP_GLYPHS.0 + (k % 8) * 8,
+        HAND_MAP_GLYPHS.1 + (k / 8) * 8,
+    )
+}
+
+/// The UV rect of label glyph cell `k`.
+pub(crate) fn map_glyph_uv(k: usize) -> [f32; 4] {
+    let (x, y) = map_glyph_cell(k);
+    atlas_rect_uv((x, y, 8, 8))
+}
+
+/// A held map's banner labels (M213): each named decoration's text, flattened
+/// as the framed map's are (M204), and the distinct bytes they draw, in
+/// first-seen order and capped at the glyph cells.
+pub(crate) fn held_map_labels(
+    data: &rewo_world::maps::ClientMap,
+    lang: Option<&rewo_data::lang::Language>,
+) -> (Vec<(i8, i8, String)>, Vec<u8>) {
+    let labels: Vec<(i8, i8, String)> = data
+        .decorations
+        .iter()
+        .filter_map(|d| {
+            let text = rewo_world::chat_style::flatten(d.name.as_ref()?, lang);
+            (!text.is_empty()).then_some((d.x, d.y, text))
+        })
+        .collect();
+    let mut bytes: Vec<u8> = Vec::new();
+    for (_, _, t) in &labels {
+        for b in t.bytes() {
+            if b != b' ' && !bytes.contains(&b) && bytes.len() < HAND_MAP_GLYPH_CELLS {
+                bytes.push(b);
+            }
+        }
+    }
+    (labels, bytes)
 }
 
 /// Copy a `w x h` RGBA image into the atlas at `(x, y)`; a short source is
@@ -361,6 +415,10 @@ pub struct HandState {
     /// The decoration sprites by raw type id, from the bake.
     pub(super) map_decoration_sprites: Vec<Option<Vec<u8>>>,
     pub(super) map_uv: Option<HeldMapUv>,
+    /// M213 — the bitmap font `(sheet, size, cell, advances)` for a held
+    /// map's banner labels, and the glyph bytes the resident atlas holds.
+    pub(super) font: Option<(Vec<u8>, u32, u32, [u8; 256])>,
+    pub(super) map_glyphs: Vec<u8>,
 }
 
 impl HandState {
@@ -404,6 +462,11 @@ impl HandState {
                         .map(|d| d.rgba.clone())
                 })
                 .collect(),
+            font: baked
+                .font
+                .as_ref()
+                .map(|f| (f.atlas.clone(), f.atlas_size, f.cell, f.advance)),
+            map_glyphs: Vec::new(),
         }
     }
 
@@ -492,10 +555,37 @@ pub(crate) fn pack_hand_atlas(
                 blit_into_atlas(&mut rgba, px, (x, y, 8, 8));
             }
         }
+        // M213 — the labels' glyphs, copied cell by cell from the font sheet,
+        // and the half-black background cell after them.
+        if let Some((sheet, size, cell)) = m.font {
+            for (k, &b) in m.label_bytes.iter().take(HAND_MAP_GLYPH_CELLS).enumerate() {
+                let (sx, sy) = (u32::from(b) % 16 * cell, u32::from(b) / 16 * cell);
+                let (dx, dy) = map_glyph_cell(k);
+                for row in 0..cell.min(8) {
+                    for col in 0..cell.min(8) {
+                        let s = (((sy + row) * size + sx + col) * 4) as usize;
+                        let d = (((dy + row) * HAND_ATLAS + dx + col) * 4) as usize;
+                        if s + 4 <= sheet.len() {
+                            rgba[d..d + 4].copy_from_slice(&sheet[s..s + 4]);
+                        }
+                    }
+                }
+            }
+        }
+        let (bx, by) = map_glyph_cell(HAND_MAP_GLYPH_CELLS);
+        for row in 0..8 {
+            for col in 0..8 {
+                let d = (((by + row) * HAND_ATLAS + bx + col) * 4) as usize;
+                rgba[d..d + 4].copy_from_slice(&[0, 0, 0, 128]);
+            }
+        }
         HeldMapUv {
             pixels: atlas_rect_uv(HAND_MAP_PIXELS),
             checker: atlas_rect_uv(HAND_MAP_CHECKER),
             background: atlas_rect_uv(HAND_MAP_BACKGROUND),
+            // The cell's centre texel only, so linear or nearest sampling
+            // never reaches a neighbour.
+            label_background: atlas_rect_uv((bx + 3, by + 3, 2, 2)),
         }
     });
     for (slot, &tex) in wanted.iter().enumerate() {
@@ -594,6 +684,8 @@ pub(super) fn apply_hand(
     wr: &mut WorldRenderer,
     gpu: &mut Gpu,
     session: &PlaySession,
+    // M213 — the language a held map's banner names flatten with.
+    lang: Option<&rewo_data::lang::Language>,
     items: &rewo_data::items::Items,
     state: &mut HandState,
     partial: f32,
@@ -634,6 +726,14 @@ pub(super) fn apply_hand(
         let data = session.maps.get(id);
         (id, data.map_or(0, |d| d.version), data.is_some())
     });
+    // M213 — the labels this frame draws, and whether the resident atlas
+    // holds their glyphs (a new byte forces the full repack below).
+    let (map_labels, label_bytes) = held_map
+        .and_then(|(id, _, _)| session.maps.get(id))
+        .filter(|_| state.font.is_some())
+        .map(|d| held_map_labels(d, lang))
+        .unwrap_or_default();
+    let glyphs_resident = label_bytes.iter().all(|b| state.map_glyphs.contains(b));
 
     // Every texture the two hands need this frame.
     let mut wanted: Vec<u16> = Vec::new();
@@ -651,6 +751,7 @@ pub(super) fn apply_hand(
         && state.skin_resident
         && wr.hand_ready()
         && state.map_uv.is_some()
+        && glyphs_resident
         && map_version_only_changed(state.map_resident, map_key);
     if map_only_moved {
         let pixels = map_key
@@ -665,6 +766,7 @@ pub(super) fn apply_hand(
         || !state.skin_resident
         || !wr.hand_ready()
         || map_key != state.map_resident
+        || !glyphs_resident
     {
         // M192 — a held map's pixels and backgrounds take the top band. A
         // new patch (version bump) repacks the whole atlas for now; the plan
@@ -687,6 +789,8 @@ pub(super) fn apply_hand(
                     checker: cb,
                     background: bg,
                     decorations: &deco_sprites,
+                    font: state.font.as_ref().map(|f| (f.0.as_slice(), f.1, f.2)),
+                    label_bytes: &label_bytes,
                 });
         let (rgba, uv, map_uv) = pack_hand_atlas(
             &state.held,
@@ -713,6 +817,7 @@ pub(super) fn apply_hand(
         state.skin_resident = state.skin.is_some();
         state.map_resident = map_key;
         state.map_uv = map_uv;
+        state.map_glyphs = label_bytes.clone();
     }
 
     let attack = state
@@ -878,10 +983,37 @@ pub(super) fn apply_hand(
                     .collect()
             })
             .unwrap_or_default();
+        // M213 — the banner labels, glyphs from the cells packed above.
+        let labels: Vec<rewo_gpu::hand::MapLabelQuad> = match (state.font.as_ref(), state.map_uv) {
+            (Some(font), Some(uv)) => map_labels
+                .iter()
+                .map(|(x, y, text)| {
+                    let mut pen = 0.0f32;
+                    let mut glyphs = Vec::new();
+                    for b in text.bytes() {
+                        if b != b' ' {
+                            if let Some(k) = state.map_glyphs.iter().position(|&g| g == b) {
+                                glyphs.push((map_glyph_uv(k), pen));
+                            }
+                        }
+                        pen += f32::from(font.3[b as usize]);
+                    }
+                    rewo_gpu::hand::MapLabelQuad {
+                        x: *x,
+                        y: *y,
+                        width: pen,
+                        glyphs,
+                        background: uv.label_background,
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         verts.extend(rewo_gpu::hand::build_map_vertices(
             view,
             m,
             &decos,
+            &labels,
             arm_geo.as_ref(),
         ));
         drawn = held_map.map(|(id, _, _)| (id, m.data_present, decos.len()));
