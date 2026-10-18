@@ -342,7 +342,7 @@ witnesses are mostly self-driven can look healthy against nothing.
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
 >   the map store, **M192 the held map**, **M193 its decorations**, **M194
 >   item frames**; banner name labels are open), ~~`render-misc [INTERP]`~~
->   (**M195**) and `[FLOW]` (the sides done, **M196**; the flowing top is open), the live
+>   (**M195**) and ~~`[FLOW]`~~ (**M196** the sides, **M197** the flowing top), the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -3843,6 +3843,54 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M197 — flowing fluid tops (`render-misc [FLOW]`, the top half, 2026-10-18)
+
+The half the plan had left as a decision. `FluidRenderer` draws a fluid's top
+from the still sprite when `fluidState.getFlow` has no horizontal part, and
+otherwise from the FLOWING sprite turned to the flow: `angle =
+(float)Mth.atan2(flow.z, flow.x) - (float)(PI / 2)`, `s/c = Mth.sin/cos(angle)
+* 0.25F`, the four corners at `0.5 +- (c +- s)` of the sprite. Those UVs
+reach about 23 px across a 32 px frame, so the 16 px block array cannot hold
+them. **Decision (reversible): the flow sprites get their own 32 px texture
+array** on a new binding 2 of the terrain set, picked per vertex by the
+layer's high bit (`rewo_mesh::FLOW_LAYER_BIT`, tested in `world.frag` and
+`water.frag`; the layer is a flat input, so the branch is uniform over each
+primitive and its quads). The other two exits were worse: halving the flow
+sprite to 16 px halves the top's texel density, and raising `TEX_SIZE` to 32
+touches every consumer of the block array (the held-item bake copies its
+layers at 16 px).
+
+- **Bake**: `BakedAssets::flow_layers` / `flow_animations` (`block/water_flow`
+  pre-tinted and raw, `block/lava_flow`, whole 32 x 32 frames, each texture's
+  own `.mcmeta`); `RenderKind::Fluid` and `CarriedFluid` carry `flow_layer` /
+  `raw_flow_layer` (`NO_FLOW_LAYER` without a sprite).
+- **Flow**: the mesher calls the SAME `rewo_world::physics::fluid_flow`
+  (`getFlow`, now public) through a `PhysicsWorld` adapter over its snapshot
+  and two new mesh inputs, `physics` and `collide` (empty = nothing flows,
+  so every pre-M197 fixture is unchanged). `rewo_world::lightmap::mth_atan2`
+  is a second port of `Mth.atan2` beside `mth_sin`/`mth_cos` (rewo-mesh
+  cannot see rewo-gpu's); a rewo-app test holds the two to the bit.
+- **GPU**: `WorldRenderer` builds a one-layer placeholder flow array and
+  `set_flow_textures` installs the baked one (waits for the device; init
+  only), animating it on the same tick as the block array.
+  `live_cmd::install_animations` installs both halves, for the windowed
+  client, the headless path, the demo and `animshot` alike.
+
+Graded by unit tests (`flow_top_uvs` against values worked by hand from the
+formula and the `SIN` table: due east is `(0.75, 0.25)`, `(0.75, 0.75)`,
+`(0.25, 0.75)`, `(0.25, 0.25)`; a source beside lower water takes the flagged
+flow layer at those UVs, and with no physics tables stays still), the
+cross-crate contract test (the bit in both shaders, the two frame sizes, the
+two `atan2` ports), `animshot` a9 (the flow array's lava layer is each whole
+`lava_flow` frame on its clock) and the **demo PNG, rebaselined**
+(`d7dc9e8985f0504f` -> `748e5a1e9bbfbf10`): the old and new images differ in
+61,849 pixels, every one of them inside exactly the three pool cells
+`getFlow` makes flow (the level-4 cell and the two sources beside it); the
+rest of the frame is byte-identical.
+
+Still open: `water_overlay` beside glass and leaves; vanilla's backward up
+face (`shouldRenderBackwardUpFace`) under a surface seen from below.
 
 ### M196 — fluid sides draw the flowing sprite (`render-misc [FLOW]`, the side half, 2026-10-18)
 

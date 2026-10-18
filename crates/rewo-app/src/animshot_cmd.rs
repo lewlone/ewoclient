@@ -23,8 +23,8 @@ use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::world::WorldRenderer;
 use rewo_gpu::Gpu;
 
-/// a1-a8.
-const EXPECTED_WITNESSES: usize = 8;
+/// a1-a9.
+const EXPECTED_WITNESSES: usize = 9;
 
 #[derive(ClapArgs)]
 pub struct AnimshotArgs {
@@ -343,6 +343,51 @@ pub fn run(args: AnimshotArgs) -> Result<(), String> {
         ),
     };
     c.record("a8.a_lava_side_animates_on_the_flow_quadrant", ok8, detail8);
+
+    // a9 (M197): a flowing lava TOP samples the whole `lava_flow` sprite, so
+    // the flow array's lava layer is each 32 x 32 frame entire, on the same
+    // clock — read back from the flow array `install_animations` built.
+    let top = baked.render.iter().find_map(|r| match r {
+        rewo_data::assets::RenderKind::Fluid {
+            flow_layer,
+            lava: true,
+            ..
+        } => Some(*flow_layer),
+        _ => None,
+    });
+    let flow = jar_bytes(&jar, "assets/minecraft/textures/block/lava_flow.png")
+        .and_then(|b| crate::skin_fetch::decode_png_rgba(&b, (32, 4096)).ok());
+    let frame_of = |rgba: &[u8], f: usize| rgba[f * 32 * 32 * 4..(f + 1) * 32 * 32 * 4].to_vec();
+    let (ok9, detail9) = match (top, flow) {
+        (Some(top), Some((rgba, 32, _))) if top != rewo_data::assets::NO_FLOW_LAYER => {
+            wr.anim_tick(&mut gpu, 0)?;
+            let t0 = wr.read_flow_texture_layer(&mut gpu, top, 0)?;
+            wr.anim_tick(&mut gpu, u64::from(ftime))?;
+            let t1 = wr.read_flow_texture_layer(&mut gpu, top, 0)?;
+            let (f0, f1) = (frame_of(&rgba, 0), frame_of(&rgba, 1));
+            (
+                max_diff(&t0, &f0) == 0 && max_diff(&t1, &f1) == 0 && max_diff(&f0, &f1) > 8,
+                format!(
+                    "flow layer {top}: tick 0 {} from frame 0, tick {ftime} {} from frame 1 ({} bytes, the whole 32 x 32 frame)",
+                    max_diff(&t0, &f0),
+                    max_diff(&t1, &f1),
+                    t0.len()
+                ),
+            )
+        }
+        (top, flow) => (
+            false,
+            format!(
+                "no lava flow layer ({top:?}) or no 32-wide lava_flow.png ({:?})",
+                flow.map(|f| (f.1, f.2))
+            ),
+        ),
+    };
+    c.record(
+        "a9.a_flowing_lava_top_samples_the_whole_flow_frame",
+        ok9,
+        detail9,
+    );
 
     wr.destroy(&mut gpu);
     off.destroy(&mut gpu);

@@ -76,8 +76,8 @@ use sky::SkyGradient;
 pub use sky::{SkyMode, SKY_HORIZON};
 use terrain::TerrainPass;
 pub(crate) use textures::upload_texture_array;
-pub use textures::{LayerAnimation, FLOW_TEX_SIZE};
 use textures::TextureArray;
+pub use textures::{LayerAnimation, FLOW_TEX_SIZE};
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
