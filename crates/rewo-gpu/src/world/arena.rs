@@ -52,12 +52,39 @@ pub const MAX_INDICES: u64 = 6_000_000;
 /// Per-column metadata slots (the third capacity pool: the cull/draw SSBO).
 pub const MAX_COLUMNS: usize = 8192;
 
-/// How far the arena may grow (M205): 64M vertices (1.79 GB) and 96M
-/// indices (384 MB) — render distance 32 of normal terrain at the measured
-/// ~14k vertices a column. Past it, or when the device refuses an
-/// allocation, columns wait in the deferred queue as before.
-pub const ARENA_VERTS_LIMIT: u64 = 64_000_000;
-pub const ARENA_INDICES_LIMIT: u64 = 96_000_000;
+/// How far the arena may grow (M205; raised by M210): 112M vertices (3.1 GB)
+/// and 168M indices (672 MB). Render distance 32 — vanilla's maximum — tracks
+/// 3,725 columns, and normal terrain measured ~18.1k vertices a column once
+/// M208 stopped merging faces: ~67M vertices and ~101M indices, over M205's
+/// 64M / 96M, so the farthest ring would have waited in the deferred queue
+/// (holes). The new ceiling leaves ~65% for mountains. Each pool is further
+/// capped by the device's largest single allocation ([`device_buffer_cap`]);
+/// past either, or when the device refuses the memory, columns wait in the
+/// deferred queue as before.
+pub const ARENA_VERTS_LIMIT: u64 = 112_000_000;
+pub const ARENA_INDICES_LIMIT: u64 = 168_000_000;
+
+/// The largest buffer the device can create and back with one allocation
+/// (M210): `min(maxMemoryAllocationSize, maxBufferSize)` — Vulkan 1.1's
+/// maintenance3 and 1.3's maintenance4 limits, both core in the 1.3 Rewo
+/// requires. A mega-buffer is one buffer in one allocation, so neither pool
+/// may grow past it.
+pub(super) fn device_buffer_cap(gpu: &Gpu) -> u64 {
+    let mut m3 = vk::PhysicalDeviceMaintenance3Properties::default();
+    let mut m4 = vk::PhysicalDeviceMaintenance4Properties::default();
+    let mut props = vk::PhysicalDeviceProperties2::default()
+        .push_next(&mut m3)
+        .push_next(&mut m4);
+    unsafe {
+        gpu.instance
+            .get_physical_device_properties2(gpu.physical, &mut props);
+    }
+    match (m3.max_memory_allocation_size, m4.max_buffer_size) {
+        (0, 0) => u64::MAX,
+        (0, b) | (b, 0) => b,
+        (a, b) => a.min(b),
+    }
+}
 
 /// The next capacity for a pool that needs `need` more units than its free
 /// space offers: double, or enough for the request if that is more, capped
@@ -237,6 +264,10 @@ pub(super) struct Arena {
     ifree: FreeList,
     /// The index pool's current capacity, in indices.
     icap: u64,
+    /// How far each pool may grow: the `ARENA_*_LIMIT` capped by the device's
+    /// largest buffer (M210).
+    vlimit: u64,
+    ilimit: u64,
     // -- columns --
     pub(super) columns: HashMap<(i32, i32), Slot>,
     /// `columns` changed since the cull metadata was last rebuilt.
@@ -281,6 +312,8 @@ pub(super) struct MegaBuffers {
     vbuf_alloc: Allocation,
     ibuf: vk::Buffer,
     ibuf_alloc: Allocation,
+    /// [`device_buffer_cap`], read once at creation.
+    buffer_cap: u64,
 }
 
 /// The mega-buffers' usages: TRANSFER_SRC as well, so a growth (M205) can
@@ -301,11 +334,19 @@ pub(super) fn create_mega_buffers(gpu: &mut Gpu) -> Result<MegaBuffers, String> 
         create_device_buffer(gpu, MAX_VERTS * VERTEX_STRIDE, VBUF_USAGE, "mega-vertices")?;
     let (ibuf, ibuf_alloc) =
         create_device_buffer(gpu, MAX_INDICES * 4, IBUF_USAGE, "mega-indices")?;
+    let buffer_cap = device_buffer_cap(gpu);
+    log::info!(
+        "world: arena ceilings {} vertices / {} indices (device buffer cap {} MB)",
+        ARENA_VERTS_LIMIT.min(buffer_cap / VERTEX_STRIDE),
+        ARENA_INDICES_LIMIT.min(buffer_cap / 4),
+        buffer_cap / 1_000_000
+    );
     Ok(MegaBuffers {
         vbuf,
         vbuf_alloc,
         ibuf,
         ibuf_alloc,
+        buffer_cap,
     })
 }
 
@@ -453,6 +494,8 @@ impl Arena {
             ibuf_alloc: Some(mega.ibuf_alloc),
             ifree: FreeList::new(MAX_INDICES),
             icap: MAX_INDICES,
+            vlimit: ARENA_VERTS_LIMIT.min(mega.buffer_cap / VERTEX_STRIDE),
+            ilimit: ARENA_INDICES_LIMIT.min(mega.buffer_cap / 4),
             columns: HashMap::new(),
             meta_dirty: false,
             pending_free: Vec::new(),
@@ -755,8 +798,8 @@ impl Arena {
     /// their draw metadata and the pending frees need no change; the terrain
     /// pass binds `vbuf` / `ibuf` afresh every frame.
     pub(super) fn grow(&mut self, gpu: &mut Gpu, need_v: u64, need_i: u64) -> Result<bool, String> {
-        let next_v = grown_capacity(self.vcap, need_v, ARENA_VERTS_LIMIT);
-        let next_i = grown_capacity(self.icap, need_i, ARENA_INDICES_LIMIT);
+        let next_v = grown_capacity(self.vcap, need_v, self.vlimit);
+        let next_i = grown_capacity(self.icap, need_i, self.ilimit);
         if next_v.is_none() && next_i.is_none() {
             return Ok(false);
         }

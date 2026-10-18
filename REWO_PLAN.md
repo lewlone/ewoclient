@@ -3863,6 +3863,21 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M210 — the arena reaches render distance 32 (2026-10-18)
+
+M205's ceiling (64M vertices / 96M indices) was sized on merged faces; with
+M208's unit quads, normal terrain averages ~18.1k vertices a column, and
+render distance 32 (vanilla's maximum, 3,725 tracked columns) needs about
+67M / 101M. `ARENA_VERTS_LIMIT` / `ARENA_INDICES_LIMIT` are now 112M / 168M,
+and each pool is also capped by the device's largest single buffer
+(`device_buffer_cap`: `min(maxMemoryAllocationSize, maxBufferSize)`, core
+in Vulkan 1.3; ~1.1 TB on the RTX 5080, logged at creation).
+`load_check.py --rd 32 --seconds 240`: PASSED, 3,725 / 3,725 columns, 0
+deferred, five growths to 112M; the run held **64.72M vertices and 97.08M
+indices**, past both of M205's ceilings, so before this the farthest ring
+would have been holes. Debug build with validation: 66 fps average, p99
+31.9 ms at RD32 (the last growth copies 1.8 GB).
+
 ### M209 — vanilla's sky disc (2026-10-18)
 
 A vista over the normal world (new gates knobs `REWO_EYE="x,y,z"` and
