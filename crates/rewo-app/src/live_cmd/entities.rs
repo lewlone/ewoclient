@@ -2074,29 +2074,35 @@ pub(crate) fn quad_leash_offsets(w: f64, h: f64, shape: [f64; 4]) -> [[f64; 3]; 
 /// `supportQuadLeash()`'s per-class `getQuadLeashOffsets` shapes, as
 /// `(front, front_back, left_right, height)` multipliers — verbatim from
 /// the decompile. Class knowledge translated to names:
-/// * `AbstractHorse` TRUE with `(0.04, 0.52, 0.23, 0.87)` — horse, donkey,
-///   mule, skeleton/zombie horse, and the camel line, which inherits it.
+/// * `AbstractHorse` TRUE with `(0.04, 0.52, 0.23, 0.87)`
+///   (`AbstractHorse.java:205`) — horse, skeleton horse.
+/// * `AbstractChestedHorse` overrides to `(0.04, 0.41, 0.18, 0.73)`
+///   (`:178`) — donkey, mule; `ZombieHorse` overrides to the same (`:192`).
 ///   **Llama is the named exception**: it overrides `supportQuadLeash`
 ///   back to FALSE (`Llama.java:418`), and trader_llama descends from it.
+/// * `Camel` overrides to `(0.02, 0.48, 0.25, 0.82)` (`Camel.java:414`);
+///   camel husk extends it.
 /// * `AbstractBoat` TRUE with `(0.0, 0.64, 0.382, 0.88)` — the whole
 ///   generated boat set, rafts included.
-/// * `Sniffer` TRUE with the DEFAULT shape `(0.0, 0.5, 0.5, 0.5)`.
+/// * `Sniffer` overrides to `(-0.01, 0.63, 0.38, 1.15)` (`Sniffer.java:159`).
+///
+/// (Before 2026-10-18 every horse-line species and the camels took the
+/// `AbstractHorse` shape and the sniffer the interface default; the review
+/// of the M194-M203 run caught it.)
 pub(crate) fn quad_leash_shape(name: &str) -> Option<[f64; 4]> {
     const HORSE: [f64; 4] = [0.04, 0.52, 0.23, 0.87];
+    const CHESTED: [f64; 4] = [0.04, 0.41, 0.18, 0.73];
+    const CAMEL: [f64; 4] = [0.02, 0.48, 0.25, 0.82];
     const BOAT: [f64; 4] = [0.0, 0.64, 0.382, 0.88];
-    const DEFAULT: [f64; 4] = [0.0, 0.5, 0.5, 0.5];
+    const SNIFFER: [f64; 4] = [-0.01, 0.63, 0.38, 1.15];
     if rewo_data::entity_classes::ABSTRACT_BOAT.contains(&name) {
         return Some(BOAT);
     }
     match name {
-        "minecraft:horse"
-        | "minecraft:donkey"
-        | "minecraft:mule"
-        | "minecraft:skeleton_horse"
-        | "minecraft:zombie_horse"
-        | "minecraft:camel"
-        | "minecraft:camel_husk" => Some(HORSE),
-        "minecraft:sniffer" => Some(DEFAULT),
+        "minecraft:horse" | "minecraft:skeleton_horse" => Some(HORSE),
+        "minecraft:donkey" | "minecraft:mule" | "minecraft:zombie_horse" => Some(CHESTED),
+        "minecraft:camel" | "minecraft:camel_husk" => Some(CAMEL),
+        "minecraft:sniffer" => Some(SNIFFER),
         _ => None,
     }
 }

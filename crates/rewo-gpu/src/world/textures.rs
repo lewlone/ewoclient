@@ -401,9 +401,11 @@ impl TextureArray {
         self.animations = animations;
     }
 
-    /// The `(layer, mip chain)` uploads `tick` calls for: every animation
-    /// whose [`anim_sample`] moved since its last upload.
-    fn due_chains(&mut self, tick: u64) -> Vec<(u16, Vec<u8>)> {
+    /// The uploads `tick` calls for: every animation whose [`anim_sample`]
+    /// moved since its last upload, as `(index, sample, layer, mip chain)`.
+    /// The caller records the sample ([`Self::uploaded`]) only once the
+    /// upload went through, so a failed one is retried next tick.
+    fn due_chains(&self, tick: u64) -> Vec<(usize, (usize, usize, u32), u16, Vec<u8>)> {
         let mut out = Vec::new();
         for i in 0..self.animations.len() {
             let a = &self.animations[i];
@@ -413,10 +415,11 @@ impl TextureArray {
             if self.anim_last[i] == Some(sample) {
                 continue;
             }
-            self.anim_last[i] = Some(sample);
             let (frame, next, progress) = sample;
             let mips = &self.anim_mips[i];
             out.push((
+                i,
+                sample,
                 a.layer,
                 if progress == 0 {
                     mips[frame].clone()
@@ -426,6 +429,11 @@ impl TextureArray {
             ));
         }
         out
+    }
+
+    /// Record that animation `i` now shows `sample`.
+    fn uploaded(&mut self, i: usize, sample: (usize, usize, u32)) {
+        self.anim_last[i] = Some(sample);
     }
 
     pub(super) fn destroy_objects(&self, device: &ash::Device) {
@@ -481,11 +489,13 @@ impl WorldRenderer {
     /// (M195) changes on every tick of its frame, as vanilla redraws it. The
     /// flow array's animations (M197) tick on the same clock.
     pub fn anim_tick(&mut self, gpu: &mut Gpu, tick: u64) -> Result<(), String> {
-        for (layer, chain) in self.textures.due_chains(tick) {
+        for (i, sample, layer, chain) in self.textures.due_chains(tick) {
             self.upload_layer_chain(gpu, false, layer, &chain)?;
+            self.textures.uploaded(i, sample);
         }
-        for (layer, chain) in self.flow_textures.due_chains(tick) {
+        for (i, sample, layer, chain) in self.flow_textures.due_chains(tick) {
             self.upload_layer_chain(gpu, true, layer, &chain)?;
+            self.flow_textures.uploaded(i, sample);
         }
         Ok(())
     }

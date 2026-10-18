@@ -264,6 +264,9 @@ fn render_headless(
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut world_renderer =
         WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    // The animated layers and, with them, the fluid flow array (M197): a
+    // flowing top meshed from these tables samples it.
+    crate::live_cmd::install_animations(&mut world_renderer, &mut gpu, &baked)?;
     upload_all(&mut gpu, &mut world_renderer, meshes)?;
     world_renderer.set_camera(eye.to_array());
 
@@ -399,6 +402,7 @@ impl ApplicationHandler for ViewApp {
                 assets::TEX_SIZE,
                 &baked.layers,
             )?;
+            crate::live_cmd::install_animations(&mut world_renderer, &mut gpu, &baked)?;
             upload_all(&mut gpu, &mut world_renderer, &self.meshes)?;
             Ok(ViewState {
                 window: window.clone(),

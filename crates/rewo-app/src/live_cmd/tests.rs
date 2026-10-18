@@ -2665,17 +2665,29 @@ fn quad_offsets_are_the_four_shoulder_points() {
 /// camel line inherits TRUE without overriding anything.
 #[test]
 fn quad_leash_shapes_match_the_class_sets() {
+    // Each override as the decompile writes it: `AbstractHorse.java:205`,
+    // `AbstractChestedHorse.java:178`, `ZombieHorse.java:192`,
+    // `Camel.java:414`.
     let horse = quad_leash_shape("minecraft:horse").unwrap();
     assert_eq!(horse, [0.04, 0.52, 0.23, 0.87]);
+    assert_eq!(quad_leash_shape("minecraft:skeleton_horse"), Some(horse));
     for name in [
         "minecraft:donkey",
         "minecraft:mule",
-        "minecraft:skeleton_horse",
         "minecraft:zombie_horse",
-        "minecraft:camel",
-        "minecraft:camel_husk",
     ] {
-        assert_eq!(quad_leash_shape(name), Some(horse), "{name}");
+        assert_eq!(
+            quad_leash_shape(name),
+            Some([0.04, 0.41, 0.18, 0.73]),
+            "{name}"
+        );
+    }
+    for name in ["minecraft:camel", "minecraft:camel_husk"] {
+        assert_eq!(
+            quad_leash_shape(name),
+            Some([0.02, 0.48, 0.25, 0.82]),
+            "{name}"
+        );
     }
     // The llama exception: FALSE despite the AbstractHorse ancestry.
     assert_eq!(quad_leash_shape("minecraft:llama"), None);
@@ -2686,10 +2698,10 @@ fn quad_leash_shapes_match_the_class_sets() {
     for name in rewo_data::entity_classes::ABSTRACT_BOAT {
         assert_eq!(quad_leash_shape(name), Some(boat), "{name}");
     }
-    // Sniffer: TRUE with the interface default.
+    // Sniffer: its own override (`Sniffer.java:159`), not the default.
     assert_eq!(
         quad_leash_shape("minecraft:sniffer"),
-        Some([0.0, 0.5, 0.5, 0.5])
+        Some([-0.01, 0.63, 0.38, 1.15])
     );
     // The ghast itself is not quad-leashABLE — only a quad HOLDER.
     assert_eq!(quad_leash_shape("minecraft:happy_ghast"), None);

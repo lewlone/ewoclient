@@ -849,6 +849,16 @@ impl WorldRenderer {
         self.arena.deferred.len()
     }
 
+    /// The arena's fill: `(vertices, indices)` held by registered columns,
+    /// opaque and translucent summed (they share both pools; see
+    /// [`MAX_VERTS`]), against `(MAX_VERTS, MAX_INDICES)`.
+    pub fn arena_usage(&self) -> ((u64, u64), (u64, u64)) {
+        let (v, i) = self.arena.columns.values().fold((0, 0), |(v, i), s| {
+            (v + s.vtx_len + s.tvtx_len, i + s.idx_len + s.tidx_len)
+        });
+        ((v, MAX_VERTS), (i, MAX_INDICES))
+    }
+
     /// Re-upload columns that did not fit the mega-buffers, nearest to the
     /// camera first, once arena space has been released since the last try.
     /// Call once per frame; cheap when nothing waits. Returns how many landed.

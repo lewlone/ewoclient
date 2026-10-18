@@ -314,6 +314,9 @@ pub fn run(args: BenchArgs) -> Result<(), String> {
     let mut gpu = Gpu::new(None, cfg!(debug_assertions) && !args.no_validation)?;
     let mut off = Offscreen::new(&mut gpu, 1280, 720)?;
     let mut wr = WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+    // The fluid flow array (M197) a flowing top samples, with the animated
+    // layers (registered only: the bench never ticks them).
+    crate::live_cmd::install_animations(&mut wr, &mut gpu, &baked)?;
 
     for m in &kept {
         wr.upload_column(

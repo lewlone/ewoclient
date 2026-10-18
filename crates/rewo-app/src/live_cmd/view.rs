@@ -382,6 +382,36 @@ pub(super) fn classify_mesh_output(panicked: bool, has_mesh: bool, gone: bool) -
 
 /// Per-frame mesh pump. Frees removed columns, uploads up to
 /// `upload_budget` finished meshes from the worker pool, then submits
+/// One log line every 10 s with the terrain arena's fill and how many columns
+/// wait for space — the measurement the fixed `MAX_VERTS` / `MAX_INDICES` caps
+/// need, since a deferred column is a hole in the world.
+fn log_arena_fill(wr: &WorldRenderer) {
+    thread_local! {
+        static LAST: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    }
+    let due = LAST.with(|l| {
+        let now = Instant::now();
+        let due = l
+            .get()
+            .is_none_or(|t| now.duration_since(t).as_secs() >= 10);
+        if due {
+            l.set(Some(now));
+        }
+        due
+    });
+    if !due {
+        return;
+    }
+    let ((v, vmax), (i, imax)) = wr.arena_usage();
+    log::info!(
+        "world: arena {v}/{vmax} verts ({:.0}%), {i}/{imax} indices ({:.0}%), {} columns, {} deferred",
+        v as f64 * 100.0 / vmax as f64,
+        i as f64 * 100.0 / imax as f64,
+        wr.column_count(),
+        wr.deferred_column_count()
+    );
+}
+
 /// fresh snapshots for dirty columns. Returns how many meshes uploaded.
 pub(super) fn pump_meshing(
     session: &mut PlaySession,
@@ -399,6 +429,7 @@ pub(super) fn pump_meshing(
     // Columns that did not fit the arena go back in once space frees; columns
     // whose upload batch failed to submit are re-meshed.
     world_renderer.retry_deferred_columns(gpu)?;
+    log_arena_fill(world_renderer);
     let lost = world_renderer.take_lost_columns();
     if !lost.is_empty() {
         session.requeue_dirty(lost);
