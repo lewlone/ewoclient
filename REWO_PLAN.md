@@ -1944,8 +1944,8 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   required): grass/foliage/water tint and camera sky/fog against
   Temurin-verified vectors, over the production jar bake and synthetic biome
   containers.
-- `rewo meshshot --check` — **the geometry gate** (M15): expands greedy
-  rectangles back to reference unit faces and pins every direction / block /
+- `rewo meshshot --check` — **the geometry gate** (M15): expands the merge
+  path's (off in production since M208) greedy rectangles back to reference unit faces and pins every direction / block /
   layer / light / AO / tint seam, plus exact model, water and lava controls.
 - `rewo play --light-check [--no-relight]` — **the live light gate** (M10):
   recomputes the loaded columns and diffs against the server's own light engine.
@@ -2755,6 +2755,8 @@ a record, because what it teaches outlived it:
 - ~~No **greedy meshing**~~ — **RESOLVED M15 (§15)** for five safe full-cube
   directions. Merge keys include exact block state/light/tint and require
   uniform AO; top faces stay 1×1 because merging them changes sampled pixels.
+  **Turned off again by M208** (`MERGE_FACES`): the rectangles leave
+  T-junction cracks; the merge path stays, tested, for a crack-free return.
 - **AO only on cube faces**, not model quads.
 - ~~**Per-biome tint** was a fixed plains color~~ — **RESOLVED M14 (§15)** for
   grass/foliage/water plus biome camera sky/fog.
@@ -3860,6 +3862,29 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M208 — no greedy merge: T-junction cracks (2026-10-18)
+
+A headless shot of the normal world (`live --out`, seed 20261018) showed
+one-pixel dark lines along block edges: the surface behind, through cracks.
+M15's greedy merge leaves **T-junctions**: up faces and non-uniform faces stay
+unit quads, so a merged rectangle's edge runs past their corners, and the two
+sides of that line are rasterized independently. M15 had seen it on the demo
+("1 pixel survives with UV held constant… not diagnosed"); the flat world kept
+it to that pixel, natural terrain puts it on every merged wall's top edge.
+
+A new mesher test, `the_production_mesh_has_no_t_junctions`, finds T-junctions
+geometrically (a vertex strictly inside another triangle's edge, exact on
+whole-number positions): 18 on the plate-and-step fixture before the change,
+0 after, and it asserts the merge path still has them. The decision, logged as
+reversible: `MERGE_FACES = false`, vanilla's unit quads. The merge saved 13%
+of the vertices of a normal world at render distance 16 (16.6M vs 19.2M,
+measured with `load_check.py`), which M205's growing arena absorbs; a merge
+that tessellates rectangle boundaries at every unit step would be crack-free
+by construction and is the way back. The merge code stays, reached through
+`mesh_column_merging(.., true)` by its nine tests and by `meshshot`'s
+`check_greedy_oracle`, so it stays graded. Demo hash unchanged (M15 measured
+the non-up merge byte-identical on the demo).
 
 ### M207 — `tools/load_check.py` (2026-10-18)
 

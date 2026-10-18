@@ -20,7 +20,10 @@
 //! the expensive vanilla radius-2 resolution, so a block's tint is computed
 //! once, not once per face.
 //!
-//! **Greedy meshing (M15).** The M4 note said greedy was impossible here
+//! **Greedy meshing (M15) — off in production since M208** ([`MERGE_FACES`]:
+//! its rectangles leave T-junctions, which are cracks). What follows describes
+//! the merge path as [`mesh_column_merging`] still runs it for its tests and the
+//! `meshshot` oracle. The M4 note said greedy was impossible here
 //! because per-vertex lighting makes coplanar faces non-mergeable. That is true
 //! only for faces whose four vertices *differ*: across such a face the
 //! rasterizer interpolates a gradient that a merged rectangle cannot reproduce.
@@ -996,11 +999,24 @@ fn greedy_plane(
     rects
 }
 
-/// The production mesher: greedy-merged cube faces, legacy models and fluids.
+/// Whether [`mesh_column`] greedy-merges uniform cube faces (M15). **Off since
+/// M208**: a merged rectangle's edge runs past the corners of the unit faces
+/// beside it (every up face, every non-uniform face), and each such T-junction
+/// is a sub-pixel crack the surface behind shows through — one-pixel lines
+/// along block edges all over natural terrain, which the flat test world never
+/// had. Vanilla meshes unit quads. Merging saved 13% of the vertices of a
+/// normal world at render distance 16 (16.6M vs 19.2M), which M205's growing
+/// arena absorbs. The merge path stays, tested through
+/// `mesh_column_merging(.., true)`, for a version that tessellates rectangle
+/// boundaries at every unit step (no T-junction, by construction).
+pub const MERGE_FACES: bool = false;
+
+/// The production mesher: unit cube faces (see [`MERGE_FACES`]), legacy models
+/// and fluids.
 ///
-/// A cube face merges when its four corner AO codes agree *and* it is not an up
-/// (+Y) face; those are collected into per-(face, plane) masks and merged into
-/// rectangles after the scan. Every other face — up faces, non-uniform AO, and
+/// With merging on, a cube face merges when its four corner AO codes agree *and*
+/// it is not an up (+Y) face; those are collected into per-(face, plane) masks
+/// and merged into rectangles after the scan. Every other face — up faces, non-uniform AO, and
 /// every model/fluid quad — is emitted exactly as [`mesh_column_reference`]
 /// would. Merging never crosses a column boundary (the masks are column-local)
 /// but freely crosses *section* boundaries, because a mask spans the column's
@@ -1025,6 +1041,18 @@ pub fn mesh_column_with(
     inputs: MeshInputs<'_>,
     cx: i32,
     cz: i32,
+) -> Option<ColumnMesh> {
+    mesh_column_merging(world, inputs, cx, cz, MERGE_FACES)
+}
+
+/// [`mesh_column_with`] with the greedy merge chosen by the caller (M208:
+/// production passes [`MERGE_FACES`]; the merge tests pass `true`).
+pub fn mesh_column_merging(
+    world: &World,
+    inputs: MeshInputs<'_>,
+    cx: i32,
+    cz: i32,
+    merge: bool,
 ) -> Option<ColumnMesh> {
     let table = Tables::new(&inputs);
     let ao = AoView { world, table };
@@ -1170,7 +1198,7 @@ pub fn mesh_column_with(
                                 // diagnosed. The other five directions came out
                                 // byte-identical under the same comparison, so
                                 // they merge and up keeps the legacy unit quads.
-                                if face != 0 && cf.lit.uniform() {
+                                if merge && face != 0 && cf.lit.uniform() {
                                     greedy_candidate_faces += 1;
                                     masks.insert(
                                         face,
@@ -2679,6 +2707,95 @@ mod tests {
         }
     }
 
+    /// Every T-junction in a mesh: a vertex lying strictly inside another
+    /// triangle's edge (M208). Two triangles that share an edge LINE but not
+    /// its endpoints are rasterized independently, so the pixels along it can
+    /// fall to neither and the surface behind shows through a crack. Watertight
+    /// rasterization holds only for edges with identical endpoints. Exact here:
+    /// every position is a whole number.
+    fn t_junctions(v: &[MeshVertex], idx: &[u32]) -> Vec<([f32; 3], [f32; 3], [f32; 3])> {
+        let mut edges = std::collections::BTreeSet::new();
+        for t in idx.chunks_exact(3) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (a, b) = (v[a as usize].pos, v[b as usize].pos);
+                let key = |p: [f32; 3]| p.map(|c| c.to_bits());
+                let (lo, hi) = if key(a) <= key(b) { (a, b) } else { (b, a) };
+                edges.insert((key(lo), key(hi)));
+            }
+        }
+        let mut points: Vec<[f32; 3]> = v.iter().map(|m| m.pos).collect();
+        points.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        points.dedup();
+        let mut out = Vec::new();
+        for (a, b) in edges {
+            let (a, b) = (a.map(f32::from_bits), b.map(f32::from_bits));
+            let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            for &p in &points {
+                let e = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+                let cross = [
+                    d[1] * e[2] - d[2] * e[1],
+                    d[2] * e[0] - d[0] * e[2],
+                    d[0] * e[1] - d[1] * e[0],
+                ];
+                let dot = d[0] * e[0] + d[1] * e[1] + d[2] * e[2];
+                if cross == [0.0; 3] && dot > 0.0 && dot < len2 {
+                    out.push((a, b, p));
+                }
+            }
+        }
+        out
+    }
+
+    /// M208 — the production mesh of a bare plate has no T-junction. Before
+    /// M208 the plate's side faces merged into 6-long strips whose top edges
+    /// ran past the corners of the unit top faces above them (up faces never
+    /// merge): natural terrain showed it as one-pixel cracks along block edges.
+    #[test]
+    fn the_production_mesh_has_no_t_junctions() {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        plate(&mut w, 4, 9, 64, 4, 8, 1);
+        plate(&mut w, 5, 7, 65, 5, 6, 1); // a step: more edges meeting
+        let table = cube_table();
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("meshed");
+        let t = t_junctions(&o.vertices, &o.indices);
+        assert!(
+            t.is_empty(),
+            "{} T-junctions, e.g. {:?}",
+            t.len(),
+            &t[..t.len().min(3)]
+        );
+        // And the merge path on the same fixture has them — the reason
+        // `MERGE_FACES` is off, and the property a boundary-tessellating merge
+        // would have to pass before it comes back.
+        let m = merged(&w, &table, &[], &[], 0, 0).expect("merged");
+        assert!(!t_junctions(&m.vertices, &m.indices).is_empty());
+    }
+
+    /// The merge path (M15), which production no longer takes (M208,
+    /// [`MERGE_FACES`]) — its tests run it explicitly.
+    fn merged(
+        w: &World,
+        table: &[RenderKind],
+        models: &[Vec<rewo_data::assets::Quad>],
+        carried: &[Option<CarriedFluid>],
+        cx: i32,
+        cz: i32,
+    ) -> Option<ColumnMesh> {
+        mesh_column_merging(
+            w,
+            MeshInputs::geometry(table, models, carried),
+            cx,
+            cz,
+            true,
+        )
+    }
+
+    fn merged_with(w: &World, inputs: MeshInputs<'_>, cx: i32, cz: i32) -> Option<ColumnMesh> {
+        mesh_column_merging(w, inputs, cx, cz, true)
+    }
+
     /// Metrics that must hold for every optimized mesh.
     fn assert_metrics(m: &ColumnMesh) {
         assert_eq!(
@@ -2838,7 +2955,7 @@ mod tests {
         let table = cube_table();
 
         let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference meshed");
-        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized meshed");
+        let o = merged(&w, &table, &[], &[], 0, 0).expect("optimized meshed");
         assert_metrics(&o);
 
         // 30 blocks: 30 tops + 30 bottoms + a 22-face perimeter.
@@ -2895,7 +3012,7 @@ mod tests {
         let table = cube_table();
 
         let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
+        let o = merged(&w, &table, &[], &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         // 82 = 30 tops + 30 bottoms + a 22-face perimeter. The 30 that fall back
@@ -2938,7 +3055,7 @@ mod tests {
         plate(&mut w, 4, 7, 64, 4, 7, 1); // stone half
         plate(&mut w, 8, 11, 64, 4, 7, 2); // slate half, same plane
         let table = cube_table();
-        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("meshed");
+        let o = merged(&w, &table, &[], &[], 0, 0).expect("meshed");
         assert_metrics(&o);
 
         // Graded on the bottom plane: it shares the top's u/v axes, and up faces
@@ -3059,7 +3176,7 @@ mod tests {
         let table = cube_table();
 
         let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
+        let o = merged(&w, &table, &[], &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         let disc = expand(&o.vertices, &o.indices)
@@ -3109,7 +3226,7 @@ mod tests {
         }
         let table = cube_table();
         let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
+        let o = merged(&w, &table, &[], &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         // The north face plane holds one 1-wide, 12-tall run.
@@ -3138,7 +3255,7 @@ mod tests {
         plate(&mut w, base_x, base_x + 15, 64, base_z, base_z + 15, 1);
         let table = cube_table();
         let r = mesh_column_reference(&w, &table, &[], &[], 1, 1).expect("reference");
-        let o = mesh_column(&w, &table, &[], &[], 1, 1).expect("optimized");
+        let o = merged(&w, &table, &[], &[], 1, 1).expect("optimized");
         assert_metrics(&o);
 
         for v in &o.vertices {
@@ -3225,7 +3342,7 @@ mod tests {
         w.set_block(3, 63, 11, 4); // lava
 
         let r = mesh_column_reference(&w, &table, &models, &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &models, &[], 0, 0).expect("optimized");
+        let o = merged(&w, &table, &models, &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         assert!(
@@ -3769,7 +3886,7 @@ mod tests {
             ),
             (
                 "optimized",
-                mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized"),
+                merged(&w, &table, &[], &[], 0, 0).expect("optimized"),
             ),
         ] {
             let qs = quads(&m.vertices, &m.indices);
@@ -3788,7 +3905,7 @@ mod tests {
 
         // The optimized path still merges the bottom plane into one 2×2
         // rectangle; up faces never merge (M15 carve-out).
-        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
+        let o = merged(&w, &table, &[], &[], 0, 0).expect("optimized");
         let span = |q: &[MeshVertex; 4], axis: usize| {
             let lo = q.iter().map(|v| v.pos[axis]).fold(f32::MAX, f32::min);
             let hi = q.iter().map(|v| v.pos[axis]).fold(f32::MIN, f32::max);

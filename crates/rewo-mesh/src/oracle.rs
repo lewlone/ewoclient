@@ -1026,7 +1026,8 @@ pub(crate) fn oracle_expect_rect(
     Ok(got)
 }
 
-/// **The M15 acceptance gate.** Grades the production [`mesh_column`] against
+/// **The M15 acceptance gate.** Grades the merge path ([`mesh_column_merging`]
+/// with merging on; production has it off since M208, [`MERGE_FACES`]) against
 /// the frozen [`mesh_column_reference`] on one adversarial cube column.
 ///
 /// The comparison is *semantic*, not byte-wise: the optimized rectangles are
@@ -1047,7 +1048,10 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
 
     let r = mesh_column_reference(&world, &table, &[], &[], 0, 0)
         .ok_or("reference mesher produced nothing for the oracle column")?;
-    let o = mesh_column(&world, &table, &[], &[], 0, 0)
+    // M208: production no longer merges (`MERGE_FACES`), so the merge path
+    // this oracle exists to grade is run explicitly — it stays correct for
+    // the day a boundary-tessellating merge turns it back on.
+    let o = mesh_column_merging(&world, MeshInputs::geometry(&table, &[], &[]), 0, 0, true)
         .ok_or("optimized mesher produced nothing for the oracle column")?;
 
     // The fixture is cube-only, so nothing may reach the translucent stream and
@@ -1400,7 +1404,7 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
     // -- 12. determinism ------------------------------------------------------
     let deterministic_runs = 4;
     for run in 0..deterministic_runs {
-        let again = mesh_column(&world, &table, &[], &[], 0, 0)
+        let again = mesh_column_merging(&world, MeshInputs::geometry(&table, &[], &[]), 0, 0, true)
             .ok_or("determinism: a rerun produced nothing")?;
         if bytemuck::cast_slice::<_, u8>(&again.vertices)
             != bytemuck::cast_slice::<_, u8>(&o.vertices)
