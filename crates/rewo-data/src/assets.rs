@@ -138,6 +138,11 @@ pub struct CullInfo {
     /// part (a fluid, an invisible block) has nothing to shade and keeps
     /// vanilla's `ModelBlockRenderer.ambientOcclusion` default `true`.
     pub ambient_occlusion: bool,
+    /// A water side against this state samples `block/water_overlay`
+    /// (M199): `FluidRenderer.tesselate`'s `relativeBlock instanceof
+    /// HalfTransparentBlock || relativeBlock instanceof LeavesBlock`
+    /// (`crate::block_props::FLUID_OVERLAY`).
+    pub fluid_overlay: bool,
 }
 
 /// Per-state render classification, indexed by global state id.
@@ -175,6 +180,11 @@ pub enum RenderKind {
         flow_layer: u16,
         /// The raw (untinted) flow layer, for the biome water tint.
         raw_flow_layer: u16,
+        /// `block/water_overlay`'s layer, pre-tinted and raw (M199): a water
+        /// side against glass, ice, slime, honey or leaves draws it instead
+        /// of the flow quadrant. [`NO_FLOW_LAYER`] for lava, which has none.
+        overlay_layer: u16,
+        raw_overlay_layer: u16,
         level: u8,
         lava: bool,
     },
@@ -202,6 +212,9 @@ pub struct CarriedFluid {
     /// toward lower water beside it.
     pub flow_layer: u16,
     pub raw_flow_layer: u16,
+    /// `block/water_overlay`, pre-tinted and raw (M199).
+    pub overlay_layer: u16,
+    pub raw_overlay_layer: u16,
     /// `FluidState.getAmount()` read the way `RenderKind::Fluid` reads it:
     /// 0 = source. **Every** carried fluid in 26.2 is a source — all 45
     /// `getFluidState` overrides call `Fluids.WATER.getSource(..)`, never
@@ -1691,6 +1704,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         .collect();
     let skip_rules: HashMap<&str, u8> =
         crate::block_props::SKIP_RENDERING.iter().copied().collect();
+    let overlay_blocks: std::collections::HashSet<&str> =
+        crate::block_props::FLUID_OVERLAY.iter().copied().collect();
     for (block_ord, (block_name, def)) in blocks.iter().enumerate() {
         let states = def
             .get("states")
@@ -1737,6 +1752,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 shade_dark: false,
                 emissive_rendering: false,
                 ambient_occlusion: true,
+                fluid_overlay: overlay_blocks.contains(block_name.as_str()),
             };
             let mut phys =
                 crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
@@ -1799,9 +1815,11 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                     // Replaced by the flow quadrant after the loop (M196).
                     side_layer: layer,
                     raw_side_layer: raw_layer,
-                    // And the whole flow sprite (M197).
+                    // And the whole flow sprite (M197) and the overlay (M199).
                     flow_layer: NO_FLOW_LAYER,
                     raw_flow_layer: NO_FLOW_LAYER,
+                    overlay_layer: NO_FLOW_LAYER,
+                    raw_overlay_layer: NO_FLOW_LAYER,
                     level,
                     lava,
                 };
@@ -2000,16 +2018,26 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         baker.flow_layer("block/water_flow", TintKind::None),
     );
     let lava_flow = baker.flow_layer("block/lava_flow", TintKind::None);
+    // M199 — water's overlay (16 px, sampled over its top-left quarter).
+    let water_overlay = baker
+        .layer_for("block/water_overlay", TintKind::Water)
+        .zip(baker.layer_for("block/water_overlay", TintKind::None));
     for r in render.iter_mut() {
         if let RenderKind::Fluid {
             side_layer,
             raw_side_layer,
             flow_layer,
             raw_flow_layer,
+            overlay_layer,
+            raw_overlay_layer,
             lava,
             ..
         } = r
         {
+            if let (false, Some((o, raw))) = (*lava, water_overlay) {
+                *overlay_layer = o;
+                *raw_overlay_layer = raw;
+            }
             let (side, flow) = if *lava {
                 (lava_side.map(|l| (l, l)), lava_flow.map(|l| (l, l)))
             } else {
@@ -2039,6 +2067,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             .0
             .zip(water_flow.1)
             .unwrap_or((NO_FLOW_LAYER, NO_FLOW_LAYER));
+        let (overlay_layer, raw_overlay_layer) =
+            water_overlay.unwrap_or((NO_FLOW_LAYER, NO_FLOW_LAYER));
         for (id, falling, self_occludes) in carried {
             fluid[id] = Some(CarriedFluid {
                 layer,
@@ -2047,6 +2077,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 raw_side_layer,
                 flow_layer,
                 raw_flow_layer,
+                overlay_layer,
+                raw_overlay_layer,
                 level: 0,
                 falling,
                 self_occludes,
@@ -5801,6 +5833,67 @@ mod tests {
             .next()
             .expect("a carried fluid");
         assert_eq!((carried.side_layer, carried.raw_side_layer), (ws, wr));
+    }
+
+    /// M199 — the overlay set (generated from the class chains in the
+    /// decompile) is exactly the blocks whose report `definition.type` is one
+    /// of the codec types registered for a `HalfTransparentBlock` or
+    /// `LeavesBlock` subclass (`BlockTypes.java`), and the bake flags those
+    /// states and gives water, not lava, its overlay layer.
+    #[test]
+    fn the_fluid_overlay_set_is_the_half_transparent_and_leaves_classes() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        const TYPES: &[&str] = &[
+            "half_transparent",
+            "transparent",
+            "stained_glass",
+            "tinted_glass",
+            "ice",
+            "frosted_ice",
+            "slime",
+            "honey",
+            "waterlogged_transparent",
+            "weathering_copper_grate",
+            "tinted_particle_leaves",
+            "untinted_particle_leaves",
+            "mangrove_leaves",
+        ];
+        let blocks = raw.as_object().expect("report");
+        let by_type: std::collections::BTreeSet<&str> = blocks
+            .iter()
+            .filter(|(_, b)| {
+                b.get("definition")
+                    .and_then(|d| d.get("type"))
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| TYPES.contains(&t.trim_start_matches("minecraft:")))
+            })
+            .map(|(n, _)| n.as_str())
+            .collect();
+        let generated: std::collections::BTreeSet<&str> =
+            crate::block_props::FLUID_OVERLAY.iter().copied().collect();
+        assert_eq!(generated, by_type);
+        for id in states_where(raw, "minecraft:glass", &[]) {
+            assert!(baked.cull[id].fluid_overlay, "glass {id}");
+        }
+        for id in states_where(raw, "minecraft:glass_pane", &[]) {
+            assert!(!baked.cull[id].fluid_overlay, "a pane is IronBarsBlock");
+        }
+        let water = states_where(raw, "minecraft:water", &[])[0];
+        let lava = states_where(raw, "minecraft:lava", &[])[0];
+        assert!(matches!(
+            baked.render[water],
+            RenderKind::Fluid { overlay_layer, .. } if overlay_layer != NO_FLOW_LAYER
+        ));
+        assert!(matches!(
+            baked.render[lava],
+            RenderKind::Fluid {
+                overlay_layer: NO_FLOW_LAYER,
+                ..
+            }
+        ));
     }
 
     #[test]

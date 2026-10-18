@@ -290,6 +290,8 @@ mod tests {
             raw_side_layer: 0,
             flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: false,
         }];

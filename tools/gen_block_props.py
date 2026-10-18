@@ -16,6 +16,9 @@ Emitted into `crates/rewo-data/src/block_props.rs`:
 * `STUCK` — `entityInside` → `makeStuckInBlock` multipliers, by class chain.
 * `TRAPDOORS` / `LADDERS` / `FENCE_GATES` — class-chain membership for
   `LivingEntity.onClimbable` and `Entity.getOnPos`.
+* `FLUID_OVERLAY` — class chain contains `HalfTransparentBlock` or
+  `LeavesBlock`: a water side against one samples `block/water_overlay`
+  (`FluidRenderer.tesselate`, M199).
 * `CLIMBABLE` / `BARS` / `FENCES` / `WALLS` / `SUPPRESSES_BOUNCE` — block tags, fully expanded.
 
 Run after a version bump:
@@ -131,7 +134,7 @@ def main():
         helpers[m.group(1)] = src[brace : j + 1]
 
     skip, friction, speed, jump, bounce, stuck = {}, {}, {}, {}, {}, {}
-    trapdoors, ladders, gates = set(), set(), set()
+    trapdoors, ladders, gates, overlay = set(), set(), set(), set()
     missing = []
 
     def record(name, body, cls):
@@ -157,6 +160,8 @@ def main():
             ladders.add(name)
         if "FenceGateBlock" in ch:
             gates.add(name)
+        if "HalfTransparentBlock" in ch or "LeavesBlock" in ch:
+            overlay.add(name)
         for prop, table in (("friction", friction), ("speedFactor", speed), ("jumpFactor", jump), ("bounceRestitution", bounce)):
             v = float_prop(body, prop) or float_prop(expanded, prop)
             if v is not None:
@@ -229,13 +234,14 @@ def main():
     str_list("TRAPDOORS", "Blocks whose class extends `TrapDoorBlock`.", trapdoors)
     str_list("LADDERS", "Blocks whose class extends `LadderBlock`.", ladders)
     str_list("FENCE_GATES", "Blocks whose class extends `FenceGateBlock`.", gates)
+    str_list("FLUID_OVERLAY", "Extends `HalfTransparentBlock` or `LeavesBlock` (water overlay, M199).", overlay)
     for t, items in tags.items():
         str_list(t.upper() + "_TAG", f"`#minecraft:{t}`, expanded.", items)
     out.close()
     print(
         f"[gen_block_props] wrote {dest}: {len(skip)} skip, {len(friction)} friction, "
         f"{len(speed)} speed, {len(jump)} jump, {len(stuck)} stuck, "
-        f"{len(trapdoors)} trapdoors, tags {[len(v) for v in tags.values()]}",
+        f"{len(trapdoors)} trapdoors, {len(overlay)} overlay, tags {[len(v) for v in tags.values()]}",
         file=sys.stderr,
     )
 

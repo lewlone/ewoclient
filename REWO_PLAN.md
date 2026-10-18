@@ -3844,6 +3844,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M199 — the water overlay beside glass and leaves (2026-10-18)
+
+`FluidRenderer.tesselate` swaps a water side's flowing sprite for
+`block/water_overlay` when the neighbour on that side is a
+`HalfTransparentBlock` or a `LeavesBlock` (glass, stained and tinted glass,
+ice, frosted and blue ice, slime, honey, the copper grates, every leaves
+block: 42 blocks), with the same `getU(0)..getU(0.5)`,
+`getV((1 - h) * 0.5)..getV(0.5)`. The overlay is a 16 px sprite, so those UVs
+are its top-left quarter stretched over the face: no new layer kind, just
+the side's UVs halved. Lava has no overlay.
+
+- `tools/gen_block_props.py` emits `FLUID_OVERLAY` from the class chains it
+  already walks (the regenerated file is otherwise byte-identical);
+  `CullInfo::fluid_overlay` carries it per state; `RenderKind::Fluid` /
+  `CarriedFluid` carry `overlay_layer` / `raw_overlay_layer` (interned after
+  the main loop like M196/M197's layers).
+- Graded by a mesher unit test (the east side against "glass" takes the
+  overlay layer with U and V in `0..0.5`, the other three keep the flow
+  quadrant) and a jar-backed test that holds the generated set to the
+  report: exactly the blocks whose `definition.type` is one of the 13 codec
+  types `BlockTypes.java` registers for a `HalfTransparentBlock` or
+  `LeavesBlock` subclass (a glass pane, an `IronBarsBlock`, is not one).
+
+Recorded deviation: vanilla adds a backward face only for a non-overlay
+side (`addFace(..., !isOverlay)`). Rewo's terrain pipeline culls nothing
+(`CullModeFlags::NONE`), so every fluid face already shows from both sides,
+and from inside the water an overlay side shows where vanilla's would not.
+
 ### M198 — the glint on a framed enchanted item (2026-10-18)
 
 M194 recorded "no foil on a framed item". `ItemFrameRenderer` submits the
@@ -3901,8 +3929,10 @@ two `atan2` ports), `animshot` a9 (the flow array's lava layer is each whole
 `getFlow` makes flow (the level-4 cell and the two sources beside it); the
 rest of the frame is byte-identical.
 
-Still open: `water_overlay` beside glass and leaves; vanilla's backward up
-face (`shouldRenderBackwardUpFace`) under a surface seen from below.
+Still open: `water_overlay` beside glass and leaves (M199). Vanilla's
+conditional backward up face (`shouldRenderBackwardUpFace`) has no
+counterpart to port: Rewo's terrain pipeline culls nothing, so a surface
+always shows from below (where vanilla hides it under a solid block).
 
 ### M196 — fluid sides draw the flowing sprite (`render-misc [FLOW]`, the side half, 2026-10-18)
 

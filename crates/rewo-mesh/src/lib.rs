@@ -1303,6 +1303,9 @@ struct FluidHere {
     /// The flow sprite in the flow array (M197), or `NO_FLOW_LAYER`.
     flow_layer: u16,
     raw_flow_layer: u16,
+    /// `block/water_overlay` (M199), or `NO_FLOW_LAYER`.
+    overlay_layer: u16,
+    raw_overlay_layer: u16,
     lava: bool,
     /// `isFaceOccludedBySelf`'s input, in the **mesher's** face order.
     self_occludes: u8,
@@ -1324,6 +1327,8 @@ fn fluid_at(
         raw_side_layer,
         flow_layer,
         raw_flow_layer,
+        overlay_layer,
+        raw_overlay_layer,
         level,
         lava,
     }) = table.get(state as usize)
@@ -1335,6 +1340,8 @@ fn fluid_at(
             raw_side_layer: *raw_side_layer,
             flow_layer: *flow_layer,
             raw_flow_layer: *raw_flow_layer,
+            overlay_layer: *overlay_layer,
+            raw_overlay_layer: *raw_overlay_layer,
             level: *level,
             lava: *lava,
             // Plain water never suppresses its own faces —
@@ -1372,6 +1379,8 @@ fn fluid_at(
         raw_side_layer: f.raw_side_layer,
         flow_layer: f.flow_layer,
         raw_flow_layer: f.raw_flow_layer,
+        overlay_layer: f.overlay_layer,
+        raw_overlay_layer: f.raw_overlay_layer,
         level: f.level,
         lava: false,
         self_occludes: mask,
@@ -1440,12 +1449,30 @@ fn emit_fluid(
     let lava = f.lava;
     // Water gets the biome water tint (raw layer + dynamic color); lava never.
     // The sides take the flow quadrant (M196), raw or pre-tinted alike.
-    let (fluid_layer, side_layer, flow_layer, tint_rgb) = if lava {
-        (f.layer, f.side_layer, f.flow_layer, TINT_WHITE)
+    let (fluid_layer, side_layer, flow_layer, overlay_layer, tint_rgb) = if lava {
+        (
+            f.layer,
+            f.side_layer,
+            f.flow_layer,
+            f.overlay_layer,
+            TINT_WHITE,
+        )
     } else {
         match biome_tint(world, cache, wx, y, wz, TintSource::Water) {
-            Some(rgb) => (f.raw_layer, f.raw_side_layer, f.raw_flow_layer, rgb),
-            None => (f.layer, f.side_layer, f.flow_layer, TINT_WHITE),
+            Some(rgb) => (
+                f.raw_layer,
+                f.raw_side_layer,
+                f.raw_flow_layer,
+                f.raw_overlay_layer,
+                rgb,
+            ),
+            None => (
+                f.layer,
+                f.side_layer,
+                f.flow_layer,
+                f.overlay_layer,
+                TINT_WHITE,
+            ),
         }
     };
     let same =
@@ -1595,7 +1622,18 @@ fn emit_fluid(
         // `FluidRenderer`: a side samples the FLOWING sprite (`getU(0)..
         // getU(0.5)`, `getV((1 - h) * 0.5)..getV(0.5)` — the quadrant the
         // side layer holds, so the `1 - h .. 1` V range above maps onto it).
-        quad(corners, up * side, fluid_light(y), side_layer);
+        // M199: against glass, ice, slime, honey or leaves a water side draws
+        // `block/water_overlay` instead, over the same `getU(0)..getU(0.5)`,
+        // `getV((1 - h) * 0.5)..getV(0.5)` of a 16 px sprite — its top-left
+        // quarter, so the V range halves.
+        let overlay = overlay_layer != rewo_data::assets::NO_FLOW_LAYER
+            && table.info(world.block_state_at(nx, y, nz)).fluid_overlay;
+        if overlay {
+            let halved = corners.map(|(p, uv)| (p, [uv[0] * 0.5, uv[1] * 0.5]));
+            quad(halved, up * side, fluid_light(y), overlay_layer);
+        } else {
+            quad(corners, up * side, fluid_light(y), side_layer);
+        }
     }
     // Bottom — against anything that isn't fluid, isn't covered by our own
     // shape, and isn't a full cube. Vanilla's `renderDown` has TWO neighbour
@@ -2068,6 +2106,8 @@ mod tests {
                 raw_side_layer: POOL_RAW,
                 flow_layer: rewo_data::assets::NO_FLOW_LAYER,
                 raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+                overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+                raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
                 level: 0,
                 lava: false,
             },
@@ -2082,6 +2122,8 @@ mod tests {
                 raw_side_layer: CARRIED_RAW,
                 flow_layer: rewo_data::assets::NO_FLOW_LAYER,
                 raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+                overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+                raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
                 level: 0,
                 falling: false,
                 self_occludes: 0,
@@ -3138,6 +3180,8 @@ mod tests {
             raw_side_layer: 30,
             flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: false,
         }); // 3
@@ -3148,6 +3192,8 @@ mod tests {
             raw_side_layer: 31,
             flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: true,
         }); // 4
@@ -3436,6 +3482,8 @@ mod tests {
             raw_side_layer: 41,
             flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: false,
         }); // 3: water
@@ -3446,6 +3494,8 @@ mod tests {
             raw_side_layer: 42,
             flow_layer: rewo_data::assets::NO_FLOW_LAYER,
             raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
             level: 0,
             lava: true,
         }); // 4: lava
@@ -3524,6 +3574,8 @@ mod tests {
             raw_side_layer: 41,
             flow_layer: 7,
             raw_flow_layer: 8,
+            overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
             level,
             lava: false,
         };
@@ -3575,6 +3627,62 @@ mod tests {
             still.iter().all(|(l, uv)| *l == 30 && uv[0] == [0.0, 0.0]),
             "{still:?}"
         );
+    }
+
+    /// M199: a water side against an overlay block (glass, ice, leaves...)
+    /// draws `water_overlay` over the top-left quarter of the sprite (U and V
+    /// halved); its other sides keep the flow quadrant.
+    #[test]
+    fn a_water_side_against_glass_draws_the_overlay() {
+        let mut table = cube_table(); // 0 air, 1 stone, 2 "glass"
+        table.push(RenderKind::Fluid {
+            layer: 30,
+            raw_layer: 31,
+            side_layer: 40,
+            raw_side_layer: 41,
+            flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+            overlay_layer: 50,
+            raw_overlay_layer: 51,
+            level: 0,
+            lava: false,
+        }); // 3: water
+        let mut cull = vec![CullInfo::default(); 4];
+        cull[1].occludes = 0b11_1111;
+        cull[2].fluid_overlay = true; // glass: no occlusion, overlay
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        w.set_block(4, 9, 4, 1);
+        w.set_block(4, 10, 4, 3);
+        w.set_block(5, 10, 4, 2); // glass to the east
+        let mesh = mesh_column_with(
+            &w,
+            MeshInputs {
+                cull: &cull,
+                ..MeshInputs::geometry(&table, &[], &[])
+            },
+            0,
+            0,
+        )
+        .expect("meshed");
+        let mut sides = Vec::new();
+        for q in mesh.tvertices.chunks(4) {
+            let q: &[MeshVertex; 4] = q.try_into().unwrap();
+            let face = fluid_face_of_quad(q, [4, 10, 4]);
+            if face >= 2 {
+                sides.push((face, q[0].layer_index(), q.map(|v| v.uv_f32())));
+            }
+        }
+        assert_eq!(sides.len(), 4, "{sides:?}");
+        for (face, layer, uv) in sides {
+            if face == 5 {
+                assert_eq!(layer, 50, "east, against the glass");
+                assert!(uv.iter().all(|t| t[0] <= 0.5 && t[1] <= 0.5), "{uv:?}");
+                assert!(uv.iter().any(|t| t[1] == 0.5), "the floor edge at V 0.5");
+            } else {
+                assert_eq!(layer, 40, "face {face}");
+            }
+        }
     }
 
     fn fluid_face_of_quad(q: &[MeshVertex; 4], block: [i32; 3]) -> usize {
@@ -3852,6 +3960,8 @@ mod occlusion_tests {
                 raw_side_layer: 4,
                 flow_layer: rewo_data::assets::NO_FLOW_LAYER,
                 raw_flow_layer: rewo_data::assets::NO_FLOW_LAYER,
+                overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
+                raw_overlay_layer: rewo_data::assets::NO_FLOW_LAYER,
                 level: 0,
                 lava: false,
             },
