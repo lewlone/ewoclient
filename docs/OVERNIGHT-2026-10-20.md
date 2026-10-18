@@ -41,6 +41,11 @@ released.
   the flat test world. The fog now follows the render distance as vanilla's
   does. Your skin-layer toggles and the "allow server listings" choice in
   `options.txt` are now sent to servers as well.
+- **M207 / M208**: a new check, `tools/load_check.py`, loads a normal
+  world at render distance 16 and fails on missing columns. Looking at that
+  world turned up thin dark lines along block edges, cracks from an old
+  vertex-saving trick (merging faces), and the trick is now off. Terrain
+  uses about 13% more GPU memory and has no cracks, as in vanilla.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -66,6 +71,10 @@ released.
 | `5160a16` | **M205** — the terrain arena grows (4M vertices initially, up to 64M) instead of deferring columns; plus a clippy fix the review commit had let through. |
 | `029f454` | §0.0 numbers after M205; this summary through M205. |
 | `2463025` | **M206** — `renderDistance`, `modelPart_*` and `allowServerListing` from `options.txt` into `client_information` (was a hard-coded view distance 10); `FogRenderer.setupFog`'s band from the effective distance, measured cylindrically; render-check **r73** with a staged `renderDistance:6`. |
+| `5e9c687` | §0.0 numbers after M206; this summary through M206. |
+| `af429b2` | **M207** — `tools/load_check.py`: a normal world at render distance 16; fails on a column count other than the server's tracking set (1,057), any deferred column, a refused arena growth or a validation message. |
+| `12e8d22`, `1dc1bc3`, `b719c12` | **M208** — greedy face merging off in production (`MERGE_FACES`): its rectangles left T-junction cracks. A new mesher test finds T-junctions geometrically (18 before, 0 after); the merge code stays tested. `b719c12` fixes two clippy errors `12e8d22` went in with. |
+| `9587057` | `live --out` is rejected beside `--run-seconds` / `--render-check` (it was silently ignored beside the first and replaced the windowed check beside the second). |
 
 ## Decisions made
 
@@ -138,7 +147,12 @@ released.
 17. **The render check's client now has its own game directory** (a scratch
    folder inside the test server's), so its `options.txt` is staged rather
    than whatever sits in the repo root.
-18. **Not fixed, noted:** several older `containershot` witness messages have
+18. **M208 turned greedy meshing off rather than fixing it in place.**
+   The merge saved 13% of vertices on natural terrain; making it crack-free
+   means emitting each rectangle's boundary at every block step, which is
+   real work for a small saving. Reversible: one constant, with the merge
+   path still covered by its tests and the `meshshot` oracle.
+19. **Not fixed, noted:** several older `containershot` witness messages have
    runs of spaces where a shell joined a backslash line continuation (the
    same artifact this run hit and fixed in its own messages). Cosmetic, in
    gate output only.
@@ -164,6 +178,9 @@ released.
   (demo hash unchanged); render check **73/73**, r73 matching on 5,605
   frames (sent 6, server radius 8, 213 of 213 tracked columns, fog 86.4..96);
   clippy (gates and default features) and `cargo fmt --check` clean.
+- After M208 (at `1dc1bc3`): **4,277 tests passed, 0 failed; gates 51/51**
+  (demo hash unchanged); render check **73/73**; `load_check.py` PASSED
+  (1,057 / 1,057 columns, 0 deferred, 19.1M vertices in a 32M arena).
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -182,6 +199,9 @@ released.
 - Banner labels on a HELD map: the hand pass has no font atlas.
 - Live witnesses for M179's tab clicks and M184's lectern page sends (the
   render check's timeline is crowded; both have offscreen gates).
-- A normal-terrain load test as a real gate (M205 found its bug with a
-  scratch one). It needs a staged server with world generation, so it
-  belongs in `render_check.py`'s family, not `gates.py`.
+- ~~A normal-terrain load test as a real check~~ (M207, `load_check.py`).
+- A crack-free greedy merge (rectangle boundaries tessellated at every unit
+  step), if the 13% of vertices is ever worth it.
+- The headless `live --out` shot can't be aimed: vanilla spawns a new player
+  at a random spot, and a console `tp` during the settle window did not land
+  in two tries (not investigated: the headless pump may not apply it).
