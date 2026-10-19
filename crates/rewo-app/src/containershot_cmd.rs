@@ -1268,6 +1268,7 @@ fn overlays(
                 &[],
                 0,
                 None,
+                &Default::default(),
             )
             .0
             .len()
@@ -2813,6 +2814,7 @@ fn overlays(
                 &[],
                 0,
                 o,
+                &Default::default(),
             )
             .0
             .len()
@@ -2906,6 +2908,7 @@ fn overlays(
                 &[],
                 0,
                 o,
+                &Default::default(),
             )
             .0
         };

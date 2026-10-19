@@ -307,6 +307,9 @@ pub(super) struct RenderCheck {
     /// M274 — r132: frames on which the staged armour stand drew wearing a
     /// carved pumpkin through the head item branch.
     pub(super) worn_item_head_frames: usize,
+    /// M275 — r133: frames on which the bot's staged player-head item
+    /// resolved to its per-skin icon model.
+    pub(super) skinned_icon_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1072,7 +1075,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 132;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 133;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1262,6 +1265,17 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M275 — r133: `render_check.py` puts a player head ITEM whose
+        // profile names r130's skin in the bot's inventory slot 26 (menu slot
+        // 35). Its icon must resolve, through the production
+        // `skinned_icon_model`, to a per-skin item model that the GUI pass
+        // holds and that samples the synthetic skin; every head icon showed
+        // Steve until M275.
+        row(
+            "r133 a player head item's icon wore its own skin",
+            self.skinned_icon_frames >= 1,
+            format!("{} frames resolved it", self.skinned_icon_frames),
         );
         // M274 — r132: `render_check.py` summons an armour stand wearing a
         // carved pumpkin, which has no equipment asset: it must draw through

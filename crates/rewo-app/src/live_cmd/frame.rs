@@ -665,9 +665,16 @@ impl LiveApp {
             let mut new_models = Vec::new();
             let mut new_textures = Vec::new();
             for (url, rgba) in self.head_skins.take_ready() {
-                let Some((name, tex)) = baked.held_items.add_skin_head_model(rgba) else {
+                let Some(made) = baked.held_items.add_skin_head_model(rgba) else {
                     continue;
                 };
+                let (name, tex) = (made.block, made.tex);
+                if let Some(item) = made.item {
+                    if let Some(m) = baked.held_items.models.get(&item) {
+                        new_models.push((item.clone(), to_gpu_held_model(m)));
+                    }
+                    self.head_skins.items.insert(url.clone(), item);
+                }
                 if let Some(m) = baked.held_items.block_entities.get(&name) {
                     new_models.push((name.clone(), to_gpu_held_model(m)));
                 }
@@ -678,12 +685,33 @@ impl LiveApp {
                 state
                     .world_renderer
                     .extend_held_items(new_models, new_textures);
+                // M275 — the GUI pass keeps its own copy of the held items;
+                // rebuilt whole (a skin arrives at most `MAX_HEAD_SKINS`
+                // times a session), so its texture indices stay the bake's.
+                if let Some(g) = self.gui_items.as_mut() {
+                    g.held = to_gpu_held_items(&baked.held_items);
+                }
             }
         }
         let head_models = head_skin_models(&session.world, &mut self.head_skins);
-        // M273 — ask for the skins worn player heads name.
-        for v in session.world.entities.head_profiles() {
+        // M273 — ask for the skins worn player heads name; M275 — and the
+        // ones head items in the inventory name, whose icons take them.
+        for v in session
+            .world
+            .entities
+            .head_profiles()
+            .chain(session.inventory.profile_skins())
+        {
             self.head_skins.request(v);
+        }
+        if let Some(g) = self.gui_items.as_mut() {
+            for v in session.inventory.profile_skins() {
+                if !g.skinned.contains_key(v) {
+                    if let Some(m) = self.head_skins.ready_item(v) {
+                        g.skinned.insert(v.to_string(), m.to_string());
+                    }
+                }
+            }
         }
         let draws = collect_entities(
             session,
@@ -1160,6 +1188,34 @@ impl LiveApp {
                         .is_some_and(|w| w.item && w.model == "minecraft:carved_pumpkin")
             }) {
                 rc.worn_item_head_frames += 1;
+            }
+            // M275 — r133: the staged head item's icon model, as the screen
+            // and hotbar resolve it.
+            let inv = &session.inventory;
+            let icon = (inv.slot_count() == 46)
+                .then(|| inv.menu_slot(35))
+                .flatten()
+                .zip(self.gui_items.as_ref())
+                .and_then(|(stack, g)| {
+                    let base = self.items.name(stack.item_id)?;
+                    let m = skinned_icon_model(inv, stack, base, &g.skinned)?;
+                    g.held.any(&m)?;
+                    Some(m)
+                });
+            if icon.is_some_and(|m| {
+                m.starts_with("minecraft:player_head#skin")
+                    && self.baked.as_ref().is_some_and(|b| {
+                        b.held_items.get(&m).is_some_and(|mm| {
+                            mm.quads.iter().any(|q| {
+                                b.held_items
+                                    .textures
+                                    .get(q.tex as usize)
+                                    .is_some_and(super::render_check::is_synthetic_skin)
+                            })
+                        })
+                    })
+            }) {
+                rc.skinned_icon_frames += 1;
             }
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand

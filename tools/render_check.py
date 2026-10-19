@@ -276,7 +276,11 @@ HEAD_STAGING = (
     # M273 -- r131. An armour stand wearing a player head in the same skin.
     ";summon minecraft:armor_stand ~-10 ~ ~3 {equipment:{head:{id:\"minecraft:player_head\",count:1,"
     "components:{\"minecraft:profile\":{properties:[{name:\"textures\",value:\"%s\"}]}}}}}"
-    % (HEAD_TEXTURES, HEAD_TEXTURES)
+    # M275 -- r133. A player head ITEM in the same skin, in the bot's last
+    # main-inventory slot (clear of the hotbar the use tail fills).
+    ";item replace entity @s inventory.26 with minecraft:player_head"
+    "[minecraft:profile={properties:[{name:\"textures\",value:\"%s\"}]}]"
+    % (HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES)
 )
 
 

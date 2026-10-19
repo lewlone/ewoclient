@@ -6814,7 +6814,8 @@ mod tests {
         let base = held.any("rewo:be/player_head").unwrap().clone();
         assert!(held.add_skin_head_model(vec![0; 64 * 32 * 4]).is_none());
         let n = held.textures.len();
-        let (name, tex) = held.add_skin_head_model(vec![7; 64 * 64 * 4]).unwrap();
+        let made = held.add_skin_head_model(vec![7; 64 * 64 * 4]).unwrap();
+        let (name, tex) = (made.block.clone(), made.tex);
         assert_eq!(
             (name.as_str(), tex),
             (format!("rewo:be/player_head#{n}").as_str(), n)
@@ -6830,6 +6831,25 @@ mod tests {
             );
         }
         assert_eq!(held.any("rewo:be/player_head").unwrap(), &base);
+        // M275 — the item's copy: the item's quads, the default sheet's
+        // swapped for the skin and nothing else changed.
+        let item = made.item.as_deref().unwrap();
+        assert_eq!(item, format!("minecraft:player_head#skin{n}"));
+        let plain = baked.held_items.get("minecraft:player_head").unwrap();
+        let skinned = held.get(item).unwrap();
+        assert_eq!(skinned.quads.len(), plain.quads.len());
+        let default_tex = base.quads[0].tex;
+        assert!(plain.quads.iter().any(|q| q.tex == default_tex));
+        for (a, b) in skinned.quads.iter().zip(&plain.quads) {
+            let want = if b.tex == default_tex {
+                tex as u16
+            } else {
+                b.tex
+            };
+            assert_eq!(a.tex, want);
+            assert_eq!((a.verts, a.uv), (b.verts, b.uv));
+        }
+        assert_eq!((skinned.gui, skinned.right), (plain.gui, plain.right));
     }
 
     /// M245 — a held block quad's `dir` is vanilla's `Direction` ordinal

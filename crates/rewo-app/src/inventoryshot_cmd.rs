@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 170;
+const EXPECTED_WITNESSES: usize = 171;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -5119,6 +5119,61 @@ fn pixels_inner(
         ),
     );
     wr.set_hud_fills(Vec::new());
+
+    // M275 — a player head item's own skin reaches its icon. The bake's
+    // `add_skin_head_model` (the production call) makes the per-skin item
+    // model from a solid green 64x64 sheet; the plain head (Steve has no
+    // pure green) and the skinned one drawn in the same slot: the skinned
+    // icon must show green and the plain one none.
+    {
+        let mut held = baked.held_items.clone();
+        let green = [0x20u8, 0xC0, 0x40, 0xFF].repeat(64 * 64);
+        let made = held.add_skin_head_model(green);
+        let skinned = made
+            .as_ref()
+            .and_then(|m| m.item.clone())
+            .unwrap_or_default();
+        let held_all = crate::live_cmd::to_gpu_held_items(&held);
+        let names = vec!["minecraft:player_head".to_string(), skinned.clone()];
+        let wanted = crate::live_cmd::gui_atlas_wanted(&held_all, &names);
+        let hatlas = crate::live_cmd::pack_gui_atlas(&held_all, &wanted);
+        wr.init_gui_items(gpu, &hatlas.rgba, 512, 512)?;
+        let mut green_px = |model: &str| -> Result<u32, String> {
+            let slot = [GuiItem {
+                model: model.into(),
+                x: 104.0,
+                y: 96.0,
+                size: 48.0,
+                glint: false,
+            }];
+            let v = build_vertices(&held_all, &slot, &lights, &|t| hatlas.uv.get(&t).copied());
+            let img = shot(gpu, off, wr, &v)?;
+            let mut n = 0;
+            for y in 96..144u32 {
+                for x in 104..152u32 {
+                    let i = ((y * W + x) * 4) as usize;
+                    let (r, g, b) = (img[i] as i32, img[i + 1] as i32, img[i + 2] as i32);
+                    if g > r + 60 && g > b + 60 {
+                        n += 1;
+                    }
+                }
+            }
+            Ok(n)
+        };
+        let plain = green_px("minecraft:player_head")?;
+        let worn = if skinned.is_empty() {
+            0
+        } else {
+            green_px(&skinned)?
+        };
+        c.record(
+            "g21.a_player_head_items_own_skin_reaches_its_icon",
+            !skinned.is_empty() && worn >= 200 && plain == 0,
+            format!(
+                "skinned model {skinned:?}: {worn} green px (want >= 200); the plain head: {plain} (want 0)"
+            ),
+        );
+    }
 
     // The sensitivity partner for all three: with no items the frame is exactly
     // what the HUD alone draws.

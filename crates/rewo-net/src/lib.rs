@@ -1972,6 +1972,7 @@ fn read_slot(
                 has_written_book: c.has_written_book,
                 writable_pages: c.writable_pages.clone(),
                 has_writable_book: c.has_writable_book,
+                profile_textures: c.profile_textures.clone(),
             };
             (
                 Some(rewo_world::inventory::ItemSlot {

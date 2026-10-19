@@ -28,6 +28,8 @@ pub(super) struct HeadSkins {
     requested: std::collections::HashSet<String>,
     /// URL → the head model wearing it, once built.
     pub(super) models: std::collections::HashMap<String, String>,
+    /// M275 — URL → the head ITEM model wearing it, once built.
+    pub(super) items: std::collections::HashMap<String, String>,
     /// base64 `textures` value → its vetted URL, so a head is decoded once.
     urls: std::collections::HashMap<String, Option<String>>,
 }
@@ -72,6 +74,7 @@ impl HeadSkins {
             res_rx,
             requested: std::collections::HashSet::new(),
             models: std::collections::HashMap::new(),
+            items: std::collections::HashMap::new(),
             urls: std::collections::HashMap::new(),
         }
     }
@@ -90,6 +93,13 @@ impl HeadSkins {
     pub(super) fn ready(&self, value: &str) -> Option<&str> {
         let url = self.urls.get(value)?.as_ref()?;
         self.models.get(url).map(String::as_str)
+    }
+
+    /// M275 — the head ITEM model for this `textures` value once its skin
+    /// has arrived.
+    pub(super) fn ready_item(&self, value: &str) -> Option<&str> {
+        let url = self.urls.get(value)?.as_ref()?;
+        self.items.get(url).map(String::as_str)
     }
 
     /// Ask for the skin of this `textures` value, the first time it is seen.

@@ -27,6 +27,17 @@ pub struct HeldTexture {
     pub rgba: Vec<u8>,
 }
 
+/// M272/M275 — what [`HeldItems::add_skin_head_model`] made.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinHeadModels {
+    /// The placed (and worn) head's block-entity model.
+    pub block: String,
+    /// The new texture's index.
+    pub tex: usize,
+    /// The item's model (`None` when the bake has no player-head item).
+    pub item: Option<String>,
+}
+
 /// One quad of a held item.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeldQuad {
@@ -181,20 +192,40 @@ impl HeldItems {
     /// `rewo:be/player_head#<texture index>`. Returns the name and the new
     /// texture's index, or `None` for a buffer of the wrong size or no
     /// player-head model.
-    pub fn add_skin_head_model(&mut self, rgba: Vec<u8>) -> Option<(String, usize)> {
+    ///
+    /// M275 — and the item's: a copy of `minecraft:player_head` (the head
+    /// model under the item's display transforms) with every quad that
+    /// sampled the default sheet sampling the new one, named
+    /// `minecraft:player_head#skin<texture index>` and returned third.
+    pub fn add_skin_head_model(&mut self, rgba: Vec<u8>) -> Option<SkinHeadModels> {
         if rgba.len() != 64 * 64 * 4 {
             return None;
         }
         let mut model = self.any("rewo:be/player_head")?.clone();
+        let default_tex = model.quads.first()?.tex;
         let tex = self.textures.len();
         let t = u16::try_from(tex).ok()?;
         self.textures.push(HeldTexture { w: 64, h: 64, rgba });
         for q in &mut model.quads {
             q.tex = t;
         }
-        let name = format!("rewo:be/player_head#{tex}");
-        self.block_entities.insert(name.clone(), model);
-        Some((name, tex))
+        let block = format!("rewo:be/player_head#{tex}");
+        self.block_entities.insert(block.clone(), model);
+        let item = self
+            .models
+            .get("minecraft:player_head")
+            .cloned()
+            .map(|mut m| {
+                for q in &mut m.quads {
+                    if q.tex == default_tex {
+                        q.tex = t;
+                    }
+                }
+                let name = format!("minecraft:player_head#skin{tex}");
+                self.models.insert(name.clone(), m);
+                name
+            });
+        Some(SkinHeadModels { block, tex, item })
     }
 
     /// Look a model up by name across both maps — what the renderer wants,

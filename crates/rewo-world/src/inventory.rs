@@ -574,6 +574,9 @@ pub struct SlotText {
     /// NEITHER component `open_book` opens nothing.
     pub writable_pages: Vec<String>,
     pub has_writable_book: bool,
+    /// M275 — `minecraft:profile`'s `textures` property: a player head's
+    /// own skin, for its icon.
+    pub profile_textures: Option<String>,
 }
 
 impl SlotText {
@@ -603,6 +606,7 @@ impl SlotText {
             has_written_book,
             writable_pages,
             has_writable_book,
+            profile_textures,
         } = self;
         custom_name.is_none()
             && item_name.is_none()
@@ -616,6 +620,7 @@ impl SlotText {
             && !*has_written_book
             && writable_pages.is_empty()
             && !*has_writable_book
+            && profile_textures.is_none()
     }
 }
 
@@ -641,6 +646,13 @@ impl Inventory {
     }
 
     /// What this stack's components say, if anything was recorded.
+    /// M275 — every recorded player-head skin (`textures` values).
+    pub fn profile_skins(&self) -> impl Iterator<Item = &str> {
+        self.texts
+            .values()
+            .filter_map(|t| t.profile_textures.as_deref())
+    }
+
     pub fn text_of(&self, stack: ItemSlot) -> Option<&SlotText> {
         self.texts.get(&stack.components)
     }

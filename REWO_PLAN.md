@@ -2088,6 +2088,7 @@ this shape once.
 | M272 (2026-10-20) — a player head draws in its own skin | **r130** | — | — |
 | M273 (2026-10-20) — an armour stand draws wearing a skinned player head | **r131** | — | — |
 | M274 (2026-10-20) — an armour stand draws wearing a carved pumpkin | **r132** | — | — |
+| M275 (2026-10-20) — a player head item's icon wears its own skin | **r133** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

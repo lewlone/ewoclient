@@ -25,6 +25,9 @@ pub(crate) fn screen_icons(
     // too. Supplied rather than reached for, so a gate drives the same call
     // the live client makes (M45).
     overlay: Option<&rewo_ui::recipe_overlay::Open>,
+    // M275 — player-head skins that have arrived, `textures` value → item
+    // model (`GuiItemState::skinned`).
+    skinned: &std::collections::HashMap<String, String>,
 ) -> (
     Vec<rewo_gpu::gui_item::GuiItem>,
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -41,7 +44,10 @@ pub(crate) fn screen_icons(
             continue;
         }
         if let Some(stack) = inv.menu_slot(slot) {
-            if let Some(icon) = icon_for(items, trim_materials, stack, rect.0, rect.1, rect.2) {
+            if let Some(mut icon) = icon_for(items, trim_materials, stack, rect.0, rect.1, rect.2) {
+                if let Some(m) = skinned_icon_model(inv, stack, &icon.model, skinned) {
+                    icon.model = m;
+                }
                 icons.push(icon);
             }
             labels.extend(count_label(stack, rect.0, rect.1, scale));
@@ -287,6 +293,21 @@ pub(crate) fn screen_icons(
         }
     }
     (icons, labels)
+}
+
+/// M275 — the item model a player-head stack draws in once the skin its
+/// profile names has arrived (`None`: the plain model).
+pub(crate) fn skinned_icon_model(
+    inv: &rewo_world::inventory::Inventory,
+    stack: rewo_world::inventory::ItemSlot,
+    model: &str,
+    skinned: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if model != "minecraft:player_head" {
+        return None;
+    }
+    let value = inv.text_of(stack)?.profile_textures.as_deref()?;
+    skinned.get(value).cloned()
 }
 
 pub(super) fn icon_for(

@@ -95,10 +95,15 @@ pub fn hotbar_models(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
     trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
+    // M275 — player-head skins that have arrived (`GuiItemState::skinned`).
+    skinned: &std::collections::HashMap<String, String>,
 ) -> [Option<String>; 9] {
     std::array::from_fn(|i| {
         let s = inv.hotbar(i)?;
         let base = items.name(s.item_id)?;
+        if let Some(m) = skinned_icon_model(inv, s, base, skinned) {
+            return Some(m);
+        }
         // M49: the same composed name the screen slots use, so a trimmed piece
         // wears its trim in the hotbar too.
         Some(
@@ -1084,6 +1089,9 @@ pub struct GuiItemState {
     pub(super) started: std::time::Instant,
     /// `misc/enchanted_glint_item.png` as `(rgba, w, h)`; `None` draws none.
     pub(super) glint: Option<(Vec<u8>, u32, u32)>,
+    /// M275 — player-head skins that have arrived, `textures` value → the
+    /// item model wearing it.
+    pub(crate) skinned: std::collections::HashMap<String, String>,
 }
 
 impl GuiItemState {
@@ -1095,6 +1103,7 @@ impl GuiItemState {
             held: to_gpu_held_items(&baked.held_items),
             started: std::time::Instant::now(),
             glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
+            skinned: std::collections::HashMap::new(),
         }
     }
 }
@@ -1112,7 +1121,12 @@ pub(super) fn apply_hotbar_icons(
     extent: (f32, f32),
 ) {
     let held = &state.held;
-    let names = hotbar_models(&session.inventory, items, &session.trim_materials);
+    let names = hotbar_models(
+        &session.inventory,
+        items,
+        &session.trim_materials,
+        &state.skinned,
+    );
     let models: Vec<String> = names.iter().flatten().map(|n| n.to_string()).collect();
     let wanted = gui_atlas_wanted(held, &models);
 
