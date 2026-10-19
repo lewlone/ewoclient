@@ -369,6 +369,15 @@ pub(super) fn collect_block_entities(
                 ),
                 rewo_data::block_entity_models::BELL_PIVOT,
             ),
+            BlockEntityAnim::EnchantingBook => {
+                let p = world.block_entities.book(*pos).pose(alpha);
+                let (o, f1, f2) =
+                    rewo_data::be_transform::enchanting_book_state(p.time, p.flip, p.open);
+                (
+                    rewo_data::be_transform::enchanting_book_parts(o, f1, f2),
+                    rewo_data::block_entity_models::ENCHANTING_BOOK_PIVOTS,
+                )
+            }
             BlockEntityAnim::ShulkerLid => one_part(
                 rewo_data::block_entity_models::SHULKER_LID_PART,
                 rewo_data::be_transform::shulker_lid_part(
@@ -376,6 +385,14 @@ pub(super) fn collect_block_entities(
                 ),
                 rewo_data::block_entity_models::SHULKER_LID_PIVOT,
             ),
+        };
+        // M276 — the enchanting book's pose is per frame
+        // (`EnchantTableRenderer.submit`), not the table's static identity.
+        let be_transform = if draw.anim == BlockEntityAnim::EnchantingBook {
+            let p = world.block_entities.book(*pos).pose(alpha);
+            rewo_data::be_transform::enchanting_book(p.time, p.y_rot)
+        } else {
+            be_transform
         };
         // M272 — a player head with a skin of its own draws that model.
         let model = if draw.model == "rewo:be/player_head" {

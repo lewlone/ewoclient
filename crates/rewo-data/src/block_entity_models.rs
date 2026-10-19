@@ -1786,16 +1786,100 @@ fn lectern_book() -> Vec<Box> {
     ]
 }
 
+/// M276 — the enchanting table's book (`EnchantTableRenderer.BOOK_TEXTURE`,
+/// the lectern's sheet), baked at rest so `setupAnim` can pose it per frame.
+pub const ENCHANTING_BOOK_MODEL: (&str, &str) = (
+    "rewo:be/enchanting_book",
+    "entity/enchantment/enchanting_table_book",
+);
+
+/// M276 — `BookModel.createBodyLayer` at REST: every part at its
+/// `PartPose` with no rotation, each animated part its own group (left lid
+/// 1, right lid 2, left pages 3, right pages 4, flip pages 5 and 6) so
+/// [`crate::be_transform::enchanting_book_parts`] can apply `setupAnim`. The
+/// seam never moves (`PartPose.rotation(0, π/2, 0)`), so it stays group 0.
+fn enchanting_book() -> Vec<Box> {
+    use std::f32::consts::FRAC_PI_2;
+    vec![
+        plain(
+            (0.0, 0.0),
+            [-6.0, -5.0, -0.005],
+            [6.0, 10.0, 0.005],
+            [0.0, 0.0, -1.0],
+            1,
+        ),
+        plain(
+            (16.0, 0.0),
+            [0.0, -5.0, -0.005],
+            [6.0, 10.0, 0.005],
+            [0.0, 0.0, 1.0],
+            2,
+        ),
+        Box {
+            rot: [0.0, FRAC_PI_2, 0.0],
+            ..plain(
+                (12.0, 0.0),
+                [-1.0, -5.0, 0.0],
+                [2.0, 10.0, 0.005],
+                [0.0; 3],
+                0,
+            )
+        },
+        plain(
+            (0.0, 10.0),
+            [0.0, -4.0, -0.99],
+            [5.0, 8.0, 1.0],
+            [0.0; 3],
+            3,
+        ),
+        plain(
+            (12.0, 10.0),
+            [0.0, -4.0, -0.01],
+            [5.0, 8.0, 1.0],
+            [0.0; 3],
+            4,
+        ),
+        plain(
+            (24.0, 10.0),
+            [0.0, -4.0, 0.0],
+            [5.0, 8.0, 0.005],
+            [0.0; 3],
+            5,
+        ),
+        plain(
+            (24.0, 10.0),
+            [0.0, -4.0, 0.0],
+            [5.0, 8.0, 0.005],
+            [0.0; 3],
+            6,
+        ),
+    ]
+}
+
+/// M276 — each animated book group's rest pivot (its `PartPose` offset),
+/// index-matched to [`crate::be_transform::enchanting_book_parts`].
+pub const ENCHANTING_BOOK_PIVOTS: [[f32; 3]; 7] = [
+    [0.0; 3],
+    [0.0, 0.0, -1.0],
+    [0.0, 0.0, 1.0],
+    [0.0; 3],
+    [0.0; 3],
+    [0.0; 3],
+    [0.0; 3],
+];
+
 /// Bake the bell and the lectern's book (M248).
 pub fn bake_bell_and_book(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
 ) -> Vec<(String, HeldItemModel)> {
     let book = lectern_book();
+    let table_book = enchanting_book();
     let mut out = Vec::new();
     for ((name, tex_name), boxes, size) in [
         (BELL_MODEL, BELL, (32.0, 32.0)),
         (LECTERN_BOOK_MODEL, &book[..], (64.0, 32.0)),
+        (ENCHANTING_BOOK_MODEL, &table_book[..], (64.0, 32.0)),
     ] {
         let Some(tex) = pool.intern(tex_name, || load(tex_name)) else {
             log::error!("bell/book: no texture {tex_name:?}");

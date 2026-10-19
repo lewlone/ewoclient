@@ -530,6 +530,38 @@ impl World {
         None
     }
 
+    /// M276 — `EnchantingTableBlockEntity.bookAnimationTick` for every
+    /// table (`states`, the enchanting tables' block states), with the
+    /// positions (feet) of the players that can open a book: vanilla's
+    /// `getNearestPlayer(centre, 3.0, false)` excludes spectators.
+    pub fn tick_enchanting_books(
+        &mut self,
+        states: &std::collections::HashSet<u32>,
+        players: &[[f64; 3]],
+    ) {
+        if states.is_empty() {
+            return;
+        }
+        for pos in self.block_entities.positions() {
+            if !states.contains(&self.block_state_at(pos.x, pos.y, pos.z)) {
+                continue;
+            }
+            let c = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
+            let nearest = players
+                .iter()
+                .map(|p| {
+                    (
+                        p,
+                        (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2),
+                    )
+                })
+                .filter(|(_, d)| *d < 9.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(p, _)| (p[0] - c[0], p[2] - c[2]));
+            self.block_entities.tick_book(pos, nearest);
+        }
+    }
+
     pub fn tick_skull_animations(&mut self, powered: &std::collections::HashSet<u32>) {
         if powered.is_empty() {
             return;

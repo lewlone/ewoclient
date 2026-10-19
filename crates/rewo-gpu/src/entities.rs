@@ -5100,7 +5100,7 @@ pub struct WorldTextDraw<'a> {
 /// Group 0 is "as baked" and never indexes the arrays, so this is the number
 /// of *animated* groups plus that one. Four covers the deepest model here — a
 /// piglin head, whose two ears animate to different formulas at once.
-pub const MAX_PARTS: usize = 4;
+pub const MAX_PARTS: usize = 7;
 
 /// One block entity to draw (M25b).
 ///

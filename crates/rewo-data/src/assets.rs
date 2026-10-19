@@ -6774,6 +6774,52 @@ mod tests {
         assert!(baked.state_quads(0).is_none(), "air has no quads");
     }
 
+    /// M276 — the enchanting book baked at rest and posed by
+    /// `enchanting_book_parts` at the lectern's fixed state (openness 1.5,
+    /// page flips 0.1 and 0.9) is the lectern's book, which M248 baked with
+    /// each part's rotation and offset in the box itself: two derivations of
+    /// `BookModel.setupAnim`, vertex for vertex.
+    #[test]
+    fn the_posed_enchanting_book_is_the_lecterns_book() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let table = baked.held_items.any("rewo:be/enchanting_book").unwrap();
+        let lectern = baked.held_items.any("rewo:be/lectern_book").unwrap();
+        assert_eq!(table.quads.len(), lectern.quads.len());
+        let parts = crate::be_transform::enchanting_book_parts(1.5, 0.1, 0.9);
+        let pivots = crate::block_entity_models::ENCHANTING_BOOK_PIVOTS;
+        let mut moved = 0;
+        for (a, b) in table.quads.iter().zip(&lectern.quads) {
+            let g = a.part as usize;
+            moved += usize::from(g != 0);
+            for (c, want) in a.verts.iter().zip(&b.verts) {
+                let p = if g == 0 {
+                    *c
+                } else {
+                    let m = &parts[g];
+                    let v = [
+                        c[0] - pivots[g][0],
+                        c[1] - pivots[g][1],
+                        c[2] - pivots[g][2],
+                    ];
+                    std::array::from_fn(|r| {
+                        m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2] + m[r][3]
+                    })
+                };
+                for k in 0..3 {
+                    assert!(
+                        (p[k] - want[k]).abs() < 1e-4,
+                        "group {g}: {p:?} vs {want:?}"
+                    );
+                }
+            }
+            assert_eq!(a.uv, b.uv);
+        }
+        assert_eq!(moved, 36, "six animated parts, six faces each");
+    }
+
     /// M274 — the `head` display context bakes from the chain: a block item
     /// (a carved pumpkin) has none, the identity (`block/block.json`
     /// declares no `head`); a plain sprite (an apple) takes

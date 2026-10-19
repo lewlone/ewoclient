@@ -310,6 +310,10 @@ pub(super) struct RenderCheck {
     /// M275 — r133: frames on which the bot's staged player-head item
     /// resolved to its per-skin icon model.
     pub(super) skinned_icon_frames: usize,
+    /// M276 — r134: frames on which r103's enchanting table drew its whole
+    /// book, and the range of the book's turn (`transform[0][0]`) over them.
+    pub(super) enchant_book_frames: usize,
+    pub(super) enchant_book_turn: Option<(f32, f32)>,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1075,7 +1079,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 133;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 134;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1264,6 +1268,20 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M276 — r134: r103's enchanting table draws its book, every quad,
+        // posed by the client's own clock: alone, vanilla's book keeps turning
+        // (`tRot += 0.02` a tick), so its pose must change across frames. No
+        // book was drawn until M276 (the opening is the tick's unit test and
+        // the pose's lectern cross-check).
+        let turn = self.enchant_book_turn.map_or(0.0, |(lo, hi)| hi - lo);
+        row(
+            "r134 an enchanting table drew its book, turning",
+            self.enchant_book_frames >= 1 && turn > 0.01,
+            format!(
+                "{} frames drew it; turn range {turn:.3}",
+                self.enchant_book_frames
             ),
         );
         // M275 — r133: `render_check.py` puts a player head ITEM whose

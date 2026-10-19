@@ -860,6 +860,9 @@ pub struct PlaySession {
     /// Empty means "do not tick skull animations", which is correct for a
     /// harness that renders none.
     pub powered_skull_states: std::collections::HashSet<u32>,
+    /// M276 — the enchanting tables' block states, whose books the client
+    /// animates.
+    pub enchanting_table_states: std::collections::HashSet<u32>,
     /// Conduit block states, plus the per-state water and frame predicates its
     /// activation scan needs (M30). A conduit decides for itself whether it is
     /// active by looking at the blocks around it — the server sends nothing.
@@ -2046,6 +2049,7 @@ impl<'a> Connection<'a> {
             take_item_kinds: crate::TakeItemKinds::default(),
             block_event_types: Default::default(),
             powered_skull_states: Default::default(),
+            enchanting_table_states: Default::default(),
             conduit_states: Default::default(),
             water_states: Vec::new(),
             block_entity_states: Vec::new(),
@@ -2753,6 +2757,21 @@ impl PlaySession {
         // a dragon head's jaw run on, which advances only while the block
         // state is POWERED (M29).
         self.world.tick_skull_animations(&self.powered_skull_states);
+        // `EnchantingTableBlockEntity.bookAnimationTick` (M276): the book
+        // opens toward the nearest player within three blocks.
+        if !self.enchanting_table_states.is_empty() {
+            let mut players = Vec::new();
+            if !self.own_game_mode().is_some_and(|g| g.is_spectator()) {
+                players.push([self.player.x, self.player.y, self.player.z]);
+            }
+            for (_, e) in self.world.entities.iter() {
+                if self.player_type_id == Some(e.type_id) {
+                    players.push(e.render_pos(1.0));
+                }
+            }
+            self.world
+                .tick_enchanting_books(&self.enchanting_table_states, &players);
+        }
         // `ConduitBlockEntity.clientTick` — the activation scan is the client's
         // own work, so this is the one animation whose *state* Rewo derives
         // rather than receives (M30).

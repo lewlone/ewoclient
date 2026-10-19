@@ -379,6 +379,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         rewo_data::block_entity_types::block_entity_states(&data.blocks, &be_types);
     // Which skull states are POWERED, so their animation counters run (M29).
     session.powered_skull_states = chest_states.powered_skull_states().clone();
+    session.enchanting_table_states = chest_states.enchanting_table_states().clone();
     // A conduit scans for its own frame (M30), so it needs the block states
     // that count as water and as prismarine, resolved once from the bake.
     session.conduit_states = chest_states.conduit_states().clone();

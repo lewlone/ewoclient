@@ -762,6 +762,97 @@ pub struct BlockEntities {
     /// server sends tells a client its conduit exists — the client scans for
     /// itself.
     conduits: HashMap<BlockEntityPos, crate::conduit::ConduitAnim>,
+    /// M276 — enchanting tables' books, created on the first tick (like a
+    /// conduit's: the clock is the client's own, nothing on the wire drives
+    /// it).
+    books: HashMap<BlockEntityPos, EnchantBook>,
+    /// `EnchantingTableBlockEntity.RANDOM`, one class-wide source: an LCG
+    /// here (the page flips are cosmetic, and vanilla's own clients each
+    /// roll their own).
+    book_rng: u64,
+}
+
+/// M276 — `EnchantingTableBlockEntity`'s client fields, which
+/// `bookAnimationTick` advances every tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EnchantBook {
+    pub time: i32,
+    pub flip: f32,
+    pub o_flip: f32,
+    pub flip_t: f32,
+    pub flip_a: f32,
+    pub open: f32,
+    pub o_open: f32,
+    pub rot: f32,
+    pub o_rot: f32,
+    pub t_rot: f32,
+}
+
+/// What `EnchantTableRenderer.extractRenderState` reads off a book.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnchantBookPose {
+    pub flip: f32,
+    pub open: f32,
+    pub time: f32,
+    pub y_rot: f32,
+}
+
+fn wrap_pi(mut a: f32) -> f32 {
+    use std::f32::consts::PI;
+    while a >= PI {
+        a -= 2.0 * PI;
+    }
+    while a < -PI {
+        a += 2.0 * PI;
+    }
+    a
+}
+
+impl EnchantBook {
+    /// `bookAnimationTick`. `nearest` is the offset `(x, z)` from the table's
+    /// centre to the nearest non-spectator player within 3 blocks, if any;
+    /// `next_int(n)` is `RANDOM.nextInt(n)`.
+    pub fn tick(&mut self, nearest: Option<(f64, f64)>, next_int: &mut dyn FnMut(i32) -> i32) {
+        self.o_open = self.open;
+        self.o_rot = self.rot;
+        if let Some((xd, zd)) = nearest {
+            self.t_rot = zd.atan2(xd) as f32;
+            self.open += 0.1;
+            if self.open < 0.5 || next_int(40) == 0 {
+                let old = self.flip_t;
+                loop {
+                    self.flip_t += (next_int(4) - next_int(4)) as f32;
+                    if old != self.flip_t {
+                        break;
+                    }
+                }
+            }
+        } else {
+            self.t_rot += 0.02;
+            self.open -= 0.1;
+        }
+        self.rot = wrap_pi(self.rot);
+        self.t_rot = wrap_pi(self.t_rot);
+        let rot_dir = wrap_pi(self.t_rot - self.rot);
+        self.rot += rot_dir * 0.4;
+        self.open = self.open.clamp(0.0, 1.0);
+        self.time += 1;
+        self.o_flip = self.flip;
+        let diff = ((self.flip_t - self.flip) * 0.4).clamp(-0.2, 0.2);
+        self.flip_a += (diff - self.flip_a) * 0.9;
+        self.flip += self.flip_a;
+    }
+
+    /// `extractRenderState`'s interpolation at partial tick `alpha`.
+    pub fn pose(&self, alpha: f32) -> EnchantBookPose {
+        let or = wrap_pi(self.rot - self.o_rot);
+        EnchantBookPose {
+            flip: self.o_flip + (self.flip - self.o_flip) * alpha,
+            open: self.o_open + (self.open - self.o_open) * alpha,
+            time: self.time as f32 + alpha,
+            y_rot: self.o_rot + or * alpha,
+        }
+    }
 }
 
 /// `DecoratedPotBlockEntity.WobbleStyle`, mirrored world-side so the event
@@ -855,6 +946,7 @@ impl BlockEntities {
         self.bells.remove(&pos);
         self.skull_anim.remove(&pos);
         self.conduits.remove(&pos);
+        self.books.remove(&pos);
         self.map.remove(&pos)
     }
 
@@ -876,6 +968,7 @@ impl BlockEntities {
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.conduits
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.books.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
     }
 
     pub fn len(&self) -> usize {
@@ -907,6 +1000,7 @@ impl BlockEntities {
         self.bells.clear();
         self.skull_anim.clear();
         self.conduits.clear();
+        self.books.clear();
     }
 
     /// `Level.blockEvent` → the block entity's own `triggerEvent(b0, b1)`.
@@ -1113,6 +1207,26 @@ impl BlockEntities {
         self.conduits.entry(pos).or_default().tick(rescan);
     }
 
+    /// M276 — advance the book at `pos` one tick (see [`EnchantBook::tick`]).
+    pub fn tick_book(&mut self, pos: BlockEntityPos, nearest: Option<(f64, f64)>) {
+        let rng = &mut self.book_rng;
+        let mut next_int = |n: i32| -> i32 {
+            *rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((*rng >> 33) % n.max(1) as u64) as i32
+        };
+        self.books
+            .entry(pos)
+            .or_default()
+            .tick(nearest, &mut next_int);
+    }
+
+    /// M276 — the book at `pos`, closed and unturned if it never ticked.
+    pub fn book(&self, pos: BlockEntityPos) -> EnchantBook {
+        self.books.get(&pos).copied().unwrap_or_default()
+    }
+
     /// The conduit clock at a position — the rest state if it has never
     /// ticked, which reads as dormant.
     pub fn conduit(&self, pos: BlockEntityPos) -> crate::conduit::ConduitAnim {
@@ -1134,6 +1248,54 @@ impl BlockEntities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M276 — `bookAnimationTick`: a player within reach opens the book by
+    /// 0.1 a tick to 1 and turns it toward them (`rot += diff · 0.4`), the
+    /// first ticks (open < 0.5) always pick a new page target; with nobody
+    /// near it closes by 0.1 a tick and its target spins by 0.02.
+    #[test]
+    fn an_enchanting_book_opens_toward_a_near_player_and_idles_alone() {
+        let mut b = EnchantBook::default();
+        let mut n = 0;
+        let mut next = |k: i32| {
+            n += 1;
+            n % k
+        };
+        // A player due +z of the table: atan2(1, 0) = π/2.
+        for i in 1..=12 {
+            let before = b.flip_t;
+            b.tick(Some((0.0, 1.0)), &mut next);
+            assert!(
+                (b.open - (0.1 * i as f32).min(1.0)).abs() < 1e-5,
+                "{i}: {}",
+                b.open
+            );
+            if i <= 4 {
+                assert_ne!(b.flip_t, before, "a closed-ish book always turns pages");
+            }
+        }
+        assert_eq!(b.time, 12);
+        assert!(
+            (b.rot - std::f32::consts::FRAC_PI_2).abs() < 0.01,
+            "{}",
+            b.rot
+        );
+        assert!((b.t_rot - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        let p = b.pose(0.5);
+        assert!((p.open - 1.0).abs() < 1e-6 && (p.time - 12.5).abs() < 1e-6);
+        // Alone: it closes and its target turns 0.02 a tick.
+        let t0 = b.t_rot;
+        for _ in 0..3 {
+            b.tick(None, &mut next);
+        }
+        assert!((b.open - 0.7).abs() < 1e-5, "{}", b.open);
+        assert!((b.t_rot - (t0 + 0.06)).abs() < 1e-5);
+        let mut never = |_: i32| -> i32 { panic!("no page turns when alone") };
+        for _ in 0..10 {
+            b.tick(None, &mut never);
+        }
+        assert_eq!(b.open, 0.0);
+    }
 
     #[test]
     fn packed_xz_puts_x_in_the_high_nibble() {

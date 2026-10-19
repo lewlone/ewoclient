@@ -1603,6 +1603,20 @@ impl LiveApp {
             if drew_hopper && drew_cart_chest {
                 c.minecart_contents_frames += 1;
             }
+            // M276 — r134: the enchanting table's book drew every quad.
+            for (d, &q) in be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+            {
+                if d.model == "rewo:be/enchanting_book" && drew_all(d, q) {
+                    c.enchant_book_frames += 1;
+                    let t = d.transform[0][0];
+                    c.enchant_book_turn = Some(
+                        c.enchant_book_turn
+                            .map_or((t, t), |(lo, hi)| (lo.min(t), hi.max(t))),
+                    );
+                }
+            }
             // M272 — r130: the staged player head drew every quad of a
             // per-skin model, all sampling one texture whose texels are the
             // synthetic skin's `(4x, 4y, 0x80, 0xff)`.

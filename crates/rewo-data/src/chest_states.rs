@@ -141,6 +141,8 @@ pub enum BlockEntityAnim {
     DecoratedPot,
     /// M264 — a bell: its body and lip swing as one group after a ring.
     Bell,
+    /// M276 — an enchanting table's book, posed by its own client clock.
+    EnchantingBook,
 }
 
 /// A block-entity block state Rewo can draw: which model, and the transform
@@ -184,6 +186,8 @@ pub struct ChestStates {
     banners: HashMap<u32, (u8, bool, crate::be_transform::Affine)>,
     /// Skull states carrying `powered=true` (M29).
     powered_skulls: std::collections::HashSet<u32>,
+    /// M276 — the enchanting tables' block states.
+    enchanting_tables: std::collections::HashSet<u32>,
     /// Conduit block states (M30).
     conduits: std::collections::HashSet<u32>,
     /// Spawner block states (M31).
@@ -612,7 +616,32 @@ impl ChestStates {
         // (`LecternRenderer`: `translate(0.5, 1.0625, 0.5)`, `YP(-yRot)` with
         // `yRot = facing.getClockWise().toYRot()`, `ZP(67.5)`,
         // `translate(0, -0.125, 0)`). A lectern with no book draws nothing.
+        let mut enchanting_tables = std::collections::HashSet::new();
         for (block, def) in obj {
+            // M276 — an enchanting table's book (`EnchantTableRenderer`): its
+            // pose is per frame, so the static transform is the identity.
+            if block == "minecraft:enchanting_table" {
+                for st in def
+                    .get("states")
+                    .and_then(|s| s.as_array())
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(id) = st.get("id").and_then(|i| i.as_u64()) {
+                        enchanting_tables.insert(id as u32);
+                        statics.insert(
+                            id as u32,
+                            (
+                                crate::block_entity_models::ENCHANTING_BOOK_MODEL
+                                    .0
+                                    .to_string(),
+                                crate::be_transform::IDENTITY,
+                            ),
+                        );
+                    }
+                }
+                continue;
+            }
             let bell = block == "minecraft:bell";
             if !bell && block != "minecraft:lectern" {
                 continue;
@@ -680,6 +709,7 @@ impl ChestStates {
             statics,
             banners,
             powered_skulls,
+            enchanting_tables,
             conduits,
             spawners,
             end_portals,
@@ -726,6 +756,8 @@ impl ChestStates {
                 BlockEntityAnim::DecoratedPot
             } else if model == crate::block_entity_models::BELL_MODEL.0 {
                 BlockEntityAnim::Bell
+            } else if model == crate::block_entity_models::ENCHANTING_BOOK_MODEL.0 {
+                BlockEntityAnim::EnchantingBook
             } else {
                 BlockEntityAnim::None
             },
@@ -778,6 +810,11 @@ impl ChestStates {
     /// because the note block beneath it is powered.
     pub fn powered_skull_states(&self) -> &std::collections::HashSet<u32> {
         &self.powered_skulls
+    }
+
+    /// M276 — the enchanting tables' block states, whose books animate.
+    pub fn enchanting_table_states(&self) -> &std::collections::HashSet<u32> {
+        &self.enchanting_tables
     }
 
     /// Every block state this table draws something for.

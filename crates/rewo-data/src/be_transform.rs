@@ -759,6 +759,61 @@ pub fn pot_wobble(style: WobbleStyle, progress: f32) -> Affine {
     }
 }
 
+/// M276 — `BookModel.setupAnim` as the book's seven group transforms
+/// (group 0 static), each `translate(pose) · Ry(yRot)` applied to box-local
+/// px (the emitter subtracts the rest pivot):
+///
+/// ```text
+/// leftLid.yRot = π + o;  rightLid.yRot = -o;
+/// leftPages.yRot = o;    rightPages.yRot = -o;
+/// flipPage1.yRot = o - 2o·pageFlip1;  flipPage2.yRot = o - 2o·pageFlip2;
+/// leftPages.x = rightPages.x = flipPage1.x = flipPage2.x = sin(o)
+/// ```
+pub fn enchanting_book_parts(openness: f32, flip1: f32, flip2: f32) -> [Affine; 7] {
+    use std::f32::consts::PI;
+    let o = openness;
+    let x = o.sin();
+    let part = |t: [f32; 3], y: f32| mul(&translation(t[0], t[1], t[2]), &rot_y_rad(y));
+    [
+        IDENTITY,
+        part([0.0, 0.0, -1.0], PI + o),
+        part([0.0, 0.0, 1.0], -o),
+        part([x, 0.0, 0.0], o),
+        part([x, 0.0, 0.0], -o),
+        part([x, 0.0, 0.0], o - o * 2.0 * flip1),
+        part([x, 0.0, 0.0], o - o * 2.0 * flip2),
+    ]
+}
+
+/// M276 — `EnchantTableRenderer.submit`'s pose for a book at `time`
+/// (ticks) turned to `y_rot` (radians):
+///
+/// ```text
+/// translate(0.5, 0.75, 0.5); translate(0, 0.1 + sin(time * 0.1) * 0.01, 0);
+/// YP(-yRot); ZP(80°)
+/// ```
+pub fn enchanting_book(time: f32, y_rot: f32) -> Affine {
+    let bob = 0.1 + (time * 0.1).sin() * 0.01;
+    mul(
+        &translation(0.5, 0.75 + bob, 0.5),
+        &mul(&rot_y_rad(-y_rot), &rot_z(80f32.to_radians())),
+    )
+}
+
+/// M276 — `BookModel.State.forAnimation(time, ff1, ff2, open)` from the
+/// render state, as `(openness, pageFlip1, pageFlip2)`:
+/// `ffN = clamp(frac(flip + 0.25 | 0.75) · 1.6 - 0.3, 0, 1)`,
+/// `openness = (sin(time · 0.02) · 0.1 + 1.25) · open`.
+pub fn enchanting_book_state(time: f32, flip: f32, open: f32) -> (f32, f32, f32) {
+    let frac = |v: f32| v - v.floor();
+    let ff = |o: f32| (frac(flip + o) * 1.6 - 0.3).clamp(0.0, 1.0);
+    (
+        ((time * 0.02).sin() * 0.1 + 1.25) * open,
+        ff(0.25),
+        ff(0.75),
+    )
+}
+
 /// A Y rotation given radians rather than degrees.
 pub fn rot_y_rad(rad: f32) -> Affine {
     let (s, c) = rad.sin_cos();
