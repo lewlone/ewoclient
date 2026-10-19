@@ -223,6 +223,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
         stand_parts: Default::default(),
+        body_hidden: false,
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -311,6 +312,8 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let draw = overlay_offscreen(&ring);
     let mut failures: Vec<String> = Vec::new();
     let mut checked = 0usize;
+    // M271 — how many hidden-body renders were graded (fail-closed).
+    let mut hidden_checked = 0usize;
 
     for kind in kinds {
         let quads = wr
@@ -368,6 +371,30 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             wr.set_entities(&[neutral_draw(kind)], right, upv, 0.0);
             off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
             let img = off.read_rgba(gpu)?;
+            // M271 — the same stand with an invisible body (an invisible
+            // armour stand, the server hologram) draws no pixel of its model.
+            if kind == EntityModelKind::ArmorStand && view_name == "front" {
+                let hidden = EntityDraw {
+                    body_hidden: true,
+                    ..neutral_draw(kind)
+                };
+                wr.set_entities(&[hidden], right, upv, 0.0);
+                off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+                let hid = off.read_rgba(gpu)?;
+                let px = bg
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(hid.as_chunks::<4>().0)
+                    .filter(|(a, b)| a[..3] != b[..3])
+                    .count();
+                hidden_checked += 1;
+                if px != 0 {
+                    failures.push(format!(
+                        "ArmorStand/front with body_hidden: {px} px changed (want 0)"
+                    ));
+                }
+            }
             if let Some(dir) = &args.out_dir {
                 save_png(
                     &img,
@@ -413,6 +440,11 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
 
     wr.destroy(gpu);
     off.destroy(gpu);
+    if hidden_checked != 1 {
+        failures.push(format!(
+            "graded {hidden_checked} hidden-body renders, expected 1 (M271)"
+        ));
+    }
     if failures.is_empty() {
         if checked != EXPECTED_MOB_VIEWS {
             return Err(format!(

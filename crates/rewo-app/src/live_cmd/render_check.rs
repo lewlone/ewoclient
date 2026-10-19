@@ -295,6 +295,9 @@ pub(super) struct RenderCheck {
     /// M270 — r128: frames on which the staged posed armour stand drew with
     /// its poses.
     pub(super) stand_pose_frames: usize,
+    /// M271 — r129: frames on which the staged invisible named armour stand
+    /// drew its name with its body hidden.
+    pub(super) hologram_stand_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1047,7 +1050,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 128;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 129;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1237,6 +1240,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M271 — r129: `render_check.py` summons the classic server hologram,
+        // an invisible armour stand with a visible custom name. Its name must
+        // draw and its body must not (`mobshot` checks the hidden body draws
+        // no pixel); the whole stand drew under the name until M271.
+        row(
+            "r129 an invisible named armour stand drew its name, not its body",
+            self.hologram_stand_frames >= 1,
+            format!("{} frames drew it so", self.hologram_stand_frames),
         );
         // M270 — r128: `render_check.py` summons an armour stand posed with
         // its head at (45, 0, 0) and right arm at (-90, 0, 0); both poses

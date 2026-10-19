@@ -2084,6 +2084,7 @@ this shape once.
 | M268 (2026-10-19) — a text display draws its drop shadow | **r126** | — | — |
 | M269 (2026-10-20) — a primed TNT draws swelling before it blows | **r127** | — | — |
 | M270 (2026-10-20) — a posed armour stand draws with its poses | **r128** | — | — |
+| M271 (2026-10-20) — an invisible named armour stand draws its name, not its body | **r129** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3918,6 +3919,41 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M271 — invisible bodies are invisible (2026-10-20)
+
+Rewo drew invisible entities whole: the invisibility flag fed only the
+name-tag rules and the cape. So every classic server hologram (an
+invisible armour stand with a visible custom name) showed a whole armour
+stand under its text, and an invisible mob or player stood in plain view.
+Vanilla's `LivingEntityRenderer` skips the body when `isBodyVisible()`
+(`!isInvisible()`) is false and the viewer cannot see invisibles (not a
+spectator), but still submits the layers (armour, held items) and the
+name.
+
+- `EntityDraw::body_hidden`, set for a living entity that is invisible
+  while the local player is not in spectator mode; the entity pass then
+  draws no part of the model (and no capsule), and the armour, held items
+  and name draw as before.
+- **The stand's name rule.** `rewo_world::label` has had
+  `LabelRenderer::ArmorStand` (`ArmorStandRenderer.shouldShowName` is
+  `isCustomNameVisible()` and nothing else), but the live code never chose
+  it: a stand took the `Mob` rule, which hides an invisible entity's name.
+  So a hologram showed its body and hid its text, the exact reverse of
+  vanilla. `live_cmd::label_inputs_from_table` now picks it for `minecraft:armor_stand`.
+  r129 caught it (0 frames on two runs with only the body fix). New
+  `labelshot` witness `a7.an_invisible_armour_stand_shows_its_visible_name`
+  (52 to 53) drives the production selection; with the old selection put
+  back it fails.
+
+Recorded: a spectator sees invisible bodies whole (vanilla draws them
+translucent; Rewo has no translucent mob pass).
+
+**mobshot**: the armour stand's front view, drawn again with `body_hidden`,
+changes no pixel (fail-closed: the check must run once); with the hide
+disabled as a control it changed 12,191. **r129**: a summoned invisible,
+named, gravity-less armour stand reaches the draws with its body hidden
+and its name shown.
 
 ### M270 — armour stand poses (2026-10-20)
 

@@ -181,6 +181,9 @@ PRECMD = (
     # M265 -- r123. A stone block display the run scales 1 -> 3 at 2 s;
     # M266 -- r124: and teleports up a block at 3 s, gliding over 20 ticks.
     "summon minecraft:block_display ~5 ~2 ~-9 {Tags:[\"rewo_interp\"],teleport_duration:20,block_state:{Name:\"minecraft:stone\"}};"
+    # M271 -- r129. The classic server hologram: an invisible, named armour
+    # stand with no gravity.
+    "summon minecraft:armor_stand ~-8 ~ ~5 {Invisible:1b,NoGravity:1b,CustomNameVisible:1b,CustomName:\"RewoStand\"};"
     # M270 -- r128. A posed armour stand (head tipped, right arm raised).
     "summon minecraft:armor_stand ~-8 ~ ~3 {ShowArms:1b,Pose:{Head:[45f,0f,0f],RightArm:[-90f,0f,0f]}};"
     # M269 -- r127. Primed TNT with a 60-tick fuse, held fourteen blocks up

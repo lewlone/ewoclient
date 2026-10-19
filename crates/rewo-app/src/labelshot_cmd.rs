@@ -54,7 +54,7 @@ use rewo_world::label::{
 
 use crate::live_cmd::{label_inputs_from_table, resolve_labels, LabelViewer};
 
-const EXPECTED_WITNESSES: usize = 52;
+const EXPECTED_WITNESSES: usize = 53;
 
 const W: u32 = 256;
 const H: u32 = 256;
@@ -544,6 +544,38 @@ fn check_predicate(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
              MUTATION PARTNER c1/d4, the same two inputs on a zombie, which do \
              suppress)",
             should_show_name(&boat_hidden_label)
+        ),
+    );
+
+    // M271 — an invisible armour stand with a visible name (the server
+    // hologram) takes `ArmorStandRenderer`'s rule, `isCustomNameVisible()`
+    // alone, through the same production selection; it took the `Mob` rule,
+    // which hides an invisible entity's name, until M271.
+    let stand = f
+        .types
+        .id_of("minecraft:armor_stand")
+        .ok_or("registries.json: no minecraft:armor_stand")?;
+    let mut stand_t = f.spawn(stand);
+    f.send_meta(&mut stand_t, &meta_body(1, 3, 8, &[0x01]));
+    f.send_meta(&mut stand_t, &meta_body(1, 0, 0, &[0x20]));
+    stand_t.set_custom_name(1, Some("RewoStand".into()));
+    let stand_label = label_inputs_from_table(
+        &stand_t,
+        1,
+        Some("minecraft:armor_stand"),
+        Some(&f.reg),
+        false,
+        4.0,
+        &LabelViewer::default(),
+        None,
+    );
+    c.record(
+        "a7.an_invisible_armour_stand_shows_its_visible_name",
+        stand_label.renderer == LabelRenderer::ArmorStand && should_show_name(&stand_label),
+        format!(
+            "renderer={:?} name={} (want ArmorStand/true — ArmorStandRenderer              overrides shouldShowName with isCustomNameVisible() and nothing              else; as a Mob the invisibility clause hid it)",
+            stand_label.renderer,
+            should_show_name(&stand_label)
         ),
     );
 

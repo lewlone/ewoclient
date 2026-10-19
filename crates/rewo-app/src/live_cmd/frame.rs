@@ -1089,6 +1089,15 @@ impl LiveApp {
         // with its head and right-arm poses.
         #[cfg(feature = "gates")]
         if let Some(rc) = self.check.as_mut() {
+            // M271 — r129: the staged hologram (an invisible armour stand
+            // with a visible name) drew its name and not its body.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
+                    && d.body_hidden
+                    && d.name.is_some_and(|n| n.contains("RewoStand"))
+            }) {
+                rc.hologram_stand_frames += 1;
+            }
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
                     && d.stand_parts.pose[0] == [45.0, 0.0, 0.0]

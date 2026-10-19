@@ -1098,6 +1098,11 @@ pub(crate) fn label_inputs_from_table<'a>(
     });
     let renderer = if is_player {
         LabelRenderer::Avatar
+    } else if entity_name == Some("minecraft:armor_stand") {
+        // M271 — `ArmorStandRenderer` overrides the name rule with
+        // `isCustomNameVisible()` alone; until M271 a stand took the `Mob`
+        // rule, so an invisible stand (a server hologram) hid its name.
+        LabelRenderer::ArmorStand
     } else if resolved.is_some() {
         LabelRenderer::Mob
     } else {
@@ -3712,6 +3717,15 @@ pub(super) fn collect_entities<'a>(
             w *= 0.5;
             h *= 0.5;
         }
+        // M271 — `isBodyVisible() = !isInvisible()` for a living entity,
+        // drawn only for a spectator viewer (translucent in vanilla; Rewo has
+        // no translucent mob pass, so a spectator sees it whole).
+        let body_hidden = session.world.entities.is_invisible(id)
+            && session
+                .entity_classes
+                .as_deref()
+                .is_some_and(|c| c.is_living(e.type_id))
+            && !session.own_game_mode().is_some_and(|g| g.is_spectator());
         let stand_pose = session.world.entities.armor_stand_pose(id);
         let stand_parts = rewo_gpu::mobs::StandParts {
             arms: stand_flags & 0x04 != 0,
@@ -3857,6 +3871,7 @@ pub(super) fn collect_entities<'a>(
             events,
             shell,
             stand_parts,
+            body_hidden,
             billboard,
             allay_dance,
             attack,

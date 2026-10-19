@@ -222,6 +222,12 @@ pub struct EntityDraw<'a> {
     /// M238 — the armour stand's arms and base plate
     /// (`mobs::StandParts`); inert on every other kind.
     pub stand_parts: mobs::StandParts,
+    /// M271 — `LivingEntityRenderer`'s `isBodyVisible` is false and the
+    /// viewer cannot see the invisible (not a spectator): the model (or its
+    /// capsule) is not drawn, while its layers (armour, held items) and its
+    /// name still are. An invisible armour stand with a name is the classic
+    /// server hologram.
+    pub body_hidden: bool,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -2283,7 +2289,9 @@ impl EntityPass {
             // the feet — which is where `setupRotations` rotates, the whole
             // model hanging off the entity origin (M24).
             let (sr, cr) = death_roll(d).sin_cos();
-            for (p, n) in &self.capsule {
+            // M271 — an invisible body draws no capsule either.
+            let capsule: &[([f32; 3], [f32; 3])] = if d.body_hidden { &[] } else { &self.capsule };
+            for (p, n) in capsule {
                 if verts.len() >= MAX_VERTS {
                     break;
                 }
@@ -3031,6 +3039,10 @@ impl EntityPass {
         // illager swaps). Vanilla's emissive layers run the *same* `setupAnim`
         // on a copy of the model, so they obey exactly the same rules.
         let visible = |part: usize| {
+            // M271 — an invisible body draws no part; its layers still draw.
+            if d.body_hidden {
+                return false;
+            }
             // CEM `bone.visible` (goat horns, bee stinger, sheared faces ...).
             if cem_visible.as_ref().is_some_and(|v| !v[part]) {
                 return false;
