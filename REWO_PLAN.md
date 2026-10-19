@@ -3924,6 +3924,37 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M275 — player head icons wear their own skins (2026-10-20)
+
+Server menus are built from custom player heads (a chest screen of
+heads, each a different texture), and every icon showed Steve.
+
+- `SlotText::profile_textures` (the per-fingerprint carrier, beside the
+  tooltip text) keeps a stack's `minecraft:profile` skin;
+  `Inventory::profile_skins` lists them, and the frame asks `HeadSkins`
+  for each (M272's loader).
+- `HeldItems::add_skin_head_model` now also copies the
+  `minecraft:player_head` ITEM model (the head under the item's display
+  transforms), its default-sheet quads moved to the skin, named
+  `minecraft:player_head#skin<texture index>` (`SkinHeadModels`).
+- `skinned_icon_model` picks it for a player-head stack whose skin has
+  arrived; `screen_icons` (every menu slot) and `hotbar_models` call it,
+  through `GuiItemState::skinned` (value → item model).
+- The GUI pass keeps its own copy of the held items; it is rebuilt whole
+  when a skin arrives, so its texture indices stay the bake's.
+
+Not done (recorded): the cursor-carried stack, held items in hands
+(first and third person), dropped and framed heads, which still show
+Steve.
+
+**Unit test**: the item copy is the item's quads with only the default
+sheet's swapped. **inventoryshot g21** (170 to 171): the production
+`add_skin_head_model` on a solid green sheet; the skinned icon shows
+green pixels and the plain head none. **r133**: a player-head item with
+r130's skin in the bot's inventory resolves, through
+`skinned_icon_model`, to a per-skin model the GUI pass holds, sampling the
+synthetic skin.
+
 ### M274 — items worn on the head (2026-10-20)
 
 `CustomHeadLayer`'s other branch: a head-slot item that is not a skull
