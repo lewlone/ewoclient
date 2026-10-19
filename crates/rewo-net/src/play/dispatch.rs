@@ -628,6 +628,19 @@ impl PlaySession {
             if let (Ok(eid), Some(me)) = (r.varint(), self.player_id) {
                 if eid == me {
                     self.hud.local_hurt.damage_event();
+                    // M249: name what hurt you — the damage type's registry
+                    // id and the cause entity (written as id + 1) with its
+                    // type, so a render-check run that loses health to
+                    // something unexpected says what it was.
+                    if let (Ok(ty), Ok(cause)) = (r.varint(), r.varint()) {
+                        let cause = (cause > 0).then_some(cause - 1);
+                        let cause_type = cause
+                            .and_then(|c| self.world.entities.get(c))
+                            .map(|e| e.type_id);
+                        log::info!(
+                            "net: you took damage: damage type {ty}, cause entity {cause:?} (entity type {cause_type:?})"
+                        );
+                    }
                 }
             }
         } else if crate::route_hurt_animation(

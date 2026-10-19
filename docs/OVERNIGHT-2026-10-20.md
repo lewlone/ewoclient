@@ -278,6 +278,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M249)* | **M249** — the session logs every hit on the local player (damage type id, cause entity and its type), for the render-check flake that lost health to an unknown source. |
 | `efcf90b` | **M248** — the bell (`BellModel`) and a lectern's book (`BookModel` at `forAnimation(0, 0.1, 0.9, 1.2)` under `LecternRenderer`'s transform) as block-entity statics; blockentityshot **k31**; **r109** grades chest, bell and book. |
 | `081032f` | **M247** — block entities created on the client when a block change makes one (`gen_block_entity_blocks.py`, `BlockEntities::sync_block_change`, as `LevelChunk.setBlockState` does); `remove` clears animation state; per-draw block-entity quad counts; render-check **r109** (a staged chest draws all 18 quads). |
 | `de43c7c` | **M246** — the entity atlas gets a 64×64 large-item band (`ATLAS_H` 2368): block-entity sheets never paged in, so every block entity drew nothing in the windowed client since M25b; shield and trident models; a slot's own model brings its `gui` transform and lighting; itemshot **c3c/c3d/c3e** (0 px with the band disabled). |
@@ -587,8 +588,10 @@ released.
   once against 0.2000 on the next two runs).
 - A render-check flake seen once (M248's run 2): the bot took damage from
   an unlogged source while walking east for r96, and the whole use tail
-  failed after it. The render check does not log `damage_event`; logging
-  the damage type and source entity would name it next time.
+  failed after it. Since M249 every hit on you is logged (`net: you took
+  damage: damage type N, cause entity ..`; the type is the `damage_type`
+  registry's wire index, the order of its `registry_data`), so the next
+  sighting names the source.
 - ~~A boat model~~ (M223).
 - Banner and shield items show no patterns (the stack's `banner_patterns`
   never reach the item path), and a pot item shows plain sides. A dropped
