@@ -366,7 +366,7 @@ released.
   failed in any of them); clippy (gates and default features) and
   `cargo fmt --check` clean; `rewo-app` tests pass. In the 23 runs of the
   loops before the fix, r78 failed six times and r20 twice.
-- After M225: **render check 89/89**; the full suite, clippy and fmt below
+- After M225: **4,306 tests passed, 5 failed under full-suite load**: all five
   `srv` TCP tests, at the test helper finding "a port free for both UDP and
   TCP" (100 tries), and all pass alone (three runs); render check **89/89**
   on two runs; clippy (gates and default features) and `cargo fmt --check`
