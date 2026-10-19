@@ -2557,6 +2557,26 @@ pub(super) fn collect_item_displays(
     out
 }
 
+/// M262 — a text display's background as linear RGBA, or `None` when it
+/// draws none (`TextDisplayRenderer.submitInner`): the default-background
+/// flag (4) takes the options' background opacity (vanilla's default,
+/// 0.25, as `(int)(0.25 · 255) << 24`: black at 63/255), else the synced
+/// ARGB colour (`0x40000000` unless the server set another); a colour of 0
+/// draws no plate.
+pub(crate) fn text_display_background(style: u8, argb: i32) -> Option<[f32; 4]> {
+    let argb = if style & 4 != 0 {
+        ((0.25f32 * 255.0) as i32) << 24
+    } else {
+        argb
+    };
+    if argb == 0 {
+        return None;
+    }
+    let [a, r, g, b] = (argb as u32).to_be_bytes();
+    let [r, g, b] = linear_rgb(r, g, b);
+    Some([r, g, b, f32::from(a) / 255.0])
+}
+
 /// M255 — `TextDisplay.cacheDisplay`'s lines: the text split at `\n` and
 /// wrapped to `line_width` font px (at the last space that fits, else
 /// mid-word), each line as runs `(text, sRGB colour)`, with its width.
@@ -2656,6 +2676,21 @@ pub(super) fn collect_text_displays(
         let width = lines.iter().map(|(_, w)| *w).fold(0.0f32, f32::max);
         let height = lines.len() as f32 * 10.0 - 1.0;
         let light = entity_light(&session.world, p[0], p[1], p[2], lightmap);
+        // M262 — the background plate, `(-1, -1)..(width, height)` from the
+        // block's top-left corner (`1 - width/2`, `-height`), in front of
+        // nothing and behind the glyphs.
+        if let Some(rgba) = text_display_background(d.style, d.background) {
+            out.push(super::block_entities::OwnedSignLine {
+                transform,
+                text: String::new(),
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                color: [1.0; 3],
+                light,
+                backdrop: Some(([-width / 2.0, -height - 1.0, 1.0 + width / 2.0, 0.0], rgba)),
+            });
+        }
         for (i, (runs, lw)) in lines.into_iter().enumerate() {
             let offset = if d.style & 8 != 0 {
                 0.0
@@ -2676,6 +2711,7 @@ pub(super) fn collect_text_displays(
                     z: 0.0,
                     color: linear_rgb(to8(c[0]), to8(c[1]), to8(c[2])),
                     light,
+                    backdrop: None,
                 });
                 pen += w;
             }

@@ -818,6 +818,7 @@ pub(super) fn run_headless(
             z: l.z,
             color: l.color,
             light: l.light,
+            backdrop: l.backdrop,
         })
         .collect();
     world_renderer.set_entities_and_block_entities(

@@ -354,6 +354,9 @@ pub(crate) struct OwnedSignLine {
     pub z: f32,
     pub color: [f32; 3],
     pub light: [f32; 3],
+    /// M262 — a plate behind the glyphs (a text display's background):
+    /// `[x0, y0, x1, y1]` font px and linear RGBA.
+    pub backdrop: Option<([f32; 4], [f32; 4])>,
 }
 
 /// Every end portal and gateway in the world, as geometry for the M32 pass.
@@ -857,6 +860,7 @@ pub(crate) fn collect_sign_text(
                             text: line.clone(),
                             color: outline,
                             light,
+                            backdrop: None,
                         });
                     }
                 }
@@ -868,6 +872,7 @@ pub(crate) fn collect_sign_text(
                     text: line,
                     color,
                     light,
+                    backdrop: None,
                 });
             }
         }

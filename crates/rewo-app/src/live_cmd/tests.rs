@@ -3996,6 +3996,29 @@ fn small_projectile_poses_follow_their_renderers() {
     );
 }
 
+/// M262 — a text display's plate: the synced default `0x40000000` is black
+/// at 64/255; the default-background flag takes the options' 0.25, which
+/// vanilla truncates to 63/255; a set colour keeps its RGB (decoded to
+/// linear) and alpha; colour 0 draws nothing.
+#[test]
+fn text_display_background_follows_the_flags() {
+    use super::entities::text_display_background;
+    let close = |a: [f32; 4], b: [f32; 4]| (0..4).all(|k| (a[k] - b[k]).abs() < 1e-6);
+    assert!(close(
+        text_display_background(0, 0x4000_0000).unwrap(),
+        [0.0, 0.0, 0.0, 64.0 / 255.0]
+    ));
+    assert!(close(
+        text_display_background(4, 0).unwrap(),
+        [0.0, 0.0, 0.0, 63.0 / 255.0]
+    ));
+    assert!(close(
+        text_display_background(0, 0x80FF_0000u32 as i32).unwrap(),
+        [1.0, 0.0, 0.0, 128.0 / 255.0]
+    ));
+    assert_eq!(text_display_background(0, 0), None);
+}
+
 /// M256 — an item display's pose: at `none` the model's centre lands on the
 /// entity and the model turns half a turn (`YP(π)`, so its +x corner faces
 /// -x); `fixed` applies the model's fixed transform first; a right hand's

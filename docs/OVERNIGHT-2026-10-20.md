@@ -253,6 +253,8 @@ released.
 - **M261**: minecarts show what they carry: chests, hoppers, furnaces
   (lit when fuelled), TNT, spawners, command blocks, or a custom block a
   server put in one. Until now every minecart was drawn empty.
+- **M262**: holograms now have vanilla's dark see-through plate behind
+  their text, so they read like they do in vanilla.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -313,6 +315,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M262)* | **M262** — the text display's background plate: an optional backdrop on world-text lines drawn from the white texel behind the glyphs, vanilla's colour rules; render-check **r121**. |
 | `33047437` | **M260 fix** — run-time block models read a state's quads through `render[state]` (`BakedAssets::state_quads`), not `models[state]` (an oak stair drew cinnabar bricks, full cubes another model); r119 and r120 check the textures too (a control run with the bug put back fails r119). |
 | `f8f91001` | **M261** — minecart contents: indices 11-13 into a `MinecartDisplay` side map, each type's default block and offset, `AbstractMinecartRenderer`'s pose; a chest as its block-entity model, any other block through M260's run-time models; render-check **r120**. |
 | `abad4262` | Comments only: thirteen doc comments that the run's patches had stranded on the wrong item (a new item inserted between a doc and its owner) moved back, found by scanning every commit for an insertion right after a `///` line. |
@@ -583,7 +586,8 @@ released.
 - Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
 - After M239: **4,348 tests passed, 0 failed; gates 51/51**; render check **106/106** on three runs (plus the push-disabled control failing r106 as it should); clippy (gates, after one `int_plus_one` fix in the witness, and default features) and `cargo fmt --check` clean.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
-- Text displays draw no background box, shadow or opacity yet (M255).
+- Text displays draw no shadow, see-through mode or text opacity yet
+  (M255; the background plate came in M262).
   Item and block displays (M256, M260) have no brightness override or
   interpolation; a block display of a block-entity block (a chest) or a
   fluid draws nothing.
@@ -612,6 +616,7 @@ released.
 - After M260: **4,392 tests passed, 0 failed; gates 51/51**; render check **119/119** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M261: **4,395 tests passed, 0 failed; gates 51/51**; render check **120/120** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After the M260 fix: **4,396 tests passed, 0 failed; gates 51/51**; render check **120/120** on four runs (two before and two after the texture checks); clippy (gates and default features) and `cargo fmt --check` clean; a control run with the bug put back failed r119.
+- After M262: **4,397 tests passed, 0 failed; gates 51/51**; render check **121/121** on two runs; clippy (gates and default features) and `cargo fmt --check` clean; the plate looked at in a scratch render (translucent, behind the glyphs).
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

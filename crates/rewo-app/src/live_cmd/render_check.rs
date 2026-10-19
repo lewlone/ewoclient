@@ -271,6 +271,9 @@ pub(super) struct RenderCheck {
     /// M261 — r120: frames on which the staged hopper and chest minecarts'
     /// contents both drew every quad.
     pub(super) minecart_contents_frames: usize,
+    /// M262 — r121: frames whose world text carried the staged text
+    /// display's background plate.
+    pub(super) text_display_backdrop_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1023,7 +1026,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 120;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 121;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1213,6 +1216,14 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M262 — r121: r114's text display has vanilla's default background
+        // (`0x40000000`); its plate must reach the world-text list behind the
+        // glyphs, 25% black. It drew no plate until M262.
+        row(
+            "r121 a text display drew its background plate",
+            self.text_display_backdrop_frames >= 1,
+            format!("{} frames drew it", self.text_display_backdrop_frames),
         );
         // M261 — r120: `render_check.py` summons a hopper minecart and a chest
         // minecart. Their contents (a hopper, a chest) were never drawn;

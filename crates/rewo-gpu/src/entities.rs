@@ -2329,6 +2329,8 @@ impl EntityPass {
                 let Some(name) = d.name else { continue };
                 self.push_tag(&mut verts, d, name, cam_right, cam_up);
             }
+            // M262: world-text plates (text display backgrounds), translucent.
+            self.emit_world_text_backdrops(&mut verts, world_text);
             // M204: framed maps' banner names — translucent backgrounds, so
             // they ride the text range too.
             for m in frame_maps {
@@ -4930,6 +4932,9 @@ pub struct WorldTextDraw<'a> {
     pub color: [f32; 3],
     /// Per-channel world light.
     pub light: [f32; 3],
+    /// M262 — a plate drawn behind this line's glyphs (a text display's
+    /// background): `[x0, y0, x1, y1]` in font px, linear RGBA.
+    pub backdrop: Option<([f32; 4], [f32; 4])>,
 }
 
 /// How many animated part groups one block-entity model may carry.
@@ -5113,6 +5118,39 @@ impl EntityPass {
                     }
                 }
                 pen += adv;
+            }
+        }
+    }
+
+    /// M262 — the plates behind world-text lines (a text display's
+    /// background): untextured quads from the atlas's white texel, as the
+    /// nametag plate and the map label use, a hundredth of a font px behind
+    /// the glyphs (vanilla's `-0.01F`). Translucent, so they go in the
+    /// blended text range; the glyphs are solid and depth-test in front.
+    fn emit_world_text_backdrops(&self, verts: &mut Vec<Vertex>, draws: &[WorldTextDraw<'_>]) {
+        for d in draws {
+            let Some(([x0, y0, x1, y1], rgba)) = d.backdrop else {
+                continue;
+            };
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let m = &d.transform;
+            let bz = d.z - 0.01;
+            let at = |px: f32, py: f32| -> [f32; 3] {
+                [
+                    m[0][0] * px + m[0][1] * py + m[0][2] * bz + m[0][3],
+                    m[1][0] * px + m[1][1] * py + m[1][2] * bz + m[1][3],
+                    m[2][0] * px + m[2][1] * py + m[2][2] * bz + m[2][3],
+                ]
+            };
+            for (px, py) in [(x0, y0), (x1, y0), (x1, y1), (x0, y0), (x1, y1), (x0, y1)] {
+                verts.push(Vertex {
+                    pos: at(px, py),
+                    uv: self.white_uv,
+                    color: rgba,
+                    light_hurt: [d.light[0], d.light[1], d.light[2], 0.0],
+                });
             }
         }
     }

@@ -2076,6 +2076,7 @@ this shape once.
 | M259 (2026-10-19) — evoker fangs draw their model once they bite | **r118** | — | — |
 | M260 (2026-10-19) — a block display draws its state's run-time model | **r119** | — | — |
 | M261 (2026-10-19) — hopper and chest minecarts draw what they carry | **r120** | — | — |
+| M262 (2026-10-19) — a text display draws its background plate | **r121** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3910,6 +3911,30 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M262 — the text display's background plate (2026-10-19)
+
+M255's holograms drew their text with no plate behind it. Vanilla's
+`TextDisplayRenderer.submitInner` draws a quad `(-1, -1)..(width,
+height)` in the text frame at `z -0.01` in the background colour before
+the glyphs: the synced ARGB (`0x40000000`, 25% black, unless the server
+set another; 0 draws none), or with the default-background flag the
+options' opacity (0.25, truncated to 63/255).
+
+- `WorldTextDraw` / `OwnedSignLine` carry an optional backdrop (font-px
+  rect, linear RGBA); `emit_world_text_backdrops` draws it from the atlas's
+  white texel (the nametag plate's and map label's source) a hundredth of a
+  font px behind the glyphs, with the line's light, in the blended text
+  range. The glyphs themselves are in the solid (alpha-tested) range, where
+  a first version put the plate too: a scratch render showed it opaque
+  black, which r121 (a draw-list check) could not see.
+- `live_cmd::text_display_background` turns the flags and colour into it;
+  `collect_text_displays` pushes the plate first.
+
+Recorded: text opacity, shadow and see-through mode are still not applied.
+
+Tests: `text_display_background_follows_the_flags`. **r121**: r114's text
+display's plate (black at 64/255) reaches the world-text list.
 
 ### M260 fix — run-time block models read the right quads (2026-10-19)
 

@@ -1040,6 +1040,14 @@ impl LiveApp {
             if sign_lines.iter().any(|l| l.text == SIGN_WITNESS_RESOLVED) {
                 c.sign_resolved_frames += 1;
             }
+            // M262 — r121: the staged text display's plate, the synced default
+            // `0x40000000` (black at 64/255).
+            if sign_lines.iter().any(|l| {
+                l.backdrop
+                    .is_some_and(|(_, c)| c[..3] == [0.0; 3] && (c[3] - 64.0 / 255.0).abs() < 1e-6)
+            }) {
+                c.text_display_backdrop_frames += 1;
+            }
             // M255 — r114: the staged text display's gold line.
             let gold = super::entities::linear_rgb(0xFF, 0xAA, 0x00);
             if sign_lines.iter().any(|l| {
@@ -1064,6 +1072,7 @@ impl LiveApp {
                 z: l.z,
                 color: l.color,
                 light: l.light,
+                backdrop: l.backdrop,
             })
             .collect();
         // r48 — the crowd census, taken on the list that is about to be
