@@ -268,6 +268,9 @@ pub(super) struct RenderCheck {
     /// M260 — r119: frames on which the staged block display drew every
     /// quad of its run-time-built model.
     pub(super) block_display_frames: usize,
+    /// M261 — r120: frames on which the staged hopper and chest minecarts'
+    /// contents both drew every quad.
+    pub(super) minecart_contents_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1020,7 +1023,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 119;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 120;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1210,6 +1213,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M261 — r120: `render_check.py` summons a hopper minecart and a chest
+        // minecart. Their contents (a hopper, a chest) were never drawn;
+        // both must draw every quad, the hopper through a model built at run
+        // time and the chest through its block-entity model at rest.
+        row(
+            "r120 hopper and chest minecarts drew what they carry",
+            self.minecart_contents_frames >= 1,
+            format!("{} frames drew both", self.minecart_contents_frames),
         );
         // M260 — r119: `render_check.py` summons a block display of an
         // east-facing oak stair, a state the bake never makes an entity model

@@ -919,13 +919,8 @@ impl LiveApp {
         if let Some(baked) = self.baked.as_mut() {
             let mut new_models = Vec::new();
             let mut new_textures = Vec::new();
-            for st in block_display_states(session, &self.etypes) {
+            for st in block_display_states(session, &self.etypes, &self.blocks) {
                 if let Some((name, first)) = baked.add_state_model(st, &mut self.runtime_states) {
-                    // r119 grades the first model built at run time.
-                    #[cfg(feature = "gates")]
-                    if self.runtime_states_witness.is_none() {
-                        self.runtime_states_witness = Some(name.clone());
-                    }
                     if let Some(m) = baked.held_items.block_entities.get(&name) {
                         new_models.push((name, to_gpu_held_model(m)));
                     }
@@ -945,6 +940,15 @@ impl LiveApp {
         bes.extend(collect_block_displays(
             session,
             &self.etypes,
+            &lightmap,
+            alpha,
+        ));
+        // M261 — what minecarts carry.
+        bes.extend(collect_minecart_contents(
+            session,
+            &self.etypes,
+            &self.blocks,
+            &self.chest_states,
             &lightmap,
             alpha,
         ));
@@ -1282,15 +1286,14 @@ impl LiveApp {
             }
             // M260 — r119: a block display of a state the bake never made (a
             // turned stair) drew every quad of the model built at run time.
+            let stair = self
+                .blocks
+                .state_with("minecraft:oak_stairs", &[("facing", "east")])
+                .map(rewo_data::block_entity_models::carried_block_model);
             let built = be_draws
                 .iter()
                 .zip(state.world_renderer.block_entity_quads())
-                .filter(|(d, _)| d.model.starts_with("rewo:be/state/"))
-                .filter(|(d, _)| {
-                    self.runtime_states_witness
-                        .as_deref()
-                        .is_some_and(|w| w == d.model)
-                })
+                .filter(|(d, _)| Some(d.model) == stair.as_deref())
                 .any(|(d, &q)| {
                     q > 0
                         && self
@@ -1301,6 +1304,36 @@ impl LiveApp {
                 });
             if built {
                 c.block_display_frames += 1;
+            }
+            // M261 — r120: the staged hopper minecart's hopper (a model built
+            // at run time) and the chest minecart's chest (off the block grid,
+            // so not r109's placed chest) each drew every quad.
+            let hopper = self
+                .blocks
+                .default_state("minecraft:hopper")
+                .map(rewo_data::block_entity_models::carried_block_model);
+            let drew_all = |d: &rewo_gpu::entities::BlockEntityDraw, q: u32| {
+                q > 0
+                    && self
+                        .baked
+                        .as_ref()
+                        .and_then(|b| b.held_items.any(d.model))
+                        .is_some_and(|m| m.quads.len() as u32 == q)
+            };
+            let drew_hopper = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .any(|(d, &q)| Some(d.model) == hopper.as_deref() && drew_all(d, q));
+            let drew_cart_chest = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .any(|(d, &q)| {
+                    d.model.starts_with("rewo:be/chest")
+                        && d.pos.iter().any(|v| v.fract() != 0.0)
+                        && drew_all(d, q)
+                });
+            if drew_hopper && drew_cart_chest {
+                c.minecart_contents_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

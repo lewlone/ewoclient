@@ -314,6 +314,11 @@ pub struct EntityMeta {
     pub byte24: Option<u8>,
     /// M260 — `BlockDisplay` (23 BLOCK_STATE), kind-gated by the caller.
     pub display_block: Option<i32>,
+    /// M261 — `AbstractMinecart` (11 OPTIONAL_BLOCK_STATE, 0 empty; 12 INT)
+    /// and `MinecartFurnace` (13 BOOLEAN), kind-gated by the caller.
+    pub opt_block11: Option<i32>,
+    pub int12: Option<i32>,
+    pub bool13: Option<bool>,
 }
 
 /// `N` big-endian f32s (a VECTOR3 or QUATERNION value), or `None` short.
@@ -467,6 +472,9 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             },
             (24, 0) => meta.byte24 = r.u8().ok(),
             (23, 14) => meta.display_block = r.varint().ok(),
+            (11, 15) => meta.opt_block11 = r.varint().ok(),
+            (12, 1) => meta.int12 = r.varint().ok(),
+            (13, 8) => meta.bool13 = r.u8().ok().map(|b| b != 0),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),

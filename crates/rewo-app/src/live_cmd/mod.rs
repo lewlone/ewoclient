@@ -569,9 +569,6 @@ struct LiveApp {
     baked: Option<assets::BakedAssets>,
     /// M260 — the block models built at run time (block displays' states).
     runtime_states: assets::RuntimeStateModels,
-    /// M260 — r119: the first state model built at run time.
-    #[cfg(feature = "gates")]
-    runtime_states_witness: Option<String>,
     etypes: EntityTypes,
     /// `minecraft:spears` membership — decides the `SPEAR` arm pose for a
     /// spear that is merely *held* (the swinging-STAB case needs no tag).
@@ -1163,8 +1160,6 @@ fn run_windowed(
         lang: std::sync::Arc::new(baked.lang.clone()),
         baked: Some(baked),
         runtime_states: Default::default(),
-        #[cfg(feature = "gates")]
-        runtime_states_witness: None,
         etypes,
         spears,
         chest_states,

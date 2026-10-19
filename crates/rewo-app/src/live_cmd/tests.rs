@@ -3877,6 +3877,73 @@ fn a_text_display_pose_follows_vanillas_chain() {
     }
 }
 
+/// M261 — a minecart's carried block sits centred over the cart at any
+/// yaw, `0.375 + 0.75 · (0.5 + (offset - 8)/16)` above it, at three
+/// quarters size.
+#[test]
+fn minecart_contents_sit_centred_over_the_cart() {
+    use super::entities::minecart_contents_transform;
+    let apply = |m: &rewo_data::be_transform::Affine, v: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+    };
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+    for yaw in [0.0, 90.0, 33.0, 270.0] {
+        for offset in [6, 8, 1] {
+            let m = minecart_contents_transform(yaw, offset);
+            let y = 0.375 + 0.75 * (0.5 + (offset - 8) as f32 / 16.0);
+            let c = apply(&m, [0.5; 3]);
+            assert!(close(c, [0.0, y, 0.0]), "{yaw} {offset}: {c:?}");
+            let x = apply(&m, [1.5, 0.5, 0.5]);
+            let d = [x[0] - c[0], x[1] - c[1], x[2] - c[2]];
+            assert!(((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - 0.75).abs() < 1e-5);
+        }
+    }
+}
+
+/// M261 — each minecart type's default contents and offset against the real
+/// block registry, and a custom display block winning over the default.
+#[test]
+fn minecart_contents_follow_each_type() {
+    use super::entities::minecart_contents;
+    use rewo_world::entities::MinecartDisplay;
+    let Some(paths) =
+        rewo_data::DataPaths::for_version("26.2").filter(|p| p.blocks_json().exists())
+    else {
+        rewo_data::skip_test!("no local 26.2 blocks report");
+        return;
+    };
+    let blocks = rewo_data::blocks::Blocks::load(&paths.blocks_json()).unwrap();
+    let none = MinecartDisplay::default();
+    let name = |s: u32| blocks.block_name(s).unwrap().to_string();
+    let (chest, off) = minecart_contents("minecraft:chest_minecart", none, &blocks).unwrap();
+    assert_eq!((name(chest).as_str(), off), ("minecraft:chest", 8));
+    assert_eq!(blocks.property(chest, "facing"), Some("north"));
+    let (hopper, off) = minecart_contents("minecraft:hopper_minecart", none, &blocks).unwrap();
+    assert_eq!((name(hopper).as_str(), off), ("minecraft:hopper", 1));
+    let lit = MinecartDisplay { fuel: true, ..none };
+    let (furnace, off) = minecart_contents("minecraft:furnace_minecart", lit, &blocks).unwrap();
+    assert_eq!((name(furnace).as_str(), off), ("minecraft:furnace", 6));
+    assert_eq!(blocks.property(furnace, "lit"), Some("true"));
+    assert_eq!(blocks.property(furnace, "facing"), Some("north"));
+    let (cold, _) = minecart_contents("minecraft:furnace_minecart", none, &blocks).unwrap();
+    assert_eq!(blocks.property(cold, "lit"), Some("false"));
+    assert!(minecart_contents("minecraft:minecart", none, &blocks).is_none());
+    let stone = blocks.default_state("minecraft:stone").unwrap();
+    let custom = MinecartDisplay {
+        custom_block: Some(stone),
+        offset: Some(10),
+        ..none
+    };
+    assert_eq!(
+        minecart_contents("minecraft:minecart", custom, &blocks),
+        Some((stone, 10))
+    );
+    assert_eq!(
+        minecart_contents("minecraft:chest_minecart", custom, &blocks),
+        Some((stone, 10))
+    );
+}
+
 /// M258 — the small projectiles' poses: the wither skull's flip puts its
 /// head (model y -8..0) above the entity and turns with the yaw about the
 /// vertical; the llama spit is lifted 0.15 and turned like an arrow; the

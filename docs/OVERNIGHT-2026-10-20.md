@@ -245,6 +245,9 @@ released.
   decoration) draw their block. Any block works, built the first time it
   is seen; a chest or other block-entity block as a display still draws
   nothing.
+- **M261**: minecarts show what they carry: chests, hoppers, furnaces
+  (lit when fuelled), TNT, spawners, command blocks, or a custom block a
+  server put in one. Until now every minecart was drawn empty.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -305,6 +308,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M261)* | **M261** — minecart contents: indices 11-13 into a `MinecartDisplay` side map, each type's default block and offset, `AbstractMinecartRenderer`'s pose; a chest as its block-entity model, any other block through M260's run-time models; render-check **r120**. |
 | `abad4262` | Comments only: thirteen doc comments that the run's patches had stranded on the wrong item (a new item inserted between a doc and its owner) moved back, found by scanning every commit for an insertion right after a `///` line. |
 | `2fc6186d` | **M260** — block displays: the state into `DisplayState`, the model built at run time from the baked terrain quads (`BakedAssets::add_state_model`, `block_quads_as_held`), handed to the GPU incrementally (`extend_held_items`); render-check **r119**. |
 | `bd4758d0` | **M259** — evoker fangs: entity event 4 stamps the bite (`EntityClasses::is_evoker_fangs`), vanilla's progress clock, the base and jaws as animated groups, drawn only while biting; render-check **r118**. |
@@ -580,7 +584,7 @@ released.
 - End crystals (M257) draw no beam, and their sheet is halved to fit the
   entity atlas's 64x64 large slots; a larger slot would draw it at full
   resolution.
-- Still a capsule after M259: the wind charge (its texture scrolls through the `breezeWind` render type, which the block-entity emitter has no equivalent of). A blue wither skull draws the black texture; the shulker bullet's translucent shell is not drawn (the display entities are no longer capsules; block displays draw nothing). A minecart's contents block is not drawn, nor its slope pitch. (M241 drew the fishing line; M250 the arrows and the thrown trident.)
+- Still a capsule after M259: the wind charge (its texture scrolls through the `breezeWind` render type, which the block-entity emitter has no equivalent of). A blue wither skull draws the black texture; the shulker bullet's translucent shell is not drawn (no display entity is a capsule; M260 drew block displays). A minecart's slope pitch is not drawn (its contents are since M261). (M241 drew the fishing line; M250 the arrows and the thrown trident.)
 - After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M242: **4,356 tests; 4,351 passed in the full run and the 5 failures, all `rewo-net` `srv` TCP tests at the fake nameserver's port pairing ("a port free for both UDP and TCP"), passed on rerun (34/34): the shared PC's sockets, not Rewo; gates 51/51** (inventoryshot 169, itemshot 78); render check **108/108** on two runs; clippy (gates and default features, after one needless `clone`) and `cargo fmt --check` clean.
 - After M243: **4,357 tests passed, 0 failed; gates 51/51** (itemshot 79); render check **108/108** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
@@ -600,6 +604,7 @@ released.
 - After M258: **4,387 tests passed, 0 failed; gates 51/51**; render check **117/117** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M259: **4,390 tests passed, 0 failed; gates 51/51**; render check **118/118** on two runs (r118 caught the bite in 917 and 826 frames); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M260: **4,392 tests passed, 0 failed; gates 51/51**; render check **119/119** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- After M261: **4,395 tests passed, 0 failed; gates 51/51**; render check **120/120** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

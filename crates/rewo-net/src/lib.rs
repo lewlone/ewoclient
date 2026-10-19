@@ -2846,6 +2846,23 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_variant(eid, i32::from(v));
         }
     }
+    // M261 — a minecart's contents: its custom display block (11, 0 is
+    // empty), display offset (12) and a furnace minecart's fuel (13, the only
+    // minecart BOOLEAN there; a command block minecart's 13 is a STRING).
+    if kinds.classes.is_some_and(|c| c.is_minecart(type_id))
+        && (meta.opt_block11.is_some() || meta.int12.is_some() || meta.bool13.is_some())
+    {
+        let d = entities.minecart_display_mut(eid);
+        if let Some(v) = meta.opt_block11 {
+            d.custom_block = u32::try_from(v).ok().filter(|&s| s != 0);
+        }
+        if let Some(v) = meta.int12 {
+            d.offset = Some(v);
+        }
+        if let Some(v) = meta.bool13 {
+            d.fuel = v;
+        }
+    }
     // Slot 9 PAINTING_VARIANT → the painting's variant (M254), raw id.
     if let Some(v) = meta.painting9 {
         entities.set_variant(eid, v);
@@ -6256,13 +6273,14 @@ mod route_decode_failure_tests {
     }
 }
 
-/// M259 — entity event 4 is an evoker fangs' bite only for that kind (a
-/// warden's 4 stays its attack), resolved against the real registry.
+/// Kind-gated decodes that need the real entity registry's classes.
 #[cfg(test)]
-mod fangs_event_tests {
+mod registry_kind_tests {
     use super::*;
     use rewo_world::entities::{EntityEvent, EntityState, EntityTable};
 
+    /// M259 — entity event 4 is an evoker fangs' bite only for that kind (a
+    /// warden's 4 stays its attack).
     #[test]
     fn event_4_starts_an_evoker_fangs_bite() {
         let Some(paths) =
@@ -6288,6 +6306,49 @@ mod fangs_event_tests {
         assert_eq!(t.event_start(2, EntityEvent::WardenAttack), Some(40));
         assert_eq!(t.event_start(2, EntityEvent::EvokerFangsBite), None);
         assert_eq!(t.event_start(3, EntityEvent::EvokerFangsBite), None);
+    }
+
+    /// M261 — indices 11 (OPTIONAL_BLOCK_STATE), 12 (INT) and 13 (BOOLEAN)
+    /// are a minecart's display block, offset and furnace fuel, and nothing
+    /// for another kind; an empty optional (0) clears the custom block.
+    #[test]
+    fn minecart_display_metadata_is_kind_gated() {
+        let Some(paths) =
+            rewo_data::DataPaths::for_version("26.2").filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report");
+            return;
+        };
+        let types = rewo_data::entity_types::EntityTypes::load(&paths.registries_json()).unwrap();
+        let classes = rewo_data::entity_types::EntityClasses::resolve(&types).unwrap();
+        let cart = types.id_of("minecraft:furnace_minecart").unwrap();
+        let zombie = types.id_of("minecraft:zombie").unwrap();
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            ..Default::default()
+        };
+        let body = |eid: u8, index: u8, serializer: u8, value: &[u8]| {
+            let mut b = vec![eid, index, serializer];
+            b.extend_from_slice(value);
+            b.push(0xFF);
+            b
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, cart, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, zombie, 0.0, 0.0, 0.0, 0.0, 0.0));
+        for eid in [7u8, 8] {
+            apply_set_entity_data(&body(eid, 11, 15, &[42]), &mut t, kinds);
+            apply_set_entity_data(&body(eid, 12, 1, &[10]), &mut t, kinds);
+            apply_set_entity_data(&body(eid, 13, 8, &[1]), &mut t, kinds);
+        }
+        let d = t.minecart_display(7);
+        assert_eq!(
+            (d.custom_block, d.offset, d.fuel),
+            (Some(42), Some(10), true)
+        );
+        assert_eq!(t.minecart_display(8), Default::default());
+        apply_set_entity_data(&body(7, 11, 15, &[0]), &mut t, kinds);
+        assert_eq!(t.minecart_display(7).custom_block, None);
     }
 }
 

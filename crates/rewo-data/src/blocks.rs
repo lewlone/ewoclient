@@ -235,6 +235,35 @@ impl Blocks {
         self.default_state.get(block_name).copied()
     }
 
+    /// M261 — the state of `block_name` that has every `(key, value)` in
+    /// `props` and otherwise the default's values, or `None`. A block's
+    /// states are contiguous, so this walks out from the default.
+    pub fn state_with(&self, block_name: &str, props: &[(&str, &str)]) -> Option<u32> {
+        let default = self.default_state(block_name)?;
+        let wanted = |s: u32| -> bool {
+            self.block_name(s) == Some(block_name)
+                && self
+                    .properties(block_name)
+                    .into_iter()
+                    .flatten()
+                    .all(|(k, _)| {
+                        let want = props
+                            .iter()
+                            .find(|(pk, _)| pk == k)
+                            .map(|(_, v)| *v)
+                            .or_else(|| self.property(default, k));
+                        self.property(s, k) == want
+                    })
+        };
+        let mut lo = default;
+        while lo > 0 && self.block_name(lo - 1) == Some(block_name) {
+            lo -= 1;
+        }
+        (lo..)
+            .take_while(|&s| self.block_name(s) == Some(block_name))
+            .find(|&s| wanted(s))
+    }
+
     /// M229 — the value of property `key` in state `state_id` (`"true"`,
     /// `"3"`, `"north"`...), or `None` when the state has no such property.
     pub fn property(&self, state_id: u32, key: &str) -> Option<&str> {

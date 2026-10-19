@@ -1707,16 +1707,158 @@ pub(crate) fn to_gpu_held_texture(
     }
 }
 
+/// M261 — the block a minecart carries and its display offset in px: the
+/// custom display block when the server sent one, else the type's
+/// `getDefaultDisplayBlockState` (a chest facing north, a furnace facing
+/// north and lit while it has fuel, a hopper, TNT, a spawner, a command
+/// block; the plain minecart none), and the offset sent or the type's
+/// `getDefaultDisplayOffset` (8 for the chest, 1 for the hopper, else 6).
+pub(crate) fn minecart_contents(
+    name: &str,
+    d: rewo_world::entities::MinecartDisplay,
+    blocks: &rewo_data::blocks::Blocks,
+) -> Option<(u32, i32)> {
+    let default_offset = match name {
+        "minecraft:chest_minecart" => 8,
+        "minecraft:hopper_minecart" => 1,
+        _ => 6,
+    };
+    let state = match d.custom_block {
+        Some(s) => s,
+        None => match name {
+            "minecraft:chest_minecart" => {
+                blocks.state_with("minecraft:chest", &[("facing", "north")])?
+            }
+            "minecraft:furnace_minecart" => blocks.state_with(
+                "minecraft:furnace",
+                &[
+                    ("facing", "north"),
+                    ("lit", if d.fuel { "true" } else { "false" }),
+                ],
+            )?,
+            "minecraft:hopper_minecart" => blocks.default_state("minecraft:hopper")?,
+            "minecraft:tnt_minecart" => blocks.default_state("minecraft:tnt")?,
+            "minecraft:spawner_minecart" => blocks.default_state("minecraft:spawner")?,
+            "minecraft:command_block_minecart" => {
+                blocks.default_state("minecraft:command_block")?
+            }
+            _ => return None,
+        },
+    };
+    Some((state, d.offset.unwrap_or(default_offset)))
+}
+
+/// M261 — `AbstractMinecartRenderer`'s pose for the carried block, block
+/// units about the entity: the fallback placement `translate(0, 0.375, 0)
+/// · YP(180 - yRot)` the cart body shares, then `scale(0.75) ·
+/// translate(-0.5, (offset - 8)/16, 0.5) · YP(90)`, the block from its
+/// origin.
+pub(crate) fn minecart_contents_transform(
+    yaw: f32,
+    offset: i32,
+) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_y, scale, translation};
+    mul(
+        &mul(&translation(0.0, 0.375, 0.0), &rot_y(180.0 - yaw)),
+        &mul(
+            &mul(
+                &scale(0.75, 0.75, 0.75),
+                &translation(-0.5, (offset - 8) as f32 / 16.0, 0.5),
+            ),
+            &rot_y(90.0),
+        ),
+    )
+}
+
+/// M261 — every minecart's carried block this frame: a block-entity block
+/// (the chest) as its block-entity model at rest under its own facing, any
+/// other as its block model (`rewo:be/state/<id>`, built at run time when the
+/// bake did not make it). Recorded: no slope pitch, rail position or hurt
+/// wobble (the cart body has none either), a TNT minecart does not flash,
+/// and a spawner's caged mob is not drawn.
+pub(super) fn collect_minecart_contents(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    blocks: &rewo_data::blocks::Blocks,
+    chests: &rewo_data::chest_states::ChestStates,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::{mul, IDENTITY};
+    use rewo_data::chest_states::BlockEntityAnim;
+    let mut out = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        let Some(name) = etypes.name(e.type_id) else {
+            continue;
+        };
+        let Some((state, offset)) =
+            minecart_contents(name, session.world.entities.minecart_display(id), blocks)
+        else {
+            continue;
+        };
+        let p = e.render_pos(alpha);
+        let base = minecart_contents_transform(e.yaw, offset);
+        let at_rest = (
+            [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+            [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+        );
+        let (model, transform, (part_transforms, part_pivots)) = match chests.draw_for(state) {
+            Some(be) => {
+                let parts = match be.anim {
+                    BlockEntityAnim::ChestLid(_) => super::one_part(
+                        rewo_data::block_entity_models::CHEST_LID_PART,
+                        rewo_data::be_transform::chest_lid_part(
+                            0.0,
+                            rewo_data::block_entity_models::CHEST_LID_PIVOT,
+                        ),
+                        rewo_data::block_entity_models::CHEST_LID_PIVOT,
+                    ),
+                    BlockEntityAnim::ShulkerLid => super::one_part(
+                        rewo_data::block_entity_models::SHULKER_LID_PART,
+                        rewo_data::be_transform::shulker_lid_part(0.0),
+                        rewo_data::block_entity_models::SHULKER_LID_PIVOT,
+                    ),
+                    _ => continue,
+                };
+                (be.model, mul(&base, &be.transform), parts)
+            }
+            None => (
+                rewo_data::block_entity_models::carried_block_model(state),
+                base,
+                at_rest,
+            ),
+        };
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            model,
+            transform,
+            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            part_transforms,
+            part_pivots,
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
+}
+
 /// M260 — every block display's state this frame, for
 /// [`rewo_data::assets::BakedAssets::add_state_model`] to build before the
 /// draws are collected.
-pub(super) fn block_display_states(session: &PlaySession, etypes: &EntityTypes) -> Vec<u32> {
-    let mut out: Vec<u32> = session
-        .world
-        .entities
+/// Since M261 also every minecart's carried block.
+pub(super) fn block_display_states(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    blocks: &rewo_data::blocks::Blocks,
+) -> Vec<u32> {
+    let ents = &session.world.entities;
+    let mut out: Vec<u32> = ents
         .iter()
-        .filter(|(_, e)| etypes.name(e.type_id) == Some("minecraft:block_display"))
-        .filter_map(|(id, _)| session.world.entities.display(id).and_then(|d| d.block))
+        .filter_map(|(id, e)| match etypes.name(e.type_id)? {
+            "minecraft:block_display" => ents.display(id).and_then(|d| d.block),
+            name => minecart_contents(name, ents.minecart_display(id), blocks).map(|(s, _)| s),
+        })
         .collect();
     out.sort_unstable();
     out.dedup();

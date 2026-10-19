@@ -2075,6 +2075,7 @@ this shape once.
 | M258 (2026-10-19) — a wither skull, llama spit and shulker bullet draw their models | **r117** | — | — |
 | M259 (2026-10-19) — evoker fangs draw their model once they bite | **r118** | — | — |
 | M260 (2026-10-19) — a block display draws its state's run-time model | **r119** | — | — |
+| M261 (2026-10-19) — hopper and chest minecarts draw what they carry | **r120** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3909,6 +3910,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M261 — what minecarts carry (2026-10-19)
+
+M252 drew all seven minecart types as the empty cart. Now the carried
+block draws too:
+
+- **Metadata** (gated on `EntityClasses::is_minecart`):
+  `DATA_ID_CUSTOM_DISPLAY_BLOCK` (index 11, OPTIONAL_BLOCK_STATE, 0 empty),
+  `DATA_ID_DISPLAY_OFFSET` (12, INT) and `MinecartFurnace.DATA_ID_FUEL`
+  (13, BOOLEAN, the only minecart BOOLEAN there), in a new `EntityTable`
+  side map (`MinecartDisplay`, cleared on removal).
+- **Contents** (`live_cmd::minecart_contents`): the custom block, else the
+  type's `getDefaultDisplayBlockState` (chest and furnace facing north, the
+  furnace lit while fuelled, hopper, TNT, spawner, command block), with the
+  sent or default offset (chest 8, hopper 1, else 6).
+  `Blocks::state_with` finds a state by properties.
+- **Pose** (`minecart_contents_transform`): the body's fallback placement
+  `translate(0, 0.375, 0) · YP(180 - yRot)`, then `scale(0.75) ·
+  translate(-0.5, (offset - 8)/16, 0.5) · YP(90)`.
+- **Drawing**: a block-entity block (the chest, a shulker box) as its
+  block-entity model at rest under its own facing transform; any other as
+  M260's run-time state model, which the frame now builds for minecart
+  contents as well as block displays.
+
+Recorded: no slope pitch, rail position or hurt wobble (the body has none
+either), a TNT minecart does not flash, a spawner minecart's caged mob is
+not drawn. r119 now names its stair's state rather than "the first model
+built at run time", which a minecart's hopper could also be.
+
+Tests: `minecart_contents_sit_centred_over_the_cart`,
+`minecart_contents_follow_each_type` (real block registry),
+`minecart_display_metadata_is_kind_gated` (real entity registry).
+**r120**: a summoned hopper minecart and chest minecart both draw what they
+carry, every quad.
 
 ### M260 — block displays: block models built at run time (2026-10-19)
 

@@ -1026,6 +1026,20 @@ pub struct EntityTable {
     /// M255 — a display entity's synced render state ([`DisplayState`]).
     /// Cleared on removal.
     displays: HashMap<i32, DisplayState>,
+    /// M261 — a minecart's synced display ([`MinecartDisplay`]). Cleared on
+    /// removal.
+    minecart_displays: HashMap<i32, MinecartDisplay>,
+}
+
+/// M261 — what a minecart carries, as synced: `AbstractMinecart`'s
+/// `DATA_ID_CUSTOM_DISPLAY_BLOCK` (index 11, OPTIONAL_BLOCK_STATE) and
+/// `DATA_ID_DISPLAY_OFFSET` (12, INT), and `MinecartFurnace.DATA_ID_FUEL`
+/// (13, BOOLEAN). `None` is "not sent", which is the type's default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MinecartDisplay {
+    pub custom_block: Option<u32>,
+    pub offset: Option<i32>,
+    pub fuel: bool,
 }
 
 /// M255 — a display entity's synced render state: `Display`'s
@@ -1439,6 +1453,7 @@ impl EntityTable {
             leash_data,
             projectile_power,
             displays,
+            minecart_displays,
         } = self;
         custom_names.remove(&id);
         poses.remove(&id);
@@ -1469,6 +1484,7 @@ impl EntityTable {
         leash_data.remove(&id);
         projectile_power.remove(&id);
         displays.remove(&id);
+        minecart_displays.remove(&id);
         // The three the original `remove` forgot: worn armour (a reused id
         // would render the last occupant's chestplate), the bee's anger end
         // time and the guardian's beam target. Each also grew without bound
@@ -2366,6 +2382,16 @@ impl EntityTable {
     /// The entity this rocket is attached to, if any.
     pub fn attached_to(&self, id: i32) -> Option<i32> {
         self.mob_state.get(&id).and_then(|s| s.attached_to)
+    }
+
+    /// M261 — the minecart's synced display, created empty on first write.
+    pub fn minecart_display_mut(&mut self, id: i32) -> &mut MinecartDisplay {
+        self.minecart_displays.entry(id).or_default()
+    }
+
+    /// M261 — the minecart's synced display (all defaults when none came).
+    pub fn minecart_display(&self, id: i32) -> MinecartDisplay {
+        self.minecart_displays.get(&id).copied().unwrap_or_default()
     }
 
     /// M255 — the display entity's state, created at vanilla's defaults on
@@ -4301,6 +4327,7 @@ mod side_state_tests {
             leash_data,
             projectile_power,
             displays,
+            minecart_displays,
         } = t;
         [
             custom_names.contains_key(&id),
@@ -4335,6 +4362,7 @@ mod side_state_tests {
             leash_data.contains_key(&id),
             projectile_power.contains_key(&id),
             displays.contains_key(&id),
+            minecart_displays.contains_key(&id),
             item_frames.contains_key(&id),
         ]
         .into_iter()
@@ -4373,6 +4401,7 @@ mod side_state_tests {
         t.leash_data.insert(id, 0);
         t.projectile_power.insert(id, 1.5);
         t.displays.entry(id).or_default();
+        t.minecart_displays.insert(id, MinecartDisplay::default());
         t.item_stacks.insert(id, (1, 1, false));
         t.hurts.insert(id, HurtState::default());
         t.hurt_dirs.insert(id, 45.0);
