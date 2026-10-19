@@ -1014,37 +1014,36 @@ impl LiveApp {
             anim_time,
         );
         drop(draws);
-        // M247 — r109: the staged chest drew every quad of its baked model.
-        // Graded on what the emitter EMITTED, not on the draw list: from
-        // M25b to M246 a chest reached the list and drew nothing, because its
-        // 64x64 sheet never paged into the entity atlas.
+        // M247 — r109: the staged chest (and, since M248, a bell and a
+        // lectern's book) drew every quad of its baked model. Graded on what
+        // the emitter EMITTED, not on the draw list: from M25b to M246 a chest
+        // reached the list and drew nothing, because its 64x64 sheet never
+        // paged into the entity atlas.
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
-            let want = self
-                .baked
-                .as_ref()
-                .and_then(|b| b.held_items.any("rewo:be/chest"))
-                .map_or(0, |m| m.quads.len() as u32);
-            let drew = be_draws
+            let mut complete = true;
+            for (i, model) in super::render_check::RC_BLOCK_ENTITY_MODELS
                 .iter()
-                .zip(state.world_renderer.block_entity_quads())
-                .filter(|(d, _)| d.model == "rewo:be/chest")
-                .map(|(_, &q)| q)
-                .max()
-                .unwrap_or(0);
-            if want > 0 && drew == want {
+                .enumerate()
+            {
+                let want = self
+                    .baked
+                    .as_ref()
+                    .and_then(|b| b.held_items.any(model))
+                    .map_or(0, |m| m.quads.len() as u32);
+                let drew = be_draws
+                    .iter()
+                    .zip(state.world_renderer.block_entity_quads())
+                    .filter(|(d, _)| d.model == *model)
+                    .map(|(_, &q)| q)
+                    .max()
+                    .unwrap_or(0);
+                complete &= want > 0 && drew == want;
+                c.be_quads[i] = (c.be_quads[i].0.max(drew), want);
+            }
+            if complete {
                 c.chest_frames += 1;
             }
-            c.chest_quads = c.chest_quads.max(drew);
-            let models: Vec<&str> = be_draws.iter().map(|d| d.model).collect();
-            if !models.is_empty() && c.be_models_seen.len() < 40 {
-                for m in models {
-                    if !c.be_models_seen.iter().any(|x| x == m) {
-                        c.be_models_seen.push(m.to_string());
-                    }
-                }
-            }
-            c.chest_quads_want = want;
         }
 
         let extent = state.renderer.swapchain.extent;

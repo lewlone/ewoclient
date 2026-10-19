@@ -4341,6 +4341,10 @@ impl<'a> Baker<'a> {
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_conduit));
         // M246 — the shield and the trident, item-only models.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_equipment));
+        // M248 — the bell and the lectern's book.
+        be_models.append(&mut bake_be!(
+            crate::block_entity_models::bake_bell_and_book
+        ));
         // M240 — the fishing bobber's sprite.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_fishing_hook));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_banners));

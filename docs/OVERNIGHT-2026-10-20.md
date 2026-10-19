@@ -216,6 +216,8 @@ released.
   you play** did not exist on the client at all until the chunk reloaded.
   Vanilla's client creates it itself; Rewo now does too. The render check
   now places a chest and checks that it draws in the game window.
+- **M248**: bells now have their bell, and lecterns their open book (both
+  were missing). The enchanting table's floating book is still missing.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -276,6 +278,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M248)* | **M248** — the bell (`BellModel`) and a lectern's book (`BookModel` at `forAnimation(0, 0.1, 0.9, 1.2)` under `LecternRenderer`'s transform) as block-entity statics; blockentityshot **k31**; **r109** grades chest, bell and book. |
 | `081032f` | **M247** — block entities created on the client when a block change makes one (`gen_block_entity_blocks.py`, `BlockEntities::sync_block_change`, as `LevelChunk.setBlockState` does); `remove` clears animation state; per-draw block-entity quad counts; render-check **r109** (a staged chest draws all 18 quads). |
 | `de43c7c` | **M246** — the entity atlas gets a 64×64 large-item band (`ATLAS_H` 2368): block-entity sheets never paged in, so every block entity drew nothing in the windowed client since M25b; shield and trident models; a slot's own model brings its `gui` transform and lighting; itemshot **c3c/c3d/c3e** (0 px with the band disabled). |
 | `ec3a771` | **M245** — slot lighting: `gui_normal` (display rotation + the slot's y flip), the diffuse decoded to linear, block items' `dir` remapped from `FACE_NAMES` to `Direction` order, block-entity `FACE_DIRS` corrected, parts' `dir` turned with their affine; inventoryshot **g10** (0.647 / 0.394 against 0.651 / 0.400). |
@@ -536,6 +539,7 @@ released.
 - After M245: **4,365 tests; 4,364 passed in the full run, and the one failure (`rewo-audio` `a_slow_read_is_not_re_requested_on_every_tick`, which waits 80 ms of wall time for a worker to open a stream) passed 5/5 on rerun; gates 51/51** (inventoryshot 170); render check **108/108 on runs 2 and 3**, run 1 107/108 with r96 at a 0.31 eating-slowdown ratio (0.2000 on the others; M245 touches no movement); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M246: **4,365 tests passed, 0 failed; gates 51/51** (itemshot 82, capeshot 69 after f1/f2 took the new bottom band; demo hash unchanged); render check **108/108** on two runs; clippy (gates and default features, after four needless `&mut gpu` in c3e) and `cargo fmt --check` clean. Control: with the large band disabled, c3c/c3d/c3e read 0 px.
 - After M247: **4,370 tests passed, 0 failed; gates 51/51**; render check **109/109** on two runs; clippy (gates and default features) and `cargo fmt --check` clean. Control: before the client-side creation, r109 failed with the chest absent from the draw list.
+- After M248: **4,370 tests passed, 0 failed; gates 51/51** (blockentityshot 192); render check **109/109 on runs 1, 3 and 4**; run 2 read 100/109: during r96's eat-while-walking the bot took 3.2 + 1.6 + 1.6 damage from an unlogged source, was knocked off its path, and the use tail never reached the furnace (the use spot moves with the random spawn; the other three runs walked the same stage at full health). Clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -581,15 +585,18 @@ released.
   for a worker to open a stream; failed once under the full workspace run,
   5/5 alone) and render-check r96 (walking while eating read a 0.31 ratio
   once against 0.2000 on the next two runs).
+- A render-check flake seen once (M248's run 2): the bot took damage from
+  an unlogged source while walking east for r96, and the whole use tail
+  failed after it. The render check does not log `damage_event`; logging
+  the damage type and source entity would name it next time.
 - ~~A boat model~~ (M223).
 - Banner and shield items show no patterns (the stack's `banner_patterns`
   never reach the item path), and a pot item shows plain sides. A dropped
   or framed trident shows its 3D model (vanilla: the sprite). The dragon
   head's 256×256 sheet is still too big for the large pool.
-- Not drawn: the parts of three blocks that only a block-entity renderer
-  draws, which Rewo has no model for: the bell's swinging bell
-  (`BellRenderer`), and the lectern's and enchanting table's books
-  (`BookModel`). Sign boards ARE drawn: in 26.2 they are ordinary block
+- Not drawn: the enchanting table's floating book (`EnchantTableRenderer`:
+  it turns to the nearest player and flips pages). M248 drew the bell and
+  the lectern's book; a rung bell does not shake. Sign boards ARE drawn: in 26.2 they are ordinary block
   models (checked: oak sign 10-15 quads, wall and hanging signs too); an
   earlier draft of this note said otherwise.
 - The render check still injects the sign's block entity by hand (r48/r49);

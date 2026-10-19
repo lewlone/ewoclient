@@ -146,6 +146,10 @@ PRECMD = (
     # M247 -- r109. A chest beside it: a block entity whose 64x64 sheet must
     # page into the entity atlas's large band, or its draw emits nothing.
     "setblock ~11 ~ ~9 minecraft:chest[facing=north];"
+    # M248 -- r109 too: a bell, clear of r87's boat pool (~5..~9 x ~4..~18),
+    # whose bell only a block-entity renderer draws. (r109's lectern book is
+    # M184's lectern at ~2 ~ ~, which holds one.)
+    "setblock ~15 ~ ~10 minecraft:bell[attachment=floor,facing=north];"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"

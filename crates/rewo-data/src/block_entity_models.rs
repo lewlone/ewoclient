@@ -1647,6 +1647,156 @@ pub fn bake_equipment(
     out
 }
 
+// ------------------------------------------------ the bell and the lectern's book
+//
+// M248 — the two block-entity parts of blocks whose frame is a block model:
+// `BellRenderer` draws the bell itself under the stand, `LecternRenderer` the
+// open book on the desk. Both baked at rest.
+
+/// `BellModel.createBodyLayer` — the body at `offset(8, 12, 8)` and its lip
+/// (a child at `offset(-8, -12, -8)`, so at the origin), 32×32. The renderer
+/// pushes no transform: the model is authored in block px, y up. At rest:
+/// a rung bell's shake (`xRot`/`zRot` from its tick count) is not kept.
+const BELL: &[Box] = &[
+    plain(
+        (0.0, 0.0),
+        [-3.0, -6.0, -3.0],
+        [6.0, 7.0, 6.0],
+        [8.0, 12.0, 8.0],
+        0,
+    ),
+    plain((0.0, 13.0), [4.0, 4.0, 4.0], [8.0, 2.0, 8.0], [0.0; 3], 0),
+];
+
+/// The bell's model name and texture (`BellRenderer.BELL_TEXTURE`).
+pub const BELL_MODEL: (&str, &str) = ("rewo:be/bell", "entity/bell/bell_body");
+/// The lectern book's model name and texture (`EnchantTableRenderer
+/// .BOOK_TEXTURE`).
+pub const LECTERN_BOOK_MODEL: (&str, &str) = (
+    "rewo:be/lectern_book",
+    "entity/enchantment/enchanting_table_book",
+);
+
+/// `BookModel.createBodyLayer` posed by `setupAnim` for `LecternRenderer`'s
+/// `BookModel.State.forAnimation(0.0, 0.1, 0.9, 1.2)`: openness
+/// `(sin(0) · 0.1 + 1.25) · 1.2 = 1.5`, page flips 0.1 and 0.9. A part's
+/// `yRot` turns it about its pose origin, which `x = sin(openness)` moves.
+fn lectern_book() -> Vec<Box> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let open = 1.5f32;
+    let x = open.sin();
+    let turned = |b: Box, y: f32| Box {
+        rot: [0.0, y, 0.0],
+        ..b
+    };
+    vec![
+        turned(
+            plain(
+                (0.0, 0.0),
+                [-6.0, -5.0, -0.005],
+                [6.0, 10.0, 0.005],
+                [0.0, 0.0, -1.0],
+                0,
+            ),
+            PI + open,
+        ),
+        turned(
+            plain(
+                (16.0, 0.0),
+                [0.0, -5.0, -0.005],
+                [6.0, 10.0, 0.005],
+                [0.0, 0.0, 1.0],
+                0,
+            ),
+            -open,
+        ),
+        turned(
+            plain(
+                (12.0, 0.0),
+                [-1.0, -5.0, 0.0],
+                [2.0, 10.0, 0.005],
+                [0.0; 3],
+                0,
+            ),
+            FRAC_PI_2,
+        ),
+        turned(
+            plain(
+                (0.0, 10.0),
+                [0.0, -4.0, -0.99],
+                [5.0, 8.0, 1.0],
+                [x, 0.0, 0.0],
+                0,
+            ),
+            open,
+        ),
+        turned(
+            plain(
+                (12.0, 10.0),
+                [0.0, -4.0, -0.01],
+                [5.0, 8.0, 1.0],
+                [x, 0.0, 0.0],
+                0,
+            ),
+            -open,
+        ),
+        turned(
+            plain(
+                (24.0, 10.0),
+                [0.0, -4.0, 0.0],
+                [5.0, 8.0, 0.005],
+                [x, 0.0, 0.0],
+                0,
+            ),
+            open - open * 2.0 * 0.1,
+        ),
+        turned(
+            plain(
+                (24.0, 10.0),
+                [0.0, -4.0, 0.0],
+                [5.0, 8.0, 0.005],
+                [x, 0.0, 0.0],
+                0,
+            ),
+            open - open * 2.0 * 0.9,
+        ),
+    ]
+}
+
+/// Bake the bell and the lectern's book (M248).
+pub fn bake_bell_and_book(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let book = lectern_book();
+    let mut out = Vec::new();
+    for ((name, tex_name), boxes, size) in [
+        (BELL_MODEL, BELL, (32.0, 32.0)),
+        (LECTERN_BOOK_MODEL, &book[..], (64.0, 32.0)),
+    ] {
+        let Some(tex) = pool.intern(tex_name, || load(tex_name)) else {
+            log::error!("bell/book: no texture {tex_name:?}");
+            continue;
+        };
+        out.push((
+            name.to_string(),
+            HeldItemModel {
+                quads: model_quads(boxes, tex, size),
+                right: DisplayTransform::IDENTITY,
+                left: DisplayTransform::IDENTITY,
+                ground: DisplayTransform::IDENTITY,
+                gui: DisplayTransform::IDENTITY,
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
+                fixed: DisplayTransform::IDENTITY,
+                from_block: false,
+                gui_quads: None,
+            },
+        ));
+    }
+    out
+}
+
 pub fn bake_conduit(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,

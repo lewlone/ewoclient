@@ -131,6 +131,12 @@ pub(super) const SIGN_WITNESS_KEY: &str = "block.minecraft.dirt";
 /// (§0.0 gotcha 0a). This is the jar's own answer, read once and written down.
 pub(super) const SIGN_WITNESS_RESOLVED: &str = "Dirt";
 
+/// M247/M248 — the block entities `render_check.py` stages (the chest by the
+/// anvil, the bell beyond it, the book on M184's lectern),
+/// which r109 requires to draw every quad of their models.
+pub(super) const RC_BLOCK_ENTITY_MODELS: [&str; 3] =
+    ["rewo:be/chest", "rewo:be/bell", "rewo:be/lectern_book"];
+
 /// What `live --render-check` observed (M86).
 ///
 /// Every field is a **count of frames on which something happened**, never a
@@ -226,12 +232,11 @@ pub(super) struct RenderCheck {
     /// hand end sat from the eye.
     pub(super) fishing_line_frames: usize,
     pub(super) fishing_line_hand: f32,
-    /// M247 — r109: frames on which the staged chest's draw emitted every
-    /// quad of its baked model, the most it emitted, and how many it has.
+    /// M247 — r109: frames on which every staged block entity
+    /// ([`RC_BLOCK_ENTITY_MODELS`]) emitted every quad of its baked model,
+    /// and per model `(most emitted, model quads)`.
     pub(super) chest_frames: usize,
-    pub(super) chest_quads: u32,
-    pub(super) chest_quads_want: u32,
-    pub(super) be_models_seen: Vec<String>,
+    pub(super) be_quads: [(u32, u32); 3],
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1180,11 +1185,11 @@ impl RenderCheck {
         // cannot page into the entity atlas emits none (every block entity
         // until M246's large-item band).
         row(
-            "r109 a placed chest drew every quad of its model in the windowed client",
+            "r109 a placed chest, bell and lectern book drew every quad of their models in the windowed client",
             self.chest_frames >= 1,
             format!(
-                "{} frames drew all {} quads (at most {} drawn); block-entity models seen {:?}",
-                self.chest_frames, self.chest_quads_want, self.chest_quads, self.be_models_seen
+                "{} frames drew them all; (drawn, model) per {:?}: {:?}",
+                self.chest_frames, RC_BLOCK_ENTITY_MODELS, self.be_quads
             ),
         );
         // M241 — r108: r94's cast rod draws its line, and the line's far end

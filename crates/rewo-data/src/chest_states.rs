@@ -596,6 +596,66 @@ impl ChestStates {
             }
         }
 
+        // M248 — the bell (`BellRenderer` pushes no transform; every
+        // attachment hangs the same bell) and a lectern holding a book
+        // (`LecternRenderer`: `translate(0.5, 1.0625, 0.5)`, `YP(-yRot)` with
+        // `yRot = facing.getClockWise().toYRot()`, `ZP(67.5)`,
+        // `translate(0, -0.125, 0)`). A lectern with no book draws nothing.
+        for (block, def) in obj {
+            let bell = block == "minecraft:bell";
+            if !bell && block != "minecraft:lectern" {
+                continue;
+            }
+            let Some(sts) = def.get("states").and_then(|s| s.as_array()) else {
+                continue;
+            };
+            for st in sts {
+                let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
+                    continue;
+                };
+                let prop = |k: &str| {
+                    st.get("properties")
+                        .and_then(|p| p.get(k))
+                        .and_then(|v| v.as_str())
+                };
+                if bell {
+                    statics.insert(
+                        id as u32,
+                        (
+                            crate::block_entity_models::BELL_MODEL.0.to_string(),
+                            crate::be_transform::IDENTITY,
+                        ),
+                    );
+                    continue;
+                }
+                if prop("has_book") != Some("true") {
+                    continue;
+                }
+                use crate::be_transform::{mul, rot_y, rot_z, translation, Facing6};
+                let clockwise = match prop("facing").and_then(Facing6::from_name) {
+                    Some(Facing6::North) => Facing6::East,
+                    Some(Facing6::East) => Facing6::South,
+                    Some(Facing6::South) => Facing6::West,
+                    Some(Facing6::West) => Facing6::North,
+                    _ => return Err(format!("blocks.json: {block} {id} has no facing")),
+                };
+                let xf = mul(
+                    &mul(
+                        &translation(0.5, 1.0625, 0.5),
+                        &rot_y(-clockwise.to_y_rot()),
+                    ),
+                    &mul(&rot_z(67.5f32.to_radians()), &translation(0.0, -0.125, 0.0)),
+                );
+                statics.insert(
+                    id as u32,
+                    (
+                        crate::block_entity_models::LECTERN_BOOK_MODEL.0.to_string(),
+                        xf,
+                    ),
+                );
+            }
+        }
+
         log::info!(
             "rewo-data: {} chest + {} shulker-box + {} static + {} banner block state(s)",
             by_state.len(),

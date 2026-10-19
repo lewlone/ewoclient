@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 191;
+const EXPECTED_WITNESSES: usize = 192;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -2613,6 +2613,57 @@ fn check_skulls(
              unwaxed, a waxed one sharing its level's texture exactly as a \
              waxed copper chest does",
             statue_blocks.len()
+        ),
+    );
+
+    // --- the bell and the lectern's book (M248) ----------------------------
+    //
+    // Every bell state draws the bell (`BellRenderer` pushes no transform);
+    // a lectern draws the book only with `has_book=true`, which is half of
+    // its sixteen states. The bell is two cuboids, the book seven parts.
+    let mut bell = (0usize, 0usize);
+    let mut lectern = (0usize, 0usize, 0usize);
+    for id in 0..40000u32 {
+        match blocks.block_name(id) {
+            Some("minecraft:bell") => {
+                bell.0 += 1;
+                if states
+                    .draw_for(id)
+                    .is_some_and(|d| d.model == bem::BELL_MODEL.0)
+                {
+                    bell.1 += 1;
+                }
+            }
+            Some("minecraft:lectern") => {
+                lectern.0 += 1;
+                match states.draw_for(id) {
+                    Some(d) if d.model == bem::LECTERN_BOOK_MODEL.0 => lectern.1 += 1,
+                    None => lectern.2 += 1,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let quads = |n: &str| items.block_entities.get(n).map_or(0, |m| m.quads.len());
+    c.record(
+        "k31.the_bell_and_a_lecterns_book_resolve_and_bake",
+        bell.0 > 0
+            && bell.1 == bell.0
+            && lectern == (16, 8, 8)
+            && quads(bem::BELL_MODEL.0) == 12
+            && quads(bem::LECTERN_BOOK_MODEL.0) == 42,
+        format!(
+            "{} of {} bell states draw the bell; lectern states {} (book {}, none {}); \
+             bell {} quads, book {} — the parts only a block-entity renderer draws, \
+             absent until M248",
+            bell.1,
+            bell.0,
+            lectern.0,
+            lectern.1,
+            lectern.2,
+            quads(bem::BELL_MODEL.0),
+            quads(bem::LECTERN_BOOK_MODEL.0)
         ),
     );
 

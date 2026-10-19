@@ -3900,6 +3900,33 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M248 — the bell and the lectern's book (2026-10-19)
+
+Two blocks whose frame is a block model have a part only a block-entity
+renderer draws, and Rewo had no model for either:
+
+- **The bell** (`BellRenderer`, `BellModel`): the body at `offset(8, 12, 8)`
+  and its lip, 32×32 `entity/bell/bell_body`, authored in block px with no
+  transform pushed, so every attachment hangs the same bell. Drawn at rest:
+  a rung bell's shake (`xRot`/`zRot` from its tick count) is not kept.
+- **A lectern's book** (`LecternRenderer`, `BookModel`): the seven parts
+  posed by `setupAnim` for `BookModel.State.forAnimation(0, 0.1, 0.9, 1.2)`
+  (openness `1.25 · 1.2 = 1.5`, page flips 0.1 and 0.9; each part's `yRot`
+  about a pose origin `x = sin(openness)` moves), placed by `translate(0.5,
+  1.0625, 0.5) · YP(-yRot) · ZP(67.5) · translate(0, -0.125, 0)` with `yRot =
+  facing.getClockWise().toYRot()`. Only `has_book=true` states draw it.
+
+Both are `ChestStates` statics. Still not drawn: the enchanting table's book,
+which turns towards the nearest player and flips its pages (a clock this
+client does not keep).
+
+Gates: blockentityshot **k31** (all 32 bell states draw the bell; 8 of 16
+lectern states the book, the other 8 nothing; 12 and 42 quads). **r109** now
+also requires r109's bell and M184's lectern book to emit every quad in the
+windowed client (chest 18/18, bell 12/12, book 42/42). The first staging put
+the bell in r87's boat pool and stopped the boat; it moved to `~15 ~ ~10`.
+Looked at: a bell and an open book, rendered serverlessly.
+
 ### M247 — a block entity placed during play exists; r109 (2026-10-19)
 
 Writing r109 (a staged chest must draw in the windowed client) found the
