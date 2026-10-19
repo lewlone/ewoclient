@@ -149,9 +149,24 @@ impl Facing6 {
     }
 }
 
-/// JOML `Quaternionf.rotationXYZ(x, y, z)` as a matrix — X first, then Y, then
-/// Z (`M = Rz · Ry · Rx`), the same convention the model parts use.
+/// JOML `Quaternionf.rotationXYZ(x, y, z)` as a matrix: `rotationX(x)
+/// .rotateY(y).rotateZ(z)`, and `rotateY` post-multiplies, so `M = Rx · Ry ·
+/// Rz` and a vector turns about Z first. Until M242 this was `Rz · Ry · Rx`
+/// (the model parts' `rotateZYX`, [`rot_zyx`]), which sent
+/// `Direction.getRotation()`'s up axis to the south for north, west and east.
 pub fn rot_xyz(x: f32, y: f32, z: f32) -> Affine {
+    let [rx, ry, rz] = axis_rots(x, y, z);
+    mul(&rx, &mul(&ry, &rz))
+}
+
+/// `ModelPart`'s `rotateZYX(zRot, yRot, xRot)` as a matrix — `M = Rz · Ry ·
+/// Rx`, a vector turns about X first. A `PartPose`'s rotation.
+pub fn rot_zyx(x: f32, y: f32, z: f32) -> Affine {
+    let [rx, ry, rz] = axis_rots(x, y, z);
+    mul(&rz, &mul(&ry, &rx))
+}
+
+fn axis_rots(x: f32, y: f32, z: f32) -> [Affine; 3] {
     let (sx, cx) = x.sin_cos();
     let (sy, cy) = y.sin_cos();
     let (sz, cz) = z.sin_cos();
@@ -170,7 +185,7 @@ pub fn rot_xyz(x: f32, y: f32, z: f32) -> Affine {
         [sz, cz, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
     ];
-    mul(&rz, &mul(&ry, &rx))
+    [rx, ry, rz]
 }
 
 /// `ShulkerBoxRenderer.createModelTransform`:
@@ -300,9 +315,10 @@ pub fn pot_side(i: usize) -> Affine {
         2 => ([15.0, 16.0, 15.0], [0.0, FRAC_PI_2, PI]),
         _ => ([1.0, 16.0, 15.0], [PI, 0.0, 0.0]),
     };
+    // `PartPose.offsetAndRotation`: a model part's `rotateZYX`.
     mul(
         &translation(off[0], off[1], off[2]),
-        &rot_xyz(rot[0], rot[1], rot[2]),
+        &rot_zyx(rot[0], rot[1], rot[2]),
     )
 }
 
@@ -871,6 +887,50 @@ mod tests {
         // `mul(T, S)` must scale then translate — the JOML chaining order.
         let m = mul(&translation(1.0, 0.0, 0.0), &scale(2.0, 2.0, 2.0));
         assert!(near(apply(&m, [1.0, 0.0, 0.0]), [3.0, 0.0, 0.0]));
+    }
+
+    /// `Direction.getRotation()` is "the quaternion that takes the up axis
+    /// to this direction" — graded on exactly that, for all six (M242: the
+    /// old `rot_xyz` order sent north, west and east to the south).
+    #[test]
+    fn get_rotation_takes_up_to_each_direction() {
+        let cases = [
+            (Facing6::Down, [0.0, -1.0, 0.0]),
+            (Facing6::Up, [0.0, 1.0, 0.0]),
+            (Facing6::North, [0.0, 0.0, -1.0]),
+            (Facing6::South, [0.0, 0.0, 1.0]),
+            (Facing6::West, [-1.0, 0.0, 0.0]),
+            (Facing6::East, [1.0, 0.0, 0.0]),
+        ];
+        for (f, want) in cases {
+            let m = f.rotation();
+            let got = [m[0][1], m[1][1], m[2][1]];
+            for i in 0..3 {
+                assert!((got[i] - want[i]).abs() < 1e-6, "{f:?}: up -> {got:?}");
+            }
+        }
+    }
+
+    /// The two orders differ, and each is what its source composes:
+    /// `rotationXYZ` turns about Z first, `rotateZYX` about X first.
+    #[test]
+    fn rotation_xyz_and_part_zyx_turn_in_opposite_orders() {
+        use std::f32::consts::FRAC_PI_2;
+        let apply = |m: &Affine, v: [f32; 3]| -> [f32; 3] {
+            std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
+        };
+        // +Y about Z by 90 is -X, then about X by 90 stays -X.
+        let a = apply(&rot_xyz(FRAC_PI_2, 0.0, FRAC_PI_2), [0.0, 1.0, 0.0]);
+        assert!(
+            (a[0] + 1.0).abs() < 1e-6 && a[1].abs() < 1e-6 && a[2].abs() < 1e-6,
+            "{a:?}"
+        );
+        // +Y about X by 90 is +Z, then about Z by 90 stays +Z.
+        let b = apply(&rot_zyx(FRAC_PI_2, 0.0, FRAC_PI_2), [0.0, 1.0, 0.0]);
+        assert!(
+            (b[2] - 1.0).abs() < 1e-6 && b[0].abs() < 1e-6 && b[1].abs() < 1e-6,
+            "{b:?}"
+        );
     }
 
     #[test]

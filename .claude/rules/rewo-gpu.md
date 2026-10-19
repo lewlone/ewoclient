@@ -31,6 +31,14 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   ground.
 - 26.x model textures can be `{sprite, force_translucent}` objects as well as
   strings.
+- **`rotationXYZ` is not `rotateZYX`.** JOML `Quaternionf.rotationXYZ(x, y,
+  z)` (item display transforms, `Direction.getRotation()`) is `M = Rx·Ry·Rz`,
+  turning a vector about Z first; a `ModelPart`/`PartPose` rotation
+  (`rotateZYX`) is `M = Rz·Ry·Rx`. Three helpers had the part order under the
+  other name until M242. Use `be_transform::rot_xyz` / `rot_zyx`,
+  `held::rotate_xyz` or `mobs::rotate_zyx` by what the Java calls.
+- **GUI item depth**: in item space +Z faces the viewer, so a larger z is a
+  greater (nearer) reversed-Z depth (`gui_item.vert`, fixed M242).
 - **Reversed-Z depth**: clear 0.0, compare `GREATER`. Coplanar multi-layer
   geometry (item sprite layers) needs **`GREATER_OR_EQUAL`**. Second passes
   over the same geometry (glint, trims) use depth **EQUAL, no write**, and must

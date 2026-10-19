@@ -24,9 +24,11 @@
 //! `gui` cases land where they do. A sprite's identity transform maps `0..16`
 //! straight onto `-8..8` pixels — exactly filling the slot, which is the whole
 //! reason an absent `display.gui` is *correct* for a sprite rather than
-//! missing. A block's `scale 0.625` with `rotation [30, 225, 0]` reaches about
-//! ±8.7 px on the diagonal, so it slightly overflows its slot, which is what
-//! vanilla shows too.
+//! missing. A block's `scale 0.625` with `rotation [30, 225, 0]` stands on a
+//! corner and reaches `(cos 30° · ½ + sin 30° · √½) · 10 ≈ 7.87` px up and down,
+//! just inside its slot. (Before M242 the rotation tilted before it yawed and
+//! leaned the block to about ±8.7 px, which this doc called vanilla's
+//! overflow.)
 //!
 //! Y is negated on the way out because model space is Y-up and the HUD's screen
 //! space is Y-down.
@@ -267,9 +269,12 @@ pub fn place(
     // Model units → block space, centred on the slot.
     let c = Vec3::new(p[0] / 16.0 - 0.5, p[1] / 16.0 - 0.5, p[2] / 16.0 - 0.5);
     let scaled = Vec3::new(c.x * t.scale[0], c.y * t.scale[1], c.z * t.scale[2]);
-    let r = Mat3::from_rotation_z(t.rotation[2].to_radians())
+    // `Quaternionf.rotationXYZ`: `M = Rx·Ry·Rz`, Z applied first. The
+    // reverse product (until M242) tilted before it yawed, so a block icon
+    // leaned on its corner instead of standing on it.
+    let r = Mat3::from_rotation_x(t.rotation[0].to_radians())
         * Mat3::from_rotation_y(t.rotation[1].to_radians())
-        * Mat3::from_rotation_x(t.rotation[0].to_radians());
+        * Mat3::from_rotation_z(t.rotation[2].to_radians());
     let v = r * scaled + Vec3::from_array(t.translation);
     [
         slot_centre[0] + v.x * px_per_block,
@@ -1075,10 +1080,11 @@ mod tests {
         assert_eq!(b[1], centre[1] - 8.0);
     }
 
-    /// A block's transform tilts it and shrinks it to 0.625, so it reaches
-    /// further than the slot on the diagonal — as vanilla's does.
+    /// A block's transform tilts it and shrinks it to 0.625: standing on its
+    /// corner it reaches `(cos 30° · ½ + sin 30° · √½) · 10 ≈ 7.87` px, just
+    /// inside the 8 px half-slot.
     #[test]
-    fn a_block_tilts_and_slightly_overflows() {
+    fn a_block_tilts_and_fits_just_inside_its_slot() {
         let t = DisplayTransform {
             rotation: [30.0, 225.0, 0.0],
             translation: [0.0; 3],
@@ -1094,10 +1100,41 @@ mod tests {
                 }
             }
         }
+        let want = (30f32.to_radians().cos() * 0.5
+            + 30f32.to_radians().sin() * std::f32::consts::FRAC_1_SQRT_2)
+            * 10.0;
         assert!(
-            max > 8.0 && max < 10.0,
-            "a block reaches just past the 8 px half-slot: {max}"
+            (max - want).abs() < 1e-4 && max < 8.0,
+            "a block reaches {max}, want {want} (inside the 8 px half-slot)"
         );
+    }
+
+    /// Vanilla's block icon stands on a corner: the vertical edge nearest the
+    /// viewer projects straight up the slot's centre line, and the top face is
+    /// a rhombus symmetric about it. Graded on the vertical edge with the
+    /// greatest depth (nearest the viewer): both its ends must land on the
+    /// centre line.
+    #[test]
+    fn a_block_icon_stands_on_its_corner() {
+        let t = DisplayTransform {
+            rotation: [30.0, 225.0, 0.0],
+            translation: [0.0; 3],
+            scale: [0.625; 3],
+        };
+        let edges = [[0.0, 0.0], [16.0, 0.0], [0.0, 16.0], [16.0, 16.0]];
+        let near = edges
+            .iter()
+            .map(|&[x, z]| {
+                (
+                    place(&t, [x, 0.0, z], [0.0, 0.0], PX_PER_BLOCK),
+                    place(&t, [x, 16.0, z], [0.0, 0.0], PX_PER_BLOCK),
+                )
+            })
+            .max_by(|a, b| a.0[2].total_cmp(&b.0[2]))
+            .unwrap();
+        assert!(near.0[0].abs() < 1e-4 && near.1[0].abs() < 1e-4, "{near:?}");
+        // The top end is higher on screen (smaller y).
+        assert!(near.1[1] < near.0[1], "{near:?}");
     }
 
     /// The scale actually shrinks: a block's corners are nearer the centre than

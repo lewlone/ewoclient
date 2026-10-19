@@ -36,7 +36,7 @@ use crate::stats::OverlayRing;
 
 /// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
 /// pickup animation's flight.
-const EXPECTED_WITNESSES: usize = 77;
+const EXPECTED_WITNESSES: usize = 78;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -476,7 +476,10 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
     // that are real work rather than a branch to evaluate: `composite` layers
     // several models into one draw, `special` hands the stack to a bespoke
     // renderer. Both must still be there — one silently starting to resolve
-    // would draw a bed as whichever of its layers came first.
+    // would draw a bed as whichever of its layers came first. (M242 resolves
+    // the `special` renderers that are block-entity models — a3c — and the
+    // rest, banners, the shield, the trident, the pot, the conduit, keep the
+    // bucket.)
     let kinds: Vec<&str> = items.unsupported.keys().map(String::as_str).collect();
     let wanted = ["minecraft:special", "minecraft:composite"];
     let missing: Vec<&str> = wanted
@@ -508,6 +511,54 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
             items.unsupported.values().sum::<usize>(),
             still_branching
         ),
+    );
+
+    // M242 — the `special` items drawn by a block-entity renderer resolve to
+    // that model, placed by the special node's `transformation`: a chest's
+    // box spans its block footprint (1..15 px across, 0..14 up, its latch
+    // out to the south face at z 16), a head's
+    // 8 px cube sits on the floor at the centre (4..12, 0..8), a shulker
+    // box fills the block. The bounds grade the transform, not just a name.
+    let bounds = |name: &str| -> Option<[[f32; 3]; 2]> {
+        let m = items.models.get(name)?;
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for v in m.quads.iter().flat_map(|q| q.verts) {
+            for i in 0..3 {
+                lo[i] = lo[i].min(v[i]);
+                hi[i] = hi[i].max(v[i]);
+            }
+        }
+        (!m.quads.is_empty()).then_some([lo, hi])
+    };
+    let near = |a: [[f32; 3]; 2], b: [[f32; 3]; 2]| {
+        (0..2).all(|k| (0..3).all(|i| (a[k][i] - b[k][i]).abs() < 0.05))
+    };
+    let want: [(&str, [[f32; 3]; 2]); 4] = [
+        ("minecraft:chest", [[1.0, 0.0, 1.0], [15.0, 14.0, 16.0]]),
+        (
+            "minecraft:creeper_head",
+            [[4.0, 0.0, 4.0], [12.0, 8.0, 12.0]],
+        ),
+        (
+            "minecraft:red_shulker_box",
+            [[0.0, 0.0, 0.0], [16.0, 16.0, 16.0]],
+        ),
+        (
+            "minecraft:ender_chest",
+            [[1.0, 0.0, 1.0], [15.0, 14.0, 16.0]],
+        ),
+    ];
+    let got: Vec<(&str, Option<[[f32; 3]; 2]>)> =
+        want.iter().map(|(n, _)| (*n, bounds(n))).collect();
+    let statue = items.models.contains_key("minecraft:copper_golem_statue");
+    c.record(
+        "a3c.special_block_entity_items_resolve_to_their_placed_models",
+        want.iter()
+            .zip(&got)
+            .all(|((_, w), (_, g))| g.is_some_and(|g| near(g, *w)))
+            && statue,
+        format!("bounds (px) {got:?}; copper golem statue resolved {statue}"),
     );
 
     // Spot-check the two paths against the definitions themselves, so a

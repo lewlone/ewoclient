@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 /// Where a resolved item's geometry comes from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ItemGeometry {
     /// `minecraft:block/<name>` — reuse the block model the asset bake already
     /// baked, via that block's default state.
@@ -42,6 +42,12 @@ pub enum ItemGeometry {
     /// resolved and namespace-stripped (`minecraft:item/x` → `item/x`), in
     /// `layer0..layer4` order.
     Sprite(Vec<String>),
+    /// M242 — a `minecraft:special` model drawn by a block-entity renderer
+    /// (a chest, a shulker box, a head, a copper golem statue): the baked
+    /// block-entity model of that name (`rewo:be/...`) and the affine (block
+    /// units) that takes its model space to the item's: the special node's
+    /// `transformation`, and for the statue its `setupAnim` root turn.
+    Entity(String, crate::be_transform::Affine),
 }
 
 /// A `display` entry, **already through vanilla's deserializer**.
@@ -598,6 +604,11 @@ fn chosen_child<'v>(
                 // material's registry id; an untrimmed one matches nothing and
                 // falls back, which is what vanilla does.
                 ctx.trim_material.and_then(|want| case_for(node, want))
+            } else if property == "minecraft:local_time" {
+                // M242 — the chest's Christmas texture (`pattern` "MM-dd",
+                // `when` 12-24..26). Rewo keeps no calendar here, so the
+                // select always takes its fallback: a plain chest all year.
+                None
             } else if property == "minecraft:charge_type" {
                 // M234 — `Charge.get`; `NONE` matches no vanilla case.
                 ctx.charge_type.and_then(|want| case_for(node, want))
@@ -676,9 +687,11 @@ fn chosen_child<'v>(
                 .map(Some)
                 .ok_or_else(|| blocked(node, Some(property)))
         }
-        // `composite` layers several models into one draw and `special` hands
-        // the stack to a bespoke renderer. Both are real work rather than a
-        // branch to evaluate, and both stay suppressed.
+        // M242 — a `special` is a leaf: `resolve_definition` maps the ones a
+        // block-entity bake covers and suppresses the rest.
+        "minecraft:special" => Ok(None),
+        // `composite` layers several models into one draw: real work rather
+        // than a branch to evaluate, and it stays suppressed.
         _ => Err(blocked(node, None)),
     }
 }
@@ -736,13 +749,15 @@ pub fn use_variant_leaves<'v>(root: &'v Value, ctx: SelectionContext<'_>) -> Vec
             return;
         }
         match chosen_child(node, ctx) {
-            Ok(None) => {
+            // Only a `minecraft:model` leaf is something the bake can draw
+            // (M242 made a `special` a leaf too).
+            Ok(None) if node.get("type").and_then(|t| t.as_str()) == Some("minecraft:model") => {
                 if !out.iter().any(|o| std::ptr::eq(*o, node)) {
                     out.push(node);
                 }
             }
             Ok(Some(next)) => go(next, ctx, depth + 1, dynamic, out),
-            Err(_) => {}
+            Ok(None) | Err(_) => {}
         }
     }
     let mut dynamic = false;
@@ -775,6 +790,9 @@ pub fn resolve_definition(
         // reduction cannot do conditions", which is the opposite of true.
         Err(reason) => return ItemModel::Unsupported(reason),
     };
+    if model.get("type").and_then(|t| t.as_str()) == Some("minecraft:special") {
+        return special_item(model, read_model);
+    }
     let Some(reference) = model.get("model").and_then(|m| m.as_str()) else {
         return ItemModel::Unsupported("minecraft:model (no reference)".into());
     };
@@ -817,6 +835,173 @@ pub fn resolve_definition(
         // A chain that reaches no `builtin/generated`, or one with no layer0,
         // is a bespoke model — suppressed, not guessed.
         _ => ItemModel::Unsupported(format!("model {reference} (not builtin/generated)")),
+    }
+}
+
+/// M242 — the block-entity model a `minecraft:special` item model names, for
+/// the special renderers a block-entity bake already covers: the chest
+/// family, shulker boxes, the six mob heads and the player head, and the
+/// copper golem statues. `None` for the rest (the shield, the trident,
+/// banners, the decorated pot, the conduit), which stay suppressed.
+pub fn special_block_entity(spec: &Value) -> Option<String> {
+    let s = |k: &str| spec.get(k).and_then(|v| v.as_str());
+    Some(match s("type")? {
+        "minecraft:chest" => match s("texture")? {
+            "minecraft:normal" => "rewo:be/chest".into(),
+            "minecraft:trapped" => "rewo:be/trapped_chest".into(),
+            "minecraft:ender" => "rewo:be/ender_chest".into(),
+            "minecraft:copper" => "rewo:be/copper_chest".into(),
+            "minecraft:copper_exposed" => "rewo:be/exposed_copper_chest".into(),
+            "minecraft:copper_weathered" => "rewo:be/weathered_copper_chest".into(),
+            "minecraft:copper_oxidized" => "rewo:be/oxidized_copper_chest".into(),
+            _ => return None,
+        },
+        "minecraft:shulker_box" => match s("texture")?.strip_prefix("minecraft:shulker")? {
+            "" => "rewo:be/shulker_box".into(),
+            colour => format!("rewo:be/{}_shulker_box", colour.strip_prefix('_')?),
+        },
+        "minecraft:head" => match s("kind")? {
+            "skeleton" => "rewo:be/skeleton_skull".into(),
+            "wither_skeleton" => "rewo:be/wither_skeleton_skull".into(),
+            "zombie" => "rewo:be/zombie_head".into(),
+            "creeper" => "rewo:be/creeper_head".into(),
+            "dragon" => "rewo:be/dragon_head".into(),
+            "piglin" => "rewo:be/piglin_head".into(),
+            _ => return None,
+        },
+        "minecraft:player_head" => "rewo:be/player_head".into(),
+        "minecraft:copper_golem_statue" => {
+            let texture = s("texture")?;
+            let weather = ["exposed", "weathered", "oxidized"]
+                .into_iter()
+                .find(|w| texture.ends_with(&format!("_{w}.png")))
+                .unwrap_or("unaffected");
+            format!("rewo:be/statue/{weather}/{}", s("pose")?)
+        }
+        _ => return None,
+    })
+}
+
+/// `Transformation`'s JSON form (`translation`, `left_rotation`, `scale`,
+/// `right_rotation`; quaternions `[x, y, z, w]`) as `T · L · S · R`.
+fn transformation_affine(t: &Value) -> crate::be_transform::Affine {
+    use crate::be_transform::{mul, scale, translation};
+    let arr = |k: &str, n: usize, d: f32| -> Vec<f32> {
+        t.get(k)
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == n)
+            .map(|a| {
+                a.iter()
+                    .map(|x| x.as_f64().unwrap_or(d as f64) as f32)
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![d; n])
+    };
+    let quat = |k: &str| {
+        let q = t
+            .get(k)
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 4)
+            .map(|a| [0, 1, 2, 3].map(|i| a[i].as_f64().unwrap_or(0.0) as f32))
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let [x, y, z, w] = q;
+        [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - z * w),
+                2.0 * (x * z + y * w),
+                0.0,
+            ],
+            [
+                2.0 * (x * y + z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - x * w),
+                0.0,
+            ],
+            [
+                2.0 * (x * z - y * w),
+                2.0 * (y * z + x * w),
+                1.0 - 2.0 * (x * x + y * y),
+                0.0,
+            ],
+        ]
+    };
+    let tr = arr("translation", 3, 0.0);
+    let sc = arr("scale", 3, 1.0);
+    let m = translation(tr[0], tr[1], tr[2]);
+    let m = mul(&m, &quat("left_rotation"));
+    let m = mul(&m, &scale(sc[0], sc[1], sc[2]));
+    mul(&m, &quat("right_rotation"))
+}
+
+/// M242 — a special item: its block-entity geometry and the `base` model's
+/// display transforms (each context from the nearest model in the parent
+/// chain that declares it; a missing left hand takes the right, as
+/// `ItemTransforms.Deserializer` does per model).
+fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>) -> ItemModel {
+    let Some(spec) = node.get("model") else {
+        return ItemModel::Unsupported(blocked(node, None));
+    };
+    let Some(key) = special_block_entity(spec) else {
+        return ItemModel::Unsupported(blocked(node, None));
+    };
+    // The special node's `transformation` (`Transformation`: translation ·
+    // left rotation · scale · right rotation), in block units, before the
+    // display transform — the item-side twin of the block-entity renderer's
+    // own transform (the shulker box's flip, the heads' turn). The statue's
+    // renderer adds none, but its model's `setupAnim` turns the root by π
+    // about Z, which Rewo keeps in the block-entity transform, not the bake.
+    let mut xf = node
+        .get("transformation")
+        .map_or(crate::be_transform::IDENTITY, transformation_affine);
+    if spec.get("type").and_then(|t| t.as_str()) == Some("minecraft:copper_golem_statue") {
+        xf = crate::be_transform::mul(
+            &xf,
+            &crate::be_transform::rot_xyz(0.0, 0.0, std::f32::consts::PI),
+        );
+    }
+    let Some(base) = node.get("base").and_then(|b| b.as_str()) else {
+        return ItemModel::Unsupported("minecraft:special (no base)".into());
+    };
+    let mut t: [Option<DisplayTransform>; 7] = [None; 7];
+    let mut cur = strip_ns(base).to_string();
+    for _ in 0..16 {
+        let Some(json) = read_model(&cur) else {
+            break;
+        };
+        if let Some(d) = json.get("display") {
+            let right = read_transform(d, "thirdperson_righthand");
+            let first_right = read_transform(d, "firstperson_righthand");
+            let here = [
+                right,
+                read_transform(d, "thirdperson_lefthand").or(right),
+                read_transform(d, "ground"),
+                read_transform(d, "gui"),
+                first_right,
+                read_transform(d, "firstperson_lefthand").or(first_right),
+                read_transform(d, "fixed"),
+            ];
+            for (slot, v) in t.iter_mut().zip(here) {
+                if slot.is_none() {
+                    *slot = v;
+                }
+            }
+        }
+        match json.get("parent").and_then(|p| p.as_str()) {
+            Some(p) if !strip_ns(p).starts_with("builtin/") => cur = strip_ns(p).to_string(),
+            _ => break,
+        }
+    }
+    let [r, l, ground, gui, fr, fl, fixed] = t.map(Option::unwrap_or_default);
+    ItemModel::Resolved {
+        geometry: ItemGeometry::Entity(key, xf),
+        third_person_right: r,
+        third_person_left: l,
+        ground,
+        gui,
+        first_person_right: fr,
+        first_person_left: fl,
+        fixed,
     }
 }
 
@@ -938,6 +1123,82 @@ fn kind_bucket(kind: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M242 — the special renderers a block-entity bake covers map to its
+    /// models; the rest stay suppressed.
+    #[test]
+    fn special_item_models_map_to_block_entity_models() {
+        let k = |j: &str| special_block_entity(&json(j));
+        assert_eq!(
+            k(r#"{"type":"minecraft:chest","texture":"minecraft:normal"}"#).as_deref(),
+            Some("rewo:be/chest")
+        );
+        assert_eq!(
+            k(r#"{"type":"minecraft:chest","texture":"minecraft:copper_oxidized"}"#).as_deref(),
+            Some("rewo:be/oxidized_copper_chest")
+        );
+        assert_eq!(
+            k(r#"{"type":"minecraft:shulker_box","texture":"minecraft:shulker"}"#).as_deref(),
+            Some("rewo:be/shulker_box")
+        );
+        assert_eq!(
+            k(r#"{"type":"minecraft:shulker_box","texture":"minecraft:shulker_light_blue"}"#)
+                .as_deref(),
+            Some("rewo:be/light_blue_shulker_box")
+        );
+        assert_eq!(
+            k(r#"{"type":"minecraft:head","kind":"wither_skeleton"}"#).as_deref(),
+            Some("rewo:be/wither_skeleton_skull")
+        );
+        assert_eq!(
+            k(r#"{"type":"minecraft:copper_golem_statue","pose":"sitting","texture":"minecraft:textures/entity/copper_golem/copper_golem_weathered.png"}"#).as_deref(),
+            Some("rewo:be/statue/weathered/sitting")
+        );
+        assert_eq!(
+            k(r#"{"type":"minecraft:copper_golem_statue","pose":"standing","texture":"minecraft:textures/entity/copper_golem/copper_golem.png"}"#).as_deref(),
+            Some("rewo:be/statue/unaffected/standing")
+        );
+        assert_eq!(k(r#"{"type":"minecraft:shield"}"#), None);
+        assert_eq!(k(r#"{"type":"minecraft:banner","color":"white"}"#), None);
+    }
+
+    /// The chest's Christmas select takes its fallback, and the special
+    /// leaf resolves with the base model's display.
+    #[test]
+    fn a_chest_item_resolves_to_its_block_entity_with_the_template_display() {
+        let def = json(
+            r#"{"model":{"type":"minecraft:select","property":"minecraft:local_time","pattern":"MM-dd",
+                "cases":[{"when":["12-24"],"model":{"type":"minecraft:special","base":"minecraft:item/chest",
+                  "model":{"type":"minecraft:chest","texture":"minecraft:christmas"}}}],
+                "fallback":{"type":"minecraft:special","base":"minecraft:item/chest",
+                  "model":{"type":"minecraft:chest","texture":"minecraft:normal"}}}}"#,
+        );
+        let mut read = |p: &str| match p {
+            "item/chest" => Some(json(r#"{"parent":"minecraft:item/template_chest"}"#)),
+            "item/template_chest" => Some(json(
+                r#"{"display":{"gui":{"rotation":[30,45,0],"scale":[0.625,0.625,0.625]},
+                    "thirdperson_righthand":{"rotation":[75,315,0],"translation":[0,2.5,0],"scale":[0.375,0.375,0.375]}}}"#,
+            )),
+            _ => None,
+        };
+        match resolve_definition(&def, &mut read, SelectionContext::gui()) {
+            ItemModel::Resolved {
+                geometry: ItemGeometry::Entity(k, _),
+                gui,
+                third_person_left,
+                ..
+            } => {
+                assert_eq!(k, "rewo:be/chest");
+                assert_eq!(gui.rotation, [30.0, 45.0, 0.0]);
+                assert_eq!(
+                    third_person_left.rotation,
+                    [75.0, 315.0, 0.0],
+                    "left takes the right"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// The bow's tree, as the 26.2 jar ships it (`items/bow.json`).
     const BOW: &str = r#"{"type":"minecraft:condition","property":"minecraft:using_item",
@@ -1200,13 +1461,13 @@ mod tests {
     #[test]
     fn an_unevaluable_property_names_itself_in_the_reason() {
         let def = json(
-            r#"{"model":{"type":"minecraft:select","property":"minecraft:local_time",
+            r#"{"model":{"type":"minecraft:select","property":"minecraft:context_dimension",
                  "cases":[],"fallback":{"type":"minecraft:model","model":"minecraft:block/dirt"}}}"#,
         );
         let m = resolve_definition(&def, &mut reader(vec![]), SelectionContext::gui());
         assert_eq!(
             m,
-            ItemModel::Unsupported("minecraft:select (minecraft:local_time)".into()),
+            ItemModel::Unsupported("minecraft:select (minecraft:context_dimension)".into()),
             "a property nobody has checked must suppress, and say which one"
         );
     }

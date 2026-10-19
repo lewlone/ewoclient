@@ -152,17 +152,37 @@ pub fn apply_display(t: &DisplayTransform, left: bool, p: [f32; 3]) -> [f32; 3] 
     [v[0] + tx, v[1] + t.translation[1], v[2] + t.translation[2]]
 }
 
-/// JOML's `Quaternionf.rotationXYZ(x, y, z)` applied to a vector — the
-/// rotation is X first, then Y, then Z (`M = Rz·Ry·Rx`), which is the same
-/// convention [`crate::mobs::rotate_zyx`] implements for model parts.
+/// JOML's `Quaternionf.rotationXYZ(x, y, z)` applied to a vector:
+/// `rotationX(x).rotateY(y).rotateZ(z)` post-multiplies, so `M = Rx·Ry·Rz`
+/// and the vector turns about **Z first**, then Y, then X — the opposite of
+/// a model part's `rotateZYX` ([`crate::mobs::rotate_zyx`]), which this
+/// borrowed until M242 and so tilted every multi-axis display transform (a
+/// block's third-person `[75, 45, 0]`) about the wrong axes.
 pub fn rotate_xyz(v: [f32; 3], deg: [f32; 3]) -> [f32; 3] {
     const D: f32 = std::f32::consts::PI / 180.0;
-    crate::mobs::rotate_zyx(v, [deg[0] * D, deg[1] * D, deg[2] * D])
+    let [rx, ry, rz] = [deg[0] * D, deg[1] * D, deg[2] * D];
+    let v = crate::mobs::rotate_zyx(v, [0.0, 0.0, rz]);
+    let v = crate::mobs::rotate_zyx(v, [0.0, ry, 0.0]);
+    crate::mobs::rotate_zyx(v, [rx, 0.0, 0.0])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rotationXYZ(30, 225, 0)` (a block's `gui`): the yaw comes first, so
+    /// the block's vertical corner edge stays vertical after the tilt — the
+    /// symmetric icon vanilla draws. Tilting first (the pre-M242 order) leans
+    /// that edge sideways.
+    #[test]
+    fn rotation_xyz_yaws_before_it_tilts() {
+        let up = rotate_xyz([0.0, 1.0, 0.0], [30.0, 225.0, 0.0]);
+        assert!(up[0].abs() < 1e-6, "the corner edge leans: {up:?}");
+        assert!(
+            (up[2] - 0.5).abs() < 1e-6,
+            "tilted 30 towards the viewer: {up:?}"
+        );
+    }
 
     #[test]
     fn the_identity_transform_only_centres() {

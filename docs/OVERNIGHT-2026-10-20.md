@@ -191,6 +191,14 @@ released.
   capsules.)
 - **M241**: the fishing line is drawn, from the bobber to your hand (and to
   other players' hands).
+- **M242**: chests, shulker boxes, mob heads and copper golem statues have
+  inventory icons (they were blank). Fixing that turned up two older bugs
+  that affected every 3D icon. The icons were drawn inside out (a furnace
+  showed its back) and leaned on an edge instead of standing on a corner.
+  The cause was a rotation applied in the wrong order. The same mistake also
+  tilted items held in third person and turned sideways shulker boxes to
+  face south. All fixed; the icons now look like vanilla's, grass top
+  included.
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -247,6 +255,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M242)* | **M242** — `minecraft:special` items drawn by block-entity models (chests, shulker boxes, heads, the statue) placed by their `transformation`; the GUI icon depth un-negated; JOML `rotationXYZ` (`Rx·Ry·Rz`) fixed in `gui_item::place`, `held::rotate_xyz` and `be_transform::rot_xyz` (the pot keeps a `rot_zyx`); inventoryshot **g9**, itemshot **a3c**. |
 | `61e3c95` | **M241** — the fishing line: `FishingHookRenderer`'s 16-segment line to the owner's hand (first-person near-plane point for the local player), a black ribbon on the leash pass; render-check **r108**. |
 | `87b0146` | **M240** — thrown items as `ThrownItemRenderer` draws them (the item, GROUND context, facing the camera; fireballs scaled and fullbright) and the fishing bobber's sprite, instead of capsules; render-check **r107**. |
 | `f9af58c` | **M239** — the firework boost: `FireworkRocketEntity.tick`'s client-side push on the local glider, the rocket's attachment decoded (index 9); render-check **r106** (glide 0.167 → 1.673 blocks a tick, no correction; fails with the push disabled). |
@@ -495,6 +504,7 @@ released.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
 - Still capsules after M240: arrows, spectral arrows, tridents, wind charges, llama spit, shulker bullets, the dragon fireball, experience orbs and other model-or-own-renderer entities. (M241 drew the fishing line.)
 - After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- After M242: **4,356 tests; 4,351 passed in the full run and the 5 failures, all `rewo-net` `srv` TCP tests at the fake nameserver's port pairing ("a port free for both UDP and TCP"), passed on rerun (34/34): the shared PC's sockets, not Rewo; gates 51/51** (inventoryshot 169, itemshot 78); render check **108/108** on two runs; clippy (gates and default features, after one needless `clone`) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -535,7 +545,16 @@ released.
 - `tools/render_check.py`'s port probe lost a race once ("server FAILED TO
   BIND"): it picks a free port, then the server binds it later. A retry on
   that message would remove the one non-Rewo failure seen in the loops.
-- ~~A boat model~~ (M223). Still open on boats: the rowing animation, the
+- ~~A boat model~~ (M223).
+- Item icons still blank after M242 (their renderers are not block-entity
+  models): banners, the shield, the trident, the decorated pot, the conduit,
+  and the beds (`composite`). The Christmas chest's date select takes its
+  fallback.
+- M242's third-person rotation fix (`held::rotate_xyz`) is unit-tested but
+  not looked at in a capture: a held block or tool in another player's hand
+  should now sit as vanilla's does.
+- ~~Grass block GUI icon: top missing and untinted~~ (M242: the rotation
+  order, not the tint). Still open on boats: the rowing animation, the
   hurt wobble, and the water mask (water can show inside a floating hull).
 - `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once
   under full-suite load (an empty TCP answer) and passed five times alone;

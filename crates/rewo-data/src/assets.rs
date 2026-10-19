@@ -4211,6 +4211,12 @@ impl<'a> Baker<'a> {
         let mut pool = TexturePool::default();
         let mut models = HashMap::new();
         let mut unsupported: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut entity_items: Vec<(
+            String,
+            String,
+            crate::be_transform::Affine,
+            [crate::item_models::DisplayTransform; 7],
+        )> = Vec::new();
         for (name, model, gui_geometry) in resolved {
             let full = format!("minecraft:{name}");
             let (geometry, right, left, ground, gui, first_right, first_left, fixed) = match model {
@@ -4243,9 +4249,21 @@ impl<'a> Baker<'a> {
                     continue;
                 }
             };
+            // M242 — a special item's geometry is a block-entity model, baked
+            // below; it is filled in once those exist.
+            if let ItemGeometry::Entity(key, xf) = &geometry {
+                entity_items.push((
+                    full,
+                    key.clone(),
+                    *xf,
+                    [right, left, ground, gui, first_right, first_left, fixed],
+                ));
+                continue;
+            }
             let baked = match &geometry {
                 ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
                 ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
+                ItemGeometry::Entity(..) => None,
             };
             // The slot geometry, when the definition selects a different
             // model there. A variant that fails to bake leaves `None`, so the
@@ -4254,6 +4272,7 @@ impl<'a> Baker<'a> {
                 .and_then(|g| match &g {
                     ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
                     ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
+                    ItemGeometry::Entity(..) => None,
                 })
                 .filter(|q| !q.is_empty());
             match baked {
@@ -4344,6 +4363,49 @@ impl<'a> Baker<'a> {
         }
         let be_count = be_models.len();
         let block_entities: HashMap<String, HeldItemModel> = be_models.into_iter().collect();
+        // M242 — the special items: the block-entity model's quads with the
+        // item's own display transforms, drawn as a 3D (block-lit) model.
+        for (name, key, xf, [right, left, ground, gui, first_right, first_left, fixed]) in
+            entity_items
+        {
+            match block_entities.get(&key) {
+                Some(be) if !be.quads.is_empty() => {
+                    // The special node's transform, in block units, applied
+                    // to the model's px (`/ 16`, then back).
+                    let quads = be
+                        .quads
+                        .iter()
+                        .map(|q| {
+                            let mut q = *q;
+                            for v in &mut q.verts {
+                                let p = [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0];
+                                let r: [f32; 3] = std::array::from_fn(|i| {
+                                    xf[i][0] * p[0] + xf[i][1] * p[1] + xf[i][2] * p[2] + xf[i][3]
+                                });
+                                *v = [r[0] * 16.0, r[1] * 16.0, r[2] * 16.0];
+                            }
+                            q
+                        })
+                        .collect();
+                    models.insert(
+                        name,
+                        HeldItemModel {
+                            quads,
+                            right,
+                            left,
+                            ground,
+                            gui,
+                            first_right,
+                            first_left,
+                            fixed,
+                            from_block: true,
+                            gui_quads: None,
+                        },
+                    );
+                }
+                _ => *unsupported.entry("(no geometry)".to_string()).or_default() += 1,
+            }
+        }
         log::info!("rewo-data: {be_count} block-entity model(s) baked");
 
         let items = HeldItems {

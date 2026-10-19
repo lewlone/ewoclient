@@ -3899,6 +3899,60 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M242 — block-entity item icons, and every 3D icon the right way round (2026-10-19)
+
+Three things, found in that order while giving chests an icon.
+
+**Special items.** A `minecraft:special` item model hands the stack to a
+bespoke renderer; Rewo left all of them blank. The ones whose renderer is a
+block-entity model now resolve to that model (`item_models::
+special_block_entity`): the chests (normal, trapped, ender, the four copper
+ones), the shulker boxes, the six mob heads and the player head, and the
+copper golem statue's poses. The special node's `transformation` (`T · L · S
+· R`, quaternions `[x, y, z, w]`) places the model in item space, as vanilla's
+`SpecialModelWrapper` does; the statue adds its `setupAnim` half-turn about Z.
+The `base` model supplies the display transforms. `local_time` selects (the
+Christmas chest) take their fallback. Still blank, with their own renderers:
+banners, the shield, the trident, the decorated pot, the conduit, and the
+beds (`composite`).
+
+**The GUI depth was inverted.** In the item's own space +Z faces the viewer
+(vanilla's `GuiItemAtlas` draws under `scale(s, -s, s)` with a larger z
+nearer), and `gui_item.vert` negated it, so the far faces won the depth test:
+a furnace icon showed its back.
+
+**`rotationXYZ` was composed backwards in three places.** JOML's
+`Quaternionf.rotationXYZ(x, y, z)` is `rotationX(x).rotateY(y).rotateZ(z)`,
+and the `rotate*` calls post-multiply, so `M = Rx · Ry · Rz`: a vector turns
+about Z first. A `ModelPart`'s `rotateZYX` is the opposite (`Rz · Ry · Rx`),
+and three helpers that quote `rotationXYZ` used the part order:
+
+- `gui_item::place`: every multi-axis `display.gui` tilted before it yawed,
+  so a block icon (`[30, 225, 0]`) leaned on an edge instead of standing on
+  its corner, and the grass block's top was nearly edge-on. With the order
+  fixed the icon is vanilla's symmetric one and reaches 7.87 px, just inside
+  its slot; the old 8.7 px "overflow, as vanilla's does" was the bug.
+- `held::rotate_xyz` (third-person and worn items): the same tilt on every
+  multi-axis `thirdperson_*` transform (a block's `[75, 45, 0]`, a tool's
+  `[0, -90, 55]`). Not looked at in a capture.
+- `be_transform::rot_xyz`, through `Direction.getRotation()`: north, west and
+  east all took the up axis to the south, so a shulker box on its side faced
+  south. The decorated pot's side planes, which really are `PartPose`s, now
+  use the new `rot_zyx`.
+
+First person (`hand.rs`) had the right order all along.
+
+Tests: `get_rotation_takes_up_to_each_direction` (all six), the two orders
+told apart on one vector, `rotation_xyz_yaws_before_it_tilts`,
+`a_block_icon_stands_on_its_corner`, and the reach pinned to its closed form.
+Gates: inventoryshot **g9** (a furnace icon's slot has near-black pixels,
+which only its front's opening has: 172 measured, 0 with the depth negated),
+**p2** renamed for the corrected reach (inventoryshot 169 witnesses);
+itemshot **a3c** (a chest, an ender chest, a creeper head and a red shulker
+box resolve to block-unit bounds that grade the placement, not just the name;
+the statue resolves; itemshot 78). Looked at: grass, furnace, chest, oak
+stairs, creeper head and red shulker box icons, all as vanilla draws them.
+
 ### M241 — the fishing line (2026-10-19)
 
 `FishingHookRenderer` draws a line from the hook to the hand holding the

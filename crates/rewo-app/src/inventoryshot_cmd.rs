@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 168;
+const EXPECTED_WITNESSES: usize = 169;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -552,13 +552,18 @@ fn check_placement(c: &mut Checker) {
             }
         }
     }
+    // Standing on its corner (M242's `rotationXYZ` order — yaw, then tilt),
+    // the block reaches `(cos 30° · ½ + sin 30° · √½) · 10` px. The old order
+    // leaned it to ~8.7 px, which this witness called vanilla's overflow.
+    let want = (30f32.to_radians().cos() * 0.5
+        + 30f32.to_radians().sin() * std::f32::consts::FRAC_1_SQRT_2)
+        * 10.0;
     c.record(
-        "p2.a_block_tilts_and_slightly_overflows_its_slot",
-        reach > 8.0 && reach < 10.0,
+        "p2.a_block_stands_on_its_corner_just_inside_its_slot",
+        (reach - want).abs() < 1e-3 && reach < 8.0,
         format!(
-            "a block's corners reach {reach:.2} px against the slot's 8 px half-width \
-             — `scale 0.625` with `rotation [30, 225, 0]` overflows a little, as \
-             vanilla's does"
+            "a block's corners reach {reach:.3} px (want {want:.3}) against the slot's \
+             8 px half-width — `scale 0.625` with `rotation [30, 225, 0]`, yawed then tilted"
         ),
     );
 
@@ -4093,6 +4098,49 @@ fn pixels_inner(
              one transform for the other is the mutation this rejects"
         ),
     );
+
+    // M242 — the depth order. In the item's own space +Z faces the viewer
+    // (vanilla's `GuiItemAtlas`: `scale(s, -s, s)` under an ortho where a
+    // larger z is nearer). The GUI shader had it negated, so the far faces
+    // won and every oriented block icon showed its back half: a furnace's
+    // front was hidden. Dirt is the same on every face, so nothing above could
+    // tell. A furnace's front is the only face with near-black pixels (its
+    // opening); its sides are cobblestone.
+    {
+        let held_all = crate::live_cmd::to_gpu_held_items(&baked.held_items);
+        let names = vec!["minecraft:furnace".to_string()];
+        let wanted = crate::live_cmd::gui_atlas_wanted(&held_all, &names);
+        let fatlas = crate::live_cmd::pack_gui_atlas(&held_all, &wanted);
+        wr.init_gui_items(gpu, &fatlas.rgba, 512, 512)?;
+        let fslots = [GuiItem {
+            model: "minecraft:furnace".into(),
+            x: 104.0,
+            y: 96.0,
+            size: 48.0,
+            glint: false,
+        }];
+        let fverts = build_vertices(&held_all, &fslots, &lights, &|t| fatlas.uv.get(&t).copied());
+        let fimg = shot(gpu, off, wr, &fverts)?;
+        let fempty = shot(gpu, off, wr, &[])?;
+        let mut dark = 0;
+        for y in 96..144u32 {
+            for x in 104..152u32 {
+                let i = ((y * W + x) * 4) as usize;
+                let p = &fimg[i..i + 3];
+                if p != &fempty[i..i + 3] && p.iter().all(|&v| v < 40) {
+                    dark += 1;
+                }
+            }
+        }
+        c.record(
+            "g9.a_furnace_icon_shows_its_front_not_its_back",
+            dark >= 20,
+            format!(
+                "{dark} near-black px in the furnace's slot — the front's opening is the only                  dark texture on the block; with the depth order inverted the icon shows                  its cobblestone back and sides and this reads 0"
+            ),
+        );
+        wr.init_gui_items(gpu, &atlas.rgba, 512, 512)?;
+    }
 
     // -- the screen (M35) ---------------------------------------------------
     let Some(sprites) = crate::live_cmd::container_sprites(baked) else {

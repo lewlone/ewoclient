@@ -32,8 +32,13 @@ layout(location = 1) out float v_shade;
 
 void main() {
     vec2 ndc = in_pos.xy / pc.screen * 2.0 - 1.0;
-    // Reversed-Z like the rest of Rewo: nearer is greater, so negate.
-    float z = 0.5 - in_pos.z / (2.0 * pc.depth_scale);
+    // Reversed-Z like the rest of Rewo: nearer is greater. In the item's
+    // own space +Z faces the viewer (vanilla's `GuiItemAtlas` draws it with
+    // `scale(s, -s, s)` under `setupOrtho(-1000, 1000, ...)`, where a larger
+    // z is nearer), so a larger z is a greater depth. This was negated until
+    // M242, which drew every block icon inside out: the far faces won the
+    // depth test, so a furnace showed its back and a grass block its bottom.
+    float z = 0.5 + in_pos.z / (2.0 * pc.depth_scale);
     gl_Position = vec4(ndc, z, 1.0);
     v_uv = in_uv;
     v_shade = in_shade;
