@@ -163,6 +163,11 @@ pub enum ItemModel {
         /// `item/generated` declares `rotation [0, 180, 0]`; block items take
         /// `block/block.json`'s `scale 0.5`.
         fixed: DisplayTransform,
+        /// `display.head` — the context `CustomHeadLayer` draws a worn
+        /// non-skull item through (M274; `updateForLiving(..., HEAD, ...)`).
+        /// `item/generated` declares `rotation [0, 180, 0], translation
+        /// [0, 13, 7]`; `block/block.json` declares none (the identity).
+        head: DisplayTransform,
     },
     /// The definition is one of the five state-dependent / bespoke types.
     /// Carries the type name so the suppression is observable.
@@ -260,7 +265,8 @@ type ChainResult = (
     // In order: `thirdperson_righthand`, `thirdperson_lefthand`, `ground`,
     // `gui` (M34), then `firstperson_righthand` and `firstperson_lefthand`
     // (M38) — the last already through vanilla's absent-left fallback —
-    // and `fixed` (M194).
+    // `fixed` (M194) and `head` (M274).
+    DisplayTransform,
     DisplayTransform,
     DisplayTransform,
     DisplayTransform,
@@ -283,6 +289,7 @@ fn resolve_chain(start: &str, read: &mut dyn FnMut(&str) -> Option<Value>) -> Op
     let mut first_right: Option<DisplayTransform> = None;
     let mut first_left: Option<DisplayTransform> = None;
     let mut fixed: Option<DisplayTransform> = None;
+    let mut head: Option<DisplayTransform> = None;
     let mut cur = strip_ns(start).to_string();
 
     for _ in 0..MAX_PARENT_DEPTH {
@@ -314,6 +321,7 @@ fn resolve_chain(start: &str, read: &mut dyn FnMut(&str) -> Option<Value>) -> Op
                 // extruded sprite that is not `handheld`.
                 first_left.or(first_right).unwrap_or_default(),
                 fixed.unwrap_or_default(),
+                head.unwrap_or_default(),
             ));
         }
         let json = read(&cur)?;
@@ -346,6 +354,9 @@ fn resolve_chain(start: &str, read: &mut dyn FnMut(&str) -> Option<Value>) -> Op
             }
             if fixed.is_none() {
                 fixed = read_transform(d, "fixed");
+            }
+            if head.is_none() {
+                head = read_transform(d, "head");
             }
         }
         // No parent and no builtin: a bespoke model (shield, chest
@@ -867,11 +878,12 @@ pub fn resolve_definition(
             first_person_right: BLOCK_FIRST_PERSON_RIGHT,
             first_person_left: BLOCK_FIRST_PERSON_LEFT,
             fixed: BLOCK_FIXED,
+            head: DisplayTransform::IDENTITY,
         };
     }
 
     match resolve_chain(reference, read_model) {
-        Some((true, layers, right, left, ground, gui, first_right, first_left, fixed))
+        Some((true, layers, right, left, ground, gui, first_right, first_left, fixed, head))
             if !layers.is_empty() =>
         {
             ItemModel::Resolved {
@@ -883,6 +895,7 @@ pub fn resolve_definition(
                 first_person_right: first_right,
                 first_person_left: first_left,
                 fixed,
+                head,
             }
         }
         // A chain that reaches no `builtin/generated`, or one with no layer0,
@@ -1096,7 +1109,7 @@ fn special_item(
     let Some(base) = node.get("base").and_then(|b| b.as_str()) else {
         return ItemModel::Unsupported("minecraft:special (no base)".into());
     };
-    let ([r, l, ground, gui, fr, fl, fixed], side_lit) = chain_display(base, read_model);
+    let ([r, l, ground, gui, fr, fl, fixed, head], side_lit) = chain_display(base, read_model);
     ItemModel::Resolved {
         geometry: ItemGeometry::Parts(
             parts
@@ -1112,6 +1125,7 @@ fn special_item(
         first_person_right: fr,
         first_person_left: fl,
         fixed,
+        head,
     }
 }
 
@@ -1152,7 +1166,7 @@ fn composite_item(
     let Some((PartSource::Block(first), _)) = parts.first() else {
         return ItemModel::Unsupported(blocked(node, None));
     };
-    let ([r, l, ground, gui, fr, fl, fixed], side_lit) =
+    let ([r, l, ground, gui, fr, fl, fixed, head], side_lit) =
         chain_display(&format!("block/{first}"), read_model);
     ItemModel::Resolved {
         geometry: ItemGeometry::Parts(parts, side_lit),
@@ -1163,6 +1177,7 @@ fn composite_item(
         first_person_right: fr,
         first_person_left: fl,
         fixed,
+        head,
     }
 }
 
@@ -1200,8 +1215,8 @@ pub fn turned_dir(xf: &crate::be_transform::Affine, dir: u8) -> u8 {
 fn chain_display(
     start: &str,
     read_model: &mut dyn FnMut(&str) -> Option<Value>,
-) -> ([DisplayTransform; 7], bool) {
-    let mut t: [Option<DisplayTransform>; 7] = [None; 7];
+) -> ([DisplayTransform; 8], bool) {
+    let mut t: [Option<DisplayTransform>; 8] = [None; 8];
     let mut gui_light: Option<bool> = None;
     let mut cur = strip_ns(start).to_string();
     for _ in 0..16 {
@@ -1225,6 +1240,7 @@ fn chain_display(
                 first_right,
                 read_transform(d, "firstperson_lefthand").or(first_right),
                 read_transform(d, "fixed"),
+                read_transform(d, "head"),
             ];
             for (slot, v) in t.iter_mut().zip(here) {
                 if slot.is_none() {
@@ -1683,6 +1699,7 @@ mod tests {
                 first_person_right: BLOCK_FIRST_PERSON_RIGHT,
                 first_person_left: BLOCK_FIRST_PERSON_LEFT,
                 fixed: BLOCK_FIXED,
+                head: DisplayTransform::IDENTITY,
             }
         );
     }

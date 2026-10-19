@@ -304,6 +304,9 @@ pub(super) struct RenderCheck {
     /// M273 — r131: frames on which the staged armour stand drew wearing a
     /// player head in r130's skin.
     pub(super) worn_skin_head_frames: usize,
+    /// M274 — r132: frames on which the staged armour stand drew wearing a
+    /// carved pumpkin through the head item branch.
+    pub(super) worn_item_head_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1069,7 +1072,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 131;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 132;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1259,6 +1262,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M274 — r132: `render_check.py` summons an armour stand wearing a
+        // carved pumpkin, which has no equipment asset: it must draw through
+        // `CustomHeadLayer`'s item branch (`mobtexshot m19` checks the
+        // pixels). It drew nothing until M274.
+        row(
+            "r132 an armour stand drew wearing a carved pumpkin",
+            self.worn_item_head_frames >= 1,
+            format!("{} frames drew it", self.worn_item_head_frames),
         );
         // M273 — r131: `render_check.py` summons an armour stand wearing a
         // player head whose `minecraft:profile` component names r130's skin.

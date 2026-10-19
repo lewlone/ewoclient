@@ -4088,6 +4088,7 @@ fn an_item_display_pose_follows_vanillas_chain() {
             scale: [0.5; 3],
             ..id
         },
+        head: id,
         from_block: false,
         gui_quads: None,
     };

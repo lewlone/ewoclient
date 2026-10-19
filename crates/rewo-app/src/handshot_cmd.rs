@@ -222,6 +222,7 @@ fn cube_item(first_right: DisplayTransform, first_left: DisplayTransform) -> Hel
         first_right,
         first_left,
         fixed: DisplayTransform::default(),
+        head: DisplayTransform::default(),
         from_block: true,
         gui_quads: None,
     }

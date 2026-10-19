@@ -77,6 +77,9 @@ pub struct HeldItemModel {
     /// `display.fixed` — the context an item frame draws its item through
     /// (M194; `ItemFrameRenderer` → `updateForNonLiving(..., FIXED, ...)`).
     pub fixed: DisplayTransform,
+    /// `display.head` — the context `CustomHeadLayer` draws a worn non-skull
+    /// item through (M274).
+    pub head: DisplayTransform,
     /// True when the geometry came from a block model — recorded so the
     /// renderer and the gate can tell the two sources apart without
     /// re-deriving it.
@@ -387,6 +390,7 @@ mod tests {
             first_right: DisplayTransform::default(),
             first_left: DisplayTransform::default(),
             fixed: DisplayTransform::default(),
+            head: DisplayTransform::default(),
             from_block,
             gui_quads: None,
         };

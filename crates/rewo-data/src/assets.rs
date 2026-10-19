@@ -190,6 +190,7 @@ impl BakedAssets {
                 first_right: DisplayTransform::IDENTITY,
                 first_left: DisplayTransform::IDENTITY,
                 fixed: DisplayTransform::IDENTITY,
+                head: DisplayTransform::IDENTITY,
                 from_block: true,
                 gui_quads: None,
             },
@@ -4388,41 +4389,44 @@ impl<'a> Baker<'a> {
             String,
             Vec<(crate::item_models::PartSource, crate::be_transform::Affine)>,
             bool,
-            [crate::item_models::DisplayTransform; 7],
+            [crate::item_models::DisplayTransform; 8],
             Option<(ItemGeometry, crate::item_models::DisplayTransform)>,
         )> = Vec::new();
         for (name, model, gui_geometry) in resolved {
             let full = format!("minecraft:{name}");
-            let (geometry, right, left, ground, gui, first_right, first_left, fixed) = match model {
-                ItemModel::Resolved {
-                    geometry,
-                    third_person_right,
-                    third_person_left,
-                    ground,
-                    gui,
-                    first_person_right,
-                    first_person_left,
-                    fixed,
-                } => (
-                    geometry,
-                    third_person_right,
-                    third_person_left,
-                    ground,
-                    gui,
-                    first_person_right,
-                    first_person_left,
-                    fixed,
-                ),
-                ItemModel::Unsupported(kind) => {
-                    let bucket = if kind.starts_with("model ") {
-                        "(bespoke model)".to_string()
-                    } else {
-                        kind
-                    };
-                    *unsupported.entry(bucket).or_default() += 1;
-                    continue;
-                }
-            };
+            let (geometry, right, left, ground, gui, first_right, first_left, fixed, head) =
+                match model {
+                    ItemModel::Resolved {
+                        geometry,
+                        third_person_right,
+                        third_person_left,
+                        ground,
+                        gui,
+                        first_person_right,
+                        first_person_left,
+                        fixed,
+                        head,
+                    } => (
+                        geometry,
+                        third_person_right,
+                        third_person_left,
+                        ground,
+                        gui,
+                        first_person_right,
+                        first_person_left,
+                        fixed,
+                        head,
+                    ),
+                    ItemModel::Unsupported(kind) => {
+                        let bucket = if kind.starts_with("model ") {
+                            "(bespoke model)".to_string()
+                        } else {
+                            kind
+                        };
+                        *unsupported.entry(bucket).or_default() += 1;
+                        continue;
+                    }
+                };
             // M242/M243 — a multi-part item (block-entity models, block
             // models) is assembled below, once the block-entity models exist.
             if let ItemGeometry::Parts(parts, side_lit) = &geometry {
@@ -4430,7 +4434,16 @@ impl<'a> Baker<'a> {
                     full,
                     parts.clone(),
                     *side_lit,
-                    [right, left, ground, gui, first_right, first_left, fixed],
+                    [
+                        right,
+                        left,
+                        ground,
+                        gui,
+                        first_right,
+                        first_left,
+                        fixed,
+                        head,
+                    ],
                     gui_geometry,
                 ));
                 continue;
@@ -4461,6 +4474,7 @@ impl<'a> Baker<'a> {
                             first_right,
                             first_left,
                             fixed,
+                            head,
                             from_block,
                             gui_quads,
                         },
@@ -4602,6 +4616,7 @@ impl<'a> Baker<'a> {
                         first_right: crate::item_models::DisplayTransform::IDENTITY,
                         first_left: crate::item_models::DisplayTransform::IDENTITY,
                         fixed: crate::item_models::DisplayTransform::IDENTITY,
+                        head: crate::item_models::DisplayTransform::IDENTITY,
                         from_block: true,
                         gui_quads: None,
                     },
@@ -4619,7 +4634,7 @@ impl<'a> Baker<'a> {
             name,
             parts,
             side_lit,
-            [right, left, ground, gui, first_right, first_left, fixed],
+            [right, left, ground, gui, first_right, first_left, fixed, head],
             gui_geometry,
         ) in entity_items
         {
@@ -4687,6 +4702,7 @@ impl<'a> Baker<'a> {
                     first_right,
                     first_left,
                     fixed,
+                    head,
                     // `gui_light`: a banner's and a pot's `front` is the flat
                     // slot lighting, everything else here the block one.
                     from_block: side_lit,
@@ -6756,6 +6772,34 @@ mod tests {
             assert!(q.verts.iter().all(|v| (v[axis] - at).abs() < 1e-6), "{q:?}");
         }
         assert!(baked.state_quads(0).is_none(), "air has no quads");
+    }
+
+    /// M274 — the `head` display context bakes from the chain: a block item
+    /// (a carved pumpkin) has none, the identity (`block/block.json`
+    /// declares no `head`); a plain sprite (an apple) takes
+    /// `item/generated`'s `rotation [0, 180, 0], translation [0, 13, 7]`
+    /// (×0.0625), a sprite with its own entry (the feather) that.
+    #[test]
+    fn the_head_display_context_bakes_from_the_model_chain() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let id = crate::item_models::DisplayTransform::IDENTITY;
+        let pumpkin = baked.held_items.get("minecraft:carved_pumpkin").unwrap();
+        assert_eq!(pumpkin.head, id);
+        let apple = baked.held_items.get("minecraft:apple").unwrap();
+        assert_eq!(apple.head.rotation, [0.0, 180.0, 0.0]);
+        assert_eq!(apple.head.translation, [0.0, 13.0 / 16.0, 7.0 / 16.0]);
+        assert_eq!(apple.head.scale, [1.0; 3]);
+        // A child's own entry wins: `item/feather` declares `rotation
+        // [0, 0, 45], translation [-1, 13, 7]`.
+        let feather = baked.held_items.get("minecraft:feather").unwrap();
+        assert_eq!(feather.head.rotation, [0.0, 0.0, 45.0]);
+        assert_eq!(
+            feather.head.translation,
+            [-1.0 / 16.0, 13.0 / 16.0, 7.0 / 16.0]
+        );
     }
 
     /// M272 — a skinned head is the player head's quads, every one sampling

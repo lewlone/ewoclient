@@ -177,13 +177,21 @@ pub type EntityLight = [f32; 3];
 
 /// `CustomHeadLayer.SKULL_SCALE`.
 pub const WORN_SKULL_SCALE: f32 = 1.1875;
+/// `CustomHeadLayer.ITEM_SCALE` (M274).
+pub const WORN_ITEM_SCALE: f32 = 0.625;
 
-/// M273 — a skull worn on the head: the skull's block-entity model (a
-/// player head may be a per-skin copy, M272) and the renderer's
-/// `CustomHeadLayer.Transforms`.
+/// M273 — what is worn on the head and the renderer's
+/// `CustomHeadLayer.Transforms`: a skull's block-entity model (a player head
+/// may be a per-skin copy, M272), or (M274, `item`) any other item's model,
+/// drawn through its `head` display context.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WornHead<'a> {
     pub model: &'a str,
+    /// M274 — `CustomHeadLayer`'s item branch rather than its skull one.
+    pub item: bool,
+    /// `Transforms.yOffset`, in blocks (the villager's −0.1171875); the item
+    /// branch's.
+    pub y_offset: f32,
     /// `Transforms.skullYOffset`, in blocks (the villager's −0.0742).
     pub skull_y_offset: f32,
     /// `Transforms.horizontalScale` (the piglin's 1.0019531).
@@ -2566,6 +2574,30 @@ impl EntityPass {
         };
         let (m, o) = &xf[head];
         let [light_r, light_g, light_b] = d.light;
+        // Head-local px of a model corner (px, `0..16` for an item).
+        let local = |c: &[f32; 3]| -> [f32; 3] {
+            if w.item {
+                // M274 — `translateToHead`: translate(0, -0.25 + yOffset, 0),
+                // YP(180), scale(0.625, -0.625, -0.625); inside it the item's
+                // `head` display transform and its -0.5 centring.
+                let p = crate::held::apply_display(
+                    &skull.head,
+                    false,
+                    [c[0] / 16.0, c[1] / 16.0, c[2] / 16.0],
+                );
+                [
+                    -WORN_ITEM_SCALE * p[0] * 16.0,
+                    (-WORN_ITEM_SCALE * p[1] - 0.25 + w.y_offset) * 16.0,
+                    WORN_ITEM_SCALE * p[2] * 16.0,
+                ]
+            } else {
+                [
+                    c[0] * WORN_SKULL_SCALE,
+                    c[1] * WORN_SKULL_SCALE + w.skull_y_offset * 16.0,
+                    c[2] * WORN_SKULL_SCALE,
+                ]
+            }
+        };
         for q in &skull.quads {
             if verts.len() + 6 > MAX_VERTS {
                 return;
@@ -2576,12 +2608,7 @@ impl EntityPass {
             let mut p4 = [[0f32; 3]; 4];
             let mut m4 = [[0f32; 3]; 4];
             for (i, c) in q.verts.iter().enumerate() {
-                let p = [
-                    c[0] * WORN_SKULL_SCALE,
-                    c[1] * WORN_SKULL_SCALE + w.skull_y_offset * 16.0,
-                    c[2] * WORN_SKULL_SCALE,
-                ];
-                let r = mat_apply(m, p);
+                let r = mat_apply(m, local(c));
                 let v = [
                     (r[0] + o[0]) * w.horizontal_scale,
                     r[1] + o[1],

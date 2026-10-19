@@ -1696,6 +1696,7 @@ pub(crate) fn to_gpu_held_model(
         first_right: conv_t(&m.first_right),
         first_left: conv_t(&m.first_left),
         fixed: conv_t(&m.fixed),
+        head: conv_t(&m.head),
         from_block: m.from_block,
         gui_quads: m.gui_quads.as_deref().map(conv_quads),
     }
@@ -2994,27 +2995,29 @@ pub(crate) fn ensure_trims(
     out
 }
 
-/// M273 — `CustomHeadLayer.Transforms` per renderer, `(skullYOffset,
-/// horizontalScale)`; `None` for an entity whose renderer has no
-/// `CustomHeadLayer` (a cow wearing a skull draws none).
-pub(crate) fn custom_head_transforms(entity: &str) -> Option<(f32, f32)> {
+/// M273 — `CustomHeadLayer.Transforms` per renderer, `(yOffset,
+/// skullYOffset, horizontalScale)`; `None` for an entity whose renderer has
+/// no `CustomHeadLayer` (a cow wearing a skull draws none).
+pub(crate) fn custom_head_transforms(entity: &str) -> Option<(f32, f32, f32)> {
     match entity.strip_prefix("minecraft:").unwrap_or(entity) {
         // `VillagerRenderer.CUSTOM_HEAD_TRANSFORMS` (the zombie villager's
         // too).
-        "villager" | "zombie_villager" => Some((-0.074_218_75, 1.0)),
+        "villager" | "zombie_villager" => Some((-0.117_187_5, -0.074_218_75, 1.0)),
         // `PiglinRenderer.PIGLIN_CUSTOM_HEAD_TRANSFORMS`.
-        "piglin" | "piglin_brute" | "zombified_piglin" => Some((0.0, 1.001_953_1)),
+        "piglin" | "piglin_brute" | "zombified_piglin" => Some((0.0, 0.0, 1.001_953_1)),
         "armor_stand" | "copper_golem" | "player" | "mannequin" | "zombie" | "husk" | "drowned"
         | "skeleton" | "stray" | "bogged" | "wither_skeleton" | "parched" | "evoker"
-        | "illusioner" | "pillager" | "vindicator" | "wandering_trader" => Some((0.0, 1.0)),
+        | "illusioner" | "pillager" | "vindicator" | "wandering_trader" => Some((0.0, 0.0, 1.0)),
         _ => None,
     }
 }
 
-/// M273 — the skull `id` wears, if its renderer draws one
-/// (`LivingEntityRenderer.extractRenderState`: a head item whose block is
-/// an `AbstractSkullBlock`). A player head takes its profile's skin once
-/// that has arrived.
+/// M273 — what `id` wears on its head, if its renderer has a
+/// `CustomHeadLayer` (`LivingEntityRenderer.extractRenderState`): a head item
+/// whose block is an `AbstractSkullBlock` draws as that skull (a player head
+/// in its profile's skin once that has arrived); M274 — any other item that
+/// `HumanoidArmorLayer` does not draw (no equipment asset: a carved pumpkin,
+/// a block, a banner) draws as itself in the `head` display context.
 fn worn_head<'a>(
     session: &'a PlaySession,
     id: i32,
@@ -3022,9 +3025,20 @@ fn worn_head<'a>(
     items: &'a rewo_data::items::Items,
     head_skins: Option<&'a HeadSkins>,
 ) -> Option<rewo_gpu::entities::WornHead<'a>> {
-    let (skull_y_offset, horizontal_scale) = custom_head_transforms(entity)?;
+    let (y_offset, skull_y_offset, horizontal_scale) = custom_head_transforms(entity)?;
     let item = items.name(session.world.entities.armor(id)[0]?.item)?;
-    let base = rewo_data::chest_states::skull_model(item)?;
+    let Some(base) = rewo_data::chest_states::skull_model(item) else {
+        if rewo_data::item_props_table::equip_asset(item).is_some() {
+            return None;
+        }
+        return Some(rewo_gpu::entities::WornHead {
+            model: item,
+            item: true,
+            y_offset,
+            skull_y_offset,
+            horizontal_scale,
+        });
+    };
     let skinned = session
         .world
         .entities
@@ -3033,6 +3047,8 @@ fn worn_head<'a>(
         .and_then(|(v, h)| h.ready(v));
     Some(rewo_gpu::entities::WornHead {
         model: skinned.unwrap_or(base),
+        item: false,
+        y_offset,
         skull_y_offset,
         horizontal_scale,
     })

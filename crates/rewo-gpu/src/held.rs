@@ -69,6 +69,8 @@ pub struct HeldItemModel {
     /// `display.fixed` — the context an item frame draws its item through
     /// (M194; `ItemFrameRenderer` → `updateForNonLiving(..., FIXED, ...)`).
     pub fixed: DisplayTransform,
+    /// `display.head` — a worn non-skull item (M274, `CustomHeadLayer`).
+    pub head: DisplayTransform,
     pub from_block: bool,
     /// Separate geometry for a slot, when the item's definition selects a
     /// different model in the `gui` context (M40) — the spears and bundles.

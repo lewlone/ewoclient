@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 18;
+const EXPECTED_WITNESSES: usize = 19;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -1270,6 +1270,8 @@ fn run_check(
     st.wr.prepare_held_items(gpu, &[SKULL])?;
     let ring = OverlayRing::default();
     let ov = overlay_offscreen(&ring);
+    const PUMPKIN: &str = "minecraft:carved_pumpkin";
+    st.wr.prepare_held_items(gpu, &[PUMPKIN])?;
     let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
         st.wr.set_entities(&[d], st.right, st.up, 0.0);
         st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
@@ -1279,6 +1281,23 @@ fn run_check(
     let worn = shot(EntityDraw {
         worn_head: Some(rewo_gpu::entities::WornHead {
             model: SKULL,
+            item: false,
+            y_offset: 0.0,
+            skull_y_offset: 0.0,
+            horizontal_scale: 1.0,
+        }),
+        ..neutral_draw(EntityModelKind::ArmorStand)
+    })?;
+    // m19 — M274: a carved pumpkin worn the same way, `CustomHeadLayer`'s
+    // item branch: `translateToHead` puts the item's centre at
+    // `(0, -0.25, 0)` head-local (the identity `head` transform of a block
+    // item, `-0.5` centring), so world `(0, 1.501 - 1/16 + 0.25, 0)`, the
+    // cube 0.625 wide.
+    let pumpkin = shot(EntityDraw {
+        worn_head: Some(rewo_gpu::entities::WornHead {
+            model: PUMPKIN,
+            item: true,
+            y_offset: 0.0,
             skull_y_offset: 0.0,
             horizontal_scale: 1.0,
         }),
@@ -1320,6 +1339,51 @@ fn run_check(
     };
     let got = (sx / n.max(1) as f64, sy / n.max(1) as f64);
     let off = ((got.0 - centre.0 as f64).powi(2) + (got.1 - centre.1 as f64).powi(2)).sqrt();
+    // The same grading for the pumpkin, against every texture its quads
+    // sample.
+    let pumpkin_sheets: HashSet<u32> = baked
+        .held_items
+        .get(PUMPKIN)
+        .map(|m| {
+            let mut texs: Vec<u16> = m.quads.iter().map(|q| q.tex).collect();
+            texs.sort_unstable();
+            texs.dedup();
+            texs.iter()
+                .filter_map(|&t| baked.held_items.textures.get(t as usize))
+                .flat_map(|t| producible(&t.rgba))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (mut pn, mut px, mut py, mut p_unexplained) = (0usize, 0f64, 0f64, None);
+    for (i, (a, b)) in pumpkin
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bare.as_chunks::<4>().0)
+        .enumerate()
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        pn += 1;
+        px += (i as u32 % sw) as f64 + 0.5;
+        py += (i as u32 / sw) as f64 + 0.5;
+        let c = pack(a[0], a[1], a[2]);
+        if p_unexplained.is_none() && !explains(&pumpkin_sheets, c) {
+            p_unexplained = Some(c);
+        }
+    }
+    let p_centre = {
+        let c = Mat4::from_cols_array_2d(&st.vp)
+            * glam::Vec4::new(0.0, 1.501 - 1.0 / 16.0 + 0.25, 0.0, 1.0);
+        (
+            (c.x / c.w * 0.5 + 0.5) * sw as f32,
+            (0.5 - c.y / c.w * 0.5) * sh as f32,
+        )
+    };
+    let p_got = (px / pn.max(1) as f64, py / pn.max(1) as f64);
+    let p_off =
+        ((p_got.0 - p_centre.0 as f64).powi(2) + (p_got.1 - p_centre.1 as f64).powi(2)).sqrt();
     st.destroy(gpu);
     w.push(wit(
         "m18.a_worn_skull_draws_on_the_armour_stands_head_in_its_own_sheet",
@@ -1333,6 +1397,21 @@ fn run_check(
             centre.0,
             centre.1,
             unexplained.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    w.push(wit(
+        "m19.a_worn_pumpkin_draws_on_the_armour_stands_head_in_its_own_textures",
+        !pumpkin_sheets.is_empty() && pn >= 300 && p_unexplained.is_none() && p_off <= 1.0,
+        format!(
+            "{pn} px added (want >= 300); centroid ({:.1}, {:.1}) vs the item's centre \
+             ({:.1}, {:.1}): {p_off:.2} px (want <= 1); first colour its textures \
+             cannot produce: {:?}",
+            p_got.0,
+            p_got.1,
+            p_centre.0,
+            p_centre.1,
+            p_unexplained.map(|c| format!("#{c:06x}"))
         ),
     ));
 

@@ -210,6 +210,9 @@ PRECMD = (
     "summon minecraft:armor_stand ~-4 ~ ~3 {Rotation:[30f,0f]};"
     "summon minecraft:armor_stand ~-6 ~ ~3 {ShowArms:1b,NoBasePlate:1b,"
     "equipment:{head:{id:\"minecraft:iron_helmet\",count:1}}};"
+    # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
+    # asset, so `CustomHeadLayer`'s item branch draws it).
+    "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

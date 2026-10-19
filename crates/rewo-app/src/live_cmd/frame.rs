@@ -1152,6 +1152,15 @@ impl LiveApp {
             }) {
                 rc.worn_skin_head_frames += 1;
             }
+            // M274 — r132: the staged stand wearing a carved pumpkin reached
+            // the draws through the head item branch.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
+                    && d.worn_head
+                        .is_some_and(|w| w.item && w.model == "minecraft:carved_pumpkin")
+            }) {
+                rc.worn_item_head_frames += 1;
+            }
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
                     && d.stand_parts.pose[0] == [45.0, 0.0, 0.0]
