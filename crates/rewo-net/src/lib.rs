@@ -2424,6 +2424,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:experience_orb` type id (M251) — gates the index-8 INT,
     /// the orb's value, which picks its icon.
     pub experience_orb: Option<i32>,
+    /// `minecraft:text_display` type id (M255) — gates the index-15 BYTE
+    /// (billboard) and the text fields 23–27.
+    pub text_display: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
@@ -2750,6 +2753,57 @@ pub(crate) fn apply_set_entity_data<'a>(
     // slot: it only ever selects the orb's look (`getIcon`).
     if let (Some(v), true) = (meta.int8, kinds.experience_orb == Some(type_id)) {
         entities.set_variant(eid, v);
+    }
+    // M255 — a display entity's transformation (VECTOR3 / QUATERNION at
+    // 11–14, the displays' alone) and a text display's billboard and text.
+    {
+        let is_text = kinds.text_display == Some(type_id);
+        let any = meta.display_translation.is_some()
+            || meta.display_scale.is_some()
+            || meta.display_left.is_some()
+            || meta.display_right.is_some()
+            || (is_text
+                && (meta.display_text.is_some()
+                    || meta.int24.is_some()
+                    || meta.int25.is_some()
+                    || meta.byte26.is_some()
+                    || meta.byte27.is_some()
+                    || meta.mob_flags.is_some()));
+        if any {
+            let d = entities.display_mut(eid);
+            if let Some(v) = meta.display_translation {
+                d.translation = v;
+            }
+            if let Some(v) = meta.display_scale {
+                d.scale = v;
+            }
+            if let Some(v) = meta.display_left {
+                d.left_rotation = v;
+            }
+            if let Some(v) = meta.display_right {
+                d.right_rotation = v;
+            }
+            if is_text {
+                if let Some(t) = meta.display_text.clone() {
+                    d.text = t;
+                }
+                if let Some(v) = meta.int24 {
+                    d.line_width = v;
+                }
+                if let Some(v) = meta.int25 {
+                    d.background = v;
+                }
+                if let Some(v) = meta.byte26 {
+                    d.text_opacity = v;
+                }
+                if let Some(v) = meta.byte27 {
+                    d.style = v;
+                }
+                if let Some(v) = meta.mob_flags {
+                    d.billboard = v;
+                }
+            }
+        }
     }
     // Slot 9 PAINTING_VARIANT → the painting's variant (M254), raw id.
     if let Some(v) = meta.painting9 {
@@ -5310,6 +5364,33 @@ mod set_entity_data_tests {
         t.add(6, EntityState::new(0, 800, 0.0, 0.0, 0.0, 0.0, 0.0));
         apply_set_entity_data(&body(6, 9, 34, &[3]), &mut t, Some(ALLAY));
         assert_eq!(t.variant(6), Some(3));
+    }
+
+    /// M255 — index 15 BYTE is a text display's billboard but a mob's flags;
+    /// index 11 VECTOR3 is any display's translation.
+    #[test]
+    fn index15_byte_is_a_text_displays_billboard_only() {
+        const TEXT: i32 = 900;
+        let kinds = crate::MetaKinds {
+            text_display: Some(TEXT),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, TEXT, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(7, 15, 0, &[3]), &mut t, kinds);
+        apply_set_entity_data(&body(8, 15, 0, &[3]), &mut t, kinds);
+        assert_eq!(t.display(7).map(|d| d.billboard), Some(3));
+        assert!(
+            t.display(8).is_none(),
+            "a zombie's slot 15 is not a display"
+        );
+        let mut v = Vec::new();
+        for f in [1.0f32, 2.0, 3.0] {
+            v.extend_from_slice(&f.to_be_bytes());
+        }
+        apply_set_entity_data(&body(7, 11, 39, &v), &mut t, kinds);
+        assert_eq!(t.display(7).map(|d| d.translation), Some([1.0, 2.0, 3.0]));
     }
 
     #[test]

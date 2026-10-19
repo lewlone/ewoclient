@@ -163,6 +163,8 @@ PRECMD = (
     # and r87's pool.
     "fill ~-3 ~ ~16 ~-1 ~2 ~16 minecraft:stone;"
     "summon minecraft:painting ~-2 ~1 ~15 {facing:2b,variant:\"minecraft:kebab\"};"
+    # M255 -- r114. A text display (a hologram), gold, facing the camera.
+    "summon minecraft:text_display ~2 ~2 ~-4 {billboard:\"center\",text:{text:\"RewoHolo\",color:\"gold\"}};"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"

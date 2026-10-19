@@ -291,6 +291,29 @@ pub struct EntityMeta {
     /// raw registry id. The serializer is the painting's alone, so it needs
     /// no kind gate.
     pub painting9: Option<i32>,
+    /// M255 — `Display` (11–14): translation, scale (VECTOR3), left and right
+    /// rotation (QUATERNION). Those serializers at those indices are the
+    /// display entities' alone.
+    pub display_translation: Option<[f32; 3]>,
+    pub display_scale: Option<[f32; 3]>,
+    pub display_left: Option<[f32; 4]>,
+    pub display_right: Option<[f32; 4]>,
+    /// M255 — `TextDisplay` (23–27), kind-gated by the caller: the text as
+    /// styled runs, line width, background, opacity, style flags.
+    pub display_text: Option<Vec<(String, [f32; 3])>>,
+    pub int24: Option<i32>,
+    pub int25: Option<i32>,
+    pub byte26: Option<u8>,
+    pub byte27: Option<u8>,
+}
+
+/// `N` big-endian f32s (a VECTOR3 or QUATERNION value), or `None` short.
+fn read_f32s<const N: usize>(r: &mut PacketReader) -> Option<[f32; N]> {
+    let mut out = [0.0f32; N];
+    for v in &mut out {
+        *v = r.f32().ok()?;
+    }
+    Some(out)
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -402,6 +425,29 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (10, 1) => meta.int10 = r.varint().ok(),
             (8, 1) => meta.int8 = r.varint().ok(),
             (9, 34) => meta.painting9 = r.varint().ok(),
+            (11, 39) => meta.display_translation = read_f32s::<3>(r),
+            (12, 39) => meta.display_scale = read_f32s::<3>(r),
+            (13, 40) => meta.display_left = read_f32s::<4>(r),
+            (14, 40) => meta.display_right = read_f32s::<4>(r),
+            (23, 5) => match r.nbt() {
+                Ok(nbt) => {
+                    meta.display_text = Some(
+                        rewo_world::chat_style::parse_component(
+                            &nbt,
+                            rewo_world::chat_style::ChatStyle::WHITE,
+                            kinds.lang,
+                        )
+                        .into_iter()
+                        .map(|s| (s.text, s.color))
+                        .collect(),
+                    )
+                }
+                Err(_) => break,
+            },
+            (24, 1) => meta.int24 = r.varint().ok(),
+            (25, 1) => meta.int25 = r.varint().ok(),
+            (26, 0) => meta.byte26 = r.u8().ok(),
+            (27, 0) => meta.byte27 = r.u8().ok(),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),

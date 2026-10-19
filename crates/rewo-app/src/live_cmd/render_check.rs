@@ -250,6 +250,9 @@ pub(super) struct RenderCheck {
     /// M254 — r113: frames on which a painting drew every quad of its
     /// variant's model.
     pub(super) painting_frames: usize,
+    /// M255 — r114: frames whose world text carried the staged text
+    /// display's line in its gold.
+    pub(super) text_display_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1002,7 +1005,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 113;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 114;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1192,6 +1195,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M255 — r114: `render_check.py` summons a text display reading
+        // `RewoHolo` in gold. Its text arrives as metadata index 23 (a
+        // component), and must reach the world-text draw list as that line in
+        // that colour — not a capsule, not white.
+        row(
+            "r114 a text display drew its gold line as world text",
+            self.text_display_frames >= 1,
+            format!("{} frames drew it", self.text_display_frames),
         );
         // M254 — r113: `render_check.py` hangs a kebab painting on a stone
         // wall. Its variant arrives as a raw `painting_variant` id (the

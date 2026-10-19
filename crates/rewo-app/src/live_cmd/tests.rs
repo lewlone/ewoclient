@@ -3849,3 +3849,52 @@ fn the_held_map_branch_follows_the_renderers_own_stacks() {
         Some((Arm::Right, false))
     );
 }
+
+/// M255 — a text display's pose: fixed at yaw 0 the font's +x is world +x
+/// at 0.025 a px and its +y (down) is world -y; at yaw 90 the text's right
+/// turns to +z; a centre billboard seen from the south (camera yaw 180)
+/// faces it exactly as a fixed one at yaw 0 does.
+#[test]
+fn a_text_display_pose_follows_vanillas_chain() {
+    use super::entities::text_display_transform;
+    let d = rewo_world::entities::DisplayState::default();
+    let apply = |m: &rewo_data::be_transform::Affine, v: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+    };
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+    let fixed0 = text_display_transform([0.0; 3], (0.0, 0.0), (0.0, 0.0), &d);
+    assert!(close(apply(&fixed0, [10.0, 0.0, 0.0]), [0.25, 0.0, 0.0]));
+    assert!(close(apply(&fixed0, [0.0, 10.0, 0.0]), [0.0, -0.25, 0.0]));
+    let fixed90 = text_display_transform([1.0, 2.0, 3.0], (90.0, 0.0), (0.0, 0.0), &d);
+    assert!(close(apply(&fixed90, [10.0, 0.0, 0.0]), [1.0, 2.0, 3.25]));
+    let centre = rewo_world::entities::DisplayState {
+        billboard: 3,
+        ..Default::default()
+    };
+    let seen = text_display_transform([0.0; 3], (37.0, 12.0), (180.0, 0.0), &centre);
+    for v in [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [3.0, -4.0, 0.0]] {
+        assert!(close(apply(&seen, v), apply(&fixed0, v)), "{v:?}");
+    }
+}
+
+/// M255 — `\n` splits, a line wider than the limit wraps at its last
+/// space, and runs of one colour merge.
+#[test]
+fn text_display_lines_split_wrap_and_merge() {
+    use super::entities::text_display_lines;
+    let advance = [6u8; 256];
+    let red = [1.0, 0.0, 0.0];
+    let white = [1.0, 1.0, 1.0];
+    let text = vec![("aaa b".to_string(), white), ("bb\nc".to_string(), red)];
+    let lines = text_display_lines(&text, 30, &advance);
+    let plain: Vec<String> = lines
+        .iter()
+        .map(|(r, _)| r.iter().map(|(t, _)| t.as_str()).collect())
+        .collect();
+    assert_eq!(plain, ["aaa", "bbb", "c"]);
+    assert_eq!(
+        lines[1].0,
+        vec![("b".to_string(), white), ("bb".to_string(), red)]
+    );
+    assert_eq!(lines[0].1, 18.0);
+}

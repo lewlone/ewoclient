@@ -1955,6 +1955,192 @@ pub(super) fn collect_paintings(
     out
 }
 
+/// M255 — a quaternion `[x, y, z, w]` as an affine rotation.
+fn quat_affine(q: [f32; 4]) -> rewo_data::be_transform::Affine {
+    let [x, y, z, w] = q;
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+            0.0,
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+            0.0,
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+            0.0,
+        ],
+    ]
+}
+
+/// M255 — a text display's font-px → world pose: `DisplayRenderer.submit`'s
+/// `T(pos) · orientation · Transformation(T · L · S · R)` then
+/// `TextDisplayRenderer.submitInner`'s `YP(π) · scale(-0.025)`. The
+/// orientation is `rotationYXZ(-yaw, pitch, 0)` with the billboard mode
+/// choosing entity or camera angles (`calculateOrientation`; the camera's
+/// yaw less 180, its pitch negated).
+pub(crate) fn text_display_transform(
+    pos: [f64; 3],
+    entity: (f32, f32),
+    camera: (f32, f32),
+    d: &rewo_world::entities::DisplayState,
+) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_x, rot_y_rad, scale, translation};
+    let (yaw, pitch) = match d.billboard {
+        1 => (camera.0 - 180.0, entity.1),
+        2 => (entity.0, -camera.1),
+        3 => (camera.0 - 180.0, -camera.1),
+        _ => entity,
+    };
+    let orient = mul(&rot_y_rad(-yaw.to_radians()), &rot_x(pitch.to_radians()));
+    let [tx, ty, tz] = d.translation;
+    let [sx, sy, sz] = d.scale;
+    let tf = mul(
+        &mul(&translation(tx, ty, tz), &quat_affine(d.left_rotation)),
+        &mul(&scale(sx, sy, sz), &quat_affine(d.right_rotation)),
+    );
+    let text = mul(
+        &rot_y_rad(std::f32::consts::PI),
+        &scale(-0.025, -0.025, -0.025),
+    );
+    let at = translation(pos[0] as f32, pos[1] as f32, pos[2] as f32);
+    mul(&mul(&at, &orient), &mul(&tf, &text))
+}
+
+/// M255 — `TextDisplay.cacheDisplay`'s lines: the text split at `\n` and
+/// wrapped to `line_width` font px (at the last space that fits, else
+/// mid-word), each line as runs `(text, sRGB colour)`, with its width.
+pub(crate) fn text_display_lines(
+    text: &[(String, [f32; 3])],
+    line_width: i32,
+    advance: &[u8; 256],
+) -> Vec<(Vec<(String, [f32; 3])>, f32)> {
+    let adv = |c: char| -> f32 {
+        if c.is_ascii() {
+            advance[c as usize] as f32
+        } else {
+            0.0
+        }
+    };
+    let limit = line_width.max(1) as f32;
+    let mut lines: Vec<Vec<(char, [f32; 3])>> = vec![Vec::new()];
+    for (t, colour) in text {
+        for c in t.chars() {
+            if c == '\n' {
+                lines.push(Vec::new());
+            } else {
+                lines.last_mut().unwrap().push((c, *colour));
+            }
+        }
+    }
+    let mut wrapped: Vec<Vec<(char, [f32; 3])>> = Vec::new();
+    for line in lines {
+        let mut cur: Vec<(char, [f32; 3])> = Vec::new();
+        let mut w = 0.0f32;
+        for ch in line {
+            if w + adv(ch.0) > limit && !cur.is_empty() {
+                match cur.iter().rposition(|(c, _)| *c == ' ') {
+                    Some(sp) => {
+                        let rest: Vec<_> = cur.split_off(sp + 1);
+                        cur.pop();
+                        wrapped.push(std::mem::take(&mut cur));
+                        cur = rest;
+                    }
+                    None => wrapped.push(std::mem::take(&mut cur)),
+                }
+                w = cur.iter().map(|(c, _)| adv(*c)).sum();
+            }
+            w += adv(ch.0);
+            cur.push(ch);
+        }
+        wrapped.push(cur);
+    }
+    wrapped
+        .into_iter()
+        .map(|chars| {
+            let width = chars.iter().map(|(c, _)| adv(*c)).sum();
+            let mut runs: Vec<(String, [f32; 3])> = Vec::new();
+            for (c, colour) in chars {
+                match runs.last_mut() {
+                    Some((s, k)) if *k == colour => s.push(c),
+                    _ => runs.push((c.to_string(), colour)),
+                }
+            }
+            (runs, width)
+        })
+        .collect()
+}
+
+/// M255 — every text display's text this frame, as world-text lines on the
+/// sign path: `TextDisplayRenderer.submitInner`'s layout (`1 - width/2`
+/// across, `-height` down, ten px a line, aligned by the style flags), one
+/// line per coloured run. Recorded: no background quad (the entity pass has
+/// no blended solid quad), no shadow, no see-through, opacity not applied,
+/// no brightness override, no interpolation.
+pub(super) fn collect_text_displays(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+    advance: &[u8; 256],
+) -> Vec<super::block_entities::OwnedSignLine> {
+    let mut out = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        if etypes.name(e.type_id) != Some("minecraft:text_display") {
+            continue;
+        }
+        let Some(d) = session.world.entities.display(id) else {
+            continue;
+        };
+        if d.text.is_empty() {
+            continue;
+        }
+        let p = e.render_pos(alpha);
+        let transform = text_display_transform(
+            p,
+            (e.yaw, e.pitch),
+            (session.player.yaw, session.player.pitch),
+            d,
+        );
+        let lines = text_display_lines(&d.text, d.line_width, advance);
+        let width = lines.iter().map(|(_, w)| *w).fold(0.0f32, f32::max);
+        let height = lines.len() as f32 * 10.0 - 1.0;
+        let light = entity_light(&session.world, p[0], p[1], p[2], lightmap);
+        for (i, (runs, lw)) in lines.into_iter().enumerate() {
+            let offset = if d.style & 8 != 0 {
+                0.0
+            } else if d.style & 16 != 0 {
+                width - lw
+            } else {
+                width / 2.0 - lw / 2.0
+            };
+            let mut pen = 1.0 - width / 2.0 + offset;
+            for (text, c) in runs {
+                let w: f32 = text.bytes().map(|b| advance[b as usize] as f32).sum();
+                let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                out.push(super::block_entities::OwnedSignLine {
+                    transform,
+                    text,
+                    x: pen,
+                    y: -height + i as f32 * 10.0,
+                    z: 0.0,
+                    color: linear_rgb(to8(c[0]), to8(c[1]), to8(c[2])),
+                    light,
+                });
+                pen += w;
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
     Some(match name {
         "minecraft:snowball" => ("minecraft:snowball", 1.0, false),
@@ -2745,6 +2931,21 @@ pub(super) fn collect_entities<'a>(
         }
         // M254 — a painting is its variant's model (`collect_paintings`).
         if name == "minecraft:painting" {
+            continue;
+        }
+        // M255 — entities vanilla draws no body for (an interaction box, a
+        // marker, an effect cloud's particles) or that are not a body at all
+        // (the displays: a text display is world text, `collect_text_displays`;
+        // block and item displays are not drawn yet). Never a capsule.
+        if matches!(
+            name,
+            "minecraft:text_display"
+                | "minecraft:block_display"
+                | "minecraft:item_display"
+                | "minecraft:interaction"
+                | "minecraft:marker"
+                | "minecraft:area_effect_cloud"
+        ) {
             continue;
         }
         let mut thrown_model: Option<&'static str> = None;

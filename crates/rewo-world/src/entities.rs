@@ -1020,6 +1020,55 @@ pub struct EntityTable {
     /// server has sent none, which reads as the field's own default rather
     /// than as an error. Cleared on removal.
     projectile_power: HashMap<i32, f64>,
+    /// M255 — a display entity's synced render state ([`DisplayState`]).
+    /// Cleared on removal.
+    displays: HashMap<i32, DisplayState>,
+}
+
+/// M255 — a display entity's synced render state: `Display`'s
+/// `Transformation` and billboard mode, and `Display.TextDisplay`'s text and
+/// style. Every field defaults to vanilla's `define(...)` value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayState {
+    /// `DATA_TRANSLATION_ID` (index 11).
+    pub translation: [f32; 3],
+    /// `DATA_SCALE_ID` (12).
+    pub scale: [f32; 3],
+    /// `DATA_LEFT_ROTATION_ID` / `DATA_RIGHT_ROTATION_ID` (13, 14),
+    /// quaternions `[x, y, z, w]`.
+    pub left_rotation: [f32; 4],
+    pub right_rotation: [f32; 4],
+    /// `DATA_BILLBOARD_RENDER_CONSTRAINTS_ID` (15): 0 fixed, 1 vertical, 2
+    /// horizontal, 3 centre.
+    pub billboard: u8,
+    /// `TextDisplay.DATA_TEXT_ID` (23), as styled runs `(text, sRGB colour)`.
+    pub text: Vec<(String, [f32; 3])>,
+    /// `DATA_LINE_WIDTH_ID` (24), font px.
+    pub line_width: i32,
+    /// `DATA_BACKGROUND_COLOR_ID` (25), ARGB.
+    pub background: i32,
+    /// `DATA_TEXT_OPACITY_ID` (26).
+    pub text_opacity: u8,
+    /// `DATA_STYLE_FLAGS_ID` (27): 1 shadow, 2 see-through, 4 default
+    /// background, 8 / 16 left / right alignment.
+    pub style: u8,
+}
+
+impl Default for DisplayState {
+    fn default() -> Self {
+        Self {
+            translation: [0.0; 3],
+            scale: [1.0; 3],
+            left_rotation: [0.0, 0.0, 0.0, 1.0],
+            right_rotation: [0.0, 0.0, 0.0, 1.0],
+            billboard: 0,
+            text: Vec::new(),
+            line_width: 200,
+            background: 0x4000_0000,
+            text_opacity: 255,
+            style: 0,
+        }
+    }
 }
 
 /// `LivingEntity`'s damage-response fields, set by
@@ -1373,6 +1422,7 @@ impl EntityTable {
             minecarts,
             leash_data,
             projectile_power,
+            displays,
         } = self;
         custom_names.remove(&id);
         poses.remove(&id);
@@ -1402,6 +1452,7 @@ impl EntityTable {
         minecarts.remove(&id);
         leash_data.remove(&id);
         projectile_power.remove(&id);
+        displays.remove(&id);
         // The three the original `remove` forgot: worn armour (a reused id
         // would render the last occupant's chestplate), the bee's anger end
         // time and the guardian's beam target. Each also grew without bound
@@ -2310,6 +2361,17 @@ impl EntityTable {
 
     /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15, BYTE). Kind-gated by
     /// the caller: a `Mob`'s flags share the index.
+    /// M255 — the display entity's state, created at vanilla's defaults on
+    /// first write.
+    pub fn display_mut(&mut self, id: i32) -> &mut DisplayState {
+        self.displays.entry(id).or_default()
+    }
+
+    /// M255 — the display entity's state, if any metadata has arrived.
+    pub fn display(&self, id: i32) -> Option<&DisplayState> {
+        self.displays.get(&id)
+    }
+
     pub fn set_armor_stand_flags(&mut self, id: i32, flags: u8) {
         self.mob_state.entry(id).or_default().stand_flags = flags;
     }
@@ -4222,6 +4284,7 @@ mod side_state_tests {
             minecarts,
             leash_data,
             projectile_power,
+            displays,
         } = t;
         [
             custom_names.contains_key(&id),
@@ -4255,6 +4318,7 @@ mod side_state_tests {
             minecarts.contains_key(&id),
             leash_data.contains_key(&id),
             projectile_power.contains_key(&id),
+            displays.contains_key(&id),
             item_frames.contains_key(&id),
         ]
         .into_iter()
@@ -4292,6 +4356,7 @@ mod side_state_tests {
         t.shared_flags.insert(id, 1);
         t.leash_data.insert(id, 0);
         t.projectile_power.insert(id, 1.5);
+        t.displays.entry(id).or_default();
         t.item_stacks.insert(id, (1, 1, false));
         t.hurts.insert(id, HurtState::default());
         t.hurt_dirs.insert(id, 45.0);

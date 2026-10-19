@@ -228,6 +228,9 @@ released.
   were grey capsules). Lit TNT does not flash or swell yet.
 - **M254**: paintings are paintings (they were grey capsules), every
   vanilla motif and size.
+- **M255**: holograms (text displays) show their text, in colour, where
+  they were grey capsules. Useful on servers like Frogsy. No dark
+  background box behind the text yet.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -288,6 +291,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M255)* | **M255** — text displays: `Display` metadata into a `DisplayState` side map, vanilla's pose and billboards, line split/wrap/alignment, coloured runs on the world-text path; no capsules for displays, interactions, markers, effect clouds; render-check **r114**. |
 | `2b02b11` | **M254** — paintings: the `painting_variant` registry synced, the variant at metadata index 9, every jar variant baked from `PaintingRenderer`'s geometry and drawn by facing; render-check **r113**. |
 | `4ed6b77` | **M253** — falling blocks and primed TNT drawn as their block models (`rewo:be/state/<id>` baked for every fall-capable state and TNT, `collect_carried_blocks`); render-check **r112**. |
 | `9a6d655` | **M252** — `MinecartModel` for all seven minecart types (the boat's fold, without the quarter turn); mobshot 264 views, mobtexshot small cap 11, render-check **r111**. |
@@ -547,6 +551,8 @@ released.
 - Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
 - After M239: **4,348 tests passed, 0 failed; gates 51/51**; render check **106/106** on three runs (plus the push-disabled control failing r106 as it should); clippy (gates, after one `int_plus_one` fix in the witness, and default features) and `cargo fmt --check` clean.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
+- Text displays draw no background box, shadow or opacity yet (M255);
+  block and item displays draw nothing (no longer capsules).
 - Still capsules after M254: end crystals, wither skulls, wind charges, llama spit, shulker bullets, the dragon fireball, evoker fangs and the display entities. A minecart's contents block is not drawn, nor its slope pitch. (M241 drew the fishing line; M250 the arrows and the thrown trident.)
 - After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M242: **4,356 tests; 4,351 passed in the full run and the 5 failures, all `rewo-net` `srv` TCP tests at the fake nameserver's port pairing ("a port free for both UDP and TCP"), passed on rerun (34/34): the shared PC's sockets, not Rewo; gates 51/51** (inventoryshot 169, itemshot 78); render check **108/108** on two runs; clippy (gates and default features, after one needless `clone`) and `cargo fmt --check` clean.
@@ -561,6 +567,7 @@ released.
 - After M252: **4,373 tests passed, 0 failed; gates 51/51** (mobshot 264 views); render check **111/111** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M253: **4,373 tests passed, 0 failed; gates 51/51**; render check **112/112** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M254: **4,376 tests; the full run passed 4,375 and failed `reconfigure.rs`'s `malformed_bodies_are_counted_once_each`, whose truncated-registry fixture was `painting_variant`, now a parsed registry: the four variant parsers stopped short silently, so a short variant registry is now counted (`short_registry`) and rewo-net passes 1,380 + 7 + 4; gates 51/51**; render check **113/113** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- After M255: **4,379 tests passed, 0 failed; gates 51/51**; render check **114/114** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

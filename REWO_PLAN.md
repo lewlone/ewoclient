@@ -2069,6 +2069,7 @@ this shape once.
 | M252 (2026-10-19) — a summoned minecart draws as `MinecartModel` | **r111** | — | — |
 | M253 (2026-10-19) — a falling block and primed TNT draw their block models | **r112** | — | — |
 | M254 (2026-10-19) — a hung painting draws its variant's model | **r113** | — | — |
+| M255 (2026-10-19) — a text display's coloured text reaches the world-text list | **r114** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3903,6 +3904,41 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M255 — text displays (holograms) (2026-10-19)
+
+A text display (the entity servers build holograms from) was a grey
+capsule with no text. Now:
+
+- **Metadata.** `Display`'s transformation (indices 11–14: translation and
+  scale VECTOR3, left and right rotation QUATERNION, serializers only the
+  displays use) and, gated on the `text_display` type, its billboard (15
+  BYTE, which is a mob's flags elsewhere), text (23, a component kept as
+  styled runs through `chat_style::parse_component`), line width (24),
+  background (25), opacity (26) and style flags (27), into a new
+  `EntityTable` side map (`DisplayState`, vanilla's defaults, cleared on
+  removal and counted by `side_rows`).
+- **Pose** (`live_cmd::text_display_transform`): `DisplayRenderer.submit`'s
+  `T(pos) · rotationYXZ(-yaw, pitch, 0) · Transformation(T·L·S·R)` with the
+  billboard choosing entity or camera angles (`calculateOrientation`: the
+  camera's yaw less 180, its pitch negated), then `TextDisplayRenderer`'s
+  `YP(π) · scale(-0.025)`.
+- **Layout** (`text_display_lines`): split at `\n`, wrapped to the line
+  width at the last space that fits, `1 - width/2` across and `-height`
+  down, ten px a line, aligned by the style flags; each coloured run is a
+  world-text line on the sign path, in its own colour.
+- The displays, interaction boxes, markers and effect clouds no longer draw
+  capsules (vanilla draws no body for them).
+
+Recorded: no background quad (the entity pass has no blended solid quad),
+no shadow, see-through mode, opacity, brightness override or interpolation;
+block and item displays draw nothing yet.
+
+Tests: `a_text_display_pose_follows_vanillas_chain` (scale and axes at yaw 0,
+the turn at yaw 90, a centre billboard from the south equals fixed yaw 0),
+`text_display_lines_split_wrap_and_merge`,
+`index15_byte_is_a_text_displays_billboard_only`. **r114**: a summoned gold
+`RewoHolo` reaches the windowed world-text list as that line in that colour.
 
 ### M254 — paintings (2026-10-19)
 

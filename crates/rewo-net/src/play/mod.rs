@@ -799,6 +799,8 @@ pub struct PlaySession {
     /// M239 — `minecraft:firework_rocket`, for its attachment and the
     /// elytra boost.
     pub firework_type_id: Option<i32>,
+    /// `minecraft:text_display`'s type id (M255), for its metadata gate.
+    pub text_display_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
     pub creaking_type_id: Option<i32>,
     /// `minecraft:bee` — gates the index-19 anger deadline, and names the kind
@@ -2019,6 +2021,7 @@ impl<'a> Connection<'a> {
             sheep_type_id: None,
             armor_stand_type_id: None,
             firework_type_id: None,
+            text_display_type_id: None,
             creaking_type_id: None,
             bee_type_id: None,
             guardian_type_id: None,

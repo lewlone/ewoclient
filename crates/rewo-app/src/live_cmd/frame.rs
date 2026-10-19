@@ -948,7 +948,18 @@ impl LiveApp {
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
         let frame_map_draws: Vec<_> = frame_maps.iter().map(|m| m.as_draw()).collect();
         let sign_lines = match state.world_renderer.font_advance() {
-            Some(a) => collect_session_sign_text(session, &self.sign_states, &lightmap, a),
+            Some(a) => {
+                let mut v = collect_session_sign_text(session, &self.sign_states, &lightmap, a);
+                // M255 — text displays ride the same world-text path.
+                v.extend(collect_text_displays(
+                    session,
+                    &self.etypes,
+                    &lightmap,
+                    alpha,
+                    a,
+                ));
+                v
+            }
             None => Vec::new(),
         };
         // M163/r49 — read the sign line OFF THE DRAW LIST, for r48's reason
@@ -960,6 +971,13 @@ impl LiveApp {
         if let Some(c) = self.check.as_mut() {
             if sign_lines.iter().any(|l| l.text == SIGN_WITNESS_RESOLVED) {
                 c.sign_resolved_frames += 1;
+            }
+            // M255 — r114: the staged text display's gold line.
+            let gold = super::entities::linear_rgb(0xFF, 0xAA, 0x00);
+            if sign_lines.iter().any(|l| {
+                l.text == "RewoHolo" && (0..3).all(|k| (l.color[k] - gold[k]).abs() < 1e-3)
+            }) {
+                c.text_display_frames += 1;
             }
             if sign_lines
                 .iter()
