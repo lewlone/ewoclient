@@ -1248,7 +1248,6 @@ fn update_fall_flying_movement(
     ]
 }
 
-/// `Entity.calculateViewVector(xRot, yRot)` — `getLookAngle()`'s body.
 /// M239 — `FireworkRocketEntity.tick`'s push on the entity it is attached
 /// to while that entity glides: `movement + look * 0.1 + (look * 1.5 -
 /// movement) * 0.5`, `look` being `getLookAngle()` (the current view
@@ -1263,6 +1262,7 @@ pub fn firework_boost(state: &mut PlayerState) {
     state.vz = m[2] + (look[2] * 0.1 + (look[2] * 1.5 - m[2]) * 0.5);
 }
 
+/// `Entity.calculateViewVector(xRot, yRot)` — `getLookAngle()`'s body.
 fn view_vector(x_rot: f32, y_rot: f32) -> [f64; 3] {
     let rad = (std::f64::consts::PI / 180.0) as f32;
     let real_x_rot = x_rot * rad;

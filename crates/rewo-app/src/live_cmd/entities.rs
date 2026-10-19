@@ -1876,13 +1876,6 @@ pub(super) fn collect_fishing_lines(
     out
 }
 
-/// M240 — the entities drawn as a camera-facing item: `(default item or
-/// sprite model, scale, fullbright)`, from `EntityRenderers`' registrations
-/// of `ThrownItemRenderer` (eye of ender, fireballs fullbright; the fireball
-/// at 3, the small one at 0.75), `FireworkEntityRenderer` and
-/// `FishingHookRenderer` (its sprite at 0.5). Recorded: a rocket shot at an
-/// angle (a crossbow's) is drawn facing the camera too, without vanilla's
-/// extra turn.
 /// M250 — the projectiles drawn by a model under `YP(yRot - 90) · ZP(xRot +
 /// extra)` rather than as a capsule: `ArrowRenderer` (the arrow and the
 /// spectral arrow, extra 0) and `ThrownTridentRenderer` (extra 90).
@@ -2549,6 +2542,13 @@ pub(super) fn collect_text_displays(
     out
 }
 
+/// M240 — the entities drawn as a camera-facing item: `(default item or
+/// sprite model, scale, fullbright)`, from `EntityRenderers`' registrations
+/// of `ThrownItemRenderer` (eye of ender, fireballs fullbright; the fireball
+/// at 3, the small one at 0.75), `FireworkEntityRenderer` and
+/// `FishingHookRenderer` (its sprite at 0.5). Recorded: a rocket shot at an
+/// angle (a crossbow's) is drawn facing the camera too, without vanilla's
+/// extra turn.
 pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
     Some(match name {
         "minecraft:snowball" => ("minecraft:snowball", 1.0, false),

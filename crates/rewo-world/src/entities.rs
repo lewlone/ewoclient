@@ -2357,13 +2357,6 @@ impl EntityTable {
         self.main_arms.get(&id).copied().unwrap_or_default()
     }
 
-    /// `Mob.DATA_MOB_FLAGS_ID` (index 15, BYTE). The caller must already have
-    /// established that this entity is a `Mob` — an `ArmorStand` puts its own
-    /// unrelated client flags at the same index with the same serializer.
-    ///
-    /// Writes handedness through to the main-arm map because
-    /// `Mob.getMainArm()` *is* `isLeftHanded()`; there is no separate mob arm
-    /// field in vanilla either.
     /// M239 — a firework rocket's attachment (index 9). Kind-gated by the
     /// caller.
     pub fn set_attached_to(&mut self, id: i32, target: Option<i32>) {
@@ -2375,8 +2368,6 @@ impl EntityTable {
         self.mob_state.get(&id).and_then(|s| s.attached_to)
     }
 
-    /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15, BYTE). Kind-gated by
-    /// the caller: a `Mob`'s flags share the index.
     /// M255 — the display entity's state, created at vanilla's defaults on
     /// first write.
     pub fn display_mut(&mut self, id: i32) -> &mut DisplayState {
@@ -2388,6 +2379,8 @@ impl EntityTable {
         self.displays.get(&id)
     }
 
+    /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15, BYTE). Kind-gated by
+    /// the caller: a `Mob`'s flags share the index.
     pub fn set_armor_stand_flags(&mut self, id: i32, flags: u8) {
         self.mob_state.entry(id).or_default().stand_flags = flags;
     }
@@ -2398,6 +2391,13 @@ impl EntityTable {
         self.mob_state.get(&id).map_or(0, |s| s.stand_flags)
     }
 
+    /// `Mob.DATA_MOB_FLAGS_ID` (index 15, BYTE). The caller must already have
+    /// established that this entity is a `Mob` — an `ArmorStand` puts its own
+    /// unrelated client flags at the same index with the same serializer.
+    ///
+    /// Writes handedness through to the main-arm map because
+    /// `Mob.getMainArm()` *is* `isLeftHanded()`; there is no separate mob arm
+    /// field in vanilla either.
     pub fn set_mob_flags(&mut self, id: i32, flags: u8) {
         self.mob_state.entry(id).or_default().flags = flags;
         self.main_arms.insert(
@@ -4386,12 +4386,6 @@ mod side_state_tests {
         t.minecarts.entry(id).or_default();
     }
 
-    /// **`remove` leaves no row in any per-entity map.**
-    ///
-    /// MUTATION: dropping `armor.remove(&id)`, `anger_end_time.remove(&id)` or
-    /// `guardian_attack.remove(&id)` from `clear_side_state` — the three the
-    /// pre-fix `remove` never cleared — leaves a row behind, and `side_rows`
-    /// reports it.
     /// M194 — a frame's facing falls back to the spawn packet's data until
     /// slot 8 arrives; rotation is kept `% 8`; an empty frame holds nothing.
     #[test]
@@ -4420,6 +4414,12 @@ mod side_state_tests {
         assert_eq!(t.item_frame(11), None, "no entity");
     }
 
+    /// **`remove` leaves no row in any per-entity map.**
+    ///
+    /// MUTATION: dropping `armor.remove(&id)`, `anger_end_time.remove(&id)` or
+    /// `guardian_attack.remove(&id)` from `clear_side_state` — the three the
+    /// pre-fix `remove` never cleared — leaves a row behind, and `side_rows`
+    /// reports it.
     #[test]
     fn a_removed_entity_leaves_no_row_in_any_side_map() {
         let mut t = EntityTable::default();

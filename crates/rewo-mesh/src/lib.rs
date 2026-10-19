@@ -3577,10 +3577,6 @@ mod tests {
         w
     }
 
-    /// The face direction of a **fluid** quad, from the plane it lies in
-    /// relative to its own block. `emit_fluid` winds its four sides identically
-    /// (unlike the cube emitter), so their normals cannot tell north from south
-    /// — the plane can, and it is still independent of the shade code.
     /// M196: `FluidRenderer` draws a fluid's four sides from the FLOWING
     /// sprite and its top (still) and bottom from the still one, so the sides
     /// take the flow-quadrant layer and the top and bottom keep the still
@@ -3798,6 +3794,10 @@ mod tests {
         }
     }
 
+    /// The face direction of a **fluid** quad, from the plane it lies in
+    /// relative to its own block. `emit_fluid` winds its four sides identically
+    /// (unlike the cube emitter), so their normals cannot tell north from south
+    /// — the plane can, and it is still independent of the shade code.
     fn fluid_face_of_quad(q: &[MeshVertex; 4], block: [i32; 3]) -> usize {
         let constant = |axis: usize| q.iter().all(|v| v.pos[axis] == q[0].pos[axis]);
         if constant(0) {

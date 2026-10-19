@@ -516,11 +516,12 @@ impl EntityClasses {
         self.minecart.contains(&type_id)
     }
 
-    /// M194 — an `ItemFrame` (plain or glow).
+    /// M259 — `minecraft:evoker_fangs`, whose entity event 4 is its bite.
     pub fn is_evoker_fangs(&self, type_id: i32) -> bool {
         self.evoker_fangs.contains(&type_id)
     }
 
+    /// M194 — an `ItemFrame` (plain or glow).
     pub fn is_item_frame(&self, type_id: i32) -> bool {
         self.item_frame.contains(&type_id)
     }

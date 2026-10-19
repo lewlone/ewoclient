@@ -202,7 +202,6 @@ pub struct MenuLayout {
 }
 
 impl MenuLayout {
-    /// Total slot count — the length of the wire's `container_set_content` list.
     /// M232 — the menu slot where `addStandardInventorySlots` begins (its
     /// 27 main slots, inventory indices 9..=35, then the 9 hotbar slots,
     /// 0..=8), or `None` for a menu without the player's inventory (the
@@ -221,6 +220,7 @@ impl MenuLayout {
         None
     }
 
+    /// Total slot count — the length of the wire's `container_set_content` list.
     pub const fn slot_count(&self) -> usize {
         let mut n = 0;
         let mut i = 0;

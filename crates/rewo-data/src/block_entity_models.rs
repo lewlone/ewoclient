@@ -1516,7 +1516,6 @@ pub const CONDUIT_ACTIVE: &[(&str, &str, (f32, f32))] = &[
     ),
 ];
 
-/// Bake the conduit's dormant shell and its four active pieces.
 /// M240 — `FishingHookRenderer`'s bobber: one camera-facing quad of
 /// `entity/fishing/fishing_hook.png`, a unit square about the origin (vanilla's
 /// `vertex(x - 0.5, y - 0.5)` over a 0..1 square, uv `(x, 1 - y)`), drawn by
@@ -2465,6 +2464,7 @@ pub fn bake_xp_orbs(
         .collect()
 }
 
+/// Bake the conduit's dormant shell and its four active pieces.
 pub fn bake_conduit(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,

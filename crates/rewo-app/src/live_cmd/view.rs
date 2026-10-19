@@ -625,10 +625,6 @@ pub(super) fn wants_audio(args: &LiveArgs) -> bool {
 mod tests {
     use super::*;
 
-    /// `pump_meshing` hands `rewo-mesh`'s vertices to `rewo-gpu` as bytes, and
-    /// the terrain arena counts vertices as `bytes / world::VERTEX_STRIDE`
-    /// with a pipeline stride of the same constant. The two crates cannot see
-    /// each other, so the size contract is pinned here, where both meet.
     /// M197: the flow array's contract, where the three crates meet — the
     /// layer bit the mesher sets is the one both terrain shaders test, and the
     /// bake's flow frame size is the renderer's array size.
@@ -673,6 +669,10 @@ mod tests {
         }
     }
 
+    /// `pump_meshing` hands `rewo-mesh`'s vertices to `rewo-gpu` as bytes, and
+    /// the terrain arena counts vertices as `bytes / world::VERTEX_STRIDE`
+    /// with a pipeline stride of the same constant. The two crates cannot see
+    /// each other, so the size contract is pinned here, where both meet.
     #[test]
     fn mesh_vertex_size_is_the_world_vertex_stride() {
         assert_eq!(

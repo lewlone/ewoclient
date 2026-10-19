@@ -6332,13 +6332,6 @@ mod tests {
         ids
     }
 
-    /// The four defaults, on one state per test case where they agree:
-    /// `isViewBlocking`'s `blocksMotion() && isCollisionShapeFullBlock`
-    /// predicate (true for a full cube that is none of cobweb /
-    /// bamboo_sapling / forceSolidOff / dynamicShape), `getShadeBrightness`'s
-    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
-    /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
-    /// `block/block`, none of which sets `"ambientocclusion"`.
     /// M211 — light dampening follows the block's SHAPE and FLUID STATE, as
     /// `BlockBehaviour.getLightDampening` / `propagatesSkylightDown` read them,
     /// not its model. Found by `play --light-check` on a normal world: a huge
@@ -6562,6 +6555,13 @@ mod tests {
         ));
     }
 
+    /// The four defaults, on one state per test case where they agree:
+    /// `isViewBlocking`'s `blocksMotion() && isCollisionShapeFullBlock`
+    /// predicate (true for a full cube that is none of cobweb /
+    /// bamboo_sapling / forceSolidOff / dynamicShape), `getShadeBrightness`'s
+    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
+    /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
+    /// `block/block`, none of which sets `"ambientocclusion"`.
     #[test]
     fn stone_takes_every_default() {
         let Some((baked, raw)) = real() else {

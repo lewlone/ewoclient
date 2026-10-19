@@ -2065,9 +2065,6 @@ impl LiveApp {
         }
     }
 
-    /// `pickBlockOrEntity` (M218): the entity under the crosshair, else the
-    /// block, with `includeData` from Ctrl. The server answers (in creative it
-    /// puts the item in the hotbar; in survival it selects a matching stack).
     /// A mouse release over an open container screen (M232: lifted out of
     /// the event arm with [`Self::screen_mouse_press`]): it ends a drag — a
     /// press with a stack on the cursor only STARTS one, and the release
@@ -2486,6 +2483,9 @@ impl LiveApp {
         }
     }
 
+    /// `pickBlockOrEntity` (M218): the entity under the crosshair, else the
+    /// block, with `includeData` from Ctrl. The server answers (in creative it
+    /// puts the item in the hotbar; in survival it selects a matching stack).
     pub(super) fn pick_key(&mut self) {
         let include = self.ctrl;
         let Some(session) = self.session.as_mut() else {

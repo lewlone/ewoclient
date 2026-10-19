@@ -5219,21 +5219,6 @@ impl PlaySession {
         self.send(p)
     }
 
-    /// `LocalPlayer.closeContainer()` (`LocalPlayer.java:333-341`): the
-    /// USER-initiated close of a container-backed screen (Esc, the inventory
-    /// key, the lectern's Done, the beacon's buttons).
-    ///
-    /// Vanilla sends `ServerboundContainerClose` for the open menu and then
-    /// runs `clientSideCloseContainer()`, which resets `containerMenu`; here
-    /// that is [`rewo_world::menu::Menus::close_local`], which clears the
-    /// open menu (so [`Self::shown_menu`] falls back to the player's own) and
-    /// returns the id to send. The menu is cleared **before** the send so a
-    /// failing socket cannot leave a stale chest behind.
-    ///
-    /// A no-op when nothing but the player's own menu is open. The
-    /// SERVER-initiated close (`handleContainerClose`) is
-    /// `menus.apply_close()` from dispatch and never reaches this method, so
-    /// it sends nothing.
     /// M232 — vanilla's container menus share the player's `Inventory`: the
     /// last 36 slots of a chest, a crafting table or a furnace ARE the
     /// player's main inventory and hotbar. Rewo keeps the player's menu
@@ -5266,6 +5251,21 @@ impl PlaySession {
         }
     }
 
+    /// `LocalPlayer.closeContainer()` (`LocalPlayer.java:333-341`): the
+    /// USER-initiated close of a container-backed screen (Esc, the inventory
+    /// key, the lectern's Done, the beacon's buttons).
+    ///
+    /// Vanilla sends `ServerboundContainerClose` for the open menu and then
+    /// runs `clientSideCloseContainer()`, which resets `containerMenu`; here
+    /// that is [`rewo_world::menu::Menus::close_local`], which clears the
+    /// open menu (so [`Self::shown_menu`] falls back to the player's own) and
+    /// returns the id to send. The menu is cleared **before** the send so a
+    /// failing socket cannot leave a stale chest behind.
+    ///
+    /// A no-op when nothing but the player's own menu is open. The
+    /// SERVER-initiated close (`handleContainerClose`) is
+    /// `menus.apply_close()` from dispatch and never reaches this method, so
+    /// it sends nothing.
     pub fn container_close(&mut self) -> Result<(), String> {
         self.mirror_open_container_inventory();
         let Some(container) = self.menus.close_local() else {
