@@ -124,7 +124,12 @@ a self-check path.
   server `move_vehicle` or teleport snaps it and is answered. A horse (M222)
   runs the player physics with its own `physics::Body` through
   `tick_ridden`; the render check's injected horse is held still with
-  `movement_speed` 0 for that reason.
+  `movement_speed` 0 for that reason. A vehicle moves on the rider's
+  PREVIOUS tick and, for a mount, on its modified `xxa` / `zza`
+  (`rider_move_vector`, ×0.98), not on the raw keys (M226). Speeds a witness
+  calls "vanilla's" must come from the decompile's chain, not a derivation
+  the code shares: the server replays a steered vehicle's moves and cannot
+  catch a wrong speed.
 - **One accessor per concept.** When two call sites each compute "which menu",
   "which origin" or "which conversion", they drift (M89, M106b, M112, M151).
 - **The M-numbers aren't a contiguous index** (M52, M61, M64, M66, M68 each

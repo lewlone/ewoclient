@@ -995,6 +995,11 @@ pub struct PlaySession {
     /// so what the elytra take-off line's `!wasJumping` reads is the last
     /// tick's (the same edge `JumpRiding::tick` keeps its own copy of).
     was_jump: bool,
+    /// M226 — the keys of the previous tick, which is what a steered
+    /// vehicle moves on: `tickNonPassenger` ticks the vehicle before the
+    /// rider's `rideTick`, whose `aiStep` refreshes `xxa` / `zza` (and whose
+    /// tail hands a boat its `setInput`).
+    prev_rider_keys: TickInput,
     /// Item ids whose prototype carries `minecraft:glider` — the elytra, and
     /// anything else `canGlideUsing` would accept. Resolved once from the item
     /// table in `into_play`: the inventory stores ids and the prototype
@@ -2028,6 +2033,7 @@ impl<'a> Connection<'a> {
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
             local_fall_flying: false,
             was_jump: false,
+            prev_rider_keys: TickInput::default(),
             glider_items,
             command_registries,
             ambient_underwater: Default::default(),
@@ -2766,12 +2772,13 @@ impl PlaySession {
                 ..*input
             };
             let input = &rider_keys;
+            let vehicle_keys = self.prev_rider_keys;
             if let Some(boat) = self.steerable_boat() {
                 self.release_steered_horse();
-                self.tick_steered_boat(boat, input)?;
+                self.tick_steered_boat(boat, &vehicle_keys, input)?;
             } else if let Some(horse) = self.steerable_horse() {
                 self.release_steered_boat();
-                self.tick_steered_horse(horse, input)?;
+                self.tick_steered_horse(horse, &vehicle_keys, input)?;
                 if let (Some(d), Some(h)) = (deferred_jump, self.steered_horse) {
                     // `Camel.onPlayerJump` adds `dashCooldown <= 0 &&
                     // onGround()` to the horse's `isSaddled()`.
@@ -2939,6 +2946,9 @@ impl PlaySession {
             }
             self.send_movement(input)?;
         }
+        // M226 — what the rider's `aiStep` just refreshed: the vehicle's
+        // input next tick.
+        self.prev_rider_keys = *input;
         self.ticks += 1;
         Ok(())
     }
@@ -5685,7 +5695,14 @@ impl PlaySession {
     /// steers (M222):
     /// [`physics::tick_ridden`] with the rider's keys and rotation, the horse
     /// placed where it went, the rider on it, then the passenger's packets.
-    fn tick_steered_horse(&mut self, id: i32, input: &TickInput) -> Result<(), String> {
+    ///
+    /// `vehicle_keys` are the previous tick's (M226), `input` this tick's.
+    fn tick_steered_horse(
+        &mut self,
+        id: i32,
+        vehicle_keys: &TickInput,
+        input: &TickInput,
+    ) -> Result<(), String> {
         let mut steered = match self.steered_horse {
             Some(h) if h.id == id => h,
             _ => {
@@ -5752,9 +5769,10 @@ impl PlaySession {
             refuse_to_move: self.world.entities.camel_refuse_to_move(id, game_time),
             sprint_bonus: self.was_sprinting && self.world.entities.dash_cooldown(id) == 0,
         });
+        let (xxa, zza) = physics::rider_move_vector(vehicle_keys);
         let ridden = physics::RiddenInput {
-            forward: input.forward,
-            strafe: input.strafe,
+            forward: zza,
+            strafe: xxa,
             rider_yaw: self.player.yaw,
             rider_pitch: self.player.pitch,
             camel,
@@ -5798,8 +5816,7 @@ impl PlaySession {
         // isCamelSitting() && !isInPoseTransition()) standUp()` — predicted
         // here as vanilla's client does (`resetLastPoseChangeTick(gameTime)`);
         // the server's own stand-up arrives as metadata after it.
-        if is_camel && input.forward > 0.0 && self.world.entities.camel_can_stand_up(id, game_time)
-        {
+        if is_camel && zza > 0.0 && self.world.entities.camel_can_stand_up(id, game_time) {
             self.world.entities.set_last_pose_change_tick(id, game_time);
         }
         self.collide = collide;
@@ -5885,7 +5902,15 @@ impl PlaySession {
     /// with the keys `rideTick` hands it, the boat placed where it went, the
     /// rider turned with it, then the passenger's packets in `LocalPlayer
     /// .tick`'s order.
-    fn tick_steered_boat(&mut self, id: i32, input: &TickInput) -> Result<(), String> {
+    ///
+    /// `vehicle_keys` are the previous tick's (M226), `input` this tick's,
+    /// which the passenger's packets carry.
+    fn tick_steered_boat(
+        &mut self,
+        id: i32,
+        vehicle_keys: &TickInput,
+        input: &TickInput,
+    ) -> Result<(), String> {
         let mut steered = match self.steered_boat {
             Some(b) if b.id == id => b,
             _ => {
@@ -5900,10 +5925,10 @@ impl PlaySession {
             }
         };
         let keys = rewo_world::boat::BoatInput {
-            up: input.forward > 0.0,
-            down: input.forward < 0.0,
-            left: input.strafe > 0.0,
-            right: input.strafe < 0.0,
+            up: vehicle_keys.forward > 0.0,
+            down: vehicle_keys.forward < 0.0,
+            left: vehicle_keys.strafe > 0.0,
+            right: vehicle_keys.strafe < 0.0,
         };
         let collide = std::mem::take(&mut self.collide);
         let block_physics = std::mem::take(&mut self.block_physics);

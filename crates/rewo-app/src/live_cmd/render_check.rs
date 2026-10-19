@@ -356,6 +356,8 @@ pub(super) struct RenderCheck {
     pub(super) horse: Option<i32>,
     pub(super) horse_steered: bool,
     pub(super) horse_moved: f64,
+    /// M226: the per-tick distance on the last tick of W.
+    pub(super) horse_step: f64,
     pub(super) horse_jumps: u64,
     pub(super) horse_rise: f64,
     pub(super) horse_moves_sent: u64,
@@ -1375,6 +1377,9 @@ impl RenderCheck {
         // horse (`tickRidden` / `travel`) and fires `executeRidersJump` from
         // the meter's release; no move is rejected and the server's own
         // position for the horse, once it stands, is the client's.
+        // M226: and W's last tick moved it vanilla's `0.98 · 0.3 / (1 - 0.6
+        // · 0.91)` (the rider's modified `zza`; the raw key gave 0.661).
+        let horse_step = 0.98f32 as f64 * 0.3f32 as f64 / (1.0 - (0.6f32 * 0.91f32) as f64);
         let hagree = match (self.horse_client_pos, self.horse_server_pos) {
             (Some(c), Some(s)) => (0..3).all(|i| (c[i] - s[i]).abs() < 0.1),
             _ => false,
@@ -1383,17 +1388,20 @@ impl RenderCheck {
             "r88 the bot rode and jumped a real horse: the server accepted every move and agrees where it is",
             self.horse_steered
                 && self.horse_moved > 2.0
+                && (self.horse_step - horse_step).abs() < 1e-3
                 && self.horse_jumps >= 1
                 && self.horse_rise > 0.5
                 && self.horse_moves_sent >= 20
                 && self.horse_rejections == 0
                 && hagree,
             format!(
-                "horse {:?}: steered {}, moved {:.2} with W, {} jump(s) rising {:.2}, {} move_vehicle sent, \
-                 {} rejection(s), client {:?} server {:?} (agree {hagree}){}",
+                "horse {:?}: steered {}, moved {:.2} with W, last step {:.4} (vanilla {horse_step:.4}), \
+                 {} jump(s) rising {:.2}, {} move_vehicle sent, {} rejection(s), client {:?} server {:?} \
+                 (agree {hagree}){}",
                 self.horse,
                 self.horse_steered,
                 self.horse_moved,
+                self.horse_step,
                 self.horse_jumps,
                 self.horse_rise,
                 self.horse_moves_sent,
@@ -1405,8 +1413,10 @@ impl RenderCheck {
         );
         // M225 — r89: the bot rides a summoned, saddled camel (vanilla's
         // speed 0.09 and jump 0.42) through the production right-click, holds
-        // W with sprint (`getRiddenSpeed` adds 0.1: a tick's distance settles
-        // at `0.19 / (1 - 0.6 * 0.91)`, where a walk would be 0.198), then
+        // W with sprint (`getRiddenSpeed` adds 0.1, and the rider's `zza` is
+        // the modified 0.98 — M226: a tick's distance settles at `0.98 · 0.19
+        // / (1 - 0.6 · 0.91)`, 0.410, where the raw key would give 0.4185
+        // and a walk 0.194), then
         // releases the jump meter: `Camel.executeRidersJump`'s dash, whose
         // cooldown keeps the meter empty while it runs. No move is rejected,
         // and the server's position once it stands is the client's.
@@ -1414,7 +1424,8 @@ impl RenderCheck {
             (Some(c), Some(s)) => (0..3).all(|i| (c[i] - s[i]).abs() < 0.1),
             _ => false,
         };
-        let sprint_step = (0.09f32 + 0.1) as f64 / (1.0 - (0.6f32 * 0.91f32) as f64);
+        let sprint_step =
+            0.98f32 as f64 * (0.09f32 + 0.1) as f64 / (1.0 - (0.6f32 * 0.91f32) as f64);
         let cooled = self
             .camel_cooldown_meter
             .is_some_and(|(peak, cd)| peak == 0.0 && cd > 0);
@@ -3768,7 +3779,28 @@ impl LiveApp {
                         self.horse_stage = 20;
                     }
                 }
+                // One reading per client tick of the steered mount: the
+                // distance since the last (r88 and r89).
+                let mount_now = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.steered_horse)
+                    .map(|h| (h.id, [h.state.x, h.state.y, h.state.z]));
+                let mount_step = match (mount_now, self.mount_last) {
+                    (Some((id, p)), Some((lid, q, t))) if id == lid && t != now => {
+                        Some(((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt())
+                    }
+                    _ => None,
+                };
+                if let Some((id, p)) = mount_now {
+                    if self.mount_last.is_none_or(|(_, _, t)| t != now) {
+                        self.mount_last = Some((id, p, now));
+                    }
+                }
                 if self.horse_stage == 3 && now >= self.horse_tick0 + 20 {
+                    if let (Some(c), Some(st)) = (self.check.as_mut(), mount_step) {
+                        c.horse_step = st;
+                    }
                     self.keys.w = false;
                     let pos = self
                         .session
@@ -3992,18 +4024,9 @@ impl LiveApp {
                         self.camel_stage = 20;
                     }
                 }
-                // One reading per client tick: the distance since the last.
-                let step = match (camel_pos, self.camel_last) {
-                    (Some((p, _)), Some((q, t))) if t != now => {
-                        Some(((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt())
-                    }
-                    _ => None,
-                };
-                if let Some((p, _)) = camel_pos {
-                    if self.camel_last.is_none_or(|(_, t)| t != now) {
-                        self.camel_last = Some((p, now));
-                    }
-                }
+                // The steered mount's per-tick distance (computed above, by
+                // the horse's stages), when it is the camel.
+                let step = mount_step.filter(|_| camel_pos.is_some());
                 let sprint_flag = self
                     .session
                     .as_ref()

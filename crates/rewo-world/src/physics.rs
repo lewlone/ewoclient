@@ -535,11 +535,16 @@ pub fn tick_env(
 
 /// The rider's side of `LivingEntity.travelRidden` for a mount (M222): the
 /// controller's `xxa` / `zza` and its rotation.
+///
+/// M226: `xxa` / `zza` are what the rider's `applyInput` stored, so the
+/// modified move vector ([`rider_move_vector`]: ×0.98 and the square
+/// stretch), and from the rider's PREVIOUS tick: `tickNonPassenger` ticks
+/// the vehicle before its rider's `rideTick` refreshes them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RiddenInput {
-    /// The rider's `zza`: +1 forward, -1 back.
+    /// The rider's `zza`: 0.98 forward, -0.98 back.
     pub forward: f32,
-    /// The rider's `xxa`: +1 left.
+    /// The rider's `xxa`: 0.98 left.
     pub strafe: f32,
     pub rider_yaw: f32,
     pub rider_pitch: f32,
@@ -558,6 +563,14 @@ pub struct CamelRide {
     /// `getRiddenSpeed`'s 0.1 bonus: the controller `isSprinting()` and the
     /// dash is ready (`getJumpCooldown() == 0`).
     pub sprint_bonus: bool,
+}
+
+/// The rider's `xxa` / `zza` as `LocalPlayer.applyInput` stores them
+/// (M226): `modifyInput` for a passenger (×0.98, then
+/// `modifyInputSpeedForSquareMovement`; the item-use slowdown skips a
+/// passenger, and a passenger does not crouch). Returns `(xxa, zza)`.
+pub fn rider_move_vector(input: &TickInput) -> (f32, f32) {
+    modify_input(input, false, &MoveAttributes::default())
 }
 
 /// `PlayerRideableJumping.getPlayerJumpPendingScale` — the release of the
@@ -4573,6 +4586,25 @@ mod tests {
             "the forward push: {} vs {expect}",
             horse.vz
         );
+    }
+
+    /// `LocalPlayer.modifyInput` for a rider (M226): W alone is 0.98, and W
+    /// with A is stretched to the unit square's corner, each axis 1/√2.
+    #[test]
+    fn a_riders_move_vector_is_the_modified_input() {
+        let w = TickInput {
+            forward: 1.0,
+            ..TickInput::default()
+        };
+        assert_eq!(rider_move_vector(&w), (0.0, 0.98));
+        let wa = TickInput {
+            forward: 1.0,
+            strafe: 1.0,
+            ..TickInput::default()
+        };
+        let (x, z) = rider_move_vector(&wa);
+        assert!((x - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6 && (x - z).abs() < 1e-7);
+        assert_eq!(rider_move_vector(&TickInput::default()), (0.0, 0.0));
     }
 
     /// A camel on stone (M225): its body, vanilla's attributes (speed 0.09,

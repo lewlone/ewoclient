@@ -124,6 +124,12 @@ released.
   numbers, and the server agreed exactly where the camel ended up. Also
   fixed on the way: Rewo used to tell the server you were sprinting while on
   a horse or in a boat, which vanilla never does.
+- **M226**: a correction to M222 and M225. Horses and camels rode 2 % faster
+  than vanilla, and boats, horses and camels all reacted to the keys one
+  tick early. Vanilla's vehicle uses the rider's slightly scaled input from
+  the tick before. The checks had compared against a formula I derived
+  with the same mistake, so they passed. They now pin vanilla's real speeds
+  (horse 0.6476, camel 0.4101 a tick), and both match.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -176,6 +182,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M226)* | **M226** — the rider's input reaches its vehicle as vanilla's does: the modified move vector (×0.98, square stretch) from the previous tick, for boats, horses and camels; r88 and r89 pin vanilla's real per-tick speeds (their earlier "vanilla" formulas left out the 0.98). |
 | `df0afe6` | **M225** — camel riding: `physics::CamelRide` (refuse-to-move, the sprint bonus, the dash), the dash cooldown and stand-up prediction in the session, sprinting while riding only on a camel (`vehicleCanSprint`); render-check **r89**, r82 moved onto it, tail cap 20 s. |
 | `62252cc` | **M224** — r78's flake pinned (the flood's water fills the broken leaves within a tick; the witness graded air, the property is "gone") and fixed; r20 takes the first panel after its chest's injection, not r76's merchant screen. Render check 10/10 consecutive runs. |
 | `326b70d` | **M223** — the boat model: `BoatModel`, `RaftModel` and their chest variants for the twenty boat types, with the wood picked by type name; the entity atlas grown to 2112 rows for the eight wood sheets. |
@@ -371,6 +378,9 @@ released.
   TCP" (100 tries), and all pass alone (three runs); render check **89/89**
   on two runs; clippy (gates and default features) and `cargo fmt --check`
   clean.
+- After M226: **4,312 tests passed, 0 failed**; render check **89/89**
+  on two runs (r88 now reading 0.6476 and r89 0.4101, vanilla's); clippy
+  (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

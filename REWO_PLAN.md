@@ -3884,6 +3884,30 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M226 — the rider's input reaches its vehicle as vanilla's does (2026-10-19)
+
+Found while reading the nautilus: a vehicle does not read the keys.
+`AbstractHorse.getRiddenInput` reads the controller's `xxa` / `zza`, which
+`LocalPlayer.applyInput` stores as `modifyInput`'s vector (×0.98, then the
+square stretch), and `ClientLevel.tickNonPassenger` ticks the vehicle
+before its rider's `rideTick`, so the vehicle moves on the rider's
+previous tick (a boat too: `LocalPlayer.rideTick` hands it `setInput` after
+the rider's own tick). Rewo fed the boat, the horse and the camel this
+tick's raw ±1: mounts rode 2 % fast and a tick early.
+
+- **`physics::rider_move_vector`**: `modifyInput` for a passenger (the
+  item-use slowdown skips one; a passenger does not crouch).
+- **The session** keeps the previous tick's keys (`prev_rider_keys`) and
+  steers with them; the passenger's packets still carry this tick's.
+- **The witnesses were wrong too.** r88 called 0.66 "vanilla's horse speed"
+  and r89 0.4185 "vanilla's" camel sprint: both formulas were mine and left
+  out the 0.98, and the server's agreement cannot catch a speed (it replays
+  the client's moves). r88 now pins the last step of W to `0.98 · 0.3 /
+  (1 − 0.6 · 0.91)` = 0.6476 and r89 to `0.98 · 0.19 / (…)` = 0.4101; both
+  read exactly that. The M222 and M225 entries are corrected in place.
+
+89/89.
+
 ### M225 — riding a camel (2026-10-19)
 
 M222's horse, with `Camel`'s overrides (`physics::CamelRide` on
@@ -3909,7 +3933,8 @@ M222's horse, with `Camel`'s overrides (`physics::CamelRide` on
 
 **r89** (in the tail, cap now 20 s): a summoned saddled camel ridden by the
 production right-click, sprinted west for 25 ticks (a tick's distance
-0.4185, vanilla's `0.19 / (1 − 0.6 · 0.91)`; a walk is 0.198), dashed
+0.4185, then thought vanilla's `0.19 / (1 − 0.6 · 0.91)`; **corrected by
+M226**: vanilla's rider input is 0.98, so 0.4101), dashed
 through the meter (a 2.000-block first step: `22.2222 · 0.09` at full
 scale), the meter held again inside the cooldown (peak 0, 36 ticks left),
 no rejection in 70 moves, and the server's position once it stood is the
@@ -4022,7 +4047,8 @@ generalisations:
 
 **r88** (in the tail): a summoned tame, saddled horse (speed 0.3, jump 0.7)
 ridden by the production right-click, walked west for 20 ticks (11.85 blocks:
-0.66 a tick at the end, vanilla's horse speed for 0.3), jumped through the
+0.66 a tick at the end, then thought vanilla's horse speed for 0.3;
+**corrected by M226**: 2 % fast, vanilla's is 0.6476), jumped through the
 riding meter (it rose 3.12, the tick-by-tick sum for a full-scale jump at
 0.7), no rejection, and the server's position once it had stood ten ticks is
 the client's exactly. The first run disagreed by half a block in y: the query

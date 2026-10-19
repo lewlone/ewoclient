@@ -848,8 +848,8 @@ struct LiveApp {
     #[cfg(feature = "gates")]
     horse_still_since: u64,
     /// r89's tail stage (M225), the tick a step began, the counters at the
-    /// start, the camel's last position and its tick, the stillness clock,
-    /// and the jump meter's peak while the dash cools down.
+    /// start, the stillness clock, and the jump meter's peak while the dash
+    /// cools down.
     #[cfg(feature = "gates")]
     camel_stage: u8,
     #[cfg(feature = "gates")]
@@ -860,8 +860,10 @@ struct LiveApp {
     camel_jumps0: u64,
     #[cfg(feature = "gates")]
     camel_sprints0: u64,
+    /// The steered mount's id, position and tick at the last reading
+    /// (r88's and r89's per-tick distance).
     #[cfg(feature = "gates")]
-    camel_last: Option<([f64; 3], u64)>,
+    mount_last: Option<(i32, [f64; 3], u64)>,
     #[cfg(feature = "gates")]
     camel_still_since: u64,
     #[cfg(feature = "gates")]
@@ -1221,7 +1223,7 @@ fn run_windowed(
         #[cfg(feature = "gates")]
         camel_sprints0: 0,
         #[cfg(feature = "gates")]
-        camel_last: None,
+        mount_last: None,
         #[cfg(feature = "gates")]
         camel_still_since: 0,
         #[cfg(feature = "gates")]
