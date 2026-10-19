@@ -1828,12 +1828,6 @@ pub(crate) fn projectile_model_of(name: &str) -> Option<(&'static str, f32)> {
     })
 }
 
-/// M250 — every arrow and thrown trident this frame, as block-entity-style
-/// draws: the model at the entity's position under the renderer's own
-/// rotation, lit at the entity. Recorded: the rotation is the latest packet's
-/// (no per-frame yaw/pitch interpolation), a stuck arrow's shake is not
-/// kept, a tipped arrow uses the plain texture, and a foil trident has no
-/// glint.
 /// M257 — every end crystal this frame, as `EndCrystalRenderer` draws it:
 /// `T(pos) · scale(2) · translate(0, -0.5, 0)` then the model, no living
 /// flip, its glass spinning and bobbing (`end_crystal_parts`); the base
@@ -1878,6 +1872,12 @@ pub(super) fn collect_end_crystals(
     out
 }
 
+/// M250 — every arrow and thrown trident this frame, as block-entity-style
+/// draws: the model at the entity's position under the renderer's own
+/// rotation, lit at the entity. Recorded: the rotation is the latest packet's
+/// (no per-frame yaw/pitch interpolation), a stuck arrow's shake is not
+/// kept, a tipped arrow uses the plain texture, and a foil trident has no
+/// glint.
 pub(super) fn collect_projectiles(
     session: &PlaySession,
     etypes: &EntityTypes,
