@@ -3927,6 +3927,42 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M277 — the white flash: creepers and lit TNT (2026-10-20)
+
+Two of the game's loudest warnings never showed: a creeper about to blow
+did not swell or flash, and lit TNT did not blink.
+
+- **The overlay**: `OverlayTexture`'s other half, the white columns
+  (`v >= 8`, alpha `(int)((1 - u/15 · 0.75) · 255)`).
+  `rewo_gpu::entities::overlay_value` packs `pack(u(white), v(hurt))` into
+  the vertex's `light_hurt.a` (1 red, `2 + u/15` white, 0 none; red wins,
+  as every red-row texel is red), and `entity.frag` mixes the white texel
+  in gamma space before the lightmap, as it did the red one.
+- **A correction found on the way**: the red row is `-1291911168` =
+  `0xB2FF0000` in 26.2, alpha **178**; the shader and `hurtshot` said 179
+  (`0xB3`) since M21.
+- **Creeper**: `EntityTable::tick_creepers` is `Creeper.tick`'s swell
+  (`+= swellDir`, the index-16 INT already kept in `sizes`, default −1;
+  clamped to 30, since the `Fuse` that changes `maxSwell` is not synced),
+  `creeper_swelling` is `getSwelling` (÷ 28). `creeper_stretch` is
+  `CreeperRenderer.scale` (`s`, `hs` and the wobble), applied by every
+  model-to-entity chain in the emitter as `EntityDraw::stretch`;
+  `creeper_white_overlay` is `getWhiteOverlayProgress`.
+- **TNT**: `tnt_is_lit` is `TntRenderer.isLit` (five ticks white in every
+  ten, the whole fuse), at `u(1.0)`, through the block-entity draw's new
+  `white`.
+
+Recorded: a charged creeper's energy swirl (`CreeperPowerLayer`) and the
+TNT minecart's flash are not drawn.
+
+**Unit tests**: the creeper's scale and flash at known swellings, `isLit`'s
+pattern, the overlay packing, and the swell clock. **hurtshot c6** (56 to
+57): the white flash is the exact mix against column 15 (alpha 63), and
+red still wins with both set; c1 now predicts with 178. **r135**: r112's
+and r127's TNT reach the draws both lit and unlit. **r136**: a staged NoAI
+creeper the run ignites at 2 s (`Fuse` 32767, so the server never blows
+it up) draws swollen and, on some frames, white.
+
 ### M276 — the enchanting table's book (2026-10-20)
 
 `EnchantTableRenderer` draws a book over every enchanting table, opening

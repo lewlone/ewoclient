@@ -333,6 +333,9 @@ released.
   cursor, dropped or in a frame still do.
 - **M276**: enchanting tables have their floating book again, opening
   and turning toward you as you come near and flipping its pages.
+- **M277, a gameplay warning that was missing**: a creeper about to blow
+  now swells and flashes white, and lit TNT blinks white. (Also corrected:
+  the red damage flash was one step too strong.)
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -394,6 +397,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `73b09728` | **M277** — the white flash: `overlay_value` and the shader's white columns (red alpha corrected 179 → 178), the creeper's client swell (`tick_creepers`, `creeper_swelling`, `EntityDraw::stretch` and `white_overlay`), TNT's `isLit` on the block-entity draw; unit tests, hurtshot **c6** and render-check **r135** / **r136**. |
 | `96db1636` | **M276** — the enchanting table's book: `EnchantBook` (`bookAnimationTick` and its render interpolation), `World::tick_enchanting_books`, the book baked at rest with six animated groups posed by `enchanting_book_parts`, `MAX_PARTS` 4 → 7; unit tests (the tick; the posed book equals the lectern's) and render-check **r134**. |
 | `17d2c03c` | **M275** — head icons in their skins: `SlotText::profile_textures`, the per-skin item model from `add_skin_head_model`, `skinned_icon_model` in `screen_icons` and `hotbar_models`, the GUI pass's copy rebuilt on arrival; unit test, inventoryshot **g21** (pixels) and render-check **r133**. |
 | `ef2c348b` | **M274** — items worn on the head: the `head` display transform baked through the model chain into `HeldItemModel::head`, `WornHead::item` and `emit_worn_head`'s `translateToHead` branch; a unit test for the bake, mobtexshot **m19** (pixels from the pumpkin's textures, centroid on the decompile's position; a control without the −0.25 fails) and render-check **r132**. |
@@ -720,6 +724,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M277: **4,419 tests passed, 0 failed; gates 51/51** (hurtshot 57: c1 predicts [208, 116, 87] with 178 and the GPU gives it exactly; c6's white flash [223, 189, 143] exactly); render check **136/136** on two runs (r136: 39,271 / 33,180 swollen frames, 214 / 221 white); clippy and `cargo fmt --check` clean.
 - After M276: **4,417 tests passed, 0 failed; gates 51/51**; render check **134/134** on two runs (r134's turn range 0.347, the full ±cos 80° a turning book gives); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M275: **4,415 tests passed, 0 failed; gates 51/51** (inventoryshot 171); render check **133/133** on two runs; clippy and `cargo fmt --check` clean. A first chain broke at clippy: g21 was edited in while that chain ran and did not compile (a closure needed `mut`); the rerun is on the fixed tree. Rule kept since: no source edits while a chain runs.
 - After M274: **4,415 tests passed, 0 failed; gates 51/51** (mobtexshot 19); render check **132/132** on two runs; clippy (gates and default features) and `cargo fmt --check` clean. The bake test's first draft expected the feather to inherit `item/generated`'s `head`; the jar's feather declares its own, and the bake was right.
