@@ -47,6 +47,14 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   the large band. A texture that fits neither draws nothing. A new texture
   path needs a pixel witness, not a draw-list one: block entities drew no
   pixels from M25b to M246 with every witness green.
+- **`BakedAssets::models` is indexed by model, not by state**: a state
+  reaches its quads through `render[state]` (`RenderKind::Model(i)`, or a
+  full-cube fast path with no quads stored). Use
+  `BakedAssets::state_quads`. M260 read `models[state]` and drew another
+  block's model (an oak stair in cinnabar bricks) while r119, a quad
+  count, passed; a scratch render caught it.
+- The entity atlas's large slots are 64×64: a bigger entity sheet (the
+  end crystal's 128×64) is halved at bake (`halve_texture`, M257).
 - **Face numbering differs by bake**: the block bake's `dir` is
   `FACE_NAMES` order (up 0, down 1, ...); `HeldQuad::dir` is vanilla's
   `Direction` ordinal (down 0, up 1, ...). Convert at the boundary

@@ -106,10 +106,47 @@ pub struct RuntimeStateModels {
 }
 
 impl BakedAssets {
+    /// A state's terrain quads, as the mesher draws it: a `Model` state's
+    /// baked quads (`models` is indexed by MODEL, through `render`, not by
+    /// state; M260 read it by state and drew another block's model), or a
+    /// full cube's six faces rebuilt from the fast path's layers with
+    /// `face_geometry`'s default UVs. `None` for anything else (air,
+    /// fluids, invisible states). Recorded: a fast-path cube's custom face
+    /// `uv` is not kept by the bake, so it is not rebuilt.
+    pub fn state_quads(&self, state: u32) -> Option<Vec<Quad>> {
+        match self.render.get(state as usize)? {
+            RenderKind::Model(i) => self.models.get(*i as usize).cloned(),
+            RenderKind::Cube {
+                faces,
+                raw_faces,
+                tint,
+            } => Some(
+                (0..6)
+                    .map(|i| {
+                        let (verts, uv) = face_geometry([0.0; 3], [16.0; 3], i, None);
+                        Quad {
+                            verts: verts.map(|v| [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0]),
+                            uv,
+                            layer: faces[i],
+                            raw_layer: raw_faces[i],
+                            cull: i as i8,
+                            dir: i as u8,
+                            tint: tint[i],
+                            shade: true,
+                            translucent: false,
+                        }
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
     /// M260 — make `state`'s model drawable on the entity path at run time:
     /// [`crate::block_entity_models::carried_block_model`]'s name, built from
-    /// the baked terrain quads (the pre-tinted layers, so foliage carries the
-    /// default colour) when the bake did not make it. Returns the model name
+    /// the state's terrain quads ([`Self::state_quads`]; the pre-tinted
+    /// layers, so foliage carries the default colour) when the bake did not
+    /// make it. Returns the model name
     /// and the index of the first texture this call appended, so the caller
     /// can hand the GPU exactly what is new; `None` when the model already
     /// exists or the state has no quads (air, fluids, block entities).
@@ -123,10 +160,11 @@ impl BakedAssets {
             return None;
         }
         let first = self.held_items.textures.len();
+        let quads = self.state_quads(state);
         let layers = &self.layers;
         let textures = &mut self.held_items.textures;
-        let built = self.models.get(state as usize).and_then(|quads| {
-            block_quads_as_held(quads, |layer| {
+        let built = quads.and_then(|quads| {
+            block_quads_as_held(&quads, |layer| {
                 if let Some(&t) = runtime.layer_tex.get(&layer) {
                     return Some(t);
                 }
@@ -6672,6 +6710,52 @@ mod tests {
                 assert!(!c.view_blocking, "snow layers={layers} ({id})");
             }
         }
+    }
+
+    /// The run-time block models (M260) read a state's quads through its
+    /// `RenderKind`: an east-facing oak stair is oak planks on every face (it
+    /// was cinnabar bricks while `models` was read by state id), and stone,
+    /// a fast-path cube, rebuilds six faces of stone, one per direction.
+    #[test]
+    fn state_quads_follow_render_kind_not_the_state_id() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let paths = crate::DataPaths::for_version("26.2").unwrap();
+        let blocks = crate::blocks::Blocks::load(&paths.blocks_json()).unwrap();
+        let name = |l: u16| baked.layer_names[l as usize].clone();
+        let stair = blocks
+            .state_with("minecraft:oak_stairs", &[("facing", "east")])
+            .unwrap();
+        let quads = baked.state_quads(stair).unwrap();
+        assert!(!quads.is_empty());
+        for q in &quads {
+            assert!(
+                name(q.layer).contains("block/oak_planks"),
+                "{}",
+                name(q.layer)
+            );
+        }
+        let stone = blocks.default_state("minecraft:stone").unwrap();
+        assert!(matches!(
+            baked.render[stone as usize],
+            RenderKind::Cube { .. }
+        ));
+        let quads = baked.state_quads(stone).unwrap();
+        assert_eq!(quads.len(), 6);
+        let mut dirs: Vec<u8> = quads.iter().map(|q| q.dir).collect();
+        dirs.sort_unstable();
+        assert_eq!(dirs, [0, 1, 2, 3, 4, 5]);
+        for q in &quads {
+            assert!(name(q.layer).contains("block/stone"), "{}", name(q.layer));
+            // Every corner on the face's own plane of the unit cube.
+            let axis = [1, 1, 2, 2, 0, 0][q.dir as usize];
+            // `FACE_NAMES` order: up, down, north, south, west, east.
+            let at = if matches!(q.dir, 0 | 3 | 5) { 1.0 } else { 0.0 };
+            assert!(q.verts.iter().all(|v| (v[axis] - at).abs() < 1e-6), "{q:?}");
+        }
+        assert!(baked.state_quads(0).is_none(), "air has no quads");
     }
 
     /// M245 — a held block quad's `dir` is vanilla's `Direction` ordinal

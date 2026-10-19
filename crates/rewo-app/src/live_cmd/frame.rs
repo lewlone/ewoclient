@@ -1285,22 +1285,50 @@ impl LiveApp {
                 c.evoker_fangs_frames += 1;
             }
             // M260 — r119: a block display of a state the bake never made (a
-            // turned stair) drew every quad of the model built at run time.
+            // turned stair) drew every quad of the model built at run time,
+            // and (since the M260 fix) every one of those quads samples the
+            // oak planks layer's pixels: the first build drew cinnabar bricks
+            // with the right quad count.
             let stair = self
                 .blocks
                 .state_with("minecraft:oak_stairs", &[("facing", "east")])
                 .map(rewo_data::block_entity_models::carried_block_model);
+            // Every quad of `m` samples the pixels of a layer whose name starts
+            // with `prefix` (since the M260 fix; r120's hopper too). A layer
+            // name keeps the model's spelling, with or without `minecraft:`.
+            let sampled_from = |b: &rewo_data::assets::BakedAssets,
+                                m: &rewo_data::held_items::HeldItemModel,
+                                prefix: &str| {
+                let layers: Vec<&Vec<u8>> = b
+                    .layer_names
+                    .iter()
+                    .zip(&b.layers)
+                    .filter(|(n, _)| {
+                        n.strip_prefix("minecraft:")
+                            .unwrap_or(n)
+                            .starts_with(prefix)
+                    })
+                    .map(|(_, l)| l)
+                    .collect();
+                !layers.is_empty()
+                    && m.quads.iter().all(|q| {
+                        b.held_items
+                            .textures
+                            .get(q.tex as usize)
+                            .is_some_and(|t| layers.contains(&&t.rgba))
+                    })
+            };
             let built = be_draws
                 .iter()
                 .zip(state.world_renderer.block_entity_quads())
                 .filter(|(d, _)| Some(d.model) == stair.as_deref())
                 .any(|(d, &q)| {
                     q > 0
-                        && self
-                            .baked
-                            .as_ref()
-                            .and_then(|b| b.held_items.any(d.model))
-                            .is_some_and(|m| m.quads.len() as u32 == q)
+                        && self.baked.as_ref().is_some_and(|b| {
+                            b.held_items.any(d.model).is_some_and(|m| {
+                                m.quads.len() as u32 == q && sampled_from(b, m, "block/oak_planks#")
+                            })
+                        })
                 });
             if built {
                 c.block_display_frames += 1;
@@ -1323,7 +1351,15 @@ impl LiveApp {
             let drew_hopper = be_draws
                 .iter()
                 .zip(state.world_renderer.block_entity_quads())
-                .any(|(d, &q)| Some(d.model) == hopper.as_deref() && drew_all(d, q));
+                .any(|(d, &q)| {
+                    Some(d.model) == hopper.as_deref()
+                        && drew_all(d, q)
+                        && self.baked.as_ref().is_some_and(|b| {
+                            b.held_items
+                                .any(d.model)
+                                .is_some_and(|m| sampled_from(b, m, "block/hopper"))
+                        })
+                });
             let drew_cart_chest = be_draws
                 .iter()
                 .zip(state.world_renderer.block_entity_quads())

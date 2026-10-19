@@ -1219,7 +1219,7 @@ impl RenderCheck {
         // both must draw every quad, the hopper through a model built at run
         // time and the chest through its block-entity model at rest.
         row(
-            "r120 hopper and chest minecarts drew what they carry",
+            "r120 hopper and chest minecarts drew what they carry, the hopper in its own textures",
             self.minecart_contents_frames >= 1,
             format!("{} frames drew both", self.minecart_contents_frames),
         );
@@ -1228,7 +1228,7 @@ impl RenderCheck {
         // for. The client builds it from the terrain quads at run time and
         // hands the GPU the new model and layers; it must draw every quad.
         row(
-            "r119 a block display drew its state's run-time model",
+            "r119 a block display drew its state's run-time model, in its own texture",
             self.block_display_frames >= 1,
             format!("{} frames drew it", self.block_display_frames),
         );

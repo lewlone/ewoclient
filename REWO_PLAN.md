@@ -3911,6 +3911,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M260 fix — run-time block models read the right quads (2026-10-19)
+
+M260's `add_state_model` read `BakedAssets::models[state]`, but `models`
+is indexed by model, through `render[state]`. An east-facing oak stair
+display drew cinnabar bricks; any full-cube state (the fast path stores no
+quads) drew another model or nothing. r119 and r120 grade quad counts and
+passed throughout; a scratch render of the new models (crystal, fangs,
+small projectiles, an item display, the stair) showed it.
+`BakedAssets::state_quads` now resolves a state through its `RenderKind`,
+rebuilding a fast-path cube's six faces with the bake's `face_geometry`.
+r119 now also checks that every quad of the stair's model samples the
+`block/oak_planks` layer's pixels, and r120 that every quad of the hopper
+samples a `block/hopper*` layer. Control: with the bug put back, r119
+failed (0 frames, 119/120) while r120's old count still passed, which is
+why r120 got the check too. Test:
+`state_quads_follow_render_kind_not_the_state_id` (real bake: the stair is
+oak planks on every face, stone six stone faces on the unit cube).
+
 ### M261 — what minecarts carry (2026-10-19)
 
 M252 drew all seven minecart types as the empty cart. Now the carried
