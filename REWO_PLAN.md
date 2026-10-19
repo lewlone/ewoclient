@@ -2077,6 +2077,7 @@ this shape once.
 | M260 (2026-10-19) — a block display draws its state's run-time model | **r119** | — | — |
 | M261 (2026-10-19) — hopper and chest minecarts draw what they carry | **r120** | — | — |
 | M262 (2026-10-19) — a text display draws its background plate | **r121** | — | — |
+| M264 (2026-10-19) — a rung bell draws swinging | **r122** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3911,6 +3912,30 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M264 — a rung bell swings (2026-10-19)
+
+M248's bell hung still when rung. Now:
+
+- **The ring** (`BlockEventTypes::bell`, `BlockEventBehavior::BellRing`):
+  `BellBlockEntity.triggerEvent`'s `b0 == 1` records the click direction
+  (`Direction.from3DDataValue(b1)`) and the game tick, restarting the
+  shake; `BlockEntities::bell_shake` gives `ticks` (vanilla's
+  `blockEntity.ticks + partialTicks`) until the shake ends at 50. Cleared
+  with the block entity, its chunk and the level, like a pot's wobble.
+- **The swing** (`be_transform::bell_body_part`): `BellModel.setupAnim`'s
+  `base = sin(ticks / π) / (4 + ticks / 3)`, rung from the north `xRot
+  -base`, south `+base`, east `zRot -base`, west `+base`; the body and its
+  child lip are now one animated group about the body's `(8, 12, 8)`, and
+  `draw_for` marks the bell `BlockEntityAnim::Bell`.
+
+Tests: `a_bell_ring_starts_its_shake`, `the_bell_body_swings_about_its_pivot`
+(the pivot fixed, the north swing's exact angle, an east swing about Z, no
+swing from below), `the_bell_swings_as_one_group`. **r122**: a redstone
+block placed beside r109's bell rings it (`BellBlock.attemptToRing`), and
+the bell draws swung away from rest. `blockentityshot` d2 pinned "a bell
+has no block-event body" and now expects `BellRing`; d3 also checks that
+the real packet route starts the shake from the north.
 
 ### M263 — sign text and holograms were upside down (2026-10-19)
 

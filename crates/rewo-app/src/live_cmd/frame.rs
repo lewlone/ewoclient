@@ -1247,6 +1247,17 @@ impl LiveApp {
             if drew_crystal {
                 c.end_crystal_frames += 1;
             }
+            // M264 — r122: the staged bell, rung by the redstone block placed
+            // beside it, drew its body swung away from rest.
+            let rest =
+                rewo_data::be_transform::part_at_rest(rewo_data::block_entity_models::BELL_PIVOT);
+            if be_draws.iter().any(|d| {
+                d.model == rewo_data::block_entity_models::BELL_MODEL.0
+                    && d.part_transforms[usize::from(rewo_data::block_entity_models::BELL_PART)]
+                        != rest
+            }) {
+                c.bell_shake_frames += 1;
+            }
             // M258 — r117: the staged wither skull, llama spit and shulker
             // bullet each drew every quad of their model.
             use rewo_data::block_entity_models::{

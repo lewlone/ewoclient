@@ -215,6 +215,14 @@ pub(super) fn collect_block_entities(
                 ),
                 rewo_data::block_entity_models::CHEST_LID_PIVOT,
             ),
+            BlockEntityAnim::Bell => one_part(
+                rewo_data::block_entity_models::BELL_PART,
+                rewo_data::be_transform::bell_body_part(
+                    world.block_entities.bell_shake(*pos, game_time, alpha),
+                    rewo_data::block_entity_models::BELL_PIVOT,
+                ),
+                rewo_data::block_entity_models::BELL_PIVOT,
+            ),
             BlockEntityAnim::ShulkerLid => one_part(
                 rewo_data::block_entity_models::SHULKER_LID_PART,
                 rewo_data::be_transform::shulker_lid_part(

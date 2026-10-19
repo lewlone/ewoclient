@@ -906,6 +906,28 @@ pub fn evoker_fangs_parts(bite: f32) -> (Affine, [Affine; 3]) {
     (root, [base, upper, lower])
 }
 
+/// M264 — the bell body's group transform at `ticks` after a ring from side
+/// `dir` (a 3D data value), `BellModel.setupAnim`: `base = sin(ticks / π) /
+/// (4 + ticks / 3)`, rung from the north `xRot -base`, south `+base`, east
+/// `zRot -base`, west `+base` (up and down do not swing it); then back to
+/// the pivot. `None` (at rest) is the pivot alone.
+pub fn bell_body_part(shake: Option<(u8, f32)>, pivot: [f32; 3]) -> Affine {
+    let (x, z) = match shake {
+        Some((dir, t)) => {
+            let base = (t / std::f32::consts::PI).sin() / (4.0 + t / 3.0);
+            match dir {
+                2 => (-base, 0.0),
+                3 => (base, 0.0),
+                5 => (0.0, -base),
+                4 => (0.0, base),
+                _ => (0.0, 0.0),
+            }
+        }
+        None => (0.0, 0.0),
+    };
+    mul(&part_at_rest(pivot), &rot_zyx(x, 0.0, z))
+}
+
 /// The shulker lid group's full transform. Unlike the chest's, the translation
 /// is already inside [`shulker_lid`] — `setPos` *replaces* the pose offset
 /// rather than adding to it, so composing with the pivot again would move the
@@ -917,6 +939,38 @@ pub fn shulker_lid_part(progress: f32) -> Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M264 — the bell body swings about its pivot: the pivot stays put;
+    /// rung from the north it tips by `-base` about X at `t = π²/2` (where
+    /// `sin(t/π)` peaks, `base = 1 / (4 + t/3)`), from the east by `-base`
+    /// about Z; at rest, and rung from below, it is the pivot alone.
+    #[test]
+    fn the_bell_body_swings_about_its_pivot() {
+        let apply = |m: &Affine, v: [f32; 3]| -> [f32; 3] {
+            std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+        };
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+        let pivot = [8.0, 12.0, 8.0];
+        let t = std::f32::consts::PI * std::f32::consts::PI / 2.0;
+        let base = 1.0 / (4.0 + t / 3.0);
+        assert_eq!(bell_body_part(None, pivot), part_at_rest(pivot));
+        assert_eq!(bell_body_part(Some((0, t)), pivot), part_at_rest(pivot));
+        let north = bell_body_part(Some((2, t)), pivot);
+        assert!(close(apply(&north, [0.0; 3]), pivot));
+        // A point straight below the pivot swings in the y-z plane.
+        let down = apply(&north, [0.0, -10.0, 0.0]);
+        let (s, c) = (-base).sin_cos();
+        assert!(
+            close(down, [8.0, 12.0 - 10.0 * c, 8.0 - 10.0 * s]),
+            "{down:?}"
+        );
+        let east = bell_body_part(Some((5, t)), pivot);
+        let down = apply(&east, [0.0, -10.0, 0.0]);
+        assert!(
+            (down[2] - 8.0).abs() < 1e-5 && (down[0] - 8.0).abs() > 1.0,
+            "{down:?}"
+        );
+    }
 
     /// M259 — the bite's progress is 0 before the event, `a/20` in the
     /// event's own tick, half after ten ticks and capped at 1 from twenty.

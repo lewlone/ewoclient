@@ -139,6 +139,8 @@ pub enum BlockEntityAnim {
     /// — and the answer being sides rather than a clock is exactly the
     /// distinction the enum exists to make.
     DecoratedPot,
+    /// M264 — a bell: its body and lip swing as one group after a ring.
+    Bell,
 }
 
 /// A block-entity block state Rewo can draw: which model, and the transform
@@ -713,6 +715,8 @@ impl ChestStates {
             transform: *transform,
             anim: if model == crate::block_entity_models::POT_BASE_MODEL.0 {
                 BlockEntityAnim::DecoratedPot
+            } else if model == crate::block_entity_models::BELL_MODEL.0 {
+                BlockEntityAnim::Bell
             } else {
                 BlockEntityAnim::None
             },

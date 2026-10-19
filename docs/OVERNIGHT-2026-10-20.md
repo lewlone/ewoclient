@@ -259,6 +259,7 @@ released.
   drawn upside down in the windowed client, ever since signs got text
   (M25e). Every automated check compared the words, not the picture.
   Fixed, and a new check looks at the actual pixels of a letter.
+- **M264**: a bell swings when it is rung (it used to hang still).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -320,6 +321,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| *(M264)* | **M264** — a rung bell swings: the bell's block event recorded and timed, `BellModel.setupAnim`'s swing as an animated group; render-check **r122** rings one with redstone. |
 | `7b828638` | **M263** — world text (signs, holograms) was upside down since M25e: `emit_world_text` gave a glyph's top the cell's bottom; it now maps top to top. New `itemshot` pixel witness `c3f.world_text_reads_upright` (83 to 84), failing on the old mapping. |
 | `0bf26963` | **M262** — the text display's background plate: an optional backdrop on world-text lines drawn from the white texel behind the glyphs, vanilla's colour rules; render-check **r121**. |
 | `33047437` | **M260 fix** — run-time block models read a state's quads through `render[state]` (`BakedAssets::state_quads`), not `models[state]` (an oak stair drew cinnabar bricks, full cubes another model); r119 and r120 check the textures too (a control run with the bug put back fails r119). |
@@ -624,6 +626,7 @@ released.
 - After the M260 fix: **4,396 tests passed, 0 failed; gates 51/51**; render check **120/120** on four runs (two before and two after the texture checks); clippy (gates and default features) and `cargo fmt --check` clean; a control run with the bug put back failed r119.
 - After M262: **4,397 tests passed, 0 failed; gates 51/51**; render check **121/121** on two runs; clippy (gates and default features) and `cargo fmt --check` clean; the plate looked at in a scratch render (translucent, behind the glyphs).
 - After M263: **4,397 tests; the full run failed one, `srv`'s `a_truncated_answer_is_retried_over_tcp` (a race in the test: the fake server recorded the query after answering it), fixed in `c40a3694`; gates 51/51 (itemshot 84)**; render check **121/121** on two runs; clippy (gates and default features) and `cargo fmt --check` clean; c3f fails on the old mapping.
+- After M264: **4,400 tests passed, 0 failed; gates 51/51** (blockentityshot rerun after its d2/d3 update; the first run failed d2, which pinned a bell as having no block-event body); render check **122/122** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

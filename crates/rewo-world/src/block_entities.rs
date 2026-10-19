@@ -318,6 +318,7 @@ impl BlockEntityRegistry {
             shulker_box: id_of("minecraft:shulker_box"),
             mob_spawner: id_of("minecraft:mob_spawner"),
             decorated_pot: id_of("minecraft:decorated_pot"),
+            bell: id_of("minecraft:bell"),
         }
     }
 }
@@ -346,6 +347,8 @@ pub struct BlockEventTypes {
     pub shulker_box: Option<i32>,
     pub mob_spawner: Option<i32>,
     pub decorated_pot: Option<i32>,
+    /// M264 — `BellBlockEntity`: `b0 == 1` rings it from side `b1`.
+    pub bell: Option<i32>,
 }
 
 impl BlockEventTypes {
@@ -361,6 +364,8 @@ impl BlockEventTypes {
             Some(BlockEventBehavior::SpawnerReset)
         } else if is(self.decorated_pot) {
             Some(BlockEventBehavior::PotWobble)
+        } else if is(self.bell) {
+            Some(BlockEventBehavior::BellRing)
         } else {
             None
         }
@@ -379,6 +384,10 @@ pub enum BlockEventBehavior {
     /// neither a count nor a direction but a **`WobbleStyle` ordinal**, and
     /// the event's arrival time is the animation's start.
     PotWobble,
+    /// M264 — `BellBlockEntity.triggerEvent`: `b0 == 1` sets the click
+    /// direction (`Direction.from3DDataValue(b1)`) and restarts the shake
+    /// (`ticks = 0, shaking = true`).
+    BellRing,
 }
 
 /// One face of a sign's text, from its block-entity NBT (M25e).
@@ -743,6 +752,9 @@ pub struct BlockEntities {
     /// Pot wobbles: `(style, the game tick the event arrived)`. Absent means
     /// no wobble, which is a pot's whole resting state.
     wobbles: HashMap<BlockEntityPos, (PotWobble, i64)>,
+    /// M264 — bell shakes: `(click direction's 3D data value, the game tick
+    /// the ring arrived)`. Absent means at rest.
+    bells: HashMap<BlockEntityPos, (u8, i64)>,
     /// Skull animation counters, for the heads whose block state is POWERED.
     skull_anim: HashMap<BlockEntityPos, u32>,
     /// Conduit clocks (M30). Unlike every other entry here, a conduit's is
@@ -840,6 +852,7 @@ impl BlockEntities {
         self.shulkers.remove(&pos);
         self.spawners.remove(&pos);
         self.wobbles.remove(&pos);
+        self.bells.remove(&pos);
         self.skull_anim.remove(&pos);
         self.conduits.remove(&pos);
         self.map.remove(&pos)
@@ -858,6 +871,7 @@ impl BlockEntities {
         self.spawners
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.wobbles.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
+        self.bells.retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.skull_anim
             .retain(|p, _| p.x >> 4 != cx || p.z >> 4 != cz);
         self.conduits
@@ -890,6 +904,7 @@ impl BlockEntities {
         self.shulkers.clear();
         self.spawners.clear();
         self.wobbles.clear();
+        self.bells.clear();
         self.skull_anim.clear();
         self.conduits.clear();
     }
@@ -948,6 +963,11 @@ impl BlockEntities {
                     return false;
                 };
                 self.wobbles.insert(pos, (style, now));
+                true
+            }
+            Some(BlockEventBehavior::BellRing) => {
+                // `Direction.from3DDataValue` is `BY_3D_DATA[abs(v % 6)]`.
+                self.bells.insert(pos, (b1 % 6, now));
                 true
             }
             Some(BlockEventBehavior::SpawnerReset) => {
@@ -1041,6 +1061,16 @@ impl BlockEntities {
         let (style, started) = self.wobbles.get(&pos).copied()?;
         let progress = ((game_time - started) as f32 + alpha) / style.duration();
         Some((style, progress))
+    }
+
+    /// M264 — a ringing bell's `(click direction 3D value, ticks)`, with
+    /// `ticks` vanilla's `BellRenderState.ticks` (`blockEntity.ticks +
+    /// partialTicks`, counting from the ring), or `None` at rest: the shake
+    /// stops at 50 ticks (`BellBlockEntity.tick`).
+    pub fn bell_shake(&self, pos: BlockEntityPos, game_time: i64, alpha: f32) -> Option<(u8, f32)> {
+        let (dir, started) = self.bells.get(&pos).copied()?;
+        let ticks = (game_time - started) as f32 + alpha;
+        (ticks < 50.0).then_some((dir, ticks.max(0.0)))
     }
 
     pub fn wobble_count(&self) -> usize {
@@ -1166,6 +1196,7 @@ mod tests {
             shulker_box: Some(4),
             mob_spawner: Some(5),
             decorated_pot: Some(6),
+            bell: None,
         }
     }
 
@@ -1193,6 +1224,23 @@ mod tests {
             assert_eq!(be.open_lid_count(), 0, "b1={b1} made a lid entry");
             assert_eq!(be.open_shulker_count(), 0, "b1={b1} made a shulker entry");
         }
+    }
+
+    /// M264 — with the bell registered, a ring records its side and starts
+    /// the shake; 50 ticks on it is over; `b0 != 1` is not a ring.
+    #[test]
+    fn a_bell_ring_starts_its_shake() {
+        let types = BlockEventTypes {
+            bell: Some(9),
+            ..types()
+        };
+        let (mut be, pos) = world_with(9);
+        assert!(!be.trigger_block_event(types, pos, 2, 3, 100));
+        assert_eq!(be.bell_shake(pos, 100, 0.0), None);
+        assert!(be.trigger_block_event(types, pos, 1, 4, 100));
+        assert_eq!(be.bell_shake(pos, 110, 0.5), Some((4, 10.5)));
+        assert_eq!(be.bell_shake(pos, 150, 0.0), None);
+        assert_eq!(be.open_lid_count(), 0, "a ring is not a lid");
     }
 
     #[test]
@@ -1240,6 +1288,7 @@ mod tests {
             shulker_box: None,
             mob_spawner: None,
             decorated_pot: None,
+            bell: None,
         };
         assert_eq!(sparse.behavior(1), Some(BlockEventBehavior::ChestLid));
         assert_eq!(sparse.behavior(7), None);

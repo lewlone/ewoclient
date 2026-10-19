@@ -274,6 +274,8 @@ pub(super) struct RenderCheck {
     /// M262 — r121: frames whose world text carried the staged text
     /// display's background plate.
     pub(super) text_display_backdrop_frames: usize,
+    /// M264 — r122: frames on which the staged bell drew swinging.
+    pub(super) bell_shake_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1026,7 +1028,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 121;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 122;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1216,6 +1218,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M264 — r122: `render_check.py` powers the r109 bell with a redstone
+        // block, which rings it (`BellBlock.attemptToRing`, a block event
+        // with its facing). The ring must reach the bell's draw as a swing
+        // away from rest; the bell hung still until M264.
+        row(
+            "r122 a rung bell drew swinging",
+            self.bell_shake_frames >= 1,
+            format!("{} frames drew it swinging", self.bell_shake_frames),
         );
         // M262 — r121: r114's text display has vanilla's default background
         // (`0x40000000`); its plate must reach the world-text list behind the

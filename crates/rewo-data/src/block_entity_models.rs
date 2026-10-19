@@ -1656,16 +1656,31 @@ pub fn bake_equipment(
 /// (a child at `offset(-8, -12, -8)`, so at the origin), 32×32. The renderer
 /// pushes no transform: the model is authored in block px, y up. At rest:
 /// a rung bell's shake (`xRot`/`zRot` from its tick count) is not kept.
+///
+/// M264: both boxes are animated group [`BELL_PART`] about the body's pose
+/// ([`BELL_PIVOT`]): the lip is the body's child, so it swings with it.
 const BELL: &[Box] = &[
     plain(
         (0.0, 0.0),
         [-3.0, -6.0, -3.0],
         [6.0, 7.0, 6.0],
-        [8.0, 12.0, 8.0],
-        0,
+        BELL_PIVOT,
+        BELL_PART,
     ),
-    plain((0.0, 13.0), [4.0, 4.0, 4.0], [8.0, 2.0, 8.0], [0.0; 3], 0),
+    plain(
+        (0.0, 13.0),
+        [4.0, 4.0, 4.0],
+        [8.0, 2.0, 8.0],
+        [0.0; 3],
+        BELL_PART,
+    ),
 ];
+
+/// The bell body's animated group (M264).
+pub const BELL_PART: u8 = 1;
+/// The bell body's `PartPose.offset(8, 12, 8)`, in block px — the pivot it
+/// swings about.
+pub const BELL_PIVOT: [f32; 3] = [8.0, 12.0, 8.0];
 
 /// The bell's model name and texture (`BellRenderer.BELL_TEXTURE`).
 pub const BELL_MODEL: (&str, &str) = ("rewo:be/bell", "entity/bell/bell_body");
@@ -2646,6 +2661,14 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M264 — both bell boxes are the swinging group, the lip included.
+    #[test]
+    fn the_bell_swings_as_one_group() {
+        let q = model_quads(BELL, 0, (32.0, 32.0));
+        assert_eq!(q.len(), 12);
+        assert!(q.iter().all(|q| q.part == BELL_PART));
+    }
 
     /// M258 — the small projectile models' face counts follow their boxes
     /// (one skull head, seven spit cubes, three bullet slabs), and the

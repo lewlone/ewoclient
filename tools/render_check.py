@@ -178,6 +178,9 @@ PRECMD = (
     "summon minecraft:wither_skull ~-2 ~3 ~-9 {acceleration_power:0d,Motion:[0d,0d,0d]};"
     "summon minecraft:llama_spit ~-3 ~3 ~-9 {NoGravity:1b,Motion:[0d,0d,0d]};"
     "summon minecraft:shulker_bullet ~-4 ~3 ~-9 {NoGravity:1b,Motion:[0d,0d,0d]};"
+    # M264 -- r122. A redstone block beside r109's bell (placed after it, so
+    # the neighbour change rings it rather than placing it powered).
+    "setblock ~16 ~ ~10 minecraft:redstone_block;"
     # M257 -- r116. An end crystal, invulnerable so a stray click cannot
     # blow up the bot.
     "summon minecraft:end_crystal ~2 ~ ~-8 {Invulnerable:1b};"

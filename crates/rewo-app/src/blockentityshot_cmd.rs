@@ -1072,10 +1072,10 @@ fn check_block_event_dispatch(
         "d2.the_three_types_resolve_to_their_own_bodies",
         types.behavior(chest) == Some(BlockEventBehavior::ChestLid)
             && types.behavior(shulker) == Some(BlockEventBehavior::ShulkerLid)
-            && types.behavior(bell).is_none(),
+            && types.behavior(bell) == Some(BlockEventBehavior::BellRing),
         format!(
             "chest={chest} -> ChestLid, shulker_box={shulker} -> ShulkerLid, \
-             bell={bell} -> none. All three send b0==1; only the type separates \
+             bell={bell} -> BellRing (M264; none before). All three send b0==1; only the type separates \
              a viewer count from an open/close pair from a click direction"
         ),
     );
@@ -1117,13 +1117,17 @@ fn check_block_event_dispatch(
         "d3.a_bell_ring_does_not_open_a_lid",
         world.block_entities.open_lid_count() == 0
             && world.block_entities.open_shulker_count() == 0
-            && world.block_entities.lid(bell_pos).openness == 0.0,
+            && world.block_entities.lid(bell_pos).openness == 0.0
+            && world.block_entities.bell_shake(bell_pos, 0, 0.0) == Some((2, 0.0)),
         format!(
             "bell rung with b0=1 b1=2 (Direction.NORTH.get3DDataValue()): {} lid \
              and {} shulker entries, both want 0. This is the M26 regression — \
-             the old type-blind route made a lid entry here and ticked it open",
+             the old type-blind route made a lid entry here and ticked it open. \
+             Since M264 the ring starts the bell's own shake instead: {:?} (want \
+             north, tick 0)",
             world.block_entities.open_lid_count(),
-            world.block_entities.open_shulker_count()
+            world.block_entities.open_shulker_count(),
+            world.block_entities.bell_shake(bell_pos, 0, 0.0)
         ),
     );
     // Every direction, not just the one: DOWN is 0 and would have passed the
