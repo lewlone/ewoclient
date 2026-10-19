@@ -732,24 +732,33 @@ fn check_wire(c: &mut Checker, paths: &rewo_data::DataPaths) -> Result<(), Strin
 fn check_pool(c: &mut Checker) {
     let (aw, ah, sw, sh, slots, pool_y) = cape_pool_geometry();
     // M194 put the framed-map band under the capes (M48's recipe once more),
-    // so the cape band is now flush against THAT band, which is flush to the
-    // bottom.
+    // so the cape band is flush against THAT band; M246 put the large-item
+    // band under the maps, flush to the bottom.
     let (_, _, map_slot, _, map_y, _) = rewo_gpu::entities::map_pool_geometry();
+    let (_, _, big_slot, big_slots, big_y) = rewo_gpu::entities::big_pool_geometry();
+    let big_rows = big_slots / (aw / big_slot);
     c.record(
         "f1.the_cape_band_is_flush_against_the_map_band_at_the_bottom",
         pool_y + (slots / (aw / sw)) * sh == map_y
-            && map_y + map_slot == ah
+            && map_y + map_slot == big_y
+            && big_y + big_rows * big_slot == ah
             && aw / sw == 16
             && slots == 32,
         format!(
-            "{slots} slots of {sw}x{sh} at y={pool_y}, the map band at y={map_y} ({map_slot} rows), atlas {aw}x{ah}"
+            "{slots} slots of {sw}x{sh} at y={pool_y}, the map band at y={map_y} ({map_slot} rows), \
+             the large-item band at y={big_y} ({big_rows} rows of {big_slot}), atlas {aw}x{ah}"
         ),
     );
     c.record(
         "f2.the_cape_band_sits_exactly_where_the_shelf_growth_left_it",
         pool_y == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH + M223_SHELF_GROWTH
             && ah
-                == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH + M223_SHELF_GROWTH + sh * 2 + M194_MAP_BAND,
+                == ATLAS_H_BEFORE_M60
+                    + M64_SHELF_GROWTH
+                    + M223_SHELF_GROWTH
+                    + sh * 2
+                    + M194_MAP_BAND
+                    + M246_BIG_BAND,
         format!(
             "cape pool starts at {pool_y}, atlas {ah} tall. M60 put the band at the pre-M60 ATLAS_H {ATLAS_H_BEFORE_M60} and claimed nothing below it moved; M64 then grew the *shelf* region by {M64_SHELF_GROWTH} rows for vanilla's 42 metadata variant sheets, and the shelf ceiling is defined by subtraction from ATLAS_H — so the item, skin, trim and cape pools all slid down by exactly that. Nothing on disk depends on those origins, and the *mob* packing is still byte-for-byte what it was because the packer is sequential and the region only grew at its far end: `mobshot --check` staying at 243/243 is the empirical half of that claim. M194's {M194_MAP_BAND}-row map band went BELOW the capes, so the cape origin did not move; M223 grew the shelf by {M223_SHELF_GROWTH} more rows (the boat woods), sliding the pools again"
         ),
@@ -758,6 +767,8 @@ fn check_pool(c: &mut Checker) {
 
 /// M194 — the framed-map band's height, added under the cape band.
 const M194_MAP_BAND: u32 = 128;
+/// M246 — the large-item band's height, added under the map band.
+const M246_BIG_BAND: u32 = 256;
 
 // ---- 6. the wavy cape, on the CPU (M61) ----------------------------------
 //

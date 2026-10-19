@@ -925,6 +925,12 @@ pub fn special_block_entity(spec: &Value) -> Option<String> {
         "minecraft:player_head" => "rewo:be/player_head".into(),
         // M243 — `ConduitSpecialRenderer` draws the shell model part alone.
         "minecraft:conduit" => crate::block_entity_models::CONDUIT.0.into(),
+        // M246 — `ShieldSpecialRenderer` (no patterns: the stack's
+        // `banner_patterns` never reach an item model) and
+        // `TridentSpecialRenderer`, each its model with no extra transform;
+        // the definitions' `condition` carries the flip.
+        "minecraft:shield" => crate::block_entity_models::SHIELD_MODEL.0.into(),
+        "minecraft:trident" => crate::block_entity_models::TRIDENT_MODEL.0.into(),
         "minecraft:copper_golem_statue" => {
             let texture = s("texture")?;
             let weather = ["exposed", "weathered", "oxidized"]
@@ -1391,8 +1397,16 @@ mod tests {
             k(r#"{"type":"minecraft:conduit"}"#).as_deref(),
             Some("rewo:be/conduit")
         );
-        assert_eq!(k(r#"{"type":"minecraft:shield"}"#), None);
+        assert_eq!(
+            k(r#"{"type":"minecraft:shield"}"#).as_deref(),
+            Some("rewo:be/shield")
+        );
+        assert_eq!(
+            k(r#"{"type":"minecraft:trident"}"#).as_deref(),
+            Some("rewo:be/trident")
+        );
         assert_eq!(k(r#"{"type":"minecraft:banner","color":"white"}"#), None);
+        assert_eq!(k(r#"{"type":"minecraft:bed"}"#), None);
     }
 
     /// M245 — a face's direction follows a part's turn: the statue's flip

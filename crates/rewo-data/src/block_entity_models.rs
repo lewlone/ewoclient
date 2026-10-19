@@ -1571,6 +1571,82 @@ pub fn bake_fishing_hook(
     )]
 }
 
+// ------------------------------------------------- the shield and the trident
+//
+// M246 — two item-only models. `ShieldSpecialRenderer` and
+// `TridentSpecialRenderer` draw them; neither has a block, but they bake
+// like the block-entity models and resolve through the same `Parts` path.
+
+/// `ShieldModel.createLayer` — the plate and the handle, 64×64.
+const SHIELD: &[Box] = &[
+    plain(
+        (0.0, 0.0),
+        [-6.0, -11.0, -2.0],
+        [12.0, 22.0, 1.0],
+        [0.0; 3],
+        0,
+    ),
+    plain(
+        (26.0, 0.0),
+        [-1.0, -3.0, -1.0],
+        [2.0, 6.0, 6.0],
+        [0.0; 3],
+        0,
+    ),
+];
+
+/// `TridentModel.createLayer` — the pole and its four children, 32×32,
+/// all at `PartPose.ZERO`; the right spike's UVs are mirrored.
+const TRIDENT: &[Box] = &[
+    plain((0.0, 6.0), [-0.5, 2.0, -0.5], [1.0, 25.0, 1.0], [0.0; 3], 0),
+    plain((4.0, 0.0), [-1.5, 0.0, -0.5], [3.0, 2.0, 1.0], [0.0; 3], 0),
+    plain((4.0, 3.0), [-2.5, -3.0, -0.5], [1.0, 4.0, 1.0], [0.0; 3], 0),
+    plain((0.0, 0.0), [-0.5, -4.0, -0.5], [1.0, 4.0, 1.0], [0.0; 3], 0),
+    Box {
+        mirror: true,
+        ..plain((4.0, 3.0), [1.5, -3.0, -0.5], [1.0, 4.0, 1.0], [0.0; 3], 0)
+    },
+];
+
+/// The shield's model name and texture. A stack with no `banner_patterns`
+/// and no `base_color` draws `Sheets.SHIELD_BASE_NO_PATTERN`.
+pub const SHIELD_MODEL: (&str, &str) = ("rewo:be/shield", "entity/shield/shield_base_nopattern");
+/// The trident's model name and texture (`TridentModel.TEXTURE`).
+pub const TRIDENT_MODEL: (&str, &str) = ("rewo:be/trident", "entity/trident/trident");
+
+/// Bake the shield and the trident (M246).
+pub fn bake_equipment(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let mut out = Vec::new();
+    for ((name, tex_name), boxes, size) in [
+        (SHIELD_MODEL, SHIELD, TEX_64),
+        (TRIDENT_MODEL, TRIDENT, (32.0, 32.0)),
+    ] {
+        let Some(tex) = pool.intern(tex_name, || load(tex_name)) else {
+            log::error!("equipment: no texture {tex_name:?}");
+            continue;
+        };
+        out.push((
+            name.to_string(),
+            HeldItemModel {
+                quads: model_quads(boxes, tex, size),
+                right: DisplayTransform::IDENTITY,
+                left: DisplayTransform::IDENTITY,
+                ground: DisplayTransform::IDENTITY,
+                gui: DisplayTransform::IDENTITY,
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
+                fixed: DisplayTransform::IDENTITY,
+                from_block: false,
+                gui_quads: None,
+            },
+        ));
+    }
+    out
+}
+
 pub fn bake_conduit(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,

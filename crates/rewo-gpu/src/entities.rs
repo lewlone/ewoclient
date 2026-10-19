@@ -480,7 +480,11 @@ const ATLAS_W: u32 = 1024;
 /// were not enough with the shelf packer's gaps)
 /// and the pools below it slid down with `ATLAS_H`; the mob packing ahead of
 /// the new sheets is unchanged.
-const ATLAS_H: u32 = 2112;
+///
+/// M246 grew it by the large-item band (256 rows at the very bottom, under
+/// the map band, which is now anchored to it): M48's recipe, so every
+/// earlier address is unchanged.
+const ATLAS_H: u32 = 2368;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -690,7 +694,35 @@ const MAP_SLOT: u32 = 128;
 const MAP_POOL_COLS: u32 = ATLAS_W / MAP_SLOT; // 8
 /// The last cell is the decoration sprites.
 const MAP_SLOTS: u32 = MAP_POOL_COLS - 1; // 7
-const MAP_POOL_Y: u32 = ATLAS_H - MAP_SLOT; // 1600
+const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 1984
+
+/// M246 — the large held-item pool: 64×64 slots for the textures the 16×16
+/// item pool cannot hold. Every block-entity model (a chest's 64×64 sheet, a
+/// head's 64×32, a banner's, a shulker box's) and the item-only shield and
+/// trident sample one of these. The 16×16-only pool skipped them, so a world
+/// chest, a held chest and every other block entity drew no quads at all from
+/// M25b until M246 — the witnesses graded draw lists, never pixels.
+/// Round-robin like the item pool; a texture larger than a slot (the dragon
+/// head's 256×256) still draws nothing.
+const BIG_SLOT: u32 = 64;
+const BIG_POOL_COLS: u32 = ATLAS_W / BIG_SLOT; // 16
+const BIG_POOL_ROWS: u32 = 4;
+const BIG_SLOTS: u32 = BIG_POOL_COLS * BIG_POOL_ROWS; // 64
+const BIG_POOL_Y: u32 = ATLAS_H - BIG_POOL_ROWS * BIG_SLOT; // 2112
+
+/// The large-item band's geometry, for the gate: `(atlas w, atlas h, slot,
+/// slots, band y)`.
+pub fn big_pool_geometry() -> (u32, u32, u32, u32, u32) {
+    (ATLAS_W, ATLAS_H, BIG_SLOT, BIG_SLOTS, BIG_POOL_Y)
+}
+
+/// Atlas origin of large item slot `i` (0..BIG_SLOTS).
+fn big_slot_origin(i: u32) -> (u32, u32) {
+    (
+        (i % BIG_POOL_COLS) * BIG_SLOT,
+        BIG_POOL_Y + (i / BIG_POOL_COLS) * BIG_SLOT,
+    )
+}
 const MAP_DECO_ORIGIN: (u32, u32) = (MAP_SLOTS * MAP_SLOT, MAP_POOL_Y);
 const MAP_DECO_SPRITE: u32 = 8;
 const MAP_DECO_COLS: u32 = MAP_SLOT / MAP_DECO_SPRITE; // 16, so 256 type ids
@@ -1115,6 +1147,10 @@ pub struct EntityPass {
     held_items: Option<crate::held::HeldItems>,
     /// Texture index -> atlas item slot, for the textures currently resident.
     item_slots: std::collections::HashMap<u16, u32>,
+    /// M246 — texture index -> (large slot, width, height), for the resident
+    /// textures bigger than an item slot.
+    big_slots: std::collections::HashMap<u16, (u32, u32, u32)>,
+    big_ring: SlotRing<u16>,
     /// `<asset>/<layer>` → the sheet's packed rect in the entity atlas (M46).
     armor_slots: std::collections::HashMap<String, (u32, u32, u32, u32)>,
     /// Sprite path → its origin in the trim pool (M48).
@@ -1673,6 +1709,8 @@ impl EntityPass {
                 held_items: None,
                 item_slots: std::collections::HashMap::new(),
                 item_ring: SlotRing::new(ITEM_SLOTS),
+                big_slots: std::collections::HashMap::new(),
+                big_ring: SlotRing::new(BIG_SLOTS),
                 cem_state: std::collections::HashMap::new(),
                 generation: 0,
                 frame_counter: 0.0,
@@ -1722,14 +1760,35 @@ impl EntityPass {
                 continue;
             };
             for q in &model.quads {
-                if self.item_slots.contains_key(&q.tex) {
+                if self.item_slots.contains_key(&q.tex) || self.big_slots.contains_key(&q.tex) {
                     continue;
                 }
                 let Some(tex) = items.textures.get(q.tex as usize) else {
                     continue;
                 };
-                // Slots are one texel-block; a larger sprite is skipped rather
-                // than scaled, so it is visibly absent instead of subtly wrong.
+                // M246 — anything else up to 64×64 (a block-entity sheet)
+                // goes in the large pool, at its own size in a 64×64 slot.
+                if (tex.w != ITEM_SLOT || tex.h != ITEM_SLOT)
+                    && tex.w <= BIG_SLOT
+                    && tex.h <= BIG_SLOT
+                    && tex.rgba.len() == (tex.w * tex.h * 4) as usize
+                {
+                    let (slot, evicted) = self.big_ring.claim(q.tex);
+                    if let Some(old) = evicted {
+                        self.big_slots.remove(&old);
+                    }
+                    let (sx, sy) = big_slot_origin(slot);
+                    if let Err(e) = upload_region(gpu, self.image, &tex.rgba, sx, sy, tex.w, tex.h)
+                    {
+                        result = Err(e);
+                        break;
+                    }
+                    self.big_slots.insert(q.tex, (slot, tex.w, tex.h));
+                    continue;
+                }
+                // Item slots are one texel-block; a larger sprite is skipped
+                // rather than scaled, so it is visibly absent instead of
+                // subtly wrong.
                 if tex.w != ITEM_SLOT || tex.h != ITEM_SLOT {
                     continue;
                 }
@@ -1872,6 +1931,15 @@ impl EntityPass {
 
     /// Atlas UV rect `(u0, v0, du, dv)` of a resident item texture.
     fn item_uv(&self, tex: u16) -> Option<[f32; 4]> {
+        if let Some(&(slot, w, h)) = self.big_slots.get(&tex) {
+            let (sx, sy) = big_slot_origin(slot);
+            return Some([
+                sx as f32 / ATLAS_W as f32,
+                sy as f32 / ATLAS_H as f32,
+                w as f32 / ATLAS_W as f32,
+                h as f32 / ATLAS_H as f32,
+            ]);
+        }
         let slot = *self.item_slots.get(&tex)?;
         let (sx, sy) = item_slot_origin(slot);
         Some([

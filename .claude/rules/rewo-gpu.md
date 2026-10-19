@@ -42,6 +42,11 @@ goes into the module that owns the subsystem, not back into `world.rs`.
 - **GUI item light** (M245): the normal goes through the display transform
   and the slot's y flip (`gui_normal`), and vanilla's gamma-space diffuse is
   decoded before it multiplies linear colour.
+- **The entity atlas pages two sizes** (M246): 16×16 item sprites into
+  the item pool, anything else up to 64×64 (every block-entity sheet) into
+  the large band. A texture that fits neither draws nothing. A new texture
+  path needs a pixel witness, not a draw-list one: block entities drew no
+  pixels from M25b to M246 with every witness green.
 - **Face numbering differs by bake**: the block bake's `dir` is
   `FACE_NAMES` order (up 0, down 1, ...); `HeldQuad::dir` is vanilla's
   `Direction` ordinal (down 0, up 1, ...). Convert at the boundary

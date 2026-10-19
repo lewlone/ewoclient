@@ -36,7 +36,7 @@ use crate::stats::OverlayRing;
 
 /// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
 /// pickup animation's flight.
-const EXPECTED_WITNESSES: usize = 79;
+const EXPECTED_WITNESSES: usize = 82;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -482,17 +482,16 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
     // trident keep `special`, and the open bundle's composite is only chosen
     // in a slot with a selected item, so no default-context item reaches the
     // `composite` bucket any more.)
+    // M246 mapped the last two (the shield and the trident), so the
+    // `special` bucket must now be EMPTY: every special renderer 26.2 ships
+    // resolves to a model. A new one in a later jar lands back in the bucket
+    // and fails this, rather than drawing nothing quietly.
     let kinds: Vec<&str> = items.unsupported.keys().map(String::as_str).collect();
-    let wanted = ["minecraft:special"];
-    let missing: Vec<&str> = wanted
-        .iter()
-        .copied()
-        .filter(|w| !kinds.contains(w))
-        .collect();
+    let unmapped = kinds.iter().any(|k| k.starts_with("minecraft:special"));
     c.record(
-        "a3.the_unmapped_special_renderers_are_still_suppressed",
-        missing.is_empty(),
-        format!("suppressed buckets {kinds:?}; missing {missing:?}"),
+        "a3.every_special_renderer_is_mapped",
+        !unmapped && !kinds.is_empty(),
+        format!("suppressed buckets {kinds:?}"),
     );
     // The other half of the same claim, and the one that would catch a
     // reduction that quietly stopped working: `condition` and
@@ -1139,7 +1138,7 @@ fn check_render(
     )?;
     let dirt = render([Some("minecraft:dirt"), None], &mut gpu, &mut wr, &mut off)?;
     let bow = render(
-        [Some("minecraft:shield"), None],
+        [Some("minecraft:compass"), None],
         &mut gpu,
         &mut wr,
         &mut off,
@@ -1186,9 +1185,9 @@ fn check_render(
         "c3.a_suppressed_item_renders_as_an_empty_hand",
         bow_px.is_empty(),
         format!(
-            "{} pixels differ (want 0) — a shield is a `special` whose \
-             renderer (`ShieldModel` and its patterns) Rewo does not map \
-             (until M243 this was a bed, until M244 a banner)",
+            "{} pixels differ (want 0) — a compass is a `range_dispatch` on the \
+             needle's angle, which this client does not evaluate (until M243 \
+             this was a bed, until M244 a banner, until M246 a shield)",
             bow_px.len()
         ),
     );
@@ -1200,6 +1199,66 @@ fn check_render(
         bed_px.len() > 40,
         format!("{} pixels differ from the empty hand", bed_px.len()),
     );
+    // M246 — a block-entity texture is 64×64 (a chest's sheet) or another
+    // size the 16×16 item pool never held, so every block-entity model drew
+    // no quads in the entity pass — a world chest as much as a held one —
+    // from M25b until the large pool. The shield is the item-only model
+    // M246 adds, on the same path.
+    for (id, name) in [
+        ("c3c.a_held_chest_renders", "minecraft:chest"),
+        ("c3d.a_held_shield_renders", "minecraft:shield"),
+    ] {
+        let img = render([Some(name), None], &mut gpu, &mut wr, &mut off)?;
+        let px = changed(&empty, &img);
+        c.record(
+            id,
+            px.len() > 40,
+            format!(
+                "{} pixels differ from the empty hand — its 64×64 texture pages \
+                 into the large pool; the 16×16-only pool drew 0",
+                px.len()
+            ),
+        );
+    }
+    // M246 — and a PLACED chest, through the block-entity emitter the live
+    // frame uses (`set_entities_and_block_entities`), with nobody in the
+    // scene: the world draw shares the held path's `item_uv`, so until the
+    // large pool a world chest was invisible too.
+    {
+        const IDENT: [[f32; 4]; 3] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        wr.prepare_held_items(&mut gpu, &["rewo:be/chest"])?;
+        let be = rewo_gpu::entities::BlockEntityDraw {
+            pos: [-0.5, 0.0, -0.5],
+            model: "rewo:be/chest",
+            transform: IDENT,
+            light: [1.0; 3],
+            part_transforms: [IDENT; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        };
+        wr.set_entities_and_block_entities(&[], &[be], &[], &[], right, up.to_array(), 0.0);
+        off.render(&gpu, Some((&mut wr, view_proj)), &draw, CLEAR)?;
+        let placed = off.read_rgba(&gpu)?;
+        wr.set_entities_and_block_entities(&[], &[], &[], &[], right, up.to_array(), 0.0);
+        off.render(&gpu, Some((&mut wr, view_proj)), &draw, CLEAR)?;
+        let nothing = off.read_rgba(&gpu)?;
+        let px = changed(&nothing, &placed);
+        c.record(
+            "c3e.a_placed_chest_renders",
+            px.len() > 200,
+            format!(
+                "{} pixels differ from an empty scene — a chest block entity drawn \
+                 by the world emitter; 0 while block-entity sheets could not page in",
+                px.len()
+            ),
+        );
+    }
     // Placement: the item must appear on the right side of the body (the
     // entity faces the camera at yaw 0, so its right arm is screen-left) and
     // below the head. A transform-order slip parks it at the origin or
@@ -1507,7 +1566,7 @@ fn check_render(
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
     let g_bow = ground(
-        Some("minecraft:shield"),
+        Some("minecraft:compass"),
         1,
         0.0,
         3,
@@ -1521,9 +1580,9 @@ fn check_render(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
         format!(
-            "{} pixels differ (want 0) — a shield's definition is an unmapped \
-             `special`, so it has no baked model in either context (a bed until \
-             M243, a banner until M244)",
+            "{} pixels differ (want 0) — a compass's definition is a \
+             `range_dispatch` on its angle, so it has no baked model in either \
+             context (a bed until M243, a banner until M244, a shield until M246)",
             changed(&g_none, &g_bow).len()
         ),
     );

@@ -4120,8 +4120,12 @@ impl<'a> Baker<'a> {
         names.sort();
 
         // Phase 1: resolve definitions (no geometry yet).
-        let mut resolved: Vec<(String, ItemModel, Option<ItemGeometry>)> =
-            Vec::with_capacity(names.len());
+        // The third field is the slot's own geometry and `display.gui`, when
+        // the definition selects a different model there (M40's spears; the
+        // trident, M246). Vanilla's `select` swaps the whole model, so the
+        // slot takes that model's transform and lighting too, not the hand
+        // model's (a trident's in-hand `gui` would bend its flat sprite).
+        let mut resolved: Vec<SlotResolved> = Vec::with_capacity(names.len());
         let mut dynamic: HashMap<String, serde_json::Value> = HashMap::new();
         for name in &names {
             let Some(def) = self.read_json(&format!("assets/minecraft/items/{name}.json")) else {
@@ -4143,8 +4147,12 @@ impl<'a> Baker<'a> {
             let gui_geometry = match (&hand, &gui) {
                 (
                     ItemModel::Resolved { geometry: h, .. },
-                    ItemModel::Resolved { geometry: g, .. },
-                ) if h != g => Some(g.clone()),
+                    ItemModel::Resolved {
+                        geometry: g,
+                        gui: t,
+                        ..
+                    },
+                ) if h != g => Some((g.clone(), *t)),
                 _ => None,
             };
             resolved.push((name.clone(), hand, gui_geometry));
@@ -4170,8 +4178,12 @@ impl<'a> Baker<'a> {
                 let gg = match (&m, &g) {
                     (
                         ItemModel::Resolved { geometry: h, .. },
-                        ItemModel::Resolved { geometry: q, .. },
-                    ) if h != q => Some(q.clone()),
+                        ItemModel::Resolved {
+                            geometry: q,
+                            gui: t,
+                            ..
+                        },
+                    ) if h != q => Some((q.clone(), *t)),
                     _ => None,
                 };
                 resolved.push((format!("{name}#{material}"), m, gg));
@@ -4216,6 +4228,7 @@ impl<'a> Baker<'a> {
             Vec<(crate::item_models::PartSource, crate::be_transform::Affine)>,
             bool,
             [crate::item_models::DisplayTransform; 7],
+            Option<(ItemGeometry, crate::item_models::DisplayTransform)>,
         )> = Vec::new();
         for (name, model, gui_geometry) in resolved {
             let full = format!("minecraft:{name}");
@@ -4257,6 +4270,7 @@ impl<'a> Baker<'a> {
                     parts.clone(),
                     *side_lit,
                     [right, left, ground, gui, first_right, first_left, fixed],
+                    gui_geometry,
                 ));
                 continue;
             }
@@ -4268,15 +4282,13 @@ impl<'a> Baker<'a> {
             // The slot geometry, when the definition selects a different
             // model there. A variant that fails to bake leaves `None`, so the
             // slot falls back to the hand's quads rather than drawing nothing.
-            let gui_quads = gui_geometry
-                .and_then(|g| match &g {
-                    ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
-                    ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
-                    ItemGeometry::Parts(..) => None,
-                })
-                .filter(|q| !q.is_empty());
+            let slot = self.bake_slot_geometry(gui_geometry.as_ref(), &mut pool, trims);
             match baked {
                 Some(quads) if !quads.is_empty() => {
+                    let (gui, from_block, gui_quads) = match slot {
+                        Some((q, t, lit)) => (t, lit, Some(q)),
+                        None => (gui, slot_lit(&geometry), None),
+                    };
                     models.insert(
                         full,
                         HeldItemModel {
@@ -4288,7 +4300,7 @@ impl<'a> Baker<'a> {
                             first_right,
                             first_left,
                             fixed,
-                            from_block: matches!(geometry, ItemGeometry::Block(_)),
+                            from_block,
                             gui_quads,
                         },
                     );
@@ -4327,6 +4339,8 @@ impl<'a> Baker<'a> {
         ));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_skulls));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_conduit));
+        // M246 — the shield and the trident, item-only models.
+        be_models.append(&mut bake_be!(crate::block_entity_models::bake_equipment));
         // M240 — the fishing bobber's sprite.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_fishing_hook));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_banners));
@@ -4368,8 +4382,13 @@ impl<'a> Baker<'a> {
         // placed by its affine in block units, with the item's own display
         // transforms, drawn as a 3D (block-lit) model. A part that baked
         // nothing suppresses the whole item rather than drawing half of it.
-        for (name, parts, side_lit, [right, left, ground, gui, first_right, first_left, fixed]) in
-            entity_items
+        for (
+            name,
+            parts,
+            side_lit,
+            [right, left, ground, gui, first_right, first_left, fixed],
+            gui_geometry,
+        ) in entity_items
         {
             let mut quads = Vec::new();
             let mut complete = true;
@@ -4418,6 +4437,12 @@ impl<'a> Baker<'a> {
                 *unsupported.entry("(no geometry)".to_string()).or_default() += 1;
                 continue;
             }
+            // The trident's slot is its flat sprite (M246).
+            let (gui, side_lit, gui_quads) =
+                match self.bake_slot_geometry(gui_geometry.as_ref(), &mut pool, trims) {
+                    Some((q, t, lit)) => (t, lit, Some(q)),
+                    None => (gui, side_lit, None),
+                };
             models.insert(
                 name,
                 HeldItemModel {
@@ -4432,7 +4457,7 @@ impl<'a> Baker<'a> {
                     // `gui_light`: a banner's and a pot's `front` is the flat
                     // slot lighting, everything else here the block one.
                     from_block: side_lit,
-                    gui_quads: None,
+                    gui_quads,
                 },
             );
         }
@@ -4458,6 +4483,35 @@ impl<'a> Baker<'a> {
 
     /// A `minecraft:block/…` item: reuse the block model's quads and copy each
     /// referenced texture-array layer into the held-item texture pool.
+    /// The slot's own geometry, baked, with its `display.gui` and its slot
+    /// lighting (M246), when the definition selects a different model in a
+    /// slot. A multi-part slot model is not baked here (none exists in 26.2);
+    /// nor is one that bakes nothing, so the slot falls back to the hand's.
+    fn bake_slot_geometry(
+        &mut self,
+        slot: Option<&(
+            crate::item_models::ItemGeometry,
+            crate::item_models::DisplayTransform,
+        )>,
+        pool: &mut crate::held_items::TexturePool,
+        trims: &crate::equipment::TrimAssets,
+    ) -> Option<(
+        Vec<crate::held_items::HeldQuad>,
+        crate::item_models::DisplayTransform,
+        bool,
+    )> {
+        let (g, t) = slot?;
+        let quads = match g {
+            crate::item_models::ItemGeometry::Block(block) => self.bake_block_item(block, pool),
+            crate::item_models::ItemGeometry::Sprite(layers) => {
+                self.bake_sprite_item(layers, pool, trims)
+            }
+            crate::item_models::ItemGeometry::Parts(..) => None,
+        }
+        .filter(|q| !q.is_empty())?;
+        Some((quads, *t, slot_lit(g)))
+    }
+
     fn bake_block_item(
         &mut self,
         block: &str,
@@ -5433,6 +5487,27 @@ fn model_collision(short: &str) -> Option<bool> {
         || short == "sticky_piston"
         || short == "piston_head";
     model_shaped.then_some(false)
+}
+
+/// One item's phase-1 resolution: its name, its hand model and, when the
+/// slot selects a different model, that model's geometry and `display.gui`.
+type SlotResolved = (
+    String,
+    crate::item_models::ItemModel,
+    Option<(
+        crate::item_models::ItemGeometry,
+        crate::item_models::DisplayTransform,
+    )>,
+);
+
+/// Vanilla's `usesBlockLight` for a geometry: a block model's `side`, a
+/// generated sprite's `front`, a multi-part model's own `gui_light`.
+fn slot_lit(g: &crate::item_models::ItemGeometry) -> bool {
+    match g {
+        crate::item_models::ItemGeometry::Block(_) => true,
+        crate::item_models::ItemGeometry::Sprite(_) => false,
+        crate::item_models::ItemGeometry::Parts(_, side_lit) => *side_lit,
+    }
 }
 
 /// Neighbour offsets matching the bit order of [`BakedAssets::face_occludes`]

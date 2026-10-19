@@ -3899,6 +3899,44 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M246 — block entities draw at all; the shield and the trident (2026-10-19)
+
+**Block entities never drew in the windowed client.** M25b baked them into
+the held-item shape so they would ride "the texture pool, the entity atlas,
+the demand-fill upload and the UV lookup that M22 built". But that upload
+(`EntityPass::prepare_held_items`) only ever paged in 16×16 textures and
+skipped anything else, and every block-entity sheet is bigger (a chest's
+64×64, a head's 64×32, a banner's, a shulker box's, a sign's). With no
+resident slot `item_uv` returned `None` and `emit_block_entities` emitted no
+quads. Every block-entity witness since graded the bake or the draw list,
+never a pixel. The M242–M244 items reached the same wall in hands and on the
+ground; their slot icons worked only because the GUI atlas has 64×64 slots.
+
+The fix is a large-item band in the entity atlas: 64 slots of 64×64 at the
+very bottom (`ATLAS_H` 2112 → 2368, the map band re-anchored above it, so
+every earlier address is unchanged, M48's recipe). `prepare_held_items`
+pages anything up to 64×64 that is not an item sprite into it, round-robin
+with eviction like the item pool; `item_uv` answers from either. The dragon
+head's 256×256 sheet still does not fit and draws nothing.
+
+**The shield and the trident.** `ShieldModel` (plate and handle, 64×64,
+`shield_base_nopattern`) and `TridentModel` (pole, base, three spikes, 32×32)
+bake as item-only models; `ShieldSpecialRenderer` and
+`TridentSpecialRenderer` map to them, under their definitions' `condition`
+flip (M244's composed transforms). Every special renderer 26.2 ships now
+resolves. When a definition picks a different model in a slot (the trident's
+flat sprite; M40's spears), the slot now takes that model's `display.gui`
+and lighting too, not the hand model's: vanilla's `select` swaps the whole
+model. Recorded: a dropped or framed trident draws the 3D model, where
+vanilla's `select` picks the sprite for `ground` and `fixed` too (the spears
+already had the mirror simplification).
+
+Gates: itemshot **c3c** (a held chest, 1453 px), **c3d** (a held shield,
+2091 px), **c3e** (a placed chest through the world emitter, 8408 px); each
+reads 0 with the large pool disabled. **a3** now requires the `special`
+bucket to be empty; **c3**/**g8** suppress a compass (`range_dispatch` on its
+angle). Looked at: the placed chest, a chest and a shield held.
+
 ### M245 — item icons lit as vanilla lights them (2026-10-19)
 
 Four faults in the slot lighting, each hiding another:
