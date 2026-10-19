@@ -858,6 +858,13 @@ impl LiveApp {
             if stand(false, true, false) && stand(true, false, true) {
                 c.armor_stand_frames += 1;
             }
+            // M252 — r111: the summoned minecart drew as its model.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Minecart)
+            {
+                c.minecart_frames += 1;
+            }
             // r107 — r94's snowball and bobber, drawn as camera-facing items
             // (the snowball's own item; the bobber's hook sprite) rather
             // than capsules.

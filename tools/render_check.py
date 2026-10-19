@@ -150,6 +150,9 @@ PRECMD = (
     # whose bell only a block-entity renderer draws. (r109's lectern book is
     # M184's lectern at ~2 ~ ~, which holds one.)
     "setblock ~15 ~ ~10 minecraft:bell[attachment=floor,facing=north];"
+    # M252 -- r111. A minecart off the rails, south-west of the spawn and
+    # clear of the pool and the use tail.
+    "summon minecraft:minecart ~-6 ~ ~-6;"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"

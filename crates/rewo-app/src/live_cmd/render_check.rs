@@ -241,6 +241,8 @@ pub(super) struct RenderCheck {
     /// and `(most drawn, model quads)`.
     pub(super) arrow_frames: usize,
     pub(super) arrow_quads: (u32, u32),
+    /// M252 — r111: frames that drew a minecart as `MinecartModel`.
+    pub(super) minecart_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -993,7 +995,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 110;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 111;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1183,6 +1185,14 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M252 — r111: `render_check.py` summons a minecart; the live wire
+        // name must reach `MinecartModel` (mobshot grades its faces), not the
+        // capsule every minecart was until M252.
+        row(
+            "r111 a summoned minecart drew as its model, not a capsule",
+            self.minecart_frames >= 1,
+            format!("{} frames drew it", self.minecart_frames),
         );
         // M250 — r110: the bow r99 draws is released at stage 51 with arrows
         // in the inventory, so the server shoots a real arrow. It must draw

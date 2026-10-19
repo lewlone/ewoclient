@@ -177,8 +177,10 @@ const MIN_DISCRIMINATING: usize = 72;
 /// Kinds too small to grade at 1600x900, measured: fox, tadpole, cod, salmon,
 /// tropical_fish x2, parrot, allay, copper_golem, and (M238) armor_stand,
 /// whose 2-px sticks draw under the floor (mobshot grades it from three
-/// views). An eleventh means something stopped drawing.
-const MAX_SMALL: usize = 10;
+/// views), and (M252) minecart, a low open box that draws under the floor in
+/// the crowd (mobshot grades it from three views too). A twelfth means
+/// something stopped drawing.
+const MAX_SMALL: usize = 11;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the

@@ -1471,6 +1471,9 @@ pub enum EntityModelKind {
     ChestBoat,
     Raft,
     ChestRaft,
+    /// M252 — `MinecartModel`, for all seven minecart types (their contents
+    /// block is not drawn). Not living.
+    Minecart,
     /// M238 — `ArmorStandModel` at its default pose; its two flags arrive
     /// per draw ([`StandParts`]), its small form as a half scale.
     ArmorStand,
@@ -1478,7 +1481,7 @@ pub enum EntityModelKind {
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 96;
+    pub const COUNT: usize = 97;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1574,6 +1577,7 @@ impl EntityModelKind {
         EntityModelKind::ChestBoat,
         EntityModelKind::Raft,
         EntityModelKind::ChestRaft,
+        EntityModelKind::Minecart,
         EntityModelKind::ArmorStand,
         EntityModelKind::Capsule,
     ];
@@ -1678,6 +1682,7 @@ impl EntityModelKind {
             EntityModelKind::ChestBoat => "chest_boat",
             EntityModelKind::Raft => "raft",
             EntityModelKind::ChestRaft => "chest_raft",
+            EntityModelKind::Minecart => "minecart",
             EntityModelKind::ArmorStand => "armor_stand",
             EntityModelKind::Capsule => "capsule",
         }
@@ -1699,6 +1704,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
         "bamboo_chest_raft" => return EntityModelKind::ChestRaft,
         s if s.ends_with("_chest_boat") => return EntityModelKind::ChestBoat,
         s if s.ends_with("_boat") => return EntityModelKind::Boat,
+        // M252 — the minecart and its six content variants share one model.
+        s if s == "minecart" || s.ends_with("_minecart") => return EntityModelKind::Minecart,
         _ => {}
     }
     for k in EntityModelKind::ALL {
@@ -2447,6 +2454,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::Raft,
         textures: &["raft"],
         build: raft,
+    },
+    // M252 — the minecart.
+    MobDef {
+        kind: EntityModelKind::Minecart,
+        textures: &["minecart"],
+        build: minecart,
     },
     MobDef {
         kind: EntityModelKind::ChestRaft,
@@ -7842,6 +7855,83 @@ fn boat_chest(b: &mut ModelBuilder, bottom_y: f32, lid_y: f32, lock_y: f32) {
 fn boat() -> Model {
     let mut b = ModelBuilder::new();
     boat_hull(&mut b);
+    b.finish(1.0)
+}
+
+// ---------------------------------------------------------------------------
+// Minecarts (M252): `MinecartModel`, placed by `AbstractMinecartRenderer`
+// ---------------------------------------------------------------------------
+
+/// `AbstractMinecartRenderer.oldRender`'s fallback is `translate(0, 0.375, 0)
+/// · rotY(180 − yRot) · rotZ(−xRot)` then `scale(−1, −1, 1) · model`. The
+/// entity pass applies the yaw and the flip with the living renderer's
+/// 24.016 px offset, so every cube carries the difference: 6 px instead,
+/// `MODEL_EYE_Y − 6` (the boat's fold without its quarter turn). Recorded:
+/// no `rotZ(−xRot)` (a cart on a slope is drawn level), no rail-derived
+/// position or yaw (`posOnRail`), no hurt wobble and no contents block.
+const MINECART_ROOT: Fold = Fold::rot([0.0; 3], [0.0, MODEL_EYE_Y - 6.0, 0.0]);
+
+/// `MinecartModel.createBodyLayer`, 64×32: the bottom and four sides.
+fn minecart() -> Model {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let mut b = ModelBuilder::new();
+    let side = |b: &mut ModelBuilder,
+                uv: (f32, f32),
+                min: [f32; 3],
+                dims: [f32; 3],
+                rot: [f32; 3],
+                off: [f32; 3]| {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            min,
+            dims,
+            0.0,
+            false,
+            &[Fold::rot(rot, off), MINECART_ROOT],
+        );
+    };
+    side(
+        &mut b,
+        (0.0, 10.0),
+        [-10.0, -8.0, -1.0],
+        [20.0, 16.0, 2.0],
+        [FRAC_PI_2, 0.0, 0.0],
+        [0.0, 4.0, 0.0],
+    );
+    side(
+        &mut b,
+        (0.0, 0.0),
+        [-8.0, -9.0, -1.0],
+        [16.0, 8.0, 2.0],
+        [0.0, 3.0 * FRAC_PI_2, 0.0],
+        [-9.0, 4.0, 0.0],
+    );
+    side(
+        &mut b,
+        (0.0, 0.0),
+        [-8.0, -9.0, -1.0],
+        [16.0, 8.0, 2.0],
+        [0.0, FRAC_PI_2, 0.0],
+        [9.0, 4.0, 0.0],
+    );
+    side(
+        &mut b,
+        (0.0, 0.0),
+        [-8.0, -9.0, -1.0],
+        [16.0, 8.0, 2.0],
+        [0.0, PI, 0.0],
+        [0.0, 4.0, -7.0],
+    );
+    side(
+        &mut b,
+        (0.0, 0.0),
+        [-8.0, -9.0, -1.0],
+        [16.0, 8.0, 2.0],
+        [0.0; 3],
+        [0.0, 4.0, 7.0],
+    );
     b.finish(1.0)
 }
 

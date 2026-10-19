@@ -2066,6 +2066,7 @@ this shape once.
 | M241 (2026-10-19) — a cast fishing rod draws its line to the first-person hand | **r108** | — | — |
 | M247 (2026-10-19) — a placed chest emits every quad of its model in the windowed client | **r109** | — | — |
 | M250 (2026-10-19) — a shot arrow draws as `ArrowModel` in the windowed client | **r110** | — | — |
+| M252 (2026-10-19) — a summoned minecart draws as `MinecartModel` | **r111** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3900,6 +3901,26 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M252 — minecarts (2026-10-19)
+
+All seven minecart types were capsules. `MinecartModel` (bottom and four
+sides, 64×32 `entity/minecart/minecart.png`) is a new `EntityModelKind::
+Minecart`, built like M223's boats: `AbstractMinecartRenderer.oldRender`'s
+fallback is `translate(0, 0.375, 0) · YP(180 − yRot) · ZP(−xRot)` then
+`scale(−1, −1, 1)`, and the entity pass's living placement differs from it
+only by the offset, so every cube carries the fold `MODEL_EYE_Y − 6` (the
+boat's, without its quarter turn).
+
+Recorded: no `ZP(−xRot)` (a cart on a slope is drawn level), no rail-derived
+position and yaw (`posOnRail`), no hurt wobble, and the contents block of a
+chest, furnace, TNT, hopper, spawner or command-block minecart is not drawn.
+
+Gates: mobshot grades its faces from three views (261 → 264);
+mobtexshot's small-kind cap 10 → 11 (the minecart is under 40 attributed
+pixels in the crowd, like the armour stand); render-check **r111**: a
+summoned minecart draws as its model. Looked at: beside a boat in mobshot's
+sheet.
 
 ### M251 — experience orbs (2026-10-19)
 
