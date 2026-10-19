@@ -188,7 +188,9 @@ released.
 - **M240**: thrown snowballs, eggs, ender pearls, potions, fireballs,
   flying rockets and the fishing bobber now show as their items/sprite
   facing you, instead of grey capsules. (Arrows and tridents still are
-  capsules; the fishing line is not drawn yet.)
+  capsules.)
+- **M241**: the fishing line is drawn, from the bobber to your hand (and to
+  other players' hands).
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -245,6 +247,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| `61e3c95` | **M241** — the fishing line: `FishingHookRenderer`'s 16-segment line to the owner's hand (first-person near-plane point for the local player), a black ribbon on the leash pass; render-check **r108**. |
 | `87b0146` | **M240** — thrown items as `ThrownItemRenderer` draws them (the item, GROUND context, facing the camera; fireballs scaled and fullbright) and the fishing bobber's sprite, instead of capsules; render-check **r107**. |
 | `f9af58c` | **M239** — the firework boost: `FireworkRocketEntity.tick`'s client-side push on the local glider, the rocket's attachment decoded (index 9); render-check **r106** (glide 0.167 → 1.673 blocks a tick, no correction; fails with the push disabled). |
 | `e9b453d` | **M238** — the armour stand model: `ArmorStandModel` at the default pose on named parts (armour hangs on them), its client flags (arms, base plate, small) routed by kind from index 15, the base plate counter-rotated; render-check **r105**. Synched poses not read. |
@@ -490,7 +493,8 @@ released.
 - Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
 - After M239: **4,348 tests passed, 0 failed; gates 51/51**; render check **106/106** on three runs (plus the push-disabled control failing r106 as it should); clippy (gates, after one `int_plus_one` fix in the witness, and default features) and `cargo fmt --check` clean.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
-- Still capsules after M240: arrows, spectral arrows, tridents, wind charges, llama spit, shulker bullets, the dragon fireball, experience orbs and other model-or-own-renderer entities. And the fishing line (M240 drew the bobber).
+- Still capsules after M240: arrows, spectral arrows, tridents, wind charges, llama spit, shulker bullets, the dragon fireball, experience orbs and other model-or-own-renderer entities. (M241 drew the fishing line.)
+- After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
