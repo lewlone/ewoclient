@@ -141,7 +141,7 @@ released.
 | `485036b` | This summary through M217. |
 | `16921fd` | **M218** — Q drop (predicted), F swap hands, middle-click pick block/entity, sprint start/stop sent; `select_hotbar` now sets the client's held slot (it never did); render-check **r79-r82**. |
 | `41078c4` | This summary through M218. |
-| *(M219)* | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
+| `26559a9` | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
 
 ## Decisions made
 
