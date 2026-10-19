@@ -856,6 +856,56 @@ pub fn end_crystal_parts(age: f32) -> [Affine; 3] {
     [outer, inner, cube]
 }
 
+/// M259 — `EvokerFangs.getAnimationProgress`: `0` until the bite event
+/// (`None`), then `1 - (lifeTicks - 2 - a) / 20` with the client's
+/// `lifeTicks` counting down from 22 one per tick after the event, which is
+/// `(elapsed + a) / 20` capped at 1.
+pub fn evoker_fangs_progress(started: Option<i64>, tick: i64, alpha: f32) -> f32 {
+    match started {
+        None => 0.0,
+        Some(s) => {
+            let remaining = 20 - (tick - s).max(0);
+            if remaining <= 0 {
+                1.0
+            } else {
+                1.0 - (remaining as f32 - alpha) / 20.0
+            }
+        }
+    }
+}
+
+/// M259 — `EvokerFangsModel.setupAnim` at `bite` (`getAnimationProgress`):
+/// the root's transform in **block units** (`translate(0, (24 - 20·s)/16,
+/// 0) · scale(s)`, `s` shrinking to 0 over the last tenth), and the base's,
+/// upper jaw's and lower jaw's group transforms in model px (each maps a
+/// corner, less its pivot, to px): the base lowered by
+/// `(bite + sin(bite·2.7))·7.2`, the jaws turned about Z by `π ∓
+/// biteAmount·0.35π` with `biteAmount = 1 - min(2·bite, 1)³`, the lower jaw
+/// also `yRot π` (`rotateZYX`: Z after Y).
+pub fn evoker_fangs_parts(bite: f32) -> (Affine, [Affine; 3]) {
+    use std::f32::consts::PI;
+    let amount = (bite * 2.0).min(1.0);
+    let amount = 1.0 - amount * amount * amount;
+    let upper_z = PI - amount * 0.35 * PI;
+    let lower_z = PI + amount * 0.35 * PI;
+    let base_y = 24.0 - (bite + (bite * 2.7).sin()) * 7.2;
+    let pre = if bite > 0.9 { (1.0 - bite) / 0.1 } else { 1.0 };
+    let root = mul(
+        &translation(0.0, (24.0 - 20.0 * pre) / 16.0, 0.0),
+        &scale(pre, pre, pre),
+    );
+    let base = translation(-5.0, base_y, -5.0);
+    let upper = mul(&base, &mul(&translation(6.5, 0.0, 1.0), &rot_z(upper_z)));
+    let lower = mul(
+        &base,
+        &mul(
+            &translation(3.5, 0.0, 9.0),
+            &mul(&rot_z(lower_z), &rot_y_rad(PI)),
+        ),
+    );
+    (root, [base, upper, lower])
+}
+
 /// The shulker lid group's full transform. Unlike the chest's, the translation
 /// is already inside [`shulker_lid`] — `setPos` *replaces* the pose offset
 /// rather than adding to it, so composing with the pivot again would move the
@@ -867,6 +917,65 @@ pub fn shulker_lid_part(progress: f32) -> Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M259 — the bite's progress is 0 before the event, `a/20` in the
+    /// event's own tick, half after ten ticks and capped at 1 from twenty.
+    #[test]
+    fn evoker_fangs_progress_counts_twenty_ticks() {
+        assert_eq!(evoker_fangs_progress(None, 100, 0.5), 0.0);
+        assert_eq!(evoker_fangs_progress(Some(100), 100, 0.0), 0.0);
+        assert!((evoker_fangs_progress(Some(100), 100, 0.5) - 0.025).abs() < 1e-6);
+        assert!((evoker_fangs_progress(Some(100), 110, 0.0) - 0.5).abs() < 1e-6);
+        assert_eq!(evoker_fangs_progress(Some(100), 120, 0.0), 1.0);
+        assert_eq!(evoker_fangs_progress(Some(100), 125, 0.7), 1.0);
+    }
+
+    /// M259 — the jaws open wide at the start (`biteAmount` 1: the upper jaw
+    /// at `0.65π`) and shut from half-way (`biteAmount` 0: both at `π`, the
+    /// lower jaw's `yRot π` then making it `diag(1, -1, -1)`); the base
+    /// drops by `(bite + sin(2.7·bite))·7.2`; the root lifts 4 px at full
+    /// size and shrinks to half at 0.95.
+    #[test]
+    fn evoker_fangs_parts_follow_setup_anim() {
+        use std::f32::consts::PI;
+        let apply = |m: &Affine, v: [f32; 3]| -> [f32; 3] {
+            std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+        };
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-4);
+        let (root, [base, upper, _]) = evoker_fangs_parts(0.0);
+        assert!(close(apply(&root, [0.0; 3]), [0.0, 0.25, 0.0]));
+        assert!(close(apply(&base, [0.0; 3]), [-5.0, 24.0, -5.0]));
+        let a = 0.65 * PI;
+        let o = apply(&upper, [0.0; 3]);
+        assert!(close(o, [1.5, 24.0, -4.0]));
+        let up = apply(&upper, [0.0, 1.0, 0.0]);
+        assert!(close(
+            [up[0] - o[0], up[1] - o[1], up[2] - o[2]],
+            [-a.sin(), a.cos(), 0.0]
+        ));
+        let (_, [base, upper, lower]) = evoker_fangs_parts(0.5);
+        let drop = (0.5 + 1.35f32.sin()) * 7.2;
+        assert!(close(apply(&base, [0.0; 3]), [-5.0, 24.0 - drop, -5.0]));
+        let o = apply(&upper, [0.0; 3]);
+        let up = apply(&upper, [0.0, 1.0, 0.0]);
+        assert!(close(
+            [up[0] - o[0], up[1] - o[1], up[2] - o[2]],
+            [0.0, -1.0, 0.0]
+        ));
+        let o = apply(&lower, [0.0; 3]);
+        assert!(close(o, [-1.5, 24.0 - drop, 4.0]));
+        let x = apply(&lower, [1.0, 1.0, 1.0]);
+        assert!(close(
+            [x[0] - o[0], x[1] - o[1], x[2] - o[2]],
+            [1.0, -1.0, -1.0]
+        ));
+        let (root, _) = evoker_fangs_parts(0.95);
+        assert!(close(apply(&root, [0.0; 3]), [0.0, 14.0 / 16.0, 0.0]));
+        assert!(close(
+            apply(&root, [2.0, 0.0, 0.0]),
+            [1.0, 14.0 / 16.0, 0.0]
+        ));
+    }
 
     /// M257 — at age 0 the outer glass sits at `24 + getY(0)·8` px (getY(0)
     /// is -1.1) turned by the tilt alone; the inner glass carries the tilt

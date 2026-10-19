@@ -217,6 +217,8 @@ pub struct EntityClasses {
     /// `ItemFrame` types: they own metadata slots 8 (DIRECTION), 9
     /// (ITEM_STACK) and 10 (INT).
     item_frame: std::collections::HashSet<i32>,
+    /// M259 — `minecraft:evoker_fangs`: entity event 4 is its bite.
+    evoker_fangs: std::collections::HashSet<i32>,
     /// M219 — `instanceof HasCustomInventoryScreen`: its three implementors'
     /// subtrees (`AbstractHorse`, `AbstractNautilus`, `AbstractChestBoat`).
     /// Riding one turns the inventory key into `OPEN_INVENTORY`.
@@ -398,6 +400,7 @@ impl EntityClasses {
                 .iter()
                 .filter_map(|n| types.id_of(n))
                 .collect(),
+            evoker_fangs: types.id_of("minecraft:evoker_fangs").into_iter().collect(),
             custom_inventory,
             abstract_horse,
             abstract_boat,
@@ -427,6 +430,7 @@ impl EntityClasses {
             camel: Default::default(),
             nautilus: Default::default(),
             item_frame: Default::default(),
+            evoker_fangs: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -457,6 +461,7 @@ impl EntityClasses {
             camel: Default::default(),
             nautilus: Default::default(),
             item_frame: Default::default(),
+            evoker_fangs: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -512,6 +517,10 @@ impl EntityClasses {
     }
 
     /// M194 — an `ItemFrame` (plain or glow).
+    pub fn is_evoker_fangs(&self, type_id: i32) -> bool {
+        self.evoker_fangs.contains(&type_id)
+    }
+
     pub fn is_item_frame(&self, type_id: i32) -> bool {
         self.item_frame.contains(&type_id)
     }

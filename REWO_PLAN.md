@@ -2073,6 +2073,7 @@ this shape once.
 | M256 (2026-10-19) — an item display draws its item's model | **r115** | — | — |
 | M257 (2026-10-19) — an end crystal draws its model | **r116** | — | — |
 | M258 (2026-10-19) — a wither skull, llama spit and shulker bullet draw their models | **r117** | — | — |
+| M259 (2026-10-19) — evoker fangs draw their model once they bite | **r118** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3907,6 +3908,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M259 — evoker fangs (2026-10-19)
+
+Evoker fangs were a grey capsule from the moment they spawned. Vanilla
+draws nothing until the bite starts and then about a second of jaws:
+
+- **The bite event.** `EvokerFangs.handleEntityEvent(4)` sets
+  `clientSideAttackStarted`; Rewo stamps it as
+  `EntityEvent::EvokerFangsBite` (a warden's 4 stays its attack), with the
+  type found through a new `EntityClasses::is_evoker_fangs`.
+- **Progress** (`be_transform::evoker_fangs_progress`):
+  `getAnimationProgress` with the client's `lifeTicks` counting down from
+  22 after the event, which is `(elapsed + a) / 20` capped at 1; zero
+  draws nothing.
+- **Model and animation** (`bake_evoker_fangs`,
+  `be_transform::evoker_fangs_parts`): the base and the two jaws as
+  animated groups, each baked unrotated at its pivot; `setupAnim`'s base
+  drop `(bite + sin(2.7·bite))·7.2`, jaws at `π ∓ biteAmount·0.35π` (the
+  lower jaw also `yRot π`), and the root's lift `24 - 20·s` with scale
+  `s` shrinking over the last tenth, which goes in the draw transform.
+- **Pose**: `YP(90 - yRot) · scale(-1, -1, 1) · translate(0, -1.501, 0)`.
+
+Tests: `evoker_fangs_progress_counts_twenty_ticks`,
+`evoker_fangs_parts_follow_setup_anim` (jaws open at the start and shut
+from half-way, the base drop, the root's lift and shrink),
+`event_4_starts_an_evoker_fangs_bite` (against the real registry).
+**r118**: summoned fangs with a 60-tick warmup draw every quad of their
+model once their bite event arrives.
 
 ### M258 — wither skulls, llama spit, shulker bullets, dragon fireballs (2026-10-19)
 

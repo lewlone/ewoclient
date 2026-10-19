@@ -900,6 +900,13 @@ impl LiveApp {
             &lightmap,
             alpha,
         ));
+        // M259 — evoker fangs.
+        bes.extend(collect_evoker_fangs(
+            session,
+            &self.etypes,
+            &lightmap,
+            alpha,
+        ));
         // M257 — end crystals.
         bes.extend(collect_end_crystals(
             session,
@@ -1220,6 +1227,24 @@ impl LiveApp {
             });
             if all_small {
                 c.small_projectile_frames += 1;
+            }
+            // M259 — r118: the staged evoker fangs, once their bite event
+            // arrived, drew every quad of their model.
+            let fangs = rewo_data::block_entity_models::EVOKER_FANGS_MODEL.0;
+            let drew_fangs = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| d.model == fangs)
+                .any(|(_, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(fangs))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                });
+            if drew_fangs {
+                c.evoker_fangs_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

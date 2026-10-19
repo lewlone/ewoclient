@@ -1928,6 +1928,80 @@ pub fn bake_small_projectiles(
     out
 }
 
+// ---------------------------------------------------------------- evoker fangs
+//
+// M259 — `EvokerFangsModel`, drawn by `EvokerFangsRenderer` with the
+// living-style flip (`YP(90 - yRot) · scale(-1, -1, 1) · translate(0,
+// -1.501, 0)`) once the bite has started. The root's lift and scale go in the
+// draw transform; the base and both jaws are animated groups
+// (`be_transform::evoker_fangs_parts`).
+
+/// The fangs' model name and texture (`EvokerFangsRenderer
+/// .TEXTURE_LOCATION`).
+pub const EVOKER_FANGS_MODEL: (&str, &str) =
+    ("rewo:be/evoker_fangs", "entity/illager/evoker_fangs");
+/// The base's `offset(-5, 24, -5)`, in model px.
+pub const EVOKER_FANGS_BASE_PIVOT: [f32; 3] = [-5.0, 24.0, -5.0];
+/// The upper jaw's pivot: the base's offset plus its own `(6.5, 0, 1)`.
+pub const EVOKER_FANGS_UPPER_PIVOT: [f32; 3] = [1.5, 24.0, -4.0];
+/// The lower jaw's pivot: the base's offset plus its own `(3.5, 0, 9)`.
+pub const EVOKER_FANGS_LOWER_PIVOT: [f32; 3] = [-1.5, 24.0, 4.0];
+
+/// `EvokerFangsModel.createBodyLayer` (64×32): the base (group 1) and the
+/// two jaws (groups 2 and 3, `texOffs(40, 0)`), each baked unrotated at its
+/// pivot; the jaws' rest rotations are replaced by `setupAnim` every frame,
+/// so they live in the part transforms.
+const EVOKER_FANGS: &[Box] = &[
+    plain(
+        (0.0, 0.0),
+        [0.0; 3],
+        [10.0, 12.0, 10.0],
+        EVOKER_FANGS_BASE_PIVOT,
+        1,
+    ),
+    plain(
+        (40.0, 0.0),
+        [0.0; 3],
+        [4.0, 14.0, 8.0],
+        EVOKER_FANGS_UPPER_PIVOT,
+        2,
+    ),
+    plain(
+        (40.0, 0.0),
+        [0.0; 3],
+        [4.0, 14.0, 8.0],
+        EVOKER_FANGS_LOWER_PIVOT,
+        3,
+    ),
+];
+
+/// M259 — the evoker fangs' model.
+pub fn bake_evoker_fangs(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let (name, tex_name) = EVOKER_FANGS_MODEL;
+    let Some(tex) = pool.intern(tex_name, || load(tex_name)) else {
+        log::error!("evoker fangs: no texture {tex_name:?}");
+        return Vec::new();
+    };
+    vec![(
+        name.to_string(),
+        HeldItemModel {
+            quads: model_quads(EVOKER_FANGS, tex, (64.0, 32.0)),
+            right: DisplayTransform::IDENTITY,
+            left: DisplayTransform::IDENTITY,
+            ground: DisplayTransform::IDENTITY,
+            gui: DisplayTransform::IDENTITY,
+            first_right: DisplayTransform::IDENTITY,
+            first_left: DisplayTransform::IDENTITY,
+            fixed: DisplayTransform::IDENTITY,
+            from_block: false,
+            gui_quads: None,
+        },
+    )]
+}
+
 // ---------------------------------------------------------------- end crystals
 //
 // M257 — `EndCrystalModel`, drawn by `EndCrystalRenderer` (no living-entity

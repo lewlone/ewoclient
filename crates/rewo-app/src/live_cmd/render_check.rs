@@ -262,6 +262,9 @@ pub(super) struct RenderCheck {
     /// M258 — r117: frames on which the staged wither skull, llama spit and
     /// shulker bullet all drew every quad of their models.
     pub(super) small_projectile_frames: usize,
+    /// M259 — r118: frames on which the staged evoker fangs drew every quad
+    /// of their model.
+    pub(super) evoker_fangs_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1014,7 +1017,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 117;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 118;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1204,6 +1207,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M259 — r118: `render_check.py` summons evoker fangs with a 60-tick
+        // warmup. They draw nothing until the server's entity event 4 starts
+        // the bite, then about a second of rising jaws before they vanish;
+        // they were a grey capsule the whole time until M259.
+        row(
+            "r118 evoker fangs drew their model once they bit",
+            self.evoker_fangs_frames >= 1,
+            format!("{} frames drew them", self.evoker_fangs_frames),
         );
         // M258 — r117: `render_check.py` summons a wither skull, a llama spit
         // and a shulker bullet, held still. Until M258 each was a grey

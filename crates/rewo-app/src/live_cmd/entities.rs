@@ -1932,6 +1932,66 @@ pub(super) fn collect_small_projectiles(
     out
 }
 
+/// M259 — every evoker fangs this frame whose bite has started, as
+/// `EvokerFangsRenderer` draws it: `YP(90 - yRot) · scale(-1, -1, 1) ·
+/// translate(0, -1.501, 0)`, the root's lift and scale, then the model with
+/// the base rising and the jaws snapping (`evoker_fangs_parts`). Nothing is
+/// drawn before the bite event (progress 0), as in vanilla.
+pub(super) fn collect_evoker_fangs(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::{
+        evoker_fangs_parts, evoker_fangs_progress, mul, rot_y, scale, translation, IDENTITY,
+    };
+    use rewo_data::block_entity_models::{
+        EVOKER_FANGS_BASE_PIVOT, EVOKER_FANGS_LOWER_PIVOT, EVOKER_FANGS_MODEL,
+        EVOKER_FANGS_UPPER_PIVOT,
+    };
+    use rewo_world::entities::EntityEvent;
+    let mut out = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        if etypes.name(e.type_id) != Some("minecraft:evoker_fangs") {
+            continue;
+        }
+        let bite = evoker_fangs_progress(
+            session
+                .world
+                .entities
+                .event_start(id, EntityEvent::EvokerFangsBite),
+            session.ticks as i64,
+            alpha,
+        );
+        if bite == 0.0 {
+            continue;
+        }
+        let (root, [base, upper, lower]) = evoker_fangs_parts(bite);
+        let p = e.render_pos(alpha);
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            model: EVOKER_FANGS_MODEL.0.to_string(),
+            transform: mul(
+                &mul(&rot_y(90.0 - e.yaw), &scale(-1.0, -1.0, 1.0)),
+                &mul(&translation(0.0, -1.501, 0.0), &root),
+            ),
+            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            part_transforms: [IDENTITY, base, upper, lower],
+            part_pivots: [
+                [0.0; 3],
+                EVOKER_FANGS_BASE_PIVOT,
+                EVOKER_FANGS_UPPER_PIVOT,
+                EVOKER_FANGS_LOWER_PIVOT,
+            ],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
+}
+
 /// M257 — every end crystal this frame, as `EndCrystalRenderer` draws it:
 /// `T(pos) · scale(2) · translate(0, -0.5, 0)` then the model, no living
 /// flip, its glass spinning and bobbing (`end_crystal_parts`); the base
@@ -3233,6 +3293,7 @@ pub(super) fn collect_entities<'a>(
                 | "minecraft:wither_skull"
                 | "minecraft:llama_spit"
                 | "minecraft:shulker_bullet"
+                | "minecraft:evoker_fangs"
                 | "minecraft:block_display"
                 | "minecraft:item_display"
                 | "minecraft:interaction"

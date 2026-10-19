@@ -4382,6 +4382,8 @@ impl<'a> Baker<'a> {
         be_models.append(&mut bake_be!(
             crate::block_entity_models::bake_small_projectiles
         ));
+        // M259 — the evoker fangs.
+        be_models.append(&mut bake_be!(crate::block_entity_models::bake_evoker_fangs));
         // M257 — the end crystals.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_end_crystals));
         // M254 — the paintings.

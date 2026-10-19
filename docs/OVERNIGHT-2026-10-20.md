@@ -239,6 +239,8 @@ released.
 - **M258**: wither skulls, llama spit, shulker bullets and dragon fireballs
   draw as themselves (they were grey capsules). A blue wither skull looks
   like a black one, and the shulker bullet has no glowing outer shell.
+- **M259**: an evoker's fangs now rise out of the ground and snap, where
+  they were a grey capsule standing there from the moment they spawned.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -299,6 +301,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M259)* | **M259** — evoker fangs: entity event 4 stamps the bite (`EntityClasses::is_evoker_fangs`), vanilla's progress clock, the base and jaws as animated groups, drawn only while biting; render-check **r118**. |
 | `35a3137` | **M258** — wither skulls, llama spit, shulker bullets (block-entity emitter, `small_projectile_pose`) and dragon fireballs (billboard, the XP orb's quad); render-check **r117**. |
 | `88a6195` | M257 follow-up: `collect_projectiles`' doc comment, which M257's insertion had left on the crystal function. |
 | `6fcbd6b` | Test fixes: `connect_tests`' dead address is loopback port 1 (an ephemeral port bound and closed could be taken back by a parallel test), and `inbound`'s `settle()` no longer reads an unstarted reader's 0 as settled. |
@@ -570,7 +573,7 @@ released.
 - End crystals (M257) draw no beam, and their sheet is halved to fit the
   entity atlas's 64x64 large slots; a larger slot would draw it at full
   resolution.
-- Still capsules after M258: wind charges (their texture scrolls through the `breezeWind` render type) and evoker fangs (their bite is timed by an entity event). A blue wither skull draws the black texture; the shulker bullet's translucent shell is not drawn (the display entities are no longer capsules; block displays draw nothing). A minecart's contents block is not drawn, nor its slope pitch. (M241 drew the fishing line; M250 the arrows and the thrown trident.)
+- Still a capsule after M259: the wind charge (its texture scrolls through the `breezeWind` render type, which the block-entity emitter has no equivalent of). A blue wither skull draws the black texture; the shulker bullet's translucent shell is not drawn (the display entities are no longer capsules; block displays draw nothing). A minecart's contents block is not drawn, nor its slope pitch. (M241 drew the fishing line; M250 the arrows and the thrown trident.)
 - After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M242: **4,356 tests; 4,351 passed in the full run and the 5 failures, all `rewo-net` `srv` TCP tests at the fake nameserver's port pairing ("a port free for both UDP and TCP"), passed on rerun (34/34): the shared PC's sockets, not Rewo; gates 51/51** (inventoryshot 169, itemshot 78); render check **108/108** on two runs; clippy (gates and default features, after one needless `clone`) and `cargo fmt --check` clean.
 - After M243: **4,357 tests passed, 0 failed; gates 51/51** (itemshot 79); render check **108/108** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
@@ -588,6 +591,7 @@ released.
 - After M256: **4,381 tests passed, 0 failed; gates 51/51**; render check **115/115** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M257: **4,385 tests; two full runs each failed one different load-sensitive rewo-net test (`connect_any`'s reused dead port, then the inbound budget test's 50 ms settle), both pass alone and are fixed in `6fcbd6b`, after which the workspace ran **4,385/4,385**; gates 51/51**; render check **116/116** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M258: **4,387 tests passed, 0 failed; gates 51/51**; render check **117/117** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- After M259: **4,390 tests passed, 0 failed; gates 51/51**; render check **118/118** on two runs (r118 caught the bite in 917 and 826 frames); clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

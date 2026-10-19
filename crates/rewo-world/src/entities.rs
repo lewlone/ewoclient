@@ -292,11 +292,14 @@ pub enum EntityEvent {
     /// `WardenModel.animateTendrils`' sway and the tendril emissive layer's
     /// alpha (`getTendrilAnimation` = `lerp(a, prev, cur) / 10`).
     WardenTendril,
+    /// Evoker fangs id 4 — `clientSideAttackStarted = true` (M259): the bite
+    /// runs from here, `getAnimationProgress` reaching 1 twenty ticks on.
+    EvokerFangsBite,
 }
 
 impl EntityEvent {
     /// Dense count for the fixed-size per-entity store.
-    pub const COUNT: usize = 4;
+    pub const COUNT: usize = 5;
 
     /// Slot index into [`EntityEventStarts`].
     pub const fn index(self) -> usize {

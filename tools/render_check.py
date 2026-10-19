@@ -165,6 +165,9 @@ PRECMD = (
     "summon minecraft:painting ~-2 ~1 ~15 {facing:2b,variant:\"minecraft:kebab\"};"
     # M255 -- r114. A text display (a hologram), gold, facing the camera.
     "summon minecraft:text_display ~2 ~2 ~-4 {billboard:\"center\",text:{text:\"RewoHolo\",color:\"gold\"}};"
+    # M259 -- r118. Evoker fangs that bite 60 ticks after the summon, clear
+    # of the camel's lane (z ~-12) and of the bot.
+    "summon minecraft:evoker_fangs ~1 ~ ~-10 {Warmup:60};"
     # M258 -- r117. Three small projectiles held still (no acceleration,
     # no gravity, no motion), up out of reach of the bot.
     "summon minecraft:wither_skull ~-2 ~3 ~-9 {acceleration_power:0d,Motion:[0d,0d,0d]};"

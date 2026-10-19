@@ -872,6 +872,10 @@ pub(crate) fn apply_entity_event(
     }
     let mapped = match event {
         4 if is(warden_type_id) => Some(EntityEvent::WardenAttack),
+        // M259 — `EvokerFangs.handleEntityEvent(4)`: the bite starts.
+        4 if classes.is_some_and(|c| c.is_evoker_fangs(type_id)) => {
+            Some(EntityEvent::EvokerFangsBite)
+        }
         62 if is(warden_type_id) => Some(EntityEvent::WardenSonicBoom),
         64 if is(armadillo_type_id) => Some(EntityEvent::ArmadilloPeek),
         // `Warden.handleEntityEvent(61)` is `tendrilAnimation = 10` — a plain
@@ -6201,6 +6205,41 @@ mod route_decode_failure_tests {
         // a decode failure.
         assert!(route_level_event(&body(1000)).is_none());
         assert_eq!(take_route_decode_failures(), 0);
+    }
+}
+
+/// M259 — entity event 4 is an evoker fangs' bite only for that kind (a
+/// warden's 4 stays its attack), resolved against the real registry.
+#[cfg(test)]
+mod fangs_event_tests {
+    use super::*;
+    use rewo_world::entities::{EntityEvent, EntityState, EntityTable};
+
+    #[test]
+    fn event_4_starts_an_evoker_fangs_bite() {
+        let Some(paths) =
+            rewo_data::DataPaths::for_version("26.2").filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report");
+            return;
+        };
+        let types = rewo_data::entity_types::EntityTypes::load(&paths.registries_json()).unwrap();
+        let classes = rewo_data::entity_types::EntityClasses::resolve(&types).unwrap();
+        let fangs = types.id_of("minecraft:evoker_fangs").unwrap();
+        let warden = types.id_of("minecraft:warden").unwrap();
+        let zombie = types.id_of("minecraft:zombie").unwrap();
+        let mut t = EntityTable::default();
+        for (eid, ty) in [(1, fangs), (2, warden), (3, zombie)] {
+            t.add(eid, EntityState::new(0, ty, 0.0, 0.0, 0.0, 0.0, 0.0));
+            let mut b = eid.to_be_bytes().to_vec();
+            b.push(4);
+            apply_entity_event(&b, &mut t, Some(warden), None, 40, Some(&classes));
+        }
+        assert_eq!(t.event_start(1, EntityEvent::EvokerFangsBite), Some(40));
+        assert_eq!(t.event_start(1, EntityEvent::WardenAttack), None);
+        assert_eq!(t.event_start(2, EntityEvent::WardenAttack), Some(40));
+        assert_eq!(t.event_start(2, EntityEvent::EvokerFangsBite), None);
+        assert_eq!(t.event_start(3, EntityEvent::EvokerFangsBite), None);
     }
 }
 
