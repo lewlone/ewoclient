@@ -2278,8 +2278,9 @@ impl LiveApp {
                     pos,
                     face,
                     offset,
+                    inside,
                     swing,
-                } => session.use_item_on_hit(hand, pos, face, offset, swing),
+                } => session.use_item_on_hit(hand, pos, face, offset, inside, swing),
                 UseStep::Use { hand, start, swing } => session.use_held(hand, start, swing),
             };
             if let Err(e) = r {
@@ -2303,7 +2304,9 @@ impl LiveApp {
         let me = session.player_id?;
         let eye = eye_f64(session);
         let dir = look_dir(session.player.yaw, session.player.pitch);
-        let hit = session.target_block(eye, dir, REACH);
+        let shape_hit = session.target_shape(eye, dir, REACH);
+        let hit = shape_hit.map(|h| h.hit);
+        let inside = shape_hit.is_some_and(|h| h.inside);
         let name = |slot: Option<rewo_world::inventory::ItemSlot>| {
             slot.and_then(|s| self.items.name(s.item_id))
         };
@@ -2393,6 +2396,7 @@ impl LiveApp {
                     pos: h.block,
                     face,
                     offset,
+                    inside,
                     swing: local == Outcome::Consumed,
                 });
                 if local != Outcome::Pass {

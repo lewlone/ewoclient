@@ -668,6 +668,13 @@ pub struct BakedAssets {
     /// `model_collision`) — slabs, stairs, fences, … — so a player can stand
     /// on a slab and can't walk through a fence.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// M230 — per-state OUTLINE boxes (`BlockBehaviour.getShape`), what the
+    /// crosshair clips against (`ClipContext.Block.OUTLINE`): the class's
+    /// constant shape where the decompile gives one
+    /// (`collision_table::OUTLINE`), the model's geometry where it depends on
+    /// state, else the full cube. A button or a flower has one though it has
+    /// no collision; water and air have none.
+    pub outline: Vec<Vec<[f32; 6]>>,
     /// Per-state face-culling facts for the mesher (see [`CullInfo`]).
     pub cull: Vec<CullInfo>,
     /// Per-state movement behaviour for the player physics.
@@ -1679,6 +1686,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut water = vec![false; max_id + 1];
     let mut bubble_column_drag: Vec<Option<bool>> = vec![None; max_id + 1];
     let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
+    let mut outline: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
     let mut cull = vec![CullInfo::default(); max_id + 1];
     let mut physics = vec![crate::block_physics::BlockPhysics::AIR; max_id + 1];
     let mut emission = vec![0u8; max_id + 1];
@@ -1719,6 +1727,13 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         .iter()
         .copied()
         .collect();
+    let constant_outline: HashMap<&str, &[[f32; 6]]> =
+        crate::collision_table::OUTLINE.iter().copied().collect();
+    let state_outline: std::collections::HashSet<&str> =
+        crate::collision_table::OUTLINE_STATE_DEPENDENT
+            .iter()
+            .copied()
+            .collect();
     let skip_rules: HashMap<&str, u8> =
         crate::block_props::SKIP_RENDERING.iter().copied().collect();
     let overlay_blocks: std::collections::HashSet<&str> =
@@ -1914,6 +1929,19 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 baker.collision_boxes(&refs, false)
             } else {
                 Vec::new()
+            };
+            outline[id as usize] = if let Some(b) = constant_outline.get(block_name.as_str()) {
+                b.to_vec()
+            } else if state_outline.contains(block_name.as_str()) {
+                match bs.as_ref() {
+                    Some(bs) => {
+                        let refs = baker.state_refs(bs, props);
+                        baker.outline_boxes(&refs)
+                    }
+                    None => Vec::new(),
+                }
+            } else {
+                vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             };
             cull[id as usize].ao_occluder =
                 collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
@@ -2188,6 +2216,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         fluid,
         bubble_column_drag,
         collide,
+        outline,
         cull,
         physics,
         emission,
@@ -3853,6 +3882,58 @@ impl<'a> Baker<'a> {
             }
         }
         out
+    }
+
+    /// M230 — the outline a state-dependent block's model stands for: its
+    /// elements' boxes (state rotation applied), or, for a model made only
+    /// of zero-thickness planes (crosses, crops, rails, wire), the planes'
+    /// bounding box, which is what vanilla's single-box outlines for those
+    /// cover.
+    fn outline_boxes(&mut self, refs: &[ModelRef]) -> Vec<[f32; 6]> {
+        let mut solid = Vec::new();
+        let mut bound: Option<[f32; 6]> = None;
+        for r in refs {
+            let Some(resolved) = self.resolve_model(&r.model) else {
+                continue;
+            };
+            for el in resolved.elements.clone() {
+                let (Some(from), Some(to)) = (box_coords(&el, "from"), box_coords(&el, "to"))
+                else {
+                    continue;
+                };
+                let b = rotate_box(
+                    [
+                        from[0] / 16.0,
+                        from[1] / 16.0,
+                        from[2] / 16.0,
+                        to[0] / 16.0,
+                        to[1] / 16.0,
+                        to[2] / 16.0,
+                    ],
+                    r.x,
+                    r.y,
+                );
+                bound = Some(match bound {
+                    None => b,
+                    Some(u) => [
+                        u[0].min(b[0]),
+                        u[1].min(b[1]),
+                        u[2].min(b[2]),
+                        u[3].max(b[3]),
+                        u[4].max(b[4]),
+                        u[5].max(b[5]),
+                    ],
+                });
+                if (b[3] - b[0]) > 1e-4 && (b[4] - b[1]) > 1e-4 && (b[5] - b[2]) > 1e-4 {
+                    solid.push(b);
+                }
+            }
+        }
+        if solid.is_empty() {
+            bound.into_iter().collect()
+        } else {
+            solid
+        }
     }
 
     /// True if the model (or a parent) has any element spanning the full

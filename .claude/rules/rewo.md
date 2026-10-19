@@ -144,6 +144,9 @@ a self-check path.
   (`tools/gen_click_use.py` names the class; a new override in a later
   version fails `every_override_class_was_reviewed`). Err toward ending the
   click: a wrongly-passed one sends a second packet the server acts on.
+  The crosshair clips the ray against OUTLINE shapes (M230,
+  `PlaySession::target_shape`, `BakedAssets::outline`), not collision: a
+  button, a flower or a lever is targetable, water and air are not.
 - **One accessor per concept.** When two call sites each compute "which menu",
   "which origin" or "which conversion", they drift (M89, M106b, M112, M151).
 - **The M-numbers aren't a contiguous index** (M52, M61, M64, M66, M68 each

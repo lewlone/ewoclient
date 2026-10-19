@@ -97,9 +97,214 @@ where
     None
 }
 
+/// M230 — `BlockGetter.clip` with `ClipContext.Block.OUTLINE` (and fluids
+/// ignored): walk the cells the ray crosses, in order, and stop at the first
+/// whose shape (`shapes(x, y, z)`, block-local `[x0,y0,z0,x1,y1,z1]` boxes)
+/// the ray actually meets, reporting the true hit — the surface point's
+/// distance and the face of the box it entered, so a ray grazing past a
+/// button, or over a slab, goes on to what is behind it.
+///
+/// `VoxelShape.clip` from inside a box (the eye in a block) is a hit at the
+/// start with the face opposite the ray's major axis; `inside` reports it,
+/// as `BlockHitResult.isInside` does.
+pub fn cast_shapes<'s, F>(
+    origin: [f64; 3],
+    dir: [f64; 3],
+    max_dist: f64,
+    shapes: F,
+) -> Option<ShapeHit>
+where
+    F: Fn(i32, i32, i32) -> &'s [[f32; 6]],
+{
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    if len < 1e-9 {
+        return None;
+    }
+    let d = [dir[0] / len, dir[1] / len, dir[2] / len];
+    let clip = |cell: [i32; 3]| -> Option<ShapeHit> {
+        let boxes = shapes(cell[0], cell[1], cell[2]);
+        let mut best: Option<ShapeHit> = None;
+        for b in boxes {
+            let lo = [
+                cell[0] as f64 + b[0] as f64,
+                cell[1] as f64 + b[1] as f64,
+                cell[2] as f64 + b[2] as f64,
+            ];
+            let hi = [
+                cell[0] as f64 + b[3] as f64,
+                cell[1] as f64 + b[4] as f64,
+                cell[2] as f64 + b[5] as f64,
+            ];
+            let inside = (0..3).all(|a| origin[a] > lo[a] && origin[a] < hi[a]);
+            if inside {
+                let major = (0..3)
+                    .max_by(|&i, &j| d[i].abs().total_cmp(&d[j].abs()))
+                    .unwrap_or(1);
+                let mut face = [0; 3];
+                face[major] = if d[major] > 0.0 { -1 } else { 1 };
+                return Some(ShapeHit {
+                    hit: RayHit {
+                        block: cell,
+                        face,
+                        distance: 0.0,
+                    },
+                    inside: true,
+                });
+            }
+            // Slab method: the latest entry and the earliest exit.
+            let (mut t0, mut t1, mut axis) = (0.0f64, max_dist, usize::MAX);
+            let mut missed = false;
+            for a in 0..3 {
+                if d[a].abs() < 1e-12 {
+                    if origin[a] < lo[a] || origin[a] > hi[a] {
+                        missed = true;
+                    }
+                    continue;
+                }
+                let (mut ta, mut tb) = ((lo[a] - origin[a]) / d[a], (hi[a] - origin[a]) / d[a]);
+                if ta > tb {
+                    std::mem::swap(&mut ta, &mut tb);
+                }
+                if ta > t0 {
+                    t0 = ta;
+                    axis = a;
+                }
+                t1 = t1.min(tb);
+            }
+            if missed || t0 > t1 || axis == usize::MAX {
+                continue;
+            }
+            if best.is_none_or(|h| t0 < h.hit.distance) {
+                let mut face = [0; 3];
+                face[axis] = if d[axis] > 0.0 { -1 } else { 1 };
+                best = Some(ShapeHit {
+                    hit: RayHit {
+                        block: cell,
+                        face,
+                        distance: t0,
+                    },
+                    inside: false,
+                });
+            }
+        }
+        best
+    };
+    let mut block = [
+        origin[0].floor() as i32,
+        origin[1].floor() as i32,
+        origin[2].floor() as i32,
+    ];
+    if let Some(h) = clip(block) {
+        return Some(h);
+    }
+    let mut step = [0i32; 3];
+    let mut t_max = [f64::INFINITY; 3];
+    let mut t_delta = [f64::INFINITY; 3];
+    for a in 0..3 {
+        if d[a] > 0.0 {
+            step[a] = 1;
+            t_delta[a] = 1.0 / d[a];
+            t_max[a] = ((block[a] as f64 + 1.0) - origin[a]) / d[a];
+        } else if d[a] < 0.0 {
+            step[a] = -1;
+            t_delta[a] = 1.0 / -d[a];
+            t_max[a] = (origin[a] - block[a] as f64) / -d[a];
+        }
+    }
+    loop {
+        let axis = if t_max[0] < t_max[1] && t_max[0] < t_max[2] {
+            0
+        } else if t_max[1] < t_max[2] {
+            1
+        } else {
+            2
+        };
+        if t_max[axis] > max_dist {
+            return None;
+        }
+        block[axis] += step[axis];
+        t_max[axis] += t_delta[axis];
+        if let Some(h) = clip(block) {
+            return Some(h);
+        }
+    }
+}
+
+/// A [`cast_shapes`] hit: the [`RayHit`] (now the true surface point's
+/// distance) and whether the ray started inside the shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapeHit {
+    pub hit: RayHit,
+    pub inside: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CUBE: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+    const SLAB: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]];
+    const BUTTON: &[[f32; 6]] = &[[0.3125, 0.0, 0.375, 0.6875, 0.125, 0.625]];
+
+    /// The true surface: a ray straight down onto a bottom slab hits its top
+    /// at 0.5, not the cell's top at 1.0.
+    #[test]
+    fn a_ray_down_meets_a_slab_at_its_top() {
+        let h = cast_shapes([0.5, 3.0, 0.5], [0.0, -1.0, 0.0], 10.0, |_, y, _| {
+            if y == 0 {
+                SLAB
+            } else {
+                &[]
+            }
+        })
+        .unwrap();
+        assert_eq!(h.hit.block, [0, 0, 0]);
+        assert_eq!(h.hit.face, [0, 1, 0]);
+        assert!((h.hit.distance - 2.5).abs() < 1e-9, "{}", h.hit.distance);
+    }
+
+    /// A small shape: a ray through the button's cell that misses the button
+    /// goes on to the floor behind it; one at the button hits the button.
+    #[test]
+    fn a_ray_past_a_button_reaches_what_is_behind() {
+        let world = |x: i32, y: i32, _z: i32| -> &'static [[f32; 6]] {
+            match (x, y) {
+                (0, 1) => BUTTON,
+                (_, 0) => CUBE,
+                _ => &[],
+            }
+        };
+        // Down through the cell's corner: misses the button, hits the floor.
+        let miss = cast_shapes([0.1, 3.0, 0.1], [0.0, -1.0, 0.0], 10.0, world).unwrap();
+        assert_eq!(miss.hit.block, [0, 0, 0]);
+        // Down through the middle: the button's top.
+        let hit = cast_shapes([0.5, 3.0, 0.5], [0.0, -1.0, 0.0], 10.0, world).unwrap();
+        assert_eq!(hit.hit.block, [0, 1, 0]);
+        assert!((hit.hit.distance - (3.0 - 1.125)).abs() < 1e-9);
+    }
+
+    /// An eye inside a shape hits it at once, flagged inside.
+    #[test]
+    fn an_eye_inside_a_shape_is_an_inside_hit() {
+        let h = cast_shapes([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], 5.0, |_, _, _| CUBE).unwrap();
+        assert!(h.inside);
+        assert_eq!(h.hit.distance, 0.0);
+        assert_eq!(h.hit.face, [-1, 0, 0]);
+    }
+
+    /// Reach still bounds it, and empty space misses.
+    #[test]
+    fn the_shape_cast_respects_reach() {
+        let wall = |x: i32, _: i32, _: i32| -> &'static [[f32; 6]] {
+            if x >= 5 {
+                CUBE
+            } else {
+                &[]
+            }
+        };
+        assert!(cast_shapes([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], 3.0, wall).is_none());
+        assert!(cast_shapes([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], 10.0, wall).is_some());
+    }
 
     #[test]
     fn ray_down_hits_the_floor_from_above() {

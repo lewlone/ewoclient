@@ -2052,6 +2052,7 @@ this shape once.
 | M227 (2026-10-19) — the bot swims and dashes a real nautilus: vanilla's water speed with no gravity, the cooldown holds the meter, the server agrees where it is | **r90** | — | — |
 | M228 (2026-10-19) — the local rider sits where the server seats it, on the boat, the horse, the camel and the nautilus (read through a marker: a passenger's saved `Pos` is the vehicle's x/z) | **r91** | — | — |
 | M229 (2026-10-19) — a survival right-click on the ground with bread eats it; a bucket fills from water and empties onto the ground; a snowball throws and a fishing rod casts and reels in | **r92**, **r93**, **r94** | — | — |
+| M230 (2026-10-19) — a floor lever and a stone button are targeted (outline shapes) and pressed while holding food, and nothing is eaten | **r95** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3886,6 +3887,36 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M230 — the crosshair clips outline shapes (2026-10-19)
+
+The pick was a whole-cell test against COLLISION shapes: a cell with any
+collision box stopped the ray at its boundary, and one with none let it
+through. So buttons, levers, flowers, torches, signs, crops, rails and open
+fence gates could not be targeted at all (the ray reached what was behind),
+and a slab was clicked at its cell's top.
+
+- **`raycast::cast_shapes`**: vanilla's `BlockGetter.clip` with
+  `ClipContext.Block.OUTLINE` and fluids ignored. Cells in ray order, each
+  clipped against its boxes (slab method); the first real hit wins, with
+  the true surface distance, the entered face, and `inside` when the eye
+  starts in a shape (now sent in `use_item_on`, as `BlockHitResult.isInside`
+  is).
+- **`BakedAssets::outline`**: per state, the class's constant `getShape`
+  (`gen_collision_shapes.py` now resolves the outline chain too:
+  `collision_table::OUTLINE`, `OUTLINE_STATE_DEPENDENT`), the model's
+  geometry where it depends on state (a model of planes alone, as crosses,
+  crops, rails and wire are, gives the planes' bounding box), else the full
+  cube. A `SHAPE.move(state.getOffset(pos))` (flowers, bamboo, dripstone) is
+  taken unmoved: Rewo renders no block offset, so the pick follows the
+  screen (a recorded deviation; offsets are a follow-up for both).
+- `PlaySession::target_shape` / `target_block` use it whenever the outline
+  table is installed; mining, picking and right-clicking all go through it.
+
+**r95** (in the tail, after r92): with bread in hand and food below 20, a
+right-click on a floor lever and on a stone button powers each (the
+server's block updates), and the bread and food are unchanged. Mutation:
+without the outline table, neither is targeted (r95 fails, 94/95). 95/95.
 
 ### M229 — the right-click, as vanilla's `startUseItem` (2026-10-19)
 

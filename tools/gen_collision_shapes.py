@@ -17,6 +17,11 @@ Emitted into `crates/rewo-data/src/collision_table.rs`:
   whose override resolves to a constant.
 * `STATE_DEPENDENT` — blocks whose override exists but is not a constant
   (stairs, panes, doors, chests, …): the bake falls back to model geometry.
+* `OUTLINE` / `OUTLINE_STATE_DEPENDENT` (M230) — the same resolution for
+  `getShape` alone, the shape the crosshair clips against
+  (`ClipContext.Block.OUTLINE`): a constant where the chain's override is one
+  and differs from the full cube (no override at all is the full cube, and is
+  not listed), else state-dependent (buttons, levers, crops, doors...).
 
 Run after a version bump:
     python tools/gen_collision_shapes.py
@@ -156,16 +161,23 @@ def scan_constants(sources):
     return out
 
 
-def resolve_class(cls, sups, sources, consts):
+def resolve_class(cls, sups, sources, consts, methods=("getCollisionShape", "getShape")):
     """('shape', boxes) | ('state', None) — for a class chain."""
-    for method in ("getCollisionShape", "getShape"):
+    for method in methods:
         for c in gbp.chain(sups, cls):
             if c in STOP:
                 break
             body = method_body(sources.get(c, ""), method)
             if body is None:
                 continue
-            m = re.fullmatch(r"return (.*);", " ".join(body.split()), re.S)
+            flat = " ".join(body.split())
+            # M230: `SHAPE.move(state.getOffset(pos))` (flowers, bamboo,
+            # dripstone): the shape at the block's random offset. Rewo
+            # renders no block offset, so the pick takes the unmoved shape
+            # the screen shows (a recorded deviation).
+            if method == "getShape":
+                flat = re.sub(r"\.move\(state\.getOffset\(pos\)\)", "", flat)
+            m = re.fullmatch(r"return (.*);", flat, re.S)
             if not m:
                 return ("state", None)
             try:
@@ -215,6 +227,8 @@ def main():
         block_helpers[m.group(1)] = src[brace : j + 1]
 
     no_collision, shapes, state_dep = [], {}, []
+    outline, outline_state = {}, []
+    FULL = [(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)]
 
     def plain_register(body):
         return re.match(r"\(\s*Block(?:Item)?Ids\.\w+\s*,\s*(?:BlockBehaviour\.)?Properties", body) is not None
@@ -234,7 +248,13 @@ def main():
         if cls is None and not (func == "register" and plain_register(body)):
             # An unrecognised construction: never guess a full cube.
             state_dep.append(name)
+            outline_state.append(name)
             return
+        okind, oboxes = resolve_class(cls or "Block", sups, sources, consts, ("getShape",))
+        if okind != "shape":
+            outline_state.append(name)
+        elif [tuple(b) for b in oboxes] != FULL:
+            outline[name] = oboxes
         overrides = any(
             method_body(sources.get(c, ""), "getCollisionShape") is not None
             for c in gbp.chain(sups, cls or "Block")
@@ -291,10 +311,24 @@ def main():
     w("pub const STATE_DEPENDENT: &[&str] = &[\n")
     for k in sorted(state_dep):
         w(f'    "minecraft:{k}",\n')
+    w("];\n\n")
+    w("/// M230 — state-independent outline (`getShape`) shapes that are not the\n")
+    w("/// full cube, block-local `[x0,y0,z0,x1,y1,z1]`. A block in neither this\n")
+    w("/// nor `OUTLINE_STATE_DEPENDENT` has the full-cube outline.\n")
+    w("pub const OUTLINE: &[(&str, &[[f32; 6]])] = &[\n")
+    for k in sorted(outline):
+        boxes = ", ".join("[" + ", ".join(repr(float(v)) for v in b) + "]" for b in outline[k])
+        w(f'    ("minecraft:{k}", &[{boxes}]),\n')
+    w("];\n\n")
+    w("/// M230 — blocks whose outline depends on state (model fallback).\n")
+    w("pub const OUTLINE_STATE_DEPENDENT: &[&str] = &[\n")
+    for k in sorted(outline_state):
+        w(f'    "minecraft:{k}",\n')
     w("];\n")
     out.close()
     print(f"[gen_collision_shapes] {len(no_collision)} no-collision, {len(shapes)} constant, "
-          f"{len(state_dep)} state-dependent", file=sys.stderr)
+          f"{len(state_dep)} state-dependent; outline {len(outline)} constant, "
+          f"{len(outline_state)} state-dependent", file=sys.stderr)
 
 
 if __name__ == "__main__":

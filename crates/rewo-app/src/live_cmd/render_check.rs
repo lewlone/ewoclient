@@ -419,6 +419,12 @@ pub(super) struct RenderCheck {
     pub(super) bobber_seen: bool,
     pub(super) bobber_gone: bool,
     pub(super) use_skip: Option<String>,
+    /// M230 — r95: the floor lever and the stone button powered by a
+    /// right-click while bread is in hand and the bot is hungry, and the
+    /// (food, bread) before and after (nothing may be eaten).
+    pub(super) lever_on: bool,
+    pub(super) button_on: bool,
+    pub(super) click_food: Option<((i32, i32), (i32, i32))>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -904,7 +910,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 94;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 95;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1599,6 +1605,26 @@ impl RenderCheck {
             format!(
                 "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
+        );
+        // M230 — r95: the crosshair clips against OUTLINE shapes, so a floor
+        // lever and a stone button (no collision box) can be targeted, and
+        // their `useWithoutItem` takes the click: with bread in hand and food
+        // below 20, each powers and nothing is eaten. Before M230 the ray
+        // passed through both to the grass, which passes, and the bot ate.
+        let kept = self.click_food.is_some_and(|(a, b)| a == b);
+        row(
+            "r95 a lever and a button were targeted and pressed while holding food, and nothing was eaten",
+            self.lever_on && self.button_on && kept,
+            format!(
+                "lever powered {}, button powered {}, (food, bread) before / after {:?}{}",
+                self.lever_on,
+                self.button_on,
+                self.click_food,
+                self.use_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
             ),
         );
         // r86 — the player preview belongs to the player's inventory only:
@@ -2478,6 +2504,9 @@ impl LiveApp {
         let spot = [o[0].floor() + 11.5, o[1], o[2].floor() + 6.5];
         let grass = [spot[0] - 1.0, o[1] - 0.5, spot[2]];
         let pool = [o[0].floor() + 8.5, o[1] - 0.6, spot[2]];
+        // r95's floor lever and stone button (`render_check.py` stages them).
+        let lever = [o[0].floor() + 12.5, o[1] + 0.1, o[2].floor() + 4.5];
+        let button = [o[0].floor() + 10.5, o[1] + 0.05, o[2].floor() + 4.5];
         match self.use_stage {
             0 if self.nautilus_stage >= 20 && seats_done => {
                 self.use_tick0 = now;
@@ -2532,13 +2561,57 @@ impl LiveApp {
                 if let Some(c) = self.check.as_mut() {
                     c.eat_food = c.eat_food.map(|(a, _)| (a, food));
                     c.eat_count = c.eat_count.map(|(a, _)| (a, count));
+                    c.click_food = Some(((food, count), (food, count)));
                 }
-                cmd(
-                    self,
-                    "item replace entity @s weapon.mainhand with minecraft:bucket",
-                );
+                // r95 next, before r93's water can reach the lever.
+                aim(self, lever);
+                self.use_key_press();
+                self.use_down = false;
                 self.use_tick0 = now;
-                self.use_stage = 5;
+                self.use_stage = 15;
+            }
+            15 | 16 => {
+                let (target, key) = if self.use_stage == 15 {
+                    (lever, "lever")
+                } else {
+                    (button, "button")
+                };
+                let on = self.session.as_ref().is_some_and(|s| {
+                    let st = s.world.block_state_at(
+                        target[0].floor() as i32,
+                        target[1].floor() as i32,
+                        target[2].floor() as i32,
+                    );
+                    self.blocks.property(st, "powered") == Some("true")
+                });
+                if on || now >= self.use_tick0 + 20 {
+                    if let Some(c) = self.check.as_mut() {
+                        if key == "lever" {
+                            c.lever_on = on;
+                        } else {
+                            c.button_on = on;
+                        }
+                    }
+                    if self.use_stage == 15 {
+                        aim(self, button);
+                        self.use_key_press();
+                        self.use_down = false;
+                        self.use_tick0 = now;
+                        self.use_stage = 16;
+                    } else {
+                        let food = self.session.as_ref().map_or(0, |s| s.food);
+                        let count = held(self).map_or(0, |(_, n)| n);
+                        if let Some(c) = self.check.as_mut() {
+                            c.click_food = c.click_food.map(|(a, _)| (a, (food, count)));
+                        }
+                        cmd(
+                            self,
+                            "item replace entity @s weapon.mainhand with minecraft:bucket",
+                        );
+                        self.use_tick0 = now;
+                        self.use_stage = 5;
+                    }
+                }
             }
             5 if now >= self.use_tick0 + 6 => {
                 aim(self, pool);

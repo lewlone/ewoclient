@@ -762,6 +762,10 @@ pub struct PlaySession {
     /// a stair. An id past the end falls back to "non-air is a full cube",
     /// which is what the flat test worlds want when no bake is supplied.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// M230 — state id → outline boxes (`BakedAssets::outline`), what the
+    /// crosshair clips against. Empty (no bake installed) = the whole-cell
+    /// test against `collide` that predates it.
+    pub outline: Vec<Vec<[f32; 6]>>,
     /// state id → movement behaviour (`BakedAssets::physics`: friction, speed
     /// and jump factors, climbable, fluids, stuck-in blocks). Empty = every
     /// block behaves like stone, as before the table existed.
@@ -1973,6 +1977,7 @@ impl<'a> Connection<'a> {
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,
+            outline: Vec::new(),
             block_physics: Vec::new(),
             entity_push: Vec::new(),
             warden_type_id: None,
@@ -5475,7 +5480,28 @@ impl PlaySession {
         dir: [f64; 3],
         reach: f64,
     ) -> Option<rewo_world::raycast::RayHit> {
+        self.target_shape(eye, dir, reach).map(|h| h.hit)
+    }
+
+    /// M230 — the crosshair's block hit as vanilla's `GameRenderer.pick`
+    /// takes it: `BlockGetter.clip` against each cell's OUTLINE shape
+    /// (`Self::outline`), fluids ignored, with the true hit point and whether
+    /// the eye started inside the shape. Without an installed outline table
+    /// it falls back to the whole-cell test against `collide`.
+    pub fn target_shape(
+        &self,
+        eye: [f64; 3],
+        dir: [f64; 3],
+        reach: f64,
+    ) -> Option<rewo_world::raycast::ShapeHit> {
         let world = &self.world;
+        if !self.outline.is_empty() {
+            let outline = &self.outline;
+            return rewo_world::raycast::cast_shapes(eye, dir, reach, |x, y, z| {
+                let s = world.block_state_at(x, y, z) as usize;
+                outline.get(s).map_or(&[][..], |b| b.as_slice())
+            });
+        }
         let collide = &self.collide;
         rewo_world::raycast::cast(eye, dir, reach, |x, y, z| {
             let s = world.block_state_at(x, y, z);
@@ -5486,6 +5512,7 @@ impl PlaySession {
                 None => s != 0,
             }
         })
+        .map(|hit| rewo_world::raycast::ShapeHit { hit, inside: false })
     }
 
     pub fn start_dig(&mut self, x: i32, y: i32, z: i32, face: u8) -> Result<(), String> {
@@ -6176,13 +6203,15 @@ impl PlaySession {
             [x, y, z],
             face,
             [0.5, 1.0, 0.5],
+            false,
             true,
         )
     }
 
     /// `MultiPlayerGameMode.useItemOn`'s packet (M229): the hand, the block,
     /// the face, the hit point relative to the block (`BlockHitResult`'s
-    /// `location - pos`, as floats), not inside, no border hit, the
+    /// `location - pos`, as floats), whether the eye was inside the shape, no
+    /// border hit, the
     /// prediction sequence. `swing` is the local result's swing (vanilla
     /// swings for a `Success` whose source is the client).
     pub fn use_item_on_hit(
@@ -6191,6 +6220,7 @@ impl PlaySession {
         pos: [i32; 3],
         face: u8,
         offset: [f32; 3],
+        inside: bool,
         swing: bool,
     ) -> Result<(), String> {
         let seq = self.next_sequence();
@@ -6205,7 +6235,7 @@ impl PlaySession {
         write_position(&mut p, pos[0], pos[1], pos[2]);
         p.varint(face as i32); // Direction enum
         p.f32(offset[0]).f32(offset[1]).f32(offset[2]);
-        p.bool(false); // inside
+        p.bool(inside);
         p.bool(false); // world border hit
         p.varint(seq);
         self.send(p)?;

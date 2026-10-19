@@ -127,6 +127,11 @@ PRECMD = (
     # `finalizeSpawn`, so LastPoseTick stays 0: standing, no transition.
     "summon minecraft:camel ~-8 ~ ~-12 {NoAI:1b,"
     "equipment:{saddle:{id:\"minecraft:saddle\",count:1}}};"
+    # M230 -- r95. A floor lever and a stone button east of r87's pool, on
+    # the ground: neither has a collision box, so only an outline-shape
+    # pick can target them.
+    "setblock ~12 ~ ~4 minecraft:lever[face=floor,facing=north];"
+    "setblock ~10 ~ ~4 minecraft:stone_button[face=floor,facing=north];"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

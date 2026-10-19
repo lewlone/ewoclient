@@ -293,6 +293,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         colormaps,
     )?;
     session.block_physics = baked.physics.clone();
+    // M230 — the crosshair clips against outline shapes.
+    session.outline = baked.outline.clone();
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = entity_push_table(&data.entity_types);
     // Resolve the kinds whose entity events drive model rigs — a
@@ -1585,6 +1587,7 @@ enum UseStep {
         pos: [i32; 3],
         face: u8,
         offset: [f32; 3],
+        inside: bool,
         swing: bool,
     },
     Use {
