@@ -52,6 +52,17 @@ book, chat) and `docs/history/claude-md-session-log.md` (M143–M180).
 - `quickMoveStack` is **per menu class**. Untranscribed menus return
   `Unimplemented` and the caller **declines**, because moving nothing is inert
   and moving the wrong stack isn't.
+- **Mount menus (M220) have no registry id** (`MOUNT_PROTOCOL_ID`): their
+  layout comes from `mount_layout(kind, columns, saddle, body)` and their
+  screen from `menu_screen::screen_for(layout)`, never `screen_of(id)`. An
+  equipment slot whose `isActive()` is false is `SlotBlock::Inactive`: it
+  keeps its index and has no position, so nothing hovers or draws it. The
+  `mount_screen_open` entity id is a fixed `readInt`. The equipment slots'
+  `mayPlace` is relative to the open mount (`PlaySession::mount_fit`,
+  `item_props_for`).
+- **Only the player's own inventory draws the player preview**
+  (`apply_screen`); every container screen sets none (render-check r86). It
+  was drawn over every container's slots until M220.
 
 ## Item predicates
 

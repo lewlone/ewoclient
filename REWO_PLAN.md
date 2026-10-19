@@ -2043,6 +2043,9 @@ this shape once.
 | M218 (2026-10-19) — the pick key on a block, the server puts it in the hand | **r81** | — | — |
 | M218 (2026-10-19) — sprint start/stop reaches the server (its flag echo) | **r82** | — | — |
 | M219 (2026-10-19) — sleeping opens the in-bed chat; Leave Bed wakes the player | **r83** | — | — |
+| M220 (2026-10-19) — a sneak-right-click opens a real donkey's inventory (layout, slots, panel) | **r84** | — | — |
+| M220 (2026-10-19) — riding the donkey, the inventory key asks the server, which opens it | **r85** | — | — |
+| M220 (2026-10-19) — the player preview draws in the inventory and in no container screen | **r86** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3877,6 +3880,57 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M220 — the horse inventory (2026-10-19)
+
+`mount_screen_open` was the first class-C row on the coverage table: E on a
+horse, a sneak-right-click on a tamed one, or a chested donkey's inventory all
+reached the server, which answered with a packet Rewo had no id for. Now:
+
+- **Decode**: `containerId` (VarInt), `inventoryColumns` (VarInt), then the
+  entity id as a fixed **`readInt`**, unlike every other entity id on the wire.
+- **Which menu** (`menu::resolve_mount`): `AbstractHorse` →
+  `HorseInventoryMenu`, `AbstractNautilus` → `NautilusInventoryMenu`, anything
+  else nothing, as vanilla's `if / else if`. Each `ArmorSlot.isActive`: a
+  horse's saddle needs an adult in `can_equip_saddle`, its body slot
+  `can_wear_horse_armor` or a llama; a nautilus's both need an adult.
+- **Layouts** (`menu_layout::mount_layout`): saddle (8, 18), body (8, 36), the
+  chest grid `columns` x 3 from (80, 18), the player's 36 from (8, 84), on a
+  176 x 166 panel; built once for every column count and slot state. An
+  inactive slot is the new `SlotBlock::Inactive`. `OpenMenu::mount` keeps what
+  the open resolved.
+- **Slots and clicks**: `SlotKind::MountSaddle` / `MountBody` cap at one and
+  accept what `isEquippableInSlot` does for the open mount — the item's
+  equippable slot, `canUseSlot`, and its `allowedEntities`, which
+  `gen_item_props.py` now emits as `EQUIP_ALLOWED` (`#tag`, one id, or a list).
+  `AbstractMountInventoryMenu.quickMoveStack` transcribed, including the
+  consuming equipment branches and the cross-move's single pass.
+- **Screen**: `horse.png` / `nautilus.png` through `menu_screen::screen_for`,
+  with the chest strip (`container/horse/chest_slots`, `columns * 18` wide) and
+  a `container/slot` under each active equipment slot as overlays.
+- **The key**: `inventory_key` (E) sends `OPEN_INVENTORY` while riding a
+  vehicle with its own inventory (`isServerControlledInventory`: horses,
+  nautiluses, chest boats).
+
+**A pre-existing bug, found by looking at a capture of the new screen**: the
+player preview was set for every container screen, so the player model was
+painted, in the inventory window's position, over the slots of every chest,
+furnace and other container since the preview landed. Only the player's
+inventory draws it now.
+
+Live, in a new render-check **tail** after the timed 8 s (r83 moved there too):
+**r84** a sneak-right-click on a summoned tamed donkey (chest, saddle, three
+apples at chest index 7) opens its menu: 5 columns, 53 slots, saddle slot
+active and body slot not, the saddle in slot 0, the apples in menu slot 9
+(row 1, column 2), the panel drawn 166 tall with its two overlays. **r85** a
+plain right-click rides it, E sends `OPEN_INVENTORY`, and the server opens a
+second menu that draws. **r86** no container frame carries the player preview,
+and the inventory's own frames do (the bot opens it at the end of the tail).
+
+Not modelled, recorded: the mount's model in the screen's window
+(`extractEntityInInventoryFollowsMouse` on the mount; the window is empty), the
+empty-slot icons (saddle, armour), and container titles (M163's deviation).
+86/86.
 
 ### M219 — sleeping and leaving a bed (2026-10-19)
 

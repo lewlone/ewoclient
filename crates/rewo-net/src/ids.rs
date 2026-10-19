@@ -438,6 +438,8 @@ pub struct Ids {
     /// unregistered type makes `MenuScreens.create` log and do nothing, so a
     /// menu Rewo cannot lay out leaves whatever was open open.
     pub cb_play_open_screen: i32,
+    /// M220 — `mount_screen_open`, the horse / nautilus inventory.
+    pub cb_play_mount_screen_open: i32,
     /// `ClientboundContainerSetDataPacket` (M87) — VarInt container id, then
     /// **two signed `readShort`s** in a mostly-var-int protocol. Applied only
     /// when the id matches the open menu.
@@ -830,6 +832,7 @@ impl Ids {
             cb_play_change_difficulty: req!(p, P, C, "change_difficulty"),
             cb_play_container_close: req!(p, P, C, "container_close"),
             cb_play_open_screen: req!(p, P, C, "open_screen"),
+            cb_play_mount_screen_open: req!(p, P, C, "mount_screen_open"),
             cb_play_container_set_data: req!(p, P, C, "container_set_data"),
             cb_play_merchant_offers: req!(p, P, C, "merchant_offers"),
             cb_play_open_book: req!(p, P, C, "open_book"),

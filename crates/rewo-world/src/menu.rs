@@ -68,6 +68,21 @@ pub struct OpenMenu {
     /// arithmetic that `container_set_content` feeds is the same code
     /// whichever menu it lands in, so it cannot drift between them.
     pub menu: crate::inventory::Inventory,
+    /// The mount this menu belongs to, for a menu `mount_screen_open` opened
+    /// (M220); `None` for every registry menu.
+    pub mount: Option<MountMenu>,
+}
+
+/// What `ClientPacketListener.handleMountScreenOpen` resolved (M220): the
+/// entity, which menu subclass, how many chest columns, and whether each
+/// equipment slot `isActive()` for this mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountMenu {
+    pub entity_id: i32,
+    pub kind: crate::menu_layout::MountKind,
+    pub columns: i32,
+    pub saddle_active: bool,
+    pub body_active: bool,
 }
 
 impl OpenMenu {
@@ -530,6 +545,35 @@ impl Menus {
             data_writes: 0,
             open_serial: self.opens,
             menu: crate::inventory::Inventory::with_layout(layout),
+            mount: None,
+        });
+        true
+    }
+
+    /// Apply `mount_screen_open` (M220): `player.containerMenu = new
+    /// HorseInventoryMenu(..)` / `NautilusInventoryMenu(..)`. Returns `false`
+    /// and changes nothing when the mount has no layout (a column count no
+    /// vanilla mount sends), as an unknown `open_screen` type does.
+    pub fn apply_open_mount(&mut self, container_id: i32, mount: MountMenu, title: String) -> bool {
+        let Some(layout) = crate::menu_layout::mount_layout(
+            mount.kind,
+            mount.columns,
+            mount.saddle_active,
+            mount.body_active,
+        ) else {
+            return false;
+        };
+        self.opens = self.opens.wrapping_add(1);
+        self.inventory_over = false;
+        self.open = Some(OpenMenu {
+            container_id,
+            layout,
+            title,
+            data: [0; MAX_DATA_SLOTS],
+            data_writes: 0,
+            open_serial: self.opens,
+            menu: crate::inventory::Inventory::with_layout(layout),
+            mount: Some(mount),
         });
         true
     }

@@ -1209,6 +1209,32 @@ impl LiveApp {
                             c.container_self_opened_frames += 1;
                         }
                     }
+                    // M220 — r84/r85: the panel the frame drew for a mount
+                    // menu, read back out of the renderer the same way.
+                    // `session` is this frame's own binding: `self.session`
+                    // is empty while the frame holds it.
+                    let mount = session
+                        .menus
+                        .shown_open()
+                        .and_then(|m| m.mount.map(|_| m.open_serial));
+                    if let (Some(serial), Some(c)) = (mount, self.check.as_mut()) {
+                        c.mount_panel_frames.push((
+                            serial,
+                            h,
+                            state.world_renderer.container_panel_overlays(),
+                        ));
+                    }
+                    // r86 — a container's frame carries no player preview.
+                    if let Some(c) = self.check.as_mut() {
+                        if state.world_renderer.preview_active() {
+                            c.container_preview_frames += 1;
+                        }
+                    }
+                } else if state.world_renderer.preview_active() {
+                    // ...and the player's own inventory's does (r86's control).
+                    if let Some(c) = self.check.as_mut() {
+                        c.inventory_preview_frames += 1;
+                    }
                 }
                 // Any glyph laid out above may be new to the atlas. Sync
                 // BEFORE the runs are drawn and outside the rendering scope --
@@ -2292,7 +2318,15 @@ impl LiveApp {
         }
 
         if let Some(limit) = self.run_seconds {
-            if self.started.elapsed().as_secs_f32() >= limit {
+            let elapsed = self.started.elapsed().as_secs_f32();
+            // M220 — the render check's tail (r84/r85) runs after the timed
+            // run, when nothing else holds the screen; it gets up to
+            // `RENDER_CHECK_TAIL_SECONDS` more and the run ends when it is done.
+            #[cfg(feature = "gates")]
+            let tail_done = self.check.is_none() || self.mount_stage >= 20;
+            #[cfg(not(feature = "gates"))]
+            let tail_done = true;
+            if elapsed >= limit && (tail_done || elapsed >= limit + RENDER_CHECK_TAIL_SECONDS) {
                 event_loop.exit();
             }
         }

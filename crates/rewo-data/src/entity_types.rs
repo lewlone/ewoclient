@@ -221,6 +221,9 @@ pub struct EntityClasses {
     /// subtrees (`AbstractHorse`, `AbstractNautilus`, `AbstractChestBoat`).
     /// Riding one turns the inventory key into `OPEN_INVENTORY`.
     custom_inventory: std::collections::HashSet<i32>,
+    /// M220 — `instanceof AbstractHorse`: `handleMountScreenOpen`'s first
+    /// branch (`HorseInventoryMenu`).
+    abstract_horse: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -270,7 +273,8 @@ impl EntityClasses {
         let rideable_jumping = resolve_set(table::PLAYER_RIDEABLE_JUMPING, "rideable-jumping")?;
         let camel = resolve_set(table::CAMEL, "camel")?;
         let nautilus = resolve_set(table::ABSTRACT_NAUTILUS, "nautilus")?;
-        let mut custom_inventory = resolve_set(table::ABSTRACT_HORSE, "horse")?;
+        let abstract_horse = resolve_set(table::ABSTRACT_HORSE, "horse")?;
+        let mut custom_inventory = abstract_horse.clone();
         custom_inventory.extend(nautilus.iter().copied());
         custom_inventory.extend(resolve_set(table::ABSTRACT_CHEST_BOAT, "chest-boat")?);
         // A swing-ticking type that is not living would mean the generator's
@@ -391,6 +395,7 @@ impl EntityClasses {
                 .filter_map(|n| types.id_of(n))
                 .collect(),
             custom_inventory,
+            abstract_horse,
         })
     }
 
@@ -418,6 +423,7 @@ impl EntityClasses {
             nautilus: Default::default(),
             item_frame: Default::default(),
             custom_inventory: Default::default(),
+            abstract_horse: Default::default(),
         }
     }
 
@@ -446,6 +452,7 @@ impl EntityClasses {
             nautilus: Default::default(),
             item_frame: Default::default(),
             custom_inventory: Default::default(),
+            abstract_horse: Default::default(),
         }
     }
 
@@ -522,6 +529,11 @@ impl EntityClasses {
     /// nautilus pair; a union of two subtrees, like `is_leashable`.
     pub fn is_rideable_jumping(&self, type_id: i32) -> bool {
         self.rideable_jumping.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractHorse` (M220).
+    pub fn is_abstract_horse(&self, type_id: i32) -> bool {
+        self.abstract_horse.contains(&type_id)
     }
 
     /// `entity instanceof HasCustomInventoryScreen` (M219).

@@ -57,7 +57,15 @@ a self-check path.
   check that drives the **windowed** client. Run it after any milestone that
   adds a render path. Validation is `cfg!(debug_assertions)`-gated for `live`,
   so run a **debug** build. M86 found nine features that had never rendered in
-  the windowed client while every headless gate was green.
+  the windowed client while every headless gate was green. A **tail** runs
+  after the timed 8 s (`RENDER_CHECK_TAIL_SECONDS` caps it at 3 s): r83's bed
+  and r84-r86's donkey and inventory live there, because a sleeping player is
+  immobile and every timed slot already holds a screen or a key. Witnesses
+  that click an entity check what the production pick hit first (r71's item
+  frame and r72's horse each took a click meant for something else).
+  `REWO_RC_CAPTURE_AT=<fraction>` and `REWO_RC_CAPTURE_MOUNT` (gates knobs)
+  save one F2 capture into the staged game directory for a person to look at
+  (`render_check.py --keep`); a capture found M220's preview bug.
 - **`tools/load_check.py`** loads normal (not flat) terrain at render distance
   16 against a fresh server and fails on a column count other than the
   server's tracking set, a deferred column, or a validation message. Run it

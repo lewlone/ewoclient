@@ -101,6 +101,14 @@ PRECMD = (
     # client sleeps in it at night and leaves through the in-bed screen.
     "setblock ~-2 ~ ~2 minecraft:red_bed[facing=west,part=foot];"
     "setblock ~-3 ~ ~2 minecraft:red_bed[facing=west,part=head];"
+    # M220 -- r84 / r85. A tamed, saddled donkey with a chest (five columns)
+    # and three apples at chest index 7, standing still: the client opens its
+    # inventory, rides it, and opens it again with the inventory key. West of
+    # the bot: the item frame below hangs in the bot's head block on its
+    # north side, and a ray to anything north-east crosses it first.
+    "summon minecraft:donkey ~-3 ~ ~-1 {Tame:1b,ChestedHorse:1b,NoAI:1b,"
+    "equipment:{saddle:{id:\"minecraft:saddle\",count:1}},"
+    "Items:[{Slot:7b,id:\"minecraft:apple\",count:3}]};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

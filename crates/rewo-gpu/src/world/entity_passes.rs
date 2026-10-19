@@ -390,4 +390,10 @@ impl WorldRenderer {
     pub fn preview_ready(&self) -> bool {
         self.preview.is_some()
     }
+
+    /// Whether this frame has a preview model to draw (M220, render-check
+    /// r86): read back out of the renderer, where the draw reads it.
+    pub fn preview_active(&self) -> bool {
+        self.gui.preview_state.is_some()
+    }
 }

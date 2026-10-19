@@ -170,6 +170,10 @@ def main():
         die(f"no item reports under {REPORT}")
 
     rows = {}
+    # M220 -- `Equippable.allowedEntities`, a HolderSet: a `#tag`, one id, or
+    # a list of ids. `canBeEquippedBy(type)` is "empty or contains". Kept as
+    # its own table so ITEM_PROPS's tuple (read in five places) is unchanged.
+    allowed = {}
     total = 0
     for name in files:
         item = name[: -len(".json")]
@@ -202,6 +206,16 @@ def main():
             asset = equippable.get("asset_id")
             if asset is not None and not isinstance(asset, str):
                 die(f"{name}: `{EQUIP_KEY}` has a non-string `asset_id`")
+            ents = equippable.get("allowed_entities")
+            if ents is not None:
+                if isinstance(ents, str):
+                    ents = [ents]
+                if (not isinstance(ents, list) or not ents
+                        or not all(isinstance(e, str) for e in ents)
+                        or (len(ents) > 1 and any(e.startswith("#") for e in ents))):
+                    die(f"{name}: `{EQUIP_KEY}` has an `allowed_entities` this "
+                        f"table cannot spell: {ents!r}")
+                allowed[item] = "|".join(ents)
             slot = equippable.get("slot")
             if not isinstance(slot, str):
                 die(f"{name}: `{EQUIP_KEY}` has no string `slot`")
@@ -248,6 +262,8 @@ def main():
             "None" if r is None else f"Some({r})")
         for item, (s, q, d, a, r) in sorted(rows.items()))
 
+    allowed_body = "\n".join(f'    ("minecraft:{item}", "{a}"),'
+                              for item, a in sorted(allowed.items()))
     assets = len({a for _, _, _, a, _ in rows.values() if a is not None})
     sizes, slots, rare, damaged = {}, {}, {}, 0
     for s, q, d, _, r in rows.values():
@@ -404,6 +420,23 @@ pub fn equip_slot(name: &str) -> Option<EquipSlot> {{
     lookup(name).and_then(|(_, q, _, _, _)| q)
 }}
 
+/// `Equippable.allowedEntities` for the {len(allowed)} equippable items that
+/// restrict who may wear them (M220), sorted by name: a `#tag` or a
+/// `|`-joined list of entity type ids.
+pub const EQUIP_ALLOWED: &[(&str, &str)] = &[
+{allowed_body}
+];
+
+/// `Equippable.allowedEntities` for an item, or `None` when any entity may
+/// wear it (`canBeEquippedBy` is "empty or contains"). `#tag` names an
+/// `entity_type` tag the caller resolves against the server's tags.
+pub fn equip_allowed(name: &str) -> Option<&'static str> {{
+    EQUIP_ALLOWED
+        .binary_search_by(|(n, _)| (*n).cmp(name))
+        .ok()
+        .map(|i| EQUIP_ALLOWED[i].1)
+}}
+
 #[cfg(test)]
 mod tests {{
     use super::*;
@@ -413,6 +446,21 @@ mod tests {{
     #[test]
     fn the_table_is_sorted() {{
         assert!(ITEM_PROPS.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(EQUIP_ALLOWED.windows(2).all(|w| w[0].0 < w[1].0));
+    }}
+
+    /// M220 — the mount equipment's three spellings, pinned by hand from the
+    /// report: a tag, one id, and a list.
+    #[test]
+    fn allowed_entities_keep_their_shape() {{
+        assert_eq!(equip_allowed("minecraft:iron_horse_armor"), Some("#minecraft:can_wear_horse_armor"));
+        assert_eq!(equip_allowed("minecraft:saddle"), Some("#minecraft:can_equip_saddle"));
+        assert_eq!(equip_allowed("minecraft:wolf_armor"), Some("minecraft:wolf"));
+        assert_eq!(
+            equip_allowed("minecraft:white_carpet"),
+            Some("minecraft:llama|minecraft:trader_llama")
+        );
+        assert_eq!(equip_allowed("minecraft:diamond_helmet"), None);
     }}
 
     /// One item per rarity bucket, pinned by hand from the report. A music

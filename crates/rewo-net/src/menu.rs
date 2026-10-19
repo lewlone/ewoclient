@@ -106,6 +106,112 @@ pub fn read_container_set_data(body: &[u8]) -> Result<SetData> {
     })
 }
 
+/// `ClientboundMountScreenOpenPacket` (M220).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountScreenOpen {
+    pub container_id: i32,
+    /// `getInventoryColumns()` — 0 for a horse, 5 for a chested donkey or
+    /// mule, a llama's strength.
+    pub columns: i32,
+    pub entity_id: i32,
+}
+
+/// Decode `mount_screen_open`: `readContainerId` (a VarInt), `readVarInt`,
+/// then **`readInt`** — the entity id is a fixed four-byte int here, not the
+/// VarInt every other entity id on the wire is.
+pub fn read_mount_screen_open(body: &[u8]) -> Result<MountScreenOpen> {
+    let mut r = PacketReader::new(body);
+    let container_id = r.varint()?;
+    let columns = r.varint()?;
+    let entity_id = r.i32()?;
+    Ok(MountScreenOpen {
+        container_id,
+        columns,
+        entity_id,
+    })
+}
+
+/// What the mount is, as `handleMountScreenOpen` and the two menus read it.
+#[derive(Debug, Clone, Copy)]
+pub struct MountFacts {
+    /// `instanceof AbstractHorse`.
+    pub horse: bool,
+    /// `instanceof AbstractNautilus`.
+    pub nautilus: bool,
+    /// `instanceof Llama` (a llama or trader llama).
+    pub llama: bool,
+    pub baby: bool,
+    /// `is(EntityTypeTags.CAN_EQUIP_SADDLE)`.
+    pub can_equip_saddle: bool,
+    /// `is(EntityTypeTags.CAN_WEAR_HORSE_ARMOR)`.
+    pub can_wear_horse_armor: bool,
+}
+
+/// `handleMountScreenOpen`'s branch and the two `ArmorSlot.isActive`
+/// overrides (M220): `(kind, saddle_active, body_active)`, or `None` for an
+/// entity that is neither (vanilla then does nothing).
+///
+/// - Horse saddle: `canUseSlot(SADDLE) && is(CAN_EQUIP_SADDLE)`, where
+///   `AbstractHorse.canUseSlot(SADDLE)` is `isAlive() && !isBaby() &&
+///   isTamed()`.
+/// - Horse body: `canUseSlot(BODY)` (`LivingEntity`'s `true`) `&&
+///   (is(CAN_WEAR_HORSE_ARMOR) || this instanceof Llama)`.
+/// - Nautilus, both: `isAlive() && !isBaby() && isTame()`.
+///
+/// Alive and tamed are taken as given: the server opens these menus only for
+/// a tamed, living mount (`openCustomInventoryScreen`'s guard).
+pub fn resolve_mount(f: MountFacts) -> Option<(rewo_world::menu_layout::MountKind, bool, bool)> {
+    use rewo_world::menu_layout::MountKind;
+    if f.horse {
+        Some((
+            MountKind::Horse,
+            !f.baby && f.can_equip_saddle,
+            f.can_wear_horse_armor || f.llama,
+        ))
+    } else if f.nautilus {
+        Some((MountKind::Nautilus, !f.baby, !f.baby))
+    } else {
+        None
+    }
+}
+
+/// The open mount's side of `LivingEntity.isEquippableInSlot` (M220), as an
+/// owned snapshot the click path's item-property closure can hold while the
+/// menu is borrowed mutably.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MountFit {
+    /// The mount's `minecraft:entity_type` id.
+    pub type_name: String,
+    /// Every `entity_type` tag the server says contains it.
+    pub type_tags: Vec<String>,
+    /// `canUseSlot(SADDLE)` / `canUseSlot(BODY)`.
+    pub saddle_usable: bool,
+    pub body_usable: bool,
+}
+
+impl MountFit {
+    /// `slot == equippable.slot() && canUseSlot(slot) &&
+    /// equippable.canBeEquippedBy(type)` for an item whose equippable slot is
+    /// the saddle (`saddle`) or the body, with `allowed` as
+    /// `rewo_data::item_props_table::equip_allowed` spells it (`None` = any
+    /// entity).
+    pub fn accepts(&self, saddle: bool, allowed: Option<&str>) -> bool {
+        let usable = if saddle {
+            self.saddle_usable
+        } else {
+            self.body_usable
+        };
+        usable
+            && match allowed {
+                None => true,
+                Some(a) => match a.strip_prefix('#') {
+                    Some(tag) => self.type_tags.iter().any(|t| t == tag),
+                    None => a.split('|').any(|n| n == self.type_name),
+                },
+            }
+    }
+}
+
 /// The two packet ids this module owns.
 ///
 /// A local struct rather than the full [`crate::ids::Ids`] for the same reason
@@ -353,5 +459,113 @@ mod tests {
         assert!(read_open_screen(&[1]).is_err());
         // id and type but no title tag.
         assert!(read_open_screen(&[1, 2]).is_err());
+    }
+
+    /// M220 — the entity id is `readInt`, four big-endian bytes, after two
+    /// VarInts. A VarInt reading of it would take one byte and leave three.
+    #[test]
+    fn mount_screen_open_reads_a_fixed_int_entity_id() {
+        let mut body = vec![7u8, 5];
+        body.extend_from_slice(&300i32.to_be_bytes());
+        let p = read_mount_screen_open(&body).unwrap();
+        assert_eq!(
+            p,
+            MountScreenOpen {
+                container_id: 7,
+                columns: 5,
+                entity_id: 300
+            }
+        );
+        assert!(
+            read_mount_screen_open(&[7, 5, 1]).is_err(),
+            "a short int is an error"
+        );
+    }
+
+    /// Which slots each mount gets: a horse both, a donkey (not in
+    /// `can_wear_horse_armor`) no armour, a llama no saddle but its carpet, a
+    /// baby horse no saddle, a baby nautilus neither.
+    #[test]
+    fn mounts_resolve_their_menu_and_active_slots() {
+        use rewo_world::menu_layout::MountKind;
+        let base = MountFacts {
+            horse: true,
+            nautilus: false,
+            llama: false,
+            baby: false,
+            can_equip_saddle: true,
+            can_wear_horse_armor: true,
+        };
+        assert_eq!(resolve_mount(base), Some((MountKind::Horse, true, true)));
+        let donkey = MountFacts {
+            can_wear_horse_armor: false,
+            ..base
+        };
+        assert_eq!(resolve_mount(donkey), Some((MountKind::Horse, true, false)));
+        let llama = MountFacts {
+            llama: true,
+            can_equip_saddle: false,
+            can_wear_horse_armor: false,
+            ..base
+        };
+        assert_eq!(resolve_mount(llama), Some((MountKind::Horse, false, true)));
+        let foal = MountFacts { baby: true, ..base };
+        assert_eq!(resolve_mount(foal), Some((MountKind::Horse, false, true)));
+        let nautilus = MountFacts {
+            horse: false,
+            nautilus: true,
+            ..base
+        };
+        assert_eq!(
+            resolve_mount(nautilus),
+            Some((MountKind::Nautilus, true, true))
+        );
+        assert_eq!(
+            resolve_mount(MountFacts {
+                baby: true,
+                ..nautilus
+            }),
+            Some((MountKind::Nautilus, false, false))
+        );
+        assert_eq!(
+            resolve_mount(MountFacts {
+                horse: false,
+                ..base
+            }),
+            None
+        );
+    }
+
+    /// `canBeEquippedBy`'s three spellings against a horse's tags.
+    #[test]
+    fn a_mount_fit_reads_tags_lists_and_usability() {
+        let horse = MountFit {
+            type_name: "minecraft:horse".into(),
+            type_tags: vec![
+                "minecraft:can_equip_saddle".into(),
+                "minecraft:can_wear_horse_armor".into(),
+            ],
+            saddle_usable: true,
+            body_usable: true,
+        };
+        assert!(horse.accepts(true, Some("#minecraft:can_equip_saddle")));
+        assert!(horse.accepts(false, Some("#minecraft:can_wear_horse_armor")));
+        assert!(!horse.accepts(false, Some("minecraft:wolf")));
+        assert!(!horse.accepts(false, Some("minecraft:llama|minecraft:trader_llama")));
+        assert!(horse.accepts(false, None), "no allowed set: anyone");
+        let foal = MountFit {
+            saddle_usable: false,
+            ..horse.clone()
+        };
+        assert!(
+            !foal.accepts(true, Some("#minecraft:can_equip_saddle")),
+            "a foal cannot use its saddle slot"
+        );
+        let llama = MountFit {
+            type_name: "minecraft:trader_llama".into(),
+            type_tags: vec![],
+            ..horse
+        };
+        assert!(llama.accepts(false, Some("minecraft:llama|minecraft:trader_llama")));
     }
 }

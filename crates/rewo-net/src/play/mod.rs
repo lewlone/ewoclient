@@ -5429,6 +5429,112 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `ClientPacketListener.handleMountScreenOpen` (M220): build the
+    /// mount's menu for the entity the packet names, or do nothing for an
+    /// entity that is not a horse or a nautilus (or not tracked), as vanilla's
+    /// `if / else if` does.
+    pub(super) fn apply_mount_screen_open(&mut self, p: crate::menu::MountScreenOpen) {
+        let (Some(classes), Some(e)) = (
+            self.entity_classes.as_deref(),
+            self.world.entities.get(p.entity_id),
+        ) else {
+            log::warn!(
+                "net: mount_screen_open: entity {} is not tracked",
+                p.entity_id
+            );
+            return;
+        };
+        let type_id = e.type_id;
+        let type_name = self
+            .entity_types
+            .as_deref()
+            .and_then(|t| t.name(type_id))
+            .unwrap_or("")
+            .to_string();
+        let tag = |t: &str| {
+            self.tags
+                .contains("minecraft:entity_type", t, type_id)
+                .unwrap_or(false)
+        };
+        let facts = crate::menu::MountFacts {
+            horse: classes.is_abstract_horse(type_id),
+            nautilus: classes.is_nautilus(type_id),
+            llama: matches!(
+                type_name.as_str(),
+                "minecraft:llama" | "minecraft:trader_llama"
+            ),
+            baby: self.world.entities.is_baby(p.entity_id),
+            can_equip_saddle: tag("minecraft:can_equip_saddle"),
+            can_wear_horse_armor: tag("minecraft:can_wear_horse_armor"),
+        };
+        let Some((kind, saddle_active, body_active)) = crate::menu::resolve_mount(facts) else {
+            log::warn!("net: mount_screen_open: {type_name} is not a mount");
+            return;
+        };
+        // `horse.getDisplayName()`: the custom name, else the type's name.
+        let title = match self.world.entities.custom_name(p.entity_id) {
+            Some(n) => n.to_string(),
+            None => {
+                let key = format!("entity.{}", type_name.replacen(':', ".", 1));
+                self.lang
+                    .as_deref()
+                    .and_then(|l| l.get(&key))
+                    .map_or(key.clone(), str::to_string)
+            }
+        };
+        let mount = rewo_world::menu::MountMenu {
+            entity_id: p.entity_id,
+            kind,
+            columns: p.columns,
+            saddle_active,
+            body_active,
+        };
+        log::info!(
+            "net: mount_screen_open: {type_name} {} ({} column(s), saddle slot {saddle_active}, body slot {body_active})",
+            p.entity_id,
+            p.columns
+        );
+        if !self.menus.apply_open_mount(p.container_id, mount, title) {
+            log::warn!(
+                "net: mount_screen_open: no layout for {} column(s) on {type_name}",
+                p.columns
+            );
+        }
+    }
+
+    /// The shown menu's mount, as the click path's `isEquippableInSlot` needs
+    /// it (M220); `None` unless a mount menu is the one on screen.
+    pub fn mount_fit(&self) -> Option<crate::menu::MountFit> {
+        let m = self.menus.shown_open()?.mount?;
+        let type_id = self.world.entities.get(m.entity_id)?.type_id;
+        let type_name = self.entity_types.as_deref()?.name(type_id)?.to_string();
+        let type_tags = self
+            .tags
+            .registry("minecraft:entity_type")
+            .map(|r| {
+                r.tags
+                    .iter()
+                    .filter(|(_, ids)| ids.contains(&type_id))
+                    .map(|(n, _)| n.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let baby = self.world.entities.is_baby(m.entity_id);
+        // `AbstractHorse.canUseSlot`: the saddle needs an adult (alive and
+        // tamed are given), the body is `LivingEntity`'s `true`;
+        // `AbstractNautilus.canUseSlot`: both need an adult.
+        let (saddle_usable, body_usable) = match m.kind {
+            rewo_world::menu_layout::MountKind::Horse => (!baby, true),
+            rewo_world::menu_layout::MountKind::Nautilus => (!baby, !baby),
+        };
+        Some(crate::menu::MountFit {
+            type_name,
+            type_tags,
+            saddle_usable,
+            body_usable,
+        })
+    }
+
     /// `MultiPlayerGameMode.isServerControlledInventory` (M219): riding a
     /// vehicle that `HasCustomInventoryScreen` (a horse, a nautilus, a chest
     /// boat).

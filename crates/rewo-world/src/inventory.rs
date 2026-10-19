@@ -748,6 +748,13 @@ pub enum SlotKind {
     /// `moveItemStackTo`'s placement pass. That makes it load-bearing for the
     /// shift-click and not merely for an ordinary one.
     GrindstoneInput,
+    /// A mount menu's saddle `ArmorSlot` (M220): `mount.isEquippableInSlot(
+    /// stack, SADDLE)`, which [`ItemProps::mount_saddle`] answers for the open
+    /// mount. Caps at one.
+    MountSaddle,
+    /// A mount menu's body `ArmorSlot` (M220) — horse armour, a llama's
+    /// carpet, nautilus armour — answered by [`ItemProps::mount_body`].
+    MountBody,
     /// `BeaconMenu`'s payment slot (M93): `mayPlace` is
     /// `itemStack.is(ItemTags.BEACON_PAYMENT_ITEMS)`.
     ///
@@ -858,7 +865,7 @@ pub fn slot_at(gui_x: f64, gui_y: f64) -> Option<usize> {
 /// overrides it to 1, everything else inherits the container's 64.
 pub fn slot_max_stack(kind: SlotKind) -> i32 {
     match kind {
-        SlotKind::Armor(_) => 1,
+        SlotKind::Armor(_) | SlotKind::MountSaddle | SlotKind::MountBody => 1,
         _ => rewo_data::item_props_table::DEFAULT_MAX_STACK,
     }
 }
@@ -952,6 +959,13 @@ pub struct ItemProps {
     /// them as separate terms and collapsing them would quietly stop being
     /// exact the version they diverge.
     pub proto_damage: bool,
+    /// M220 — `mount.isEquippableInSlot(stack, SADDLE)` / `(stack, BODY)` for
+    /// the mount whose menu is open: the item's `equippable` slot matches,
+    /// its `allowedEntities` admit the mount's type, and the mount
+    /// `canUseSlot`. Relative to the open mount, so the caller sets them;
+    /// false whenever no mount menu is open.
+    pub mount_saddle: bool,
+    pub mount_body: bool,
 }
 
 /// Which entry of [`ItemProps::smeltable`] a `minecraft:menu` id selects.
@@ -1062,6 +1076,10 @@ impl Inventory {
             // out, the shift-click stays exact and a PLAIN click predicts a
             // placement the server rejects, costing a full state-id resync —
             // which is the failure `SlotKind::BeaconPayment`'s doc describes.
+            // M220 — the mount's two `ArmorSlot`s. Listed for the reason the
+            // smithing kinds below are: `_ => true` would grant them.
+            SlotKind::MountSaddle => props.mount_saddle,
+            SlotKind::MountBody => props.mount_body,
             SlotKind::SmithingTemplate => props.smithing_template,
             SlotKind::SmithingBase => props.smithing_base,
             SlotKind::SmithingAddition => props.smithing_addition,
@@ -1538,6 +1556,40 @@ impl Inventory {
                     (player..hotbar, false)
                 }]);
             }
+            QuickMove::Mount { container_slots } => {
+                // AbstractMountInventoryMenu.quickMoveStack (M220):
+                //
+                //   if (slot < 2 + size)          move(player, end, true)
+                //   else if (slot1.mayPlace && !slot1.hasItem()) move(1, 2)
+                //   else if (slot0.mayPlace && !slot0.hasItem()) move(0, 1)
+                //   else if (size == 0 || !move(2, 2 + size)) cross-move
+                //
+                // The two equipment branches CONSUME: a stack slot 1 takes
+                // nothing of moves nowhere else. The cross-move returns EMPTY,
+                // so vanilla does not repeat it (`quick_move_single_pass`).
+                let player = 2 + container_slots;
+                let hotbar = player + 27;
+                let end = slots.len();
+                if slot < player {
+                    return Some(vec![(player..end, true)]);
+                }
+                if p.mount_body && slots[1].is_none() {
+                    return Some(vec![(1..2, false)]);
+                }
+                if p.mount_saddle && slots[0].is_none() {
+                    return Some(vec![(0..1, false)]);
+                }
+                let cross = if (hotbar..end).contains(&slot) {
+                    (player..hotbar, false)
+                } else {
+                    (hotbar..end, false)
+                };
+                return Some(if container_slots == 0 {
+                    vec![cross]
+                } else {
+                    vec![(2..player, false), cross]
+                });
+            }
             QuickMove::Beacon => {
                 // BeaconMenu: payment 0, player 1..37.
                 let (player, hotbar, end) = (1usize, 28usize, 37usize);
@@ -1715,6 +1767,20 @@ impl Inventory {
         }])
     }
 
+    /// Whether the pass that just moved from `slot` through `range` returned
+    /// `ItemStack.EMPTY` in vanilla, which ends `doClick`'s repeat loop after
+    /// one pass. Only the mount menu's cross-move does that (M220): it
+    /// `return ItemStack.EMPTY`s unconditionally after moving.
+    fn quick_move_single_pass(&self, slot: usize, range: std::ops::Range<usize>) -> bool {
+        match self.layout.quick_move() {
+            crate::menu_layout::QuickMove::Mount { container_slots } => {
+                let player = 2 + container_slots;
+                slot >= player && range.start >= player
+            }
+            _ => false,
+        }
+    }
+
     /// `doClick`'s `QUICK_MOVE` arm — shift-click.
     ///
     /// The outer loop is vanilla's:
@@ -1758,7 +1824,9 @@ impl Inventory {
             // vanilla's `if (!moveItemStackTo(a)) moveItemStackTo(b)` means
             // (M92e). A chain of one behaves exactly as the old single range.
             let mut moved = false;
+            let mut used = 0..0;
             for (range, backwards) in chain {
+                used = range.clone();
                 moved = self.move_stack_to(
                     &mut slots,
                     &mut moving,
@@ -1776,7 +1844,7 @@ impl Inventory {
             }
             slots[index] = (moving.count > 0).then_some(moving);
             changed.push((index as u16, slots[index]));
-            if moving.count == 0 {
+            if moving.count == 0 || self.quick_move_single_pass(index, used) {
                 break;
             }
         }
@@ -1964,6 +2032,8 @@ mod tests {
             loom_pattern: false,
             proto_max_damage: false,
             proto_damage: false,
+            mount_saddle: false,
+            mount_body: false,
         })
     }
 
@@ -1985,6 +2055,8 @@ mod tests {
             loom_pattern: false,
             proto_max_damage: false,
             proto_damage: false,
+            mount_saddle: false,
+            mount_body: false,
         })
     }
 
@@ -2006,6 +2078,8 @@ mod tests {
             loom_pattern: false,
             proto_max_damage: false,
             proto_damage: false,
+            mount_saddle: false,
+            mount_body: false,
         })
     }
 
@@ -2380,6 +2454,105 @@ mod tests {
             beacon_payment: true,
             ..plain_props(0).unwrap()
         })
+    }
+
+    // ------------------------------------------------- M220: mount menus
+
+    /// A donkey's menu (5 columns; saddle slot active, body inactive) with the
+    /// given stacks.
+    fn donkey_menu(stacks: &[(usize, Option<ItemSlot>)]) -> Inventory {
+        let layout =
+            crate::menu_layout::mount_layout(crate::menu_layout::MountKind::Horse, 5, true, false)
+                .unwrap();
+        let mut m = Inventory::with_layout(layout);
+        let mut v = vec![None; m.slot_count()];
+        for (i, st) in stacks {
+            v[*i] = *st;
+        }
+        assert!(m.set_content(1, &v, None));
+        m
+    }
+
+    fn touched(p: &ClickPrediction) -> Vec<u16> {
+        p.changed.iter().map(|(i, _)| *i).collect()
+    }
+
+    /// M220 — `AbstractMountInventoryMenu.quickMoveStack` from a player slot:
+    /// a saddle the mount takes goes to slot 0 (and only one, the slot's cap);
+    /// anything else fills the chest before it would cross-move.
+    #[test]
+    fn a_mount_menu_routes_equipment_then_the_chest() {
+        // Player hotbar starts at 2 + 15 + 27 = 44.
+        let saddle = |_id: i32| {
+            Some(ItemProps {
+                mount_saddle: true,
+                max_stack: 1,
+                ..plain_props(0).unwrap()
+            })
+        };
+        let m = donkey_menu(&[(44, stack(7, 1))]);
+        let p = m.click_quick_move(44, &saddle).expect("predictable");
+        assert_eq!(
+            touched(&p),
+            vec![0, 44],
+            "the saddle goes to the saddle slot"
+        );
+        // Dirt: not equipment, so the chest (2..17) takes it.
+        let m = donkey_menu(&[(44, stack(3, 64))]);
+        let p = m.click_quick_move(44, &plain_props).expect("predictable");
+        assert_eq!(touched(&p), vec![2, 44]);
+        // A chest slot goes back to the player, BACKWARDS (hotbar's right end).
+        let m = donkey_menu(&[(5, stack(3, 64))]);
+        let p = m.click_quick_move(5, &plain_props).expect("predictable");
+        assert_eq!(touched(&p), vec![5, 52]);
+    }
+
+    /// The equipment branches consume: a saddle with the saddle slot taken
+    /// falls through to the chest, but the inactive body slot is never a
+    /// destination for an item the mount cannot wear there.
+    #[test]
+    fn a_mount_with_its_saddle_on_sends_a_saddle_to_the_chest() {
+        let saddle = |_id: i32| {
+            Some(ItemProps {
+                mount_saddle: true,
+                max_stack: 1,
+                ..plain_props(0).unwrap()
+            })
+        };
+        let m = donkey_menu(&[(0, stack(7, 1)), (44, stack(7, 1))]);
+        let p = m.click_quick_move(44, &saddle).expect("predictable");
+        assert_eq!(touched(&p), vec![2, 44]);
+    }
+
+    /// With the chest full the hotbar cross-moves to the main inventory, in
+    /// one pass (vanilla's cross-move `return ItemStack.EMPTY`s, so `doClick`
+    /// does not repeat it). A repeat would not move more here — one
+    /// `moveItemStackTo` merges into every partial stack and then fills an
+    /// empty slot with the rest — so this pins the routing, not the rule.
+    #[test]
+    fn a_mount_menu_cross_moves_when_the_chest_is_full() {
+        let mut stacks: Vec<(usize, Option<ItemSlot>)> =
+            (2..17).map(|i| (i, stack(9, 64))).collect();
+        stacks.push((17, stack(3, 60)));
+        stacks.push((18, stack(3, 60)));
+        stacks.push((44, stack(3, 64)));
+        let m = donkey_menu(&stacks);
+        let p = m.click_quick_move(44, &plain_props).expect("predictable");
+        let t = touched(&p);
+        assert!(t.contains(&17) && t.contains(&44), "touched {t:?}");
+        assert!(
+            !t.iter().any(|&i| i < 17),
+            "the chest is full; touched {t:?}"
+        );
+        let left = p
+            .changed
+            .iter()
+            .find(|(i, _)| *i == 44)
+            .and_then(|(_, v)| *v)
+            .map(|s| s.count);
+        // One moveItemStackTo over 17..44: it merges into 17 and 18 (4 each)
+        // and then fills the first empty slot with the remaining 56.
+        assert_eq!(left, None, "the one pass placed everything; touched {t:?}");
     }
 
     // ------------------------------------------------- M152: smithing table
@@ -3151,6 +3324,8 @@ mod tests {
         Some(ItemProps {
             proto_max_damage: true,
             proto_damage: true,
+            mount_saddle: false,
+            mount_body: false,
             max_stack: 1,
             ..plain_props(0).unwrap()
         })

@@ -664,6 +664,8 @@ fn props_for(max_stack: i32, equips: Option<ArmorPiece>) -> ItemProps {
         loom_pattern: false,
         proto_max_damage: false,
         proto_damage: false,
+        mount_saddle: false,
+        mount_body: false,
     }
 }
 

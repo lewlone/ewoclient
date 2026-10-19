@@ -268,6 +268,9 @@ pub(super) struct RenderCheck {
     pub(super) mine_ticks: Option<u64>,
     pub(super) mine_broken: bool,
     pub(super) mine_skip: Option<String>,
+    /// What the client believed at the press (elapsed fraction, on ground,
+    /// eye in water, game mode flags) — r78's failure detail.
+    pub(super) mine_diag: Option<String>,
     /// The main-hand item at the press, and the tick count vanilla's
     /// literals give for it.
     pub(super) mine_held: Option<String>,
@@ -306,6 +309,27 @@ pub(super) struct RenderCheck {
     /// How many right-clicks on the bed it took (the server's clock echo is
     /// periodic, so the first may land before its night).
     pub(super) bed_clicks: u32,
+    /// M220 — r84/r85: per drawn mount-menu frame `(open serial, panel
+    /// height, overlay count)`; the donkey; what the first (sneak-click) menu
+    /// resolved; whether the bot rode the donkey and E went out; and the
+    /// second menu's serial.
+    pub(super) mount_panel_frames: Vec<(u64, f32, usize)>,
+    pub(super) donkey: Option<i32>,
+    pub(super) mount_columns: Option<i32>,
+    pub(super) mount_slots: usize,
+    pub(super) mount_active: Option<(bool, bool)>,
+    pub(super) mount_saddle_item: Option<String>,
+    pub(super) mount_chest_item: Option<(String, i32)>,
+    pub(super) mount_title: Option<String>,
+    pub(super) mount_rode: bool,
+    pub(super) mount_e_sent: bool,
+    pub(super) mount_second_serial: Option<u64>,
+    pub(super) mount_skip: Option<String>,
+    pub(super) mount_seen: Option<String>,
+    /// M220 — r86: container-panel frames that still carried the player
+    /// preview, and player-inventory frames that did (the control).
+    pub(super) container_preview_frames: u64,
+    pub(super) inventory_preview_frames: u64,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -787,7 +811,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 83;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 86;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1100,13 +1124,14 @@ impl RenderCheck {
             self.mine_survival && self.mine_expected.is_some() && self.mine_ticks == self.mine_expected && self.mine_broken,
             format!(
                 "leaves at {:?}, held {:?}: pressed in survival {}, STOP {:?} ticks after the press (vanilla {:?}), \
-                 server turned it to air {}{}",
+                 server turned it to air {} [{}]{}",
                 self.mine_pos,
                 self.mine_held,
                 self.mine_survival,
                 self.mine_ticks,
                 self.mine_expected,
                 self.mine_broken,
+                self.mine_diag.as_deref().unwrap_or("-"),
                 self.mine_skip
                     .as_ref()
                     .map(|s| format!(" (stopped: {s})"))
@@ -1186,6 +1211,79 @@ impl RenderCheck {
                     .as_ref()
                     .map(|s| format!(" (stopped: {s})"))
                     .unwrap_or_default()
+            ),
+        );
+        // M220 — the donkey's inventory against the real server, in the
+        // run's tail. r84: a sneak-right-click (`isSecondaryUseActive` on a
+        // tamed horse opens `openCustomInventoryScreen`) brought a
+        // `mount_screen_open` the client turned into the donkey's menu: five
+        // chest columns (2 + 15 + 36 slots), the saddle slot active and the
+        // body slot not (a donkey is not in `can_wear_horse_armor`), the
+        // summoned saddle in slot 0 and the summoned apples at chest index 7 —
+        // row 1, column 2, menu slot 9 — and the panel drawn 166 tall with its
+        // two overlays (the strip and the saddle slot's background).
+        let mskip = self
+            .mount_skip
+            .as_ref()
+            .map(|s| format!(" (stopped: {s})"))
+            .unwrap_or_default();
+        let first = self.mount_panel_frames.first().map(|f| f.0);
+        let first_frames: Vec<&(u64, f32, usize)> = self
+            .mount_panel_frames
+            .iter()
+            .filter(|f| Some(f.0) == first)
+            .collect();
+        let drawn =
+            !first_frames.is_empty() && first_frames.iter().all(|f| f.1 == 166.0 && f.2 == 2);
+        row(
+            "r84 a sneak-right-click opened a real donkey's inventory: its layout, slots and panel",
+            self.mount_columns == Some(5)
+                && self.mount_slots == 53
+                && self.mount_active == Some((true, false))
+                && self.mount_saddle_item.as_deref() == Some("minecraft:saddle")
+                && self.mount_chest_item == Some(("minecraft:apple".to_string(), 3))
+                && drawn,
+            format!(
+                "donkey {:?} {:?}: columns {:?}, {} slots, (saddle, body) active {:?}, slot 0 {:?}, \
+                 slot 9 {:?}, {} drawn frame(s) all 166 tall with 2 overlays {drawn}{mskip}",
+                self.donkey,
+                self.mount_title,
+                self.mount_columns,
+                self.mount_slots,
+                self.mount_active,
+                self.mount_saddle_item,
+                self.mount_chest_item,
+                first_frames.len(),
+            ),
+        );
+        // r85: then a plain right-click rode it (`doPlayerRide`, the server's
+        // `set_passengers`), and the inventory key while riding sent
+        // `OPEN_INVENTORY` instead of opening the player's inventory — and the
+        // server answered with a second, distinct mount menu that drew.
+        let second_drawn = self.mount_second_serial.is_some_and(|s| {
+            self.mount_panel_frames
+                .iter()
+                .any(|f| f.0 == s && f.1 == 166.0)
+        });
+        row(
+            "r85 riding the donkey, the inventory key asked the server, which opened its inventory",
+            self.mount_rode && self.mount_e_sent && second_drawn && self.mount_second_serial != first,
+            format!(
+                "rode {}, OPEN_INVENTORY sent {}, second menu {:?} (first {first:?}) drawn {second_drawn}{mskip}",
+                self.mount_rode, self.mount_e_sent, self.mount_second_serial
+            ),
+        );
+        // r86 — the player preview belongs to the player's inventory only:
+        // no container frame (chests, furnaces, the donkey...) carries it,
+        // and the inventory's own frames do (so the reading is live).
+        row(
+            "r86 the player preview drew in the inventory and in no container screen",
+            self.container_frames > 0
+                && self.container_preview_frames == 0
+                && self.inventory_preview_frames > 0,
+            format!(
+                "{} of {} container frame(s) carried the player preview; {} inventory frame(s) did",
+                self.container_preview_frames, self.container_frames, self.inventory_preview_frames
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2534,7 +2632,19 @@ impl LiveApp {
                                     Some(n) if n.ends_with("_sword") => 1.5,
                                     _ => 1.0,
                                 };
+                                let diag = self.session.as_ref().map(|s| {
+                                    format!(
+                                        "pressed at {:.3} of the run, on ground {}, eye in water {}, pos ({:.2}, {:.2}, {:.2})",
+                                        elapsed / limit,
+                                        s.player.on_ground,
+                                        s.local_player_view().is_some_and(|v| v.underwater),
+                                        s.player.x,
+                                        s.player.y,
+                                        s.player.z
+                                    )
+                                });
                                 if let Some(ch) = self.check.as_mut() {
+                                    ch.mine_diag = diag;
                                     ch.mine_pos = Some(c);
                                     ch.mine_survival = true;
                                     ch.mine_expected = Some(leaves_ticks(speed));
@@ -2604,13 +2714,15 @@ impl LiveApp {
                         self.mine_stage = 4;
                     }
                 }
-                // r83 — M219's bed, first thing after spawn (the options
-                // pages wait for it). Night is needed (`BedRule.WHEN_DARK`)
-                // and lasts only the round trip; waking teleports the bot
-                // beside the bed, so it is sent back to where it spawned.
+                // r83 — M219's bed, in the TAIL (after the timed run, once
+                // the tail has cleared the stage — see r84 below): a sleeping
+                // player is immobile and every timed slot has a screen or a
+                // held key in it. Night is needed (`BedRule.WHEN_DARK`);
+                // waking teleports the bot beside the bed, so it is sent back
+                // to where it stood before the donkey's turn.
                 if self.bed_stage > 0 && self.bed_stage < 20 {
                     self.bed_stage_frames += 1;
-                    if elapsed >= limit * 0.11 {
+                    if elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2 {
                         if let Some(c) = self.check.as_mut() {
                             c.bed_skip.get_or_insert_with(|| {
                                 format!("timed out in stage {}", self.bed_stage)
@@ -2620,12 +2732,13 @@ impl LiveApp {
                         self.bed_stage = 6;
                     }
                 }
-                let spawned = self
-                    .session
-                    .as_ref()
-                    .is_some_and(|s| s.spawned && s.ticks > 0);
+                let tail_ready = self.mount_stage == 1
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.ticks >= self.mount_tick0 + 5);
                 if self.bed_stage == 0
-                    && spawned
+                    && tail_ready
                     && self.chat_screen.is_none()
                     && !self.screen.any_open()
                 {
@@ -2770,8 +2883,322 @@ impl LiveApp {
                     {
                         let _ = s.send_command(&format!("tp @s {x} {y} {z}"));
                         let _ = s.send_command(&format!("time set {}", day.rem_euclid(24_000)));
+                        // The donkey's turn waits for the teleport.
+                        self.mount_tick0 = s.ticks;
                     }
                     self.bed_stage = 20;
+                }
+                // `REWO_RC_CAPTURE_AT=<fraction>`: one F2 capture at that point
+                // of the timed run, into the staged game directory, for a
+                // person to look at (`render_check.py --keep`).
+                if !self.rc_captured_at {
+                    if let Some(f) = crate::knobs::var("REWO_RC_CAPTURE_AT")
+                        .ok()
+                        .and_then(|v| v.parse::<f32>().ok())
+                    {
+                        if elapsed >= limit * f {
+                            self.capture_pending = true;
+                            self.rc_captured_at = true;
+                        }
+                    }
+                }
+                // r84/r85 — M220's donkey, in the TAIL: after the timed run
+                // (`elapsed >= limit`), when no other stage can hold the
+                // screen; the run ends when this reaches 20 (or the tail cap).
+                if self.mount_stage > 0 && self.mount_stage < 20 {
+                    self.mount_stage_frames += 1;
+                    if elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2 {
+                        if let Some(c) = self.check.as_mut() {
+                            let seen = c.mount_seen.clone().unwrap_or_default();
+                            c.mount_skip.get_or_insert_with(|| {
+                                format!("timed out in stage {} ({seen})", self.mount_stage)
+                            });
+                        }
+                        self.keys.sneak = false;
+                        self.mount_stage = 20;
+                    }
+                }
+                let now = self.session.as_ref().map_or(0, |s| s.ticks);
+                let aim_donkey = |app: &mut Self| -> bool {
+                    let Some(id) = app.check.as_ref().and_then(|c| c.donkey) else {
+                        return false;
+                    };
+                    let Some(s) = app.session.as_mut() else {
+                        return false;
+                    };
+                    let Some(e) = s.world.entities.get(id) else {
+                        return false;
+                    };
+                    let (ex, ey, ez) = (e.x, e.y + 0.8, e.z);
+                    let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                    let d = [ex - eye[0], ey - eye[1], ez - eye[2]];
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                    s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                    s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                    true
+                };
+                if self.mount_stage == 0 && elapsed >= limit {
+                    // Clear the stage: every screen closed through its own
+                    // production path, the keys released, and r72's
+                    // client-side horse dismounted and removed (through the
+                    // router, the way it was added and seated).
+                    if self.screen.inventory_open() {
+                        self.close_container_screen();
+                    }
+                    if self.chat_screen.is_some() {
+                        self.close_chat_screen();
+                    }
+                    if !matches!(self.view, ScreenView::None) || self.screen.any_open() {
+                        self.close_view_screen();
+                    }
+                    self.keys.w = false;
+                    self.keys.sprint = false;
+                    self.keys.jump = false;
+                    self.keys.tab_list = false;
+                    if let Some(session) = self.session.as_mut() {
+                        let mut pass: Vec<u8> = Vec::new();
+                        rewo_proto::varint::write_varint(&mut pass, 0x00A9_0000);
+                        rewo_proto::varint::write_varint(&mut pass, 0);
+                        session.inject_packet(session.ids.cb_play_set_passengers, &pass);
+                        // ...and take the horse away: it stands where the bot
+                        // does, so the bot's eye is inside its box and every
+                        // pick would hit it first.
+                        let mut gone: Vec<u8> = Vec::new();
+                        rewo_proto::varint::write_varint(&mut gone, 1);
+                        rewo_proto::varint::write_varint(&mut gone, 0x00A9_0000);
+                        session.inject_packet(session.ids.cb_play_remove_entities, &gone);
+                        // r71's item frame hangs in the bot's head block and
+                        // took the pick on an earlier cut of this stage; it
+                        // has done its job, so the server removes it.
+                        let _ = session.send_command("kill @e[type=minecraft:item_frame]");
+                    }
+                    let donkey = self.session.as_ref().and_then(|s| {
+                        let want = s.entity_types.as_deref()?.id_of("minecraft:donkey")?;
+                        let (px, pz) = (s.player.x, s.player.z);
+                        s.world
+                            .entities
+                            .iter()
+                            .filter(|(_, e)| {
+                                e.type_id == want
+                                    && (e.x - px).abs() < 8.0
+                                    && (e.z - pz).abs() < 8.0
+                            })
+                            .map(|(id, _)| id)
+                            .next()
+                    });
+                    match donkey {
+                        Some(id) => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.donkey = Some(id);
+                            }
+                            self.mount_tick0 = now;
+                            self.mount_stage = 1;
+                        }
+                        None => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.mount_skip = Some("no donkey near the bot".into());
+                            }
+                            self.mount_stage = 20;
+                        }
+                    }
+                }
+                if self.mount_stage == 1
+                    && self.bed_stage >= 20
+                    && now >= self.mount_tick0 + 5
+                    && !self.screen.any_open()
+                    && self.chat_screen.is_none()
+                {
+                    // Sneak + right-click: the production entity click, which
+                    // reads the shift key into the interact packet.
+                    if aim_donkey(self) {
+                        self.keys.sneak = true;
+                        // Only a click that the production pick resolves to
+                        // the donkey counts (a frame or a mob in the way would
+                        // take the interaction instead).
+                        let on_donkey = self.session.as_ref().is_some_and(|s| {
+                            super::entities::frame_crosshair_hit(s, &self.etypes, 1.0).map(|h| h.id)
+                                == self.check.as_ref().and_then(|c| c.donkey)
+                        });
+                        if on_donkey && self.entity_click(winit::event::MouseButton::Right) {
+                            self.mount_stage = 2;
+                            self.mount_stage_frames = 0;
+                        } else if !on_donkey {
+                            let why = self.session.as_ref().map(|s| {
+                                let hit = super::entities::frame_crosshair_hit(s, &self.etypes, 1.0);
+                                let d = self.check.as_ref().and_then(|c| c.donkey).and_then(|id| s.world.entities.get(id));
+                                format!(
+                                    "the crosshair is not on the donkey: hit {:?}, eye ({:.2}, {:.2}, {:.2}) yaw {:.1} pitch {:.1}, donkey at {:?}, vehicle {:?}",
+                                    hit.map(|h| (h.id, s.world.entities.get(h.id).and_then(|e| self.etypes.name(e.type_id)))),
+                                    s.player.x,
+                                    s.player.eye_y(),
+                                    s.player.z,
+                                    s.player.yaw,
+                                    s.player.pitch,
+                                    d.map(|e| (e.x, e.y, e.z)),
+                                    s.local_vehicle()
+                                )
+                            });
+                            if let Some(c) = self.check.as_mut() {
+                                c.mount_skip = why;
+                            }
+                        }
+                    }
+                }
+                if self.mount_stage == 2 {
+                    let open = self.session.as_ref().and_then(|s| {
+                        let m = s.menus.shown_open()?;
+                        let mount = m.mount?;
+                        let name = |slot: usize| {
+                            m.menu.menu_slot(slot).and_then(|st| {
+                                self.items
+                                    .name(st.item_id)
+                                    .map(|n| (n.to_string(), st.count))
+                            })
+                        };
+                        Some((
+                            m.open_serial,
+                            mount,
+                            m.layout.slot_count(),
+                            m.title.clone(),
+                            name(0),
+                            name(9),
+                            m.menu.content_updates(),
+                        ))
+                    });
+                    let drawn = |serial: u64, c: &RenderCheck| {
+                        c.mount_panel_frames
+                            .iter()
+                            .filter(|f| f.0 == serial)
+                            .count()
+                    };
+                    let seen = format!(
+                        "stage 2 saw: inventory screen {}, shown menu {:?}, panel frames {}",
+                        self.screen.inventory_open(),
+                        open.as_ref().map(|o| (o.0, o.2, o.6)),
+                        self.check
+                            .as_ref()
+                            .map_or(0, |c| c.mount_panel_frames.len())
+                    );
+                    if let Some(c) = self.check.as_mut() {
+                        c.mount_seen = Some(seen);
+                    }
+                    if let Some((serial, mount, slots, title, saddle, chest, contents)) = open {
+                        let frames = self.check.as_ref().map_or(0, |c| drawn(serial, c));
+                        // The contents arrive in `container_set_content` just
+                        // after the open; wait for them and a few frames.
+                        // `REWO_RC_CAPTURE_MOUNT`: one F2 capture of the
+                        // donkey screen into the staged game directory, for a
+                        // person to look at (`render_check.py --keep`), with
+                        // the screen held long enough for it to land.
+                        let capture = crate::knobs::var("REWO_RC_CAPTURE_MOUNT").is_ok();
+                        if capture && frames >= 3 && contents > 0 && !self.mount_captured {
+                            self.capture_pending = true;
+                            self.mount_captured = true;
+                        }
+                        if frames >= if capture { 30 } else { 3 } && contents > 0 {
+                            if let Some(c) = self.check.as_mut() {
+                                c.mount_columns = Some(mount.columns);
+                                c.mount_slots = slots;
+                                c.mount_active = Some((mount.saddle_active, mount.body_active));
+                                c.mount_saddle_item = saddle.map(|s| s.0);
+                                c.mount_chest_item = chest;
+                                c.mount_title = Some(title);
+                            }
+                            self.mount_serial = serial;
+                            self.close_container_screen();
+                            self.keys.sneak = false;
+                            self.mount_tick0 = now;
+                            self.mount_stage = 3;
+                        }
+                    }
+                }
+                if self.mount_stage == 3
+                    && now >= self.mount_tick0 + 3
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.menus.open().is_none())
+                {
+                    // A plain right-click rides the tamed, saddled donkey.
+                    if aim_donkey(self) && {
+                        let on = self.session.as_ref().is_some_and(|s| {
+                            super::entities::frame_crosshair_hit(s, &self.etypes, 1.0).map(|h| h.id)
+                                == self.check.as_ref().and_then(|c| c.donkey)
+                        });
+                        on && self.entity_click(winit::event::MouseButton::Right)
+                    } {
+                        self.mount_stage = 4;
+                        self.mount_stage_frames = 0;
+                    }
+                }
+                if self.mount_stage == 4 {
+                    let donkey = self.check.as_ref().and_then(|c| c.donkey);
+                    let riding = self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_vehicle() == donkey && donkey.is_some());
+                    if riding
+                        && self
+                            .session
+                            .as_ref()
+                            .is_some_and(|s| s.server_controlled_inventory())
+                    {
+                        if let Some(c) = self.check.as_mut() {
+                            c.mount_rode = true;
+                        }
+                        // The inventory key, through its production handler.
+                        self.inventory_key();
+                        if let Some(c) = self.check.as_mut() {
+                            c.mount_e_sent = !self.screen.inventory_open();
+                        }
+                        self.mount_stage = 5;
+                    }
+                }
+                if self.mount_stage == 5 {
+                    let serial = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.menus.shown_open())
+                        .filter(|m| m.mount.is_some() && m.open_serial != self.mount_serial)
+                        .map(|m| m.open_serial);
+                    if let Some(serial) = serial {
+                        let frames = self.check.as_ref().map_or(0, |c| {
+                            c.mount_panel_frames
+                                .iter()
+                                .filter(|f| f.0 == serial)
+                                .count()
+                        });
+                        if frames >= 3 {
+                            if let Some(c) = self.check.as_mut() {
+                                c.mount_second_serial = Some(serial);
+                            }
+                            self.close_container_screen();
+                            if let Some(s) = self.session.as_mut() {
+                                let _ = s.send_command("ride @s dismount");
+                            }
+                            self.mount_tick0 = now;
+                            self.mount_stage = 6;
+                        }
+                    }
+                }
+                // r86's control: off the donkey, the same key opens the
+                // player's own inventory, whose frames carry the preview.
+                if self.mount_stage == 6
+                    && now >= self.mount_tick0 + 4
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_vehicle().is_none())
+                    && !self.screen.inventory_open()
+                {
+                    self.inventory_key();
+                    self.mount_stage_frames = 0;
+                    self.mount_stage = 7;
+                }
+                if self.mount_stage == 7 && self.mount_stage_frames >= 30 {
+                    // E again closes it (`onClose`).
+                    self.inventory_key();
+                    self.mount_stage = 20;
                 }
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
                 // (the bot rides r72's client-side horse, so W moves nothing
@@ -2958,7 +3385,19 @@ impl LiveApp {
                 // and before the horse (0.28+). Face the summoned librarian,
                 // click through the production `entity_click`, read the
                 // decoded offers, close through `close_container_screen`.
-                if self.trade_stage == 0 && elapsed >= limit * 0.25 && !self.screen.inventory_open()
+                // ...and only once r78 has handed creative back: a survival
+                // player's entity reach is 3.0 and the villager stands ~3.1
+                // away, so a click while r78 still waits for its block misses
+                // (the flake this guard closes).
+                let creative_again = self.mine_stage >= 4
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.abilities.instabuild);
+                if self.trade_stage == 0
+                    && elapsed >= limit * 0.25
+                    && creative_again
+                    && !self.screen.inventory_open()
                 {
                     let villager = self.session.as_ref().and_then(|s| {
                         let tid = self.etypes.id_of("minecraft:villager")?;
@@ -3196,10 +3635,7 @@ impl LiveApp {
                 // a stale `self.view`.
                 // r83 (M219) owns the slot until the bed round trip is done;
                 // the Sound page waits for it, but never past 0.11.
-                if self.options_staged == 0
-                    && elapsed >= limit * 0.06
-                    && (self.bed_stage >= 20 || elapsed >= limit * 0.11)
-                {
+                if self.options_staged == 0 && elapsed >= limit * 0.06 {
                     self.options_staged = 1;
                     self.open_options_screen(rewo_ui::options_screen::OptionsPage::Sound);
                 }

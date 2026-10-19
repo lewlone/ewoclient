@@ -267,6 +267,87 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
     plain("textures/gui/container/stonecutter.png"),
 ];
 
+/// `HorseInventoryScreen` (M220): `horse.png`, the default 176 x 166 panel
+/// and label positions, one whole blit. The chest strip and the equipment
+/// slots' backgrounds are overlays (`AbstractMountInventoryScreen
+/// .extractBackground`).
+pub static HORSE_SCREEN: MenuScreen = MenuScreen {
+    texture: "textures/gui/container/horse.png",
+    image_w: 176,
+    image_h: 166,
+    title_x: TitleX::Default,
+    title_y: 6,
+    inventory_label_x: 8,
+    background: Background::Whole,
+    sheet_w: 256.0,
+    sheet_h: 256.0,
+};
+
+/// `NautilusInventoryScreen` (M220) — `HORSE_SCREEN`'s geometry on
+/// `nautilus.png`, with no chest strip (`getChestSlotsSpriteLocation` is null).
+pub static NAUTILUS_SCREEN: MenuScreen = MenuScreen {
+    texture: "textures/gui/container/nautilus.png",
+    ..HORSE_SCREEN
+};
+
+/// The screen for any menu layout: a registry menu by its id, a mount menu
+/// (M220) by its name.
+pub fn screen_for(layout: &rewo_world::menu_layout::MenuLayout) -> Option<&'static MenuScreen> {
+    if layout.protocol_id == rewo_world::menu_layout::MOUNT_PROTOCOL_ID {
+        return match layout.name {
+            "horse" => Some(&HORSE_SCREEN),
+            "nautilus" => Some(&NAUTILUS_SCREEN),
+            _ => None,
+        };
+    }
+    screen_of(layout.protocol_id)
+}
+
+/// `AbstractMountInventoryScreen.extractBackground`'s overlays (M220), as
+/// `(sprite, blit)` with the sprite one of `"chest"` (the 90 x 54 strip,
+/// `columns * 18` of it at (79, 17)) or `"slot"` (18 x 18 at (7, 17) under
+/// the saddle and (7, 35) under the body slot, each only when that slot is
+/// shown — the same condition as the slot's `isActive`).
+pub fn mount_overlays(
+    nautilus: bool,
+    columns: i32,
+    saddle: bool,
+    body: bool,
+) -> Vec<(&'static str, ProgressBlit)> {
+    let mut out = Vec::new();
+    if !nautilus && columns > 0 {
+        out.push((
+            "chest",
+            ProgressBlit {
+                dx: 79,
+                dy: 17,
+                w: columns * 18,
+                h: 54,
+                sx: 0,
+                sy: 0,
+                src: None,
+            },
+        ));
+    }
+    for (shown, dy) in [(saddle, 17), (body, 35)] {
+        if shown {
+            out.push((
+                "slot",
+                ProgressBlit {
+                    dx: 7,
+                    dy,
+                    w: 18,
+                    h: 18,
+                    sx: 0,
+                    sy: 0,
+                    src: None,
+                },
+            ));
+        }
+    }
+    out
+}
+
 /// The screen for a `minecraft:menu` id, or `None` for an unknown id or for
 /// `lectern`.
 pub fn screen_of(protocol_id: i32) -> Option<&'static MenuScreen> {
@@ -1164,8 +1245,11 @@ mod tests {
         // The two spell paths differently on purpose, each in its own crate's
         // idiom: vanilla's `Identifier` form here (`textures/gui/...`) and the
         // jar-relative form the loader takes there (`gui/...`).
+        // M220 — plus the two mount screens, which have no registry id and so
+        // are not in `SCREENS`.
         let mut mine: Vec<String> = distinct_textures()
             .iter()
+            .chain([HORSE_SCREEN.texture, NAUTILUS_SCREEN.texture].iter())
             .map(|t| t.trim_start_matches("textures/").to_string())
             .collect();
         let mut theirs: Vec<String> = rewo_data::assets::MENU_BACKGROUND_TEXTURES
@@ -3325,5 +3409,39 @@ mod m93o_loom_grid {
         assert!(loom_can_scroll(true, 32), "the no-item-required set does");
         // ...and a hidden grid never scrolls whatever its size.
         assert!(!loom_can_scroll(false, 32));
+    }
+}
+
+#[cfg(test)]
+mod mount_tests {
+    use super::*;
+
+    /// M220 — the two mount screens resolve by layout name, and the
+    /// overlays follow `extractBackground`: the strip only for a horse with
+    /// a chest, a slot background only under a shown slot.
+    #[test]
+    fn mount_screens_and_overlays() {
+        use rewo_world::menu_layout::{mount_layout, MountKind};
+        let donkey = mount_layout(MountKind::Horse, 5, true, false).unwrap();
+        assert_eq!(
+            screen_for(donkey).unwrap().texture,
+            "textures/gui/container/horse.png"
+        );
+        let n = mount_layout(MountKind::Nautilus, 0, true, true).unwrap();
+        assert_eq!(
+            screen_for(n).unwrap().texture,
+            "textures/gui/container/nautilus.png"
+        );
+        assert_eq!(screen_for(n).unwrap().inventory_label_y(), 72);
+        let o = mount_overlays(false, 5, true, false);
+        assert_eq!(o.len(), 2);
+        assert_eq!((o[0].0, o[0].1.dx, o[0].1.w), ("chest", 79, 90));
+        assert_eq!((o[1].0, o[1].1.dy), ("slot", 17));
+        assert_eq!(
+            mount_overlays(true, 0, true, true).len(),
+            2,
+            "no strip on a nautilus"
+        );
+        assert!(mount_overlays(false, 0, false, false).is_empty());
     }
 }

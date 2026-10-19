@@ -526,6 +526,67 @@ pub fn equip_slot(name: &str) -> Option<EquipSlot> {
     lookup(name).and_then(|(_, q, _, _, _)| q)
 }
 
+/// `Equippable.allowedEntities` for the 45 equippable items that
+/// restrict who may wear them (M220), sorted by name: a `#tag` or a
+/// `|`-joined list of entity type ids.
+pub const EQUIP_ALLOWED: &[(&str, &str)] = &[
+    ("minecraft:black_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:black_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:blue_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:blue_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:brown_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:brown_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:copper_horse_armor", "#minecraft:can_wear_horse_armor"),
+    ("minecraft:copper_nautilus_armor", "#minecraft:can_wear_nautilus_armor"),
+    ("minecraft:cyan_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:cyan_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:diamond_horse_armor", "#minecraft:can_wear_horse_armor"),
+    ("minecraft:diamond_nautilus_armor", "#minecraft:can_wear_nautilus_armor"),
+    ("minecraft:golden_horse_armor", "#minecraft:can_wear_horse_armor"),
+    ("minecraft:golden_nautilus_armor", "#minecraft:can_wear_nautilus_armor"),
+    ("minecraft:gray_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:gray_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:green_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:green_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:iron_horse_armor", "#minecraft:can_wear_horse_armor"),
+    ("minecraft:iron_nautilus_armor", "#minecraft:can_wear_nautilus_armor"),
+    ("minecraft:leather_horse_armor", "#minecraft:can_wear_horse_armor"),
+    ("minecraft:light_blue_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:light_blue_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:light_gray_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:light_gray_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:lime_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:lime_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:magenta_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:magenta_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:netherite_horse_armor", "#minecraft:can_wear_horse_armor"),
+    ("minecraft:netherite_nautilus_armor", "#minecraft:can_wear_nautilus_armor"),
+    ("minecraft:orange_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:orange_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:pink_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:pink_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:purple_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:purple_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:red_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:red_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:saddle", "#minecraft:can_equip_saddle"),
+    ("minecraft:white_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:white_harness", "#minecraft:can_equip_harness"),
+    ("minecraft:wolf_armor", "minecraft:wolf"),
+    ("minecraft:yellow_carpet", "minecraft:llama|minecraft:trader_llama"),
+    ("minecraft:yellow_harness", "#minecraft:can_equip_harness"),
+];
+
+/// `Equippable.allowedEntities` for an item, or `None` when any entity may
+/// wear it (`canBeEquippedBy` is "empty or contains"). `#tag` names an
+/// `entity_type` tag the caller resolves against the server's tags.
+pub fn equip_allowed(name: &str) -> Option<&'static str> {
+    EQUIP_ALLOWED
+        .binary_search_by(|(n, _)| (*n).cmp(name))
+        .ok()
+        .map(|i| EQUIP_ALLOWED[i].1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +596,21 @@ mod tests {
     #[test]
     fn the_table_is_sorted() {
         assert!(ITEM_PROPS.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(EQUIP_ALLOWED.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    /// M220 — the mount equipment's three spellings, pinned by hand from the
+    /// report: a tag, one id, and a list.
+    #[test]
+    fn allowed_entities_keep_their_shape() {
+        assert_eq!(equip_allowed("minecraft:iron_horse_armor"), Some("#minecraft:can_wear_horse_armor"));
+        assert_eq!(equip_allowed("minecraft:saddle"), Some("#minecraft:can_equip_saddle"));
+        assert_eq!(equip_allowed("minecraft:wolf_armor"), Some("minecraft:wolf"));
+        assert_eq!(
+            equip_allowed("minecraft:white_carpet"),
+            Some("minecraft:llama|minecraft:trader_llama")
+        );
+        assert_eq!(equip_allowed("minecraft:diamond_helmet"), None);
     }
 
     /// One item per rarity bucket, pinned by hand from the report. A music

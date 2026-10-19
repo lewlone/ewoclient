@@ -2634,6 +2634,26 @@ fn a_lectern_paints_no_panel_rather_than_someone_elses() {
     assert!(container_panel(layout(17), None, EnchantPlayer::default(), None).is_none());
 }
 
+/// M220 — a mount menu gets its own panel: `horse.png` (or `nautilus.png`),
+/// 176 x 166, with no registry id behind it.
+#[test]
+fn a_mount_menu_paints_its_own_panel() {
+    use rewo_world::menu_layout::{mount_layout, MountKind};
+    let donkey = mount_layout(MountKind::Horse, 5, true, false).unwrap();
+    let p = container_panel(donkey, None, EnchantPlayer::default(), None).expect("a horse panel");
+    assert_eq!(
+        rewo_data::assets::MENU_BACKGROUND_TEXTURES[p.sheet],
+        "gui/container/horse.png"
+    );
+    assert_eq!((p.gui_w, p.gui_h), (176.0, 166.0));
+    let n = mount_layout(MountKind::Nautilus, 0, true, true).unwrap();
+    let p = container_panel(n, None, EnchantPlayer::default(), None).expect("a nautilus panel");
+    assert_eq!(
+        rewo_data::assets::MENU_BACKGROUND_TEXTURES[p.sheet],
+        "gui/container/nautilus.png"
+    );
+}
+
 // -- the quad-leash (M185) ------------------------------------------------
 
 /// `createQuadLeashOffsets`'s arithmetic on a 4×4 ghast-sized body with

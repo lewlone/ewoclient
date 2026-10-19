@@ -804,6 +804,20 @@ struct LiveApp {
     bed_tick0: u64,
     #[cfg(feature = "gates")]
     bed_click_tick: u64,
+    /// r84/r85's tail stage (M220), its frames, the donkey, the tick a step
+    /// began, and the first mount menu's serial.
+    #[cfg(feature = "gates")]
+    mount_stage: u8,
+    #[cfg(feature = "gates")]
+    mount_stage_frames: u32,
+    #[cfg(feature = "gates")]
+    mount_tick0: u64,
+    #[cfg(feature = "gates")]
+    mount_serial: u64,
+    #[cfg(feature = "gates")]
+    mount_captured: bool,
+    #[cfg(feature = "gates")]
+    rc_captured_at: bool,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1113,6 +1127,18 @@ fn run_windowed(
         #[cfg(feature = "gates")]
         bed_click_tick: 0,
         #[cfg(feature = "gates")]
+        mount_stage: 0,
+        #[cfg(feature = "gates")]
+        mount_stage_frames: 0,
+        #[cfg(feature = "gates")]
+        mount_tick0: 0,
+        #[cfg(feature = "gates")]
+        mount_serial: 0,
+        #[cfg(feature = "gates")]
+        mount_captured: false,
+        #[cfg(feature = "gates")]
+        rc_captured_at: false,
+        #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
         lectern_shown: None,
@@ -1292,6 +1318,10 @@ fn run_windowed(
 /// particle paths to have been reached many times over, short enough to be a
 /// gate rather than a soak.
 const RENDER_CHECK_SECONDS: f32 = 8.0;
+
+/// The most the render check's tail (M220's r84/r85, run after the timed
+/// part) may add before the run ends regardless.
+const RENDER_CHECK_TAIL_SECONDS: f32 = 3.0;
 
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {

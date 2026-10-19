@@ -670,6 +670,28 @@ pub(super) fn carried_icon(
 /// vanilla does before the packet lands, because
 /// `ClientRecipeContainer.propertySet` is
 /// `getOrDefault(id, RecipePropertySet.EMPTY)`.
+/// [`item_props`] with the open mount's two `ArmorSlot` answers filled in
+/// (M220): `isEquippableInSlot(stack, SADDLE / BODY)` for the mount whose menu
+/// is shown. With no mount menu open this is `item_props`.
+pub(crate) fn item_props_for(
+    items: &rewo_data::items::Items,
+    id: i32,
+    smithing: Option<&rewo_net::recipe_book::SmithingSets>,
+    mount: Option<&rewo_net::menu::MountFit>,
+) -> Option<rewo_world::inventory::ItemProps> {
+    use rewo_data::item_props_table::{equip_allowed, equip_slot, EquipSlot};
+    let mut p = item_props(items, id, smithing)?;
+    if let (Some(fit), Some(name)) = (mount, items.name(id)) {
+        let allowed = equip_allowed(name);
+        match equip_slot(name) {
+            Some(EquipSlot::Saddle) => p.mount_saddle = fit.accepts(true, allowed),
+            Some(EquipSlot::Body) => p.mount_body = fit.accepts(false, allowed),
+            _ => {}
+        }
+    }
+    Some(p)
+}
+
 pub(crate) fn item_props(
     items: &rewo_data::items::Items,
     id: i32,
@@ -715,6 +737,10 @@ pub(crate) fn item_props(
             "minecraft:damage",
         )
         .unwrap_or(false),
+        // M220 — relative to the open mount; the click path sets them
+        // (`mount_fit`), and with no mount menu open they stay false.
+        mount_saddle: false,
+        mount_body: false,
         // M93f — `is(PAPER) || is(MAP) || is(GLASS_PANE)`. Item identity, so
         // three names rather than a table. `minecraft:map` is the EMPTY map;
         // `filled_map` is a different item and routes by its MAP_ID component.

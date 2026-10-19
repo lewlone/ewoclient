@@ -74,11 +74,107 @@ pub enum SlotBlock {
     /// (`hotbarSeparator`), which is why a naive `top + rows * 18` puts the
     /// hotbar 4 px high and overlapping the row above it.
     StandardInventory { left: i16, top: i16 },
+    /// One slot whose `Slot.isActive()` is false for this menu (M220): it
+    /// keeps its index, but `getHoveredSlot` skips it and the screen draws
+    /// nothing there, so it has no position. A llama's saddle slot and a
+    /// donkey's armour slot are the two in vanilla's mount menus.
+    Inactive,
 }
 
 /// The player inventory's own menu (`container_id` 0) is not in the
 /// `minecraft:menu` registry, so it has no protocol id.
 pub const NO_PROTOCOL_ID: i32 = -1;
+
+/// The mount menus (M220) are not in the registry either: `mount_screen_open`
+/// names an entity, and the client builds `HorseInventoryMenu` or
+/// `NautilusInventoryMenu` from what that entity is.
+pub const MOUNT_PROTOCOL_ID: i32 = -2;
+
+/// Which `AbstractMountInventoryMenu` subclass (M220).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountKind {
+    /// `HorseInventoryMenu`, for every `AbstractHorse` (horses, donkeys,
+    /// mules, llamas, camels, the undead horses).
+    Horse,
+    /// `NautilusInventoryMenu`, for an `AbstractNautilus`.
+    Nautilus,
+}
+
+/// The widest chest `getInventoryColumns` answers in vanilla: a donkey or
+/// mule's 5, and a llama's strength, which is at most 5.
+pub const MAX_MOUNT_COLUMNS: i32 = 5;
+
+/// A mount menu's layout (M220): the saddle `ArmorSlot` at (8, 18), the body
+/// one at (8, 36), then — horse menus only — the chest grid `columns` wide
+/// and 3 high from (80, 18), then `addStandardInventorySlots(inventory, 8,
+/// 84)`. The screen is 176 x 166. An inactive equipment slot keeps its index
+/// with no position ([`SlotBlock::Inactive`]).
+///
+/// `None` for a column count no vanilla mount has, and for a nautilus with a
+/// chest at all: `NautilusInventoryMenu` adds no grid whatever the packet
+/// says, while its container would still be sized by it, and a shift-click
+/// computed from a container the menu has no slots for moves the wrong stack.
+pub fn mount_layout(
+    kind: MountKind,
+    columns: i32,
+    saddle_active: bool,
+    body_active: bool,
+) -> Option<&'static MenuLayout> {
+    use std::sync::LazyLock;
+    // Every combination, built once: 6 column counts x 4 slot states for the
+    // horse, then the nautilus's 4. Leaked into `'static` because the menu
+    // state holds `&'static MenuLayout` like every registry menu.
+    static TABLE: LazyLock<Vec<MenuLayout>> = LazyLock::new(|| {
+        let mut out = Vec::new();
+        for kind in [MountKind::Horse, MountKind::Nautilus] {
+            let widths = match kind {
+                MountKind::Horse => 0..=MAX_MOUNT_COLUMNS,
+                MountKind::Nautilus => 0..=0,
+            };
+            for columns in widths {
+                for state in 0..4u8 {
+                    let equip = |active: bool, y: i16| {
+                        if active {
+                            SlotBlock::One { x: 8, y }
+                        } else {
+                            SlotBlock::Inactive
+                        }
+                    };
+                    let mut blocks = vec![equip(state & 1 != 0, 18), equip(state & 2 != 0, 36)];
+                    if columns > 0 {
+                        blocks.push(SlotBlock::Grid {
+                            left: 80,
+                            top: 18,
+                            cols: columns as u8,
+                            rows: 3,
+                        });
+                    }
+                    blocks.push(SlotBlock::StandardInventory { left: 8, top: 84 });
+                    out.push(MenuLayout {
+                        protocol_id: MOUNT_PROTOCOL_ID,
+                        name: match kind {
+                            MountKind::Horse => "horse",
+                            MountKind::Nautilus => "nautilus",
+                        },
+                        blocks: Box::leak(blocks.into_boxed_slice()),
+                        image_w: 176,
+                        image_h: 166,
+                    });
+                }
+            }
+        }
+        out
+    });
+    let state = usize::from(saddle_active) | usize::from(body_active) << 1;
+    let index = match kind {
+        MountKind::Horse if (0..=MAX_MOUNT_COLUMNS).contains(&columns) => {
+            columns as usize * 4 + state
+        }
+        MountKind::Nautilus if columns == 0 => (MAX_MOUNT_COLUMNS as usize + 1) * 4 + state,
+        _ => return None,
+    };
+    TABLE.get(index)
+}
 
 /// Vertical distance from an `addStandardInventorySlots` origin to the hotbar.
 pub const TOP_TO_HOTBAR: i16 = 58;
@@ -112,7 +208,7 @@ impl MenuLayout {
         let mut i = 0;
         while i < self.blocks.len() {
             n += match self.blocks[i] {
-                SlotBlock::One { .. } => 1,
+                SlotBlock::One { .. } | SlotBlock::Inactive => 1,
                 SlotBlock::Grid { cols, rows, .. } => (cols as usize) * (rows as usize),
                 SlotBlock::StandardInventory { .. } => 36,
             };
@@ -132,6 +228,7 @@ impl MenuLayout {
         for block in self.blocks {
             let (len, pos) = match *block {
                 SlotBlock::One { x, y } => (1usize, Some((x, y))),
+                SlotBlock::Inactive => (1usize, None),
                 SlotBlock::Grid {
                     left,
                     top,
@@ -207,6 +304,9 @@ impl MenuLayout {
         for block in self.blocks {
             match *block {
                 SlotBlock::One { x, y } => out.push((x, y)),
+                // No position: a sentinel far off any panel, so the index
+                // still lines up and nothing can land on it.
+                SlotBlock::Inactive => out.push((i16::MIN, i16::MIN)),
                 SlotBlock::Grid {
                     left,
                     top,
@@ -838,6 +938,9 @@ pub enum QuickMove {
     /// returns false and vanilla `return`s — so shift-clicking a stick into an
     /// empty grindstone moves **nothing**, rather than cross-moving.
     Grindstone,
+    /// `AbstractMountInventoryMenu` (M220): saddle 0, body 1, then the
+    /// mount's own `container_slots` (`columns * 3`), then the player's 36.
+    Mount { container_slots: usize },
     /// Not transcribed yet. The caller must **decline** rather than fall back
     /// to another menu's routing: a shift-click sent under the wrong menu's
     /// rules moves the wrong stack to the wrong place and the server applies
@@ -958,6 +1061,14 @@ impl MenuLayout {
                 2 => crate::inventory::SlotKind::Result,
                 _ => crate::inventory::SlotKind::Plain,
             }),
+            // M220 — both equipment slots are `ArmorSlot`s over the mount
+            // (`owner.isEquippableInSlot`), the chest and the player's 36
+            // plain `Slot`s.
+            QuickMove::Mount { .. } => Some(match slot {
+                0 => crate::inventory::SlotKind::MountSaddle,
+                1 => crate::inventory::SlotKind::MountBody,
+                _ => crate::inventory::SlotKind::Plain,
+            }),
             QuickMove::Unimplemented => None,
         }
     }
@@ -966,6 +1077,11 @@ impl MenuLayout {
     pub fn quick_move(&self) -> QuickMove {
         if self.protocol_id == NO_PROTOCOL_ID {
             return QuickMove::PlayerInventory;
+        }
+        if self.protocol_id == MOUNT_PROTOCOL_ID {
+            return QuickMove::Mount {
+                container_slots: self.slot_count() - 2 - 36,
+            };
         }
         match self.protocol_id {
             // generic_9x1..9x6, generic_3x3 (dispenser), hopper, shulker_box —
@@ -1096,5 +1212,53 @@ mod tests {
         assert!(layout_of(25).is_none());
         assert!(layout_of(-1).is_none());
         assert!(layout_of(i32::MAX).is_none());
+    }
+
+    /// M220 — `HorseInventoryMenu`'s order: saddle, body, the chest grid
+    /// row-major from (80, 18), the player's 36 from (8, 84); an inactive
+    /// equipment slot keeps its index and has no position.
+    #[test]
+    fn mount_layouts_follow_the_menu_constructors() {
+        let donkey = mount_layout(MountKind::Horse, 5, true, false).expect("donkey");
+        assert_eq!(donkey.slot_count(), 2 + 15 + 36);
+        assert_eq!(donkey.position(0), Some((8, 18)));
+        assert_eq!(donkey.position(1), None, "a donkey wears no armour");
+        assert_eq!(donkey.position(2), Some((80, 18)));
+        assert_eq!(donkey.position(6), Some((80 + 4 * 18, 18)));
+        assert_eq!(donkey.position(7), Some((80, 36)));
+        assert_eq!(donkey.position(17), Some((8, 84)));
+        assert_eq!(donkey.position(17 + 27), Some((8, 84 + TOP_TO_HOTBAR)));
+        assert_eq!(donkey.positions().len(), donkey.slot_count());
+        assert_eq!(
+            donkey.slot_at(9.0, 37.0),
+            None,
+            "the inactive slot is never hovered"
+        );
+        assert_eq!(
+            donkey.quick_move(),
+            QuickMove::Mount {
+                container_slots: 15
+            }
+        );
+        let horse = mount_layout(MountKind::Horse, 0, true, true).expect("horse");
+        assert_eq!(horse.slot_count(), 38);
+        assert_eq!(horse.position(1), Some((8, 36)));
+        assert_eq!(horse.quick_move(), QuickMove::Mount { container_slots: 0 });
+        assert_eq!((horse.image_w, horse.image_h), (176, 166));
+        let nautilus = mount_layout(MountKind::Nautilus, 0, true, true).expect("nautilus");
+        assert_eq!(nautilus.name, "nautilus");
+        assert_eq!(nautilus.slot_count(), 38);
+        assert!(mount_layout(MountKind::Nautilus, 3, true, true).is_none());
+        assert!(mount_layout(MountKind::Horse, 6, true, true).is_none());
+        assert!(mount_layout(MountKind::Horse, -1, true, true).is_none());
+        assert_eq!(
+            horse.slot_kind(0),
+            Some(crate::inventory::SlotKind::MountSaddle)
+        );
+        assert_eq!(
+            horse.slot_kind(1),
+            Some(crate::inventory::SlotKind::MountBody)
+        );
+        assert_eq!(horse.slot_kind(2), Some(crate::inventory::SlotKind::Plain));
     }
 }

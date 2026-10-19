@@ -180,7 +180,7 @@ take**, not about how much anyone wants it:
 |---|---|
 | **A** — pure state | Decoding it changes a value Rewo could act or gate on **without drawing anything new**. A witness can prove the decode; no human has to look at it. This is the class the M52–M74 batches drew from. |
 | **B** — needs rendering | The decode is possible today, but the packet's purpose is a visual Rewo does not have (a title overlay, an XP bar, the damage camera tilt). Landing the *feature* needs an eyeball; landing the *decode* does not. |
-| **C** — needs a subsystem Rewo lacks | The **5** remaining are, exactly: a horse/mount screen (41), a resource-pack download/apply pipeline (80 `resource_pack_pop` — the push's decode and reply are M166's, on row 81), a server-transfer/reconnect flow (129), and a dialog framework (139, 140). *(It said **6** and listed the map image pipeline (51) until M190.)* *(This sentence said **11** and still listed the book viewer (58, closed M171/M172) and the sign editor (60, closed M174) until 2026-08-23 — fourth recurrence of this file's own documented failure mode on the class table.)* *(This sentence said **12** and listed `133 update_recipes` until 2026-08-20 — which line 630 of this same file records as `handled` (M152) and which §2's machine-checked table has never counted. Third recurrence of this file's own documented failure mode, now on the class table.)* *(And it said **8**, still listing the advancement tree (85 and 130), until M177 took them off — decode + tree state in `rewo_net::advancements`, screen model in `rewo_world::advancements_screen`; the render is M178.)* The decode is not the hard part and shipping it alone buys nothing. **Four subsystems have come OFF this list**: the screen/menu framework (M82/M87), the recipe book (M93y–M107), the chat-input path (M110 + M114–M124), the book viewer (M171/M172) and the sign editor (M174). |
+| **C** — needs a subsystem Rewo lacks | The **4** remaining are, exactly: a resource-pack download/apply pipeline (80 `resource_pack_pop` — the push's decode and reply are M166's, on row 81), a server-transfer/reconnect flow (129), and a dialog framework (139, 140). *(It said **5** and listed the horse/mount screen (41) until M220.)* *(It said **6** and listed the map image pipeline (51) until M190.)* *(This sentence said **11** and still listed the book viewer (58, closed M171/M172) and the sign editor (60, closed M174) until 2026-08-23 — fourth recurrence of this file's own documented failure mode on the class table.)* *(This sentence said **12** and listed `133 update_recipes` until 2026-08-20 — which line 630 of this same file records as `handled` (M152) and which §2's machine-checked table has never counted. Third recurrence of this file's own documented failure mode, now on the class table.)* *(And it said **8**, still listing the advancement tree (85 and 130), until M177 took them off — decode + tree state in `rewo_net::advancements`, screen model in `rewo_world::advancements_screen`; the render is M178.)* The decode is not the hard part and shipping it alone buys nothing. **Four subsystems have come OFF this list**: the screen/menu framework (M82/M87), the recipe book (M93y–M107), the chat-input path (M110 + M114–M124), the book viewer (M171/M172) and the sign editor (M174). |
 | **D** — not applicable | Debug/dev tooling, integrated-server-only warnings, or a reply to a serverbound request Rewo never sends. Each row states which. |
 
 The A/B line is drawn at *what the decode itself unlocks*, so a packet whose
@@ -208,20 +208,21 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **125** |
+| Resolved **and** consumed | **126** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **16** |
+| Not resolved at all | **15** |
 | **Total clientbound-play** | **141** |
 
-The 16 gaps, by class:
+The 15 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **5** | 31% |
-| **D** not applicable | **11** | 69% |
+| **C** needs a subsystem Rewo lacks | **4** | 27% |
+| **D** not applicable | **11** | 73% |
 
+*(They said 125 / 16 / C-5 until M220 took `mount_screen_open` (41).)*
 *(They said 124 / 17 / C-6 until M190 took `map_item_data` (51).)*
 *(The counts above said 122 / 19 / C-8 until M177 took the two advancement
 packets (85 `select_advancements_tab`, 130 `update_advancements`) off the list.
@@ -552,7 +553,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 38 | `game_event` | handled | `req!` → `cb_play_game_event` | All 14 types since M71. Was 4 of 14 — the §4 worked example. |
 | 39 | `game_rule_values` | handled | `req!` → `cb_play_game_rule_values` | **M78.** A counted map of `Identifier` → string, kept wholesale. Vanilla has **no store** — the map goes to a screen if one is open and nowhere otherwise — so replacement is the reading, not merge. |
 | 40 | `game_test_highlight_pos` | absent | **D** | Game-test tooling. |
-| 41 | `mount_screen_open` | absent | **C** | Horse/nautilus inventory screen. |
+| 41 | `mount_screen_open` | handled | `req!` → `cb_play_mount_screen_open` | **M220.** `HorseInventoryMenu` / `NautilusInventoryMenu` built from the entity the packet names (whose id is a fixed `readInt`, not a VarInt): the slot layout per column count, each `ArmorSlot`'s `isActive`, and the horse screen. Was class C. |
 | 42 | `hurt_animation` | handled | `req!` → `cb_play_hurt_animation` | **M81.** The damage camera yaw-tilt — and with it, `M52a`'s vacuous `no_damage_tilt` module became real. §0 item 6. |
 | 43 | `initialize_border` | handled | `req!` → `cb_play_initialize_border` | **M80.** The whole border at once. Its `lerpTime > 0` guard picks `setSize(newSize)` over `lerpSizeBetween` — the guard `set_border_lerp_size` (89) does *not* have. |
 | 44 | `keep_alive` | handled | `req!` → `cb_play_keep_alive` | |

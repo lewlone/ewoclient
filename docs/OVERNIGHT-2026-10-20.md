@@ -92,6 +92,11 @@ released.
   so it showed no in-bed screen (no Leave Bed button) and the walk keys
   still worked in bed. Now the in-bed chat appears, Leave Bed and Esc wake
   you, and you can't walk while asleep; checked live against the server.
+- **M220**: horse, donkey, llama and nautilus inventories open (E while
+  riding, or sneak-right-click), with their saddle and armour slots and chest,
+  and shift-click works as in vanilla; checked live on a donkey. Building it
+  found a visible old bug: every chest, furnace and other container screen
+  had your player model painted over its slots. Fixed.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -141,6 +146,8 @@ released.
 | `485036b` | This summary through M217. |
 | `16921fd` | **M218** — Q drop (predicted), F swap hands, middle-click pick block/entity, sprint start/stop sent; `select_hotbar` now sets the client's held slot (it never did); render-check **r79-r82**. |
 | `41078c4` | This summary through M218. |
+| `7517ce5` | This summary through M219. |
+| *(M220)* | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `26559a9` | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
 
 ## Decisions made
@@ -246,6 +253,15 @@ released.
    point afterwards so later checks see the world they were written for. Not
    modelled, recorded: the lying-down camera, and gravity while asleep (the
    client settles 0.125 onto the bed; the server allows it).
+24. **M220 moved r83 into a new render-check tail** (after the timed 8 s,
+   capped at 3 s more). Its first home before the options pages kept missing
+   its 0.11 deadline on slower runs, and its teleport there is the likeliest
+   cause of r78's two flakes (none in the six runs since the move). The tail
+   costs about 1.5 s per run and holds r83-r86.
+25. **The horse screen's window stays empty** instead of showing the mount
+   (vanilla draws it there, following the mouse). Building a single entity's
+   draw outside the world pass is a refactor of `collect_entities`; it is
+   proposed as follow-up work rather than folded in here.
 
 ## Verification
 
@@ -286,6 +302,12 @@ released.
   passing on the rerun; r83's first version waited for the server's clock
   echo, which is periodic, and timed out once before the click retry);
   clippy (gates and default features) and `cargo fmt --check` clean.
+- After M220: **4,301 tests, 1 failure under full-suite load** (`reconfigure`'s
+  `start_configuration_round_trips_back_to_play`, "connection closed"; it
+  passed five times alone and is a timing test like the `play::inbound` ones);
+  gates **51/51** (demo hash unchanged); render check **86/86** on two runs
+  (after fixing three of the new witnesses' own aim problems, see the §15
+  entry); clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -312,9 +334,15 @@ released.
 - Other everyday actions found unwired by the same sweep (each is a
   `player_action` or `player_command` the client never sends, or a packet it
   has no id for): ~~dropping items (Q), swapping hands (F), middle-click
-  pick block, sprint start/stop~~ (M218), ~~leaving a bed~~ (M219); still
-  open: the horse inventory (M220, next), and riding boats/horses
-  (`move_vehicle`, `paddle_boat`).
+  pick block, sprint start/stop~~ (M218), ~~leaving a bed~~ (M219), ~~the
+  horse inventory~~ (M220); still open: riding boats/horses (`move_vehicle`,
+  `paddle_boat`), next.
+- The mount in the horse screen's window, and empty-slot icons (the saddle
+  and armour outlines vanilla draws in an empty equipment slot, the player's
+  armour slots included).
+- `rewo-net`'s `reconfigure` test `start_configuration_round_trips_back_to_play`
+  failed once under full-suite load ("connection closed") and passed five
+  times alone; the same class as the `play::inbound` timing tests.
 - The sleeping camera: vanilla lays the view down in the bed (eye height 0.2,
   turned to the bed's facing). Rewo keeps the standing camera while asleep.
 - `rewo-net`'s three `play::inbound` timing tests failed once under heavy

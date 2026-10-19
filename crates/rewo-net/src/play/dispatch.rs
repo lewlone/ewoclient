@@ -790,6 +790,12 @@ impl PlaySession {
             // M87 — `open_screen` and `container_set_data`. State only so far:
             // the menu's own item slots arrive when `Inventory` becomes a
             // layout-driven menu, and nothing renders it yet.
+        } else if id == ids.cb_play_mount_screen_open {
+            // M220 — `handleMountScreenOpen`.
+            match crate::menu::read_mount_screen_open(body) {
+                Ok(p) => self.apply_mount_screen_open(p),
+                Err(e) => self.decode_failed("mount_screen_open", e),
+            }
         } else if id == ids.cb_play_merchant_offers {
             // M93u. The coverage doc filed this as class C; it needed nothing
             // Rewo had not already built — `ItemStack` (M34/M41) and the

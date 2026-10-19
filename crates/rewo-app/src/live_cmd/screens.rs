@@ -899,7 +899,14 @@ pub(super) fn apply_screen(
             log::warn!("live: inventory preview unavailable: {e}");
         }
     }
-    if wr.preview_ready() {
+    // M220 — only `InventoryScreen` draws the player
+    // (`extractEntityInInventoryFollowsMouse(.., minecraft.player)`); a
+    // container screen draws no entity at all (a mount screen draws the
+    // MOUNT, which Rewo does not yet). Before this the player was painted in
+    // the inventory's window position over every container's slots.
+    if session.menus.shown_open().is_some() {
+        wr.set_preview(None);
+    } else if wr.preview_ready() {
         let held = [
             session.inventory.held().and_then(|s| items.name(s.item_id)),
             session
@@ -1066,7 +1073,9 @@ pub(super) fn finish_drag(
         .recipes
         .as_ref()
         .map(rewo_net::recipe_book::SmithingSets::from_packet);
-    let props = |id: i32| item_props(items, id, smithing.as_ref());
+    // M220 — the shown mount menu's equipment rules, snapshotted likewise.
+    let mount = session.mount_fit();
+    let props = |id: i32| item_props_for(items, id, smithing.as_ref(), mount.as_ref());
     let accepted = session
         .inventory
         .quick_craft_accepts(&touched, kind, &props);
@@ -1175,7 +1184,9 @@ pub(super) fn click_screen(
         .recipes
         .as_ref()
         .map(rewo_net::recipe_book::SmithingSets::from_packet);
-    let props = |id: i32| item_props(items, id, smithing.as_ref());
+    // M220 — the shown mount menu's equipment rules, snapshotted likewise.
+    let mount = session.mount_fit();
+    let props = |id: i32| item_props_for(items, id, smithing.as_ref(), mount.as_ref());
     use rewo_world::inventory as inv;
     let slot = slot as i32;
     let (input, button, predicted) = match action {

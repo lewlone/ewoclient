@@ -2473,6 +2473,10 @@ pub const MENU_BACKGROUND_TEXTURES: &[&str] = &[
     // the book is a separate window-anchored panel — but it rides the same
     // atlas because it is blitted the same way.
     "gui/recipe_book.png",
+    // M220 — the two mount screens (`HorseInventoryScreen`,
+    // `NautilusInventoryScreen`), after the book so no index above moves.
+    "gui/container/horse.png",
+    "gui/container/nautilus.png",
 ];
 
 /// The recipe book's panel sheet in [`MENU_BACKGROUND_TEXTURES`] (M94).
@@ -2729,7 +2733,19 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/container/loom/scroller_disabled.png",
     // 131 — the loom's full-banner error (M200), `LoomScreen.ERROR_SPRITE`.
     "gui/sprites/container/loom/error.png",
+    // 132..=133 — the mount screens (M220): the chest grid's slot strip
+    // (90 x 54, blitted `columns * 18` wide), then the plain 18 x 18 slot
+    // drawn under each active equipment slot.
+    "gui/sprites/container/horse/chest_slots.png",
+    "gui/sprites/container/slot.png",
 ];
+
+/// `AbstractMountInventoryScreen`'s chest strip (M220): the 90 x 54
+/// `container/horse/chest_slots`, sub-rect `(0, 0, columns * 18, 54)`.
+pub const MOUNT_CHEST_SLOTS: usize = 132;
+
+/// `container/slot`, 18 x 18 — under each active equipment slot (M220).
+pub const MOUNT_SLOT: usize = 133;
 
 /// The search field's background pair, **plain first** —
 /// `+ usize::from(focused)` (M100).
@@ -5548,7 +5564,15 @@ mod tests {
             MENU_OVERLAY_SPRITES[LOOM_ERROR],
             "gui/sprites/container/loom/error.png"
         );
-        assert_eq!(MENU_OVERLAY_SPRITES.len(), LOOM_ERROR + 1);
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[MOUNT_CHEST_SLOTS],
+            "gui/sprites/container/horse/chest_slots.png"
+        );
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[MOUNT_SLOT],
+            "gui/sprites/container/slot.png"
+        );
+        assert_eq!(MENU_OVERLAY_SPRITES.len(), MOUNT_SLOT + 1);
     }
 
     // -- M164: the waterlogging rule ---------------------------------------

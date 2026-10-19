@@ -632,23 +632,7 @@ impl ApplicationHandler for LiveApp {
                         self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
                     }
                     // E opens and closes the inventory (M35).
-                    PhysicalKey::Code(KeyCode::KeyE) if p => {
-                        // The inventory key closes a container screen
-                        // through `onClose()` (`AbstractContainerScreen.java:
-                        // 489-491`) — a user close.
-                        if self.screen.inventory_open() {
-                            self.close_container_screen();
-                        } else {
-                            // A menu still open here has no screen of its own
-                            // (a lectern a held book's reader replaced):
-                            // vanilla's key opens the player's inventory over
-                            // it (`Minecraft.java:1887-1893`).
-                            if let Some(session) = self.session.as_mut() {
-                                session.menus.show_player_inventory();
-                            }
-                            self.set_screen_open(true);
-                        }
-                    }
+                    PhysicalKey::Code(KeyCode::KeyE) if p => self.inventory_key(),
                     // F3 is a **modifier** whose release toggles the overlay
                     // (M66). `keyDebugModifier` and `keyDebugOverlay` are the
                     // same key, so `KeyboardHandler` defers the toggle to
@@ -2192,6 +2176,39 @@ impl LiveApp {
             if let Err(e) = r {
                 log::warn!("live: block action: {e}");
             }
+        }
+    }
+
+    /// `keyInventory` (M35, M220): close an open container screen through
+    /// `onClose()`; while riding a vehicle with its own inventory
+    /// (`isServerControlledInventory`) ask the server with `OPEN_INVENTORY`;
+    /// otherwise open the player's inventory.
+    pub(super) fn inventory_key(&mut self) {
+        // The inventory key closes a container screen through `onClose()`
+        // (`AbstractContainerScreen.java:489-491`) — a user close.
+        if self.screen.inventory_open() {
+            self.close_container_screen();
+        } else if self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.server_controlled_inventory())
+        {
+            // M220 — riding a horse (or a nautilus, or a chest boat): the
+            // key asks the server, which answers with `mount_screen_open`
+            // (or `open_screen` for a chest boat).
+            if let Some(s) = self.session.as_mut() {
+                if let Err(e) = s.open_vehicle_inventory() {
+                    log::warn!("live: open vehicle inventory: {e}");
+                }
+            }
+        } else {
+            // A menu still open here has no screen of its own (a lectern a
+            // held book's reader replaced): vanilla's key opens the player's
+            // inventory over it (`Minecraft.java:1887-1893`).
+            if let Some(session) = self.session.as_mut() {
+                session.menus.show_player_inventory();
+            }
+            self.set_screen_open(true);
         }
     }
 

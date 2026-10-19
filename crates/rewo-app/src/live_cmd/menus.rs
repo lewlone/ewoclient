@@ -26,7 +26,8 @@ pub(super) fn container_panel(
     if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
         return None;
     }
-    let screen = rewo_ui::menu_screen::screen_of(layout.protocol_id)?;
+    // `screen_for`, not `screen_of`: a mount menu (M220) has no registry id.
+    let screen = rewo_ui::menu_screen::screen_for(layout)?;
     let sheet = sheet_index(screen.texture)?;
     let blits = rewo_ui::menu_screen::background_quads(screen)
         .into_iter()
@@ -1430,6 +1431,23 @@ pub(super) fn menu_overlays(
     use rewo_data::assets as a;
     let mut out = Vec::new();
     let Some(m) = open else { return out };
+    // M220 — `AbstractMountInventoryScreen.extractBackground`'s strip and
+    // equipment-slot backgrounds, from what the menu resolved at open.
+    if let Some(mount) = m.mount {
+        for (sprite, b) in rewo_ui::menu_screen::mount_overlays(
+            mount.kind == rewo_world::menu_layout::MountKind::Nautilus,
+            mount.columns,
+            mount.saddle_active,
+            mount.body_active,
+        ) {
+            let index = match sprite {
+                "chest" => a::MOUNT_CHEST_SLOTS,
+                _ => a::MOUNT_SLOT,
+            };
+            out.push((index, to_blit(b)));
+        }
+        return out;
+    }
     match layout.protocol_id {
         // The furnace family (M91): flame then arrow.
         id if a::progress_index(id).is_some() => {
