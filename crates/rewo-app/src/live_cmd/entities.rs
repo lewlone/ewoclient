@@ -1844,6 +1844,7 @@ pub(super) fn collect_minecart_contents(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -1923,6 +1924,7 @@ pub(super) fn collect_block_displays(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -2146,6 +2148,7 @@ pub(super) fn collect_small_projectiles(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -2209,6 +2212,7 @@ pub(super) fn collect_evoker_fangs(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -2256,6 +2260,7 @@ pub(super) fn collect_end_crystals(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -2290,6 +2295,7 @@ pub(super) fn collect_projectiles(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -2300,8 +2306,7 @@ pub(super) fn collect_projectiles(
 /// `translate(-0.5, 0, -0.5)`) and primed TNT (`TntRenderer`'s chain
 /// `translate(0, 0.5, 0) · YP(-90) · translate(-0.5, -0.5, 0.5) · YP(90)`,
 /// which is the same `translate(-0.5, 0, -0.5)`, with the TNT block).
-/// Recorded: TNT's swell in its last ten fuse ticks and its white flash are
-/// not drawn, nor a primed block other than TNT (`DATA_BLOCK_STATE_ID`).
+/// M269 drew the swell and any primed block; M277 its white flash.
 pub(super) fn collect_carried_blocks(
     session: &PlaySession,
     etypes: &EntityTypes,
@@ -2312,9 +2317,9 @@ pub(super) fn collect_carried_blocks(
     use rewo_data::be_transform::{translation, IDENTITY};
     let mut out = Vec::new();
     for (id, e) in session.world.entities.iter() {
-        let (state, transform) = match etypes.name(e.type_id) {
+        let (state, transform, white) = match etypes.name(e.type_id) {
             Some("minecraft:falling_block") => {
-                (Some(e.spawn_data as u32), translation(-0.5, 0.0, -0.5))
+                (Some(e.spawn_data as u32), translation(-0.5, 0.0, -0.5), 0.0)
             }
             Some("minecraft:tnt") => {
                 // M269 — the primed block (TNT unless the server set one)
@@ -2322,7 +2327,9 @@ pub(super) fn collect_carried_blocks(
                 // `fuseRemainingInTicks = getFuse() - partial + 1`.
                 let primed = session.world.entities.primed(id);
                 let fuse = primed.fuse.map_or(80.0, |f| f as f32 - alpha + 1.0);
-                (primed.block.or(tnt_state), tnt_transform(fuse))
+                // M277 — and its white flash, `isLit(fuse)` at full white.
+                let white = if tnt_is_lit(fuse) { 1.0 } else { 0.0 };
+                (primed.block.or(tnt_state), tnt_transform(fuse), white)
             }
             _ => continue,
         };
@@ -2340,9 +2347,35 @@ pub(super) fn collect_carried_blocks(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white,
         });
     }
     out
+}
+
+/// M277 — `CreeperRenderer.scale`: `wobble = 1 + sin(g · 100) · g · 0.01`,
+/// then `g` clamped and raised to the fourth, `s = (1 + g · 0.4) · wobble`,
+/// `hs = (1 + g · 0.1) / wobble` — as `[s, hs]` for `EntityDraw::stretch`.
+pub(crate) fn creeper_stretch(swelling: f32) -> [f32; 2] {
+    let wobble = 1.0 + (swelling * 100.0).sin() * swelling * 0.01;
+    let g = swelling.clamp(0.0, 1.0).powi(4);
+    [(1.0 + g * 0.4) * wobble, (1.0 + g * 0.1) / wobble]
+}
+
+/// M277 — `CreeperRenderer.getWhiteOverlayProgress`: white on every other
+/// tenth of the swell, `clamp(step, 0.5, 1)`.
+pub(crate) fn creeper_white_overlay(step: f32) -> f32 {
+    if (step * 10.0) as i32 % 2 == 0 {
+        0.0
+    } else {
+        step.clamp(0.5, 1.0)
+    }
+}
+
+/// M277 — `TntRenderer.isLit(fuse)`: lit TNT flashes white for five ticks
+/// in every ten, its whole fuse long.
+pub(crate) fn tnt_is_lit(fuse: f32) -> bool {
+    fuse >= 0.0 && (fuse / 5.0) as i32 % 2 == 0
 }
 
 /// M269 — `TntRenderer.getSwellAmount(fuse)`: nothing until the last ten
@@ -2414,6 +2447,7 @@ pub(super) fn collect_paintings(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -2620,6 +2654,7 @@ pub(super) fn collect_item_displays(
             tint: [1.0; 3],
             fixed_display: false,
             glint: foil,
+            white: 0.0,
         });
     }
     out
@@ -3794,6 +3829,9 @@ pub(super) fn collect_entities<'a>(
                 .as_deref()
                 .is_some_and(|c| c.is_living(e.type_id))
             && !session.own_game_mode().is_some_and(|g| g.is_spectator());
+        // M277 — `CreeperRenderer`'s `state.swelling`.
+        let creeper_swelling = (name == "minecraft:creeper")
+            .then(|| session.world.entities.creeper_swelling(id, alpha));
         let stand_pose = session.world.entities.armor_stand_pose(id);
         let stand_parts = rewo_gpu::mobs::StandParts {
             arms: stand_flags & 0x04 != 0,
@@ -3941,6 +3979,9 @@ pub(super) fn collect_entities<'a>(
             stand_parts,
             body_hidden,
             worn_head: worn_head(session, id, name, item_names, head_skins),
+            // M277 — a swelling creeper's flash and swell.
+            white_overlay: creeper_swelling.map_or(0.0, creeper_white_overlay),
+            stretch: creeper_swelling.map_or([1.0, 1.0], creeper_stretch),
             billboard,
             allay_dance,
             attack,

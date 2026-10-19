@@ -175,6 +175,22 @@ pub struct ArmorPiece<'a> {
 /// One entity to draw this frame — position already frame-interpolated.
 pub type EntityLight = [f32; 3];
 
+/// M277 — `OverlayTexture.pack(u(whiteOverlayProgress), v(hurt))` as the
+/// entity shader reads it from `light_hurt.a`: 1 for the red row (it wins:
+/// every texel of the red rows is red, whatever the column), `2 + u/15` for
+/// a white column `u = (int)(progress · 15)` above 0, and 0 for none.
+pub fn overlay_value(hurt: bool, white: f32) -> f32 {
+    if hurt {
+        return 1.0;
+    }
+    let u = (white * 15.0) as i32;
+    if u > 0 {
+        2.0 + u.min(15) as f32 / 15.0
+    } else {
+        0.0
+    }
+}
+
 /// `CustomHeadLayer.SKULL_SCALE`.
 pub const WORN_SKULL_SCALE: f32 = 1.1875;
 /// `CustomHeadLayer.ITEM_SCALE` (M274).
@@ -254,6 +270,13 @@ pub struct EntityDraw<'a> {
     /// M273 — a skull worn on the head (`CustomHeadLayer`'s skull branch),
     /// `None` for no skull or a model without the layer.
     pub worn_head: Option<WornHead<'a>>,
+    /// M277 — `getWhiteOverlayProgress` (a swelling creeper's flash), 0 for
+    /// none; it packs with [`Self::hurt`] through [`overlay_value`].
+    pub white_overlay: f32,
+    /// M277 — a renderer's own `scale(x, y, x)` in entity space after the
+    /// model flip (the creeper's swell: wider by `s`, taller by `hs`),
+    /// `[horizontal, vertical]`; `[1, 1]` for every other entity.
+    pub stretch: [f32; 2],
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -2261,7 +2284,7 @@ impl EntityPass {
         let sun = norm3([0.45, 0.8, 0.35]);
         for d in draws {
             // `OverlayTexture.v(hasRedOverlay)` as a 0/1 flag (M21).
-            let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+            let hurt = overlay_value(d.hurt, d.white_overlay);
             // A dropped stack is drawn by `ItemEntityRenderer` and has no
             // model or capsule of its own — the item IS the entity (M24b).
             if let Some(name) = d.ground_item {
@@ -2510,6 +2533,11 @@ impl EntityPass {
                 // The same model -> entity-local -> world chain the mob quads
                 // take, so an item cannot drift from the arm holding it.
                 let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                let e = [
+                    e[0] * d.stretch[0],
+                    e[1] * d.stretch[1],
+                    e[2] * d.stretch[0],
+                ];
                 // The same death topple the body takes — `setupRotations`
                 // rotates the entity, and `ItemInHandLayer` hangs off the arm
                 // *inside* that rotation, so a corpse's sword falls with it.
@@ -2616,6 +2644,11 @@ impl EntityPass {
                 ];
                 m4[i] = v;
                 let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                let e = [
+                    e[0] * d.stretch[0],
+                    e[1] * d.stretch[1],
+                    e[2] * d.stretch[0],
+                ];
                 let (sr, cr) = death_roll(d).sin_cos();
                 let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
                 let x = e[0] * ct + e[2] * st;
@@ -2709,6 +2742,11 @@ impl EntityPass {
                     rr[2] + o[2] + shift[2],
                 ];
                 let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                let e = [
+                    e[0] * d.stretch[0],
+                    e[1] * d.stretch[1],
+                    e[2] * d.stretch[0],
+                ];
                 let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
                 let x = e[0] * ct + e[2] * st;
                 let z = -e[0] * st + e[2] * ct;
@@ -2907,7 +2945,7 @@ impl EntityPass {
             return;
         }
         let [light_r, light_g, light_b] = d.light;
-        let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+        let hurt = overlay_value(d.hurt, d.white_overlay);
         for (slot, piece) in [
             (mobs::ArmorSlot::Chest, d.armor[1]),
             (mobs::ArmorSlot::Legs, d.armor[2]),
@@ -2970,6 +3008,11 @@ impl EntityPass {
                             let r = mat_apply(m, *corner);
                             let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
                             let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                            let e = [
+                                e[0] * d.stretch[0],
+                                e[1] * d.stretch[1],
+                                e[2] * d.stretch[0],
+                            ];
                             let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
                             let x = e[0] * ct + e[2] * st;
                             let z = -e[0] * st + e[2] * ct;
@@ -3138,6 +3181,11 @@ impl EntityPass {
                 // model → entity local (px): scale(−1,−1,1) after the
                 // −1.501-block translate.
                 let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                let e = [
+                    e[0] * d.stretch[0],
+                    e[1] * d.stretch[1],
+                    e[2] * d.stretch[0],
+                ];
                 // rotZ(fall · flipDegrees) — the death topple, identity while
                 // alive because `death_roll` is then exactly 0.
                 let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
@@ -3222,7 +3270,7 @@ impl EntityPass {
         };
         // Directional face shade x the entity's per-channel world light.
         let [light_r, light_g, light_b] = d.light;
-        let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+        let hurt = overlay_value(d.hurt, d.white_overlay);
         // M64: `SheepWoolLayer.submit` opens `if (!state.isSheared)`, so a
         // shorn mob's fleece is not submitted at all. Rewo bakes that layer as
         // a texture slot of the one model, so the layer's absence is the
@@ -3351,14 +3399,14 @@ impl EntityPass {
             s,
             st,
             ct,
-            if d.hurt { 1.0 } else { 0.0 },
+            overlay_value(d.hurt, d.white_overlay),
         );
         // M22: whatever each arm holds, drawn after the body —
         // `ItemInHandLayer` is a render layer, so it sits on top of the
         // model it hangs off.
         for (i, left) in [(0usize, false), (1usize, true)] {
             if let Some(name) = d.held[i] {
-                let hurt = if d.hurt { 1.0f32 } else { 0.0 };
+                let hurt = overlay_value(d.hurt, d.white_overlay);
                 self.emit_held_item(
                     verts,
                     d,
@@ -5170,6 +5218,9 @@ pub struct BlockEntityDraw<'a> {
     /// item renderer adds `RenderTypes.entityGlint()` for a foil stack in any
     /// world context. `false` for every block entity.
     pub glint: bool,
+    /// M277 — the white overlay's progress (`OverlayTexture.u`), lit TNT's
+    /// flash; 0 for none.
+    pub white: f32,
 }
 
 /// A map in an item frame (M194): `MapRenderer.render(state, pose, ...,
@@ -5505,8 +5556,9 @@ impl EntityPass {
                         uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
                         color: [shade * d.tint[0], shade * d.tint[1], shade * d.tint[2], 1.0],
                         // A block entity is never hurt — the overlay flag is
-                        // a `LivingEntity` property.
-                        light_hurt: [light_r, light_g, light_b, 0.0],
+                        // a `LivingEntity` property — but lit TNT flashes
+                        // white (M277).
+                        light_hurt: [light_r, light_g, light_b, overlay_value(false, d.white)],
                     });
                     // Same position, same moment — see [`GlintSink`].
                     if d.glint {

@@ -241,6 +241,7 @@ pub(super) fn collect_block_entities(
                 tint,
                 fixed_display: false,
                 glint: false,
+                white: 0.0,
             };
             // The bare cloth, untinted — its own texture carries its colour.
             out.push(layer(flag.to_string(), [1.0; 3]));
@@ -287,6 +288,7 @@ pub(super) fn collect_block_entities(
                         tint: [1.0; 3],
                         fixed_display: false,
                         glint: false,
+                        white: 0.0,
                     });
                 };
                 piece(
@@ -344,6 +346,7 @@ pub(super) fn collect_block_entities(
                     tint: [1.0; 3],
                     fixed_display: false,
                     glint: false,
+                    white: 0.0,
                 });
             }
         }
@@ -428,6 +431,7 @@ pub(super) fn collect_block_entities(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         });
     }
     out
@@ -692,6 +696,8 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         stand_parts: Default::default(),
         body_hidden: false,
         worn_head: None,
+        white_overlay: 0.0,
+        stretch: [1.0, 1.0],
         billboard: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         allay_dance: None,
@@ -781,6 +787,8 @@ pub(crate) fn collect_pickups<'a>(
             stand_parts: Default::default(),
             body_hidden: false,
             worn_head: None,
+            white_overlay: 0.0,
+            stretch: [1.0, 1.0],
             billboard: None,
             events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
             allay_dance: None,
@@ -1091,6 +1099,8 @@ pub(crate) struct OwnedBlockEntityDraw {
     pub fixed_display: bool,
     /// The enchantment glint over it (M198) — a framed foil item.
     pub glint: bool,
+    /// M277 — the white overlay (lit TNT's flash), 0 for none.
+    pub white: f32,
 }
 
 impl OwnedBlockEntityDraw {
@@ -1105,6 +1115,7 @@ impl OwnedBlockEntityDraw {
             tint: self.tint,
             fixed_display: self.fixed_display,
             glint: self.glint,
+            white: self.white,
         }
     }
 }

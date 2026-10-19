@@ -314,6 +314,13 @@ pub(super) struct RenderCheck {
     /// book, and the range of the book's turn (`transform[0][0]`) over them.
     pub(super) enchant_book_frames: usize,
     pub(super) enchant_book_turn: Option<(f32, f32)>,
+    /// M277 — r135: frames on which a TNT draw was lit (white) and unlit.
+    pub(super) tnt_lit_frames: usize,
+    pub(super) tnt_unlit_frames: usize,
+    /// M277 — r136: frames on which the ignited creeper drew swollen, and
+    /// those of them with its white flash.
+    pub(super) creeper_swollen_frames: usize,
+    pub(super) creeper_flash_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1079,7 +1086,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 134;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 136;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1268,6 +1275,31 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M277 — r135: lit TNT flashes white for five ticks in every ten
+        // (`TntRenderer.isLit`): r112's and r127's TNT must reach the draws
+        // both white and plain. It never flashed until M277 (`hurtshot c6`
+        // checks the white mix's pixels).
+        row(
+            "r135 primed TNT flashed white",
+            self.tnt_lit_frames >= 1 && self.tnt_unlit_frames >= 1,
+            format!(
+                "{} lit and {} unlit TNT draws",
+                self.tnt_lit_frames, self.tnt_unlit_frames
+            ),
+        );
+        // M277 — r136: two seconds in, the render check ignites a staged
+        // NoAI creeper (`Fuse` 32767, so the server never blows it up). The
+        // client counts its swell (`swellDir` 1) and draws it swollen
+        // (`CreeperRenderer.scale`) and flashing on its odd tenths. Creepers
+        // never swelled or flashed until M277.
+        row(
+            "r136 an ignited creeper swelled and flashed white",
+            self.creeper_swollen_frames >= 1 && self.creeper_flash_frames >= 1,
+            format!(
+                "{} frames swollen, {} of them white",
+                self.creeper_swollen_frames, self.creeper_flash_frames
             ),
         );
         // M276 — r134: r103's enchanting table draws its book, every quad,
@@ -5216,6 +5248,13 @@ impl LiveApp {
                              {transformation:{left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],\
                              translation:[0f,0f,0f],scale:[3f,3f,3f]},interpolation_duration:40,\
                              start_interpolation:0}",
+                        );
+                    }
+                    // M277 — r136: and ignite the staged creeper.
+                    if let Some(s) = self.session.as_mut() {
+                        let _ = s.send_command(
+                            "data merge entity @e[type=minecraft:creeper,tag=rewo_creeper,limit=1] \
+                             {ignited:1b}",
                         );
                     }
                     self.rc_interp_sent = true;

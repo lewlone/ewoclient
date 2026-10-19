@@ -1055,6 +1055,10 @@ pub struct EntityTable {
     primed: HashMap<i32, PrimedState>,
 }
 
+/// M277 — `Creeper.maxSwell`'s default (the `Fuse` tag that changes it is
+/// not synced, so a client always counts to 30).
+pub const CREEPER_MAX_SWELL: i32 = 30;
+
 /// M269 — primed TNT as synced: `PrimedTnt.DATA_FUSE_ID` (index 8, INT),
 /// counted down each client tick as `PrimedTnt.tick` does on the client
 /// too, and `DATA_BLOCK_STATE_ID` (9, BLOCK_STATE; `None` is vanilla's
@@ -1463,6 +1467,10 @@ pub struct MobState {
     /// `Mob.DATA_MOB_FLAGS_ID`. Bit 1 no-AI, bit 2 left-handed, bit 4
     /// aggressive.
     pub flags: u8,
+    /// M277 — `Creeper.swell` and `oldSwell`, the client's own count toward
+    /// `maxSwell` (30; the `Fuse` that sets it is not synced).
+    pub swell: i32,
+    pub old_swell: i32,
     /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15 BYTE too, a different
     /// class): 0x01 small, 0x04 show arms, 0x08 no base plate, 0x10 marker.
     pub stand_flags: u8,
@@ -2624,6 +2632,32 @@ impl EntityTable {
     /// M269 — primed TNT's state (all defaults when none came).
     pub fn primed(&self, id: i32) -> PrimedState {
         self.primed.get(&id).copied().unwrap_or_default()
+    }
+
+    /// M277 — `Creeper.tick`'s swell for every creeper (`creeper`, its type
+    /// id): `swell += swellDir` (`DATA_SWELL_DIR`, index 16 INT, default -1,
+    /// kept in `sizes`), clamped to `0..=30`.
+    pub fn tick_creepers(&mut self, creeper: i32) {
+        let ids: Vec<i32> = self
+            .map
+            .iter()
+            .filter(|(_, e)| e.type_id == creeper)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let dir = self.sizes.get(&id).copied().unwrap_or(-1);
+            let m = self.mob_state.entry(id).or_default();
+            m.old_swell = m.swell;
+            m.swell = (m.swell + dir).clamp(0, CREEPER_MAX_SWELL);
+        }
+    }
+
+    /// M277 — `Creeper.getSwelling(a)`: `lerp(a, oldSwell, swell) /
+    /// (maxSwell - 2)`.
+    pub fn creeper_swelling(&self, id: i32, alpha: f32) -> f32 {
+        let m = self.mob_state.get(&id).copied().unwrap_or_default();
+        (m.old_swell as f32 + (m.swell - m.old_swell) as f32 * alpha)
+            / (CREEPER_MAX_SWELL - 2) as f32
     }
 
     /// M269 — `PrimedTnt.tick`'s `setFuse(getFuse() - 1)`, which the client
@@ -4793,6 +4827,32 @@ mod side_state_tests {
         t.uses.entry(id).or_default();
         t.main_arms.insert(id, HumanoidArm::Left);
         t.minecarts.entry(id).or_default();
+    }
+
+    /// M277 — `Creeper.tick`'s swell: it counts down from nothing (the
+    /// default `swellDir` is -1), up by one a tick once the server sets the
+    /// direction to 1, and stops at 30; `getSwelling` lerps and divides by 28.
+    #[test]
+    fn a_creepers_swell_counts_to_thirty_and_lerps() {
+        let mut t = EntityTable::default();
+        t.add(4, EntityState::new(1, 7, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.tick_creepers(7);
+        assert_eq!(t.creeper_swelling(4, 1.0), 0.0);
+        t.set_size(4, 1);
+        for _ in 0..10 {
+            t.tick_creepers(7);
+        }
+        assert!((t.creeper_swelling(4, 1.0) - 10.0 / 28.0).abs() < 1e-6);
+        assert!((t.creeper_swelling(4, 0.5) - 9.5 / 28.0).abs() < 1e-6);
+        for _ in 0..40 {
+            t.tick_creepers(7);
+        }
+        assert!((t.creeper_swelling(4, 0.3) - 30.0 / 28.0).abs() < 1e-6);
+        // Another type does not swell.
+        t.add(5, EntityState::new(2, 8, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_size(5, 1);
+        t.tick_creepers(7);
+        assert_eq!(t.creeper_swelling(5, 1.0), 0.0);
     }
 
     /// M194 — a frame's facing falls back to the spawn packet's data until

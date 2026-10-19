@@ -141,6 +141,7 @@ pub(crate) fn frame_draws(f: &FrameInputs, lightmap: &LightmapState, out: &mut I
         tint: [1.0; 3],
         fixed_display,
         glint,
+        white: 0.0,
     };
     if !f.invisible {
         if let Some(t) = item_frame::frame_transform(f.facing) {

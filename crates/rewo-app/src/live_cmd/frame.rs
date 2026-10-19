@@ -1189,6 +1189,18 @@ impl LiveApp {
             }) {
                 rc.worn_item_head_frames += 1;
             }
+            // M277 — r136: the ignited creeper swollen, and flashing.
+            for d in draws
+                .iter()
+                .filter(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Creeper)
+            {
+                if d.stretch[0] > 1.05 {
+                    rc.creeper_swollen_frames += 1;
+                    if d.white_overlay > 0.0 {
+                        rc.creeper_flash_frames += 1;
+                    }
+                }
+            }
             // M275 — r133: the staged head item's icon model, as the screen
             // and hotbar resolve it.
             let inv = &session.inventory;
@@ -1332,6 +1344,14 @@ impl LiveApp {
                 .blocks
                 .default_state("minecraft:tnt")
                 .map(rewo_data::block_entity_models::carried_block_model);
+            // M277 — r135: and the TNT drawn both lit (white) and unlit.
+            for d in be_draws.iter().filter(|d| Some(d.model) == tnt.as_deref()) {
+                if d.white > 0.0 {
+                    c.tnt_lit_frames += 1;
+                } else {
+                    c.tnt_unlit_frames += 1;
+                }
+            }
             if be_draws
                 .iter()
                 .any(|d| Some(d.model) == tnt.as_deref() && d.transform[0][0] > 1.01)

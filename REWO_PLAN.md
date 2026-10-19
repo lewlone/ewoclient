@@ -2090,6 +2090,8 @@ this shape once.
 | M274 (2026-10-20) — an armour stand draws wearing a carved pumpkin | **r132** | — | — |
 | M275 (2026-10-20) — a player head item's icon wears its own skin | **r133** | — | — |
 | M276 (2026-10-20) — an enchanting table draws its book, turning | **r134** | — | — |
+| M277 (2026-10-20) — primed TNT flashes white | **r135** | — | — |
+| M277 (2026-10-20) — an ignited creeper swells and flashes | **r136** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

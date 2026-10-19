@@ -14,21 +14,26 @@
 // so the overlay lands on `texture * vertexColor` and the lightmap multiplies
 // *after* it — which is why `v_light_hurt.rgb` carries the light separately
 // instead of the CPU folding it into `v_color`. `overlayColor` is a texel of
-// `OverlayTexture`: the red row (v=3) is 0xB3FF0000, i.e. rgb (1,0,0) with
-// a = 179/255, and the no-overlay texel (u=0, v=10) is white with a = 1.0 —
-// which makes the mix a no-op, exactly as vanilla intends.
+// `OverlayTexture`: the red row (v=3) is 0xB2FF0000 (`-1291911168` in
+// 26.2), i.e. rgb (1,0,0) with a = 178/255, and the no-overlay texel (u=0,
+// v=10) is white with a = 1.0 — which makes the mix a no-op, exactly as
+// vanilla intends. M277 — the white rows (v >= 8) at column u are white with
+// a = floor((1 - u/15 · 0.75) · 255) / 255: the creeper's and lit TNT's
+// flash. The CPU packs the overlay into `v_light_hurt.a`: 1 is the red row
+// (which wins whatever u is, as every red texel is red), 2 + u/15 a white
+// column, 0 none.
 
 layout(set = 0, binding = 0) uniform sampler2D u_font;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
-// rgb = per-channel world light, a = the hurt flag (0 or 1).
+// rgb = per-channel world light, a = the overlay (see above).
 layout(location = 2) in vec4 v_light_hurt;
 
 layout(location = 0) out vec4 out_color;
 
-// `OverlayTexture`'s red row alpha, 0xB3 = 179.
-const float HURT_OVERLAY_ALPHA = 179.0 / 255.0;
+// `OverlayTexture`'s red row alpha, 0xB2 = 178.
+const float HURT_OVERLAY_ALPHA = 178.0 / 255.0;
 
 // Rewo works in linear light; vanilla mixes in its gamma-encoded texture
 // space. `mix` is not invariant under the transfer function, so mixing
@@ -52,10 +57,17 @@ void main() {
         discard;
     }
     vec3 c = t.rgb * v_color.rgb;
-    if (v_light_hurt.a > 0.5) {
+    if (v_light_hurt.a > 0.5 && v_light_hurt.a < 1.5) {
         // mix(overlay.rgb, color.rgb, overlay.a) against the red row's texel.
         vec3 s = to_srgb(c);
         s = mix(vec3(1.0, 0.0, 0.0), s, HURT_OVERLAY_ALPHA);
+        c = to_linear(s);
+    } else if (v_light_hurt.a >= 1.5) {
+        // M277 — a white column's texel.
+        float u = floor((v_light_hurt.a - 2.0) * 15.0 + 0.5);
+        float wa = floor((1.0 - u / 15.0 * 0.75) * 255.0) / 255.0;
+        vec3 s = to_srgb(c);
+        s = mix(vec3(1.0), s, wa);
         c = to_linear(s);
     }
     c *= v_light_hurt.rgb;

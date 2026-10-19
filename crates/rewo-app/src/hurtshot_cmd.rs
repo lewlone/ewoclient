@@ -45,10 +45,15 @@ use crate::stats::OverlayRing;
 /// a1-a7 receipt, b1-b6 clock, c1-c5 flash, d1-d20 death/topple, and M81's
 /// e1-e18 — the `hurt_animation` receipt, the tilt's easing and conjugation,
 /// and the four that need a rendered frame.
-const EXPECTED_WITNESSES: usize = 56;
+const EXPECTED_WITNESSES: usize = 57;
 
-/// `OverlayTexture`'s red row is 0xB3FF0000 — alpha 0xB3 = 179.
-const HURT_ALPHA: f32 = 179.0 / 255.0;
+/// `OverlayTexture`'s red row is `-1291911168` = 0xB2FF0000 in 26.2 —
+/// alpha 0xB2 = 178 (M277; 179 until then).
+const HURT_ALPHA: f32 = 178.0 / 255.0;
+
+/// M277 — `OverlayTexture`'s white column 15 (`u(1.0)`, lit TNT's flash):
+/// alpha `(int)((1 - 15/15 · 0.75) · 255)` = 63.
+const WHITE_ALPHA: f32 = 63.0 / 255.0;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const TEX: u32 = 16;
@@ -472,6 +477,8 @@ fn render_capsule(
     draw: &OverlayDraw,
     light: [f32; 3],
     hurt: bool,
+    // M277 — the white overlay's progress.
+    white: f32,
 ) -> Result<[u8; 3], String> {
     let eye = Vec3::new(0.0, 1.0, 3.0);
     let dir = Vec3::new(0.0, 0.0, -1.0);
@@ -515,6 +522,8 @@ fn render_capsule(
         stand_parts: Default::default(),
         body_hidden: false,
         worn_head: None,
+        white_overlay: white,
+        stretch: [1.0, 1.0],
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -887,6 +896,8 @@ fn silhouette(
         stand_parts: Default::default(),
         body_hidden: false,
         worn_head: None,
+        white_overlay: 0.0,
+        stretch: [1.0, 1.0],
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -1298,8 +1309,8 @@ fn check_flash(c: &mut Checker, check: bool) -> Result<(), String> {
     // A deliberately non-grey light so a channel swap or a dropped light
     // multiply cannot pass: R > G > B, none saturated.
     let light = [0.80f32, 0.55, 0.30];
-    let cold = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, false)?;
-    let hot = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, true)?;
+    let cold = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, false, 0.0)?;
+    let hot = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, true, 0.0)?;
 
     // Predict `hot` FROM `cold`: undo the light, encode to sRGB, mix vanilla's
     // red overlay texel, decode, re-apply the light. This never needs to know
@@ -1374,7 +1385,31 @@ fn check_flash(c: &mut Checker, check: bool) -> Result<(), String> {
     );
     // And an unhurt entity is untouched by the overlay path at all: the
     // no-overlay texel is white with alpha 1, so the mix is the identity.
-    let cold2 = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, false)?;
+    let cold2 = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, false, 0.0)?;
+    // M277 — the white flash: the same prediction against white column 15,
+    // and the red row still winning when both are set (`OverlayTexture`'s red
+    // rows are red in every column).
+    let flash = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, false, 1.0)?;
+    let both = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, true, 1.0)?;
+    let mut want_w = [0u8; 3];
+    for i in 0..3 {
+        let lin = srgb_to_linear(cold[i] as f32 / 255.0);
+        let s = linear_to_srgb(lin / light[i]);
+        let mixed = (1.0 - WHITE_ALPHA) + s * WHITE_ALPHA;
+        want_w[i] = (linear_to_srgb(srgb_to_linear(mixed) * light[i]) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+    }
+    c.record(
+        "c6.the_white_flash_is_the_exact_overlay_mix_and_red_wins",
+        (0..3).all(|i| (flash[i] as i32 - want_w[i] as i32).abs() <= CHANNEL_TOL)
+            && (0..3).all(|i| flash[i] > cold[i])
+            && both == hot,
+        format!(
+            "unhurt {cold:?} -> white {flash:?}, predicted {want_w:?} (mix(white, c, \
+             {WHITE_ALPHA:.4})); hurt and white {both:?} == hurt {hot:?}"
+        ),
+    );
     c.record(
         "c5.an_unhurt_entity_is_bit_identical_across_renders",
         cold == cold2,
@@ -1644,6 +1679,8 @@ fn render_marker_template() -> EntityDraw<'static> {
         stand_parts: Default::default(),
         body_hidden: false,
         worn_head: None,
+        white_overlay: 0.0,
+        stretch: [1.0, 1.0],
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,

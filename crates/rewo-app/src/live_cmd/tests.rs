@@ -4155,3 +4155,38 @@ fn a_player_heads_skin_is_its_profiles_textures_property() {
     assert_eq!(head_textures_value(&named), None);
     assert_eq!(head_textures_value(&Nbt::Compound(vec![])), None);
 }
+
+/// M277 — `CreeperRenderer.scale` and `getWhiteOverlayProgress` at known
+/// swellings, and `TntRenderer.isLit`: at rest the creeper is unscaled and
+/// unlit; fully swollen it is 1.4 wide (times the wobble) and 1.1 tall
+/// (over it); it flashes on every odd tenth, clamped to 0.5..1; TNT is lit
+/// for fuse 0..5, 10..15, and never past its fuse.
+#[test]
+fn a_creeper_swells_and_flashes_and_tnt_blinks_as_vanilla_draws_them() {
+    use super::entities::{creeper_stretch, creeper_white_overlay, tnt_is_lit};
+    assert_eq!(creeper_stretch(0.0), [1.0, 1.0]);
+    let [s, hs] = creeper_stretch(1.0);
+    let wobble = 1.0 + 100f32.sin() * 0.01;
+    assert!((s - 1.4 * wobble).abs() < 1e-6 && (hs - 1.1 / wobble).abs() < 1e-6);
+    assert_eq!(creeper_white_overlay(0.05), 0.0);
+    assert_eq!(creeper_white_overlay(0.15), 0.5);
+    assert_eq!(creeper_white_overlay(0.75), 0.75);
+    assert_eq!(creeper_white_overlay(0.85), 0.0);
+    assert_eq!(creeper_white_overlay(0.95), 0.95);
+    let lit: Vec<bool> = [0.0, 4.9, 5.0, 9.9, 10.0, 14.0, -0.5]
+        .iter()
+        .map(|&f| tnt_is_lit(f))
+        .collect();
+    assert_eq!(lit, [true, true, false, false, true, true, false]);
+    // The overlay's packing: red wins, white columns are 2 + u/15.
+    use rewo_gpu::entities::overlay_value;
+    assert_eq!(overlay_value(false, 0.0), 0.0);
+    assert_eq!(overlay_value(true, 1.0), 1.0);
+    assert_eq!(overlay_value(false, 1.0), 3.0);
+    assert!((overlay_value(false, 0.5) - (2.0 + 7.0 / 15.0)).abs() < 1e-6);
+    assert_eq!(
+        overlay_value(false, 0.05),
+        0.0,
+        "u = (int)(0.75) = 0: no overlay"
+    );
+}

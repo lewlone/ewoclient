@@ -968,6 +968,8 @@ fn check_render(
             stand_parts: Default::default(),
             body_hidden: false,
             worn_head: None,
+            white_overlay: 0.0,
+            stretch: [1.0, 1.0],
             billboard: None,
             allay_dance: None,
             attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -1032,6 +1034,8 @@ fn check_render(
             stand_parts: Default::default(),
             body_hidden: false,
             worn_head: None,
+            white_overlay: 0.0,
+            stretch: [1.0, 1.0],
             billboard: None,
             allay_dance: None,
             attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -1112,6 +1116,8 @@ fn check_render(
             stand_parts: Default::default(),
             body_hidden: false,
             worn_head: None,
+            white_overlay: 0.0,
+            stretch: [1.0, 1.0],
             billboard: ground_billboard.get(),
             allay_dance: None,
             attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -1251,6 +1257,7 @@ fn check_render(
             tint: [1.0; 3],
             fixed_display: false,
             glint: false,
+            white: 0.0,
         };
         wr.set_entities_and_block_entities(&[], &[be], &[], &[], right, up.to_array(), 0.0);
         off.render(&gpu, Some((&mut wr, view_proj)), &draw, CLEAR)?;

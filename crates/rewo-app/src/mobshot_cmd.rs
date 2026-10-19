@@ -225,6 +225,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         stand_parts: Default::default(),
         body_hidden: false,
         worn_head: None,
+        white_overlay: 0.0,
+        stretch: [1.0, 1.0],
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -378,6 +380,8 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
                 let hidden = EntityDraw {
                     body_hidden: true,
                     worn_head: None,
+                    white_overlay: 0.0,
+                    stretch: [1.0, 1.0],
                     ..neutral_draw(kind)
                 };
                 wr.set_entities(&[hidden], right, upv, 0.0);

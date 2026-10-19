@@ -807,6 +807,8 @@ pub struct PlaySession {
     pub end_crystal_type_id: Option<i32>,
     /// `minecraft:tnt`'s type id (M269).
     pub tnt_type_id: Option<i32>,
+    /// M277 — `minecraft:creeper`, whose swell the client counts.
+    pub creeper_type_id: Option<i32>,
     /// `minecraft:block_display`'s type id (M260).
     pub block_display_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
@@ -2036,6 +2038,7 @@ impl<'a> Connection<'a> {
             item_display_type_id: None,
             end_crystal_type_id: None,
             tnt_type_id: None,
+            creeper_type_id: None,
             block_display_type_id: None,
             creaking_type_id: None,
             bee_type_id: None,
@@ -2750,6 +2753,10 @@ impl PlaySession {
         self.world.entities.tick_displays();
         // `PrimedTnt.tick`'s fuse countdown (M269).
         self.world.entities.tick_fuses();
+        // `Creeper.tick`'s swell (M277).
+        if let Some(t) = self.creeper_type_id {
+            self.world.entities.tick_creepers(t);
+        }
         // `ChestLidController.tickLid` — the client animates the ten ticks the
         // server never sends (M25c).
         self.world.block_entities.tick_lids();
