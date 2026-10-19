@@ -957,10 +957,14 @@ pub struct PlaySession {
     /// server has said about its position meanwhile (vanilla keeps only the
     /// delta codec's base for an entity it controls).
     pub steered_boat: Option<SteeredBoat>,
+    /// M222 — the horse the local player steers, simulated here.
+    pub steered_horse: Option<SteeredHorse>,
     /// `move_vehicle` / `paddle_boat` packets sent (render-check r87).
     pub vehicle_moves_sent: u64,
     /// Server `move_vehicle` rejections of a steered move (r87).
     pub vehicle_rejections: u64,
+    /// `executeRidersJump`s the steered horse performed (r88).
+    pub ridden_jumps: u64,
     pub paddles_sent: u64,
     /// The **local player's** `update_attributes` snapshots (M73).
     ///
@@ -2015,8 +2019,10 @@ impl<'a> Connection<'a> {
             was_sprinting: false,
             sprint_commands_sent: 0,
             steered_boat: None,
+            steered_horse: None,
             vehicle_moves_sent: 0,
             vehicle_rejections: 0,
+            ridden_jumps: 0,
             paddles_sent: 0,
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
@@ -2715,9 +2721,14 @@ impl PlaySession {
         let was_jump = self.was_jump;
         self.was_jump = input.jump;
         let jumpable = self.jumpable_vehicle();
-        if let Some(data) = self.jump_riding.tick(input.jump, jumpable) {
+        let riding_jump = self.jump_riding.tick(input.jump, jumpable);
+        if let Some(data) = riding_jump {
             self.send_riding_jump(data)?;
         }
+        // M222 — `jumpableVehicle.onPlayerJump(floor(scale * 100))`, which
+        // vanilla's rider reaches in its `aiStep`, AFTER the vehicle's tick:
+        // the horse spends it next tick. Held until then.
+        let deferred_jump = riding_jump;
         if self.spawned && self.is_mounted() {
             // M68. A passenger does not travel under its own power: vanilla's
             // `ClientLevel.tickNonPassenger` skips passengers entirely, and
@@ -2740,9 +2751,17 @@ impl PlaySession {
             // M221 — a boat whose first passenger is the local player is the
             // client's to simulate (`isLocalInstanceAuthoritative`).
             if let Some(boat) = self.steerable_boat() {
+                self.release_steered_horse();
                 self.tick_steered_boat(boat, input)?;
+            } else if let Some(horse) = self.steerable_horse() {
+                self.release_steered_boat();
+                self.tick_steered_horse(horse, input)?;
+                if let (Some(d), Some(h)) = (deferred_jump, self.steered_horse.as_mut()) {
+                    h.jump_pending = physics::jump_pending_scale(d);
+                }
             } else {
                 self.release_steered_boat();
+                self.release_steered_horse();
                 if let Some(vehicle) = self.local_vehicle() {
                     if let Some(e) = self.world.entities.get(vehicle) {
                         self.player.x = e.x;
@@ -2754,6 +2773,7 @@ impl PlaySession {
             }
         } else if self.spawned {
             self.release_steered_boat();
+            self.release_steered_horse();
             // Vanilla order: `LivingEntity.aiStep` pushes entities apart
             // *before* `travel`, so the shove lands in this tick's movement.
             self.push_from_entities();
@@ -4138,6 +4158,32 @@ impl PlaySession {
                     .f64(s.z)
                     .f32(s.yaw)
                     .f32(0.0)
+                    .bool(s.on_ground);
+                if let Err(e) = self.send(pk) {
+                    log::warn!("net: move_vehicle answer: {e}");
+                }
+            }
+        }
+        // M222 — the same for a steered horse.
+        if let Some(h) = self.steered_horse.as_mut() {
+            let p = [v.position.x, v.position.y, v.position.z];
+            h.state.x = p[0];
+            h.state.y = p[1];
+            h.state.z = p[2];
+            h.state.yaw = v.y_rot;
+            h.server_base = p;
+            let (id, s) = (h.id, h.state);
+            if let Some(e) = self.world.entities.get_mut(id) {
+                e.set_simulated(p, v.y_rot);
+            }
+            self.vehicle_rejections += 1;
+            if let Some(mid) = self.ids.sb_play_move_vehicle {
+                let mut pk = PacketWriter::packet(mid);
+                pk.f64(s.x)
+                    .f64(s.y)
+                    .f64(s.z)
+                    .f32(s.yaw)
+                    .f32(s.pitch)
                     .bool(s.on_ground);
                 if let Err(e) = self.send(pk) {
                     log::warn!("net: move_vehicle answer: {e}");
@@ -5584,6 +5630,141 @@ impl PlaySession {
         })
     }
 
+    /// The horse the local player steers, if any (M222): the root vehicle, an
+    /// `AbstractHorse` other than a camel (whose riding is its own), saddled
+    /// (`getControllingPassenger` needs the saddle), its first passenger the
+    /// local player.
+    fn steerable_horse(&self) -> Option<i32> {
+        let me = self.player_id?;
+        let vid = self.local_vehicle()?;
+        let classes = self.entity_classes.as_deref()?;
+        let e = self.world.entities.get(vid)?;
+        (classes.is_abstract_horse(e.type_id)
+            && !classes.is_camel(e.type_id)
+            && self.world.entities.saddled(vid)
+            && self.mounts.passengers(vid).first() == Some(&me))
+        .then_some(vid)
+    }
+
+    fn release_steered_horse(&mut self) {
+        if let Some(h) = self.steered_horse.take() {
+            if let Some(e) = self.world.entities.get_mut(h.id) {
+                e.set_target(h.server_base[0], h.server_base[1], h.server_base[2]);
+            }
+        }
+    }
+
+    /// One tick of the horse the local player steers (M222):
+    /// [`physics::tick_ridden`] with the rider's keys and rotation, the horse
+    /// placed where it went, the rider on it, then the passenger's packets.
+    fn tick_steered_horse(&mut self, id: i32, input: &TickInput) -> Result<(), String> {
+        let mut steered = match self.steered_horse {
+            Some(h) if h.id == id => h,
+            _ => {
+                let Some(e) = self.world.entities.get(id) else {
+                    return Ok(());
+                };
+                let mut state = physics::PlayerState::at(e.x, e.y, e.z);
+                state.yaw = e.yaw;
+                state.on_ground = true;
+                SteeredHorse {
+                    id,
+                    state,
+                    jump_pending: 0.0,
+                    server_base: [e.x, e.y, e.z],
+                }
+            }
+        };
+        let Some(e) = self.world.entities.get(id) else {
+            return Ok(());
+        };
+        let type_id = e.type_id;
+        self.resolve_entity_shapes();
+        let (w, h) = self
+            .entity_shapes
+            .as_deref()
+            .and_then(|t| t.get(type_id))
+            .map_or((1.3964844, 1.6), |s| (s.width as f64, s.height as f64));
+        // `EntityDimensions`' default eye height, `height * 0.85` (a horse
+        // declares its own 1.52; only the eye-in-water test reads it here).
+        steered.state.body = Some(physics::Body {
+            width: w,
+            height: h,
+            eye: h * 0.85,
+        });
+        let name = self
+            .entity_types
+            .as_deref()
+            .and_then(|t| t.name(type_id))
+            .unwrap_or("minecraft:horse")
+            .to_string();
+        let mut attrs = match self.attribute_registry.as_deref() {
+            Some(reg) => crate::attributes::move_attributes_for_entity(
+                reg,
+                self.world.entities.attributes(id),
+                &name,
+            ),
+            None => physics::MoveAttributes::default(),
+        };
+        attrs.fast_lava = self
+            .active_dimension_type
+            .as_ref()
+            .is_some_and(|d| d.fast_lava);
+        let ridden = physics::RiddenInput {
+            forward: input.forward,
+            strafe: input.strafe,
+            rider_yaw: self.player.yaw,
+            rider_pitch: self.player.pitch,
+        };
+        let collide = std::mem::take(&mut self.collide);
+        let block_physics = std::mem::take(&mut self.block_physics);
+        {
+            let world = SessionPhysics {
+                blocks: physics::WorldPhysics {
+                    world: &self.world,
+                    collide: &collide,
+                    blocks: &block_physics,
+                },
+                entities: &self.world.entities,
+                mounts: &self.mounts,
+                exclude_root: Some(id),
+                player_y: steered.state.y,
+                shapes: self.entity_shapes.as_deref(),
+                classes: self.entity_classes.as_deref(),
+                types: self.entity_types.as_deref(),
+                attributes: self.attribute_registry.as_deref(),
+            };
+            let mut pending = steered.jump_pending;
+            if physics::tick_ridden(
+                &mut steered.state,
+                ridden,
+                &mut pending,
+                &attrs,
+                Some(self.border.collision()),
+                &world,
+            ) {
+                self.ridden_jumps += 1;
+            }
+            steered.jump_pending = pending;
+        }
+        self.collide = collide;
+        self.block_physics = block_physics;
+        let s = steered.state;
+        if let Some(e) = self.world.entities.get_mut(id) {
+            e.set_simulated([s.x, s.y, s.z], s.yaw);
+        }
+        self.player.x = s.x;
+        self.player.y = s.y;
+        self.player.z = s.z;
+        self.steered_horse = Some(steered);
+        let pose = rewo_world::boat::BoatState {
+            yaw: s.yaw,
+            on_ground: s.on_ground,
+            ..rewo_world::boat::BoatState::at(s.x, s.y, s.z, s.yaw)
+        };
+        self.send_passenger_movement_pitched(input, Some((pose, s.pitch)))
+    }
+
     /// The boat the local player steers, if any (M221): the root vehicle, an
     /// `AbstractBoat`, whose first passenger (`getControllingPassenger`) is
     /// the local player.
@@ -5610,20 +5791,23 @@ impl PlaySession {
     /// only advance [`SteeredBoat::server_base`] (M221).
     pub(super) fn steers(&self, eid: i32) -> bool {
         self.steered_boat.is_some_and(|b| b.id == eid)
+            || self.steered_horse.is_some_and(|h| h.id == eid)
     }
 
     /// A move packet for the steered boat: the base advances, the boat does
     /// not move (`handleMoveEntity`'s authoritative arm).
     pub(super) fn steered_base(&mut self, absolute: Option<[f64; 3]>, delta: [f64; 3]) {
-        if let Some(b) = self.steered_boat.as_mut() {
-            b.server_base = match absolute {
+        let advance = |base: &mut [f64; 3]| {
+            *base = match absolute {
                 Some(p) => p,
-                None => [
-                    b.server_base[0] + delta[0],
-                    b.server_base[1] + delta[1],
-                    b.server_base[2] + delta[2],
-                ],
+                None => [base[0] + delta[0], base[1] + delta[1], base[2] + delta[2]],
             };
+        };
+        if let Some(b) = self.steered_boat.as_mut() {
+            advance(&mut b.server_base);
+        }
+        if let Some(h) = self.steered_horse.as_mut() {
+            advance(&mut h.server_base);
         }
     }
 
@@ -5719,6 +5903,16 @@ impl PlaySession {
         input: &TickInput,
         steered: Option<rewo_world::boat::BoatState>,
     ) -> Result<(), String> {
+        self.send_passenger_movement_pitched(input, steered.map(|s| (s, 0.0)))
+    }
+
+    /// [`Self::send_passenger_movement`] with the steered vehicle's pitch (a
+    /// horse carries half its rider's; a boat none).
+    fn send_passenger_movement_pitched(
+        &mut self,
+        input: &TickInput,
+        steered: Option<(rewo_world::boat::BoatState, f32)>,
+    ) -> Result<(), String> {
         let flags = outgoing::player_input_flags(input);
         if flags != self.last_input_flags {
             if let Some(id) = self.ids.sb_play_player_input {
@@ -5734,13 +5928,13 @@ impl PlaySession {
         p.f32(self.player.yaw).f32(self.player.pitch).u8(move_flags);
         self.send(p)?;
         self.last_rot = (self.player.yaw, self.player.pitch);
-        if let (Some(s), Some(id)) = (steered, self.ids.sb_play_move_vehicle) {
+        if let (Some((s, pitch)), Some(id)) = (steered, self.ids.sb_play_move_vehicle) {
             let mut p = PacketWriter::packet(id);
             p.f64(s.x)
                 .f64(s.y)
                 .f64(s.z)
                 .f32(s.yaw)
-                .f32(0.0)
+                .f32(pitch)
                 .bool(s.on_ground);
             self.send(p)?;
             self.vehicle_moves_sent += 1;
@@ -6707,6 +6901,20 @@ pub struct SteeredBoat {
     /// The server's position for it, advanced by the move packets the client
     /// does not apply while it steers (`VecDeltaCodec.setBase`), and restored
     /// when the steering ends.
+    pub server_base: [f64; 3],
+}
+
+/// The horse the local player steers (M222).
+#[derive(Clone, Copy, Debug)]
+pub struct SteeredHorse {
+    pub id: i32,
+    /// The mount's simulated body: a [`physics::PlayerState`] whose
+    /// [`physics::Body`] is the horse's.
+    pub state: physics::PlayerState,
+    /// `playerJumpPendingScale`, set by the jump meter's release
+    /// (`onPlayerJump`) and spent on the ground (`executeRidersJump`).
+    pub jump_pending: f32,
+    /// As [`SteeredBoat::server_base`].
     pub server_base: [f64; 3],
 }
 

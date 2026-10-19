@@ -342,6 +342,22 @@ pub(super) struct RenderCheck {
     pub(super) boat_client_pos: Option<[f64; 3]>,
     pub(super) boat_server_pos: Option<[f64; 3]>,
     pub(super) boat_skip: Option<String>,
+    /// M222 — r88: the horse, whether the client steered it, how far W moved
+    /// it, its jumps and highest rise, the moves sent, the rejections, and the
+    /// server's position against the client's.
+    pub(super) horse: Option<i32>,
+    pub(super) horse_steered: bool,
+    pub(super) horse_moved: f64,
+    pub(super) horse_jumps: u64,
+    pub(super) horse_rise: f64,
+    pub(super) horse_moves_sent: u64,
+    pub(super) horse_rejections: u64,
+    pub(super) horse_client_pos: Option<[f64; 3]>,
+    pub(super) horse_server_pos: Option<[f64; 3]>,
+    pub(super) horse_skip: Option<String>,
+    /// Frames, and inventory-screen frames, inside the timed run (r16).
+    pub(super) timed_frames: u64,
+    pub(super) timed_screen_frames: u64,
     pub(super) inventory_preview_frames: u64,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
@@ -824,7 +840,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 87;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 88;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -945,8 +961,12 @@ impl RenderCheck {
         // reached" rather than on scheduling jitter.
         row(
             "r16 the inventory screen was drawn",
-            self.screen_frames * 4 >= self.frames && self.frames > 0,
-            format!("{} of {} frames", self.screen_frames, self.frames),
+            // M222 — of the TIMED run's frames: the tail's length varies.
+            self.timed_screen_frames * 4 >= self.timed_frames && self.timed_frames > 0,
+            format!(
+                "{} of {} timed frames",
+                self.timed_screen_frames, self.timed_frames
+            ),
         );
         // M88 — the gap M87 recorded and could not close from a headless gate.
         row(
@@ -1318,6 +1338,40 @@ impl RenderCheck {
                 self.boat_client_pos,
                 self.boat_server_pos,
                 self.boat_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
+            ),
+        );
+        // M222 — r88: the bot rides a summoned, tamed, saddled horse (fixed
+        // speed and jump strength) through the production right-click, holds
+        // W, then holds and releases the jump key: the client simulates the
+        // horse (`tickRidden` / `travel`) and fires `executeRidersJump` from
+        // the meter's release; no move is rejected and the server's own
+        // position for the horse, once it stands, is the client's.
+        let hagree = match (self.horse_client_pos, self.horse_server_pos) {
+            (Some(c), Some(s)) => (0..3).all(|i| (c[i] - s[i]).abs() < 0.1),
+            _ => false,
+        };
+        row(
+            "r88 the bot rode and jumped a real horse: the server accepted every move and agrees where it is",
+            self.horse_steered
+                && self.horse_moved > 2.0
+                && self.horse_jumps >= 1
+                && self.horse_rise > 0.5
+                && self.horse_moves_sent >= 20
+                && self.horse_rejections == 0
+                && hagree,
+            format!(
+                "horse {:?}: steered {}, moved {:.2} with W, {} jump(s) rising {:.2}, {} move_vehicle sent, \
+                 {} rejection(s), client {:?} server {:?} (agree {hagree}){}",
+                self.horse,
+                self.horse_steered,
+                self.horse_moved,
+                self.horse_jumps,
+                self.horse_rise,
+                self.horse_moves_sent,
+                self.horse_rejections,
+                self.horse_client_pos,
+                self.horse_server_pos,
+                self.horse_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
             ),
         );
         // r86 — the player preview belongs to the player's inventory only:
@@ -2151,6 +2205,15 @@ pub(crate) fn witness_seam_faults(names: &[&str], expected: usize) -> Vec<String
 }
 
 impl LiveApp {
+    /// Whether the render check is still inside its timed run (M222), not
+    /// the tail.
+    pub(super) fn in_timed_run(&self) -> bool {
+        let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+        self.started.elapsed().as_secs_f32() < limit
+    }
+}
+
+impl LiveApp {
     /// M86's gate drives the inventory open for the second half of its run.
     ///
     /// The screen is one of the paths the bake fix re-enables, and it is the
@@ -2475,6 +2538,7 @@ impl LiveApp {
                                 },
                             );
                             log::info!("render-check: sign witness at ({x},{y},{z})");
+                            self.sign_witness_pos = Some((x, y, z));
                         }
                     }
                     self.tab_list_injected = true;
@@ -3448,11 +3512,233 @@ impl LiveApp {
                             let _ = s.send_command("ride @s dismount");
                         }
                         self.boat_stage = 20;
+                        self.horse_tick0 = now;
                     } else if now >= self.boat_tick0 + 40 {
                         if let Some(c) = self.check.as_mut() {
                             c.boat_skip = Some("no /data reply".into());
                         }
                         self.boat_stage = 20;
+                        self.horse_tick0 = now;
+                    }
+                }
+                // r88 — M222's horse, after the boat.
+                if self.horse_stage > 0
+                    && self.horse_stage < 20
+                    && elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2
+                {
+                    if let Some(c) = self.check.as_mut() {
+                        c.horse_skip.get_or_insert_with(|| {
+                            format!("timed out in stage {}", self.horse_stage)
+                        });
+                    }
+                    self.keys.w = false;
+                    self.keys.jump = false;
+                    self.horse_stage = 20;
+                }
+                if self.horse_stage == 0
+                    && self.boat_stage >= 20
+                    && now >= self.horse_tick0 + 5
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_vehicle().is_none())
+                {
+                    let horse = self.session.as_ref().and_then(|s| {
+                        let want = s.entity_types.as_deref()?.id_of("minecraft:horse")?;
+                        s.world
+                            .entities
+                            .iter()
+                            // The summoned one: not r72's or the crowd's
+                            // injected horses, and saddled.
+                            .filter(|(id, e)| {
+                                e.type_id == want
+                                    && *id != 0x00A9_0000
+                                    && !CROWD_IDS.contains(id)
+                                    && s.world.entities.saddled(*id)
+                            })
+                            .map(|(id, e)| (id, e.x, e.y, e.z))
+                            .next()
+                    });
+                    match horse {
+                        Some((id, hx, hy, hz)) => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.horse = Some(id);
+                            }
+                            if let Some(s) = self.session.as_mut() {
+                                let _ =
+                                    s.send_command(&format!("tp @s {} {} {}", hx + 2.0, hy, hz));
+                            }
+                            self.horse_tick0 = now;
+                            self.horse_stage = 1;
+                        }
+                        None => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.horse_skip = Some("no summoned horse".into());
+                            }
+                            self.horse_stage = 20;
+                        }
+                    }
+                }
+                if self.horse_stage == 1 && now >= self.horse_tick0 + 8 {
+                    let id = self.check.as_ref().and_then(|c| c.horse);
+                    let aimed = id.zip(self.session.as_mut()).is_some_and(|(id, s)| {
+                        let Some(e) = s.world.entities.get(id) else {
+                            return false;
+                        };
+                        let (ex, ey, ez) = (e.x, e.y + 1.0, e.z);
+                        let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                        let d = [ex - eye[0], ey - eye[1], ez - eye[2]];
+                        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                        s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                        s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        true
+                    });
+                    let on_horse = self.session.as_ref().is_some_and(|s| {
+                        super::entities::frame_crosshair_hit(s, &self.etypes, 1.0).map(|h| h.id)
+                            == id
+                    });
+                    if aimed && on_horse && self.entity_click(winit::event::MouseButton::Right) {
+                        self.horse_tick0 = now;
+                        self.horse_stage = 2;
+                    } else if now >= self.horse_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.horse_skip = Some("the crosshair never reached the horse".into());
+                        }
+                        self.horse_stage = 20;
+                    }
+                }
+                if self.horse_stage == 2 {
+                    let steering = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.steered_horse)
+                        .map(|h| [h.state.x, h.state.y, h.state.z]);
+                    if let Some(start) = steering {
+                        if let Some(c) = self.check.as_mut() {
+                            c.horse_steered = true;
+                        }
+                        if let Some(s) = self.session.as_mut() {
+                            // West, away from the spawn's flood.
+                            s.player.yaw = 90.0;
+                            s.player.pitch = 0.0;
+                            self.horse_counts0 = (s.vehicle_moves_sent, s.vehicle_rejections);
+                            self.horse_jumps0 = s.ridden_jumps;
+                        }
+                        self.keys.w = true;
+                        self.horse_start = Some(start);
+                        self.horse_tick0 = now;
+                        self.horse_stage = 3;
+                    } else if now >= self.horse_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.horse_skip = Some("never steered the horse".into());
+                        }
+                        self.horse_stage = 20;
+                    }
+                }
+                if self.horse_stage == 3 && now >= self.horse_tick0 + 20 {
+                    self.keys.w = false;
+                    let pos = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.steered_horse)
+                        .map(|h| [h.state.x, h.state.y, h.state.z]);
+                    if let (Some(c), Some(p), Some(st)) =
+                        (self.check.as_mut(), pos, self.horse_start)
+                    {
+                        c.horse_moved = ((p[0] - st[0]).powi(2) + (p[2] - st[2]).powi(2)).sqrt();
+                    }
+                    // Hold the jump key for the riding meter, then release.
+                    self.keys.jump = true;
+                    self.horse_tick0 = now;
+                    self.horse_stage = 4;
+                }
+                if self.horse_stage == 4 {
+                    if now >= self.horse_tick0 + 12 {
+                        self.keys.jump = false;
+                    }
+                    let (y, ground_y) = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.steered_horse)
+                        .map_or((0.0, 0.0), |h| {
+                            (h.state.y, self.horse_start.map_or(h.state.y, |st| st[1]))
+                        });
+                    if let Some(c) = self.check.as_mut() {
+                        c.horse_rise = c.horse_rise.max(y - ground_y);
+                    }
+                    let (jumps, still) = self
+                        .session
+                        .as_ref()
+                        .map(|s| {
+                            (
+                                s.ridden_jumps,
+                                s.steered_horse.is_some_and(|h| {
+                                    h.state.on_ground
+                                        && h.state.vx.abs() < 0.003
+                                        && h.state.vz.abs() < 0.003
+                                }),
+                            )
+                        })
+                        .unwrap_or((0, false));
+                    // Ten ticks standing after the landing, so the server has
+                    // the final position before it is asked.
+                    if !still {
+                        self.horse_still_since = now;
+                    }
+                    let settled = still && now >= self.horse_still_since + 10;
+                    if (jumps > self.horse_jumps0 && settled && now >= self.horse_tick0 + 25)
+                        || now >= self.horse_tick0 + 100
+                    {
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command(
+                                "data get entity @e[type=minecraft:horse,limit=1,sort=nearest] Pos",
+                            );
+                        }
+                        let snap = self.session.as_ref().map(|s| {
+                            (
+                                s.steered_horse.map(|h| [h.state.x, h.state.y, h.state.z]),
+                                s.vehicle_moves_sent,
+                                s.vehicle_rejections,
+                                s.ridden_jumps,
+                            )
+                        });
+                        if let (Some((pos, moves, rej, jumps)), Some(c)) =
+                            (snap, self.check.as_mut())
+                        {
+                            c.horse_client_pos = pos;
+                            c.horse_moves_sent = moves - self.horse_counts0.0;
+                            c.horse_rejections = rej - self.horse_counts0.1;
+                            c.horse_jumps = jumps - self.horse_jumps0;
+                        }
+                        self.horse_tick0 = now;
+                        self.horse_stage = 5;
+                    }
+                }
+                if self.horse_stage == 5 {
+                    let reply = self.session.as_ref().and_then(|s| {
+                        s.chat_log
+                            .iter()
+                            .rev()
+                            .find(|l| l.contains("Horse has the following entity data"))
+                            .cloned()
+                    });
+                    if let Some(line) = reply {
+                        let nums: Vec<f64> = line
+                            .split(['[', ']', ','])
+                            .filter_map(|t| t.trim().trim_end_matches('d').parse::<f64>().ok())
+                            .collect();
+                        if let (3, Some(c)) = (nums.len(), self.check.as_mut()) {
+                            c.horse_server_pos = Some([nums[0], nums[1], nums[2]]);
+                        }
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command("ride @s dismount");
+                        }
+                        self.horse_stage = 20;
+                    } else if now >= self.horse_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.horse_skip = Some("no /data reply".into());
+                        }
+                        self.horse_stage = 20;
                     }
                 }
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
@@ -3950,6 +4236,24 @@ impl LiveApp {
                                 rewo_proto::varint::write_varint(&mut pass, 1);
                                 rewo_proto::varint::write_varint(&mut pass, me);
                                 session.inject_packet(session.ids.cb_play_set_passengers, &pass);
+                                // M222 — the client now steers a saddled horse
+                                // its player rides, and this one exists only
+                                // here: a movement speed of 0 keeps r82's held
+                                // W from walking it (and the bot) away.
+                                let speed = session.attribute_registry.as_deref().and_then(|r| {
+                                    r.id_of("movement_speed")
+                                        .or_else(|| r.id_of("minecraft:movement_speed"))
+                                });
+                                if let Some(attr) = speed {
+                                    let mut at: Vec<u8> = Vec::new();
+                                    rewo_proto::varint::write_varint(&mut at, HORSE_EID);
+                                    rewo_proto::varint::write_varint(&mut at, 1);
+                                    rewo_proto::varint::write_varint(&mut at, attr);
+                                    at.extend_from_slice(&0.0f64.to_be_bytes());
+                                    rewo_proto::varint::write_varint(&mut at, 0);
+                                    session
+                                        .inject_packet(session.ids.cb_play_update_attributes, &at);
+                                }
                             }
                         }
                     }
@@ -4163,7 +4467,10 @@ impl LiveApp {
                 // M169 — hold Space for a tenth of the run while mounted on
                 // the staged horse: the meter climbs for ~16 ticks and the
                 // release sends `START_RIDING_JUMP`. A level, like Tab.
-                self.keys.jump = elapsed >= limit * 0.32 && elapsed < limit * 0.46;
+                // Only in the timed run: the tail (r88) drives the key itself.
+                if elapsed < limit {
+                    self.keys.jump = elapsed >= limit * 0.32 && elapsed < limit * 0.46;
+                }
             }
             // M162 — the two packet tails that carry a sound. Both call sites
             // live inside `PlaySession`, which owns a socket and cannot be
@@ -4668,13 +4975,17 @@ impl LiveApp {
             if !self.sign_editor_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.80 {
+                    let witness = self.sign_witness_pos;
                     if let Some(session) = self.session.as_mut() {
+                        // Where the witness was staged (M222: the bot can
+                        // have moved since — its client-side horse is now
+                        // steered, and r72's riding jump nudges it).
                         let (dx, dy, dz) = SIGN_WITNESS_OFFSET;
-                        let (x, y, z) = (
+                        let (x, y, z) = witness.unwrap_or((
                             session.player.x.floor() as i32 + dx,
                             session.player.y.floor() as i32 + dy,
                             session.player.z.floor() as i32 + dz,
-                        );
+                        ));
                         // Packed BlockPos: x<<38 | z<<12 | y — the packing
                         // `sign_update_body` writes and `position()` reads.
                         let packed: u64 = (((x as i64 & 0x3ff_ffff) as u64) << 38)

@@ -58,8 +58,8 @@ a self-check path.
   adds a render path. Validation is `cfg!(debug_assertions)`-gated for `live`,
   so run a **debug** build. M86 found nine features that had never rendered in
   the windowed client while every headless gate was green. A **tail** runs
-  after the timed 8 s (`RENDER_CHECK_TAIL_SECONDS` caps it at 3 s): r83's bed
-  and r84-r86's donkey and inventory live there, because a sleeping player is
+  after the timed 8 s (`RENDER_CHECK_TAIL_SECONDS` caps it at 15 s): r83's
+  bed, r84-r86's donkey and inventory, r87's boat and r88's horse live there, because a sleeping player is
   immobile and every timed slot already holds a screen or a key. Witnesses
   that click an entity check what the production pick hit first (r71's item
   frame and r72's horse each took a click meant for something else).
@@ -116,7 +116,10 @@ a self-check path.
   `isLocalInstanceAuthoritative`): the session simulates it
   (`rewo_world::boat`), places it with `EntityState::set_simulated`, and
   server move packets for it only advance `SteeredBoat::server_base`; a
-  server `move_vehicle` or teleport snaps it and is answered.
+  server `move_vehicle` or teleport snaps it and is answered. A horse (M222)
+  runs the player physics with its own `physics::Body` through
+  `tick_ridden`; the render check's injected horse is held still with
+  `movement_speed` 0 for that reason.
 - **One accessor per concept.** When two call sites each compute "which menu",
   "which origin" or "which conversion", they drift (M89, M106b, M112, M151).
 - **The M-numbers aren't a contiguous index** (M52, M61, M64, M66, M68 each

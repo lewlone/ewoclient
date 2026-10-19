@@ -114,6 +114,13 @@ PRECMD = (
     # client rides it and steers it with the production keys.
     "fill ~5 ~-1 ~4 ~9 ~-1 ~18 minecraft:water;"
     "summon minecraft:oak_boat ~7 ~ ~6 {Rotation:[0f,0f]};"
+    # M222 -- r88. A tamed, saddled horse with a fixed speed and jump
+    # strength, standing still, well away from the spawn's flood: the client
+    # rides it, walks it west and jumps it.
+    "summon minecraft:horse ~-10 ~ ~8 {Tame:1b,NoAI:1b,"
+    "equipment:{saddle:{id:\"minecraft:saddle\",count:1}},"
+    "attributes:[{id:\"minecraft:movement_speed\",base:0.3},"
+    "{id:\"minecraft:jump_strength\",base:0.7}]};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

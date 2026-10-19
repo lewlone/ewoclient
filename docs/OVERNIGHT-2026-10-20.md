@@ -103,6 +103,11 @@ released.
   boat model yet (boats are a placeholder blob), and sitting in one used to
   black out the view; that's fixed for now, and a real boat model is next.
   Horses next after that.
+- **M222**: you can ride horses (also donkeys, mules, skeleton and zombie
+  horses): walk, strafe, back up slowly, and jump with the jump bar, as
+  vanilla does. Checked live: a horse walked twelve blocks at vanilla's speed,
+  jumped three blocks high, and the server agreed exactly where it ended up.
+  Camels and the nautilus are not done yet.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -155,6 +160,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M222)* | **M222** — horse steering: `physics::Body` and `tick_ridden` (`travelRidden`, `executeRidersJump`), the steered horse in the session with its own attributes, the jump meter's release as `onPlayerJump`; the render check's injected horse held still, r63 at its staged witness, r72's jump level and r16's ratio limited to the timed run; render-check **r88**. |
 | `26559a9` | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
 
 ## Decisions made
@@ -261,10 +267,10 @@ released.
    modelled, recorded: the lying-down camera, and gravity while asleep (the
    client settles 0.125 onto the bed; the server allows it).
 24. **M220 moved r83 into a new render-check tail** (after the timed 8 s,
-   capped at 3 s more). Its first home before the options pages kept missing
-   its 0.11 deadline on slower runs, and its teleport there is the likeliest
-   cause of r78's two flakes (none in the six runs since the move). The tail
-   costs about 1.5 s per run and holds r83-r86.
+   now capped at 15 s more). Its first home before the options pages kept
+   missing its 0.11 deadline on slower runs. (It was also suspected of causing
+   r78's flakes; r78 failed again later without it, so that was wrong.) The
+   tail costs about 9 s per run and holds r83-r88.
 25. **The horse screen's window stays empty** instead of showing the mount
    (vanilla draws it there, following the mouse). Building a single entity's
    draw outside the world pass is a refactor of `collect_entities`; it is
@@ -328,6 +334,11 @@ released.
   gates **51/51** (demo hash unchanged); render check **87/87** on every run
   since r87 landed (three); clippy (gates and default features) and
   `cargo fmt --check` clean.
+- After M222: **4,308 tests, 0 failed; gates 51/51** (demo hash unchanged);
+  render check **88/88** on two consecutive runs (earlier runs while it was
+  built found the injected-horse, jump-key and r16-ratio issues the §15
+  entry lists); clippy (gates and default features) and `cargo fmt --check`
+  clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -355,8 +366,15 @@ released.
   `player_action` or `player_command` the client never sends, or a packet it
   has no id for): ~~dropping items (Q), swapping hands (F), middle-click
   pick block, sprint start/stop~~ (M218), ~~leaving a bed~~ (M219), ~~the
-  horse inventory~~ (M220), ~~steering boats~~ (M221); still open: steering
-  horses (M222, next).
+  horse inventory~~ (M220), ~~steering boats~~ (M221), ~~steering horses~~
+  (M222); still open: camels (their own dash and riding speed) and the
+  nautilus (a water mount).
+- r78 (survival mining against the server) has failed three times in about
+  fifteen runs, in different positions, with the client's tick count right:
+  the server leaves the leaves standing until r78's 0.28 deadline. The
+  bed-teleport explanation in decision 24 did not hold (it failed again with
+  r83 moved to the tail). Unexplained; its message now prints the client's
+  state at the press.
 - A boat model: boats (and rafts, chest boats) draw as the placeholder
   capsule.
 - `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once

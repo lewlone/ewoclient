@@ -827,6 +827,22 @@ struct LiveApp {
     boat_start: Option<[f64; 2]>,
     #[cfg(feature = "gates")]
     boat_yaw0: f32,
+    /// r88's tail stage (M222), the tick a step began, the starting point.
+    #[cfg(feature = "gates")]
+    horse_stage: u8,
+    #[cfg(feature = "gates")]
+    horse_tick0: u64,
+    #[cfg(feature = "gates")]
+    horse_start: Option<[f64; 3]>,
+    #[cfg(feature = "gates")]
+    horse_counts0: (u64, u64),
+    /// Where r63's sign witness was staged.
+    #[cfg(feature = "gates")]
+    sign_witness_pos: Option<(i32, i32, i32)>,
+    #[cfg(feature = "gates")]
+    horse_jumps0: u64,
+    #[cfg(feature = "gates")]
+    horse_still_since: u64,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1156,6 +1172,20 @@ fn run_windowed(
         #[cfg(feature = "gates")]
         boat_yaw0: 0.0,
         #[cfg(feature = "gates")]
+        horse_stage: 0,
+        #[cfg(feature = "gates")]
+        horse_tick0: 0,
+        #[cfg(feature = "gates")]
+        horse_start: None,
+        #[cfg(feature = "gates")]
+        horse_counts0: (0, 0),
+        #[cfg(feature = "gates")]
+        sign_witness_pos: None,
+        #[cfg(feature = "gates")]
+        horse_jumps0: 0,
+        #[cfg(feature = "gates")]
+        horse_still_since: 0,
+        #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
         lectern_shown: None,
@@ -1338,7 +1368,7 @@ const RENDER_CHECK_SECONDS: f32 = 8.0;
 
 /// The most the render check's tail (M220's r84/r85, run after the timed
 /// part) may add before the run ends regardless.
-const RENDER_CHECK_TAIL_SECONDS: f32 = 7.0;
+const RENDER_CHECK_TAIL_SECONDS: f32 = 15.0;
 
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {

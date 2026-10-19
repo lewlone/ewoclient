@@ -2047,6 +2047,7 @@ this shape once.
 | M220 (2026-10-19) — riding the donkey, the inventory key asks the server, which opens it | **r85** | — | — |
 | M220 (2026-10-19) — the player preview draws in the inventory and in no container screen | **r86** | — | — |
 | M221 (2026-10-19) — the bot steers a real boat; the server accepts every move and agrees where it is | **r87** | — | — |
+| M222 (2026-10-19) — the bot rides and jumps a real horse; the server accepts every move and agrees where it is | **r88** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3881,6 +3882,52 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M222 — steering a horse (2026-10-19)
+
+A horse is a `LivingEntity` whose `travel` is the player's own with the
+horse's size and attributes, so its simulation is the player physics with two
+generalisations:
+
+- **`physics::Body`** on `PlayerState`: a mount's registered box and eye
+  height (`None` is the player, sized by its pose). Only `aabb` and
+  `eye_height` read it.
+- **`physics::tick_ridden`**: `LivingEntity.aiStep` for a non-player (the
+  per-axis 0.003 clamp; no jump key, a mount's `jumping` is AI-driven), then
+  `travelRidden`: `getRiddenInput` (half the strafe, a quarter of the backward
+  input), `tickRidden` (the mount takes the rider's yaw and half its pitch; a
+  pending jump fires on the ground as `executeRidersJump`: `jump_strength ·
+  scale · blockJumpFactor + jumpBoost` up, `0.4 · scale` forward while moving
+  forward), and `travel` at the mount's `movement_speed` with
+  `getFlyingSpeed`'s tenth of it in the air. `jump_pending_scale` is
+  `PlayerRideableJumping.getPlayerJumpPendingScale`.
+- **The session** (`tick_steered_horse`): a saddled `AbstractHorse` other
+  than a camel whose first passenger is the local player; its attributes from
+  its own `update_attributes`, else its type's supplier defaults
+  (`move_attributes_for_entity`); the same base / rejection / passenger-packet
+  handling as M221's boat. The jump meter's release (M169) now also does
+  `onPlayerJump`, held until after the horse's tick, which is vanilla's order
+  (the rider's `aiStep` reads the release after the vehicle has ticked).
+
+**r88** (in the tail): a summoned tame, saddled horse (speed 0.3, jump 0.7)
+ridden by the production right-click, walked west for 20 ticks (11.85 blocks:
+0.66 a tick at the end, vanilla's horse speed for 0.3), jumped through the
+riding meter (it rose 3.12, the tick-by-tick sum for a full-scale jump at
+0.7), no rejection, and the server's position once it had stood ten ticks is
+the client's exactly. The first run disagreed by half a block in y: the query
+raced the landing.
+
+**Found on the way**: the client now steers r72's client-side horse too
+(it is saddled and the bot rides it), so r82's held W walked the bot away
+and r63's sign injection missed its block entity; the injected horse now gets
+`movement_speed` 0, and r63 opens the editor where the witness was staged.
+r72's per-frame jump-key level is limited to the timed run (it switched the
+key off for the whole tail), and r16's 25 % is measured over the timed frames.
+
+Not modelled, recorded: rearing (`isStanding` freezes the input), the
+camel's own riding, the nautilus, a mount's eye height (the default `0.85 ·
+height`; only the eye-in-water test reads it), and jump-boost effects on the
+mount. 88/88.
 
 ### M221 — steering a boat (2026-10-19)
 

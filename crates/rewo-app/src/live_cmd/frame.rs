@@ -1063,8 +1063,12 @@ impl LiveApp {
                 .get_or_insert_with(|| GuiItemState::new(baked));
             if self.screen.inventory_open() {
                 #[cfg(feature = "gates")]
+                let timed = self.started.elapsed().as_secs_f32()
+                    < self.run_seconds.unwrap_or(super::RENDER_CHECK_SECONDS);
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     c.screen_frames += 1;
+                    c.timed_screen_frames += u64::from(timed);
                 }
                 let beacon_override = session
                     .menus
@@ -2256,8 +2260,11 @@ impl LiveApp {
         #[cfg(feature = "gates")]
         let baked_live = self.baked.is_some();
         #[cfg(feature = "gates")]
+        let timed = self.in_timed_run();
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             c.frames += 1;
+            c.timed_frames += u64::from(timed);
             c.baked_frames += u64::from(baked_live);
             c.sample_rings(world_renderer);
             c.gui_items_ready |= world_renderer.gui_items_ready();
@@ -2323,8 +2330,8 @@ impl LiveApp {
             // run, when nothing else holds the screen; it gets up to
             // `RENDER_CHECK_TAIL_SECONDS` more and the run ends when it is done.
             #[cfg(feature = "gates")]
-            let tail_done =
-                self.check.is_none() || (self.mount_stage >= 20 && self.boat_stage >= 20);
+            let tail_done = self.check.is_none()
+                || (self.mount_stage >= 20 && self.boat_stage >= 20 && self.horse_stage >= 20);
             #[cfg(not(feature = "gates"))]
             let tail_done = true;
             if elapsed >= limit && (tail_done || elapsed >= limit + RENDER_CHECK_TAIL_SECONDS) {

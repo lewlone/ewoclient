@@ -172,6 +172,25 @@ pub fn move_attributes(
     })
 }
 
+/// A mount's movement attributes (M222): the entity's own `update_attributes`
+/// values, else its type's `AttributeSupplier` default (a horse's 0.225
+/// speed and 1.0 step height, not the player's).
+pub fn move_attributes_for_entity(
+    reg: &rewo_data::attributes::AttributeRegistry,
+    attrs: Option<&rewo_world::attributes::EntityAttributes>,
+    entity_name: &str,
+) -> rewo_world::physics::MoveAttributes {
+    fill_move_attributes(|name| {
+        let id = reg.id_of(name)?;
+        match attrs.and_then(|a| a.get(id)) {
+            Some(inst) => Some(value_without_sprint(inst, reg.def(id)?)),
+            None => reg
+                .default_base(entity_name, &format!("minecraft:{name}"))
+                .or_else(|| reg.default_base(entity_name, name)),
+        }
+    })
+}
+
 fn fill_move_attributes(
     value: impl Fn(&str) -> Option<f64>,
 ) -> rewo_world::physics::MoveAttributes {

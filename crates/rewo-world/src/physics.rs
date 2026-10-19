@@ -272,6 +272,18 @@ pub struct PlayerState {
     /// `LocalPlayer.crouching` — the auto-crouching flag, **not** the shift
     /// key (`TickInput::sneak`).
     pub crouching: bool,
+    /// M222 — a body other than the player's: the box and eye of the mount
+    /// [`tick_ridden`] moves. `None` is the player, sized by [`Self::pose`].
+    pub body: Option<Body>,
+}
+
+/// An entity's registered dimensions (M222): `EntityDimensions.width`,
+/// `height` and eye height, for a body [`tick_ridden`] moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Body {
+    pub width: f64,
+    pub height: f64,
+    pub eye: f64,
 }
 
 impl PlayerState {
@@ -299,12 +311,17 @@ impl PlayerState {
             pose: Pose::Standing,
             swimming: false,
             crouching: false,
+            body: None,
         }
     }
 
-    /// `Entity.getEyeHeight()` — the current pose's eye height.
+    /// `Entity.getEyeHeight()` — the current pose's eye height (or the
+    /// body's, for a mount).
     pub fn eye_height(&self) -> f64 {
-        dimensions(self.pose).2
+        match self.body {
+            Some(b) => b.eye,
+            None => dimensions(self.pose).2,
+        }
     }
 
     pub fn eye_y(&self) -> f64 {
@@ -326,9 +343,23 @@ impl PlayerState {
         self.crouching || (self.pose == Pose::Swimming && !self.in_water())
     }
 
-    /// `Entity.getBoundingBox` for the current pose.
+    /// `Entity.getBoundingBox` for the current pose (or the body's box).
     fn aabb(&self) -> Aabb {
-        pose_box(self.pose, self.x, self.y, self.z)
+        match self.body {
+            // `makeBoundingBox`: the half width in `float`.
+            Some(b) => {
+                let h = (b.width as f32 / 2.0) as f64;
+                [
+                    self.x - h,
+                    self.y,
+                    self.z - h,
+                    self.x + h,
+                    self.y + b.height,
+                    self.z + h,
+                ]
+            }
+            None => pose_box(self.pose, self.x, self.y, self.z),
+        }
     }
 
     fn block_pos(&self) -> [i32; 3] {
@@ -500,6 +531,116 @@ pub fn tick_env(
 
     // -- Player.tick's tail: updatePlayerPose, after the move ---------------
     update_player_pose(state, input, flying, no_clip, world, border);
+}
+
+/// The rider's side of `LivingEntity.travelRidden` for a mount (M222): the
+/// controller's `xxa` / `zza` and its rotation.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RiddenInput {
+    /// The rider's `zza`: +1 forward, -1 back.
+    pub forward: f32,
+    /// The rider's `xxa`: +1 left.
+    pub strafe: f32,
+    pub rider_yaw: f32,
+    pub rider_pitch: f32,
+}
+
+/// `PlayerRideableJumping.getPlayerJumpPendingScale` — the release of the
+/// jump meter, `floor(scale * 100)`, as `AbstractHorse.onPlayerJump` stores it.
+pub fn jump_pending_scale(jump_amount: i32) -> f32 {
+    let amount = jump_amount.max(0);
+    if amount >= 90 {
+        1.0
+    } else {
+        0.4 + 0.4 * amount as f32 / 90.0
+    }
+}
+
+/// One tick of an `AbstractHorse` the local player rides (M222):
+/// `LivingEntity.aiStep` for a non-player (the per-axis small-motion clamp,
+/// no jump key — a mount's `jumping` is AI-driven), then `travelRidden`:
+/// `getRiddenInput` (half the strafe, a quarter of the backward speed),
+/// `tickRidden` (the mount takes the rider's yaw and half its pitch, and a
+/// pending jump fires the first tick it is on the ground —
+/// `executeRidersJump`), and `travel` at the mount's `movement_speed` with
+/// `getFlyingSpeed`'s tenth of it in the air.
+///
+/// `state.body` must be the mount's. Returns whether the jump fired.
+/// Not modelled: rearing (`isStanding` zeroes the input while the mount
+/// rears).
+pub fn tick_ridden(
+    state: &mut PlayerState,
+    input: RiddenInput,
+    jump_pending: &mut f32,
+    attrs: &MoveAttributes,
+    border: Option<BorderCollision>,
+    world: &dyn PhysicsWorld,
+) -> bool {
+    // -- Entity.baseTick: fluid interaction ---------------------------------
+    update_fluids(state, world, true, attrs.fast_lava);
+    if state.in_water() {
+        state.fall_distance = 0.0;
+    }
+    if state.in_lava() {
+        state.fall_distance *= 0.5;
+    }
+    // -- LivingEntity.aiStep: a non-player clamps each axis on its own ------
+    if state.no_jump_delay > 0 {
+        state.no_jump_delay -= 1;
+    }
+    if state.vx.abs() < MIN_MOVEMENT_DISTANCE {
+        state.vx = 0.0;
+    }
+    if state.vz.abs() < MIN_MOVEMENT_DISTANCE {
+        state.vz = 0.0;
+    }
+    if state.vy.abs() < MIN_MOVEMENT_DISTANCE {
+        state.vy = 0.0;
+    }
+    state.no_jump_delay = 0;
+    // -- travelRidden: getRiddenInput ---------------------------------------
+    let sideways = input.strafe * 0.5;
+    let mut forward = input.forward;
+    if forward <= 0.0 {
+        forward *= 0.25;
+    }
+    // -- tickRidden ---------------------------------------------------------
+    state.yaw = input.rider_yaw;
+    state.pitch = input.rider_pitch * 0.5;
+    let mut jumped = false;
+    if state.on_ground {
+        if *jump_pending > 0.0 {
+            // `executeRidersJump(playerJumpPendingScale, riddenInput)`.
+            let amount = *jump_pending;
+            let boost = attrs.jump_boost.map_or(0.0, |a| 0.1 * (a as f32 + 1.0));
+            let power =
+                attrs.jump_strength as f32 * amount * block_jump_factor(state, world) + boost;
+            state.vy = power as f64;
+            if forward > 0.0 {
+                let rad = state.yaw * (std::f64::consts::PI / 180.0) as f32;
+                state.vx += (-0.4f32 * mth_sin(rad) * amount) as f64;
+                state.vz += (0.4f32 * mth_cos(rad) * amount) as f64;
+            }
+            jumped = true;
+        }
+        *jump_pending = 0.0;
+    }
+    // -- travel at getRiddenSpeed ------------------------------------------
+    let keys = TickInput::default();
+    let mut ctx = Ctx {
+        world,
+        attrs,
+        border,
+        input: &keys,
+        no_clip: false,
+        flying: false,
+        // `LivingEntity.getFlyingSpeed`: a player-controlled mount's
+        // `getSpeed() * 0.1F`.
+        air_speed: attrs.movement_speed as f32 * 0.1,
+    };
+    travel(state, &mut ctx, sideways, forward);
+    apply_stuck(state, world, false);
+    jumped
 }
 
 struct Ctx<'a> {
@@ -4229,5 +4370,135 @@ mod tests {
                  on_ground={on_ground} in_water={in_water} levitating={levitating} glider={glider}"
             );
         }
+    }
+
+    /// M222 — a ridden horse on flat stone: forward at the horse's own
+    /// `movement_speed` (0.3375 here, a fast horse) through `travelInAir`'s
+    /// ground arm, so the terminal speed is `speed * 0.216 / 0.6^3 / (1 -
+    /// 0.6 * 0.91)` a tick; backward is a quarter of the input; the mount
+    /// takes the rider's yaw.
+    #[test]
+    fn a_ridden_horse_walks_at_its_own_speed() {
+        let shapes = |_x: i32, y: i32, _z: i32| -> &'static [[f32; 6]] {
+            if y < 0 {
+                FULL
+            } else {
+                &[]
+            }
+        };
+        let world = ShapesOnly { shapes: &shapes };
+        let attrs = MoveAttributes {
+            movement_speed: 0.3375,
+            step_height: 1.0,
+            jump_strength: 0.7,
+            ..MoveAttributes::default()
+        };
+        let mut horse = PlayerState::at(0.5, 0.0, 0.5);
+        horse.body = Some(Body {
+            width: 1.3964844,
+            height: 1.6,
+            eye: 1.52,
+        });
+        horse.on_ground = true;
+        let mut pending = 0.0;
+        let fwd = RiddenInput {
+            forward: 1.0,
+            strafe: 0.0,
+            rider_yaw: 0.0,
+            rider_pitch: 10.0,
+        };
+        for _ in 0..60 {
+            tick_ridden(&mut horse, fwd, &mut pending, &attrs, None, &world);
+        }
+        assert_eq!(horse.pitch, 5.0, "half the rider's pitch");
+        let accel = 0.3375f32 * (0.21600002f32 / (0.6f32 * 0.6 * 0.6));
+        let terminal = accel as f64 / (1.0 - (0.6f32 * 0.91f32) as f64);
+        assert!(
+            (horse.vz - terminal * (0.6f32 * 0.91f32) as f64).abs() < 1e-3,
+            "vz {} against the terminal {}",
+            horse.vz,
+            terminal
+        );
+        // Backward: a quarter.
+        let mut back = PlayerState::at(0.5, 0.0, 0.5);
+        back.body = horse.body;
+        back.on_ground = true;
+        let bwd = RiddenInput {
+            forward: -1.0,
+            ..fwd
+        };
+        for _ in 0..60 {
+            tick_ridden(&mut back, bwd, &mut pending, &attrs, None, &world);
+        }
+        assert!(
+            (back.vz / horse.vz + 0.25).abs() < 1e-3,
+            "{} vs {}",
+            back.vz,
+            horse.vz
+        );
+    }
+
+    /// `executeRidersJump`: on the ground with a pending scale, the vertical
+    /// speed is `jump_strength * scale` (stone's jump factor is 1), plus the
+    /// forward push `0.4 * scale` along the yaw when moving forward; the
+    /// pending scale is consumed. `jump_pending_scale` is vanilla's ramp.
+    #[test]
+    fn a_ridden_jump_follows_execute_riders_jump() {
+        assert_eq!(jump_pending_scale(100), 1.0);
+        assert_eq!(jump_pending_scale(90), 1.0);
+        assert!((jump_pending_scale(45) - 0.6).abs() < 1e-6);
+        assert_eq!(jump_pending_scale(-5), 0.4);
+        let shapes = |_x: i32, y: i32, _z: i32| -> &'static [[f32; 6]] {
+            if y < 0 {
+                FULL
+            } else {
+                &[]
+            }
+        };
+        let world = ShapesOnly { shapes: &shapes };
+        let attrs = MoveAttributes {
+            jump_strength: 0.7,
+            step_height: 1.0,
+            ..MoveAttributes::default()
+        };
+        let mut horse = PlayerState::at(0.5, 0.0, 0.5);
+        horse.body = Some(Body {
+            width: 1.3964844,
+            height: 1.6,
+            eye: 1.52,
+        });
+        horse.on_ground = true;
+        let mut pending = 1.0;
+        let fwd = RiddenInput {
+            forward: 1.0,
+            strafe: 0.0,
+            rider_yaw: 0.0,
+            rider_pitch: 0.0,
+        };
+        let y0 = horse.y;
+        assert!(tick_ridden(
+            &mut horse,
+            fwd,
+            &mut pending,
+            &attrs,
+            None,
+            &world
+        ));
+        assert_eq!(pending, 0.0);
+        // After the tick's own move and gravity: 0.7 moved, then (0.7 - 0.08) * 0.98.
+        assert!((horse.y - y0 - 0.7).abs() < 1e-6, "rose {}", horse.y - y0);
+        assert!(
+            (horse.vy - (0.7f32 as f64 - 0.08) * 0.98f32 as f64).abs() < 1e-6,
+            "vy {}",
+            horse.vy
+        );
+        // The push (0.4 * 1.0) and that tick's ground thrust (the default
+        // speed 0.1 on stone), then stone's friction 0.6 * 0.91.
+        let expect = (0.4f32 as f64 + 0.1f32 as f64) * (0.6f32 * 0.91f32) as f64;
+        assert!(
+            (horse.vz - expect).abs() < 1e-6,
+            "the forward push: {} vs {expect}",
+            horse.vz
+        );
     }
 }
