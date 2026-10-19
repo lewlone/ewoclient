@@ -1702,6 +1702,112 @@ pub(crate) fn to_gpu_held_items(
     }
 }
 
+/// M241 — every fishing line this frame: for each bobber whose owner
+/// (`spawn_data`, `FishingHook.getPlayerOwner`) is a known player, the line
+/// from the hook to the hand that holds the rod. The local player's hand is
+/// `FishingHookRenderer.getPlayerHandPos`'s first-person point: the camera's
+/// near-plane point `(invert · 0.525, −0.1)` scaled by `960 / fov` and turned
+/// by the swing; another player's is the body-yaw offset from its eye.
+/// Recorded: a remote owner's swing and crouch offsets are not applied.
+pub(super) fn collect_fishing_lines(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    items: &rewo_data::items::Items,
+    alpha: f32,
+    fov: f32,
+    (width, height): (f32, f32),
+) -> Vec<rewo_gpu::leash::LeashVertex> {
+    use rewo_world::entities::{HandItem, HumanoidArm, InteractionHand};
+    let Some(bobber) = etypes.id_of("minecraft:fishing_bobber") else {
+        return Vec::new();
+    };
+    let eye = player_eye(session);
+    let eye = [eye[0] as f64, eye[1] as f64, eye[2] as f64];
+    let world_per_px = 2.0 * (fov.to_radians() / 2.0).tan() / height.max(1.0);
+    let width_px = (width / 1920.0 * 2.5).max(2.5);
+    let is_rod =
+        |item: Option<i32>| item.and_then(|i| items.name(i)) == Some("minecraft:fishing_rod");
+    let mut out = Vec::new();
+    for (_, e) in session.world.entities.iter() {
+        if e.type_id != bobber {
+            continue;
+        }
+        let owner = e.spawn_data;
+        let hook = e.render_pos(alpha);
+        let hand = if Some(owner) == session.player_id {
+            // `getHoldingArm`: the main arm when the main hand holds the
+            // rod, else the other one (the local main arm is the default
+            // right).
+            let invert = if is_rod(session.inventory.held().map(|s| s.item_id)) {
+                1.0
+            } else {
+                -1.0
+            };
+            let swing = session.local_attack_anim(alpha);
+            let swing = (swing.sqrt() * std::f32::consts::PI).sin();
+            let bb = |v: [f32; 3]| {
+                rewo_gpu::entities::Billboard {
+                    cam_yaw: session.player.yaw,
+                    cam_pitch: session.player.pitch,
+                    scale: 1.0,
+                }
+                .place(v)
+            };
+            let (forwards, up, left) = (
+                bb([0.0, 0.0, -1.0]),
+                bb([0.0, 1.0, 0.0]),
+                bb([-1.0, 0.0, 0.0]),
+            );
+            let aspect = width / height.max(1.0);
+            let plane_h = (fov.to_radians() / 2.0).tan() * 0.05;
+            let plane_w = plane_h * aspect;
+            let (px, py) = (invert * 0.525, -0.1f32);
+            let k = 960.0 / fov;
+            let mut v: [f32; 3] = std::array::from_fn(|i| {
+                (forwards[i] * 0.05 + up[i] * plane_h * py - left[i] * plane_w * px) * k
+            });
+            // `Vec3.yRot(swing * 0.5)` then `xRot(-swing * 0.7)`.
+            let (sy, cy) = (swing * 0.5).sin_cos();
+            v = [v[0] * cy + v[2] * sy, v[1], v[2] * cy - v[0] * sy];
+            let (sx, cx) = (-swing * 0.7).sin_cos();
+            v = [v[0], v[1] * cx + v[2] * sx, v[2] * cx - v[1] * sx];
+            [
+                eye[0] + v[0] as f64,
+                eye[1] + v[1] as f64,
+                eye[2] + v[2] as f64,
+            ]
+        } else {
+            let Some(o) = session.world.entities.get(owner) else {
+                continue;
+            };
+            let main_rod = matches!(
+                session.world.entities.hand_item(owner, InteractionHand::MainHand),
+                HandItem::Held(h) if is_rod(Some(h.item_id))
+            );
+            let main_right = session.world.entities.main_arm(owner) == HumanoidArm::Right;
+            let invert = if main_rod == main_right { 1.0 } else { -1.0 };
+            let p = o.render_pos(alpha);
+            let yaw = o.yaw.to_radians();
+            let (sin, cos) = (yaw.sin() as f64, yaw.cos() as f64);
+            let right = invert * 0.35;
+            let forward = 0.8;
+            [
+                p[0] - cos * right - sin * forward,
+                p[1] + 1.62 - 0.45,
+                p[2] - sin * right + cos * forward,
+            ]
+        };
+        out.extend(rewo_gpu::leash::fishing_line(
+            hook,
+            hand,
+            eye,
+            world_per_px,
+            width_px,
+        ));
+    }
+    out
+}
+
 /// M240 — the entities drawn as a camera-facing item: `(default item or
 /// sprite model, scale, fullbright)`, from `EntityRenderers`' registrations
 /// of `ThrownItemRenderer` (eye of ender, fireballs fullbright; the fireball

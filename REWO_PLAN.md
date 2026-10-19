@@ -2063,6 +2063,7 @@ this shape once.
 | M238 (2026-10-19) — armour stands draw as their model with their flags (arms, base plate) and worn armour | **r105** | — | — |
 | M239 (2026-10-19) — a firework rocket boosts the elytra glide (the client's push) and the server accepts it | **r106** | — | — |
 | M240 (2026-10-19) — thrown items and the fishing bobber draw as camera-facing items | **r107** | — | — |
+| M241 (2026-10-19) — a cast fishing rod draws its line to the first-person hand | **r108** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3897,6 +3898,26 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M241 — the fishing line (2026-10-19)
+
+`FishingHookRenderer` draws a line from the hook to the hand holding the
+rod; Rewo drew none. `leash::fishing_line` builds vanilla's 16 segments,
+`p(a) = hook + (xa·a, ya·(a² + a)/2 + 0.25, za·a)` towards the hand, as a
+black ribbon `max(2.5, width / 1920 · 2.5)` pixels wide on screen (vanilla
+draws GL lines that wide), turned to the eye, both windings, and the lines
+ride the leash pass. `live_cmd::collect_fishing_lines` finds each bobber's
+owner (`spawn_data`) and its hand: for the local player
+`getPlayerHandPos`'s first-person point (the camera's near-plane point
+`(invert · 0.525, −0.1)` scaled by `960 / fov`, turned by the swing), for
+another player the body-yaw offset from its eye.
+
+Recorded: a remote owner's swing and crouch offsets are not applied; the
+headless still render does not draw lines.
+
+**r108**: r94's real cast draws a line whose far end is the first-person
+hand (0.778 blocks from the eye at the bot's FOV; vanilla's point is about
+0.8 at 70).
 
 ### M240 — thrown items and the fishing bobber are drawn (2026-10-19)
 

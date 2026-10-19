@@ -1024,7 +1024,41 @@ impl LiveApp {
             REACH,
         );
         state.world_renderer.set_selection(hit.map(|h| h.block));
-        let (leash_verts, quad_leashes) = collect_leashes(session, &self.etypes, alpha, &lightmap);
+        let (mut leash_verts, quad_leashes) =
+            collect_leashes(session, &self.etypes, alpha, &lightmap);
+        // M241 — the fishing lines ride the leash pass (a black ribbon).
+        let fov = session.fov_degrees(self.modules.render().fov_degrees, alpha);
+        let lines = collect_fishing_lines(
+            session,
+            &self.etypes,
+            &self.items,
+            alpha,
+            fov,
+            (extent.width as f32, extent.height as f32),
+        );
+        // r108 — a line whose far end sits at the local hand (in front of
+        // and close to the eye).
+        #[cfg(feature = "gates")]
+        if let Some(c) = self.check.as_mut() {
+            if lines.len() >= 12 {
+                let eye = player_eye(session);
+                let n = lines.len() - 12;
+                let end = |k: usize| lines[n + k].pos;
+                let (a, b) = (end(2), end(5));
+                let mid = [
+                    (a[0] + b[0]) / 2.0,
+                    (a[1] + b[1]) / 2.0,
+                    (a[2] + b[2]) / 2.0,
+                ];
+                let d = ((mid[0] - eye[0]).powi(2)
+                    + (mid[1] - eye[1]).powi(2)
+                    + (mid[2] - eye[2]).powi(2))
+                .sqrt();
+                c.fishing_line_frames += 1;
+                c.fishing_line_hand = c.fishing_line_hand.max(d);
+            }
+        }
+        leash_verts.extend(lines);
         state.world_renderer.set_leash(&leash_verts);
         // r72 — the injected happy ghast's horse took the quad branch.
         #[cfg(feature = "gates")]

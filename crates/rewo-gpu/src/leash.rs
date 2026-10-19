@@ -215,8 +215,112 @@ fn strip_to_list(strip: &[LeashVertex]) -> Vec<LeashVertex> {
     out
 }
 
+/// M241 — `FishingHookRenderer`'s line: 16 segments from the hook to the
+/// owner's hand, `p(a) = hook + (xa·a, ya·(a² + a)/2 + 0.25, za·a)` with
+/// `(xa, ya, za) = hand − (hook + (0, 0.25, 0))`, so it leaves the hook a
+/// quarter block up and sags towards it. Vanilla draws it as black GL lines
+/// `max(2.5, width / 1920 · 2.5)` pixels wide; here each segment is a black
+/// ribbon that wide on screen (`world_per_px` is one pixel's size at one
+/// block from the eye), turned to face the eye, both windings.
+pub const FISHING_LINE_STEPS: i32 = 16;
+
+pub fn fishing_line(
+    hook: [f64; 3],
+    hand: [f64; 3],
+    eye: [f64; 3],
+    world_per_px: f32,
+    width_px: f32,
+) -> Vec<LeashVertex> {
+    let off = [
+        hand[0] - hook[0],
+        hand[1] - (hook[1] + 0.25),
+        hand[2] - hook[2],
+    ];
+    let at = |a: f64| {
+        [
+            hook[0] + off[0] * a,
+            hook[1] + off[1] * (a * a + a) * 0.5 + 0.25,
+            hook[2] + off[2] * a,
+        ]
+    };
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let len = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let side_at = |p: [f64; 3], dir: [f64; 3]| {
+        let view = sub(p, eye);
+        let c = cross(dir, view);
+        let l = len(c);
+        if l < 1e-9 {
+            return [0.0; 3];
+        }
+        let half = 0.5 * f64::from(width_px * world_per_px) * len(view);
+        [c[0] / l * half, c[1] / l * half, c[2] / l * half]
+    };
+    let mut out = Vec::with_capacity(FISHING_LINE_STEPS as usize * 12);
+    let black = [0.0f32; 3];
+    let v = |p: [f64; 3]| LeashVertex {
+        pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+        color: black,
+    };
+    for i in 0..FISHING_LINE_STEPS {
+        let a0 = f64::from(i) / f64::from(FISHING_LINE_STEPS);
+        let a1 = f64::from(i + 1) / f64::from(FISHING_LINE_STEPS);
+        let (p0, p1) = (at(a0), at(a1));
+        let dir = sub(p1, p0);
+        let (s0, s1) = (side_at(p0, dir), side_at(p1, dir));
+        let q = [
+            [p0[0] - s0[0], p0[1] - s0[1], p0[2] - s0[2]],
+            [p0[0] + s0[0], p0[1] + s0[1], p0[2] + s0[2]],
+            [p1[0] + s1[0], p1[1] + s1[1], p1[2] + s1[2]],
+            [p1[0] - s1[0], p1[1] - s1[1], p1[2] - s1[2]],
+        ];
+        for &k in &[0usize, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] {
+            out.push(v(q[k]));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// M241 — the line leaves the hook a quarter block up and ends at the
+    /// hand, 16 segments of two-sided quads, black.
+    #[test]
+    fn a_fishing_line_runs_from_the_hook_to_the_hand() {
+        let hook = [0.0, 60.0, 0.0];
+        let hand = [0.0, 62.0, 4.0];
+        let v = fishing_line(hook, hand, [3.0, 62.0, 2.0], 0.001, 2.5);
+        assert_eq!(v.len(), 16 * 12);
+        let mid = |a: &LeashVertex, b: &LeashVertex| {
+            [
+                (a.pos[0] + b.pos[0]) / 2.0,
+                (a.pos[1] + b.pos[1]) / 2.0,
+                (a.pos[2] + b.pos[2]) / 2.0,
+            ]
+        };
+        // The first quad's p0 edge (vertices 0 and 1) is centred on hook +
+        // 0.25 up; the last quad's p1 edge (its vertices 2 and 3) on the hand.
+        let start = mid(&v[0], &v[1]);
+        assert!(
+            (start[1] - 60.25).abs() < 1e-4 && start[2].abs() < 1e-4,
+            "{start:?}"
+        );
+        let n = v.len() - 12;
+        let end = mid(&v[n + 2], &v[n + 5]);
+        assert!(
+            (end[1] - 62.0).abs() < 1e-3 && (end[2] - 4.0).abs() < 1e-3,
+            "{end:?}"
+        );
+        assert!(v.iter().all(|x| x.color == [0.0; 3]));
+    }
+
     use super::*;
 
     /// Full block + sky tops the curve out at a constant for the geometry

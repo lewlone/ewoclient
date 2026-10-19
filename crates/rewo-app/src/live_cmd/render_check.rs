@@ -222,6 +222,10 @@ pub(super) struct RenderCheck {
     /// M240 — r107: frames drawing r94's snowball and its bobber as
     /// camera-facing items.
     pub(super) thrown_frames: (usize, usize),
+    /// M241 — r108: frames that drew a fishing line, and the farthest its
+    /// hand end sat from the eye.
+    pub(super) fishing_line_frames: usize,
+    pub(super) fishing_line_hand: f32,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -974,7 +978,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 107;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 108;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1163,6 +1167,19 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M241 — r108: r94's cast rod draws its line, and the line's far end
+        // is the local first-person hand: vanilla's near-plane point scaled
+        // by 960 / fov sits under a block from the eye.
+        row(
+            "r108 a cast fishing rod drew its line to the first-person hand",
+            self.fishing_line_frames >= 1
+                && self.fishing_line_hand > 0.0
+                && self.fishing_line_hand < 1.0,
+            format!(
+                "{} frames drew a line, its hand end at most {:.3} blocks from the eye",
+                self.fishing_line_frames, self.fishing_line_hand
             ),
         );
         // M240 — r107: r94's thrown snowball and its cast bobber reach the
