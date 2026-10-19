@@ -181,6 +181,10 @@ released.
   capsule), with their arms and base plate shown or hidden as set, small
   stands half size, and armour worn on them. Custom poses (raised arms and
   so on) still show the default pose.
+- **M239**: **firework rockets now boost elytra flight.** Before, using a
+  rocket while gliding did nothing (in vanilla the push is applied by the
+  client, and Rewo never did). Checked live: the glide went from 0.17 to
+  1.67 blocks a tick and the server accepted it.
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -237,6 +241,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| `f9af58c` | **M239** — the firework boost: `FireworkRocketEntity.tick`'s client-side push on the local glider, the rocket's attachment decoded (index 9); render-check **r106** (glide 0.167 → 1.673 blocks a tick, no correction; fails with the push disabled). |
 | `e9b453d` | **M238** — the armour stand model: `ArmorStandModel` at the default pose on named parts (armour hangs on them), its client flags (arms, base plate, small) routed by kind from index 15, the base plate counter-rotated; render-check **r105**. Synched poses not read. |
 | `cb8ed1a` | **M237** — the brewing stand's clicks (no `QuickMove` arm, nothing sent): slot kinds and the shift-click from `BrewingStandMenu`; `tools/gen_brewing.py` reads `PotionBrewing`'s ingredients from the decompile; render-check **r104** (a real stand brews). |
 | `ff8b256` | **M236** — the enchanting table's clicks (its menu had no `QuickMove` arm, so nothing was sent); the anvil's cost line; render-check **r102** (anvil rename: cost line red/green, level spent) and **r103** (real enchanting); harness: the tail's flakes were a slime killing the survival bot (`gamerule spawn_monsters false`), plus no structures, r96 per-tick steps, tail cap 90 s. |
@@ -478,6 +483,7 @@ released.
 - After M237: **4,347 tests passed, 0 failed; gates 51/51**; render check **104/104** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M238: **4,347 tests passed, 0 failed; gates 51/51**; render check **105/105** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
+- After M239: **4,348 tests passed, 0 failed; gates 51/51**; render check **106/106** on three runs (plus the push-disabled control failing r106 as it should); clippy (gates, after one `int_plus_one` fix in the witness, and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
