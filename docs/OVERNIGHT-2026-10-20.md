@@ -199,6 +199,9 @@ released.
   tilted items held in third person and turned sideways shulker boxes to
   face south. All fixed; the icons now look like vanilla's, grass top
   included.
+- **M243**: beds, decorated pots and conduits have icons too, and a bed in
+  someone's hand is drawn. Still blank: banners, the shield and the
+  trident.
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -255,6 +258,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M243)* | **M243** — `ItemGeometry::Parts`: `composite` of block models (the beds: head + foot one block south), the conduit's shell and the decorated pot's base + four plain sides as items; itemshot **a3c** bounds for all three, **c3b**. |
 | `c77e002` | **M242** — `minecraft:special` items drawn by block-entity models (chests, shulker boxes, heads, the statue) placed by their `transformation`; the GUI icon depth un-negated; JOML `rotationXYZ` (`Rx·Ry·Rz`) fixed in `gui_item::place`, `held::rotate_xyz` and `be_transform::rot_xyz` (the pot keeps a `rot_zyx`); inventoryshot **g9**, itemshot **a3c**. |
 | `61e3c95` | **M241** — the fishing line: `FishingHookRenderer`'s 16-segment line to the owner's hand (first-person near-plane point for the local player), a black ribbon on the leash pass; render-check **r108**. |
 | `87b0146` | **M240** — thrown items as `ThrownItemRenderer` draws them (the item, GROUND context, facing the camera; fireballs scaled and fullbright) and the fishing bobber's sprite, instead of capsules; render-check **r107**. |
@@ -505,6 +509,7 @@ released.
 - Still capsules after M240: arrows, spectral arrows, tridents, wind charges, llama spit, shulker bullets, the dragon fireball, experience orbs and other model-or-own-renderer entities. (M241 drew the fishing line.)
 - After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M242: **4,356 tests; 4,351 passed in the full run and the 5 failures, all `rewo-net` `srv` TCP tests at the fake nameserver's port pairing ("a port free for both UDP and TCP"), passed on rerun (34/34): the shared PC's sockets, not Rewo; gates 51/51** (inventoryshot 169, itemshot 78); render check **108/108** on two runs; clippy (gates and default features, after one needless `clone`) and `cargo fmt --check` clean.
+- After M243: **4,357 tests passed, 0 failed; gates 51/51** (itemshot 79); render check **108/108** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -546,10 +551,10 @@ released.
   BIND"): it picks a free port, then the server binds it later. A retry on
   that message would remove the one non-Rewo failure seen in the loops.
 - ~~A boat model~~ (M223).
-- Item icons still blank after M242 (their renderers are not block-entity
-  models): banners, the shield, the trident, the decorated pot, the conduit,
-  and the beds (`composite`). The Christmas chest's date select takes its
-  fallback.
+- Item icons still blank after M243: banners, the shield and the trident
+  (their own models and patterns). A decorated pot's sherds
+  (`pot_decorations`) are not read: its icon shows four plain sides. The
+  Christmas chest's date select takes its fallback.
 - M242's third-person rotation fix (`held::rotate_xyz`) is unit-tested but
   not looked at in a capture: a held block or tool in another player's hand
   should now sit as vanilla's does.

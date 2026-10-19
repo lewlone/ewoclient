@@ -42,12 +42,22 @@ pub enum ItemGeometry {
     /// resolved and namespace-stripped (`minecraft:item/x` → `item/x`), in
     /// `layer0..layer4` order.
     Sprite(Vec<String>),
-    /// M242 — a `minecraft:special` model drawn by a block-entity renderer
-    /// (a chest, a shulker box, a head, a copper golem statue): the baked
-    /// block-entity model of that name (`rewo:be/...`) and the affine (block
-    /// units) that takes its model space to the item's: the special node's
-    /// `transformation`, and for the statue its `setupAnim` root turn.
-    Entity(String, crate::be_transform::Affine),
+    /// Several models drawn as one item, each placed by an affine in block
+    /// units: a `minecraft:special` drawn by a block-entity renderer (M242:
+    /// a chest, a shulker box, a head, a statue; M243: the conduit's shell,
+    /// the decorated pot's base and four sides), or a `minecraft:composite`
+    /// of block models (M243: a bed's head and foot). The affine is the
+    /// node's `transformation`, plus whatever the renderer adds per part.
+    Parts(Vec<(PartSource, crate::be_transform::Affine)>),
+}
+
+/// Where one [`ItemGeometry::Parts`] part's quads come from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PartSource {
+    /// `minecraft:block/<name>`, baked like a block item's.
+    Block(String),
+    /// A baked block-entity model (`rewo:be/...`).
+    Entity(String),
 }
 
 /// A `display` entry, **already through vanilla's deserializer**.
@@ -690,8 +700,10 @@ fn chosen_child<'v>(
         // M242 — a `special` is a leaf: `resolve_definition` maps the ones a
         // block-entity bake covers and suppresses the rest.
         "minecraft:special" => Ok(None),
-        // `composite` layers several models into one draw: real work rather
-        // than a branch to evaluate, and it stays suppressed.
+        // M243 — so is a `composite`: `resolve_definition` draws one whose
+        // models are all plain block models (the beds) and suppresses the
+        // rest (the open bundle, whose middle layer is the selected item).
+        "minecraft:composite" => Ok(None),
         _ => Err(blocked(node, None)),
     }
 }
@@ -790,8 +802,10 @@ pub fn resolve_definition(
         // reduction cannot do conditions", which is the opposite of true.
         Err(reason) => return ItemModel::Unsupported(reason),
     };
-    if model.get("type").and_then(|t| t.as_str()) == Some("minecraft:special") {
-        return special_item(model, read_model);
+    match model.get("type").and_then(|t| t.as_str()) {
+        Some("minecraft:special") => return special_item(model, read_model),
+        Some("minecraft:composite") => return composite_item(model, read_model),
+        _ => {}
     }
     let Some(reference) = model.get("model").and_then(|m| m.as_str()) else {
         return ItemModel::Unsupported("minecraft:model (no reference)".into());
@@ -870,6 +884,8 @@ pub fn special_block_entity(spec: &Value) -> Option<String> {
             _ => return None,
         },
         "minecraft:player_head" => "rewo:be/player_head".into(),
+        // M243 — `ConduitSpecialRenderer` draws the shell model part alone.
+        "minecraft:conduit" => crate::block_entity_models::CONDUIT.0.into(),
         "minecraft:copper_golem_statue" => {
             let texture = s("texture")?;
             let weather = ["exposed", "weathered", "oxidized"]
@@ -942,9 +958,33 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
     let Some(spec) = node.get("model") else {
         return ItemModel::Unsupported(blocked(node, None));
     };
-    let Some(key) = special_block_entity(spec) else {
-        return ItemModel::Unsupported(blocked(node, None));
-    };
+    let kind = spec.get("type").and_then(|t| t.as_str());
+    // The parts in the renderer's own model space. The decorated pot is the
+    // one multi-part special: `DecoratedPotRenderer.submit` draws the base
+    // (neck, top, bottom) and the four sides, each side posed by its
+    // `PartPose` (`be_transform::pot_side`, written in px), and a stack with
+    // no `pot_decorations` shows the plain side on all four.
+    let parts: Vec<(PartSource, crate::be_transform::Affine)> =
+        if kind == Some("minecraft:decorated_pot") {
+            let side = crate::block_entity_models::pot_side_model(None);
+            std::iter::once((
+                PartSource::Entity(crate::block_entity_models::POT_BASE_MODEL.0.into()),
+                crate::be_transform::IDENTITY,
+            ))
+            .chain((0..4).map(|i| {
+                let mut m = crate::be_transform::pot_side(i);
+                for row in &mut m {
+                    row[3] /= 16.0; // px → block units; the rotation is unitless
+                }
+                (PartSource::Entity(side.clone()), m)
+            }))
+            .collect()
+        } else {
+            match special_block_entity(spec) {
+                Some(key) => vec![(PartSource::Entity(key), crate::be_transform::IDENTITY)],
+                None => return ItemModel::Unsupported(blocked(node, None)),
+            }
+        };
     // The special node's `transformation` (`Transformation`: translation ·
     // left rotation · scale · right rotation), in block units, before the
     // display transform — the item-side twin of the block-entity renderer's
@@ -954,7 +994,7 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
     let mut xf = node
         .get("transformation")
         .map_or(crate::be_transform::IDENTITY, transformation_affine);
-    if spec.get("type").and_then(|t| t.as_str()) == Some("minecraft:copper_golem_statue") {
+    if kind == Some("minecraft:copper_golem_statue") {
         xf = crate::be_transform::mul(
             &xf,
             &crate::be_transform::rot_xyz(0.0, 0.0, std::f32::consts::PI),
@@ -963,8 +1003,76 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
     let Some(base) = node.get("base").and_then(|b| b.as_str()) else {
         return ItemModel::Unsupported("minecraft:special (no base)".into());
     };
+    let [r, l, ground, gui, fr, fl, fixed] = chain_display(base, read_model);
+    ItemModel::Resolved {
+        geometry: ItemGeometry::Parts(
+            parts
+                .into_iter()
+                .map(|(src, m)| (src, crate::be_transform::mul(&xf, &m)))
+                .collect(),
+        ),
+        third_person_right: r,
+        third_person_left: l,
+        ground,
+        gui,
+        first_person_right: fr,
+        first_person_left: fl,
+        fixed,
+    }
+}
+
+/// M243 — a `minecraft:composite` whose models are all plain `block/...`
+/// models (each optionally placed by its `transformation`): the beds, whose
+/// foot is the head's model one block south. Vanilla resolves each layer's
+/// display from its own model; a bed's two share `template_bed`'s, and this
+/// takes the first layer's. Anything else in the list (the open bundle's
+/// `bundle/selected_item`) suppresses the whole item.
+fn composite_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>) -> ItemModel {
+    let models = node
+        .get("models")
+        .and_then(|m| m.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut parts = Vec::new();
+    for m in models {
+        let reference = (m.get("type").and_then(|t| t.as_str()) == Some("minecraft:model"))
+            .then(|| m.get("model").and_then(|r| r.as_str()))
+            .flatten()
+            .map(strip_ns);
+        let Some(block) = reference.and_then(|r| r.strip_prefix("block/")) else {
+            return ItemModel::Unsupported(blocked(node, None));
+        };
+        let xf = m
+            .get("transformation")
+            .map_or(crate::be_transform::IDENTITY, transformation_affine);
+        parts.push((PartSource::Block(block.to_string()), xf));
+    }
+    let Some((PartSource::Block(first), _)) = parts.first() else {
+        return ItemModel::Unsupported(blocked(node, None));
+    };
+    let [r, l, ground, gui, fr, fl, fixed] = chain_display(&format!("block/{first}"), read_model);
+    ItemModel::Resolved {
+        geometry: ItemGeometry::Parts(parts),
+        third_person_right: r,
+        third_person_left: l,
+        ground,
+        gui,
+        first_person_right: fr,
+        first_person_left: fl,
+        fixed,
+    }
+}
+
+/// The seven display contexts a model chain declares, each from the nearest
+/// model that declares it (a missing left hand takes the right, as
+/// `ItemTransforms.Deserializer` does per model); absent ones are the
+/// identity.
+fn chain_display(
+    start: &str,
+    read_model: &mut dyn FnMut(&str) -> Option<Value>,
+) -> [DisplayTransform; 7] {
     let mut t: [Option<DisplayTransform>; 7] = [None; 7];
-    let mut cur = strip_ns(base).to_string();
+    let mut cur = strip_ns(start).to_string();
     for _ in 0..16 {
         let Some(json) = read_model(&cur) else {
             break;
@@ -992,17 +1100,7 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
             _ => break,
         }
     }
-    let [r, l, ground, gui, fr, fl, fixed] = t.map(Option::unwrap_or_default);
-    ItemModel::Resolved {
-        geometry: ItemGeometry::Entity(key, xf),
-        third_person_right: r,
-        third_person_left: l,
-        ground,
-        gui,
-        first_person_right: fr,
-        first_person_left: fl,
-        fixed,
-    }
+    t.map(Option::unwrap_or_default)
 }
 
 /// `assets/minecraft/models/block/block.json`'s `thirdperson_righthand`:
@@ -1158,6 +1256,10 @@ mod tests {
             k(r#"{"type":"minecraft:copper_golem_statue","pose":"standing","texture":"minecraft:textures/entity/copper_golem/copper_golem.png"}"#).as_deref(),
             Some("rewo:be/statue/unaffected/standing")
         );
+        assert_eq!(
+            k(r#"{"type":"minecraft:conduit"}"#).as_deref(),
+            Some("rewo:be/conduit")
+        );
         assert_eq!(k(r#"{"type":"minecraft:shield"}"#), None);
         assert_eq!(k(r#"{"type":"minecraft:banner","color":"white"}"#), None);
     }
@@ -1183,12 +1285,13 @@ mod tests {
         };
         match resolve_definition(&def, &mut read, SelectionContext::gui()) {
             ItemModel::Resolved {
-                geometry: ItemGeometry::Entity(k, _),
+                geometry: ItemGeometry::Parts(parts),
                 gui,
                 third_person_left,
                 ..
             } => {
-                assert_eq!(k, "rewo:be/chest");
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0].0, PartSource::Entity("rewo:be/chest".into()));
                 assert_eq!(gui.rotation, [30.0, 45.0, 0.0]);
                 assert_eq!(
                     third_person_left.rotation,
@@ -1397,9 +1500,77 @@ mod tests {
         }
     }
 
+    /// M243 — a bed: two block models, the foot one block south, with the
+    /// head model's chain display; an open bundle's composite (a dynamic
+    /// middle layer) and a decorated pot's five parts.
+    #[test]
+    fn composites_of_block_models_resolve_and_others_suppress() {
+        let bed = json(
+            r#"{"model":{"type":"minecraft:composite","models":[
+                {"type":"minecraft:model","model":"minecraft:block/red_bed_head"},
+                {"type":"minecraft:model","model":"minecraft:block/red_bed_foot",
+                 "transformation":{"left_rotation":[0,0,0,1],"right_rotation":[0,0,0,1],
+                   "scale":[1,1,1],"translation":[0,0,1]}}]}}"#,
+        );
+        let mut read = |p: &str| match p {
+            "block/red_bed_head" => Some(json(r#"{"parent":"block/template_bed_head"}"#)),
+            "block/template_bed_head" => Some(json(r#"{"parent":"block/template_bed"}"#)),
+            "block/template_bed" => Some(json(
+                r#"{"display":{"gui":{"rotation":[30,340,0],"translation":[2,3,0],"scale":[0.5325,0.5325,0.5325]}}}"#,
+            )),
+            _ => None,
+        };
+        match resolve_definition(&bed, &mut read, SelectionContext::gui()) {
+            ItemModel::Resolved {
+                geometry: ItemGeometry::Parts(parts),
+                gui,
+                ..
+            } => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0].0, PartSource::Block("red_bed_head".into()));
+                assert_eq!(parts[1].0, PartSource::Block("red_bed_foot".into()));
+                assert_eq!(parts[1].1[2][3], 1.0, "the foot is one block south");
+                assert_eq!(parts[0].1, crate::be_transform::IDENTITY);
+                assert_eq!(gui.rotation, [30.0, 340.0, 0.0]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let bundle = json(
+            r#"{"model":{"type":"minecraft:composite","models":[
+                {"type":"minecraft:model","model":"minecraft:item/red_bundle_open_back"},
+                {"type":"minecraft:bundle/selected_item"}]}}"#,
+        );
+        assert_eq!(
+            resolve_definition(&bundle, &mut reader(vec![]), SelectionContext::gui()),
+            ItemModel::Unsupported("minecraft:composite".into())
+        );
+        let pot = json(
+            r#"{"model":{"type":"minecraft:special","base":"minecraft:item/decorated_pot",
+                "model":{"type":"minecraft:decorated_pot"}}}"#,
+        );
+        match resolve_definition(&pot, &mut reader(vec![]), SelectionContext::gui()) {
+            ItemModel::Resolved {
+                geometry: ItemGeometry::Parts(parts),
+                ..
+            } => {
+                assert_eq!(parts.len(), 5);
+                assert_eq!(
+                    parts[0].0,
+                    PartSource::Entity("rewo:be/decorated_pot".into())
+                );
+                // The back side's `PartPose` offset (15, 16, 1) px in block units.
+                let back = parts[1].1;
+                assert!((back[0][3] - 15.0 / 16.0).abs() < 1e-6, "{back:?}");
+                assert!((back[1][3] - 1.0).abs() < 1e-6, "{back:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// M40: `composite` and `special` are the two types the reduction does not
     /// evaluate, and a branching type with no `property` at all is malformed —
-    /// all three must suppress rather than guess.
+    /// all three must suppress rather than guess. (M242/M243 resolve the
+    /// specials and composites they can; an empty one still suppresses.)
     #[test]
     fn a_definition_that_cannot_be_reduced_is_suppressed() {
         for kind in [

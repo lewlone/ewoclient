@@ -36,7 +36,7 @@ use crate::stats::OverlayRing;
 
 /// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
 /// pickup animation's flight.
-const EXPECTED_WITNESSES: usize = 78;
+const EXPECTED_WITNESSES: usize = 79;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -477,18 +477,20 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
     // several models into one draw, `special` hands the stack to a bespoke
     // renderer. Both must still be there — one silently starting to resolve
     // would draw a bed as whichever of its layers came first. (M242 resolves
-    // the `special` renderers that are block-entity models — a3c — and the
-    // rest, banners, the shield, the trident, the pot, the conduit, keep the
-    // bucket.)
+    // the `special` renderers that are block-entity models — a3c — and M243
+    // the composites of block models, the beds; banners, the shield and the
+    // trident keep `special`, and the open bundle's composite is only chosen
+    // in a slot with a selected item, so no default-context item reaches the
+    // `composite` bucket any more.)
     let kinds: Vec<&str> = items.unsupported.keys().map(String::as_str).collect();
-    let wanted = ["minecraft:special", "minecraft:composite"];
+    let wanted = ["minecraft:special"];
     let missing: Vec<&str> = wanted
         .iter()
         .copied()
         .filter(|w| !kinds.contains(w))
         .collect();
     c.record(
-        "a3.the_two_non_branching_definition_types_are_still_suppressed",
+        "a3.the_unmapped_special_renderers_are_still_suppressed",
         missing.is_empty(),
         format!("suppressed buckets {kinds:?}; missing {missing:?}"),
     );
@@ -534,7 +536,7 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
     let near = |a: [[f32; 3]; 2], b: [[f32; 3]; 2]| {
         (0..2).all(|k| (0..3).all(|i| (a[k][i] - b[k][i]).abs() < 0.05))
     };
-    let want: [(&str, [[f32; 3]; 2]); 4] = [
+    let want: [(&str, [[f32; 3]; 2]); 7] = [
         ("minecraft:chest", [[1.0, 0.0, 1.0], [15.0, 14.0, 16.0]]),
         (
             "minecraft:creeper_head",
@@ -547,6 +549,13 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         (
             "minecraft:ender_chest",
             [[1.0, 0.0, 1.0], [15.0, 14.0, 16.0]],
+        ),
+        ("minecraft:red_bed", [[0.0, 0.0, 0.0], [16.0, 9.0, 32.0]]),
+        ("minecraft:conduit", [[5.0, 5.0, 5.0], [11.0, 11.0, 11.0]]),
+        // The neck's `CubeDeformation(-0.1)` takes its top to 19.9.
+        (
+            "minecraft:decorated_pot",
+            [[1.0, 0.0, 1.0], [15.0, 19.9, 15.0]],
         ),
     ];
     let got: Vec<(&str, Option<[[f32; 3]; 2]>)> =
@@ -1118,6 +1127,12 @@ fn check_render(
     )?;
     let dirt = render([Some("minecraft:dirt"), None], &mut gpu, &mut wr, &mut off)?;
     let bow = render(
+        [Some("minecraft:white_banner"), None],
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    let bed = render(
         [Some("minecraft:white_bed"), None],
         &mut gpu,
         &mut wr,
@@ -1159,10 +1174,19 @@ fn check_render(
         "c3.a_suppressed_item_renders_as_an_empty_hand",
         bow_px.is_empty(),
         format!(
-            "{} pixels differ (want 0) — a bed is a `composite` of several \
-             models, which M40's reduction deliberately does not resolve",
+            "{} pixels differ (want 0) — a banner is a `special` whose \
+             renderer (`BannerRenderer`'s flag and patterns) Rewo does not map \
+             (until M243 this was a bed, a `composite`)",
             bow_px.len()
         ),
+    );
+    // M243 — the bed this witness used to suppress is drawn now: a
+    // `composite` of its head and foot block models.
+    let bed_px = changed(&empty, &bed);
+    c.record(
+        "c3b.a_composite_bed_renders",
+        bed_px.len() > 40,
+        format!("{} pixels differ from the empty hand", bed_px.len()),
     );
     // Placement: the item must appear on the right side of the body (the
     // entity faces the camera at yaw 0, so its right arm is screen-left) and
@@ -1471,7 +1495,7 @@ fn check_render(
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
     let g_bow = ground(
-        Some("minecraft:white_bed"),
+        Some("minecraft:white_banner"),
         1,
         0.0,
         3,
@@ -1485,8 +1509,9 @@ fn check_render(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
         format!(
-            "{} pixels differ (want 0) — a bed's definition is a `composite`, \
-             so it has no baked model in either context",
+            "{} pixels differ (want 0) — a banner's definition is an unmapped \
+             `special`, so it has no baked model in either context (a bed until \
+             M243)",
             changed(&g_none, &g_bow).len()
         ),
     );

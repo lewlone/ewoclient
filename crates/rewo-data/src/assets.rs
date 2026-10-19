@@ -4213,8 +4213,7 @@ impl<'a> Baker<'a> {
         let mut unsupported: std::collections::BTreeMap<String, usize> = Default::default();
         let mut entity_items: Vec<(
             String,
-            String,
-            crate::be_transform::Affine,
+            Vec<(crate::item_models::PartSource, crate::be_transform::Affine)>,
             [crate::item_models::DisplayTransform; 7],
         )> = Vec::new();
         for (name, model, gui_geometry) in resolved {
@@ -4249,13 +4248,12 @@ impl<'a> Baker<'a> {
                     continue;
                 }
             };
-            // M242 — a special item's geometry is a block-entity model, baked
-            // below; it is filled in once those exist.
-            if let ItemGeometry::Entity(key, xf) = &geometry {
+            // M242/M243 — a multi-part item (block-entity models, block
+            // models) is assembled below, once the block-entity models exist.
+            if let ItemGeometry::Parts(parts) = &geometry {
                 entity_items.push((
                     full,
-                    key.clone(),
-                    *xf,
+                    parts.clone(),
                     [right, left, ground, gui, first_right, first_left, fixed],
                 ));
                 continue;
@@ -4263,7 +4261,7 @@ impl<'a> Baker<'a> {
             let baked = match &geometry {
                 ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
                 ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
-                ItemGeometry::Entity(..) => None,
+                ItemGeometry::Parts(..) => None,
             };
             // The slot geometry, when the definition selects a different
             // model there. A variant that fails to bake leaves `None`, so the
@@ -4272,7 +4270,7 @@ impl<'a> Baker<'a> {
                 .and_then(|g| match &g {
                     ItemGeometry::Block(block) => self.bake_block_item(block, &mut pool),
                     ItemGeometry::Sprite(layers) => self.bake_sprite_item(layers, &mut pool, trims),
-                    ItemGeometry::Entity(..) => None,
+                    ItemGeometry::Parts(..) => None,
                 })
                 .filter(|q| !q.is_empty());
             match baked {
@@ -4363,48 +4361,61 @@ impl<'a> Baker<'a> {
         }
         let be_count = be_models.len();
         let block_entities: HashMap<String, HeldItemModel> = be_models.into_iter().collect();
-        // M242 — the special items: the block-entity model's quads with the
-        // item's own display transforms, drawn as a 3D (block-lit) model.
-        for (name, key, xf, [right, left, ground, gui, first_right, first_left, fixed]) in
+        // M242/M243 — the multi-part items: each part's quads (a baked
+        // block-entity model, or a block model baked like a block item's)
+        // placed by its affine in block units, with the item's own display
+        // transforms, drawn as a 3D (block-lit) model. A part that baked
+        // nothing suppresses the whole item rather than drawing half of it.
+        for (name, parts, [right, left, ground, gui, first_right, first_left, fixed]) in
             entity_items
         {
-            match block_entities.get(&key) {
-                Some(be) if !be.quads.is_empty() => {
-                    // The special node's transform, in block units, applied
-                    // to the model's px (`/ 16`, then back).
-                    let quads = be
-                        .quads
-                        .iter()
-                        .map(|q| {
-                            let mut q = *q;
-                            for v in &mut q.verts {
-                                let p = [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0];
-                                let r: [f32; 3] = std::array::from_fn(|i| {
-                                    xf[i][0] * p[0] + xf[i][1] * p[1] + xf[i][2] * p[2] + xf[i][3]
-                                });
-                                *v = [r[0] * 16.0, r[1] * 16.0, r[2] * 16.0];
-                            }
-                            q
-                        })
-                        .collect();
-                    models.insert(
-                        name,
-                        HeldItemModel {
-                            quads,
-                            right,
-                            left,
-                            ground,
-                            gui,
-                            first_right,
-                            first_left,
-                            fixed,
-                            from_block: true,
-                            gui_quads: None,
-                        },
-                    );
-                }
-                _ => *unsupported.entry("(no geometry)".to_string()).or_default() += 1,
+            let mut quads = Vec::new();
+            let mut complete = true;
+            for (src, xf) in &parts {
+                let part = match src {
+                    crate::item_models::PartSource::Entity(key) => block_entities
+                        .get(key)
+                        .map(|be| be.quads.clone())
+                        .filter(|q| !q.is_empty()),
+                    crate::item_models::PartSource::Block(block) => {
+                        self.bake_block_item(block, &mut pool)
+                    }
+                };
+                let Some(part) = part else {
+                    complete = false;
+                    break;
+                };
+                // The model's px → block units (`/ 16`), the affine, and back.
+                quads.extend(part.into_iter().map(|mut q| {
+                    for v in &mut q.verts {
+                        let p = [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0];
+                        let r: [f32; 3] = std::array::from_fn(|i| {
+                            xf[i][0] * p[0] + xf[i][1] * p[1] + xf[i][2] * p[2] + xf[i][3]
+                        });
+                        *v = [r[0] * 16.0, r[1] * 16.0, r[2] * 16.0];
+                    }
+                    q
+                }));
             }
+            if !complete || quads.is_empty() {
+                *unsupported.entry("(no geometry)".to_string()).or_default() += 1;
+                continue;
+            }
+            models.insert(
+                name,
+                HeldItemModel {
+                    quads,
+                    right,
+                    left,
+                    ground,
+                    gui,
+                    first_right,
+                    first_left,
+                    fixed,
+                    from_block: true,
+                    gui_quads: None,
+                },
+            );
         }
         log::info!("rewo-data: {be_count} block-entity model(s) baked");
 

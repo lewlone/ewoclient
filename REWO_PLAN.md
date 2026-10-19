@@ -3899,6 +3899,36 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M243 — beds, the decorated pot and the conduit as items (2026-10-19)
+
+M242's single block-entity geometry becomes `ItemGeometry::Parts`: a list of
+models (a baked block-entity model or a `block/...` model baked as a block
+item's), each placed by an affine in block units.
+
+- `minecraft:composite` is a leaf now. One whose models are all plain block
+  models resolves; that is the beds, whose foot is `block/<colour>_bed_foot`
+  translated one block south, with `template_bed`'s display (the first
+  layer's chain; vanilla reads each layer's own, and a bed's two agree).
+  The open bundle's composite has a dynamic middle layer
+  (`bundle/selected_item`) and stays suppressed; it is only chosen in a slot
+  with a selected item.
+- The conduit item is `ConduitSpecialRenderer`'s shell alone, at the block
+  centre.
+- The decorated pot is `DecoratedPotRenderer`'s base and four sides, each
+  side posed by its `PartPose` (`be_transform::pot_side`, converted from px),
+  all plain: the stack's `pot_decorations` are not read.
+- A part that bakes nothing suppresses the whole item.
+
+Still suppressed: banners, the shield and the trident (their own models and
+patterns).
+
+Gates: itemshot **a3c** grows to seven placed bounds (the bed 16 × 9 × 32,
+the conduit's shell 5..11 px, the pot 1..15 across and 19.9 high, the neck's
+`CubeDeformation(-0.1)`); **a3** now expects only the `special` bucket; **c3**
+and **g8** suppress a banner instead of a bed, and **c3b** sees the bed drawn
+in the hand (itemshot 79). Looked at: red and lime beds, the pot and the
+conduit in slots.
+
 ### M242 — block-entity item icons, and every 3D icon the right way round (2026-10-19)
 
 Three things, found in that order while giving chests an icon.
