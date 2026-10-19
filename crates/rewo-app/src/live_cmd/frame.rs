@@ -1247,6 +1247,23 @@ impl LiveApp {
             if drew_crystal {
                 c.end_crystal_frames += 1;
             }
+            // M266 — r124: the staged stone display part-way up its teleport,
+            // between the height it was first seen at and one block above,
+            // counted once per tick.
+            let stone = self.blocks.default_state("minecraft:stone");
+            let y = session.world.entities.iter().find_map(|(id, e)| {
+                (self.etypes.name(e.type_id) == Some("minecraft:block_display")
+                    && session.world.entities.display(id).and_then(|d| d.block) == stone)
+                    .then(|| e.render_pos(0.0)[1])
+            });
+            let gliding = y.is_some_and(|y| {
+                let y0 = *c.display_glide_y0.get_or_insert(y);
+                y > y0 + 0.02 && y < y0 + 0.98
+            });
+            if gliding && session.ticks != c.display_glide_last {
+                c.display_glide_last = session.ticks;
+                c.display_glide_ticks += 1;
+            }
             // M265 — r123: a block display drawn part-way through its scale-up.
             if session.world.entities.iter().any(|(id, e)| {
                 self.etypes.name(e.type_id) == Some("minecraft:block_display")

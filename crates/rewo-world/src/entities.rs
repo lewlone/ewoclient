@@ -410,6 +410,9 @@ pub struct EntityState {
     /// model can turn its head toward the viewer. Defaults to the body yaw.
     pub head_yaw: f32,
     lerp_steps: u32,
+    /// M266 — the `InterpolationHandler`'s length: vanilla's default 3, a
+    /// display's 0 (it snaps) or its `teleport_duration`.
+    lerp_len: u32,
     cur: [f64; 3],
     prev: [f64; 3],
     /// Walk-cycle phase (vanilla `animationPosition`) — advances by
@@ -548,6 +551,7 @@ impl EntityState {
             pitch,
             head_yaw: yaw,
             lerp_steps: 0,
+            lerp_len: LERP_STEPS,
             cur: [x, y, z],
             prev: [x, y, z],
             limb_swing: 0.0,
@@ -569,12 +573,26 @@ impl EntityState {
         self.head_yaw = yaw;
     }
 
-    /// Absolute target (teleport / position sync): start a fresh 3-tick lerp.
+    /// Absolute target (teleport / position sync): start a fresh lerp of the
+    /// entity's length (3 unless set), or with a length of 0 snap there,
+    /// last tick's position included (`InterpolationHandler.interpolateTo`'s
+    /// `snapTo`, M266).
     pub fn set_target(&mut self, x: f64, y: f64, z: f64) {
         self.x = x;
         self.y = y;
         self.z = z;
-        self.lerp_steps = LERP_STEPS;
+        if self.lerp_len == 0 {
+            self.cur = [x, y, z];
+            self.prev = [x, y, z];
+            self.lerp_steps = 0;
+        } else {
+            self.lerp_steps = self.lerp_len;
+        }
+    }
+
+    /// M266 — `InterpolationHandler.setInterpolationLength`.
+    pub fn set_lerp_len(&mut self, steps: u32) {
+        self.lerp_len = steps;
     }
 
     /// Relative move (the short-delta packets): accumulate onto the synced
@@ -4452,6 +4470,28 @@ mod jump_vehicle_tests {
 /// The per-id side maps: a removed or re-added entity leaves nothing behind.
 #[cfg(test)]
 mod side_state_tests {
+    /// M266 — an entity with a lerp length of 0 (a display) snaps to a new
+    /// target, last tick's position too, so no frame slides; a length of 5
+    /// moves a fifth of the way the first tick, as the default 3 moves a
+    /// third.
+    #[test]
+    fn a_zero_lerp_length_snaps_and_a_longer_one_glides() {
+        let mut e = EntityState::new(0, 1, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.set_lerp_len(0);
+        e.set_target(10.0, 0.0, 0.0);
+        assert_eq!(e.render_pos(0.0), [10.0, 0.0, 0.0]);
+        assert_eq!(e.render_pos(0.5), [10.0, 0.0, 0.0]);
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 1, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(2, EntityState::new(0, 1, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.get_mut(1).unwrap().set_lerp_len(5);
+        t.get_mut(1).unwrap().set_target(10.0, 0.0, 0.0);
+        t.get_mut(2).unwrap().set_target(9.0, 0.0, 0.0);
+        t.tick_lerp();
+        assert!((t.get(1).unwrap().render_pos(1.0)[0] - 2.0).abs() < 1e-9);
+        assert!((t.get(2).unwrap().render_pos(1.0)[0] - 3.0).abs() < 1e-9);
+    }
+
     /// M265 — a display's transformation follows `Display.tick`: the first
     /// tick builds a fresh state; an update with a 10-tick duration moves
     /// from where it was over ten ticks (1.1 at a twentieth, 2.0 at half);

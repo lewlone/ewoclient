@@ -263,6 +263,8 @@ released.
 - **M265**: animated holograms and display decorations (servers move,
   turn and scale them smoothly) now slide like vanilla instead of jumping
   from step to step.
+- **M266**: displays moved by a server now snap or glide exactly as in
+  vanilla (glide when the server asks for it, otherwise jump).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -324,6 +326,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| *(M266)* | **M266** — display position updates: a per-entity lerp length, 0 (snap) for displays, `teleport_duration` (index 10) for a glide; render-check **r124**. |
 | `27874c9f` | **M265** — display transformations interpolate: indices 8-9 and `Display.tick`'s render state, `Transformation.slerp` when drawn; render-check **r123** merges a 40-tick scale-up mid-run. |
 | `5301f57e` | **M264** — a rung bell swings: the bell's block event recorded and timed, `BellModel.setupAnim`'s swing as an animated group; render-check **r122** rings one with redstone. |
 | `7b828638` | **M263** — world text (signs, holograms) was upside down since M25e: `emit_world_text` gave a glyph's top the cell's bottom; it now maps top to top. New `itemshot` pixel witness `c3f.world_text_reads_upright` (83 to 84), failing on the old mapping. |
@@ -600,9 +603,8 @@ released.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
 - Text displays draw no shadow, see-through mode or text opacity yet
   (M255; the background plate came in M262).
-  Item and block displays (M256, M260) have no brightness override, and
-  no display applies its position interpolation (`teleport_duration`;
-  M265 interpolates the transformation); a block display of a block-entity block (a chest) or a
+  Item and block displays (M256, M260) have no brightness override
+  (M265 and M266 interpolate the transformation and the position); a block display of a block-entity block (a chest) or a
   fluid draws nothing.
 - End crystals (M257) draw no beam, and their sheet is halved to fit the
   entity atlas's 64x64 large slots; a larger slot would draw it at full
@@ -633,6 +635,7 @@ released.
 - After M263: **4,397 tests; the full run failed one, `srv`'s `a_truncated_answer_is_retried_over_tcp` (a race in the test: the fake server recorded the query after answering it), fixed in `c40a3694`; gates 51/51 (itemshot 84)**; render check **121/121** on two runs; clippy (gates and default features) and `cargo fmt --check` clean; c3f fails on the old mapping.
 - After M264: **4,400 tests passed, 0 failed; gates 51/51** (blockentityshot rerun after its d2/d3 update; the first run failed d2, which pinned a bell as having no block-event body); render check **122/122** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M265: **4,403 tests passed, 0 failed** (rewo-net and rewo-world rerun after the render-flag fix: 1,387 + 813 passed); **gates 51/51**; render check **123/123** on two runs after the fix (r123 failed on the two before it); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M266: **4,405 tests passed, 0 failed; gates 51/51**; render check **124/124** on two runs (r124: 22 and 21 ticks part-way); clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

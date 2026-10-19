@@ -840,6 +840,9 @@ struct LiveApp {
     /// M265 — r123's interpolation command has been sent.
     #[cfg(feature = "gates")]
     rc_interp_sent: bool,
+    /// M266 — r124's teleport command has been sent.
+    #[cfg(feature = "gates")]
+    rc_glide_sent: bool,
     /// r87's tail stage (M221), the tick a step began.
     #[cfg(feature = "gates")]
     boat_stage: u8,
@@ -1256,6 +1259,8 @@ fn run_windowed(
         rc_captured_at: false,
         #[cfg(feature = "gates")]
         rc_interp_sent: false,
+        #[cfg(feature = "gates")]
+        rc_glide_sent: false,
         #[cfg(feature = "gates")]
         boat_stage: 0,
         #[cfg(feature = "gates")]

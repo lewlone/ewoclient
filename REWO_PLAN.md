@@ -2079,6 +2079,7 @@ this shape once.
 | M262 (2026-10-19) — a text display draws its background plate | **r121** | — | — |
 | M264 (2026-10-19) — a rung bell draws swinging | **r122** | — | — |
 | M265 (2026-10-19) — a block display's transformation interpolates between keyframes | **r123** | — | — |
+| M266 (2026-10-19) — a display with a teleport duration glides | **r124** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3913,6 +3914,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M266 — displays snap, or glide by their teleport duration (2026-10-19)
+
+Rewo lerped every entity's position updates over vanilla's default 3
+ticks. A display's `InterpolationHandler` is built with length 0, so it
+snaps (`snapTo`, which resets last tick's position too, so no frame
+slides), unless the server sets `teleport_duration` (index 10, INT,
+clamped 0..59 by the server), which `setInterpolationLength` makes the
+glide's length.
+
+- `EntityState` has a lerp length (`set_lerp_len`): `set_target` starts a
+  lerp of that length, or with 0 snaps the position and last tick's.
+- A display's first metadata sets 0; index 10 sets the duration (gated on
+  the display kinds; an item frame's 10 is its rotation).
+
+Tests: `a_zero_lerp_length_snaps_and_a_longer_one_glides`,
+`a_display_snaps_unless_it_has_a_teleport_duration` (a display at 6 at
+once, a zombie a third of the way, `teleport_duration` 20 a twentieth).
+**r124**: r123's display, summoned with `teleport_duration:20`, is
+teleported up a block three seconds in and stands part-way on at least 10
+distinct ticks (the old 3-tick lerp gave 2).
 
 ### M265 — display transformations interpolate (2026-10-19)
 

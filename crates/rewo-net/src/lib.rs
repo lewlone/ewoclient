@@ -2787,8 +2787,24 @@ pub(crate) fn apply_set_entity_data<'a>(
                 && (meta.display_item.is_some()
                     || meta.byte24.is_some()
                     || meta.mob_flags.is_some()));
-        let any = render_field || (is_display && (meta.int8.is_some() || meta.int9.is_some()));
+        let any = render_field
+            || (is_display && (meta.int8.is_some() || meta.int9.is_some() || meta.int10.is_some()));
         if any {
+            // M266 — a display's `InterpolationHandler` is built with length
+            // 0 (it snaps to each position update) until `teleport_duration`
+            // (index 10, INT, clamped to 0..59 by the server) says otherwise.
+            let first = entities.display(eid).is_none();
+            if is_display {
+                if let Some(v) = meta.int10 {
+                    if let Some(e) = entities.get_mut(eid) {
+                        e.set_lerp_len(v.clamp(0, 59) as u32);
+                    }
+                } else if first {
+                    if let Some(e) = entities.get_mut(eid) {
+                        e.set_lerp_len(0);
+                    }
+                }
+            }
             let d = entities.display_mut(eid);
             // M265 — `onSyncedDataUpdated`: the start delay (8) and duration
             // (9) raise their flags; `Display.tick` acts on them.
@@ -5524,6 +5540,34 @@ mod set_entity_data_tests {
         }
         apply_set_entity_data(&body(7, 12, 39, &v), &mut t, kinds);
         assert!(t.display(7).unwrap().interp.pending_render);
+    }
+
+    /// M266 — a display snaps to position updates from its first metadata
+    /// (vanilla's length-0 `InterpolationHandler`), and index 10
+    /// (`teleport_duration`) gives it a glide instead; a zombie keeps the
+    /// 3-tick lerp.
+    #[test]
+    fn a_display_snaps_unless_it_has_a_teleport_duration() {
+        const BLOCK: i32 = 903;
+        let kinds = crate::MetaKinds {
+            block_display: Some(BLOCK),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        for eid in [7, 9] {
+            t.add(eid, EntityState::new(0, BLOCK, 0.0, 0.0, 0.0, 0.0, 0.0));
+        }
+        t.add(8, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(7, 23, 14, &[1]), &mut t, kinds);
+        apply_set_entity_data(&body(9, 10, 1, &[20]), &mut t, kinds);
+        for eid in [7, 8, 9] {
+            t.get_mut(eid).unwrap().set_target(6.0, 0.0, 0.0);
+        }
+        t.tick_lerp();
+        let x = |eid| t.get(eid).unwrap().render_pos(1.0)[0];
+        assert_eq!(x(7), 6.0, "a display snaps");
+        assert!((x(8) - 2.0).abs() < 1e-9, "a zombie lerps over 3: {}", x(8));
+        assert!((x(9) - 0.3).abs() < 1e-9, "teleport_duration 20: {}", x(9));
     }
 
     /// M260 — a block display's state (23, BLOCK_STATE) and billboard (15)

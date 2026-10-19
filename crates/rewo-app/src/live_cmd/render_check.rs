@@ -279,6 +279,11 @@ pub(super) struct RenderCheck {
     /// M265 — r123: frames on which a block display drew at a scale strictly
     /// between its two keyframes.
     pub(super) display_interp_frames: usize,
+    /// M266 — r124: distinct ticks on which the staged display stood part-way
+    /// through its teleport, and the last such tick.
+    pub(super) display_glide_ticks: usize,
+    pub(super) display_glide_last: u64,
+    pub(super) display_glide_y0: Option<f64>,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1031,7 +1036,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 123;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 124;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1221,6 +1226,16 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M266 — r124: three seconds in, the render check teleports r123's
+        // display (summoned with `teleport_duration:20`) up a block. Vanilla
+        // glides it over 20 ticks; Rewo's 3-tick lerp spent 2 ticks part-way,
+        // and a display without a duration snaps. At least 10 distinct ticks
+        // part-way.
+        row(
+            "r124 a display with a teleport duration glided to its new position",
+            self.display_glide_ticks >= 10,
+            format!("{} ticks part-way", self.display_glide_ticks),
         );
         // M265 — r123: two seconds in, the render check merges a 40-tick
         // scale-up (1 to 3) into a staged stone block display. Vanilla slides
@@ -5053,6 +5068,17 @@ impl LiveApp {
                         );
                     }
                     self.rc_interp_sent = true;
+                }
+                // M266 — r124: a second later, teleport it up a block; its
+                // `teleport_duration` of 20 makes the move a glide.
+                if !self.rc_glide_sent && elapsed >= 3.0 {
+                    if let Some(s) = self.session.as_mut() {
+                        let _ = s.send_command(
+                            "execute as @e[type=minecraft:block_display,tag=rewo_interp,limit=1] \
+                             at @s run tp @s ~ ~1 ~",
+                        );
+                    }
+                    self.rc_glide_sent = true;
                 }
                 // `REWO_RC_CAPTURE_AT=<fraction>`: one F2 capture at that point
                 // of the timed run, into the staged game directory, for a
