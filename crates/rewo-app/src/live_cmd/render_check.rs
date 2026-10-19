@@ -414,6 +414,9 @@ pub(super) struct RenderCheck {
     /// M231 — r96: a tick's walking distance after 25 ticks of W, and after
     /// 25 ticks of W while eating.
     pub(super) walk_steps: (f64, f64),
+    /// M236 — the bot's health when the use witnesses began (before the
+    /// heal), for a failure's detail.
+    pub(super) use_start_health: f32,
     pub(super) eat_count: Option<(i32, i32)>,
     pub(super) bucket_filled: bool,
     pub(super) bucket_emptied: bool,
@@ -450,6 +453,19 @@ pub(super) struct RenderCheck {
     /// with the shield up, and whether the off hand was using at that hit.
     pub(super) shield_health: (f32, f32, f32),
     pub(super) shield_up: bool,
+    /// M236 — r102: the anvil's drawn cost line (text, linear colour) at 0
+    /// levels and at 5, the levels before and after taking the result, and
+    /// the swords in the inventory after; r103: the table's three offers,
+    /// the levels before and after the first row, and (enchanted, lapis
+    /// left) after it.
+    pub(super) anvil_labels: (Option<(String, [f32; 3])>, Option<(String, [f32; 3])>),
+    pub(super) anvil_xp: (i32, i32),
+    pub(super) anvil_swords: i32,
+    pub(super) enchant_costs: [i32; 3],
+    pub(super) enchant_xp: (i32, i32),
+    pub(super) enchant_result: (bool, i32),
+    /// The cursor stack after the first press, and where the press was.
+    pub(super) enchant_carried: Option<(Option<(String, i32)>, (f64, f64))>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -935,7 +951,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 101;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 103;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1632,6 +1648,54 @@ impl RenderCheck {
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
             ),
         );
+        // M236 — r102: the anvil's cost line, drawn as `AnvilScreen.
+        // extractLabels` does: a rename costs one level, so at 0 levels the
+        // line is red (`-40864`, 0xFF6060: `mayPickup` refuses) and at 5 it
+        // is green (`-8323296`, 0x80FF20); taking the result spends the level
+        // and puts the sword back in the inventory.
+        let colour = |rgb: u32| super::hud::srgb_bytes_to_linear(rgb);
+        let line = |l: &Option<(String, [f32; 3])>, rgb: u32| {
+            l.as_ref()
+                .is_some_and(|(t, c)| t == "Enchantment Cost: 1" && *c == colour(rgb))
+        };
+        row(
+            "r102 an anvil rename showed 'Enchantment Cost: 1' red at 0 levels, green at 5, and took the level",
+            line(&self.anvil_labels.0, 0xFF6060)
+                && line(&self.anvil_labels.1, 0x80FF20)
+                && self.anvil_xp == (5, 4)
+                && self.anvil_swords == 1,
+            format!(
+                "labels {:?} then {:?}, levels {:?}, swords after {}{}",
+                self.anvil_labels.0,
+                self.anvil_labels.1,
+                self.anvil_xp,
+                self.anvil_swords,
+                self.use_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
+            ),
+        );
+        // r103: the enchanting table's offers arrive and the first row's
+        // press (`EnchantmentScreen.mouseClicked` -> `container_button_click`)
+        // enchants the pickaxe for one lapis and one level.
+        row(
+            "r103 an enchanting table offered three enchantments and its first row enchanted the pickaxe for one lapis and one level",
+            self.enchant_costs.iter().all(|&c| c > 0)
+                && self.enchant_result == (true, 2)
+                && self.enchant_xp.0 - self.enchant_xp.1 == 1,
+            format!(
+                "offers {:?}, levels {:?}, (enchanted, lapis left) {:?}, carried after the first press {:?}{}",
+                self.enchant_costs,
+                self.enchant_xp,
+                self.enchant_result,
+                self.enchant_carried,
+                self.use_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
+            ),
+        );
         // M235 — r101: a right-click with a shield in the off hand and an
         // empty main hand raises it (the main hand passes, the off hand's
         // `use` starts), and the server blocks a hit from in front: the
@@ -1720,7 +1784,8 @@ impl RenderCheck {
             "r96 walking while eating went at a fifth of the walking speed (vanilla's use slowdown)",
             walk > 0.1 && (ratio - 0.2).abs() < 0.01,
             format!(
-                "walking step {walk:.4}, while eating {eat:.4}, ratio {ratio:.4} (vanilla 0.2){}",
+                "walking step {walk:.4}, while eating {eat:.4}, ratio {ratio:.4} (vanilla 0.2), health at the start {}{}",
+                self.use_start_health,
                 self.use_skip
                     .as_ref()
                     .map(|s| format!(" (stopped: {s})"))
@@ -2590,9 +2655,21 @@ impl LiveApp {
             && self.use_stage < 100
             && elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2
         {
+            let at = self.session.as_ref().map(|s| {
+                (
+                    [s.player.x, s.player.y, s.player.z],
+                    s.player.yaw,
+                    s.local_vehicle(),
+                )
+            });
+            let origin = self.precmd_origin;
             if let Some(c) = self.check.as_mut() {
-                c.use_skip
-                    .get_or_insert_with(|| format!("timed out in stage {}", self.use_stage));
+                c.use_skip.get_or_insert_with(|| {
+                    format!(
+                        "timed out in stage {} (bot (pos, yaw, vehicle) {at:?}, spawn origin {origin:?})",
+                        self.use_stage
+                    )
+                });
             }
             self.use_down = false;
             self.use_stage = 100;
@@ -2672,6 +2749,51 @@ impl LiveApp {
                 app.shift = false;
             }
         };
+        // M236 — a press and release on enchanting row `i`'s centre
+        // (`enchant_row_rect`: 108 x 19 at (60, 14 + 19 i)).
+        let press_row = |app: &mut Self, i: usize| {
+            let Some(ext) = app.state.as_ref().map(|s| s.window.inner_size()) else {
+                return;
+            };
+            let layout = &rewo_world::menu_layout::REGISTRY[13];
+            let (left, top, scale) = rewo_gpu::container::gui_origin_for(
+                ext.width as f32,
+                ext.height as f32,
+                layout.image_w as f32,
+                layout.image_h as f32,
+            );
+            let r = rewo_ui::menu_screen::enchant_row_rect(i);
+            app.screen.mouse = (
+                (left + (r.dx as f32 + r.w as f32 * 0.5) * scale) as f64,
+                (top + (r.dy as f32 + r.h as f32 * 0.5) * scale) as f64,
+            );
+            app.screen_mouse_press(winit::event::MouseButton::Left);
+            app.screen_mouse_release();
+        };
+        let xp = |app: &Self| app.session.as_ref().map_or(-1, |s| s.hud.experience.level);
+        // What the crosshair is on and where the bot stands, for a timeout's
+        // reason (M236).
+        let looking_at = |app: &Self| {
+            app.session.as_ref().map_or_else(String::new, |s| {
+                let hit = s
+                    .target_block(
+                        super::eye_f64(s),
+                        super::look_dir(s.player.yaw, s.player.pitch),
+                        super::REACH,
+                    )
+                    .map(|h| {
+                        let st = s.world.block_state_at(h.block[0], h.block[1], h.block[2]);
+                        (
+                            h.block,
+                            app.blocks.block_name(st).unwrap_or("?").to_string(),
+                        )
+                    });
+                format!(
+                    "hit {hit:?}, at ({:.2}, {:.2}, {:.2}) yaw {:.1} pitch {:.1}",
+                    s.player.x, s.player.y, s.player.z, s.player.yaw, s.player.pitch
+                )
+            })
+        };
         let Some(o) = self.precmd_origin else {
             return;
         };
@@ -2684,7 +2806,11 @@ impl LiveApp {
         // r97's crafting table and r98's furnace (`render_check.py`).
         let table = [o[0].floor() + 14.5, o[1] + 0.5, o[2].floor() + 8.5];
         let furnace = [o[0].floor() + 13.5, o[1] + 0.5, o[2].floor() + 9.5];
+        // r102's anvil and r103's enchanting table (`render_check.py`).
+        let anvil = [o[0].floor() + 12.5, o[1] + 0.5, o[2].floor() + 9.5];
+        let enchanting = [o[0].floor() + 10.5, o[1] + 0.5, o[2].floor() + 9.5];
         let button = [o[0].floor() + 10.5, o[1] + 0.05, o[2].floor() + 4.5];
+        let stage_before = self.use_stage;
         match self.use_stage {
             0 if self.nautilus_stage >= 20 && seats_done => {
                 self.use_tick0 = now;
@@ -2697,6 +2823,24 @@ impl LiveApp {
                     .is_some_and(|s| s.local_vehicle().is_none()) =>
             {
                 cmd(self, "gamemode survival");
+                // r87's boat is done with and floats in the pool a few blocks
+                // from the spot: a later right-click with the boat under the
+                // crosshair mounted it instead of using the item, and the bot
+                // spent the rest of the tail paddling (M236; two runs).
+                cmd(self, "kill @e[type=minecraft:oak_boat]");
+                // And any slime: a flat world spawns them, the use witnesses
+                // run in survival, and one killed the bot mid-tail (the
+                // harness also stages `gamerule spawn_monsters false`).
+                cmd(self, "kill @e[type=minecraft:slime]");
+                // And full health: the earlier tail can leave the bot hurt (one
+                // run reached r101 at 3.1 health, drowned under the nautilus,
+                // and r101's hits killed it). Instant health leaves the food
+                // r92 eats against alone.
+                let health = self.session.as_ref().map_or(-1.0, |s| s.health);
+                if let Some(c) = self.check.as_mut() {
+                    c.use_start_health = health;
+                }
+                cmd(self, "effect give @s minecraft:instant_health 1 4 true");
                 cmd(self, &format!("tp @s {} {} {}", spot[0], spot[1], spot[2]));
                 cmd(
                     self,
@@ -2743,10 +2887,13 @@ impl LiveApp {
                 if now >= self.use_tick0 + 24 && self.walk_mark.is_none() {
                     self.walk_mark = pos.map(|p| (p, now));
                 }
+                // Per tick: a frame that runs two client ticks (a catch-up)
+                // puts two steps between the marks, and one run read a
+                // walking "step" of exactly twice the real one (M236).
                 let step = match (pos, self.walk_mark) {
-                    (Some(p), Some((q, t))) if now > t => {
-                        Some(((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt())
-                    }
+                    (Some(p), Some((q, t))) if now > t => Some(
+                        ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() / (now - t) as f64,
+                    ),
                     _ => None,
                 };
                 if let Some(st) = step {
@@ -2988,8 +3135,11 @@ impl LiveApp {
                     self.use_tick0 = now;
                     self.use_stage = 32;
                 } else if now >= self.use_tick0 + 40 {
+                    let at = looking_at(self);
                     if let Some(c) = self.check.as_mut() {
-                        c.use_skip = Some("the crafting table never opened".into());
+                        c.use_skip.get_or_insert_with(|| {
+                            format!("the crafting table never opened ({at})")
+                        });
                     }
                     self.use_stage = 40;
                     self.use_tick0 = now;
@@ -3067,8 +3217,10 @@ impl LiveApp {
                     self.use_tick0 = now;
                     self.use_stage = 42;
                 } else if now >= self.use_tick0 + 40 {
+                    let at = looking_at(self);
                     if let Some(c) = self.check.as_mut() {
-                        c.use_skip = Some("the furnace never opened".into());
+                        c.use_skip
+                            .get_or_insert_with(|| format!("the furnace never opened ({at})"));
                     }
                     self.use_stage = 60;
                 }
@@ -3216,6 +3368,209 @@ impl LiveApp {
                     c.shield_health.2 = health;
                 }
                 self.use_down = false;
+                // r102 next: an iron sword in hotbar 0 (the selected slot),
+                // no levels.
+                cmd(
+                    self,
+                    "item replace entity @s weapon.offhand with minecraft:air",
+                );
+                cmd(
+                    self,
+                    "item replace entity @s hotbar.0 with minecraft:iron_sword 1",
+                );
+                cmd(self, "xp set @s 0 levels");
+                // Back to the spot: r101's unblocked hit knocked the bot back.
+                cmd(self, &format!("tp @s {} {} {}", spot[0], spot[1], spot[2]));
+                if let Some(s) = self.session.as_mut() {
+                    let _ = s.select_hotbar(0);
+                }
+                self.use_tick0 = now;
+                self.use_stage = 80;
+            }
+            // r102 — the anvil, for real: the sword clicked into the first
+            // input, a letter typed into the name field (a rename costs one
+            // level), the cost line read off the drawn labels at 0 levels and
+            // at 5, then the result shift-clicked out.
+            // Only once the teleport has landed: aiming from where the
+            // knockback left the bot missed the anvil in one run.
+            80 if now >= self.use_tick0 + 10
+                && self.session.as_ref().is_some_and(|s| {
+                    (s.player.x - spot[0]).abs() < 0.2 && (s.player.z - spot[2]).abs() < 0.2
+                }) =>
+            {
+                aim(self, anvil);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 81;
+            }
+            81 => {
+                if shown(self) == Some("anvil") {
+                    // Hotbar 0 is menu slot 3 + 27 = 30.
+                    press(self, 30, false);
+                    press(self, 0, false);
+                    self.use_tick0 = now;
+                    self.use_stage = 82;
+                } else if now >= self.use_tick0 + 40 {
+                    let at = looking_at(self);
+                    if let Some(c) = self.check.as_mut() {
+                        c.use_skip
+                            .get_or_insert_with(|| format!("the anvil never opened ({at})"));
+                    }
+                    self.use_stage = 90;
+                    self.use_tick0 = now;
+                }
+            }
+            82 if now >= self.use_tick0 + 5 => {
+                if let Some(s) = self.session.as_mut() {
+                    super::menus::anvil_char(
+                        s,
+                        &mut self.screen,
+                        &self.items,
+                        self.baked.as_ref(),
+                        'X',
+                    );
+                }
+                self.use_tick0 = now;
+                self.use_stage = 83;
+            }
+            83 => {
+                let ready = self.session.as_ref().is_some_and(|s| {
+                    s.menus
+                        .open()
+                        .is_some_and(|m| m.data(0) > 0 && m.menu.menu_slot(2).is_some())
+                });
+                if ready && now >= self.use_tick0 + 5 || now >= self.use_tick0 + 40 {
+                    let label = self.last_anvil_label.clone();
+                    if let Some(c) = self.check.as_mut() {
+                        c.anvil_labels.0 = label;
+                    }
+                    cmd(self, "xp set @s 5 levels");
+                    self.use_tick0 = now;
+                    self.use_stage = 84;
+                }
+            }
+            84 if now >= self.use_tick0 + 10 => {
+                let label = self.last_anvil_label.clone();
+                let before = xp(self);
+                if let Some(c) = self.check.as_mut() {
+                    c.anvil_labels.1 = label;
+                    c.anvil_xp.0 = before;
+                }
+                press(self, 2, true);
+                self.use_tick0 = now;
+                self.use_stage = 85;
+            }
+            85 if now >= self.use_tick0 + 10 => {
+                self.close_container_screen();
+                self.use_tick0 = now;
+                self.use_stage = 86;
+            }
+            86 if now >= self.use_tick0 + 10 => {
+                let after = xp(self);
+                let swords = inventory_count(self, "minecraft:iron_sword");
+                if let Some(c) = self.check.as_mut() {
+                    c.anvil_xp.1 = after;
+                    c.anvil_swords = swords;
+                }
+                // r103 next: a pickaxe and lapis in hotbar 0 and 1, levels
+                // to spend.
+                cmd(self, "clear @s minecraft:iron_sword");
+                cmd(
+                    self,
+                    "item replace entity @s hotbar.0 with minecraft:iron_pickaxe 1",
+                );
+                cmd(
+                    self,
+                    "item replace entity @s hotbar.1 with minecraft:lapis_lazuli 3",
+                );
+                cmd(self, "xp set @s 30 levels");
+                self.use_tick0 = now;
+                self.use_stage = 90;
+            }
+            // r103 — the enchanting table: pickaxe and lapis clicked in, the
+            // server's three offers arrive (data 0..2), the first row is
+            // pressed, and the pickaxe comes back enchanted for one lapis and
+            // one level.
+            90 if now >= self.use_tick0 + 10 && !self.screen.inventory_open() => {
+                aim(self, enchanting);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 91;
+            }
+            91 => {
+                if shown(self) == Some("enchantment") {
+                    // Hotbar 0 and 1 are menu slots 2 + 27 = 29 and 30.
+                    press(self, 29, false);
+                    let carried = self.session.as_ref().and_then(|s| {
+                        let c = s.shown_menu().carried()?;
+                        Some((self.items.name(c.item_id)?.to_string(), c.count))
+                    });
+                    let mouse = self.screen.mouse;
+                    press(self, 0, false);
+                    press(self, 30, false);
+                    press(self, 1, false);
+                    if let Some(c) = self.check.as_mut() {
+                        c.enchant_carried = Some((carried, mouse));
+                    }
+                    self.use_tick0 = now;
+                    self.use_stage = 92;
+                } else if now >= self.use_tick0 + 40 {
+                    let at = looking_at(self);
+                    if let Some(c) = self.check.as_mut() {
+                        c.use_skip.get_or_insert_with(|| {
+                            format!("the enchanting table never opened ({at})")
+                        });
+                    }
+                    self.use_stage = 60;
+                }
+            }
+            92 => {
+                let costs = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.menus.open())
+                    .map_or([0; 3], |m| m.enchant_costs());
+                if costs[0] > 0 || now >= self.use_tick0 + 40 {
+                    if costs[0] <= 0 {
+                        let slots: Vec<_> =
+                            (0..2).chain(29..31).map(|i| menu_slot(self, i)).collect();
+                        let at = looking_at(self);
+                        if let Some(c) = self.check.as_mut() {
+                            c.use_skip.get_or_insert_with(|| {
+                                format!("no offers: menu slots 0, 1, 29, 30 {slots:?} ({at})")
+                            });
+                        }
+                    }
+                    let before = xp(self);
+                    if let Some(c) = self.check.as_mut() {
+                        c.enchant_costs = costs;
+                        c.enchant_xp.0 = before;
+                    }
+                    press_row(self, 0);
+                    self.use_tick0 = now;
+                    self.use_stage = 93;
+                }
+            }
+            93 if now >= self.use_tick0 + 10 => {
+                let enchanted = self.session.as_ref().is_some_and(|s| {
+                    s.menus
+                        .open()
+                        .and_then(|m| m.menu.menu_slot(0))
+                        .is_some_and(|st| st.enchanted)
+                });
+                let lapis = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.menus.open())
+                    .map_or(-1, |m| m.enchant_lapis());
+                let after = xp(self);
+                if let Some(c) = self.check.as_mut() {
+                    c.enchant_result = (enchanted, lapis);
+                    c.enchant_xp.1 = after;
+                }
+                self.close_container_screen();
                 self.use_stage = 60;
             }
             60 => {
@@ -3223,6 +3578,20 @@ impl LiveApp {
                 self.use_stage = 100;
             }
             _ => {}
+        }
+        if self.use_stage != stage_before {
+            if let Some(s) = self.session.as_ref() {
+                log::info!(
+                    "render-check: use stage {stage_before} -> {} at tick {now}: pos ({:.2}, {:.2}, {:.2}) yaw {:.1} health {} vehicle {:?}",
+                    self.use_stage,
+                    s.player.x,
+                    s.player.y,
+                    s.player.z,
+                    s.player.yaw,
+                    s.health,
+                    s.local_vehicle()
+                );
+            }
         }
     }
 

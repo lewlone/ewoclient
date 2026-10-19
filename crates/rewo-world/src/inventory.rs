@@ -748,6 +748,12 @@ pub enum SlotKind {
     /// `moveItemStackTo`'s placement pass. That makes it load-bearing for the
     /// shift-click and not merely for an ordinary one.
     GrindstoneInput,
+    /// `EnchantmentMenu`'s item slot 0 (M236): a `Slot` whose
+    /// `getMaxStackSize` is 1 and whose `mayPlace` is the default (anything).
+    EnchantItem,
+    /// `EnchantmentMenu`'s lapis slot 1 (M236): `mayPlace` is
+    /// `itemStack.is(Items.LAPIS_LAZULI)`.
+    EnchantLapis,
     /// A mount menu's saddle `ArmorSlot` (M220): `mount.isEquippableInSlot(
     /// stack, SADDLE)`, which [`ItemProps::mount_saddle`] answers for the open
     /// mount. Caps at one.
@@ -865,7 +871,10 @@ pub fn slot_at(gui_x: f64, gui_y: f64) -> Option<usize> {
 /// overrides it to 1, everything else inherits the container's 64.
 pub fn slot_max_stack(kind: SlotKind) -> i32 {
     match kind {
-        SlotKind::Armor(_) | SlotKind::MountSaddle | SlotKind::MountBody => 1,
+        SlotKind::Armor(_)
+        | SlotKind::MountSaddle
+        | SlotKind::MountBody
+        | SlotKind::EnchantItem => 1,
         _ => rewo_data::item_props_table::DEFAULT_MAX_STACK,
     }
 }
@@ -949,6 +958,9 @@ pub struct ItemProps {
     /// [`ItemSlot::has_map_id`] to the other slot entirely, which is what makes
     /// map-cloning work.
     pub cartography_additional: bool,
+    /// `is(Items.LAPIS_LAZULI)` (M236) — the enchanting table's lapis slot
+    /// and its shift-click branch.
+    pub enchant_lapis: bool,
     /// Whether the item's **prototype** carries `minecraft:max_damage` (M93e).
     /// From the per-item component table, which M56 already generates.
     pub proto_max_damage: bool,
@@ -1080,6 +1092,9 @@ impl Inventory {
             // smithing kinds below are: `_ => true` would grant them.
             SlotKind::MountSaddle => props.mount_saddle,
             SlotKind::MountBody => props.mount_body,
+            // M236 — listed for the same reason: the lapis slot refuses
+            // everything else.
+            SlotKind::EnchantLapis => props.enchant_lapis,
             SlotKind::SmithingTemplate => props.smithing_template,
             SlotKind::SmithingBase => props.smithing_base,
             SlotKind::SmithingAddition => props.smithing_addition,
@@ -1638,6 +1653,24 @@ impl Inventory {
                     _ => (player..hotbar, false),
                 }]);
             }
+            QuickMove::Enchantment => {
+                // EnchantmentMenu: item 0, lapis 1, player 2..38.
+                let (player, hotbar, end) = (2usize, 29usize, 38usize);
+                let _ = hotbar;
+                return Some(vec![match slot {
+                    // Both inputs go back to the player, filling backwards.
+                    0 | 1 => (player..end, true),
+                    // Lapis to its slot, also `reverse` (a one-slot range,
+                    // so the direction only names vanilla's argument).
+                    _ if p.enchant_lapis => (1..2, true),
+                    // Anything else: vanilla copies ONE item into slot 0
+                    // when it is empty, and moves nothing when it is not —
+                    // which is `moveItemStackTo` into a slot capped at one
+                    // (`SlotKind::EnchantItem`), so the same range model
+                    // says it exactly. There is no main/hotbar cross-move.
+                    _ => (0..1, false),
+                }]);
+            }
             QuickMove::Cartography => {
                 // CartographyTableMenu: map 0, additional 1, result 2,
                 // player 3..39.
@@ -2027,6 +2060,8 @@ mod tests {
             beacon_payment: false,
             stonecuttable: false,
             cartography_additional: false,
+
+            enchant_lapis: false,
             loom_banner: false,
             loom_dye: false,
             loom_pattern: false,
@@ -2050,6 +2085,8 @@ mod tests {
             beacon_payment: false,
             stonecuttable: false,
             cartography_additional: false,
+
+            enchant_lapis: false,
             loom_banner: false,
             loom_dye: false,
             loom_pattern: false,
@@ -2073,6 +2110,8 @@ mod tests {
             beacon_payment: false,
             stonecuttable: false,
             cartography_additional: false,
+
+            enchant_lapis: false,
             loom_banner: false,
             loom_dye: false,
             loom_pattern: false,
@@ -2960,6 +2999,77 @@ mod tests {
         );
     }
 
+    // -- M236: the enchanting table ------------------------------------------
+
+    fn lapis_props(id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            // Item 9 is the test's lapis.
+            enchant_lapis: id == 9,
+            ..plain_props(id).unwrap()
+        })
+    }
+
+    fn enchanting(content: &[(usize, Option<ItemSlot>)]) -> Inventory {
+        let mut s = Inventory::with_layout(crate::menu_layout::layout_of(13).unwrap());
+        let mut v = vec![None; s.slot_count()];
+        for (i, st) in content {
+            v[*i] = *st;
+        }
+        assert!(s.set_content(1, &v, None));
+        s
+    }
+
+    /// Before M236 the menu was unimplemented, so every click on an
+    /// enchanting table was declined locally and never sent.
+    #[test]
+    fn an_enchanting_table_click_is_predictable_and_places_one_item() {
+        let mut s = enchanting(&[]);
+        s.set_carried(stack(1, 5));
+        let p = s
+            .click_pickup(0, 0, &lapis_props)
+            .expect("an enchanting-table click is predicted (and so sent)");
+        assert_eq!(p.changed, vec![(0u16, stack(1, 1))], "slot 0 takes one");
+        assert_eq!(p.carried, stack(1, 4));
+        // The lapis slot refuses anything but lapis, and takes a stack of it.
+        let mut s = enchanting(&[]);
+        s.set_carried(stack(1, 5));
+        let p = s.click_pickup(1, 0, &lapis_props).expect("predictable");
+        assert!(
+            p.changed.is_empty(),
+            "a non-lapis stack stays on the cursor"
+        );
+        let mut s = enchanting(&[]);
+        s.set_carried(stack(9, 3));
+        let p = s.click_pickup(1, 0, &lapis_props).expect("predictable");
+        assert_eq!(p.changed, vec![(1u16, stack(9, 3))]);
+    }
+
+    /// `EnchantmentMenu.quickMoveStack`: lapis to slot 1, anything else ONE
+    /// item into an empty slot 0 (and nothing at all when it is taken), and
+    /// both inputs back to the player.
+    #[test]
+    fn an_enchanting_table_shift_click_routes_lapis_and_one_item() {
+        let s = enchanting(&[(29, stack(9, 3))]);
+        let p = s.click_quick_move(29, &lapis_props).expect("lapis moves");
+        assert!(p.changed.contains(&(1u16, stack(9, 3))), "{:?}", p.changed);
+        let s = enchanting(&[(29, stack(1, 5))]);
+        let p = s
+            .click_quick_move(29, &lapis_props)
+            .expect("one item moves");
+        assert!(p.changed.contains(&(0u16, stack(1, 1))), "{:?}", p.changed);
+        assert!(p.changed.contains(&(29u16, stack(1, 4))), "{:?}", p.changed);
+        let s = enchanting(&[(0, stack(7, 1)), (29, stack(1, 5))]);
+        assert!(
+            s.click_quick_move(29, &lapis_props).is_none(),
+            "slot 0 taken: nothing moves, no cross-move"
+        );
+        let s = enchanting(&[(0, stack(1, 1))]);
+        let p = s
+            .click_quick_move(0, &lapis_props)
+            .expect("back to the player");
+        assert!(p.changed.contains(&(0u16, None)), "{:?}", p.changed);
+    }
+
     // -- M93g: the loom ----------------------------------------------------
 
     fn loom_props(banner: bool, dye: bool, pattern: bool) -> impl Fn(i32) -> Option<ItemProps> {
@@ -3184,6 +3294,8 @@ mod tests {
     fn additional_props(_id: i32) -> Option<ItemProps> {
         Some(ItemProps {
             cartography_additional: true,
+
+            enchant_lapis: false,
             ..plain_props(0).unwrap()
         })
     }

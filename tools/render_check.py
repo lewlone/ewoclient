@@ -58,6 +58,11 @@ BASE = os.path.join(os.environ["APPDATA"], "EwoClient", "rewo", "26.2")
 SRC = os.path.join(BASE, "testserver")
 REWO = os.path.join(ROOT, "target", "debug", "rewo.exe")
 PRECMD = (
+    # M236 -- no hostile spawns. `spawn-monsters=false` in server.properties
+    # no longer stops them, a flat world spawns slimes, and the use witnesses
+    # run in survival: one slime killed the bot mid-tail ("slain by Slime")
+    # and others left it at 3 health, failing a different witness each time.
+    "gamerule spawn_monsters false;"
     "give @s minecraft:diamond_sword 1;"
     "give @s minecraft:dirt 64;"
     "recipe give @s *;"
@@ -136,6 +141,9 @@ PRECMD = (
     # the furnace holding an iron ingot in its result slot.
     "setblock ~14 ~ ~8 minecraft:crafting_table;"
     "setblock ~13 ~ ~9 minecraft:furnace[facing=north]{Items:[{Slot:2b,id:\"minecraft:iron_ingot\",count:1}]};"
+    # M236 -- r102 / r103. An anvil and an enchanting table beside them.
+    "setblock ~12 ~ ~9 minecraft:anvil[facing=north];"
+    "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "
@@ -249,7 +257,7 @@ def run(args):
 
     props = io.open(os.path.join(SRC, "server.properties"), "rb").read().decode("utf-8")
     out, hits = [], 0
-    # M166 stages three keys. They are REPLACED IN PLACE and each must be hit
+    # M166 stages these keys (M236 added the fourth). They are REPLACED IN PLACE and each must be hit
     # exactly once: a vanilla server writes its whole default property set, so
     # all three are already present and appending would leave two copies with
     # the server reading whichever comes last -- the gate would then grade a
@@ -260,6 +268,11 @@ def run(args):
         "resource-pack": PACK_URL,
         "resource-pack-id": PACK_ID,
         "enable-code-of-conduct": "true",
+        # M236 -- the seed is random per run (`level-seed=` is empty), and a
+        # flat world still places villages: one run spawned the bot on a
+        # roof six blocks up and two dozen witnesses failed with it. No
+        # structures, so every spawn is on the flat surface.
+        "generate-structures": "false",
     }
     staged_hits = dict.fromkeys(staged, 0)
     for line in props.splitlines():

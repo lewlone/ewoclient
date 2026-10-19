@@ -940,6 +940,9 @@ pub enum QuickMove {
     /// (component present -> slot 0) from `minecraft:map` (a different item,
     /// no component -> slot 1). Putting both in one slot would break cloning.
     Cartography,
+    /// `EnchantmentMenu` (M236): item 0 (one at a time), lapis 1, the
+    /// player's 36 after.
+    Enchantment,
     /// `GrindstoneMenu` — repair 0 and 1, result 2, then the player's 36.
     ///
     /// **Its `quickMoveStack` has no item predicate at all.** The guard is
@@ -1073,6 +1076,12 @@ impl MenuLayout {
                 3 => crate::inventory::SlotKind::Result,
                 _ => crate::inventory::SlotKind::Plain,
             }),
+            // M236 — the enchanting table: a one-item slot and the lapis.
+            QuickMove::Enchantment => Some(match slot {
+                0 => crate::inventory::SlotKind::EnchantItem,
+                1 => crate::inventory::SlotKind::EnchantLapis,
+                _ => crate::inventory::SlotKind::Plain,
+            }),
             QuickMove::Cartography => Some(match slot {
                 0 => crate::inventory::SlotKind::CartographyMap,
                 1 => crate::inventory::SlotKind::CartographyAdditional,
@@ -1134,6 +1143,9 @@ impl MenuLayout {
             23 => QuickMove::Cartography,
             // loom (M93g).
             18 => QuickMove::Loom,
+            // enchantment (M236) — every click was refused locally before
+            // this arm, so nothing could be put on an enchanting table.
+            13 => QuickMove::Enchantment,
             _ => QuickMove::Unimplemented,
         }
     }

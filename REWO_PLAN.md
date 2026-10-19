@@ -2058,6 +2058,7 @@ this shape once.
 | M233 (2026-10-19) — drawing a bow narrows the frame's FOV to 0.85 of the standing FOV (vanilla's dynamic FOV) | **r99** | — | — |
 | M234 (2026-10-19) — a fully drawn bow's first-person model is `bow_pulling_2` (item-model use variants) | **r100** | — | — |
 | M235 (2026-10-19) — a right-click raises the off-hand shield and the server blocks a hit from in front | **r101** | — | — |
+| M236 (2026-10-19) — a real anvil's cost line (red without levels, green with) and rename; a real enchanting table's offers and first row | **r102**, **r103** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3892,6 +3893,55 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M236 — the anvil's cost line, and the enchanting table can be used (2026-10-19)
+
+**The anvil.** `AnvilScreen.extractLabels` draws the level cost (or "Too
+Expensive!" at 40 and up, outside creative) right-aligned at y 69 over a
+`0x4F000000` fill; Rewo stored the menu's cost (data 0) and drew nothing.
+`rewo_ui::menu_screen::anvil_cost_line` / `anvil_cost_rect` transcribe the
+rule (nothing at cost 0, nothing without a result unless too expensive, red
+`-40864` when `mayPickup` refuses, else green `-8323296`), and
+`icons::anvil_cost_label` draws it from the open menu, the language table
+and the player's level, its fill riding the anvil's panel quads.
+
+**The enchanting table was unusable.** Its menu (protocol 13) had no
+`QuickMove` arm, so `MenuLayout::slot_kind` was `None`, every click was
+"not predictable" and `click_screen` sent nothing: no item or lapis could
+be put on the table. Now `QuickMove::Enchantment` with
+`SlotKind::EnchantItem` (`getMaxStackSize` 1) and `SlotKind::EnchantLapis`
+(`is(LAPIS_LAZULI)`, `ItemProps::enchant_lapis`); the shift-click sends
+lapis to slot 1 and one item to an empty slot 0 (vanilla's
+`copyWithCount(1)` is `moveItemStackTo` into a one-item slot), and nothing
+when slot 0 is taken. The brewing stand (11) has the same gap and is a
+follow-up: its ingredient slot needs `PotionBrewing`'s ingredient set, which
+is code, not data.
+
+Witnesses, on real blocks in survival (`render_check.py` stages them):
+
+- **r102**: an iron sword clicked into the anvil, an `X` typed through
+  `anvil_char` (the keyboard's path; a rename costs one level): the drawn
+  line reads "Enchantment Cost: 1" in red at 0 levels and in green at 5,
+  and taking the result spends the level (5 → 4).
+- **r103**: a pickaxe and three lapis clicked into the table; the server's
+  three offers arrive ([2, 2, 6] in one run), and a press on the first row
+  enchants the pickaxe for one lapis and one level.
+
+Harness: the tail had become flaky (about one run in three failed a
+different use witness each time), and a per-stage log line (stage, position,
+health, vehicle) found why: **a slime killed the bot** ("RewoBot was slain
+by Slime"). `spawn-monsters=false` no longer stops hostile spawns, a flat
+world spawns slimes, and the use witnesses run in survival, so a slime wore
+the bot down (one run reached r101 at 3.1 health) or killed it. Fixed by
+`gamerule spawn_monsters false` first in `REWO_PRECMD` and a slime kill when
+the use witnesses start. On the way: `generate-structures=false` (the random
+seed once spawned the bot on a village roof six blocks up and two dozen
+witnesses failed); r96 measured its walking step across two client ticks
+when a frame ran a catch-up and read twice the real step (now per tick);
+r87's boat is removed and the bot healed when the use witnesses start; the
+tail cap is 90 s (the tail is about 45 s; one run hit the 60 s cap
+mid-anvil); r102 waits for its teleport to land before aiming; and the use
+timeouts name what the crosshair hit and where the bot stood.
 
 ### M235 — shield blocking, checked live (2026-10-19)
 

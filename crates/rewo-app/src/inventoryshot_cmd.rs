@@ -659,6 +659,7 @@ fn props_for(max_stack: i32, equips: Option<ArmorPiece>) -> ItemProps {
         beacon_payment: false,
         stonecuttable: false,
         cartography_additional: false,
+        enchant_lapis: false,
         loom_banner: false,
         loom_dye: false,
         loom_pattern: false,

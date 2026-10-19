@@ -1159,6 +1159,16 @@ impl LiveApp {
                     self.screen.book_button_focus == Some(session.shown_container_id()),
                     loom_scroll,
                 );
+                // r102 — the anvil's cost line as drawn this frame.
+                #[cfg(feature = "gates")]
+                {
+                    self.last_anvil_label = labels
+                        .iter()
+                        .find(|l| {
+                            l.text.starts_with("Enchantment Cost") || l.text == "Too Expensive!"
+                        })
+                        .map(|l| (l.text.clone(), l.color_linear));
+                }
                 // M105 — the page counter is a LABEL, so it is counted here
                 // rather than among the book's quads. Matched on the
                 // model's own geometry (the counter is the only text the book

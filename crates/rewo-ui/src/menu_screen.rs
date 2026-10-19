@@ -835,6 +835,94 @@ pub const ENCHANT_NAME_DISABLED: u32 = 0x342F25;
 pub const ENCHANT_COST_ENABLED: u32 = 0x80FF20;
 pub const ENCHANT_COST_DISABLED: u32 = 0x407F10;
 
+/// M236 — `AnvilScreen.extractLabels`' cost line: what it says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnvilCostText {
+    /// `container.repair.cost` with the level cost.
+    Cost(i32),
+    /// `container.repair.expensive`.
+    TooExpensive,
+}
+
+/// The cost line's green, `-8323296` (`0xFF80FF20`).
+pub const ANVIL_COST_OK: u32 = 0x80FF20;
+/// Its red, `-40864` (`0xFFFF6060`): too expensive, or the result cannot be
+/// taken (`AnvilMenu.mayPickup`).
+pub const ANVIL_COST_RED: u32 = 0xFF6060;
+
+/// M236 — `AnvilScreen.extractLabels`: nothing at cost 0; at 40 or more
+/// (and not creative) "Too Expensive!" in red whether or not there is a
+/// result; otherwise nothing without a result, else the cost, red when
+/// `mayPickup` refuses (`(creative || xp >= cost) && cost > 0`).
+pub fn anvil_cost_line(
+    cost: i32,
+    creative: bool,
+    has_result: bool,
+    xp_level: i32,
+) -> Option<(AnvilCostText, u32)> {
+    if cost <= 0 {
+        return None;
+    }
+    if cost >= 40 && !creative {
+        return Some((AnvilCostText::TooExpensive, ANVIL_COST_RED));
+    }
+    if !has_result {
+        return None;
+    }
+    let may_pickup = creative || xp_level >= cost;
+    Some((
+        AnvilCostText::Cost(cost),
+        if may_pickup {
+            ANVIL_COST_OK
+        } else {
+            ANVIL_COST_RED
+        },
+    ))
+}
+
+/// The line's place in the anvil (`imageWidth` 176): right-aligned at
+/// `imageWidth - 8 - width - 2`, y 69, over a `0x4F000000` fill from
+/// `(x - 2, 67)` to `(imageWidth - 8, 79)`. Returns `(text x, text y, fill
+/// x0, fill y0, fill x1, fill y1)`.
+pub fn anvil_cost_rect(text_width: i32) -> (i32, i32, i32, i32, i32, i32) {
+    const IMAGE_W: i32 = 176;
+    let tx = IMAGE_W - 8 - text_width - 2;
+    (tx, 69, tx - 2, 67, IMAGE_W - 8, 79)
+}
+
+#[cfg(test)]
+mod anvil_cost_tests {
+    use super::*;
+
+    #[test]
+    fn the_anvil_cost_line_follows_extract_labels() {
+        assert_eq!(anvil_cost_line(0, false, true, 30), None);
+        assert_eq!(anvil_cost_line(5, false, false, 30), None);
+        assert_eq!(
+            anvil_cost_line(5, false, true, 30),
+            Some((AnvilCostText::Cost(5), ANVIL_COST_OK))
+        );
+        assert_eq!(
+            anvil_cost_line(5, false, true, 4),
+            Some((AnvilCostText::Cost(5), ANVIL_COST_RED))
+        );
+        assert_eq!(
+            anvil_cost_line(5, true, true, 0),
+            Some((AnvilCostText::Cost(5), ANVIL_COST_OK))
+        );
+        // Too expensive is shown with no result at all, and creative skips it.
+        assert_eq!(
+            anvil_cost_line(40, false, false, 99),
+            Some((AnvilCostText::TooExpensive, ANVIL_COST_RED))
+        );
+        assert_eq!(
+            anvil_cost_line(40, true, true, 0),
+            Some((AnvilCostText::Cost(40), ANVIL_COST_OK))
+        );
+        assert_eq!(anvil_cost_rect(100), (66, 69, 64, 67, 168, 79));
+    }
+}
+
 impl EnchantRow {
     /// This row's cost-text colour, which depends only on affordability.
     pub fn cost_color(self) -> Option<u32> {

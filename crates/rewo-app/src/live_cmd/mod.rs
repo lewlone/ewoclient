@@ -907,6 +907,9 @@ struct LiveApp {
     /// M233 — the FOV the last frame was projected with (r99).
     #[cfg(feature = "gates")]
     last_frame_fov: f32,
+    /// M236 — the anvil's cost line the last screen frame drew (r102).
+    #[cfg(feature = "gates")]
+    last_anvil_label: Option<(String, [f32; 3])>,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1302,6 +1305,8 @@ fn run_windowed(
         #[cfg(feature = "gates")]
         last_frame_fov: 0.0,
         #[cfg(feature = "gates")]
+        last_anvil_label: None,
+        #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
         lectern_shown: None,
@@ -1485,9 +1490,11 @@ const RENDER_CHECK_SECONDS: f32 = 8.0;
 /// The most the render check's tail (M220's r84/r85, run after the timed
 /// part) may add before the run ends regardless. 20 since M225's camel, 30
 /// since M227's nautilus (its swim and settle take about nine seconds), 45
-/// since M229's survival uses, 60 since M232's crafting table and furnace;
-/// the run ends as soon as every tail stage is done.
-const RENDER_CHECK_TAIL_SECONDS: f32 = 60.0;
+/// since M229's survival uses, 60 since M232's crafting table and furnace,
+/// 90 since M236's anvil and enchanting table (M233-M236 added about 15 s;
+/// one run hit the 60 s cap mid-anvil); the run ends as soon as every tail
+/// stage is done.
+const RENDER_CHECK_TAIL_SECONDS: f32 = 90.0;
 
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {

@@ -152,6 +152,16 @@ a self-check path.
   `PlaySession::mirror_open_container_inventory` copies an open container's
   last 36 slots back every tick and before any close (M232). Anything that
   reads the player inventory while a container is open sees it a tick late.
+- **A menu whose `quick_move()` is `Unimplemented` cannot be clicked at
+  all**: `slot_kind` is `None`, every click is "not predictable" and is
+  never sent (`click_screen`). The enchanting table was unusable that way
+  until M236; the brewing stand (11) still is. A new menu needs its arm.
+- **The render-check server's seed is random** (`level-seed=` empty) and the
+  harness stages `generate-structures=false` (M236): a village once put the
+  spawn on a roof and two dozen witnesses failed with it. It also stages
+  `gamerule spawn_monsters false`: `spawn-monsters=false` no longer stops
+  slimes, which killed the survival bot mid-tail. The use tail logs each
+  stage's position and health (`render-check: use stage`).
 - **The frame's FOV is vanilla's dynamic FOV** (M233,
   `PlaySession::fov_degrees`, `rewo_world::fov`): the option times the
   eased `getFieldOfViewModifier` (sprint, speed, flying, a drawn bow, the

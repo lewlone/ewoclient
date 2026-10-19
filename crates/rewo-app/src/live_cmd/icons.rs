@@ -410,6 +410,64 @@ pub(super) fn enchant_cost_labels(
     out
 }
 
+/// M236 — the anvil's cost line (`AnvilScreen.extractLabels`): the level
+/// cost or "Too Expensive!", right-aligned over its translucent black fill,
+/// from the menu's data slot 0 (`AnvilMenu.cost`) and the result slot.
+pub(super) fn anvil_cost_label(
+    open: &rewo_world::menu::OpenMenu,
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    (xp_level, creative): (i32, bool),
+    w: f32,
+    h: f32,
+) -> Option<(
+    rewo_gpu::world::OwnedTextLine,
+    (usize, rewo_gpu::container::PanelBlit),
+)> {
+    use rewo_ui::menu_screen::{anvil_cost_line, anvil_cost_rect, AnvilCostText};
+    if open.layout.protocol_id != ANVIL_MENU_PROTOCOL_ID {
+        return None;
+    }
+    let cost = i32::from(open.data(0));
+    let has_result = open.menu.menu_slot(2).is_some();
+    let (line, rgb) = anvil_cost_line(cost, creative, has_result, xp_level)?;
+    let text = match line {
+        AnvilCostText::Cost(c) => lang.translate("container.repair.cost", &[&c.to_string()]),
+        AnvilCostText::TooExpensive => lang.or_key("container.repair.expensive").to_string(),
+    };
+    let width = rewo_gpu::text::width(&text, advance) as i32;
+    let (tx, ty, x0, y0, x1, y1) = anvil_cost_rect(width);
+    let layout = &rewo_world::menu_layout::REGISTRY[ANVIL_MENU_PROTOCOL_ID as usize];
+    let (left, top, scale) =
+        rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
+    let label = rewo_gpu::world::OwnedTextLine {
+        x: left + tx as f32 * scale,
+        y: top + ty as f32 * scale,
+        px: scale,
+        color_linear: srgb_bytes_to_linear(rgb),
+        alpha: 1.0,
+        shadow: true,
+        style: rewo_gpu::text::TextStyle::PLAIN,
+        text,
+    };
+    // `fill(.., 1325400064)` = 0x4F000000: black at 79/255.
+    let fill = (
+        rewo_gpu::container::FILL_SPRITE,
+        rewo_gpu::container::PanelBlit {
+            dx: x0 as f32,
+            dy: y0 as f32,
+            w: (x1 - x0) as f32,
+            h: (y1 - y0) as f32,
+            sx: 0.0,
+            sy: 0.0,
+            sw: 0.0,
+            sh: 0.0,
+            tint: [0.0, 0.0, 0.0, 79.0 / 255.0],
+        },
+    );
+    Some((label, fill))
+}
+
 /// The anvil name field's geometry, from `AnvilScreen.subInit` (M93t).
 ///
 /// ```java
@@ -748,6 +806,8 @@ pub(crate) fn item_props(
             name,
             "minecraft:paper" | "minecraft:map" | "minecraft:glass_pane"
         ),
+        // M236 — `is(Items.LAPIS_LAZULI)`.
+        enchant_lapis: name == "minecraft:lapis_lazuli",
         // M93g — the loom. The banner half is item identity from the tag; the
         // other two are the CONJUNCTIONS, tag AND prototype component, and a
         // tag-only test would look correct on every vanilla item.

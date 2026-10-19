@@ -573,13 +573,24 @@ pub(super) fn apply_screen(
     // its cursor share a width measurement: the cursor's x is the width of the
     // run before it. Splitting the two would measure the same string twice
     // with two chances to disagree.
-    let (anvil_labels, anvil_fills) = match (baked.font.as_ref(), anvil_field) {
+    let (mut anvil_labels, mut anvil_fills) = match (baked.font.as_ref(), anvil_field) {
         (Some(f), Some(a)) => {
             let (l, fills, _) = anvil_field_render(a, &f.advance, w, h, now_ms);
             (l, fills)
         }
         _ => (Vec::new(), Vec::new()),
     };
+    // M236 — the cost line, which rides the same two lists: its fill is a
+    // panel quad and its text a label.
+    if let (Some(f), Some(open)) = (baked.font.as_ref(), session.menus.shown_open()) {
+        let player = (session.hud.experience.level, session.abilities.instabuild);
+        if let Some((label, fill)) =
+            super::icons::anvil_cost_label(open, &baked.lang, &f.advance, player, w, h)
+        {
+            anvil_labels.push(label);
+            anvil_fills.push(fill);
+        }
+    }
     // M93q — the loom's grid, resolved here because it keys off the pattern
     // slot's item NAME and only this side holds the registry.
     let loom = session
