@@ -298,6 +298,9 @@ pub(super) struct RenderCheck {
     /// M271 — r129: frames on which the staged invisible named armour stand
     /// drew its name with its body hidden.
     pub(super) hologram_stand_frames: usize,
+    /// M272 — r130: frames on which the staged player head drew every quad
+    /// in a skin of its own, the staged file's pixels.
+    pub(super) skin_head_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1050,7 +1053,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 129;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 130;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1240,6 +1243,16 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M272 — r130: `render_check.py` places a player head whose profile
+        // carries a `textures` property (served from a local file, a
+        // synthetic skin). The head must draw every quad in a model of its
+        // own whose texture holds that file's texels; every head wore
+        // Steve until M272.
+        row(
+            "r130 a player head drew in its own skin",
+            self.skin_head_frames >= 1,
+            format!("{} frames drew it", self.skin_head_frames),
         );
         // M271 — r129: `render_check.py` summons the classic server hologram,
         // an invisible armour stand with a visible custom name. Its name must

@@ -751,6 +751,7 @@ pub(super) fn run_headless(
     let mut bes = collect_block_entities(
         &session.world,
         &chest_states,
+        &Default::default(),
         &lightmap,
         1.0,
         session.game_time(),

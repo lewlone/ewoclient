@@ -6758,6 +6758,36 @@ mod tests {
         assert!(baked.state_quads(0).is_none(), "air has no quads");
     }
 
+    /// M272 — a skinned head is the player head's quads, every one sampling
+    /// the new 64×64 texture; a buffer of another size makes nothing.
+    #[test]
+    fn a_skinned_head_copies_the_player_head_onto_its_own_texture() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let mut held = baked.held_items.clone();
+        let base = held.any("rewo:be/player_head").unwrap().clone();
+        assert!(held.add_skin_head_model(vec![0; 64 * 32 * 4]).is_none());
+        let n = held.textures.len();
+        let (name, tex) = held.add_skin_head_model(vec![7; 64 * 64 * 4]).unwrap();
+        assert_eq!(
+            (name.as_str(), tex),
+            (format!("rewo:be/player_head#{n}").as_str(), n)
+        );
+        assert_eq!(held.textures[tex].rgba, vec![7; 64 * 64 * 4]);
+        let m = held.any(&name).unwrap();
+        assert_eq!(m.quads.len(), base.quads.len());
+        for (a, b) in m.quads.iter().zip(&base.quads) {
+            assert_eq!(a.tex as usize, tex);
+            assert_eq!(
+                (a.verts, a.uv, a.part, a.dir),
+                (b.verts, b.uv, b.part, b.dir)
+            );
+        }
+        assert_eq!(held.any("rewo:be/player_head").unwrap(), &base);
+    }
+
     /// M245 — a held block quad's `dir` is vanilla's `Direction` ordinal
     /// (down 0, up 1), not the block bake's `FACE_NAMES` order (up 0, down
     /// 1): dirt's top face, every corner at y 16, must say up.

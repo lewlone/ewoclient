@@ -39,6 +39,7 @@ docs/history/AGENT_LOOP_BRIEF.md's "Test server" section.
   a mutation as SURVIVED.
 """
 import argparse
+import base64
 import hashlib
 import io
 import json
@@ -52,6 +53,8 @@ import tempfile
 from gpu_lock import machine_lock
 import time
 import uuid
+import struct
+import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = os.path.join(os.environ["APPDATA"], "EwoClient", "rewo", "26.2")
@@ -256,6 +259,37 @@ def nautilus_staging(name):
     )
 
 
+# M272 -- r130. A player head wearing a skin of its own: its profile's
+# `textures` property names a textures.minecraft.net URL. The client is told
+# to read every head skin from a local file instead (`REWO_HEAD_SKIN_FILE`, a
+# gates knob), so the run stays offline; the file is a synthetic skin whose
+# texel (x, y) is (4x, 4y, 0x80, 0xff), which the witness checks.
+HEAD_SKIN_URL = "http://textures.minecraft.net/texture/" + "ab" * 32
+HEAD_STAGING = (
+    ";setblock ~-10 ~ ~1 minecraft:player_head{profile:{properties:[{name:\"textures\",value:\"%s\"}]}}"
+    % base64.b64encode(
+        json.dumps({"textures": {"SKIN": {"url": HEAD_SKIN_URL}}}).encode("ascii")
+    ).decode("ascii")
+)
+
+
+def synthetic_skin_png():
+    """A 64x64 RGBA PNG whose texel (x, y) is (4x, 4y, 0x80, 0xff)."""
+    raw = b"".join(
+        b"\x00" + bytes(v for x in range(64) for v in (4 * x, 4 * y, 0x80, 0xFF))
+        for y in range(64)
+    )
+
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -401,7 +435,10 @@ def run(args):
         print("server up; running render-check as %s" % args.username)
 
         env = dict(os.environ)
-        env["REWO_PRECMD"] = PRECMD + nautilus_staging(args.username)
+        env["REWO_PRECMD"] = PRECMD + nautilus_staging(args.username) + HEAD_STAGING
+        skin = os.path.join(dest, "head-skin.png")
+        io.open(skin, "wb").write(synthetic_skin_png())
+        env["REWO_HEAD_SKIN_FILE"] = skin
         # The client no longer injects a dirt stack into slot 0 on spawn
         # unless asked (it was item synthesis in the shipped build). No
         # witness needs the stack, but the baseline was calibrated with slot 0

@@ -172,6 +172,28 @@ impl HeldItems {
         self.models.get(name)
     }
 
+    /// M272 — a player head wearing a skin of its own: the 64×64 `rgba`
+    /// appended to the textures and a copy of `rewo:be/player_head` (head
+    /// and hat, the full sheet) sampling it, named
+    /// `rewo:be/player_head#<texture index>`. Returns the name and the new
+    /// texture's index, or `None` for a buffer of the wrong size or no
+    /// player-head model.
+    pub fn add_skin_head_model(&mut self, rgba: Vec<u8>) -> Option<(String, usize)> {
+        if rgba.len() != 64 * 64 * 4 {
+            return None;
+        }
+        let mut model = self.any("rewo:be/player_head")?.clone();
+        let tex = self.textures.len();
+        let t = u16::try_from(tex).ok()?;
+        self.textures.push(HeldTexture { w: 64, h: 64, rgba });
+        for q in &mut model.quads {
+            q.tex = t;
+        }
+        let name = format!("rewo:be/player_head#{tex}");
+        self.block_entities.insert(name.clone(), model);
+        Some((name, tex))
+    }
+
     /// Look a model up by name across both maps — what the renderer wants,
     /// since a draw carries a name and does not care which kind it is. The
     /// namespaces cannot collide: block-entity models are `rewo:be/…`.

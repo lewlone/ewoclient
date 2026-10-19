@@ -251,7 +251,7 @@ pub fn decode_png_rgba(
 }
 
 /// Decode PNG bytes → 64×64 RGBA; 64×32 legacy skins land in the top half.
-fn decode_png_to_64(bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub fn decode_png_to_64(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let (src, w, h) = decode_png_rgba(bytes, SKIN_MAX_DIMS)?;
     if w != 64 || (h != 64 && h != 32) {
         return Err(format!(

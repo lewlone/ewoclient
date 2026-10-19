@@ -570,6 +570,8 @@ struct LiveApp {
     baked: Option<assets::BakedAssets>,
     /// M260 — the block models built at run time (block displays' states).
     runtime_states: assets::RuntimeStateModels,
+    /// M272 — player heads' own skins (fetched, then built as models).
+    head_skins: block_entities::HeadSkins,
     etypes: EntityTypes,
     /// `minecraft:spears` membership — decides the `SPEAR` arm pose for a
     /// spear that is merely *held* (the swinging-STAB case needs no tag).
@@ -1167,6 +1169,7 @@ fn run_windowed(
         lang: std::sync::Arc::new(baked.lang.clone()),
         baked: Some(baked),
         runtime_states: Default::default(),
+        head_skins: block_entities::HeadSkins::new(),
         etypes,
         spears,
         chest_states,

@@ -1,8 +1,130 @@
 use super::*;
 
+/// M272 — the raw base64 `textures` property of a player head's `profile`
+/// (`ResolvableProfile`, whose properties the codec always writes as a list
+/// of `{name, value, signature}`), or `None`: a profile that is a bare name
+/// or id, which vanilla resolves through Mojang's session server, which Rewo
+/// does not call.
+pub(super) fn head_textures_value(data: &rewo_proto::nbt::Nbt) -> Option<&str> {
+    let rewo_proto::nbt::Nbt::List(props) = data.get("profile")?.get("properties")? else {
+        return None;
+    };
+    props
+        .iter()
+        .find(|p| p.get("name").and_then(rewo_proto::nbt::Nbt::as_str) == Some("textures"))?
+        .get("value")?
+        .as_str()
+}
+
+/// M272 — the skins of player heads: each distinct URL (vetted to
+/// `textures.minecraft.net` by [`rewo_net::skins::decode_textures_property`])
+/// fetched once on a worker thread through `skin_fetch::fetch_rgba64`, its
+/// model made by [`rewo_data::held_items::HeldItems::add_skin_head_model`] when
+/// the pixels arrive. Bounded at [`MAX_HEAD_SKINS`] distinct skins; a head
+/// past that draws the default skin.
+pub(super) struct HeadSkins {
+    req_tx: std::sync::mpsc::Sender<String>,
+    res_rx: std::sync::mpsc::Receiver<(String, Vec<u8>)>,
+    requested: std::collections::HashSet<String>,
+    /// URL → the head model wearing it, once built.
+    pub(super) models: std::collections::HashMap<String, String>,
+    /// base64 `textures` value → its vetted URL, so a head is decoded once.
+    urls: std::collections::HashMap<String, Option<String>>,
+}
+
+/// M272 — the most distinct head skins kept. Each is a 64×64 texture in the
+/// entity atlas's large band, whose 64 slots every block-entity sheet
+/// shares (a ring, so more than 64 on screen at once would thrash it).
+pub(super) const MAX_HEAD_SKINS: usize = 16;
+
+impl HeadSkins {
+    pub(super) fn new() -> Self {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<String>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<(String, Vec<u8>)>();
+        let spawned = std::thread::Builder::new()
+            .name("rewo-head-skins".into())
+            .spawn(move || {
+                while let Ok(url) = req_rx.recv() {
+                    // `REWO_HEAD_SKIN_FILE` (gates knob): every head skin from
+                    // this local PNG, for the render check, which must not
+                    // depend on the internet.
+                    let got = match crate::knobs::var("REWO_HEAD_SKIN_FILE") {
+                        Ok(path) => std::fs::read(&path)
+                            .map_err(|e| format!("{path}: {e}"))
+                            .and_then(|b| crate::skin_fetch::decode_png_to_64(&b)),
+                        Err(_) => crate::skin_fetch::fetch_rgba64(&url),
+                    };
+                    match got {
+                        Ok(rgba) => {
+                            if res_tx.send((url, rgba)).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => log::warn!("head skin: {e}"),
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("head skin: no loader thread: {e}");
+        }
+        Self {
+            req_tx,
+            res_rx,
+            requested: std::collections::HashSet::new(),
+            models: std::collections::HashMap::new(),
+            urls: std::collections::HashMap::new(),
+        }
+    }
+
+    /// The model for a player head with this block-entity data: its own
+    /// skin's once that has arrived, requesting it the first time it is
+    /// seen; `None` means draw the default head.
+    pub(super) fn model_for(&mut self, data: &rewo_proto::nbt::Nbt) -> Option<&str> {
+        let value = head_textures_value(data)?;
+        if !self.urls.contains_key(value) {
+            if self.urls.len() >= 16 * MAX_HEAD_SKINS {
+                self.urls.clear();
+            }
+            let url = rewo_net::skins::decode_textures_property(value).and_then(|i| i.url);
+            self.urls.insert(value.to_string(), url);
+        }
+        let url = self.urls.get(value)?.as_ref()?;
+        if !self.requested.contains(url) && self.requested.len() < MAX_HEAD_SKINS {
+            self.requested.insert(url.clone());
+            let _ = self.req_tx.send(url.clone());
+        }
+        self.models.get(url).map(String::as_str)
+    }
+
+    /// The skins that arrived since the last call, by URL.
+    pub(super) fn take_ready(&mut self) -> Vec<(String, Vec<u8>)> {
+        self.res_rx.try_iter().collect()
+    }
+}
+
+/// M272 — the player heads in `world` that wear a skin of their own whose
+/// model is ready, by position (for [`collect_block_entities`]).
+pub(super) fn head_skin_models(
+    world: &rewo_world::World,
+    skins: &mut HeadSkins,
+) -> std::collections::HashMap<rewo_world::block_entities::BlockEntityPos, String> {
+    let mut out = std::collections::HashMap::new();
+    for (pos, be) in world.block_entities.iter() {
+        if be.data.get("profile").is_none() {
+            continue;
+        }
+        if let Some(m) = skins.model_for(&be.data) {
+            out.insert(*pos, m.to_string());
+        }
+    }
+    out
+}
+
 pub(super) fn collect_block_entities(
     world: &rewo_world::World,
     chests: &rewo_data::chest_states::ChestStates,
+    // M272 — the player heads wearing a skin of their own, by position.
+    head_models: &std::collections::HashMap<rewo_world::block_entities::BlockEntityPos, String>,
     lightmap: &LightmapState,
     alpha: f32,
     game_time: i64,
@@ -231,9 +353,15 @@ pub(super) fn collect_block_entities(
                 rewo_data::block_entity_models::SHULKER_LID_PIVOT,
             ),
         };
+        // M272 — a player head with a skin of its own draws that model.
+        let model = if draw.model == "rewo:be/player_head" {
+            head_models.get(pos).cloned().unwrap_or(draw.model)
+        } else {
+            draw.model
+        };
         out.push(OwnedBlockEntityDraw {
             pos: [pos.x as f32, pos.y as f32, pos.z as f32],
-            model: draw.model,
+            model,
             transform: be_transform,
             // Lit from the block's own cell — a chest fills its block, so
             // there is no neighbour to sample the way a flat model would need.

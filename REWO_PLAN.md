@@ -2085,6 +2085,7 @@ this shape once.
 | M269 (2026-10-20) — a primed TNT draws swelling before it blows | **r127** | — | — |
 | M270 (2026-10-20) — a posed armour stand draws with its poses | **r128** | — | — |
 | M271 (2026-10-20) — an invisible named armour stand draws its name, not its body | **r129** | — | — |
+| M272 (2026-10-20) — a player head draws in its own skin | **r130** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

@@ -779,9 +779,33 @@ impl LiveApp {
             },
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
+        // M272 — player heads wearing skins of their own: build the model of
+        // each skin that arrived (the GPU gets the new model and texture, in
+        // the bake's order), then pick each head's.
+        if let Some(baked) = self.baked.as_mut() {
+            let mut new_models = Vec::new();
+            let mut new_textures = Vec::new();
+            for (url, rgba) in self.head_skins.take_ready() {
+                let Some((name, tex)) = baked.held_items.add_skin_head_model(rgba) else {
+                    continue;
+                };
+                if let Some(m) = baked.held_items.block_entities.get(&name) {
+                    new_models.push((name.clone(), to_gpu_held_model(m)));
+                }
+                new_textures.push(to_gpu_held_texture(&baked.held_items.textures[tex]));
+                self.head_skins.models.insert(url, name);
+            }
+            if !new_textures.is_empty() {
+                state
+                    .world_renderer
+                    .extend_held_items(new_models, new_textures);
+            }
+        }
+        let head_models = head_skin_models(&session.world, &mut self.head_skins);
         let mut bes = collect_block_entities(
             &session.world,
             &self.chest_states,
+            &head_models,
             &lightmap,
             alpha,
             session.game_time(),
@@ -1483,6 +1507,40 @@ impl LiveApp {
                 });
             if drew_hopper && drew_cart_chest {
                 c.minecart_contents_frames += 1;
+            }
+            // M272 — r130: the staged player head drew every quad of a
+            // per-skin model, all sampling one texture whose texels are the
+            // synthetic skin's `(4x, 4y, 0x80, 0xff)`.
+            let synthetic = |t: &rewo_data::held_items::HeldTexture| {
+                t.w == 64
+                    && t.h == 64
+                    && [(0usize, 0usize), (8, 8), (40, 12), (63, 63)]
+                        .iter()
+                        .all(|&(x, y)| {
+                            let i = (y * 64 + x) * 4;
+                            t.rgba.get(i..i + 4)
+                                == Some(&[(4 * x) as u8, (4 * y) as u8, 0x80, 0xff][..])
+                        })
+            };
+            let drew_skin_head = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .any(|(d, &q)| {
+                    d.model.starts_with("rewo:be/player_head#")
+                        && drew_all(d, q)
+                        && self.baked.as_ref().is_some_and(|b| {
+                            b.held_items.any(d.model).is_some_and(|m| {
+                                m.quads.iter().all(|mq| {
+                                    b.held_items
+                                        .textures
+                                        .get(mq.tex as usize)
+                                        .is_some_and(synthetic)
+                                })
+                            })
+                        })
+                });
+            if drew_skin_head {
+                c.skin_head_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

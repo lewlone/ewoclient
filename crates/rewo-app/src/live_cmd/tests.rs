@@ -4131,3 +4131,26 @@ fn text_display_lines_split_wrap_and_merge() {
     );
     assert_eq!(lines[0].1, 18.0);
 }
+
+/// M272 — a player head's skin is its profile's `textures` property (the
+/// list form the codec writes); a bare-name profile has none.
+#[test]
+fn a_player_heads_skin_is_its_profiles_textures_property() {
+    use rewo_proto::nbt::Nbt;
+    let s = |v: &str| Nbt::String(v.to_string());
+    let prop = |name: &str, value: &str| {
+        Nbt::Compound(vec![("name".into(), s(name)), ("value".into(), s(value))])
+    };
+    let head = |props: Vec<Nbt>| {
+        Nbt::Compound(vec![(
+            "profile".into(),
+            Nbt::Compound(vec![("properties".into(), Nbt::List(props))]),
+        )])
+    };
+    let data = head(vec![prop("other", "x"), prop("textures", "abc")]);
+    assert_eq!(head_textures_value(&data), Some("abc"));
+    assert_eq!(head_textures_value(&head(vec![prop("other", "x")])), None);
+    let named = Nbt::Compound(vec![("profile".into(), s("Notch"))]);
+    assert_eq!(head_textures_value(&named), None);
+    assert_eq!(head_textures_value(&Nbt::Compound(vec![])), None);
+}
