@@ -1503,6 +1503,60 @@ pub const CONDUIT_ACTIVE: &[(&str, &str, (f32, f32))] = &[
 ];
 
 /// Bake the conduit's dormant shell and its four active pieces.
+/// M240 — `FishingHookRenderer`'s bobber: one camera-facing quad of
+/// `entity/fishing/fishing_hook.png`, a unit square about the origin (vanilla's
+/// `vertex(x - 0.5, y - 0.5)` over a 0..1 square, uv `(x, 1 - y)`), drawn by
+/// the entity pass's billboard path at half scale. Both windings, because
+/// the billboard can be seen from behind for the frame it turns in.
+pub fn bake_fishing_hook(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    const TEX: &str = "entity/fishing/fishing_hook";
+    let Some(tex) = pool.intern(TEX, || load(TEX)) else {
+        log::error!("fishing hook: no texture {TEX:?}");
+        return Vec::new();
+    };
+    // Model units 0..16; the display step centres them (`translate(-0.5)`).
+    let front = HeldQuad {
+        verts: [
+            [0.0, 0.0, 8.0],
+            [16.0, 0.0, 8.0],
+            [16.0, 16.0, 8.0],
+            [0.0, 16.0, 8.0],
+        ],
+        uv: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+        tex,
+        part: 0,
+        dir: 0,
+    };
+    let back = HeldQuad {
+        verts: [
+            front.verts[3],
+            front.verts[2],
+            front.verts[1],
+            front.verts[0],
+        ],
+        uv: [front.uv[3], front.uv[2], front.uv[1], front.uv[0]],
+        ..front
+    };
+    vec![(
+        "rewo:be/fishing_hook".to_string(),
+        HeldItemModel {
+            quads: vec![front, back],
+            right: DisplayTransform::IDENTITY,
+            left: DisplayTransform::IDENTITY,
+            ground: DisplayTransform::IDENTITY,
+            gui: DisplayTransform::IDENTITY,
+            first_right: DisplayTransform::IDENTITY,
+            first_left: DisplayTransform::IDENTITY,
+            fixed: DisplayTransform::IDENTITY,
+            from_block: false,
+            gui_quads: None,
+        },
+    )]
+}
+
 pub fn bake_conduit(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,

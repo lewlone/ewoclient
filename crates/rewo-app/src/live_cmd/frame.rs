@@ -858,6 +858,30 @@ impl LiveApp {
             if stand(false, true, false) && stand(true, false, true) {
                 c.armor_stand_frames += 1;
             }
+            // r107 — r94's snowball and bobber, drawn as camera-facing items
+            // (the snowball's own item; the bobber's hook sprite) rather
+            // than capsules.
+            // ...and the name has baked geometry to draw: the first cut
+            // pointed the hook at a texture path that did not exist, so the
+            // bobber reached the draw list and drew nothing.
+            let baked_geometry = |item: &str| {
+                self.baked
+                    .as_ref()
+                    .and_then(|b| b.held_items.any(item))
+                    .is_some_and(|m| !m.quads.is_empty())
+            };
+            let thrown = |item: &str| {
+                baked_geometry(item)
+                    && draws
+                        .iter()
+                        .any(|d| d.ground_item == Some(item) && d.billboard.is_some())
+            };
+            if thrown("minecraft:snowball") {
+                c.thrown_frames.0 += 1;
+            }
+            if thrown("rewo:be/fishing_hook") {
+                c.thrown_frames.1 += 1;
+            }
         }
         bes.extend(frames.models);
         let frame_maps = frames.maps;

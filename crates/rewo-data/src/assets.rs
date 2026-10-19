@@ -4308,6 +4308,8 @@ impl<'a> Baker<'a> {
         ));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_skulls));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_conduit));
+        // M240 — the fishing bobber's sprite.
+        be_models.append(&mut bake_be!(crate::block_entity_models::bake_fishing_hook));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_banners));
         be_models.append(&mut bake_be!(
             crate::block_entity_models::bake_copper_golem_statues

@@ -2062,6 +2062,7 @@ this shape once.
 | M237 (2026-10-19) — a real brewing stand takes a bottle, wart and powder (shift-clicked) and brews | **r104** | — | — |
 | M238 (2026-10-19) — armour stands draw as their model with their flags (arms, base plate) and worn armour | **r105** | — | — |
 | M239 (2026-10-19) — a firework rocket boosts the elytra glide (the client's push) and the server accepts it | **r106** | — | — |
+| M240 (2026-10-19) — thrown items and the fishing bobber draw as camera-facing items | **r107** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3896,6 +3897,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M240 — thrown items and the fishing bobber are drawn (2026-10-19)
+
+Every non-living entity without a model fell through to the grey capsule:
+a thrown snowball, egg, ender pearl, potion or experience bottle, an eye of
+ender, a fireball, a firework rocket in flight and a fishing bobber.
+
+- `ThrownItemRenderer` (registered for those in `EntityRenderers`) draws
+  `getItem()` (the slot-8 stack, already stored for any entity) in the
+  GROUND display context, scaled (the fireball 3, the small one 0.75) and
+  turned by the camera's orientation (`rotationYXZ(π - yaw, -pitch, 0)`);
+  the eye of ender and the fireballs are fullbright. `EntityDraw::billboard`
+  carries the camera and the scale; `emit_ground_item`'s billboard branch
+  draws one copy, no bob or spin. The type's default item stands in when no
+  stack arrived (`live_cmd::thrown_item_of`).
+- `FishingHookRenderer`'s bobber is a camera-facing quad of
+  `entity/fishing/fishing_hook.png` at half scale: baked as the block-entity sprite
+  `rewo:be/fishing_hook` and drawn through the same branch.
+- A rocket attached to someone is not drawn (`shouldRender` is false while
+  attached).
+
+Recorded: a rocket shot at an angle (a crossbow's) faces the camera without
+vanilla's extra turn; arrows, tridents, wind charges, llama spit, shulker
+bullets and the dragon fireball still use the capsule (they have models or
+their own renderers); the fishing LINE is not drawn yet. Not looked at in a
+capture; the orientation is unit-tested (`a_billboard_turns_its_front_to_
+the_camera`: looking south the quad's front faces north, back at the camera).
+
+**r107**: r94's real snowball and cast bobber reach the windowed draw list as
+camera-facing items (the snowball's item, the hook sprite), and both names
+resolve to baked geometry. That second half was added after the first cut
+passed while drawing nothing: the hook pointed at a texture path that does
+not exist (`entity/fishing_hook`), the bake logged it, and the draw list
+still carried the name.
 
 ### M239 — firework rockets boost an elytra glide (2026-10-19)
 

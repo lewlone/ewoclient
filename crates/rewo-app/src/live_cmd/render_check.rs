@@ -219,6 +219,9 @@ pub(super) struct RenderCheck {
     /// M238 — r105: frames whose draw list carried both staged armour stands
     /// as their model with their flags.
     pub(super) armor_stand_frames: usize,
+    /// M240 — r107: frames drawing r94's snowball and its bobber as
+    /// camera-facing items.
+    pub(super) thrown_frames: (usize, usize),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -971,7 +974,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 106;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 107;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1160,6 +1163,18 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M240 — r107: r94's thrown snowball and its cast bobber reach the
+        // windowed draw list as `ThrownItemRenderer` / `FishingHookRenderer`
+        // draw them: the item (or the hook sprite) facing the camera, not
+        // the capsule every non-living entity without a model used to get.
+        row(
+            "r107 a thrown snowball and a fishing bobber drew as camera-facing items, not capsules",
+            self.thrown_frames.0 >= 1 && self.thrown_frames.1 >= 1,
+            format!(
+                "{} frames drew the snowball, {} the bobber",
+                self.thrown_frames.0, self.thrown_frames.1
             ),
         );
         // M238 — r105: two armour stands `render_check.py` summons, drawn as

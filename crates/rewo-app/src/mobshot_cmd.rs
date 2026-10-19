@@ -223,6 +223,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
         stand_parts: Default::default(),
+        billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,

@@ -1702,6 +1702,30 @@ pub(crate) fn to_gpu_held_items(
     }
 }
 
+/// M240 — the entities drawn as a camera-facing item: `(default item or
+/// sprite model, scale, fullbright)`, from `EntityRenderers`' registrations
+/// of `ThrownItemRenderer` (eye of ender, fireballs fullbright; the fireball
+/// at 3, the small one at 0.75), `FireworkEntityRenderer` and
+/// `FishingHookRenderer` (its sprite at 0.5). Recorded: a rocket shot at an
+/// angle (a crossbow's) is drawn facing the camera too, without vanilla's
+/// extra turn.
+pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
+    Some(match name {
+        "minecraft:snowball" => ("minecraft:snowball", 1.0, false),
+        "minecraft:egg" => ("minecraft:egg", 1.0, false),
+        "minecraft:ender_pearl" => ("minecraft:ender_pearl", 1.0, false),
+        "minecraft:experience_bottle" => ("minecraft:experience_bottle", 1.0, false),
+        "minecraft:splash_potion" => ("minecraft:splash_potion", 1.0, false),
+        "minecraft:lingering_potion" => ("minecraft:lingering_potion", 1.0, false),
+        "minecraft:eye_of_ender" => ("minecraft:ender_eye", 1.0, true),
+        "minecraft:fireball" => ("minecraft:fire_charge", 3.0, true),
+        "minecraft:small_fireball" => ("minecraft:fire_charge", 0.75, true),
+        "minecraft:firework_rocket" => ("minecraft:firework_rocket", 1.0, false),
+        "minecraft:fishing_bobber" => ("rewo:be/fishing_hook", 0.5, false),
+        _ => return None,
+    })
+}
+
 /// The item held in each arm (M22), as registry names — `[right, left]`.
 ///
 /// `ArmedEntityRenderState` carries the stacks per *arm*, and the hand-to-arm
@@ -2448,9 +2472,39 @@ pub(super) fn collect_entities<'a>(
         // an ITEM_STACK at slot 8, but the gate makes that explicit rather
         // than relying on it.
         let is_item_entity = Some(e.type_id) == etypes.id_of("minecraft:item");
-        let ground_stack = is_item_entity
+        let mut ground_stack = is_item_entity
             .then(|| session.world.entities.item_stack(id))
             .flatten();
+        // M240 — the thrown items `ThrownItemRenderer` / `FireworkEntityRenderer`
+        // draw (and the bobber, `FishingHookRenderer`'s sprite): the item off
+        // slot 8 (`getItem()`), else the type's default item, scaled and
+        // facing the camera. A rocket attached to someone is not drawn
+        // (`shouldRender` is false while attached).
+        let thrown = thrown_item_of(name);
+        if thrown.is_some()
+            && name == "minecraft:firework_rocket"
+            && session.world.entities.attached_to(id).is_some()
+        {
+            continue;
+        }
+        let mut thrown_model: Option<&'static str> = None;
+        let billboard = thrown.map(|(default, scale, _)| {
+            if default.starts_with("rewo:") {
+                thrown_model = Some(default);
+            } else if ground_stack.is_none() {
+                ground_stack = session
+                    .world
+                    .entities
+                    .item_stack(id)
+                    .or_else(|| item_names.id(default).map(|i| (i, 1, false)));
+            }
+            rewo_gpu::entities::Billboard {
+                cam_yaw: session.player.yaw,
+                cam_pitch: session.player.pitch,
+                scale,
+            }
+        });
+        let thrown_fullbright = thrown.is_some_and(|(_, _, fullbright)| fullbright);
 
         // Slime / magma-cube size (metadata index 16, vanilla default 1;
         // the model + bbox scale linearly by it). Our slime model is baked
@@ -2591,7 +2645,8 @@ pub(super) fn collect_entities<'a>(
                 .render_death_time(alpha),
             // M24b: a dropped stack. `Some` makes the renderer draw the item
             // instead of a model — `ItemEntityRenderer` has no body of its own.
-            ground_item: ground_stack.and_then(|(i, _, _)| item_names.name(i)),
+            ground_item: thrown_model
+                .or_else(|| ground_stack.and_then(|(i, _, _)| item_names.name(i))),
             // `ItemStack.hasFoil()` (M45), decoded at the wire because it
             // lives only in the component patch.
             armor: armor_keys(session, id, item_names, equipment, trim_slots),
@@ -2618,6 +2673,7 @@ pub(super) fn collect_entities<'a>(
             events,
             shell,
             stand_parts,
+            billboard,
             allay_dance,
             attack,
             arm_poses,
@@ -2632,7 +2688,11 @@ pub(super) fn collect_entities<'a>(
             scale_mul,
             mount: None,
             anim_id: (id & 0xffff) as f32,
-            light: entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], lightmap),
+            light: if thrown_fullbright {
+                [1.0; 3]
+            } else {
+                entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], lightmap)
+            },
             // M52. Vanilla's synched defaults: the warden's tendril countdown
             // rides entity_event 61 and the creaking's glow rides metadata
             // IS_ACTIVE — both resolved below.

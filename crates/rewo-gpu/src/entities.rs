@@ -222,6 +222,10 @@ pub struct EntityDraw<'a> {
     /// M238 — the armour stand's arms and base plate
     /// (`mobs::StandParts`); inert on every other kind.
     pub stand_parts: mobs::StandParts,
+    /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
+    /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
+    /// scaled and turned to face the camera instead of bobbing and spinning.
+    pub billboard: Option<Billboard>,
     /// Allay dance inputs (`Some` only for a dancing Allay); `None` for every
     /// other entity and a non-dancing Allay (ordinary head-look / upright pose).
     pub allay_dance: Option<mobs::AllayDance>,
@@ -5251,6 +5255,40 @@ impl EntityPass {
             return;
         };
         let mut glint = glint;
+        // M240 — a thrown item: the GROUND transform, then the billboard,
+        // centred on the entity; one copy, no bob, no spin.
+        if let Some(bb) = d.billboard {
+            let [light_r, light_g, light_b] = d.light;
+            for q in &item.quads {
+                if verts.len() + 6 > MAX_VERTS {
+                    return;
+                }
+                let Some([u0, v0, du, dv]) = self.item_uv(q.tex) else {
+                    continue;
+                };
+                let mut p4 = [[0f32; 3]; 4];
+                let mut m4 = [[0f32; 3]; 4];
+                for (i, c) in q.verts.iter().enumerate() {
+                    let p = [c[0] / 16.0, c[1] / 16.0, c[2] / 16.0];
+                    let p = bb.place(crate::held::apply_display(&item.ground, false, p));
+                    m4[i] = p;
+                    p4[i] = [d.pos[0] + p[0], d.pos[1] + p[1], d.pos[2] + p[2]];
+                }
+                let shade = mobs::shade_for(face_normal(&m4));
+                for &i in &[0usize, 1, 2, 0, 2, 3] {
+                    verts.push(Vertex {
+                        pos: p4[i],
+                        uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
+                        color: [shade, shade, shade, 1.0],
+                        light_hurt: [light_r, light_g, light_b, hurt],
+                    });
+                    if let Some(g) = glint.as_deref_mut() {
+                        g.push(p4[i], q.uv[i]);
+                    }
+                }
+            }
+            return;
+        }
         let amount = rendered_amount(d.ground_count);
         if amount == 0 {
             return;
@@ -5375,6 +5413,29 @@ impl EntityPass {
                 }
             }
         }
+    }
+}
+
+/// M240 — `ThrownItemRenderer.submit`'s `scale(s) · mulPose(camera.orientation)`:
+/// the camera's yaw and pitch (degrees) and the renderer's scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Billboard {
+    pub cam_yaw: f32,
+    pub cam_pitch: f32,
+    pub scale: f32,
+}
+
+impl Billboard {
+    /// `Camera.rotation.rotationYXZ(π - yRot, -xRot, 0)` applied to `p`:
+    /// `Ry(π - yaw) · Rx(-pitch) · p`, after the scale.
+    pub fn place(&self, p: [f32; 3]) -> [f32; 3] {
+        let p = [p[0] * self.scale, p[1] * self.scale, p[2] * self.scale];
+        let pitch = -self.cam_pitch.to_radians();
+        let (sx, cx) = pitch.sin_cos();
+        let p = [p[0], p[1] * cx - p[2] * sx, p[1] * sx + p[2] * cx];
+        let yaw = std::f32::consts::PI - self.cam_yaw.to_radians();
+        let (sy, cy) = yaw.sin_cos();
+        [p[0] * cy + p[2] * sy, p[1], -p[0] * sy + p[2] * cy]
     }
 }
 
@@ -6888,6 +6949,35 @@ fn build_pipeline(
 
 #[cfg(test)]
 mod tests {
+    /// M240 — the billboard faces the camera: looking south (yaw 0) the
+    /// quad's +Z points north, back at the camera; looking east (yaw -90)
+    /// it points west; looking straight down (pitch 90) it points up.
+    #[test]
+    fn a_billboard_turns_its_front_to_the_camera() {
+        let n = |yaw: f32, pitch: f32| {
+            super::Billboard {
+                cam_yaw: yaw,
+                cam_pitch: pitch,
+                scale: 1.0,
+            }
+            .place([0.0, 0.0, 1.0])
+        };
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+        assert!(close(n(0.0, 0.0), [0.0, 0.0, -1.0]), "{:?}", n(0.0, 0.0));
+        assert!(
+            close(n(-90.0, 0.0), [-1.0, 0.0, 0.0]),
+            "{:?}",
+            n(-90.0, 0.0)
+        );
+        assert!(close(n(0.0, 90.0), [0.0, 1.0, 0.0]), "{:?}", n(0.0, 90.0));
+        let half = super::Billboard {
+            cam_yaw: 0.0,
+            cam_pitch: 0.0,
+            scale: 0.5,
+        };
+        assert!(close(half.place([1.0, 0.0, 0.0]), [-0.5, 0.0, 0.0]));
+    }
+
     use super::*;
 
     /// A fresh pool fills lowest-first (the order the round-robin it replaced
