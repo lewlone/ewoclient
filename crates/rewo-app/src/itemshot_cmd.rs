@@ -536,7 +536,7 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
     let near = |a: [[f32; 3]; 2], b: [[f32; 3]; 2]| {
         (0..2).all(|k| (0..3).all(|i| (a[k][i] - b[k][i]).abs() < 0.05))
     };
-    let want: [(&str, [[f32; 3]; 2]); 7] = [
+    let want: [(&str, [[f32; 3]; 2]); 9] = [
         ("minecraft:chest", [[1.0, 0.0, 1.0], [15.0, 14.0, 16.0]]),
         (
             "minecraft:creeper_head",
@@ -556,6 +556,18 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         (
             "minecraft:decorated_pot",
             [[1.0, 0.0, 1.0], [15.0, 19.9, 15.0]],
+        ),
+        // M244 — the pole and bar at 2/3 scale: the bar's 20 px across and
+        // its top at 44 px, plus a hair of the cloth's rest tilt (z, top).
+        (
+            "minecraft:red_banner",
+            [[1.3333, 0.0, 7.3333], [14.6667, 29.3438, 9.5427]],
+        ),
+        // M244 — standing on the floor: `setupAnim`'s `root.y = 0` and the
+        // `select`'s flip-and-lift (the bake once floated it 24 px up).
+        (
+            "minecraft:copper_golem_statue",
+            [[1.0, 0.015, 2.985], [15.0, 24.0, 14.0]],
         ),
     ];
     let got: Vec<(&str, Option<[[f32; 3]; 2]>)> =
@@ -1127,7 +1139,7 @@ fn check_render(
     )?;
     let dirt = render([Some("minecraft:dirt"), None], &mut gpu, &mut wr, &mut off)?;
     let bow = render(
-        [Some("minecraft:white_banner"), None],
+        [Some("minecraft:shield"), None],
         &mut gpu,
         &mut wr,
         &mut off,
@@ -1174,9 +1186,9 @@ fn check_render(
         "c3.a_suppressed_item_renders_as_an_empty_hand",
         bow_px.is_empty(),
         format!(
-            "{} pixels differ (want 0) — a banner is a `special` whose \
-             renderer (`BannerRenderer`'s flag and patterns) Rewo does not map \
-             (until M243 this was a bed, a `composite`)",
+            "{} pixels differ (want 0) — a shield is a `special` whose \
+             renderer (`ShieldModel` and its patterns) Rewo does not map \
+             (until M243 this was a bed, until M244 a banner)",
             bow_px.len()
         ),
     );
@@ -1495,7 +1507,7 @@ fn check_render(
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
     let g_bow = ground(
-        Some("minecraft:white_banner"),
+        Some("minecraft:shield"),
         1,
         0.0,
         3,
@@ -1509,9 +1521,9 @@ fn check_render(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
         format!(
-            "{} pixels differ (want 0) — a banner's definition is an unmapped \
+            "{} pixels differ (want 0) — a shield's definition is an unmapped \
              `special`, so it has no baked model in either context (a bed until \
-             M243)",
+             M243, a banner until M244)",
             changed(&g_none, &g_bow).len()
         ),
     );

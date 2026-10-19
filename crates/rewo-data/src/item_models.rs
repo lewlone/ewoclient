@@ -48,7 +48,11 @@ pub enum ItemGeometry {
     /// the decorated pot's base and four sides), or a `minecraft:composite`
     /// of block models (M243: a bed's head and foot). The affine is the
     /// node's `transformation`, plus whatever the renderer adds per part.
-    Parts(Vec<(PartSource, crate::be_transform::Affine)>),
+    ///
+    /// The flag is the base model's `gui_light` (M244): `true` for `side`
+    /// (the default, a block's 3D slot lighting), `false` for `front` (the
+    /// flat item lighting a banner and a decorated pot use in a slot).
+    Parts(Vec<(PartSource, crate::be_transform::Affine)>, bool),
 }
 
 /// Where one [`ItemGeometry::Parts`] part's quads come from.
@@ -58,6 +62,11 @@ pub enum PartSource {
     Block(String),
     /// A baked block-entity model (`rewo:be/...`).
     Entity(String),
+    /// M244 — a baked block-entity model drawn with its textures multiplied
+    /// by an sRGB colour: vanilla's per-vertex tint (a banner's dye on its
+    /// greyscale base layer), baked into texture copies because item
+    /// vertices carry no colour.
+    TintedEntity(String, u32),
 }
 
 /// A `display` entry, **already through vanilla's deserializer**.
@@ -565,6 +574,33 @@ pub fn reduce_definition<'v>(
     Err("(definition nested past 16 levels)".into())
 }
 
+/// [`reduce_definition`], plus the `transformation`s of the branch nodes the
+/// walk passed through, composed parent first — vanilla's
+/// `Transformation.compose(parent, this)` as each `Unbaked.bake` hands its
+/// matrix down (M244). The leaf's own `transformation` is not included; the
+/// leaf's resolver reads it. In 26.2 only the copper golem statue's
+/// `select` (and the shield's and trident's `condition`, above specials
+/// Rewo does not map) carries one.
+fn reduce_placed<'v>(
+    node: &'v Value,
+    ctx: SelectionContext<'_>,
+) -> Result<(&'v Value, crate::be_transform::Affine), String> {
+    let mut node = node;
+    let mut xf = crate::be_transform::IDENTITY;
+    for _ in 0..=16 {
+        match chosen_child(node, ctx)? {
+            None => return Ok((node, xf)),
+            Some(next) => {
+                if let Some(t) = node.get("transformation") {
+                    xf = crate::be_transform::mul(&xf, &transformation_affine(t));
+                }
+                node = next;
+            }
+        }
+    }
+    Err("(definition nested past 16 levels)".into())
+}
+
 fn blocked(node: &Value, property: Option<&str>) -> String {
     let kind = node
         .get("type")
@@ -794,7 +830,7 @@ pub fn resolve_definition(
     // Walk the branches this stack and context select. A plain
     // `minecraft:model` reduces to itself, so this costs nothing for the 1390
     // items that were already resolving.
-    let model = match reduce_definition(root, ctx) {
+    let (model, outer) = match reduce_placed(root, ctx) {
         Ok(m) => m,
         // The reason names the node the walk **stopped at**, not the root: a
         // `condition` whose chosen branch is a `special` is blocked by the
@@ -803,8 +839,11 @@ pub fn resolve_definition(
         Err(reason) => return ItemModel::Unsupported(reason),
     };
     match model.get("type").and_then(|t| t.as_str()) {
-        Some("minecraft:special") => return special_item(model, read_model),
-        Some("minecraft:composite") => return composite_item(model, read_model),
+        Some("minecraft:special") => return special_item(model, &outer, read_model),
+        Some("minecraft:composite") => return composite_item(model, &outer, read_model),
+        // A plain model under a transformed branch would need its geometry
+        // placed; no 26.2 item has one, so the branch transform is dropped
+        // here rather than every block and sprite item becoming `Parts`.
         _ => {}
     }
     let Some(reference) = model.get("model").and_then(|m| m.as_str()) else {
@@ -954,7 +993,11 @@ fn transformation_affine(t: &Value) -> crate::be_transform::Affine {
 /// display transforms (each context from the nearest model in the parent
 /// chain that declares it; a missing left hand takes the right, as
 /// `ItemTransforms.Deserializer` does per model).
-fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>) -> ItemModel {
+fn special_item(
+    node: &Value,
+    outer: &crate::be_transform::Affine,
+    read_model: &mut dyn FnMut(&str) -> Option<Value>,
+) -> ItemModel {
     let Some(spec) = node.get("model") else {
         return ItemModel::Unsupported(blocked(node, None));
     };
@@ -979,6 +1022,45 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
                 (PartSource::Entity(side.clone()), m)
             }))
             .collect()
+        } else if kind == Some("minecraft:banner") {
+            // `BannerRenderer.submitSpecial`: the standing pole and bar, then
+            // the cloth at `setupAnim(0)`'s rest tilt, then the base colour —
+            // `Sheets.BANNER_PATTERN_BASE` on the same flag geometry, tinted
+            // with the dye. The base mask is opaque wherever the bare cloth
+            // is, so drawing it alone on the flag gives the cloth-then-base
+            // result without two coplanar layers. Pattern layers come from
+            // the stack's `banner_patterns`, which an item model never sees.
+            use crate::block_entity_models as bem;
+            let Some(colour) = spec
+                .get("color")
+                .and_then(|c| c.as_str())
+                .and_then(|c| bem::DYE_COLORS.iter().position(|d| *d == strip_ns(c)))
+            else {
+                return ItemModel::Unsupported(blocked(node, None));
+            };
+            // The entity pass applies a part transform to `v - pivot` (the
+            // flag is baked where it hangs), so the item does the same.
+            let p = bem::BANNER_STANDING_FLAG_PIVOT;
+            let mut flag = crate::be_transform::mul(
+                &crate::be_transform::banner_flag_part(0.0, p),
+                &crate::be_transform::translation(-p[0], -p[1], -p[2]),
+            );
+            for row in &mut flag {
+                row[3] /= 16.0; // px → block units
+            }
+            vec![
+                (
+                    PartSource::Entity(bem::BANNER_STANDING_BODY_MODEL.into()),
+                    crate::be_transform::IDENTITY,
+                ),
+                (
+                    PartSource::TintedEntity(
+                        "rewo:be/banner_pattern/base".into(),
+                        bem::DYE_DIFFUSE_COLORS[colour],
+                    ),
+                    flag,
+                ),
+            ]
         } else {
             match special_block_entity(spec) {
                 Some(key) => vec![(PartSource::Entity(key), crate::be_transform::IDENTITY)],
@@ -991,9 +1073,14 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
     // own transform (the shulker box's flip, the heads' turn). The statue's
     // renderer adds none, but its model's `setupAnim` turns the root by π
     // about Z, which Rewo keeps in the block-entity transform, not the bake.
-    let mut xf = node
-        .get("transformation")
-        .map_or(crate::be_transform::IDENTITY, transformation_affine);
+    // Under the branch transforms above it (the statue's `select` flips
+    // y and z and lifts it 1.5 blocks: M244).
+    let mut xf = crate::be_transform::mul(
+        outer,
+        &node
+            .get("transformation")
+            .map_or(crate::be_transform::IDENTITY, transformation_affine),
+    );
     if kind == Some("minecraft:copper_golem_statue") {
         xf = crate::be_transform::mul(
             &xf,
@@ -1003,13 +1090,14 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
     let Some(base) = node.get("base").and_then(|b| b.as_str()) else {
         return ItemModel::Unsupported("minecraft:special (no base)".into());
     };
-    let [r, l, ground, gui, fr, fl, fixed] = chain_display(base, read_model);
+    let ([r, l, ground, gui, fr, fl, fixed], side_lit) = chain_display(base, read_model);
     ItemModel::Resolved {
         geometry: ItemGeometry::Parts(
             parts
                 .into_iter()
                 .map(|(src, m)| (src, crate::be_transform::mul(&xf, &m)))
                 .collect(),
+            side_lit,
         ),
         third_person_right: r,
         third_person_left: l,
@@ -1027,7 +1115,11 @@ fn special_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>)
 /// display from its own model; a bed's two share `template_bed`'s, and this
 /// takes the first layer's. Anything else in the list (the open bundle's
 /// `bundle/selected_item`) suppresses the whole item.
-fn composite_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value>) -> ItemModel {
+fn composite_item(
+    node: &Value,
+    outer: &crate::be_transform::Affine,
+    read_model: &mut dyn FnMut(&str) -> Option<Value>,
+) -> ItemModel {
     let models = node
         .get("models")
         .and_then(|m| m.as_array())
@@ -1042,17 +1134,22 @@ fn composite_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value
         let Some(block) = reference.and_then(|r| r.strip_prefix("block/")) else {
             return ItemModel::Unsupported(blocked(node, None));
         };
+        let own = node
+            .get("transformation")
+            .map_or(crate::be_transform::IDENTITY, transformation_affine);
         let xf = m
             .get("transformation")
             .map_or(crate::be_transform::IDENTITY, transformation_affine);
+        let xf = crate::be_transform::mul(&crate::be_transform::mul(outer, &own), &xf);
         parts.push((PartSource::Block(block.to_string()), xf));
     }
     let Some((PartSource::Block(first), _)) = parts.first() else {
         return ItemModel::Unsupported(blocked(node, None));
     };
-    let [r, l, ground, gui, fr, fl, fixed] = chain_display(&format!("block/{first}"), read_model);
+    let ([r, l, ground, gui, fr, fl, fixed], side_lit) =
+        chain_display(&format!("block/{first}"), read_model);
     ItemModel::Resolved {
-        geometry: ItemGeometry::Parts(parts),
+        geometry: ItemGeometry::Parts(parts, side_lit),
         third_person_right: r,
         third_person_left: l,
         ground,
@@ -1066,17 +1163,25 @@ fn composite_item(node: &Value, read_model: &mut dyn FnMut(&str) -> Option<Value
 /// The seven display contexts a model chain declares, each from the nearest
 /// model that declares it (a missing left hand takes the right, as
 /// `ItemTransforms.Deserializer` does per model); absent ones are the
-/// identity.
+/// identity. Also the nearest `gui_light` (M244), `true` unless it says
+/// `front`: vanilla's `usesBlockLight`, which picks a slot's lighting.
 fn chain_display(
     start: &str,
     read_model: &mut dyn FnMut(&str) -> Option<Value>,
-) -> [DisplayTransform; 7] {
+) -> ([DisplayTransform; 7], bool) {
     let mut t: [Option<DisplayTransform>; 7] = [None; 7];
+    let mut gui_light: Option<bool> = None;
     let mut cur = strip_ns(start).to_string();
     for _ in 0..16 {
         let Some(json) = read_model(&cur) else {
             break;
         };
+        if gui_light.is_none() {
+            gui_light = json
+                .get("gui_light")
+                .and_then(|g| g.as_str())
+                .map(|g| g != "front");
+        }
         if let Some(d) = json.get("display") {
             let right = read_transform(d, "thirdperson_righthand");
             let first_right = read_transform(d, "firstperson_righthand");
@@ -1100,7 +1205,7 @@ fn chain_display(
             _ => break,
         }
     }
-    t.map(Option::unwrap_or_default)
+    (t.map(Option::unwrap_or_default), gui_light.unwrap_or(true))
 }
 
 /// `assets/minecraft/models/block/block.json`'s `thirdperson_righthand`:
@@ -1264,6 +1369,86 @@ mod tests {
         assert_eq!(k(r#"{"type":"minecraft:banner","color":"white"}"#), None);
     }
 
+    /// M244 — a branch node's `transformation` reaches the special below it,
+    /// composed parent first: the statue's `select` (flip y and z, lift 1.5)
+    /// then the special's own (none), then the model's `setupAnim` turn.
+    #[test]
+    fn a_branch_transformation_composes_onto_the_special() {
+        let def = json(
+            r#"{"model":{"type":"minecraft:select","property":"minecraft:block_state",
+                "block_state_property":"copper_golem_pose",
+                "transformation":{"left_rotation":[0,0,0,1],"right_rotation":[0,0,0,1],
+                  "scale":[1,-1,-1],"translation":[0.5,1.5,0.5]},
+                "fallback":{"type":"minecraft:special","base":"x","model":{
+                  "type":"minecraft:copper_golem_statue","pose":"standing",
+                  "texture":"minecraft:textures/entity/copper_golem/copper_golem.png"}}}}"#,
+        );
+        match resolve_definition(&def, &mut reader(vec![]), SelectionContext::gui()) {
+            ItemModel::Resolved {
+                geometry: ItemGeometry::Parts(parts, _),
+                ..
+            } => {
+                let m = parts[0].1;
+                // scale(1,-1,-1) · rotZ(π) = diag(-1, 1, -1), then the lift.
+                let want = [
+                    [-1.0, 0.0, 0.0, 0.5],
+                    [0.0, 1.0, 0.0, 1.5],
+                    [0.0, 0.0, -1.0, 0.5],
+                ];
+                for i in 0..3 {
+                    for j in 0..4 {
+                        assert!((m[i][j] - want[i][j]).abs() < 1e-5, "{m:?}");
+                    }
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// M244 — a banner item is its standing body and the dye-tinted base
+    /// layer on the flag's rest pose.
+    #[test]
+    fn a_banner_item_is_its_body_and_its_tinted_base() {
+        let def = json(
+            r#"{"model":{"type":"minecraft:special","base":"minecraft:item/template_banner",
+                "model":{"type":"minecraft:banner","color":"red"}}}"#,
+        );
+        // `template_banner` declares `gui_light: front` — the flat slot light.
+        let mut read = reader(vec![(
+            "item/template_banner",
+            r#"{"gui_light":"front","display":{"gui":{"rotation":[30,20,0]}}}"#,
+        )]);
+        match resolve_definition(&def, &mut read, SelectionContext::gui()) {
+            ItemModel::Resolved {
+                geometry: ItemGeometry::Parts(parts, side_lit),
+                ..
+            } => {
+                assert!(!side_lit, "a banner is lit flat in a slot");
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0].0, PartSource::Entity("rewo:be/banner_body".into()));
+                assert_eq!(
+                    parts[1].0,
+                    PartSource::TintedEntity("rewo:be/banner_pattern/base".into(), 0xB02E26)
+                );
+                // At rest the flag only tilts about its pivot: a point AT the
+                // pivot (-44 px up, block units) stays put.
+                let m = parts[1].1;
+                let y = -44.0 / 16.0;
+                assert!((m[1][1] * y + m[1][3] - y).abs() < 1e-5, "{m:?}");
+                assert!((m[2][1] * y + m[2][3]).abs() < 1e-5, "{m:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        let bad = json(
+            r#"{"model":{"type":"minecraft:special","base":"x",
+                "model":{"type":"minecraft:banner","color":"chartreuse"}}}"#,
+        );
+        assert_eq!(
+            resolve_definition(&bad, &mut reader(vec![]), SelectionContext::gui()),
+            ItemModel::Unsupported("minecraft:special".into())
+        );
+    }
+
     /// The chest's Christmas select takes its fallback, and the special
     /// leaf resolves with the base model's display.
     #[test]
@@ -1285,7 +1470,7 @@ mod tests {
         };
         match resolve_definition(&def, &mut read, SelectionContext::gui()) {
             ItemModel::Resolved {
-                geometry: ItemGeometry::Parts(parts),
+                geometry: ItemGeometry::Parts(parts, _),
                 gui,
                 third_person_left,
                 ..
@@ -1522,7 +1707,7 @@ mod tests {
         };
         match resolve_definition(&bed, &mut read, SelectionContext::gui()) {
             ItemModel::Resolved {
-                geometry: ItemGeometry::Parts(parts),
+                geometry: ItemGeometry::Parts(parts, _),
                 gui,
                 ..
             } => {
@@ -1550,7 +1735,7 @@ mod tests {
         );
         match resolve_definition(&pot, &mut reader(vec![]), SelectionContext::gui()) {
             ItemModel::Resolved {
-                geometry: ItemGeometry::Parts(parts),
+                geometry: ItemGeometry::Parts(parts, _),
                 ..
             } => {
                 assert_eq!(parts.len(), 5);

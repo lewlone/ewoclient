@@ -3899,6 +3899,46 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M244 — banner icons; branch transformations; the standing statue's floor (2026-10-19)
+
+- **Banners.** `BannerRenderer.submitSpecial` draws the standing pole and
+  bar, the bare cloth at `setupAnim(0)`'s rest tilt, then the base colour:
+  `Sheets.BANNER_PATTERN_BASE` on the same flag geometry, tinted with the dye.
+  The base mask is opaque wherever the bare cloth is (checked texel by texel
+  over the flag's UV box), so the item draws the tinted base alone on the
+  flag: same pixels, no coplanar layers. The tint is baked into a texture
+  copy (`TexturePool::tinted`, `PartSource::TintedEntity`) because item
+  vertices carry no colour; multiplying 8-bit sRGB is vanilla's own
+  gamma-space multiply. The flag part transform applies to `v - pivot`, as
+  the entity pass does (the first cut added the pivot twice and the banner
+  stood 58 px tall). Pattern layers (`banner_patterns`) are not read.
+- **Branch `transformation`s.** Every `ItemModel.Unbaked` takes an optional
+  `transformation` and bakes its children under `Transformation.compose
+  (parent, this)`. `reduce_placed` composes the ones it passes through and
+  hands them to the special or composite leaf. In 26.2 the copper golem
+  statue's `select` (flip y and z, lift 1.5 blocks) is the one that reaches a
+  resolved item; M242 dropped it.
+- **The standing statue sat 1.5 blocks into the ground.** Only the STANDING
+  layer's mesh is `translated(0, 24, 0)`, and `CopperGolemStatueModel
+  .setupAnim` sets `root.y = 0` before every draw; the bake kept the 24. In
+  the world that sank a standing statue (the default pose) a block and a half
+  below its block; as an item it floated. `statue_point` now zeroes the root's
+  y. Test: `a_standing_statue_bakes_with_its_feet_at_the_root` (the old bake
+  fails it); blockentityshot k25's naive sum takes the same rule.
+- **`gui_light`.** A parts item takes its base model's `gui_light`
+  (`template_banner` and `decorated_pot` say `front`, the flat slot
+  lighting) as `from_block`, vanilla's `usesBlockLight`.
+
+Found while looking: Rewo's slot shading uses the quad's MODEL-space normal,
+where vanilla lights the normal after the display rotation and the GUI's
+`scale(s, -s, s)`. A block icon's top is its darkest face in Rewo and its
+brightest in vanilla; that is M245.
+
+Gates: itemshot a3c adds the banner (13.3 px wide, 29.3 tall: the bar's 44
+px at 2/3) and the statue (0..24 px, on the floor); c3 and g8 suppress a
+shield now. Unit tests: the tinted copy, the banner's parts and lighting, a
+branch transformation composed onto the statue.
+
 ### M243 — beds, the decorated pot and the conduit as items (2026-10-19)
 
 M242's single block-entity geometry becomes `ItemGeometry::Parts`: a list of

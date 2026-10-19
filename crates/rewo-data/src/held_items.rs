@@ -246,6 +246,35 @@ impl TexturePool {
         Some(i)
     }
 
+    /// M244 — texture `id` with every texel's RGB multiplied by the sRGB
+    /// colour `rgb` (alpha kept), interned once per (texture, colour). This
+    /// is vanilla's per-vertex tint (a banner's dye) baked into a copy, for
+    /// item paths whose vertices carry no colour. Multiplying the 8-bit sRGB
+    /// values is exactly vanilla's gamma-space `texture * vertexColor`, and
+    /// since a power curve is multiplicative it equals the world pass's
+    /// linear-space multiply too.
+    pub fn tinted(&mut self, id: u16, rgb: u32) -> Option<u16> {
+        let key = format!("tint:{id}:{rgb:06x}");
+        if let Some(&i) = self.by_key.get(&key) {
+            return Some(i);
+        }
+        let src = self.textures.get(id as usize)?.clone();
+        let mul = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF];
+        self.intern(&key, || {
+            let mut rgba = src.rgba;
+            for px in rgba.as_chunks_mut::<4>().0 {
+                for (c, m) in px.iter_mut().zip(mul) {
+                    *c = ((*c as u32 * m + 127) / 255) as u8;
+                }
+            }
+            Some(HeldTexture {
+                w: src.w,
+                h: src.h,
+                rgba,
+            })
+        })
+    }
+
     pub fn into_textures(self) -> Vec<HeldTexture> {
         self.textures
     }
@@ -256,6 +285,33 @@ impl TexturePool {
 
     pub fn is_empty(&self) -> bool {
         self.textures.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tint_tests {
+    use super::*;
+
+    /// A tinted copy multiplies RGB, keeps alpha, leaves the source alone,
+    /// and is interned once per colour.
+    #[test]
+    fn a_tinted_copy_multiplies_rgb_and_keeps_alpha() {
+        let mut pool = TexturePool::default();
+        let src = pool
+            .intern("src", || {
+                Some(HeldTexture {
+                    w: 1,
+                    h: 1,
+                    rgba: vec![255, 128, 0, 77],
+                })
+            })
+            .unwrap();
+        let red = pool.tinted(src, 0xB02E26).unwrap();
+        assert_ne!(red, src);
+        assert_eq!(pool.tinted(src, 0xB02E26), Some(red), "interned once");
+        let tex = pool.into_textures();
+        assert_eq!(tex[src as usize].rgba, vec![255, 128, 0, 77]);
+        assert_eq!(tex[red as usize].rgba, vec![0xB0, 23, 0, 77]);
     }
 }
 

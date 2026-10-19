@@ -2542,12 +2542,16 @@ fn check_skulls(
     // box's real position against a naive offset-sum that ignores every
     // ancestor rotation — they must agree where no ancestor turns, and differ
     // where one does.
+    // The root's y is `setupAnim`'s 0 whatever the layer says (M244: the
+    // STANDING mesh is translated 24 px, which vanilla discards).
     let naive = |b: &rewo_data::block_entity_models::StatueBox| -> [f32; 3] {
         let mut p = b.min;
         for k in 0..3 {
             p[k] += b.own.0[k];
-            for a in b.chain {
-                p[k] += a.0[k];
+            for (depth, a) in b.chain.iter().enumerate() {
+                if !(depth == 0 && k == 1) {
+                    p[k] += a.0[k];
+                }
             }
         }
         p

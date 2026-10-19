@@ -935,12 +935,7 @@ fn statue_quads(boxes: &[StatueBox], tex: u16) -> Vec<HeldQuad> {
         {
             let mut v = [[0f32; 3]; 4];
             for (k, c) in verts.iter().enumerate() {
-                // Own pose first, then each ancestor from the innermost out.
-                let mut p = apply_pose(&b.own, *c);
-                for anc in b.chain.iter().rev() {
-                    p = apply_pose(anc, p);
-                }
-                v[k] = p;
+                v[k] = statue_point(b, *c);
             }
             let mut t = [[0f32; 2]; 4];
             for (k, c) in uv.iter().enumerate() {
@@ -964,9 +959,24 @@ fn statue_quads(boxes: &[StatueBox], tex: u16) -> Vec<HeldQuad> {
 /// the ancestor **rotations** are doing something — the one property a flat
 /// box list could not express.
 pub fn statue_corner(b: &StatueBox) -> [f32; 3] {
-    let mut p = apply_pose(&b.own, b.min);
-    for anc in b.chain.iter().rev() {
-        p = apply_pose(anc, p);
+    statue_point(b, b.min)
+}
+
+/// A box-local point through its own pose, then each ancestor from the
+/// innermost out — with the root's y offset forced to 0, as
+/// `CopperGolemStatueModel.setupAnim` does (`root.y = 0`) before every draw.
+/// Only the STANDING layer's mesh is `translated(0, 24, 0)`; baking that 24
+/// in (until M244) sank a standing statue a block and a half into the ground
+/// and floated its item icon as far above the slot.
+fn statue_point(b: &StatueBox, c: [f32; 3]) -> [f32; 3] {
+    let mut p = apply_pose(&b.own, c);
+    for (depth, anc) in b.chain.iter().enumerate().rev() {
+        if depth == 0 {
+            let ([x, _, z], rot) = *anc;
+            p = apply_pose(&([x, 0.0, z], rot), p);
+        } else {
+            p = apply_pose(anc, p);
+        }
     }
     p
 }
@@ -1738,6 +1748,28 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M244 — `CopperGolemStatueModel.setupAnim` sets `root.y = 0` for every
+    /// pose. Only the STANDING layer's mesh carries `translated(0, 24, 0)`,
+    /// and baking it in sank a standing statue 1.5 blocks into the ground:
+    /// in model space (y down) its feet must be at 0 and its top at -24, so
+    /// the half-turn about Z stands it on the floor.
+    #[test]
+    fn a_standing_statue_bakes_with_its_feet_at_the_root() {
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        for b in crate::copper_golem_poses::STANDING {
+            for (verts, _) in cube_faces(b.tex, b.min, b.dims, b.grow, false) {
+                for c in verts {
+                    let y = statue_point(b, c)[1];
+                    lo = lo.min(y);
+                    hi = hi.max(y);
+                }
+            }
+        }
+        assert!((hi - 0.0).abs() < 0.05, "feet at {hi}");
+        assert!((lo + 24.0).abs() < 0.05, "top at {lo}");
+    }
 
     #[test]
     fn a_chest_bakes_three_cuboids_of_six_faces() {

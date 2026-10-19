@@ -4214,6 +4214,7 @@ impl<'a> Baker<'a> {
         let mut entity_items: Vec<(
             String,
             Vec<(crate::item_models::PartSource, crate::be_transform::Affine)>,
+            bool,
             [crate::item_models::DisplayTransform; 7],
         )> = Vec::new();
         for (name, model, gui_geometry) in resolved {
@@ -4250,10 +4251,11 @@ impl<'a> Baker<'a> {
             };
             // M242/M243 — a multi-part item (block-entity models, block
             // models) is assembled below, once the block-entity models exist.
-            if let ItemGeometry::Parts(parts) = &geometry {
+            if let ItemGeometry::Parts(parts, side_lit) = &geometry {
                 entity_items.push((
                     full,
                     parts.clone(),
+                    *side_lit,
                     [right, left, ground, gui, first_right, first_left, fixed],
                 ));
                 continue;
@@ -4366,7 +4368,7 @@ impl<'a> Baker<'a> {
         // placed by its affine in block units, with the item's own display
         // transforms, drawn as a 3D (block-lit) model. A part that baked
         // nothing suppresses the whole item rather than drawing half of it.
-        for (name, parts, [right, left, ground, gui, first_right, first_left, fixed]) in
+        for (name, parts, side_lit, [right, left, ground, gui, first_right, first_left, fixed]) in
             entity_items
         {
             let mut quads = Vec::new();
@@ -4380,6 +4382,18 @@ impl<'a> Baker<'a> {
                     crate::item_models::PartSource::Block(block) => {
                         self.bake_block_item(block, &mut pool)
                     }
+                    crate::item_models::PartSource::TintedEntity(key, rgb) => block_entities
+                        .get(key)
+                        .filter(|be| !be.quads.is_empty())
+                        .and_then(|be| {
+                            be.quads
+                                .iter()
+                                .map(|q| {
+                                    let tex = pool.tinted(q.tex, *rgb)?;
+                                    Some(crate::held_items::HeldQuad { tex, ..*q })
+                                })
+                                .collect::<Option<Vec<_>>>()
+                        }),
                 };
                 let Some(part) = part else {
                     complete = false;
@@ -4412,7 +4426,9 @@ impl<'a> Baker<'a> {
                     first_right,
                     first_left,
                     fixed,
-                    from_block: true,
+                    // `gui_light`: a banner's and a pot's `front` is the flat
+                    // slot lighting, everything else here the block one.
+                    from_block: side_lit,
                     gui_quads: None,
                 },
             );
