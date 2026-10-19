@@ -3252,6 +3252,16 @@ impl LiveApp {
                 // And any slime: a flat world spawns them, the use witnesses
                 // run in survival, and one killed the bot mid-tail (the
                 // harness also stages `gamerule spawn_monsters false`).
+                // Shrunk to size 1 first: a killed slime larger than that
+                // SPLITS (`AbstractCubeMob.remove`), and the medium children
+                // the kill itself made hit the bot through the rest of the
+                // tail (M273's second run: slimes 53-55, r101-r106 failed).
+                // NBT `Size` is the size minus one; a tiny slime neither
+                // splits nor deals damage (`isDealsDamage`).
+                cmd(
+                    self,
+                    "execute as @e[type=minecraft:slime] run data merge entity @s {Size:0}",
+                );
                 cmd(self, "kill @e[type=minecraft:slime]");
                 // And full health: the earlier tail can leave the bot hurt (one
                 // run reached r101 at 3.1 health, drowned under the nautilus,
