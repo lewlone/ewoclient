@@ -1229,6 +1229,29 @@ impl LiveApp {
             if item_display {
                 c.item_display_frames += 1;
             }
+            // M267 — r125: the staged item display draws at its brightness
+            // override's light, (0, 0), and not at the world's light where it
+            // hangs (daylight, which the override was chosen to differ from).
+            let overridden = super::sky::display_light(&session.world, 0.0, 0.0, 0.0, &lightmap, 0);
+            if session.world.entities.iter().any(|(id, e)| {
+                self.etypes.name(e.type_id) == Some("minecraft:item_display")
+                    && session
+                        .world
+                        .entities
+                        .display(id)
+                        .is_some_and(|d| d.brightness == 0)
+                    && {
+                        let p = e.render_pos(alpha);
+                        let world =
+                            super::sky::entity_light(&session.world, p[0], p[1], p[2], &lightmap);
+                        world != overridden
+                            && be_draws.iter().any(|d| {
+                                d.model == shard && !d.fixed_display && d.light == overridden
+                            })
+                    }
+            }) {
+                c.display_brightness_frames += 1;
+            }
             // M257 — r116: the staged end crystal drew every quad of its
             // model (base included).
             let crystal = rewo_data::block_entity_models::END_CRYSTAL_MODELS[0].0;

@@ -2080,6 +2080,7 @@ this shape once.
 | M264 (2026-10-19) — a rung bell draws swinging | **r122** | — | — |
 | M265 (2026-10-19) — a block display's transformation interpolates between keyframes | **r123** | — | — |
 | M266 (2026-10-19) — a display with a teleport duration glides | **r124** | — | — |
+| M267 (2026-10-19) — a display draws at its brightness override's light | **r125** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3914,6 +3915,23 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M267 — the display brightness override (2026-10-19)
+
+Servers often light holograms and display decorations with
+`brightness:{sky:15,block:15}` so they read at night and underground;
+Rewo lit every display from the world. `DATA_BRIGHTNESS_OVERRIDE_ID`
+(index 16, INT; the `size` arm reads every index-16 INT, so a display
+takes it from there) is `LightCoordsUtil.pack(block, sky)`, -1 for none,
+and `DisplayRenderer.getBlockLightLevel` / `getSkyLightLevel` use its
+levels in place of the world's. `live_cmd::sky::display_light` does that
+for the text, item and block displays (`brightness_levels` unpacks).
+
+Tests: `brightness_overrides_unpack_like_light_coords`,
+`index16_int_is_a_displays_brightness_override`. **r125**: r115's item
+display carries `brightness:{sky:0,block:0}` (dark, which the daylight it
+hangs in cannot match, so a coincidence cannot pass it) and draws at the
+lightmap's (0, 0) light.
 
 ### M266 — displays snap, or glide by their teleport duration (2026-10-19)
 

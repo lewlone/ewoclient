@@ -3944,6 +3944,17 @@ fn minecart_contents_follow_each_type() {
     );
 }
 
+/// M267 — a brightness override unpacks as `LightCoordsUtil` packs it
+/// (`block << 4 | sky << 20`); -1 is no override.
+#[test]
+fn brightness_overrides_unpack_like_light_coords() {
+    use super::sky::brightness_levels;
+    assert_eq!(brightness_levels(15 << 4 | 15 << 20), Some((15, 15)));
+    assert_eq!(brightness_levels(7 << 4 | 3 << 20), Some((7, 3)));
+    assert_eq!(brightness_levels(0), Some((0, 0)));
+    assert_eq!(brightness_levels(-1), None);
+}
+
 /// M258 — the small projectiles' poses: the wither skull's flip puts its
 /// head (model y -8..0) above the entity and turns with the yaw about the
 /// vertical; the llama spit is lifted 0.15 and turned like an arrow; the

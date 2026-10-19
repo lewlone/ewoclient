@@ -37,6 +37,39 @@ pub(super) fn entity_light_boosted(
     rgb
 }
 
+/// M267 — a display's light (`DisplayRenderer.getBlockLightLevel` /
+/// `getSkyLightLevel`): its brightness override's levels in place of the
+/// world's, or the world's when it has none.
+pub(super) fn display_light(
+    world: &rewo_world::World,
+    x: f64,
+    eye_y: f64,
+    z: f64,
+    state: &LightmapState,
+    brightness: i32,
+) -> [f32; 3] {
+    match brightness_levels(brightness) {
+        None => entity_light(world, x, eye_y, z, state),
+        Some((block, sky)) => {
+            let mut rgb = sample(block, sky, state);
+            // The same NaN guard as `entity_light_boosted`.
+            for c in &mut rgb {
+                if !c.is_finite() {
+                    *c = 0.0;
+                }
+            }
+            rgb
+        }
+    }
+}
+
+/// M267 — a packed brightness override's `(block, sky)` levels
+/// (`LightCoordsUtil.block` / `sky`: bits 4..8 and 20..24), or `None` for
+/// vanilla's "no override", -1.
+pub(crate) fn brightness_levels(packed: i32) -> Option<(u8, u8)> {
+    (packed != -1).then_some((((packed >> 4) & 15) as u8, ((packed >> 20) & 15) as u8))
+}
+
 /// The cycle state for a world-clock tick, defaulting to full daylight
 /// before the first `set_time`.
 pub(super) fn daylight_of(day_ticks: Option<i64>) -> rewo_world::daylight::SkyLighting {

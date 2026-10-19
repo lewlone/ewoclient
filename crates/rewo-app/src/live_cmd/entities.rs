@@ -1900,7 +1900,14 @@ pub(super) fn collect_block_displays(
             pos: [0.0; 3],
             model: rewo_data::block_entity_models::carried_block_model(state),
             transform: display_pose(p, angles, d, alpha),
-            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            light: super::sky::display_light(
+                &session.world,
+                p[0],
+                p[1],
+                p[2],
+                lightmap,
+                d.brightness,
+            ),
             part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
             part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
             tint: [1.0; 3],
@@ -2553,7 +2560,14 @@ pub(super) fn collect_item_displays(
             pos: [0.0; 3],
             model: name.to_string(),
             transform: pose,
-            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            light: super::sky::display_light(
+                &session.world,
+                p[0],
+                p[1],
+                p[2],
+                lightmap,
+                d.brightness,
+            ),
             part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
             part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
             tint: [1.0; 3],
@@ -2683,7 +2697,8 @@ pub(super) fn collect_text_displays(
         let lines = text_display_lines(&d.text, d.line_width, advance);
         let width = lines.iter().map(|(_, w)| *w).fold(0.0f32, f32::max);
         let height = lines.len() as f32 * 10.0 - 1.0;
-        let light = entity_light(&session.world, p[0], p[1], p[2], lightmap);
+        let light =
+            super::sky::display_light(&session.world, p[0], p[1], p[2], lightmap, d.brightness);
         // M262 — the background plate, `(-1, -1)..(width, height)` from the
         // block's top-left corner (`1 - width/2`, `-height`), in front of
         // nothing and behind the glyphs.

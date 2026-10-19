@@ -187,8 +187,10 @@ PRECMD = (
     # M257 -- r116. An end crystal, invulnerable so a stray click cannot
     # blow up the bot.
     "summon minecraft:end_crystal ~2 ~ ~-8 {Invulnerable:1b};"
-    # M256 -- r115. An item display (an amethyst shard), fixed context.
-    "summon minecraft:item_display ~3 ~2 ~-5 {item:{id:\"minecraft:amethyst_shard\",count:1},item_display:\"fixed\",billboard:\"center\"};"
+    # M256 -- r115. An item display (an amethyst shard), fixed context;
+    # M267 -- r125: dark by its brightness override (0, 0), which daylight
+    # cannot match.
+    "summon minecraft:item_display ~3 ~2 ~-5 {item:{id:\"minecraft:amethyst_shard\",count:1},item_display:\"fixed\",billboard:\"center\",brightness:{sky:0,block:0}};"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"

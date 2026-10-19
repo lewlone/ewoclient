@@ -1100,6 +1100,9 @@ pub struct DisplayState {
     /// M265 — the transformation's interpolation (`Display.tick`'s render
     /// state). The four fields above are the synced target.
     pub interp: DisplayInterp,
+    /// M267 — `DATA_BRIGHTNESS_OVERRIDE_ID` (16): packed block and sky
+    /// light (`LightCoordsUtil.pack`), -1 for none.
+    pub brightness: i32,
 }
 
 /// M265 — a display's `Transformation`: translation, left rotation, scale,
@@ -1279,6 +1282,7 @@ impl Default for DisplayState {
             item_context: 0,
             block: None,
             interp: DisplayInterp::default(),
+            brightness: -1,
         }
     }
 }

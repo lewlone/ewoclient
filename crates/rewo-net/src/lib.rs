@@ -2772,6 +2772,7 @@ pub(crate) fn apply_set_entity_data<'a>(
         let is_block = kinds.block_display == Some(type_id);
         let is_display = is_text || is_item || is_block;
         let render_field = meta.display_translation.is_some()
+            || (is_display && meta.size.is_some())
             || meta.display_scale.is_some()
             || meta.display_left.is_some()
             || meta.display_right.is_some()
@@ -2824,6 +2825,13 @@ pub(crate) fn apply_set_entity_data<'a>(
             // state; only the two interpolation ints do not.
             if render_field {
                 d.interp.pending_render = true;
+            }
+            // M267 — index 16 INT is a display's brightness override (the
+            // `size` arm reads every index-16 INT; a slime's is its size).
+            if is_display {
+                if let Some(v) = meta.size {
+                    d.brightness = v;
+                }
             }
             if let Some(v) = meta.display_translation {
                 d.translation = v;
@@ -5568,6 +5576,22 @@ mod set_entity_data_tests {
         assert_eq!(x(7), 6.0, "a display snaps");
         assert!((x(8) - 2.0).abs() < 1e-9, "a zombie lerps over 3: {}", x(8));
         assert!((x(9) - 0.3).abs() < 1e-9, "teleport_duration 20: {}", x(9));
+    }
+
+    /// M267 — index 16 INT is a display's brightness override.
+    #[test]
+    fn index16_int_is_a_displays_brightness_override() {
+        const ITEM: i32 = 901;
+        let kinds = crate::MetaKinds {
+            item_display: Some(ITEM),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, ITEM, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.display(7).map(|d| d.brightness), None);
+        // 15 << 4 | 15 << 20 = 0xF000F0, a VarInt of four bytes.
+        apply_set_entity_data(&body(7, 16, 1, &[0xF0, 0x81, 0xC0, 0x07]), &mut t, kinds);
+        assert_eq!(t.display(7).map(|d| d.brightness), Some(0xF0_00F0));
     }
 
     /// M260 — a block display's state (23, BLOCK_STATE) and billboard (15)
