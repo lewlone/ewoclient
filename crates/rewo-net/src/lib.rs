@@ -6209,10 +6209,13 @@ mod connect_tests {
     use super::*;
     use std::net::TcpListener;
 
-    /// A port with nothing listening: bind, read the port, close.
+    /// A port with nothing listening: loopback port 1 (tcpmux, unused in
+    /// practice). It used to be an ephemeral port bound and closed, which a
+    /// parallel test's `bind("127.0.0.1:0")` could take back before the
+    /// connect: a full workspace run (2026-10-19) connected to it.
+    /// Ephemeral allocation never hands out port 1.
     fn dead_addr() -> SocketAddr {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap()
+        SocketAddr::from(([127, 0, 0, 1], 1))
     }
 
     #[test]

@@ -144,14 +144,17 @@ mod tests {
         out
     }
 
-    /// Wait until `queued` stops changing, i.e. the reader has blocked.
+    /// Wait until `queued` stops changing, i.e. the reader has blocked. A
+    /// reader that has queued nothing yet has not settled: on a loaded
+    /// machine its thread can take longer than one poll to start, and a
+    /// zero read as "settled" failed a full workspace run (2026-10-19).
     fn settle(budget: &ByteBudget) -> usize {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut last = budget.queued();
         loop {
             std::thread::sleep(Duration::from_millis(50));
             let now = budget.queued();
-            if now == last || Instant::now() > deadline {
+            if (now == last && now > 0) || Instant::now() > deadline {
                 return now;
             }
             last = now;
