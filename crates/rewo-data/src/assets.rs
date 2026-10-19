@@ -49,6 +49,117 @@ const FACE_NORMALS: [[f32; 3]; 6] = [
     [1.0, 0.0, 0.0],
 ];
 
+/// A terrain layer's pixels as a held texture — the entity pass cannot
+/// sample the world texture array, so a block drawn on the entity path gets
+/// a copy. `None` for a missing or odd-sized layer.
+fn layer_texture(layers: &[Vec<u8>], layer: usize) -> Option<crate::held_items::HeldTexture> {
+    let rgba = layers.get(layer)?.clone();
+    (rgba.len() == (TEX_SIZE * TEX_SIZE * 4) as usize).then_some(crate::held_items::HeldTexture {
+        w: TEX_SIZE,
+        h: TEX_SIZE,
+        rgba,
+    })
+}
+
+/// Block-bake quads as held quads: the 0..1 geometry scaled to the 0..16
+/// model units, the face renumbered, each quad's (pre-tinted) layer
+/// resolved to a held texture by `tex_of_layer`. `None` when there are no
+/// quads or a layer has no texture.
+pub fn block_quads_as_held(
+    quads: &[Quad],
+    mut tex_of_layer: impl FnMut(usize) -> Option<u16>,
+) -> Option<Vec<crate::held_items::HeldQuad>> {
+    if quads.is_empty() {
+        return None;
+    }
+    quads
+        .iter()
+        .map(|q| {
+            Some(crate::held_items::HeldQuad {
+                verts: q.verts.map(|v| [v[0] * 16.0, v[1] * 16.0, v[2] * 16.0]),
+                uv: q.uv,
+                tex: tex_of_layer(q.layer as usize)?,
+                // Blocks never articulate.
+                part: 0,
+                // The block bake numbers faces in `FACE_NAMES` order (up 0,
+                // down 1, ...); a held quad's `dir` is vanilla's `Direction`
+                // ordinal (down 0, up 1, ...). Copied raw until M245, which
+                // shaded every block item's top as its bottom in a slot and
+                // in the first-person hand.
+                dir: match q.dir {
+                    0 => 1,
+                    1 => 0,
+                    d => d,
+                },
+            })
+        })
+        .collect()
+}
+
+/// M260 — the layers a run-time block model has already copied into
+/// [`BakedAssets::held_items`]' textures, and the states found to have no
+/// quads (so they are not retried every frame).
+#[derive(Debug, Default)]
+pub struct RuntimeStateModels {
+    layer_tex: HashMap<usize, u16>,
+    empty: std::collections::HashSet<u32>,
+}
+
+impl BakedAssets {
+    /// M260 — make `state`'s model drawable on the entity path at run time:
+    /// [`crate::block_entity_models::carried_block_model`]'s name, built from
+    /// the baked terrain quads (the pre-tinted layers, so foliage carries the
+    /// default colour) when the bake did not make it. Returns the model name
+    /// and the index of the first texture this call appended, so the caller
+    /// can hand the GPU exactly what is new; `None` when the model already
+    /// exists or the state has no quads (air, fluids, block entities).
+    pub fn add_state_model(
+        &mut self,
+        state: u32,
+        runtime: &mut RuntimeStateModels,
+    ) -> Option<(String, usize)> {
+        let name = crate::block_entity_models::carried_block_model(state);
+        if runtime.empty.contains(&state) || self.held_items.any(&name).is_some() {
+            return None;
+        }
+        let first = self.held_items.textures.len();
+        let layers = &self.layers;
+        let textures = &mut self.held_items.textures;
+        let built = self.models.get(state as usize).and_then(|quads| {
+            block_quads_as_held(quads, |layer| {
+                if let Some(&t) = runtime.layer_tex.get(&layer) {
+                    return Some(t);
+                }
+                let t = u16::try_from(textures.len()).ok()?;
+                textures.push(layer_texture(layers, layer)?);
+                runtime.layer_tex.insert(layer, t);
+                Some(t)
+            })
+        });
+        let Some(quads) = built else {
+            runtime.empty.insert(state);
+            return None;
+        };
+        use crate::item_models::DisplayTransform;
+        self.held_items.block_entities.insert(
+            name.clone(),
+            crate::held_items::HeldItemModel {
+                quads,
+                right: DisplayTransform::IDENTITY,
+                left: DisplayTransform::IDENTITY,
+                ground: DisplayTransform::IDENTITY,
+                gui: DisplayTransform::IDENTITY,
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
+                fixed: DisplayTransform::IDENTITY,
+                from_block: true,
+                gui_quads: None,
+            },
+        );
+        Some((name, first))
+    }
+}
+
 /// One textured quad in block-local space (0..1), baked from a model face.
 #[derive(Clone, Debug)]
 pub struct Quad {
@@ -4627,45 +4738,10 @@ impl<'a> Baker<'a> {
         quads: Vec<Quad>,
         pool: &mut crate::held_items::TexturePool,
     ) -> Option<Vec<crate::held_items::HeldQuad>> {
-        use crate::held_items::{HeldQuad, HeldTexture};
-        if quads.is_empty() {
-            return None;
-        }
-        let mut out = Vec::with_capacity(quads.len());
-        for q in quads {
-            // The layer pixels, copied so the entity atlas can hold them — the
-            // entity pass cannot sample the world texture array.
-            let layer = q.layer as usize;
-            let layers = &self.layers;
-            let tex = pool.intern(&format!("layer:{layer}"), || {
-                let rgba = layers.get(layer)?.clone();
-                (rgba.len() == (TEX_SIZE * TEX_SIZE * 4) as usize).then_some(HeldTexture {
-                    w: TEX_SIZE,
-                    h: TEX_SIZE,
-                    rgba,
-                })
-            })?;
-            out.push(HeldQuad {
-                // The block bake normalises to 0..1; held-item space is the
-                // 0..16 model units the display transform is written in.
-                verts: q.verts.map(|v| [v[0] * 16.0, v[1] * 16.0, v[2] * 16.0]),
-                uv: q.uv,
-                tex,
-                // Items never articulate.
-                part: 0,
-                // The block bake numbers faces in `FACE_NAMES` order (up 0,
-                // down 1, ...); a held quad's `dir` is vanilla's `Direction`
-                // ordinal (down 0, up 1, ...). Copied raw until M245, which
-                // shaded every block item's top as its bottom in a slot and
-                // in the first-person hand.
-                dir: match q.dir {
-                    0 => 1,
-                    1 => 0,
-                    d => d,
-                },
-            });
-        }
-        Some(out)
+        let layers = &self.layers;
+        block_quads_as_held(&quads, |layer| {
+            pool.intern(&format!("layer:{layer}"), || layer_texture(layers, layer))
+        })
     }
 
     /// A `builtin/generated` item: extrude each sprite layer.
@@ -5952,6 +6028,46 @@ fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M260 — a terrain quad becomes a held quad at 16× the size with the
+    /// face renumbered (`FACE_NAMES`' up 0 is `Direction`'s 1) and its layer
+    /// resolved once per layer; a layer with no texture refuses the model.
+    #[test]
+    fn block_quads_as_held_scales_renumbers_and_resolves() {
+        let quad = |layer: u16, dir: u8| Quad {
+            verts: [
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ],
+            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            layer,
+            raw_layer: layer,
+            cull: -1,
+            dir,
+            tint: TintSource::None,
+            shade: true,
+            translucent: false,
+        };
+        let mut asked = Vec::new();
+        let held = block_quads_as_held(&[quad(7, 0), quad(9, 1), quad(7, 4)], |l| {
+            asked.push(l);
+            Some(l as u16 + 100)
+        })
+        .unwrap();
+        assert_eq!(held[0].verts[2], [16.0, 16.0, 16.0]);
+        assert_eq!(held.iter().map(|q| q.dir).collect::<Vec<_>>(), [1, 0, 4]);
+        assert_eq!(
+            held.iter().map(|q| q.tex).collect::<Vec<_>>(),
+            [107, 109, 107]
+        );
+        assert_eq!(asked, [7, 9, 7]);
+        assert!(
+            block_quads_as_held(&[quad(7, 0), quad(8, 0)], |l| (l == 7).then_some(1)).is_none()
+        );
+        assert!(block_quads_as_held(&[], |_| Some(0)).is_none());
+    }
 
     /// M187 — the list is an append-only index contract (§0.0's allocation
     /// table); pin the newest pair by path so a misplaced insert fails here

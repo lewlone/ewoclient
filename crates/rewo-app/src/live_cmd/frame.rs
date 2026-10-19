@@ -914,6 +914,40 @@ impl LiveApp {
             &lightmap,
             alpha,
         ));
+        // M260 — block displays: build any state model the bake did not
+        // make, hand the GPU just what is new, then draw them.
+        if let Some(baked) = self.baked.as_mut() {
+            let mut new_models = Vec::new();
+            let mut new_textures = Vec::new();
+            for st in block_display_states(session, &self.etypes) {
+                if let Some((name, first)) = baked.add_state_model(st, &mut self.runtime_states) {
+                    // r119 grades the first model built at run time.
+                    #[cfg(feature = "gates")]
+                    if self.runtime_states_witness.is_none() {
+                        self.runtime_states_witness = Some(name.clone());
+                    }
+                    if let Some(m) = baked.held_items.block_entities.get(&name) {
+                        new_models.push((name, to_gpu_held_model(m)));
+                    }
+                    new_textures.extend(
+                        baked.held_items.textures[first..]
+                            .iter()
+                            .map(to_gpu_held_texture),
+                    );
+                }
+            }
+            if !new_models.is_empty() || !new_textures.is_empty() {
+                state
+                    .world_renderer
+                    .extend_held_items(new_models, new_textures);
+            }
+        }
+        bes.extend(collect_block_displays(
+            session,
+            &self.etypes,
+            &lightmap,
+            alpha,
+        ));
         // M256 — item displays.
         bes.extend(collect_item_displays(
             session,
@@ -1245,6 +1279,28 @@ impl LiveApp {
                 });
             if drew_fangs {
                 c.evoker_fangs_frames += 1;
+            }
+            // M260 — r119: a block display of a state the bake never made (a
+            // turned stair) drew every quad of the model built at run time.
+            let built = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| d.model.starts_with("rewo:be/state/"))
+                .filter(|(d, _)| {
+                    self.runtime_states_witness
+                        .as_deref()
+                        .is_some_and(|w| w == d.model)
+                })
+                .any(|(d, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(d.model))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                });
+            if built {
+                c.block_display_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

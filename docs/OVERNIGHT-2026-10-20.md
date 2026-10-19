@@ -241,6 +241,10 @@ released.
   like a black one, and the shulker bullet has no glowing outer shell.
 - **M259**: an evoker's fangs now rise out of the ground and snap, where
   they were a grey capsule standing there from the moment they spawned.
+- **M260**: block displays (the blocks servers float, turn and scale for
+  decoration) draw their block. Any block works, built the first time it
+  is seen; a chest or other block-entity block as a display still draws
+  nothing.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -301,6 +305,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M260)* | **M260** — block displays: the state into `DisplayState`, the model built at run time from the baked terrain quads (`BakedAssets::add_state_model`, `block_quads_as_held`), handed to the GPU incrementally (`extend_held_items`); render-check **r119**. |
 | `bd4758d0` | **M259** — evoker fangs: entity event 4 stamps the bite (`EntityClasses::is_evoker_fangs`), vanilla's progress clock, the base and jaws as animated groups, drawn only while biting; render-check **r118**. |
 | `35a3137` | **M258** — wither skulls, llama spit, shulker bullets (block-entity emitter, `small_projectile_pose`) and dragon fireballs (billboard, the XP orb's quad); render-check **r117**. |
 | `88a6195` | M257 follow-up: `collect_projectiles`' doc comment, which M257's insertion had left on the crystal function. |
@@ -567,9 +572,10 @@ released.
 - Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
 - After M239: **4,348 tests passed, 0 failed; gates 51/51**; render check **106/106** on three runs (plus the push-disabled control failing r106 as it should); clippy (gates, after one `int_plus_one` fix in the witness, and default features) and `cargo fmt --check` clean.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
-- Text displays draw no background box, shadow or opacity yet (M255);
-  block displays draw nothing (no longer capsules). Item displays (M256)
-  have no brightness override or interpolation.
+- Text displays draw no background box, shadow or opacity yet (M255).
+  Item and block displays (M256, M260) have no brightness override or
+  interpolation; a block display of a block-entity block (a chest) or a
+  fluid draws nothing.
 - End crystals (M257) draw no beam, and their sheet is halved to fit the
   entity atlas's 64x64 large slots; a larger slot would draw it at full
   resolution.
@@ -592,6 +598,7 @@ released.
 - After M257: **4,385 tests; two full runs each failed one different load-sensitive rewo-net test (`connect_any`'s reused dead port, then the inbound budget test's 50 ms settle), both pass alone and are fixed in `6fcbd6b`, after which the workspace ran **4,385/4,385**; gates 51/51**; render check **116/116** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M258: **4,387 tests passed, 0 failed; gates 51/51**; render check **117/117** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M259: **4,390 tests passed, 0 failed; gates 51/51**; render check **118/118** on two runs (r118 caught the bite in 917 and 826 frames); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M260: **4,392 tests passed, 0 failed; gates 51/51**; render check **119/119** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

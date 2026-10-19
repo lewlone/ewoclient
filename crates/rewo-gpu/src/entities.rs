@@ -1742,6 +1742,21 @@ impl EntityPass {
         self.held_items = Some(items);
     }
 
+    /// M260 — append block-entity-path models built after the bake (a block
+    /// display's state) and the textures they added. The new quads index
+    /// `textures` from the current end, so every installed index and every
+    /// paged atlas slot stays valid. No-op before [`Self::set_held_items`].
+    pub fn extend_held_items(
+        &mut self,
+        models: Vec<(String, crate::held::HeldItemModel)>,
+        textures: Vec<crate::held::HeldTexture>,
+    ) {
+        if let Some(h) = self.held_items.as_mut() {
+            h.textures.extend(textures);
+            h.block_entities.extend(models);
+        }
+    }
+
     /// Whether an item name has a baked held model.
     pub fn has_held_item(&self, name: &str) -> bool {
         self.held_items

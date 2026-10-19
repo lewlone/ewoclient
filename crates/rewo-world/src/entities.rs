@@ -1062,6 +1062,9 @@ pub struct DisplayState {
     /// `ItemDisplayContext` id (0 none, 1/2 third-person left/right, 3/4
     /// first-person left/right, 5 head, 6 gui, 7 ground, 8 fixed, 9 shelf).
     pub item_context: u8,
+    /// M260 — `BlockDisplay.DATA_BLOCK_STATE_ID` (23): the state id; `None`
+    /// is air, vanilla's default.
+    pub block: Option<u32>,
 }
 
 impl Default for DisplayState {
@@ -1079,6 +1082,7 @@ impl Default for DisplayState {
             style: 0,
             item: None,
             item_context: 0,
+            block: None,
         }
     }
 }

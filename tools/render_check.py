@@ -165,6 +165,8 @@ PRECMD = (
     "summon minecraft:painting ~-2 ~1 ~15 {facing:2b,variant:\"minecraft:kebab\"};"
     # M255 -- r114. A text display (a hologram), gold, facing the camera.
     "summon minecraft:text_display ~2 ~2 ~-4 {billboard:\"center\",text:{text:\"RewoHolo\",color:\"gold\"}};"
+    # M260 -- r119. A block display of a state no bake makes a model for.
+    "summon minecraft:block_display ~4 ~2 ~-7 {block_state:{Name:\"minecraft:oak_stairs\",Properties:{facing:\"east\"}}};"
     # M259 -- r118. Evoker fangs that bite 60 ticks after the summon, clear
     # of the camel's lane (z ~-12) and of the bot.
     "summon minecraft:evoker_fangs ~1 ~ ~-10 {Warmup:60};"

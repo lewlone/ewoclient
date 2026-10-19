@@ -318,6 +318,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.text_display_type_id = data.entity_types.id_of("minecraft:text_display");
     session.item_display_type_id = data.entity_types.id_of("minecraft:item_display");
     session.end_crystal_type_id = data.entity_types.id_of("minecraft:end_crystal");
+    session.block_display_type_id = data.entity_types.id_of("minecraft:block_display");
     session.bee_type_id = data.entity_types.id_of("minecraft:bee");
     session.guardian_type_id = data.entity_types.id_of("minecraft:guardian");
     session.elder_guardian_type_id = data.entity_types.id_of("minecraft:elder_guardian");
@@ -566,6 +567,11 @@ struct LiveState {
 struct LiveApp {
     session: Option<PlaySession>,
     baked: Option<assets::BakedAssets>,
+    /// M260 — the block models built at run time (block displays' states).
+    runtime_states: assets::RuntimeStateModels,
+    /// M260 — r119: the first state model built at run time.
+    #[cfg(feature = "gates")]
+    runtime_states_witness: Option<String>,
     etypes: EntityTypes,
     /// `minecraft:spears` membership — decides the `SPEAR` arm pose for a
     /// spear that is merely *held* (the swinging-STAB case needs no tag).
@@ -1156,6 +1162,9 @@ fn run_windowed(
         trims: std::sync::Arc::new(baked.trims.clone()),
         lang: std::sync::Arc::new(baked.lang.clone()),
         baked: Some(baked),
+        runtime_states: Default::default(),
+        #[cfg(feature = "gates")]
+        runtime_states_witness: None,
         etypes,
         spears,
         chest_states,

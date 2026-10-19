@@ -265,6 +265,9 @@ pub(super) struct RenderCheck {
     /// M259 — r118: frames on which the staged evoker fangs drew every quad
     /// of their model.
     pub(super) evoker_fangs_frames: usize,
+    /// M260 — r119: frames on which the staged block display drew every
+    /// quad of its run-time-built model.
+    pub(super) block_display_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1017,7 +1020,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 118;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 119;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1207,6 +1210,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M260 — r119: `render_check.py` summons a block display of an
+        // east-facing oak stair, a state the bake never makes an entity model
+        // for. The client builds it from the terrain quads at run time and
+        // hands the GPU the new model and layers; it must draw every quad.
+        row(
+            "r119 a block display drew its state's run-time model",
+            self.block_display_frames >= 1,
+            format!("{} frames drew it", self.block_display_frames),
         );
         // M259 — r118: `render_check.py` summons evoker fangs with a 60-tick
         // warmup. They draw nothing until the server's entity event 4 starts

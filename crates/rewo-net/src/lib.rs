@@ -2435,6 +2435,8 @@ pub struct MetaKinds<'a> {
     pub item_display: Option<i32>,
     /// `minecraft:end_crystal` type id (M257) — gates the index-9 BOOLEAN.
     pub end_crystal: Option<i32>,
+    /// `minecraft:block_display` type id (M260) — gates index 23 and 15.
+    pub block_display: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
@@ -2767,6 +2769,7 @@ pub(crate) fn apply_set_entity_data<'a>(
     {
         let is_text = kinds.text_display == Some(type_id);
         let is_item = kinds.item_display == Some(type_id);
+        let is_block = kinds.block_display == Some(type_id);
         let any = meta.display_translation.is_some()
             || meta.display_scale.is_some()
             || meta.display_left.is_some()
@@ -2778,6 +2781,7 @@ pub(crate) fn apply_set_entity_data<'a>(
                     || meta.byte26.is_some()
                     || meta.byte27.is_some()
                     || meta.mob_flags.is_some()))
+            || (is_block && (meta.display_block.is_some() || meta.mob_flags.is_some()))
             || (is_item
                 && (meta.display_item.is_some()
                     || meta.byte24.is_some()
@@ -2822,7 +2826,13 @@ pub(crate) fn apply_set_entity_data<'a>(
                     d.item_context = v;
                 }
             }
-            if is_text || is_item {
+            // M260 — a block display's state (23); air is nothing.
+            if is_block {
+                if let Some(v) = meta.display_block {
+                    d.block = u32::try_from(v).ok().filter(|&s| s != 0);
+                }
+            }
+            if is_text || is_item || is_block {
                 if let Some(v) = meta.mob_flags {
                     d.billboard = v;
                 }
@@ -5443,6 +5453,44 @@ mod set_entity_data_tests {
         assert_eq!(t.variant(8), None, "a zombie's slot 9 is not a crystal's");
         apply_set_entity_data(&body(7, 9, 8, &[1]), &mut t, kinds);
         assert_eq!(t.variant(7), Some(1));
+    }
+
+    /// M260 — a block display's state (23, BLOCK_STATE) and billboard (15)
+    /// reach its `DisplayState`; state 0 (air) is no block; an item display's
+    /// 23 BLOCK_STATE (which no server sends) is not a block.
+    #[test]
+    fn a_block_displays_state_and_billboard_land() {
+        const BLOCK: i32 = 903;
+        const ITEM: i32 = 901;
+        let kinds = crate::MetaKinds {
+            block_display: Some(BLOCK),
+            item_display: Some(ITEM),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, BLOCK, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, ITEM, 0.0, 0.0, 0.0, 0.0, 0.0));
+        let mut v = Vec::new();
+        let mut n = 9001u32;
+        loop {
+            let b = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                v.push(b);
+                break;
+            }
+            v.push(b | 0x80);
+        }
+        apply_set_entity_data(&body(7, 23, 14, &v), &mut t, kinds);
+        apply_set_entity_data(&body(7, 15, 0, &[2]), &mut t, kinds);
+        assert_eq!(
+            t.display(7).map(|d| (d.block, d.billboard)),
+            Some((Some(9001), 2))
+        );
+        apply_set_entity_data(&body(7, 23, 14, &[0]), &mut t, kinds);
+        assert_eq!(t.display(7).and_then(|d| d.block), None);
+        apply_set_entity_data(&body(8, 23, 14, &v), &mut t, kinds);
+        assert_eq!(t.display(8).and_then(|d| d.block), None);
     }
 
     /// M256 — an item display's stack (23, ITEM_STACK), context (24, BYTE)

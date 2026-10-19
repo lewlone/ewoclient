@@ -1648,6 +1648,23 @@ pub(crate) fn frame_crosshair_hit(
 pub(crate) fn to_gpu_held_items(
     src: &rewo_data::held_items::HeldItems,
 ) -> rewo_gpu::held::HeldItems {
+    let conv_models =
+        |m: &std::collections::HashMap<String, rewo_data::held_items::HeldItemModel>| {
+            m.iter()
+                .map(|(k, m)| (k.clone(), to_gpu_held_model(m)))
+                .collect()
+        };
+    rewo_gpu::held::HeldItems {
+        models: conv_models(&src.models),
+        block_entities: conv_models(&src.block_entities),
+        textures: src.textures.iter().map(to_gpu_held_texture).collect(),
+    }
+}
+
+/// One held model in the GPU crate's shape.
+pub(crate) fn to_gpu_held_model(
+    m: &rewo_data::held_items::HeldItemModel,
+) -> rewo_gpu::held::HeldItemModel {
     use rewo_gpu::held as g;
     let conv_t = |t: &rewo_data::item_models::DisplayTransform| g::DisplayTransform {
         rotation: t.rotation,
@@ -1665,41 +1682,91 @@ pub(crate) fn to_gpu_held_items(
             })
             .collect()
     };
-    let conv_models =
-        |m: &std::collections::HashMap<String, rewo_data::held_items::HeldItemModel>| {
-            m.iter()
-                .map(|(k, m)| {
-                    (
-                        k.clone(),
-                        g::HeldItemModel {
-                            quads: conv_quads(&m.quads),
-                            right: conv_t(&m.right),
-                            left: conv_t(&m.left),
-                            ground: conv_t(&m.ground),
-                            gui: conv_t(&m.gui),
-                            first_right: conv_t(&m.first_right),
-                            first_left: conv_t(&m.first_left),
-                            fixed: conv_t(&m.fixed),
-                            from_block: m.from_block,
-                            gui_quads: m.gui_quads.as_deref().map(conv_quads),
-                        },
-                    )
-                })
-                .collect()
-        };
-    rewo_gpu::held::HeldItems {
-        models: conv_models(&src.models),
-        block_entities: conv_models(&src.block_entities),
-        textures: src
-            .textures
-            .iter()
-            .map(|t| g::HeldTexture {
-                w: t.w,
-                h: t.h,
-                rgba: t.rgba.clone(),
-            })
-            .collect(),
+    g::HeldItemModel {
+        quads: conv_quads(&m.quads),
+        right: conv_t(&m.right),
+        left: conv_t(&m.left),
+        ground: conv_t(&m.ground),
+        gui: conv_t(&m.gui),
+        first_right: conv_t(&m.first_right),
+        first_left: conv_t(&m.first_left),
+        fixed: conv_t(&m.fixed),
+        from_block: m.from_block,
+        gui_quads: m.gui_quads.as_deref().map(conv_quads),
     }
+}
+
+/// One held texture in the GPU crate's shape.
+pub(crate) fn to_gpu_held_texture(
+    t: &rewo_data::held_items::HeldTexture,
+) -> rewo_gpu::held::HeldTexture {
+    rewo_gpu::held::HeldTexture {
+        w: t.w,
+        h: t.h,
+        rgba: t.rgba.clone(),
+    }
+}
+
+/// M260 — every block display's state this frame, for
+/// [`rewo_data::assets::BakedAssets::add_state_model`] to build before the
+/// draws are collected.
+pub(super) fn block_display_states(session: &PlaySession, etypes: &EntityTypes) -> Vec<u32> {
+    let mut out: Vec<u32> = session
+        .world
+        .entities
+        .iter()
+        .filter(|(_, e)| etypes.name(e.type_id) == Some("minecraft:block_display"))
+        .filter_map(|(id, _)| session.world.entities.display(id).and_then(|d| d.block))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// M260 — every block display this frame, as `BlockDisplayRenderer` draws
+/// it: the display pose (`display_pose`, the billboard's angles) then the
+/// state's block model from the origin, no centring. The model is
+/// `rewo:be/state/<id>`: the bake's for a falling block's state, else built
+/// at run time from the terrain quads. Recorded: a block entity's state
+/// (a chest) and a fluid draw nothing, no brightness override, no
+/// interpolation.
+pub(super) fn collect_block_displays(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::IDENTITY;
+    let mut out = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        if etypes.name(e.type_id) != Some("minecraft:block_display") {
+            continue;
+        }
+        let Some(d) = session.world.entities.display(id) else {
+            continue;
+        };
+        let Some(state) = d.block else {
+            continue;
+        };
+        let p = e.render_pos(alpha);
+        let angles = billboard_angles(
+            d.billboard,
+            (e.yaw, e.pitch),
+            (session.player.yaw, session.player.pitch),
+        );
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [0.0; 3],
+            model: rewo_data::block_entity_models::carried_block_model(state),
+            transform: display_pose(p, angles, d),
+            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
 }
 
 /// M241 — every fishing line this frame: for each bobber whose owner
@@ -3285,7 +3352,7 @@ pub(super) fn collect_entities<'a>(
         // marker, an effect cloud's particles) or that are not a body at all
         // (the displays: a text display is world text, `collect_text_displays`;
         // an item display its item's model, `collect_item_displays`; a block
-        // display is not drawn yet). Never a capsule.
+        // display its block's, `collect_block_displays`). Never a capsule.
         if matches!(
             name,
             "minecraft:text_display"

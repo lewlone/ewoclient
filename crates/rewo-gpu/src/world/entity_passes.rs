@@ -101,6 +101,18 @@ impl WorldRenderer {
         }
     }
 
+    /// M260 — append models built after the bake (see
+    /// [`crate::entities::EntityPass::extend_held_items`]).
+    pub fn extend_held_items(
+        &mut self,
+        models: Vec<(String, crate::held::HeldItemModel)>,
+        textures: Vec<crate::held::HeldTexture>,
+    ) {
+        if let Some(e) = self.entities.as_mut() {
+            e.extend_held_items(models, textures);
+        }
+    }
+
     /// Page in the atlas textures the named held items need, before the frame
     /// is built (M22). Uploading needs the device, and only the handful of
     /// items actually on screen should occupy the pool.

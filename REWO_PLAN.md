@@ -2074,6 +2074,7 @@ this shape once.
 | M257 (2026-10-19) — an end crystal draws its model | **r116** | — | — |
 | M258 (2026-10-19) — a wither skull, llama spit and shulker bullet draw their models | **r117** | — | — |
 | M259 (2026-10-19) — evoker fangs draw their model once they bite | **r118** | — | — |
+| M260 (2026-10-19) — a block display draws its state's run-time model | **r119** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3908,6 +3909,39 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M260 — block displays: block models built at run time (2026-10-19)
+
+A block display drew nothing since M255 dropped its capsule. Any of the
+~29,000 block states can be one, and the bake makes entity-path models
+only for the gravity blocks (M253), so the model is built when it is
+first needed:
+
+- **Metadata.** `BlockDisplay.DATA_BLOCK_STATE_ID` (index 23,
+  BLOCK_STATE) and the billboard (15), gated on the `block_display` type,
+  into `DisplayState::block` (air is none).
+- **Run-time models** (`BakedAssets::add_state_model`): the state's baked
+  terrain quads (`BakedAssets::models`, the pre-tinted layers, so foliage
+  carries the default colour, as a block display does with no level)
+  become `rewo:be/state/<id>` through `block_quads_as_held`, now shared
+  with the bake's `held_quads_of`; each layer is copied into the held
+  textures once (`RuntimeStateModels`), and a state with no quads is
+  remembered so it is not retried.
+- **GPU** (`EntityPass::extend_held_items`): the frame hands over only the
+  new models and textures. New quads index textures from the current
+  end, so every installed index and paged atlas slot stays valid; nothing
+  is re-converted.
+- **Pose**: the display pose (`display_pose`) with the block from the
+  origin, no centring (`BlockDisplayRenderer.submitInner`).
+
+Recorded: a block-entity state (a chest) and a fluid draw nothing (their
+terrain quads are empty), translucent faces are alpha-tested, no
+brightness override or interpolation.
+
+Tests: `block_quads_as_held_scales_renumbers_and_resolves`,
+`a_block_displays_state_and_billboard_land`. **r119**: a summoned block
+display of an east-facing oak stair (a state no bake makes) draws every
+quad of the model built for it at run time.
 
 ### M259 — evoker fangs (2026-10-19)
 
