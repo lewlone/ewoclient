@@ -237,6 +237,10 @@ pub(super) struct RenderCheck {
     /// and per model `(most emitted, model quads)`.
     pub(super) chest_frames: usize,
     pub(super) be_quads: [(u32, u32); 3],
+    /// M250 — r110: frames on which an arrow drew every quad of its model,
+    /// and `(most drawn, model quads)`.
+    pub(super) arrow_frames: usize,
+    pub(super) arrow_quads: (u32, u32),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -989,7 +993,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 109;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 110;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1178,6 +1182,17 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M250 — r110: the bow r99 draws is released at stage 51 with arrows
+        // in the inventory, so the server shoots a real arrow. It must draw
+        // as `ArrowModel` (every quad), not the capsule it was until M250.
+        row(
+            "r110 a shot arrow drew every quad of the arrow model in the windowed client",
+            self.arrow_frames >= 1,
+            format!(
+                "{} frames drew it; (most drawn, model quads) {:?}",
+                self.arrow_frames, self.arrow_quads
             ),
         );
         // M247 — r109: `render_check.py` stages a chest by the anvil. Its
@@ -3427,7 +3442,16 @@ impl LiveApp {
                     c.bow_drawing = drawing;
                     c.bow_models.1 = model;
                 }
+                // Release: the server shoots r110's arrow on the release
+                // packet, which leaves in the NEXT client tick. A command
+                // sent now could empty the hand first (commands run off the
+                // server's task queue, ahead of the player's tick), so the
+                // next staging waits in stage 98.
                 self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 98;
+            }
+            98 if now >= self.use_tick0 + 5 => {
                 // r101 next: a shield in the off hand, nothing in the main
                 // hand, facing south (+Z) and level.
                 cmd(

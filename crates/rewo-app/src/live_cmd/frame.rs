@@ -884,6 +884,8 @@ impl LiveApp {
             }
         }
         bes.extend(frames.models);
+        // M250 — arrows and thrown tridents, by their models.
+        bes.extend(collect_projectiles(session, &self.etypes, &lightmap, alpha));
         let frame_maps = frames.maps;
         // A spawner's caged mob rides the ENTITY pass, mounted inside its
         // block (M31), so it joins the entity draws rather than these.
@@ -1044,6 +1046,24 @@ impl LiveApp {
             if complete {
                 c.chest_frames += 1;
             }
+            // M250 — r110: the arrow r99's released bow shot drew every quad
+            // of the arrow model (it was a grey capsule until M250).
+            let arrow_want = self
+                .baked
+                .as_ref()
+                .and_then(|b| b.held_items.any("rewo:be/arrow"))
+                .map_or(0, |m| m.quads.len() as u32);
+            let arrow_drew = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| d.model == "rewo:be/arrow")
+                .map(|(_, &q)| q)
+                .max()
+                .unwrap_or(0);
+            if arrow_want > 0 && arrow_drew == arrow_want {
+                c.arrow_frames += 1;
+            }
+            c.arrow_quads = (c.arrow_quads.0.max(arrow_drew), arrow_want);
         }
 
         let extent = state.renderer.swapchain.extent;

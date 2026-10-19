@@ -4345,6 +4345,8 @@ impl<'a> Baker<'a> {
         be_models.append(&mut bake_be!(
             crate::block_entity_models::bake_bell_and_book
         ));
+        // M250 — the arrows.
+        be_models.append(&mut bake_be!(crate::block_entity_models::bake_arrows));
         // M240 — the fishing bobber's sprite.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_fishing_hook));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_banners));

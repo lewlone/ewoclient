@@ -1797,6 +1797,141 @@ pub fn bake_bell_and_book(
     out
 }
 
+// ---------------------------------------------------------------- arrows
+//
+// M250 — `ArrowModel`, drawn by `ArrowRenderer` (no living-entity flip):
+// `YP(yRot - 90) · ZP(xRot) · model`. Baked here, in px, and placed by the
+// block-entity emitter with that affine.
+
+/// The three arrow models: `(name, texture)`. A tipped arrow is drawn with
+/// the plain arrow's texture (its colour metadata is not read).
+pub const ARROW_MODELS: [(&str, &str); 2] = [
+    ("rewo:be/arrow", "entity/projectiles/arrow"),
+    (
+        "rewo:be/spectral_arrow",
+        "entity/projectiles/arrow_spectral",
+    ),
+];
+
+/// `ArrowModel.createBodyLayer`, 32×32, the whole mesh `scaled(0.9)`:
+///
+/// * `back` — `addBox(0, -2.5, -2.5, 0, 5, 5)` at `offsetAndRotation(-11, 0,
+///   0, π/4, 0, 0).withScale(0.8)`;
+/// * `cross_1` / `cross_2` — `addBox(-12, -2, 0, 16, 4, 0, NONE, 1.0, 0.8)`
+///   rotated π/4 and 3π/4 about X. The `(1.0, 0.8)` is a texture-size scale:
+///   `CubeDefinition.bake` passes `texSize · scale`, so V is normalised by
+///   25.6 rather than 32.
+///
+/// A part's point is scaled, rotated, then offset (`translateAndRotate`),
+/// and the zero-thickness boxes' degenerate faces are dropped.
+fn arrow_quads(tex: u16) -> Vec<HeldQuad> {
+    use std::f32::consts::FRAC_PI_4;
+    // (tex offset, min, dims, (u size, v size), x rotation, part scale, offset)
+    let parts: [(
+        (f32, f32),
+        [f32; 3],
+        [f32; 3],
+        (f32, f32),
+        f32,
+        f32,
+        [f32; 3],
+    ); 3] = [
+        (
+            (0.0, 0.0),
+            [0.0, -2.5, -2.5],
+            [0.0, 5.0, 5.0],
+            (32.0, 32.0),
+            FRAC_PI_4,
+            0.8,
+            [-11.0, 0.0, 0.0],
+        ),
+        (
+            (0.0, 0.0),
+            [-12.0, -2.0, 0.0],
+            [16.0, 4.0, 0.0],
+            (32.0, 32.0 * 0.8),
+            FRAC_PI_4,
+            1.0,
+            [0.0; 3],
+        ),
+        (
+            (0.0, 0.0),
+            [-12.0, -2.0, 0.0],
+            [16.0, 4.0, 0.0],
+            (32.0, 32.0 * 0.8),
+            3.0 * FRAC_PI_4,
+            1.0,
+            [0.0; 3],
+        ),
+    ];
+    let mut out = Vec::new();
+    for (uv0, min, dims, (tw, th), rx, s, off) in parts {
+        let (sx, cx) = rx.sin_cos();
+        for (i, (verts, uv)) in cube_faces(uv0, min, dims, 0.0, false)
+            .into_iter()
+            .enumerate()
+        {
+            let v: [[f32; 3]; 4] = verts.map(|p| {
+                let p = [p[0] * s, p[1] * s, p[2] * s];
+                let p = [p[0], p[1] * cx - p[2] * sx, p[1] * sx + p[2] * cx];
+                [
+                    (p[0] + off[0]) * 0.9,
+                    (p[1] + off[1]) * 0.9,
+                    (p[2] + off[2]) * 0.9,
+                ]
+            });
+            let e1: [f32; 3] = std::array::from_fn(|k| v[1][k] - v[0][k]);
+            let e2: [f32; 3] = std::array::from_fn(|k| v[2][k] - v[0][k]);
+            let n = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            if n.iter().map(|c| c * c).sum::<f32>() < 1e-8 {
+                continue;
+            }
+            out.push(HeldQuad {
+                verts: v,
+                uv: uv.map(|c| [c[0] / tw, c[1] / th]),
+                tex,
+                part: 0,
+                dir: FACE_DIRS[i],
+            });
+        }
+    }
+    out
+}
+
+/// Bake the arrows (M250).
+pub fn bake_arrows(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let mut out = Vec::new();
+    for (name, tex_name) in ARROW_MODELS {
+        let Some(tex) = pool.intern(tex_name, || load(tex_name)) else {
+            log::error!("arrows: no texture {tex_name:?}");
+            continue;
+        };
+        out.push((
+            name.to_string(),
+            HeldItemModel {
+                quads: arrow_quads(tex),
+                right: DisplayTransform::IDENTITY,
+                left: DisplayTransform::IDENTITY,
+                ground: DisplayTransform::IDENTITY,
+                gui: DisplayTransform::IDENTITY,
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
+                fixed: DisplayTransform::IDENTITY,
+                from_block: false,
+                gui_quads: None,
+            },
+        ));
+    }
+    out
+}
+
 pub fn bake_conduit(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
@@ -1978,6 +2113,47 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M250 — `ArrowModel`: the three zero-thickness boxes keep two faces
+    /// each (six quads), and the shaft runs from -12 to 4 px scaled by the
+    /// mesh's 0.9; the fletching sits at -11 · 0.9, inside it.
+    #[test]
+    fn an_arrow_is_three_crossed_planes() {
+        let q = arrow_quads(0);
+        assert_eq!(q.len(), 6);
+        let xs: Vec<f32> = q.iter().flat_map(|q| q.verts.map(|v| v[0])).collect();
+        let (lo, hi) = xs
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+        assert!(
+            (lo + 10.8).abs() < 1e-4 && (hi - 3.6).abs() < 1e-4,
+            "{lo} {hi}"
+        );
+        // V: a shaft plane's 4 texels over the 25.6-texel sheet its (1.0,
+        // 0.8) scale implies; the fletching's 10 over the plain 32.
+        let vmax = |shaft: bool| {
+            q.iter()
+                .filter(|q| {
+                    let xs = q.verts.map(|v| v[0]);
+                    (xs.iter().fold(f32::MIN, |a, &b| a.max(b))
+                        - xs.iter().fold(f32::MAX, |a, &b| a.min(b))
+                        > 5.0)
+                        == shaft
+                })
+                .flat_map(|q| q.uv.map(|u| u[1]))
+                .fold(0f32, f32::max)
+        };
+        assert!(
+            (vmax(true) - 4.0 / 25.6).abs() < 1e-5,
+            "shaft {}",
+            vmax(true)
+        );
+        assert!(
+            (vmax(false) - 10.0 / 32.0).abs() < 1e-5,
+            "fletching {}",
+            vmax(false)
+        );
+    }
 
     /// M245 — each face's `dir` is the side of the box it is on: the face's
     /// centre minus the box's centre points along that `Direction`.

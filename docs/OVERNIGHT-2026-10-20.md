@@ -218,6 +218,8 @@ released.
   now places a chest and checks that it draws in the game window.
 - **M248**: bells now have their bell, and lecterns their open book (both
   were missing). The enchanting table's floating book is still missing.
+- **M250**: arrows and thrown tridents look like arrows and tridents
+  (they were grey capsules).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -278,6 +280,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M250)* | **M250** — `ArrowModel` (arrow, spectral arrow) and the thrown trident drawn by their renderers' rotations through the block-entity emitter (`collect_projectiles`), no capsule; render-check **r110** (a shot arrow's 6 quads); the bow stage now waits before emptying the hand, so it really fires. |
 | `ecace99` | **M249** — the session logs every hit on the local player (damage type id, cause entity and its type), for the render-check flake that lost health to an unknown source. |
 | `efcf90b` | **M248** — the bell (`BellModel`) and a lectern's book (`BookModel` at `forAnimation(0, 0.1, 0.9, 1.2)` under `LecternRenderer`'s transform) as block-entity statics; blockentityshot **k31**; **r109** grades chest, bell and book. |
 | `081032f` | **M247** — block entities created on the client when a block change makes one (`gen_block_entity_blocks.py`, `BlockEntities::sync_block_change`, as `LevelChunk.setBlockState` does); `remove` clears animation state; per-draw block-entity quad counts; render-check **r109** (a staged chest draws all 18 quads). |
@@ -532,7 +535,7 @@ released.
 - Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
 - After M239: **4,348 tests passed, 0 failed; gates 51/51**; render check **106/106** on three runs (plus the push-disabled control failing r106 as it should); clippy (gates, after one `int_plus_one` fix in the witness, and default features) and `cargo fmt --check` clean.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
-- Still capsules after M240: arrows, spectral arrows, tridents, wind charges, llama spit, shulker bullets, the dragon fireball, experience orbs and other model-or-own-renderer entities. (M241 drew the fishing line.)
+- Still capsules after M250: wind charges, llama spit, shulker bullets, the dragon fireball, evoker fangs, experience orbs and other model-or-own-renderer entities. (M241 drew the fishing line; M250 the arrows and the thrown trident.)
 - After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M242: **4,356 tests; 4,351 passed in the full run and the 5 failures, all `rewo-net` `srv` TCP tests at the fake nameserver's port pairing ("a port free for both UDP and TCP"), passed on rerun (34/34): the shared PC's sockets, not Rewo; gates 51/51** (inventoryshot 169, itemshot 78); render check **108/108** on two runs; clippy (gates and default features, after one needless `clone`) and `cargo fmt --check` clean.
 - After M243: **4,357 tests passed, 0 failed; gates 51/51** (itemshot 79); render check **108/108** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
@@ -541,6 +544,7 @@ released.
 - After M246: **4,365 tests passed, 0 failed; gates 51/51** (itemshot 82, capeshot 69 after f1/f2 took the new bottom band; demo hash unchanged); render check **108/108** on two runs; clippy (gates and default features, after four needless `&mut gpu` in c3e) and `cargo fmt --check` clean. Control: with the large band disabled, c3c/c3d/c3e read 0 px.
 - After M247: **4,370 tests passed, 0 failed; gates 51/51**; render check **109/109** on two runs; clippy (gates and default features) and `cargo fmt --check` clean. Control: before the client-side creation, r109 failed with the chest absent from the draw list.
 - After M248: **4,370 tests passed, 0 failed; gates 51/51** (blockentityshot 192); render check **109/109 on runs 1, 3 and 4**; run 2 read 100/109: during r96's eat-while-walking the bot took 3.2 + 1.6 + 1.6 damage from an unlogged source, was knocked off its path, and the use tail never reached the furnace (the use spot moves with the random spawn; the other three runs walked the same stage at full health). Clippy (gates and default features) and `cargo fmt --check` clean.
+- After M250: **4,371 tests passed, 0 failed; gates 51/51**; render check **110/110** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

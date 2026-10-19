@@ -1815,6 +1815,52 @@ pub(super) fn collect_fishing_lines(
 /// `FishingHookRenderer` (its sprite at 0.5). Recorded: a rocket shot at an
 /// angle (a crossbow's) is drawn facing the camera too, without vanilla's
 /// extra turn.
+/// M250 — the projectiles drawn by a model under `YP(yRot - 90) · ZP(xRot +
+/// extra)` rather than as a capsule: `ArrowRenderer` (the arrow and the
+/// spectral arrow, extra 0) and `ThrownTridentRenderer` (extra 90).
+pub(crate) fn projectile_model_of(name: &str) -> Option<(&'static str, f32)> {
+    Some(match name {
+        "minecraft:arrow" => ("rewo:be/arrow", 0.0),
+        "minecraft:spectral_arrow" => ("rewo:be/spectral_arrow", 0.0),
+        "minecraft:trident" => ("rewo:be/trident", 90.0),
+        _ => return None,
+    })
+}
+
+/// M250 — every arrow and thrown trident this frame, as block-entity-style
+/// draws: the model at the entity's position under the renderer's own
+/// rotation, lit at the entity. Recorded: the rotation is the latest packet's
+/// (no per-frame yaw/pitch interpolation), a stuck arrow's shake is not
+/// kept, a tipped arrow uses the plain texture, and a foil trident has no
+/// glint.
+pub(super) fn collect_projectiles(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::{mul, rot_y, rot_z, IDENTITY};
+    let mut out = Vec::new();
+    for (_, e) in session.world.entities.iter() {
+        let Some((model, extra)) = etypes.name(e.type_id).and_then(projectile_model_of) else {
+            continue;
+        };
+        let p = e.render_pos(alpha);
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            model: model.to_string(),
+            transform: mul(&rot_y(e.yaw - 90.0), &rot_z((e.pitch + extra).to_radians())),
+            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
+}
+
 pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
     Some(match name {
         "minecraft:snowball" => ("minecraft:snowball", 1.0, false),
@@ -2591,6 +2637,11 @@ pub(super) fn collect_entities<'a>(
             && name == "minecraft:firework_rocket"
             && session.world.entities.attached_to(id).is_some()
         {
+            continue;
+        }
+        // M250 — an arrow or a thrown trident is a model on the block-entity
+        // path (`collect_projectiles`), not a capsule here.
+        if projectile_model_of(name).is_some() {
             continue;
         }
         let mut thrown_model: Option<&'static str> = None;

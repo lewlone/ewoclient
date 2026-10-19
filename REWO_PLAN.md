@@ -2065,6 +2065,7 @@ this shape once.
 | M240 (2026-10-19) — thrown items and the fishing bobber draw as camera-facing items | **r107** | — | — |
 | M241 (2026-10-19) — a cast fishing rod draws its line to the first-person hand | **r108** | — | — |
 | M247 (2026-10-19) — a placed chest emits every quad of its model in the windowed client | **r109** | — | — |
+| M250 (2026-10-19) — a shot arrow draws as `ArrowModel` in the windowed client | **r110** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3899,6 +3900,37 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M250 — arrows and thrown tridents are models (2026-10-19)
+
+An arrow, a spectral arrow and a thrown trident were grey capsules. They are
+drawn by `EntityRenderer`s with no living-entity flip: `ArrowRenderer` is
+`YP(yRot - 90) · ZP(xRot) · ArrowModel`, `ThrownTridentRenderer` the same with
+`ZP(xRot + 90)` and `TridentModel` (M246's). A projectile's `yRot`/`xRot` follow
+its motion (`atan2`), the opposite yaw sign from a living entity's, so they
+are not folded into the mob path: `live_cmd::collect_projectiles` emits them
+as block-entity-style draws (the model in px, that affine, the entity's
+position and light) and `collect_entities` no longer draws their capsule.
+
+`ArrowModel` (`bake_arrows`): the fletching (`back`, a 5×5 plane at
+`offsetAndRotation(-11, 0, 0, π/4, 0, 0).withScale(0.8)`) and two crossed
+16×4 shaft planes (π/4 and 3π/4 about X) whose `addBox(..., 1.0, 0.8)` is a
+TEXTURE-SIZE scale (`CubeDefinition.bake`: V over 25.6, not 32), the whole
+mesh `scaled(0.9)`; the degenerate faces of the zero-thickness boxes are
+dropped (six quads).
+
+Recorded: the rotation is the latest packet's (no per-frame interpolation;
+vanilla also integrates a projectile client-side), a stuck arrow's shake is
+not kept, a tipped arrow uses the plain texture (its colour is not read), a
+foil trident has no glint.
+
+**r110**: the arrow r99's released bow shoots draws all 6 quads of
+`ArrowModel` in the windowed client. Writing it found the bow never fired:
+stage 51 released the use key and emptied the hand by command in the same
+tick, and the command ran first. The release now waits five ticks (stage
+98) before r101's staging. Tests: `an_arrow_is_three_crossed_planes` (quad
+count, the 0.9-scaled shaft span, both V scales). Looked at: arrows and a
+thrown trident, rendered serverlessly.
 
 ### M248 — the bell and the lectern's book (2026-10-19)
 
