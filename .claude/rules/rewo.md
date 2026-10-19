@@ -147,6 +147,10 @@ a self-check path.
   The crosshair clips the ray against OUTLINE shapes (M230,
   `PlaySession::target_shape`, `BakedAssets::outline`), not collision: a
   button, a flower or a lever is targetable, water and air are not.
+- **Render-check staging lanes**: r87's boat pool is `~5..~9 x ~4..~18`,
+  r89's camel sprints west along z `~-12`, r88's horse west along z `~8`.
+  Two stagings (M248's bell, M254's wall) first landed in a lane and failed
+  a witness that had nothing to do with them; place new blocks clear.
 - **Block entities are created by the client** (M247): a block change to
   a block valid for a `BlockEntityType` makes an empty entity
   (`BlockEntities::sync_block_change`, from `block_entity_blocks.rs`,

@@ -1908,6 +1908,160 @@ pub fn carried_block_model(id: u32) -> String {
     format!("rewo:be/state/{id}")
 }
 
+/// M254 — the entity-pass model of a painting variant's `asset_id`
+/// (`minecraft:kebab` → `rewo:be/painting/kebab`).
+pub fn painting_model(asset_id: &str) -> String {
+    let path = asset_id.split_once(':').map_or(asset_id, |(_, p)| p);
+    format!("rewo:be/painting/{path}")
+}
+
+/// M254 — `PaintingRenderer.renderPainting`'s geometry for a `width` ×
+/// `height` (blocks) painting, in px: per one-block cell, the front (z
+/// `-1/32` block, its slice of the whole sprite, mirrored in U and V as the
+/// renderer reads it) and the back (`+1/32`, the whole back sprite), and on
+/// the outer cells the top, bottom and side edges (the back sprite's first
+/// 1/16). Vertex order as the renderer writes it.
+fn painting_quads(width: i32, height: i32, front: u16, back: u16) -> Vec<HeldQuad> {
+    let (w, h) = (width as f32, height as f32);
+    let (ox, oy) = (-w / 2.0, -h / 2.0);
+    let zf = -0.03125f32;
+    let zb = 0.03125f32;
+    let e = 0.0625f32;
+    let mut out = Vec::new();
+    let mut quad = |v: [([f32; 3], [f32; 2]); 4], tex: u16, dir: u8| {
+        out.push(HeldQuad {
+            verts: v.map(|(p, _)| [p[0] * 16.0, p[1] * 16.0, p[2] * 16.0]),
+            uv: v.map(|(_, t)| t),
+            tex,
+            part: 0,
+            dir,
+        });
+    };
+    for sx in 0..width {
+        for sy in 0..height {
+            let (sxf, syf) = (sx as f32, sy as f32);
+            let x0 = ox + sxf + 1.0;
+            let x1 = ox + sxf;
+            let y0 = oy + syf + 1.0;
+            let y1 = oy + syf;
+            let fu0 = (w - sxf) / w;
+            let fu1 = (w - (sxf + 1.0)) / w;
+            let fv0 = (h - syf) / h;
+            let fv1 = (h - (syf + 1.0)) / h;
+            quad(
+                [
+                    ([x0, y1, zf], [fu1, fv0]),
+                    ([x1, y1, zf], [fu0, fv0]),
+                    ([x1, y0, zf], [fu0, fv1]),
+                    ([x0, y0, zf], [fu1, fv1]),
+                ],
+                front,
+                2,
+            );
+            quad(
+                [
+                    ([x0, y0, zb], [1.0, 0.0]),
+                    ([x1, y0, zb], [0.0, 0.0]),
+                    ([x1, y1, zb], [0.0, 1.0]),
+                    ([x0, y1, zb], [1.0, 1.0]),
+                ],
+                back,
+                3,
+            );
+            if sy == height - 1 {
+                quad(
+                    [
+                        ([x0, y0, zf], [0.0, 0.0]),
+                        ([x1, y0, zf], [1.0, 0.0]),
+                        ([x1, y0, zb], [1.0, e]),
+                        ([x0, y0, zb], [0.0, e]),
+                    ],
+                    back,
+                    1,
+                );
+            }
+            if sy == 0 {
+                quad(
+                    [
+                        ([x0, y1, zb], [0.0, 0.0]),
+                        ([x1, y1, zb], [1.0, 0.0]),
+                        ([x1, y1, zf], [1.0, e]),
+                        ([x0, y1, zf], [0.0, e]),
+                    ],
+                    back,
+                    0,
+                );
+            }
+            if sx == width - 1 {
+                quad(
+                    [
+                        ([x0, y0, zb], [e, 0.0]),
+                        ([x0, y1, zb], [e, 1.0]),
+                        ([x0, y1, zf], [0.0, 1.0]),
+                        ([x0, y0, zf], [0.0, 0.0]),
+                    ],
+                    back,
+                    4,
+                );
+            }
+            if sx == 0 {
+                quad(
+                    [
+                        ([x1, y0, zf], [e, 0.0]),
+                        ([x1, y1, zf], [e, 1.0]),
+                        ([x1, y1, zb], [0.0, 1.0]),
+                        ([x1, y0, zb], [0.0, 0.0]),
+                    ],
+                    back,
+                    5,
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Bake every painting variant the jar defines (M254): `variants` is
+/// `(asset_id, width, height)` from `data/minecraft/painting_variant/*.json`.
+/// A server-defined variant the jar has no texture for draws nothing.
+pub fn bake_paintings(
+    variants: &[(String, i32, i32)],
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let Some(back) = pool.intern("painting/back", || load("painting/back")) else {
+        log::error!("paintings: no back texture");
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (asset, w, h) in variants {
+        if !(1..=16).contains(w) || !(1..=16).contains(h) {
+            continue;
+        }
+        let path = asset.split_once(':').map_or(asset.as_str(), |(_, p)| p);
+        let tex_name = format!("painting/{path}");
+        let Some(front) = pool.intern(&tex_name, || load(&tex_name)) else {
+            continue;
+        };
+        out.push((
+            painting_model(asset),
+            HeldItemModel {
+                quads: painting_quads(*w, *h, front, back),
+                right: DisplayTransform::IDENTITY,
+                left: DisplayTransform::IDENTITY,
+                ground: DisplayTransform::IDENTITY,
+                gui: DisplayTransform::IDENTITY,
+                first_right: DisplayTransform::IDENTITY,
+                first_left: DisplayTransform::IDENTITY,
+                fixed: DisplayTransform::IDENTITY,
+                from_block: false,
+                gui_quads: None,
+            },
+        ));
+    }
+    out
+}
+
 /// Bake the arrows (M250).
 pub fn bake_arrows(
     pool: &mut TexturePool,
@@ -2202,6 +2356,32 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M254 — a 2×1 painting: two cells, each a front and a back, plus the
+    /// two top and two bottom edge strips and one side at each end (10
+    /// quads), spanning ±1 × ±0.5 blocks; the front's U runs mirrored.
+    #[test]
+    fn a_painting_is_its_cells_and_edges() {
+        let q = painting_quads(2, 1, 7, 9);
+        assert_eq!(q.len(), 10);
+        let xs: Vec<f32> = q.iter().flat_map(|q| q.verts.map(|v| v[0])).collect();
+        let ys: Vec<f32> = q.iter().flat_map(|q| q.verts.map(|v| v[1])).collect();
+        let r = |v: &[f32]| {
+            v.iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)))
+        };
+        assert_eq!(r(&xs), (-16.0, 16.0));
+        assert_eq!(r(&ys), (-8.0, 8.0));
+        let fronts: Vec<&HeldQuad> = q.iter().filter(|q| q.tex == 7).collect();
+        assert_eq!(fronts.len(), 2);
+        // The cell at the far +x end samples U 0..0.5, mirrored.
+        let right = fronts
+            .iter()
+            .find(|q| q.verts.iter().any(|v| v[0] > 15.0))
+            .unwrap();
+        let us: Vec<f32> = right.uv.iter().map(|u| u[0]).collect();
+        assert!(us.iter().all(|&u| u <= 0.5 + 1e-6), "{us:?}");
+    }
 
     /// M251 — `ExperienceOrb.getIcon`'s thresholds, at and either side of
     /// each step.

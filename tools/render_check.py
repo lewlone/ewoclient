@@ -158,6 +158,11 @@ PRECMD = (
     # far below the 600-tick discard, the TNT's fuse is 32767 ticks.
     "summon minecraft:falling_block ~-8 ~2 ~-6 {BlockState:{Name:\"minecraft:gravel\"},NoGravity:1b,Time:-100000};"
     "summon minecraft:tnt ~-8 ~2 ~-8 {fuse:32767,NoGravity:1b};"
+    # M254 -- r113. A stone wall and a 1x1 painting hung on its north face
+    # (facing is the 2D value: 2 = north), off r89's camel lane (z -12)
+    # and r87's pool.
+    "fill ~-3 ~ ~16 ~-1 ~2 ~16 minecraft:stone;"
+    "summon minecraft:painting ~-2 ~1 ~15 {facing:2b,variant:\"minecraft:kebab\"};"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"

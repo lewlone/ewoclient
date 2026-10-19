@@ -247,6 +247,9 @@ pub(super) struct RenderCheck {
     /// quad of their block model, and the most complete in one frame.
     pub(super) carried_block_frames: usize,
     pub(super) carried_blocks_max: usize,
+    /// M254 — r113: frames on which a painting drew every quad of its
+    /// variant's model.
+    pub(super) painting_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -999,7 +1002,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 112;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 113;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1189,6 +1192,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M254 — r113: `render_check.py` hangs a kebab painting on a stone
+        // wall. Its variant arrives as a raw `painting_variant` id (the
+        // registry synced at configuration), its facing as spawn data; it
+        // must draw its variant's model where it was a capsule.
+        row(
+            "r113 a hung painting drew its variant's model",
+            self.painting_frames >= 1,
+            format!("{} frames drew it completely", self.painting_frames),
         );
         // M253 — r112: `render_check.py` summons a floating falling block
         // (gravel) and primed TNT with a long fuse, both NoGravity. Each must

@@ -915,6 +915,8 @@ pub struct PlaySession {
     pub cat_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub frog_variants: Vec<crate::variant_parse::MobVariantDef>,
+    /// M254 — the `painting_variant` registry, index = protocol id.
+    pub painting_variants: Vec<crate::variant_parse::PaintingVariantDef>,
     /// The server's datapack tags (M69).
     ///
     /// Carried over from configuration, where a vanilla server sends them, and
@@ -1908,6 +1910,7 @@ impl<'a> Connection<'a> {
         let cat_variants = std::mem::take(&mut self.cfg.cat_variants);
         let wolf_variants = std::mem::take(&mut self.cfg.wolf_variants);
         let frog_variants = std::mem::take(&mut self.cfg.frog_variants);
+        let painting_variants = std::mem::take(&mut self.cfg.painting_variants);
         // The glider items (`minecraft:glider` on the prototype) as ids, so
         // the elytra take-off line can ask the inventory's chest slot without
         // a name round-trip. `minecraft:elytra` is one of them.
@@ -2001,6 +2004,7 @@ impl<'a> Connection<'a> {
             cat_variants,
             wolf_variants,
             frog_variants,
+            painting_variants,
             tags,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
@@ -3476,6 +3480,7 @@ impl PlaySession {
             cat_variants,
             wolf_variants,
             frog_variants,
+            painting_variants,
             tags,
             ..
         } = cfg;
@@ -3486,6 +3491,7 @@ impl PlaySession {
         self.cat_variants = cat_variants;
         self.wolf_variants = wolf_variants;
         self.frog_variants = frog_variants;
+        self.painting_variants = painting_variants;
         self.tags = tags;
     }
 

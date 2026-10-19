@@ -1903,6 +1903,58 @@ pub(super) fn collect_carried_blocks(
     out
 }
 
+/// M254 — every painting this frame, as `PaintingRenderer` draws it: the
+/// variant's model (`painting_variant` registry, by the entity's raw holder
+/// id) turned by `YP(180 - direction.get2DDataValue() · 90)`, the direction
+/// from the spawn data (`get3DDataValue`), at the entity's position.
+/// Recorded: one light for the whole painting (vanilla samples one per
+/// block).
+pub(super) fn collect_paintings(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::{rot_y, IDENTITY};
+    let mut out = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        if etypes.name(e.type_id) != Some("minecraft:painting") {
+            continue;
+        }
+        let Some(asset) = session
+            .world
+            .entities
+            .variant(id)
+            .and_then(|v| session.painting_variants.get(usize::try_from(v).ok()?))
+            .and_then(|v| v.asset_id.as_deref())
+        else {
+            continue;
+        };
+        // `Direction.get3DDataValue` → `get2DDataValue`: north 2 → 2,
+        // south 3 → 0, west 4 → 1, east 5 → 3.
+        let d2 = match e.spawn_data {
+            2 => 2.0,
+            3 => 0.0,
+            4 => 1.0,
+            5 => 3.0,
+            _ => continue,
+        };
+        let p = e.render_pos(alpha);
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            model: rewo_data::block_entity_models::painting_model(asset),
+            transform: rot_y(180.0 - d2 * 90.0),
+            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
+}
+
 pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
     Some(match name {
         "minecraft:snowball" => ("minecraft:snowball", 1.0, false),
@@ -2689,6 +2741,10 @@ pub(super) fn collect_entities<'a>(
         // M253 — a falling block or primed TNT is its block model on the
         // block-entity path (`collect_carried_blocks`).
         if matches!(name, "minecraft:falling_block" | "minecraft:tnt") {
+            continue;
+        }
+        // M254 — a painting is its variant's model (`collect_paintings`).
+        if name == "minecraft:painting" {
             continue;
         }
         let mut thrown_model: Option<&'static str> = None;

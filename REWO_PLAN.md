@@ -2068,6 +2068,7 @@ this shape once.
 | M250 (2026-10-19) — a shot arrow draws as `ArrowModel` in the windowed client | **r110** | — | — |
 | M252 (2026-10-19) — a summoned minecart draws as `MinecartModel` | **r111** | — | — |
 | M253 (2026-10-19) — a falling block and primed TNT draw their block models | **r112** | — | — |
+| M254 (2026-10-19) — a hung painting draws its variant's model | **r113** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3902,6 +3903,39 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M254 — paintings (2026-10-19)
+
+Paintings were capsules. Three pieces:
+
+- **The variant registry.** `painting_variant` is a datapack registry;
+  Rewo answers `select_known_packs` with none, so every entry arrives with
+  its NBT (`width`, `height`, `asset_id`). `variant_parse::
+  parse_painting_variant_registry` keeps them in wire order (the index is
+  the holder id) and the session carries them beside the mob variants.
+- **The metadata.** `Painting.DATA_PAINTING_VARIANT_ID` is index **9**
+  (8 is `HangingEntity.DATA_DIRECTION`), serializer 34 (`PAINTING_VARIANT`,
+  a raw registry id), which only paintings use, so it routes with no kind
+  gate. The first cut read index 8 and drew nothing; r113 caught it. The
+  facing is the spawn data (`get3DDataValue`).
+- **The geometry.** `PaintingRenderer.renderPainting`, per one-block cell:
+  the front at z −1/32 (its slice of the sprite, mirrored in U and V), the
+  back at +1/32 (the whole back sprite) and, on the outer cells, the top,
+  bottom and side strips (the back sprite's first 1/16), in the renderer's
+  vertex order. Every jar variant (`data/minecraft/painting_variant/*.json`)
+  is baked as `rewo:be/painting/<asset>`; the sprites (up to 64×64) page
+  into M246's large band. `collect_paintings` draws them under `YP(180 −
+  direction.get2DDataValue() · 90)`.
+
+Recorded: one light for the whole painting (vanilla samples one per
+block); a server variant whose texture the jar lacks draws nothing.
+
+Tests: `a_painting_is_its_cells_and_edges` (a 2×1's ten quads, its span and
+the mirrored U), `a_painting_entry_keeps_its_asset_and_size`,
+`index9_painting_variant_is_the_variant`. **r113**: a kebab hung on a stone
+wall draws every quad of its model in the windowed client (the wall first
+went into r89's camel lane and stopped the camel; it moved to `~-3..-1 ~
+~16`).
 
 ### M253 — falling blocks and primed TNT (2026-10-19)
 

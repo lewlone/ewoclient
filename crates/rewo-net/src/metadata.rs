@@ -286,6 +286,11 @@ pub struct EntityMeta {
     /// M251 — INT at 8: `ExperienceOrb.DATA_VALUE` (kind-gated by the
     /// caller; a boat's `DATA_ID_HURT` shares the index and serializer).
     pub int8: Option<i32>,
+    /// M254 — `Painting.DATA_PAINTING_VARIANT_ID` at 9 (8 is
+    /// `HangingEntity.DATA_DIRECTION`): serializer 34, `PAINTING_VARIANT`, a
+    /// raw registry id. The serializer is the painting's alone, so it needs
+    /// no kind gate.
+    pub painting9: Option<i32>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -396,6 +401,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             },
             (10, 1) => meta.int10 = r.varint().ok(),
             (8, 1) => meta.int8 = r.varint().ok(),
+            (9, 34) => meta.painting9 = r.varint().ok(),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),

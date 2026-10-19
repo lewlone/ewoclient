@@ -2751,6 +2751,10 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let (Some(v), true) = (meta.int8, kinds.experience_orb == Some(type_id)) {
         entities.set_variant(eid, v);
     }
+    // Slot 9 PAINTING_VARIANT → the painting's variant (M254), raw id.
+    if let Some(v) = meta.painting9 {
+        entities.set_variant(eid, v);
+    }
     if let Some(raw) = meta.opt_uint9 {
         if kinds.firework_rocket == Some(type_id) {
             entities.set_attached_to(eid, (raw > 0).then(|| raw - 1));
@@ -5295,6 +5299,17 @@ mod set_entity_data_tests {
         apply_set_entity_data(&body(5, 8, 1, &[17]), &mut t, kinds);
         assert_eq!(t.variant(4), Some(17));
         assert_eq!(t.variant(5), None);
+    }
+
+    /// M254 — index 9 PAINTING_VARIANT (serializer 34) is the painting's
+    /// variant; the serializer is the painting's alone, so no kind gate.
+    /// Index 8 on a painting is `HangingEntity.DATA_DIRECTION`, not this.
+    #[test]
+    fn index9_painting_variant_is_the_variant() {
+        let mut t = EntityTable::default();
+        t.add(6, EntityState::new(0, 800, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(6, 9, 34, &[3]), &mut t, Some(ALLAY));
+        assert_eq!(t.variant(6), Some(3));
     }
 
     #[test]

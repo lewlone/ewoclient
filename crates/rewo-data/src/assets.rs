@@ -4331,8 +4331,26 @@ impl<'a> Baker<'a> {
         // One loader, reborrowed per bake. Each `bake_*` takes `&mut dyn FnMut`
         // and the closure holds the jar, so they cannot be live at once —
         // hence the sequence rather than one call.
+        // M254 — the jar's painting variants, for `bake_paintings`.
+        let painting_files: Vec<String> = self
+            .jar
+            .file_names()
+            .filter_map(Result::ok)
+            .map(|p| p.to_string())
+            .filter(|p| p.starts_with("data/minecraft/painting_variant/") && p.ends_with(".json"))
+            .collect();
+        let mut paintings: Vec<(String, i32, i32)> = Vec::new();
+        for f in painting_files {
+            if let Some(j) = self.read_json(&f) {
+                let int = |k: &str| j.get(k).and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+                if let Some(asset) = j.get("asset_id").and_then(|a| a.as_str()) {
+                    paintings.push((asset.to_string(), int("width"), int("height")));
+                }
+            }
+        }
+        paintings.sort();
         macro_rules! bake_be {
-            ($f:path) => {{
+            ($f:expr) => {{
                 let jar = &mut self.jar;
                 $f(&mut pool, &mut |tex_name: &str| {
                     let path = format!("assets/minecraft/textures/{tex_name}.png");
@@ -4359,6 +4377,13 @@ impl<'a> Baker<'a> {
         ));
         // M250 — the arrows.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_arrows));
+        // M254 — the paintings.
+        be_models.append(&mut bake_be!(
+            |pool: &mut crate::held_items::TexturePool,
+             load: &mut dyn FnMut(&str) -> Option<crate::held_items::HeldTexture>| {
+                crate::block_entity_models::bake_paintings(&paintings, pool, load)
+            }
+        ));
         // M251 — the experience orb's icons.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_xp_orbs));
         // M240 — the fishing bobber's sprite.

@@ -39,6 +39,44 @@ use rewo_proto::nbt::Nbt;
 pub const CAT_VARIANT_REGISTRY: &str = "minecraft:cat_variant";
 pub const WOLF_VARIANT_REGISTRY: &str = "minecraft:wolf_variant";
 pub const FROG_VARIANT_REGISTRY: &str = "minecraft:frog_variant";
+/// M254 — the `painting_variant` registry (`PaintingVariant.NETWORK_CODEC`:
+/// `width`, `height`, `asset_id`, optional title and author).
+pub const PAINTING_VARIANT_REGISTRY: &str = "minecraft:painting_variant";
+
+/// M254 — one painting variant, at the index that is its protocol id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaintingVariantDef {
+    /// `minecraft:kebab`.
+    pub id: String,
+    /// `asset_id`, as written (`minecraft:kebab`): the painting texture is
+    /// `textures/painting/<path>.png`.
+    pub asset_id: Option<String>,
+    /// Size in blocks (1..=16; vanilla's go to 4).
+    pub width: i32,
+    pub height: i32,
+}
+
+/// `painting_variant`: `width`, `height` and `asset_id` per entry.
+pub fn parse_painting_variant_registry(
+    r: &mut rewo_proto::reader::PacketReader,
+    count: usize,
+) -> Vec<PaintingVariantDef> {
+    read_entries(r, count, |id, data| {
+        let int = |k: &str| match data.as_ref().and_then(|d| d.get(k)) {
+            Some(Nbt::Int(v)) => *v,
+            _ => 1,
+        };
+        PaintingVariantDef {
+            id,
+            asset_id: match data.as_ref().and_then(|d| d.get("asset_id")) {
+                Some(Nbt::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+            width: int("width"),
+            height: int("height"),
+        }
+    })
+}
 
 /// One variant entry, at the index that is its protocol id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -166,6 +204,42 @@ mod tests {
 
     fn s(v: &str) -> Nbt {
         Nbt::String(v.to_string())
+    }
+
+    /// M254 — a `painting_variant` entry keeps its asset id as written and
+    /// its size in blocks; an entry with no data defaults to 1×1 and no
+    /// asset (nothing to draw), in wire order.
+    #[test]
+    fn a_painting_entry_keeps_its_asset_and_size() {
+        let b = body(&[
+            (
+                "minecraft:pointer",
+                Some(compound(&[
+                    ("asset_id", s("minecraft:pointer")),
+                    ("width", Nbt::Int(4)),
+                    ("height", Nbt::Int(4)),
+                ])),
+            ),
+            ("minecraft:mystery", None),
+        ]);
+        let v = parse_painting_variant_registry(&mut PacketReader::new(&b), 2);
+        assert_eq!(
+            v,
+            vec![
+                PaintingVariantDef {
+                    id: "minecraft:pointer".into(),
+                    asset_id: Some("minecraft:pointer".into()),
+                    width: 4,
+                    height: 4,
+                },
+                PaintingVariantDef {
+                    id: "minecraft:mystery".into(),
+                    asset_id: None,
+                    width: 1,
+                    height: 1,
+                },
+            ]
+        );
     }
 
     #[test]

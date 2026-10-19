@@ -893,6 +893,8 @@ impl LiveApp {
         bes.extend(frames.models);
         // M250 — arrows and thrown tridents, by their models.
         bes.extend(collect_projectiles(session, &self.etypes, &lightmap, alpha));
+        // M254 — paintings.
+        bes.extend(collect_paintings(session, &self.etypes, &lightmap, alpha));
         // M253 — falling blocks and primed TNT, by their block models.
         bes.extend(collect_carried_blocks(
             session,
@@ -1096,6 +1098,23 @@ impl LiveApp {
                 .count();
             if complete >= 2 {
                 c.carried_block_frames += 1;
+            }
+            // M254 — r113: the staged painting drew every quad of its
+            // variant's model.
+            let painting = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| d.model.starts_with("rewo:be/painting/"))
+                .any(|(d, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(d.model))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                });
+            if painting {
+                c.painting_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

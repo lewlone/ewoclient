@@ -64,6 +64,8 @@ pub struct ConfigData {
     pub cat_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub frog_variants: Vec<crate::variant_parse::MobVariantDef>,
+    /// M254 — the `painting_variant` registry, index = protocol id.
+    pub painting_variants: Vec<crate::variant_parse::PaintingVariantDef>,
     /// The server's datapack tags (M69).
     pub tags: crate::tags::TagOverrides,
 }
@@ -98,6 +100,7 @@ impl ConfigData {
             cat_variants: Vec::new(),
             wolf_variants: Vec::new(),
             frog_variants: Vec::new(),
+            painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
     }
@@ -126,6 +129,7 @@ impl ConfigData {
             cat_variants: Vec::new(),
             wolf_variants: Vec::new(),
             frog_variants: Vec::new(),
+            painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
     }
@@ -198,16 +202,29 @@ impl ConfigData {
         // same reason — the index is the raw holder id the metadata carries.
         if registry == crate::variant_parse::CAT_VARIANT_REGISTRY {
             self.cat_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            short_registry(&registry, self.cat_variants.len(), count);
             log::info!("net: {} cat variant(s) synced", self.cat_variants.len());
             return Ok(());
         }
         if registry == crate::variant_parse::WOLF_VARIANT_REGISTRY {
             self.wolf_variants = crate::variant_parse::parse_wolf_variant_registry(&mut r, count);
+            short_registry(&registry, self.wolf_variants.len(), count);
             log::info!("net: {} wolf variant(s) synced", self.wolf_variants.len());
+            return Ok(());
+        }
+        if registry == crate::variant_parse::PAINTING_VARIANT_REGISTRY {
+            self.painting_variants =
+                crate::variant_parse::parse_painting_variant_registry(&mut r, count);
+            short_registry(&registry, self.painting_variants.len(), count);
+            log::info!(
+                "net: {} painting variant(s) synced",
+                self.painting_variants.len()
+            );
             return Ok(());
         }
         if registry == crate::variant_parse::FROG_VARIANT_REGISTRY {
             self.frog_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            short_registry(&registry, self.frog_variants.len(), count);
             log::info!("net: {} frog variant(s) synced", self.frog_variants.len());
             return Ok(());
         }
@@ -462,4 +479,17 @@ pub fn handle_config_packet(
     // (deliberately unresolved — see `config_tasks`). None of them blocks the
     // server's task queue.
     Ok(ConfigStep::Continue)
+}
+
+/// A variant registry that parsed fewer entries than it claimed was
+/// truncated: counted as one decode failure, as the generic registry path
+/// counts it (M254; the cat, wolf and frog branches stopped short silently
+/// before).
+fn short_registry(registry: &str, parsed: usize, claimed: usize) {
+    if parsed < claimed {
+        crate::route_decode_failed(
+            &format!("registry_data {registry}"),
+            format!("{parsed} of {claimed} entries"),
+        );
+    }
 }
