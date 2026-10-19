@@ -177,6 +177,10 @@ released.
   Fixed and checked live: a real stand took a water bottle, nether wart
   and blaze powder (shift-clicked, sorted into the right slots as vanilla
   does) and started brewing.
+- **M238**: armour stands now look like armour stands (they were a grey
+  capsule), with their arms and base plate shown or hidden as set, small
+  stands half size, and armour worn on them. Custom poses (raised arms and
+  so on) still show the default pose.
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -233,6 +237,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| `e9b453d` | **M238** — the armour stand model: `ArmorStandModel` at the default pose on named parts (armour hangs on them), its client flags (arms, base plate, small) routed by kind from index 15, the base plate counter-rotated; render-check **r105**. Synched poses not read. |
 | `cb8ed1a` | **M237** — the brewing stand's clicks (no `QuickMove` arm, nothing sent): slot kinds and the shift-click from `BrewingStandMenu`; `tools/gen_brewing.py` reads `PotionBrewing`'s ingredients from the decompile; render-check **r104** (a real stand brews). |
 | `ff8b256` | **M236** — the enchanting table's clicks (its menu had no `QuickMove` arm, so nothing was sent); the anvil's cost line; render-check **r102** (anvil rename: cost line red/green, level spent) and **r103** (real enchanting); harness: the tail's flakes were a slime killing the survival bot (`gamerule spawn_monsters false`), plus no structures, r96 per-tick steps, tail cap 90 s. |
 | `a9feba5` | **M235** — shield blocking checked live: render-check **r101** (a right-click raises the off-hand shield; the server's own damage: 20 → 16.64 unblocked, no loss blocked). Witness only, no client change. |
@@ -471,6 +476,8 @@ released.
 - After M235: render-check only change: `rewo-app` tests (gates) 296 passed; render check **101/101** on two runs; clippy (gates) and `cargo fmt --check` clean.
 - After M236: **4,344 tests passed, 0 failed** (before the last witness-only and harness edits; `rewo-app` gates tests 296 after them); gates 51/51; render check **103/103 on five consecutive runs** after the slime fix (earlier runs failed about one in three on the tail, now explained); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M237: **4,347 tests passed, 0 failed; gates 51/51**; render check **104/104** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- After M238: **4,347 tests passed, 0 failed; gates 51/51**; render check **105/105** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -478,6 +485,13 @@ released.
   validation messages.
 
 ## Needs Enni
+
+- **An incident on the shared PC (2026-10-19 13:28):** stopping a failed
+  verification chain, I force-killed a `java.exe` (PID 37804, ~456 MB)
+  assuming it was my render check's test server. It was not (my chain had
+  not reached the render check; no `testserver-rc` directory existed), so it
+  was some other session's server or Gradle daemon. Control Room was told at
+  once. Since then I check a process's command line before stopping it.
 
 - Nothing blocking. Still open from before (listening pass, the release
   zip on a fresh machine, the HUD's Java side in a running Minecraft): see
