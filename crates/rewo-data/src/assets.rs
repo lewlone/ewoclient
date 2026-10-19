@@ -4347,6 +4347,8 @@ impl<'a> Baker<'a> {
         ));
         // M250 — the arrows.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_arrows));
+        // M251 — the experience orb's icons.
+        be_models.append(&mut bake_be!(crate::block_entity_models::bake_xp_orbs));
         // M240 — the fishing bobber's sprite.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_fishing_hook));
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_banners));

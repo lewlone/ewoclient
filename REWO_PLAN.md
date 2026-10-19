@@ -3901,6 +3901,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M251 — experience orbs (2026-10-19)
+
+An experience orb was a grey capsule. `ExperienceOrbRenderer` draws one of
+the eleven 16×16 icons of `entity/experience/experience_orb.png` (picked by
+`getIcon()` from the orb's value) as a camera-facing quad `(-0.5,
+-0.25)..(0.5, 0.75)` at scale 0.3, lifted 0.1, in its own vertex colour
+`((sin(r) + 1) / 2, 1, (sin(r + 4π/3) + 1) / 10)` with `r = age / 2`,
+unshaded, lit with the block light raised by 7 (`getBlockLightLevel`).
+
+- The value is `ExperienceOrb.DATA_VALUE`, metadata index 8 INT, decoded
+  (`meta.int8`) and routed only for the orb type (a boat's `DATA_ID_HURT`
+  shares the index and serializer), into the variant slot: it only selects
+  the look.
+- The icons are baked as `rewo:be/xp_orb/<n>` sprites and drawn through
+  M240's billboard branch, which gains `Billboard::tint` (a vertex colour
+  drawn unshaded; `None` keeps the item path's face shading). The colour is
+  decoded to linear before it multiplies.
+- `entity_light_boosted` adds the +7.
+
+Recorded: Rewo keeps no per-entity tick count, so the colour's phase is the
+world clock offset by the entity id (orbs pulse out of step, not in
+vanilla's exact phase). No render-check witness: a staged orb flies to the
+bot and grants levels, which r102's anvil reads.
+
+Tests: `an_orbs_icon_follows_its_value` (every threshold),
+`index8_int_is_an_orbs_value_only_on_an_orb`; itemshot **g11** (an orb's
+icon draws 314 px, green-led).
+
 ### M250 — arrows and thrown tridents are models (2026-10-19)
 
 An arrow, a spectral arrow and a thrown trident were grey capsules. They are

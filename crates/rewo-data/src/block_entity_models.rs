@@ -1932,6 +1932,89 @@ pub fn bake_arrows(
     out
 }
 
+/// M251 — the experience orb's eleven icons (`ExperienceOrb.getIcon`),
+/// `rewo:be/xp_orb/<icon>`, from `entity/experience/experience_orb` (64×64, 4×4 cells
+/// of 16). `ExperienceOrbRenderer` draws the quad `(-0.5, -0.25)..(0.5,
+/// 0.75)`; the billboard path centres a model on `(8, 8, 8)` px and scales
+/// it, so the quad is baked at `x 0..16, y 4..20, z 8`, front and back.
+pub const XP_ORB_MODELS: [&str; 11] = [
+    "rewo:be/xp_orb/0",
+    "rewo:be/xp_orb/1",
+    "rewo:be/xp_orb/2",
+    "rewo:be/xp_orb/3",
+    "rewo:be/xp_orb/4",
+    "rewo:be/xp_orb/5",
+    "rewo:be/xp_orb/6",
+    "rewo:be/xp_orb/7",
+    "rewo:be/xp_orb/8",
+    "rewo:be/xp_orb/9",
+    "rewo:be/xp_orb/10",
+];
+
+/// `ExperienceOrb.getIcon`: the icon for an orb of `value`.
+pub fn xp_orb_icon(value: i32) -> usize {
+    const STEPS: [i32; 10] = [3, 7, 17, 37, 73, 149, 307, 617, 1237, 2477];
+    STEPS.iter().take_while(|&&s| value >= s).count()
+}
+
+/// Bake the orb icons (M251).
+pub fn bake_xp_orbs(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    const TEX: &str = "entity/experience/experience_orb";
+    let Some(tex) = pool.intern(TEX, || load(TEX)) else {
+        log::error!("experience orb: no texture {TEX:?}");
+        return Vec::new();
+    };
+    XP_ORB_MODELS
+        .iter()
+        .enumerate()
+        .map(|(icon, name)| {
+            let (u0, v0) = ((icon % 4) as f32 * 0.25, (icon / 4) as f32 * 0.25);
+            let (u1, v1) = (u0 + 0.25, v0 + 0.25);
+            let front = HeldQuad {
+                verts: [
+                    [0.0, 4.0, 8.0],
+                    [16.0, 4.0, 8.0],
+                    [16.0, 20.0, 8.0],
+                    [0.0, 20.0, 8.0],
+                ],
+                uv: [[u0, v1], [u1, v1], [u1, v0], [u0, v0]],
+                tex,
+                part: 0,
+                dir: 3,
+            };
+            let back = HeldQuad {
+                verts: [
+                    front.verts[3],
+                    front.verts[2],
+                    front.verts[1],
+                    front.verts[0],
+                ],
+                uv: [front.uv[3], front.uv[2], front.uv[1], front.uv[0]],
+                dir: 2,
+                ..front
+            };
+            (
+                name.to_string(),
+                HeldItemModel {
+                    quads: vec![front, back],
+                    right: DisplayTransform::IDENTITY,
+                    left: DisplayTransform::IDENTITY,
+                    ground: DisplayTransform::IDENTITY,
+                    gui: DisplayTransform::IDENTITY,
+                    first_right: DisplayTransform::IDENTITY,
+                    first_left: DisplayTransform::IDENTITY,
+                    fixed: DisplayTransform::IDENTITY,
+                    from_block: false,
+                    gui_quads: None,
+                },
+            )
+        })
+        .collect()
+}
+
 pub fn bake_conduit(
     pool: &mut TexturePool,
     load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
@@ -2113,6 +2196,33 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M251 — `ExperienceOrb.getIcon`'s thresholds, at and either side of
+    /// each step.
+    #[test]
+    fn an_orbs_icon_follows_its_value() {
+        let cases = [
+            (0, 0),
+            (2, 0),
+            (3, 1),
+            (6, 1),
+            (7, 2),
+            (17, 3),
+            (37, 4),
+            (73, 5),
+            (149, 6),
+            (307, 7),
+            (617, 8),
+            (1236, 8),
+            (1237, 9),
+            (2476, 9),
+            (2477, 10),
+            (32767, 10),
+        ];
+        for (v, icon) in cases {
+            assert_eq!(xp_orb_icon(v), icon, "value {v}");
+        }
+    }
 
     /// M250 — `ArrowModel`: the three zero-thickness boxes keep two faces
     /// each (six quads), and the shaft runs from -12 to 4 px scaled by the

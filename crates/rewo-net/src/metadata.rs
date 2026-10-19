@@ -283,6 +283,9 @@ pub struct EntityMeta {
     pub frame_item: Option<Option<rewo_world::entities::FrameItem>>,
     /// M194 — INT at 10, `ItemFrame.DATA_ROTATION`.
     pub int10: Option<i32>,
+    /// M251 — INT at 8: `ExperienceOrb.DATA_VALUE` (kind-gated by the
+    /// caller; a boat's `DATA_ID_HURT` shares the index and serializer).
+    pub int8: Option<i32>,
 }
 
 /// Parse a metadata stream (reader positioned at the first entry index).
@@ -392,6 +395,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
                 _ => break,
             },
             (10, 1) => meta.int10 = r.varint().ok(),
+            (8, 1) => meta.int8 = r.varint().ok(),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),

@@ -36,7 +36,7 @@ use crate::stats::OverlayRing;
 
 /// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
 /// pickup animation's flight.
-const EXPECTED_WITNESSES: usize = 82;
+const EXPECTED_WITNESSES: usize = 83;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -1063,6 +1063,10 @@ fn check_render(
     // M24b: the same scene, but as a *dropped* stack — no model, no capsule,
     // the item is the entity. `EntityModelKind::Capsule` is passed to prove
     // the kind is never consulted: `ground_item` short-circuits before it.
+    // M251: the orb witness draws through the billboard branch; every other
+    // ground render leaves this `None`.
+    let ground_billboard: std::cell::Cell<Option<rewo_gpu::entities::Billboard>> =
+        std::cell::Cell::new(None);
     let ground = |name: Option<&str>,
                   count: i32,
                   bob: f32,
@@ -1102,7 +1106,7 @@ fn check_render(
             events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
             shell: false,
             stand_parts: Default::default(),
-            billboard: None,
+            billboard: ground_billboard.get(),
             allay_dance: None,
             attack: rewo_gpu::mobs::SwingPose::NONE,
             mob: rewo_gpu::mobs::MobCombat::default(),
@@ -1584,6 +1588,46 @@ fn check_render(
              `range_dispatch` on its angle, so it has no baked model in either \
              context (a bed until M243, a banner until M244, a shield until M246)",
             changed(&g_none, &g_bow).len()
+        ),
+    );
+
+    // M251 — an experience orb is `ExperienceOrbRenderer`'s camera-facing
+    // icon, not a capsule: the value-17 icon (3) through the billboard
+    // branch, in its vertex colour (green full, red and blue below it at
+    // every phase), unshaded.
+    ground_billboard.set(Some(rewo_gpu::entities::Billboard {
+        cam_yaw: 0.0,
+        cam_pitch: 0.0,
+        scale: 0.3,
+        tint: Some([0.5, 1.0, 0.05]),
+    }));
+    let g_orb = ground(
+        Some("rewo:be/xp_orb/3"),
+        1,
+        0.0,
+        3,
+        0.0,
+        false,
+        &mut gpu,
+        &mut wr,
+        &mut off,
+    )?;
+    ground_billboard.set(None);
+    let orb_px = changed(&g_none, &g_orb);
+    let (mut rs, mut gs, mut bs) = (0u64, 0u64, 0u64);
+    for &(x, y) in &orb_px {
+        let i = ((y * W + x) * 4) as usize;
+        rs += g_orb[i] as u64;
+        gs += g_orb[i + 1] as u64;
+        bs += g_orb[i + 2] as u64;
+    }
+    c.record(
+        "g11.an_experience_orb_draws_its_icon",
+        orb_px.len() > 20 && gs > rs && gs > bs * 2,
+        format!(
+            "{} pixels differ from nothing; summed RGB ({rs}, {gs}, {bs}) — the orb's \
+             own colour, green-led (a capsule until M251)",
+            orb_px.len()
         ),
     );
 

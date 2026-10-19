@@ -7,8 +7,22 @@ pub(super) fn entity_light(
     z: f64,
     state: &LightmapState,
 ) -> [f32; 3] {
+    entity_light_boosted(world, x, eye_y, z, state, 0)
+}
+
+/// [`entity_light`] with the block light raised by `boost`, clamped to 15 —
+/// an entity that overrides `getBlockLightLevel` (`ExperienceOrb`: `+ 7`,
+/// M251).
+pub(super) fn entity_light_boosted(
+    world: &rewo_world::World,
+    x: f64,
+    eye_y: f64,
+    z: f64,
+    state: &LightmapState,
+    boost: u8,
+) -> [f32; 3] {
     let (block, sky) = world.light_at(x.floor() as i32, eye_y.floor() as i32, z.floor() as i32);
-    let mut rgb = sample(block, sky, state);
+    let mut rgb = sample(block.saturating_add(boost).min(15), sky, state);
     // The shader's genuine `0/0` black-texel path yields NaN (see
     // `rewo_world::lightmap::sample`'s docs). Map ONLY nonfinite components to
     // 0 so a NaN can't poison the CPU entity-vertex transport. This is a CPU

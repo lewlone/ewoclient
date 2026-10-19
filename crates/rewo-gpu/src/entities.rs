@@ -5357,11 +5357,12 @@ impl EntityPass {
                     p4[i] = [d.pos[0] + p[0], d.pos[1] + p[1], d.pos[2] + p[2]];
                 }
                 let shade = mobs::shade_for(face_normal(&m4));
+                let [cr, cg, cb] = bb.tint.unwrap_or([shade; 3]);
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     verts.push(Vertex {
                         pos: p4[i],
                         uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                        color: [shade, shade, shade, 1.0],
+                        color: [cr, cg, cb, 1.0],
                         light_hurt: [light_r, light_g, light_b, hurt],
                     });
                     if let Some(g) = glint.as_deref_mut() {
@@ -5505,6 +5506,10 @@ pub struct Billboard {
     pub cam_yaw: f32,
     pub cam_pitch: f32,
     pub scale: f32,
+    /// M251 — a vertex colour drawn unshaded, for a renderer that submits
+    /// its own coloured geometry (`ExperienceOrbRenderer`); `None` shades the
+    /// item model by its faces as `ThrownItemRenderer` does.
+    pub tint: Option<[f32; 3]>,
 }
 
 impl Billboard {
@@ -7041,6 +7046,7 @@ mod tests {
                 cam_yaw: yaw,
                 cam_pitch: pitch,
                 scale: 1.0,
+                tint: None,
             }
             .place([0.0, 0.0, 1.0])
         };
@@ -7056,6 +7062,7 @@ mod tests {
             cam_yaw: 0.0,
             cam_pitch: 0.0,
             scale: 0.5,
+            tint: None,
         };
         assert!(close(half.place([1.0, 0.0, 0.0]), [-0.5, 0.0, 0.0]));
     }

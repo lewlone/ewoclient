@@ -2421,6 +2421,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:firework_rocket` type id (M239) — gates the index-9
     /// OPTIONAL_UNSIGNED_INT, the entity a rocket is attached to.
     pub firework_rocket: Option<i32>,
+    /// `minecraft:experience_orb` type id (M251) — gates the index-8 INT,
+    /// the orb's value, which picks its icon.
+    pub experience_orb: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
@@ -2743,6 +2746,11 @@ pub(crate) fn apply_set_entity_data<'a>(
     // with the same serializer, and bit 2 there does not mean left-handed.
     // Slot 9 OPTIONAL_UNSIGNED_INT → `FireworkRocketEntity.
     // DATA_ATTACHED_TO_TARGET` (M239): the elytra boost reads it.
+    // Slot 8 INT → `ExperienceOrb.DATA_VALUE` (M251), kept in the variant
+    // slot: it only ever selects the orb's look (`getIcon`).
+    if let (Some(v), true) = (meta.int8, kinds.experience_orb == Some(type_id)) {
+        entities.set_variant(eid, v);
+    }
     if let Some(raw) = meta.opt_uint9 {
         if kinds.firework_rocket == Some(type_id) {
             entities.set_attached_to(eid, (raw > 0).then(|| raw - 1));
@@ -5267,6 +5275,26 @@ mod set_entity_data_tests {
         apply_set_entity_data(&index16_bool_true(2), &mut t, Some(ALLAY));
         assert!(t.is_baby(2), "a zombie's index-16 BOOLEAN is DATA_BABY_ID");
         assert_eq!(t.allay_dance_render(2, 1.0), None, "a zombie never dances");
+    }
+
+    /// M251 — index 8 INT is `ExperienceOrb.DATA_VALUE` on an orb, and is
+    /// left alone on anything else (a boat's `DATA_ID_HURT` shares the index
+    /// and the serializer).
+    #[test]
+    fn index8_int_is_an_orbs_value_only_on_an_orb() {
+        const ORB: i32 = 700;
+        const BOAT: i32 = 701;
+        let kinds = crate::MetaKinds {
+            experience_orb: Some(ORB),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(4, EntityState::new(0, ORB, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(5, EntityState::new(0, BOAT, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(4, 8, 1, &[17]), &mut t, kinds);
+        apply_set_entity_data(&body(5, 8, 1, &[17]), &mut t, kinds);
+        assert_eq!(t.variant(4), Some(17));
+        assert_eq!(t.variant(5), None);
     }
 
     #[test]

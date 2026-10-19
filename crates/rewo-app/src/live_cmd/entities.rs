@@ -1750,6 +1750,7 @@ pub(super) fn collect_fishing_lines(
                     cam_yaw: session.player.yaw,
                     cam_pitch: session.player.pitch,
                     scale: 1.0,
+                    tint: None,
                 }
                 .place(v)
             };
@@ -2645,7 +2646,7 @@ pub(super) fn collect_entities<'a>(
             continue;
         }
         let mut thrown_model: Option<&'static str> = None;
-        let billboard = thrown.map(|(default, scale, _)| {
+        let mut billboard = thrown.map(|(default, scale, _)| {
             if default.starts_with("rewo:") {
                 thrown_model = Some(default);
             } else if ground_stack.is_none() {
@@ -2659,8 +2660,42 @@ pub(super) fn collect_entities<'a>(
                 cam_yaw: session.player.yaw,
                 cam_pitch: session.player.pitch,
                 scale,
+                tint: None,
             }
         });
+        // M251 — an experience orb: `ExperienceOrbRenderer`'s camera-facing
+        // icon (`getIcon()` of its `DATA_VALUE`) at scale 0.3, lifted 0.1,
+        // in its own pulsing colour `((sin(r) + 1) / 2, 1, (sin(r + 4π/3) +
+        // 1) / 10)`, `r = age / 2`, unshaded and lit 7 brighter. Recorded:
+        // the age is the world clock offset by the entity id (Rewo keeps no
+        // per-entity tick count), so orbs pulse out of step, not in vanilla's
+        // exact phase.
+        let is_orb = name == "minecraft:experience_orb";
+        if is_orb {
+            use rewo_data::block_entity_models::{xp_orb_icon, XP_ORB_MODELS};
+            let value = session.world.entities.variant(id).unwrap_or(0);
+            thrown_model = Some(XP_ORB_MODELS[xp_orb_icon(value)]);
+            let r = (session.game_time() as f32 + alpha + (id & 0xff) as f32 * 7.0) / 2.0;
+            let srgb = |c: f32| -> f32 {
+                // The colour is a vertex colour vanilla multiplies in gamma
+                // space; this pass is linear.
+                if c <= 0.040_449_936 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            billboard = Some(rewo_gpu::entities::Billboard {
+                cam_yaw: session.player.yaw,
+                cam_pitch: session.player.pitch,
+                scale: 0.3,
+                tint: Some([
+                    srgb((r.sin() + 1.0) * 0.5),
+                    1.0,
+                    srgb((((r + std::f32::consts::PI * 4.0 / 3.0).sin()) + 1.0) * 0.1),
+                ]),
+            });
+        }
         let thrown_fullbright = thrown.is_some_and(|(_, _, fullbright)| fullbright);
 
         // Slime / magma-cube size (metadata index 16, vanilla default 1;
@@ -2782,7 +2817,11 @@ pub(super) fn collect_entities<'a>(
             },
         );
         out.push(EntityDraw {
-            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            pos: [
+                p[0] as f32,
+                p[1] as f32 + if is_orb { 0.1 } else { 0.0 },
+                p[2] as f32,
+            ],
             width: w,
             height: h,
             color: if is_player { player_color } else { mob_color },
@@ -2847,6 +2886,8 @@ pub(super) fn collect_entities<'a>(
             anim_id: (id & 0xffff) as f32,
             light: if thrown_fullbright {
                 [1.0; 3]
+            } else if is_orb {
+                entity_light_boosted(&session.world, p[0], p[1], p[2], lightmap, 7)
             } else {
                 entity_light(&session.world, p[0], p[1] + h as f64 * 0.85, p[2], lightmap)
             },
