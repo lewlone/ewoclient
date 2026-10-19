@@ -65,7 +65,7 @@ use rewo_world::entities::{EntityState, EntityTable};
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 45;
+const EXPECTED_WITNESSES: usize = 46;
 
 /// Positions are exact `f64` arithmetic on both sides, but the seat rotation
 /// runs through `Mth`'s float sine table, so anything rotated carries float
@@ -473,6 +473,7 @@ pub fn run(args: RideshotArgs) -> Result<(), String> {
         t,
     };
     check_seat(&f, &mut c);
+    check_local_seat(&f, &mut c);
     check_interpolation(&f, &mut c);
     check_overrides(&f, &mut c);
     check_graph(&f, &mut c);
@@ -656,6 +657,50 @@ fn check_seat(f: &Fixture, c: &mut Checker) {
 }
 
 // ------------------------------------- r2: it does not interpolate its own way
+
+/// M228 — the local player is not in the table, so the session seats it
+/// through `EntityTable::seat_of`; that must be exactly what the table's
+/// own `positionRider` gives a player rider at the same place on the
+/// roster. A vehicle per seat rule: the pig's declared point, the boat's
+/// yaw-rotated override, the camel's driver and back seats (its own
+/// anchor), the horse's table point; turned off the axes, so a rotation
+/// error cannot hide.
+fn check_local_seat(f: &Fixture, c: &mut Checker) {
+    let t = &f.t;
+    let mut bad = Vec::new();
+    let mut seen = 0;
+    for (vehicle, riders, yaw) in [
+        (t.pig, 1usize, 37.0f32),
+        (t.oak_boat, 2, 123.0),
+        (t.camel, 1, 90.0),
+        (t.camel, 2, -61.0),
+        (t.horse, 1, 211.0),
+    ] {
+        let mut spec = vec![(vehicle, [4.25, 70.0, -9.5], yaw)];
+        for _ in 0..riders {
+            spec.push((t.player, [0.0, 0.0, 0.0], yaw + 15.0));
+        }
+        let ids: Vec<i32> = (2..=riders as i32 + 1).collect();
+        let tab = f.mounted(&spec, 1, &ids);
+        for (index, rider) in ids.iter().copied().enumerate() {
+            let want = pos(&tab, rider, 1.0);
+            let got = tab.seat_of(1, t.player, yaw + 15.0, index);
+            seen += 1;
+            if got.is_none_or(|g| (0..3).any(|i| (g[i] - want[i]).abs() > 1e-12)) {
+                bad.push((vehicle, index, got, want));
+            }
+        }
+    }
+    c.record(
+        "r1.the_local_riders_seat_is_the_tables",
+        bad.is_empty() && seen == 7,
+        format!(
+            "{seen} seats compared, mismatches (vehicle, index, seat_of, table) {bad:?}. \
+             MUTATION PARTNER: give `seat_of` the rider's scale 0.5 or drop the VEHICLE \
+             point and every row disagrees"
+        ),
+    );
+}
 
 fn check_interpolation(f: &Fixture, c: &mut Checker) {
     let t = &f.t;

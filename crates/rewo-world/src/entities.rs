@@ -2791,6 +2791,29 @@ impl EntityTable {
         }
     }
 
+    /// M228 — `Entity.positionRider` for a rider who is NOT in the table
+    /// (the local player): the world position a rider of `rider_type`, yaw
+    /// `rider_yaw`, `index`-th on `vehicle_id`'s roster is snapped to. A
+    /// player's age scale is 1. `None` when the vehicle or either type is
+    /// unknown (see [`crate::riding::rider_position`]).
+    pub fn seat_of(
+        &self,
+        vehicle_id: i32,
+        rider_type: i32,
+        rider_yaw: f32,
+        index: usize,
+    ) -> Option<[f64; 3]> {
+        let att = self.attachments.as_ref()?;
+        let v = self.vehicle_inputs(vehicle_id)?;
+        let r = crate::riding::RiderInputs {
+            type_id: rider_type,
+            yaw: rider_yaw,
+            scale: 1.0,
+            index,
+        };
+        crate::riding::rider_position(att, &v, &r)
+    }
+
     /// `LivingEntity.getAgeScale()` — `isBaby() ? 0.5F : 1.0F`, and 1.0 for
     /// anything that is not a `LivingEntity` at all (an `Entity` has no age
     /// scale, and its `getPassengerRidingPosition` passes a literal 1.0).

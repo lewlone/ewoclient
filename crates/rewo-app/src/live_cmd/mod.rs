@@ -885,6 +885,9 @@ struct LiveApp {
     nautilus_still_since: u64,
     #[cfg(feature = "gates")]
     nautilus_meter_peak: f32,
+    /// The last "Marker has the following entity data" line r91 took.
+    #[cfg(feature = "gates")]
+    seat_last_line: Option<String>,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1259,6 +1262,8 @@ fn run_windowed(
         nautilus_still_since: 0,
         #[cfg(feature = "gates")]
         nautilus_meter_peak: 0.0,
+        #[cfg(feature = "gates")]
+        seat_last_line: None,
         #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,

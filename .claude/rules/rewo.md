@@ -66,7 +66,9 @@ a self-check path.
   that click an entity check what the production pick hit first (r71's item
   frame and r72's horse each took a click meant for something else).
   `REWO_PRECMD` is split on `;`: NBT's `[I;...]` int array cannot go in it
-  (r90's nautilus owner is a UUID string). A tail witness that changes the
+  (r90's nautilus owner is a UUID string). `/data get` of a PASSENGER's `Pos`
+  is `(vehicle.x, own y, vehicle.z)` (`Entity.saveWithoutId`); r91 reads a
+  rider's live position through a marker summoned `at @s`. A tail witness that changes the
   bot's state (an effect, a position) can leak into a run-wide maximum
   (r58's icon count is the timed run's since r90's Breath of the Nautilus).
   r53's waterlogged slab floods the spawn: a block a witness removes near it

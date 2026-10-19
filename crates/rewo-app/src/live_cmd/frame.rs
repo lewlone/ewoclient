@@ -477,11 +477,14 @@ impl LiveApp {
             #[cfg(feature = "gates")]
             if self.check.is_some() {
                 let _ = session.send_chat("rewo render-check");
-                // M164 (r48) — a waterlogged block for the mesher to find.
-                // ABOVE the player, not beside: `~ ~2 ~` is air wherever a
+                // M164 (r53) — a waterlogged block for the mesher to find.
+                // ABOVE the player, not beside: `~ ~4 ~` is air wherever a
                 // player is standing, while `~2 ~ ~` assumes flat ground.
+                // M228: four up, not two: r72's injected horse stands on this
+                // spot, and a rider seated by `positionRider` has its eye at
+                // about +2.4, inside a slab at +2 (r81's pick hit the slab).
                 let _ = session.send_command(
-                    "setblock ~ ~2 ~ minecraft:oak_slab[type=bottom,waterlogged=true]",
+                    "setblock ~ ~4 ~ minecraft:oak_slab[type=bottom,waterlogged=true]",
                 );
             }
             log::info!(
@@ -2347,7 +2350,12 @@ impl LiveApp {
                     && self.boat_stage >= 20
                     && self.horse_stage >= 20
                     && self.camel_stage >= 20
-                    && self.nautilus_stage >= 20);
+                    && self.nautilus_stage >= 20
+                    // r91's last answer can land a frame after r90's own.
+                    && self
+                        .check
+                        .as_ref()
+                        .is_none_or(|c| c.seat_checks.iter().all(|e| e.2.is_some())));
             #[cfg(not(feature = "gates"))]
             let tail_done = true;
             if elapsed >= limit && (tail_done || elapsed >= limit + RENDER_CHECK_TAIL_SECONDS) {

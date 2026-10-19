@@ -2050,6 +2050,7 @@ this shape once.
 | M222 (2026-10-19) — the bot rides and jumps a real horse; the server accepts every move and agrees where it is | **r88** | — | — |
 | M225 (2026-10-19) — the bot sprints and dashes a real camel; the dash's cooldown blocks a second; the server accepts every move and agrees where it is | **r89** | — | — |
 | M227 (2026-10-19) — the bot swims and dashes a real nautilus: vanilla's water speed with no gravity, the cooldown holds the meter, the server agrees where it is | **r90** | — | — |
+| M228 (2026-10-19) — the local rider sits where the server seats it, on the boat, the horse, the camel and the nautilus (read through a marker: a passenger's saved `Pos` is the vehicle's x/z) | **r91** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3884,6 +3885,43 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M228 — the local rider's seat (2026-10-19)
+
+Since M68 the local player sat at its vehicle's origin (M72 seated every
+OTHER rider through `Entity.positionRider`; the local player is not in the
+entity table). So a rider sat about a third of a block low in a boat and
+with its eye inside a horse's back. Now `EntityTable::seat_of` gives the
+same derivation for a rider outside the table (the vehicle's PASSENGER
+point for the player's place on the roster, less the player's own VEHICLE
+point), and the session seats the player with it on every vehicle, steered
+or not (`seat_local_player`).
+
+**r91** compares the client's seat with the server's, which runs its own
+`positionRider` for the passenger every tick, on the boat, the horse, the
+camel and the nautilus while each stands still. **The first oracle was
+wrong**: `/data get entity @s Pos` reported the camel's driver at the
+camel's own x and z, which read as a client error (the client seats a lone
+camel rider 0.5 forward, as `Camel.getPassengerAttachmentPoint` does, the
+bytecode of both jars identical). `Entity.saveWithoutId` stores a
+passenger's `Pos` as `(vehicle.x, own y, vehicle.z)`, so it can never show a
+horizontal seat. A marker summoned `at @s` stands at the live position and
+rides nothing; with it all four seats agree with the server (the camel's
+0.5 forward included; the boat within its own 1e-4 position difference).
+`rideshot` gains r1's `the_local_riders_seat_is_the_tables` (seven seats,
+`seat_of` against the table's own derivation; its mutation partner, a
+rider scale of 0.5, fails every row).
+
+**Two witnesses had to move**, because a rider now sits where vanilla
+seats it: r53's waterlogged slab went from `~ ~2 ~` to `~ ~4 ~` (r72's
+injected horse stands under it, and a rider's eye at about +2.4 was inside
+it, so r81's pick took the slab), and r70's injected frame moved 1.5 south
+(the line from a rider's eye to r81's lectern ran through it). Vanilla
+would pick the slab and the frame too: these are staging conflicts.
+
+Not modelled, recorded: the rider's own pose while riding (vanilla's
+player model sits; the camera height is the standing eye on the seat, as
+vanilla's is).
 
 ### M227 — riding a nautilus (2026-10-19)
 

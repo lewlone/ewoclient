@@ -291,6 +291,8 @@ pub(super) struct RenderCheck {
     pub(super) swap_offhand: Option<(String, i32)>,
     /// r81: the held item after the pick key on the lectern.
     pub(super) pick_held: Option<String>,
+    /// What the pick press targeted (entity, block, eye) — r81's detail.
+    pub(super) pick_aim: Option<String>,
     /// r82: the server's sprint flag after START, and after STOP, and how
     /// many sprint commands went out.
     pub(super) sprint_on: bool,
@@ -399,6 +401,10 @@ pub(super) struct RenderCheck {
     pub(super) nautilus_client_pos: Option<[f64; 3]>,
     pub(super) nautilus_server_pos: Option<[f64; 3]>,
     pub(super) nautilus_skip: Option<String>,
+    /// M228 — r91: for each ridden vehicle (r87-r90), the local player's
+    /// position as the client seated it, and the server's own
+    /// (`positionRider` on its side) once the vehicle stood still.
+    pub(super) seat_checks: Vec<(&'static str, [f64; 3], Option<[f64; 3]>)>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -884,7 +890,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 90;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 91;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1241,7 +1247,11 @@ impl RenderCheck {
         row(
             "r81 the pick key on the lectern put a lectern in the hand (creative)",
             self.pick_held.as_deref() == Some("minecraft:lectern"),
-            format!("held after the pick {:?}{skip}", self.pick_held),
+            format!(
+                "held after the pick {:?}, aimed at {}{skip}",
+                self.pick_held,
+                self.pick_aim.as_deref().unwrap_or("-")
+            ),
         );
         row(
             "r82 the sprint state reached the server: its flag echo set then cleared",
@@ -1518,6 +1528,22 @@ impl RenderCheck {
                 self.nautilus_server_pos,
                 self.nautilus_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
             ),
+        );
+        // M228 — r91: the local rider sits where the server seats it. The
+        // server places a passenger with its own `positionRider` (the
+        // vehicle's PASSENGER point, less the player's VEHICLE point) every
+        // tick, so the bot's live position there (read through a marker, see
+        // `seat_ask`), asked while each vehicle stands still, is vanilla's
+        // seat; the client's must match.
+        let seats_ok = self.seat_checks.len() == 4
+            && self
+                .seat_checks
+                .iter()
+                .all(|(_, c, s)| s.is_some_and(|s| (0..3).all(|i| (c[i] - s[i]).abs() < 0.05)));
+        row(
+            "r91 the local rider sat where the server seats it, on the boat, the horse, the camel and the nautilus",
+            seats_ok,
+            format!("(vehicle, client seat, server seat): {:?}", self.seat_checks),
         );
         // r86 — the player preview belongs to the player's inventory only:
         // no container frame (chests, furnaces, the donkey...) carries it,
@@ -2347,6 +2373,67 @@ pub(crate) fn witness_seam_faults(names: &[&str], expected: usize) -> Vec<String
         ));
     }
     faults
+}
+
+impl LiveApp {
+    /// M228 — r91: ask the server where it seats the bot, right after a
+    /// vehicle's own position was asked, and note where the client put it.
+    ///
+    /// NOT `data get entity @s Pos`: `Entity.saveWithoutId` stores a
+    /// passenger's `Pos` as `(vehicle.x, own y, vehicle.z)`, so it can never
+    /// show a horizontal seat offset (the first cut of r91 read the camel's
+    /// 0.5 forward driver seat as a client error that way). A marker
+    /// summoned `at @s` stands at the bot's live `position()`, and a marker
+    /// rides nothing, so its own `Pos` is honest.
+    pub(super) fn seat_ask(&mut self, what: &'static str) {
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        let _ = s
+            .send_command("execute at @s run summon minecraft:marker ~ ~ ~ {Tags:[\"rewo_seat\"]}");
+        let _ = s.send_command(
+            "data get entity @e[type=minecraft:marker,tag=rewo_seat,limit=1,sort=nearest] Pos",
+        );
+        let _ = s.send_command("kill @e[type=minecraft:marker,tag=rewo_seat]");
+        let client = [s.player.x, s.player.y, s.player.z];
+        if let Some(c) = self.check.as_mut() {
+            c.seat_checks.push((what, client, None));
+        }
+    }
+
+    /// M228 — r91: the oldest unanswered seat question takes the newest
+    /// "Marker has the following entity data" line it has not seen yet.
+    pub(super) fn seat_resolve(&mut self) {
+        let Some(s) = self.session.as_ref() else {
+            return;
+        };
+        let Some(c) = self.check.as_mut() else {
+            return;
+        };
+        let Some(idx) = c.seat_checks.iter().position(|e| e.2.is_none()) else {
+            return;
+        };
+        let reply = s
+            .chat_log
+            .iter()
+            .rev()
+            .find(|l| l.contains("Marker has the following entity data"))
+            .cloned();
+        let Some(line) = reply else {
+            return;
+        };
+        if self.seat_last_line.as_ref() == Some(&line) {
+            return;
+        }
+        let nums: Vec<f64> = line
+            .split(['[', ']', ','])
+            .filter_map(|t| t.trim().trim_end_matches('d').parse::<f64>().ok())
+            .collect();
+        if nums.len() == 3 {
+            c.seat_checks[idx].2 = Some([nums[0], nums[1], nums[2]]);
+            self.seat_last_line = Some(line);
+        }
+    }
 }
 
 impl LiveApp {
@@ -3676,6 +3763,7 @@ impl LiveApp {
                         if let Some(s) = self.session.as_mut() {
                             let _ = s.send_command("data get entity @e[type=minecraft:oak_boat,limit=1,sort=nearest] Pos");
                         }
+                        self.seat_ask("boat");
                         let (pos, moves, paddles, rejections) = self
                             .session
                             .as_ref()
@@ -3704,7 +3792,9 @@ impl LiveApp {
                         s.chat_log
                             .iter()
                             .rev()
-                            .find(|l| l.contains("has the following entity data"))
+                            // "Oak Boat has ...": not the bot's own reply
+                            // (r91), which can arrive in the same frame.
+                            .find(|l| l.contains("Boat has the following entity data"))
                             .cloned()
                     });
                     if let Some(line) = reply {
@@ -3922,6 +4012,7 @@ impl LiveApp {
                                 "data get entity @e[type=minecraft:horse,limit=1,sort=nearest] Pos",
                             );
                         }
+                        self.seat_ask("horse");
                         let snap = self.session.as_ref().map(|s| {
                             (
                                 s.steered_horse.map(|h| [h.state.x, h.state.y, h.state.z]),
@@ -4174,6 +4265,7 @@ impl LiveApp {
                                 "data get entity @e[type=minecraft:camel,limit=1,sort=nearest] Pos",
                             );
                         }
+                        self.seat_ask("camel");
                         let snap = self.session.as_ref().map(|s| {
                             (
                                 s.steered_horse.map(|h| [h.state.x, h.state.y, h.state.z]),
@@ -4438,6 +4530,7 @@ impl LiveApp {
                                 "data get entity @e[type=minecraft:nautilus,limit=1,sort=nearest] Pos",
                             );
                         }
+                        self.seat_ask("nautilus");
                         let snap = self.session.as_ref().map(|s| {
                             (
                                 s.steered_horse.map(|h| [h.state.x, h.state.y, h.state.z]),
@@ -4485,6 +4578,7 @@ impl LiveApp {
                         self.nautilus_stage = 20;
                     }
                 }
+                self.seat_resolve();
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
                 // (the bot rides r72's client-side horse, so W moves nothing
                 // and no screen is up until 0.46). One stage per server echo.
@@ -4608,6 +4702,27 @@ impl LiveApp {
                             let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
                             s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
                             s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        }
+                        // What the press will target (r81's failure detail).
+                        let aim = self.session.as_ref().map(|s| {
+                            let ent = super::entities::frame_crosshair_hit(s, &self.etypes, 1.0)
+                                .map(|h| (h.id, s.world.entities.get(h.id).map(|e| e.type_id)));
+                            let block = s
+                                .target_block(
+                                    [s.player.x, s.player.eye_y(), s.player.z],
+                                    super::look_dir(s.player.yaw, s.player.pitch),
+                                    5.0,
+                                )
+                                .map(|h| h.block);
+                            format!(
+                                "entity {ent:?}, block {block:?}, eye ({:.2}, {:.2}, {:.2})",
+                                s.player.x,
+                                s.player.eye_y(),
+                                s.player.z
+                            )
+                        });
+                        if let Some(c) = self.check.as_mut() {
+                            c.pick_aim = aim;
                         }
                         self.pick_key();
                         self.hands_stage = 5;
@@ -5087,7 +5202,11 @@ impl LiveApp {
                         let sword = items.id("minecraft:diamond_sword");
                         if let (Some(tid), Some(sword)) = (frame_type, sword) {
                             let p = &session.player;
-                            let (x, y, z) = (p.x + 1.5, p.y + 1.0, p.z);
+                            // M228: 1.5 south of the bot, not level with it:
+                            // a rider seated by `positionRider` (the bot is on
+                            // r72's horse from 0.28) looks down at r81's lectern
+                            // (x + 2) through x + 1.5, y + 1 on its own z.
+                            let (x, y, z) = (p.x + 1.5, p.y + 1.0, p.z + 1.5);
                             let mut add: Vec<u8> = Vec::new();
                             write(&mut add, FRAME_WITNESS_EID);
                             add.extend_from_slice(

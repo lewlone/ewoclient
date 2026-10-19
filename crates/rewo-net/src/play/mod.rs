@@ -2747,13 +2747,10 @@ impl PlaySession {
             // is structurally unable to catch, which is exactly why it is
             // handled here rather than left for the meter to find.
             //
-            // **The ride offset is not modelled.** Vanilla seats a rider at
-            // the vehicle's `getPassengerAttachmentPoint`, which is per
-            // vehicle type (and per pose, for a boat with two seats). Rewo
-            // snaps to the vehicle's own position, so a mounted player sits
-            // roughly a third of a block low. Riding *visuals* are a feature;
-            // this is the minimum that keeps the player attached to its
-            // vehicle instead of falling through the world.
+            // M228: the player is seated by `positionRider`
+            // ([`Self::seat_local_player`]), the vehicle's PASSENGER point
+            // less the player's VEHICLE point; until then it sat at the
+            // vehicle's origin.
             // M221 — a boat whose first passenger is the local player is the
             // client's to simulate (`isLocalInstanceAuthoritative`).
             // M225 — `LocalPlayer.vehicleCanSprint`: a passenger sprints only
@@ -2808,11 +2805,7 @@ impl PlaySession {
                 self.release_steered_boat();
                 self.release_steered_horse();
                 if let Some(vehicle) = self.local_vehicle() {
-                    if let Some(e) = self.world.entities.get(vehicle) {
-                        self.player.x = e.x;
-                        self.player.y = e.y;
-                        self.player.z = e.z;
-                    }
+                    self.seat_local_player(vehicle);
                 }
                 self.send_movement(input)?;
             }
@@ -5678,6 +5671,34 @@ impl PlaySession {
         })
     }
 
+    /// M228 — `rideTick`'s `getVehicle().positionRider(this)` for the local
+    /// player: the vehicle's PASSENGER point for the player's place on its
+    /// roster, less the player's own VEHICLE point (`0.6` up), from the same
+    /// attachment tables M72 seats every other rider with. Before M228 the
+    /// player sat at the vehicle's origin: about a third of a block low on a
+    /// boat, and with the camera inside a horse's back. Falls back to the
+    /// origin when the seat cannot be derived.
+    fn seat_local_player(&mut self, vehicle: i32) {
+        let me = self.player_id;
+        let index = self
+            .mounts
+            .passengers(vehicle)
+            .iter()
+            .position(|p| Some(*p) == me)
+            .unwrap_or(0);
+        let seat = self.entity_types.as_deref().and_then(|t| {
+            self.world
+                .entities
+                .seat_of(vehicle, t.player_id, self.player.yaw, index)
+        });
+        let pos = seat.or_else(|| self.world.entities.get(vehicle).map(|e| [e.x, e.y, e.z]));
+        if let Some([x, y, z]) = pos {
+            self.player.x = x;
+            self.player.y = y;
+            self.player.z = z;
+        }
+    }
+
     /// The horse the local player steers, if any (M222): the root vehicle, an
     /// `AbstractHorse` (a camel too since M225, with its own overrides in
     /// [`physics::CamelRide`]; and since M227 an `AbstractNautilus`, whose
@@ -5861,9 +5882,7 @@ impl PlaySession {
         if let Some(e) = self.world.entities.get_mut(id) {
             e.set_simulated([s.x, s.y, s.z], s.yaw);
         }
-        self.player.x = s.x;
-        self.player.y = s.y;
-        self.player.z = s.z;
+        self.seat_local_player(id);
         self.steered_horse = Some(steered);
         let pose = rewo_world::boat::BoatState {
             yaw: s.yaw,
@@ -5993,9 +6012,7 @@ impl PlaySession {
         if let Some(e) = self.world.entities.get_mut(id) {
             e.set_simulated([s.x, s.y, s.z], s.yaw);
         }
-        self.player.x = s.x;
-        self.player.y = s.y;
-        self.player.z = s.z;
+        self.seat_local_player(id);
         self.player.yaw = boat_rider_yaw(self.player.yaw, s.yaw, s.delta_rotation);
         self.steered_boat = Some(steered);
         // `AbstractBoat.tick` sends the paddles during the vehicle's tick,
