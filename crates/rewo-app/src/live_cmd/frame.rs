@@ -893,6 +893,15 @@ impl LiveApp {
         bes.extend(frames.models);
         // M250 — arrows and thrown tridents, by their models.
         bes.extend(collect_projectiles(session, &self.etypes, &lightmap, alpha));
+        // M256 — item displays.
+        bes.extend(collect_item_displays(
+            session,
+            &self.etypes,
+            &self.items,
+            self.baked.as_ref().map(|b| &b.held_items),
+            &lightmap,
+            alpha,
+        ));
         // M254 — paintings.
         bes.extend(collect_paintings(session, &self.etypes, &lightmap, alpha));
         // M253 — falling blocks and primed TNT, by their block models.
@@ -1133,6 +1142,24 @@ impl LiveApp {
                 });
             if painting {
                 c.painting_frames += 1;
+            }
+            // M256 — r115: the staged item display drew every quad of its
+            // item's model, outside an item frame.
+            let shard = "minecraft:amethyst_shard";
+            let item_display = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| d.model == shard && !d.fixed_display)
+                .any(|(_, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(shard))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                });
+            if item_display {
+                c.item_display_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

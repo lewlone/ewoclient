@@ -253,6 +253,9 @@ pub(super) struct RenderCheck {
     /// M255 — r114: frames whose world text carried the staged text
     /// display's line in its gold.
     pub(super) text_display_frames: usize,
+    /// M256 — r115: frames on which the staged item display drew every quad
+    /// of its item's model.
+    pub(super) item_display_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1005,7 +1008,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 114;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 115;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1195,6 +1198,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M256 — r115: `render_check.py` summons an item display holding an
+        // amethyst shard. Its stack arrives as metadata index 23 (an
+        // ITEM_STACK); the shard's model must draw every quad through the
+        // block-entity emitter — not a capsule, not nothing.
+        row(
+            "r115 an item display drew its item's model",
+            self.item_display_frames >= 1,
+            format!("{} frames drew it", self.item_display_frames),
         );
         // M255 — r114: `render_check.py` summons a text display reading
         // `RewoHolo` in gold. Its text arrives as metadata index 23 (a

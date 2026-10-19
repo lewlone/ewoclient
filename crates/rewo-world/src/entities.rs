@@ -1052,6 +1052,13 @@ pub struct DisplayState {
     /// `DATA_STYLE_FLAGS_ID` (27): 1 shadow, 2 see-through, 4 default
     /// background, 8 / 16 left / right alignment.
     pub style: u8,
+    /// M256 — `ItemDisplay.DATA_ITEM_STACK_ID` (23): `(item id, foil)`,
+    /// `None` empty.
+    pub item: Option<(i32, bool)>,
+    /// M256 — `ItemDisplay.DATA_ITEM_DISPLAY_ID` (24): the
+    /// `ItemDisplayContext` id (0 none, 1/2 third-person left/right, 3/4
+    /// first-person left/right, 5 head, 6 gui, 7 ground, 8 fixed, 9 shelf).
+    pub item_context: u8,
 }
 
 impl Default for DisplayState {
@@ -1067,6 +1074,8 @@ impl Default for DisplayState {
             background: 0x4000_0000,
             text_opacity: 255,
             style: 0,
+            item: None,
+            item_context: 0,
         }
     }
 }

@@ -305,6 +305,10 @@ pub struct EntityMeta {
     pub int25: Option<i32>,
     pub byte26: Option<u8>,
     pub byte27: Option<u8>,
+    /// M256 — `ItemDisplay` (23 ITEM_STACK, 24 BYTE), kind-gated by the
+    /// caller: `Some(None)` is an empty stack.
+    pub display_item: Option<Option<(i32, bool)>>,
+    pub byte24: Option<u8>,
 }
 
 /// `N` big-endian f32s (a VECTOR3 or QUATERNION value), or `None` short.
@@ -448,6 +452,14 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (25, 1) => meta.int25 = r.varint().ok(),
             (26, 0) => meta.byte26 = r.u8().ok(),
             (27, 0) => meta.byte27 = r.u8().ok(),
+            (23, 7) => match components.and_then(|c| crate::item_stack::read_optional(r, c).ok()) {
+                Some(crate::item_stack::WireSlot::Empty) => meta.display_item = Some(None),
+                Some(crate::item_stack::WireSlot::Stack(s)) if s.aligned_stack() => {
+                    meta.display_item = Some(Some((s.item_id, s.components.has_foil())))
+                }
+                _ => break,
+            },
+            (24, 0) => meta.byte24 = r.u8().ok(),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at
             // the same index is somebody else's flags byte and still skips.
             (15, 42) => meta.main_arm = r.varint().ok().map(|v| v as u8),

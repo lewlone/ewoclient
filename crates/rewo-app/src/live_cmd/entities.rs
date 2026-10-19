@@ -1992,13 +1992,24 @@ pub(crate) fn text_display_transform(
     camera: (f32, f32),
     d: &rewo_world::entities::DisplayState,
 ) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_y_rad, scale};
+    let (yaw, pitch) = billboard_angles(d.billboard, entity, camera);
+    let text = mul(
+        &rot_y_rad(std::f32::consts::PI),
+        &scale(-0.025, -0.025, -0.025),
+    );
+    mul(&display_pose(pos, (yaw, pitch), d), &text)
+}
+
+/// M255/M256 — `DisplayRenderer.submit`'s pose shared by every display:
+/// `T(pos) · rotationYXZ(-yaw, pitch, 0) · Transformation(T · L · S · R)`,
+/// the angles already chosen by the billboard mode.
+fn display_pose(
+    pos: [f64; 3],
+    (yaw, pitch): (f32, f32),
+    d: &rewo_world::entities::DisplayState,
+) -> rewo_data::be_transform::Affine {
     use rewo_data::be_transform::{mul, rot_x, rot_y_rad, scale, translation};
-    let (yaw, pitch) = match d.billboard {
-        1 => (camera.0 - 180.0, entity.1),
-        2 => (entity.0, -camera.1),
-        3 => (camera.0 - 180.0, -camera.1),
-        _ => entity,
-    };
     let orient = mul(&rot_y_rad(-yaw.to_radians()), &rot_x(pitch.to_radians()));
     let [tx, ty, tz] = d.translation;
     let [sx, sy, sz] = d.scale;
@@ -2006,12 +2017,134 @@ pub(crate) fn text_display_transform(
         &mul(&translation(tx, ty, tz), &quat_affine(d.left_rotation)),
         &mul(&scale(sx, sy, sz), &quat_affine(d.right_rotation)),
     );
-    let text = mul(
-        &rot_y_rad(std::f32::consts::PI),
-        &scale(-0.025, -0.025, -0.025),
-    );
     let at = translation(pos[0] as f32, pos[1] as f32, pos[2] as f32);
-    mul(&mul(&at, &orient), &mul(&tf, &text))
+    mul(&mul(&at, &orient), &tf)
+}
+
+/// The angles a billboard mode picks (`calculateOrientation`): 0 fixed, 1
+/// vertical, 2 horizontal, 3 centre.
+fn billboard_angles(billboard: u8, entity: (f32, f32), camera: (f32, f32)) -> (f32, f32) {
+    match billboard {
+        1 => (camera.0 - 180.0, entity.1),
+        2 => (entity.0, -camera.1),
+        3 => (camera.0 - 180.0, -camera.1),
+        _ => entity,
+    }
+}
+
+/// M256 — `ItemTransform.apply` then `ItemStackRenderState`'s
+/// `translate(-0.5)`, as an affine in block units: `T · rotationXYZ · S ·
+/// T(-0.5)`, a left-hand context negating x translation and y/z rotation.
+fn item_context_affine(
+    t: &rewo_data::item_models::DisplayTransform,
+    left: bool,
+) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_xyz, scale, translation};
+    let m = if left { -1.0 } else { 1.0 };
+    let [rx, ry, rz] = t.rotation;
+    mul(
+        &mul(
+            &translation(t.translation[0] * m, t.translation[1], t.translation[2]),
+            &rot_xyz(
+                rx.to_radians(),
+                (ry * m).to_radians(),
+                (rz * m).to_radians(),
+            ),
+        ),
+        &mul(
+            &scale(t.scale[0], t.scale[1], t.scale[2]),
+            &translation(-0.5, -0.5, -0.5),
+        ),
+    )
+}
+
+/// M256 — an item display's model-block-unit → world pose: the display
+/// pose, `YP(π)`, then the item's display transform for its context (the
+/// third- and first-person hands, gui, ground, fixed; `none`, `head` and
+/// `on_shelf` use the identity, the last two because Rewo bakes no such
+/// transform) and `translate(-0.5)`.
+pub(crate) fn item_display_transform(
+    pos: [f64; 3],
+    entity: (f32, f32),
+    camera: (f32, f32),
+    d: &rewo_world::entities::DisplayState,
+    model: &rewo_data::held_items::HeldItemModel,
+) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_y_rad};
+    let identity = rewo_data::item_models::DisplayTransform::IDENTITY;
+    let (t, left) = match d.item_context {
+        1 => (&model.left, true),
+        2 => (&model.right, false),
+        3 => (&model.first_left, true),
+        4 => (&model.first_right, false),
+        6 => (&model.gui, false),
+        7 => (&model.ground, false),
+        8 => (&model.fixed, false),
+        _ => (&identity, false),
+    };
+    let angles = billboard_angles(d.billboard, entity, camera);
+    mul(
+        &display_pose(pos, angles, d),
+        &mul(
+            &rot_y_rad(std::f32::consts::PI),
+            &item_context_affine(t, left),
+        ),
+    )
+}
+
+/// M256 — every item display this frame, as `ItemDisplayRenderer` draws it:
+/// [`item_display_transform`]'s pose, with its foil. Recorded: no
+/// brightness override, no interpolation.
+pub(super) fn collect_item_displays(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    item_names: &rewo_data::items::Items,
+    held: Option<&rewo_data::held_items::HeldItems>,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::IDENTITY;
+    let mut out = Vec::new();
+    let Some(held) = held else {
+        return out;
+    };
+    for (id, e) in session.world.entities.iter() {
+        if etypes.name(e.type_id) != Some("minecraft:item_display") {
+            continue;
+        }
+        let Some(d) = session.world.entities.display(id) else {
+            continue;
+        };
+        let Some((item, foil)) = d.item else {
+            continue;
+        };
+        let Some(name) = item_names.name(item) else {
+            continue;
+        };
+        let Some(model) = held.any(name) else {
+            continue;
+        };
+        let p = e.render_pos(alpha);
+        let pose = item_display_transform(
+            p,
+            (e.yaw, e.pitch),
+            (session.player.yaw, session.player.pitch),
+            d,
+            model,
+        );
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [0.0; 3],
+            model: name.to_string(),
+            transform: pose,
+            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: foil,
+        });
+    }
+    out
 }
 
 /// M255 — `TextDisplay.cacheDisplay`'s lines: the text split at `\n` and
@@ -2936,7 +3069,8 @@ pub(super) fn collect_entities<'a>(
         // M255 — entities vanilla draws no body for (an interaction box, a
         // marker, an effect cloud's particles) or that are not a body at all
         // (the displays: a text display is world text, `collect_text_displays`;
-        // block and item displays are not drawn yet). Never a capsule.
+        // an item display its item's model, `collect_item_displays`; a block
+        // display is not drawn yet). Never a capsule.
         if matches!(
             name,
             "minecraft:text_display"

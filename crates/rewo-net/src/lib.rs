@@ -2427,6 +2427,8 @@ pub struct MetaKinds<'a> {
     /// `minecraft:text_display` type id (M255) — gates the index-15 BYTE
     /// (billboard) and the text fields 23–27.
     pub text_display: Option<i32>,
+    /// `minecraft:item_display` type id (M256) — gates indices 23–24.
+    pub item_display: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
@@ -2758,6 +2760,7 @@ pub(crate) fn apply_set_entity_data<'a>(
     // 11–14, the displays' alone) and a text display's billboard and text.
     {
         let is_text = kinds.text_display == Some(type_id);
+        let is_item = kinds.item_display == Some(type_id);
         let any = meta.display_translation.is_some()
             || meta.display_scale.is_some()
             || meta.display_left.is_some()
@@ -2768,6 +2771,10 @@ pub(crate) fn apply_set_entity_data<'a>(
                     || meta.int25.is_some()
                     || meta.byte26.is_some()
                     || meta.byte27.is_some()
+                    || meta.mob_flags.is_some()))
+            || (is_item
+                && (meta.display_item.is_some()
+                    || meta.byte24.is_some()
                     || meta.mob_flags.is_some()));
         if any {
             let d = entities.display_mut(eid);
@@ -2799,6 +2806,17 @@ pub(crate) fn apply_set_entity_data<'a>(
                 if let Some(v) = meta.byte27 {
                     d.style = v;
                 }
+            }
+            // M256 — an item display's stack (23) and context (24).
+            if is_item {
+                if let Some(item) = meta.display_item {
+                    d.item = item;
+                }
+                if let Some(v) = meta.byte24 {
+                    d.item_context = v;
+                }
+            }
+            if is_text || is_item {
                 if let Some(v) = meta.mob_flags {
                     d.billboard = v;
                 }
@@ -5391,6 +5409,68 @@ mod set_entity_data_tests {
         }
         apply_set_entity_data(&body(7, 11, 39, &v), &mut t, kinds);
         assert_eq!(t.display(7).map(|d| d.translation), Some([1.0, 2.0, 3.0]));
+    }
+
+    /// M256 — an item display's stack (23, ITEM_STACK), context (24, BYTE)
+    /// and billboard (15) reach its `DisplayState`; a text display's 24 is
+    /// a VARINT line width and its BYTE never names an item context.
+    #[test]
+    fn an_item_displays_stack_context_and_billboard_land() {
+        const ITEM: i32 = 901;
+        const TEXT: i32 = 900;
+        let ids = rewo_data::components::DataComponentIds {
+            max_damage: 4,
+            stored_enchantments: 12,
+            enchantment_glint_override: 13,
+            dyed_color: 14,
+            trim: 15,
+            map_id: 19,
+            dye: 20,
+            provides_banner_patterns: 21,
+            banner_patterns: 1021,
+            rarity: 5,
+            unbreakable: 6,
+            custom_name: 8,
+            item_name: 9,
+            lore: 10,
+            enchantments: 11,
+            swing_animation: 40,
+            damage: 3,
+            charged_projectiles: 7,
+            bundle_contents: 16,
+            container: 17,
+            use_cooldown: 18,
+            written_book_content: 22,
+            writable_book_content: 23,
+        };
+        let kinds = crate::MetaKinds {
+            text_display: Some(TEXT),
+            item_display: Some(ITEM),
+            components: Some(ids),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, ITEM, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, TEXT, 0.0, 0.0, 0.0, 0.0, 0.0));
+        // One diamond-ish stack (item 5), no components added or removed.
+        apply_set_entity_data(&body(7, 23, 7, &[1, 5, 0, 0]), &mut t, kinds);
+        apply_set_entity_data(&body(7, 24, 0, &[8]), &mut t, kinds);
+        apply_set_entity_data(&body(7, 15, 0, &[3]), &mut t, kinds);
+        let d = t.display(7).expect("an item display's state");
+        assert_eq!(d.item, Some((5, false)));
+        assert_eq!(d.item_context, 8);
+        assert_eq!(d.billboard, 3);
+        // An empty stack clears it.
+        apply_set_entity_data(&body(7, 23, 7, &[0]), &mut t, kinds);
+        assert_eq!(t.display(7).and_then(|d| d.item), None);
+        // A text display's BYTE 24 is nothing; its VARINT 24 is line width.
+        apply_set_entity_data(&body(8, 24, 0, &[8]), &mut t, kinds);
+        assert!(t.display(8).is_none(), "a text display has no item context");
+        apply_set_entity_data(&body(8, 24, 1, &[100]), &mut t, kinds);
+        assert_eq!(
+            t.display(8).map(|d| (d.line_width, d.item_context)),
+            Some((100, 0))
+        );
     }
 
     #[test]

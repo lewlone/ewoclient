@@ -2630,6 +2630,7 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             firework_rocket: None,
             experience_orb: None,
             text_display: None,
+            item_display: None,
             creaking: None,
             // M60: likewise not exercised — no cape reaches an arm rig.
             player: None,

@@ -2070,6 +2070,7 @@ this shape once.
 | M253 (2026-10-19) — a falling block and primed TNT draw their block models | **r112** | — | — |
 | M254 (2026-10-19) — a hung painting draws its variant's model | **r113** | — | — |
 | M255 (2026-10-19) — a text display's coloured text reaches the world-text list | **r114** | — | — |
+| M256 (2026-10-19) — an item display draws its item's model | **r115** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3904,6 +3905,36 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M256 — item displays (2026-10-19)
+
+An item display (the entity servers decorate with: floating items, custom
+models) drew nothing since M255 dropped its capsule. Now:
+
+- **Metadata.** Gated on the `item_display` type: the stack (index 23,
+  ITEM_STACK, walked with the session's component ids) as `(item id, foil)`,
+  the `ItemDisplayContext` (24, BYTE; a text display's 24 is a VARINT line
+  width) and the billboard (15), into M255's `DisplayState`.
+- **Pose** (`live_cmd::item_display_transform`): M255's display pose
+  (`display_pose`, shared now with the text display) then
+  `ItemDisplayRenderer.submitInner`'s `YP(π)`, then the item's display
+  transform for the context (`ItemTransform.apply`: `T · rotationXYZ · S`, a
+  left-hand context negating x translation and y/z rotation) and
+  `translate(-0.5)`. Third- and first-person hands, gui, ground and fixed use
+  the baked transforms; `none` is the identity, and so are `head` and
+  `on_shelf` (Rewo bakes neither).
+- Drawn through the block-entity emitter with the stack's glint, like a
+  framed item but with the whole transform composed on the app side.
+
+Recorded: no brightness override, no interpolation; block displays still
+draw nothing.
+
+Tests: `an_item_display_pose_follows_vanillas_chain` (centre on the entity,
+the half turn, fixed's scale, the left hand's mirrored translation, head as
+identity), `an_item_displays_stack_context_and_billboard_land` (the stack,
+an empty stack, context and billboard; a text display's BYTE 24 is ignored
+and its VARINT 24 is line width). **r115**: a summoned item display holding
+an amethyst shard draws every quad of the shard's model.
 
 ### M255 — text displays (holograms) (2026-10-19)
 

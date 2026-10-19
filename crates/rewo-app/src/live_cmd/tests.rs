@@ -3877,6 +3877,58 @@ fn a_text_display_pose_follows_vanillas_chain() {
     }
 }
 
+/// M256 — an item display's pose: at `none` the model's centre lands on the
+/// entity and the model turns half a turn (`YP(π)`, so its +x corner faces
+/// -x); `fixed` applies the model's fixed transform first; a right hand's
+/// x translation flips sign for the left hand.
+#[test]
+fn an_item_display_pose_follows_vanillas_chain() {
+    use super::entities::item_display_transform;
+    use rewo_data::item_models::DisplayTransform;
+    use rewo_world::entities::DisplayState;
+    let apply = |m: &rewo_data::be_transform::Affine, v: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+    };
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+    let id = DisplayTransform::IDENTITY;
+    let hand = DisplayTransform {
+        translation: [0.25, 0.0, 0.0],
+        ..id
+    };
+    let model = rewo_data::held_items::HeldItemModel {
+        quads: Vec::new(),
+        right: hand,
+        left: hand,
+        ground: id,
+        gui: id,
+        first_right: id,
+        first_left: id,
+        fixed: DisplayTransform {
+            scale: [0.5; 3],
+            ..id
+        },
+        from_block: false,
+        gui_quads: None,
+    };
+    let at = [1.0, 2.0, 3.0];
+    let pose = |ctx: u8| {
+        let d = DisplayState {
+            item_context: ctx,
+            ..Default::default()
+        };
+        item_display_transform(at, (0.0, 0.0), (0.0, 0.0), &d, &model)
+    };
+    let none = pose(0);
+    assert!(close(apply(&none, [0.5; 3]), [1.0, 2.0, 3.0]));
+    assert!(close(apply(&none, [1.0, 0.5, 0.5]), [0.5, 2.0, 3.0]));
+    assert!(close(apply(&none, [0.5, 0.5, 1.0]), [1.0, 2.0, 2.5]));
+    assert!(close(apply(&pose(8), [1.0, 0.5, 0.5]), [0.75, 2.0, 3.0]));
+    assert!(close(apply(&pose(2), [0.5; 3]), [0.75, 2.0, 3.0]));
+    assert!(close(apply(&pose(1), [0.5; 3]), [1.25, 2.0, 3.0]));
+    // `head` and `on_shelf` have no baked transform: the identity.
+    assert!(close(apply(&pose(5), [1.0, 0.5, 0.5]), [0.5, 2.0, 3.0]));
+}
+
 /// M255 — `\n` splits, a line wider than the limit wraps at its last
 /// space, and runs of one colour merge.
 #[test]
