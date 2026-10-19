@@ -224,6 +224,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         shell: false,
         stand_parts: Default::default(),
         body_hidden: false,
+        worn_head: None,
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -376,6 +377,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             if kind == EntityModelKind::ArmorStand && view_name == "front" {
                 let hidden = EntityDraw {
                     body_hidden: true,
+                    worn_head: None,
                     ..neutral_draw(kind)
                 };
                 wr.set_entities(&[hidden], right, upv, 0.0);

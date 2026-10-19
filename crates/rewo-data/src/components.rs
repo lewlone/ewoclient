@@ -135,6 +135,9 @@ pub struct DataComponentIds {
     /// has no written content, so `open_book` can show a writable book
     /// read-only (there is NO WritableBookViewScreen in 26.2).
     pub writable_book_content: i32,
+    /// `minecraft:profile` (M273) — `ResolvableProfile`, a player head's
+    /// owner; its `textures` property is the skin a worn head draws.
+    pub profile: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -227,6 +230,7 @@ impl DataComponentIds {
             use_cooldown: id("minecraft:use_cooldown")?,
             written_book_content: id("minecraft:written_book_content")?,
             writable_book_content: id("minecraft:writable_book_content")?,
+            profile: id("minecraft:profile")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

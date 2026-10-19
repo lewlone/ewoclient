@@ -301,6 +301,9 @@ pub(super) struct RenderCheck {
     /// M272 — r130: frames on which the staged player head drew every quad
     /// in a skin of its own, the staged file's pixels.
     pub(super) skin_head_frames: usize,
+    /// M273 — r131: frames on which the staged armour stand drew wearing a
+    /// player head in r130's skin.
+    pub(super) worn_skin_head_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1009,6 +1012,19 @@ pub(super) struct RenderCheck {
     pub(super) validation: bool,
 }
 
+/// M272 — r130/r131: whether `t` is `render_check.py`'s synthetic skin,
+/// texel (x, y) = (4x, 4y, 0x80, 0xff).
+pub(super) fn is_synthetic_skin(t: &rewo_data::held_items::HeldTexture) -> bool {
+    t.w == 64
+        && t.h == 64
+        && [(0usize, 0usize), (8, 8), (40, 12), (63, 63)]
+            .iter()
+            .all(|&(x, y)| {
+                let i = (y * 64 + x) * 4;
+                t.rgba.get(i..i + 4) == Some(&[(4 * x) as u8, (4 * y) as u8, 0x80, 0xff][..])
+            })
+}
+
 impl RenderCheck {
     /// Sample the ringed passes once per frame, after this frame's `set_*`
     /// calls and before the next one.
@@ -1053,7 +1069,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 130;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 131;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1243,6 +1259,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M273 — r131: `render_check.py` summons an armour stand wearing a
+        // player head whose `minecraft:profile` component names r130's skin.
+        // The stand must draw wearing it, in that skin; a worn skull drew
+        // nothing until M273 (`mobtexshot m18` checks the worn pixels).
+        row(
+            "r131 an armour stand drew wearing a player head in its own skin",
+            self.worn_skin_head_frames >= 1,
+            format!("{} frames drew it", self.worn_skin_head_frames),
         );
         // M272 — r130: `render_check.py` places a player head whose profile
         // carries a `textures` property (served from a local file, a

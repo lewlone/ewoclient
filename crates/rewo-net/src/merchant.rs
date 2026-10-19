@@ -211,6 +211,7 @@ mod tests {
         use_cooldown: 119,
         written_book_content: 122,
         writable_book_content: 123,
+        profile: 125,
     };
 
     /// A hand-built body, to pin the wire ORDER.

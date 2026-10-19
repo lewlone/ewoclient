@@ -199,6 +199,15 @@ pub struct ChestStates {
 /// transform — `SkullBlockRenderer` picks the model by
 /// `AbstractSkullBlock.getType()`, which is the same for both.
 /// `skeleton_skull` → `skeleton_wall_skull`.
+/// M273 — the skull model a worn skull item draws (`CustomHeadLayer`
+/// picks it by `AbstractSkullBlock.getType()`, as a placed one does):
+/// `minecraft:skeleton_skull` → `rewo:be/skeleton_skull`. `None` for an
+/// item that is not a skull.
+pub fn skull_model(item: &str) -> Option<&'static str> {
+    let prefix = item.strip_prefix("minecraft:").unwrap_or(item);
+    SKULLS.iter().find(|(p, _)| *p == prefix).map(|(_, m)| *m)
+}
+
 fn wall_skull_name(prefix: &str) -> String {
     match prefix.rsplit_once('_') {
         Some((head, tail)) => format!("{head}_wall_{tail}"),

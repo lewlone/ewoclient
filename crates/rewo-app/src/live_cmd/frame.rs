@@ -658,6 +658,33 @@ impl LiveApp {
             &mut state.gpu,
             &mut state.world_renderer,
         );
+        // M272 — player heads wearing skins of their own: build the model of
+        // each skin that arrived (the GPU gets the new model and texture, in
+        // the bake's order), then pick each head's.
+        if let Some(baked) = self.baked.as_mut() {
+            let mut new_models = Vec::new();
+            let mut new_textures = Vec::new();
+            for (url, rgba) in self.head_skins.take_ready() {
+                let Some((name, tex)) = baked.held_items.add_skin_head_model(rgba) else {
+                    continue;
+                };
+                if let Some(m) = baked.held_items.block_entities.get(&name) {
+                    new_models.push((name.clone(), to_gpu_held_model(m)));
+                }
+                new_textures.push(to_gpu_held_texture(&baked.held_items.textures[tex]));
+                self.head_skins.models.insert(url, name);
+            }
+            if !new_textures.is_empty() {
+                state
+                    .world_renderer
+                    .extend_held_items(new_models, new_textures);
+            }
+        }
+        let head_models = head_skin_models(&session.world, &mut self.head_skins);
+        // M273 — ask for the skins worn player heads name.
+        for v in session.world.entities.head_profiles() {
+            self.head_skins.request(v);
+        }
         let draws = collect_entities(
             session,
             &self.etypes,
@@ -674,6 +701,7 @@ impl LiveApp {
             &self.etf,
             self.hud_hidden,
             frame_crosshair_pick(session, &self.etypes, alpha),
+            Some(&self.head_skins),
         );
         // M163 — read the label OFF THE DRAW LIST, not off the entity table:
         // the claim is that the resolved string reached the renderer, and a
@@ -779,29 +807,6 @@ impl LiveApp {
             },
         );
         apply_biome_sky_fog(&mut state.world_renderer, session);
-        // M272 — player heads wearing skins of their own: build the model of
-        // each skin that arrived (the GPU gets the new model and texture, in
-        // the bake's order), then pick each head's.
-        if let Some(baked) = self.baked.as_mut() {
-            let mut new_models = Vec::new();
-            let mut new_textures = Vec::new();
-            for (url, rgba) in self.head_skins.take_ready() {
-                let Some((name, tex)) = baked.held_items.add_skin_head_model(rgba) else {
-                    continue;
-                };
-                if let Some(m) = baked.held_items.block_entities.get(&name) {
-                    new_models.push((name.clone(), to_gpu_held_model(m)));
-                }
-                new_textures.push(to_gpu_held_texture(&baked.held_items.textures[tex]));
-                self.head_skins.models.insert(url, name);
-            }
-            if !new_textures.is_empty() {
-                state
-                    .world_renderer
-                    .extend_held_items(new_models, new_textures);
-            }
-        }
-        let head_models = head_skin_models(&session.world, &mut self.head_skins);
         let mut bes = collect_block_entities(
             &session.world,
             &self.chest_states,
@@ -1027,6 +1032,8 @@ impl LiveApp {
             anim_time,
         ));
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+        // M273 — worn skulls page their sheets in like any held model.
+        held.extend(draws.iter().filter_map(|d| d.worn_head.map(|w| w.model)));
         held.extend(draws.iter().filter_map(|d| d.ground_item));
         held.extend(bes.iter().map(|b| b.model.as_str()));
         // A failed upload leaves the item simply absent (no resident slot →
@@ -1121,6 +1128,29 @@ impl LiveApp {
                     && d.name.is_some_and(|n| n.contains("RewoStand"))
             }) {
                 rc.hologram_stand_frames += 1;
+            }
+            // M273 — r131: the staged armour stand wears a player head whose
+            // profile names r130's skin; it reached the draws as the
+            // per-skin model, every quad of which samples the synthetic skin.
+            let skinned = |m: &str| {
+                self.baked.as_ref().is_some_and(|b| {
+                    b.held_items.any(m).is_some_and(|mm| {
+                        mm.quads.iter().all(|q| {
+                            b.held_items
+                                .textures
+                                .get(q.tex as usize)
+                                .is_some_and(super::render_check::is_synthetic_skin)
+                        })
+                    })
+                })
+            };
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
+                    && d.worn_head.is_some_and(|w| {
+                        w.model.starts_with("rewo:be/player_head#") && skinned(w.model)
+                    })
+            }) {
+                rc.worn_skin_head_frames += 1;
             }
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
@@ -1511,17 +1541,6 @@ impl LiveApp {
             // M272 — r130: the staged player head drew every quad of a
             // per-skin model, all sampling one texture whose texels are the
             // synthetic skin's `(4x, 4y, 0x80, 0xff)`.
-            let synthetic = |t: &rewo_data::held_items::HeldTexture| {
-                t.w == 64
-                    && t.h == 64
-                    && [(0usize, 0usize), (8, 8), (40, 12), (63, 63)]
-                        .iter()
-                        .all(|&(x, y)| {
-                            let i = (y * 64 + x) * 4;
-                            t.rgba.get(i..i + 4)
-                                == Some(&[(4 * x) as u8, (4 * y) as u8, 0x80, 0xff][..])
-                        })
-            };
             let drew_skin_head = be_draws
                 .iter()
                 .zip(state.world_renderer.block_entity_quads())
@@ -1534,7 +1553,7 @@ impl LiveApp {
                                     b.held_items
                                         .textures
                                         .get(mq.tex as usize)
-                                        .is_some_and(synthetic)
+                                        .is_some_and(super::render_check::is_synthetic_skin)
                                 })
                             })
                         })

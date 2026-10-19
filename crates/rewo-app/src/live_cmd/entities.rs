@@ -2994,6 +2994,50 @@ pub(crate) fn ensure_trims(
     out
 }
 
+/// M273 — `CustomHeadLayer.Transforms` per renderer, `(skullYOffset,
+/// horizontalScale)`; `None` for an entity whose renderer has no
+/// `CustomHeadLayer` (a cow wearing a skull draws none).
+pub(crate) fn custom_head_transforms(entity: &str) -> Option<(f32, f32)> {
+    match entity.strip_prefix("minecraft:").unwrap_or(entity) {
+        // `VillagerRenderer.CUSTOM_HEAD_TRANSFORMS` (the zombie villager's
+        // too).
+        "villager" | "zombie_villager" => Some((-0.074_218_75, 1.0)),
+        // `PiglinRenderer.PIGLIN_CUSTOM_HEAD_TRANSFORMS`.
+        "piglin" | "piglin_brute" | "zombified_piglin" => Some((0.0, 1.001_953_1)),
+        "armor_stand" | "copper_golem" | "player" | "mannequin" | "zombie" | "husk" | "drowned"
+        | "skeleton" | "stray" | "bogged" | "wither_skeleton" | "parched" | "evoker"
+        | "illusioner" | "pillager" | "vindicator" | "wandering_trader" => Some((0.0, 1.0)),
+        _ => None,
+    }
+}
+
+/// M273 — the skull `id` wears, if its renderer draws one
+/// (`LivingEntityRenderer.extractRenderState`: a head item whose block is
+/// an `AbstractSkullBlock`). A player head takes its profile's skin once
+/// that has arrived.
+fn worn_head<'a>(
+    session: &'a PlaySession,
+    id: i32,
+    entity: &str,
+    items: &'a rewo_data::items::Items,
+    head_skins: Option<&'a HeadSkins>,
+) -> Option<rewo_gpu::entities::WornHead<'a>> {
+    let (skull_y_offset, horizontal_scale) = custom_head_transforms(entity)?;
+    let item = items.name(session.world.entities.armor(id)[0]?.item)?;
+    let base = rewo_data::chest_states::skull_model(item)?;
+    let skinned = session
+        .world
+        .entities
+        .head_profile(id)
+        .zip(head_skins)
+        .and_then(|(v, h)| h.ready(v));
+    Some(rewo_gpu::entities::WornHead {
+        model: skinned.unwrap_or(base),
+        skull_y_offset,
+        horizontal_scale,
+    })
+}
+
 pub(crate) fn armor_keys<'a>(
     session: &PlaySession,
     id: i32,
@@ -3496,6 +3540,8 @@ pub(super) fn collect_entities<'a>(
     // raycast and `EntityRenderDispatcher.prepare` hands the single result to
     // every renderer.
     crosshair_pick: Option<i32>,
+    // M273 — player heads' own skins, for a worn head (`None`: Steve).
+    head_skins: Option<&'a HeadSkins>,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -3872,6 +3918,7 @@ pub(super) fn collect_entities<'a>(
             shell,
             stand_parts,
             body_hidden,
+            worn_head: worn_head(session, id, name, item_names, head_skins),
             billboard,
             allay_dance,
             attack,

@@ -955,6 +955,9 @@ pub struct EntityTable {
     /// and on (re-)add, so a reused id cannot wear the last occupant's
     /// chestplate.
     armor: HashMap<i32, [Option<WornPiece>; 4]>,
+    /// M273 — the `textures` property of a worn player head's profile, the
+    /// skin `CustomHeadLayer` draws it in. Cleared with the armour.
+    head_profiles: HashMap<i32, String>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -1641,6 +1644,7 @@ impl EntityTable {
             item_stacks,
             item_frames,
             armor,
+            head_profiles,
             dances,
             events,
             swings: _,
@@ -1695,6 +1699,7 @@ impl EntityTable {
         // time and the guardian's beam target. Each also grew without bound
         // over a long session, one row per entity ever seen.
         armor.remove(&id);
+        head_profiles.remove(&id);
         anger_end_time.remove(&id);
         guardian_attack.remove(&id);
         self.clear_riding(id);
@@ -2512,6 +2517,28 @@ impl EntityTable {
         }
         let e = self.armor.entry(id).or_insert([None; 4]);
         e[slot] = item;
+    }
+
+    /// M273 — the worn head's profile skin (`None` clears it).
+    pub fn set_head_profile(&mut self, id: i32, textures: Option<String>) {
+        match textures {
+            Some(t) => {
+                self.head_profiles.insert(id, t);
+            }
+            None => {
+                self.head_profiles.remove(&id);
+            }
+        }
+    }
+
+    /// M273 — the `textures` property of the player head `id` wears.
+    pub fn head_profile(&self, id: i32) -> Option<&str> {
+        self.head_profiles.get(&id).map(String::as_str)
+    }
+
+    /// M273 — every worn head's profile skin.
+    pub fn head_profiles(&self) -> impl Iterator<Item = &str> {
+        self.head_profiles.values().map(String::as_str)
     }
 
     /// What this entity wears, head first. All `None` for anything the server
@@ -4659,6 +4686,7 @@ mod side_state_tests {
             item_stacks,
             item_frames,
             armor,
+            head_profiles,
             dances,
             events,
             swings,
@@ -4696,6 +4724,7 @@ mod side_state_tests {
             model_customisation.contains_key(&id),
             item_stacks.contains_key(&id),
             armor.contains_key(&id),
+            head_profiles.contains_key(&id),
             dances.contains_key(&id),
             events.contains_key(&id),
             swings.contains_key(&id),
@@ -4738,6 +4767,7 @@ mod side_state_tests {
                 foil: true,
             }),
         );
+        t.set_head_profile(id, Some("e30=".into()));
         t.set_anger_end_time(id, 12_345);
         t.set_guardian_attack_target(id, 99);
         t.set_custom_name(id, Some("Jeb".into()));

@@ -81,6 +81,19 @@ impl HeadSkins {
     /// seen; `None` means draw the default head.
     pub(super) fn model_for(&mut self, data: &rewo_proto::nbt::Nbt) -> Option<&str> {
         let value = head_textures_value(data)?;
+        self.request(value);
+        self.ready(value)
+    }
+
+    /// M273 — the model for this `textures` value once its skin has
+    /// arrived (no request).
+    pub(super) fn ready(&self, value: &str) -> Option<&str> {
+        let url = self.urls.get(value)?.as_ref()?;
+        self.models.get(url).map(String::as_str)
+    }
+
+    /// Ask for the skin of this `textures` value, the first time it is seen.
+    pub(super) fn request(&mut self, value: &str) {
         if !self.urls.contains_key(value) {
             if self.urls.len() >= 16 * MAX_HEAD_SKINS {
                 self.urls.clear();
@@ -88,12 +101,13 @@ impl HeadSkins {
             let url = rewo_net::skins::decode_textures_property(value).and_then(|i| i.url);
             self.urls.insert(value.to_string(), url);
         }
-        let url = self.urls.get(value)?.as_ref()?;
+        let Some(Some(url)) = self.urls.get(value) else {
+            return;
+        };
         if !self.requested.contains(url) && self.requested.len() < MAX_HEAD_SKINS {
             self.requested.insert(url.clone());
             let _ = self.req_tx.send(url.clone());
         }
-        self.models.get(url).map(String::as_str)
     }
 
     /// The skins that arrived since the last call, by URL.
@@ -650,6 +664,7 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         shell: false,
         stand_parts: Default::default(),
         body_hidden: false,
+        worn_head: None,
         billboard: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         allay_dance: None,
@@ -738,6 +753,7 @@ pub(crate) fn collect_pickups<'a>(
             shell: false,
             stand_parts: Default::default(),
             body_hidden: false,
+            worn_head: None,
             billboard: None,
             events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
             allay_dance: None,

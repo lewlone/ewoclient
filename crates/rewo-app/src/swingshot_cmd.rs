@@ -1362,6 +1362,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         shell: false,
         stand_parts: Default::default(),
         body_hidden: false,
+        worn_head: None,
         billboard: None,
         allay_dance: None,
         attack,

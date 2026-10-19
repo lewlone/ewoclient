@@ -175,6 +175,21 @@ pub struct ArmorPiece<'a> {
 /// One entity to draw this frame — position already frame-interpolated.
 pub type EntityLight = [f32; 3];
 
+/// `CustomHeadLayer.SKULL_SCALE`.
+pub const WORN_SKULL_SCALE: f32 = 1.1875;
+
+/// M273 — a skull worn on the head: the skull's block-entity model (a
+/// player head may be a per-skin copy, M272) and the renderer's
+/// `CustomHeadLayer.Transforms`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WornHead<'a> {
+    pub model: &'a str,
+    /// `Transforms.skullYOffset`, in blocks (the villager's −0.0742).
+    pub skull_y_offset: f32,
+    /// `Transforms.horizontalScale` (the piglin's 1.0019531).
+    pub horizontal_scale: f32,
+}
+
 pub struct EntityDraw<'a> {
     /// Feet-center world position.
     pub pos: [f32; 3],
@@ -228,6 +243,9 @@ pub struct EntityDraw<'a> {
     /// name still are. An invisible armour stand with a name is the classic
     /// server hologram.
     pub body_hidden: bool,
+    /// M273 — a skull worn on the head (`CustomHeadLayer`'s skull branch),
+    /// `None` for no skull or a model without the layer.
+    pub worn_head: Option<WornHead<'a>>,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -2514,6 +2532,85 @@ impl EntityPass {
         }
     }
 
+    /// M273 — a worn skull, `CustomHeadLayer.submit`'s skull branch:
+    ///
+    /// ```text
+    /// scale(h, 1, h); root.translateAndRotate; translateToHead (the head
+    /// part); translate(0, skullYOffset, 0); scale(1.1875); submitSkull
+    /// ```
+    ///
+    /// The skull model is a mob model, y-down, authored at the head part's
+    /// origin (its head cube spans `-8..0` in y), so its px corners are
+    /// head-local px as they stand. Vanilla draws the layer for an
+    /// invisible body too (M271). Drawn at rest: the piglin's ears and the
+    /// dragon's jaw take `wornHeadAnimationPos`, which Rewo leaves at 0.
+    fn emit_worn_head(
+        &self,
+        verts: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        model: &MobModel,
+        xf: &[([[f32; 3]; 3], [f32; 3])],
+        scale: f32,
+        st: f32,
+        ct: f32,
+        hurt: f32,
+    ) {
+        let Some(w) = d.worn_head else {
+            return;
+        };
+        let Some(skull) = self.held_items.as_ref().and_then(|h| h.any(w.model)) else {
+            return;
+        };
+        let Some(head) = model.parts.iter().position(|p| p.name == "head") else {
+            return;
+        };
+        let (m, o) = &xf[head];
+        let [light_r, light_g, light_b] = d.light;
+        for q in &skull.quads {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let Some([u0, v0, du, dv]) = self.item_uv(q.tex) else {
+                continue;
+            };
+            let mut p4 = [[0f32; 3]; 4];
+            let mut m4 = [[0f32; 3]; 4];
+            for (i, c) in q.verts.iter().enumerate() {
+                let p = [
+                    c[0] * WORN_SKULL_SCALE,
+                    c[1] * WORN_SKULL_SCALE + w.skull_y_offset * 16.0,
+                    c[2] * WORN_SKULL_SCALE,
+                ];
+                let r = mat_apply(m, p);
+                let v = [
+                    (r[0] + o[0]) * w.horizontal_scale,
+                    r[1] + o[1],
+                    (r[2] + o[2]) * w.horizontal_scale,
+                ];
+                m4[i] = v;
+                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+                let (sr, cr) = death_roll(d).sin_cos();
+                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+                let x = e[0] * ct + e[2] * st;
+                let z = -e[0] * st + e[2] * ct;
+                p4[i] = [
+                    d.pos[0] + x * scale,
+                    d.pos[1] + e[1] * scale,
+                    d.pos[2] + z * scale,
+                ];
+            }
+            let shade = mobs::shade_for(face_normal(&m4));
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                verts.push(Vertex {
+                    pos: p4[i],
+                    uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
+                    color: [shade, shade, shade, 1.0],
+                    light_hurt: [light_r, light_g, light_b, hurt],
+                });
+            }
+        }
+    }
+
     /// The worn cape, hanging off the body (M60).
     ///
     /// `CapeLayer` is a render layer over the same `body` the torso used, so
@@ -3218,6 +3315,17 @@ impl EntityPass {
         // settles them. What keeps the cape off a chestplate is the clearance
         // shift, not the sequence.
         self.emit_cape(verts, d, model, &xf, s, st, ct, sr, cr);
+        // M273: a worn skull, a render layer off the head.
+        self.emit_worn_head(
+            verts,
+            d,
+            model,
+            &xf,
+            s,
+            st,
+            ct,
+            if d.hurt { 1.0 } else { 0.0 },
+        );
         // M22: whatever each arm holds, drawn after the body —
         // `ItemInHandLayer` is a render layer, so it sits on top of the
         // model it hangs off.

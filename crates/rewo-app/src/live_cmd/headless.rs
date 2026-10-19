@@ -464,6 +464,7 @@ pub(super) fn run_headless(
         // scripted shot exercise F1's suppression without a keyboard.
         crate::knobs::var("REWO_HUD_HIDDEN").is_ok_and(|v| v.trim() == "1"),
         frame_crosshair_pick(&session, &etypes, 1.0),
+        None,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);

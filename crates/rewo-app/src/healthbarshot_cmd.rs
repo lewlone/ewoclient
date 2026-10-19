@@ -492,6 +492,7 @@ pub(crate) fn neutral_draw() -> EntityDraw<'static> {
         shell: false,
         stand_parts: Default::default(),
         body_hidden: false,
+        worn_head: None,
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,

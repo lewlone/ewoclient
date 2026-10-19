@@ -337,6 +337,10 @@ pub struct StackComponents {
     /// as "this stack is undyed" — which sends a dyeable layer to its
     /// `color_when_undyed` instead.
     pub dyed_color: Option<i32>,
+    /// M273 — `minecraft:profile`'s `textures` property (base64 JSON), the
+    /// skin a worn player head draws. `None` without one (a bare name or id,
+    /// which vanilla resolves through Mojang's profile service).
+    pub profile_textures: Option<String>,
     /// `minecraft:trim`'s `(material, pattern)` registry ids (M48).
     ///
     /// Captured only when **both** holders are registry references. `holder`
@@ -810,6 +814,36 @@ fn read_patch_at(
     Ok((PatchOutcome::Walked(swing), charged, true, comps))
 }
 
+/// M273 — the `textures` property of a `ResolvableProfile.STREAM_CODEC`
+/// value: `either(GameProfile, Partial)` (true is the full profile: uuid,
+/// name, properties; false the partial: optional name, optional uuid,
+/// properties), each property `(name, value, optional signature)`.
+fn profile_textures(p: &mut PacketReader) -> Option<String> {
+    if p.bool().ok()? {
+        p.uuid().ok()?;
+        p.string(16).ok()?;
+    } else {
+        if p.bool().ok()? {
+            p.string(16).ok()?;
+        }
+        if p.bool().ok()? {
+            p.uuid().ok()?;
+        }
+    }
+    let n = p.varint().ok()?;
+    for _ in 0..n.clamp(0, 16) {
+        let name = p.string(64).ok()?;
+        let value = p.string(32767).ok()?;
+        if p.bool().ok()? {
+            p.string(1024).ok()?;
+        }
+        if name == "textures" {
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// Walk one value, reading it out when the client has a use for it.
 ///
 /// Returns `false` only when the shape itself could not be walked (a nested
@@ -864,6 +898,18 @@ fn read_interpreted(
         // `ByteBufCodecs.INT` — a fixed big-endian i32 among the var-ints,
         // the same trap `container_set_slot`'s signed short is.
         out.dyed_color = Some(r.i32().map_err(|_| ())?);
+        return Ok(true);
+    }
+    if ty == ids.profile {
+        // M273 — walked by the table's own shape (so the bytes consumed are
+        // the walker's by construction), then read again for the one
+        // property a worn head needs.
+        let start = r.offset();
+        if !walk(r, shape, 1)? {
+            return Ok(false);
+        }
+        let mut p = PacketReader::new(r.bytes_between(start, r.offset()));
+        out.profile_textures = profile_textures(&mut p);
         return Ok(true);
     }
     if ty == ids.enchantment_glint_override {
@@ -1168,6 +1214,7 @@ mod tests {
         use_cooldown: 18,
         written_book_content: 22,
         writable_book_content: 23,
+        profile: 25,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -1187,6 +1234,7 @@ mod tests {
             ("minecraft:enchantments", 11),
             ("minecraft:enchantment_glint_override", 13),
             ("minecraft:dyed_color", 14),
+            ("minecraft:profile", 25),
             ("minecraft:bundle_contents", 16),
             ("minecraft:container", 17),
             ("minecraft:use_cooldown", 18),
@@ -1224,6 +1272,58 @@ mod tests {
         // The whole patch was consumed: nothing is left for a later entry to
         // misread.
         assert_eq!(r.remaining(), 0);
+    }
+
+    /// M273 — a profile's `textures` property in the full form (true, uuid,
+    /// name, properties) and the partial one (optional name, optional uuid,
+    /// properties), after a property that is not it; a bare-name profile
+    /// has none. The whole value (skin patch included) is consumed.
+    #[test]
+    fn a_profile_component_yields_its_textures_property() {
+        install_test_shapes();
+        let s = |v: &str| {
+            let mut b = vec![v.len() as u8];
+            b.extend(v.as_bytes());
+            b
+        };
+        let prop = |n: &str, v: &str, signed: bool| {
+            let mut b = s(n);
+            b.extend(s(v));
+            if signed {
+                b.push(1);
+                b.extend(s("sig"));
+            } else {
+                b.push(0);
+            }
+            b
+        };
+        // `PlayerSkin.Patch`: three absent texture ids, no model flag.
+        let patch = [0u8, 0, 0, 0];
+        let mut full = vec![1u8];
+        full.extend([7u8; 16]);
+        full.extend(s("Notch"));
+        full.push(2);
+        full.extend(prop("other", "x", true));
+        full.extend(prop("textures", "abc", false));
+        full.extend(patch);
+        let mut partial = vec![0u8, 0, 1];
+        partial.extend([9u8; 16]);
+        partial.push(1);
+        partial.extend(prop("textures", "xyz", true));
+        partial.extend(patch);
+        let mut named = vec![0u8, 1];
+        named.extend(s("jeb_"));
+        named.extend([0u8, 0]);
+        named.extend(patch);
+        for (bytes, want) in [(full, Some("abc")), (partial, Some("xyz")), (named, None)] {
+            let raw = stack(1, 1, &[(25, bytes)], &[]);
+            let mut r = PacketReader::new(&raw);
+            let WireSlot::Stack(st) = read_optional(&mut r, IDS).expect("decodes") else {
+                panic!("expected a stack");
+            };
+            assert_eq!(st.components.profile_textures.as_deref(), want);
+            assert_eq!(r.remaining(), 0);
+        }
     }
 
     /// Absence is **not** a black dye. `getOrDefault` answers 0 for an absent

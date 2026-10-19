@@ -265,11 +265,15 @@ def nautilus_staging(name):
 # gates knob), so the run stays offline; the file is a synthetic skin whose
 # texel (x, y) is (4x, 4y, 0x80, 0xff), which the witness checks.
 HEAD_SKIN_URL = "http://textures.minecraft.net/texture/" + "ab" * 32
+HEAD_TEXTURES = base64.b64encode(
+    json.dumps({"textures": {"SKIN": {"url": HEAD_SKIN_URL}}}).encode("ascii")
+).decode("ascii")
 HEAD_STAGING = (
     ";setblock ~-10 ~ ~1 minecraft:player_head{profile:{properties:[{name:\"textures\",value:\"%s\"}]}}"
-    % base64.b64encode(
-        json.dumps({"textures": {"SKIN": {"url": HEAD_SKIN_URL}}}).encode("ascii")
-    ).decode("ascii")
+    # M273 -- r131. An armour stand wearing a player head in the same skin.
+    ";summon minecraft:armor_stand ~-10 ~ ~3 {equipment:{head:{id:\"minecraft:player_head\",count:1,"
+    "components:{\"minecraft:profile\":{properties:[{name:\"textures\",value:\"%s\"}]}}}}}"
+    % (HEAD_TEXTURES, HEAD_TEXTURES)
 )
 
 

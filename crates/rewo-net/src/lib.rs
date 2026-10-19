@@ -3520,6 +3520,14 @@ pub(crate) fn apply_set_equipment(
                 }),
             };
             entities.set_armor(eid, index, worn);
+            // M273 — a worn player head's skin, from its `profile`.
+            if index == 0 {
+                let profile = match &slot {
+                    WireSlot::Stack(s) => s.components.profile_textures.clone(),
+                    WireSlot::Empty => None,
+                };
+                entities.set_head_profile(eid, profile);
+            }
         }
         // M169: slot 7 is SADDLE — `Mob.isSaddled()`, the whole of a horse's
         // `canJump()` and half of `getControllingPassenger()`. Read here
@@ -5307,6 +5315,7 @@ mod animate_tests {
             use_cooldown: 18,
             written_book_content: 22,
             writable_book_content: 23,
+            profile: 25,
         };
         let data = super::item_stack::SwingWireData {
             prototypes: unreachable_prototypes(&paths),
@@ -5728,6 +5737,7 @@ mod set_entity_data_tests {
             use_cooldown: 18,
             written_book_content: 22,
             writable_book_content: 23,
+            profile: 25,
         };
         let kinds = crate::MetaKinds {
             text_display: Some(TEXT),

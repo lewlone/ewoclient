@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 17;
+const EXPECTED_WITNESSES: usize = 18;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -422,6 +422,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         shell: false,
         stand_parts: Default::default(),
         body_hidden: false,
+        worn_head: None,
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -1245,6 +1246,95 @@ fn run_check(
         ),
     ));
     pools.destroy(gpu);
+
+    // m18 — M273: a skeleton skull worn by an armour stand
+    // (`CustomHeadLayer`'s skull branch). Every pixel it adds must be a
+    // colour the jar's skull sheet can produce, and their centroid must sit
+    // on the skull's centre as the decompile's literals place it: the stand's
+    // head pivot is `PartPose.offset(0, 1, 0)` px under the model origin
+    // (`translate(0, -1.501, 0)` after `scale(-1, -1, 1)`), and the skull's
+    // 8 px cube (`y -8..0`) is scaled by 1.1875, so its centre is world
+    // `(0, 1.501 - 1/16 + 4 * 1.1875 / 16, 0)`.
+    const SKULL: &str = "rewo:be/skeleton_skull";
+    let (sw, sh) = (128u32, 128u32);
+    let mut st = stage_from(
+        gpu,
+        baked,
+        sw,
+        sh,
+        Vec3::new(0.0, 1.735, 2.5),
+        Vec3::new(0.0, 1.735, 0.0),
+    )?;
+    st.wr
+        .set_held_items(crate::live_cmd::to_gpu_held_items(&baked.held_items));
+    st.wr.prepare_held_items(gpu, &[SKULL])?;
+    let ring = OverlayRing::default();
+    let ov = overlay_offscreen(&ring);
+    let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        st.wr.set_entities(&[d], st.right, st.up, 0.0);
+        st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
+        st.off.read_rgba(gpu)
+    };
+    let bare = shot(neutral_draw(EntityModelKind::ArmorStand))?;
+    let worn = shot(EntityDraw {
+        worn_head: Some(rewo_gpu::entities::WornHead {
+            model: SKULL,
+            skull_y_offset: 0.0,
+            horizontal_scale: 1.0,
+        }),
+        ..neutral_draw(EntityModelKind::ArmorStand)
+    })?;
+    let skull_sheet: HashSet<u32> = baked
+        .held_items
+        .any(SKULL)
+        .and_then(|m| m.quads.first())
+        .and_then(|q| baked.held_items.textures.get(q.tex as usize))
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let (mut n, mut sx, mut sy, mut unexplained) = (0usize, 0f64, 0f64, None);
+    for (i, (a, b)) in worn
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bare.as_chunks::<4>().0)
+        .enumerate()
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        n += 1;
+        sx += (i as u32 % sw) as f64 + 0.5;
+        sy += (i as u32 / sw) as f64 + 0.5;
+        let c = pack(a[0], a[1], a[2]);
+        if unexplained.is_none() && !explains(&skull_sheet, c) {
+            unexplained = Some(c);
+        }
+    }
+    let centre = {
+        let c = Mat4::from_cols_array_2d(&st.vp)
+            * glam::Vec4::new(0.0, 1.501 - 1.0 / 16.0 + 4.0 * 1.1875 / 16.0, 0.0, 1.0);
+        (
+            (c.x / c.w * 0.5 + 0.5) * sw as f32,
+            (0.5 - c.y / c.w * 0.5) * sh as f32,
+        )
+    };
+    let got = (sx / n.max(1) as f64, sy / n.max(1) as f64);
+    let off = ((got.0 - centre.0 as f64).powi(2) + (got.1 - centre.1 as f64).powi(2)).sqrt();
+    st.destroy(gpu);
+    w.push(wit(
+        "m18.a_worn_skull_draws_on_the_armour_stands_head_in_its_own_sheet",
+        !skull_sheet.is_empty() && n >= 300 && unexplained.is_none() && off <= 1.0,
+        format!(
+            "{n} px added (want >= 300); centroid ({:.1}, {:.1}) vs the skull's centre \
+             ({:.1}, {:.1}): {off:.2} px (want <= 1); first colour the skull sheet \
+             cannot produce: {:?}",
+            got.0,
+            got.1,
+            centre.0,
+            centre.1,
+            unexplained.map(|c| format!("#{c:06x}"))
+        ),
+    ));
 
     // ---- report ----------------------------------------------------------
     let pass = w.iter().filter(|x| x.ok).count();
