@@ -446,6 +446,10 @@ pub(super) struct RenderCheck {
     /// M234 — r100: the model the first-person main hand drew standing and
     /// after 40 ticks drawing.
     pub(super) bow_models: (Option<String>, Option<String>),
+    /// M235 — r101: health before and after an unblocked hit, after a hit
+    /// with the shield up, and whether the off hand was using at that hit.
+    pub(super) shield_health: (f32, f32, f32),
+    pub(super) shield_up: bool,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -931,7 +935,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 100;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 101;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1626,6 +1630,24 @@ impl RenderCheck {
             format!(
                 "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
+        );
+        // M235 — r101: a right-click with a shield in the off hand and an
+        // empty main hand raises it (the main hand passes, the off hand's
+        // `use` starts), and the server blocks a hit from in front: the
+        // unblocked control lost health, the blocked hit none (natural
+        // regeneration can only raise it).
+        let (h0, h1, h2) = self.shield_health;
+        row(
+            "r101 a right-click raised the off-hand shield and the server blocked a hit from in front",
+            self.shield_up && h0 - h1 >= 3.0 && h2 >= h1,
+            format!(
+                "health {h0} -> {h1} unblocked, -> {h2} with the shield up (off hand using {}){}",
+                self.shield_up,
+                self.use_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
             ),
         );
         // M234 — r100: the bow's item model follows the draw. Standing it is
@@ -3112,6 +3134,86 @@ impl LiveApp {
                     c.bow_fov.1 = self.last_frame_fov;
                     c.bow_drawing = drawing;
                     c.bow_models.1 = model;
+                }
+                self.use_down = false;
+                // r101 next: a shield in the off hand, nothing in the main
+                // hand, facing south (+Z) and level.
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:air",
+                );
+                cmd(
+                    self,
+                    "item replace entity @s weapon.offhand with minecraft:shield",
+                );
+                if let Some(s) = self.session.as_mut() {
+                    s.player.yaw = 0.0;
+                    s.player.pitch = 0.0;
+                }
+                self.use_tick0 = now;
+                self.use_stage = 70;
+            }
+            // r101 — shield blocking, graded by the server's own damage: a
+            // hit from in front while NOT blocking costs health (the
+            // control), the same hit while the right-click holds the shield
+            // up costs none. `/damage .. at <pos>` gives the source a
+            // position, which `applyItemBlocking` measures the angle to.
+            70 if now >= self.use_tick0 + 20 => {
+                let front = self.session.as_ref().map(|s| {
+                    format!(
+                        "{:.2} {:.2} {:.2}",
+                        s.player.x,
+                        s.player.y + 1.0,
+                        s.player.z + 3.0
+                    )
+                });
+                let health = self.session.as_ref().map_or(0.0, |s| s.health);
+                if let Some(c) = self.check.as_mut() {
+                    c.shield_health.0 = health;
+                }
+                if let Some(f) = front {
+                    cmd(self, &format!("damage @s 4 minecraft:mob_attack at {f}"));
+                }
+                self.use_tick0 = now;
+                self.use_stage = 71;
+            }
+            // Past the 20-tick hurt invulnerability before blocking.
+            71 if now >= self.use_tick0 + 30 => {
+                let health = self.session.as_ref().map_or(0.0, |s| s.health);
+                if let Some(c) = self.check.as_mut() {
+                    c.shield_health.1 = health;
+                }
+                self.use_key_press();
+                self.use_tick0 = now;
+                self.use_stage = 72;
+            }
+            // Past the shield's `block_delay_seconds` (0.25 s, 5 ticks).
+            72 if now >= self.use_tick0 + 12 => {
+                let blocking = self.session.as_ref().is_some_and(|s| {
+                    let u = s.local_use_state();
+                    u.using && u.hand == rewo_world::entities::InteractionHand::OffHand
+                });
+                let front = self.session.as_ref().map(|s| {
+                    format!(
+                        "{:.2} {:.2} {:.2}",
+                        s.player.x,
+                        s.player.y + 1.0,
+                        s.player.z + 3.0
+                    )
+                });
+                if let Some(c) = self.check.as_mut() {
+                    c.shield_up = blocking;
+                }
+                if let Some(f) = front {
+                    cmd(self, &format!("damage @s 4 minecraft:mob_attack at {f}"));
+                }
+                self.use_tick0 = now;
+                self.use_stage = 73;
+            }
+            73 if now >= self.use_tick0 + 15 => {
+                let health = self.session.as_ref().map_or(0.0, |s| s.health);
+                if let Some(c) = self.check.as_mut() {
+                    c.shield_health.2 = health;
                 }
                 self.use_down = false;
                 self.use_stage = 60;

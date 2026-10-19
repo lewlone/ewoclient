@@ -2057,6 +2057,7 @@ this shape once.
 | M232 (2026-10-19) — a real crafting table crafts and a real furnace lights, cooks and gives up its result, in survival (and what was taken reaches the player inventory) | **r97**, **r98** | — | — |
 | M233 (2026-10-19) — drawing a bow narrows the frame's FOV to 0.85 of the standing FOV (vanilla's dynamic FOV) | **r99** | — | — |
 | M234 (2026-10-19) — a fully drawn bow's first-person model is `bow_pulling_2` (item-model use variants) | **r100** | — | — |
+| M235 (2026-10-19) — a right-click raises the off-hand shield and the server blocks a hit from in front | **r101** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3891,6 +3892,19 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M235 — shield blocking, checked live (2026-10-19)
+
+A witness, no client change: blocking already worked end to end. **r101**
+puts a shield in the off hand with an empty main hand and grades the
+SERVER's damage, which is the only judge of a block: `/damage @s 4
+minecraft:mob_attack at <3 blocks in front>` cost 3.36 health while not
+blocking (the control: 20 → 16.64), and the same hit 12 ticks into a
+right-click (past the shield's `block_delay_seconds`, 5 ticks) cost none.
+That proves the click loop's off-hand step (main hand empty, PASS, then
+`use_item` for the off hand), the server starting the use, and the look
+direction the server measures the hit's angle against. Natural
+regeneration can only raise the second reading, so it is graded `>=`.
 
 ### M234 — the bow, crossbow and goat horn change model when used (2026-10-19)
 
