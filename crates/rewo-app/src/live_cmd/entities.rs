@@ -1834,6 +1834,50 @@ pub(crate) fn projectile_model_of(name: &str) -> Option<(&'static str, f32)> {
 /// (no per-frame yaw/pitch interpolation), a stuck arrow's shake is not
 /// kept, a tipped arrow uses the plain texture, and a foil trident has no
 /// glint.
+/// M257 — every end crystal this frame, as `EndCrystalRenderer` draws it:
+/// `T(pos) · scale(2) · translate(0, -0.5, 0)` then the model, no living
+/// flip, its glass spinning and bobbing (`end_crystal_parts`); the base
+/// unless `DATA_SHOW_BOTTOM` is false. Recorded: the age is the world clock
+/// offset by the entity id (`EndCrystal.time` starts at a random value on
+/// the server and is never synced), and no beam.
+pub(super) fn collect_end_crystals(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::{mul, scale, translation, IDENTITY};
+    use rewo_data::block_entity_models::{END_CRYSTAL_GLASS_PIVOT, END_CRYSTAL_MODELS};
+    let mut out = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        if etypes.name(e.type_id) != Some("minecraft:end_crystal") {
+            continue;
+        }
+        let shows_bottom = session.world.entities.variant(id) != Some(0);
+        let model = END_CRYSTAL_MODELS[usize::from(!shows_bottom)].0;
+        let age = session.game_time() as f32 + alpha + (id & 0xff) as f32 * 7.0;
+        let [outer, inner, cube] = rewo_data::be_transform::end_crystal_parts(age);
+        let p = e.render_pos(alpha);
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            model: model.to_string(),
+            transform: mul(&scale(2.0, 2.0, 2.0), &translation(0.0, -0.5, 0.0)),
+            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            part_transforms: [IDENTITY, outer, inner, cube],
+            part_pivots: [
+                [0.0; 3],
+                END_CRYSTAL_GLASS_PIVOT,
+                END_CRYSTAL_GLASS_PIVOT,
+                END_CRYSTAL_GLASS_PIVOT,
+            ],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
+}
+
 pub(super) fn collect_projectiles(
     session: &PlaySession,
     etypes: &EntityTypes,
@@ -3074,6 +3118,7 @@ pub(super) fn collect_entities<'a>(
         if matches!(
             name,
             "minecraft:text_display"
+                | "minecraft:end_crystal"
                 | "minecraft:block_display"
                 | "minecraft:item_display"
                 | "minecraft:interaction"

@@ -291,6 +291,9 @@ pub struct EntityMeta {
     /// raw registry id. The serializer is the painting's alone, so it needs
     /// no kind gate.
     pub painting9: Option<i32>,
+    /// M257 — a BOOLEAN at index 9: `EndCrystal.DATA_SHOW_BOTTOM`,
+    /// kind-gated by the caller.
+    pub bool9: Option<bool>,
     /// M255 — `Display` (11–14): translation, scale (VECTOR3), left and right
     /// rotation (QUATERNION). Those serializers at those indices are the
     /// display entities' alone.
@@ -429,6 +432,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (10, 1) => meta.int10 = r.varint().ok(),
             (8, 1) => meta.int8 = r.varint().ok(),
             (9, 34) => meta.painting9 = r.varint().ok(),
+            (9, 8) => meta.bool9 = r.u8().ok().map(|b| b != 0),
             (11, 39) => meta.display_translation = read_f32s::<3>(r),
             (12, 39) => meta.display_scale = read_f32s::<3>(r),
             (13, 40) => meta.display_left = read_f32s::<4>(r),

@@ -165,6 +165,9 @@ PRECMD = (
     "summon minecraft:painting ~-2 ~1 ~15 {facing:2b,variant:\"minecraft:kebab\"};"
     # M255 -- r114. A text display (a hologram), gold, facing the camera.
     "summon minecraft:text_display ~2 ~2 ~-4 {billboard:\"center\",text:{text:\"RewoHolo\",color:\"gold\"}};"
+    # M257 -- r116. An end crystal, invulnerable so a stray click cannot
+    # blow up the bot.
+    "summon minecraft:end_crystal ~2 ~ ~-8 {Invulnerable:1b};"
     # M256 -- r115. An item display (an amethyst shard), fixed context.
     "summon minecraft:item_display ~3 ~2 ~-5 {item:{id:\"minecraft:amethyst_shard\",count:1},item_display:\"fixed\",billboard:\"center\"};"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"

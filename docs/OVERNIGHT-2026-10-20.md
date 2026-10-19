@@ -233,6 +233,9 @@ released.
   background box behind the text yet.
 - **M256**: item displays (floating items servers decorate with) draw their
   item, posed the way vanilla poses them, glint included.
+- **M257**: end crystals are end crystals (they were grey capsules), the
+  glass spinning and bobbing. No beam to the dragon yet, and the texture is
+  drawn at half its resolution (it is too big for the entity atlas).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -293,6 +296,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M257)* | **M257** — end crystals: `EndCrystalModel` (two models, with and without the base) through the block-entity emitter, the nested glass animation as part transforms, `DATA_SHOW_BOTTOM`, the 128x64 sheet halved for the atlas; render-check **r116**. |
 | `a03a237` | **M256** — item displays: the stack, context and billboard into `DisplayState`; vanilla's pose (`YP(π)`, the context's display transform, `translate(-0.5)`) through the block-entity emitter with glint; render-check **r115**. |
 | `0061293` | **M255** — text displays: `Display` metadata into a `DisplayState` side map, vanilla's pose and billboards, line split/wrap/alignment, coloured runs on the world-text path; no capsules for displays, interactions, markers, effect clouds; render-check **r114**. |
 | `2b02b11` | **M254** — paintings: the `painting_variant` registry synced, the variant at metadata index 9, every jar variant baked from `PaintingRenderer`'s geometry and drawn by facing; render-check **r113**. |
@@ -557,7 +561,10 @@ released.
 - Text displays draw no background box, shadow or opacity yet (M255);
   block displays draw nothing (no longer capsules). Item displays (M256)
   have no brightness override or interpolation.
-- Still capsules after M254: end crystals, wither skulls, wind charges, llama spit, shulker bullets, the dragon fireball, evoker fangs and the display entities. A minecart's contents block is not drawn, nor its slope pitch. (M241 drew the fishing line; M250 the arrows and the thrown trident.)
+- End crystals (M257) draw no beam, and their sheet is halved to fit the
+  entity atlas's 64x64 large slots; a larger slot would draw it at full
+  resolution.
+- Still capsules after M257: wither skulls, wind charges, llama spit, shulker bullets, the dragon fireball and evoker fangs (the display entities are no longer capsules; block displays draw nothing). A minecart's contents block is not drawn, nor its slope pitch. (M241 drew the fishing line; M250 the arrows and the thrown trident.)
 - After M241: **4,350 tests passed, 0 failed; gates 51/51**; render check **108/108** on three runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M242: **4,356 tests; 4,351 passed in the full run and the 5 failures, all `rewo-net` `srv` TCP tests at the fake nameserver's port pairing ("a port free for both UDP and TCP"), passed on rerun (34/34): the shared PC's sockets, not Rewo; gates 51/51** (inventoryshot 169, itemshot 78); render check **108/108** on two runs; clippy (gates and default features, after one needless `clone`) and `cargo fmt --check` clean.
 - After M243: **4,357 tests passed, 0 failed; gates 51/51** (itemshot 79); render check **108/108** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
@@ -573,6 +580,7 @@ released.
 - After M254: **4,376 tests; the full run passed 4,375 and failed `reconfigure.rs`'s `malformed_bodies_are_counted_once_each`, whose truncated-registry fixture was `painting_variant`, now a parsed registry: the four variant parsers stopped short silently, so a short variant registry is now counted (`short_registry`) and rewo-net passes 1,380 + 7 + 4; gates 51/51**; render check **113/113** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M255: **4,379 tests passed, 0 failed; gates 51/51**; render check **114/114** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M256: **4,381 tests passed, 0 failed; gates 51/51**; render check **115/115** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- After M257: **4,385 tests; two full runs each failed one different load-sensitive rewo-net test (`connect_any`'s reused dead port, then the inbound budget test's 50 ms settle), both pass alone and are fixed in the next commit; gates 51/51**; render check **116/116** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

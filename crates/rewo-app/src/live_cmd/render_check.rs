@@ -256,6 +256,9 @@ pub(super) struct RenderCheck {
     /// M256 — r115: frames on which the staged item display drew every quad
     /// of its item's model.
     pub(super) item_display_frames: usize,
+    /// M257 — r116: frames on which the staged end crystal drew every quad
+    /// of its model.
+    pub(super) end_crystal_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1008,7 +1011,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 115;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 116;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1198,6 +1201,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M257 — r116: `render_check.py` summons an (invulnerable) end
+        // crystal. Until M257 it was a grey capsule; it must draw every quad
+        // of `rewo:be/end_crystal`, whose 128x64 sheet is halved to fit the
+        // entity atlas's large band.
+        row(
+            "r116 an end crystal drew its model",
+            self.end_crystal_frames >= 1,
+            format!("{} frames drew it", self.end_crystal_frames),
         );
         // M256 — r115: `render_check.py` summons an item display holding an
         // amethyst shard. Its stack arrives as metadata index 23 (an

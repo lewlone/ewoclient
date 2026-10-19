@@ -581,6 +581,7 @@ impl PlaySession {
                 experience_orb: self.take_item_kinds.orb,
                 text_display: self.text_display_type_id,
                 item_display: self.item_display_type_id,
+                end_crystal: self.end_crystal_type_id,
                 creaking: self.creaking_type_id,
                 player: self.player_type_id,
                 bee: self.bee_type_id,

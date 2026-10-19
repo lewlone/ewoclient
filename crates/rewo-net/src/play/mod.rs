@@ -803,6 +803,8 @@ pub struct PlaySession {
     pub text_display_type_id: Option<i32>,
     /// `minecraft:item_display`'s type id (M256).
     pub item_display_type_id: Option<i32>,
+    /// `minecraft:end_crystal`'s type id (M257).
+    pub end_crystal_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
     pub creaking_type_id: Option<i32>,
     /// `minecraft:bee` — gates the index-19 anger deadline, and names the kind
@@ -2025,6 +2027,7 @@ impl<'a> Connection<'a> {
             firework_type_id: None,
             text_display_type_id: None,
             item_display_type_id: None,
+            end_crystal_type_id: None,
             creaking_type_id: None,
             bee_type_id: None,
             guardian_type_id: None,

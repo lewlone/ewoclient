@@ -2429,6 +2429,8 @@ pub struct MetaKinds<'a> {
     pub text_display: Option<i32>,
     /// `minecraft:item_display` type id (M256) — gates indices 23–24.
     pub item_display: Option<i32>,
+    /// `minecraft:end_crystal` type id (M257) — gates the index-9 BOOLEAN.
+    pub end_crystal: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
@@ -2821,6 +2823,13 @@ pub(crate) fn apply_set_entity_data<'a>(
                     d.billboard = v;
                 }
             }
+        }
+    }
+    // M257 — an end crystal's `DATA_SHOW_BOTTOM` (9, BOOLEAN), kept as its
+    // variant (1 shown, 0 hidden; none sent is vanilla's default, shown).
+    if let Some(v) = meta.bool9 {
+        if kinds.end_crystal == Some(type_id) {
+            entities.set_variant(eid, i32::from(v));
         }
     }
     // Slot 9 PAINTING_VARIANT → the painting's variant (M254), raw id.
@@ -5409,6 +5418,27 @@ mod set_entity_data_tests {
         }
         apply_set_entity_data(&body(7, 11, 39, &v), &mut t, kinds);
         assert_eq!(t.display(7).map(|d| d.translation), Some([1.0, 2.0, 3.0]));
+    }
+
+    /// M257 — index 9 BOOLEAN is an end crystal's `DATA_SHOW_BOTTOM`
+    /// (kept as its variant, 0 hidden), and nothing for another kind.
+    #[test]
+    fn index9_bool_is_an_end_crystals_show_bottom_only() {
+        const CRYSTAL: i32 = 902;
+        let kinds = crate::MetaKinds {
+            end_crystal: Some(CRYSTAL),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, CRYSTAL, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.variant(7), None, "shown until the server says");
+        apply_set_entity_data(&body(7, 9, 8, &[0]), &mut t, kinds);
+        apply_set_entity_data(&body(8, 9, 8, &[0]), &mut t, kinds);
+        assert_eq!(t.variant(7), Some(0));
+        assert_eq!(t.variant(8), None, "a zombie's slot 9 is not a crystal's");
+        apply_set_entity_data(&body(7, 9, 8, &[1]), &mut t, kinds);
+        assert_eq!(t.variant(7), Some(1));
     }
 
     /// M256 — an item display's stack (23, ITEM_STACK), context (24, BYTE)

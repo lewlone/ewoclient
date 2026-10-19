@@ -893,6 +893,13 @@ impl LiveApp {
         bes.extend(frames.models);
         // M250 — arrows and thrown tridents, by their models.
         bes.extend(collect_projectiles(session, &self.etypes, &lightmap, alpha));
+        // M257 — end crystals.
+        bes.extend(collect_end_crystals(
+            session,
+            &self.etypes,
+            &lightmap,
+            alpha,
+        ));
         // M256 — item displays.
         bes.extend(collect_item_displays(
             session,
@@ -1160,6 +1167,24 @@ impl LiveApp {
                 });
             if item_display {
                 c.item_display_frames += 1;
+            }
+            // M257 — r116: the staged end crystal drew every quad of its
+            // model (base included).
+            let crystal = rewo_data::block_entity_models::END_CRYSTAL_MODELS[0].0;
+            let drew_crystal = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| d.model == crystal)
+                .any(|(_, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(crystal))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                });
+            if drew_crystal {
+                c.end_crystal_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

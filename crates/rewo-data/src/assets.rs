@@ -4377,6 +4377,8 @@ impl<'a> Baker<'a> {
         ));
         // M250 — the arrows.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_arrows));
+        // M257 — the end crystals.
+        be_models.append(&mut bake_be!(crate::block_entity_models::bake_end_crystals));
         // M254 — the paintings.
         be_models.append(&mut bake_be!(
             |pool: &mut crate::held_items::TexturePool,

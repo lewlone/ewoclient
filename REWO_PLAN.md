@@ -2071,6 +2071,7 @@ this shape once.
 | M254 (2026-10-19) — a hung painting draws its variant's model | **r113** | — | — |
 | M255 (2026-10-19) — a text display's coloured text reaches the world-text list | **r114** | — | — |
 | M256 (2026-10-19) — an item display draws its item's model | **r115** | — | — |
+| M257 (2026-10-19) — an end crystal draws its model | **r116** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3905,6 +3906,39 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M257 — end crystals (2026-10-19)
+
+An end crystal was a grey capsule. It is now `EndCrystalModel` through the
+block-entity emitter:
+
+- **Model** (`block_entity_models::bake_end_crystals`): the base (group 0)
+  and the outer glass, inner glass and cube (groups 1–3), each glass part
+  baked unscaled at the outer glass's `offset(0, 24, 0)`. Two models, with
+  and without the base, because the glass uses three of the four animated
+  groups. The sheet is 128×64 (a 64×32 layer at double resolution), larger
+  than the entity atlas's 64×64 large slots, so it is halved at bake
+  (`halve_texture`, alpha-weighted 2×2 means); the UVs are fractions of the
+  sheet and keep their mapping.
+- **Animation** (`be_transform::end_crystal_parts`): `setupAnim`'s nesting,
+  each level `translateAndRotate`'s translate, rotate, scale: the outer
+  glass bobbing by `getY` and turned by `YP(3·age°) · axis(π/3)`, the inner
+  glass inside it by `axis(π/3) · YP(3·age°)` at 0.875, the cube inside
+  that the same way at 0.765625; the axis is `(sin 45°, 0, sin 45°)`.
+- **Pose**: `EndCrystalRenderer`'s `scale(2) · translate(0, -0.5, 0)`, no
+  living flip.
+- **Metadata**: `DATA_SHOW_BOTTOM` (index 9 BOOLEAN), gated on the
+  `end_crystal` type, kept as the entity's variant and picking the model.
+
+Recorded: the age is the world clock offset by the entity id
+(`EndCrystal.time` starts at a random value on the server and is never
+synced), `f32::sin` for `Mth.sin`, no beam, half-resolution texture.
+
+Tests: `end_crystal_glass_nests_its_turns_and_scales` (the bob at age 0, the
+inner glass's 120° and the cube's half turn about the axis with their
+scales, derived as powers of the tilt), `halve_texture_weights_colour_by_alpha`,
+`end_crystal_models_group_the_glass`, `index9_bool_is_an_end_crystals_show_bottom_only`.
+**r116**: a summoned end crystal draws every quad of its model.
 
 ### M256 — item displays (2026-10-19)
 

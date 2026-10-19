@@ -1797,6 +1797,114 @@ pub fn bake_bell_and_book(
     out
 }
 
+// ---------------------------------------------------------------- end crystals
+//
+// M257 — `EndCrystalModel`, drawn by `EndCrystalRenderer` (no living-entity
+// flip): `scale(2) · translate(0, -0.5, 0) · model`, its glass animated by
+// `setupAnim` through the part transforms
+// (`be_transform::end_crystal_parts`).
+
+/// The two end crystal models: `(name, with base)`. `DATA_SHOW_BOTTOM`
+/// picks one; a model has only four animated groups and the glass needs
+/// three of them, so a hidden base is a second model rather than a group.
+pub const END_CRYSTAL_MODELS: [(&str, bool); 2] = [
+    ("rewo:be/end_crystal", true),
+    ("rewo:be/end_crystal_no_base", false),
+];
+/// `EndCrystalRenderer.END_CRYSTAL_LOCATION`.
+pub const END_CRYSTAL_TEXTURE: &str = "entity/end_crystal/end_crystal";
+/// The outer glass's `PartPose.offset(0, 24, 0)`, in model px: the pivot
+/// of all three glass groups (the inner glass and the cube sit at their
+/// parent's origin).
+pub const END_CRYSTAL_GLASS_PIVOT: [f32; 3] = [0.0, 24.0, 0.0];
+
+/// `EndCrystalModel.createBodyLayer` (64×32): the base at the origin
+/// (group 0), then the outer glass, inner glass and cube (groups 1, 2, 3),
+/// each baked unscaled at the glass pivot. The inner glass's
+/// `withScale(0.875)` and the cube's `0.765625` are in the part transforms,
+/// which compose the nesting.
+const END_CRYSTAL_BASE: Box = plain(
+    (0.0, 16.0),
+    [-6.0, 0.0, -6.0],
+    [12.0, 4.0, 12.0],
+    [0.0; 3],
+    0,
+);
+const END_CRYSTAL_GLASS: [Box; 3] = [
+    plain((0.0, 0.0), [-4.0; 3], [8.0; 3], END_CRYSTAL_GLASS_PIVOT, 1),
+    plain((0.0, 0.0), [-4.0; 3], [8.0; 3], END_CRYSTAL_GLASS_PIVOT, 2),
+    plain((32.0, 0.0), [-4.0; 3], [8.0; 3], END_CRYSTAL_GLASS_PIVOT, 3),
+];
+
+/// A texture at half its size, each texel the alpha-weighted mean of a 2×2
+/// block. The end crystal's sheet is 128×64 (a 64×32 layer at double
+/// resolution), larger than the entity atlas's 64×64 large slots; its UVs
+/// are fractions of the sheet, so a halved copy draws the same mapping at
+/// the layer's own resolution.
+pub fn halve_texture(t: &HeldTexture) -> HeldTexture {
+    let (w, h) = (t.w / 2, t.h / 2);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = [0u32; 4];
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let i = (((y * 2 + dy) * t.w + x * 2 + dx) * 4) as usize;
+                let a = t.rgba[i + 3] as u32;
+                for (k, s) in sum.iter_mut().take(3).enumerate() {
+                    *s += t.rgba[i + k] as u32 * a;
+                }
+                sum[3] += a;
+            }
+            let o = ((y * w + x) * 4) as usize;
+            for k in 0..3 {
+                rgba[o + k] = (sum[k] + sum[3] / 2)
+                    .checked_div(sum[3])
+                    .map_or(0, |v| v as u8);
+            }
+            rgba[o + 3] = ((sum[3] + 2) / 4) as u8;
+        }
+    }
+    HeldTexture { w, h, rgba }
+}
+
+/// M257 — the end crystal models, from the halved sheet.
+pub fn bake_end_crystals(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let Some(tex) = pool.intern(END_CRYSTAL_TEXTURE, || {
+        load(END_CRYSTAL_TEXTURE).map(|t| if t.w > 64 { halve_texture(&t) } else { t })
+    }) else {
+        log::error!("end crystal: no texture {END_CRYSTAL_TEXTURE:?}");
+        return Vec::new();
+    };
+    END_CRYSTAL_MODELS
+        .iter()
+        .map(|(name, base)| {
+            let mut boxes = Vec::with_capacity(4);
+            if *base {
+                boxes.push(END_CRYSTAL_BASE);
+            }
+            boxes.extend(END_CRYSTAL_GLASS);
+            (
+                name.to_string(),
+                HeldItemModel {
+                    quads: model_quads(&boxes, tex, (64.0, 32.0)),
+                    right: DisplayTransform::IDENTITY,
+                    left: DisplayTransform::IDENTITY,
+                    ground: DisplayTransform::IDENTITY,
+                    gui: DisplayTransform::IDENTITY,
+                    first_right: DisplayTransform::IDENTITY,
+                    first_left: DisplayTransform::IDENTITY,
+                    fixed: DisplayTransform::IDENTITY,
+                    from_block: false,
+                    gui_quads: None,
+                },
+            )
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------- arrows
 //
 // M250 — `ArrowModel`, drawn by `ArrowRenderer` (no living-entity flip):
@@ -2356,6 +2464,52 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M257 — each halved texel is the alpha-weighted mean of its 2×2
+    /// block: two opaque reds and two clear texels make red at half alpha
+    /// (the clear texels' colour does not bleed in); four clear texels stay
+    /// clear.
+    #[test]
+    fn halve_texture_weights_colour_by_alpha() {
+        let red = [255, 0, 0, 255];
+        let clear_blue = [0, 0, 255, 0];
+        let mut rgba = Vec::new();
+        for row in [
+            [red, clear_blue, clear_blue, clear_blue],
+            [clear_blue, red, clear_blue, clear_blue],
+        ] {
+            for px in row {
+                rgba.extend_from_slice(&px);
+            }
+        }
+        let t = HeldTexture { w: 4, h: 2, rgba };
+        let h = halve_texture(&t);
+        assert_eq!((h.w, h.h), (2, 1));
+        assert_eq!(&h.rgba[..4], &[255, 0, 0, 128]);
+        assert_eq!(&h.rgba[4..], &[0, 0, 0, 0]);
+    }
+
+    /// M257 — the crystal with its base has the base's six faces more than
+    /// the one without, and its three glass groups are 1, 2 and 3.
+    #[test]
+    fn end_crystal_models_group_the_glass() {
+        let parts = |base: bool| {
+            let mut boxes = Vec::new();
+            if base {
+                boxes.push(END_CRYSTAL_BASE);
+            }
+            boxes.extend(END_CRYSTAL_GLASS);
+            let q = model_quads(&boxes, 0, (64.0, 32.0));
+            let mut groups: Vec<u8> = q.iter().map(|q| q.part).collect();
+            groups.dedup();
+            (q.len(), groups)
+        };
+        let (with, g1) = parts(true);
+        let (without, g2) = parts(false);
+        assert_eq!(with, without + 6);
+        assert_eq!(g1, [0, 1, 2, 3]);
+        assert_eq!(g2, [1, 2, 3]);
+    }
 
     /// M254 — a 2×1 painting: two cells, each a front and a back, plus the
     /// two top and two bottom edge strips and one side at each end (10

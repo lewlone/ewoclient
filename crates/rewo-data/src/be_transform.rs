@@ -812,6 +812,50 @@ pub fn chest_lid_part(openness: f32, pivot: [f32; 3]) -> Affine {
     mul(&part_at_rest(pivot), &chest_lid(openness))
 }
 
+/// A rotation of `rad` about `axis` (taken as unit): JOML's
+/// `Quaternionf.setAngleAxis` / `rotateAxis` as a matrix.
+pub fn axis_angle(rad: f32, axis: [f32; 3]) -> Affine {
+    let [x, y, z] = axis;
+    let (s, c) = rad.sin_cos();
+    let t = 1.0 - c;
+    [
+        [t * x * x + c, t * x * y - s * z, t * x * z + s * y, 0.0],
+        [t * x * y + s * z, t * y * y + c, t * y * z - s * x, 0.0],
+        [t * x * z - s * y, t * y * z + s * x, t * z * z + c, 0.0],
+    ]
+}
+
+/// `EndCrystalRenderer.getY`: the crystal's bob, in blocks (`-1.4..-0.6`).
+/// `f32::sin` stands in for `Mth.sin`'s table.
+pub fn end_crystal_y(age: f32) -> f32 {
+    let hh = (age * 0.2).sin() / 2.0 + 0.5;
+    (hh * hh + hh) * 0.4 - 1.4
+}
+
+/// M257 — `EndCrystalModel.setupAnim`'s three glass groups at `ageInTicks`,
+/// ready for the emitter (each maps a corner, less the glass pivot, to model
+/// px): the outer glass at `offset(0, 24 + y/2, 0)` turned by
+/// `YP(3·age°) · axis(π/3)`, the inner glass inside it turned by
+/// `axis(π/3) · YP(3·age°)` and scaled 0.875, the cube inside that turned
+/// the same way and scaled 0.765625 — `translateAndRotate`'s translate,
+/// rotate, scale at every level. The axis is `(sin 45°, 0, sin 45°)`.
+pub fn end_crystal_parts(age: f32) -> [Affine; 3] {
+    let s = std::f32::consts::FRAC_PI_4.sin();
+    let tilt = axis_angle(std::f32::consts::FRAC_PI_3, [s, 0.0, s]);
+    let spin = rot_y(age * 3.0);
+    let y = end_crystal_y(age) * 16.0;
+    let outer = mul(&translation(0.0, 24.0 + y / 2.0, 0.0), &mul(&spin, &tilt));
+    let inner = mul(
+        &outer,
+        &mul(&mul(&tilt, &spin), &scale(0.875, 0.875, 0.875)),
+    );
+    let cube = mul(
+        &inner,
+        &mul(&mul(&tilt, &spin), &scale(0.765625, 0.765625, 0.765625)),
+    );
+    [outer, inner, cube]
+}
+
 /// The shulker lid group's full transform. Unlike the chest's, the translation
 /// is already inside [`shulker_lid`] — `setPos` *replaces* the pose offset
 /// rather than adding to it, so composing with the pivot again would move the
@@ -823,6 +867,44 @@ pub fn shulker_lid_part(progress: f32) -> Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M257 — at age 0 the outer glass sits at `24 + getY(0)·8` px (getY(0)
+    /// is -1.1) turned by the tilt alone; the inner glass carries the tilt
+    /// twice (a 120° turn about the axis) at 0.875, the cube three times
+    /// (a half turn) at 0.875 · 0.765625. The tilt keeps its axis fixed.
+    #[test]
+    fn end_crystal_glass_nests_its_turns_and_scales() {
+        let apply = |m: &Affine, v: [f32; 3]| -> [f32; 3] {
+            std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+        };
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-4);
+        assert!((end_crystal_y(0.0) + 1.1).abs() < 1e-6);
+        for t in 0..200 {
+            let y = end_crystal_y(t as f32 * 0.37);
+            assert!((-1.4..=-0.6 + 1e-6).contains(&y), "{y}");
+        }
+        let s = std::f32::consts::FRAC_PI_4.sin();
+        let axis = [s, 0.0, s];
+        let tilt = axis_angle(std::f32::consts::FRAC_PI_3, axis);
+        assert!(close(apply(&tilt, axis), axis));
+        let [outer, inner, cube] = end_crystal_parts(0.0);
+        let at = 24.0 - 1.1 * 8.0;
+        assert!(close(apply(&outer, [0.0; 3]), [0.0, at, 0.0]));
+        let less = |v: [f32; 3]| [v[0], v[1] - at, v[2]];
+        let x = [1.0, 0.0, 0.0];
+        assert!(close(less(apply(&outer, x)), apply(&tilt, x)));
+        let turn120 = axis_angle(2.0 * std::f32::consts::FRAC_PI_3, axis);
+        let k = 0.875;
+        assert!(close(
+            less(apply(&inner, x)),
+            apply(&turn120, [k, 0.0, 0.0])
+        ));
+        let half = axis_angle(std::f32::consts::PI, axis);
+        let k2 = 0.875 * 0.765625;
+        assert!(close(less(apply(&cube, x)), apply(&half, [k2, 0.0, 0.0])));
+        // A half turn about (s, 0, s) swaps x and z: x lands on +z.
+        assert!(close(apply(&half, x), [0.0, 0.0, 1.0]));
+    }
 
     #[test]
     fn a_shut_shulker_lid_is_the_pose_offset_itself() {
