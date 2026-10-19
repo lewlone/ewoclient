@@ -837,6 +837,9 @@ struct LiveApp {
     mount_captured: bool,
     #[cfg(feature = "gates")]
     rc_captured_at: bool,
+    /// M265 — r123's interpolation command has been sent.
+    #[cfg(feature = "gates")]
+    rc_interp_sent: bool,
     /// r87's tail stage (M221), the tick a step began.
     #[cfg(feature = "gates")]
     boat_stage: u8,
@@ -1251,6 +1254,8 @@ fn run_windowed(
         mount_captured: false,
         #[cfg(feature = "gates")]
         rc_captured_at: false,
+        #[cfg(feature = "gates")]
+        rc_interp_sent: false,
         #[cfg(feature = "gates")]
         boat_stage: 0,
         #[cfg(feature = "gates")]

@@ -1247,6 +1247,16 @@ impl LiveApp {
             if drew_crystal {
                 c.end_crystal_frames += 1;
             }
+            // M265 — r123: a block display drawn part-way through its scale-up.
+            if session.world.entities.iter().any(|(id, e)| {
+                self.etypes.name(e.type_id) == Some("minecraft:block_display")
+                    && session.world.entities.display(id).is_some_and(|d| {
+                        let s = d.render_transformation(alpha).scale[0];
+                        s > 1.05 && s < 2.95
+                    })
+            }) {
+                c.display_interp_frames += 1;
+            }
             // M264 — r122: the staged bell, rung by the redstone block placed
             // beside it, drew its body swung away from rest.
             let rest =

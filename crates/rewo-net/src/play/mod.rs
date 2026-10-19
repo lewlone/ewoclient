@@ -2739,6 +2739,8 @@ impl PlaySession {
         self.tick_music();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
+        // `Display.tick` — the displays' transformation interpolation (M265).
+        self.world.entities.tick_displays();
         // `ChestLidController.tickLid` — the client animates the ten ticks the
         // server never sends (M25c).
         self.world.block_entities.tick_lids();

@@ -1079,6 +1079,169 @@ pub struct DisplayState {
     /// M260 — `BlockDisplay.DATA_BLOCK_STATE_ID` (23): the state id; `None`
     /// is air, vanilla's default.
     pub block: Option<u32>,
+    /// M265 — the transformation's interpolation (`Display.tick`'s render
+    /// state). The four fields above are the synced target.
+    pub interp: DisplayInterp,
+}
+
+/// M265 — a display's `Transformation`: translation, left rotation, scale,
+/// right rotation (quaternions `[x, y, z, w]`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DisplayTransformation {
+    pub translation: [f32; 3],
+    pub left_rotation: [f32; 4],
+    pub scale: [f32; 3],
+    pub right_rotation: [f32; 4],
+}
+
+impl Default for DisplayTransformation {
+    fn default() -> Self {
+        Self {
+            translation: [0.0; 3],
+            left_rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+            right_rotation: [0.0, 0.0, 0.0, 1.0],
+        }
+    }
+}
+
+impl DisplayTransformation {
+    /// `Transformation.slerp`: translation and scale linear, both rotations
+    /// JOML's `Quaternionf.slerp` (the shorter way round).
+    pub fn slerp(&self, to: &Self, t: f32) -> Self {
+        let lerp3 = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
+            std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
+        };
+        Self {
+            translation: lerp3(self.translation, to.translation),
+            left_rotation: quat_slerp(self.left_rotation, to.left_rotation, t),
+            scale: lerp3(self.scale, to.scale),
+            right_rotation: quat_slerp(self.right_rotation, to.right_rotation, t),
+        }
+    }
+}
+
+/// JOML's `Quaternionf.slerp(target, alpha)`: the sign flipped toward the
+/// shorter arc, a linear blend when the two are nearly equal.
+fn quat_slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let cosom = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    let abs = cosom.abs();
+    let (s0, mut s1) = if 1.0 - abs > 1e-6 {
+        let sinsqr = 1.0 - abs * abs;
+        let sinom = 1.0 / sinsqr.sqrt();
+        let omega = sinsqr.sqrt().atan2(abs);
+        (((1.0 - t) * omega).sin() * sinom, (t * omega).sin() * sinom)
+    } else {
+        (1.0 - t, t)
+    };
+    if cosom < 0.0 {
+        s1 = -s1;
+    }
+    std::array::from_fn(|i| s0 * a[i] + s1 * b[i])
+}
+
+/// M265 — `Display`'s client-side interpolation state: the synced start
+/// delay (index 8) and duration (index 9), the flags `onSyncedDataUpdated`
+/// raises, and the render state `tick` rebuilds from them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisplayInterp {
+    /// `DATA_TRANSFORMATION_INTERPOLATION_START_DELTA_TICKS_ID` (8).
+    pub delay: i32,
+    /// `DATA_TRANSFORMATION_INTERPOLATION_DURATION_ID` (9).
+    pub duration_synced: i32,
+    /// `updateStartTick`, `updateInterpolationDuration`, `updateRenderState`.
+    pub pending_start: bool,
+    pub pending_duration: bool,
+    pub pending_render: bool,
+    /// `tickCount`, advanced once per client tick.
+    ticks: i64,
+    /// `interpolationStartClientTick` and `interpolationDuration`.
+    start: i64,
+    duration: i32,
+    /// The render state's interpolator `(previous, current)`; `None` before
+    /// the first tick (vanilla draws nothing then).
+    render: Option<(DisplayTransformation, DisplayTransformation)>,
+}
+
+impl DisplayInterp {
+    /// `calculateInterpolationProgress(partialTicks)`.
+    fn progress(&self, partial: f32) -> f32 {
+        if self.duration <= 0 {
+            return 1.0;
+        }
+        (((self.ticks - self.start) as f32 + partial) / self.duration as f32).clamp(0.0, 1.0)
+    }
+
+    /// `Display.tick`'s client branch (the level has already advanced
+    /// `tickCount`): the start tick, then the duration, then, if a render
+    /// field changed, a fresh render state (no interpolation, or none yet) or
+    /// an interpolated one from where the old one had got to. That point is
+    /// the progress the last frame drew, `lastProgress`, so it is measured
+    /// before the new start and duration apply.
+    pub fn tick(&mut self, target: DisplayTransformation) {
+        self.ticks += 1;
+        let last = self.progress(0.0);
+        if self.pending_start {
+            self.pending_start = false;
+            self.start = self.ticks + i64::from(self.delay);
+        }
+        if self.pending_duration {
+            self.pending_duration = false;
+            self.duration = self.duration_synced;
+        }
+        if self.pending_render {
+            self.pending_render = false;
+            self.render = Some(match self.render {
+                Some((from, to)) if self.duration != 0 => {
+                    let now = if last >= 1.0 {
+                        to
+                    } else {
+                        from.slerp(&to, last)
+                    };
+                    (now, target)
+                }
+                _ => (target, target),
+            });
+        }
+    }
+
+    /// The transformation to draw at `partial` ticks past this tick:
+    /// `TransformationInterpolator.get(progress)`, or `target` before the
+    /// first tick.
+    pub fn transformation(
+        &self,
+        target: DisplayTransformation,
+        partial: f32,
+    ) -> DisplayTransformation {
+        match self.render {
+            None => target,
+            Some((from, to)) => {
+                let p = self.progress(partial);
+                if p >= 1.0 {
+                    to
+                } else {
+                    from.slerp(&to, p)
+                }
+            }
+        }
+    }
+}
+
+impl DisplayState {
+    /// M265 — the synced target transformation.
+    pub fn target(&self) -> DisplayTransformation {
+        DisplayTransformation {
+            translation: self.translation,
+            left_rotation: self.left_rotation,
+            scale: self.scale,
+            right_rotation: self.right_rotation,
+        }
+    }
+
+    /// M265 — the transformation to draw at `partial` ticks.
+    pub fn render_transformation(&self, partial: f32) -> DisplayTransformation {
+        self.interp.transformation(self.target(), partial)
+    }
 }
 
 impl Default for DisplayState {
@@ -1097,6 +1260,7 @@ impl Default for DisplayState {
             item: None,
             item_context: 0,
             block: None,
+            interp: DisplayInterp::default(),
         }
     }
 }
@@ -2398,6 +2562,14 @@ impl EntityTable {
     /// first write.
     pub fn display_mut(&mut self, id: i32) -> &mut DisplayState {
         self.displays.entry(id).or_default()
+    }
+
+    /// M265 — advance every display's interpolation one client tick.
+    pub fn tick_displays(&mut self) {
+        for d in self.displays.values_mut() {
+            let target = d.target();
+            d.interp.tick(target);
+        }
     }
 
     /// M255 — the display entity's state, if any metadata has arrived.
@@ -4280,6 +4452,79 @@ mod jump_vehicle_tests {
 /// The per-id side maps: a removed or re-added entity leaves nothing behind.
 #[cfg(test)]
 mod side_state_tests {
+    /// M265 — a display's transformation follows `Display.tick`: the first
+    /// tick builds a fresh state; an update with a 10-tick duration moves
+    /// from where it was over ten ticks (1.1 at a twentieth, 2.0 at half);
+    /// a new target half-way starts from the point the last frame drew
+    /// (`lastProgress` 0.7 under the OLD start: 2.4); without a duration an
+    /// update snaps.
+    #[test]
+    fn display_transformation_interpolates_like_vanillas_tick() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        let scale = |d: &DisplayState, p: f32| d.render_transformation(p).scale[0];
+        let mut d = DisplayState::default();
+        d.interp.pending_render = true;
+        d.interp.tick(d.target());
+        assert!(close(scale(&d, 0.5), 1.0));
+        d.scale = [3.0; 3];
+        d.interp.delay = 0;
+        d.interp.pending_start = true;
+        d.interp.duration_synced = 10;
+        d.interp.pending_duration = true;
+        d.interp.pending_render = true;
+        d.interp.tick(d.target());
+        assert!(close(scale(&d, 0.0), 1.0));
+        assert!(close(scale(&d, 0.5), 1.1), "{}", scale(&d, 0.5));
+        for _ in 0..5 {
+            d.interp.tick(d.target());
+        }
+        assert!(close(scale(&d, 0.0), 2.0), "{}", scale(&d, 0.0));
+        d.interp.tick(d.target());
+        d.scale = [1.0; 3];
+        d.interp.pending_start = true;
+        d.interp.pending_render = true;
+        d.interp.tick(d.target());
+        assert!(close(scale(&d, 0.0), 2.4), "{}", scale(&d, 0.0));
+        for _ in 0..10 {
+            d.interp.tick(d.target());
+        }
+        assert!(close(scale(&d, 0.0), 1.0));
+        d.interp.duration_synced = 0;
+        d.interp.pending_duration = true;
+        d.scale = [5.0; 3];
+        d.interp.pending_render = true;
+        d.interp.tick(d.target());
+        assert!(close(scale(&d, 0.0), 5.0));
+    }
+
+    /// M265 — the rotations slerp: half-way from identity to a quarter turn
+    /// about Y is an eighth; a quaternion and its negation (one rotation)
+    /// interpolate to themselves, the shorter way round.
+    #[test]
+    fn display_rotations_slerp_the_short_way() {
+        let s = std::f32::consts::FRAC_PI_4.sin();
+        let id = DisplayTransformation::default();
+        let quarter = DisplayTransformation {
+            left_rotation: [0.0, s, 0.0, s],
+            ..id
+        };
+        let half = id.slerp(&quarter, 0.5).left_rotation;
+        let e = (std::f32::consts::PI / 8.0).sin_cos();
+        assert!(
+            (half[1] - e.0).abs() < 1e-5 && (half[3] - e.1).abs() < 1e-5,
+            "{half:?}"
+        );
+        let neg = DisplayTransformation {
+            left_rotation: [0.0, -s, 0.0, -s],
+            ..id
+        };
+        let mid = quarter.slerp(&neg, 0.3).left_rotation;
+        assert!(
+            (mid[1] - s).abs() < 1e-5 && (mid[3] - s).abs() < 1e-5,
+            "{mid:?}"
+        );
+    }
+
     use super::*;
 
     /// How many per-entity side maps hold a row for `id`.

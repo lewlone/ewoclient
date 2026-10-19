@@ -3862,16 +3862,16 @@ fn a_text_display_pose_follows_vanillas_chain() {
         std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
     };
     let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
-    let fixed0 = text_display_transform([0.0; 3], (0.0, 0.0), (0.0, 0.0), &d);
+    let fixed0 = text_display_transform([0.0; 3], (0.0, 0.0), (0.0, 0.0), &d, 0.0);
     assert!(close(apply(&fixed0, [10.0, 0.0, 0.0]), [0.25, 0.0, 0.0]));
     assert!(close(apply(&fixed0, [0.0, 10.0, 0.0]), [0.0, -0.25, 0.0]));
-    let fixed90 = text_display_transform([1.0, 2.0, 3.0], (90.0, 0.0), (0.0, 0.0), &d);
+    let fixed90 = text_display_transform([1.0, 2.0, 3.0], (90.0, 0.0), (0.0, 0.0), &d, 0.0);
     assert!(close(apply(&fixed90, [10.0, 0.0, 0.0]), [1.0, 2.0, 3.25]));
     let centre = rewo_world::entities::DisplayState {
         billboard: 3,
         ..Default::default()
     };
-    let seen = text_display_transform([0.0; 3], (37.0, 12.0), (180.0, 0.0), &centre);
+    let seen = text_display_transform([0.0; 3], (37.0, 12.0), (180.0, 0.0), &centre, 0.0);
     for v in [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [3.0, -4.0, 0.0]] {
         assert!(close(apply(&seen, v), apply(&fixed0, v)), "{v:?}");
     }
@@ -4058,7 +4058,7 @@ fn an_item_display_pose_follows_vanillas_chain() {
             item_context: ctx,
             ..Default::default()
         };
-        item_display_transform(at, (0.0, 0.0), (0.0, 0.0), &d, &model)
+        item_display_transform(at, (0.0, 0.0), (0.0, 0.0), &d, &model, 0.0)
     };
     let none = pose(0);
     assert!(close(apply(&none, [0.5; 3]), [1.0, 2.0, 3.0]));

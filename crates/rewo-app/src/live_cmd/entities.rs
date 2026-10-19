@@ -1899,7 +1899,7 @@ pub(super) fn collect_block_displays(
         out.push(super::block_entities::OwnedBlockEntityDraw {
             pos: [0.0; 3],
             model: rewo_data::block_entity_models::carried_block_model(state),
-            transform: display_pose(p, angles, d),
+            transform: display_pose(p, angles, d, alpha),
             light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
             part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
             part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
@@ -2401,6 +2401,7 @@ pub(crate) fn text_display_transform(
     entity: (f32, f32),
     camera: (f32, f32),
     d: &rewo_world::entities::DisplayState,
+    alpha: f32,
 ) -> rewo_data::be_transform::Affine {
     use rewo_data::be_transform::{mul, rot_y_rad, scale};
     let (yaw, pitch) = billboard_angles(d.billboard, entity, camera);
@@ -2408,24 +2409,28 @@ pub(crate) fn text_display_transform(
         &rot_y_rad(std::f32::consts::PI),
         &scale(-0.025, -0.025, -0.025),
     );
-    mul(&display_pose(pos, (yaw, pitch), d), &text)
+    mul(&display_pose(pos, (yaw, pitch), d, alpha), &text)
 }
 
 /// M255/M256 — `DisplayRenderer.submit`'s pose shared by every display:
 /// `T(pos) · rotationYXZ(-yaw, pitch, 0) · Transformation(T · L · S · R)`,
-/// the angles already chosen by the billboard mode.
+/// the angles already chosen by the billboard mode. Since M265 the
+/// transformation is the interpolated one at `alpha`
+/// (`DisplayState::render_transformation`).
 fn display_pose(
     pos: [f64; 3],
     (yaw, pitch): (f32, f32),
     d: &rewo_world::entities::DisplayState,
+    alpha: f32,
 ) -> rewo_data::be_transform::Affine {
     use rewo_data::be_transform::{mul, rot_x, rot_y_rad, scale, translation};
     let orient = mul(&rot_y_rad(-yaw.to_radians()), &rot_x(pitch.to_radians()));
-    let [tx, ty, tz] = d.translation;
-    let [sx, sy, sz] = d.scale;
+    let t = d.render_transformation(alpha);
+    let [tx, ty, tz] = t.translation;
+    let [sx, sy, sz] = t.scale;
     let tf = mul(
-        &mul(&translation(tx, ty, tz), &quat_affine(d.left_rotation)),
-        &mul(&scale(sx, sy, sz), &quat_affine(d.right_rotation)),
+        &mul(&translation(tx, ty, tz), &quat_affine(t.left_rotation)),
+        &mul(&scale(sx, sy, sz), &quat_affine(t.right_rotation)),
     );
     let at = translation(pos[0] as f32, pos[1] as f32, pos[2] as f32);
     mul(&mul(&at, &orient), &tf)
@@ -2479,6 +2484,7 @@ pub(crate) fn item_display_transform(
     camera: (f32, f32),
     d: &rewo_world::entities::DisplayState,
     model: &rewo_data::held_items::HeldItemModel,
+    alpha: f32,
 ) -> rewo_data::be_transform::Affine {
     use rewo_data::be_transform::{mul, rot_y_rad};
     let identity = rewo_data::item_models::DisplayTransform::IDENTITY;
@@ -2494,7 +2500,7 @@ pub(crate) fn item_display_transform(
     };
     let angles = billboard_angles(d.billboard, entity, camera);
     mul(
-        &display_pose(pos, angles, d),
+        &display_pose(pos, angles, d, alpha),
         &mul(
             &rot_y_rad(std::f32::consts::PI),
             &item_context_affine(t, left),
@@ -2541,6 +2547,7 @@ pub(super) fn collect_item_displays(
             (session.player.yaw, session.player.pitch),
             d,
             model,
+            alpha,
         );
         out.push(super::block_entities::OwnedBlockEntityDraw {
             pos: [0.0; 3],
@@ -2671,6 +2678,7 @@ pub(super) fn collect_text_displays(
             (e.yaw, e.pitch),
             (session.player.yaw, session.player.pitch),
             d,
+            alpha,
         );
         let lines = text_display_lines(&d.text, d.line_width, advance);
         let width = lines.iter().map(|(_, w)| *w).fold(0.0f32, f32::max);

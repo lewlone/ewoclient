@@ -2078,6 +2078,7 @@ this shape once.
 | M261 (2026-10-19) — hopper and chest minecarts draw what they carry | **r120** | — | — |
 | M262 (2026-10-19) — a text display draws its background plate | **r121** | — | — |
 | M264 (2026-10-19) — a rung bell draws swinging | **r122** | — | — |
+| M265 (2026-10-19) — a block display's transformation interpolates between keyframes | **r123** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3912,6 +3913,42 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M265 — display transformations interpolate (2026-10-19)
+
+Servers animate displays (holograms, floating items, decorative blocks) by
+sending a new transformation with an interpolation duration; vanilla
+slides between the two, Rewo jumped. Now:
+
+- **Metadata**, gated on the three display types: index 8 (INT, the start
+  delay) and 9 (INT, the duration) raise `Display.onSyncedDataUpdated`'s
+  flags, and every render field (the transformation, the billboard, the
+  block, the item, the text) raises the render flag. A first version raised
+  it only for the transformation: a display's spawn metadata then built no
+  render state, so the first interpolation snapped. r123 caught it (0
+  frames part-way on two runs).
+- **The tick** (`DisplayInterp::tick`, from `EntityTable::tick_displays`
+  after the position lerps): `Display.tick`'s client branch: the start
+  tick (`tickCount + delay`), the duration, then a fresh render state (no
+  duration, or none yet) or an interpolated one from where the previous
+  one had got to. That point is the progress the last frame drew
+  (`lastProgress`), so it is measured under the old start and duration.
+- **Drawing** (`DisplayState::render_transformation`, used by
+  `display_pose`): `calculateInterpolationProgress` and
+  `Transformation.slerp` (translation and scale linear, the rotations
+  JOML's shorter-arc slerp).
+
+Recorded: index 10, the position and rotation interpolation duration
+(`teleport_duration`), is not applied; displays draw before their first
+tick (vanilla skips them).
+
+Tests: `display_transformation_interpolates_like_vanillas_tick` (exact
+values: 1.1 a twentieth of the way, 2.0 half-way, 2.4 for a new target
+under the old start, a snap without a duration),
+`display_rotations_slerp_the_short_way`,
+`a_displays_interpolation_fields_raise_its_flags`. **r123**: two seconds
+in, the render check merges a 40-tick scale-up into a staged stone
+display, and frames draw it part-way.
 
 ### M264 — a rung bell swings (2026-10-19)
 

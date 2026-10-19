@@ -2770,7 +2770,8 @@ pub(crate) fn apply_set_entity_data<'a>(
         let is_text = kinds.text_display == Some(type_id);
         let is_item = kinds.item_display == Some(type_id);
         let is_block = kinds.block_display == Some(type_id);
-        let any = meta.display_translation.is_some()
+        let is_display = is_text || is_item || is_block;
+        let render_field = meta.display_translation.is_some()
             || meta.display_scale.is_some()
             || meta.display_left.is_some()
             || meta.display_right.is_some()
@@ -2786,8 +2787,28 @@ pub(crate) fn apply_set_entity_data<'a>(
                 && (meta.display_item.is_some()
                     || meta.byte24.is_some()
                     || meta.mob_flags.is_some()));
+        let any = render_field || (is_display && (meta.int8.is_some() || meta.int9.is_some()));
         if any {
             let d = entities.display_mut(eid);
+            // M265 — `onSyncedDataUpdated`: the start delay (8) and duration
+            // (9) raise their flags; `Display.tick` acts on them.
+            if is_display {
+                if let Some(v) = meta.int8 {
+                    d.interp.delay = v;
+                    d.interp.pending_start = true;
+                }
+                if let Some(v) = meta.int9 {
+                    d.interp.duration_synced = v;
+                    d.interp.pending_duration = true;
+                }
+            }
+            // Every render field raises the render flag (`RENDER_STATE_IDS`
+            // and each subclass's own: the block, the item, the text), so the
+            // first tick after a display's spawn metadata builds its render
+            // state; only the two interpolation ints do not.
+            if render_field {
+                d.interp.pending_render = true;
+            }
             if let Some(v) = meta.display_translation {
                 d.translation = v;
             }
@@ -5470,6 +5491,39 @@ mod set_entity_data_tests {
         assert_eq!(t.variant(8), None, "a zombie's slot 9 is not a crystal's");
         apply_set_entity_data(&body(7, 9, 8, &[1]), &mut t, kinds);
         assert_eq!(t.variant(7), Some(1));
+    }
+
+    /// M265 — indices 8 and 9 (INT) are a display's interpolation start delay
+    /// and duration, raising `Display`'s flags, and a transformation field
+    /// raises the render flag; a zombie's 8 and 9 are nothing of the kind.
+    #[test]
+    fn a_displays_interpolation_fields_raise_its_flags() {
+        const BLOCK: i32 = 903;
+        let kinds = crate::MetaKinds {
+            block_display: Some(BLOCK),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, BLOCK, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(7, 8, 1, &[3]), &mut t, kinds);
+        apply_set_entity_data(&body(7, 9, 1, &[40]), &mut t, kinds);
+        apply_set_entity_data(&body(8, 9, 1, &[40]), &mut t, kinds);
+        let i = &t.display(7).unwrap().interp;
+        assert_eq!((i.delay, i.duration_synced), (3, 40));
+        assert!(i.pending_start && i.pending_duration && !i.pending_render);
+        assert!(t.display(8).is_none());
+        // A block state is a render field too: the first tick after a
+        // display's spawn metadata builds its render state.
+        apply_set_entity_data(&body(7, 23, 14, &[1]), &mut t, kinds);
+        assert!(t.display(7).unwrap().interp.pending_render);
+        t.display_mut(7).interp.pending_render = false;
+        let mut v = Vec::new();
+        for f in [2.0f32, 2.0, 2.0] {
+            v.extend_from_slice(&f.to_be_bytes());
+        }
+        apply_set_entity_data(&body(7, 12, 39, &v), &mut t, kinds);
+        assert!(t.display(7).unwrap().interp.pending_render);
     }
 
     /// M260 — a block display's state (23, BLOCK_STATE) and billboard (15)

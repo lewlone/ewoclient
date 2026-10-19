@@ -276,6 +276,9 @@ pub(super) struct RenderCheck {
     pub(super) text_display_backdrop_frames: usize,
     /// M264 — r122: frames on which the staged bell drew swinging.
     pub(super) bell_shake_frames: usize,
+    /// M265 — r123: frames on which a block display drew at a scale strictly
+    /// between its two keyframes.
+    pub(super) display_interp_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1028,7 +1031,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 122;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 123;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1218,6 +1221,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M265 — r123: two seconds in, the render check merges a 40-tick
+        // scale-up (1 to 3) into a staged stone block display. Vanilla slides
+        // between the two; Rewo jumped until M265. Some frame must draw it
+        // strictly between.
+        row(
+            "r123 a block display's transformation interpolated between keyframes",
+            self.display_interp_frames >= 1,
+            format!("{} frames drew it part-way", self.display_interp_frames),
         );
         // M264 — r122: `render_check.py` powers the r109 bell with a redstone
         // block, which rings it (`BellBlock.attemptToRing`, a block event
@@ -5028,6 +5040,19 @@ impl LiveApp {
                         self.mount_tick0 = s.ticks;
                     }
                     self.bed_stage = 20;
+                }
+                // M265 — r123: two seconds in, scale the staged stone display
+                // 1 -> 3 over 40 ticks, starting at once.
+                if !self.rc_interp_sent && elapsed >= 2.0 {
+                    if let Some(s) = self.session.as_mut() {
+                        let _ = s.send_command(
+                            "data merge entity @e[type=minecraft:block_display,tag=rewo_interp,limit=1] \
+                             {transformation:{left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],\
+                             translation:[0f,0f,0f],scale:[3f,3f,3f]},interpolation_duration:40,\
+                             start_interpolation:0}",
+                        );
+                    }
+                    self.rc_interp_sent = true;
                 }
                 // `REWO_RC_CAPTURE_AT=<fraction>`: one F2 capture at that point
                 // of the timed run, into the staged game directory, for a

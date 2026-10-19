@@ -286,6 +286,9 @@ pub struct EntityMeta {
     /// M251 — INT at 8: `ExperienceOrb.DATA_VALUE` (kind-gated by the
     /// caller; a boat's `DATA_ID_HURT` shares the index and serializer).
     pub int8: Option<i32>,
+    /// M265 — INT at 9: a display's
+    /// `DATA_TRANSFORMATION_INTERPOLATION_DURATION_ID` (kind-gated).
+    pub int9: Option<i32>,
     /// M254 — `Painting.DATA_PAINTING_VARIANT_ID` at 9 (8 is
     /// `HangingEntity.DATA_DIRECTION`): serializer 34, `PAINTING_VARIANT`, a
     /// raw registry id. The serializer is the painting's alone, so it needs
@@ -438,6 +441,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             },
             (10, 1) => meta.int10 = r.varint().ok(),
             (8, 1) => meta.int8 = r.varint().ok(),
+            (9, 1) => meta.int9 = r.varint().ok(),
             (9, 34) => meta.painting9 = r.varint().ok(),
             (9, 8) => meta.bool9 = r.u8().ok().map(|b| b != 0),
             (11, 39) => meta.display_translation = read_f32s::<3>(r),
