@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 83 Rewo milestones, M194 to M276, in 183 commits on
+- **What happened**: 84 Rewo milestones, M194 to M277, in about 187 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`96db1636`): 4,417 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 134 of
-  134 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`73b09728`): 4,419 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 136 of
+  136 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -39,6 +39,7 @@ released.
   - player heads in their own skins (placed, worn and as icons), and skulls,
     pumpkins and blocks worn on the head;
   - the enchanting table's book;
+  - creepers that swell and flash before they blow, and lit TNT that blinks;
   - steering boats, horses, camels and the nautilus;
   - everyday actions that were never sent (drop, swap hands, pick block,
     sprint, leave bed).
