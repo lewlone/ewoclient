@@ -34,6 +34,11 @@ pub struct Blocks {
     /// because the only consumer is a suggestion list that gets sorted, but
     /// it would matter to anything that numbered them.
     properties: HashMap<String, Vec<(String, Vec<String>)>>,
+    /// M229 — each state's property values, as `(index into its block's
+    /// `properties` list, index into that property's values)`, from the
+    /// state's own `properties` object (the block-level order is not relied
+    /// on: serde's map sorts its keys).
+    state_props: Vec<Box<[(u8, u8)]>>,
     /// Bits needed to index any state in the global palette:
     /// `ceil(log2(state_count))`. Used by the chunk decoder's direct path.
     pub global_palette_bits: u32,
@@ -59,7 +64,7 @@ impl Blocks {
             .as_object()
             .ok_or("blocks.json: root is not an object")?;
 
-        let mut entries: Vec<(u32, String, bool)> = Vec::new();
+        let mut entries: Vec<(u32, String, bool, Box<[(u8, u8)]>)> = Vec::new();
         let mut names: Vec<String> = Vec::new();
         let mut properties: HashMap<String, Vec<(String, Vec<String>)>> = HashMap::new();
         for (block_name, def) in obj {
@@ -85,7 +90,6 @@ impl Blocks {
                         .collect()
                 })
                 .unwrap_or_default();
-            properties.insert(block_name.clone(), props);
             let states = def
                 .get("states")
                 .and_then(|s| s.as_array())
@@ -101,8 +105,25 @@ impl Blocks {
                     .get("default")
                     .and_then(|d| d.as_bool())
                     .unwrap_or(false);
-                entries.push((id, block_name.clone(), is_default));
+                let values: Box<[(u8, u8)]> = state
+                    .get("properties")
+                    .and_then(|p| p.as_object())
+                    .map(|p| {
+                        p.iter()
+                            .filter_map(|(k, v)| {
+                                let pi = props.iter().position(|(name, _)| name == k)?;
+                                let vi = props[pi]
+                                    .1
+                                    .iter()
+                                    .position(|x| Some(x.as_str()) == v.as_str())?;
+                                Some((pi as u8, vi as u8))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                entries.push((id, block_name.clone(), is_default, values));
             }
+            properties.insert(block_name.clone(), props);
         }
         if entries.is_empty() {
             return Err("blocks.json: no block states found".into());
@@ -111,8 +132,9 @@ impl Blocks {
         // N states, N slots: every id must land in `0..N`, once.
         let count = entries.len();
         let mut slots: Vec<Option<String>> = vec![None; count];
+        let mut state_props: Vec<Box<[(u8, u8)]>> = vec![Box::default(); count];
         let mut default_state = HashMap::new();
-        for (id, name, is_default) in entries {
+        for (id, name, is_default, values) in entries {
             let slot = slots.get_mut(id as usize).ok_or_else(|| {
                 format!(
                     "blocks.json: state id {id} ({name}) is outside 0..{count}: the ids are \
@@ -128,6 +150,7 @@ impl Blocks {
                 default_state.insert(name.clone(), id);
             }
             *slot = Some(name);
+            state_props[id as usize] = values;
         }
         // N entries into N slots with no repeat and no overflow fills every
         // slot, so there is no gap left to find.
@@ -155,6 +178,7 @@ impl Blocks {
             default_state,
             names,
             properties,
+            state_props,
             global_palette_bits,
         })
     }
@@ -181,6 +205,7 @@ impl Blocks {
             default_state,
             names,
             properties: properties.into_iter().collect(),
+            state_props: Vec::new(),
         }
     }
 
@@ -208,6 +233,19 @@ impl Blocks {
 
     pub fn default_state(&self, block_name: &str) -> Option<u32> {
         self.default_state.get(block_name).copied()
+    }
+
+    /// M229 — the value of property `key` in state `state_id` (`"true"`,
+    /// `"3"`, `"north"`...), or `None` when the state has no such property.
+    pub fn property(&self, state_id: u32, key: &str) -> Option<&str> {
+        let block = self.block_name(state_id)?;
+        let props = self.properties.get(block)?;
+        self.state_props
+            .get(state_id as usize)?
+            .iter()
+            .find(|(pi, _)| props.get(*pi as usize).is_some_and(|(n, _)| n == key))
+            .and_then(|(pi, vi)| props[*pi as usize].1.get(*vi as usize))
+            .map(String::as_str)
     }
 }
 
@@ -249,6 +287,38 @@ mod tests {
             m.insert((*name).to_string(), json!({ "states": list }));
         }
         serde_json::Value::Object(m)
+    }
+
+    /// M229 — a state's own property values, by key, from its `properties`
+    /// object; a block-level key the state lacks, or a stateless block, is
+    /// `None`.
+    #[test]
+    fn a_states_property_values_are_read_from_its_own_entry() {
+        let json = json!({
+            "minecraft:air": { "states": [ { "id": 0, "default": true } ] },
+            "minecraft:jukebox": {
+                "properties": { "has_record": ["true", "false"] },
+                "states": [
+                    { "id": 1, "properties": { "has_record": "true" } },
+                    { "id": 2, "default": true, "properties": { "has_record": "false" } }
+                ]
+            },
+            "minecraft:cake": {
+                "properties": { "bites": ["0", "1", "2"] },
+                "states": [
+                    { "id": 3, "default": true, "properties": { "bites": "0" } },
+                    { "id": 4, "properties": { "bites": "1" } },
+                    { "id": 5, "properties": { "bites": "2" } }
+                ]
+            }
+        });
+        let b = Blocks::from_json(&json).unwrap();
+        assert_eq!(b.property(1, "has_record"), Some("true"));
+        assert_eq!(b.property(2, "has_record"), Some("false"));
+        assert_eq!(b.property(5, "bites"), Some("2"));
+        assert_eq!(b.property(4, "has_record"), None);
+        assert_eq!(b.property(0, "bites"), None);
+        assert_eq!(b.property(99, "bites"), None);
     }
 
     #[test]

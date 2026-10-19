@@ -137,6 +137,12 @@ released.
   ridden, as in vanilla, and a crash in rainy weather far from the world's
   center (debug builds only) is fixed.
 - Every mount is done: horses, donkeys, mules, camels, the nautilus, boats.
+- **M229** (Control Room's new list: everyday survival actions): right-click
+  now works the way vanilla's does. Before, you could only eat or block
+  while looking at the sky, and buckets, fishing rods, snowballs, ender
+  pearls and fireworks did nothing at all. Checked live in survival: eating
+  bread while looking at the ground, filling a bucket from water and
+  pouring it out, throwing a snowball, casting and reeling a fishing rod.
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -193,6 +199,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M229)* | **M229** — the right-click as `startUseItem`: both hands, `use_item_on` with the real hit point then `use_item` on a local pass, the held repeat and release; `rewo_world::click_use` (one rule per overriding class, from `tools/gen_click_use.py`), `Blocks::property`; render-check **r92-r94** (eating, buckets, snowball and fishing rod, in survival). |
 | `c5e35d6` | **M228** — the local rider's seat: `EntityTable::seat_of` (M72's `positionRider` for a rider outside the table) and the session's `seat_local_player` on every vehicle; render-check **r91** against the server's seat read through a marker (a passenger's saved `Pos` is the vehicle's x/z); rideshot's local-seat row; r53's slab and r70's frame moved off a seated rider's sightlines. |
 | `9d8989a` | **M227** — nautilus riding: `physics::tick_ridden_nautilus` (3D ridden input, the halfway turn, the look-direction dash, gravity-free water travel), `move_relative` with a y; `floatInWaterWhileRidden` for the tagged mounts; a debug-build overflow in `rain_column` fixed; r58 counts the timed run; render-check **r90**, tail cap 30 s. |
 | `0beef60` | **M226** — the rider's input reaches its vehicle as vanilla's does: the modified move vector (×0.98, square stretch) from the previous tick, for boats, horses and camels; r88 and r89 pin vanilla's real per-tick speeds (their earlier "vanilla" formulas left out the 0.98). |
@@ -402,6 +409,9 @@ released.
   local-seat row checked against its mutation partner); render check
   **91/91** on two consecutive runs; clippy (gates and default features)
   and `cargo fmt --check` clean.
+- After M229: **4,326 tests passed, 0 failed; gates 51/51**; render check **94/94**
+  on two runs; clippy (gates and default features) and `cargo fmt --check`
+  clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

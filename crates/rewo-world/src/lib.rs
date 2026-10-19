@@ -22,6 +22,7 @@ pub mod chat_events;
 pub mod chat_style;
 pub mod chat_translate;
 pub mod chunk;
+pub mod click_use;
 pub mod conduit;
 pub mod daylight;
 pub mod destruction;

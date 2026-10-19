@@ -888,6 +888,14 @@ struct LiveApp {
     /// The last "Marker has the following entity data" line r91 took.
     #[cfg(feature = "gates")]
     seat_last_line: Option<String>,
+    /// M229 — where the bot stood when `REWO_PRECMD` ran (its `~` origin),
+    /// and r92-r94's tail stage and the tick it began.
+    #[cfg(feature = "gates")]
+    precmd_origin: Option<[f64; 3]>,
+    #[cfg(feature = "gates")]
+    use_stage: u8,
+    #[cfg(feature = "gates")]
+    use_tick0: u64,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1021,6 +1029,11 @@ struct LiveApp {
     mining_tables: Option<std::sync::Arc<rewo_data::mining::MiningTables>>,
     mining: rewo_world::mining::Mining,
     attack_held: bool,
+    /// M229 — `keyUse.isDown()`, `Minecraft.rightClickDelay`, and the client
+    /// tick `use_tick` last ran on.
+    use_down: bool,
+    right_click_delay: u8,
+    use_tick_at: u64,
     /// The client tick the machine last advanced on — once per tick, as
     /// `Minecraft.handleKeybinds` calls `continueAttack`.
     mining_tick_at: u64,
@@ -1137,6 +1150,9 @@ fn run_windowed(
         mining_tables: None,
         mining: rewo_world::mining::Mining::default(),
         attack_held: false,
+        use_down: false,
+        right_click_delay: 0,
+        use_tick_at: 0,
         mining_tick_at: 0,
         bed_tick_at: 0,
         #[cfg(feature = "gates")]
@@ -1264,6 +1280,12 @@ fn run_windowed(
         nautilus_meter_peak: 0.0,
         #[cfg(feature = "gates")]
         seat_last_line: None,
+        #[cfg(feature = "gates")]
+        precmd_origin: None,
+        #[cfg(feature = "gates")]
+        use_stage: 0,
+        #[cfg(feature = "gates")]
+        use_tick0: 0,
         #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
@@ -1447,9 +1469,10 @@ const RENDER_CHECK_SECONDS: f32 = 8.0;
 
 /// The most the render check's tail (M220's r84/r85, run after the timed
 /// part) may add before the run ends regardless. 20 since M225's camel, 30
-/// since M227's nautilus (its swim and settle take about nine seconds); the
-/// run ends as soon as every tail stage is done.
-const RENDER_CHECK_TAIL_SECONDS: f32 = 30.0;
+/// since M227's nautilus (its swim and settle take about nine seconds), 45
+/// since M229's survival uses; the run ends as soon as every tail stage is
+/// done.
+const RENDER_CHECK_TAIL_SECONDS: f32 = 45.0;
 
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {
@@ -1552,6 +1575,23 @@ fn face_index(n: [i32; 3]) -> u8 {
         [1, 0, 0] => 5,
         _ => 1,
     }
+}
+
+/// One packet of M229's `startUseItem` plan.
+#[derive(Clone, Copy, Debug)]
+enum UseStep {
+    On {
+        hand: rewo_world::entities::InteractionHand,
+        pos: [i32; 3],
+        face: u8,
+        offset: [f32; 3],
+        swing: bool,
+    },
+    Use {
+        hand: rewo_world::entities::InteractionHand,
+        start: bool,
+        swing: bool,
+    },
 }
 
 /// winit → GLFW key code, for the keys the screen framework reads (M82).

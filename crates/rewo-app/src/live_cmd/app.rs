@@ -1022,14 +1022,15 @@ impl ApplicationHandler for LiveApp {
                     self.apply_mining(vec![a]);
                 }
             }
-            // Releasing the right button ends a use — eating stops, a bow
-            // fires, a shield drops. Vanilla sends `RELEASE_USE_ITEM`, and the
-            // pose ends locally at the same moment.
+            // Releasing the right button: `keyUse` is up, so the next tick's
+            // `handleKeybinds` releases a use in progress (M229's
+            // `use_tick`) — eating stops, a bow fires, a shield drops.
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Right,
                 ..
             } => {
+                self.use_down = false;
                 if let Some(session) = self.session.as_mut() {
                     let _ = session.stop_use();
                 }
@@ -1054,29 +1055,11 @@ impl ApplicationHandler for LiveApp {
                 if self.entity_click(button) {
                     return;
                 }
-                if let Some(session) = self.session.as_mut() {
-                    // The pick ray starts from the f64 eye (`eye_f64`), not the
-                    // f32 render eye — at large coordinates the two disagree by
-                    // more than a block.
-                    let hit = session.target_block(
-                        eye_f64(session),
-                        look_dir(session.player.yaw, session.player.pitch),
-                        REACH,
-                    );
-                    // Right-clicking thin air uses the item. Vanilla also uses
-                    // it when the *block* interaction is declined, which needs
-                    // the server's answer; this is the half that needs no round
-                    // trip, and it covers eating, drawing and blocking.
-                    if hit.is_none() && button == MouseButton::Right {
-                        let _ = session.start_use(rewo_world::entities::InteractionHand::MainHand);
-                    }
-                    if let Some(h) = hit {
-                        let [x, y, z] = h.block;
-                        let face = face_index(h.face);
-                        if button == MouseButton::Right {
-                            let _ = session.use_item_on(x, y, z, face);
-                        }
-                    }
+                // M229 — `keyUse.consumeClick()` -> `startUseItem`, unless an
+                // item is already in use (`handleKeybinds` drains the clicks
+                // then). Held, `use_tick` repeats it every 4 ticks.
+                if button == MouseButton::Right {
+                    self.use_key_press();
                 }
                 // M217 — the attack key on a block: `startAttack`'s BLOCK arm
                 // (`startDestroyBlock`), and the key stays held for
@@ -2253,6 +2236,237 @@ impl LiveApp {
     /// `pickBlockOrEntity` (M218): the entity under the crosshair, else the
     /// block, with `includeData` from Ctrl. The server answers (in creative it
     /// puts the item in the hotbar; in survival it selects a matching stack).
+    /// M229 — the use key going down: `keyUse.consumeClick()` ->
+    /// `startUseItem`, unless an item is already in use (`handleKeybinds`
+    /// drains the clicks then). Held, `use_tick` repeats it.
+    pub(super) fn use_key_press(&mut self) {
+        self.use_down = true;
+        let using = self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.local_use_state().using);
+        if !using {
+            self.start_use_item();
+        }
+    }
+
+    /// M229 — `Minecraft.startUseItem`: for each hand, the block under the
+    /// crosshair (`useItemOn`, its packet always sent), then the item itself
+    /// (`useItem`, likewise), each step's LOCAL result
+    /// ([`rewo_world::click_use`]) deciding whether the next is tried. An
+    /// entity under the crosshair was already taken by `entity_click`.
+    ///
+    /// Recorded deviations: the entity arm interacts with the main hand only
+    /// (`entity_click`); the hit is the collision-shape pick, not vanilla's
+    /// outline shape (M230); `itemInHandRenderer.itemUsed` (the re-equip
+    /// bob) is not run.
+    pub(super) fn start_use_item(&mut self) {
+        if self.mining.destroying() {
+            return;
+        }
+        self.right_click_delay = 4;
+        let Some(plan) = self.use_plan() else {
+            return;
+        };
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        for step in plan {
+            let r = match step {
+                UseStep::On {
+                    hand,
+                    pos,
+                    face,
+                    offset,
+                    swing,
+                } => session.use_item_on_hit(hand, pos, face, offset, swing),
+                UseStep::Use { hand, start, swing } => session.use_held(hand, start, swing),
+            };
+            if let Err(e) = r {
+                log::warn!("live: use: {e}");
+            }
+        }
+    }
+
+    /// The packets `startUseItem` sends, decided against the local state
+    /// before any is sent (sending changes none of what the decision reads).
+    fn use_plan(&self) -> Option<Vec<UseStep>> {
+        use rewo_world::click_use::{self as cu, Hand, Outcome};
+        use rewo_world::entities::InteractionHand;
+        let session = self.session.as_ref()?;
+        // `isHandsBusy`: a boat being paddled (`LocalPlayer.rideTick`).
+        if session.steered_boat.is_some()
+            && (self.keys.w || self.keys.a || self.keys.s || self.keys.d)
+        {
+            return Some(Vec::new());
+        }
+        let me = session.player_id?;
+        let eye = eye_f64(session);
+        let dir = look_dir(session.player.yaw, session.player.pitch);
+        let hit = session.target_block(eye, dir, REACH);
+        let name = |slot: Option<rewo_world::inventory::ItemSlot>| {
+            slot.and_then(|s| self.items.name(s.item_id))
+        };
+        let main = name(session.inventory.held());
+        let off = name(session.inventory.offhand());
+        let item_tag = |item: &str, tag: &str| {
+            self.items.id(item).is_some_and(|id| {
+                session
+                    .tags
+                    .contains("minecraft:item", tag, id)
+                    .unwrap_or(false)
+            })
+        };
+        let campfire = |item: &str| {
+            let set = session
+                .recipes
+                .as_ref()
+                .and_then(|r| r.property_set("minecraft:campfire_input"));
+            self.items
+                .id(item)
+                .is_some_and(|id| set.is_some_and(|s| s.contains(&id)))
+        };
+        let exists = |b: &str| self.blocks.default_state(b).is_some();
+        let mode = session.game_state.game_mode();
+        let clicker = cu::Clicker {
+            main,
+            off,
+            sneaking: self.keys.sneak,
+            creative: session.abilities.instabuild,
+            may_build: !matches!(
+                mode,
+                Some(rewo_net::play::GameMode::Adventure | rewo_net::play::GameMode::Spectator)
+            ),
+            food: session.food,
+            item_tag: &item_tag,
+            campfire_input: &campfire,
+            block_exists: &exists,
+        };
+        let arrows = || {
+            session.abilities.instabuild
+                || (0..session.inventory.slot_count()).any(|i| {
+                    name(session.inventory.menu_slot(i)).is_some_and(|n| {
+                        matches!(
+                            n,
+                            "minecraft:arrow"
+                                | "minecraft:spectral_arrow"
+                                | "minecraft:tipped_arrow"
+                        )
+                    })
+                })
+        };
+        let mut plan = Vec::new();
+        for (hand, eh) in [
+            (Hand::Main, InteractionHand::MainHand),
+            (Hand::Off, InteractionHand::OffHand),
+        ] {
+            let held = match hand {
+                Hand::Main => main,
+                Hand::Off => off,
+            };
+            if let Some(h) = hit {
+                let state = session
+                    .world
+                    .block_state_at(h.block[0], h.block[1], h.block[2]);
+                let block = self.blocks.block_name(state).unwrap_or("minecraft:air");
+                let prop = |k: &str| self.blocks.property(state, k).map(str::to_string);
+                let face = face_index(h.face);
+                let clicked = cu::Clicked {
+                    block,
+                    prop: &prop,
+                    face,
+                };
+                let local = cu::use_item_on(&clicked, &clicker, hand);
+                // `BlockHitResult.getLocation() - pos`, as the packet's floats.
+                let at = [
+                    eye[0] + dir[0] * h.distance,
+                    eye[1] + dir[1] * h.distance,
+                    eye[2] + dir[2] * h.distance,
+                ];
+                let offset = [
+                    (at[0] - h.block[0] as f64).clamp(0.0, 1.0) as f32,
+                    (at[1] - h.block[1] as f64).clamp(0.0, 1.0) as f32,
+                    (at[2] - h.block[2] as f64).clamp(0.0, 1.0) as f32,
+                ];
+                plan.push(UseStep::On {
+                    hand: eh,
+                    pos: h.block,
+                    face,
+                    offset,
+                    swing: local == Outcome::Consumed,
+                });
+                if local != Outcome::Pass {
+                    return Some(plan);
+                }
+            }
+            let Some(item) = held else {
+                continue;
+            };
+            let hand_item = session.world.entities.hand_item(me, eh);
+            let duration = hand_item.use_profile().map_or(0, |p| p.duration);
+            let armor = matches!(
+                rewo_data::item_props_table::equip_slot(item),
+                Some(
+                    rewo_data::item_props_table::EquipSlot::Head
+                        | rewo_data::item_props_table::EquipSlot::Chest
+                        | rewo_data::item_props_table::EquipSlot::Legs
+                        | rewo_data::item_props_table::EquipSlot::Feet
+                )
+            );
+            let mut local = cu::use_item(item, &clicker, duration, armor);
+            // `BowItem.use`: FAIL without an arrow (outside creative);
+            // `CrossbowItem.use`: a charged crossbow fires (SUCCESS) and
+            // starts no use.
+            let charged = hand_item.is_charged();
+            if item == "minecraft:bow" && !arrows() {
+                local = Outcome::Fail;
+            }
+            let start = local == Outcome::Consumed && duration > 0 && !charged;
+            // An instant use (a throw, a bucket, a cast) swings; a held one
+            // (eating, a draw, a shield) is a CONSUME, which does not.
+            let swing = local == Outcome::Consumed && (duration == 0 || charged);
+            plan.push(UseStep::Use {
+                hand: eh,
+                start,
+                swing,
+            });
+            if local == Outcome::Consumed {
+                return Some(plan);
+            }
+        }
+        Some(plan)
+    }
+
+    /// M229 — `handleKeybinds`' tick half: release a use the moment the use
+    /// key is up (`if isUsingItem() && !keyUse.isDown() releaseUsingItem`),
+    /// and while it is held repeat `startUseItem` once `rightClickDelay`
+    /// (counted down by `Minecraft.tick`) reaches 0.
+    pub(super) fn use_tick(&mut self) {
+        let Some(now) = self.session.as_ref().map(|s| s.ticks) else {
+            return;
+        };
+        if now == self.use_tick_at {
+            return;
+        }
+        self.use_tick_at = now;
+        self.right_click_delay = self.right_click_delay.saturating_sub(1);
+        // A screen up releases the key (`KeyMapping.releaseAll` on open).
+        if self.screen.inventory_open() {
+            self.use_down = false;
+        }
+        let using = self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.local_use_state().using);
+        if using && !self.use_down {
+            if let Some(s) = self.session.as_mut() {
+                let _ = s.stop_use();
+            }
+        } else if self.use_down && self.right_click_delay == 0 && !using {
+            self.start_use_item();
+        }
+    }
+
     pub(super) fn pick_key(&mut self) {
         let include = self.ctrl;
         let Some(session) = self.session.as_mut() else {

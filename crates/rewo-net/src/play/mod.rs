@@ -6171,20 +6171,81 @@ impl PlaySession {
 
     /// Place the held item against (x,y,z)'s `face`.
     pub fn use_item_on(&mut self, x: i32, y: i32, z: i32, face: u8) -> Result<(), String> {
+        self.use_item_on_hit(
+            rewo_world::entities::InteractionHand::MainHand,
+            [x, y, z],
+            face,
+            [0.5, 1.0, 0.5],
+            true,
+        )
+    }
+
+    /// `MultiPlayerGameMode.useItemOn`'s packet (M229): the hand, the block,
+    /// the face, the hit point relative to the block (`BlockHitResult`'s
+    /// `location - pos`, as floats), not inside, no border hit, the
+    /// prediction sequence. `swing` is the local result's swing (vanilla
+    /// swings for a `Success` whose source is the client).
+    pub fn use_item_on_hit(
+        &mut self,
+        hand: rewo_world::entities::InteractionHand,
+        pos: [i32; 3],
+        face: u8,
+        offset: [f32; 3],
+        swing: bool,
+    ) -> Result<(), String> {
         let seq = self.next_sequence();
         let Some(id) = self.ids.sb_play_use_item_on else {
             return Err("use_item_on unavailable".into());
         };
         let mut p = PacketWriter::packet(id);
-        p.varint(0); // main hand
-        write_position(&mut p, x, y, z);
+        p.varint(match hand {
+            rewo_world::entities::InteractionHand::MainHand => 0,
+            rewo_world::entities::InteractionHand::OffHand => 1,
+        });
+        write_position(&mut p, pos[0], pos[1], pos[2]);
         p.varint(face as i32); // Direction enum
-        p.f32(0.5).f32(1.0).f32(0.5); // click offset on the face
+        p.f32(offset[0]).f32(offset[1]).f32(offset[2]);
         p.bool(false); // inside
         p.bool(false); // world border hit
         p.varint(seq);
         self.send(p)?;
-        self.swing()
+        if swing {
+            self.swing_hand(hand)?;
+        }
+        Ok(())
+    }
+
+    /// `MultiPlayerGameMode.useItem` (M229): the packet always goes (vanilla
+    /// builds it inside `startPrediction` before the local `use` runs); the
+    /// local half starts the use state when `start_using` (the item's own
+    /// `use` began using it) and swings when `swing`.
+    ///
+    /// The use state goes through `set_living_flags`, the same door a remote
+    /// entity's synced flags take (M38): the local use clock is M23's machine
+    /// with an id, so a repeat does not restart it and an unresolvable stack
+    /// latches nothing. Before M229 an item with no use duration sent nothing
+    /// at all, which left buckets, rods, throwables and fireworks dead.
+    pub fn use_held(
+        &mut self,
+        hand: rewo_world::entities::InteractionHand,
+        start_using: bool,
+        swing: bool,
+    ) -> Result<(), String> {
+        self.use_item(hand)?;
+        if start_using {
+            if let Some(id) = self.player_id {
+                let flags = 1 | if hand == rewo_world::entities::InteractionHand::OffHand {
+                    2
+                } else {
+                    0
+                };
+                self.world.entities.set_living_flags(id, flags);
+            }
+        }
+        if swing {
+            self.swing_hand(hand)?;
+        }
+        Ok(())
     }
 
     /// `MultiPlayerGameMode.attack` (M216): `ServerboundAttackPacket(entityId)`
@@ -6331,47 +6392,6 @@ impl PlaySession {
         self.send(p)
     }
 
-    /// Start using the held item — the local half of `startUsingItem` (M38).
-    ///
-    /// Drives the **same** door the remote-entity path uses:
-    /// `LivingEntity.startUsingItem` sets shared-flag bit 0 (and bit 1 for the
-    /// off hand), which is exactly what `set_living_flags` decodes. So the
-    /// local player's use clock is M23's machine with an id, in the way its
-    /// swing is M19's — no second implementation, and every rule the flags
-    /// path already encodes (a repeat does not restart, an unresolvable stack
-    /// latches nothing) applies unchanged.
-    ///
-    /// Returns whether a use actually began: an item with no use duration —
-    /// most of them — is not usable, and vanilla plays no pose for it.
-    pub fn start_use(
-        &mut self,
-        hand: rewo_world::entities::InteractionHand,
-    ) -> Result<bool, String> {
-        let Some(id) = self.player_id else {
-            return Ok(false);
-        };
-        // `Item.getUseDuration() == 0` means the item cannot be used at all,
-        // which is the overwhelming majority. Checking here keeps a pickaxe
-        // from sending a use packet on every right click.
-        let usable = self
-            .world
-            .entities
-            .hand_item(id, hand)
-            .use_profile()
-            .is_some_and(|p| p.duration > 0);
-        if !usable {
-            return Ok(false);
-        }
-        self.use_item(hand)?;
-        let flags = 1 | if hand == rewo_world::entities::InteractionHand::OffHand {
-            2
-        } else {
-            0
-        };
-        self.world.entities.set_living_flags(id, flags);
-        Ok(true)
-    }
-
     /// Stop using it — `releaseUsingItem`. Idempotent, so a mouse release with
     /// no use in progress costs one packet and nothing else.
     pub fn stop_use(&mut self) -> Result<(), String> {
@@ -6394,17 +6414,26 @@ impl PlaySession {
     }
 
     pub fn swing(&mut self) -> Result<(), String> {
+        self.swing_hand(rewo_world::entities::InteractionHand::MainHand)
+    }
+
+    /// `LocalPlayer.swing(hand)` (M229 adds the off hand).
+    pub fn swing_hand(
+        &mut self,
+        hand: rewo_world::entities::InteractionHand,
+    ) -> Result<(), String> {
         // Vanilla's `LocalPlayer.swing` runs `super.swing` *and* sends the
         // packet, so the animation starts locally rather than waiting for the
         // server to echo it back — which it never does for your own swings.
         if let Some(id) = self.player_id {
-            self.world
-                .entities
-                .swing(id, rewo_world::entities::InteractionHand::MainHand, true);
+            self.world.entities.swing(id, hand, true);
         }
         if let Some(id) = self.ids.sb_play_swing {
             let mut p = PacketWriter::packet(id);
-            p.varint(0); // main hand
+            p.varint(match hand {
+                rewo_world::entities::InteractionHand::MainHand => 0,
+                rewo_world::entities::InteractionHand::OffHand => 1,
+            });
             self.send(p)?;
         }
         Ok(())

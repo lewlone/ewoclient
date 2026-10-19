@@ -162,6 +162,8 @@ impl LiveApp {
         // M217 - `continueAttack`, once per client tick while the attack key
         // is held (survival block breaking and creative's repeat).
         self.mining_tick();
+        // M229 - `handleKeybinds`' use half: release, and the held repeat.
+        self.use_tick();
 
         // M219 - `Gui.tick`'s sleep half: the in-bed chat opens into an empty
         // slot while the player sleeps and hands over when they wake.
@@ -458,6 +460,12 @@ impl LiveApp {
         }
         if ran_tick && session.spawned && !self.logged_spawn {
             self.logged_spawn = true;
+            // M229 — the origin `REWO_PRECMD`'s `~` coordinates are
+            // relative to, for the tail witnesses that walk back to them.
+            #[cfg(feature = "gates")]
+            {
+                self.precmd_origin = Some([session.player.x, session.player.y, session.player.z]);
+            }
             // `REWO_PRECMD`: the same semicolon-separated op-command knob the
             // headless path has had since M64, wired into the windowed one
             // (M82) — without it a windowed run cannot stage anything that
@@ -2351,6 +2359,7 @@ impl LiveApp {
                     && self.horse_stage >= 20
                     && self.camel_stage >= 20
                     && self.nautilus_stage >= 20
+                    && self.use_stage >= 20
                     // r91's last answer can land a frame after r90's own.
                     && self
                         .check

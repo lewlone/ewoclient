@@ -2051,6 +2051,7 @@ this shape once.
 | M225 (2026-10-19) — the bot sprints and dashes a real camel; the dash's cooldown blocks a second; the server accepts every move and agrees where it is | **r89** | — | — |
 | M227 (2026-10-19) — the bot swims and dashes a real nautilus: vanilla's water speed with no gravity, the cooldown holds the meter, the server agrees where it is | **r90** | — | — |
 | M228 (2026-10-19) — the local rider sits where the server seats it, on the boat, the horse, the camel and the nautilus (read through a marker: a passenger's saved `Pos` is the vehicle's x/z) | **r91** | — | — |
+| M229 (2026-10-19) — a survival right-click on the ground with bread eats it; a bucket fills from water and empties onto the ground; a snowball throws and a fishing rod casts and reels in | **r92**, **r93**, **r94** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3885,6 +3886,51 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M229 — the right-click, as vanilla's `startUseItem` (2026-10-19)
+
+Control Room's survival sweep. A survey of eleven everyday actions found one
+shared fault: the right-click sent `use_item_on` when a block was under the
+crosshair and `use_item` only at thin air and only for an item with a use
+duration. So no eating while looking at the ground, no shield with a block
+in reach, and buckets, fishing rods, snowballs, ender pearls and fireworks
+could never be used at all.
+
+- **The loop** (`LiveApp::use_plan` / `start_use_item`): for the main hand
+  and then the off hand, the block arm sends `use_item_on` (now with the
+  hand and the real hit point relative to the block, not a fixed
+  `(0.5, 1.0, 0.5)`), and on a local PASS `use_item` follows; a local
+  success ends the loop. Vanilla builds both packets before its local run,
+  so they are sent regardless; the local result only decides what is tried
+  next.
+- **The local result** (`rewo_world::click_use`): `performUseItemOn` with
+  sneak suppression, `useItemOn` -> `useWithoutItem` (main hand only) ->
+  the item's `useOn`, and `Item.use` for the hand loop (`use` overrides,
+  consumables with `canEat`, armour swapping, the bow's arrow check, the
+  charged crossbow). One rule per overriding class, each transcribed from
+  its decompiled body (every `useItemOn`, `useWithoutItem` and `useOn`
+  override in 26.2). `tools/gen_click_use.py` extracts which class answers for
+  every block and item, the composter's list, the food items and the
+  always-edible ones; `Blocks::property` (new) reads a state's values.
+- **Held and released as vanilla does** (`use_tick`): `rightClickDelay`
+  repeats `startUseItem` every 4 ticks while the key is held, and any tick
+  with the key up releases a use in progress (an open screen releases it).
+- A boat being paddled keeps the hands busy (`isHandsBusy`).
+
+**r92-r94** (in the tail, survival, through `use_key_press`): bread eaten by
+a right-click on the grass (food 13 -> 18, bread 4 -> 3); a bucket filled
+from r87's pool (the ray passes the water to the pool's floor, which
+passes, and the server's own fluid raycast fills it) and poured onto dry
+grass (the client then sees the water); a snowball thrown and a fishing
+rod cast and reeled in (their entities appear and the bobber goes). Each
+was impossible before. 94/94; the tail cap is 45 s.
+
+Recorded approximations are listed at the top of `click_use.rs` (command
+blocks taken as creative, shelf and bookshelf slots unresolved, the
+cauldron map reduced, a `use` override always a success). Still to come in
+the sweep: outline-shape targeting (buttons, levers, flowers can't be
+targeted: the pick uses collision shapes), the using-item slowdown and the
+bow's FOV, and the per-action details.
 
 ### M228 — the local rider's seat (2026-10-19)
 

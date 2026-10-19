@@ -405,6 +405,20 @@ pub(super) struct RenderCheck {
     /// position as the client seated it, and the server's own
     /// (`positionRider` on its side) once the vehicle stood still.
     pub(super) seat_checks: Vec<(&'static str, [f64; 3], Option<[f64; 3]>)>,
+    /// M229 — r92-r94, survival right-clicks through the production use key:
+    /// food before / after eating bread at the ground and the bread count
+    /// before / after; the bucket filled from r87's pool and emptied on dry
+    /// ground (and whether the client then saw water there); a snowball and
+    /// a fishing bobber appearing, and the bobber reeled back in.
+    pub(super) eat_food: Option<(i32, i32)>,
+    pub(super) eat_count: Option<(i32, i32)>,
+    pub(super) bucket_filled: bool,
+    pub(super) bucket_emptied: bool,
+    pub(super) bucket_water_placed: bool,
+    pub(super) snowball_seen: bool,
+    pub(super) bobber_seen: bool,
+    pub(super) bobber_gone: bool,
+    pub(super) use_skip: Option<String>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -890,7 +904,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 91;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 94;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1544,6 +1558,48 @@ impl RenderCheck {
             "r91 the local rider sat where the server seats it, on the boat, the horse, the camel and the nautilus",
             seats_ok,
             format!("(vehicle, client seat, server seat): {:?}", self.seat_checks),
+        );
+        // M229 — r92: eating while looking at the ground. Vanilla sends
+        // `use_item_on` for the grass, the grass passes (no override), and
+        // `startUseItem` falls through to `use_item`: the server's food goes
+        // up by the bread's 5 (capped) and one bread is gone. Before M229 the
+        // client sent `use_item_on` alone and nothing was eaten.
+        let ate = self.eat_food.is_some_and(|(a, b)| b > a)
+            && self.eat_count.is_some_and(|(a, b)| b == a - 1);
+        let uskip = self
+            .use_skip
+            .as_ref()
+            .map(|s| format!(" (stopped: {s})"))
+            .unwrap_or_default();
+        row(
+            "r92 a survival right-click on the ground with bread ate it (use_item_on passed, use_item followed)",
+            ate,
+            format!(
+                "food before / after {:?}, bread before / after {:?}{uskip}",
+                self.eat_food, self.eat_count
+            ),
+        );
+        // r93: a bucket. A ray at the pool passes through the water (the
+        // crosshair ignores fluids) to the pool's floor, which passes, so
+        // `use_item` lets the server's own fluid raycast fill the bucket;
+        // emptied on dry grass, it places water.
+        row(
+            "r93 a bucket filled from water and emptied onto the ground (survival)",
+            self.bucket_filled && self.bucket_emptied && self.bucket_water_placed,
+            format!(
+                "filled {}, emptied {}, water seen where it was poured {}{uskip}",
+                self.bucket_filled, self.bucket_emptied, self.bucket_water_placed
+            ),
+        );
+        // r94: the instant uses that a zero use-duration used to block: a
+        // snowball is thrown, a fishing rod casts its bobber and reels it in.
+        row(
+            "r94 a snowball was thrown and a fishing rod cast and reeled in (survival)",
+            self.snowball_seen && self.bobber_seen && self.bobber_gone,
+            format!(
+                "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
+                self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
         );
         // r86 — the player preview belongs to the player's inventory only:
         // no container frame (chests, furnaces, the donkey...) carries it,
@@ -2376,6 +2432,247 @@ pub(crate) fn witness_seam_faults(names: &[&str], expected: usize) -> Vec<String
 }
 
 impl LiveApp {
+    /// M229 — r92-r94 in the tail, after r90-r91: survival right-clicks
+    /// through `use_key_press` / `use_down`, each graded by what the server
+    /// sent back (food, slot contents, block updates, entities).
+    pub(super) fn use_witnesses(&mut self, now: u64, elapsed: f32, limit: f32) {
+        let seats_done = self
+            .check
+            .as_ref()
+            .is_some_and(|c| c.seat_checks.iter().all(|e| e.2.is_some()));
+        if self.use_stage > 0
+            && self.use_stage < 20
+            && elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2
+        {
+            if let Some(c) = self.check.as_mut() {
+                c.use_skip
+                    .get_or_insert_with(|| format!("timed out in stage {}", self.use_stage));
+            }
+            self.use_down = false;
+            self.use_stage = 20;
+        }
+        let held = |app: &Self| {
+            app.session.as_ref().and_then(|s| {
+                let h = s.inventory.held()?;
+                Some((app.items.name(h.item_id)?.to_string(), h.count))
+            })
+        };
+        let aim = |app: &mut Self, target: [f64; 3]| {
+            if let Some(s) = app.session.as_mut() {
+                let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                let d = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+            }
+        };
+        let cmd = |app: &mut Self, c: &str| {
+            if let Some(s) = app.session.as_mut() {
+                let _ = s.send_command(c);
+            }
+        };
+        let Some(o) = self.precmd_origin else {
+            return;
+        };
+        // A dry spot two blocks east of r87's pool (`~5..9, ~-1, ~4..18`).
+        let spot = [o[0].floor() + 11.5, o[1], o[2].floor() + 6.5];
+        let grass = [spot[0] - 1.0, o[1] - 0.5, spot[2]];
+        let pool = [o[0].floor() + 8.5, o[1] - 0.6, spot[2]];
+        match self.use_stage {
+            0 if self.nautilus_stage >= 20 && seats_done => {
+                self.use_tick0 = now;
+                self.use_stage = 1;
+            }
+            1 if now >= self.use_tick0 + 5
+                && self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.local_vehicle().is_none()) =>
+            {
+                cmd(self, "gamemode survival");
+                cmd(self, &format!("tp @s {} {} {}", spot[0], spot[1], spot[2]));
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:bread 4",
+                );
+                cmd(self, "effect give @s minecraft:hunger 2 255 true");
+                self.use_tick0 = now;
+                self.use_stage = 2;
+            }
+            // Hungry, the effect gone, the bread in hand.
+            2 if now >= self.use_tick0 + 50 => {
+                cmd(self, "effect clear @s minecraft:hunger");
+                let food = self.session.as_ref().map_or(20, |s| s.food);
+                let bread = held(self).filter(|(n, _)| n == "minecraft:bread");
+                if food < 20 && bread.is_some() {
+                    if let Some(c) = self.check.as_mut() {
+                        c.eat_food = Some((food, food));
+                        c.eat_count = bread.map(|(_, n)| (n, n));
+                    }
+                    aim(self, grass);
+                    self.use_key_press();
+                    self.use_tick0 = now;
+                    self.use_stage = 3;
+                } else if now >= self.use_tick0 + 120 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.use_skip = Some(format!("not hungry ({food}) or no bread ({bread:?})"));
+                    }
+                    self.use_stage = 20;
+                }
+            }
+            // Held past the 32-tick eat, released before a second bite ends.
+            3 if now >= self.use_tick0 + 36 => {
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 4;
+            }
+            4 if now >= self.use_tick0 + 10 => {
+                let food = self.session.as_ref().map_or(0, |s| s.food);
+                let count = held(self).map_or(0, |(_, n)| n);
+                if let Some(c) = self.check.as_mut() {
+                    c.eat_food = c.eat_food.map(|(a, _)| (a, food));
+                    c.eat_count = c.eat_count.map(|(a, _)| (a, count));
+                }
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:bucket",
+                );
+                self.use_tick0 = now;
+                self.use_stage = 5;
+            }
+            5 if now >= self.use_tick0 + 6 => {
+                aim(self, pool);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 6;
+            }
+            6 => {
+                let filled = held(self).is_some_and(|(n, _)| n == "minecraft:water_bucket");
+                if filled {
+                    if let Some(c) = self.check.as_mut() {
+                        c.bucket_filled = true;
+                    }
+                    aim(self, grass);
+                    self.use_key_press();
+                    self.use_down = false;
+                    self.use_tick0 = now;
+                    self.use_stage = 7;
+                } else if now >= self.use_tick0 + 30 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.use_skip = Some("the bucket never filled".into());
+                    }
+                    self.use_stage = 8;
+                    self.use_tick0 = now;
+                }
+            }
+            7 => {
+                let emptied = held(self).is_some_and(|(n, _)| n == "minecraft:bucket");
+                // The water goes on top of the grass that was clicked.
+                let water = self.session.as_ref().is_some_and(|s| {
+                    let (x, y, z) = (
+                        grass[0].floor() as i32,
+                        o[1].floor() as i32,
+                        grass[2].floor() as i32,
+                    );
+                    self.blocks.block_name(s.world.block_state_at(x, y, z))
+                        == Some("minecraft:water")
+                });
+                if emptied && water {
+                    if let Some(c) = self.check.as_mut() {
+                        c.bucket_emptied = true;
+                        c.bucket_water_placed = true;
+                    }
+                    self.use_stage = 8;
+                    self.use_tick0 = now;
+                } else if now >= self.use_tick0 + 30 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.bucket_emptied = emptied;
+                        c.bucket_water_placed = water;
+                    }
+                    self.use_stage = 8;
+                    self.use_tick0 = now;
+                }
+            }
+            8 if now >= self.use_tick0 + 4 => {
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:snowball 4",
+                );
+                self.use_tick0 = now;
+                self.use_stage = 9;
+            }
+            9 if now >= self.use_tick0 + 6 => {
+                // Level, away from the pool.
+                aim(self, [spot[0] + 8.0, o[1] + 1.6, spot[2]]);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 10;
+            }
+            10 => {
+                let seen = self.session.as_ref().is_some_and(|s| {
+                    let t = s
+                        .entity_types
+                        .as_deref()
+                        .and_then(|t| t.id_of("minecraft:snowball"));
+                    s.world.entities.iter().any(|(_, e)| Some(e.type_id) == t)
+                });
+                if seen || now >= self.use_tick0 + 30 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.snowball_seen = seen;
+                    }
+                    cmd(
+                        self,
+                        "item replace entity @s weapon.mainhand with minecraft:fishing_rod",
+                    );
+                    self.use_tick0 = now;
+                    self.use_stage = 11;
+                }
+            }
+            11 if now >= self.use_tick0 + 8 => {
+                aim(self, [spot[0] + 8.0, o[1] + 0.5, spot[2]]);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 12;
+            }
+            12 | 13 => {
+                let bobber = self.session.as_ref().is_some_and(|s| {
+                    let t = s
+                        .entity_types
+                        .as_deref()
+                        .and_then(|t| t.id_of("minecraft:fishing_bobber"));
+                    s.world.entities.iter().any(|(_, e)| Some(e.type_id) == t)
+                });
+                if self.use_stage == 12 {
+                    if bobber && now >= self.use_tick0 + 10 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.bobber_seen = true;
+                        }
+                        // Reel in: the same key again.
+                        self.use_key_press();
+                        self.use_down = false;
+                        self.use_tick0 = now;
+                        self.use_stage = 13;
+                    } else if now >= self.use_tick0 + 40 {
+                        self.use_stage = 14;
+                    }
+                } else if !bobber || now >= self.use_tick0 + 30 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.bobber_gone = !bobber;
+                    }
+                    self.use_stage = 14;
+                }
+            }
+            14 => {
+                cmd(self, "gamemode creative");
+                self.use_stage = 20;
+            }
+            _ => {}
+        }
+    }
+
     /// M228 — r91: ask the server where it seats the bot, right after a
     /// vehicle's own position was asked, and note where the client put it.
     ///
@@ -4579,6 +4876,7 @@ impl LiveApp {
                     }
                 }
                 self.seat_resolve();
+                self.use_witnesses(now, elapsed, limit);
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
                 // (the bot rides r72's client-side horse, so W moves nothing
                 // and no screen is up until 0.46). One stage per server echo.

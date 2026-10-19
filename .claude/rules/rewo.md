@@ -137,6 +137,13 @@ a self-check path.
   calls "vanilla's" must come from the decompile's chain, not a derivation
   the code shares: the server replays a steered vehicle's moves and cannot
   catch a wrong speed.
+- **A right-click is `startUseItem`'s loop** (M229, `live_cmd/app.rs`
+  `use_plan`): per hand, `use_item_on` for the block (always sent), then on
+  a local PASS `use_item` (always sent); the local results come from
+  `rewo_world::click_use`, one rule per overriding class
+  (`tools/gen_click_use.py` names the class; a new override in a later
+  version fails `every_override_class_was_reviewed`). Err toward ending the
+  click: a wrongly-passed one sends a second packet the server acts on.
 - **One accessor per concept.** When two call sites each compute "which menu",
   "which origin" or "which conversion", they drift (M89, M106b, M112, M151).
 - **The M-numbers aren't a contiguous index** (M52, M61, M64, M66, M68 each
