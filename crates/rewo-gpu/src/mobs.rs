@@ -1438,11 +1438,18 @@ pub enum EntityModelKind {
     /// skin model; never wire-mapped (players resolve to `Player` and the
     /// caller swaps to this when the skin is slim).
     PlayerSlim,
+    /// M223 — `BoatModel` (every wood but bamboo; the wood picks the
+    /// texture), its chest variant, and `RaftModel` (bamboo) with its chest
+    /// variant. Not living, so no walk, head or death animation.
+    Boat,
+    ChestBoat,
+    Raft,
+    ChestRaft,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 91;
+    pub const COUNT: usize = 95;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1534,6 +1541,10 @@ impl EntityModelKind {
         EntityModelKind::Nautilus,
         EntityModelKind::ZombieNautilus,
         EntityModelKind::PlayerSlim,
+        EntityModelKind::Boat,
+        EntityModelKind::ChestBoat,
+        EntityModelKind::Raft,
+        EntityModelKind::ChestRaft,
         EntityModelKind::Capsule,
     ];
 
@@ -1633,6 +1644,10 @@ impl EntityModelKind {
             EntityModelKind::Nautilus => "nautilus",
             EntityModelKind::ZombieNautilus => "zombie_nautilus",
             EntityModelKind::PlayerSlim => "player_slim",
+            EntityModelKind::Boat => "boat",
+            EntityModelKind::ChestBoat => "chest_boat",
+            EntityModelKind::Raft => "raft",
+            EntityModelKind::ChestRaft => "chest_raft",
             EntityModelKind::Capsule => "capsule",
         }
     }
@@ -1646,6 +1661,15 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
     let Some(short) = name.strip_prefix("minecraft:") else {
         return EntityModelKind::Capsule;
     };
+    // M223 — twenty boat types over four models: `<wood>_boat`,
+    // `<wood>_chest_boat`, `bamboo_raft`, `bamboo_chest_raft`.
+    match short {
+        "bamboo_raft" => return EntityModelKind::Raft,
+        "bamboo_chest_raft" => return EntityModelKind::ChestRaft,
+        s if s.ends_with("_chest_boat") => return EntityModelKind::ChestBoat,
+        s if s.ends_with("_boat") => return EntityModelKind::Boat,
+        _ => {}
+    }
     for k in EntityModelKind::ALL {
         // Player variants are chosen by the caller (type id + skin model),
         // never by the wire name; capsule is the fallback, not a match. The
@@ -2375,6 +2399,28 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ZombieHorse,
         textures: &["zombie_horse"],
         build: equine_plain,
+    },
+    // M223 — the boats: oak and bamboo are the baked bases, the other woods
+    // variant sheets (`rewo_data::mob_variants`).
+    MobDef {
+        kind: EntityModelKind::Boat,
+        textures: &["boat"],
+        build: boat,
+    },
+    MobDef {
+        kind: EntityModelKind::ChestBoat,
+        textures: &["chest_boat"],
+        build: chest_boat,
+    },
+    MobDef {
+        kind: EntityModelKind::Raft,
+        textures: &["raft"],
+        build: raft,
+    },
+    MobDef {
+        kind: EntityModelKind::ChestRaft,
+        textures: &["chest_raft"],
+        build: chest_raft,
     },
     MobDef {
         kind: EntityModelKind::SnowGolem,
@@ -7579,6 +7625,210 @@ fn equine_plain() -> Model {
     equine(false)
 }
 
+// ---------------------------------------------------------------------------
+// Boats (M223): `BoatModel` / `RaftModel`, placed by `AbstractBoatRenderer`
+// ---------------------------------------------------------------------------
+
+/// `AbstractBoatRenderer.submit` is `translate(0, 0.375, 0) · rotY(180 − yaw)
+/// · scale(−1, −1, 1) · rotY(90°) · model`. The entity pass applies the yaw
+/// and the flip with the living renderer's 1.501-block (24.016 px) offset, so
+/// every boat cube carries this root fold: the `rotY(90°)` that comes after
+/// the flip, and the offset that turns 24.016 px into the boat's 6 (0.375
+/// block): `y_entity = 24.016 − (v.y + 18.016) = 6 − v.y`.
+const BOAT_ROOT: Fold = Fold::rot([0.0, FRAC_PI_2, 0.0], [0.0, MODEL_EYE_Y - 6.0, 0.0]);
+
+/// `AbstractBoatModel.animatePaddle` at a rowing time of 0, which is where a
+/// boat nobody paddles keeps its paddles: `xRot = lerp(0.5, −π/3, −π/12)`,
+/// `yRot = lerp((sin(1) + 1) / 2, −π/4, π/4)`, the right paddle's yaw
+/// mirrored to `π − yRot`; the `PartPose`'s `zRot` of π/16 stays.
+fn paddle_rest(right: bool) -> [f32; 3] {
+    use std::f32::consts::PI;
+    let lerp = |t: f32, a: f32, b: f32| a + t.clamp(0.0, 1.0) * (b - a);
+    let x = lerp((0.0f32.sin() + 1.0) / 2.0, -PI / 3.0, -PI / 12.0);
+    let y = lerp((1.0f32.sin() + 1.0) / 2.0, -PI / 4.0, PI / 4.0);
+    [x, if right { PI - y } else { y }, PI / 16.0]
+}
+
+/// The two paddles (`BoatModel` / `RaftModel` share the boxes and differ in
+/// the texture offsets and the pivot height).
+fn boat_paddles(b: &mut ModelBuilder, uv_left: (f32, f32), uv_right: (f32, f32), pivot_y: f32) {
+    for (right, uv, z, blade_x) in [(false, uv_left, 9.0, -1.001), (true, uv_right, -9.0, 0.001)] {
+        let pose = Fold::rot(paddle_rest(right), [3.0, pivot_y, z]);
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [-1.0, 0.0, -5.0],
+            [2.0, 2.0, 18.0],
+            0.0,
+            false,
+            &[pose, BOAT_ROOT],
+        );
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [blade_x, -3.0, 8.0],
+            [1.0, 6.0, 7.0],
+            0.0,
+            false,
+            &[pose, BOAT_ROOT],
+        );
+    }
+}
+
+/// `BoatModel.addCommonParts`: the bottom, the four sides, the paddles.
+fn boat_hull(b: &mut ModelBuilder) {
+    use std::f32::consts::PI;
+    let part = |b: &mut ModelBuilder,
+                uv: (f32, f32),
+                min: [f32; 3],
+                dims: [f32; 3],
+                rot: [f32; 3],
+                off: [f32; 3]| {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            min,
+            dims,
+            0.0,
+            false,
+            &[Fold::rot(rot, off), BOAT_ROOT],
+        );
+    };
+    part(
+        b,
+        (0.0, 0.0),
+        [-14.0, -9.0, -3.0],
+        [28.0, 16.0, 3.0],
+        [FRAC_PI_2, 0.0, 0.0],
+        [0.0, 3.0, 1.0],
+    );
+    part(
+        b,
+        (0.0, 19.0),
+        [-13.0, -7.0, -1.0],
+        [18.0, 6.0, 2.0],
+        [0.0, PI * 3.0 / 2.0, 0.0],
+        [-15.0, 4.0, 4.0],
+    );
+    part(
+        b,
+        (0.0, 27.0),
+        [-8.0, -7.0, -1.0],
+        [16.0, 6.0, 2.0],
+        [0.0, FRAC_PI_2, 0.0],
+        [15.0, 4.0, 0.0],
+    );
+    part(
+        b,
+        (0.0, 35.0),
+        [-14.0, -7.0, -1.0],
+        [28.0, 6.0, 2.0],
+        [0.0, PI, 0.0],
+        [0.0, 4.0, -9.0],
+    );
+    part(
+        b,
+        (0.0, 43.0),
+        [-14.0, -7.0, -1.0],
+        [28.0, 6.0, 2.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 4.0, 9.0],
+    );
+    boat_paddles(b, (62.0, 0.0), (62.0, 20.0), -5.0);
+}
+
+/// `RaftModel.addCommonParts`: two stacked bottom boxes, the paddles.
+fn raft_hull(b: &mut ModelBuilder) {
+    let pose = Fold::rot([1.5708, 0.0, 0.0], [0.0, -2.1, 1.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-14.0, -11.0, -4.0],
+        [28.0, 20.0, 4.0],
+        0.0,
+        false,
+        &[pose, BOAT_ROOT],
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-14.0, -9.0, -8.0],
+        [28.0, 16.0, 4.0],
+        0.0,
+        false,
+        &[pose, BOAT_ROOT],
+    );
+    boat_paddles(b, (0.0, 24.0), (40.0, 24.0), -4.0);
+}
+
+/// `createChestBoatModel` / `createChestRaftModel`'s chest: bottom, lid and
+/// lock at the given heights (the raft's sit 5.1 px higher).
+fn boat_chest(b: &mut ModelBuilder, bottom_y: f32, lid_y: f32, lock_y: f32) {
+    let rot = [0.0, -FRAC_PI_2, 0.0];
+    for (uv, min, dims, off) in [
+        (
+            (0.0, 76.0),
+            [0.0, 0.0, 0.0],
+            [12.0, 8.0, 12.0],
+            [-2.0, bottom_y, -6.0],
+        ),
+        (
+            (0.0, 59.0),
+            [0.0, 0.0, 0.0],
+            [12.0, 4.0, 12.0],
+            [-2.0, lid_y, -6.0],
+        ),
+        (
+            (0.0, 59.0),
+            [0.0, 0.0, 0.0],
+            [2.0, 4.0, 1.0],
+            [-1.0, lock_y, -1.0],
+        ),
+    ] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            min,
+            dims,
+            0.0,
+            false,
+            &[Fold::rot(rot, off), BOAT_ROOT],
+        );
+    }
+}
+
+fn boat() -> Model {
+    let mut b = ModelBuilder::new();
+    boat_hull(&mut b);
+    b.finish(1.0)
+}
+
+fn chest_boat() -> Model {
+    let mut b = ModelBuilder::new();
+    boat_hull(&mut b);
+    boat_chest(&mut b, -5.0, -9.0, -6.0);
+    b.finish(1.0)
+}
+
+fn raft() -> Model {
+    let mut b = ModelBuilder::new();
+    raft_hull(&mut b);
+    b.finish(1.0)
+}
+
+fn chest_raft() -> Model {
+    let mut b = ModelBuilder::new();
+    raft_hull(&mut b);
+    boat_chest(&mut b, -10.1, -14.1, -11.1);
+    b.finish(1.0)
+}
+
 fn equine_eared() -> Model {
     equine(true)
 }
@@ -9687,6 +9937,12 @@ mod tests {
                 EntityModelKind::Player
                     | EntityModelKind::PlayerSlim
                     | EntityModelKind::TropicalFishLarge
+                    // M223 — a boat kind is a model shared by many wire
+                    // types, none of them named after it; asserted below.
+                    | EntityModelKind::Boat
+                    | EntityModelKind::ChestBoat
+                    | EntityModelKind::Raft
+                    | EntityModelKind::ChestRaft
             ) {
                 continue;
             }
@@ -9697,6 +9953,29 @@ mod tests {
                 def.kind
             );
         }
+        // The boat types (M223): every wood's boat and chest boat, and the
+        // bamboo pair, which are rafts.
+        for wood in [
+            "oak", "spruce", "birch", "jungle", "acacia", "cherry", "dark_oak", "mangrove",
+            "pale_oak",
+        ] {
+            assert_eq!(
+                kind_for_entity_name(&format!("minecraft:{wood}_boat")),
+                EntityModelKind::Boat
+            );
+            assert_eq!(
+                kind_for_entity_name(&format!("minecraft:{wood}_chest_boat")),
+                EntityModelKind::ChestBoat
+            );
+        }
+        assert_eq!(
+            kind_for_entity_name("minecraft:bamboo_raft"),
+            EntityModelKind::Raft
+        );
+        assert_eq!(
+            kind_for_entity_name("minecraft:bamboo_chest_raft"),
+            EntityModelKind::ChestRaft
+        );
     }
 
     /// Every layer table names a texture the mob actually lists, and no mob

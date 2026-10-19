@@ -952,6 +952,11 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("mule", "entity/horse/mule.png", 64, 64),
     ("skeleton_horse", "entity/horse/horse_skeleton.png", 64, 64),
     ("zombie_horse", "entity/horse/horse_zombie.png", 64, 64),
+    // M223 — the boats' baked bases (the other woods are variants).
+    ("boat", "entity/boat/oak.png", 128, 64),
+    ("chest_boat", "entity/chest_boat/oak.png", 128, 128),
+    ("raft", "entity/boat/bamboo.png", 128, 64),
+    ("chest_raft", "entity/chest_boat/bamboo.png", 128, 128),
     ("snow_golem", "entity/snow_golem/snow_golem.png", 64, 64),
     ("iron_golem", "entity/iron_golem/iron_golem.png", 128, 128),
     ("allay", "entity/allay/allay.png", 32, 32),

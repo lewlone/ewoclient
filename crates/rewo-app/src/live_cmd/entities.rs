@@ -2014,6 +2014,17 @@ pub(crate) fn fish_kind(v: rewo_data::mob_variants::FishVariant) -> EntityModelK
     }
 }
 pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySession) -> u16 {
+    // M223 — a boat's wood is its TYPE, not a metadata variant.
+    if matches!(kind, EntityModelKind::Boat | EntityModelKind::ChestBoat) {
+        return session
+            .world
+            .entities
+            .get(id)
+            .and_then(|e| session.entity_types.as_deref()?.name(e.type_id))
+            .and_then(rewo_data::mob_variants::boat_texture)
+            .and_then(|t| rewo_data::mob_variants::variant_id(&t))
+            .unwrap_or(0);
+    }
     let Some(v) = session.world.entities.variant(id) else {
         return 0;
     };
@@ -2341,10 +2352,10 @@ pub(super) fn collect_entities<'a>(
             continue;
         }
         // M221 — the vehicle the local player rides, when Rewo has no model
-        // for it (boats today): its placeholder capsule is centred on the
-        // vehicle and encloses the rider's camera, hiding the whole world.
-        // Vanilla draws the boat model around the rider; with no model, not
-        // drawing it is the honest stand-in.
+        // for it (boats had none until M223): its placeholder capsule is
+        // centred on the vehicle and encloses the rider's camera, hiding the
+        // whole world. Vanilla draws the vehicle's model around the rider;
+        // with no model, not drawing it is the honest stand-in.
         if session.local_vehicle() == Some(id)
             && rewo_gpu::mobs::kind_for_entity_name(etypes.name(e.type_id).unwrap_or(""))
                 == rewo_gpu::mobs::EntityModelKind::Capsule

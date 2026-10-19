@@ -254,7 +254,10 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// could silently drop any number of mobs from grading. Both numbers move when a
 /// mob is added or its texture starts/stops reusing rects across face labels;
 /// update them (and say why) in that commit.
-const EXPECTED_MOB_VIEWS: usize = 246;
+///
+/// M223: 246 → 258, the four boat models (boat, chest boat, raft, chest raft)
+/// at three views each.
+const EXPECTED_MOB_VIEWS: usize = 258;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.
@@ -1558,7 +1561,8 @@ fn run_variant_check(
         .collect();
     c.record(
         "n1.every_declared_variant_sheet_baked_at_its_bases_size",
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 52,
+        // M223: 52 → 68, the eight boat and eight chest-boat woods.
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 68,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \

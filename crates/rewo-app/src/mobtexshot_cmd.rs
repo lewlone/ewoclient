@@ -172,8 +172,8 @@ const ITEM_PX: u32 = 16;
 /// floor is now stated the other way round — the two escape buckets are
 /// **pinned at their measured sizes** and the sweep must account for every
 /// kind — which turns "a mob stopped rendering" from a SKIP into a red gate.
-const MIN_GRADED: usize = 78;
-const MIN_DISCRIMINATING: usize = 70;
+const MIN_GRADED: usize = 82;
+const MIN_DISCRIMINATING: usize = 72;
 /// Kinds too small to grade at 1600x900, measured: fox, tadpole, cod, salmon,
 /// tropical_fish x2, parrot, allay, copper_golem. A tenth means something
 /// stopped drawing.
@@ -183,8 +183,10 @@ const MAX_SMALL: usize = 9;
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
 /// same-size baby sheets, dolphin/dolphin_baby (the baby shares the adult's
 /// grey palette outright). Sound but not discriminating, so the count is
-/// pinned rather than left to drift.
-const MAX_AMBIGUOUS: usize = 6;
+/// pinned rather than left to drift. M223 added boat/chest_boat and
+/// raft/chest_raft: the same wood sheet drawn on two models (and the floors
+/// above rose by the four new kinds, two of them discriminating).
+const MAX_AMBIGUOUS: usize = 8;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {

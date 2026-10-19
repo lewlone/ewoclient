@@ -167,6 +167,23 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
         "tropical_fish_pattern_b",
         "entity/fish/tropical_b_pattern_6.png",
     ),
+    // M223 — boat woods; oak (and bamboo, the raft) are the baked bases.
+    ("boat", "entity/boat/spruce.png"),
+    ("boat", "entity/boat/birch.png"),
+    ("boat", "entity/boat/jungle.png"),
+    ("boat", "entity/boat/acacia.png"),
+    ("boat", "entity/boat/cherry.png"),
+    ("boat", "entity/boat/dark_oak.png"),
+    ("boat", "entity/boat/mangrove.png"),
+    ("boat", "entity/boat/pale_oak.png"),
+    ("chest_boat", "entity/chest_boat/spruce.png"),
+    ("chest_boat", "entity/chest_boat/birch.png"),
+    ("chest_boat", "entity/chest_boat/jungle.png"),
+    ("chest_boat", "entity/chest_boat/acacia.png"),
+    ("chest_boat", "entity/chest_boat/cherry.png"),
+    ("chest_boat", "entity/chest_boat/dark_oak.png"),
+    ("chest_boat", "entity/chest_boat/mangrove.png"),
+    ("chest_boat", "entity/chest_boat/pale_oak.png"),
 ];
 
 // ---------------------------------------------------------------------------
@@ -348,6 +365,24 @@ pub fn variant_id(rel_path: &str) -> Option<u16> {
         .iter()
         .position(|(_, p)| *p == rel_path)
         .map(|i| VANILLA_VARIANT_BASE + i as u16)
+}
+
+/// A boat type's texture (M223): `BoatRenderer`'s model layer
+/// `boat/<wood>` / `chest_boat/<wood>` expanded to `entity/<layer>.png`.
+/// `None` for anything that is not a boat or raft.
+pub fn boat_texture(type_name: &str) -> Option<String> {
+    let short = type_name.strip_prefix("minecraft:")?;
+    if let Some(wood) = short.strip_suffix("_chest_boat") {
+        return Some(format!("entity/chest_boat/{wood}.png"));
+    }
+    if let Some(wood) = short.strip_suffix("_boat") {
+        return Some(format!("entity/boat/{wood}.png"));
+    }
+    match short {
+        "bamboo_raft" => Some("entity/boat/bamboo.png".into()),
+        "bamboo_chest_raft" => Some("entity/chest_boat/bamboo.png".into()),
+        _ => None,
+    }
 }
 
 /// `Axolotl.Variant.byId` → its texture, out of bounds → LUCY.

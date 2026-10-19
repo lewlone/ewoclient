@@ -108,6 +108,10 @@ released.
   vanilla does. Checked live: a horse walked twelve blocks at vanilla's speed,
   jumped three blocks high, and the server agreed exactly where it ended up.
   Camels and the nautilus are not done yet.
+- **M223**: boats have their real models now (all twenty: every wood, the
+  bamboo raft, and the chest versions), instead of a placeholder blob.
+  Sitting in one shows the hull around you. The paddles don't row yet, and
+  water can show inside a floating boat (vanilla masks it out; not done).
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -160,6 +164,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M223)* | **M223** — the boat model: `BoatModel`, `RaftModel` and their chest variants for the twenty boat types, with the wood picked by type name; the entity atlas grown to 2112 rows for the eight wood sheets. |
 | `7ddc07e` | **M222** — horse steering: `physics::Body` and `tick_ridden` (`travelRidden`, `executeRidersJump`), the steered horse in the session with its own attributes, the jump meter's release as `onPlayerJump`; the render check's injected horse held still, r63 at its staged witness, r72's jump level and r16's ratio limited to the timed run; render-check **r88**. |
 | `26559a9` | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
 
@@ -339,6 +344,9 @@ released.
   built found the injected-horse, jump-key and r16-ratio issues the §15
   entry lists); clippy (gates and default features) and `cargo fmt --check`
   clean.
+- After M223: **4,308 tests, 0 failed; gates 51/51** (demo hash
+  unchanged); render check **88/88** with an in-boat F2 capture looked at;
+  clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -375,8 +383,8 @@ released.
   bed-teleport explanation in decision 24 did not hold (it failed again with
   r83 moved to the tail). Unexplained; its message now prints the client's
   state at the press.
-- A boat model: boats (and rafts, chest boats) draw as the placeholder
-  capsule.
+- ~~A boat model~~ (M223). Still open on boats: the rowing animation, the
+  hurt wobble, and the water mask (water can show inside a floating hull).
 - `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once
   under full-suite load (an empty TCP answer) and passed five times alone;
   the same loopback-timing class as the others listed here.

@@ -60,6 +60,9 @@ const ATLAS_H_BEFORE_M60: u32 = 1408;
 /// variant sheets. Unlike M22/M48/M60's bands this one is not at the bottom,
 /// so it slid every dynamic pool — including the cape's — down with it.
 const M64_SHELF_GROWTH: u32 = 128;
+/// M223 — the second shelf growth (384 rows, for the boat woods), which slid
+/// the pools down exactly as M64's did.
+const M223_SHELF_GROWTH: u32 = 384;
 
 #[derive(ClapArgs)]
 pub struct CapeshotArgs {
@@ -744,10 +747,11 @@ fn check_pool(c: &mut Checker) {
     );
     c.record(
         "f2.the_cape_band_sits_exactly_where_the_shelf_growth_left_it",
-        pool_y == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH
-            && ah == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH + sh * 2 + M194_MAP_BAND,
+        pool_y == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH + M223_SHELF_GROWTH
+            && ah
+                == ATLAS_H_BEFORE_M60 + M64_SHELF_GROWTH + M223_SHELF_GROWTH + sh * 2 + M194_MAP_BAND,
         format!(
-            "cape pool starts at {pool_y}, atlas {ah} tall. M60 put the band at the pre-M60 ATLAS_H {ATLAS_H_BEFORE_M60} and claimed nothing below it moved; M64 then grew the *shelf* region by {M64_SHELF_GROWTH} rows for vanilla's 42 metadata variant sheets, and the shelf ceiling is defined by subtraction from ATLAS_H — so the item, skin, trim and cape pools all slid down by exactly that. Nothing on disk depends on those origins, and the *mob* packing is still byte-for-byte what it was because the packer is sequential and the region only grew at its far end: `mobshot --check` staying at 243/243 is the empirical half of that claim. M194's {M194_MAP_BAND}-row map band went BELOW the capes, so the cape origin did not move"
+            "cape pool starts at {pool_y}, atlas {ah} tall. M60 put the band at the pre-M60 ATLAS_H {ATLAS_H_BEFORE_M60} and claimed nothing below it moved; M64 then grew the *shelf* region by {M64_SHELF_GROWTH} rows for vanilla's 42 metadata variant sheets, and the shelf ceiling is defined by subtraction from ATLAS_H — so the item, skin, trim and cape pools all slid down by exactly that. Nothing on disk depends on those origins, and the *mob* packing is still byte-for-byte what it was because the packer is sequential and the region only grew at its far end: `mobshot --check` staying at 243/243 is the empirical half of that claim. M194's {M194_MAP_BAND}-row map band went BELOW the capes, so the cape origin did not move; M223 grew the shelf by {M223_SHELF_GROWTH} more rows (the boat woods), sliding the pools again"
         ),
     );
 }

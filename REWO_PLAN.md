@@ -3883,6 +3883,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M223 — the boat model (2026-10-19)
+
+Boats drew as the placeholder capsule; M221 had to hide the ridden one
+because it enclosed the camera. Now the twenty boat types draw with
+vanilla's four models: `BoatModel` (every wood but bamboo),
+`createChestBoatModel`, `RaftModel` (bamboo) and `createChestRaftModel`.
+
+- **Placement.** `AbstractBoatRenderer.submit` is `translate(0, 0.375, 0) ·
+  rotY(180 − yaw) · scale(−1, −1, 1) · rotY(90°)`. The entity pass already
+  applies the yaw and the flip with the living renderer's 24.016 px offset,
+  so every boat cube carries one root fold (`BOAT_ROOT`): the `rotY(90°)`
+  and the offset that turns 24.016 px into the boat's 6.
+- **Paddles** are at `animatePaddle`'s rest pose (rowing time 0), which is
+  where a boat nobody paddles keeps them.
+- **Textures.** Oak and bamboo are the baked bases (`boat`, `chest_boat`,
+  `raft`, `chest_raft`); the other eight woods are `VARIANT_TEXTURES` sheets
+  picked by the entity's type name (`mob_variants::boat_texture`). The
+  sixteen sheets did not fit the entity atlas: `ATLAS_H` grew 1728 → 2112
+  (256 rows were the sheets' area; the shelf packer's gaps needed 384).
+  `capeshot`'s atlas-layout pin carries the growth as `M223_SHELF_GROWTH`.
+- **Pins:** mobshot 258 views over 68 declared kinds; mobtexshot's floors
+  82 graded / 72 discriminating, `MAX_AMBIGUOUS` 8 (a boat's planks repeat).
+
+The capsule exception for the ridden vehicle stays (it now applies to
+nothing that has a model). Checked by the mobshot sheet and by an F2 capture
+in r87's boat (`REWO_RC_CAPTURE_AT=1.55`): the world is drawn, with the
+hull's edge along the bottom of the view.
+
+Not modelled, recorded: the rowing animation (paddles stay at rest; the
+paddle state is in the metadata and, for the steered boat, in the session),
+the hurt wobble and `getBubbleAngle` rocking, and vanilla's water mask (a
+depth-only patch that keeps water out of the hull; without it water can show
+inside a floating boat). 88/88.
+
 ### M222 — steering a horse (2026-10-19)
 
 A horse is a `LivingEntity` whose `travel` is the player's own with the

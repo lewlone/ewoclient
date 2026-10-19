@@ -467,7 +467,13 @@ const ATLAS_W: u32 = 1024;
 ///
 /// M194 grew it by the framed-map band (128 rows at the bottom, M48's recipe
 /// again), so every earlier address is unchanged.
-const ATLAS_H: u32 = 1728;
+///
+/// M223 is M64's case again: the eight boat and eight chest-boat wood sheets
+/// (128 x 64 and 128 x 128) did not fit the shelf region, so 384 rows went in (256
+/// were not enough with the shelf packer's gaps)
+/// and the pools below it slid down with `ATLAS_H`; the mob packing ahead of
+/// the new sheets is unchanged.
+const ATLAS_H: u32 = 2112;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
