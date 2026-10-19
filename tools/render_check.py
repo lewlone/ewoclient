@@ -165,6 +165,11 @@ PRECMD = (
     "summon minecraft:painting ~-2 ~1 ~15 {facing:2b,variant:\"minecraft:kebab\"};"
     # M255 -- r114. A text display (a hologram), gold, facing the camera.
     "summon minecraft:text_display ~2 ~2 ~-4 {billboard:\"center\",text:{text:\"RewoHolo\",color:\"gold\"}};"
+    # M258 -- r117. Three small projectiles held still (no acceleration,
+    # no gravity, no motion), up out of reach of the bot.
+    "summon minecraft:wither_skull ~-2 ~3 ~-9 {acceleration_power:0d,Motion:[0d,0d,0d]};"
+    "summon minecraft:llama_spit ~-3 ~3 ~-9 {NoGravity:1b,Motion:[0d,0d,0d]};"
+    "summon minecraft:shulker_bullet ~-4 ~3 ~-9 {NoGravity:1b,Motion:[0d,0d,0d]};"
     # M257 -- r116. An end crystal, invulnerable so a stray click cannot
     # blow up the bot.
     "summon minecraft:end_crystal ~2 ~ ~-8 {Invulnerable:1b};"

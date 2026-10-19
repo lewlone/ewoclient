@@ -2072,6 +2072,7 @@ this shape once.
 | M255 (2026-10-19) — a text display's coloured text reaches the world-text list | **r114** | — | — |
 | M256 (2026-10-19) — an item display draws its item's model | **r115** | — | — |
 | M257 (2026-10-19) — an end crystal draws its model | **r116** | — | — |
+| M258 (2026-10-19) — a wither skull, llama spit and shulker bullet draw their models | **r117** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3906,6 +3907,36 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M258 — wither skulls, llama spit, shulker bullets, dragon fireballs (2026-10-19)
+
+Four more projectiles that were grey capsules:
+
+- **Wither skull** (`WitherSkullRenderer`): `SkullModel`'s head from
+  `createSkullLayer` (`texOffs(0, 35)` on the 64×64 `wither` sheet) under
+  `scale(-1, -1, 1)`, turned by the entity's `yRot` / `xRot`, full-bright.
+- **Llama spit** (`LlamaSpitRenderer`): the seven 2-px cubes under
+  `translate(0, 0.15, 0) · YP(yRot - 90) · ZP(xRot)`.
+- **Shulker bullet** (`ShulkerBulletRenderer`): the three crossed slabs
+  under `translate(0, 0.15, 0)`, the tumble (`YP(sin(t·0.1)·180) ·
+  XP(cos(t·0.1)·180) · ZP(sin(t·0.15)·360)`) and `scale(-0.5, -0.5, 0.5)`,
+  full-bright.
+- **Dragon fireball** (`DragonFireballRenderer`): a camera-facing sprite at
+  scale 2, full-bright, on the thrown-item billboard path; it shares the
+  experience orb's lifted quad (`lifted_sprite_quads`, factored out of
+  M251's bake).
+
+The three models go through the block-entity emitter
+(`live_cmd::small_projectile_pose`, `collect_small_projectiles`).
+Recorded: a dangerous (blue) wither skull draws the ordinary texture, the
+shulker bullet's translucent outer shell is not drawn, the bullet's age is
+the world clock offset by the entity id, rotations are the latest packet's.
+
+Tests: `small_projectile_poses_follow_their_renderers`,
+`small_projectile_models_have_their_boxes`. **r117**: a summoned wither
+skull, llama spit and shulker bullet, held still, all draw every quad of
+their models in one frame. The fireball has no render-check witness (its
+draw is the billboard path the XP orb's itemshot witness grades).
 
 ### M257 — end crystals (2026-10-19)
 

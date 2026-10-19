@@ -3877,6 +3877,58 @@ fn a_text_display_pose_follows_vanillas_chain() {
     }
 }
 
+/// M258 — the small projectiles' poses: the wither skull's flip puts its
+/// head (model y -8..0) above the entity and turns with the yaw about the
+/// vertical; the llama spit is lifted 0.15 and turned like an arrow; the
+/// shulker bullet is lifted 0.15 at half size; only the skull and the bullet
+/// are full-bright; the dragon fireball is a scale-2 full-bright billboard.
+#[test]
+fn small_projectile_poses_follow_their_renderers() {
+    use super::entities::{small_projectile_pose, thrown_item_of};
+    let apply = |m: &rewo_data::be_transform::Affine, v: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+    };
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+    let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    for yaw in [0.0, 90.0, 217.0] {
+        let (m, skull, bright) =
+            small_projectile_pose("minecraft:wither_skull", yaw, 0.0, 0.0).unwrap();
+        assert_eq!(m, "rewo:be/wither_skull");
+        assert!(bright);
+        assert!(
+            close(apply(&skull, [0.0, -0.5, 0.0]), [0.0, 0.5, 0.0]),
+            "{yaw}"
+        );
+    }
+    let (_, spit, bright) = small_projectile_pose("minecraft:llama_spit", 30.0, 10.0, 0.0).unwrap();
+    assert!(!bright);
+    assert!(close(apply(&spit, [0.0; 3]), [0.0, 0.15, 0.0]));
+    let arrow = rewo_data::be_transform::mul(
+        &rewo_data::be_transform::rot_y(30.0 - 90.0),
+        &rewo_data::be_transform::rot_z(10f32.to_radians()),
+    );
+    let v = [0.3, -0.2, 0.7];
+    let lifted = apply(&arrow, v);
+    assert!(close(
+        apply(&spit, v),
+        [lifted[0], lifted[1] + 0.15, lifted[2]]
+    ));
+    for age in [0.0, 13.0, 77.5] {
+        let (_, bullet, bright) =
+            small_projectile_pose("minecraft:shulker_bullet", 40.0, -20.0, age).unwrap();
+        assert!(bright);
+        let c = apply(&bullet, [0.0; 3]);
+        assert!(close(c, [0.0, 0.15, 0.0]), "{age}");
+        let x = apply(&bullet, [1.0, 0.0, 0.0]);
+        assert!((len([x[0] - c[0], x[1] - c[1], x[2] - c[2]]) - 0.5).abs() < 1e-5);
+    }
+    assert!(small_projectile_pose("minecraft:arrow", 0.0, 0.0, 0.0).is_none());
+    assert_eq!(
+        thrown_item_of("minecraft:dragon_fireball"),
+        Some(("rewo:be/dragon_fireball", 2.0, true))
+    );
+}
+
 /// M256 — an item display's pose: at `none` the model's centre lands on the
 /// entity and the model turns half a turn (`YP(π)`, so its +x corner faces
 /// -x); `fixed` applies the model's fixed transform first; a right hand's

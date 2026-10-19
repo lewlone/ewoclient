@@ -1797,6 +1797,137 @@ pub fn bake_bell_and_book(
     out
 }
 
+/// The camera-facing quad `(-0.5, -0.25)..(0.5, 0.75)` that
+/// `ExperienceOrbRenderer` and `DragonFireballRenderer` both build, as the
+/// billboard path takes a model (centred on `(8, 8, 8)` px): `x 0..16, y
+/// 4..20, z 8`, front and back, over the UV rect `[u0, v0, u1, v1]`.
+fn lifted_sprite_quads(tex: u16, [u0, v0, u1, v1]: [f32; 4]) -> [HeldQuad; 2] {
+    let front = HeldQuad {
+        verts: [
+            [0.0, 4.0, 8.0],
+            [16.0, 4.0, 8.0],
+            [16.0, 20.0, 8.0],
+            [0.0, 20.0, 8.0],
+        ],
+        uv: [[u0, v1], [u1, v1], [u1, v0], [u0, v0]],
+        tex,
+        part: 0,
+        dir: 3,
+    };
+    let back = HeldQuad {
+        verts: [
+            front.verts[3],
+            front.verts[2],
+            front.verts[1],
+            front.verts[0],
+        ],
+        uv: [front.uv[3], front.uv[2], front.uv[1], front.uv[0]],
+        dir: 2,
+        ..front
+    };
+    [front, back]
+}
+
+// ---------------------------------------------------------------- small projectiles
+//
+// M258 — the projectiles whose renderer draws a small model or a sprite:
+// the wither skull, llama spit and shulker bullet on the block-entity path
+// (`live_cmd::small_projectile_pose`), the dragon fireball as a billboard.
+
+/// `(name, texture)` of the wither skull (`WitherSkullRenderer
+/// .WITHER_LOCATION`; the blue `wither_invulnerable` one is not drawn).
+pub const WITHER_SKULL_MODEL: (&str, &str) = ("rewo:be/wither_skull", "entity/wither/wither");
+/// `(name, texture)` of the llama spit (`LlamaSpitRenderer`).
+pub const LLAMA_SPIT_MODEL: (&str, &str) = ("rewo:be/llama_spit", "entity/llama/llama_spit");
+/// `(name, texture)` of the shulker bullet (`ShulkerBulletRenderer`).
+pub const SHULKER_BULLET_MODEL: (&str, &str) = ("rewo:be/shulker_bullet", "entity/shulker/spark");
+/// `(name, texture)` of the dragon fireball (`DragonFireballRenderer`).
+pub const DRAGON_FIREBALL_MODEL: (&str, &str) = (
+    "rewo:be/dragon_fireball",
+    "entity/enderdragon/dragon_fireball",
+);
+
+/// `WitherSkullRenderer.createSkullLayer` (64×64): the head at `texOffs(0,
+/// 35)`.
+const WITHER_SKULL: &[Box] = &[plain(
+    (0.0, 35.0),
+    [-4.0, -8.0, -4.0],
+    [8.0; 3],
+    [0.0; 3],
+    0,
+)];
+
+/// `LlamaSpitModel.createBodyLayer` (64×32): seven 2-px cubes, all at
+/// `texOffs(0, 0)`.
+const LLAMA_SPIT: &[Box] = &[
+    plain((0.0, 0.0), [-4.0, 0.0, 0.0], [2.0; 3], [0.0; 3], 0),
+    plain((0.0, 0.0), [0.0, -4.0, 0.0], [2.0; 3], [0.0; 3], 0),
+    plain((0.0, 0.0), [0.0, 0.0, -4.0], [2.0; 3], [0.0; 3], 0),
+    plain((0.0, 0.0), [0.0, 0.0, 0.0], [2.0; 3], [0.0; 3], 0),
+    plain((0.0, 0.0), [2.0, 0.0, 0.0], [2.0; 3], [0.0; 3], 0),
+    plain((0.0, 0.0), [0.0, 2.0, 0.0], [2.0; 3], [0.0; 3], 0),
+    plain((0.0, 0.0), [0.0, 0.0, 2.0], [2.0; 3], [0.0; 3], 0),
+];
+
+/// `ShulkerBulletModel.createBodyLayer` (64×32): three crossed slabs.
+const SHULKER_BULLET: &[Box] = &[
+    plain((0.0, 0.0), [-4.0, -4.0, -1.0], [8.0, 8.0, 2.0], [0.0; 3], 0),
+    plain(
+        (0.0, 10.0),
+        [-1.0, -4.0, -4.0],
+        [2.0, 8.0, 8.0],
+        [0.0; 3],
+        0,
+    ),
+    plain(
+        (20.0, 0.0),
+        [-4.0, -1.0, -4.0],
+        [8.0, 2.0, 8.0],
+        [0.0; 3],
+        0,
+    ),
+];
+
+/// M258 — the small projectile models and the dragon fireball's sprite.
+pub fn bake_small_projectiles(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let model = |quads| HeldItemModel {
+        quads,
+        right: DisplayTransform::IDENTITY,
+        left: DisplayTransform::IDENTITY,
+        ground: DisplayTransform::IDENTITY,
+        gui: DisplayTransform::IDENTITY,
+        first_right: DisplayTransform::IDENTITY,
+        first_left: DisplayTransform::IDENTITY,
+        fixed: DisplayTransform::IDENTITY,
+        from_block: false,
+        gui_quads: None,
+    };
+    let mut out = Vec::new();
+    for ((name, tex_name), boxes, size) in [
+        (WITHER_SKULL_MODEL, WITHER_SKULL, (64.0, 64.0)),
+        (LLAMA_SPIT_MODEL, LLAMA_SPIT, (64.0, 32.0)),
+        (SHULKER_BULLET_MODEL, SHULKER_BULLET, (64.0, 32.0)),
+    ] {
+        let Some(tex) = pool.intern(tex_name, || load(tex_name)) else {
+            log::error!("projectiles: no texture {tex_name:?}");
+            continue;
+        };
+        out.push((name.to_string(), model(model_quads(boxes, tex, size))));
+    }
+    let (name, tex_name) = DRAGON_FIREBALL_MODEL;
+    match pool.intern(tex_name, || load(tex_name)) {
+        Some(tex) => out.push((
+            name.to_string(),
+            model(lifted_sprite_quads(tex, [0.0, 0.0, 1.0, 1.0]).to_vec()),
+        )),
+        None => log::error!("projectiles: no texture {tex_name:?}"),
+    }
+    out
+}
+
 // ---------------------------------------------------------------- end crystals
 //
 // M257 — `EndCrystalModel`, drawn by `EndCrystalRenderer` (no living-entity
@@ -2240,30 +2371,7 @@ pub fn bake_xp_orbs(
         .enumerate()
         .map(|(icon, name)| {
             let (u0, v0) = ((icon % 4) as f32 * 0.25, (icon / 4) as f32 * 0.25);
-            let (u1, v1) = (u0 + 0.25, v0 + 0.25);
-            let front = HeldQuad {
-                verts: [
-                    [0.0, 4.0, 8.0],
-                    [16.0, 4.0, 8.0],
-                    [16.0, 20.0, 8.0],
-                    [0.0, 20.0, 8.0],
-                ],
-                uv: [[u0, v1], [u1, v1], [u1, v0], [u0, v0]],
-                tex,
-                part: 0,
-                dir: 3,
-            };
-            let back = HeldQuad {
-                verts: [
-                    front.verts[3],
-                    front.verts[2],
-                    front.verts[1],
-                    front.verts[0],
-                ],
-                uv: [front.uv[3], front.uv[2], front.uv[1], front.uv[0]],
-                dir: 2,
-                ..front
-            };
+            let [front, back] = lifted_sprite_quads(tex, [u0, v0, u0 + 0.25, v0 + 0.25]);
             (
                 name.to_string(),
                 HeldItemModel {
@@ -2464,6 +2572,24 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M258 — the small projectile models' face counts follow their boxes
+    /// (one skull head, seven spit cubes, three bullet slabs), and the
+    /// lifted sprite spans `x 0..16, y 4..20` at `z 8`, back reversed.
+    #[test]
+    fn small_projectile_models_have_their_boxes() {
+        assert_eq!(model_quads(WITHER_SKULL, 0, (64.0, 64.0)).len(), 6);
+        assert_eq!(model_quads(LLAMA_SPIT, 0, (64.0, 32.0)).len(), 42);
+        assert_eq!(model_quads(SHULKER_BULLET, 0, (64.0, 32.0)).len(), 18);
+        let [front, back] = lifted_sprite_quads(3, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(front.verts[0], [0.0, 4.0, 8.0]);
+        assert_eq!(front.verts[2], [16.0, 20.0, 8.0]);
+        assert_eq!(back.verts[0], front.verts[3]);
+        assert_eq!(
+            (front.tex, front.uv[0], front.uv[2]),
+            (3, [0.0, 1.0], [1.0, 0.0])
+        );
+    }
 
     /// M257 — each halved texel is the alpha-weighted mean of its 2×2
     /// block: two opaque reds and two clear texels make red at half alpha

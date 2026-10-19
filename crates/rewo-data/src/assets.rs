@@ -4377,6 +4377,11 @@ impl<'a> Baker<'a> {
         ));
         // M250 — the arrows.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_arrows));
+        // M258 — the wither skull, llama spit, shulker bullet and dragon
+        // fireball.
+        be_models.append(&mut bake_be!(
+            crate::block_entity_models::bake_small_projectiles
+        ));
         // M257 — the end crystals.
         be_models.append(&mut bake_be!(crate::block_entity_models::bake_end_crystals));
         // M254 — the paintings.

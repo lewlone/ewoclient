@@ -1828,6 +1828,110 @@ pub(crate) fn projectile_model_of(name: &str) -> Option<(&'static str, f32)> {
     })
 }
 
+/// M258 — a small projectile's model and its renderer's pose, block units,
+/// at `age` ticks with the entity's `yRot` / `xRot` in degrees:
+///
+/// - the wither skull: `scale(-1, -1, 1)` then `SkullModel`'s head turned
+///   by `yRot` and `xRot` (`rotateZYX`: Y after X);
+/// - the llama spit: `translate(0, 0.15, 0) · YP(yRot - 90) · ZP(xRot)`;
+/// - the shulker bullet: `translate(0, 0.15, 0)` and its tumble
+///   (`YP(sin(t·0.1)·180) · XP(cos(t·0.1)·180) · ZP(sin(t·0.15)·360)`)
+///   then `scale(-0.5, -0.5, 0.5)` and the model's own `yRot` / `xRot`.
+///
+/// The bool is "full-bright" (`getBlockLightLevel` 15: the skull and the
+/// bullet).
+pub(crate) fn small_projectile_pose(
+    name: &str,
+    yaw: f32,
+    pitch: f32,
+    age: f32,
+) -> Option<(&'static str, rewo_data::be_transform::Affine, bool)> {
+    use rewo_data::be_transform::{mul, rot_x, rot_y, rot_z, scale, translation};
+    use rewo_data::block_entity_models::{
+        LLAMA_SPIT_MODEL, SHULKER_BULLET_MODEL, WITHER_SKULL_MODEL,
+    };
+    let turned = || mul(&rot_y(yaw), &rot_x(pitch.to_radians()));
+    Some(match name {
+        "minecraft:wither_skull" => (
+            WITHER_SKULL_MODEL.0,
+            mul(&scale(-1.0, -1.0, 1.0), &turned()),
+            true,
+        ),
+        "minecraft:llama_spit" => (
+            LLAMA_SPIT_MODEL.0,
+            mul(
+                &translation(0.0, 0.15, 0.0),
+                &mul(&rot_y(yaw - 90.0), &rot_z(pitch.to_radians())),
+            ),
+            false,
+        ),
+        "minecraft:shulker_bullet" => {
+            let tumble = mul(
+                &rot_y((age * 0.1).sin() * 180.0),
+                &mul(
+                    &rot_x(((age * 0.1).cos() * 180.0).to_radians()),
+                    &rot_z(((age * 0.15).sin() * 360.0).to_radians()),
+                ),
+            );
+            (
+                SHULKER_BULLET_MODEL.0,
+                mul(
+                    &mul(&translation(0.0, 0.15, 0.0), &tumble),
+                    &mul(&scale(-0.5, -0.5, 0.5), &turned()),
+                ),
+                true,
+            )
+        }
+        _ => return None,
+    })
+}
+
+/// M258 — every wither skull, llama spit and shulker bullet this frame
+/// (`small_projectile_pose`). Recorded: a dangerous (blue) wither skull
+/// draws the ordinary texture, the shulker bullet's translucent outer shell
+/// (`scale(1.5)`, `entityTranslucent` at alpha 0x26) is not drawn, the
+/// bullet's age is the world clock offset by the entity id, and the
+/// rotation is the latest packet's.
+pub(super) fn collect_small_projectiles(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::IDENTITY;
+    let mut out = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        let age = session.game_time() as f32 + alpha + (id & 0xff) as f32 * 7.0;
+        let Some((model, transform, bright)) = etypes
+            .name(e.type_id)
+            .and_then(|n| small_projectile_pose(n, e.yaw, e.pitch, age))
+        else {
+            continue;
+        };
+        let p = e.render_pos(alpha);
+        let boost = if bright { 15 } else { 0 };
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            model: model.to_string(),
+            transform,
+            light: super::sky::entity_light_boosted(
+                &session.world,
+                p[0],
+                p[1],
+                p[2],
+                lightmap,
+                boost,
+            ),
+            part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
+}
+
 /// M257 — every end crystal this frame, as `EndCrystalRenderer` draws it:
 /// `T(pos) · scale(2) · translate(0, -0.5, 0)` then the model, no living
 /// flip, its glass spinning and bobbing (`end_crystal_parts`); the base
@@ -2331,6 +2435,13 @@ pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
         "minecraft:small_fireball" => ("minecraft:fire_charge", 0.75, true),
         "minecraft:firework_rocket" => ("minecraft:firework_rocket", 1.0, false),
         "minecraft:fishing_bobber" => ("rewo:be/fishing_hook", 0.5, false),
+        // M258 — `DragonFireballRenderer`'s camera-facing sprite at scale 2,
+        // full-bright.
+        "minecraft:dragon_fireball" => (
+            rewo_data::block_entity_models::DRAGON_FIREBALL_MODEL.0,
+            2.0,
+            true,
+        ),
         _ => return None,
     })
 }
@@ -3119,6 +3230,9 @@ pub(super) fn collect_entities<'a>(
             name,
             "minecraft:text_display"
                 | "minecraft:end_crystal"
+                | "minecraft:wither_skull"
+                | "minecraft:llama_spit"
+                | "minecraft:shulker_bullet"
                 | "minecraft:block_display"
                 | "minecraft:item_display"
                 | "minecraft:interaction"

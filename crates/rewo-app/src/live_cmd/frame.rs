@@ -893,6 +893,13 @@ impl LiveApp {
         bes.extend(frames.models);
         // M250 — arrows and thrown tridents, by their models.
         bes.extend(collect_projectiles(session, &self.etypes, &lightmap, alpha));
+        // M258 — wither skulls, llama spit, shulker bullets.
+        bes.extend(collect_small_projectiles(
+            session,
+            &self.etypes,
+            &lightmap,
+            alpha,
+        ));
         // M257 — end crystals.
         bes.extend(collect_end_crystals(
             session,
@@ -1185,6 +1192,34 @@ impl LiveApp {
                 });
             if drew_crystal {
                 c.end_crystal_frames += 1;
+            }
+            // M258 — r117: the staged wither skull, llama spit and shulker
+            // bullet each drew every quad of their model.
+            use rewo_data::block_entity_models::{
+                LLAMA_SPIT_MODEL, SHULKER_BULLET_MODEL, WITHER_SKULL_MODEL,
+            };
+            let all_small = [
+                WITHER_SKULL_MODEL.0,
+                LLAMA_SPIT_MODEL.0,
+                SHULKER_BULLET_MODEL.0,
+            ]
+            .iter()
+            .all(|name| {
+                be_draws
+                    .iter()
+                    .zip(state.world_renderer.block_entity_quads())
+                    .filter(|(d, _)| d.model == *name)
+                    .any(|(_, &q)| {
+                        q > 0
+                            && self
+                                .baked
+                                .as_ref()
+                                .and_then(|b| b.held_items.any(name))
+                                .is_some_and(|m| m.quads.len() as u32 == q)
+                    })
+            });
+            if all_small {
+                c.small_projectile_frames += 1;
             }
             c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }

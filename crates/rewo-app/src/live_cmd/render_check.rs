@@ -259,6 +259,9 @@ pub(super) struct RenderCheck {
     /// M257 — r116: frames on which the staged end crystal drew every quad
     /// of its model.
     pub(super) end_crystal_frames: usize,
+    /// M258 — r117: frames on which the staged wither skull, llama spit and
+    /// shulker bullet all drew every quad of their models.
+    pub(super) small_projectile_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1011,7 +1014,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 116;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 117;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1201,6 +1204,14 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M258 — r117: `render_check.py` summons a wither skull, a llama spit
+        // and a shulker bullet, held still. Until M258 each was a grey
+        // capsule; each must draw every quad of its model in one frame.
+        row(
+            "r117 a wither skull, llama spit and shulker bullet drew their models",
+            self.small_projectile_frames >= 1,
+            format!("{} frames drew all three", self.small_projectile_frames),
         );
         // M257 — r116: `render_check.py` summons an (invulnerable) end
         // crystal. Until M257 it was a grey capsule; it must draw every quad
