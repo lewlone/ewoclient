@@ -2053,6 +2053,7 @@ this shape once.
 | M228 (2026-10-19) — the local rider sits where the server seats it, on the boat, the horse, the camel and the nautilus (read through a marker: a passenger's saved `Pos` is the vehicle's x/z) | **r91** | — | — |
 | M229 (2026-10-19) — a survival right-click on the ground with bread eats it; a bucket fills from water and empties onto the ground; a snowball throws and a fishing rod casts and reels in | **r92**, **r93**, **r94** | — | — |
 | M230 (2026-10-19) — a floor lever and a stone button are targeted (outline shapes) and pressed while holding food, and nothing is eaten | **r95** | — | — |
+| M231 (2026-10-19) — walking while eating goes at a fifth of the walking speed (`itemUseSpeedMultiplier`) | **r96** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3887,6 +3888,30 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M231 — using an item slows you (2026-10-19)
+
+`LocalPlayer.modifyInput` scales the input by `itemUseSpeedMultiplier()`
+while `isUsingItem()` (and not riding), after the 0.98 and before the sneak
+factor; in 26.2 that is the used item's `minecraft:use_effects`
+(`UseEffects.DEFAULT`: `speed_multiplier` 0.2, `can_sprint` false; only the
+seven spears differ, at 1.0 and sprintable). And `canStartSprinting` refuses
+while `isSlowDueToUsingItem()` (a sprint already running is not stopped by
+it). Rewo walked at full speed while eating, drawing or blocking.
+
+- `MoveAttributes::using_item` carries the multiplier into `modify_input`;
+  the session fills it from the local use state and holds a new sprint back,
+  and `send_movement` now takes the effective sprint separately from the
+  key flags.
+- `tools/gen_click_use.py` emits `USE_EFFECTS` (the non-default items).
+
+**r96**: 25 ticks of walking, then 25 more while eating bread: a tick's
+step 0.2590 then 0.0518, a ratio of 0.2000 (both terminal steps scale with
+the input, so the ratio is the multiplier whatever the bot's Speed I).
+
+Found writing it: a tail stage numbered 20 or more counts as done (the
+tail's exit and its timeout both read `stage >= 20`), so r96's first stage
+numbers ended the run on entry.
 
 ### M230 — the crosshair clips outline shapes (2026-10-19)
 

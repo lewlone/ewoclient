@@ -162,6 +162,10 @@ pub struct MoveAttributes {
     /// at `LAVA_FAST_FLOW_SCALE` instead of `LAVA_SLOW_FLOW_SCALE`. The Nether
     /// sets it; no other vanilla dimension does.
     pub fast_lava: bool,
+    /// M231 — `LocalPlayer.isUsingItem()` (not a passenger), with the used
+    /// item's `use_effects.speed_multiplier` (`UseEffects.DEFAULT`'s 0.2;
+    /// spears 1.0): `modifyInput` scales the input by it after the 0.98.
+    pub using_item: Option<f32>,
 }
 
 impl Default for MoveAttributes {
@@ -180,6 +184,7 @@ impl Default for MoveAttributes {
             dolphins_grace: false,
             levitation: None,
             fast_lava: false,
+            using_item: None,
         }
     }
 }
@@ -1060,6 +1065,12 @@ fn modify_input(input: &TickInput, moving_slowly: bool, attrs: &MoveAttributes) 
     }
     x *= 0.98;
     y *= 0.98;
+    // `if (this.isUsingItem() && !this.isPassenger())`: the used item's
+    // `itemUseSpeedMultiplier()` (M231).
+    if let Some(f) = attrs.using_item {
+        x *= f;
+        y *= f;
+    }
     if moving_slowly {
         let f = attrs.sneaking_speed as f32;
         x *= f;
@@ -4880,6 +4891,33 @@ mod tests {
             (floats - sinks - 0.04f32 as f64).abs() < 1e-12,
             "{floats} against {sinks}"
         );
+    }
+
+    /// M231 — using an item multiplies the modified input by the item's
+    /// `itemUseSpeedMultiplier` after the 0.98 (and before the sneak factor).
+    #[test]
+    fn using_an_item_slows_the_input() {
+        let w = TickInput {
+            forward: 1.0,
+            ..TickInput::default()
+        };
+        let eating = MoveAttributes {
+            using_item: Some(0.2),
+            ..MoveAttributes::default()
+        };
+        let (_, z) = modify_input(&w, false, &eating);
+        assert!((z - 0.98 * 0.2).abs() < 1e-7, "{z}");
+        let (_, sneak) = modify_input(&w, true, &eating);
+        assert!((sneak - 0.98 * 0.2 * 0.3).abs() < 1e-7, "{sneak}");
+        let (_, spear) = modify_input(
+            &w,
+            false,
+            &MoveAttributes {
+                using_item: Some(1.0),
+                ..MoveAttributes::default()
+            },
+        );
+        assert_eq!(spear, 0.98);
     }
 
     /// `LocalPlayer.modifyInput` for a rider (M226): W alone is 0.98, and W

@@ -411,6 +411,9 @@ pub(super) struct RenderCheck {
     /// ground (and whether the client then saw water there); a snowball and
     /// a fishing bobber appearing, and the bobber reeled back in.
     pub(super) eat_food: Option<(i32, i32)>,
+    /// M231 — r96: a tick's walking distance after 25 ticks of W, and after
+    /// 25 ticks of W while eating.
+    pub(super) walk_steps: (f64, f64),
     pub(super) eat_count: Option<(i32, i32)>,
     pub(super) bucket_filled: bool,
     pub(super) bucket_emptied: bool,
@@ -910,7 +913,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 95;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 96;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1605,6 +1608,23 @@ impl RenderCheck {
             format!(
                 "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
+        );
+        // M231 — r96: using an item slows the walk to vanilla's
+        // `itemUseSpeedMultiplier` (`UseEffects.DEFAULT`, 0.2): both terminal
+        // steps scale with the input, so the ratio is the multiplier whatever
+        // the movement speed (the bot carries Speed I).
+        let (walk, eat) = self.walk_steps;
+        let ratio = if walk > 0.0 { eat / walk } else { 0.0 };
+        row(
+            "r96 walking while eating went at a fifth of the walking speed (vanilla's use slowdown)",
+            walk > 0.1 && (ratio - 0.2).abs() < 0.01,
+            format!(
+                "walking step {walk:.4}, while eating {eat:.4}, ratio {ratio:.4} (vanilla 0.2){}",
+                self.use_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
             ),
         );
         // M230 — r95: the crosshair clips against OUTLINE shapes, so a floor
@@ -2538,10 +2558,16 @@ impl LiveApp {
                         c.eat_food = Some((food, food));
                         c.eat_count = bread.map(|(_, n)| (n, n));
                     }
-                    aim(self, grass);
-                    self.use_key_press();
+                    // r96 first: walk east (clear ground) looking at the
+                    // grass ahead, so the eat below starts mid-walk.
+                    if let Some(s) = self.session.as_mut() {
+                        s.player.yaw = -90.0;
+                        s.player.pitch = 60.0;
+                    }
+                    self.keys.w = true;
+                    self.walk_mark = None;
                     self.use_tick0 = now;
-                    self.use_stage = 3;
+                    self.use_stage = 17;
                 } else if now >= self.use_tick0 + 120 {
                     if let Some(c) = self.check.as_mut() {
                         c.use_skip = Some(format!("not hungry ({food}) or no bread ({bread:?})"));
@@ -2549,9 +2575,46 @@ impl LiveApp {
                     self.use_stage = 20;
                 }
             }
-            // Held past the 32-tick eat, released before a second bite ends.
+            // r96: the walking step on the 25th tick, then eat while walking
+            // and take the step again on the 25th tick of that.
+            17 | 18 => {
+                let pos = self
+                    .session
+                    .as_ref()
+                    .map(|s| [s.player.x, s.player.y, s.player.z]);
+                if now >= self.use_tick0 + 24 && self.walk_mark.is_none() {
+                    self.walk_mark = pos.map(|p| (p, now));
+                }
+                let step = match (pos, self.walk_mark) {
+                    (Some(p), Some((q, t))) if now > t => {
+                        Some(((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt())
+                    }
+                    _ => None,
+                };
+                if let Some(st) = step {
+                    if let Some(c) = self.check.as_mut() {
+                        if self.use_stage == 17 {
+                            c.walk_steps.0 = st;
+                        } else {
+                            c.walk_steps.1 = st;
+                        }
+                    }
+                    if self.use_stage == 17 {
+                        self.use_key_press();
+                        self.walk_mark = None;
+                        self.use_tick0 = now;
+                        self.use_stage = 18;
+                    } else {
+                        self.keys.w = false;
+                        self.use_stage = 3;
+                    }
+                }
+            }
+            // Held past the 32-tick eat, released before a second bite ends;
+            // then back to the spot for r95.
             3 if now >= self.use_tick0 + 36 => {
                 self.use_down = false;
+                cmd(self, &format!("tp @s {} {} {}", spot[0], spot[1], spot[2]));
                 self.use_tick0 = now;
                 self.use_stage = 4;
             }

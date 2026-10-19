@@ -1009,6 +1009,9 @@ pub struct PlaySession {
     /// table in `into_play`: the inventory stores ids and the prototype
     /// component table is keyed by name.
     glider_items: Vec<i32>,
+    /// M231 — `(item id, can_sprint, speed_multiplier)` for the items whose
+    /// `use_effects` differ from `UseEffects.DEFAULT` (the spears).
+    use_effects: Vec<(i32, bool, f32)>,
     /// The block and item registries [`Self::send_command`]'s parse resolves
     /// `block_state` / `block_predicate` / `item_*` arguments against, as
     /// vanilla's tree is built with `CommandBuildContext.simple(registryAccess,
@@ -1892,6 +1895,10 @@ impl<'a> Connection<'a> {
         // the elytra take-off line can ask the inventory's chest slot without
         // a name round-trip. `minecraft:elytra` is one of them.
         let glider_items = glider_item_ids(&self.data.items);
+        let use_effects = rewo_data::click_use_table::USE_EFFECTS
+            .iter()
+            .filter_map(|(name, sprint, f)| Some((self.data.items.id(name)?, *sprint, *f)))
+            .collect();
         let command_registries = CommandRegistries {
             blocks: Some(std::sync::Arc::new(self.data.blocks.clone())),
             items: Some(std::sync::Arc::new(self.data.items.clone())),
@@ -2040,6 +2047,7 @@ impl<'a> Connection<'a> {
             was_jump: false,
             prev_rider_keys: TickInput::default(),
             glider_items,
+            use_effects,
             command_registries,
             ambient_underwater: Default::default(),
             ambient_bubble: Default::default(),
@@ -2812,7 +2820,7 @@ impl PlaySession {
                 if let Some(vehicle) = self.local_vehicle() {
                     self.seat_local_player(vehicle);
                 }
-                self.send_movement(input)?;
+                self.send_movement(input, input.sprint)?;
             }
         } else if self.spawned {
             self.release_steered_boat();
@@ -2925,6 +2933,14 @@ impl PlaySession {
             // The physics reads the flag as `TickInput::fall_flying`.
             let mut phys = *input;
             phys.fall_flying = self.local_fall_flying;
+            // M231 — using an item: `modifyInput`'s slowdown, and
+            // `canStartSprinting`'s `!isSlowDueToUsingItem()` (a sprint
+            // already running is not stopped by it).
+            let (slow, can_sprint) = self.local_use_effects();
+            move_attrs.using_item = slow;
+            if slow.is_some() && !can_sprint && !self.was_sprinting {
+                phys.sprint = false;
+            }
             physics::tick_env(
                 &mut self.player,
                 &phys,
@@ -2952,13 +2968,29 @@ impl PlaySession {
             if owes_packet {
                 self.send_abilities()?;
             }
-            self.send_movement(input)?;
+            self.send_movement(input, phys.sprint)?;
         }
         // M226 — what the rider's `aiStep` just refreshed: the vehicle's
         // input next tick.
         self.prev_rider_keys = *input;
         self.ticks += 1;
         Ok(())
+    }
+
+    /// M231 — `isUsingItem()`'s speed multiplier (`None` when not using) and
+    /// the used item's `use_effects.can_sprint`.
+    fn local_use_effects(&self) -> (Option<f32>, bool) {
+        let state = self.local_use_state();
+        if !state.using {
+            return (None, false);
+        }
+        match state
+            .item_id
+            .and_then(|id| self.use_effects.iter().find(|(i, _, _)| *i == id))
+        {
+            Some((_, sprint, f)) => (Some(*f), *sprint),
+            None => (Some(0.2), false),
+        }
     }
 
     /// The local player's visual-effect tracker (night vision + darkness),

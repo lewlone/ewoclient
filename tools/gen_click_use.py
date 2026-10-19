@@ -217,6 +217,25 @@ def food_items():
     return food, always
 
 
+def use_effects():
+    """Items whose `minecraft:use_effects` differs from `UseEffects.DEFAULT`
+    (`can_sprint` false, `speed_multiplier` 0.2): `LocalPlayer.modifyInput`'s
+    slowdown and `canStartSprinting`'s `isSlowDueToUsingItem` while used."""
+    d = os.path.join(os.path.dirname(gbl.REGISTRY), "minecraft", "components", "item")
+    out = []
+    for fn in sorted(os.listdir(d)):
+        comps = json.load(open(os.path.join(d, fn), encoding="utf8"))
+        comps = comps.get("components", comps)
+        u = comps.get("minecraft:use_effects")
+        if not isinstance(u, dict):
+            continue
+        sprint = bool(u.get("can_sprint", False))
+        speed = float(u.get("speed_multiplier", 0.2))
+        if sprint or abs(speed - 0.2) > 1e-6:
+            out.append(("minecraft:" + fn[: -len(".json")], sprint, speed))
+    return out
+
+
 def main():
     btab, bover = blocks("useItemOn")
     wtab, wover = blocks("useWithoutItem")
@@ -224,6 +243,7 @@ def main():
     utab, uover, _ = items("use")
     comp = compostables(consts)
     food, always = food_items()
+    effects = use_effects()
     if len(btab) < 20 or len(wtab) < 100 or len(itab) < 400:
         die(f"suspiciously small tables: {len(btab)} blocks, {len(itab)} items")
     out = open(OUT, "w", encoding="utf8", newline="\n")
@@ -278,6 +298,12 @@ def main():
     w("pub const ALWAYS_EDIBLE: &[&str] = &[\n")
     for k in always:
         w(f"    \"{k}\",\n")
+    w("];\n\n")
+    w("/// Items whose `use_effects` differ from `UseEffects.DEFAULT` (no sprint,\n")
+    w(f"/// x0.2): (name, can_sprint, speed_multiplier) ({len(effects)} items).\n")
+    w("pub const USE_EFFECTS: &[(&str, bool, f32)] = &[\n")
+    for k, sp, f in effects:
+        w(f"    (\"{k}\", {'true' if sp else 'false'}, {f!r}),\n")
     w("];\n\n")
     w("/// Every item class that overrides `use`.\n")
     w("pub const ITEM_USE_CLASSES: &[&str] = &[\n")

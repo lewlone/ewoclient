@@ -44,14 +44,20 @@ impl PlaySession {
     }
 
     /// Decompiled `LocalPlayer.sendPosition` cadence + tick_end + input.
-    pub(super) fn send_movement(&mut self, input: &TickInput) -> Result<(), String> {
+    /// `sprinting` is the effective `isSprinting()` (M231: a use in progress
+    /// can hold back a new sprint while the key flags still say sprint).
+    pub(super) fn send_movement(
+        &mut self,
+        input: &TickInput,
+        sprinting: bool,
+    ) -> Result<(), String> {
         // M218 — `sendPosition` opens with `sendIsSprintingIfNeeded`: a sprint
         // state that differs from the last one sent goes out as
         // `START_SPRINTING` (1) / `STOP_SPRINTING` (2). Rewo's `isSprinting()`
         // is `TickInput::sprint` (see `physics`). Never sent before M218, so
         // the server never knew: no sprint hunger, no sprint knockback, and
         // other players saw a walking player.
-        self.send_sprint_if_needed(input.sprint)?;
+        self.send_sprint_if_needed(sprinting)?;
         // player_input on change (Input.STREAM_CODEC flag order).
         let flags = player_input_flags(input);
         if flags != self.last_input_flags {

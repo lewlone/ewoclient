@@ -147,6 +147,9 @@ released.
   crops and rails. Before, the crosshair looked straight through anything
   you can walk through. Checked live: pressing a lever and a button while
   holding food presses them (and doesn't eat).
+- **M231**: eating, drawing a bow and blocking now slow you to a fifth of
+  your walking speed, as in vanilla (spears excepted). Before, you walked at
+  full speed. Checked live: the ratio is exactly 0.2.
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -203,6 +206,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M231)* | **M231** — using an item slows the walk (`itemUseSpeedMultiplier` from `use_effects`) and holds back a new sprint; render-check **r96** (walking while eating at exactly 0.2 of walking). |
 | `4e6c8a9` | **M230** — the crosshair clips outline shapes: `raycast::cast_shapes` (`BlockGetter.clip`, OUTLINE, fluids ignored, the true hit point and `inside`), `BakedAssets::outline` from `gen_collision_shapes.py`'s new outline pass; render-check **r95** (a lever and a button pressed while holding food), mutation-checked. |
 | `654115b` | **M229** — the right-click as `startUseItem`: both hands, `use_item_on` with the real hit point then `use_item` on a local pass, the held repeat and release; `rewo_world::click_use` (one rule per overriding class, from `tools/gen_click_use.py`), `Blocks::property`; render-check **r92-r94** (eating, buckets, snowball and fishing rod, in survival). |
 | `c5e35d6` | **M228** — the local rider's seat: `EntityTable::seat_of` (M72's `positionRider` for a rider outside the table) and the session's `seat_local_player` on every vehicle; render-check **r91** against the server's seat read through a marker (a passenger's saved `Pos` is the vehicle's x/z); rideshot's local-seat row; r53's slab and r70's frame moved off a seated rider's sightlines. |
@@ -420,6 +424,9 @@ released.
 - After M230: **4,330 tests passed, 0 failed; gates 51/51**; render check **95/95**
   on two runs (and 94/95 with the outline table withheld: r95 discriminates);
   clippy (gates and default features) and `cargo fmt --check` clean.
+- After M231: **4,331 tests passed, 0 failed; gates 51/51**; render check **96/96**
+  on two runs; clippy (gates and default features) and `cargo fmt --check`
+  clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

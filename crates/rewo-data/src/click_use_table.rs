@@ -1708,6 +1708,18 @@ pub const ALWAYS_EDIBLE: &[&str] = &[
     "minecraft:suspicious_stew",
 ];
 
+/// Items whose `use_effects` differ from `UseEffects.DEFAULT` (no sprint,
+/// x0.2): (name, can_sprint, speed_multiplier) (7 items).
+pub const USE_EFFECTS: &[(&str, bool, f32)] = &[
+    ("minecraft:copper_spear", true, 1.0),
+    ("minecraft:diamond_spear", true, 1.0),
+    ("minecraft:golden_spear", true, 1.0),
+    ("minecraft:iron_spear", true, 1.0),
+    ("minecraft:netherite_spear", true, 1.0),
+    ("minecraft:stone_spear", true, 1.0),
+    ("minecraft:wooden_spear", true, 1.0),
+];
+
 /// Every item class that overrides `use`.
 pub const ITEM_USE_CLASSES: &[&str] = &[
     "BoatItem",
