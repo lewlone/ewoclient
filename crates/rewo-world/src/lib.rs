@@ -14,6 +14,7 @@ pub mod attributes;
 pub mod biome;
 pub mod biome_noise;
 pub mod block_entities;
+pub mod boat;
 pub mod border;
 pub mod cape;
 pub mod celestial;

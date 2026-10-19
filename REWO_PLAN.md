@@ -2046,6 +2046,7 @@ this shape once.
 | M220 (2026-10-19) — a sneak-right-click opens a real donkey's inventory (layout, slots, panel) | **r84** | — | — |
 | M220 (2026-10-19) — riding the donkey, the inventory key asks the server, which opens it | **r85** | — | — |
 | M220 (2026-10-19) — the player preview draws in the inventory and in no container screen | **r86** | — | — |
+| M221 (2026-10-19) — the bot steers a real boat; the server accepts every move and agrees where it is | **r87** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3880,6 +3881,52 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M221 — steering a boat (2026-10-19)
+
+A boat the player sat in did not move: Rewo snapped the player onto it and
+never sent `move_vehicle` or `paddle_boat`, the two packets vanilla sends for
+a vehicle the client controls (`isLocalInstanceAuthoritative`: its first
+passenger is the local player). Now the client simulates it, as vanilla does:
+
+- **`rewo_world::boat`** transcribes `AbstractBoat.tick`: the status
+  (`isUnderwater`, `checkInWater` with its `float` water level,
+  `getGroundFriction`'s slab scan), `Entity.baseTick`'s water current for a
+  non-player (normalized), `floatBoat` (the landing snap to
+  `getWaterLevelAbove() - height + 0.101`, then gravity, buoyancy and friction
+  by status), `controlBoat` (a degree a tick of `deltaRotation`, 0.04 thrust,
+  the paddle states), and `Entity.move` for a boat (no step, the collision
+  flags, `lastYd`, a non-living bounce, the block speed factor). Tests derive
+  their expectations in closed form: the float height `surface − 0.65 ·
+  height`, the terminal speed `0.04 / (1 − f)` in water and on stone and ice.
+  Three of the first expectations were wrong and the code right (the
+  thrust-after-friction order, the float height, `getWaterLevelAbove`
+  scanning from the boat's top row).
+- **The session** (`tick_steered_boat`): the keys `rideTick` passes
+  (`setInput(left, right, forward, backward)`), the boat's tick against the
+  same `SessionPhysics` the player walks in, the boat placed by the
+  simulation (`EntityState::set_simulated`), the rider turned by the boat and
+  held within 105 degrees (`boat_rider_yaw`), then `paddle_boat` and the
+  passenger arm of `LocalPlayer.tick`: input on change, `Rot` every tick,
+  `move_vehicle`, the sprint state, the tick end. Server position packets for
+  the steered boat only advance a base (`handleMoveEntity`'s authoritative
+  arm), restored when the steering ends; a server `move_vehicle` (a rejected
+  move) or a teleport snaps the boat and is answered with `move_vehicle`.
+- **A blinded rider, found by a capture**: Rewo has no boat model, so a boat
+  draws as the placeholder capsule, and sitting in one put the camera inside
+  it: the whole world disappeared behind it. The local player's own vehicle is
+  not drawn while it has no model; a real boat model is the next piece.
+
+**r87** (in the tail): the bot rides a summoned oak boat on a staged pool
+through the production right-click, holds W for 20 ticks (it moved 4.8
+blocks) and A for 10 (−41°), sends 78 `move_vehicle` and 78 `paddle_boat`,
+gets no rejection, and once it has drifted to a stop the server's `/data get
+entity` position is the client's within 0.001, the float height included.
+
+Not modelled, recorded: bubble columns, pushing other entities, the
+lily-pad exception in ground friction, the rider's seat offset (the rider sits
+at the boat's own y, as every vehicle has in Rewo since M68), and horse
+steering (M222). 87/87.
 
 ### M220 — the horse inventory (2026-10-19)
 

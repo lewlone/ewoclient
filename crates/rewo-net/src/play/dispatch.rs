@@ -448,7 +448,11 @@ impl PlaySession {
         } else if id == ids.cb_play_move_entity_pos {
             let mut r = PacketReader::new(body);
             if let Ok((eid, dx, dy, dz)) = read_move_delta(&mut r) {
-                if let Some(e) = self.world.entities.get_mut(eid) {
+                // M221 — `handleMoveEntity`'s authoritative arm: a vehicle
+                // the client steers only advances its base.
+                if self.steers(eid) {
+                    self.steered_base(None, [dx, dy, dz]);
+                } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.nudge(dx, dy, dz);
                 }
             } else {
@@ -463,7 +467,9 @@ impl PlaySession {
                 Ok((eid, dx, dy, dz, yaw, pitch))
             })();
             if let Ok((eid, dx, dy, dz, yaw, pitch)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
+                if self.steers(eid) {
+                    self.steered_base(None, [dx, dy, dz]);
+                } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.nudge(dx, dy, dz);
                     e.set_rot(yaw, pitch);
                 }
@@ -480,7 +486,9 @@ impl PlaySession {
                 ))
             })();
             if let Ok((eid, yaw, pitch)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
+                if self.steers(eid) {
+                    // The steered boat turns by its own simulation.
+                } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.set_rot(yaw, pitch);
                 }
             } else {
@@ -497,7 +505,11 @@ impl PlaySession {
                 Ok((eid, pos, r.f32()?, r.f32()?))
             })();
             if let Ok((eid, pos, yaw, pitch)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
+                // `handleEntityPositionSync` skips an entity the client
+                // steers (M221), keeping only the base.
+                if self.steers(eid) {
+                    self.steered_base(Some(pos), [0.0; 3]);
+                } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.set_target(pos[0], pos[1], pos[2]);
                     e.set_rot(yaw, pitch);
                 }
@@ -518,7 +530,15 @@ impl PlaySession {
                 Ok((eid, pos, yaw, pitch, r.i32()?))
             })();
             if let Ok((eid, pos, yaw, pitch, relatives)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
+                if self.steers(eid) {
+                    // M221 — a steered vehicle's teleport: vanilla's
+                    // `handleTeleportEntity` snaps it (`setValuesFromPositionPacket`
+                    // without interpolation) and answers `move_vehicle`; the
+                    // absolute case is what servers send.
+                    if relatives & 7 == 0 {
+                        self.steered_teleport(pos, yaw);
+                    }
+                } else if let Some(e) = self.world.entities.get_mut(eid) {
                     let rel = |bit: i32| relatives & (1 << bit) != 0;
                     let (tx, ty, tz) = (
                         if rel(0) { e.x + pos[0] } else { pos[0] },

@@ -329,6 +329,19 @@ pub(super) struct RenderCheck {
     /// M220 — r86: container-panel frames that still carried the player
     /// preview, and player-inventory frames that did (the control).
     pub(super) container_preview_frames: u64,
+    /// M221 — r87: the boat, whether the client steered it, how far W moved
+    /// it, how far A turned it, the packets sent, the rejections, and the
+    /// server's `/data get` position against the client's.
+    pub(super) boat: Option<i32>,
+    pub(super) boat_steered: bool,
+    pub(super) boat_moved: f64,
+    pub(super) boat_turned: f32,
+    pub(super) boat_moves_sent: u64,
+    pub(super) boat_paddles_sent: u64,
+    pub(super) boat_rejections: u64,
+    pub(super) boat_client_pos: Option<[f64; 3]>,
+    pub(super) boat_server_pos: Option<[f64; 3]>,
+    pub(super) boat_skip: Option<String>,
     pub(super) inventory_preview_frames: u64,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
@@ -811,7 +824,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 86;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 87;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1271,6 +1284,40 @@ impl RenderCheck {
             format!(
                 "rode {}, OPEN_INVENTORY sent {}, second menu {:?} (first {first:?}) drawn {second_drawn}{mskip}",
                 self.mount_rode, self.mount_e_sent, self.mount_second_serial
+            ),
+        );
+        // M221 — r87: the bot rides a real boat on a staged pool and steers
+        // it with the production keys: the client simulates it (`AbstractBoat
+        // .tick`), W moves it, A turns it, every tick sends `move_vehicle` and
+        // `paddle_boat`, the server never rejects a move (`move_vehicle` back),
+        // and once it has drifted to a stop the server's own position for it
+        // (`/data get entity`) is the client's.
+        let agree = match (self.boat_client_pos, self.boat_server_pos) {
+            (Some(c), Some(s)) => (0..3).all(|i| (c[i] - s[i]).abs() < 0.1),
+            _ => false,
+        };
+        row(
+            "r87 the bot steered a real boat: it moved and turned, the server accepted every move and agrees where it is",
+            self.boat_steered
+                && self.boat_moved > 2.0
+                && self.boat_turned < -5.0
+                && self.boat_moves_sent >= 20
+                && self.boat_paddles_sent >= 20
+                && self.boat_rejections == 0
+                && agree,
+            format!(
+                "boat {:?}: steered {}, moved {:.2} with W, turned {:.1} with A, {} move_vehicle and {} paddle_boat sent, \
+                 {} rejection(s), client {:?} server {:?} (agree {agree}){}",
+                self.boat,
+                self.boat_steered,
+                self.boat_moved,
+                self.boat_turned,
+                self.boat_moves_sent,
+                self.boat_paddles_sent,
+                self.boat_rejections,
+                self.boat_client_pos,
+                self.boat_server_pos,
+                self.boat_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
             ),
         );
         // r86 — the player preview belongs to the player's inventory only:
@@ -3199,6 +3246,214 @@ impl LiveApp {
                     // E again closes it (`onClose`).
                     self.inventory_key();
                     self.mount_stage = 20;
+                    self.boat_tick0 = now;
+                }
+                // r87 — M221's boat, last in the tail: ride it, hold W, then
+                // A, let it drift to a stop, ask the server where it is.
+                if self.boat_stage > 0
+                    && self.boat_stage < 20
+                    && elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2
+                {
+                    if let Some(c) = self.check.as_mut() {
+                        c.boat_skip.get_or_insert_with(|| {
+                            format!("timed out in stage {}", self.boat_stage)
+                        });
+                    }
+                    self.keys.w = false;
+                    self.keys.a = false;
+                    self.boat_stage = 20;
+                }
+                if self.boat_stage == 0
+                    && self.mount_stage >= 20
+                    && now >= self.boat_tick0 + 5
+                    && !self.screen.any_open()
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_vehicle().is_none())
+                {
+                    let boat = self.session.as_ref().and_then(|s| {
+                        let want = s.entity_types.as_deref()?.id_of("minecraft:oak_boat")?;
+                        let (px, pz) = (s.player.x, s.player.z);
+                        s.world
+                            .entities
+                            .iter()
+                            .filter(|(_, e)| {
+                                e.type_id == want
+                                    && (e.x - px).abs() < 12.0
+                                    && (e.z - pz).abs() < 12.0
+                            })
+                            .map(|(id, e)| (id, e.x, e.y, e.z))
+                            .next()
+                    });
+                    match boat {
+                        Some((id, bx, by, bz)) => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.boat = Some(id);
+                            }
+                            // Walk-free: put the bot beside the boat on the
+                            // bank and face it.
+                            if let Some(s) = self.session.as_mut() {
+                                let _ = s.send_command(&format!(
+                                    "tp @s {} {} {}",
+                                    bx - 2.5,
+                                    by.ceil(),
+                                    bz
+                                ));
+                            }
+                            self.boat_tick0 = now;
+                            self.boat_stage = 1;
+                        }
+                        None => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.boat_skip = Some("no oak boat near the bot".into());
+                            }
+                            self.boat_stage = 20;
+                        }
+                    }
+                }
+                if self.boat_stage == 1 && now >= self.boat_tick0 + 8 {
+                    let id = self.check.as_ref().and_then(|c| c.boat);
+                    let aimed = id.zip(self.session.as_mut()).is_some_and(|(id, s)| {
+                        let Some(e) = s.world.entities.get(id) else {
+                            return false;
+                        };
+                        let (ex, ey, ez) = (e.x, e.y + 0.3, e.z);
+                        let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                        let d = [ex - eye[0], ey - eye[1], ez - eye[2]];
+                        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                        s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                        s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        true
+                    });
+                    let on_boat = self.session.as_ref().is_some_and(|s| {
+                        super::entities::frame_crosshair_hit(s, &self.etypes, 1.0).map(|h| h.id)
+                            == id
+                    });
+                    if aimed && on_boat && self.entity_click(winit::event::MouseButton::Right) {
+                        self.boat_tick0 = now;
+                        self.boat_stage = 2;
+                    } else if now >= self.boat_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.boat_skip = Some("the crosshair never reached the boat".into());
+                        }
+                        self.boat_stage = 20;
+                    }
+                }
+                if self.boat_stage == 2 {
+                    let steering = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.steered_boat)
+                        .map(|b| [b.state.x, b.state.z]);
+                    if let Some(start) = steering {
+                        if let Some(c) = self.check.as_mut() {
+                            c.boat_steered = true;
+                        }
+                        // Face along the boat so W is "forward" for both.
+                        if let Some(s) = self.session.as_mut() {
+                            if let Some(b) = s.steered_boat {
+                                s.player.yaw = b.state.yaw;
+                            }
+                        }
+                        self.keys.w = true;
+                        self.boat_start = Some(start);
+                        self.boat_tick0 = now;
+                        self.boat_stage = 3;
+                    }
+                }
+                if self.boat_stage == 3 && now >= self.boat_tick0 + 20 {
+                    self.keys.w = false;
+                    let (pos, yaw) = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.steered_boat)
+                        .map_or(([0.0; 2], 0.0), |b| ([b.state.x, b.state.z], b.state.yaw));
+                    if let (Some(c), Some(st)) = (self.check.as_mut(), self.boat_start) {
+                        c.boat_moved = ((pos[0] - st[0]).powi(2) + (pos[1] - st[1]).powi(2)).sqrt();
+                    }
+                    self.boat_yaw0 = yaw;
+                    self.keys.a = true;
+                    self.boat_tick0 = now;
+                    self.boat_stage = 4;
+                }
+                if self.boat_stage == 4 && now >= self.boat_tick0 + 10 {
+                    self.keys.a = false;
+                    let yaw = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.steered_boat)
+                        .map_or(0.0, |b| b.state.yaw);
+                    if let Some(c) = self.check.as_mut() {
+                        c.boat_turned = yaw - self.boat_yaw0;
+                    }
+                    self.boat_tick0 = now;
+                    self.boat_stage = 5;
+                }
+                if self.boat_stage == 5 {
+                    // Drift to a stop (friction 0.9 a tick), then ask.
+                    let still = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.steered_boat)
+                        .is_some_and(|b| {
+                            b.state.vx.abs() < 0.002
+                                && b.state.vz.abs() < 0.002
+                                && b.state.delta_rotation.abs() < 0.05
+                        });
+                    if still || now >= self.boat_tick0 + 60 {
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command("data get entity @e[type=minecraft:oak_boat,limit=1,sort=nearest] Pos");
+                        }
+                        let (pos, moves, paddles, rejections) = self
+                            .session
+                            .as_ref()
+                            .map(|s| {
+                                (
+                                    s.steered_boat.map(|b| [b.state.x, b.state.y, b.state.z]),
+                                    s.vehicle_moves_sent,
+                                    s.paddles_sent,
+                                    s.vehicle_rejections,
+                                )
+                            })
+                            .unwrap_or((None, 0, 0, 0));
+                        if let Some(c) = self.check.as_mut() {
+                            c.boat_client_pos = pos;
+                            c.boat_moves_sent = moves;
+                            c.boat_paddles_sent = paddles;
+                            c.boat_rejections = rejections;
+                        }
+                        self.boat_tick0 = now;
+                        self.boat_stage = 6;
+                    }
+                }
+                if self.boat_stage == 6 {
+                    // "Oak Boat has the following entity data: [x d, y d, z d]".
+                    let reply = self.session.as_ref().and_then(|s| {
+                        s.chat_log
+                            .iter()
+                            .rev()
+                            .find(|l| l.contains("has the following entity data"))
+                            .cloned()
+                    });
+                    if let Some(line) = reply {
+                        let nums: Vec<f64> = line
+                            .split(['[', ']', ','])
+                            .filter_map(|t| t.trim().trim_end_matches('d').parse::<f64>().ok())
+                            .collect();
+                        if let (3, Some(c)) = (nums.len(), self.check.as_mut()) {
+                            c.boat_server_pos = Some([nums[0], nums[1], nums[2]]);
+                        }
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command("ride @s dismount");
+                        }
+                        self.boat_stage = 20;
+                    } else if now >= self.boat_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.boat_skip = Some("no /data reply".into());
+                        }
+                        self.boat_stage = 20;
+                    }
                 }
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
                 // (the bot rides r72's client-side horse, so W moves nothing

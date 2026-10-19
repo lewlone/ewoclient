@@ -79,7 +79,7 @@ const MIN_MOVEMENT_DISTANCE: f64 = 0.003;
 const SPRINT_MODIFIER: f64 = 0.3;
 /// `Entity.getFluidJumpThreshold()` for an eye height ≥ 0.4.
 const FLUID_JUMP_THRESHOLD: f64 = 0.4;
-const EPS: f64 = 1.0e-7;
+pub(crate) const EPS: f64 = 1.0e-7;
 
 /// `Pose` — the entity-data pose, which picks the bounding box and the eye
 /// height (`Avatar.POSES` maps it to `EntityDimensions`). `SLEEPING`,
@@ -1156,7 +1156,7 @@ fn block_speed_factor(state: &PlayerState, ctx: &Ctx) -> f32 {
 }
 
 /// `Mth.equal(double, double)`: `|b - a| < 1.0E-5F`.
-fn mth_equal(a: f64, b: f64) -> bool {
+pub(crate) fn mth_equal(a: f64, b: f64) -> bool {
     (b - a).abs() < 1.0e-5f32 as f64
 }
 
@@ -1581,7 +1581,7 @@ fn update_fluids(
 
 /// A fluid cell's type and absolute top (`FluidState.getHeight`: 1.0 with
 /// the same fluid above, else the own height).
-fn fluid_top(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32) -> Option<(bool, f64)> {
+pub(crate) fn fluid_top(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32) -> Option<(bool, f64)> {
     let (lava, own) = match world.block(x, y, z).fluid {
         PhysFluid::None => return None,
         PhysFluid::Water { own_height } => (false, own_height),
@@ -1795,13 +1795,13 @@ fn contains_liquid(b: &Aabb, world: &dyn PhysicsWorld) -> bool {
 // -- collision ---------------------------------------------------------------
 
 /// `[minX, minY, minZ, maxX, maxY, maxZ]`, absolute.
-type Aabb = [f64; 6];
+pub(crate) type Aabb = [f64; 6];
 
-fn len_sq(v: [f64; 3]) -> f64 {
+pub(crate) fn len_sq(v: [f64; 3]) -> f64 {
     v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
 }
 
-fn offset(b: &Aabb, d: [f64; 3]) -> Aabb {
+pub(crate) fn offset(b: &Aabb, d: [f64; 3]) -> Aabb {
     [
         b[0] + d[0],
         b[1] + d[1],
@@ -1817,12 +1817,12 @@ fn deflate(b: &Aabb, e: f64) -> Aabb {
 }
 
 /// `AABB.inflate(amount)` — every face moves outwards.
-fn inflate(b: &Aabb, e: f64) -> Aabb {
+pub(crate) fn inflate(b: &Aabb, e: f64) -> Aabb {
     [b[0] - e, b[1] - e, b[2] - e, b[3] + e, b[4] + e, b[5] + e]
 }
 
 /// `AABB.expandTowards`.
-fn expand_towards(b: &Aabb, d: [f64; 3]) -> Aabb {
+pub(crate) fn expand_towards(b: &Aabb, d: [f64; 3]) -> Aabb {
     let mut o = *b;
     for a in 0..3 {
         if d[a] < 0.0 {
@@ -1835,7 +1835,7 @@ fn expand_towards(b: &Aabb, d: [f64; 3]) -> Aabb {
 }
 
 /// Positive-volume overlap (`AABB.intersects`, and `joinIsNotEmpty(AND)`).
-fn intersects(a: &Aabb, b: &Aabb) -> bool {
+pub(crate) fn intersects(a: &Aabb, b: &Aabb) -> bool {
     a[0] < b[3] && a[3] > b[0] && a[1] < b[4] && a[4] > b[1] && a[2] < b[5] && a[5] > b[2]
 }
 
@@ -1895,7 +1895,7 @@ fn for_each_collider(query: &Aabb, world: &dyn PhysicsWorld, mut f: impl FnMut([
     }
 }
 
-fn collect_colliders(query: &Aabb, world: &dyn PhysicsWorld) -> Vec<Vec<Aabb>> {
+pub(crate) fn collect_colliders(query: &Aabb, world: &dyn PhysicsWorld) -> Vec<Vec<Aabb>> {
     let mut out = Vec::new();
     for_each_collider(query, world, |_, b| out.push(b.to_vec()));
     out
@@ -1943,7 +1943,7 @@ fn shapes_collide(axis: usize, moving: &Aabb, colliders: &[Vec<Aabb>], mut d: f6
 /// `Entity.collideWithShapes`: Y first, then the horizontal axis with the
 /// smaller movement, then the larger (`Direction.axisStepOrder`). The world
 /// border is one more collider, infinite in Y.
-fn collide_with_shapes(
+pub(crate) fn collide_with_shapes(
     movement: [f64; 3],
     bx: &Aabb,
     colliders: &[Vec<Aabb>],

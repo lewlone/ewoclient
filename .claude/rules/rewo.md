@@ -112,6 +112,11 @@ a self-check path.
   `removeEntity` first), so a reused id inherits no armour, anger clock or beam.
 - **The local player is not in `EntityTable`.** Metadata and attributes
   addressed to it are dropped unless routed separately (M55, M73, M141e).
+- **A vehicle the local player steers is the client's** (M221,
+  `isLocalInstanceAuthoritative`): the session simulates it
+  (`rewo_world::boat`), places it with `EntityState::set_simulated`, and
+  server move packets for it only advance `SteeredBoat::server_base`; a
+  server `move_vehicle` or teleport snaps it and is answered.
 - **One accessor per concept.** When two call sites each compute "which menu",
   "which origin" or "which conversion", they drift (M89, M106b, M112, M151).
 - **The M-numbers aren't a contiguous index** (M52, M61, M64, M66, M68 each

@@ -224,6 +224,9 @@ pub struct EntityClasses {
     /// M220 — `instanceof AbstractHorse`: `handleMountScreenOpen`'s first
     /// branch (`HorseInventoryMenu`).
     abstract_horse: std::collections::HashSet<i32>,
+    /// M221 — `instanceof AbstractBoat` (boats, rafts, chest boats): the
+    /// vehicles the client steers with `AbstractBoat`'s physics.
+    abstract_boat: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -274,6 +277,7 @@ impl EntityClasses {
         let camel = resolve_set(table::CAMEL, "camel")?;
         let nautilus = resolve_set(table::ABSTRACT_NAUTILUS, "nautilus")?;
         let abstract_horse = resolve_set(table::ABSTRACT_HORSE, "horse")?;
+        let abstract_boat = resolve_set(table::ABSTRACT_BOAT, "boat")?;
         let mut custom_inventory = abstract_horse.clone();
         custom_inventory.extend(nautilus.iter().copied());
         custom_inventory.extend(resolve_set(table::ABSTRACT_CHEST_BOAT, "chest-boat")?);
@@ -396,6 +400,7 @@ impl EntityClasses {
                 .collect(),
             custom_inventory,
             abstract_horse,
+            abstract_boat,
         })
     }
 
@@ -424,6 +429,7 @@ impl EntityClasses {
             item_frame: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
+            abstract_boat: Default::default(),
         }
     }
 
@@ -453,6 +459,7 @@ impl EntityClasses {
             item_frame: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
+            abstract_boat: Default::default(),
         }
     }
 
@@ -529,6 +536,11 @@ impl EntityClasses {
     /// nautilus pair; a union of two subtrees, like `is_leashable`.
     pub fn is_rideable_jumping(&self, type_id: i32) -> bool {
         self.rideable_jumping.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractBoat` (M221).
+    pub fn is_boat(&self, type_id: i32) -> bool {
+        self.abstract_boat.contains(&type_id)
     }
 
     /// `entity instanceof AbstractHorse` (M220).

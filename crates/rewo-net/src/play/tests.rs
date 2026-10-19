@@ -2388,3 +2388,17 @@ mod write_packet_tests {
         assert!(failed.is_none());
     }
 }
+
+/// M221 — `positionRider` turns the rider with the boat, then
+/// `clampRotation` holds it within 105 degrees of the boat's facing.
+#[test]
+fn a_boat_rider_turns_with_the_boat_and_stays_within_105_degrees() {
+    use super::boat_rider_yaw;
+    // Facing forward, the boat turning one degree: the rider turns one.
+    assert_eq!(boat_rider_yaw(0.0, 1.0, 1.0), 1.0);
+    // Looking 150 degrees to the side is clamped back to 105.
+    assert_eq!(boat_rider_yaw(150.0, 0.0, 0.0), 105.0);
+    assert_eq!(boat_rider_yaw(-150.0, 0.0, 0.0), -105.0);
+    // Across the wrap: 350 is -10 relative to a boat at 0, left alone.
+    assert_eq!(boat_rider_yaw(350.0, 0.0, 0.0), 350.0);
+}

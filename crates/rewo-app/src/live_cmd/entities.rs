@@ -2340,6 +2340,17 @@ pub(super) fn collect_entities<'a>(
         if frame_kind(etypes, e.type_id).is_some() {
             continue;
         }
+        // M221 — the vehicle the local player rides, when Rewo has no model
+        // for it (boats today): its placeholder capsule is centred on the
+        // vehicle and encloses the rider's camera, hiding the whole world.
+        // Vanilla draws the boat model around the rider; with no model, not
+        // drawing it is the honest stand-in.
+        if session.local_vehicle() == Some(id)
+            && rewo_gpu::mobs::kind_for_entity_name(etypes.name(e.type_id).unwrap_or(""))
+                == rewo_gpu::mobs::EntityModelKind::Capsule
+        {
+            continue;
+        }
         let p = e.render_pos(alpha);
         let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;

@@ -109,6 +109,11 @@ PRECMD = (
     "summon minecraft:donkey ~-3 ~ ~-1 {Tame:1b,ChestedHorse:1b,NoAI:1b,"
     "equipment:{saddle:{id:\"minecraft:saddle\",count:1}},"
     "Items:[{Slot:7b,id:\"minecraft:apple\",count:3}]};"
+    # M221 -- r87. A pool five wide and fifteen long at ground level (water
+    # replaces the grass layer) and an oak boat on it facing +z (yaw 0): the
+    # client rides it and steers it with the production keys.
+    "fill ~5 ~-1 ~4 ~9 ~-1 ~18 minecraft:water;"
+    "summon minecraft:oak_boat ~7 ~ ~6 {Rotation:[0f,0f]};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

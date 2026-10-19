@@ -323,6 +323,10 @@ pub struct Ids {
     /// M218 — middle click: `ServerboundPickItemFromBlockPacket(pos,
     /// includeData)` and `ServerboundPickItemFromEntityPacket(id, includeData)`.
     pub sb_play_pick_item_from_block: Option<i32>,
+    /// M221 — `move_vehicle` (the steered vehicle's position) and
+    /// `paddle_boat` (the two paddle states).
+    pub sb_play_move_vehicle: Option<i32>,
+    pub sb_play_paddle_boat: Option<i32>,
     pub sb_play_pick_item_from_entity: Option<i32>,
     /// `ServerboundSeenAdvancementsPacket` (M178) — the advancements screen's
     /// lifecycle packet: `OPENED_TAB` carries a tab id, `CLOSED_SCREEN` is
@@ -799,6 +803,8 @@ impl Ids {
             sb_play_recipe_book_change_settings: opt!(p, P, S, "recipe_book_change_settings"),
             sb_play_place_recipe: opt!(p, P, S, "place_recipe"),
             sb_play_pick_item_from_block: opt!(p, P, S, "pick_item_from_block"),
+            sb_play_move_vehicle: opt!(p, P, S, "move_vehicle"),
+            sb_play_paddle_boat: opt!(p, P, S, "paddle_boat"),
             sb_play_pick_item_from_entity: opt!(p, P, S, "pick_item_from_entity"),
             sb_play_seen_advancements: opt!(p, P, S, "seen_advancements"),
             sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),

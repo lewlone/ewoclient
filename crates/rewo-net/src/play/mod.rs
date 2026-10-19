@@ -953,6 +953,15 @@ pub struct PlaySession {
     was_sprinting: bool,
     /// How many sprint commands went out (render-check r82).
     pub sprint_commands_sent: u64,
+    /// M221 — the boat the local player steers, simulated here, and what the
+    /// server has said about its position meanwhile (vanilla keeps only the
+    /// delta codec's base for an entity it controls).
+    pub steered_boat: Option<SteeredBoat>,
+    /// `move_vehicle` / `paddle_boat` packets sent (render-check r87).
+    pub vehicle_moves_sent: u64,
+    /// Server `move_vehicle` rejections of a steered move (r87).
+    pub vehicle_rejections: u64,
+    pub paddles_sent: u64,
     /// The **local player's** `update_attributes` snapshots (M73).
     ///
     /// Kept beside the entity table rather than in it: the server sends no
@@ -2005,6 +2014,10 @@ impl<'a> Connection<'a> {
             riding_jumps_sent: 0,
             was_sprinting: false,
             sprint_commands_sent: 0,
+            steered_boat: None,
+            vehicle_moves_sent: 0,
+            vehicle_rejections: 0,
+            paddles_sent: 0,
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
             local_fall_flying: false,
@@ -2724,15 +2737,23 @@ impl PlaySession {
             // roughly a third of a block low. Riding *visuals* are a feature;
             // this is the minimum that keeps the player attached to its
             // vehicle instead of falling through the world.
-            if let Some(vehicle) = self.local_vehicle() {
-                if let Some(e) = self.world.entities.get(vehicle) {
-                    self.player.x = e.x;
-                    self.player.y = e.y;
-                    self.player.z = e.z;
+            // M221 — a boat whose first passenger is the local player is the
+            // client's to simulate (`isLocalInstanceAuthoritative`).
+            if let Some(boat) = self.steerable_boat() {
+                self.tick_steered_boat(boat, input)?;
+            } else {
+                self.release_steered_boat();
+                if let Some(vehicle) = self.local_vehicle() {
+                    if let Some(e) = self.world.entities.get(vehicle) {
+                        self.player.x = e.x;
+                        self.player.y = e.y;
+                        self.player.z = e.z;
+                    }
                 }
+                self.send_movement(input)?;
             }
-            self.send_movement(input)?;
         } else if self.spawned {
+            self.release_steered_boat();
             // Vanilla order: `LivingEntity.aiStep` pushes entities apart
             // *before* `travel`, so the shove lands in this tick's movement.
             self.push_from_entities();
@@ -4095,6 +4116,34 @@ impl PlaySession {
     fn apply_move_vehicle(&mut self, v: &crate::motion::VehicleMove) {
         self.motion_stats.vehicle_moves += 1;
         self.vehicle_pose = Some(*v);
+        // M221 — `handleMoveVehicle` for a vehicle the client steers: the
+        // server rejected a move, so snap to its position (`absSnapTo`, the
+        // velocity kept) and answer with `move_vehicle` at once.
+        if let Some(b) = self.steered_boat.as_mut() {
+            let p = [v.position.x, v.position.y, v.position.z];
+            b.state.x = p[0];
+            b.state.y = p[1];
+            b.state.z = p[2];
+            b.state.yaw = v.y_rot;
+            b.server_base = p;
+            let (id, s) = (b.id, b.state);
+            if let Some(e) = self.world.entities.get_mut(id) {
+                e.set_simulated(p, v.y_rot);
+            }
+            self.vehicle_rejections += 1;
+            if let Some(mid) = self.ids.sb_play_move_vehicle {
+                let mut pk = PacketWriter::packet(mid);
+                pk.f64(s.x)
+                    .f64(s.y)
+                    .f64(s.z)
+                    .f32(s.yaw)
+                    .f32(0.0)
+                    .bool(s.on_ground);
+                if let Err(e) = self.send(pk) {
+                    log::warn!("net: move_vehicle answer: {e}");
+                }
+            }
+        }
     }
 
     /// Player Info Update — apply what [`parse_player_info`] read.
@@ -5535,6 +5584,174 @@ impl PlaySession {
         })
     }
 
+    /// The boat the local player steers, if any (M221): the root vehicle, an
+    /// `AbstractBoat`, whose first passenger (`getControllingPassenger`) is
+    /// the local player.
+    fn steerable_boat(&self) -> Option<i32> {
+        let me = self.player_id?;
+        let vid = self.local_vehicle()?;
+        let classes = self.entity_classes.as_deref()?;
+        let e = self.world.entities.get(vid)?;
+        (classes.is_boat(e.type_id) && self.mounts.passengers(vid).first() == Some(&me))
+            .then_some(vid)
+    }
+
+    /// The steering ended: put the boat back where the server last said it
+    /// was, and let its packets move it again.
+    fn release_steered_boat(&mut self) {
+        if let Some(b) = self.steered_boat.take() {
+            if let Some(e) = self.world.entities.get_mut(b.id) {
+                e.set_target(b.server_base[0], b.server_base[1], b.server_base[2]);
+            }
+        }
+    }
+
+    /// Whether `eid` is the vehicle the client steers, whose position packets
+    /// only advance [`SteeredBoat::server_base`] (M221).
+    pub(super) fn steers(&self, eid: i32) -> bool {
+        self.steered_boat.is_some_and(|b| b.id == eid)
+    }
+
+    /// A move packet for the steered boat: the base advances, the boat does
+    /// not move (`handleMoveEntity`'s authoritative arm).
+    pub(super) fn steered_base(&mut self, absolute: Option<[f64; 3]>, delta: [f64; 3]) {
+        if let Some(b) = self.steered_boat.as_mut() {
+            b.server_base = match absolute {
+                Some(p) => p,
+                None => [
+                    b.server_base[0] + delta[0],
+                    b.server_base[1] + delta[1],
+                    b.server_base[2] + delta[2],
+                ],
+            };
+        }
+    }
+
+    /// `handleTeleportEntity` for the steered boat: snap it and answer with
+    /// `move_vehicle` (M221).
+    pub(super) fn steered_teleport(&mut self, pos: [f64; 3], yaw: f32) {
+        let v = crate::motion::VehicleMove {
+            position: crate::motion::Vec3 {
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+            },
+            y_rot: yaw,
+            x_rot: 0.0,
+        };
+        self.apply_move_vehicle(&v);
+    }
+
+    /// One tick of the boat the local player steers (M221): `AbstractBoat.tick`
+    /// with the keys `rideTick` hands it, the boat placed where it went, the
+    /// rider turned with it, then the passenger's packets in `LocalPlayer
+    /// .tick`'s order.
+    fn tick_steered_boat(&mut self, id: i32, input: &TickInput) -> Result<(), String> {
+        let mut steered = match self.steered_boat {
+            Some(b) if b.id == id => b,
+            _ => {
+                let Some(e) = self.world.entities.get(id) else {
+                    return Ok(());
+                };
+                SteeredBoat {
+                    id,
+                    state: rewo_world::boat::BoatState::at(e.x, e.y, e.z, e.yaw),
+                    server_base: [e.x, e.y, e.z],
+                }
+            }
+        };
+        let keys = rewo_world::boat::BoatInput {
+            up: input.forward > 0.0,
+            down: input.forward < 0.0,
+            left: input.strafe > 0.0,
+            right: input.strafe < 0.0,
+        };
+        let collide = std::mem::take(&mut self.collide);
+        let block_physics = std::mem::take(&mut self.block_physics);
+        self.resolve_entity_shapes();
+        {
+            let world = SessionPhysics {
+                blocks: physics::WorldPhysics {
+                    world: &self.world,
+                    collide: &collide,
+                    blocks: &block_physics,
+                },
+                entities: &self.world.entities,
+                mounts: &self.mounts,
+                exclude_root: Some(id),
+                player_y: self.player.y,
+                shapes: self.entity_shapes.as_deref(),
+                classes: self.entity_classes.as_deref(),
+                types: self.entity_types.as_deref(),
+                attributes: self.attribute_registry.as_deref(),
+            };
+            rewo_world::boat::tick(&mut steered.state, keys, &world);
+        }
+        self.collide = collide;
+        self.block_physics = block_physics;
+        let s = steered.state;
+        if let Some(e) = self.world.entities.get_mut(id) {
+            e.set_simulated([s.x, s.y, s.z], s.yaw);
+        }
+        self.player.x = s.x;
+        self.player.y = s.y;
+        self.player.z = s.z;
+        self.player.yaw = boat_rider_yaw(self.player.yaw, s.yaw, s.delta_rotation);
+        self.steered_boat = Some(steered);
+        // `AbstractBoat.tick` sends the paddles during the vehicle's tick,
+        // ahead of the rider's packets.
+        if let Some(pid) = self.ids.sb_play_paddle_boat {
+            let mut p = PacketWriter::packet(pid);
+            p.bool(s.paddles[0]);
+            p.bool(s.paddles[1]);
+            self.send(p)?;
+            self.paddles_sent += 1;
+        }
+        self.send_passenger_movement(input, Some(s))
+    }
+
+    /// `LocalPlayer.tick`'s passenger arm (M221): the input on change, the
+    /// rotation (`ServerboundMovePlayerPacket.Rot`) every tick, and for a
+    /// vehicle the client steers its `ServerboundMoveVehiclePacket` and
+    /// `sendIsSprintingIfNeeded`; then the tick end.
+    fn send_passenger_movement(
+        &mut self,
+        input: &TickInput,
+        steered: Option<rewo_world::boat::BoatState>,
+    ) -> Result<(), String> {
+        let flags = outgoing::player_input_flags(input);
+        if flags != self.last_input_flags {
+            if let Some(id) = self.ids.sb_play_player_input {
+                let mut p = PacketWriter::packet(id);
+                p.u8(flags);
+                self.send(p)?;
+            }
+            self.last_input_flags = flags;
+        }
+        let move_flags =
+            self.player.on_ground as u8 | ((self.player.horizontal_collision as u8) << 1);
+        let mut p = PacketWriter::packet(self.ids.sb_play_move_rot);
+        p.f32(self.player.yaw).f32(self.player.pitch).u8(move_flags);
+        self.send(p)?;
+        self.last_rot = (self.player.yaw, self.player.pitch);
+        if let (Some(s), Some(id)) = (steered, self.ids.sb_play_move_vehicle) {
+            let mut p = PacketWriter::packet(id);
+            p.f64(s.x)
+                .f64(s.y)
+                .f64(s.z)
+                .f32(s.yaw)
+                .f32(0.0)
+                .bool(s.on_ground);
+            self.send(p)?;
+            self.vehicle_moves_sent += 1;
+            self.send_sprint_if_needed(input.sprint)?;
+        }
+        if let Some(id) = self.ids.sb_play_client_tick_end {
+            self.send(PacketWriter::packet(id))?;
+        }
+        Ok(())
+    }
+
     /// `MultiPlayerGameMode.isServerControlledInventory` (M219): riding a
     /// vehicle that `HasCustomInventoryScreen` (a horse, a nautilus, a chest
     /// boat).
@@ -6480,6 +6697,39 @@ pub fn collide_kind(name: &str) -> CollideKind {
 /// one-sided: it can miss a collider vanilla has, never invent one.
 fn happy_ghast_collides(baby: bool, alive: bool, player_y: f64, bb_max_y: f64) -> bool {
     !baby && alive && player_y >= bb_max_y
+}
+
+/// The boat the local player steers (M221).
+#[derive(Clone, Copy, Debug)]
+pub struct SteeredBoat {
+    pub id: i32,
+    pub state: rewo_world::boat::BoatState,
+    /// The server's position for it, advanced by the move packets the client
+    /// does not apply while it steers (`VecDeltaCodec.setBase`), and restored
+    /// when the steering ends.
+    pub server_base: [f64; 3],
+}
+
+/// `positionRider`'s rider turn and `AbstractBoat.clampRotation`: the rider
+/// turns with the boat's `deltaRotation`, then its yaw is held within 105
+/// degrees of the boat's (M221).
+pub fn boat_rider_yaw(rider_yaw: f32, boat_yaw: f32, delta_rotation: f32) -> f32 {
+    let yaw = rider_yaw + delta_rotation;
+    let delta = wrap_degrees(yaw - boat_yaw);
+    let target = delta.clamp(-105.0, 105.0);
+    yaw + target - delta
+}
+
+/// `Mth.wrapDegrees(float)`.
+fn wrap_degrees(a: f32) -> f32 {
+    let mut w = a % 360.0;
+    if w >= 180.0 {
+        w -= 360.0;
+    }
+    if w < -180.0 {
+        w += 360.0;
+    }
+    w
 }
 
 /// The live [`physics::PhysicsWorld`] for [`PlaySession::tick`]: the world's

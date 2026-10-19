@@ -2323,7 +2323,8 @@ impl LiveApp {
             // run, when nothing else holds the screen; it gets up to
             // `RENDER_CHECK_TAIL_SECONDS` more and the run ends when it is done.
             #[cfg(feature = "gates")]
-            let tail_done = self.check.is_none() || self.mount_stage >= 20;
+            let tail_done =
+                self.check.is_none() || (self.mount_stage >= 20 && self.boat_stage >= 20);
             #[cfg(not(feature = "gates"))]
             let tail_done = true;
             if elapsed >= limit && (tail_done || elapsed >= limit + RENDER_CHECK_TAIL_SECONDS) {

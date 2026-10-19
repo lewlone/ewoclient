@@ -694,6 +694,20 @@ impl EntityState {
         self.cur = p;
     }
 
+    /// M221 — the vehicle the local player steers is placed by the client's
+    /// own simulation (`isLocalInstanceAuthoritative`): this tick's position
+    /// and target both become `p`, with no interpolation left to run, so the
+    /// render blends last tick's position into this one exactly as it does
+    /// for the player.
+    pub fn set_simulated(&mut self, p: [f64; 3], yaw: f32) {
+        self.x = p[0];
+        self.y = p[1];
+        self.z = p[2];
+        self.cur = p;
+        self.lerp_steps = 0;
+        self.yaw = yaw;
+    }
+
     /// Frame position: last tick's `prev` blended toward `cur` by the
     /// partial-tick alpha (0..1).
     pub fn render_pos(&self, alpha: f32) -> [f64; 3] {

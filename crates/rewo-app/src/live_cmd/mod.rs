@@ -818,6 +818,15 @@ struct LiveApp {
     mount_captured: bool,
     #[cfg(feature = "gates")]
     rc_captured_at: bool,
+    /// r87's tail stage (M221), the tick a step began.
+    #[cfg(feature = "gates")]
+    boat_stage: u8,
+    #[cfg(feature = "gates")]
+    boat_tick0: u64,
+    #[cfg(feature = "gates")]
+    boat_start: Option<[f64; 2]>,
+    #[cfg(feature = "gates")]
+    boat_yaw0: f32,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1139,6 +1148,14 @@ fn run_windowed(
         #[cfg(feature = "gates")]
         rc_captured_at: false,
         #[cfg(feature = "gates")]
+        boat_stage: 0,
+        #[cfg(feature = "gates")]
+        boat_tick0: 0,
+        #[cfg(feature = "gates")]
+        boat_start: None,
+        #[cfg(feature = "gates")]
+        boat_yaw0: 0.0,
+        #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
         lectern_shown: None,
@@ -1321,7 +1338,7 @@ const RENDER_CHECK_SECONDS: f32 = 8.0;
 
 /// The most the render check's tail (M220's r84/r85, run after the timed
 /// part) may add before the run ends regardless.
-const RENDER_CHECK_TAIL_SECONDS: f32 = 3.0;
+const RENDER_CHECK_TAIL_SECONDS: f32 = 7.0;
 
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {

@@ -97,6 +97,12 @@ released.
   and shift-click works as in vanilla; checked live on a donkey. Building it
   found a visible old bug: every chest, furnace and other container screen
   had your player model painted over its slots. Fixed.
+- **M221**: you can steer a boat (W/S, A/D), the way vanilla does it: the
+  client moves the boat and the server checks it. Checked live: the server
+  accepted every move and agreed exactly where the boat ended up. Rewo has no
+  boat model yet (boats are a placeholder blob), and sitting in one used to
+  black out the view; that's fixed for now, and a real boat model is next.
+  Horses next after that.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -148,6 +154,7 @@ released.
 | `41078c4` | This summary through M218. |
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
+| *(M221)* | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `26559a9` | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
 
 ## Decisions made
@@ -262,6 +269,14 @@ released.
    (vanilla draws it there, following the mouse). Building a single entity's
    draw outside the world pass is a refactor of `collect_entities`; it is
    proposed as follow-up work rather than folded in here.
+26. **Boats and horses are two milestones (M221, M222).** A boat has its own
+   physics class (`AbstractBoat`), a horse is a `LivingEntity` whose travel
+   is the player's own with the horse's size and attributes; Rewo's player
+   physics fixes the player's box sizes, so horses need that generalised
+   first.
+27. **The ridden vehicle's placeholder capsule is not drawn** (M221). It
+   enclosed the camera and hid the world. Reversible in one line once boats
+   have a model; the honest fix is the model.
 
 ## Verification
 
@@ -308,6 +323,11 @@ released.
   gates **51/51** (demo hash unchanged); render check **86/86** on two runs
   (after fixing three of the new witnesses' own aim problems, see the §15
   entry); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M221: **4,306 tests, 1 failure under full-suite load** (`srv`'s
+  `a_truncated_answer_is_retried_over_tcp`, passing five times alone);
+  gates **51/51** (demo hash unchanged); render check **87/87** on every run
+  since r87 landed (three); clippy (gates and default features) and
+  `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -335,8 +355,13 @@ released.
   `player_action` or `player_command` the client never sends, or a packet it
   has no id for): ~~dropping items (Q), swapping hands (F), middle-click
   pick block, sprint start/stop~~ (M218), ~~leaving a bed~~ (M219), ~~the
-  horse inventory~~ (M220); still open: riding boats/horses (`move_vehicle`,
-  `paddle_boat`), next.
+  horse inventory~~ (M220), ~~steering boats~~ (M221); still open: steering
+  horses (M222, next).
+- A boat model: boats (and rafts, chest boats) draw as the placeholder
+  capsule.
+- `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once
+  under full-suite load (an empty TCP answer) and passed five times alone;
+  the same loopback-timing class as the others listed here.
 - The mount in the horse screen's window, and empty-slot icons (the saddle
   and armour outlines vanilla draws in an empty equipment slot, the player's
   armour slots included).
