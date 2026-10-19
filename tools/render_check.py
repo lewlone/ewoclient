@@ -164,7 +164,7 @@ PRECMD = (
     "fill ~-3 ~ ~16 ~-1 ~2 ~16 minecraft:stone;"
     "summon minecraft:painting ~-2 ~1 ~15 {facing:2b,variant:\"minecraft:kebab\"};"
     # M255 -- r114. A text display (a hologram), gold, facing the camera.
-    "summon minecraft:text_display ~2 ~2 ~-4 {billboard:\"center\",text:{text:\"RewoHolo\",color:\"gold\"}};"
+    "summon minecraft:text_display ~2 ~2 ~-4 {billboard:\"center\",shadow:1b,text:{text:\"RewoHolo\",color:\"gold\"}};"
     # M261 -- r120. Minecarts that carry something: a hopper and a chest.
     "summon minecraft:hopper_minecart ~-6 ~ ~-4;"
     "summon minecraft:chest_minecart ~-6 ~ ~-2;"

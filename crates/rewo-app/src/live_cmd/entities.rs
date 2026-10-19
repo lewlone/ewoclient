@@ -2578,6 +2578,12 @@ pub(super) fn collect_item_displays(
     out
 }
 
+/// M268 — the depth, in font px along the text's own axis, a text display's
+/// drop shadow sits at: behind the glyphs (0), in front of the plate
+/// (-0.01). Vanilla separates the three by submission order and polygon
+/// offset; Rewo's world text is depth-tested, so by depth.
+pub(crate) const TEXT_DISPLAY_SHADOW_DEPTH: f32 = -0.005;
+
 /// M262 — a text display's background as linear RGBA, or `None` when it
 /// draws none (`TextDisplayRenderer.submitInner`): the default-background
 /// flag (4) takes the options' background opacity (vanilla's default,
@@ -2666,7 +2672,7 @@ pub(crate) fn text_display_lines(
 /// sign path: `TextDisplayRenderer.submitInner`'s layout (`1 - width/2`
 /// across, `-height` down, ten px a line, aligned by the style flags), one
 /// line per coloured run. Recorded: no background quad (the entity pass has
-/// no blended solid quad), no shadow, no see-through, opacity not applied,
+/// no blended solid quad), no see-through, opacity not applied (the shadow since M268),
 /// no brightness override, no interpolation.
 pub(super) fn collect_text_displays(
     session: &PlaySession,
@@ -2726,11 +2732,28 @@ pub(super) fn collect_text_displays(
             for (text, c) in runs {
                 let w: f32 = text.bytes().map(|b| advance[b as usize] as f32).sum();
                 let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let y = -height + i as f32 * 10.0;
+                if d.style & 1 != 0 {
+                    // M268 — the drop shadow (style flag 1): `Font`'s
+                    // `ARGB.scaleRGB(color, 0.25)` one font px right and down,
+                    // a hair behind the glyphs and in front of the plate.
+                    let shade = |v: f32| (f32::from(to8(v)) * 0.25) as u8;
+                    out.push(super::block_entities::OwnedSignLine {
+                        transform,
+                        text: text.clone(),
+                        x: pen + 1.0,
+                        y: y + 1.0,
+                        z: TEXT_DISPLAY_SHADOW_DEPTH,
+                        color: linear_rgb(shade(c[0]), shade(c[1]), shade(c[2])),
+                        light,
+                        backdrop: None,
+                    });
+                }
                 out.push(super::block_entities::OwnedSignLine {
                     transform,
                     text,
                     x: pen,
-                    y: -height + i as f32 * 10.0,
+                    y,
                     z: 0.0,
                     color: linear_rgb(to8(c[0]), to8(c[1]), to8(c[2])),
                     light,

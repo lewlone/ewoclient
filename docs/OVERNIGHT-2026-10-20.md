@@ -267,6 +267,7 @@ released.
   vanilla (glide when the server asks for it, otherwise jump).
 - **M267**: holograms and displays that a server lights itself (for
   example to stay bright at night) are lit that way.
+- **M268**: hologram text with a shadow (a common server style) has it.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -328,6 +329,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| *(M268)* | **M268** — the text display's drop shadow (style bit 1), vanilla's quarter-colour copy one px down-right, by depth between glyphs and plate; render-check **r126**. |
 | `9db1a606` | **M267** — the display brightness override (index 16) replaces the world's light for text, item and block displays; render-check **r125**. |
 | `1a50f06e` | **M266** — display position updates: a per-entity lerp length, 0 (snap) for displays, `teleport_duration` (index 10) for a glide; render-check **r124**. |
 | `27874c9f` | **M265** — display transformations interpolate: indices 8-9 and `Display.tick`'s render state, `Transformation.slerp` when drawn; render-check **r123** merges a 40-tick scale-up mid-run. |
@@ -604,8 +606,8 @@ released.
 - Armour-stand POSES (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`, six `Rotations`) are not read (M238): a posed stand shows the default pose. Needs per-instance part rotations in the entity pass (the model builds per kind today).
 - After M239: **4,348 tests passed, 0 failed; gates 51/51**; render check **106/106** on three runs (plus the push-disabled control failing r106 as it should); clippy (gates, after one `int_plus_one` fix in the witness, and default features) and `cargo fmt --check` clean.
 - After M240: **4,349 tests passed, 0 failed; gates 51/51**; render check **107/107** on three runs (after the texture-path fix); clippy (gates and default features, after collapsing one `if`) and `cargo fmt --check` clean.
-- Text displays draw no shadow, see-through mode or text opacity yet
-  (M255; the background plate came in M262).
+- Text displays draw no see-through mode or text opacity yet (M255; the
+  plate came in M262, the shadow in M268).
   Displays have their transformation and position interpolation and
   brightness override (M265-M267), but no shadow or glow outline; a block display of a block-entity block (a chest) or a
   fluid draws nothing.
@@ -640,6 +642,7 @@ released.
 - After M265: **4,403 tests passed, 0 failed** (rewo-net and rewo-world rerun after the render-flag fix: 1,387 + 813 passed); **gates 51/51**; render check **123/123** on two runs after the fix (r123 failed on the two before it); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M266: **4,405 tests passed, 0 failed; gates 51/51**; render check **124/124** on two runs (r124: 22 and 21 ticks part-way); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M267: **4,407 tests passed, 0 failed; gates 51/51**; render check **125/125** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
+- After M268: **4,407 tests passed, 0 failed; gates 51/51**; render check **126/126** on two runs; clippy (gates and default features) and `cargo fmt --check` clean; a scratch render of the finished hologram looked like vanilla's.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

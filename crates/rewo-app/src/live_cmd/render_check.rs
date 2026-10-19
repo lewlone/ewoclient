@@ -287,6 +287,9 @@ pub(super) struct RenderCheck {
     /// M267 — r125: frames on which the staged item display drew at its
     /// brightness override's light.
     pub(super) display_brightness_frames: usize,
+    /// M268 — r126: frames whose world text carried the staged text display's
+    /// drop shadow.
+    pub(super) text_display_shadow_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1039,7 +1042,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 125;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 126;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1229,6 +1232,13 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M268 — r126: r114's text display has the shadow flag; its line's
+        // quarter-colour copy must reach the world-text list behind it.
+        row(
+            "r126 a text display drew its drop shadow",
+            self.text_display_shadow_frames >= 1,
+            format!("{} frames drew it", self.text_display_shadow_frames),
         );
         // M267 — r125: r115's item display is summoned with
         // `brightness:{sky:0,block:0}`; it must draw at the lightmap's (0, 0)

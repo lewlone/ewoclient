@@ -1048,6 +1048,16 @@ impl LiveApp {
             }) {
                 c.text_display_backdrop_frames += 1;
             }
+            // M268 — r126: the staged text display's drop shadow, gold at a
+            // quarter (`ARGB.scaleRGB(0xFFAA00, 0.25)` = 0x3F2A00), behind.
+            let shadow = super::entities::linear_rgb(0x3F, 0x2A, 0x00);
+            if sign_lines.iter().any(|l| {
+                l.text == "RewoHolo"
+                    && l.z == super::entities::TEXT_DISPLAY_SHADOW_DEPTH
+                    && (0..3).all(|k| (l.color[k] - shadow[k]).abs() < 1e-6)
+            }) {
+                c.text_display_shadow_frames += 1;
+            }
             // M255 — r114: the staged text display's gold line.
             let gold = super::entities::linear_rgb(0xFF, 0xAA, 0x00);
             if sign_lines.iter().any(|l| {

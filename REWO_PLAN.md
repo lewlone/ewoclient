@@ -2081,6 +2081,7 @@ this shape once.
 | M265 (2026-10-19) — a block display's transformation interpolates between keyframes | **r123** | — | — |
 | M266 (2026-10-19) — a display with a teleport duration glides | **r124** | — | — |
 | M267 (2026-10-19) — a display draws at its brightness override's light | **r125** | — | — |
+| M268 (2026-10-19) — a text display draws its drop shadow | **r126** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3915,6 +3916,22 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M268 — the text display's drop shadow (2026-10-19)
+
+A text display with the shadow flag (style bit 1) draws each line twice
+in vanilla: `Font`'s shadow, `ARGB.scaleRGB(color, 0.25)` one font px right
+and down, under the glyphs. `collect_text_displays` now pushes that copy
+first, at `TEXT_DISPLAY_SHADOW_DEPTH` (-0.005 font px: behind the glyphs,
+in front of M262's plate at -0.01; vanilla orders the three by submission
+and polygon offset, Rewo's world text by depth). A scratch render of a
+hologram (gold text, shadow, plate) looked like vanilla's.
+
+Recorded: text opacity and see-through mode are still not applied.
+
+**r126**: r114's text display now carries `shadow:1b`, and its line's
+quarter-gold copy (`0x3F2A00`) reaches the world-text list at the shadow
+depth.
 
 ### M267 — the display brightness override (2026-10-19)
 
