@@ -3925,6 +3925,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M276 — the enchanting table's book (2026-10-20)
+
+`EnchantTableRenderer` draws a book over every enchanting table, opening
+and turning to the nearest player and flipping its pages. Rewo drew none.
+
+- **Clock** (`rewo_world::block_entities::EnchantBook`):
+  `bookAnimationTick` ported field for field (open ±0.1 a tick, the turn
+  toward `atan2(zd, xd)` at 0.4 of the difference, the page target and its
+  damped follow, `tRot += 0.02` when alone), and `extractRenderState`'s
+  interpolation (`pose`). `World::tick_enchanting_books` runs it every tick
+  for the tables' block states (`ChestStates::enchanting_table_states`,
+  copied to the session like the powered skulls) with the players within
+  three blocks of the centre (the local player unless a spectator, and
+  every remote player). The page flips' `RANDOM` is an LCG.
+- **Model**: `rewo:be/enchanting_book`, `BookModel` baked at rest with six
+  animated groups; `be_transform::enchanting_book_parts` is `setupAnim`,
+  `enchanting_book_state` is `State.forAnimation` with the renderer's
+  `ffN`, and `enchanting_book` is `submit`'s pose (`translate(0.5, 0.75,
+  0.5)`, the bob, `YP(-yRot)`, `ZP(80°)`).
+- `rewo_gpu::entities::MAX_PARTS` 4 → 7 (the book's six groups plus the
+  static one).
+
+Recorded: remote players in spectator mode still open a book (vanilla's
+`NO_SPECTATORS`; Rewo reads only its own game mode).
+
+**Unit tests**: the tick (opening by 0.1 to 1, the turn toward a player,
+page targets while nearly closed, closing and the idle spin alone), and a
+cross-check: the book baked at rest and posed through
+`enchanting_book_parts` at the lectern's fixed state (openness 1.5, flips
+0.1/0.9) equals M248's lectern book, which baked each part's rotation into
+its box, vertex for vertex (36 animated faces). **r134**: r103's table
+draws its whole book and the book's pose changes across frames (alone, it
+keeps turning).
+
 ### M275 — player head icons wear their own skins (2026-10-20)
 
 Server menus are built from custom player heads (a chest screen of

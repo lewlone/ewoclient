@@ -290,6 +290,8 @@ released.
   inventory, the hotbar and container screens show their own skins; menus
   built from custom heads all showed Steve. Heads in a hand, on the
   cursor, dropped or in a frame still do.
+- **M276**: enchanting tables have their floating book again, opening
+  and turning toward you as you come near and flipping its pages.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -351,6 +353,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `96db1636` | **M276** — the enchanting table's book: `EnchantBook` (`bookAnimationTick` and its render interpolation), `World::tick_enchanting_books`, the book baked at rest with six animated groups posed by `enchanting_book_parts`, `MAX_PARTS` 4 → 7; unit tests (the tick; the posed book equals the lectern's) and render-check **r134**. |
 | `17d2c03c` | **M275** — head icons in their skins: `SlotText::profile_textures`, the per-skin item model from `add_skin_head_model`, `skinned_icon_model` in `screen_icons` and `hotbar_models`, the GUI pass's copy rebuilt on arrival; unit test, inventoryshot **g21** (pixels) and render-check **r133**. |
 | `ef2c348b` | **M274** — items worn on the head: the `head` display transform baked through the model chain into `HeldItemModel::head`, `WornHead::item` and `emit_worn_head`'s `translateToHead` branch; a unit test for the bake, mobtexshot **m19** (pixels from the pumpkin's textures, centroid on the decompile's position; a control without the −0.25 fails) and render-check **r132**. |
 | `5f8c2e9a` | Render check: the use tail shrinks slimes to size 1 before killing them (a killed big slime split, and its children hit the bot through r101-r106). |
@@ -676,6 +679,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M276: **4,417 tests passed, 0 failed; gates 51/51**; render check **134/134** on two runs (r134's turn range 0.347, the full ±cos 80° a turning book gives); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M275: **4,415 tests passed, 0 failed; gates 51/51** (inventoryshot 171); render check **133/133** on two runs; clippy and `cargo fmt --check` clean. A first chain broke at clippy: g21 was edited in while that chain ran and did not compile (a closure needed `mut`); the rerun is on the fixed tree. Rule kept since: no source edits while a chain runs.
 - After M274: **4,415 tests passed, 0 failed; gates 51/51** (mobtexshot 19); render check **132/132** on two runs; clippy (gates and default features) and `cargo fmt --check` clean. The bake test's first draft expected the feather to inherit `item/generated`'s `head`; the jar's feather declares its own, and the bake was right.
 - After M273: **4,414 tests passed, 0 failed; gates 51/51** (mobtexshot 18); clippy (gates and default features) and `cargo fmt --check` clean; render check **131/131** on run 1 and on both runs after `5f8c2e9a`. Run 2 of the first chain read 126/131: slimes split by the use tail's own kill hit the bot from stage 70 on and r101-r104 and r106 timed out (fixed in `5f8c2e9a`, see Follow-ups). m18's control (no 1.1875 scale) fails at 2.52 px.
@@ -749,8 +753,7 @@ released.
   never reach the item path), and a pot item shows plain sides. A dropped
   or framed trident shows its 3D model (vanilla: the sprite). The dragon
   head's 256×256 sheet is still too big for the large pool.
-- Not drawn: the enchanting table's floating book (`EnchantTableRenderer`:
-  it turns to the nearest player and flips pages). M248 drew the bell and
+- ~~Not drawn: the enchanting table's floating book~~ (M276). M248 drew the bell and
   the lectern's book; a rung bell does not shake. Sign boards ARE drawn: in 26.2 they are ordinary block
   models (checked: oak sign 10-15 quads, wall and hanging signs too); an
   earlier draft of this note said otherwise.
