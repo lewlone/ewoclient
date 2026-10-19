@@ -164,6 +164,9 @@ released.
   while it plays, in your hand and in other players' hands. Before, they
   never changed. Checked live (the drawn bow's model) and in the item gate
   (every frame, at vanilla's thresholds).
+- **M235**: shield blocking checked live in survival. It already worked:
+  a hit from the front costs nothing with the shield raised, and the same
+  hit without it costs health. No fix needed.
 - **M228**: when you ride something, you now sit where vanilla puts you.
   Before, you sat at the vehicle's center: too low in a boat, and with the
   camera inside a horse's back. Checked live against the server's own idea
@@ -220,6 +223,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| `a9feba5` | **M235** — shield blocking checked live: render-check **r101** (a right-click raises the off-hand shield; the server's own damage: 20 → 16.64 unblocked, no loss blocked). Witness only, no client change. |
 | `f333aef` | **M234** — item-model use variants: the bow's and crossbow's pull frames, the loaded crossbow's arrow/firework, the tooting goat horn, baked as `<item>#<model ref>` and selected with the live use state; the crossbow's projectile id now decoded; itemshot **a10**/**a11**, render-check **r100**. |
 | `2a9f7e8` | **M233** — vanilla's dynamic FOV (`getFieldOfViewModifier` + `tickFov` easing + water): sprint, speed, flying, bow draw, spyglass; render-check **r99** (a drawn bow's frame FOV at exactly 0.85 of standing). |
 | `e452419` | **M232** — crafting tables and furnaces end to end: render-check **r97** and **r98** with real blocks in survival through the production press/release; the open container's player part mirrored into the player inventory (a taken stack was missing from the hotbar after closing). |
@@ -452,6 +456,7 @@ released.
 - After M233: **4,338 tests passed, 0 failed; gates 51/51**; render check **99/99** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M234: **4,340 tests passed, 1 failed** (`connect_tests::the_first_address_that_answers_wins`, a pre-existing loopback flake: its just-closed "dead" port answered, a TCP self-connect; it passes 3/3 alone, see follow-ups); gates 51/51; render check **100/100** on two runs; clippy (gates and default features, after eliding one lifetime) and `cargo fmt --check` clean.
 - `rewo-net` `connect_tests::the_first_address_that_answers_wins` flaked once (M234's run): its `dead_addr()` binds and closes an ephemeral loopback port, and the connect to it can succeed by TCP self-connect (the client's ephemeral source port equals the closed port). Fix: hold the dead port's listener with no `accept`, or use a port from a reserved range. Not touched in this run.
+- After M235: render-check only change: `rewo-app` tests (gates) 296 passed; render check **101/101** on two runs; clippy (gates) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
