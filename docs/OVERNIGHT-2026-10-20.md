@@ -11,6 +11,47 @@ released.
 
 *(Kept current through the run; the last update is the one that counts.)*
 
+### In one minute
+
+- **What happened**: 83 Rewo milestones, M194 to M276, in 183 commits on
+  `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
+  the local `main` is still at `e09f02f`.
+- **Checks at the end** (`96db1636`): 4,417 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 134 of
+  134 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+  clean.
+- **Real bugs you would have seen, now fixed**:
+  - holes in the terrain on normal worlds at render distance 16 (M205);
+  - every sign's text drawn upside down (M263);
+  - invisible entities drawn whole, so server holograms showed an armour
+    stand under the text (M271);
+  - block displays drawing the wrong block (the M260 fix);
+  - the render distance option ignored (M206);
+  - inventory icons lit wrongly (M245);
+  - the rider's seat in the wrong place (M228).
+- **New, broadly**:
+  - item frames;
+  - blended animated textures and flowing water and lava;
+  - text, item and block displays (interpolation, brightness, shadows,
+    background plates);
+  - end crystals, small projectiles, evoker fangs, swelling TNT, posed
+    armour stands and minecart contents;
+  - player heads in their own skins (placed, worn and as icons), and skulls,
+    pumpkins and blocks worn on the head;
+  - the enchanting table's book;
+  - steering boats, horses, camels and the nautilus;
+  - everyday actions that were never sent (drop, swap hands, pick block,
+    sprint, leave bed).
+- **Test harness**: the render check's old "damage from an unknown source"
+  flake was slimes that the check's own `kill` command split; fixed in
+  `5f8c2e9a`.
+- **Needs you**: nothing blocking. One incident on the shared PC was
+  reported at the time (see "Needs Enni"). The checks only you can do are
+  unchanged: the audio listening pass, the release zip on a fresh machine,
+  and the HUD in a running Minecraft.
+
+### Milestone by milestone
+
 - **M194, item frames, is done**: frames draw their wood model, the item in
   them (turned in eighths) and a map in them (turned in quarters, with only
   the markers a frame shows). New offscreen gate `itemframeshot`.
