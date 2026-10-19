@@ -36,7 +36,7 @@ use crate::stats::OverlayRing;
 
 /// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
 /// pickup animation's flight.
-const EXPECTED_WITNESSES: usize = 83;
+const EXPECTED_WITNESSES: usize = 84;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -1259,6 +1259,48 @@ fn check_render(
             format!(
                 "{} pixels differ from an empty scene — a chest block entity drawn \
                  by the world emitter; 0 while block-entity sheets could not page in",
+                px.len()
+            ),
+        );
+    }
+    // M263 — world text (sign faces, holograms) reads upright. A `T` drawn
+    // through a sign's y-down font frame (`scale(s, -s, s)`, vanilla's) has
+    // its crossbar at the TOP of the screen: the top quarter of its pixels'
+    // box holds more of them than the bottom quarter. From M25e to M263
+    // every sign's text was upside down and every sign witness, comparing
+    // strings, passed.
+    {
+        let s = 0.08;
+        let frame = [[s, 0.0, 0.0, -0.3], [0.0, -s, 0.0, 1.4], [0.0, 0.0, s, 0.0]];
+        let line = rewo_gpu::entities::WorldTextDraw {
+            transform: frame,
+            text: "T",
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            color: [1.0; 3],
+            light: [1.0; 3],
+            backdrop: None,
+        };
+        wr.set_entities_and_block_entities(&[], &[], &[], &[line], right, up.to_array(), 0.0);
+        off.render(&gpu, Some((&mut wr, view_proj)), &draw, CLEAR)?;
+        let text = off.read_rgba(&gpu)?;
+        wr.set_entities_and_block_entities(&[], &[], &[], &[], right, up.to_array(), 0.0);
+        off.render(&gpu, Some((&mut wr, view_proj)), &draw, CLEAR)?;
+        let nothing = off.read_rgba(&gpu)?;
+        let px = changed(&nothing, &text);
+        let (y_min, y_max) = px
+            .iter()
+            .fold((u32::MAX, 0), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+        let quarter = (y_max.saturating_sub(y_min) + 1) / 4;
+        let top = px.iter().filter(|p| p.1 < y_min + quarter).count();
+        let bottom = px.iter().filter(|p| p.1 > y_max - quarter).count();
+        c.record(
+            "c3f.world_text_reads_upright",
+            px.len() > 40 && top > bottom * 2,
+            format!(
+                "{} pixels; top quarter {top}, bottom quarter {bottom} — a `T`'s crossbar \
+                 is on top when the glyph is upright (want top > 2x bottom)",
                 px.len()
             ),
         );

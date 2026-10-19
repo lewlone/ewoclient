@@ -3912,6 +3912,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M263 — sign text and holograms were upside down (2026-10-19)
+
+Every sign's text in the windowed client has read upside down since M25e,
+and M255's holograms with it. `glyph_uv` returns a cell's bottom as `v0`,
+which is right for the nametag's y-up frame; `emit_world_text` gives the
+glyph's top (`y0`) that `v0`, but a world-text frame is y-down (a sign's
+and a text display's transform end in vanilla's negative y scale), so the
+bottom of each glyph was drawn at its top. Every sign witness compares
+strings and passed throughout; a scratch render of a
+hologram (looking at M262's plate) showed the text inverted, and a second
+one drawing the same text through a y-up and a y-down frame confirmed it.
+
+The emitter now maps the glyph's top to the cell's top (`v1`), as the map
+label emitter (M204) already did. New `itemshot` witness
+`c3f.world_text_reads_upright` (itemshot 83 to 84): a `T` drawn through a
+sign's y-down frame must have more pixels in the top quarter of its box
+(the crossbar) than twice the bottom quarter. With the fix 280 against 84;
+with the old mapping put back as a control it fails, 77 against 245.
+
 ### M262 — the text display's background plate (2026-10-19)
 
 M255's holograms drew their text with no plate behind it. Vanilla's

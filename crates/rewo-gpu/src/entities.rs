@@ -5094,7 +5094,14 @@ impl EntityPass {
                     if verts.len() + 6 > MAX_VERTS {
                         return;
                     }
-                    let [u0, v0, u1, v1] = self.glyph_uv(b);
+                    // `glyph_uv` gives the cell's bottom as `v0`, for the
+                    // nametag's y-UP frame. A world-text frame is y-DOWN (a
+                    // sign's and a text display's transform end in a
+                    // negative y scale, vanilla's font layout), so the
+                    // glyph's top, `y0`, takes the cell's top, `v1`. Until
+                    // M263 this took `v0`, and every sign and hologram in
+                    // the windowed client read upside down.
+                    let [u0, v1, u1, v0] = self.glyph_uv(b);
                     // The glyph cell is `cell` px square in the atlas but 8 px
                     // in font space, so it scales by 8/cell.
                     let s = 8.0 / cell;

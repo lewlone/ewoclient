@@ -53,6 +53,12 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   `BakedAssets::state_quads`. M260 read `models[state]` and drew another
   block's model (an oak stair in cinnabar bricks) while r119, a quad
   count, passed; a scratch render caught it.
+- **World text frames are y-down** (a sign's and a text display's
+  transform end in a negative y scale, as vanilla's font layout does), so
+  `emit_world_text` maps a glyph's top to its cell's top (`glyph_uv`'s
+  `v1`); the nametag's frame is y-up and takes `v0`. Every sign read upside
+  down from M25e to M263 with every string witness green;
+  `itemshot c3f` checks the pixels.
 - The entity atlas's large slots are 64×64: a bigger entity sheet (the
   end crystal's 128×64) is halved at bake (`halve_texture`, M257).
 - **Face numbering differs by bake**: the block bake's `dir` is

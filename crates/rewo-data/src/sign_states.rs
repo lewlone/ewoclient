@@ -15,7 +15,10 @@
 //!
 //! The negative y in that scale is the flip from the font's y-down layout to
 //! the world's y-up — dropping it renders every sign's text upside down while
-//! leaving it in exactly the right place, which is a hard bug to see.
+//! leaving it in exactly the right place, which is a hard bug to see. (The
+//! emitter must then map a glyph's top to its cell's top: until M263 it did
+//! not, and every sign read upside down anyway; `itemshot`'s
+//! `c3f.world_text_reads_upright` now looks.)
 //!
 //! `0.010416667` is `1/96`: the font cell is 8 px and vanilla wants a line to
 //! occupy 1/12 of a block, so a whole 4-line sign fits the board.
