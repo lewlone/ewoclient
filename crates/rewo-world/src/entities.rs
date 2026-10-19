@@ -1455,7 +1455,7 @@ impl Default for DeathState {
 /// The synced mob state the M20 arm rigs consume. Every field defaults to
 /// vanilla's `define(...)` default, so an entity that has sent no metadata
 /// renders exactly as one whose flags are all clear.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MobState {
     /// `Mob.DATA_MOB_FLAGS_ID`. Bit 1 no-AI, bit 2 left-handed, bit 4
     /// aggressive.
@@ -1463,6 +1463,10 @@ pub struct MobState {
     /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15 BYTE too, a different
     /// class): 0x01 small, 0x04 show arms, 0x08 no base plate, 0x10 marker.
     pub stand_flags: u8,
+    /// M270 — `ArmorStand`'s six pose rotations (indices 16-21: head, body,
+    /// left arm, right arm, left leg, right leg), degrees; `None` is
+    /// vanilla's default for that part.
+    pub stand_pose: [Option<[f32; 3]>; 6],
     /// M239 — `FireworkRocketEntity.DATA_ATTACHED_TO_TARGET`: the entity a
     /// rocket is attached to (an elytra boost), carried here so it is
     /// cleared with the entity like every other per-entity state.
@@ -2642,6 +2646,25 @@ impl EntityTable {
 
     /// The armour stand's client flags, 0 (vanilla's `define` default: big,
     /// no arms, base plate) when none were sent.
+    /// M270 — one of the armour stand's six poses (`part` 0..6).
+    pub fn set_armor_stand_pose(&mut self, id: i32, part: usize, rot: [f32; 3]) {
+        if let Some(slot) = self
+            .mob_state
+            .entry(id)
+            .or_default()
+            .stand_pose
+            .get_mut(part)
+        {
+            *slot = Some(rot);
+        }
+    }
+
+    /// M270 — the armour stand's six poses, `None` where vanilla's default
+    /// stands.
+    pub fn armor_stand_pose(&self, id: i32) -> [Option<[f32; 3]>; 6] {
+        self.mob_state.get(&id).map_or([None; 6], |s| s.stand_pose)
+    }
+
     pub fn armor_stand_flags(&self, id: i32) -> u8 {
         self.mob_state.get(&id).map_or(0, |s| s.stand_flags)
     }

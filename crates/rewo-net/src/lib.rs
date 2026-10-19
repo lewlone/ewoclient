@@ -2929,6 +2929,14 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_attached_to(eid, (raw > 0).then(|| raw - 1));
         }
     }
+    // M270 — an armour stand's six poses (16-21, ROTATIONS).
+    if kinds.armor_stand == Some(type_id) {
+        for (part, rot) in meta.stand_pose.iter().enumerate() {
+            if let Some(r) = rot {
+                entities.set_armor_stand_pose(eid, part, *r);
+            }
+        }
+    }
     if let Some(flags) = meta.mob_flags {
         if kinds.classes.is_some_and(|c| c.is_mob(type_id)) {
             entities.set_mob_flags(eid, flags);
@@ -5627,6 +5635,28 @@ mod set_entity_data_tests {
         assert_eq!(t.primed(8), Default::default());
         t.tick_fuses();
         assert_eq!(t.primed(7).fuse, Some(39));
+    }
+
+    /// M270 — indices 16-21 (ROTATIONS) are an armour stand's six poses.
+    #[test]
+    fn an_armor_stands_poses_land() {
+        const STAND: i32 = 905;
+        let kinds = crate::MetaKinds {
+            armor_stand: Some(STAND),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, STAND, 0.0, 0.0, 0.0, 0.0, 0.0));
+        let mut v = Vec::new();
+        for f in [45.0f32, 10.0, -5.0] {
+            v.extend_from_slice(&f.to_be_bytes());
+        }
+        apply_set_entity_data(&body(7, 16, 9, &v), &mut t, kinds);
+        apply_set_entity_data(&body(7, 21, 9, &v), &mut t, kinds);
+        let p = t.armor_stand_pose(7);
+        assert_eq!(p[0], Some([45.0, 10.0, -5.0]));
+        assert_eq!(p[5], Some([45.0, 10.0, -5.0]));
+        assert_eq!(p[1..5], [None; 4]);
     }
 
     /// M260 — a block display's state (23, BLOCK_STATE) and billboard (15)

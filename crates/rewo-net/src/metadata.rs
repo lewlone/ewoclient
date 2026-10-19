@@ -292,6 +292,9 @@ pub struct EntityMeta {
     /// M269 — BLOCK_STATE at 9: primed TNT's `DATA_BLOCK_STATE_ID`
     /// (kind-gated).
     pub block9: Option<i32>,
+    /// M270 — ROTATIONS at 16..=21: an armour stand's head, body, left arm,
+    /// right arm, left leg and right leg poses (kind-gated by the caller).
+    pub stand_pose: [Option<[f32; 3]>; 6],
     /// M254 — `Painting.DATA_PAINTING_VARIANT_ID` at 9 (8 is
     /// `HangingEntity.DATA_DIRECTION`): serializer 34, `PAINTING_VARIANT`, a
     /// raw registry id. The serializer is the painting's alone, so it needs
@@ -480,6 +483,10 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (24, 0) => meta.byte24 = r.u8().ok(),
             (23, 14) => meta.display_block = r.varint().ok(),
             (9, 14) => meta.block9 = r.varint().ok(),
+            (16..=21, 9) => match read_f32s::<3>(r) {
+                Some(v) => meta.stand_pose[usize::from(index - 16)] = Some(v),
+                None => break,
+            },
             (11, 15) => meta.opt_block11 = r.varint().ok(),
             (12, 1) => meta.int12 = r.varint().ok(),
             (13, 8) => meta.bool13 = r.u8().ok().map(|b| b != 0),

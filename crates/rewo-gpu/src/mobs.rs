@@ -80,6 +80,10 @@ pub enum Anim {
     /// M238 — `ArmorStandModel`'s `basePlate.yRot = -yRot`: the plate turns
     /// back by the stand's own yaw, so it stays aligned to the world grid.
     CounterBodyYaw,
+    /// M270 — `ArmorStandArmorModel.setupAnim`: part `i` of the stand's six
+    /// poses (head, body, left arm, right arm, left leg, right leg) set
+    /// absolutely, as a delta from the default pose the part is baked at.
+    StandPose(u8),
     /// Look pitch about X + net head yaw about Y (vanilla `rotateZYX(0,y,x)`).
     Head,
     /// Humanoid arms: `cos(f ± π) · 2.0 · amount · 0.5`.
@@ -797,17 +801,33 @@ pub enum Show {
 /// M238 — the armour stand's two visibility flags (`DATA_CLIENT_FLAGS` 0x04
 /// show arms, 0x08 no base plate). The default is vanilla's flags byte 0:
 /// no arms, a base plate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StandParts {
     pub arms: bool,
     pub base_plate: bool,
+    /// M270 — `DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE` (indices 16-21),
+    /// degrees, in that order: head, body, left arm, right arm, left leg,
+    /// right leg.
+    pub pose: [[f32; 3]; 6],
 }
+
+/// M270 — `ArmorStand.DEFAULT_*_POSE`, degrees, in [`StandParts::pose`]'s
+/// order: the pose the model is baked at.
+pub const STAND_DEFAULT_POSE: [[f32; 3]; 6] = [
+    [0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [-10.0, 0.0, -10.0],
+    [-15.0, 0.0, 10.0],
+    [-1.0, 0.0, -1.0],
+    [1.0, 0.0, 1.0],
+];
 
 impl Default for StandParts {
     fn default() -> Self {
         Self {
             arms: false,
             base_plate: true,
+            pose: STAND_DEFAULT_POSE,
         }
     }
 }
@@ -7972,7 +7992,7 @@ fn armor_stand() -> Model {
         "head",
         [0.0, 1.0, 0.0],
         d(0.0, 0.0, 0.0),
-        Anim::None,
+        Anim::StandPose(0),
         1.0,
         None,
     );
@@ -7984,7 +8004,14 @@ fn armor_stand() -> Model {
         [2.0, 7.0, 2.0],
         NONE,
     );
-    let body = b.part_named("body", [0.0; 3], d(0.0, 0.0, 0.0), Anim::None, 1.0, None);
+    let body = b.part_named(
+        "body",
+        [0.0; 3],
+        d(0.0, 0.0, 0.0),
+        Anim::StandPose(1),
+        1.0,
+        None,
+    );
     b.cube(
         body,
         0,
@@ -7997,7 +8024,7 @@ fn armor_stand() -> Model {
         "right_arm",
         [-5.0, 2.0, 0.0],
         d(-15.0, 0.0, 10.0),
-        Anim::None,
+        Anim::StandPose(3),
         1.0,
         None,
     );
@@ -8014,7 +8041,7 @@ fn armor_stand() -> Model {
         "left_arm",
         [5.0, 2.0, 0.0],
         d(-10.0, 0.0, -10.0),
-        Anim::None,
+        Anim::StandPose(2),
         1.0,
         None,
     );
@@ -8031,7 +8058,7 @@ fn armor_stand() -> Model {
         "right_leg",
         [-1.9, 12.0, 0.0],
         d(1.0, 0.0, 1.0),
-        Anim::None,
+        Anim::StandPose(5),
         1.0,
         None,
     );
@@ -8047,7 +8074,7 @@ fn armor_stand() -> Model {
         "left_leg",
         [1.9, 12.0, 0.0],
         d(-1.0, 0.0, -1.0),
-        Anim::None,
+        Anim::StandPose(4),
         1.0,
         None,
     );
@@ -8059,10 +8086,11 @@ fn armor_stand() -> Model {
         [2.0, 11.0, 2.0],
         NONE,
     );
-    // The three sticks take the BODY pose (0, 0, 0 by default) about the
-    // origin, so they are static here.
+    // The three sticks take the BODY pose about the origin
+    // (`ArmorStandModel.setupAnim` copies it to each), the body's own pivot,
+    // so they ride the body part (M270).
     b.cube(
-        STATIC_PART,
+        body,
         0,
         (16.0, 0.0),
         [-3.0, 3.0, -1.0],
@@ -8070,7 +8098,7 @@ fn armor_stand() -> Model {
         NONE,
     );
     b.cube(
-        STATIC_PART,
+        body,
         0,
         (48.0, 16.0),
         [1.0, 3.0, -1.0],
@@ -8078,7 +8106,7 @@ fn armor_stand() -> Model {
         NONE,
     );
     b.cube(
-        STATIC_PART,
+        body,
         0,
         (0.0, 48.0),
         [-4.0, 10.0, -1.0],

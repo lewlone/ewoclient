@@ -2083,6 +2083,7 @@ this shape once.
 | M267 (2026-10-19) — a display draws at its brightness override's light | **r125** | — | — |
 | M268 (2026-10-19) — a text display draws its drop shadow | **r126** | — | — |
 | M269 (2026-10-20) — a primed TNT draws swelling before it blows | **r127** | — | — |
+| M270 (2026-10-20) — a posed armour stand draws with its poses | **r128** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3917,6 +3918,35 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M270 — armour stand poses (2026-10-20)
+
+M238's armour stand always stood at vanilla's default pose; servers pose
+stands for decoration constantly. Now:
+
+- **Metadata**, gated on the armour stand type: `DATA_HEAD_POSE` ..
+  `DATA_RIGHT_LEG_POSE` (indices 16-21, ROTATIONS, three f32 degrees) into
+  `MobState::stand_pose` (`None` is the default for that part).
+- **Model** (`mobs::Anim::StandPose`): `ArmorStandArmorModel.setupAnim`
+  sets each of the six parts absolutely, so the delta onto the part's baked
+  default (`STAND_DEFAULT_POSE`, `ArmorStand.DEFAULT_*_POSE`) is `pose -
+  default`. The three body sticks take the body pose about the origin
+  (`ArmorStandModel.setupAnim` copies it to each), which is the body's own
+  pivot, so they ride the body part now.
+- `StandParts` carries the six poses per draw; at the default every delta
+  is zero and the geometry is unchanged (mobshot).
+
+A scratch render of a stand posed head (45, 0, 0), right arm (-90, 0, 0)
+showed the head tipped and the arm raised forward.
+
+Worn armour follows the pose by construction: `emit_armor` re-poses the
+armour mesh from the same per-part transforms the body was just drawn
+with (not looked at in a render).
+
+Tests: `stand_poses_replace_the_baked_default` (zero at the default, the
+head's and right arm's exact deltas), `an_armor_stands_poses_land`.
+**r128**: a stand summoned with that pose reaches the entity draws with
+it.
 
 ### M269 — primed TNT swells, and any falling or primed block draws (2026-10-20)
 

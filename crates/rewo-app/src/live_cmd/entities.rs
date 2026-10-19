@@ -3712,9 +3712,14 @@ pub(super) fn collect_entities<'a>(
             w *= 0.5;
             h *= 0.5;
         }
+        let stand_pose = session.world.entities.armor_stand_pose(id);
         let stand_parts = rewo_gpu::mobs::StandParts {
             arms: stand_flags & 0x04 != 0,
             base_plate: stand_flags & 0x08 == 0,
+            // M270 — the six poses, vanilla's default where none came.
+            pose: std::array::from_fn(|i| {
+                stand_pose[i].unwrap_or(rewo_gpu::mobs::STAND_DEFAULT_POSE[i])
+            }),
         };
         let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
         // Gesture + wire-event rigs: pose/state → rig, timed from the observed

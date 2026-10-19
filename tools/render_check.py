@@ -181,6 +181,8 @@ PRECMD = (
     # M265 -- r123. A stone block display the run scales 1 -> 3 at 2 s;
     # M266 -- r124: and teleports up a block at 3 s, gliding over 20 ticks.
     "summon minecraft:block_display ~5 ~2 ~-9 {Tags:[\"rewo_interp\"],teleport_duration:20,block_state:{Name:\"minecraft:stone\"}};"
+    # M270 -- r128. A posed armour stand (head tipped, right arm raised).
+    "summon minecraft:armor_stand ~-8 ~ ~3 {ShowArms:1b,Pose:{Head:[45f,0f,0f],RightArm:[-90f,0f,0f]}};"
     # M269 -- r127. Primed TNT with a 60-tick fuse, held fourteen blocks up
     # and away from everything, so its blast breaks nothing and hurts no one.
     "summon minecraft:tnt ~ ~14 ~-20 {fuse:60,NoGravity:1b};"

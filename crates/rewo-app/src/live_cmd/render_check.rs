@@ -292,6 +292,9 @@ pub(super) struct RenderCheck {
     pub(super) text_display_shadow_frames: usize,
     /// M269 — r127: frames on which a primed TNT drew swelling.
     pub(super) tnt_swell_frames: usize,
+    /// M270 — r128: frames on which the staged posed armour stand drew with
+    /// its poses.
+    pub(super) stand_pose_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1044,7 +1047,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 127;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 128;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1234,6 +1237,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M270 — r128: `render_check.py` summons an armour stand posed with
+        // its head at (45, 0, 0) and right arm at (-90, 0, 0); both poses
+        // must reach its draw. Every stand stood at the default pose until
+        // M270.
+        row(
+            "r128 a posed armour stand drew with its poses",
+            self.stand_pose_frames >= 1,
+            format!("{} frames drew it posed", self.stand_pose_frames),
         );
         // M269 — r127: `render_check.py` primes a TNT with a 60-tick fuse high
         // in the air. In its last ten ticks it swells (`getSwellAmount`); it

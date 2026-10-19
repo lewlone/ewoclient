@@ -1085,6 +1085,18 @@ impl LiveApp {
                 backdrop: l.backdrop,
             })
             .collect();
+        // M270 — r128: the staged posed armour stand reached the entity draws
+        // with its head and right-arm poses.
+        #[cfg(feature = "gates")]
+        if let Some(rc) = self.check.as_mut() {
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
+                    && d.stand_parts.pose[0] == [45.0, 0.0, 0.0]
+                    && d.stand_parts.pose[3] == [-90.0, 0.0, 0.0]
+            }) {
+                rc.stand_pose_frames += 1;
+            }
+        }
         // r48 — the crowd census, taken on the list that is about to be
         // uploaded, so it cannot drift from what was drawn. Two counts because
         // they break independently: how many of the injected draws share one

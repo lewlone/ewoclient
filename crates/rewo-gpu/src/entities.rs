@@ -2108,6 +2108,7 @@ impl EntityPass {
             events: [None; mobs::ModelEvent::COUNT],
             shell: false,
             body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
             allay_dance: Option::None,
             attack: mobs::SwingPose::NONE,
             arm_poses: mobs::ArmPoses::EMPTY,
@@ -2939,6 +2940,7 @@ impl EntityPass {
             events: d.events,
             shell: d.shell,
             body_yaw: d.yaw.to_radians(),
+            stand_pose: d.stand_parts.pose,
             allay_dance: d.allay_dance,
             attack: d.attack,
             arm_poses: d.arm_poses,
@@ -4063,6 +4065,9 @@ struct AnimCtx {
     /// M238 — the entity's body yaw, radians, for
     /// [`mobs::Anim::CounterBodyYaw`].
     body_yaw: f32,
+    /// M270 — an armour stand's six poses, degrees, for
+    /// [`mobs::Anim::StandPose`].
+    stand_pose: [[f32; 3]; 6],
     /// Allay dance inputs (`Some` only for a dancing Allay) — drives
     /// [`mobs::Anim::AllayRoot`] / [`mobs::Anim::AllayHead`].
     allay_dance: Option<mobs::AllayDance>,
@@ -4247,6 +4252,12 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
     match anim {
         None => {}
         CounterBodyYaw => rot[1] = -c.body_yaw,
+        StandPose(i) => {
+            let i = usize::from(i).min(5);
+            for (k, r) in rot.iter_mut().enumerate() {
+                *r = (c.stand_pose[i][k] - mobs::STAND_DEFAULT_POSE[i][k]).to_radians();
+            }
+        }
         Head => {
             rot[0] = c.pitch;
             rot[1] = c.net;
@@ -5839,6 +5850,7 @@ pub fn oracle_part_deltas(
         events: inputs.events,
         shell: inputs.shell,
         body_yaw: 0.0,
+        stand_pose: mobs::STAND_DEFAULT_POSE,
         allay_dance: inputs.allay_dance,
         attack: inputs.attack,
         arm_poses: inputs.arm_poses,
@@ -7540,6 +7552,50 @@ mod tests {
         assert_eq!(a(mobs::EmissiveAlpha::EyesGlowing, 0.0, &on), 1.0);
     }
 
+    /// M270 — an armour stand part's pose is absolute: at vanilla's default
+    /// pose every part's delta is zero (the model is baked there); a head
+    /// pose of (45, 10, -5) adds exactly that to the head's baked (0, 0, 0),
+    /// and a right arm at (-90, 0, 0) moves from its baked (-15, 0, 10) by
+    /// (-75, 0, -10).
+    #[test]
+    fn stand_poses_replace_the_baked_default() {
+        let ctx = |stand_pose| AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        };
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-6);
+        let rad = |v: [f32; 3]| v.map(f32::to_radians);
+        for i in 0..6u8 {
+            let (r, _) = anim_delta(
+                mobs::Anim::StandPose(i),
+                1.0,
+                &ctx(mobs::STAND_DEFAULT_POSE),
+            );
+            assert!(close(r, [0.0; 3]), "part {i}: {r:?}");
+        }
+        let mut pose = mobs::STAND_DEFAULT_POSE;
+        pose[0] = [45.0, 10.0, -5.0];
+        pose[3] = [-90.0, 0.0, 0.0];
+        let (head, _) = anim_delta(mobs::Anim::StandPose(0), 1.0, &ctx(pose));
+        assert!(close(head, rad([45.0, 10.0, -5.0])), "{head:?}");
+        let (arm, _) = anim_delta(mobs::Anim::StandPose(3), 1.0, &ctx(pose));
+        assert!(close(arm, rad([-75.0, 0.0, -10.0])), "{arm:?}");
+    }
+
     /// `WardenModel.animateTendrils`: one angle, mirrored between the two
     /// tendrils, scaled by the countdown and zero without it.
     #[test]
@@ -7555,6 +7611,7 @@ mod tests {
             events: [None; mobs::ModelEvent::COUNT],
             shell: false,
             body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
             allay_dance: None,
             attack: mobs::SwingPose::NONE,
             arm_poses: mobs::ArmPoses::EMPTY,
