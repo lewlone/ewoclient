@@ -2435,6 +2435,8 @@ pub struct MetaKinds<'a> {
     pub item_display: Option<i32>,
     /// `minecraft:end_crystal` type id (M257) — gates the index-9 BOOLEAN.
     pub end_crystal: Option<i32>,
+    /// `minecraft:tnt` type id (M269) — gates indices 8 (fuse) and 9.
+    pub tnt: Option<i32>,
     /// `minecraft:block_display` type id (M260) — gates index 23 and 15.
     pub block_display: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
@@ -2882,6 +2884,16 @@ pub(crate) fn apply_set_entity_data<'a>(
                     d.billboard = v;
                 }
             }
+        }
+    }
+    // M269 — primed TNT's fuse (8, INT) and block (9, BLOCK_STATE).
+    if kinds.tnt == Some(type_id) && (meta.int8.is_some() || meta.block9.is_some()) {
+        let p = entities.primed_mut(eid);
+        if let Some(v) = meta.int8 {
+            p.fuse = Some(v);
+        }
+        if let Some(v) = meta.block9 {
+            p.block = u32::try_from(v).ok();
         }
     }
     // M257 — an end crystal's `DATA_SHOW_BOTTOM` (9, BOOLEAN), kept as its
@@ -5592,6 +5604,29 @@ mod set_entity_data_tests {
         // 15 << 4 | 15 << 20 = 0xF000F0, a VarInt of four bytes.
         apply_set_entity_data(&body(7, 16, 1, &[0xF0, 0x81, 0xC0, 0x07]), &mut t, kinds);
         assert_eq!(t.display(7).map(|d| d.brightness), Some(0xF0_00F0));
+    }
+
+    /// M269 — primed TNT's fuse (8, INT) and block (9, BLOCK_STATE), and the
+    /// client's countdown; a zombie's 8 and 9 are not a fuse.
+    #[test]
+    fn primed_tnt_reads_its_fuse_and_block() {
+        const TNT: i32 = 904;
+        let kinds = crate::MetaKinds {
+            tnt: Some(TNT),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, TNT, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        for eid in [7, 8] {
+            apply_set_entity_data(&body(eid, 8, 1, &[40]), &mut t, kinds);
+            apply_set_entity_data(&body(eid, 9, 14, &[1]), &mut t, kinds);
+        }
+        assert_eq!(t.primed(7).fuse, Some(40));
+        assert_eq!(t.primed(7).block, Some(1));
+        assert_eq!(t.primed(8), Default::default());
+        t.tick_fuses();
+        assert_eq!(t.primed(7).fuse, Some(39));
     }
 
     /// M260 — a block display's state (23, BLOCK_STATE) and billboard (15)

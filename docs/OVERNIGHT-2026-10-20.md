@@ -225,7 +225,7 @@ released.
 - **M252**: minecarts are minecarts (they were grey capsules). Their
   contents (a chest in a chest minecart, etc.) are not drawn yet.
 - **M253**: falling sand and gravel, and lit TNT, are blocks again (they
-  were grey capsules). Lit TNT does not flash or swell yet.
+  were grey capsules). Lit TNT does not flash yet (it swells since M269).
 - **M254**: paintings are paintings (they were grey capsules), every
   vanilla motif and size.
 - **M255**: holograms (text displays) show their text, in colour, where
@@ -268,6 +268,9 @@ released.
 - **M267**: holograms and displays that a server lights itself (for
   example to stay bright at night) are lit that way.
 - **M268**: hologram text with a shadow (a common server style) has it.
+- **M269**: lit TNT swells just before it blows, and falling or lit blocks
+  of any kind draw (before, only sand, gravel and the like did). It does
+  not flash white yet.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -329,6 +332,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| *(M269)* | **M269** — primed TNT: fuse and block metadata (`PrimedState`), the client countdown, `TntRenderer`'s swell; any falling or primed block through the run-time state models; render-check **r127**. |
 | `75928753` | **M268** — the text display's drop shadow (style bit 1), vanilla's quarter-colour copy one px down-right, by depth between glyphs and plate; render-check **r126**. |
 | `9db1a606` | **M267** — the display brightness override (index 16) replaces the world's light for text, item and block displays; render-check **r125**. |
 | `1a50f06e` | **M266** — display position updates: a per-entity lerp length, 0 (snap) for displays, `teleport_duration` (index 10) for a glide; render-check **r124**. |
@@ -643,6 +647,7 @@ released.
 - After M266: **4,405 tests passed, 0 failed; gates 51/51**; render check **124/124** on two runs (r124: 22 and 21 ticks part-way); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M267: **4,407 tests passed, 0 failed; gates 51/51**; render check **125/125** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M268: **4,407 tests passed, 0 failed; gates 51/51**; render check **126/126** on two runs; clippy (gates and default features) and `cargo fmt --check` clean; a scratch render of the finished hologram looked like vanilla's.
+- After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of

@@ -1047,6 +1047,19 @@ pub struct EntityTable {
     /// M261 — a minecart's synced display ([`MinecartDisplay`]). Cleared on
     /// removal.
     minecart_displays: HashMap<i32, MinecartDisplay>,
+    /// M269 — primed TNT's fuse and block ([`PrimedState`]). Cleared on
+    /// removal.
+    primed: HashMap<i32, PrimedState>,
+}
+
+/// M269 — primed TNT as synced: `PrimedTnt.DATA_FUSE_ID` (index 8, INT),
+/// counted down each client tick as `PrimedTnt.tick` does on the client
+/// too, and `DATA_BLOCK_STATE_ID` (9, BLOCK_STATE; `None` is vanilla's
+/// default, TNT).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrimedState {
+    pub fuse: Option<i32>,
+    pub block: Option<u32>,
 }
 
 /// M261 — what a minecart carries, as synced: `AbstractMinecart`'s
@@ -1640,6 +1653,7 @@ impl EntityTable {
             projectile_power,
             displays,
             minecart_displays,
+            primed,
         } = self;
         custom_names.remove(&id);
         poses.remove(&id);
@@ -1671,6 +1685,7 @@ impl EntityTable {
         projectile_power.remove(&id);
         displays.remove(&id);
         minecart_displays.remove(&id);
+        primed.remove(&id);
         // The three the original `remove` forgot: worn armour (a reused id
         // would render the last occupant's chestplate), the bee's anger end
         // time and the guardian's beam target. Each also grew without bound
@@ -2568,6 +2583,26 @@ impl EntityTable {
     /// The entity this rocket is attached to, if any.
     pub fn attached_to(&self, id: i32) -> Option<i32> {
         self.mob_state.get(&id).and_then(|s| s.attached_to)
+    }
+
+    /// M269 — primed TNT's synced state, created empty on first write.
+    pub fn primed_mut(&mut self, id: i32) -> &mut PrimedState {
+        self.primed.entry(id).or_default()
+    }
+
+    /// M269 — primed TNT's state (all defaults when none came).
+    pub fn primed(&self, id: i32) -> PrimedState {
+        self.primed.get(&id).copied().unwrap_or_default()
+    }
+
+    /// M269 — `PrimedTnt.tick`'s `setFuse(getFuse() - 1)`, which the client
+    /// runs too; the server's next value overwrites it.
+    pub fn tick_fuses(&mut self) {
+        for p in self.primed.values_mut() {
+            if let Some(f) = p.fuse.as_mut() {
+                *f -= 1;
+            }
+        }
     }
 
     /// M261 — the minecart's synced display, created empty on first write.
@@ -4617,6 +4652,7 @@ mod side_state_tests {
             projectile_power,
             displays,
             minecart_displays,
+            primed,
         } = t;
         [
             custom_names.contains_key(&id),
@@ -4652,6 +4688,7 @@ mod side_state_tests {
             projectile_power.contains_key(&id),
             displays.contains_key(&id),
             minecart_displays.contains_key(&id),
+            primed.contains_key(&id),
             item_frames.contains_key(&id),
         ]
         .into_iter()
@@ -4691,6 +4728,7 @@ mod side_state_tests {
         t.projectile_power.insert(id, 1.5);
         t.displays.entry(id).or_default();
         t.minecart_displays.insert(id, MinecartDisplay::default());
+        t.primed.insert(id, PrimedState::default());
         t.item_stacks.insert(id, (1, 1, false));
         t.hurts.insert(id, HurtState::default());
         t.hurt_dirs.insert(id, 45.0);

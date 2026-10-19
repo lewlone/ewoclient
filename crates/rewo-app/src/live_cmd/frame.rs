@@ -1186,6 +1186,18 @@ impl LiveApp {
                 c.arrow_frames += 1;
             }
             c.arrow_quads = (c.arrow_quads.0.max(arrow_drew), arrow_want);
+            // M269 — r127: a primed TNT drawn swelling (its last ten fuse
+            // ticks): any TNT draw scaled up.
+            let tnt = self
+                .blocks
+                .default_state("minecraft:tnt")
+                .map(rewo_data::block_entity_models::carried_block_model);
+            if be_draws
+                .iter()
+                .any(|d| Some(d.model) == tnt.as_deref() && d.transform[0][0] > 1.01)
+            {
+                c.tnt_swell_frames += 1;
+            }
             // M253 — r112: the staged falling gravel and primed TNT each drew
             // every quad of their block model.
             let complete: usize = be_draws

@@ -582,6 +582,7 @@ impl PlaySession {
                 text_display: self.text_display_type_id,
                 item_display: self.item_display_type_id,
                 end_crystal: self.end_crystal_type_id,
+                tnt: self.tnt_type_id,
                 block_display: self.block_display_type_id,
                 creaking: self.creaking_type_id,
                 player: self.player_type_id,

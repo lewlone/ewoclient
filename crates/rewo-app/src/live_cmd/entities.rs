@@ -1857,6 +1857,10 @@ pub(super) fn block_display_states(
         .iter()
         .filter_map(|(id, e)| match etypes.name(e.type_id)? {
             "minecraft:block_display" => ents.display(id).and_then(|d| d.block),
+            // M269 — a falling block or primed TNT of any state; the bake
+            // makes only the gravity blocks and TNT.
+            "minecraft:falling_block" => Some(e.spawn_data as u32),
+            "minecraft:tnt" => ents.primed(id).block,
             name => minecart_contents(name, ents.minecart_display(id), blocks).map(|(s, _)| s),
         })
         .collect();
@@ -2295,10 +2299,19 @@ pub(super) fn collect_carried_blocks(
 ) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
     use rewo_data::be_transform::{translation, IDENTITY};
     let mut out = Vec::new();
-    for (_, e) in session.world.entities.iter() {
-        let state = match etypes.name(e.type_id) {
-            Some("minecraft:falling_block") => Some(e.spawn_data as u32),
-            Some("minecraft:tnt") => tnt_state,
+    for (id, e) in session.world.entities.iter() {
+        let (state, transform) = match etypes.name(e.type_id) {
+            Some("minecraft:falling_block") => {
+                (Some(e.spawn_data as u32), translation(-0.5, 0.0, -0.5))
+            }
+            Some("minecraft:tnt") => {
+                // M269 — the primed block (TNT unless the server set one)
+                // and the swell of the last ten fuse ticks:
+                // `fuseRemainingInTicks = getFuse() - partial + 1`.
+                let primed = session.world.entities.primed(id);
+                let fuse = primed.fuse.map_or(80.0, |f| f as f32 - alpha + 1.0);
+                (primed.block.or(tnt_state), tnt_transform(fuse))
+            }
             _ => continue,
         };
         let Some(state) = state else {
@@ -2308,7 +2321,7 @@ pub(super) fn collect_carried_blocks(
         out.push(super::block_entities::OwnedBlockEntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             model: rewo_data::block_entity_models::carried_block_model(state),
-            transform: translation(-0.5, 0.0, -0.5),
+            transform,
             light: entity_light(&session.world, p[0], p[1] + 0.5, p[2], lightmap),
             part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
             part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
@@ -2318,6 +2331,28 @@ pub(super) fn collect_carried_blocks(
         });
     }
     out
+}
+
+/// M269 — `TntRenderer.getSwellAmount(fuse)`: nothing until the last ten
+/// ticks, then `g⁴ · 0.3` with `g = clamp(1 - fuse / 10)`.
+pub(crate) fn tnt_swell(fuse: f32) -> f32 {
+    let g = (1.0 - fuse / 10.0).clamp(0.0, 1.0);
+    let g = g * g;
+    g * g * 0.3
+}
+
+/// M269 — `TntRenderer.submit`'s chain, block units about the entity:
+/// `translate(0, 0.5, 0)`, the swell's scale, then `YP(-90) · translate(-0.5,
+/// -0.5, 0.5) · YP(90)`, which is `translate(-0.5, -0.5, -0.5)`. At rest it
+/// is M253's `translate(-0.5, 0, -0.5)`. Recorded: the white flash
+/// (`isLit`) is not drawn.
+pub(crate) fn tnt_transform(fuse: f32) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, scale, translation};
+    let s = 1.0 + if fuse < 10.0 { tnt_swell(fuse) } else { 0.0 };
+    mul(
+        &mul(&translation(0.0, 0.5, 0.0), &scale(s, s, s)),
+        &translation(-0.5, -0.5, -0.5),
+    )
 }
 
 /// M254 — every painting this frame, as `PaintingRenderer` draws it: the

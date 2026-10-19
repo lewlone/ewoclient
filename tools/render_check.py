@@ -181,6 +181,9 @@ PRECMD = (
     # M265 -- r123. A stone block display the run scales 1 -> 3 at 2 s;
     # M266 -- r124: and teleports up a block at 3 s, gliding over 20 ticks.
     "summon minecraft:block_display ~5 ~2 ~-9 {Tags:[\"rewo_interp\"],teleport_duration:20,block_state:{Name:\"minecraft:stone\"}};"
+    # M269 -- r127. Primed TNT with a 60-tick fuse, held fourteen blocks up
+    # and away from everything, so its blast breaks nothing and hurts no one.
+    "summon minecraft:tnt ~ ~14 ~-20 {fuse:60,NoGravity:1b};"
     # M264 -- r122. A redstone block beside r109's bell (placed after it, so
     # the neighbour change rings it rather than placing it powered).
     "setblock ~16 ~ ~10 minecraft:redstone_block;"

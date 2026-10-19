@@ -3955,6 +3955,34 @@ fn brightness_overrides_unpack_like_light_coords() {
     assert_eq!(brightness_levels(-1), None);
 }
 
+/// M269 — primed TNT swells only in its last ten ticks, `g⁴ · 0.3`: a
+/// sixty-fourth of 0.3 at half-way through them (fuse 5), all of 0.3 at 0;
+/// at rest it stands where M253 placed it; fully swollen its corner moves
+/// out by 0.15 about the block's centre, half a block up.
+#[test]
+fn primed_tnt_swells_in_its_last_ten_ticks() {
+    use super::entities::{tnt_swell, tnt_transform};
+    let apply = |m: &rewo_data::be_transform::Affine, v: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3])
+    };
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-6);
+    assert_eq!(tnt_swell(10.0), 0.0);
+    assert!((tnt_swell(5.0) - 0.3 / 16.0).abs() < 1e-7);
+    assert!((tnt_swell(0.0) - 0.3).abs() < 1e-7);
+    assert!((tnt_swell(-3.0) - 0.3).abs() < 1e-7);
+    assert!(close(
+        apply(&tnt_transform(80.0), [0.0; 3]),
+        [-0.5, 0.0, -0.5]
+    ));
+    assert!(close(
+        apply(&tnt_transform(80.0), [1.0; 3]),
+        [0.5, 1.0, 0.5]
+    ));
+    let full = tnt_transform(0.0);
+    assert!(close(apply(&full, [0.5; 3]), [0.0, 0.5, 0.0]));
+    assert!(close(apply(&full, [0.0; 3]), [-0.65, -0.15, -0.65]));
+}
+
 /// M258 — the small projectiles' poses: the wither skull's flip puts its
 /// head (model y -8..0) above the entity and turns with the yaw about the
 /// vertical; the llama spit is lifted 0.15 and turned like an arrow; the

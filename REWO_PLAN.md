@@ -2082,6 +2082,7 @@ this shape once.
 | M266 (2026-10-19) — a display with a teleport duration glides | **r124** | — | — |
 | M267 (2026-10-19) — a display draws at its brightness override's light | **r125** | — | — |
 | M268 (2026-10-19) — a text display draws its drop shadow | **r126** | — | — |
+| M269 (2026-10-20) — a primed TNT draws swelling before it blows | **r127** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3916,6 +3917,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M269 — primed TNT swells, and any falling or primed block draws (2026-10-20)
+
+M253's primed TNT stood still until it vanished, and a falling block or
+primed TNT of any state but the gravity blocks and TNT drew nothing (the
+bake makes only those). Now:
+
+- **Metadata**, gated on a new `MetaKinds::tnt`: `PrimedTnt.DATA_FUSE_ID`
+  (index 8, INT) and `DATA_BLOCK_STATE_ID` (9, BLOCK_STATE) into a new
+  `EntityTable` side map (`PrimedState`, cleared on removal);
+  `tick_fuses` counts the fuse down each client tick, as `PrimedTnt.tick`
+  does on the client, until the server's next value overwrites it.
+- **Swell** (`live_cmd::tnt_swell`, `tnt_transform`): `TntRenderer`'s
+  `fuseRemainingInTicks = getFuse() - partial + 1`, and under ten
+  `scale(1 + g⁴ · 0.3)` with `g = clamp(1 - fuse/10)`, inside
+  `translate(0, 0.5, 0)` and the rotated `translate(-0.5)`; at rest M253's
+  placement.
+- **Any block**: primed TNT's block (TNT unless set) and a falling block's
+  state go through M260's run-time state models, so a summoned falling
+  stone or a primed custom block draws.
+
+Recorded: the white flash every five ticks (`isLit`) is not drawn: the
+entity pass has a red hurt overlay but no white one.
+
+Tests: `primed_tnt_swells_in_its_last_ten_ticks` (0.3/16 at fuse 5, 0.3
+at 0, the rest pose, a corner at full swell),
+`primed_tnt_reads_its_fuse_and_block`. **r127**: a TNT primed with a
+60-tick fuse fourteen blocks up draws swelling before it blows.
 
 ### M268 — the text display's drop shadow (2026-10-19)
 

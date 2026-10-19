@@ -318,6 +318,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.text_display_type_id = data.entity_types.id_of("minecraft:text_display");
     session.item_display_type_id = data.entity_types.id_of("minecraft:item_display");
     session.end_crystal_type_id = data.entity_types.id_of("minecraft:end_crystal");
+    session.tnt_type_id = data.entity_types.id_of("minecraft:tnt");
     session.block_display_type_id = data.entity_types.id_of("minecraft:block_display");
     session.bee_type_id = data.entity_types.id_of("minecraft:bee");
     session.guardian_type_id = data.entity_types.id_of("minecraft:guardian");

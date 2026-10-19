@@ -290,6 +290,8 @@ pub(super) struct RenderCheck {
     /// M268 — r126: frames whose world text carried the staged text display's
     /// drop shadow.
     pub(super) text_display_shadow_frames: usize,
+    /// M269 — r127: frames on which a primed TNT drew swelling.
+    pub(super) tnt_swell_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1042,7 +1044,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 126;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 127;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1232,6 +1234,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M269 — r127: `render_check.py` primes a TNT with a 60-tick fuse high
+        // in the air. In its last ten ticks it swells (`getSwellAmount`); it
+        // drew at rest until M269. (r112's TNT has a fuse of 32767 and never
+        // swells.)
+        row(
+            "r127 a primed TNT drew swelling before it blew",
+            self.tnt_swell_frames >= 1,
+            format!("{} frames drew it swelling", self.tnt_swell_frames),
         );
         // M268 — r126: r114's text display has the shadow flag; its line's
         // quarter-colour copy must reach the world-text list behind it.
