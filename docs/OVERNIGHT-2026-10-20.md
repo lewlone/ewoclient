@@ -118,6 +118,12 @@ released.
   within a tick, and the check only accepted air. Found by asking the server
   directly. Ten runs in a row are clean now. A second flaky check (r20) had
   the same kind of mistake and is fixed too.
+- **M225**: you can ride camels: walk, sprint (which only a camel allows, as
+  in vanilla), and dash with the jump bar, which then cools down. Checked
+  live: the sprint speed, the dash and the cooldown all match vanilla's
+  numbers, and the server agreed exactly where the camel ended up. Also
+  fixed on the way: Rewo used to tell the server you were sprinting while on
+  a horse or in a boat, which vanilla never does.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -170,6 +176,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M225)* | **M225** — camel riding: `physics::CamelRide` (refuse-to-move, the sprint bonus, the dash), the dash cooldown and stand-up prediction in the session, sprinting while riding only on a camel (`vehicleCanSprint`); render-check **r89**, r82 moved onto it, tail cap 20 s. |
 | `62252cc` | **M224** — r78's flake pinned (the flood's water fills the broken leaves within a tick; the witness graded air, the property is "gone") and fixed; r20 takes the first panel after its chest's injection, not r76's merchant screen. Render check 10/10 consecutive runs. |
 | `326b70d` | **M223** — the boat model: `BoatModel`, `RaftModel` and their chest variants for the twenty boat types, with the wood picked by type name; the entity atlas grown to 2112 rows for the eight wood sheets. |
 | `7ddc07e` | **M222** — horse steering: `physics::Body` and `tick_ridden` (`travelRidden`, `executeRidersJump`), the steered horse in the session with its own attributes, the jump meter's release as `onPlayerJump`; the render check's injected horse held still, r63 at its staged witness, r72's jump level and r16's ratio limited to the timed run; render-check **r88**. |
@@ -359,6 +366,11 @@ released.
   failed in any of them); clippy (gates and default features) and
   `cargo fmt --check` clean; `rewo-app` tests pass. In the 23 runs of the
   loops before the fix, r78 failed six times and r20 twice.
+- After M225: **render check 89/89**; the full suite, clippy and fmt below
+  `srv` TCP tests, at the test helper finding "a port free for both UDP and
+  TCP" (100 tries), and all pass alone (three runs); render check **89/89**
+  on two runs; clippy (gates and default features) and `cargo fmt --check`
+  clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -387,8 +399,7 @@ released.
   has no id for): ~~dropping items (Q), swapping hands (F), middle-click
   pick block, sprint start/stop~~ (M218), ~~leaving a bed~~ (M219), ~~the
   horse inventory~~ (M220), ~~steering boats~~ (M221), ~~steering horses~~
-  (M222); still open: camels (their own dash and riding speed) and the
-  nautilus (a water mount).
+  (M222), ~~camels~~ (M225); still open: the nautilus (a water mount).
 - ~~r78's survival-mining flake~~ (M224: the witness, not the client).
 - `tools/render_check.py`'s port probe lost a race once ("server FAILED TO
   BIND"): it picks a free port, then the server binds it later. A retry on
@@ -397,7 +408,11 @@ released.
   hurt wobble, and the water mask (water can show inside a floating hull).
 - `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once
   under full-suite load (an empty TCP answer) and passed five times alone;
-  the same loopback-timing class as the others listed here.
+  the same loopback-timing class as the others listed here. After M225 five
+  `srv` TCP tests failed together at the helper's "a port free for both UDP
+  and TCP" (it binds a TCP ephemeral port, then UDP on the same number, 100
+  tries); a helper that falls back to two separate ports for the TCP tests
+  would remove this class.
 - The mount in the horse screen's window, and empty-slot icons (the saddle
   and armour outlines vanilla draws in an empty equipment slot, the player's
   armour slots included).

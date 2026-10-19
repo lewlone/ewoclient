@@ -2336,7 +2336,10 @@ impl LiveApp {
             // `RENDER_CHECK_TAIL_SECONDS` more and the run ends when it is done.
             #[cfg(feature = "gates")]
             let tail_done = self.check.is_none()
-                || (self.mount_stage >= 20 && self.boat_stage >= 20 && self.horse_stage >= 20);
+                || (self.mount_stage >= 20
+                    && self.boat_stage >= 20
+                    && self.horse_stage >= 20
+                    && self.camel_stage >= 20);
             #[cfg(not(feature = "gates"))]
             let tail_done = true;
             if elapsed >= limit && (tail_done || elapsed >= limit + RENDER_CHECK_TAIL_SECONDS) {

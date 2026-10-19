@@ -121,6 +121,12 @@ PRECMD = (
     "equipment:{saddle:{id:\"minecraft:saddle\",count:1}},"
     "attributes:[{id:\"minecraft:movement_speed\",base:0.3},"
     "{id:\"minecraft:jump_strength\",base:0.7}]};"
+    # M225 -- r89. A saddled camel (vanilla's speed and jump), standing still
+    # north-west of the bot on a lane of its own: the client rides it,
+    # sprints it west and dashes it. With NBT given, `/summon` skips
+    # `finalizeSpawn`, so LastPoseTick stays 0: standing, no transition.
+    "summon minecraft:camel ~-8 ~ ~-12 {NoAI:1b,"
+    "equipment:{saddle:{id:\"minecraft:saddle\",count:1}}};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

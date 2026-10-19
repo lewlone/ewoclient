@@ -543,6 +543,21 @@ pub struct RiddenInput {
     pub strafe: f32,
     pub rider_yaw: f32,
     pub rider_pitch: f32,
+    /// M225 — a camel's overrides of the horse's ride; `None` for a horse.
+    pub camel: Option<CamelRide>,
+}
+
+/// What `Camel` changes about `AbstractHorse`'s ride (M225).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CamelRide {
+    /// `refuseToMove()`: sitting, or standing up or sitting down. The input
+    /// is zero (`getRiddenInput`), the camel keeps its own rotation
+    /// (`getRiddenRotation`), and on the ground its horizontal motion stops
+    /// (`travel`).
+    pub refuse_to_move: bool,
+    /// `getRiddenSpeed`'s 0.1 bonus: the controller `isSprinting()` and the
+    /// dash is ready (`getJumpCooldown() == 0`).
+    pub sprint_bonus: bool,
 }
 
 /// `PlayerRideableJumping.getPlayerJumpPendingScale` — the release of the
@@ -564,6 +579,12 @@ pub fn jump_pending_scale(jump_amount: i32) -> f32 {
 /// pending jump fires the first tick it is on the ground —
 /// `executeRidersJump`), and `travel` at the mount's `movement_speed` with
 /// `getFlyingSpeed`'s tenth of it in the air.
+///
+/// A camel (`input.camel`, M225) refuses to move while sitting or changing
+/// pose, adds 0.1 to its riding speed while its rider sprints, and its jump
+/// is `Camel.executeRidersJump`'s dash: `22.2222 · scale · movement_speed ·
+/// blockSpeedFactor` along its look direction flattened, and `1.4285 ·
+/// scale · getJumpPower()` up, both added to its motion.
 ///
 /// `state.body` must be the mount's. Returns whether the jump fired.
 /// Not modelled: rearing (`isStanding` zeroes the input while the mount
@@ -598,46 +619,96 @@ pub fn tick_ridden(
         state.vy = 0.0;
     }
     state.no_jump_delay = 0;
-    // -- travelRidden: getRiddenInput ---------------------------------------
-    let sideways = input.strafe * 0.5;
-    let mut forward = input.forward;
-    if forward <= 0.0 {
-        forward *= 0.25;
-    }
-    // -- tickRidden ---------------------------------------------------------
-    state.yaw = input.rider_yaw;
-    state.pitch = input.rider_pitch * 0.5;
-    let mut jumped = false;
-    if state.on_ground {
-        if *jump_pending > 0.0 {
-            // `executeRidersJump(playerJumpPendingScale, riddenInput)`.
-            let amount = *jump_pending;
-            let boost = attrs.jump_boost.map_or(0.0, |a| 0.1 * (a as f32 + 1.0));
-            let power =
-                attrs.jump_strength as f32 * amount * block_jump_factor(state, world) + boost;
-            state.vy = power as f64;
-            if forward > 0.0 {
-                let rad = state.yaw * (std::f64::consts::PI / 180.0) as f32;
-                state.vx += (-0.4f32 * mth_sin(rad) * amount) as f64;
-                state.vz += (0.4f32 * mth_cos(rad) * amount) as f64;
-            }
-            jumped = true;
-        }
-        *jump_pending = 0.0;
-    }
-    // -- travel at getRiddenSpeed ------------------------------------------
+    let refuse = input.camel.is_some_and(|c| c.refuse_to_move);
+    // -- travelRidden: getRiddenInput (`Camel`: zero while it refuses) ------
+    let (sideways, forward) = if refuse {
+        (0.0, 0.0)
+    } else {
+        let forward = if input.forward <= 0.0 {
+            input.forward * 0.25
+        } else {
+            input.forward
+        };
+        (input.strafe * 0.5, forward)
+    };
+    // `setSpeed(getRiddenSpeed(controller))`, a float: the attribute, plus
+    // the camel's sprint bonus. `travel` reads it as the movement speed.
+    let ridden_speed = attrs.movement_speed as f32
+        + if input.camel.is_some_and(|c| c.sprint_bonus) {
+            0.1
+        } else {
+            0.0
+        };
+    let ridden_attrs = MoveAttributes {
+        movement_speed: ridden_speed as f64,
+        ..*attrs
+    };
     let keys = TickInput::default();
     let mut ctx = Ctx {
         world,
-        attrs,
+        attrs: &ridden_attrs,
         border,
         input: &keys,
         no_clip: false,
         flying: false,
         // `LivingEntity.getFlyingSpeed`: a player-controlled mount's
         // `getSpeed() * 0.1F`.
-        air_speed: attrs.movement_speed as f32 * 0.1,
+        air_speed: ridden_speed * 0.1,
     };
+    // -- tickRidden: getRiddenRotation (`Camel`: its own while it refuses) --
+    if !refuse {
+        state.yaw = input.rider_yaw;
+        state.pitch = input.rider_pitch * 0.5;
+    }
+    let mut jumped = false;
+    if state.on_ground {
+        if *jump_pending > 0.0 {
+            // `executeRidersJump(playerJumpPendingScale, riddenInput)`.
+            let amount = *jump_pending;
+            let boost = attrs.jump_boost.map_or(0.0, |a| 0.1 * (a as f32 + 1.0));
+            if input.camel.is_some() {
+                // `Camel.executeRidersJump`: `getJumpPower()` is the
+                // full-strength power; `getLookAngle()` is
+                // `calculateViewVector(xRot, yRot)`, flattened and
+                // normalised (`Vec3.normalize`: zero below 1e-5).
+                let power =
+                    (attrs.jump_strength as f32 * block_jump_factor(state, world) + boost) as f64;
+                let xr = state.pitch * (std::f64::consts::PI / 180.0) as f32;
+                let yr = -state.yaw * (std::f64::consts::PI / 180.0) as f32;
+                let xcos = mth_cos(xr);
+                let (lx, lz) = ((mth_sin(yr) * xcos) as f64, (mth_cos(yr) * xcos) as f64);
+                let len = (lx * lx + lz * lz).sqrt();
+                let (nx, nz) = if len < 1.0e-5f32 as f64 {
+                    (0.0, 0.0)
+                } else {
+                    (lx / len, lz / len)
+                };
+                let push = (22.2222f32 * amount) as f64
+                    * attrs.movement_speed
+                    * block_speed_factor(state, &ctx) as f64;
+                state.vx += nx * push;
+                state.vz += nz * push;
+                state.vy += (1.4285f32 * amount) as f64 * power;
+            } else {
+                let power =
+                    attrs.jump_strength as f32 * amount * block_jump_factor(state, world) + boost;
+                state.vy = power as f64;
+                if forward > 0.0 {
+                    let rad = state.yaw * (std::f64::consts::PI / 180.0) as f32;
+                    state.vx += (-0.4f32 * mth_sin(rad) * amount) as f64;
+                    state.vz += (0.4f32 * mth_cos(rad) * amount) as f64;
+                }
+            }
+            jumped = true;
+        }
+        *jump_pending = 0.0;
+    }
+    // -- Camel.travel: on the ground, refusing stops the horizontal motion --
+    if refuse && state.on_ground {
+        state.vx = 0.0;
+        state.vz = 0.0;
+    }
+    // -- travel at getRiddenSpeed ------------------------------------------
     travel(state, &mut ctx, sideways, forward);
     apply_stuck(state, world, false);
     jumped
@@ -4406,6 +4477,7 @@ mod tests {
             strafe: 0.0,
             rider_yaw: 0.0,
             rider_pitch: 10.0,
+            camel: None,
         };
         for _ in 0..60 {
             tick_ridden(&mut horse, fwd, &mut pending, &attrs, None, &world);
@@ -4474,6 +4546,7 @@ mod tests {
             strafe: 0.0,
             rider_yaw: 0.0,
             rider_pitch: 0.0,
+            camel: None,
         };
         let y0 = horse.y;
         assert!(tick_ridden(
@@ -4499,6 +4572,142 @@ mod tests {
             (horse.vz - expect).abs() < 1e-6,
             "the forward push: {} vs {expect}",
             horse.vz
+        );
+    }
+
+    /// A camel on stone (M225): its body, vanilla's attributes (speed 0.09,
+    /// jump 0.42), standing on the ground.
+    fn camel_on_stone() -> (PlayerState, MoveAttributes) {
+        let attrs = MoveAttributes {
+            movement_speed: 0.09f32 as f64,
+            jump_strength: 0.42f32 as f64,
+            step_height: 1.5,
+            ..MoveAttributes::default()
+        };
+        let mut camel = PlayerState::at(0.5, 0.0, 0.5);
+        camel.body = Some(Body {
+            width: 1.7,
+            height: 2.375,
+            eye: 2.275,
+        });
+        camel.on_ground = true;
+        (camel, attrs)
+    }
+
+    fn stone_floor(_x: i32, y: i32, _z: i32) -> &'static [[f32; 6]] {
+        if y < 0 {
+            FULL
+        } else {
+            &[]
+        }
+    }
+
+    /// `Camel.getRiddenSpeed`: the attribute, plus 0.1 while the rider
+    /// sprints with the dash ready. The terminal ground speed is the horse's
+    /// formula at 0.19 instead of 0.09.
+    #[test]
+    fn a_sprinting_camel_rides_at_its_speed_plus_a_tenth() {
+        let world = ShapesOnly {
+            shapes: &stone_floor,
+        };
+        let terminal = |speed: f32| {
+            let accel = speed * (0.21600002f32 / (0.6f32 * 0.6 * 0.6));
+            accel as f64 / (1.0 - (0.6f32 * 0.91f32) as f64) * (0.6f32 * 0.91f32) as f64
+        };
+        for (bonus, speed) in [(false, 0.09f32), (true, 0.09f32 + 0.1)] {
+            let (mut camel, attrs) = camel_on_stone();
+            let mut pending = 0.0;
+            let input = RiddenInput {
+                forward: 1.0,
+                camel: Some(CamelRide {
+                    refuse_to_move: false,
+                    sprint_bonus: bonus,
+                }),
+                ..RiddenInput::default()
+            };
+            for _ in 0..80 {
+                tick_ridden(&mut camel, input, &mut pending, &attrs, None, &world);
+            }
+            assert!(
+                (camel.vz - terminal(speed)).abs() < 1e-6,
+                "bonus {bonus}: vz {} against {}",
+                camel.vz,
+                terminal(speed)
+            );
+        }
+    }
+
+    /// `Camel.refuseToMove`: no input, no rotation from the rider, and on
+    /// the ground its horizontal motion is stopped before `travel`.
+    #[test]
+    fn a_camel_that_refuses_to_move_stays_put() {
+        let world = ShapesOnly {
+            shapes: &stone_floor,
+        };
+        let (mut camel, attrs) = camel_on_stone();
+        camel.yaw = 30.0;
+        camel.vx = 0.2;
+        let mut pending = 0.0;
+        let input = RiddenInput {
+            forward: 1.0,
+            strafe: 1.0,
+            rider_yaw: 120.0,
+            rider_pitch: 20.0,
+            camel: Some(CamelRide {
+                refuse_to_move: true,
+                sprint_bonus: false,
+            }),
+        };
+        let x0 = camel.x;
+        tick_ridden(&mut camel, input, &mut pending, &attrs, None, &world);
+        assert_eq!((camel.yaw, camel.pitch), (30.0, 0.0), "its own rotation");
+        assert_eq!(camel.x, x0, "the 0.2 was stopped on the ground");
+        assert_eq!((camel.vx, camel.vz), (0.0, 0.0));
+    }
+
+    /// `Camel.executeRidersJump`: facing west (yaw 90), a full-scale dash
+    /// adds `22.2222 · 0.09` along -x and `1.4285 · 0.42` up to the motion;
+    /// the tick then moves it by that and applies stone's friction.
+    #[test]
+    fn a_camel_dash_follows_execute_riders_jump() {
+        let world = ShapesOnly {
+            shapes: &stone_floor,
+        };
+        let (mut camel, attrs) = camel_on_stone();
+        let mut pending = 1.0;
+        let input = RiddenInput {
+            rider_yaw: 90.0,
+            camel: Some(CamelRide::default()),
+            ..RiddenInput::default()
+        };
+        let (x0, y0) = (camel.x, camel.y);
+        assert!(tick_ridden(
+            &mut camel,
+            input,
+            &mut pending,
+            &attrs,
+            None,
+            &world
+        ));
+        assert_eq!(pending, 0.0);
+        // The look vector at yaw 90 is (sin(-π/2)·1, 0, cos(-π/2)·1) in
+        // Mth's table: x is -1, z the table's tiny cosine, then normalised.
+        let yr = -90.0f32 * (std::f64::consts::PI / 180.0) as f32;
+        let (lx, lz) = (mth_sin(yr) as f64, mth_cos(yr) as f64);
+        let len = (lx * lx + lz * lz).sqrt();
+        let push = 22.2222f32 as f64 * (0.09f32 as f64);
+        assert!(
+            (camel.x - x0 - lx / len * push).abs() < 1e-9,
+            "moved {} against {}",
+            camel.x - x0,
+            lx / len * push
+        );
+        let up = 1.4285f32 as f64 * 0.42f32 as f64;
+        assert!((camel.y - y0 - up).abs() < 1e-9, "rose {}", camel.y - y0);
+        assert!(
+            (camel.vx - lx / len * push * (0.6f32 * 0.91f32) as f64).abs() < 1e-9,
+            "vx {}",
+            camel.vx
         );
     }
 }

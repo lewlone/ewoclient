@@ -2048,6 +2048,7 @@ this shape once.
 | M220 (2026-10-19) — the player preview draws in the inventory and in no container screen | **r86** | — | — |
 | M221 (2026-10-19) — the bot steers a real boat; the server accepts every move and agrees where it is | **r87** | — | — |
 | M222 (2026-10-19) — the bot rides and jumps a real horse; the server accepts every move and agrees where it is | **r88** | — | — |
+| M225 (2026-10-19) — the bot sprints and dashes a real camel; the dash's cooldown blocks a second; the server accepts every move and agrees where it is | **r89** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3882,6 +3883,42 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M225 — riding a camel (2026-10-19)
+
+M222's horse, with `Camel`'s overrides (`physics::CamelRide` on
+`RiddenInput`):
+
+- **`refuseToMove()`** (sitting, or within the 40 / 52-tick pose
+  transition, from `LAST_POSE_CHANGE_TICK` and the game time; M169 already
+  tracked both): no input, the camel keeps its own rotation, and on the
+  ground its horizontal motion stops before `travel`. `tickRidden`'s
+  stand-up when the rider pushes forward is predicted as vanilla's client
+  does (`resetLastPoseChangeTick(gameTime)`).
+- **`getRiddenSpeed`**: the attribute plus 0.1 while the rider
+  `isSprinting()` and the dash is ready; the rider's state is the one its
+  previous tick left (the vehicle ticks before its rider).
+- **The dash** (`executeRidersJump`): `22.2222 · scale · movement_speed ·
+  blockSpeedFactor` along the flattened look vector and `1.4285 · scale ·
+  getJumpPower()` up, added to the motion; `dashCooldown` = 55 locally.
+  `onPlayerJump` adds `dashCooldown <= 0 && onGround()`.
+- **Sprinting while riding** (`vehicleCanSprint`): a passenger now sprints
+  only on a vehicle that `canSprint()` and that this client simulates, which
+  is the steered camel. Before, Ctrl+W on a horse or in a boat sent
+  `START_SPRINTING` (vanilla's `shouldStopRunSprinting` keeps it off).
+
+**r89** (in the tail, cap now 20 s): a summoned saddled camel ridden by the
+production right-click, sprinted west for 25 ticks (a tick's distance
+0.4185, vanilla's `0.19 / (1 − 0.6 · 0.91)`; a walk is 0.198), dashed
+through the meter (a 2.000-block first step: `22.2222 · 0.09` at full
+scale), the meter held again inside the cooldown (peak 0, 36 ticks left),
+no rejection in 70 moves, and the server's position once it stood is the
+client's exactly. **r82** (the sprint state's server echo) moved onto this
+camel: it ran on r72's injected horse, where vanilla's rider cannot sprint.
+
+Not modelled, recorded: the camel's riding offset per pose (the rider still
+snaps to the vehicle's position, as for every vehicle since M68), the
+camel's eye height, the nautilus (next).
 
 ### M224 — r78's flake, pinned (2026-10-19)
 

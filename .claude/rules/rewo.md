@@ -58,8 +58,9 @@ a self-check path.
   adds a render path. Validation is `cfg!(debug_assertions)`-gated for `live`,
   so run a **debug** build. M86 found nine features that had never rendered in
   the windowed client while every headless gate was green. A **tail** runs
-  after the timed 8 s (`RENDER_CHECK_TAIL_SECONDS` caps it at 15 s): r83's
-  bed, r84-r86's donkey and inventory, r87's boat and r88's horse live there, because a sleeping player is
+  after the timed 8 s (`RENDER_CHECK_TAIL_SECONDS` caps it at 20 s): r83's
+  bed, r84-r86's donkey and inventory, r87's boat, r88's horse and r89's camel (with r82's
+  sprint state: a rider sprints only on a camel) live there, because a sleeping player is
   immobile and every timed slot already holds a screen or a key. Witnesses
   that click an entity check what the production pick hit first (r71's item
   frame and r72's horse each took a click meant for something else).

@@ -2750,14 +2750,42 @@ impl PlaySession {
             // vehicle instead of falling through the world.
             // M221 — a boat whose first passenger is the local player is the
             // client's to simulate (`isLocalInstanceAuthoritative`).
+            // M225 — `LocalPlayer.vehicleCanSprint`: a passenger sprints only
+            // on a vehicle that `canSprint()` (a camel) and that this client
+            // simulates (`isLocalInstanceAuthoritative`); on anything else
+            // `shouldStopRunSprinting` holds and `isSprinting()` is false, so
+            // no `START_SPRINTING` goes out from a horse or a boat.
+            let steering_camel = self.steerable_horse().is_some_and(|h| {
+                self.entity_classes
+                    .as_deref()
+                    .zip(self.world.entities.get(h))
+                    .is_some_and(|(c, e)| c.is_camel(e.type_id))
+            });
+            let rider_keys = TickInput {
+                sprint: input.sprint && steering_camel,
+                ..*input
+            };
+            let input = &rider_keys;
             if let Some(boat) = self.steerable_boat() {
                 self.release_steered_horse();
                 self.tick_steered_boat(boat, input)?;
             } else if let Some(horse) = self.steerable_horse() {
                 self.release_steered_boat();
                 self.tick_steered_horse(horse, input)?;
-                if let (Some(d), Some(h)) = (deferred_jump, self.steered_horse.as_mut()) {
-                    h.jump_pending = physics::jump_pending_scale(d);
+                if let (Some(d), Some(h)) = (deferred_jump, self.steered_horse) {
+                    // `Camel.onPlayerJump` adds `dashCooldown <= 0 &&
+                    // onGround()` to the horse's `isSaddled()`.
+                    let camel = self
+                        .entity_classes
+                        .as_deref()
+                        .zip(self.world.entities.get(h.id))
+                        .is_some_and(|(c, e)| c.is_camel(e.type_id));
+                    if !camel || (self.world.entities.dash_cooldown(h.id) <= 0 && h.state.on_ground)
+                    {
+                        if let Some(h) = self.steered_horse.as_mut() {
+                            h.jump_pending = physics::jump_pending_scale(d);
+                        }
+                    }
                 }
             } else {
                 self.release_steered_boat();
@@ -5631,16 +5659,15 @@ impl PlaySession {
     }
 
     /// The horse the local player steers, if any (M222): the root vehicle, an
-    /// `AbstractHorse` other than a camel (whose riding is its own), saddled
-    /// (`getControllingPassenger` needs the saddle), its first passenger the
-    /// local player.
+    /// `AbstractHorse` (a camel too since M225, with its own overrides in
+    /// [`physics::CamelRide`]), saddled (`getControllingPassenger` needs the
+    /// saddle), its first passenger the local player.
     fn steerable_horse(&self) -> Option<i32> {
         let me = self.player_id?;
         let vid = self.local_vehicle()?;
         let classes = self.entity_classes.as_deref()?;
         let e = self.world.entities.get(vid)?;
         (classes.is_abstract_horse(e.type_id)
-            && !classes.is_camel(e.type_id)
             && self.world.entities.saddled(vid)
             && self.mounts.passengers(vid).first() == Some(&me))
         .then_some(vid)
@@ -5654,7 +5681,8 @@ impl PlaySession {
         }
     }
 
-    /// One tick of the horse the local player steers (M222):
+    /// One tick of the horse (or, since M225, the camel) the local player
+    /// steers (M222):
     /// [`physics::tick_ridden`] with the rider's keys and rotation, the horse
     /// placed where it went, the rider on it, then the passenger's packets.
     fn tick_steered_horse(&mut self, id: i32, input: &TickInput) -> Result<(), String> {
@@ -5710,11 +5738,26 @@ impl PlaySession {
             .active_dimension_type
             .as_ref()
             .is_some_and(|d| d.fast_lava);
+        // M225 — a camel (`Camel`, and the camel husk that extends it):
+        // `refuseToMove()` from its pose clock, and `getRiddenSpeed`'s bonus
+        // from the rider's `isSprinting()`. The vehicle ticks before its
+        // rider (`tickNonPassenger`, then `rideTick`), so that is the state
+        // the rider's previous `aiStep` left: the last one sent.
+        let game_time = self.game_time();
+        let is_camel = self
+            .entity_classes
+            .as_deref()
+            .is_some_and(|c| c.is_camel(type_id));
+        let camel = is_camel.then(|| physics::CamelRide {
+            refuse_to_move: self.world.entities.camel_refuse_to_move(id, game_time),
+            sprint_bonus: self.was_sprinting && self.world.entities.dash_cooldown(id) == 0,
+        });
         let ridden = physics::RiddenInput {
             forward: input.forward,
             strafe: input.strafe,
             rider_yaw: self.player.yaw,
             rider_pitch: self.player.pitch,
+            camel,
         };
         let collide = std::mem::take(&mut self.collide);
         let block_physics = std::mem::take(&mut self.block_physics);
@@ -5744,8 +5787,20 @@ impl PlaySession {
                 &world,
             ) {
                 self.ridden_jumps += 1;
+                // `Camel.executeRidersJump`: `dashCooldown = 55`.
+                if is_camel {
+                    self.world.entities.set_dash_cooldown(id, 55);
+                }
             }
             steered.jump_pending = pending;
+        }
+        // `Camel.tickRidden`: `if (controller.zza > 0.0F &&
+        // isCamelSitting() && !isInPoseTransition()) standUp()` — predicted
+        // here as vanilla's client does (`resetLastPoseChangeTick(gameTime)`);
+        // the server's own stand-up arrives as metadata after it.
+        if is_camel && input.forward > 0.0 && self.world.entities.camel_can_stand_up(id, game_time)
+        {
+            self.world.entities.set_last_pose_change_tick(id, game_time);
         }
         self.collide = collide;
         self.block_physics = block_physics;

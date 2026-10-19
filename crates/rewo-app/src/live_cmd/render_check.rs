@@ -363,6 +363,23 @@ pub(super) struct RenderCheck {
     pub(super) horse_client_pos: Option<[f64; 3]>,
     pub(super) horse_server_pos: Option<[f64; 3]>,
     pub(super) horse_skip: Option<String>,
+    /// M225 — r89 (and r82's sprint state, which needs a vehicle that lets
+    /// its rider sprint): the camel, whether the client steered it, its
+    /// per-tick distance on the last sprinting tick, its dashes and the
+    /// fastest tick after the dash, the jump meter's peak while the dash
+    /// cooled down (and the cooldown then), the moves sent, the rejections,
+    /// and the server's position against the client's.
+    pub(super) camel: Option<i32>,
+    pub(super) camel_steered: bool,
+    pub(super) camel_sprint_step: f64,
+    pub(super) camel_dashes: u64,
+    pub(super) camel_dash_step: f64,
+    pub(super) camel_cooldown_meter: Option<(f32, i32)>,
+    pub(super) camel_moves_sent: u64,
+    pub(super) camel_rejections: u64,
+    pub(super) camel_client_pos: Option<[f64; 3]>,
+    pub(super) camel_server_pos: Option<[f64; 3]>,
+    pub(super) camel_skip: Option<String>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -848,7 +865,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 88;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 89;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1211,8 +1228,12 @@ impl RenderCheck {
             "r82 the sprint state reached the server: its flag echo set then cleared",
             self.sprint_on && self.sprint_off && self.sprint_sent >= 2,
             format!(
-                "server sprint flag after START {}, cleared after STOP {}, {} sprint command(s) sent{skip}",
-                self.sprint_on, self.sprint_off, self.sprint_sent
+                "server sprint flag after START {}, cleared after STOP {}, {} sprint command(s) sent, \
+                 sprinting on r89's camel{}",
+                self.sprint_on,
+                self.sprint_off,
+                self.sprint_sent,
+                self.camel_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
             ),
         );
         // M219 — the bed, against the real server: a right-click on the bed
@@ -1380,6 +1401,48 @@ impl RenderCheck {
                 self.horse_client_pos,
                 self.horse_server_pos,
                 self.horse_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
+            ),
+        );
+        // M225 — r89: the bot rides a summoned, saddled camel (vanilla's
+        // speed 0.09 and jump 0.42) through the production right-click, holds
+        // W with sprint (`getRiddenSpeed` adds 0.1: a tick's distance settles
+        // at `0.19 / (1 - 0.6 * 0.91)`, where a walk would be 0.198), then
+        // releases the jump meter: `Camel.executeRidersJump`'s dash, whose
+        // cooldown keeps the meter empty while it runs. No move is rejected,
+        // and the server's position once it stands is the client's.
+        let cagree = match (self.camel_client_pos, self.camel_server_pos) {
+            (Some(c), Some(s)) => (0..3).all(|i| (c[i] - s[i]).abs() < 0.1),
+            _ => false,
+        };
+        let sprint_step = (0.09f32 + 0.1) as f64 / (1.0 - (0.6f32 * 0.91f32) as f64);
+        let cooled = self
+            .camel_cooldown_meter
+            .is_some_and(|(peak, cd)| peak == 0.0 && cd > 0);
+        row(
+            "r89 the bot sprinted and dashed a real camel: the cooldown held the meter, the server accepted every move and agrees where it is",
+            self.camel_steered
+                && (self.camel_sprint_step - sprint_step).abs() < 1e-3
+                && self.camel_dashes == 1
+                && self.camel_dash_step > 0.7
+                && cooled
+                && self.camel_moves_sent >= 20
+                && self.camel_rejections == 0
+                && cagree,
+            format!(
+                "camel {:?}: steered {}, sprinting step {:.4} (vanilla {sprint_step:.4}), {} dash(es), \
+                 fastest step after it {:.3}, meter peak / cooldown while cooling {:?}, {} move_vehicle sent, \
+                 {} rejection(s), client {:?} server {:?} (agree {cagree}){}",
+                self.camel,
+                self.camel_steered,
+                self.camel_sprint_step,
+                self.camel_dashes,
+                self.camel_dash_step,
+                self.camel_cooldown_meter,
+                self.camel_moves_sent,
+                self.camel_rejections,
+                self.camel_client_pos,
+                self.camel_server_pos,
+                self.camel_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
             ),
         );
         // r86 — the player preview belongs to the player's inventory only:
@@ -3811,6 +3874,269 @@ impl LiveApp {
                         self.horse_stage = 20;
                     }
                 }
+                // r89 — M225's camel, after the horse; r82's sprint state
+                // rides along.
+                if self.camel_stage > 0
+                    && self.camel_stage < 20
+                    && elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2
+                {
+                    if let Some(c) = self.check.as_mut() {
+                        c.camel_skip.get_or_insert_with(|| {
+                            format!("timed out in stage {}", self.camel_stage)
+                        });
+                    }
+                    self.keys.w = false;
+                    self.keys.sprint = false;
+                    self.keys.jump = false;
+                    self.camel_stage = 20;
+                }
+                if self.camel_stage == 0 && self.horse_stage >= 20 {
+                    self.camel_tick0 = now;
+                    self.camel_stage = 1;
+                }
+                if self.camel_stage == 1
+                    && now >= self.camel_tick0 + 5
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_vehicle().is_none())
+                {
+                    let camel = self.session.as_ref().and_then(|s| {
+                        let want = s.entity_types.as_deref()?.id_of("minecraft:camel")?;
+                        s.world
+                            .entities
+                            .iter()
+                            .filter(|(id, e)| {
+                                e.type_id == want
+                                    && !CROWD_IDS.contains(id)
+                                    && s.world.entities.saddled(*id)
+                            })
+                            .map(|(id, e)| (id, e.x, e.y, e.z))
+                            .next()
+                    });
+                    match camel {
+                        Some((id, cx, cy, cz)) => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.camel = Some(id);
+                            }
+                            if let Some(s) = self.session.as_mut() {
+                                let _ =
+                                    s.send_command(&format!("tp @s {} {} {}", cx + 2.0, cy, cz));
+                            }
+                            self.camel_tick0 = now;
+                            self.camel_stage = 2;
+                        }
+                        None => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.camel_skip = Some("no summoned camel".into());
+                            }
+                            self.camel_stage = 20;
+                        }
+                    }
+                }
+                if self.camel_stage == 2 && now >= self.camel_tick0 + 8 {
+                    let id = self.check.as_ref().and_then(|c| c.camel);
+                    let aimed = id.zip(self.session.as_mut()).is_some_and(|(id, s)| {
+                        let Some(e) = s.world.entities.get(id) else {
+                            return false;
+                        };
+                        let (ex, ey, ez) = (e.x, e.y + 1.4, e.z);
+                        let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                        let d = [ex - eye[0], ey - eye[1], ez - eye[2]];
+                        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                        s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                        s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        true
+                    });
+                    let on_camel = self.session.as_ref().is_some_and(|s| {
+                        super::entities::frame_crosshair_hit(s, &self.etypes, 1.0).map(|h| h.id)
+                            == id
+                    });
+                    if aimed && on_camel && self.entity_click(winit::event::MouseButton::Right) {
+                        self.camel_tick0 = now;
+                        self.camel_stage = 3;
+                    } else if now >= self.camel_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.camel_skip = Some("the crosshair never reached the camel".into());
+                        }
+                        self.camel_stage = 20;
+                    }
+                }
+                let camel_pos = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.steered_horse)
+                    .filter(|h| Some(h.id) == self.check.as_ref().and_then(|c| c.camel))
+                    .map(|h| ([h.state.x, h.state.y, h.state.z], h.state.on_ground));
+                if self.camel_stage == 3 {
+                    if camel_pos.is_some() {
+                        if let Some(c) = self.check.as_mut() {
+                            c.camel_steered = true;
+                        }
+                        if let Some(s) = self.session.as_mut() {
+                            // West, along a lane clear of the horse's.
+                            s.player.yaw = 90.0;
+                            s.player.pitch = 0.0;
+                            self.camel_counts0 = (s.vehicle_moves_sent, s.vehicle_rejections);
+                            self.camel_jumps0 = s.ridden_jumps;
+                            self.camel_sprints0 = s.sprint_commands_sent;
+                        }
+                        self.keys.w = true;
+                        self.keys.sprint = true;
+                        self.camel_tick0 = now;
+                        self.camel_stage = 4;
+                    } else if now >= self.camel_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.camel_skip = Some("never steered the camel".into());
+                        }
+                        self.camel_stage = 20;
+                    }
+                }
+                // One reading per client tick: the distance since the last.
+                let step = match (camel_pos, self.camel_last) {
+                    (Some((p, _)), Some((q, t))) if t != now => {
+                        Some(((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt())
+                    }
+                    _ => None,
+                };
+                if let Some((p, _)) = camel_pos {
+                    if self.camel_last.is_none_or(|(_, t)| t != now) {
+                        self.camel_last = Some((p, now));
+                    }
+                }
+                let sprint_flag = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.local_shared_flags() & (1 << 3) != 0);
+                if self.camel_stage == 4 {
+                    if sprint_flag {
+                        if let Some(c) = self.check.as_mut() {
+                            c.sprint_on = true;
+                        }
+                    }
+                    if now >= self.camel_tick0 + 25 {
+                        if let (Some(c), Some(st)) = (self.check.as_mut(), step) {
+                            c.camel_sprint_step = st;
+                        }
+                        self.keys.w = false;
+                        self.keys.sprint = false;
+                        // Hold the jump key for the riding meter, then release.
+                        self.keys.jump = true;
+                        self.camel_tick0 = now;
+                        self.camel_stage = 5;
+                    }
+                }
+                if self.camel_stage == 5 {
+                    if now >= self.camel_tick0 + 12 {
+                        self.keys.jump = false;
+                    }
+                    let dashes = self
+                        .session
+                        .as_ref()
+                        .map_or(0, |s| s.ridden_jumps - self.camel_jumps0);
+                    if let (Some(c), Some(st), true) = (self.check.as_mut(), step, dashes > 0) {
+                        c.camel_dash_step = c.camel_dash_step.max(st);
+                    }
+                    let landed = camel_pos.is_some_and(|(_, g)| g);
+                    if dashes > 0 && landed && now >= self.camel_tick0 + 20 {
+                        // Inside the 55-tick cooldown: hold the key again.
+                        self.keys.jump = true;
+                        self.camel_meter_peak = 0.0;
+                        self.camel_tick0 = now;
+                        self.camel_stage = 6;
+                    } else if now >= self.camel_tick0 + 80 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.camel_skip = Some("the dash never landed".into());
+                        }
+                        self.keys.jump = false;
+                        self.camel_stage = 20;
+                    }
+                }
+                if self.camel_stage == 6 {
+                    let scale = self.session.as_ref().map_or(0.0, |s| s.jump_riding_scale());
+                    self.camel_meter_peak = self.camel_meter_peak.max(scale);
+                    if now >= self.camel_tick0 + 6 {
+                        let cd = self
+                            .session
+                            .as_ref()
+                            .zip(self.check.as_ref().and_then(|c| c.camel))
+                            .map_or(0, |(s, id)| s.world.entities.dash_cooldown(id));
+                        let peak = self.camel_meter_peak;
+                        if let Some(c) = self.check.as_mut() {
+                            c.camel_cooldown_meter = Some((peak, cd));
+                        }
+                        self.keys.jump = false;
+                        self.camel_tick0 = now;
+                        self.camel_still_since = now;
+                        self.camel_stage = 7;
+                    }
+                }
+                if self.camel_stage == 7 {
+                    if !sprint_flag {
+                        if let Some(c) = self.check.as_mut() {
+                            c.sprint_off = true;
+                        }
+                    }
+                    if step.is_some_and(|st| st > 1e-4) {
+                        self.camel_still_since = now;
+                    }
+                    let settled =
+                        camel_pos.is_some_and(|(_, g)| g) && now >= self.camel_still_since + 10;
+                    if settled || now >= self.camel_tick0 + 100 {
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command(
+                                "data get entity @e[type=minecraft:camel,limit=1,sort=nearest] Pos",
+                            );
+                        }
+                        let snap = self.session.as_ref().map(|s| {
+                            (
+                                s.steered_horse.map(|h| [h.state.x, h.state.y, h.state.z]),
+                                s.vehicle_moves_sent,
+                                s.vehicle_rejections,
+                                s.ridden_jumps,
+                                s.sprint_commands_sent,
+                            )
+                        });
+                        if let (Some((pos, moves, rej, jumps, sprints)), Some(c)) =
+                            (snap, self.check.as_mut())
+                        {
+                            c.camel_client_pos = pos;
+                            c.camel_moves_sent = moves - self.camel_counts0.0;
+                            c.camel_rejections = rej - self.camel_counts0.1;
+                            c.camel_dashes = jumps - self.camel_jumps0;
+                            c.sprint_sent = sprints - self.camel_sprints0;
+                        }
+                        self.camel_tick0 = now;
+                        self.camel_stage = 8;
+                    }
+                }
+                if self.camel_stage == 8 {
+                    let reply = self.session.as_ref().and_then(|s| {
+                        s.chat_log
+                            .iter()
+                            .rev()
+                            .find(|l| l.contains("Camel has the following entity data"))
+                            .cloned()
+                    });
+                    if let Some(line) = reply {
+                        let nums: Vec<f64> = line
+                            .split(['[', ']', ','])
+                            .filter_map(|t| t.trim().trim_end_matches('d').parse::<f64>().ok())
+                            .collect();
+                        if let (3, Some(c)) = (nums.len(), self.check.as_mut()) {
+                            c.camel_server_pos = Some([nums[0], nums[1], nums[2]]);
+                        }
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command("ride @s dismount");
+                        }
+                        self.camel_stage = 20;
+                    } else if now >= self.camel_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.camel_skip = Some("no /data reply".into());
+                        }
+                        self.camel_stage = 20;
+                    }
+                }
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
                 // (the bot rides r72's client-side horse, so W moves nothing
                 // and no screen is up until 0.46). One stage per server echo.
@@ -3951,40 +4277,10 @@ impl LiveApp {
                         if let Some(c) = self.check.as_mut() {
                             c.pick_held = held;
                         }
-                        // The sprint state: hold W + sprint (moves nothing on
-                        // the injected horse).
-                        self.keys.w = true;
-                        self.keys.sprint = true;
-                        self.hands_stage = 6;
-                        self.hands_stage_frames = 0;
-                    }
-                }
-                if self.hands_stage == 6 {
-                    let on = self
-                        .session
-                        .as_ref()
-                        .is_some_and(|s| s.local_shared_flags() & (1 << 3) != 0);
-                    if on || self.hands_stage_frames > 600 {
-                        if let Some(c) = self.check.as_mut() {
-                            c.sprint_on = on;
-                        }
-                        self.keys.w = false;
-                        self.keys.sprint = false;
-                        self.hands_stage = 7;
-                        self.hands_stage_frames = 0;
-                    }
-                }
-                if self.hands_stage == 7 {
-                    let off = self
-                        .session
-                        .as_ref()
-                        .is_some_and(|s| s.local_shared_flags() & (1 << 3) == 0);
-                    if off || self.hands_stage_frames > 600 {
-                        let sent = self.session.as_ref().map_or(0, |s| s.sprint_commands_sent);
-                        if let Some(c) = self.check.as_mut() {
-                            c.sprint_off = off;
-                            c.sprint_sent = sent;
-                        }
+                        // M225: r82's sprint state moved to r89's camel. A
+                        // rider sprints only on a vehicle that lets it
+                        // (`vehicleCanSprint`), and the bot sits on r72's
+                        // injected horse here.
                         // Back to the sword slot for the rest of the run.
                         if let Some(s) = self.session.as_mut() {
                             let _ = s.select_hotbar(0);

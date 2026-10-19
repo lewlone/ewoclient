@@ -1521,6 +1521,24 @@ impl EntityTable {
         self.map.get(&id).map_or(0, |e| e.dash_cooldown)
     }
 
+    /// `Camel.executeRidersJump`'s `dashCooldown = 55` (M225): the dash the
+    /// local rider fired sets it outright, running or not.
+    pub fn set_dash_cooldown(&mut self, id: i32, ticks: i32) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.dash_cooldown = ticks;
+        }
+    }
+
+    /// `Camel.tickRidden`'s stand-up test, `isCamelSitting() &&
+    /// !isInPoseTransition()` (M225): a sitting camel that has finished
+    /// sitting down stands up when its rider pushes forward.
+    pub fn camel_can_stand_up(&self, id: i32, game_time: i64) -> bool {
+        self.map.get(&id).is_some_and(|e| {
+            e.last_pose_change_tick < 0
+                && game_time.wrapping_sub(e.last_pose_change_tick.wrapping_abs()) >= 40
+        })
+    }
+
     /// `Camel.LAST_POSE_CHANGE_TICK` arrived (M169).
     pub fn set_last_pose_change_tick(&mut self, id: i32, tick: i64) {
         if let Some(e) = self.map.get_mut(&id) {
