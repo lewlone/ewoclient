@@ -3923,6 +3923,38 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M274 — items worn on the head (2026-10-20)
+
+`CustomHeadLayer`'s other branch: a head-slot item that is not a skull
+and that `HumanoidArmorLayer` does not draw (no equipment asset: a carved
+pumpkin, any block, a banner, a sprite) draws as itself in the `head`
+display context. Rewo drew nothing.
+
+- **Bake**: the `head` display transform rides the model chain like the
+  other seven (`ChainResult`, `chain_display`'s eight slots,
+  `ItemModel::Resolved::head`, `HeldItemModel::head` in both crates).
+  `block/block.json` declares none, so a block item's is the identity;
+  `item/generated` declares `rotation [0, 180, 0], translation [0, 13, 7]`,
+  and a sprite's own entry wins (the feather's `[0, 0, 45]`).
+- **Draw**: `WornHead::item` and `y_offset` (`Transforms.yOffset`, the
+  villager's −0.1171875). `emit_worn_head`'s item branch is
+  `translateToHead`: `translate(0, -0.25 + yOffset, 0)`, `YP(180)`,
+  `scale(0.625, -0.625, -0.625)`, inside it `apply_display(head)` with its
+  −0.5 centring, then the head part's transform as for a skull.
+- `worn_head` picks the branch: a skull model, else nothing for an item
+  with an equipment asset (the armour layer draws it), else the item.
+
+Not done (recorded): a worn item's enchantment glint; a banner's patterns
+(M246's open item gap).
+
+**Unit test**: the bake's `head` for a carved pumpkin (identity), an
+apple (`item/generated`'s) and the feather (its own). **mobtexshot m19**
+(18 to 19): a carved pumpkin on an armour stand adds 1,260 px, every one a
+colour its textures can produce, centroid 0.21 px from world
+`(0, 1.501 - 1/16 + 0.25, 0)`; without the −0.25 it is 14.21 px off and
+fails. **r132**: a summoned stand wearing a carved pumpkin reaches the
+draws through the item branch.
+
 ### M273 — worn skulls and heads (2026-10-20)
 
 A skull or head on an entity's head slot drew nothing at all: it has no
