@@ -212,6 +212,10 @@ released.
   looked at the draw list, none at pixels. They draw now (checked on
   pixels: a placed chest, a held chest, a held shield). Shields and tridents
   also show in hands now.
+- **M247**: and a chest, banner, head or other block entity **placed while
+  you play** did not exist on the client at all until the chunk reloaded.
+  Vanilla's client creates it itself; Rewo now does too. The render check
+  now places a chest and checks that it draws in the game window.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -272,6 +276,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M247)* | **M247** — block entities created on the client when a block change makes one (`gen_block_entity_blocks.py`, `BlockEntities::sync_block_change`, as `LevelChunk.setBlockState` does); `remove` clears animation state; per-draw block-entity quad counts; render-check **r109** (a staged chest draws all 18 quads). |
 | `de43c7c` | **M246** — the entity atlas gets a 64×64 large-item band (`ATLAS_H` 2368): block-entity sheets never paged in, so every block entity drew nothing in the windowed client since M25b; shield and trident models; a slot's own model brings its `gui` transform and lighting; itemshot **c3c/c3d/c3e** (0 px with the band disabled). |
 | `ec3a771` | **M245** — slot lighting: `gui_normal` (display rotation + the slot's y flip), the diffuse decoded to linear, block items' `dir` remapped from `FACE_NAMES` to `Direction` order, block-entity `FACE_DIRS` corrected, parts' `dir` turned with their affine; inventoryshot **g10** (0.647 / 0.394 against 0.651 / 0.400). |
 | `74e1e23` | **M244** — banner items (pole and bar + the dye-tinted base on the flag, `TexturePool::tinted`); branch `transformation`s composed onto the leaf (the statue's `select`); `setupAnim`'s `root.y = 0` for statues (a standing statue was 1.5 blocks underground); `gui_light: front` for banners and the pot; itemshot a3c bounds. |
@@ -530,6 +535,7 @@ released.
 - After M244: **4,361 tests passed, 0 failed; gates 51/51** (itemshot 79, blockentityshot 191); render check **108/108** on two runs; clippy (gates and default features, after one `chunks_exact_mut` → `as_chunks_mut`, re-run clean) and `cargo fmt --check` clean.
 - After M245: **4,365 tests; 4,364 passed in the full run, and the one failure (`rewo-audio` `a_slow_read_is_not_re_requested_on_every_tick`, which waits 80 ms of wall time for a worker to open a stream) passed 5/5 on rerun; gates 51/51** (inventoryshot 170); render check **108/108 on runs 2 and 3**, run 1 107/108 with r96 at a 0.31 eating-slowdown ratio (0.2000 on the others; M245 touches no movement); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M246: **4,365 tests passed, 0 failed; gates 51/51** (itemshot 82, capeshot 69 after f1/f2 took the new bottom band; demo hash unchanged); render check **108/108** on two runs; clippy (gates and default features, after four needless `&mut gpu` in c3e) and `cargo fmt --check` clean. Control: with the large band disabled, c3c/c3d/c3e read 0 px.
+- After M247: **4,370 tests passed, 0 failed; gates 51/51**; render check **109/109** on two runs; clippy (gates and default features) and `cargo fmt --check` clean. Control: before the client-side creation, r109 failed with the chest absent from the draw list.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -580,8 +586,12 @@ released.
   never reach the item path), and a pot item shows plain sides. A dropped
   or framed trident shows its 3D model (vanilla: the sprite). The dragon
   head's 256×256 sheet is still too big for the large pool.
-- No windowed check looks at a placed block entity yet: the render check
-  stages none. itemshot's c3e covers the emitter serverlessly. A decorated pot's sherds
+- Sign BOARDS are not drawn at all (only their text): Rewo bakes no sign,
+  hanging-sign, bell, lectern-book or enchanting-book model. Found while
+  writing r109.
+- The render check still injects the sign's block entity by hand (r48/r49);
+  since M247 the client would create it from the block update, so the
+  injection could go. A decorated pot's sherds
   (`pot_decorations`) are not read: its icon shows four plain sides. The
   Christmas chest's date select takes its fallback.
 - M242's third-person rotation fix (`held::rotate_xyz`) is unit-tested but

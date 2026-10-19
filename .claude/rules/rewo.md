@@ -147,6 +147,11 @@ a self-check path.
   The crosshair clips the ray against OUTLINE shapes (M230,
   `PlaySession::target_shape`, `BakedAssets::outline`), not collision: a
   button, a flower or a lever is targetable, water and air are not.
+- **Block entities are created by the client** (M247): a block change to
+  a block valid for a `BlockEntityType` makes an empty entity
+  (`BlockEntities::sync_block_change`, from `block_entity_blocks.rs`,
+  generated); the server sends no `block_entity_data` for most placements.
+  A witness that injects a block entity by hand may be hiding this.
 - **A container's player part is the player's inventory** in vanilla (one
   shared `Inventory`); Rewo keeps the player's menu apart, so
   `PlaySession::mirror_open_container_inventory` copies an open container's

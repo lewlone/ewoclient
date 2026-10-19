@@ -793,7 +793,55 @@ impl BlockEntities {
         self.map.get_mut(&pos)
     }
 
+    /// M247 — `LevelChunk.setBlockState`'s block-entity half, for a block
+    /// change at `pos` from state `old` to `new`. `states` is per state the
+    /// block entity the client creates, `(type id, block ordinal)`
+    /// (`rewo_data::block_entity_types::block_entity_states`):
+    ///
+    /// * a DIFFERENT block (`!oldState.is(block)`) drops the old entity;
+    ///   another state of the same block (a chest turned, a furnace lit)
+    ///   keeps it, data and animation included;
+    /// * a block that has one gets an empty one if none is there
+    ///   (`getBlockEntity(pos, CHECK)` returning null → `newBlockEntity`).
+    ///
+    /// The server sends no `block_entity_data` for a placed chest, banner or
+    /// head, so without this one placed during play never existed here.
+    pub fn sync_block_change(
+        &mut self,
+        states: &[Option<(i32, u32)>],
+        pos: BlockEntityPos,
+        old: u32,
+        new: u32,
+    ) {
+        let of = |s: u32| states.get(s as usize).copied().flatten();
+        let (was, now) = (of(old), of(new));
+        if was.is_some() && was.map(|w| w.1) != now.map(|n| n.1) {
+            self.remove(pos);
+        }
+        if let Some((type_id, _)) = now {
+            if self.get(pos).is_none() {
+                self.insert(
+                    pos,
+                    BlockEntity {
+                        type_id,
+                        data: Nbt::Compound(Vec::new()),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Drop the block entity at `pos` and every per-position animation it
+    /// owned (a lid, a shulker shell, a spawner's spin, a pot's wobble, a
+    /// skull's counter, a conduit's scan): a chest placed where a broken one
+    /// stood must start closed, not mid-swing (M247).
     pub fn remove(&mut self, pos: BlockEntityPos) -> Option<BlockEntity> {
+        self.lids.remove(&pos);
+        self.shulkers.remove(&pos);
+        self.spawners.remove(&pos);
+        self.wobbles.remove(&pos);
+        self.skull_anim.remove(&pos);
+        self.conduits.remove(&pos);
         self.map.remove(&pos)
     }
 
@@ -1277,5 +1325,69 @@ mod tests {
         assert_eq!(back.lines[0], "x");
         assert_eq!(back.color, None, "no color key was invented");
         assert!(!back.glowing);
+    }
+}
+
+#[cfg(test)]
+mod sync_block_change_tests {
+    use super::*;
+
+    // States: 0 air, 1-2 a chest (two facings), 3 a furnace, 4 stone.
+    const STATES: [Option<(i32, u32)>; 5] = [None, Some((2, 0)), Some((2, 0)), Some((0, 1)), None];
+    const POS: BlockEntityPos = BlockEntityPos { x: 3, y: 64, z: -5 };
+
+    fn table() -> BlockEntities {
+        BlockEntities::default()
+    }
+
+    #[test]
+    fn placing_a_block_entity_block_creates_an_empty_one() {
+        let mut t = table();
+        t.sync_block_change(&STATES, POS, 0, 1);
+        let be = t
+            .get(POS)
+            .expect("a chest placed over air has its block entity");
+        assert_eq!(be.type_id, 2);
+        assert_eq!(be.data, Nbt::Compound(Vec::new()));
+    }
+
+    #[test]
+    fn turning_the_same_block_keeps_its_entity_and_data() {
+        let mut t = table();
+        t.insert(
+            POS,
+            BlockEntity {
+                type_id: 2,
+                data: Nbt::Compound(vec![("CustomName".into(), Nbt::String("x".into()))]),
+            },
+        );
+        t.sync_block_change(&STATES, POS, 1, 2);
+        assert_eq!(
+            t.get(POS).map(|b| &b.data),
+            Some(&Nbt::Compound(vec![(
+                "CustomName".into(),
+                Nbt::String("x".into())
+            )])),
+            "a chest turned is the same chest"
+        );
+    }
+
+    #[test]
+    fn a_different_block_replaces_the_entity_and_air_removes_it() {
+        let mut t = table();
+        t.sync_block_change(&STATES, POS, 0, 1);
+        t.sync_block_change(&STATES, POS, 1, 3);
+        assert_eq!(t.get(POS).map(|b| b.type_id), Some(0), "a furnace's own");
+        t.sync_block_change(&STATES, POS, 3, 0);
+        assert!(t.get(POS).is_none(), "broken to air: gone");
+        t.sync_block_change(&STATES, POS, 0, 4);
+        assert!(t.get(POS).is_none(), "stone has none");
+    }
+
+    #[test]
+    fn an_empty_table_changes_nothing() {
+        let mut t = table();
+        t.sync_block_change(&[], POS, 0, 1);
+        assert!(t.get(POS).is_none());
     }
 }

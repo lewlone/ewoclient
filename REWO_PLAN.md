@@ -2064,6 +2064,7 @@ this shape once.
 | M239 (2026-10-19) — a firework rocket boosts the elytra glide (the client's push) and the server accepts it | **r106** | — | — |
 | M240 (2026-10-19) — thrown items and the fishing bobber draw as camera-facing items | **r107** | — | — |
 | M241 (2026-10-19) — a cast fishing rod draws its line to the first-person hand | **r108** | — | — |
+| M247 (2026-10-19) — a placed chest emits every quad of its model in the windowed client | **r109** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3898,6 +3899,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M247 — a block entity placed during play exists; r109 (2026-10-19)
+
+Writing r109 (a staged chest must draw in the windowed client) found the
+second half of M246's gap: the chest never reached the draw list at all.
+`LevelChunk.setBlockState` creates a block entity ON THE CLIENT when the new
+block is valid for a `BlockEntityType`, and the server sends no
+`block_entity_data` for a chest, a banner or a head (their update tag is
+empty). Rewo filled its block-entity table only from chunk payloads and
+`block_entity_data`, which vanilla also ignores for a position with no
+entity. So a block entity placed during play did not exist on the client
+until its chunk was re-sent. The render check's own sign witness had been
+working around it by injecting the sign's entity by hand.
+
+- `tools/gen_block_entity_blocks.py` generates `block_entity_blocks.rs` from
+  `BlockEntityTypes.java` (every type's `validBlocks`; the four group forms
+  expanded and counted against `blocks.json`; every registered type must be
+  matched): 49 types, 186 blocks.
+- `rewo_data::block_entity_types::block_entity_states` turns it into a
+  per-state `(type id, block ordinal)` table, held by the session.
+- `BlockEntities::sync_block_change`, called from both block-update handlers:
+  a different block (vanilla's `!oldState.is(block)`) drops the old entity,
+  another state of the same block keeps it, and a block that has one gets an
+  empty one if none is there. `remove` now clears the position's animation
+  state too (a chest placed where a broken one stood starts closed).
+
+The entity pass now reports quads emitted per block-entity draw
+(`block_entity_quads`). **r109**: the chest `render_check.py` stages by the
+anvil draws all 18 quads of its model in the windowed client. Before this
+change it was absent from the draw list; with M246's large band disabled it
+would emit 0 (itemshot c3e's control).
+
+Tests: `sync_block_change`'s four cases, and the real-report table (every
+chest state one type and one ordinal, a furnace another, stone none).
 
 ### M246 — block entities draw at all; the shield and the trident (2026-10-19)
 

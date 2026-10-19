@@ -1151,6 +1151,10 @@ pub struct EntityPass {
     /// textures bigger than an item slot.
     big_slots: std::collections::HashMap<u16, (u32, u32, u32)>,
     big_ring: SlotRing<u16>,
+    /// M247 — the quads the last frame emitted for each block-entity draw,
+    /// index-matched to the draws `set_draws` was given. A quad whose texture
+    /// is not resident is skipped, so this is what a draw really drew.
+    be_quads: Vec<u32>,
     /// `<asset>/<layer>` → the sheet's packed rect in the entity atlas (M46).
     armor_slots: std::collections::HashMap<String, (u32, u32, u32, u32)>,
     /// Sprite path → its origin in the trim pool (M48).
@@ -1711,6 +1715,7 @@ impl EntityPass {
                 item_ring: SlotRing::new(ITEM_SLOTS),
                 big_slots: std::collections::HashMap::new(),
                 big_ring: SlotRing::new(BIG_SLOTS),
+                be_quads: Vec::new(),
                 cem_state: std::collections::HashMap::new(),
                 generation: 0,
                 frame_counter: 0.0,
@@ -2288,7 +2293,7 @@ impl EntityPass {
                 offsets: glint_offsets,
                 scale: crate::gui_item::GLINT_SCALE_ENTITY,
             };
-            self.emit_block_entities(&mut verts, block_entities, &mut sink);
+            self.be_quads = self.emit_block_entities(&mut verts, block_entities, &mut sink);
         }
         // M194: maps in item frames, beside the frames' own models.
         self.emit_frame_maps(&mut verts, frame_maps);
@@ -5201,16 +5206,18 @@ impl EntityPass {
     /// own space — a chest's lid rotating about its hinge, a shulker box's lid
     /// sliding and spinning off its base. Both animations run on the
     /// *interpolated* clock, so they advance per frame rather than per tick.
+    /// Returns the quads emitted per draw (M247).
     pub(crate) fn emit_block_entities(
         &self,
         verts: &mut Vec<Vertex>,
         draws: &[BlockEntityDraw<'_>],
         glint: &mut GlintSink<'_>,
-    ) {
+    ) -> Vec<u32> {
+        let mut emitted = vec![0u32; draws.len()];
         let Some(items) = self.held_items.as_ref() else {
-            return;
+            return emitted;
         };
-        for d in draws {
+        for (n, d) in draws.iter().enumerate() {
             let Some(model) = items.any(d.model) else {
                 continue;
             };
@@ -5218,11 +5225,12 @@ impl EntityPass {
             let [light_r, light_g, light_b] = d.light;
             for q in &model.quads {
                 if verts.len() + 6 > MAX_VERTS {
-                    return;
+                    return emitted;
                 }
                 let Some([u0, v0, du, dv]) = self.item_uv(q.tex) else {
                     continue;
                 };
+                emitted[n] += 1;
                 let mut p4 = [[0f32; 3]; 4];
                 let mut m4 = [[0f32; 3]; 4];
                 for (i, corner) in q.verts.iter().enumerate() {
@@ -5289,6 +5297,12 @@ impl EntityPass {
                 }
             }
         }
+        emitted
+    }
+
+    /// M247 — the quads the last frame emitted per block-entity draw.
+    pub fn block_entity_quads(&self) -> &[u32] {
+        &self.be_quads
     }
 
     /// `ItemEntityRenderer.submit` — a dropped stack (M24b).

@@ -143,6 +143,9 @@ PRECMD = (
     "setblock ~13 ~ ~9 minecraft:furnace[facing=north]{Items:[{Slot:2b,id:\"minecraft:iron_ingot\",count:1}]};"
     # M236 -- r102 / r103. An anvil and an enchanting table beside them.
     "setblock ~12 ~ ~9 minecraft:anvil[facing=north];"
+    # M247 -- r109. A chest beside it: a block entity whose 64x64 sheet must
+    # page into the entity atlas's large band, or its draw emits nothing.
+    "setblock ~11 ~ ~9 minecraft:chest[facing=north];"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"

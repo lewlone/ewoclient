@@ -172,6 +172,7 @@ impl PlaySession {
             if let (Ok((x, y, z)), Ok(state)) = (r.position(), r.varint()) {
                 let old = self.world.block_state_at(x, y, z);
                 self.world.set_block(x, y, z, state as u32);
+                self.sync_block_entity(x, y, z, old, state as u32);
                 self.relight(x, y, z, old, state as u32);
                 self.block_updates += 1;
                 self.mark_dirty_block(x, z);
@@ -238,6 +239,7 @@ impl PlaySession {
                     let (x, y, z) = (sx * 16 + ox, sy * 16 + oy, sz * 16 + oz);
                     let old = self.world.block_state_at(x, y, z);
                     self.world.set_block(x, y, z, state);
+                    self.sync_block_entity(x, y, z, old, state);
                     changes.push((x, y, z, old, state));
                     self.mark_dirty_block(x, z);
                     applied += 1;

@@ -366,10 +366,12 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // makes this a boundary: `resolve` errors on a registered type nobody has
     // classified, so a version that adds one stops the client here instead of
     // dropping it silently. That check used to run only in the gate.
-    let be_registry = rewo_world::block_entities::BlockEntityRegistry::resolve(
-        &rewo_data::block_entity_types::load(&paths.registries_json())?,
-    )?;
+    let be_types = rewo_data::block_entity_types::load(&paths.registries_json())?;
+    let be_registry = rewo_world::block_entities::BlockEntityRegistry::resolve(&be_types)?;
     session.block_event_types = be_registry.block_event_types();
+    // M247: the block entity a block change creates on the client.
+    session.block_entity_states =
+        rewo_data::block_entity_types::block_entity_states(&data.blocks, &be_types);
     // Which skull states are POWERED, so their animation counters run (M29).
     session.powered_skull_states = chest_states.powered_skull_states().clone();
     // A conduit scans for its own frame (M30), so it needs the block states

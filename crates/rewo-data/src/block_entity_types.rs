@@ -20,6 +20,35 @@ use std::path::Path;
 
 use crate::read_json_file;
 
+/// M247 — per block state, the block entity `LevelChunk.setBlockState`
+/// creates for it on the client, as `(type protocol id, block ordinal)`;
+/// `None` for a block with none. From
+/// [`crate::block_entity_blocks::BLOCK_ENTITY_BLOCKS`] (each type's
+/// `validBlocks`) and the registry's ids. The ordinal tells two blocks apart:
+/// a DIFFERENT block drops the old entity, another state of the same block
+/// (a chest turned, a furnace lit) keeps it.
+pub fn block_entity_states(
+    blocks: &crate::blocks::Blocks,
+    types: &[(String, i32)],
+) -> Vec<Option<(i32, u32)>> {
+    let id_of: std::collections::HashMap<&str, i32> =
+        types.iter().map(|(n, i)| (n.as_str(), *i)).collect();
+    let mut of_block: std::collections::HashMap<&str, (i32, u32)> = Default::default();
+    let mut ordinal = 0u32;
+    for (ty, members) in crate::block_entity_blocks::BLOCK_ENTITY_BLOCKS {
+        let Some(&id) = id_of.get(ty) else {
+            continue;
+        };
+        for b in *members {
+            of_block.insert(b, (id, ordinal));
+            ordinal += 1;
+        }
+    }
+    (0..blocks.state_count() as u32)
+        .map(|s| blocks.block_name(s).and_then(|n| of_block.get(n).copied()))
+        .collect()
+}
+
 /// Every `minecraft:block_entity_type` entry as `(name, protocol id)`.
 ///
 /// Returned as a flat list rather than a map because that is what
@@ -45,4 +74,49 @@ pub fn load(path: &Path) -> Result<Vec<(String, i32)>, String> {
     }
     log::info!("rewo-data: {} block-entity type(s)", out.len());
     Ok(out)
+}
+
+#[cfg(test)]
+mod block_entity_states_tests {
+    /// M247 — on the real report: every chest state carries the chest type
+    /// and one ordinal, a furnace a different one, stone none.
+    #[test]
+    fn chest_states_carry_the_chest_type_and_one_ordinal() {
+        let Some(paths) = crate::DataPaths::for_version("26.2") else {
+            crate::skip_test!("no local 26.2 datagen report");
+            return;
+        };
+        if !paths.blocks_json().is_file() || !paths.registries_json().is_file() {
+            crate::skip_test!("no local 26.2 datagen report");
+            return;
+        }
+        let json = crate::read_json_file(&paths.blocks_json()).unwrap();
+        let blocks = crate::blocks::Blocks::from_json(&json).unwrap();
+        let types = super::load(&paths.registries_json()).unwrap();
+        let table = super::block_entity_states(&blocks, &types);
+        assert_eq!(table.len(), blocks.state_count());
+        let chest_id = types
+            .iter()
+            .find(|(n, _)| n == "minecraft:chest")
+            .unwrap()
+            .1;
+        let of = |name: &str| -> Vec<Option<(i32, u32)>> {
+            (0..blocks.state_count() as u32)
+                .filter(|&s| blocks.block_name(s) == Some(name))
+                .map(|s| table[s as usize])
+                .collect()
+        };
+        let chest = of("minecraft:chest");
+        assert!(!chest.is_empty());
+        assert!(chest.iter().all(|c| c.map(|c| c.0) == Some(chest_id)));
+        assert!(
+            chest.windows(2).all(|w| w[0] == w[1]),
+            "one ordinal per block"
+        );
+        let furnace = of("minecraft:furnace");
+        assert!(furnace
+            .iter()
+            .all(|f| f.is_some() && f.map(|f| f.1) != chest[0].map(|c| c.1)));
+        assert!(of("minecraft:stone").iter().all(Option::is_none));
+    }
 }

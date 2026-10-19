@@ -307,6 +307,14 @@ impl WorldRenderer {
         }
     }
 
+    /// M247 — the quads the last frame emitted per block-entity draw (empty
+    /// before `init_entities`).
+    pub fn block_entity_quads(&self) -> &[u32] {
+        self.entities
+            .as_ref()
+            .map_or(&[][..], |e| e.block_entity_quads())
+    }
+
     /// The map decoration sprites for framed maps (M194), by raw type id —
     /// [`crate::entities::EntityPass::init_map_decorations`]. No-op until
     /// `init_entities`.

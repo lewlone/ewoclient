@@ -226,6 +226,12 @@ pub(super) struct RenderCheck {
     /// hand end sat from the eye.
     pub(super) fishing_line_frames: usize,
     pub(super) fishing_line_hand: f32,
+    /// M247 — r109: frames on which the staged chest's draw emitted every
+    /// quad of its baked model, the most it emitted, and how many it has.
+    pub(super) chest_frames: usize,
+    pub(super) chest_quads: u32,
+    pub(super) chest_quads_want: u32,
+    pub(super) be_models_seen: Vec<String>,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -978,7 +984,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 108;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 109;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1167,6 +1173,18 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M247 — r109: `render_check.py` stages a chest by the anvil. Its
+        // draw must emit all of its model's quads: a block-entity sheet that
+        // cannot page into the entity atlas emits none (every block entity
+        // until M246's large-item band).
+        row(
+            "r109 a placed chest drew every quad of its model in the windowed client",
+            self.chest_frames >= 1,
+            format!(
+                "{} frames drew all {} quads (at most {} drawn); block-entity models seen {:?}",
+                self.chest_frames, self.chest_quads_want, self.chest_quads, self.be_models_seen
             ),
         );
         // M241 — r108: r94's cast rod draws its line, and the line's far end

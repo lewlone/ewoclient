@@ -855,6 +855,10 @@ pub struct PlaySession {
     /// active by looking at the blocks around it — the server sends nothing.
     pub conduit_states: std::collections::HashSet<u32>,
     pub water_states: Vec<bool>,
+    /// M247 — per block state, the block entity the client creates for it
+    /// (`rewo_data::block_entity_types::block_entity_states`). Empty until
+    /// the app supplies it, which reads as "no block makes one".
+    pub block_entity_states: Vec<Option<(i32, u32)>>,
     /// `BakedAssets::bubble_column_drag` — `Some(drag)` per bubble-column
     /// state (M142c). Empty until the bake is attached, which reads as
     /// "no columns anywhere" and simply keeps the handler quiet.
@@ -2025,6 +2029,7 @@ impl<'a> Connection<'a> {
             powered_skull_states: Default::default(),
             conduit_states: Default::default(),
             water_states: Vec::new(),
+            block_entity_states: Vec::new(),
             bubble_column_drag: Vec::new(),
             conduit_frame_states: Vec::new(),
             entity_classes: None,
@@ -2386,6 +2391,21 @@ impl PlaySession {
         self.light_emission = emission;
         self.light_dampening = dampening;
         self.light_faces = faces;
+    }
+
+    /// M247 — `LevelChunk.setBlockState`'s block-entity half, after a block
+    /// change from the server: if the block changed (not just its state) the
+    /// old block's entity goes, and a block that has one gets an empty one
+    /// if none is there. The server sends no `block_entity_data` for a placed
+    /// chest, banner or head, so without this a block entity placed during
+    /// play never existed on the client (and never drew).
+    pub(crate) fn sync_block_entity(&mut self, x: i32, y: i32, z: i32, old: u32, new: u32) {
+        self.world.block_entities.sync_block_change(
+            &self.block_entity_states,
+            rewo_world::block_entities::BlockEntityPos { x, y, z },
+            old,
+            new,
+        );
     }
 
     /// Apply a block change and relight around it, marking every column whose
