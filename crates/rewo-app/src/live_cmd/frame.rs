@@ -2359,7 +2359,7 @@ impl LiveApp {
                     && self.horse_stage >= 20
                     && self.camel_stage >= 20
                     && self.nautilus_stage >= 20
-                    && self.use_stage >= 20
+                    && self.use_stage >= 100
                     // r91's last answer can land a frame after r90's own.
                     && self
                         .check

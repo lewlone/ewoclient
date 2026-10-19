@@ -1477,9 +1477,9 @@ const RENDER_CHECK_SECONDS: f32 = 8.0;
 /// The most the render check's tail (M220's r84/r85, run after the timed
 /// part) may add before the run ends regardless. 20 since M225's camel, 30
 /// since M227's nautilus (its swim and settle take about nine seconds), 45
-/// since M229's survival uses; the run ends as soon as every tail stage is
-/// done.
-const RENDER_CHECK_TAIL_SECONDS: f32 = 45.0;
+/// since M229's survival uses, 60 since M232's crafting table and furnace;
+/// the run ends as soon as every tail stage is done.
+const RENDER_CHECK_TAIL_SECONDS: f32 = 60.0;
 
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {

@@ -147,6 +147,11 @@ a self-check path.
   The crosshair clips the ray against OUTLINE shapes (M230,
   `PlaySession::target_shape`, `BakedAssets::outline`), not collision: a
   button, a flower or a lever is targetable, water and air are not.
+- **A container's player part is the player's inventory** in vanilla (one
+  shared `Inventory`); Rewo keeps the player's menu apart, so
+  `PlaySession::mirror_open_container_inventory` copies an open container's
+  last 36 slots back every tick and before any close (M232). Anything that
+  reads the player inventory while a container is open sees it a tick late.
 - **One accessor per concept.** When two call sites each compute "which menu",
   "which origin" or "which conversion", they drift (M89, M106b, M112, M151).
 - **The M-numbers aren't a contiguous index** (M52, M61, M64, M66, M68 each

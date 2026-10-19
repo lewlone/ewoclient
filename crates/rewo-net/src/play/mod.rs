@@ -2597,6 +2597,7 @@ impl PlaySession {
 
     /// One 20 Hz tick: drain inbound, run physics, send movement.
     pub fn tick(&mut self, input: &TickInput) -> Result<(), String> {
+        self.mirror_open_container_inventory();
         self.drain_inbound(self.tick_budget.unwrap_or(PumpBudget::UNLIMITED))?;
         // During a mid-session configuration there is no level and no play
         // listener to tick — vanilla's `ClientPacketListener` is gone.
@@ -5087,7 +5088,40 @@ impl PlaySession {
     /// SERVER-initiated close (`handleContainerClose`) is
     /// `menus.apply_close()` from dispatch and never reaches this method, so
     /// it sends nothing.
+    /// M232 — vanilla's container menus share the player's `Inventory`: the
+    /// last 36 slots of a chest, a crafting table or a furnace ARE the
+    /// player's main inventory and hotbar. Rewo keeps the player's menu
+    /// apart, so what a click moved into those slots must be copied back
+    /// here — the server sends nothing for it when the prediction matched,
+    /// and on close `transferState` hands the inventory menu the container's
+    /// view, so no correction follows either. Without it, a stack taken from
+    /// a chest or a crafting result was missing from the hotbar after the
+    /// screen closed (r97, r98). Run every tick while a container is open
+    /// and once more before any close.
+    pub fn mirror_open_container_inventory(&mut self) {
+        let Some(open) = self.menus.open() else {
+            return;
+        };
+        let Some(start) = open.layout.standard_inventory_start() else {
+            return;
+        };
+        // A menu opens empty and its `container_set_content` follows: until
+        // that arrives its player part is not the player's yet, and copying
+        // it would wipe the real inventory.
+        if open.menu.content_updates() == 0 {
+            return;
+        }
+        let part: Vec<Option<rewo_world::inventory::ItemSlot>> =
+            (0..36).map(|i| open.menu.menu_slot(start + i)).collect();
+        for (i, item) in part.into_iter().enumerate() {
+            // Main 9..=35 first, then the hotbar 0..=8.
+            let index = if i < 27 { 9 + i as i32 } else { i as i32 - 27 };
+            self.inventory.set_inventory_index(index, item);
+        }
+    }
+
     pub fn container_close(&mut self) -> Result<(), String> {
+        self.mirror_open_container_inventory();
         let Some(container) = self.menus.close_local() else {
             return Ok(());
         };

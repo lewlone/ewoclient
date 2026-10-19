@@ -132,6 +132,10 @@ PRECMD = (
     # pick can target them.
     "setblock ~12 ~ ~4 minecraft:lever[face=floor,facing=north];"
     "setblock ~10 ~ ~4 minecraft:stone_button[face=floor,facing=north];"
+    # M232 -- r97 / r98. A crafting table and a furnace near the use spot,
+    # the furnace holding an iron ingot in its result slot.
+    "setblock ~14 ~ ~8 minecraft:crafting_table;"
+    "setblock ~13 ~ ~9 minecraft:furnace[facing=north]{Items:[{Slot:2b,id:\"minecraft:iron_ingot\",count:1}]};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

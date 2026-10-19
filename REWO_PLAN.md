@@ -2054,6 +2054,7 @@ this shape once.
 | M229 (2026-10-19) — a survival right-click on the ground with bread eats it; a bucket fills from water and empties onto the ground; a snowball throws and a fishing rod casts and reels in | **r92**, **r93**, **r94** | — | — |
 | M230 (2026-10-19) — a floor lever and a stone button are targeted (outline shapes) and pressed while holding food, and nothing is eaten | **r95** | — | — |
 | M231 (2026-10-19) — walking while eating goes at a fifth of the walking speed (`itemUseSpeedMultiplier`) | **r96** | — | — |
+| M232 (2026-10-19) — a real crafting table crafts and a real furnace lights, cooks and gives up its result, in survival (and what was taken reaches the player inventory) | **r97**, **r98** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3888,6 +3889,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M232 — crafting tables and furnaces, end to end (2026-10-19)
+
+Every container witness before this one injected its screen. **r97** and
+**r98** use real blocks in survival through the production paths: a
+right-click opens the screen, and each slot click is a press and a release
+on that slot (`LiveApp::screen_mouse_press` / `screen_mouse_release`,
+lifted out of the event arms for this) with the cursor parked on it.
+
+**The bug they found**: in vanilla a container menu's last 36 slots ARE the
+player's inventory (one shared `Inventory`); Rewo keeps the player's menu
+apart. A click that moved a stack into those slots updated only the
+container's copy, and when the prediction matched, the server sent nothing
+back; on close its `transferState` hands the inventory menu the container's
+view of the client, so no correction came then either. A crafting result
+shift-clicked out, or a stack taken from a chest or a furnace, was missing
+from the hotbar after the screen closed (the server had it: `data get
+entity @s Inventory` showed the planks and the ingot). Fix:
+`PlaySession::mirror_open_container_inventory` copies an open container's
+player part (`MenuLayout::standard_inventory_start`) into the player's
+inventory every tick and before any close, once the container's content
+has arrived.
+
+- **r97**: a log clicked from the hotbar into the crafting grid; the server
+  puts four planks in the result; a shift-click on it; after closing, four
+  planks and no log in the inventory.
+- **r98**: raw iron and coal clicked into a furnace's input and fuel; it
+  lights and cooks (container data 0 and 2 rise); the ingot staged in its
+  result is shift-clicked out and is in the inventory after closing.
+
+Found on the way (witness errors, not client bugs): a press with a stack on
+the cursor only starts a drag, which the release settles (M40), so a
+witness must release; and the player inventory is read after the close.
+The tail cap is 60 s.
 
 ### M231 — using an item slows you (2026-10-19)
 

@@ -804,6 +804,7 @@ impl PlaySession {
             // claiming the same id would either steal it from M74's counter or
             // never see it, depending only on which arm came first.
             if id == ids.cb_play_container_close {
+                self.mirror_open_container_inventory();
                 self.menus.apply_close();
             }
         } else if crate::route_menu(id, body, ids, &mut self.menus) {

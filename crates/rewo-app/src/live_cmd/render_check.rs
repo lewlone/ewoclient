@@ -428,6 +428,17 @@ pub(super) struct RenderCheck {
     pub(super) lever_on: bool,
     pub(super) button_on: bool,
     pub(super) click_food: Option<((i32, i32), (i32, i32))>,
+    /// M232 — r97: the crafting table opened by a right-click, the result
+    /// slot after a log went into the grid, and (planks, logs) in the
+    /// inventory after the shift-click; r98: the furnace opened, its (lit
+    /// time, cook progress) once ore and fuel were clicked in, and the iron
+    /// ingots in the inventory after shift-clicking its result.
+    pub(super) craft_opened: bool,
+    pub(super) craft_result: Option<(String, i32)>,
+    pub(super) craft_inventory: Option<(i32, i32)>,
+    pub(super) furnace_opened: bool,
+    pub(super) furnace_data: Option<(i16, i16)>,
+    pub(super) furnace_taken: i32,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -913,7 +924,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 96;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 98;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1608,6 +1619,37 @@ impl RenderCheck {
             format!(
                 "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
+        );
+        // M232 — r97: a real crafting table, in survival: a right-click opens
+        // it (the server's `open_screen`), a log clicked from the hotbar into
+        // the grid makes the server put four planks in the result slot, and a
+        // shift-click on the result moves them to the inventory (the log is
+        // gone). The clicks go through `screen_mouse_press`, the cursor parked
+        // on each slot.
+        row(
+            "r97 a crafting table opened, a log in the grid made four planks, and a shift-click took them",
+            self.craft_opened
+                && self.craft_result == Some(("minecraft:oak_planks".to_string(), 4))
+                && self.craft_inventory == Some((4, 0)),
+            format!(
+                "opened {}, result {:?}, (planks, logs) in the inventory {:?}",
+                self.craft_opened, self.craft_result, self.craft_inventory
+            ),
+        );
+        // r98: a real furnace: ore and coal clicked into its input and fuel
+        // slots light it and start cooking (container data 0 and 2 rise), and
+        // the ingot staged in its result is shift-clicked into the inventory.
+        row(
+            "r98 a furnace took ore and fuel, lit and cooked, and its result was shift-clicked out",
+            self.furnace_opened
+                && self
+                    .furnace_data
+                    .is_some_and(|(lit, cook)| lit > 0 && cook > 0)
+                && self.furnace_taken == 1,
+            format!(
+                "opened {}, (lit time, cook progress) {:?}, iron ingots taken {}",
+                self.furnace_opened, self.furnace_data, self.furnace_taken
             ),
         );
         // M231 — r96: using an item slows the walk to vanilla's
@@ -2487,7 +2529,7 @@ impl LiveApp {
             .as_ref()
             .is_some_and(|c| c.seat_checks.iter().all(|e| e.2.is_some()));
         if self.use_stage > 0
-            && self.use_stage < 20
+            && self.use_stage < 100
             && elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2
         {
             if let Some(c) = self.check.as_mut() {
@@ -2495,7 +2537,7 @@ impl LiveApp {
                     .get_or_insert_with(|| format!("timed out in stage {}", self.use_stage));
             }
             self.use_down = false;
-            self.use_stage = 20;
+            self.use_stage = 100;
         }
         let held = |app: &Self| {
             app.session.as_ref().and_then(|s| {
@@ -2517,6 +2559,61 @@ impl LiveApp {
                 let _ = s.send_command(c);
             }
         };
+        // The open menu's layout name, a menu slot's (item, count), the
+        // selected hotbar index, an item's total in the player inventory, and
+        // a press on a menu slot through `screen_mouse_press` with the cursor
+        // parked on it (M232).
+        // The shown menu's name once its content has arrived: `open_screen`
+        // puts the screen up empty and `container_set_content` follows, so a
+        // click before it lands on empty slots (r98 failed that way once).
+        let shown = |app: &Self| {
+            app.session
+                .as_ref()
+                .filter(|s| app.screen.inventory_open() && s.shown_menu().content_updates() > 0)
+                .map(|s| s.shown_menu().layout().name)
+        };
+        let menu_slot = |app: &Self, i: usize| {
+            app.session.as_ref().and_then(|s| {
+                let st = s.shown_menu().menu_slot(i)?;
+                Some((app.items.name(st.item_id)?.to_string(), st.count))
+            })
+        };
+        let selected = |app: &Self| {
+            app.session
+                .as_ref()
+                .map_or(0, |s| s.inventory.selected() as usize)
+        };
+        let inventory_count = |app: &Self, item: &str| {
+            app.session.as_ref().map_or(0, |s| {
+                (0..s.inventory.slot_count())
+                    .filter_map(|i| s.inventory.menu_slot(i))
+                    .filter(|st| app.items.name(st.item_id) == Some(item))
+                    .map(|st| st.count)
+                    .sum::<i32>()
+            })
+        };
+        let press = |app: &mut Self, slot: usize, shift: bool| {
+            let Some(ext) = app.state.as_ref().map(|s| s.window.inner_size()) else {
+                return;
+            };
+            let rect = app.session.as_ref().and_then(|s| {
+                super::slots::menu_slot_rects(
+                    s.shown_menu(),
+                    ext.width as f32,
+                    ext.height as f32,
+                    super::recipe_book::book_visible(s),
+                )
+                .get(slot)
+                .copied()
+            });
+            if let Some((x, y, size)) = rect {
+                app.screen.mouse = ((x + size * 0.5) as f64, (y + size * 0.5) as f64);
+                app.shift = shift;
+                app.screen_mouse_press(winit::event::MouseButton::Left);
+                app.screen_mouse_release();
+                app.shift = false;
+            }
+        };
         let Some(o) = self.precmd_origin else {
             return;
         };
@@ -2526,6 +2623,9 @@ impl LiveApp {
         let pool = [o[0].floor() + 8.5, o[1] - 0.6, spot[2]];
         // r95's floor lever and stone button (`render_check.py` stages them).
         let lever = [o[0].floor() + 12.5, o[1] + 0.1, o[2].floor() + 4.5];
+        // r97's crafting table and r98's furnace (`render_check.py`).
+        let table = [o[0].floor() + 14.5, o[1] + 0.5, o[2].floor() + 8.5];
+        let furnace = [o[0].floor() + 13.5, o[1] + 0.5, o[2].floor() + 9.5];
         let button = [o[0].floor() + 10.5, o[1] + 0.05, o[2].floor() + 4.5];
         match self.use_stage {
             0 if self.nautilus_stage >= 20 && seats_done => {
@@ -2572,7 +2672,7 @@ impl LiveApp {
                     if let Some(c) = self.check.as_mut() {
                         c.use_skip = Some(format!("not hungry ({food}) or no bread ({bread:?})"));
                     }
-                    self.use_stage = 20;
+                    self.use_stage = 100;
                 }
             }
             // r96: the walking step on the 25th tick, then eat while walking
@@ -2801,9 +2901,151 @@ impl LiveApp {
                     self.use_stage = 14;
                 }
             }
+            // r97 — the crafting table, for real: a log into the grid, the
+            // planks shift-clicked out.
             14 => {
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:oak_log 1",
+                );
+                self.use_tick0 = now;
+                self.use_stage = 30;
+            }
+            30 if now >= self.use_tick0 + 6 => {
+                aim(self, table);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 31;
+            }
+            31 => {
+                if shown(self) == Some("crafting") {
+                    if let Some(c) = self.check.as_mut() {
+                        c.craft_opened = true;
+                    }
+                    // Hotbar -> cursor -> the grid's first cell.
+                    let hot = 37 + selected(self);
+                    press(self, hot, false);
+                    press(self, 1, false);
+                    self.use_tick0 = now;
+                    self.use_stage = 32;
+                } else if now >= self.use_tick0 + 40 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.use_skip = Some("the crafting table never opened".into());
+                    }
+                    self.use_stage = 40;
+                    self.use_tick0 = now;
+                }
+            }
+            32 => {
+                let result = menu_slot(self, 0);
+                if result
+                    .as_ref()
+                    .is_some_and(|(n, _)| n == "minecraft:oak_planks")
+                {
+                    if let Some(c) = self.check.as_mut() {
+                        c.craft_result = result.clone();
+                    }
+                    press(self, 0, true);
+                    self.use_tick0 = now;
+                    self.use_stage = 33;
+                } else if now >= self.use_tick0 + 40 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.craft_result = result;
+                    }
+                    self.use_stage = 33;
+                    self.use_tick0 = now;
+                }
+            }
+            // The player inventory is its own menu here, which the server
+            // settles once the container closes (`transferState`, then
+            // `broadcastChanges`): count after the close.
+            33 if now >= self.use_tick0 + 10 => {
+                self.close_container_screen();
+                self.use_tick0 = now;
+                self.use_stage = 34;
+            }
+            34 if now >= self.use_tick0 + 10 => {
+                let planks = inventory_count(self, "minecraft:oak_planks");
+                let logs = inventory_count(self, "minecraft:oak_log");
+                if let Some(c) = self.check.as_mut() {
+                    c.craft_inventory = Some((planks, logs));
+                }
+                // Slot 0 selected BEFORE the main hand is filled, so the ore
+                // and the coal sit in hotbar 0 and 1 (furnace menu 30, 31).
+                if let Some(s) = self.session.as_mut() {
+                    let _ = s.select_hotbar(0);
+                }
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:raw_iron 1",
+                );
+                cmd(
+                    self,
+                    "item replace entity @s hotbar.1 with minecraft:coal 1",
+                );
+                self.use_tick0 = now;
+                self.use_stage = 40;
+            }
+            // r98 — the furnace: ore and fuel placed by clicks, the furnace
+            // lights and cooks (its container data), and the ingot staged in
+            // its result slot shift-clicked out.
+            40 if now >= self.use_tick0 + 8 && !self.screen.inventory_open() => {
+                aim(self, furnace);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 41;
+            }
+            41 => {
+                if shown(self) == Some("furnace") {
+                    if let Some(c) = self.check.as_mut() {
+                        c.furnace_opened = true;
+                    }
+                    press(self, 30, false);
+                    press(self, 0, false);
+                    press(self, 31, false);
+                    press(self, 1, false);
+                    self.use_tick0 = now;
+                    self.use_stage = 42;
+                } else if now >= self.use_tick0 + 40 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.use_skip = Some("the furnace never opened".into());
+                    }
+                    self.use_stage = 60;
+                }
+            }
+            42 => {
+                // `AbstractFurnaceMenu` data: 0 litTime, 2 cookingProgress.
+                let (lit, cook) = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.menus.open())
+                    .map_or((0, 0), |m| (m.data(0), m.data(2)));
+                if lit > 0 && cook > 0 || now >= self.use_tick0 + 60 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.furnace_data = Some((lit, cook));
+                    }
+                    press(self, 2, true);
+                    self.use_tick0 = now;
+                    self.use_stage = 43;
+                }
+            }
+            43 if now >= self.use_tick0 + 10 => {
+                self.close_container_screen();
+                self.use_tick0 = now;
+                self.use_stage = 44;
+            }
+            44 if now >= self.use_tick0 + 10 => {
+                let ingots = inventory_count(self, "minecraft:iron_ingot");
+                if let Some(c) = self.check.as_mut() {
+                    c.furnace_taken = ingots;
+                }
+                self.use_stage = 60;
+            }
+            60 => {
                 cmd(self, "gamemode creative");
-                self.use_stage = 20;
+                self.use_stage = 100;
             }
             _ => {}
         }

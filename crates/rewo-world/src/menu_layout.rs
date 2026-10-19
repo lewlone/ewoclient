@@ -203,6 +203,24 @@ pub struct MenuLayout {
 
 impl MenuLayout {
     /// Total slot count — the length of the wire's `container_set_content` list.
+    /// M232 — the menu slot where `addStandardInventorySlots` begins (its
+    /// 27 main slots, inventory indices 9..=35, then the 9 hotbar slots,
+    /// 0..=8), or `None` for a menu without the player's inventory (the
+    /// lectern).
+    pub const fn standard_inventory_start(&self) -> Option<usize> {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.blocks.len() {
+            n += match self.blocks[i] {
+                SlotBlock::One { .. } | SlotBlock::Inactive => 1,
+                SlotBlock::Grid { cols, rows, .. } => (cols as usize) * (rows as usize),
+                SlotBlock::StandardInventory { .. } => return Some(n),
+            };
+            i += 1;
+        }
+        None
+    }
+
     pub const fn slot_count(&self) -> usize {
         let mut n = 0;
         let mut i = 0;
@@ -1135,6 +1153,28 @@ pub fn layout_of(protocol_id: i32) -> Option<&'static MenuLayout> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M232 — where a menu's player inventory begins: after the crafting
+    /// table's result and grid, after the furnace's three slots, after a
+    /// chest's 27; the lectern has none.
+    #[test]
+    fn the_player_inventory_starts_after_the_containers_own_slots() {
+        let by = |name: &str| {
+            REGISTRY
+                .iter()
+                .find(|l| l.name == name)
+                .unwrap_or_else(|| panic!("no {name} layout"))
+                .standard_inventory_start()
+        };
+        assert_eq!(by("crafting"), Some(10));
+        assert_eq!(by("furnace"), Some(3));
+        assert_eq!(by("generic_9x3"), Some(27));
+        assert_eq!(by("lectern"), None);
+        // The player's own menu: after the result, the 2x2 grid and the
+        // armour, at 9 (the mirror never runs on it: it only copies an OPEN
+        // container's part).
+        assert_eq!(PLAYER.standard_inventory_start(), Some(9));
+    }
 
     #[test]
     fn the_registry_is_dense_and_in_id_order() {

@@ -807,158 +807,7 @@ impl ApplicationHandler for LiveApp {
             WindowEvent::MouseInput {
                 state: btn, button, ..
             } if btn == ElementState::Pressed && self.screen.inventory_open() => {
-                // A click on the screen moves items; it never digs or places.
-                let ext = self.state.as_ref().map(|s| s.window.inner_size());
-                let items = self.items.clone();
-                if let (Some(session), Some(ext)) = (self.session.as_mut(), ext) {
-                    let b = match button {
-                        MouseButton::Left => 0,
-                        MouseButton::Right => 1,
-                        _ => return,
-                    };
-                    // M98 — the recipe book is pressed before EVERYTHING:
-                    // `AbstractRecipeBookScreen.mouseClicked` runs the book and
-                    // only calls `super` when the book declines.
-                    // The bake's display names, or an empty map when there is
-                    // no bake — in which case `search_entry_of` falls back to
-                    // the id's prettified path, which is the same fallback the
-                    // tooltip takes. Degrading rather than disabling the book's
-                    // clicks.
-                    static NO_NAMES: std::sync::OnceLock<
-                        std::collections::HashMap<String, String>,
-                    > = std::sync::OnceLock::new();
-                    let display = self
-                        .baked
-                        .as_ref()
-                        .map(|b| &b.item_names)
-                        .unwrap_or_else(|| NO_NAMES.get_or_init(Default::default));
-                    if book_press(
-                        session,
-                        &mut self.screen,
-                        &items,
-                        // M107 — `event.hasShiftDown()`, straight through to
-                        // `useMaxItems`.
-                        self.shift,
-                        display,
-                        b == 1,
-                        ext.width as f32,
-                        ext.height as f32,
-                    ) {
-                        return;
-                    }
-                    // M187 — the recipe-book button: a screen widget, so it is
-                    // `super.mouseClicked`'s first act once the book declined.
-                    if book_button_press(
-                        session,
-                        &mut self.screen,
-                        b == 0,
-                        ext.width as f32,
-                        ext.height as f32,
-                    ) {
-                        return;
-                    }
-                    // M92f — an enchanting row is pressed BEFORE the slot
-                    // logic, and only then. `EnchantmentScreen.mouseClicked`
-                    // runs its three-row loop first and calls
-                    // `super.mouseClicked` only when no row took the press, so
-                    // a click on a *disabled* row still falls through to the
-                    // normal slot handling (which finds nothing there).
-                    if enchant_press(session, &self.screen, ext.width as f32, ext.height as f32) {
-                        return;
-                    }
-                    // M93m — the beacon's buttons, on the same seam and for
-                    // the same reason: a live widget consumes the click and
-                    // it never reaches the slot logic, while a DARK one falls
-                    // through exactly as a disabled enchanting row does.
-                    if beacon_press(
-                        session,
-                        &mut self.screen,
-                        &self.beacon_effects,
-                        ext.width as f32,
-                        ext.height as f32,
-                    ) {
-                        return;
-                    }
-                    // M93s — the stonecutter's grid. Same seam, and vanilla's
-                    // own order: the recipe loop runs first and returns true
-                    // on a hit, then the scrollbar's grab box sets `scrolling`
-                    // and DOES NOT consume the press — it falls through to
-                    // `super.mouseClicked`, so a grab still reaches the slots.
-                    if cut_press(
-                        session,
-                        &mut self.screen,
-                        &items,
-                        ext.width as f32,
-                        ext.height as f32,
-                    ) {
-                        return;
-                    }
-                    // M186 — the loom's pattern grid, the stonecutter's
-                    // shape: a pattern consumes the press.
-                    if loom_press(
-                        session,
-                        &mut self.screen,
-                        &items,
-                        ext.width as f32,
-                        ext.height as f32,
-                    ) {
-                        return;
-                    }
-                    // M93u — the merchant's trade buttons, on the same seam.
-                    if merchant_press(
-                        session,
-                        &mut self.screen,
-                        ext.width as f32,
-                        ext.height as f32,
-                    ) {
-                        return;
-                    }
-                    // `AbstractContainerScreen.mouseClicked`'s double click:
-                    // the **same slot**, the **left** button, and under 250 ms
-                    // since the last one. Not "two clicks anywhere in
-                    // 250 ms" — moving to a neighbouring slot resets it.
-                    let layout = session.shown_menu().layout();
-                    let slot = self.screen.hovered(
-                        layout,
-                        ext.width as f32,
-                        ext.height as f32,
-                        book_visible(session),
-                    );
-                    let now = std::time::Instant::now();
-                    let doubled = b == 0
-                        && slot.is_some()
-                        && self.last_click == slot
-                        && now.duration_since(self.last_click_at).as_millis() < 250;
-                    self.last_click = slot;
-                    self.last_click_at = now;
-                    // With a stack already on the cursor a press starts a
-                    // drag rather than a click. The two are told apart at
-                    // *release*: a drag that never left its slot collapses
-                    // back into the click it looks like, which is exactly what
-                    // vanilla's one-slot special case does.
-                    if session.inventory.carried().is_some() && !self.shift && !doubled {
-                        self.drag.begin(b);
-                        if let Some(slot) = slot {
-                            self.drag.add(slot);
-                        }
-                        return;
-                    }
-                    let action = if doubled {
-                        SlotAction::PickupAll
-                    } else if self.shift {
-                        SlotAction::QuickMove
-                    } else {
-                        SlotAction::Pickup(b)
-                    };
-                    click_screen(
-                        session,
-                        &items,
-                        &mut self.screen,
-                        action,
-                        ext.width as f32,
-                        ext.height as f32,
-                    );
-                }
+                self.screen_mouse_press(button);
             }
             // M173 — releasing ends a slider drag, unconditionally (the
             // M93s rule: a screen that vanished mid-drag must not strand the
@@ -991,24 +840,7 @@ impl ApplicationHandler for LiveApp {
                 state: ElementState::Released,
                 ..
             } if self.screen.inventory_open() => {
-                let items = self.items.clone();
-                // `StonecutterScreen.mouseReleased` clears `scrolling`
-                // unconditionally — not gated on `displayRecipes`, so a list
-                // that vanishes mid-drag does not strand the grab (M93s).
-                if let Some(c) = self.screen.cut.as_mut() {
-                    c.scrolling = false;
-                }
-                // M189 — `LoomScreen.mouseReleased`, the same unconditional
-                // clear.
-                if let Some(l) = self.screen.loom.as_mut() {
-                    l.scrolling = false;
-                }
-                if let Some(m) = self.screen.merchant.as_mut() {
-                    m.dragging = false;
-                }
-                if let Some(session) = self.session.as_mut() {
-                    finish_drag(session, &items, &mut self.drag);
-                }
+                self.screen_mouse_release();
             }
             // M217 — releasing the attack key: `continueAttack(false)` →
             // `stopDestroyBlock`, which aborts a block in progress.
@@ -2236,6 +2068,189 @@ impl LiveApp {
     /// `pickBlockOrEntity` (M218): the entity under the crosshair, else the
     /// block, with `includeData` from Ctrl. The server answers (in creative it
     /// puts the item in the hotbar; in survival it selects a matching stack).
+    /// A mouse release over an open container screen (M232: lifted out of
+    /// the event arm with [`Self::screen_mouse_press`]): it ends a drag — a
+    /// press with a stack on the cursor only STARTS one, and the release
+    /// decides whether it was a click or a spread (M40).
+    pub(super) fn screen_mouse_release(&mut self) {
+        let items = self.items.clone();
+        // `StonecutterScreen.mouseReleased` clears `scrolling`
+        // unconditionally — not gated on `displayRecipes`, so a list
+        // that vanishes mid-drag does not strand the grab (M93s).
+        if let Some(c) = self.screen.cut.as_mut() {
+            c.scrolling = false;
+        }
+        // M189 — `LoomScreen.mouseReleased`, the same unconditional
+        // clear.
+        if let Some(l) = self.screen.loom.as_mut() {
+            l.scrolling = false;
+        }
+        if let Some(m) = self.screen.merchant.as_mut() {
+            m.dragging = false;
+        }
+        if let Some(session) = self.session.as_mut() {
+            finish_drag(session, &items, &mut self.drag);
+        }
+    }
+
+    /// A mouse press over an open container screen (M232: lifted out of the
+    /// event arm so the render check's crafting and furnace witnesses press
+    /// through the same code): the recipe book, the screen's widgets, the
+    /// enchanting rows and the beacon, then the slot under the cursor.
+    pub(super) fn screen_mouse_press(&mut self, button: MouseButton) {
+        // A click on the screen moves items; it never digs or places.
+        let ext = self.state.as_ref().map(|s| s.window.inner_size());
+        let items = self.items.clone();
+        if let (Some(session), Some(ext)) = (self.session.as_mut(), ext) {
+            let b = match button {
+                MouseButton::Left => 0,
+                MouseButton::Right => 1,
+                _ => return,
+            };
+            // M98 — the recipe book is pressed before EVERYTHING:
+            // `AbstractRecipeBookScreen.mouseClicked` runs the book and
+            // only calls `super` when the book declines.
+            // The bake's display names, or an empty map when there is
+            // no bake — in which case `search_entry_of` falls back to
+            // the id's prettified path, which is the same fallback the
+            // tooltip takes. Degrading rather than disabling the book's
+            // clicks.
+            static NO_NAMES: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+                std::sync::OnceLock::new();
+            let display = self
+                .baked
+                .as_ref()
+                .map(|b| &b.item_names)
+                .unwrap_or_else(|| NO_NAMES.get_or_init(Default::default));
+            if book_press(
+                session,
+                &mut self.screen,
+                &items,
+                // M107 — `event.hasShiftDown()`, straight through to
+                // `useMaxItems`.
+                self.shift,
+                display,
+                b == 1,
+                ext.width as f32,
+                ext.height as f32,
+            ) {
+                return;
+            }
+            // M187 — the recipe-book button: a screen widget, so it is
+            // `super.mouseClicked`'s first act once the book declined.
+            if book_button_press(
+                session,
+                &mut self.screen,
+                b == 0,
+                ext.width as f32,
+                ext.height as f32,
+            ) {
+                return;
+            }
+            // M92f — an enchanting row is pressed BEFORE the slot
+            // logic, and only then. `EnchantmentScreen.mouseClicked`
+            // runs its three-row loop first and calls
+            // `super.mouseClicked` only when no row took the press, so
+            // a click on a *disabled* row still falls through to the
+            // normal slot handling (which finds nothing there).
+            if enchant_press(session, &self.screen, ext.width as f32, ext.height as f32) {
+                return;
+            }
+            // M93m — the beacon's buttons, on the same seam and for
+            // the same reason: a live widget consumes the click and
+            // it never reaches the slot logic, while a DARK one falls
+            // through exactly as a disabled enchanting row does.
+            if beacon_press(
+                session,
+                &mut self.screen,
+                &self.beacon_effects,
+                ext.width as f32,
+                ext.height as f32,
+            ) {
+                return;
+            }
+            // M93s — the stonecutter's grid. Same seam, and vanilla's
+            // own order: the recipe loop runs first and returns true
+            // on a hit, then the scrollbar's grab box sets `scrolling`
+            // and DOES NOT consume the press — it falls through to
+            // `super.mouseClicked`, so a grab still reaches the slots.
+            if cut_press(
+                session,
+                &mut self.screen,
+                &items,
+                ext.width as f32,
+                ext.height as f32,
+            ) {
+                return;
+            }
+            // M186 — the loom's pattern grid, the stonecutter's
+            // shape: a pattern consumes the press.
+            if loom_press(
+                session,
+                &mut self.screen,
+                &items,
+                ext.width as f32,
+                ext.height as f32,
+            ) {
+                return;
+            }
+            // M93u — the merchant's trade buttons, on the same seam.
+            if merchant_press(
+                session,
+                &mut self.screen,
+                ext.width as f32,
+                ext.height as f32,
+            ) {
+                return;
+            }
+            // `AbstractContainerScreen.mouseClicked`'s double click:
+            // the **same slot**, the **left** button, and under 250 ms
+            // since the last one. Not "two clicks anywhere in
+            // 250 ms" — moving to a neighbouring slot resets it.
+            let layout = session.shown_menu().layout();
+            let slot = self.screen.hovered(
+                layout,
+                ext.width as f32,
+                ext.height as f32,
+                book_visible(session),
+            );
+            let now = std::time::Instant::now();
+            let doubled = b == 0
+                && slot.is_some()
+                && self.last_click == slot
+                && now.duration_since(self.last_click_at).as_millis() < 250;
+            self.last_click = slot;
+            self.last_click_at = now;
+            // With a stack already on the cursor a press starts a
+            // drag rather than a click. The two are told apart at
+            // *release*: a drag that never left its slot collapses
+            // back into the click it looks like, which is exactly what
+            // vanilla's one-slot special case does.
+            if session.inventory.carried().is_some() && !self.shift && !doubled {
+                self.drag.begin(b);
+                if let Some(slot) = slot {
+                    self.drag.add(slot);
+                }
+                return;
+            }
+            let action = if doubled {
+                SlotAction::PickupAll
+            } else if self.shift {
+                SlotAction::QuickMove
+            } else {
+                SlotAction::Pickup(b)
+            };
+            click_screen(
+                session,
+                &items,
+                &mut self.screen,
+                action,
+                ext.width as f32,
+                ext.height as f32,
+            );
+        }
+    }
+
     /// M229 — the use key going down: `keyUse.consumeClick()` ->
     /// `startUseItem`, unless an item is already in use (`handleKeybinds`
     /// drains the clicks then). Held, `use_tick` repeats it.
