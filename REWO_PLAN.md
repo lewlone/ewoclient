@@ -2056,6 +2056,7 @@ this shape once.
 | M231 (2026-10-19) — walking while eating goes at a fifth of the walking speed (`itemUseSpeedMultiplier`) | **r96** | — | — |
 | M232 (2026-10-19) — a real crafting table crafts and a real furnace lights, cooks and gives up its result, in survival (and what was taken reaches the player inventory) | **r97**, **r98** | — | — |
 | M233 (2026-10-19) — drawing a bow narrows the frame's FOV to 0.85 of the standing FOV (vanilla's dynamic FOV) | **r99** | — | — |
+| M234 (2026-10-19) — a fully drawn bow's first-person model is `bow_pulling_2` (item-model use variants) | **r100** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3890,6 +3891,45 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M234 — the bow, crossbow and goat horn change model when used (2026-10-19)
+
+Item models were baked once per item with `SelectionContext::hand()`, whose
+use state is "not using", so a drawn bow stayed the resting bow, a loading
+or loaded crossbow stayed the empty one, and a tooting goat horn was never
+raised. Three item definitions in the jar branch on use: the bow
+(`using_item` → `use_duration` × 0.05 over 0.65 / 0.9), the crossbow
+(`charge_type` arrow / rocket, else `using_item` → `crossbow/pull` over
+0.58 / 1.0) and the goat horn (`using_item` → `tooting_goat_horn`, the same
+sprite with a raised hold).
+
+- `item_models`: the reduction reads `use_duration` (and `"remaining"`),
+  `crossbow/pull` and `charge_type` from the context, `scale` included, in
+  float as `RangeSelectItemModel` does; `reduce_definition` is now a loop
+  over one `chosen_child` step, which `use_variant_leaves` reuses to list
+  every model a use can reach.
+- The bake keeps those definitions and bakes each reachable model as
+  `"<item>#<model ref>"`; `UseVariants::select` reduces with the live state
+  and names the variant to draw. `live_cmd::use_model` builds that state:
+  the entity's use hand and ticks (`getUseItem() == itemStack`), the
+  crossbow's pull over its 25-tick charge, and the loaded projectile.
+- The crossbow's projectile now rides the decode: `PatchCharged::Set` and
+  `HeldItem::charged` carry the first projectile's item id (was a bool), and
+  `StackDetail::charged_projectile` carries it for the local player's own
+  stacks, so a rocket-loaded crossbow shows the firework model.
+- Both draw paths go through it: the first-person hand and every entity's
+  held items (other players draw their bows drawn too).
+
+Recorded: Quick Charge does not shorten the 25-tick charge (its effect is a
+datapack value not resolved here), so an enchanted crossbow's pull frames
+run late; the shield and trident are `special` models (their use poses
+already exist; their models are not item-model variants here).
+
+itemshot **a10** (every variant baked, with its own sprite or hold) and
+**a11** (selection at the jar's thresholds, worked by hand: 13 and 18 ticks
+for the bow, 0.58 and 1.0 of 25 for the crossbow, the charge winning over
+the use). **r100**: the first-person hand drew `minecraft:bow` standing and
+`minecraft:bow#minecraft:item/bow_pulling_2` after 40 ticks drawing.
 
 ### M233 — the dynamic field of view (2026-10-19)
 

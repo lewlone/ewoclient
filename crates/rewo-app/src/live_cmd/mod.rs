@@ -238,6 +238,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let items = std::sync::Arc::new(data.items.clone());
     let blocks = std::sync::Arc::new(data.blocks.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
+    // M234 — the use-model variants and the rocket `Charge` asks about.
+    let _ = USE_VARIANTS.set(baked.held_items.use_variants());
+    let _ = FIREWORK_ROCKET_ITEM.set(data.items.id("minecraft:firework_rocket"));
     // M73: the crosshair entity pick's two version tables. Both fail loud
     // here rather than at the first frame — a drifted table would otherwise
     // show up as "nothing is ever under the crosshair".

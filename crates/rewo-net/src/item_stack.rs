@@ -147,9 +147,12 @@ impl WireStack {
 /// What a stack's `DataComponentPatch` said about
 /// `minecraft:charged_projectiles`.
 ///
-/// The value is reduced to "is the projectile list non-empty", because that is
-/// all `CrossbowItem.isCharged` asks:
-/// `!getOrDefault(CHARGED_PROJECTILES, ChargedProjectiles.EMPTY).isEmpty()`.
+/// The value is reduced to its first projectile's item id: whether there is
+/// one is all `CrossbowItem.isCharged` asks
+/// (`!getOrDefault(CHARGED_PROJECTILES, ChargedProjectiles.EMPTY).isEmpty()`),
+/// and what it is answers the item model's `Charge` select (M234,
+/// `contains(FIREWORK_ROCKET)`; a multishot crossbow loads three copies of
+/// one projectile, so the first is the list's answer).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PatchCharged {
     /// The patch did not mention the component, so the item prototype answers.
@@ -157,8 +160,9 @@ pub enum PatchCharged {
     /// *not charged*.
     #[default]
     Absent,
-    /// The patch set it: `true` when the list has at least one projectile.
-    Set(bool),
+    /// The patch set it: the first projectile's item id, `None` for an empty
+    /// list.
+    Set(Option<i32>),
     /// The patch *removed* it. `getOrDefault` then hands back
     /// `ChargedProjectiles.EMPTY` — not charged.
     Removed,
@@ -168,7 +172,15 @@ impl PatchCharged {
     /// `CrossbowItem.isCharged(stack)`. `Absent` and `Removed` both resolve
     /// through `ChargedProjectiles.EMPTY`, so both are `false`.
     pub const fn is_charged(self) -> bool {
-        matches!(self, PatchCharged::Set(true))
+        matches!(self, PatchCharged::Set(Some(_)))
+    }
+
+    /// M234 — the loaded projectile's item id, if the crossbow is charged.
+    pub const fn projectile(self) -> Option<i32> {
+        match self {
+            PatchCharged::Set(p) => p,
+            PatchCharged::Absent | PatchCharged::Removed => None,
+        }
     }
 }
 
@@ -284,6 +296,9 @@ pub struct StackComponents {
     /// there. No prototype carries MAP_ID, so a patch is the only source and
     /// the three-step `has()` collapses to this one bit.
     pub has_map_id: bool,
+    /// M234 — `minecraft:charged_projectiles`' first item id, carried into
+    /// [`StackDetail`] (the walk sets it beside [`WireStack::charged`]).
+    pub charged_projectile: Option<i32>,
     /// Its value (M191) — the tooltip's `ID #n` and the key into the level's
     /// maps. `has_map_id` stays the predicate the menus ask.
     pub map_id: Option<i32>,
@@ -567,6 +582,9 @@ pub struct StackDetail {
     pub map_id: Option<i32>,
     /// `minecraft:banner_patterns`' layer count (M200), for the loom.
     pub banner_layers: Option<u32>,
+    /// M234 — a charged crossbow's first projectile (item id), for the item
+    /// model's `Charge` select on the local player's own stacks.
+    pub charged_projectile: Option<i32>,
 }
 
 impl StackDetail {
@@ -581,6 +599,7 @@ impl StackDetail {
             && self.removed.is_empty()
             && self.map_id.is_none()
             && self.banner_layers.is_none()
+            && self.charged_projectile.is_none()
     }
 
     /// The occupied slots, in order — [`StackComponents::container_items`] for
@@ -599,6 +618,7 @@ impl StackComponents {
             removed: self.removed.clone(),
             map_id: self.map_id,
             banner_layers: self.banner_layers,
+            charged_projectile: self.charged_projectile,
         }
     }
 }
@@ -730,7 +750,10 @@ fn read_patch_at(
             swing = PatchSwing::Set(SwingAnimation::new(kind, duration));
         } else if ty == ids.charged_projectiles {
             match read_projectile_list(r, ids, depth)? {
-                Some(non_empty) => charged = PatchCharged::Set(non_empty),
+                Some(first) => {
+                    charged = PatchCharged::Set(first);
+                    comps.charged_projectile = first;
+                }
                 // A nested patch this decoder cannot walk. The reader is parked
                 // mid-value, so the whole enclosing stack is unwalkable — the
                 // charge answer is lost with it.
@@ -1046,7 +1069,7 @@ fn read_projectile_list(
     r: &mut PacketReader,
     ids: DataComponentIds,
     depth: u32,
-) -> Result<Option<bool>, ()> {
+) -> Result<Option<Option<i32>>, ()> {
     if depth >= MAX_PATCH_DEPTH {
         return Ok(None);
     }
@@ -1056,15 +1079,17 @@ fn read_projectile_list(
     if !(0..=1024).contains(&len) {
         return Err(());
     }
+    let mut first = None;
     for _ in 0..len {
-        r.varint().map_err(|_| ())?; // Item.STREAM_CODEC — raw registry id
+        let item = r.varint().map_err(|_| ())?; // Item.STREAM_CODEC — raw registry id
+        first = first.or(Some(item));
         r.varint().map_err(|_| ())?; // ByteBufCodecs.VAR_INT — count
         let (outcome, _, _, _) = read_patch_at(r, ids, depth + 1)?;
         if outcome == PatchOutcome::Unwalkable {
             return Ok(None);
         }
     }
-    Ok(Some(len > 0))
+    Ok(Some(first))
 }
 
 /// The value `ItemStack.getSwingAnimation()` would return for a decoded stack,

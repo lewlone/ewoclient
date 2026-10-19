@@ -4099,7 +4099,10 @@ impl<'a> Baker<'a> {
         trims: &crate::equipment::TrimAssets,
     ) -> crate::held_items::HeldItems {
         use crate::held_items::{HeldItemModel, HeldItems, TexturePool};
-        use crate::item_models::{resolve_definition, ItemGeometry, ItemModel, SelectionContext};
+        use crate::item_models::{
+            reduce_definition, resolve_definition, use_variant_leaves, ItemGeometry, ItemModel,
+            SelectionContext,
+        };
 
         let mut names: Vec<String> = self
             .jar
@@ -4117,6 +4120,7 @@ impl<'a> Baker<'a> {
         // Phase 1: resolve definitions (no geometry yet).
         let mut resolved: Vec<(String, ItemModel, Option<ItemGeometry>)> =
             Vec::with_capacity(names.len());
+        let mut dynamic: HashMap<String, serde_json::Value> = HashMap::new();
         for name in &names {
             let Some(def) = self.read_json(&format!("assets/minecraft/items/{name}.json")) else {
                 resolved.push((
@@ -4169,6 +4173,35 @@ impl<'a> Baker<'a> {
                     _ => None,
                 };
                 resolved.push((format!("{name}#{material}"), m, gg));
+            }
+
+            // M234: a definition that branches on the owner's use or a
+            // crossbow's charge (the bow, the crossbow, the goat horn) gets
+            // one more bake per model it can reach that way, keyed
+            // `"<item>#<model reference>"`; the draw path reduces the kept
+            // definition with the live state ([`HeldItems::select`]) and
+            // draws the variant it lands on. A leaf that does not resolve on
+            // its own is skipped rather than counted: it is not an item.
+            if let Some(root) = def.get("model") {
+                let hand_ctx = SelectionContext::hand();
+                let plain = reduce_definition(root, hand_ctx).ok();
+                let leaves = use_variant_leaves(root, hand_ctx);
+                for leaf in &leaves {
+                    if plain.is_some_and(|p| std::ptr::eq(p, *leaf)) {
+                        continue;
+                    }
+                    let Some(reference) = leaf.get("model").and_then(|m| m.as_str()) else {
+                        continue;
+                    };
+                    let one = serde_json::json!({ "model": (*leaf).clone() });
+                    let m = resolve_definition(&one, &mut read_model, hand_ctx);
+                    if matches!(m, ItemModel::Resolved { .. }) {
+                        resolved.push((format!("{name}#{reference}"), m, None));
+                    }
+                }
+                if !leaves.is_empty() {
+                    dynamic.insert(format!("minecraft:{name}"), root.clone());
+                }
             }
         }
 
@@ -4314,6 +4347,7 @@ impl<'a> Baker<'a> {
             block_entities,
             textures: pool.into_textures(),
             unsupported,
+            dynamic,
         };
         log::info!(
             "rewo-data: held items — {} resolved ({} block + {} sprite), {} textures, {} unsupported",

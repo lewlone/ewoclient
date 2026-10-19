@@ -394,6 +394,9 @@ pub struct HandState {
     /// when one arrives.
     pub(super) skin: Option<(Vec<u8>, bool)>,
     pub(super) held: rewo_gpu::held::HeldItems,
+    /// M234 — the model name the main hand drew last frame (r100).
+    #[cfg(feature = "gates")]
+    pub(super) last_main_model: Option<String>,
     /// The tick the clocks were last advanced on, so they step once per client
     /// tick rather than once per frame.
     pub(super) last_tick: u64,
@@ -440,6 +443,8 @@ impl HandState {
             held: to_gpu_held_items(&baked.held_items),
             last_tick: 0,
             forced_attack: None,
+            #[cfg(feature = "gates")]
+            last_main_model: None,
             started: std::time::Instant::now(),
             glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
             map_backgrounds: match (
@@ -695,12 +700,39 @@ pub(super) fn apply_hand(
 
     // The item on screen is the one the equip clock says, which lags the held
     // one across a swap — that is the whole point of the dip.
-    let model_of = |id: Option<i32>| {
-        id.and_then(|i| items.name(i))
-            .and_then(|n| state.held.any(n))
+    //
+    // M234 — through the item's use variant: a drawn bow's pull frames, a
+    // loading or loaded crossbow, a tooting horn. The charge comes from the
+    // inventory stack's detail, and only while the stack on screen is still
+    // the one in the hand.
+    let local_use = session.local_use_state();
+    let model_of = |id: Option<i32>, hand: rewo_world::entities::InteractionHand| {
+        let id = id?;
+        let stack = match hand {
+            rewo_world::entities::InteractionHand::MainHand => session.inventory.held(),
+            rewo_world::entities::InteractionHand::OffHand => session.inventory.offhand(),
+        };
+        let charged = stack
+            .filter(|s| s.item_id == id)
+            .and_then(|s| session.stack_details.get(s.components))
+            .and_then(|d| d.charged_projectile);
+        let name = use_model(items.name(id)?, local_use, hand, charged);
+        state.held.any(name).map(|m| (name, m))
     };
-    let main_item = model_of(state.main_equip.visible_item());
-    let off_item = model_of(state.off_equip.visible_item());
+    let main = model_of(
+        state.main_equip.visible_item(),
+        rewo_world::entities::InteractionHand::MainHand,
+    );
+    #[cfg(feature = "gates")]
+    {
+        state.last_main_model = main.map(|(n, _)| n.to_string());
+    }
+    let main_item = main.map(|(_, m)| m);
+    let off_item = model_of(
+        state.off_equip.visible_item(),
+        rewo_world::entities::InteractionHand::OffHand,
+    )
+    .map(|(_, m)| m);
 
     // M192 — `ItemInHandRenderer`'s map branch: a stack that `has(MAP_ID)`
     // is drawn as a map, two-handed in the main hand with an empty off-hand,

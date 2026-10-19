@@ -2856,7 +2856,7 @@ fn resolve_attack_anim_extracts_the_armed_render_state() {
             item_id: 1329,
             swing: SwingAnimation::new(SwingAnimationType::Stab, 19),
             use_profile: rewo_data::use_item::UseProfile::UNUSABLE,
-            charged: false,
+            charged: None,
             glint: false,
         }),
     );

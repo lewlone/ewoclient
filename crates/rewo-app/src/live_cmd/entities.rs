@@ -1320,7 +1320,7 @@ pub(crate) fn resolve_arm_poses(
             }
             HandItem::Held(h) => h,
         };
-        if !swinging && Some(held.item_id) == crossbow_item && held.charged {
+        if !swinging && Some(held.item_id) == crossbow_item && held.charged.is_some() {
             return ArmPose::CrossbowHold;
         }
         if use_state.poses_hand(hand) {
@@ -1547,6 +1547,55 @@ pub(super) fn crossbow_item_id() -> Option<i32> {
 /// than guessed.
 pub(crate) static CROSSBOW_ITEM: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
 
+/// M234 — the item models that branch on use (the bow's and crossbow's
+/// pull, the crossbow's charge, the goat horn's toot) and the firework
+/// rocket the crossbow's `Charge` select asks about, set once at session
+/// setup beside [`CROSSBOW_ITEM`]. Unset, every item draws its plain model.
+pub(crate) static USE_VARIANTS: std::sync::OnceLock<rewo_data::held_items::UseVariants> =
+    std::sync::OnceLock::new();
+pub(crate) static FIREWORK_ROCKET_ITEM: std::sync::OnceLock<Option<i32>> =
+    std::sync::OnceLock::new();
+
+/// `CrossbowItem.getChargeDuration` without Quick Charge:
+/// `Mth.floor(1.25F * 20.0F)`.
+pub(crate) const CROSSBOW_CHARGE_TICKS: i32 = 25;
+
+/// M234 — the model an entity's stack in `hand` draws with: the item model's
+/// use properties read the entity's use when `hand` is its use hand
+/// (`IsUsingItem` / `UseDuration` both test `getUseItem() == itemStack`), and
+/// a crossbow's loaded projectile (`charged`, its item id) answers `Charge`
+/// and zeroes `CrossbowPull`. `name` itself for anything without a variant.
+///
+/// Recorded: Quick Charge does not shorten [`CROSSBOW_CHARGE_TICKS`] (the
+/// enchantment's effect is a datapack value the client does not resolve), so
+/// an enchanted crossbow's pull frames run late.
+pub(crate) fn use_model(
+    name: &str,
+    use_state: rewo_world::entities::UseState,
+    hand: rewo_world::entities::InteractionHand,
+    charged: Option<i32>,
+) -> &str {
+    let Some(variants) = USE_VARIANTS.get() else {
+        return name;
+    };
+    if !variants.is_dynamic(name) {
+        return name;
+    }
+    let mut ctx = rewo_data::item_models::SelectionContext::hand();
+    if use_state.using && use_state.hand == hand {
+        let ticks = use_state.ticks_using_item();
+        let pull = if charged.is_some() {
+            0.0
+        } else {
+            ticks as f32 / CROSSBOW_CHARGE_TICKS as f32
+        };
+        ctx = ctx.with_use(ticks, use_state.remaining_ticks(), pull);
+    }
+    let rocket = FIREWORK_ROCKET_ITEM.get().copied().flatten();
+    ctx = ctx.with_charge(charged.map(|p| if Some(p) == rocket { "rocket" } else { "arrow" }));
+    variants.select(name, ctx)
+}
+
 /// The crosshair pick's two version tables (M73), resolved once at session
 /// setup — per-type bounding-box dimensions with `isPickable()`, and the
 /// `redirectable_projectile` tag that rule reads.
@@ -1666,11 +1715,20 @@ pub(crate) fn resolve_held_items<'a>(
     id: i32,
     items: &'a rewo_data::items::Items,
 ) -> [Option<&'a str>; 2] {
-    use rewo_world::entities::HumanoidArm;
+    use rewo_world::entities::{HumanoidArm, InteractionHand};
     let mut out: [Option<&str>; 2] = [None, None];
+    let use_state = entities.use_state(id);
     for (i, arm) in [(0usize, HumanoidArm::Right), (1usize, HumanoidArm::Left)] {
         if let Some(held) = entities.item_by_arm(id, arm).held() {
-            out[i] = items.name(held.item_id);
+            // M234 — which hand this arm holds, for the use variant.
+            let hand = if entities.main_arm(id) == arm {
+                InteractionHand::MainHand
+            } else {
+                InteractionHand::OffHand
+            };
+            out[i] = items
+                .name(held.item_id)
+                .map(|n| use_model(n, use_state, hand, held.charged));
         }
     }
     out

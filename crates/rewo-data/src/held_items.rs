@@ -106,6 +106,57 @@ pub struct HeldItems {
     /// Definition types that were deliberately not resolved, and how many
     /// items each accounted for. Sorted so the load log is stable.
     pub unsupported: BTreeMap<String, usize>,
+    /// M234 — the definitions (their `model` trees) of the items whose model
+    /// branches on the owner's use or a crossbow's charge, keyed by full
+    /// name; their variants are baked into [`Self::models`] as
+    /// `"<item>#<model reference>"`.
+    pub dynamic: HashMap<String, serde_json::Value>,
+}
+
+/// M234 — what [`UseVariants::select`] needs: the definitions of the items
+/// whose model branches on use, and which `"<item>#<model reference>"`
+/// variants of them baked.
+#[derive(Clone, Debug, Default)]
+pub struct UseVariants {
+    dynamic: HashMap<String, serde_json::Value>,
+    keys: std::collections::HashSet<String>,
+}
+
+impl UseVariants {
+    /// The model to draw for `name` in `ctx`: the variant the item's
+    /// definition reduces to with the live state (`IsUsingItem`,
+    /// `UseDuration`, `CrossbowPull`, `Charge`), or `name` itself for an item
+    /// whose model never branches on use, a reduction that lands on the
+    /// plain model, or a variant that did not bake.
+    pub fn select<'s>(
+        &'s self,
+        name: &'s str,
+        ctx: crate::item_models::SelectionContext<'_>,
+    ) -> &'s str {
+        let Some(root) = self.dynamic.get(name) else {
+            return name;
+        };
+        let Some(reference) = crate::item_models::reduce_definition(root, ctx)
+            .ok()
+            .and_then(|leaf| leaf.get("model"))
+            .and_then(|m| m.as_str())
+        else {
+            return name;
+        };
+        self.keys
+            .get(&format!("{name}#{reference}"))
+            .map_or(name, String::as_str)
+    }
+
+    /// Whether `name`'s model branches on use at all.
+    pub fn is_dynamic(&self, name: &str) -> bool {
+        self.dynamic.contains_key(name)
+    }
+
+    /// How many variants baked (for the gate).
+    pub fn variant_count(&self) -> usize {
+        self.keys.len()
+    }
 }
 
 impl HeldItemModel {
@@ -139,6 +190,23 @@ impl HeldItems {
         // missing variant must degrade to it rather than to no icon at all.
         let (base, _) = name.split_once('#')?;
         self.models.get(base)
+    }
+
+    /// M234 — the use-variant table the draw path selects with: the dynamic
+    /// definitions and the variant keys that baked, without the geometry.
+    pub fn use_variants(&self) -> UseVariants {
+        UseVariants {
+            dynamic: self.dynamic.clone(),
+            keys: self
+                .models
+                .keys()
+                .filter(|k| {
+                    k.split_once('#')
+                        .is_some_and(|(base, _)| self.dynamic.contains_key(base))
+                })
+                .cloned()
+                .collect(),
+        }
     }
 
     /// Items whose geometry came from a block model.
@@ -257,6 +325,7 @@ mod tests {
             unsupported: [("minecraft:special".to_string(), 51)]
                 .into_iter()
                 .collect(),
+            dynamic: HashMap::new(),
         };
         assert_eq!(items.block_count(), 2);
         assert_eq!(items.sprite_count(), 1);

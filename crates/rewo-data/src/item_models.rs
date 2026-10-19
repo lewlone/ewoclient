@@ -411,7 +411,7 @@ impl DisplayContext {
 /// not at all. It is the same direction of error [`ItemModel::Unsupported`]
 /// takes (show less, never show wrong geometry for the wrong item), traded for
 /// a visible icon.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SelectionContext<'a> {
     pub display: DisplayContext,
     /// `minecraft:trim_material` — the trim material's **registry id**
@@ -426,6 +426,19 @@ pub struct SelectionContext<'a> {
     /// this stack. M38's use clock can answer it for the local player's hand;
     /// a slot icon is never using anything.
     pub using_item: bool,
+    /// M234 — `UseDuration.useDuration(stack, owner)`, `getUseDuration -
+    /// getUseItemRemainingTicks`: the ticks this stack has been used, 0
+    /// unless it is the owner's use item (`entity.getUseItem() == itemStack`).
+    pub use_ticks: i32,
+    /// `getUseItemRemainingTicks()`, what `use_duration` reads with
+    /// `"remaining": true` (0 likewise unless this is the use item).
+    pub use_remaining: i32,
+    /// M234 — `CrossbowPull.get`: 0 when charged or not this stack's use,
+    /// else `useDuration / getChargeDuration`.
+    pub crossbow_pull: f32,
+    /// M234 — `Charge.get`: `"arrow"` or `"rocket"` for a charged crossbow,
+    /// `None` for `ChargeType.NONE`.
+    pub charge_type: Option<&'a str>,
 }
 
 impl<'a> SelectionContext<'a> {
@@ -434,13 +447,36 @@ impl<'a> SelectionContext<'a> {
             display: DisplayContext::Gui,
             using_item: false,
             trim_material: None,
+            use_ticks: 0,
+            use_remaining: 0,
+            crossbow_pull: 0.0,
+            charge_type: None,
         }
     }
     pub fn hand() -> Self {
         Self {
             display: DisplayContext::FirstPersonRightHand,
-            using_item: false,
-            trim_material: None,
+            ..Self::gui()
+        }
+    }
+
+    /// M234 — the same context for the owner's use item: `using_item`, the
+    /// ticks used and remaining, and the crossbow's pull.
+    pub fn with_use(self, use_ticks: i32, use_remaining: i32, crossbow_pull: f32) -> Self {
+        Self {
+            using_item: true,
+            use_ticks,
+            use_remaining,
+            crossbow_pull,
+            ..self
+        }
+    }
+
+    /// M234 — a charged crossbow's `charge_type`.
+    pub fn with_charge(self, charge_type: Option<&'a str>) -> Self {
+        Self {
+            charge_type,
+            ..self
         }
     }
 
@@ -465,7 +501,6 @@ const ABSENT_ON_A_PLAIN_STACK: &[&str] = &[
     "minecraft:block_state",
     "minecraft:custom_model_data",
     "minecraft:main_hand",
-    "minecraft:charge_type",
 ];
 
 /// Conditions that are false for a component-free, unused stack.
@@ -485,10 +520,9 @@ const FALSE_ON_A_PLAIN_STACK: &[&str] = &[
 
 /// Numeric properties that read **zero** on a component-free, unused stack, so
 /// a `range_dispatch` over them takes the entry at or below zero.
+/// `use_duration` and `crossbow/pull` read the context instead (M234).
 const ZERO_ON_A_PLAIN_STACK: &[&str] = &[
-    "minecraft:use_duration",
     "minecraft:use_cycle",
-    "minecraft:crossbow/pull",
     "minecraft:damage",
     "minecraft:cooldown",
 ];
@@ -505,131 +539,220 @@ pub fn reduce_definition<'v>(
     node: &'v Value,
     ctx: SelectionContext<'_>,
 ) -> Result<&'v Value, String> {
-    fn blocked(node: &Value, property: Option<&str>) -> String {
-        let kind = node
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("(no type)");
-        match property {
-            Some(p) => format!("{kind} ({p})"),
-            None => kind.to_string(),
+    let mut node = node;
+    for _ in 0..=16 {
+        match chosen_child(node, ctx)? {
+            None => return Ok(node),
+            Some(next) => node = next,
         }
     }
-    fn go<'v>(node: &'v Value, ctx: SelectionContext<'_>, depth: u32) -> Result<&'v Value, String> {
-        if depth > 16 {
-            return Err("(definition nested past 16 levels)".into());
+    Err("(definition nested past 16 levels)".into())
+}
+
+fn blocked(node: &Value, property: Option<&str>) -> String {
+    let kind = node
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("(no type)");
+    match property {
+        Some(p) => format!("{kind} ({p})"),
+        None => kind.to_string(),
+    }
+}
+
+/// The `cases` entry whose `when` names `want`.
+fn case_for<'v>(node: &'v Value, want: &str) -> Option<&'v Value> {
+    node.get("cases")
+        .and_then(|c| c.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .find(|c| match c.get("when") {
+            // `when` is either one name or a list of them, and the list form
+            // is not rare — a spear's slot case names four contexts at once.
+            Some(Value::String(s)) => s == want,
+            Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(want)),
+            _ => false,
+        })
+}
+
+/// One step of [`reduce_definition`]: the child `node` selects in `ctx`, or
+/// `None` when `node` is the `minecraft:model` leaf itself.
+fn chosen_child<'v>(
+    node: &'v Value,
+    ctx: SelectionContext<'_>,
+) -> Result<Option<&'v Value>, String> {
+    let Some(kind) = node.get("type").and_then(|t| t.as_str()) else {
+        return Err(blocked(node, None));
+    };
+    match kind {
+        "minecraft:model" => Ok(None),
+        "minecraft:select" => {
+            let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
+                return Err(blocked(node, None));
+            };
+            let chosen = if property == "minecraft:display_context" {
+                case_for(node, ctx.display.wire_name())
+            } else if property == "minecraft:trim_material" {
+                // M49. A trimmed stack picks the case whose `when` is its
+                // material's registry id; an untrimmed one matches nothing and
+                // falls back, which is what vanilla does.
+                ctx.trim_material.and_then(|want| case_for(node, want))
+            } else if property == "minecraft:charge_type" {
+                // M234 — `Charge.get`; `NONE` matches no vanilla case.
+                ctx.charge_type.and_then(|want| case_for(node, want))
+            } else if ABSENT_ON_A_PLAIN_STACK.contains(&property) {
+                // The property reads absent, so no case matches. This is
+                // vanilla's own answer, not a substitution.
+                None
+            } else {
+                return Err(blocked(node, Some(property)));
+            };
+            let next = match chosen {
+                Some(case) => case.get("model"),
+                None => node.get("fallback"),
+            };
+            next.map(Some).ok_or_else(|| blocked(node, Some(property)))
         }
-        let Some(kind) = node.get("type").and_then(|t| t.as_str()) else {
-            return Err(blocked(node, None));
-        };
-        match kind {
-            "minecraft:model" => Ok(node),
-            "minecraft:select" => {
-                let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
-                    return Err(blocked(node, None));
-                };
-                let chosen = if property == "minecraft:display_context" {
-                    let want = ctx.display.wire_name();
-                    node.get("cases")
-                        .and_then(|c| c.as_array())
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[])
-                        .iter()
-                        .find(|c| match c.get("when") {
-                            // `when` is either one name or a list of them, and
-                            // the list form is not rare — a spear's slot case
-                            // names four contexts at once.
-                            Some(Value::String(s)) => s == want,
-                            Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(want)),
-                            _ => false,
-                        })
-                } else if property == "minecraft:trim_material" {
-                    // M49. A trimmed stack picks the case whose `when` is its
-                    // material's registry id; an untrimmed one matches nothing
-                    // and falls back, which is what vanilla does.
-                    ctx.trim_material.and_then(|want| {
-                        node.get("cases")
-                            .and_then(|c| c.as_array())
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[])
-                            .iter()
-                            .find(|c| match c.get("when") {
-                                Some(Value::String(s)) => s == want,
-                                Some(Value::Array(a)) => a.iter().any(|v| v.as_str() == Some(want)),
-                                _ => false,
-                            })
-                    })
-                } else if ABSENT_ON_A_PLAIN_STACK.contains(&property) {
-                    // The property reads absent, so no case matches. This is
-                    // vanilla's own answer, not a substitution.
-                    None
-                } else {
-                    return Err(blocked(node, Some(property)));
-                };
-                let next = match chosen {
-                    Some(case) => case.get("model"),
-                    None => node.get("fallback"),
-                };
-                match next {
-                    Some(n) => go(n, ctx, depth + 1),
-                    None => Err(blocked(node, Some(property))),
-                }
-            }
-            "minecraft:condition" => {
-                let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
-                    return Err(blocked(node, None));
-                };
-                let value = if property == "minecraft:using_item" {
-                    ctx.using_item
-                } else if FALSE_ON_A_PLAIN_STACK.contains(&property) {
-                    false
-                } else {
-                    return Err(blocked(node, Some(property)));
-                };
-                match node.get(if value { "on_true" } else { "on_false" }) {
-                    Some(n) => go(n, ctx, depth + 1),
-                    None => Err(blocked(node, Some(property))),
-                }
-            }
-            "minecraft:range_dispatch" => {
-                let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
-                    return Err(blocked(node, None));
-                };
-                if !ZERO_ON_A_PLAIN_STACK.contains(&property) {
-                    return Err(blocked(node, Some(property)));
-                }
-                // `RangeSelectItemModel` picks the **last** entry whose
-                // threshold the value has reached, and its `fallback` when it
-                // has reached none. At zero that is an entry with a threshold
-                // of zero or below, which `clock` has and `brush` does not.
-                let mut best: Option<(f64, &Value)> = None;
-                let entries = node
-                    .get("entries")
-                    .and_then(|e| e.as_array())
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                for e in entries {
-                    let (Some(t), Some(m)) =
-                        (e.get("threshold").and_then(|t| t.as_f64()), e.get("model"))
-                    else {
-                        return Err(blocked(node, Some(property)));
-                    };
-                    if t <= 0.0 && best.is_none_or(|(bt, _)| t >= bt) {
-                        best = Some((t, m));
+        "minecraft:condition" => {
+            let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
+                return Err(blocked(node, None));
+            };
+            let value = if property == "minecraft:using_item" {
+                ctx.using_item
+            } else if FALSE_ON_A_PLAIN_STACK.contains(&property) {
+                false
+            } else {
+                return Err(blocked(node, Some(property)));
+            };
+            node.get(if value { "on_true" } else { "on_false" })
+                .map(Some)
+                .ok_or_else(|| blocked(node, Some(property)))
+        }
+        "minecraft:range_dispatch" => {
+            let Some(property) = node.get("property").and_then(|p| p.as_str()) else {
+                return Err(blocked(node, None));
+            };
+            let raw = match property {
+                "minecraft:use_duration" => {
+                    if node.get("remaining").and_then(|r| r.as_bool()) == Some(true) {
+                        ctx.use_remaining as f32
+                    } else {
+                        ctx.use_ticks as f32
                     }
                 }
-                match best.map(|(_, m)| m).or_else(|| node.get("fallback")) {
-                    Some(n) => go(n, ctx, depth + 1),
-                    None => Err(blocked(node, Some(property))),
+                "minecraft:crossbow/pull" => ctx.crossbow_pull,
+                p if ZERO_ON_A_PLAIN_STACK.contains(&p) => 0.0,
+                _ => return Err(blocked(node, Some(property))),
+            };
+            // `RangeSelectItemModel.get`: `property.get(..) * scale` (`scale`
+            // defaults to 1), in float.
+            let scale = node.get("scale").and_then(|s| s.as_f64()).unwrap_or(1.0) as f32;
+            let value = raw * scale;
+            // `RangeSelectItemModel` picks the **last** entry whose threshold
+            // the value has reached, and its `fallback` when it has reached
+            // none. At zero that is an entry with a threshold of zero or
+            // below, which `clock` has and `brush` does not.
+            let mut best: Option<(f32, &Value)> = None;
+            let entries = node
+                .get("entries")
+                .and_then(|e| e.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            for e in entries {
+                let (Some(t), Some(m)) =
+                    (e.get("threshold").and_then(|t| t.as_f64()), e.get("model"))
+                else {
+                    return Err(blocked(node, Some(property)));
+                };
+                // Thresholds are floats in vanilla (`Codec.FLOAT`).
+                let t = t as f32;
+                if t <= value && best.is_none_or(|(bt, _)| t >= bt) {
+                    best = Some((t, m));
                 }
             }
-            // `composite` layers several models into one draw and `special`
-            // hands the stack to a bespoke renderer. Both are real work rather
-            // than a branch to evaluate, and both stay suppressed.
-            _ => Err(blocked(node, None)),
+            best.map(|(_, m)| m)
+                .or_else(|| node.get("fallback"))
+                .map(Some)
+                .ok_or_else(|| blocked(node, Some(property)))
+        }
+        // `composite` layers several models into one draw and `special` hands
+        // the stack to a bespoke renderer. Both are real work rather than a
+        // branch to evaluate, and both stay suppressed.
+        _ => Err(blocked(node, None)),
+    }
+}
+
+/// Whether `node` branches on the owner's use or a crossbow's charge (M234):
+/// a `using_item` condition, a `use_duration` / `crossbow/pull` range
+/// dispatch, or a `charge_type` select.
+fn branches_on_use(node: &Value) -> bool {
+    let property = node.get("property").and_then(|p| p.as_str());
+    match node.get("type").and_then(|t| t.as_str()) {
+        Some("minecraft:condition") => property == Some("minecraft:using_item"),
+        Some("minecraft:range_dispatch") => matches!(
+            property,
+            Some("minecraft:use_duration" | "minecraft:crossbow/pull")
+        ),
+        Some("minecraft:select") => property == Some("minecraft:charge_type"),
+        _ => false,
+    }
+}
+
+/// M234 — every `minecraft:model` leaf a definition can reach in `ctx`'s
+/// display context as the owner's use and a crossbow's charge vary: all the
+/// branches of the nodes [`branches_on_use`] names, and the branch `ctx`
+/// selects everywhere else. Empty for a definition that never branches on
+/// use (there is nothing to bake beyond the plain model); a leaf the walk
+/// cannot reach (behind a `special`) is skipped.
+pub fn use_variant_leaves<'v>(root: &'v Value, ctx: SelectionContext<'_>) -> Vec<&'v Value> {
+    fn go<'v>(
+        node: &'v Value,
+        ctx: SelectionContext<'_>,
+        depth: u32,
+        dynamic: &mut bool,
+        out: &mut Vec<&'v Value>,
+    ) {
+        if depth > 16 {
+            return;
+        }
+        if branches_on_use(node) {
+            *dynamic = true;
+            let mut children: Vec<&Value> = Vec::new();
+            for key in ["on_true", "on_false", "fallback"] {
+                children.extend(node.get(key));
+            }
+            for list in ["cases", "entries"] {
+                let entries = node
+                    .get(list)
+                    .and_then(|c| c.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                children.extend(entries.iter().filter_map(|e| e.get("model")));
+            }
+            for c in children {
+                go(c, ctx, depth + 1, dynamic, out);
+            }
+            return;
+        }
+        match chosen_child(node, ctx) {
+            Ok(None) => {
+                if !out.iter().any(|o| std::ptr::eq(*o, node)) {
+                    out.push(node);
+                }
+            }
+            Ok(Some(next)) => go(next, ctx, depth + 1, dynamic, out),
+            Err(_) => {}
         }
     }
-    go(node, ctx, 0)
+    let mut dynamic = false;
+    let mut out = Vec::new();
+    go(root, ctx, 0, &mut dynamic, &mut out);
+    if dynamic {
+        out
+    } else {
+        Vec::new()
+    }
 }
 
 /// Resolve one item definition. `read_model` fetches `models/<path>.json`.
@@ -816,6 +939,109 @@ fn kind_bucket(kind: &str) -> String {
 mod tests {
     use super::*;
 
+    /// The bow's tree, as the 26.2 jar ships it (`items/bow.json`).
+    const BOW: &str = r#"{"type":"minecraft:condition","property":"minecraft:using_item",
+        "on_false":{"type":"minecraft:model","model":"minecraft:item/bow"},
+        "on_true":{"type":"minecraft:range_dispatch","property":"minecraft:use_duration",
+          "scale":0.05,
+          "entries":[
+            {"threshold":0.65,"model":{"type":"minecraft:model","model":"minecraft:item/bow_pulling_1"}},
+            {"threshold":0.9,"model":{"type":"minecraft:model","model":"minecraft:item/bow_pulling_2"}}],
+          "fallback":{"type":"minecraft:model","model":"minecraft:item/bow_pulling_0"}}}"#;
+
+    fn leaf_ref(node: &Value, ctx: SelectionContext<'_>) -> String {
+        reduce_definition(node, ctx)
+            .ok()
+            .and_then(|l| l.get("model"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("(none)")
+            .to_string()
+    }
+
+    /// M234 — `use_duration` times `scale`, in float, against float
+    /// thresholds: 13 ticks reach 0.65 and 18 reach 0.9.
+    #[test]
+    fn a_bows_pull_frames_change_at_thirteen_and_eighteen_ticks() {
+        let bow = json(BOW);
+        let hand = SelectionContext::hand();
+        assert_eq!(leaf_ref(&bow, hand), "minecraft:item/bow");
+        let at = |t: i32| leaf_ref(&bow, hand.with_use(t, 72000 - t, 0.0));
+        assert_eq!(at(0), "minecraft:item/bow_pulling_0");
+        assert_eq!(at(12), "minecraft:item/bow_pulling_0");
+        assert_eq!(at(13), "minecraft:item/bow_pulling_1");
+        assert_eq!(at(17), "minecraft:item/bow_pulling_1");
+        assert_eq!(at(18), "minecraft:item/bow_pulling_2");
+        assert_eq!(at(400), "minecraft:item/bow_pulling_2");
+    }
+
+    /// `"remaining": true` reads the remaining ticks instead, and `charge_type`
+    /// picks its case (NONE takes the fallback).
+    #[test]
+    fn remaining_and_charge_type_are_read_from_the_context() {
+        let remaining = json(
+            r#"{"type":"minecraft:range_dispatch","property":"minecraft:use_duration",
+                "remaining":true,
+                "entries":[{"threshold":10,"model":{"type":"minecraft:model","model":"a"}}],
+                "fallback":{"type":"minecraft:model","model":"b"}}"#,
+        );
+        let hand = SelectionContext::hand();
+        assert_eq!(leaf_ref(&remaining, hand.with_use(50, 9, 0.0)), "b");
+        assert_eq!(leaf_ref(&remaining, hand.with_use(0, 10, 0.0)), "a");
+        let charge = json(
+            r#"{"type":"minecraft:select","property":"minecraft:charge_type",
+                "cases":[{"when":"arrow","model":{"type":"minecraft:model","model":"a"}},
+                         {"when":"rocket","model":{"type":"minecraft:model","model":"r"}}],
+                "fallback":{"type":"minecraft:model","model":"none"}}"#,
+        );
+        assert_eq!(leaf_ref(&charge, hand), "none");
+        assert_eq!(leaf_ref(&charge, hand.with_charge(Some("arrow"))), "a");
+        assert_eq!(leaf_ref(&charge, hand.with_charge(Some("rocket"))), "r");
+    }
+
+    /// The bake's leaf list: every model a use can reach (the plain one
+    /// included), nothing for an item that never branches on use, and a
+    /// display-context select is walked as the context selects it.
+    #[test]
+    fn use_variant_leaves_lists_what_a_use_can_reach() {
+        let bow = json(BOW);
+        let refs: Vec<&str> = use_variant_leaves(&bow, SelectionContext::hand())
+            .iter()
+            .filter_map(|l| l.get("model").and_then(|m| m.as_str()))
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                // `on_true` first (its fallback, then its entries), then
+                // `on_false`.
+                "minecraft:item/bow_pulling_0",
+                "minecraft:item/bow_pulling_1",
+                "minecraft:item/bow_pulling_2",
+                "minecraft:item/bow"
+            ]
+        );
+        let plain = json(r#"{"type":"minecraft:model","model":"minecraft:item/stick"}"#);
+        assert!(use_variant_leaves(&plain, SelectionContext::hand()).is_empty());
+        // A spyglass-like display select over a use condition: in the hand
+        // the condition's two branches, in a slot nothing dynamic at all.
+        let ctxd = json(
+            r#"{"type":"minecraft:select","property":"minecraft:display_context",
+                "cases":[{"when":"gui","model":{"type":"minecraft:model","model":"slot"}}],
+                "fallback":{"type":"minecraft:condition","property":"minecraft:using_item",
+                  "on_false":{"type":"minecraft:model","model":"rest"},
+                  "on_true":{"type":"minecraft:model","model":"used"}}}"#,
+        );
+        assert_eq!(use_variant_leaves(&ctxd, SelectionContext::hand()).len(), 2);
+        assert!(use_variant_leaves(&ctxd, SelectionContext::gui()).is_empty());
+        // Behind a `special` (the shield, the trident) there is nothing the
+        // bake could draw, so nothing is listed.
+        let special = json(
+            r#"{"type":"minecraft:condition","property":"minecraft:using_item",
+                "on_false":{"type":"minecraft:special","base":"x","model":{"type":"minecraft:shield"}},
+                "on_true":{"type":"minecraft:special","base":"y","model":{"type":"minecraft:shield"}}}"#,
+        );
+        assert!(use_variant_leaves(&special, SelectionContext::hand()).is_empty());
+    }
+
     fn json(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
     }
@@ -1000,11 +1226,7 @@ mod tests {
         let using = resolve_definition(
             &def,
             &mut reader(vec![]),
-            SelectionContext {
-                display: DisplayContext::FirstPersonRightHand,
-                using_item: true,
-                trim_material: None,
-            },
+            SelectionContext::hand().with_use(0, 72000, 0.0),
         );
         assert!(
             matches!(&rest, ItemModel::Resolved { geometry: ItemGeometry::Block(b), .. } if b == "dirt"),

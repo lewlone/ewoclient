@@ -1826,6 +1826,7 @@ fn overlays(
                     removed: Vec::new(),
                     map_id: None,
                     banner_layers: Some(layers),
+                    charged_projectile: None,
                 },
             );
             let open = m.open().expect("open");

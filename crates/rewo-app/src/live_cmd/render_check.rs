@@ -443,6 +443,9 @@ pub(super) struct RenderCheck {
     /// and whether the bow was still being drawn at the second reading.
     pub(super) bow_fov: (f32, f32),
     pub(super) bow_drawing: bool,
+    /// M234 — r100: the model the first-person main hand drew standing and
+    /// after 40 ticks drawing.
+    pub(super) bow_models: (Option<String>, Option<String>),
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -928,7 +931,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 99;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 100;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1623,6 +1626,20 @@ impl RenderCheck {
             format!(
                 "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
+        );
+        // M234 — r100: the bow's item model follows the draw. Standing it is
+        // `item/bow`; after 40 ticks (past the jar's 0.9 threshold at scale
+        // 0.05, 18 ticks) the hand draws `item/bow_pulling_2`, the name the
+        // hand pass looked its quads up by.
+        row(
+            "r100 a fully drawn bow's first-person model is bow_pulling_2 (the item model's use_duration)",
+            self.bow_drawing
+                && self.bow_models.0.as_deref() == Some("minecraft:bow")
+                && self.bow_models.1.as_deref() == Some("minecraft:bow#minecraft:item/bow_pulling_2"),
+            format!(
+                "standing {:?}, drawing {:?}",
+                self.bow_models.0, self.bow_models.1
             ),
         );
         // M233 — r99: vanilla's dynamic FOV, read from the FOV the frame was
@@ -3076,8 +3093,10 @@ impl LiveApp {
             // 40 ticks of drawing (the narrowing is full at 20 and the eased
             // modifier settles within a few more).
             50 if now >= self.use_tick0 + 30 => {
+                let model = self.hand.as_ref().and_then(|h| h.last_main_model.clone());
                 if let Some(c) = self.check.as_mut() {
                     c.bow_fov.0 = self.last_frame_fov;
+                    c.bow_models.0 = model;
                 }
                 self.use_key_press();
                 self.use_tick0 = now;
@@ -3088,9 +3107,11 @@ impl LiveApp {
                     .session
                     .as_ref()
                     .is_some_and(|s| s.local_use_state().using);
+                let model = self.hand.as_ref().and_then(|h| h.last_main_model.clone());
                 if let Some(c) = self.check.as_mut() {
                     c.bow_fov.1 = self.last_frame_fov;
                     c.bow_drawing = drawing;
+                    c.bow_models.1 = model;
                 }
                 self.use_down = false;
                 self.use_stage = 60;

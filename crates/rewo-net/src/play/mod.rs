@@ -6488,7 +6488,7 @@ impl PlaySession {
                     item_id: stack.item_id,
                     swing,
                     use_profile: data.use_profiles.of(stack.item_id).unwrap_or_default(),
-                    charged: false,
+                    charged: None,
                     // This is the *local* player's own inventory stack, which
                     // reaches here as `(id, count)` and carries no patch — so
                     // no foil. The hand's own glint (M44) reads the inventory

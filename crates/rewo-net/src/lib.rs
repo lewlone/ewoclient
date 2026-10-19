@@ -3337,7 +3337,7 @@ pub(crate) fn apply_set_equipment(
                                 item_id: s.item_id,
                                 swing,
                                 use_profile,
-                                charged: s.charged.is_charged(),
+                                charged: s.charged.projectile(),
                                 glint: s.components.has_foil(),
                             }),
                             None => HandItem::Unknown,

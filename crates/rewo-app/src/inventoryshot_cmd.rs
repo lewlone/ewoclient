@@ -2862,6 +2862,7 @@ fn check_advanced_tooltip(
             removed: removed.iter().map(|n| name_id(n)).collect(),
             map_id: None,
             banner_layers: None,
+            charged_projectile: None,
         };
         StackComponents {
             added: detail.added.clone(),

@@ -63,10 +63,11 @@ pub struct HeldItem {
     /// the wire and carried rather than derived from the item id.
     pub glint: bool,
     /// `CrossbowItem.isCharged(stack)` — the patch's
-    /// `minecraft:charged_projectiles` list is non-empty. The sole gate on
-    /// `ArmPose::CrossbowHold`, and the one held-item property that comes from
-    /// the *stack* rather than the item id.
-    pub charged: bool,
+    /// `minecraft:charged_projectiles` list is non-empty — as its first
+    /// projectile's item id (M234: the item model's `Charge` select asks what
+    /// it is). The sole gate on `ArmPose::CrossbowHold`, and the one
+    /// held-item property that comes from the *stack* rather than the item id.
+    pub charged: Option<i32>,
 }
 
 /// What a hand holds, including the case where the wire said something this
@@ -125,7 +126,7 @@ impl HandItem {
     /// `CrossbowItem.isCharged(getItemInHand(hand))`. An empty hand holds no
     /// crossbow, and an unknowable stack must not be claimed charged.
     pub fn is_charged(self) -> bool {
-        matches!(self, HandItem::Held(i) if i.charged)
+        matches!(self, HandItem::Held(i) if i.charged.is_some())
     }
 
     /// The item id, for `ItemStack.isSameItem` — which compares only the item,
@@ -3295,7 +3296,7 @@ mod tests {
             item_id,
             swing: SwingAnimation::new(kind, duration),
             use_profile: UseProfile::UNUSABLE,
-            charged: false,
+            charged: None,
             glint: false,
         })
     }
@@ -3716,7 +3717,7 @@ mod m21_hurt_tests {
                 duration,
                 animation: ItemUseAnimation::Block,
             },
-            charged: false,
+            charged: None,
             glint: false,
         })
     }

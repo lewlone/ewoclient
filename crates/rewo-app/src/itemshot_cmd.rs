@@ -25,9 +25,7 @@ use clap::Args as ClapArgs;
 use glam::{Mat4, Vec3};
 use rewo_data::assets;
 use rewo_data::equipment;
-use rewo_data::item_models::{
-    resolve_definition, DisplayContext, ItemGeometry, ItemModel, SelectionContext,
-};
+use rewo_data::item_models::{resolve_definition, ItemGeometry, ItemModel, SelectionContext};
 use rewo_gpu::entities::{EntityDraw, EntityModelKind};
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
@@ -38,7 +36,7 @@ use crate::stats::OverlayRing;
 
 /// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
 /// pickup animation's flight.
-const EXPECTED_WITNESSES: usize = 75;
+const EXPECTED_WITNESSES: usize = 77;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -461,7 +459,7 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
                 items.models.contains_key(base) && mat.starts_with("minecraft:")
             }),
         format!(
-            "{variants} variant(s), every one `<item>#<material id>` over an item that              resolved on its own. `HeldItems::any` falls back to that base, which is              where a material the definition names no case for has to land"
+            "{variants} variant(s), every one `<item>#<material id>` (or, M234, `<item>#<model ref>`) over an item that              resolved on its own. `HeldItems::any` falls back to that base, which is              where a material the definition names no case for has to land"
         ),
     );
     c.record(
@@ -553,11 +551,7 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         resolve_definition(
             &d,
             &mut |_| None,
-            SelectionContext {
-                display: DisplayContext::FirstPersonRightHand,
-                trim_material: None,
-                using_item: true,
-            },
+            SelectionContext::hand().with_use(0, 72000, 0.0),
         )
     });
     c.record(
@@ -611,6 +605,124 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
             && matches!(&in_hand, Some(ItemModel::Unsupported(k))
                 if k == "model item/copper_spear_in_hand (not builtin/generated)"),
         format!("gui → {in_slot:?}; hand → {in_hand:?}"),
+    );
+
+    // M234 — the use variants. Every model a bow, a crossbow or a goat horn
+    // reaches by being used or loaded is baked under `<item>#<model ref>`,
+    // with geometry or a hold of its own.
+    let variants = items.use_variants();
+    let wanted = [
+        ("minecraft:bow", "minecraft:item/bow_pulling_0"),
+        ("minecraft:bow", "minecraft:item/bow_pulling_1"),
+        ("minecraft:bow", "minecraft:item/bow_pulling_2"),
+        ("minecraft:crossbow", "minecraft:item/crossbow_pulling_0"),
+        ("minecraft:crossbow", "minecraft:item/crossbow_pulling_1"),
+        ("minecraft:crossbow", "minecraft:item/crossbow_pulling_2"),
+        ("minecraft:crossbow", "minecraft:item/crossbow_arrow"),
+        ("minecraft:crossbow", "minecraft:item/crossbow_firework"),
+        ("minecraft:goat_horn", "minecraft:item/tooting_goat_horn"),
+    ];
+    let baked_apart = |item: &str, reference: &str| {
+        let key = format!("{item}#{reference}");
+        match (items.models.get(&key), items.models.get(item)) {
+            // A different sprite (the pull frames) or a different hold
+            // (the tooting horn shares the horn's sprite and is raised to
+            // the mouth by its display transforms).
+            (Some(v), Some(plain)) => {
+                !v.quads.is_empty()
+                    && (v.quads != plain.quads
+                        || v.first_right != plain.first_right
+                        || v.right != plain.right)
+            }
+            _ => false,
+        }
+    };
+    let missing: Vec<String> = wanted
+        .iter()
+        .filter(|(i, r)| !baked_apart(i, r))
+        .map(|(i, r)| format!("{i}#{r}"))
+        .collect();
+    c.record(
+        "a10.every_use_variant_of_the_bow_crossbow_and_goat_horn_is_baked",
+        missing.is_empty() && variants.variant_count() == wanted.len(),
+        format!(
+            "{} variant(s) baked; missing or identical to the plain model: {missing:?}",
+            variants.variant_count()
+        ),
+    );
+    // And the reduction picks them where vanilla does. The tick counts are
+    // the jar's own numbers worked by hand: the bow's `use_duration` (scale
+    // 0.05) thresholds 0.65 and 0.9 are 13 and 18 ticks; the crossbow's pull
+    // thresholds are 0.58 and 1.0 of its 25-tick charge; `charge_type` is
+    // the crossbow's outermost select, so a loaded one shows its projectile
+    // even while used.
+    let hand = SelectionContext::hand();
+    let pick =
+        |item: &'static str, ctx: SelectionContext<'_>| variants.select(item, ctx).to_string();
+    let bow_at = |t: i32| pick("minecraft:bow", hand.with_use(t, 72000 - t, 0.0));
+    let cases: Vec<(String, String)> = vec![
+        (pick("minecraft:bow", hand), "minecraft:bow".into()),
+        (
+            bow_at(0),
+            "minecraft:bow#minecraft:item/bow_pulling_0".into(),
+        ),
+        (
+            bow_at(12),
+            "minecraft:bow#minecraft:item/bow_pulling_0".into(),
+        ),
+        (
+            bow_at(13),
+            "minecraft:bow#minecraft:item/bow_pulling_1".into(),
+        ),
+        (
+            bow_at(17),
+            "minecraft:bow#minecraft:item/bow_pulling_1".into(),
+        ),
+        (
+            bow_at(18),
+            "minecraft:bow#minecraft:item/bow_pulling_2".into(),
+        ),
+        (
+            pick("minecraft:crossbow", hand.with_use(14, 0, 14.0 / 25.0)),
+            "minecraft:crossbow#minecraft:item/crossbow_pulling_0".into(),
+        ),
+        (
+            pick("minecraft:crossbow", hand.with_use(15, 0, 15.0 / 25.0)),
+            "minecraft:crossbow#minecraft:item/crossbow_pulling_1".into(),
+        ),
+        (
+            pick("minecraft:crossbow", hand.with_use(25, 0, 1.0)),
+            "minecraft:crossbow#minecraft:item/crossbow_pulling_2".into(),
+        ),
+        (
+            pick("minecraft:crossbow", hand.with_charge(Some("arrow"))),
+            "minecraft:crossbow#minecraft:item/crossbow_arrow".into(),
+        ),
+        (
+            pick(
+                "minecraft:crossbow",
+                hand.with_use(5, 0, 0.0).with_charge(Some("rocket")),
+            ),
+            "minecraft:crossbow#minecraft:item/crossbow_firework".into(),
+        ),
+        (
+            pick("minecraft:crossbow", hand),
+            "minecraft:crossbow".into(),
+        ),
+        (
+            pick("minecraft:goat_horn", hand.with_use(3, 137, 0.0)),
+            "minecraft:goat_horn#minecraft:item/tooting_goat_horn".into(),
+        ),
+        (
+            pick("minecraft:stick", hand.with_use(3, 0, 0.0)),
+            "minecraft:stick".into(),
+        ),
+    ];
+    let wrong: Vec<&(String, String)> = cases.iter().filter(|(got, want)| got != want).collect();
+    c.record(
+        "a11.the_use_variants_are_selected_at_vanillas_thresholds",
+        wrong.is_empty(),
+        format!("{} case(s); wrong (got, want): {wrong:?}", cases.len()),
     );
 }
 
