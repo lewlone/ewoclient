@@ -46,7 +46,11 @@
 //! The two directions are `DIFFUSE_LIGHT_0 = normalize(0.2, 1, -0.7)` and
 //! `DIFFUSE_LIGHT_1 = normalize(-0.2, 1, 0.7)`, each transformed by a pose that
 //! differs between flat and 3D items — see [`items_flat_lights`] and
-//! [`items_3d_lights`]. Rewo's world and hand passes shade an item by its
+//! [`items_3d_lights`]. The normal they meet is the face's normal **as the
+//! slot shows it** ([`gui_normal`]): through the display scale and rotation,
+//! then `GuiItemAtlas`'s `scale(s, -s, s)`, whose y flip `ITEMS_3D`'s own
+//! `scaling(1, -1, 1)` is there to undo. Until M245 the model-space normal
+//! went in, which lit a block icon's top as its darkest face. Rewo's world and hand passes shade an item by its
 //! `Direction` ordinal instead; the GUI genuinely uses this other model, which
 //! is why a block looks lit from a different angle in the hotbar than in your
 //! hand.
@@ -269,19 +273,49 @@ pub fn place(
     // Model units → block space, centred on the slot.
     let c = Vec3::new(p[0] / 16.0 - 0.5, p[1] / 16.0 - 0.5, p[2] / 16.0 - 0.5);
     let scaled = Vec3::new(c.x * t.scale[0], c.y * t.scale[1], c.z * t.scale[2]);
-    // `Quaternionf.rotationXYZ`: `M = Rx·Ry·Rz`, Z applied first. The
-    // reverse product (until M242) tilted before it yawed, so a block icon
-    // leaned on its corner instead of standing on it.
-    let r = Mat3::from_rotation_x(t.rotation[0].to_radians())
-        * Mat3::from_rotation_y(t.rotation[1].to_radians())
-        * Mat3::from_rotation_z(t.rotation[2].to_radians());
-    let v = r * scaled + Vec3::from_array(t.translation);
+    let v = display_rotation(t) * scaled + Vec3::from_array(t.translation);
     [
         slot_centre[0] + v.x * px_per_block,
         // Model space is Y-up; the HUD's screen space is Y-down.
         slot_centre[1] - v.y * px_per_block,
         v.z * px_per_block,
     ]
+}
+
+/// The sRGB transfer's decode, for a gamma-space factor applied to linear
+/// colour.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.040_449_936 {
+        c / 12.92
+    } else {
+        ((c as f64 + 0.055) / 1.055).powf(2.4) as f32
+    }
+}
+
+/// A display transform's rotation, `Quaternionf.rotationXYZ`: `M = Rx·Ry·Rz`,
+/// Z applied first. The reverse product (until M242) tilted before it
+/// yawed, so a block icon leaned on its corner instead of standing on it.
+fn display_rotation(t: &DisplayTransform) -> Mat3 {
+    Mat3::from_rotation_x(t.rotation[0].to_radians())
+        * Mat3::from_rotation_y(t.rotation[1].to_radians())
+        * Mat3::from_rotation_z(t.rotation[2].to_radians())
+}
+
+/// The normal vanilla lights a slot's face by (M245): the face's outward
+/// normal through the display transform (a normal takes the inverse of a
+/// scale, so a negative axis flips it and a squashed one tilts it), then the
+/// slot pose's `scale(s, -s, s)`, whose y flip the 3D light pose already
+/// mirrors.
+pub fn gui_normal(t: &DisplayTransform, dir: u8) -> Vec3 {
+    let n = direction_normal(dir);
+    let inv = |n: f32, s: f32| if s.abs() > 1e-6 { n / s } else { n };
+    let n = Vec3::new(
+        inv(n.x, t.scale[0]),
+        inv(n.y, t.scale[1]),
+        inv(n.z, t.scale[2]),
+    );
+    let v = display_rotation(t) * n;
+    Vec3::new(v.x, -v.y, v.z).normalize_or_zero()
 }
 
 /// Build the vertices for one frame's slots.
@@ -358,7 +392,12 @@ pub fn build_vertices(
             let Some(uv) = atlas(q.tex) else {
                 continue; // texture not resident — nothing, never garbage
             };
-            let shade = lights.shade(direction_normal(q.dir), model.from_block);
+            // Vanilla multiplies the texel by the diffuse in gamma space; this
+            // pass's colour is linear (an sRGB atlas in, an sRGB target out),
+            // so the factor goes in decoded, or 0.4 would darken like 0.66
+            // and the faces would barely differ (M245).
+            let shade =
+                srgb_to_linear(lights.shade(gui_normal(&model.gui, q.dir), model.from_block));
             let p: Vec<[f32; 3]> = q
                 .verts
                 .iter()
@@ -1135,6 +1174,30 @@ mod tests {
         assert!(near.0[0].abs() < 1e-4 && near.1[0].abs() < 1e-4, "{near:?}");
         // The top end is higher on screen (smaller y).
         assert!(near.1[1] < near.0[1], "{near:?}");
+    }
+
+    /// M245 — a block icon lit as vanilla lights it: through `[30, 225, 0]`
+    /// and the slot's y flip, the top meets both 3D lights head-on (1.0),
+    /// the left (east) face is half-lit and the right (north) face sits at
+    /// the ambient floor. With the model-space normal (until M245) the top
+    /// was the darkest of the three.
+    #[test]
+    fn a_block_icons_top_is_lit_and_its_right_face_is_darkest() {
+        let block = DisplayTransform {
+            rotation: [30.0, 225.0, 0.0],
+            translation: [0.0; 3],
+            scale: [0.625; 3],
+        };
+        let l = ItemLights::default();
+        let top = l.shade(gui_normal(&block, 1), true);
+        let east = l.shade(gui_normal(&block, 5), true);
+        let north = l.shade(gui_normal(&block, 2), true);
+        assert!((top - 1.0).abs() < 1e-4, "top {top}");
+        assert!((east - 0.651).abs() < 2e-3, "left (east) {east}");
+        assert!((north - 0.4).abs() < 1e-4, "right (north) {north}");
+        // A sprite's front, under the identity, is untouched by the flip.
+        let id = DisplayTransform::default();
+        assert_eq!(gui_normal(&id, 3), direction_normal(3));
     }
 
     /// The scale actually shrinks: a block's corners are nearer the centre than

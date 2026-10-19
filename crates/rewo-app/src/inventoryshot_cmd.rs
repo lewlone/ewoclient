@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 169;
+const EXPECTED_WITNESSES: usize = 170;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -4136,7 +4136,56 @@ fn pixels_inner(
             "g9.a_furnace_icon_shows_its_front_not_its_back",
             dark >= 20,
             format!(
-                "{dark} near-black px in the furnace's slot — the front's opening is the only                  dark texture on the block; with the depth order inverted the icon shows                  its cobblestone back and sides and this reads 0"
+                "{dark} near-black px in the furnace's slot — the front's opening is the only \
+                 dark texture on the block; with the depth order inverted the icon shows \
+                 its cobblestone back and sides and this reads 0"
+            ),
+        );
+
+        // M245 — the lighting. Vanilla lights a slot's face by its normal
+        // AFTER the display rotation and the slot's `scale(s, -s, s)`; with
+        // `[30, 225, 0]` and `ITEMS_3D` the top meets both lights (1.0), the
+        // left (east) face is half-lit (0.65) and the right (north) one sits
+        // at the ambient 0.4. Rewo lit the model-space normal until M245,
+        // which made the top the DARKEST face, and multiplied the gamma-space
+        // diffuse into linear colour, which flattened the faces (0.4 darkened
+        // like 0.66). White concrete is one near-flat texture on every face,
+        // so the faces' mean brightness ratios are the diffuse ratios.
+        // Sample points: each face's centre through `place` (top 13 px up,
+        // the sides 10.6 px out and 5.3 px down at 48 px a block).
+        let dslots = [GuiItem {
+            model: "minecraft:white_concrete".into(),
+            x: 104.0,
+            y: 96.0,
+            size: 48.0,
+            glint: false,
+        }];
+        let names = vec!["minecraft:white_concrete".to_string()];
+        let wanted = crate::live_cmd::gui_atlas_wanted(&held_all, &names);
+        let datlas = crate::live_cmd::pack_gui_atlas(&held_all, &wanted);
+        wr.init_gui_items(gpu, &datlas.rgba, 512, 512)?;
+        let dverts = build_vertices(&held_all, &dslots, &lights, &|t| datlas.uv.get(&t).copied());
+        let dimg = shot(gpu, off, wr, &dverts)?;
+        let mean = |cx: i32, cy: i32| -> f32 {
+            let mut sum = 0u32;
+            for y in cy - 2..=cy + 2 {
+                for x in cx - 2..=cx + 2 {
+                    let i = ((y as u32 * W + x as u32) * 4) as usize;
+                    sum += dimg[i..i + 3].iter().map(|&v| v as u32).sum::<u32>();
+                }
+            }
+            sum as f32 / (25.0 * 3.0)
+        };
+        let (top, left, right) = (mean(128, 107), mean(117, 125), mean(139, 125));
+        let (l, r) = (left / top, right / top);
+        c.record(
+            "g10.a_block_icon_is_lit_on_top_and_darkest_on_the_right",
+            (l - 0.651).abs() < 0.06 && (r - 0.40).abs() < 0.06,
+            format!(
+                "white concrete's face means: top {top:.0}, left {left:.0}, right {right:.0} \
+                 — left/top {l:.3}, right/top {r:.3} against vanilla's diffuse 0.651 and \
+                 0.400. The model-space normal made the top the darkest face; the \
+                 diffuse multiplied into linear colour read 0.82 and 0.66"
             ),
         );
         wr.init_gui_items(gpu, &atlas.rgba, 512, 512)?;

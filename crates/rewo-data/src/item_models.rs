@@ -1160,6 +1160,32 @@ fn composite_item(
     }
 }
 
+/// M245 — the `Direction` ordinal (down 0, up 1, north 2, south 3, west 4,
+/// east 5) a face of direction `dir` points along once `xf`'s linear part has
+/// turned it: the nearest of the six. Exact for the part transforms items use
+/// (quarter turns, flips, uniform scales); the banner's 0.45° cloth tilt
+/// snaps back to the face it was.
+pub fn turned_dir(xf: &crate::be_transform::Affine, dir: u8) -> u8 {
+    const N: [[f32; 3]; 6] = [
+        [0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+    ];
+    let Some(n) = N.get(dir as usize) else {
+        return dir;
+    };
+    let r: [f32; 3] = std::array::from_fn(|i| xf[i][0] * n[0] + xf[i][1] * n[1] + xf[i][2] * n[2]);
+    (0..6u8)
+        .max_by(|&a, &b| {
+            let d = |k: u8| N[k as usize].iter().zip(r).map(|(x, y)| x * y).sum::<f32>();
+            d(a).total_cmp(&d(b))
+        })
+        .unwrap_or(dir)
+}
+
 /// The seven display contexts a model chain declares, each from the nearest
 /// model that declares it (a missing left hand takes the right, as
 /// `ItemTransforms.Deserializer` does per model); absent ones are the
@@ -1367,6 +1393,24 @@ mod tests {
         );
         assert_eq!(k(r#"{"type":"minecraft:shield"}"#), None);
         assert_eq!(k(r#"{"type":"minecraft:banner","color":"white"}"#), None);
+    }
+
+    /// M245 — a face's direction follows a part's turn: the statue's flip
+    /// (`diag(-1, 1, -1)`) swaps north and south, east and west, and keeps
+    /// up; a half-turn about X swaps up and down.
+    #[test]
+    fn a_turned_part_turns_its_faces() {
+        let flip = [
+            [-1.0, 0.0, 0.0, 0.5],
+            [0.0, 1.0, 0.0, 1.5],
+            [0.0, 0.0, -1.0, 0.5],
+        ];
+        assert_eq!(turned_dir(&flip, 2), 3);
+        assert_eq!(turned_dir(&flip, 5), 4);
+        assert_eq!(turned_dir(&flip, 1), 1);
+        let rx = crate::be_transform::rot_xyz(std::f32::consts::PI, 0.0, 0.0);
+        assert_eq!(turned_dir(&rx, 1), 0);
+        assert_eq!(turned_dir(&crate::be_transform::IDENTITY, 4), 4);
     }
 
     /// M244 — a branch node's `transformation` reaches the special below it,

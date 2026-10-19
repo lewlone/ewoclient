@@ -4399,8 +4399,11 @@ impl<'a> Baker<'a> {
                     complete = false;
                     break;
                 };
-                // The model's px → block units (`/ 16`), the affine, and back.
+                // The model's px → block units (`/ 16`), the affine, and back;
+                // the face's `dir` follows the turn (M245), so a flipped part
+                // shades by the face it now shows.
                 quads.extend(part.into_iter().map(|mut q| {
+                    q.dir = crate::item_models::turned_dir(xf, q.dir);
                     for v in &mut q.verts {
                         let p = [v[0] / 16.0, v[1] / 16.0, v[2] / 16.0];
                         let r: [f32; 3] = std::array::from_fn(|i| {
@@ -4501,7 +4504,16 @@ impl<'a> Baker<'a> {
                 tex,
                 // Items never articulate.
                 part: 0,
-                dir: q.dir,
+                // The block bake numbers faces in `FACE_NAMES` order (up 0,
+                // down 1, ...); a held quad's `dir` is vanilla's `Direction`
+                // ordinal (down 0, up 1, ...). Copied raw until M245, which
+                // shaded every block item's top as its bottom in a slot and
+                // in the first-person hand.
+                dir: match q.dir {
+                    0 => 1,
+                    1 => 0,
+                    d => d,
+                },
             });
         }
         Some(out)
@@ -6351,6 +6363,27 @@ mod tests {
                 assert!(!c.view_blocking, "snow layers={layers} ({id})");
             }
         }
+    }
+
+    /// M245 — a held block quad's `dir` is vanilla's `Direction` ordinal
+    /// (down 0, up 1), not the block bake's `FACE_NAMES` order (up 0, down
+    /// 1): dirt's top face, every corner at y 16, must say up.
+    #[test]
+    fn a_block_items_top_quad_points_up_in_direction_order() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let dirt = &baked.held_items.models["minecraft:dirt"];
+        let flat = |y: f32| {
+            dirt.quads
+                .iter()
+                .filter(move |q| q.verts.iter().all(|v| (v[1] - y).abs() < 1e-4))
+                .map(|q| q.dir)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(flat(16.0), vec![1], "the top is UP (1)");
+        assert_eq!(flat(0.0), vec![0], "the bottom is DOWN (0)");
     }
 
     /// `Blocks.java`'s `.emissiveRendering(var0 -> true)` — magma alone.

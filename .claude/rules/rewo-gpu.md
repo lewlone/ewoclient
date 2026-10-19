@@ -39,6 +39,13 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   `held::rotate_xyz` or `mobs::rotate_zyx` by what the Java calls.
 - **GUI item depth**: in item space +Z faces the viewer, so a larger z is a
   greater (nearer) reversed-Z depth (`gui_item.vert`, fixed M242).
+- **GUI item light** (M245): the normal goes through the display transform
+  and the slot's y flip (`gui_normal`), and vanilla's gamma-space diffuse is
+  decoded before it multiplies linear colour.
+- **Face numbering differs by bake**: the block bake's `dir` is
+  `FACE_NAMES` order (up 0, down 1, ...); `HeldQuad::dir` is vanilla's
+  `Direction` ordinal (down 0, up 1, ...). Convert at the boundary
+  (`bake_block_item`), and test a label against its geometry.
 - **Reversed-Z depth**: clear 0.0, compare `GREATER`. Coplanar multi-layer
   geometry (item sprite layers) needs **`GREATER_OR_EQUAL`**. Second passes
   over the same geometry (glint, trims) use depth **EQUAL, no write**, and must

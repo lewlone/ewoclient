@@ -267,12 +267,16 @@ pub const CHESTS: &[(&str, &str, bool)] = &[
 pub const LEFT_SUFFIX: &str = "_left";
 pub const RIGHT_SUFFIX: &str = "_right";
 
-/// Vanilla `Direction` ordinals for the six faces, in the order
-/// [`rewo_gpu::mobs::cube_faces`] returns them.
+/// Vanilla `Direction` ordinals (down 0, up 1, north 2, south 3, west 4,
+/// east 5) for the six faces, in the order [`cube_faces`] returns them:
+/// DOWN, UP, WEST, NORTH, EAST, SOUTH.
 ///
-/// Duplicated from the mob port rather than imported: `rewo-data` does not
-/// depend on `rewo-gpu`, and this is a six-entry constant.
-const FACE_DIRS: [u8; 6] = [0, 1, 2, 5, 4, 3];
+/// Until M245 this read `[0, 1, 2, 5, 4, 3]`, which labelled the west face
+/// north, the north face east and the east face west. The world pass never
+/// reads a block-entity quad's `dir`, so nothing showed until M242 made
+/// these models items, whose slot lighting does (a banner's front was lit
+/// as its edge).
+const FACE_DIRS: [u8; 6] = [0, 1, 4, 2, 5, 3];
 
 /// `ShulkerModel.createShellMesh` — a closed shulker box, texture 64x64.
 ///
@@ -1748,6 +1752,36 @@ fn cube_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M245 — each face's `dir` is the side of the box it is on: the face's
+    /// centre minus the box's centre points along that `Direction`.
+    #[test]
+    fn every_cube_face_is_labelled_with_its_own_direction() {
+        const N: [[f32; 3]; 6] = [
+            [0.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        let (min, dims) = ([1.0, 2.0, 3.0], [4.0, 6.0, 8.0]);
+        let centre: [f32; 3] = std::array::from_fn(|i| min[i] + dims[i] / 2.0);
+        for (i, (verts, _)) in cube_faces((0.0, 0.0), min, dims, 0.0, false)
+            .into_iter()
+            .enumerate()
+        {
+            let fc: [f32; 3] =
+                std::array::from_fn(|k| verts.iter().map(|v| v[k]).sum::<f32>() / 4.0 - centre[k]);
+            let n = N[FACE_DIRS[i] as usize];
+            let along: f32 = (0..3).map(|k| fc[k] * n[k]).sum();
+            assert!(
+                along > 0.0,
+                "face {i} labelled {} sits at {fc:?}",
+                FACE_DIRS[i]
+            );
+        }
+    }
 
     /// M244 — `CopperGolemStatueModel.setupAnim` sets `root.y = 0` for every
     /// pose. Only the STANDING layer's mesh carries `translated(0, 24, 0)`,

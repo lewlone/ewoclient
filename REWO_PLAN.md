@@ -3899,6 +3899,43 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M245 — item icons lit as vanilla lights them (2026-10-19)
+
+Four faults in the slot lighting, each hiding another:
+
+1. **The normal.** Vanilla lights a slot's face by its normal after the
+   display rotation and `GuiItemAtlas`'s `scale(s, -s, s)` (the y flip that
+   `ITEMS_3D`'s `scaling(1, -1, 1)` mirrors). Rewo used the model-space
+   normal. `gui_item::gui_normal` now takes the face through the display
+   scale (inverse), the rotation and the flip.
+2. **The gamma.** Vanilla multiplies the texel by the diffuse in gamma
+   space; this pass's colour is linear (an sRGB atlas in, an sRGB target
+   out), so the factor goes in through `srgb_to_linear`. Multiplied raw, the
+   ambient 0.4 darkened like 0.66 and the faces barely differed.
+3. **The block faces' order.** The block bake numbers faces in `FACE_NAMES`
+   order (up 0, down 1); a held quad's `dir` is vanilla's `Direction`
+   ordinal (down 0, up 1). `bake_block_item` copied it raw, so every block
+   item's top was shaded as its bottom, in a slot and in the first-person
+   hand. The model-space normal and this swap together had lit the top as
+   1.0 by accident; the sides were wrong.
+4. **The block-entity faces' order.** `block_entity_models::FACE_DIRS` read
+   `[0, 1, 2, 5, 4, 3]` for `cube_faces`' DOWN, UP, WEST, NORTH, EAST,
+   SOUTH; it is `[0, 1, 4, 2, 5, 3]`. The world pass never reads a
+   block-entity quad's `dir`, so only the M242+ items showed it (a banner's
+   front was lit as its edge).
+
+Parts quads also take their `dir` through their affine (`turned_dir`), so a
+flipped part (the statue, a banner) shades by the face it shows.
+
+Measured (inventoryshot **g10**, white concrete, nearly one flat colour on
+every face): left/top 0.647 and right/top 0.394 against vanilla's diffuse
+0.651 and 0.400 (`[30, 225, 0]`, `ITEMS_3D`); before, the top read 0.4 of
+itself. Tests: `a_block_icons_top_is_lit_and_its_right_face_is_darkest`,
+`a_block_items_top_quad_points_up_in_direction_order` (real assets),
+`every_cube_face_is_labelled_with_its_own_direction`,
+`a_turned_part_turns_its_faces`. Looked at: grass, chest, banners (their dye
+colours now), the head and the pot.
+
 ### M244 — banner icons; branch transformations; the standing statue's floor (2026-10-19)
 
 - **Banners.** `BannerRenderer.submitSpecial` draws the standing pole and
