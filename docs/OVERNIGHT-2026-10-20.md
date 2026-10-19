@@ -586,9 +586,12 @@ released.
   never reach the item path), and a pot item shows plain sides. A dropped
   or framed trident shows its 3D model (vanilla: the sprite). The dragon
   head's 256×256 sheet is still too big for the large pool.
-- Sign BOARDS are not drawn at all (only their text): Rewo bakes no sign,
-  hanging-sign, bell, lectern-book or enchanting-book model. Found while
-  writing r109.
+- Not drawn: the parts of three blocks that only a block-entity renderer
+  draws, which Rewo has no model for: the bell's swinging bell
+  (`BellRenderer`), and the lectern's and enchanting table's books
+  (`BookModel`). Sign boards ARE drawn: in 26.2 they are ordinary block
+  models (checked: oak sign 10-15 quads, wall and hanging signs too); an
+  earlier draft of this note said otherwise.
 - The render check still injects the sign's block entity by hand (r48/r49);
   since M247 the client would create it from the block update, so the
   injection could go. A decorated pot's sherds
