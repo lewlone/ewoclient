@@ -458,6 +458,7 @@ pub fn tick_env(
         no_clip,
         flying,
         air_speed: abilities.air_move_speed(input.sprint, flying) as f32,
+        up: 0.0,
     };
 
     // -- LocalPlayer.aiStep: sneaking sinks in water --------------------------
@@ -550,6 +551,12 @@ pub struct RiddenInput {
     pub rider_pitch: f32,
     /// M225 — a camel's overrides of the horse's ride; `None` for a horse.
     pub camel: Option<CamelRide>,
+    /// M227 — the ridden input's y; only [`tick_ridden_nautilus`] sets it.
+    pub up: f32,
+    /// M227 — `EntityTypeTags.CAN_FLOAT_WHILE_RIDDEN` (the horses and the
+    /// camels): in water deeper than its fluid-jump threshold, a ridden
+    /// mount rises 0.04 a tick (`floatInWaterWhileRidden`).
+    pub floats_while_ridden: bool,
 }
 
 /// What `Camel` changes about `AbstractHorse`'s ride (M225).
@@ -667,6 +674,7 @@ pub fn tick_ridden(
         // `LivingEntity.getFlyingSpeed`: a player-controlled mount's
         // `getSpeed() * 0.1F`.
         air_speed: ridden_speed * 0.1,
+        up: input.up,
     };
     // -- tickRidden: getRiddenRotation (`Camel`: its own while it refuses) --
     if !refuse {
@@ -722,7 +730,135 @@ pub fn tick_ridden(
         state.vz = 0.0;
     }
     // -- travel at getRiddenSpeed ------------------------------------------
+    let in_water = state.in_water();
     travel(state, &mut ctx, sideways, forward);
+    // `travelInFluid`'s `floatInWaterWhileRidden` (M227): the tagged mounts,
+    // ridden, in water above `getFluidJumpThreshold` (0.4 for an eye above
+    // 0.4, as every mount's is).
+    if in_water && input.floats_while_ridden && state.water_height > fluid_jump_threshold(state) {
+        state.vy += 0.04f32 as f64;
+    }
+    apply_stuck(state, world, false);
+    jumped
+}
+
+/// `Entity.getFluidJumpThreshold`: `eyeHeight < 0.4 ? 0.0 : 0.4`.
+fn fluid_jump_threshold(state: &PlayerState) -> f64 {
+    if state.eye_height() < 0.4 {
+        0.0
+    } else {
+        0.4
+    }
+}
+
+/// One tick of a nautilus the local player rides (M227):
+/// `AbstractNautilus`'s ride on `LivingEntity.aiStep`.
+///
+/// - `getRiddenInput`: the rider's `xxa` as it is; while `zza` is not 0 the
+///   forward and up parts are `cos` and `-sin` of the rider's pitch, both
+///   ×-0.5 backward (the magnitude of `zza` is not read).
+/// - `tickRidden`: the yaw goes half the way to the rider's each tick, the
+///   pitch is half the rider's; a pending jump is `executeRidersJump`, a
+///   dash along the rider's look (`1.2` in water, `0.5` out, × scale ×
+///   `movement_speed` × `blockSpeedFactor`), with no ground needed.
+/// - `travel` at `getRiddenSpeed` (`0.0325 · speed` in water, `0.02 ·`
+///   out): in water `travelInWater` is replaced by `moveRelative`, move,
+///   ×0.9 (no gravity, no drag of its own); out of water the ordinary
+///   `travelInAir`, the up part included. `isPushedByFluid` is false.
+///
+/// `input.forward` / `strafe` are the rider's `zza` / `xxa`. Returns whether
+/// the dash fired.
+pub fn tick_ridden_nautilus(
+    state: &mut PlayerState,
+    input: RiddenInput,
+    jump_pending: &mut f32,
+    attrs: &MoveAttributes,
+    border: Option<BorderCollision>,
+    world: &dyn PhysicsWorld,
+) -> bool {
+    // -- Entity.baseTick: fluid interaction (not pushed by the flow) -------
+    update_fluids(state, world, false, attrs.fast_lava);
+    if state.in_water() {
+        state.fall_distance = 0.0;
+    }
+    if state.in_lava() {
+        state.fall_distance *= 0.5;
+    }
+    // -- LivingEntity.aiStep: a non-player clamps each axis on its own ------
+    if state.no_jump_delay > 0 {
+        state.no_jump_delay -= 1;
+    }
+    if state.vx.abs() < MIN_MOVEMENT_DISTANCE {
+        state.vx = 0.0;
+    }
+    if state.vz.abs() < MIN_MOVEMENT_DISTANCE {
+        state.vz = 0.0;
+    }
+    if state.vy.abs() < MIN_MOVEMENT_DISTANCE {
+        state.vy = 0.0;
+    }
+    state.no_jump_delay = 0;
+    // -- getRiddenInput ------------------------------------------------------
+    let (mut up, mut forward) = (0.0f32, 0.0f32);
+    if input.forward != 0.0 {
+        let rad = input.rider_pitch * (std::f64::consts::PI / 180.0) as f32;
+        let (mut fl, mut ul) = (mth_cos(rad), -mth_sin(rad));
+        if input.forward < 0.0 {
+            fl *= -0.5;
+            ul *= -0.5;
+        }
+        up = ul;
+        forward = fl;
+    }
+    let strafe = input.strafe;
+    // -- getRiddenSpeed, a float ----------------------------------------------
+    let ridden_speed =
+        if state.in_water() { 0.0325f32 } else { 0.02f32 } * attrs.movement_speed as f32;
+    let ridden_attrs = MoveAttributes {
+        movement_speed: ridden_speed as f64,
+        ..*attrs
+    };
+    let keys = TickInput::default();
+    let mut ctx = Ctx {
+        world,
+        attrs: &ridden_attrs,
+        border,
+        input: &keys,
+        no_clip: false,
+        flying: false,
+        air_speed: ridden_speed * 0.1,
+        up,
+    };
+    // -- tickRidden ---------------------------------------------------------
+    let diff = crate::rotation::wrap_degrees(input.rider_yaw - state.yaw);
+    state.yaw += diff * 0.5;
+    state.pitch = input.rider_pitch * 0.5;
+    let mut jumped = false;
+    if *jump_pending > 0.0 {
+        // `executeRidersJump`: the CONTROLLER's look angle.
+        let look = view_vector(input.rider_pitch, input.rider_yaw);
+        let k = ((if state.in_water() { 1.2f32 } else { 0.5f32 }) * *jump_pending) as f64
+            * attrs.movement_speed
+            * block_speed_factor(state, &ctx) as f64;
+        state.vx += look[0] * k;
+        state.vy += look[1] * k;
+        state.vz += look[2] * k;
+        jumped = true;
+    }
+    *jump_pending = 0.0;
+    // -- travel -------------------------------------------------------------
+    if state.in_water() {
+        // `AbstractNautilus.travelInWater`; the nautilus is not tagged to
+        // float while ridden.
+        move_relative(state, ridden_speed, strafe, up, forward);
+        let (dx, dy, dz) = (state.vx, state.vy, state.vz);
+        do_move(state, &ctx, [dx, dy, dz]);
+        state.vx *= 0.9;
+        state.vy *= 0.9;
+        state.vz *= 0.9;
+    } else {
+        travel(state, &mut ctx, strafe, forward);
+    }
     apply_stuck(state, world, false);
     jumped
 }
@@ -736,6 +872,10 @@ struct Ctx<'a> {
     flying: bool,
     /// `Player.getFlyingSpeed()` (the airborne `moveRelative` amount).
     air_speed: f32,
+    /// The input's y (`moveRelative`'s `input.y`): 0 for a player and for
+    /// every mount but the nautilus, whose ridden input leans with the
+    /// rider's pitch (M227).
+    up: f32,
 }
 
 // -- poses and un-suffocation (`LocalPlayer.aiStep`, `Player.updatePlayerPose`)
@@ -938,22 +1078,28 @@ fn modify_input(input: &TickInput, moving_slowly: bool, attrs: &MoveAttributes) 
 }
 
 /// `Entity.moveRelative` / `getInputVector` with the `Mth` sine table.
-fn move_relative(state: &mut PlayerState, speed: f32, xxa: f32, zza: f32) {
-    let (mut mx, mut mz) = (xxa as f64, zza as f64);
-    let len = mx * mx + mz * mz;
+fn move_relative(state: &mut PlayerState, speed: f32, xxa: f32, yya: f32, zza: f32) {
+    // `Entity.getInputVector`: the whole vector normalised past length 1,
+    // scaled, and turned by the yaw; its y is added as it is (M227: only the
+    // nautilus's ridden input has one).
+    let (mut mx, mut my, mut mz) = (xxa as f64, yya as f64, zza as f64);
+    let len = mx * mx + my * my + mz * mz;
     if len < 1.0e-7 {
         return;
     }
     if len > 1.0 {
         let l = len.sqrt();
         mx /= l;
+        my /= l;
         mz /= l;
     }
     mx *= speed as f64;
+    my *= speed as f64;
     mz *= speed as f64;
     let angle = state.yaw * (std::f64::consts::PI / 180.0) as f32;
     let (sin, cos) = (mth_sin(angle) as f64, mth_cos(angle) as f64);
     state.vx += mx * cos - mz * sin;
+    state.vy += my;
     state.vz += mz * cos + mx * sin;
 }
 
@@ -1182,7 +1328,7 @@ fn travel_in_air(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
     } else {
         ctx.air_speed
     };
-    move_relative(state, accel, xxa, zza);
+    move_relative(state, accel, xxa, ctx.up, zza);
     handle_on_climbable(state, ctx);
     let (dx, dy, dz) = (state.vx, state.vy, state.vz);
     do_move(state, ctx, [dx, dy, dz]);
@@ -1230,7 +1376,7 @@ fn travel_in_fluid(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
         if ctx.attrs.dolphins_grace {
             slow_down = 0.96;
         }
-        move_relative(state, speed_f, xxa, zza);
+        move_relative(state, speed_f, xxa, ctx.up, zza);
         let d = [state.vx, state.vy, state.vz];
         do_move(state, ctx, d);
         let mut m = [state.vx, state.vy, state.vz];
@@ -1245,7 +1391,7 @@ fn travel_in_fluid(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
         state.vy = m[1];
         state.vz = m[2];
     } else {
-        move_relative(state, 0.02, xxa, zza);
+        move_relative(state, 0.02, xxa, ctx.up, zza);
         let d = [state.vx, state.vy, state.vz];
         do_move(state, ctx, d);
         if state.lava_height <= FLUID_JUMP_THRESHOLD {
@@ -4491,6 +4637,7 @@ mod tests {
             rider_yaw: 0.0,
             rider_pitch: 10.0,
             camel: None,
+            ..RiddenInput::default()
         };
         for _ in 0..60 {
             tick_ridden(&mut horse, fwd, &mut pending, &attrs, None, &world);
@@ -4560,6 +4707,7 @@ mod tests {
             rider_yaw: 0.0,
             rider_pitch: 0.0,
             camel: None,
+            ..RiddenInput::default()
         };
         let y0 = horse.y;
         assert!(tick_ridden(
@@ -4585,6 +4733,152 @@ mod tests {
             (horse.vz - expect).abs() < 1e-6,
             "the forward push: {} vs {expect}",
             horse.vz
+        );
+    }
+
+    /// A world of water: still water everywhere above y = 0, stone below.
+    struct Pool;
+    impl PhysicsWorld for Pool {
+        fn collision(&self, _x: i32, y: i32, _z: i32) -> &[[f32; 6]] {
+            if y < 0 {
+                FULL
+            } else {
+                &[]
+            }
+        }
+        fn block(&self, _x: i32, y: i32, _z: i32) -> BlockPhysics {
+            let mut b = BlockPhysics::default();
+            if y >= 0 {
+                b.fluid = PhysFluid::Water {
+                    own_height: 8.0 / 9.0,
+                };
+                b.flags |= flags::WATER_BLOCK;
+            }
+            b
+        }
+        fn has_chunk(&self, _x: i32, _z: i32) -> bool {
+            true
+        }
+        fn min_y(&self) -> i32 {
+            -64
+        }
+    }
+
+    fn nautilus_in(world_y: f64) -> (PlayerState, MoveAttributes) {
+        let attrs = MoveAttributes {
+            movement_speed: 1.0,
+            ..MoveAttributes::default()
+        };
+        let mut n = PlayerState::at(0.5, world_y, 0.5);
+        n.body = Some(Body {
+            width: 0.875,
+            height: 0.95,
+            eye: 0.8075,
+        });
+        (n, attrs)
+    }
+
+    /// `AbstractNautilus.travelInWater` under a rider (M227): no gravity,
+    /// `moveRelative(0.0325 · speed)` then ×0.9, so a level push forward
+    /// settles at a tick's distance of `0.0325 / (1 - 0.9)`; pitched down 30°
+    /// the push splits into `cos` forward and `-sin` up (so it dives).
+    #[test]
+    fn a_ridden_nautilus_swims_along_the_riders_pitch() {
+        let (mut n, attrs) = nautilus_in(2.0);
+        let mut pending = 0.0;
+        let level = RiddenInput {
+            forward: 0.98,
+            ..RiddenInput::default()
+        };
+        let mut last = n.z;
+        let mut step = 0.0;
+        for _ in 0..200 {
+            tick_ridden_nautilus(&mut n, level, &mut pending, &attrs, None, &Pool);
+            step = n.z - last;
+            last = n.z;
+        }
+        assert!(n.in_water(), "the pool is water");
+        let expect = 0.0325f32 as f64 / (1.0 - 0.9);
+        assert!((step - expect).abs() < 1e-9, "step {step} against {expect}");
+        assert!((n.y - 2.0).abs() < 1e-9, "no gravity in water: y {}", n.y);
+        // Pitched 30° down: the vertical share is -sin(30°)·0.0325 a tick
+        // pushed, settling at ten times that.
+        let (mut d, _) = nautilus_in(40.0);
+        let dive = RiddenInput {
+            forward: 0.98,
+            rider_pitch: 30.0,
+            ..RiddenInput::default()
+        };
+        let mut last_y = d.y;
+        let mut dy = 0.0;
+        for _ in 0..200 {
+            tick_ridden_nautilus(&mut d, dive, &mut pending, &attrs, None, &Pool);
+            dy = d.y - last_y;
+            last_y = d.y;
+        }
+        let rad = 30.0f32 * (std::f64::consts::PI / 180.0) as f32;
+        let expect_dy = -(mth_sin(rad) as f64) * 0.0325f32 as f64 / (1.0 - 0.9);
+        assert!((dy - expect_dy).abs() < 1e-9, "dy {dy} against {expect_dy}");
+        assert_eq!(d.pitch, 15.0, "half the rider's pitch");
+    }
+
+    /// The nautilus's yaw goes half the way to the rider's each tick, and
+    /// its dash is along the RIDER's look, 1.2 · scale in water, no ground
+    /// needed.
+    #[test]
+    fn a_nautilus_turns_halfway_and_dashes_along_the_riders_look() {
+        let (mut n, attrs) = nautilus_in(2.0);
+        let mut pending = 1.0;
+        let input = RiddenInput {
+            rider_yaw: 90.0,
+            ..RiddenInput::default()
+        };
+        assert!(tick_ridden_nautilus(
+            &mut n,
+            input,
+            &mut pending,
+            &attrs,
+            None,
+            &Pool
+        ));
+        assert_eq!(n.yaw, 45.0);
+        assert_eq!(pending, 0.0);
+        let look = view_vector(0.0, 90.0);
+        let k = 1.2f32 as f64;
+        // The dash, moved by, then ×0.9.
+        assert!(
+            (n.x - 0.5 - look[0] * k).abs() < 1e-9,
+            "x moved {}",
+            n.x - 0.5
+        );
+        assert!((n.vx - look[0] * k * 0.9).abs() < 1e-9, "vx {}", n.vx);
+    }
+
+    /// `floatInWaterWhileRidden` (M227): a tagged mount, ridden in water
+    /// above its fluid-jump threshold, rises 0.04 more a tick than one that
+    /// is not tagged.
+    #[test]
+    fn a_tagged_mount_floats_while_ridden() {
+        let attrs = MoveAttributes::default();
+        let run = |floats: bool| {
+            let mut h = PlayerState::at(0.5, 2.0, 0.5);
+            h.body = Some(Body {
+                width: 1.3964844,
+                height: 1.6,
+                eye: 1.52,
+            });
+            let mut pending = 0.0;
+            let input = RiddenInput {
+                floats_while_ridden: floats,
+                ..RiddenInput::default()
+            };
+            tick_ridden(&mut h, input, &mut pending, &attrs, None, &Pool);
+            h.vy
+        };
+        let (sinks, floats) = (run(false), run(true));
+        assert!(
+            (floats - sinks - 0.04f32 as f64).abs() < 1e-12,
+            "{floats} against {sinks}"
         );
     }
 
@@ -4689,6 +4983,7 @@ mod tests {
                 refuse_to_move: true,
                 sprint_bonus: false,
             }),
+            ..RiddenInput::default()
         };
         let x0 = camel.x;
         tick_ridden(&mut camel, input, &mut pending, &attrs, None, &world);

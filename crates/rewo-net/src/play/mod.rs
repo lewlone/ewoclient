@@ -2781,14 +2781,24 @@ impl PlaySession {
                 self.tick_steered_horse(horse, &vehicle_keys, input)?;
                 if let (Some(d), Some(h)) = (deferred_jump, self.steered_horse) {
                     // `Camel.onPlayerJump` adds `dashCooldown <= 0 &&
-                    // onGround()` to the horse's `isSaddled()`.
-                    let camel = self
+                    // onGround()` to the horse's `isSaddled()`;
+                    // `AbstractNautilus.onPlayerJump` only the cooldown.
+                    let (camel, nautilus) = self
                         .entity_classes
                         .as_deref()
                         .zip(self.world.entities.get(h.id))
-                        .is_some_and(|(c, e)| c.is_camel(e.type_id));
-                    if !camel || (self.world.entities.dash_cooldown(h.id) <= 0 && h.state.on_ground)
-                    {
+                        .map_or((false, false), |(c, e)| {
+                            (c.is_camel(e.type_id), c.is_nautilus(e.type_id))
+                        });
+                    let ready = self.world.entities.dash_cooldown(h.id) <= 0;
+                    let allowed = if camel {
+                        ready && h.state.on_ground
+                    } else if nautilus {
+                        ready
+                    } else {
+                        true
+                    };
+                    if allowed {
                         if let Some(h) = self.steered_horse.as_mut() {
                             h.jump_pending = physics::jump_pending_scale(d);
                         }
@@ -5670,14 +5680,16 @@ impl PlaySession {
 
     /// The horse the local player steers, if any (M222): the root vehicle, an
     /// `AbstractHorse` (a camel too since M225, with its own overrides in
-    /// [`physics::CamelRide`]), saddled (`getControllingPassenger` needs the
-    /// saddle), its first passenger the local player.
+    /// [`physics::CamelRide`]; and since M227 an `AbstractNautilus`, whose
+    /// ride is [`physics::tick_ridden_nautilus`]), saddled
+    /// (`getControllingPassenger` needs the saddle), its first passenger the
+    /// local player.
     fn steerable_horse(&self) -> Option<i32> {
         let me = self.player_id?;
         let vid = self.local_vehicle()?;
         let classes = self.entity_classes.as_deref()?;
         let e = self.world.entities.get(vid)?;
-        (classes.is_abstract_horse(e.type_id)
+        ((classes.is_abstract_horse(e.type_id) || classes.is_nautilus(e.type_id))
             && self.world.entities.saddled(vid)
             && self.mounts.passengers(vid).first() == Some(&me))
         .then_some(vid)
@@ -5765,6 +5777,20 @@ impl PlaySession {
             .entity_classes
             .as_deref()
             .is_some_and(|c| c.is_camel(type_id));
+        let is_nautilus = self
+            .entity_classes
+            .as_deref()
+            .is_some_and(|c| c.is_nautilus(type_id));
+        // M227 — `EntityTypeTags.CAN_FLOAT_WHILE_RIDDEN`, as the server
+        // synced it.
+        let floats_while_ridden = self
+            .tags
+            .contains(
+                "minecraft:entity_type",
+                "minecraft:can_float_while_ridden",
+                type_id,
+            )
+            .unwrap_or(false);
         let camel = is_camel.then(|| physics::CamelRide {
             refuse_to_move: self.world.entities.camel_refuse_to_move(id, game_time),
             sprint_bonus: self.was_sprinting && self.world.entities.dash_cooldown(id) == 0,
@@ -5776,6 +5802,8 @@ impl PlaySession {
             rider_yaw: self.player.yaw,
             rider_pitch: self.player.pitch,
             camel,
+            up: 0.0,
+            floats_while_ridden,
         };
         let collide = std::mem::take(&mut self.collide);
         let block_physics = std::mem::take(&mut self.block_physics);
@@ -5796,7 +5824,12 @@ impl PlaySession {
                 attributes: self.attribute_registry.as_deref(),
             };
             let mut pending = steered.jump_pending;
-            if physics::tick_ridden(
+            let tick = if is_nautilus {
+                physics::tick_ridden_nautilus
+            } else {
+                physics::tick_ridden
+            };
+            if tick(
                 &mut steered.state,
                 ridden,
                 &mut pending,
@@ -5805,9 +5838,12 @@ impl PlaySession {
                 &world,
             ) {
                 self.ridden_jumps += 1;
-                // `Camel.executeRidersJump`: `dashCooldown = 55`.
+                // `Camel.executeRidersJump`: `dashCooldown = 55`;
+                // `AbstractNautilus.executeRidersJump`: 40.
                 if is_camel {
                     self.world.entities.set_dash_cooldown(id, 55);
+                } else if is_nautilus {
+                    self.world.entities.set_dash_cooldown(id, 40);
                 }
             }
             steered.jump_pending = pending;

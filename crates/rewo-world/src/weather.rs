@@ -455,10 +455,15 @@ pub fn rain_column(
     partial_ticks: f32,
 ) -> ColumnInstance {
     let wrapped_ticks = (game_time & 131_071) as i32;
-    let tick_offset = (x.wrapping_mul(x).wrapping_mul(3121)
-        + x.wrapping_mul(45_238_971)
-        + z.wrapping_mul(z).wrapping_mul(418_711)
-        + z.wrapping_mul(13_761))
+    // Java `int` arithmetic: every product AND sum wraps (M227: the sums
+    // were plain `+`, which panics in a debug build once a column is far
+    // enough out — x = -48 already overflows `x * 45238971`'s neighbour).
+    let tick_offset = x
+        .wrapping_mul(x)
+        .wrapping_mul(3121)
+        .wrapping_add(x.wrapping_mul(45_238_971))
+        .wrapping_add(z.wrapping_mul(z).wrapping_mul(418_711))
+        .wrapping_add(z.wrapping_mul(13_761))
         & 0xFF;
     let speed = 3.0 + rng.next_float();
     let texture_offset = -((wrapped_ticks + tick_offset) as f32 + partial_ticks) / 32.0 * speed;
@@ -556,6 +561,24 @@ mod column_tests {
         let mut rng = LegacyRandom::new(column_seed(5, 9));
         let snow = snow_column(&mut rng, 1000, 5, 60, 90, 9, pack_light(0, 15), 0.0);
         assert_ne!(snow.u_offset, 0.0, "snow drifts");
+    }
+
+    /// The tick offset is Java `int` arithmetic (M227): far columns wrap
+    /// instead of panicking, and the result is the wrapped sum's low byte.
+    #[test]
+    fn a_far_rain_column_wraps_like_java() {
+        for (x, z) in [(-48, -30), (-30_000_000, 29_999_999), (i32::MAX, i32::MIN)] {
+            let mut rng = LegacyRandom::new(column_seed(x, z));
+            let c = rain_column(&mut rng, 0, x, 0, 1, z, pack_light(0, 15), 0.0);
+            assert!(c.v_offset.is_finite());
+        }
+        // -48: x*x*3121 = 7190784, x*45238971 = -2171470608 wraps to
+        // 2123496688; the sum overflows and wraps again.
+        let java = (7_190_784i64 + 2_123_496_688 + 900 * 418_711 - 30 * 13_761) as i32 & 0xFF;
+        let mut rng = LegacyRandom::new(column_seed(-48, -30));
+        let speed = 3.0 + LegacyRandom::new(column_seed(-48, -30)).next_float();
+        let c = rain_column(&mut rng, 0, -48, 0, 1, -30, pack_light(0, 15), 0.0);
+        assert_eq!(c.v_offset, -(java as f32) / 32.0 * speed);
     }
 
     /// Snow brightens its light so flakes stay visible: `(level*3 + 15) / 4`,

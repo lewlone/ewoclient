@@ -160,6 +160,22 @@ def offline_uuid(name):
     return str(uuid.UUID(bytes=bytes(b)))
 
 
+def nautilus_staging(name):
+    """M227 -- r90. A channel three deep (the grass and both dirt layers
+    turned to water, over the bedrock) running 43 blocks west on a lane of
+    its own, and a nautilus in it: tamed by the bot (`Owner`, which
+    `TamableAnimal` reads as tame) and saddled, so a plain right-click rides
+    it; NoAI keeps it put until then. The owner is the UUID as a STRING:
+    NBT's `[I;...]` int array carries a `;`, which is REWO_PRECMD's command
+    separator, and `EntityReference.readWithOldOwnerConversion` takes a
+    string longer than 16 characters through `UUID.fromString`."""
+    return (
+        ";fill ~-10 ~-3 ~-21 ~-52 ~-1 ~-19 minecraft:water"
+        ";summon minecraft:nautilus ~-12 ~-2 ~-20 {NoAI:1b,Owner:\"%s\","
+        "equipment:{saddle:{id:\"minecraft:saddle\",count:1}}}" % offline_uuid(name)
+    )
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -300,7 +316,7 @@ def run(args):
         print("server up; running render-check as %s" % args.username)
 
         env = dict(os.environ)
-        env["REWO_PRECMD"] = PRECMD
+        env["REWO_PRECMD"] = PRECMD + nautilus_staging(args.username)
         # The client no longer injects a dirt stack into slot 0 on spawn
         # unless asked (it was item synthesis in the shipped build). No
         # witness needs the stack, but the baseline was calibrated with slot 0

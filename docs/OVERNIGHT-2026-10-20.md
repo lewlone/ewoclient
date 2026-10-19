@@ -130,6 +130,13 @@ released.
   the tick before. The checks had compared against a formula I derived
   with the same mistake, so they passed. They now pin vanilla's real speeds
   (horse 0.6476, camel 0.4101 a tick), and both match.
+- **M227**: you can ride a nautilus underwater: it swims where you look
+  (up and down too), turns smoothly, and dashes with the jump bar. Checked
+  live against vanilla's numbers, and the server agreed exactly where it
+  ended. On the way: horses and camels now float up in deep water while
+  ridden, as in vanilla, and a crash in rainy weather far from the world's
+  center (debug builds only) is fixed.
+- Every mount is done: horses, donkeys, mules, camels, the nautilus, boats.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -182,6 +189,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M227)* | **M227** — nautilus riding: `physics::tick_ridden_nautilus` (3D ridden input, the halfway turn, the look-direction dash, gravity-free water travel), `move_relative` with a y; `floatInWaterWhileRidden` for the tagged mounts; a debug-build overflow in `rain_column` fixed; r58 counts the timed run; render-check **r90**, tail cap 30 s. |
 | `0beef60` | **M226** — the rider's input reaches its vehicle as vanilla's does: the modified move vector (×0.98, square stretch) from the previous tick, for boats, horses and camels; r88 and r89 pin vanilla's real per-tick speeds (their earlier "vanilla" formulas left out the 0.98). |
 | `df0afe6` | **M225** — camel riding: `physics::CamelRide` (refuse-to-move, the sprint bonus, the dash), the dash cooldown and stand-up prediction in the session, sprinting while riding only on a camel (`vehicleCanSprint`); render-check **r89**, r82 moved onto it, tail cap 20 s. |
 | `62252cc` | **M224** — r78's flake pinned (the flood's water fills the broken leaves within a tick; the witness graded air, the property is "gone") and fixed; r20 takes the first panel after its chest's injection, not r76's merchant screen. Render check 10/10 consecutive runs. |
@@ -381,6 +389,10 @@ released.
 - After M226: **4,312 tests passed, 0 failed**; render check **89/89**
   on two runs (r88 now reading 0.6476 and r89 0.4101, vanilla's); clippy
   (gates and default features) and `cargo fmt --check` clean.
+- After M227: **4,316 tests passed, 0 failed; gates 51/51** (demo hash unchanged);
+  render check **90/90** (the first full runs found the debug-build rain
+  overflow, which panicked, and r58's tail leak; both fixed); clippy (gates
+  and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -409,7 +421,7 @@ released.
   has no id for): ~~dropping items (Q), swapping hands (F), middle-click
   pick block, sprint start/stop~~ (M218), ~~leaving a bed~~ (M219), ~~the
   horse inventory~~ (M220), ~~steering boats~~ (M221), ~~steering horses~~
-  (M222), ~~camels~~ (M225); still open: the nautilus (a water mount).
+  (M222), ~~camels~~ (M225), ~~the nautilus~~ (M227). That list is done.
 - ~~r78's survival-mining flake~~ (M224: the witness, not the client).
 - `tools/render_check.py`'s port probe lost a race once ("server FAILED TO
   BIND"): it picks a free port, then the server binds it later. A retry on

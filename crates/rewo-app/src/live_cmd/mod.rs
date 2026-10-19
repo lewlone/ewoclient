@@ -868,6 +868,23 @@ struct LiveApp {
     camel_still_since: u64,
     #[cfg(feature = "gates")]
     camel_meter_peak: f32,
+    /// r90's tail stage (M227), the tick a step began, the counters at the
+    /// start, the height W started at, the stillness clock, and the jump
+    /// meter's peak while the dash cools down.
+    #[cfg(feature = "gates")]
+    nautilus_stage: u8,
+    #[cfg(feature = "gates")]
+    nautilus_tick0: u64,
+    #[cfg(feature = "gates")]
+    nautilus_counts0: (u64, u64),
+    #[cfg(feature = "gates")]
+    nautilus_jumps0: u64,
+    #[cfg(feature = "gates")]
+    nautilus_y0: f64,
+    #[cfg(feature = "gates")]
+    nautilus_still_since: u64,
+    #[cfg(feature = "gates")]
+    nautilus_meter_peak: f32,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1229,6 +1246,20 @@ fn run_windowed(
         #[cfg(feature = "gates")]
         camel_meter_peak: 0.0,
         #[cfg(feature = "gates")]
+        nautilus_stage: 0,
+        #[cfg(feature = "gates")]
+        nautilus_tick0: 0,
+        #[cfg(feature = "gates")]
+        nautilus_counts0: (0, 0),
+        #[cfg(feature = "gates")]
+        nautilus_jumps0: 0,
+        #[cfg(feature = "gates")]
+        nautilus_y0: 0.0,
+        #[cfg(feature = "gates")]
+        nautilus_still_since: 0,
+        #[cfg(feature = "gates")]
+        nautilus_meter_peak: 0.0,
+        #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
         lectern_shown: None,
@@ -1410,9 +1441,10 @@ fn run_windowed(
 const RENDER_CHECK_SECONDS: f32 = 8.0;
 
 /// The most the render check's tail (M220's r84/r85, run after the timed
-/// part) may add before the run ends regardless. 20 since M225's camel; the
+/// part) may add before the run ends regardless. 20 since M225's camel, 30
+/// since M227's nautilus (its swim and settle take about nine seconds); the
 /// run ends as soon as every tail stage is done.
-const RENDER_CHECK_TAIL_SECONDS: f32 = 20.0;
+const RENDER_CHECK_TAIL_SECONDS: f32 = 30.0;
 
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {

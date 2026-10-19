@@ -1395,6 +1395,11 @@ impl LiveApp {
                 },
             ));
         }
+        // M227 — r58's effect count is the timed run's: riding r90's
+        // nautilus in the tail gives the bot Breath of the Nautilus, a
+        // second icon that r58's staged Speed is not about.
+        #[cfg(feature = "gates")]
+        let timed_hud = self.in_timed_run();
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             use rewo_gpu::hud::HudIcon;
@@ -1413,7 +1418,9 @@ impl LiveApp {
                 .iter()
                 .filter(|b| matches!(b.icon, HudIcon::Effect(_)))
                 .collect();
-            c.effect_icons_max = c.effect_icons_max.max(effects.len());
+            if timed_hud {
+                c.effect_icons_max = c.effect_icons_max.max(effects.len());
+            }
             // The beneficial row is y = 1 + 3; the first slot is
             // `guiWidth - 25 + 3`, read off the layout's own GUI size.
             let gui_w = (extent.width as f32
@@ -2339,7 +2346,8 @@ impl LiveApp {
                 || (self.mount_stage >= 20
                     && self.boat_stage >= 20
                     && self.horse_stage >= 20
-                    && self.camel_stage >= 20);
+                    && self.camel_stage >= 20
+                    && self.nautilus_stage >= 20);
             #[cfg(not(feature = "gates"))]
             let tail_done = true;
             if elapsed >= limit && (tail_done || elapsed >= limit + RENDER_CHECK_TAIL_SECONDS) {

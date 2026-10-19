@@ -2049,6 +2049,7 @@ this shape once.
 | M221 (2026-10-19) — the bot steers a real boat; the server accepts every move and agrees where it is | **r87** | — | — |
 | M222 (2026-10-19) — the bot rides and jumps a real horse; the server accepts every move and agrees where it is | **r88** | — | — |
 | M225 (2026-10-19) — the bot sprints and dashes a real camel; the dash's cooldown blocks a second; the server accepts every move and agrees where it is | **r89** | — | — |
+| M227 (2026-10-19) — the bot swims and dashes a real nautilus: vanilla's water speed with no gravity, the cooldown holds the meter, the server agrees where it is | **r90** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3883,6 +3884,54 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M227 — riding a nautilus (2026-10-19)
+
+The last mount. `AbstractNautilus` is a `TamableAnimal`, not a horse, and
+its ride is its own (`physics::tick_ridden_nautilus`):
+
+- **`getRiddenInput`** is three-dimensional: the rider's `xxa`, and while
+  `zza` is not 0, `cos` and `-sin` of the rider's pitch as forward and up
+  (×-0.5 backward; the magnitude of `zza` is not read). `move_relative`
+  now takes a y (`Entity.getInputVector` normalises the whole vector), 0
+  for every other caller.
+- **`tickRidden`**: the yaw moves half the way to the rider's each tick,
+  the pitch is half the rider's; the dash (`executeRidersJump`) is along the
+  RIDER's look, `1.2` in water and `0.5` out × scale × speed ×
+  `blockSpeedFactor`, with no ground needed; cooldown 40.
+- **`getRiddenSpeed`** `0.0325 · speed` in water, `0.02 ·` out, and
+  **`travelInWater`** replaced by `moveRelative`, move, ×0.9: no gravity, no
+  drag of its own. Not pushed by fluid. Out of water, the ordinary air
+  travel with the up part.
+
+**Also found:**
+
+- `floatInWaterWhileRidden`, which M222 and M225 lacked: a mount tagged
+  `can_float_while_ridden` (the horses and camels, from the server's synced
+  tags), ridden in water above its fluid-jump threshold, rises 0.04 a tick.
+  The nautilus is not tagged.
+- **A debug-build crash in the rain**: `rain_column`'s tick offset summed
+  Java-`int` products with a plain `+`, which overflows once a rain column
+  is far enough out (x = -48 already); r90's ride was the first witness to
+  go that far west in r53's rain. `wrapping_add` throughout, and a test at
+  the coordinates that tripped it and at the extremes. Release builds wrap
+  silently, so the shipped build never crashed.
+- r58 (the staged Speed icon) took the run-wide maximum of effect icons;
+  riding the nautilus gives Breath of the Nautilus, a second icon. It now
+  counts the timed run only.
+- `REWO_PRECMD` is split on `;`, so the nautilus's `Owner` cannot be NBT's
+  `[I;...]` int array; it is the UUID string, which
+  `EntityReference.readWithOldOwnerConversion` takes through
+  `UUID.fromString`.
+
+**r90** (in the tail; the cap is now 30 s): a nautilus tamed to the bot and
+saddled, in a three-deep, 43-block channel, ridden by the production
+right-click; W level for 70 ticks: a tick's distance 0.3248 against
+`0.0325 / (1 − 0.9)` = 0.3250 (69 thrusts in, after the one-tick input
+delay), the height unchanged to the bit; the dash's first step 1.283; the
+meter held inside the cooldown (peak 0, 28 ticks left); 151 moves, no
+rejection, and the server's position once it was still is the client's
+exactly. 90/90.
 
 ### M226 — the rider's input reaches its vehicle as vanilla's does (2026-10-19)
 

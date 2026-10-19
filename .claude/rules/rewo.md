@@ -59,11 +59,16 @@ a self-check path.
   so run a **debug** build. M86 found nine features that had never rendered in
   the windowed client while every headless gate was green. A **tail** runs
   after the timed 8 s (`RENDER_CHECK_TAIL_SECONDS` caps it at 20 s): r83's
-  bed, r84-r86's donkey and inventory, r87's boat, r88's horse and r89's camel (with r82's
-  sprint state: a rider sprints only on a camel) live there, because a sleeping player is
+  bed, r84-r86's donkey and inventory, r87's boat, r88's horse, r89's camel (with r82's
+  sprint state: a rider sprints only on a camel) and r90's nautilus live there (the cap is
+  30 s; the run ends when they are done), because a sleeping player is
   immobile and every timed slot already holds a screen or a key. Witnesses
   that click an entity check what the production pick hit first (r71's item
   frame and r72's horse each took a click meant for something else).
+  `REWO_PRECMD` is split on `;`: NBT's `[I;...]` int array cannot go in it
+  (r90's nautilus owner is a UUID string). A tail witness that changes the
+  bot's state (an effect, a position) can leak into a run-wide maximum
+  (r58's icon count is the timed run's since r90's Breath of the Nautilus).
   r53's waterlogged slab floods the spawn: a block a witness removes near it
   can turn straight to water (r78's flake, M224), so grade "gone", not "air".
   A witness that keeps the first sighting of a shared value (r20's panel)

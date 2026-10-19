@@ -382,6 +382,23 @@ pub(super) struct RenderCheck {
     pub(super) camel_client_pos: Option<[f64; 3]>,
     pub(super) camel_server_pos: Option<[f64; 3]>,
     pub(super) camel_skip: Option<String>,
+    /// M227 — r90: the nautilus, whether the client steered it, its per-tick
+    /// distance on the last tick of W and how far its height drifted (no
+    /// gravity in water), its dashes and the fastest tick after one, the
+    /// meter's peak and the cooldown while it cooled, the moves sent, the
+    /// rejections, and the server's position against the client's.
+    pub(super) nautilus: Option<i32>,
+    pub(super) nautilus_steered: bool,
+    pub(super) nautilus_swim_step: f64,
+    pub(super) nautilus_drift: f64,
+    pub(super) nautilus_dashes: u64,
+    pub(super) nautilus_dash_step: f64,
+    pub(super) nautilus_cooldown_meter: Option<(f32, i32)>,
+    pub(super) nautilus_moves_sent: u64,
+    pub(super) nautilus_rejections: u64,
+    pub(super) nautilus_client_pos: Option<[f64; 3]>,
+    pub(super) nautilus_server_pos: Option<[f64; 3]>,
+    pub(super) nautilus_skip: Option<String>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -867,7 +884,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 89;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 90;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1454,6 +1471,52 @@ impl RenderCheck {
                 self.camel_client_pos,
                 self.camel_server_pos,
                 self.camel_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
+            ),
+        );
+        // M227 — r90: the bot rides a summoned, tamed, saddled nautilus
+        // (vanilla's speed 1.0) in a three-deep channel through the
+        // production right-click, holds W level for 70 ticks
+        // (`AbstractNautilus.travelInWater`: `moveRelative(0.0325)`, move,
+        // ×0.9, no gravity: a tick's distance settles at `0.0325 / (1 - 0.9)`
+        // and its height does not move), then releases the jump meter: the
+        // dash along the rider's look (1.2 in water), whose 40-tick cooldown
+        // keeps the meter empty. No move is rejected, and the server's
+        // position once it is still is the client's.
+        let nagree = match (self.nautilus_client_pos, self.nautilus_server_pos) {
+            (Some(c), Some(s)) => (0..3).all(|i| (c[i] - s[i]).abs() < 0.1),
+            _ => false,
+        };
+        let swim_step = 0.0325f32 as f64 / (1.0 - 0.9);
+        let ncooled = self
+            .nautilus_cooldown_meter
+            .is_some_and(|(peak, cd)| peak == 0.0 && cd > 0);
+        row(
+            "r90 the bot swam and dashed a real nautilus: no gravity in water, the cooldown held the meter, the server agrees where it is",
+            self.nautilus_steered
+                && (self.nautilus_swim_step - swim_step).abs() < 1e-3
+                && self.nautilus_drift < 1e-6
+                && self.nautilus_dashes == 1
+                && self.nautilus_dash_step > 1.0
+                && ncooled
+                && self.nautilus_moves_sent >= 20
+                && self.nautilus_rejections == 0
+                && nagree,
+            format!(
+                "nautilus {:?}: steered {}, swimming step {:.4} (vanilla {swim_step:.4}), height drift {:.2e}, \
+                 {} dash(es), fastest step after it {:.3}, meter peak / cooldown while cooling {:?}, \
+                 {} move_vehicle sent, {} rejection(s), client {:?} server {:?} (agree {nagree}){}",
+                self.nautilus,
+                self.nautilus_steered,
+                self.nautilus_swim_step,
+                self.nautilus_drift,
+                self.nautilus_dashes,
+                self.nautilus_dash_step,
+                self.nautilus_cooldown_meter,
+                self.nautilus_moves_sent,
+                self.nautilus_rejections,
+                self.nautilus_client_pos,
+                self.nautilus_server_pos,
+                self.nautilus_skip.as_ref().map(|s| format!(" (stopped: {s})")).unwrap_or_default()
             ),
         );
         // r86 — the player preview belongs to the player's inventory only:
@@ -4158,6 +4221,268 @@ impl LiveApp {
                             c.camel_skip = Some("no /data reply".into());
                         }
                         self.camel_stage = 20;
+                    }
+                }
+                // r90 — M227's nautilus, after the camel.
+                if self.nautilus_stage > 0
+                    && self.nautilus_stage < 20
+                    && elapsed >= limit + RENDER_CHECK_TAIL_SECONDS - 0.2
+                {
+                    if let Some(c) = self.check.as_mut() {
+                        c.nautilus_skip.get_or_insert_with(|| {
+                            format!("timed out in stage {}", self.nautilus_stage)
+                        });
+                    }
+                    self.keys.w = false;
+                    self.keys.jump = false;
+                    self.nautilus_stage = 20;
+                }
+                if self.nautilus_stage == 0 && self.camel_stage >= 20 {
+                    self.nautilus_tick0 = now;
+                    self.nautilus_stage = 1;
+                }
+                if self.nautilus_stage == 1
+                    && now >= self.nautilus_tick0 + 5
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.local_vehicle().is_none())
+                {
+                    let found = self.session.as_ref().and_then(|s| {
+                        let want = s.entity_types.as_deref()?.id_of("minecraft:nautilus")?;
+                        s.world
+                            .entities
+                            .iter()
+                            .filter(|(id, e)| {
+                                e.type_id == want
+                                    && !CROWD_IDS.contains(id)
+                                    && s.world.entities.saddled(*id)
+                            })
+                            .map(|(id, e)| (id, e.x, e.y, e.z))
+                            .next()
+                    });
+                    match found {
+                        Some((id, nx, ny, nz)) => {
+                            if let Some(c) = self.check.as_mut() {
+                                c.nautilus = Some(id);
+                            }
+                            if let Some(s) = self.session.as_mut() {
+                                let _ =
+                                    s.send_command(&format!("tp @s {} {} {}", nx + 2.0, ny, nz));
+                            }
+                            self.nautilus_tick0 = now;
+                            self.nautilus_stage = 2;
+                        }
+                        None => {
+                            // What the client does see: any nautilus and its
+                            // saddle, and the server's replies to the staging.
+                            let seen = self.session.as_ref().map(|s| {
+                                let want = s
+                                    .entity_types
+                                    .as_deref()
+                                    .and_then(|t| t.id_of("minecraft:nautilus"));
+                                let found: Vec<(i32, bool)> = s
+                                    .world
+                                    .entities
+                                    .iter()
+                                    .filter(|(_, e)| Some(e.type_id) == want)
+                                    .map(|(id, _)| (id, s.world.entities.saddled(id)))
+                                    .collect();
+                                // The replies from the channel's fill on.
+                                let from = s
+                                    .chat_log
+                                    .iter()
+                                    .rposition(|l| l.contains("filled 387"))
+                                    .unwrap_or(0);
+                                let replies: Vec<String> =
+                                    s.chat_log.iter().skip(from).take(4).cloned().collect();
+                                format!("nautili {found:?}, replies {replies:?}")
+                            });
+                            if let Some(c) = self.check.as_mut() {
+                                c.nautilus_skip = Some(format!(
+                                    "no summoned nautilus; {}",
+                                    seen.unwrap_or_default()
+                                ));
+                            }
+                            self.nautilus_stage = 20;
+                        }
+                    }
+                }
+                if self.nautilus_stage == 2 && now >= self.nautilus_tick0 + 8 {
+                    let id = self.check.as_ref().and_then(|c| c.nautilus);
+                    let aimed = id.zip(self.session.as_mut()).is_some_and(|(id, s)| {
+                        let Some(e) = s.world.entities.get(id) else {
+                            return false;
+                        };
+                        let (ex, ey, ez) = (e.x, e.y + 0.45, e.z);
+                        let eye = [s.player.x, s.player.eye_y(), s.player.z];
+                        let d = [ex - eye[0], ey - eye[1], ez - eye[2]];
+                        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                        s.player.yaw = (-d[0]).atan2(d[2]).to_degrees() as f32;
+                        s.player.pitch = (-d[1] / len).asin().to_degrees() as f32;
+                        true
+                    });
+                    let on_it = self.session.as_ref().is_some_and(|s| {
+                        super::entities::frame_crosshair_hit(s, &self.etypes, 1.0).map(|h| h.id)
+                            == id
+                    });
+                    if aimed && on_it && self.entity_click(winit::event::MouseButton::Right) {
+                        self.nautilus_tick0 = now;
+                        self.nautilus_stage = 3;
+                    } else if now >= self.nautilus_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.nautilus_skip =
+                                Some("the crosshair never reached the nautilus".into());
+                        }
+                        self.nautilus_stage = 20;
+                    }
+                }
+                let naut_pos = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.steered_horse)
+                    .filter(|h| Some(h.id) == self.check.as_ref().and_then(|c| c.nautilus))
+                    .map(|h| [h.state.x, h.state.y, h.state.z]);
+                let naut_step = mount_step.filter(|_| naut_pos.is_some());
+                if self.nautilus_stage == 3 {
+                    if let Some(p) = naut_pos {
+                        if let Some(c) = self.check.as_mut() {
+                            c.nautilus_steered = true;
+                        }
+                        if let Some(s) = self.session.as_mut() {
+                            // West along the channel, level.
+                            s.player.yaw = 90.0;
+                            s.player.pitch = 0.0;
+                            self.nautilus_counts0 = (s.vehicle_moves_sent, s.vehicle_rejections);
+                            self.nautilus_jumps0 = s.ridden_jumps;
+                        }
+                        self.nautilus_y0 = p[1];
+                        self.keys.w = true;
+                        self.nautilus_tick0 = now;
+                        self.nautilus_stage = 4;
+                    } else if now >= self.nautilus_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.nautilus_skip = Some("never steered the nautilus".into());
+                        }
+                        self.nautilus_stage = 20;
+                    }
+                }
+                if self.nautilus_stage == 4 {
+                    if let (Some(c), Some(p)) = (self.check.as_mut(), naut_pos) {
+                        c.nautilus_drift = c.nautilus_drift.max((p[1] - self.nautilus_y0).abs());
+                    }
+                    if now >= self.nautilus_tick0 + 70 {
+                        if let (Some(c), Some(st)) = (self.check.as_mut(), naut_step) {
+                            c.nautilus_swim_step = st;
+                        }
+                        self.keys.w = false;
+                        // Hold the jump key for the riding meter, then release.
+                        self.keys.jump = true;
+                        self.nautilus_tick0 = now;
+                        self.nautilus_stage = 5;
+                    }
+                }
+                if self.nautilus_stage == 5 {
+                    if now >= self.nautilus_tick0 + 12 {
+                        self.keys.jump = false;
+                    }
+                    let dashes = self
+                        .session
+                        .as_ref()
+                        .map_or(0, |s| s.ridden_jumps - self.nautilus_jumps0);
+                    if let (Some(c), Some(st), true) = (self.check.as_mut(), naut_step, dashes > 0)
+                    {
+                        c.nautilus_dash_step = c.nautilus_dash_step.max(st);
+                    }
+                    if dashes > 0 && now >= self.nautilus_tick0 + 20 {
+                        // Inside the 40-tick cooldown: hold the key again.
+                        self.keys.jump = true;
+                        self.nautilus_meter_peak = 0.0;
+                        self.nautilus_tick0 = now;
+                        self.nautilus_stage = 6;
+                    } else if now >= self.nautilus_tick0 + 60 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.nautilus_skip = Some("the dash never fired".into());
+                        }
+                        self.keys.jump = false;
+                        self.nautilus_stage = 20;
+                    }
+                }
+                if self.nautilus_stage == 6 {
+                    let scale = self.session.as_ref().map_or(0.0, |s| s.jump_riding_scale());
+                    self.nautilus_meter_peak = self.nautilus_meter_peak.max(scale);
+                    if now >= self.nautilus_tick0 + 6 {
+                        let cd = self
+                            .session
+                            .as_ref()
+                            .zip(self.check.as_ref().and_then(|c| c.nautilus))
+                            .map_or(0, |(s, id)| s.world.entities.dash_cooldown(id));
+                        let peak = self.nautilus_meter_peak;
+                        if let Some(c) = self.check.as_mut() {
+                            c.nautilus_cooldown_meter = Some((peak, cd));
+                        }
+                        self.keys.jump = false;
+                        self.nautilus_tick0 = now;
+                        self.nautilus_still_since = now;
+                        self.nautilus_stage = 7;
+                    }
+                }
+                if self.nautilus_stage == 7 {
+                    if naut_step.is_some_and(|st| st > 1e-4) {
+                        self.nautilus_still_since = now;
+                    }
+                    let settled = now >= self.nautilus_still_since + 10;
+                    if settled || now >= self.nautilus_tick0 + 100 {
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command(
+                                "data get entity @e[type=minecraft:nautilus,limit=1,sort=nearest] Pos",
+                            );
+                        }
+                        let snap = self.session.as_ref().map(|s| {
+                            (
+                                s.steered_horse.map(|h| [h.state.x, h.state.y, h.state.z]),
+                                s.vehicle_moves_sent,
+                                s.vehicle_rejections,
+                                s.ridden_jumps,
+                            )
+                        });
+                        if let (Some((pos, moves, rej, jumps)), Some(c)) =
+                            (snap, self.check.as_mut())
+                        {
+                            c.nautilus_client_pos = pos;
+                            c.nautilus_moves_sent = moves - self.nautilus_counts0.0;
+                            c.nautilus_rejections = rej - self.nautilus_counts0.1;
+                            c.nautilus_dashes = jumps - self.nautilus_jumps0;
+                        }
+                        self.nautilus_tick0 = now;
+                        self.nautilus_stage = 8;
+                    }
+                }
+                if self.nautilus_stage == 8 {
+                    let reply = self.session.as_ref().and_then(|s| {
+                        s.chat_log
+                            .iter()
+                            .rev()
+                            .find(|l| l.contains("Nautilus has the following entity data"))
+                            .cloned()
+                    });
+                    if let Some(line) = reply {
+                        let nums: Vec<f64> = line
+                            .split(['[', ']', ','])
+                            .filter_map(|t| t.trim().trim_end_matches('d').parse::<f64>().ok())
+                            .collect();
+                        if let (3, Some(c)) = (nums.len(), self.check.as_mut()) {
+                            c.nautilus_server_pos = Some([nums[0], nums[1], nums[2]]);
+                        }
+                        if let Some(s) = self.session.as_mut() {
+                            let _ = s.send_command("ride @s dismount");
+                        }
+                        self.nautilus_stage = 20;
+                    } else if now >= self.nautilus_tick0 + 40 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.nautilus_skip = Some("no /data reply".into());
+                        }
+                        self.nautilus_stage = 20;
                     }
                 }
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
