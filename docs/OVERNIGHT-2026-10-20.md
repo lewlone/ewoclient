@@ -278,6 +278,9 @@ released.
   a full armour stand under the text, and invisible players and mobs were
   plainly visible. They are invisible now, with their armour, held items
   and names still showing, as in vanilla.
+- **M272**: placed player heads show their own skins (server head walls
+  and decorations all showed Steve). Heads on armour stands, in the
+  inventory and in a hand still show Steve.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -339,6 +342,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `bbe57010` | **M272** — player heads wear their own skins: `HeadSkins` (a worker thread, one fetch per URL, vetted to `textures.minecraft.net`, at most 16), `HeldItems::add_skin_head_model` (a per-skin copy of the head model) and a per-position model in `collect_block_entities`; render-check **r130** (a synthetic skin from a local file). |
 | `4ab41389` | **M271** — invisible bodies: `EntityDraw::body_hidden` for an invisible living entity (not seen by a spectator); the model and capsule skip, layers and name stay; mobshot pixel check (fails on the old behaviour) and render-check **r129**. |
 | `cff0a842` | **M270** — armour stand poses: indices 16-21 into `MobState`, `Anim::StandPose` as a delta from the baked default, the body sticks on the body part; render-check **r128**. |
 | `8e259f94` | **M269** — primed TNT: fuse and block metadata (`PrimedState`), the client countdown, `TntRenderer`'s swell; any falling or primed block through the run-time state models; render-check **r127**. |
@@ -659,6 +663,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M272: **4,413 tests passed, 0 failed; gates 51/51**; render check **130/130** on two runs (r130 drew on 33,296 and 35,912 frames); clippy (gates and default features) and `cargo fmt --check` clean. r130 cannot pass on the old code (the per-skin model it looks for did not exist). The first chain attempt was stopped to raise the witness pin; its gate process outlived the stop and held `rewo.exe`, so the rerun's build failed until it was killed (verified its command line first).
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -711,6 +716,11 @@ released.
   registry's wire index, the order of its `registry_data`), so the next
   sighting names the source.
 - ~~A boat model~~ (M223).
+- Player heads (M272): a name-only profile (vanilla asks Mojang's profile
+  service), the profile's `texture` skin patch, heads worn by armour stands
+  and mobs, and head items in the inventory or a hand still show Steve. The
+  entity atlas's large band is a 64-slot ring, not an LRU: past 64 distinct
+  big textures on screen at once it would recycle slots mid-frame.
 - Banner and shield items show no patterns (the stack's `banner_patterns`
   never reach the item path), and a pot item shows plain sides. A dropped
   or framed trident shows its 3D model (vanilla: the sprite). The dragon

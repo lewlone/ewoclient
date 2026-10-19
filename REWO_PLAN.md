@@ -3921,6 +3921,50 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M272 — player heads wear their own skins (2026-10-20)
+
+Every placed player head drew Steve. Servers decorate with custom heads by
+the thousand (a head's `profile` carries a `textures` property, the same
+base64 JSON a player's skin comes in), so every lobby's head wall, every
+"skull" decoration and every menu-board icon in the world showed the same
+face. Vanilla's `SkullBlockRenderer` takes the skin from
+`ResolvableProfile`; the server sends the profile in the head's update tag
+(`SkullBlockEntity.getUpdateTag`, the list form of `PROPERTY_MAP` that the
+codec always writes).
+
+- `live_cmd::head_textures_value` reads the property;
+  `rewo_net::skins::decode_textures_property` decodes it and vets the URL to
+  `textures.minecraft.net` (the hostile-server rule the player skins use).
+- `HeadSkins` (one worker thread, `mpsc` both ways) fetches each distinct
+  URL once through `skin_fetch::fetch_rgba64` (timeouts, no redirects,
+  1 MiB cap, PNG header checked first). A base64 value is decoded once.
+  At most `MAX_HEAD_SKINS` (16) skins: each is a 64×64 texture in the
+  entity atlas's large band, a 64-slot RING every block-entity sheet
+  shares, so more than 64 distinct big textures on screen would recycle
+  slots mid-frame. A head past the cap keeps Steve.
+- `HeldItems::add_skin_head_model` appends the skin and a copy of
+  `rewo:be/player_head` whose quads all sample it, named
+  `rewo:be/player_head#<texture index>`; the frame hands the GPU the new
+  model and texture (M260's `extend_held_items`, which keeps the CPU and
+  GPU texture lists in step), and `collect_block_entities` gives each head
+  its model by position.
+- `REWO_HEAD_SKIN_FILE` (gates knob) serves every head skin from a local
+  PNG, so the render check stays offline.
+
+Not done (recorded): a profile that is only a name or an id (vanilla
+resolves it through Mojang's profile service, which Rewo does not call),
+the `texture` skin patch (a resource-pack texture named in the profile),
+heads worn on armour stands and mobs, and head items in the inventory or a
+hand, which still draw Steve.
+
+**Unit tests**: the property is found in the list (a bare-name profile and
+a missing one give none), and the skinned model is the head's quads with
+only the texture changed (a 64×32 buffer makes nothing). **r130**:
+`render_check.py` writes a synthetic 64×64 skin whose texel (x, y) is
+(4x, 4y, 0x80, 0xff) and places a head whose profile names a
+`textures.minecraft.net` URL; the head must draw every quad in a per-skin
+model whose texture holds those texels.
+
 ### M271 — invisible bodies are invisible (2026-10-20)
 
 Rewo drew invisible entities whole: the invisibility flag fed only the
