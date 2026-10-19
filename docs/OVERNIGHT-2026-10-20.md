@@ -88,6 +88,10 @@ released.
   checks found a real bug: after pressing a number key, Rewo kept treating
   the previous slot as the held item (in hand, for mining and attacking)
   while the server had switched. Fixed.
+- **M219**: you can leave a bed. Rewo did not know the player was asleep,
+  so it showed no in-bed screen (no Leave Bed button) and the walk keys
+  still worked in bed. Now the in-bed chat appears, Leave Bed and Esc wake
+  you, and you can't walk while asleep; checked live against the server.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -136,6 +140,8 @@ released.
 | `4c97c99` | **M217** — survival block breaking: generated block hardness (1,196 blocks) and item tool tables, vanilla's destroy progress and start/continue/stop machine, the held attack key; render-check **r78** (leaves broken in survival on vanilla's tick, the server agreeing). |
 | `485036b` | This summary through M217. |
 | `16921fd` | **M218** — Q drop (predicted), F swap hands, middle-click pick block/entity, sprint start/stop sent; `select_hotbar` now sets the client's held slot (it never did); render-check **r79-r82**. |
+| `41078c4` | This summary through M218. |
+| *(M219)* | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
 
 ## Decisions made
 
@@ -226,6 +232,20 @@ released.
    runs of spaces where a shell joined a backslash line continuation (the
    same artifact this run hit and fixed in its own messages). Cosmetic, in
    gate output only.
+22. **The horse inventory is its own milestone (M220), not part of M219.**
+   The key half is one packet (`OPEN_INVENTORY`), but Rewo had never handled
+   the server's answer, `mount_screen_open` (a class-C packet in the coverage
+   table): the menu, its slot layout and the horse screen are all new.
+   Sending the key without them would have made E on a horse do nothing
+   instead of opening the player's inventory, so the key change waits for
+   the screen.
+23. **r83 runs first, before the options pages**, because a sleeping player
+   is immobile and the riding-jump check (r72, 0.32-0.46) needs the jump key,
+   and every later slot already has a screen up. The night it needs lasts only
+   the round trip (well under a second), and the bot returns to its spawn
+   point afterwards so later checks see the world they were written for. Not
+   modelled, recorded: the lying-down camera, and gravity while asleep (the
+   client settles 0.125 onto the bed; the server allows it).
 
 ## Verification
 
@@ -260,6 +280,12 @@ released.
   0 unexplained sky disagreements after the fixes (two seeds exact), and
   CORRECTIONS 0 on every run. One block-light cell (seed 5) did not recur
   on rerun; recorded, not explained.
+- After M219: **4,291 tests, 0 failed; gates 51/51** (demo hash unchanged,
+  `e658532bcc8c2758`); render check **83/83** on two consecutive runs (a
+  first run read 82/83 with r78's survival mining late on its 0.28 deadline,
+  passing on the rerun; r83's first version waited for the server's clock
+  echo, which is periodic, and timed out once before the click retry);
+  clippy (gates and default features) and `cargo fmt --check` clean.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -286,8 +312,11 @@ released.
 - Other everyday actions found unwired by the same sweep (each is a
   `player_action` or `player_command` the client never sends, or a packet it
   has no id for): ~~dropping items (Q), swapping hands (F), middle-click
-  pick block, sprint start/stop~~ (M218); still open: leaving a bed, the
-  horse inventory, and riding boats/horses (`move_vehicle`, `paddle_boat`).
+  pick block, sprint start/stop~~ (M218), ~~leaving a bed~~ (M219); still
+  open: the horse inventory (M220, next), and riding boats/horses
+  (`move_vehicle`, `paddle_boat`).
+- The sleeping camera: vanilla lays the view down in the bed (eye height 0.2,
+  turned to the bed's facing). Rewo keeps the standing camera while asleep.
 - `rewo-net`'s three `play::inbound` timing tests failed once under heavy
   machine load (they passed alone and in every other full run).
 - More live witnesses for screens that only have offscreen gates. M214's

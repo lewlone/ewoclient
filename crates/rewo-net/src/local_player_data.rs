@@ -94,6 +94,8 @@ pub struct LocalPlayerData {
     /// `DATA_PLAYER_ABSORPTION_ID` — index 17, FLOAT (M168). Defined 0.0
     /// (`Player.java:225`).
     absorption: f32,
+    /// `LivingEntity.SLEEPING_POS_ID` — index 14 (M219). Defined empty.
+    sleeping_pos: Option<(i32, i32, i32)>,
 }
 
 impl Default for LocalPlayerData {
@@ -104,6 +106,7 @@ impl Default for LocalPlayerData {
             air_supply: MAX_AIR_SUPPLY,
             ticks_frozen: 0,
             absorption: 0.0,
+            sleeping_pos: None,
         }
     }
 }
@@ -129,6 +132,16 @@ impl LocalPlayerData {
     /// `Player.getAbsorptionAmount()`.
     pub fn absorption(&self) -> f32 {
         self.absorption
+    }
+
+    /// `LivingEntity.getSleepingPos()` (M219).
+    pub fn sleeping_pos(&self) -> Option<(i32, i32, i32)> {
+        self.sleeping_pos
+    }
+
+    /// `LivingEntity.isSleeping()` — `getSleepingPos().isPresent()`.
+    pub fn is_sleeping(&self) -> bool {
+        self.sleeping_pos.is_some()
     }
 
     /// `getSharedFlag(flag)`.
@@ -167,6 +180,10 @@ pub struct LocalMetaOutcome {
     pub flags_updated: bool,
     /// …and the elytra sound should start.
     pub start_elytra_sound: bool,
+    /// The packet set a sleeping position (M219):
+    /// `LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID)` on the client runs
+    /// `getSleepingPos().ifPresent(this::setPosToBed)`.
+    pub moved_to_bed: Option<(i32, i32, i32)>,
 }
 
 /// `handleSetEntityData` for the local player — the branch
@@ -214,11 +231,19 @@ pub fn apply_local_metadata(
     if let Some(absorption) = meta.absorption {
         data.absorption = absorption;
     }
+    let mut moved_to_bed = None;
+    if let Some(pos) = meta.sleeping_pos {
+        data.sleeping_pos = pos;
+        moved_to_bed = pos;
+    }
     let Some(flags) = meta.flags else {
         // The packet did not mention index 0, so `onSyncedDataUpdated` never
         // ran for that accessor and the elytra test is not reached — however
         // the flag stands.
-        return LocalMetaOutcome::default();
+        return LocalMetaOutcome {
+            moved_to_bed,
+            ..Default::default()
+        };
     };
     data.shared_flags = flags;
     LocalMetaOutcome {
@@ -227,7 +252,13 @@ pub fn apply_local_metadata(
         // in the packet, so this is `isFallFlying() && !wasFallFlying` on the
         // freshly-assigned value.
         start_elytra_sound: data.is_fall_flying() && !data.was_fall_flying,
+        moved_to_bed,
     }
+}
+
+/// `LivingEntity.setPosToBed`: the bed block's centre, `0.6875` up (M219).
+pub fn bed_position((x, y, z): (i32, i32, i32)) -> [f64; 3] {
+    [x as f64 + 0.5, y as f64 + 0.6875, z as f64 + 0.5]
 }
 
 #[cfg(test)]
@@ -542,5 +573,41 @@ mod tests {
             assert_eq!(out, LocalMetaOutcome::default());
         }
         assert_eq!(d, LocalPlayerData::default());
+    }
+
+    /// M219 — `SLEEPING_POS_ID` is index 14, OPTIONAL_BLOCK_POS (serializer
+    /// 11): present sets the position and moves the player to the bed, empty
+    /// clears it (the player woke up) without a move. A packet carrying it
+    /// alone (no index 0) still lands, as the air supply does.
+    #[test]
+    fn the_sleeping_position_sets_and_clears() {
+        let body = |present: bool| {
+            let mut w = PacketWriter::default();
+            w.varint(42);
+            w.u8(14);
+            w.varint(11);
+            w.bool(present);
+            if present {
+                // `BlockPos.asLong`: x << 38 | z << 12 & .. | y.
+                let (x, y, z) = (10i64, 64i64, -3i64);
+                w.i64(((x & 0x3FF_FFFF) << 38) | ((z & 0x3FF_FFFF) << 12) | (y & 0xFFF));
+            }
+            w.u8(0xFF);
+            w.into_bytes()
+        };
+        let mut data = LocalPlayerData::default();
+        assert!(!data.is_sleeping(), "defined empty");
+        let out = apply_local_metadata(&body(true), Some(42), None, &mut data);
+        assert_eq!(data.sleeping_pos(), Some((10, 64, -3)));
+        assert!(data.is_sleeping());
+        assert_eq!(out.moved_to_bed, Some((10, 64, -3)));
+        assert!(!out.flags_updated, "no index 0 in the packet");
+        assert_eq!(bed_position((10, 64, -3)), [10.5, 64.6875, -2.5]);
+        let out = apply_local_metadata(&body(false), Some(42), None, &mut data);
+        assert!(!data.is_sleeping());
+        assert_eq!(out.moved_to_bed, None);
+        // Another entity's packet changes nothing.
+        apply_local_metadata(&body(true), Some(7), None, &mut data);
+        assert!(!data.is_sleeping());
     }
 }

@@ -86,6 +86,9 @@ pub enum ScreenKind {
     /// (`Screen.clickUrlAction`). Opened over whatever screen the click was
     /// on, which it returns to; see [`crate::confirm_link_screen`].
     ConfirmLink,
+    /// `InBedChatScreen`'s Leave Bed button (M219). The chat half is the app's
+    /// `ChatScreen`; this kind only carries the one widget for drawing.
+    InBed,
 }
 
 /// A widget's identity within its screen. The screen's own module owns the

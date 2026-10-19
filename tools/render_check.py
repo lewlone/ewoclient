@@ -97,6 +97,10 @@ PRECMD = (
     # waterlogged slab spreads around spawn): the client mines them in
     # survival.
     "setblock ~ ~ ~-2 minecraft:oak_leaves[persistent=true];"
+    # M219 -- r83. A bed two blocks out (foot, then head to its west): the
+    # client sleeps in it at night and leaves through the in-bed screen.
+    "setblock ~-2 ~ ~2 minecraft:red_bed[facing=west,part=foot];"
+    "setblock ~-3 ~ ~2 minecraft:red_bed[facing=west,part=head];"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

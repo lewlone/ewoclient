@@ -236,6 +236,71 @@ pub struct ChatScreen {
     /// than sent, because the screen owns no socket — the same seam
     /// [`ChatAction`] is.
     command_request: Option<String>,
+    /// `instanceof InBedChatScreen` (M219): the chat a sleeping player gets,
+    /// with a Leave Bed button, `closeOnSubmit` false, and an `onClose` that
+    /// sends `STOP_SLEEPING` instead of closing.
+    in_bed: bool,
+}
+
+/// `InBedChatScreen`'s button: `Button.builder(..).bounds(width / 2 - 100,
+/// height - 40, 200, 20)` (M219), as `(x, y, w, h)` in GUI pixels.
+pub fn leave_bed_bounds(gui_w: i32, gui_h: i32) -> (i32, i32, i32, i32) {
+    (gui_w / 2 - 100, gui_h - 40, 200, 20)
+}
+
+/// The button's label key, `multiplayer.stopSleeping` ("Leave Bed").
+pub const KEY_STOP_SLEEPING: &str = "multiplayer.stopSleeping";
+
+/// What `Gui.tick`'s screen block does about sleep this tick (M219).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BedTick {
+    /// Nothing.
+    None,
+    /// `chat.openScreen(MESSAGE, InBedChatScreen::new)`.
+    OpenInBed,
+    /// `inBedScreen.onPlayerWokeUp()`.
+    WokeUp,
+}
+
+/// `Gui.tick`'s screen block, as far as sleep goes:
+///
+/// ```text
+/// if (screen != null || player == null) {
+///     if (screen instanceof InBedChatScreen s && !player.isSleeping()) s.onPlayerWokeUp();
+/// } else if (player.isDeadOrDying() && !(screen instanceof DeathScreen)) {
+///     setScreen(null);
+/// } else if (player.isSleeping() && level != null) {
+///     openScreen(MESSAGE, InBedChatScreen::new);
+/// }
+/// ```
+///
+/// `chat` is `None` with no chat screen up and `Some(in_bed)` with one;
+/// `other_screen` is any other screen in the slot. The in-bed screen opens
+/// only into an EMPTY slot, so a player who sleeps with the inventory open
+/// gets it the tick the inventory closes.
+pub fn bed_tick(chat: Option<bool>, other_screen: bool, sleeping: bool, dead: bool) -> BedTick {
+    if chat.is_some() || other_screen {
+        if chat == Some(true) && !sleeping {
+            return BedTick::WokeUp;
+        }
+        BedTick::None
+    } else if dead {
+        BedTick::None
+    } else if sleeping {
+        BedTick::OpenInBed
+    } else {
+        BedTick::None
+    }
+}
+
+/// What `InBedChatScreen.onPlayerWokeUp` asks of the slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WokeUp {
+    /// `setScreen(new ChatScreen(text, false))` — the typed text carries over
+    /// into an ordinary chat screen.
+    Reopen(String),
+    /// `setScreen(null)`.
+    Close,
 }
 
 /// Everything [`ChatScreen`] needs to drive its popup that it cannot own: the
@@ -281,6 +346,47 @@ impl ChatScreen {
             // off. Both are in `CommandSuggestions::for_chat`.
             suggestions: crate::command_suggestions::CommandSuggestions::for_chat(),
             command_request: None,
+            in_bed: false,
+        }
+    }
+
+    /// `chat.openScreen(MESSAGE, InBedChatScreen::new)` (M219): the message
+    /// method's initial text and draft rule, then `super(initial, isDraft,
+    /// false)` — **`closeOnSubmit` false**, so a sent message clears the field
+    /// and the player stays in bed.
+    pub fn open_in_bed(draft: Option<&Draft>, recent_len: usize) -> Self {
+        let mut s = Self::open(ChatMethod::Message, draft, recent_len);
+        s.close_on_submit = false;
+        s.in_bed = true;
+        s
+    }
+
+    /// `new ChatScreen(text, false)` — an ordinary chat screen holding `text`,
+    /// not a draft (`onPlayerWokeUp`'s hand-over).
+    pub fn with_text(text: &str, recent_len: usize) -> Self {
+        let mut s = Self::open(ChatMethod::Message, None, recent_len);
+        s.input.set_value(text);
+        s
+    }
+
+    /// `instanceof InBedChatScreen`.
+    pub fn in_bed(&self) -> bool {
+        self.in_bed
+    }
+
+    /// `InBedChatScreen.onPlayerWokeUp` (M219): text the player typed (not an
+    /// untouched draft) moves to an ordinary chat screen, exit `DONE`;
+    /// otherwise the screen closes, exit `INTERRUPTED`. The caller runs
+    /// [`Self::removed`] on this screen either way, which is what
+    /// `setScreen` does to the outgoing one.
+    pub fn player_woke_up(&mut self) -> WokeUp {
+        let text = self.input.value();
+        if !self.is_draft && !text.is_empty() {
+            self.exit_reason = ExitReason::Done;
+            WokeUp::Reopen(text)
+        } else {
+            self.exit_reason = ExitReason::Interrupted;
+            WokeUp::Close
         }
     }
 
@@ -1535,5 +1641,100 @@ mod tests {
         let mut s = screen(0);
         assert_eq!(s.mouse_clicked(0, 0, 0, true, &hit), ChatClick::NotHandled);
         assert_eq!(seen.get(), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod in_bed_tests {
+    use super::*;
+
+    fn env_metrics() -> crate::command_suggestions::InputMetrics {
+        crate::command_suggestions::InputMetrics {
+            x: 4,
+            inner_width: 300,
+            screen_height: 240,
+        }
+    }
+
+    /// M219 — `Gui.tick`'s order: any screen in the slot blocks the open, the
+    /// in-bed screen hands over once the player is awake, and a dead player
+    /// never gets one.
+    #[test]
+    fn bed_tick_follows_gui_tick() {
+        assert_eq!(bed_tick(None, false, true, false), BedTick::OpenInBed);
+        assert_eq!(bed_tick(None, false, false, false), BedTick::None);
+        assert_eq!(
+            bed_tick(None, true, true, false),
+            BedTick::None,
+            "slot taken"
+        );
+        assert_eq!(
+            bed_tick(Some(false), false, true, false),
+            BedTick::None,
+            "plain chat"
+        );
+        assert_eq!(
+            bed_tick(Some(true), false, true, false),
+            BedTick::None,
+            "still asleep"
+        );
+        assert_eq!(bed_tick(Some(true), false, false, false), BedTick::WokeUp);
+        assert_eq!(bed_tick(None, false, true, true), BedTick::None, "dead");
+    }
+
+    /// `closeOnSubmit` false: Enter sends and clears, and the exit reason
+    /// stays INTERRUPTED, so the app does not close the screen.
+    #[test]
+    fn a_message_sent_in_bed_keeps_the_screen() {
+        let mut s = ChatScreen::open_in_bed(None, 0);
+        assert!(s.in_bed());
+        s.input.set_value("hi");
+        let width = |t: &str| t.len() as i32 * 6;
+        let env = SuggestionEnv {
+            metrics: env_metrics(),
+            width: &width,
+            tab_words: &[],
+            auto_suggestions: true,
+        };
+        let mut clip = String::new();
+        let a = s.key_pressed(Input::new(KEY_ENTER, 0), &mut clip, &[], 20, &env);
+        assert_eq!(a, ChatAction::Send("hi".into()));
+        assert_eq!(s.input.value(), "");
+        assert_eq!(s.exit_reason(), ExitReason::Interrupted);
+        // An ordinary chat screen closes on the same key.
+        let mut c = ChatScreen::open(ChatMethod::Message, None, 0);
+        c.input.set_value("hi");
+        c.key_pressed(Input::new(KEY_ENTER, 0), &mut clip, &[], 20, &env);
+        assert_eq!(c.exit_reason(), ExitReason::Done);
+    }
+
+    /// `onPlayerWokeUp`: typed text moves to a plain chat screen; an empty
+    /// field or an untouched draft closes.
+    #[test]
+    fn waking_up_hands_typed_text_over() {
+        let mut s = ChatScreen::open_in_bed(None, 0);
+        s.input.set_value("gm");
+        assert_eq!(s.player_woke_up(), WokeUp::Reopen("gm".into()));
+        assert_eq!(s.exit_reason(), ExitReason::Done);
+        let next = ChatScreen::with_text("gm", 0);
+        assert!(!next.in_bed() && !next.is_draft());
+        assert_eq!(next.input.value(), "gm");
+        let mut empty = ChatScreen::open_in_bed(None, 0);
+        assert_eq!(empty.player_woke_up(), WokeUp::Close);
+        assert_eq!(empty.exit_reason(), ExitReason::Interrupted);
+        let draft = Draft::of("draft text");
+        let mut d = ChatScreen::open_in_bed(Some(&draft), 0);
+        assert!(d.is_draft());
+        assert_eq!(
+            d.player_woke_up(),
+            WokeUp::Close,
+            "an untouched draft is not typed text"
+        );
+    }
+
+    /// The button's bounds are vanilla's literals.
+    #[test]
+    fn the_leave_bed_button_sits_forty_up() {
+        assert_eq!(leave_bed_bounds(427, 240), (113, 200, 200, 20));
     }
 }

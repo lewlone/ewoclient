@@ -286,6 +286,26 @@ pub(super) struct RenderCheck {
     pub(super) sprint_off: bool,
     pub(super) sprint_sent: u64,
     pub(super) hands_skip: Option<String>,
+    /// M219 — r83: frames the in-bed screen's button was drawn with its label.
+    pub(super) in_bed_frames: usize,
+    /// r83: the bed's foot, whether the server set a sleeping position, the
+    /// client's position then, the largest horizontal move while asleep with
+    /// W held, the STOP_SLEEPING sends from the button, and whether the
+    /// server woke the player and the in-bed screen went away.
+    pub(super) bed_pos: Option<[i32; 3]>,
+    pub(super) bed_slept: bool,
+    /// The server's sleeping position — the HEAD half, whichever was clicked
+    /// (`BedBlock.useWithoutItem` moves to it).
+    pub(super) bed_head: Option<(i32, i32, i32)>,
+    pub(super) bed_client_pos: Option<[f64; 3]>,
+    pub(super) bed_drift: f64,
+    pub(super) bed_wake_sends: u32,
+    pub(super) bed_woke: bool,
+    pub(super) bed_screen_closed: bool,
+    pub(super) bed_skip: Option<String>,
+    /// How many right-clicks on the bed it took (the server's clock echo is
+    /// periodic, so the first may land before its night).
+    pub(super) bed_clicks: u32,
     /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
     ///
     /// The gate injects an objective, three scores and a display-slot
@@ -767,7 +787,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 82;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 83;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1127,6 +1147,45 @@ impl RenderCheck {
             format!(
                 "server sprint flag after START {}, cleared after STOP {}, {} sprint command(s) sent{skip}",
                 self.sprint_on, self.sprint_off, self.sprint_sent
+            ),
+        );
+        // M219 — the bed, against the real server: a right-click on the bed
+        // at night sleeps (the server's SLEEPING_POS_ID moves the client onto
+        // the bed and the in-bed chat opens into the empty slot), W moves
+        // nothing while asleep, a click on Leave Bed sends STOP_SLEEPING, and
+        // the server's cleared position closes the screen (`Gui.tick`).
+        let at_bed = match (self.bed_head, self.bed_client_pos) {
+            (Some((x, _, z)), Some(p)) => {
+                (p[0] - (x as f64 + 0.5)).abs() < 1e-6 && (p[2] - (z as f64 + 0.5)).abs() < 1e-6
+            }
+            _ => false,
+        };
+        row(
+            "r83 sleeping opened the in-bed chat; Leave Bed woke the player and closed it",
+            self.bed_slept
+                && at_bed
+                && self.bed_drift < 1e-6
+                && self.in_bed_frames > 0
+                && self.bed_wake_sends >= 1
+                && self.bed_woke
+                && self.bed_screen_closed,
+            format!(
+                "bed {:?} (head {:?}): slept {}, client at {:?} (on the bed {at_bed}), drift with W held {:.4}, \
+                 in-bed frames {}, wake-ups sent {}, woke {}, screen closed {}, bed clicks {}{}",
+                self.bed_pos,
+                self.bed_head,
+                self.bed_slept,
+                self.bed_client_pos,
+                self.bed_drift,
+                self.in_bed_frames,
+                self.bed_wake_sends,
+                self.bed_woke,
+                self.bed_screen_closed,
+                self.bed_clicks,
+                self.bed_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -2545,6 +2604,175 @@ impl LiveApp {
                         self.mine_stage = 4;
                     }
                 }
+                // r83 — M219's bed, first thing after spawn (the options
+                // pages wait for it). Night is needed (`BedRule.WHEN_DARK`)
+                // and lasts only the round trip; waking teleports the bot
+                // beside the bed, so it is sent back to where it spawned.
+                if self.bed_stage > 0 && self.bed_stage < 20 {
+                    self.bed_stage_frames += 1;
+                    if elapsed >= limit * 0.11 {
+                        if let Some(c) = self.check.as_mut() {
+                            c.bed_skip.get_or_insert_with(|| {
+                                format!("timed out in stage {}", self.bed_stage)
+                            });
+                        }
+                        self.keys.w = false;
+                        self.bed_stage = 6;
+                    }
+                }
+                let spawned = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.spawned && s.ticks > 0);
+                if self.bed_stage == 0
+                    && spawned
+                    && self.chat_screen.is_none()
+                    && !self.screen.any_open()
+                {
+                    if let Some(s) = self.session.as_mut() {
+                        self.bed_origin = Some((
+                            [s.player.x, s.player.y, s.player.z],
+                            s.day_ticks.unwrap_or(0),
+                        ));
+                        self.bed_tick0 = s.ticks;
+                        let _ = s.send_command("time set 18000");
+                    }
+                    self.bed_stage = 1;
+                    self.bed_stage_frames = 0;
+                }
+                if self.bed_stage == 1 {
+                    let night = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.day_ticks)
+                        .is_some_and(|t| (13_000..23_000).contains(&t.rem_euclid(24_000)));
+                    let bed = self.session.as_ref().and_then(|s| {
+                        let (px, py, pz) = (
+                            s.player.x.floor() as i32,
+                            s.player.y.floor() as i32,
+                            s.player.z.floor() as i32,
+                        );
+                        let mut hit = None;
+                        'scan: for dy in -2..=2 {
+                            for dx in -4..=4 {
+                                for dz in -4..=4 {
+                                    let (x, y, z) = (px + dx, py + dy, pz + dz);
+                                    let st = s.world.block_state_at(x, y, z);
+                                    if self.blocks.block_name(st) == Some("minecraft:red_bed") {
+                                        hit = Some([x, y, z]);
+                                        break 'scan;
+                                    }
+                                }
+                            }
+                        }
+                        hit
+                    });
+                    // The server syncs its clock only every 20 ticks, so the
+                    // echo of `time set` may come after the night has begun
+                    // server-side: click once night is seen or three ticks
+                    // after the command, and again every four ticks until the
+                    // server says the bot sleeps (a refused click answers
+                    // "You can only sleep at night" and changes nothing).
+                    let now = self.session.as_ref().map_or(0, |s| s.ticks);
+                    if self.session.as_ref().is_some_and(|s| s.is_sleeping()) {
+                        self.bed_stage = 2;
+                        self.bed_stage_frames = 0;
+                    } else if let Some([x, y, z]) = bed {
+                        let due = (night || now >= self.bed_tick0 + 3)
+                            && self.check.as_ref().is_none_or(|c| {
+                                c.bed_pos.is_none() || now >= self.bed_click_tick + 4
+                            });
+                        if due {
+                            if let Some(s) = self.session.as_mut() {
+                                let _ = s.use_item_on(x, y, z, 1);
+                            }
+                            if let Some(c) = self.check.as_mut() {
+                                c.bed_pos = Some([x, y, z]);
+                                c.bed_clicks += 1;
+                            }
+                            self.bed_click_tick = now;
+                        }
+                    }
+                }
+                if self.bed_stage == 2 {
+                    let sleeping = self.session.as_ref().and_then(|s| {
+                        s.sleeping_pos()
+                            .map(|b| (b, [s.player.x, s.player.y, s.player.z]))
+                    });
+                    let shown = self.check.as_ref().is_some_and(|c| c.in_bed_frames >= 2);
+                    if let (Some((head, p)), true) = (sleeping, shown) {
+                        if let Some(c) = self.check.as_mut() {
+                            c.bed_slept = true;
+                            c.bed_head = Some(head);
+                            c.bed_client_pos = Some(p);
+                        }
+                        // `isImmobile`: hold W for a few ticks; nothing moves.
+                        self.keys.w = true;
+                        self.bed_stage = 3;
+                        self.bed_stage_frames = 0;
+                    }
+                }
+                if self.bed_stage == 3 {
+                    let drift = self
+                        .session
+                        .as_ref()
+                        .zip(self.check.as_ref().and_then(|c| c.bed_client_pos))
+                        .map_or(0.0, |(s, p)| {
+                            ((s.player.x - p[0]).powi(2) + (s.player.z - p[2]).powi(2)).sqrt()
+                        });
+                    if let Some(c) = self.check.as_mut() {
+                        c.bed_drift = c.bed_drift.max(drift);
+                    }
+                    let ticks_in = self.session.as_ref().map_or(0, |s| s.ticks);
+                    if self.bed_stage_frames == 1 {
+                        self.bed_click_tick = ticks_in;
+                    }
+                    if ticks_in >= self.bed_click_tick + 4 {
+                        self.keys.w = false;
+                        // The Leave Bed button, through the production click
+                        // path: the cursor on its centre, then the press.
+                        let (gw, gh) = self.gui_size();
+                        let (x, y, w, h) = rewo_ui::chat_screen::leave_bed_bounds(gw, gh);
+                        let px = self
+                            .state
+                            .as_ref()
+                            .map(|st| {
+                                let e = st.window.inner_size();
+                                gui_px(e.width, e.height) as f64
+                            })
+                            .unwrap_or(1.0);
+                        self.screen.mouse = (
+                            (f64::from(x) + f64::from(w) / 2.0) * px,
+                            (f64::from(y) + f64::from(h) / 2.0) * px,
+                        );
+                        let before = self.wake_ups_sent;
+                        self.in_bed_click();
+                        if let Some(c) = self.check.as_mut() {
+                            c.bed_wake_sends = self.wake_ups_sent - before;
+                        }
+                        self.bed_stage = 4;
+                        self.bed_stage_frames = 0;
+                    }
+                }
+                if self.bed_stage == 4 {
+                    let awake = self.session.as_ref().is_some_and(|s| !s.is_sleeping());
+                    if awake && self.chat_screen.is_none() {
+                        if let Some(c) = self.check.as_mut() {
+                            c.bed_woke = true;
+                            c.bed_screen_closed = true;
+                        }
+                        self.bed_stage = 5;
+                    }
+                }
+                if self.bed_stage == 5 || self.bed_stage == 6 {
+                    if let (Some(([x, y, z], day)), Some(s)) =
+                        (self.bed_origin, self.session.as_mut())
+                    {
+                        let _ = s.send_command(&format!("tp @s {x} {y} {z}"));
+                        let _ = s.send_command(&format!("time set {}", day.rem_euclid(24_000)));
+                    }
+                    self.bed_stage = 20;
+                }
                 // r79-r82 — M218's hand keys and the sprint state, from 0.29
                 // (the bot rides r72's client-side horse, so W moves nothing
                 // and no screen is up until 0.46). One stage per server echo.
@@ -2966,7 +3194,12 @@ impl LiveApp {
                 // (to the root), 0.14 (to the pause screen) and 0.16 (back
                 // to the game), so nothing later meets a leftover screen or
                 // a stale `self.view`.
-                if self.options_staged == 0 && elapsed >= limit * 0.06 {
+                // r83 (M219) owns the slot until the bed round trip is done;
+                // the Sound page waits for it, but never past 0.11.
+                if self.options_staged == 0
+                    && elapsed >= limit * 0.06
+                    && (self.bed_stage >= 20 || elapsed >= limit * 0.11)
+                {
                     self.options_staged = 1;
                     self.open_options_screen(rewo_ui::options_screen::OptionsPage::Sound);
                 }

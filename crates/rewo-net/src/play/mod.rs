@@ -2683,6 +2683,22 @@ impl PlaySession {
         // (`:773`), which it samples *before* `this.input.tick()` refreshes the
         // key state — so what it holds is the PREVIOUS tick's key. The elytra
         // take-off line's `!wasJumping` is that same edge.
+        // M219 — `Player.isImmobile()` is `super.isImmobile() || isSleeping()`,
+        // and `LivingEntity.aiStep` zeroes `xxa`, `zza` and `jumping` for an
+        // immobile entity: a sleeping player's keys move nothing.
+        let immobile;
+        let input = if self.local_player_data.is_sleeping() {
+            immobile = TickInput {
+                forward: 0.0,
+                strafe: 0.0,
+                jump: false,
+                sprint: false,
+                ..*input
+            };
+            &immobile
+        } else {
+            input
+        };
         let was_jump = self.was_jump;
         self.was_jump = input.jump;
         let jumpable = self.jumpable_vehicle();
@@ -3596,6 +3612,15 @@ impl PlaySession {
             // which is why this is gated on `flags_updated` rather than run on
             // every packet.
             self.local_fall_flying = self.local_player_data.is_fall_flying();
+        }
+        // M219 — `onSyncedDataUpdated(SLEEPING_POS_ID)`'s client branch:
+        // `getSleepingPos().ifPresent(this::setPosToBed)`.
+        if let Some(bed) = out.moved_to_bed {
+            let [x, y, z] = crate::local_player_data::bed_position(bed);
+            self.player.x = x;
+            self.player.y = y;
+            self.player.z = z;
+            (self.player.vx, self.player.vy, self.player.vz) = (0.0, 0.0, 0.0);
         }
         if out.start_elytra_sound {
             if let Some(player) = self.player_id {
@@ -5379,6 +5404,55 @@ impl PlaySession {
         let dig = (haste.is_some() || conduit.is_some())
             .then(|| haste.unwrap_or(0).max(conduit.unwrap_or(0)));
         (dig, amp(ids.mining_fatigue))
+    }
+
+    /// `LivingEntity.isSleeping()` for the local player (M219): the server
+    /// set a sleeping position and has not cleared it.
+    pub fn is_sleeping(&self) -> bool {
+        self.local_player_data.is_sleeping()
+    }
+
+    /// `LivingEntity.getSleepingPos()` for the local player (M219).
+    pub fn sleeping_pos(&self) -> Option<(i32, i32, i32)> {
+        self.local_player_data.sleeping_pos()
+    }
+
+    /// `InBedChatScreen.sendWakeUp` (M219): `STOP_SLEEPING` (0). The server
+    /// answers by clearing the sleeping position, and that — not this send —
+    /// is what closes the in-bed screen (`Gui.tick`).
+    pub fn stop_sleeping(&mut self) -> Result<(), String> {
+        let (Some(id), Some(me)) = (self.ids.sb_play_player_command, self.player_id) else {
+            return Err("player_command unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.raw(&crate::jump_riding::player_command_body(me, 0, 0));
+        self.send(p)
+    }
+
+    /// `MultiPlayerGameMode.isServerControlledInventory` (M219): riding a
+    /// vehicle that `HasCustomInventoryScreen` (a horse, a nautilus, a chest
+    /// boat).
+    pub fn server_controlled_inventory(&self) -> bool {
+        let (Some(vid), Some(classes)) = (self.local_vehicle(), self.entity_classes.as_deref())
+        else {
+            return false;
+        };
+        self.world
+            .entities
+            .get(vid)
+            .is_some_and(|e| classes.has_custom_inventory(e.type_id))
+    }
+
+    /// `LocalPlayer.sendOpenInventory` (M219): `OPEN_INVENTORY` (5), what the
+    /// inventory key sends while riding a vehicle that has one
+    /// (`Minecraft.handleKeybinds`). The server opens the horse's menu.
+    pub fn open_vehicle_inventory(&mut self) -> Result<(), String> {
+        let (Some(id), Some(me)) = (self.ids.sb_play_player_command, self.player_id) else {
+            return Err("player_command unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.raw(&crate::jump_riding::player_command_body(me, 5, 0));
+        self.send(p)
     }
 
     /// The local player's shared flags byte as the server last set it

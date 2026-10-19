@@ -792,6 +792,18 @@ struct LiveApp {
     hands_stage: u8,
     #[cfg(feature = "gates")]
     hands_stage_frames: u32,
+    /// r83's stage (M219), the frames in it, the bot's spawn position and
+    /// the day time to restore.
+    #[cfg(feature = "gates")]
+    bed_stage: u8,
+    #[cfg(feature = "gates")]
+    bed_stage_frames: u32,
+    #[cfg(feature = "gates")]
+    bed_origin: Option<([f64; 3], i64)>,
+    #[cfg(feature = "gates")]
+    bed_tick0: u64,
+    #[cfg(feature = "gates")]
+    bed_click_tick: u64,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -928,6 +940,11 @@ struct LiveApp {
     /// The client tick the machine last advanced on — once per tick, as
     /// `Minecraft.handleKeybinds` calls `continueAttack`.
     mining_tick_at: u64,
+    /// M219 — the client tick `Gui.tick`'s sleep check last ran on.
+    bed_tick_at: u64,
+    /// M219 — how many `STOP_SLEEPING` the in-bed screen sent (r83).
+    #[cfg(feature = "gates")]
+    wake_ups_sent: u32,
     /// The statistics screen's own state (M84) — `None` when it is shut.
     ///
     /// Opened by F6, because vanilla's only route to it is the pause menu's
@@ -1037,6 +1054,9 @@ fn run_windowed(
         mining: rewo_world::mining::Mining::default(),
         attack_held: false,
         mining_tick_at: 0,
+        bed_tick_at: 0,
+        #[cfg(feature = "gates")]
+        wake_ups_sent: 0,
         stats: None,
         advancements: None,
         hand: None,
@@ -1082,6 +1102,16 @@ fn run_windowed(
         hands_stage: 0,
         #[cfg(feature = "gates")]
         hands_stage_frames: 0,
+        #[cfg(feature = "gates")]
+        bed_stage: 0,
+        #[cfg(feature = "gates")]
+        bed_stage_frames: 0,
+        #[cfg(feature = "gates")]
+        bed_origin: None,
+        #[cfg(feature = "gates")]
+        bed_tick0: 0,
+        #[cfg(feature = "gates")]
+        bed_click_tick: 0,
         #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,

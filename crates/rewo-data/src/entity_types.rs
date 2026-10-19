@@ -217,6 +217,10 @@ pub struct EntityClasses {
     /// `ItemFrame` types: they own metadata slots 8 (DIRECTION), 9
     /// (ITEM_STACK) and 10 (INT).
     item_frame: std::collections::HashSet<i32>,
+    /// M219 — `instanceof HasCustomInventoryScreen`: its three implementors'
+    /// subtrees (`AbstractHorse`, `AbstractNautilus`, `AbstractChestBoat`).
+    /// Riding one turns the inventory key into `OPEN_INVENTORY`.
+    custom_inventory: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -266,6 +270,9 @@ impl EntityClasses {
         let rideable_jumping = resolve_set(table::PLAYER_RIDEABLE_JUMPING, "rideable-jumping")?;
         let camel = resolve_set(table::CAMEL, "camel")?;
         let nautilus = resolve_set(table::ABSTRACT_NAUTILUS, "nautilus")?;
+        let mut custom_inventory = resolve_set(table::ABSTRACT_HORSE, "horse")?;
+        custom_inventory.extend(nautilus.iter().copied());
+        custom_inventory.extend(resolve_set(table::ABSTRACT_CHEST_BOAT, "chest-boat")?);
         // A swing-ticking type that is not living would mean the generator's
         // own invariant broke between generation and resolution.
         if let Some(bad) = swing_ticking.iter().find(|id| !living.contains(id)) {
@@ -383,6 +390,7 @@ impl EntityClasses {
                 .iter()
                 .filter_map(|n| types.id_of(n))
                 .collect(),
+            custom_inventory,
         })
     }
 
@@ -409,6 +417,7 @@ impl EntityClasses {
             camel: Default::default(),
             nautilus: Default::default(),
             item_frame: Default::default(),
+            custom_inventory: Default::default(),
         }
     }
 
@@ -436,6 +445,7 @@ impl EntityClasses {
             camel: Default::default(),
             nautilus: Default::default(),
             item_frame: Default::default(),
+            custom_inventory: Default::default(),
         }
     }
 
@@ -512,6 +522,11 @@ impl EntityClasses {
     /// nautilus pair; a union of two subtrees, like `is_leashable`.
     pub fn is_rideable_jumping(&self, type_id: i32) -> bool {
         self.rideable_jumping.contains(&type_id)
+    }
+
+    /// `entity instanceof HasCustomInventoryScreen` (M219).
+    pub fn has_custom_inventory(&self, type_id: i32) -> bool {
+        self.custom_inventory.contains(&type_id)
     }
 
     /// `entity instanceof Camel` (M169).

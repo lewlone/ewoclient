@@ -722,7 +722,12 @@ impl ApplicationHandler for LiveApp {
                     MouseButton::Middle => 2,
                     _ => return,
                 };
-                let _ = self.chat_mouse_pressed(b);
+                let click = self.chat_mouse_pressed(b);
+                // M219 — `super.mouseClicked`, after the chat's own text:
+                // the in-bed screen's Leave Bed button.
+                if b == 0 && click == rewo_ui::chat_screen::ChatClick::NotHandled {
+                    self.in_bed_click();
+                }
             }
             // M82: a click on a widget-bearing screen. Before the inventory's
             // arm and before the world's, because

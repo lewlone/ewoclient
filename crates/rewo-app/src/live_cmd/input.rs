@@ -245,6 +245,12 @@ impl LiveApp {
         // widget — an `EditBox` with `canLoseFocus` false would otherwise
         // swallow it.
         if key == 256 {
+            // M219 — `InBedChatScreen.onClose` is `sendWakeUp()` and nothing
+            // else: the screen stays up until the server wakes the player.
+            if self.chat_screen.as_ref().is_some_and(|s| s.in_bed()) {
+                self.leave_bed();
+                return;
+            }
             if let Some(s) = self.chat_screen.as_mut() {
                 s.close();
             }
@@ -564,6 +570,97 @@ impl LiveApp {
         };
         if let Some(s) = self.chat_screen.as_mut() {
             s.accept_suggestions(completion.local, &env);
+        }
+    }
+
+    /// `InBedChatScreen.sendWakeUp` (M219).
+    pub(super) fn leave_bed(&mut self) {
+        if let Some(s) = self.session.as_mut() {
+            match s.stop_sleeping() {
+                Ok(()) => {
+                    #[cfg(feature = "gates")]
+                    {
+                        self.wake_ups_sent += 1;
+                    }
+                }
+                Err(e) => log::warn!("live: leave bed: {e}"),
+            }
+        }
+    }
+
+    /// The Leave Bed button as a one-widget screen (M219), for drawing and
+    /// for the click test, at the current GUI size.
+    pub(super) fn in_bed_screen(&self) -> rewo_ui::screen::Screen {
+        let (gw, gh) = self.gui_size();
+        let (x, y, w, h) = rewo_ui::chat_screen::leave_bed_bounds(gw, gh);
+        let label = self
+            .lang
+            .get_or_default(rewo_ui::chat_screen::KEY_STOP_SLEEPING, "Leave Bed")
+            .to_string();
+        rewo_ui::screen::Screen::new(rewo_ui::screen::ScreenKind::InBed, gw, gh)
+            .with_widgets(vec![rewo_ui::screen::Widget::button(0, x, y, w, h, label)])
+    }
+
+    /// A left click the chat did not take, on the in-bed screen (M219):
+    /// `super.mouseClicked` reaches the button, whose `onPress` is
+    /// `sendWakeUp`. Returns whether the button took it.
+    pub(super) fn in_bed_click(&mut self) -> bool {
+        if !self.chat_screen.as_ref().is_some_and(|s| s.in_bed()) {
+            return false;
+        }
+        let (mx, my) = self.mouse_gui();
+        let mut screen = self.in_bed_screen();
+        let pressed = screen.mouse_clicked(mx, my, 0);
+        if let rewo_ui::screen::MouseResult::Pressed(_) = pressed {
+            if let Some(sound) = screen.widgets[0].down_sound() {
+                self.screen.ui_sounds.play(sound);
+            }
+            self.leave_bed();
+            return true;
+        }
+        false
+    }
+
+    /// `Gui.tick`'s sleep half, once per client tick (M219) — see
+    /// [`rewo_ui::chat_screen::bed_tick`].
+    pub(super) fn bed_tick(&mut self) {
+        use rewo_ui::chat_screen::{BedTick, ChatScreen, WokeUp};
+        let Some((now, sleeping, dead, recent_len)) = self.session.as_ref().map(|s| {
+            (
+                s.ticks,
+                s.is_sleeping(),
+                s.health <= 0.0,
+                s.chat.recent_chat().len(),
+            )
+        }) else {
+            return;
+        };
+        if now == self.bed_tick_at {
+            return;
+        }
+        self.bed_tick_at = now;
+        let chat = self.chat_screen.as_ref().map(|c| c.in_bed());
+        let other = self.screen.any_open() || self.death.is_some();
+        match rewo_ui::chat_screen::bed_tick(chat, other, sleeping, dead) {
+            BedTick::None => {}
+            BedTick::OpenInBed => {
+                self.chat_screen = Some(ChatScreen::open_in_bed(
+                    self.chat_draft.as_ref(),
+                    recent_len,
+                ));
+                if let Some(open) = chat_cursor_arg(true, self.screen.any_open()) {
+                    self.grab_for_screen(open);
+                }
+            }
+            BedTick::WokeUp => match self.chat_screen.as_mut().map(|c| c.player_woke_up()) {
+                Some(WokeUp::Reopen(text)) => {
+                    // `setScreen(new ChatScreen(text, false))`: the outgoing
+                    // screen's `removed` runs (exit DONE, so the draft goes).
+                    let _ = self.take_chat_screen();
+                    self.chat_screen = Some(ChatScreen::with_text(&text, recent_len));
+                }
+                _ => self.close_chat_screen(),
+            },
         }
     }
 

@@ -137,6 +137,13 @@ pub struct EntityMeta {
     /// `getAbsorptionAmount()`), and the FLOAT serializer separates it from
     /// the BYTE / BOOLEAN / INT / enum readings of index 17 above.
     pub absorption: Option<f32>,
+    /// `LivingEntity.SLEEPING_POS_ID` — index 14, OPTIONAL_BLOCK_POS
+    /// (serializer 11), M219. The seventh LivingEntity accessor (flags 8,
+    /// health 9, effect particles 10, ambience 11, arrows 12, stingers 13);
+    /// `isSleeping()` is `getSleepingPos().isPresent()`. `Some(None)` is a
+    /// cleared position (the player woke up), `None` an untouched slot. Only
+    /// the local player reads it.
+    pub sleeping_pos: Option<Option<(i32, i32, i32)>>,
     /// Mob gesture state (index 17 on sniffer/armadillo/copper golem —
     /// their SNIFFER_STATE/ARMADILLO_STATE/… enum ordinal). Which enum it
     /// is depends on the entity type; the caller knows the kind.
@@ -336,6 +343,15 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             // `Entity` owns 0..7, so nothing else can claim it.
             (4, 8) => meta.silent = r.bool().ok(),
             (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
+            // OPTIONAL_BLOCK_POS at 14 = `LivingEntity.SLEEPING_POS_ID` (M219).
+            (14, 11) => match r.bool() {
+                Ok(true) => match r.position() {
+                    Ok(p) => meta.sleeping_pos = Some(Some(p)),
+                    Err(_) => break,
+                },
+                Ok(false) => meta.sleeping_pos = Some(None),
+                Err(_) => break,
+            },
             // BYTE at 8 = `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, the first
             // LivingEntity-owned slot. Unambiguous: Entity owns 0..7.
             (8, 0) => meta.living_flags = r.u8().ok(),

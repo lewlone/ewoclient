@@ -163,6 +163,10 @@ impl LiveApp {
         // is held (survival block breaking and creative's repeat).
         self.mining_tick();
 
+        // M219 - `Gui.tick`'s sleep half: the in-bed chat opens into an empty
+        // slot while the player sleeps and hands over when they wake.
+        self.bed_tick();
+
         // M184 - the lectern's menu-backed reader. `LecternScreen extends
         // BookViewScreen` (`LecternScreen.java:25`): the pages are the book
         // in the menu's slot 0, the page is container-data 0, and every
@@ -2073,6 +2077,27 @@ impl LiveApp {
                         && self.chat_screen.is_none()
                     {
                         c.link_prompt_frames += 1;
+                    }
+                }
+            }
+            // M219 — `InBedChatScreen`'s Leave Bed button. The chat half is
+            // drawn by the chat path above; this is `super.extractRenderState`
+            // drawing the screen's one widget.
+            if self.chat_screen.as_ref().is_some_and(|c| c.in_bed())
+                && !self.screen.any_open()
+                && self.death.is_none()
+            {
+                let screen = self.in_bed_screen();
+                chrome = screen_chrome(&screen, Some(mouse_gui));
+                if let Some(advance) = state.world_renderer.font_advance() {
+                    text.extend(screen_text_lines(&screen, advance, px));
+                }
+                #[cfg(feature = "gates")]
+                if let Some(c) = self.check.as_mut() {
+                    if chrome.buttons.len() == 1
+                        && text.iter().any(|l| l.text == screen.widgets[0].message)
+                    {
+                        c.in_bed_frames += 1;
                     }
                 }
             }

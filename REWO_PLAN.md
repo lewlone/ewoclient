@@ -2042,6 +2042,7 @@ this shape once.
 | M218 (2026-10-19) — F swaps the hands, the server agrees | **r80** | — | — |
 | M218 (2026-10-19) — the pick key on a block, the server puts it in the hand | **r81** | — | — |
 | M218 (2026-10-19) — sprint start/stop reaches the server (its flag echo) | **r82** | — | — |
+| M219 (2026-10-19) — sleeping opens the in-bed chat; Leave Bed wakes the player | **r83** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3876,6 +3877,51 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M219 — sleeping and leaving a bed (2026-10-19)
+
+Rewo had no idea the local player could sleep. A right-click on a bed reached
+the server, which put the player to bed, and the client carried on as if
+awake: no in-bed screen, so no way to leave the bed but waiting for morning,
+and the walk keys still moved the player.
+
+- **The state** is `LivingEntity.SLEEPING_POS_ID`: index 14, OPTIONAL_BLOCK_POS
+  (serializer 11), the seventh LivingEntity accessor. `metadata::parse` reads it,
+  `LocalPlayerData` keeps it (`is_sleeping`, `sleeping_pos`), and a position
+  arriving moves the client onto the bed (`setPosToBed`, the HEAD half's centre
+  0.6875 up), as `onSyncedDataUpdated`'s client branch does.
+- **`Player.isImmobile`** includes `isSleeping`, and `aiStep` zeroes `xxa`,
+  `zza` and `jumping`: the session's tick input loses walk, strafe, jump and
+  sprint while asleep.
+- **The screen** is `InBedChatScreen`: a chat screen with `closeOnSubmit`
+  false (a sent message clears the field and the player stays in bed), an
+  `onClose` that sends `STOP_SLEEPING` and does not close, and a Leave Bed
+  button at `(width / 2 - 100, height - 40, 200, 20)`. `Gui.tick`'s sleep half
+  is the free function `chat_screen::bed_tick`: the screen opens into an
+  EMPTY slot while sleeping, and when the server clears the position,
+  `onPlayerWokeUp` either hands typed text to an ordinary chat screen or
+  closes. The button is drawn as a one-widget `ScreenKind::InBed` screen
+  through the generic chrome, and a left click the chat text did not take
+  reaches it (`super.mouseClicked`'s order).
+- `PlaySession::stop_sleeping` sends `player_command` action 0. Also added
+  for M220: `open_vehicle_inventory` (action 5), `server_controlled_inventory`
+  and `EntityClasses::has_custom_inventory` (the `AbstractHorse`,
+  `AbstractNautilus` and `AbstractChestBoat` subtrees).
+
+**r83**, first thing after spawn (the options pages wait for it, never past
+0.11): the bot asks for night, right-clicks a staged bed through `use_item_on`
+until the server puts it to bed (the clock echo is periodic, so the first
+click can land before the server's night; one click has sufficed so far), and
+the run checks that the client sits on the bed's head, that W held for four
+ticks moves it nowhere, that the in-bed button drew with its label, that a
+click on it through the production path sent one `STOP_SLEEPING`, and that
+the server's cleared position closed the screen. Waking teleports the player
+beside the bed, so the bot `/tp`s back to its spawn and the time is restored.
+
+Recorded deviations: the sleeping camera (vanilla lies the view down in the
+bed, eye height 0.2) is not modelled, and gravity still runs while asleep, so
+the client settles 0.125 onto the bed's top (the server accepts any sleeping
+move under 1.0 without a correction). 83/83.
 
 ### M218 — drop, swap hands, pick block, sprint; and a stale held slot (2026-10-19)
 
