@@ -2418,6 +2418,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:armor_stand` type id (M238) — gates the index-15 BYTE that
     /// a `Mob` uses for its own flags.
     pub armor_stand: Option<i32>,
+    /// `minecraft:firework_rocket` type id (M239) — gates the index-9
+    /// OPTIONAL_UNSIGNED_INT, the entity a rocket is attached to.
+    pub firework_rocket: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
@@ -2738,6 +2741,13 @@ pub(crate) fn apply_set_entity_data<'a>(
     // Slot 15 BYTE → `Mob.DATA_MOB_FLAGS_ID`. Gated on the type actually being
     // a `Mob`: an `ArmorStand` puts unrelated client flags at the same index
     // with the same serializer, and bit 2 there does not mean left-handed.
+    // Slot 9 OPTIONAL_UNSIGNED_INT → `FireworkRocketEntity.
+    // DATA_ATTACHED_TO_TARGET` (M239): the elytra boost reads it.
+    if let Some(raw) = meta.opt_uint9 {
+        if kinds.firework_rocket == Some(type_id) {
+            entities.set_attached_to(eid, (raw > 0).then(|| raw - 1));
+        }
+    }
     if let Some(flags) = meta.mob_flags {
         if kinds.classes.is_some_and(|c| c.is_mob(type_id)) {
             entities.set_mob_flags(eid, flags);

@@ -2626,6 +2626,7 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             // them. `None` means the kind gate can never match.
             sheep: None,
             armor_stand: None,
+            firework_rocket: None,
             creaking: None,
             // M60: likewise not exercised — no cape reaches an arm rig.
             player: None,

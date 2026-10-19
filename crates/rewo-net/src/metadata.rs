@@ -223,6 +223,10 @@ pub struct EntityMeta {
     /// accessor is 18. The kind gate lives in `apply_set_entity_data`;
     /// `Creaking.IS_TEARING_DOWN` shares the index with a different serializer.
     pub byte18: Option<u8>,
+    /// M239 — index 9 **OPTIONAL_UNSIGNED_INT** (serializer 19):
+    /// `FireworkRocketEntity.DATA_ATTACHED_TO_TARGET`, raw (`0` empty, else
+    /// the entity id + 1). Kind-gated by the caller.
+    pub opt_uint9: Option<i32>,
     /// Index 18 **INT** — `Axolotl.DATA_VARIANT` (M64). `Axolotl extends
     /// Animal`, so its first own accessor is 18: Entity 0..7, LivingEntity
     /// 8..14, Mob 15, PathfinderMob none, AgeableMob 16 + 17, Animal none.
@@ -439,6 +443,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             // fourth serializer at this index, and the only FLOAT.
             (17, 3) => meta.absorption = r.f32().ok(),
             (18, 0) => meta.byte18 = r.u8().ok(),
+            (9, 19) => meta.opt_uint9 = r.varint().ok(),
             // M64's variant slots. Index 18 now has three readings — BYTE
             // (sheep wool / tamable flags), INT (axolotl) and FROG_VARIANT —
             // and the serializer separates all three; only the two BYTE

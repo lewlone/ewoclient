@@ -1249,6 +1249,20 @@ fn update_fall_flying_movement(
 }
 
 /// `Entity.calculateViewVector(xRot, yRot)` — `getLookAngle()`'s body.
+/// M239 — `FireworkRocketEntity.tick`'s push on the entity it is attached
+/// to while that entity glides: `movement + look * 0.1 + (look * 1.5 -
+/// movement) * 0.5`, `look` being `getLookAngle()` (the current view
+/// vector). Vanilla runs it in the ROCKET's tick, after the player's own
+/// (the player was added to the level first), so it shapes the next tick's
+/// travel; the caller applies it after the move for that reason.
+pub fn firework_boost(state: &mut PlayerState) {
+    let look = view_vector(state.pitch, state.yaw);
+    let m = [state.vx, state.vy, state.vz];
+    state.vx = m[0] + (look[0] * 0.1 + (look[0] * 1.5 - m[0]) * 0.5);
+    state.vy = m[1] + (look[1] * 0.1 + (look[1] * 1.5 - m[1]) * 0.5);
+    state.vz = m[2] + (look[2] * 0.1 + (look[2] * 1.5 - m[2]) * 0.5);
+}
+
 fn view_vector(x_rot: f32, y_rot: f32) -> [f64; 3] {
     let rad = (std::f64::consts::PI / 180.0) as f32;
     let real_x_rot = x_rot * rad;
@@ -4918,6 +4932,32 @@ mod tests {
             },
         );
         assert_eq!(spear, 0.98);
+    }
+
+    /// M239 — the rocket's push: looking level along +Z from rest, one tick
+    /// adds look * (0.1 + 0.75) = 0.85; repeated, the speed converges on
+    /// look * 1.7 (the fixed point of v + 0.1 l + (1.5 l - v) / 2).
+    #[test]
+    fn a_firework_pushes_along_the_look_towards_one_point_seven() {
+        let mut st = PlayerState {
+            yaw: 0.0,
+            pitch: 0.0,
+            ..PlayerState::at(0.0, 0.0, 0.0)
+        };
+        firework_boost(&mut st);
+        assert!((st.vz - 0.85).abs() < 1e-6, "{}", st.vz);
+        assert!(st.vx.abs() < 1e-6 && st.vy.abs() < 1e-6);
+        for _ in 0..60 {
+            firework_boost(&mut st);
+        }
+        assert!((st.vz - 1.7).abs() < 1e-6, "{}", st.vz);
+        // Looking straight up pushes up.
+        let mut up = PlayerState {
+            pitch: -90.0,
+            ..PlayerState::at(0.0, 0.0, 0.0)
+        };
+        firework_boost(&mut up);
+        assert!((up.vy - 0.85).abs() < 1e-5, "{}", up.vy);
     }
 
     /// `LocalPlayer.modifyInput` for a rider (M226): W alone is 0.98, and W

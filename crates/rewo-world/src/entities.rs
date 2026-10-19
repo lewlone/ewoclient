@@ -1185,6 +1185,10 @@ pub struct MobState {
     /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15 BYTE too, a different
     /// class): 0x01 small, 0x04 show arms, 0x08 no base plate, 0x10 marker.
     pub stand_flags: u8,
+    /// M239 — `FireworkRocketEntity.DATA_ATTACHED_TO_TARGET`: the entity a
+    /// rocket is attached to (an elytra boost), carried here so it is
+    /// cleared with the entity like every other per-entity state.
+    pub attached_to: Option<i32>,
     /// `Raider.isCelebrating()`.
     pub celebrating: bool,
     /// `SpellcasterIllager.DATA_SPELL_CASTING_ID`; `isCastingSpell()` is `> 0`.
@@ -2293,6 +2297,17 @@ impl EntityTable {
     /// Writes handedness through to the main-arm map because
     /// `Mob.getMainArm()` *is* `isLeftHanded()`; there is no separate mob arm
     /// field in vanilla either.
+    /// M239 — a firework rocket's attachment (index 9). Kind-gated by the
+    /// caller.
+    pub fn set_attached_to(&mut self, id: i32, target: Option<i32>) {
+        self.mob_state.entry(id).or_default().attached_to = target;
+    }
+
+    /// The entity this rocket is attached to, if any.
+    pub fn attached_to(&self, id: i32) -> Option<i32> {
+        self.mob_state.get(&id).and_then(|s| s.attached_to)
+    }
+
     /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15, BYTE). Kind-gated by
     /// the caller: a `Mob`'s flags share the index.
     pub fn set_armor_stand_flags(&mut self, id: i32, flags: u8) {

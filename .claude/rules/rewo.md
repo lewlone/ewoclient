@@ -162,6 +162,12 @@ a self-check path.
   `gamerule spawn_monsters false`: `spawn-monsters=false` no longer stops
   slimes, which killed the survival bot mid-tail. The use tail logs each
   stage's position and health (`render-check: use stage`).
+- **A chat command can overtake a `container_close`** on a 26.2 server:
+  the close is handled in the player's tick, a command off the server's
+  task queue. Commands sent right behind a close can still find the
+  container open, and their slot changes go to the container's id, which
+  the client (like vanilla's) drops once closed. A witness waits a few
+  ticks after a close before staging items (M239, r106).
 - **The frame's FOV is vanilla's dynamic FOV** (M233,
   `PlaySession::fov_degrees`, `rewo_world::fov`): the option times the
   eased `getFieldOfViewModifier` (sprint, speed, flying, a drawn bow, the

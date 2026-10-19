@@ -472,6 +472,18 @@ pub(super) struct RenderCheck {
     pub(super) brew_opened: bool,
     pub(super) brew_state: Option<(i16, i16)>,
     pub(super) brew_slots: Vec<Option<(String, i32)>>,
+    /// M239 — r106: the glide began, a rocket was attached to the bot, the
+    /// per-tick horizontal step before the rocket and the fastest after,
+    /// and the server corrections before and after the boost.
+    pub(super) boost_glided: bool,
+    pub(super) boost_rocket: bool,
+    pub(super) boost_steps: (f64, f64),
+    pub(super) boost_corrections: (u32, u32),
+    /// The firework entities seen during the boost, with their attachment.
+    pub(super) boost_seen: Vec<(i32, Option<i32>)>,
+    pub(super) boost_bot: Option<i32>,
+    /// Rockets left in the inventory after the boost, and still gliding.
+    pub(super) boost_after: (i32, bool),
     /// The cursor stack after the first press, and where the press was.
     pub(super) enchant_carried: Option<(Option<(String, i32)>, (f64, f64))>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
@@ -959,7 +971,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 105;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 106;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1669,6 +1681,34 @@ impl RenderCheck {
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
             ),
         );
+        // M239 — r106: the firework boost, in survival with an elytra. The
+        // server spawns the rocket attached to the bot (index 9); the push
+        // (`look * 0.1 + (look * 1.5 - v) * 0.5` a tick, converging on
+        // 1.7 blocks a tick before the glide's drag) is the CLIENT's, so
+        // without it a rocket does nothing. Graded on the bot's own speed
+        // and on the server accepting the flight (no correction).
+        let (before, after) = self.boost_steps;
+        row(
+            "r106 a firework rocket boosted the elytra glide (attached rocket, faster than 1.2 blocks a tick, no correction)",
+            self.boost_glided
+                && self.boost_rocket
+                && before < 0.8
+                && after > 1.2
+                && self.boost_corrections.0 == self.boost_corrections.1,
+            format!(
+                "glided {}, rocket attached {}, step before {before:.3}, fastest after {after:.3}, corrections {:?}, rockets seen (id, attached to) {:?} (bot {:?}), (rockets left, still gliding) {:?}{}",
+                self.boost_glided,
+                self.boost_rocket,
+                self.boost_corrections,
+                self.boost_seen,
+                self.boost_bot,
+                self.boost_after,
+                self.use_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
+            ),
+        );
         // M237 — r104: a real brewing stand, in survival: a water bottle
         // clicked into a bottle slot, nether wart and blaze powder
         // shift-clicked (wart to the ingredient slot; powder, being fuel
@@ -1723,8 +1763,8 @@ impl RenderCheck {
         // press (`EnchantmentScreen.mouseClicked` -> `container_button_click`)
         // enchants the pickaxe for one lapis and one level.
         row(
-            "r103 an enchanting table offered three enchantments and its first row enchanted the pickaxe for one lapis and one level",
-            self.enchant_costs.iter().all(|&c| c > 0)
+            "r103 an enchanting table offered enchantments and its first row enchanted the pickaxe for one lapis and one level",
+            self.enchant_costs[0] > 0
                 && self.enchant_result == (true, 2)
                 && self.enchant_xp.0 - self.enchant_xp.1 == 1,
             format!(
@@ -3577,7 +3617,13 @@ impl LiveApp {
                     .as_ref()
                     .and_then(|s| s.menus.open())
                     .map_or([0; 3], |m| m.enchant_costs());
-                if costs[0] > 0 || now >= self.use_tick0 + 40 {
+                // The three data slots arrive one packet each: wait for all
+                // of them (rows 1 and 2 may stay 0 with no bookshelves, so
+                // not forever).
+                if costs.iter().all(|&c| c > 0)
+                    || (costs[0] > 0 && now >= self.use_tick0 + 15)
+                    || now >= self.use_tick0 + 40
+                {
                     if costs[0] <= 0 {
                         let slots: Vec<_> =
                             (0..2).chain(29..31).map(|i| menu_slot(self, i)).collect();
@@ -3678,6 +3724,148 @@ impl LiveApp {
                         c.brew_slots = slots;
                     }
                     self.close_container_screen();
+                    self.use_tick0 = now;
+                    self.use_stage = 78;
+                }
+            }
+            // r106 next: an elytra, three rockets, thirty blocks up, looking
+            // level east over the open flat world. A few ticks AFTER the
+            // close: the server handles `container_close` in the player's
+            // tick but runs a chat command off its task queue, so a command
+            // sent right behind the close can still find the stand open and
+            // send its slot changes to the stand's container id, which the
+            // client (as vanilla's) drops once it has closed, and the server
+            // then believes they arrived. One run lost the rockets that way.
+            78 if now >= self.use_tick0 + 4 => {
+                cmd(
+                    self,
+                    "item replace entity @s armor.chest with minecraft:elytra",
+                );
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:firework_rocket 3",
+                );
+                cmd(
+                    self,
+                    &format!("tp @s {} {} {}", spot[0], spot[1] + 30.0, spot[2]),
+                );
+                self.use_tick0 = now;
+                self.use_stage = 74;
+            }
+            // r106 — the firework boost: take off (a jump press while
+            // falling with an elytra), right-click a rocket, and the rocket
+            // the server attaches to the bot pushes it each tick (a
+            // client-side push in vanilla: the server only replays the
+            // client's moves).
+            74 if now >= self.use_tick0 + 8 && !self.screen.inventory_open() => {
+                if let Some(s) = self.session.as_mut() {
+                    s.player.yaw = -90.0;
+                    s.player.pitch = 0.0;
+                }
+                self.keys.jump = true;
+                self.use_tick0 = now;
+                self.use_stage = 75;
+            }
+            75 if now > self.use_tick0 => {
+                self.keys.jump = false;
+                let gliding = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.local_player_view())
+                    .is_some_and(|v| v.fall_flying);
+                if gliding {
+                    self.walk_mark = None;
+                    let corrections = self.session.as_ref().map_or(0, |s| s.corrections);
+                    if let Some(c) = self.check.as_mut() {
+                        c.boost_glided = true;
+                        c.boost_corrections.0 = corrections;
+                    }
+                    self.use_tick0 = now;
+                    self.use_stage = 76;
+                } else if now >= self.use_tick0 + 20 {
+                    // Try the take-off once more: the press may have landed
+                    // before the fall began.
+                    self.keys.jump = true;
+                    self.use_tick0 = now;
+                }
+            }
+            // Two ticks of plain gliding (the step before the push), then the
+            // rocket.
+            76 => {
+                let pos = self
+                    .session
+                    .as_ref()
+                    .map(|s| [s.player.x, s.player.y, s.player.z]);
+                if let (Some(p), Some((q, t))) = (pos, self.walk_mark) {
+                    if now > t && now >= self.use_tick0 + 3 {
+                        let step = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+                            / (now - t) as f64;
+                        if let Some(c) = self.check.as_mut() {
+                            c.boost_steps.0 = step;
+                        }
+                        self.use_key_press();
+                        self.use_down = false;
+                        self.walk_mark = Some((p, now));
+                        self.use_tick0 = now;
+                        self.use_stage = 77;
+                    }
+                } else if now > self.use_tick0 {
+                    self.walk_mark = pos.map(|p| (p, now));
+                }
+            }
+            // Twenty ticks of the boost: the fastest per-tick horizontal step,
+            // and whether a rocket was ever attached to the bot.
+            77 => {
+                let pos = self
+                    .session
+                    .as_ref()
+                    .map(|s| [s.player.x, s.player.y, s.player.z]);
+                let rockets = self.session.as_ref().map_or(0, |s| s.attached_rockets());
+                let seen: Vec<(i32, Option<i32>)> = self.session.as_ref().map_or(Vec::new(), |s| {
+                    let rocket = s.firework_type_id;
+                    s.world
+                        .entities
+                        .iter()
+                        .filter(|(_, e)| Some(e.type_id) == rocket)
+                        .map(|(id, _)| (id, s.world.entities.attached_to(id)))
+                        .collect()
+                });
+                let bot = self.session.as_ref().and_then(|s| s.player_id);
+                if !seen.is_empty() {
+                    if let Some(c) = self.check.as_mut() {
+                        c.boost_seen = seen.clone();
+                        c.boost_bot = bot;
+                    }
+                }
+                if let (Some(p), Some((q, t))) = (pos, self.walk_mark) {
+                    if now > t {
+                        let step = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+                            / (now - t) as f64;
+                        if let Some(c) = self.check.as_mut() {
+                            c.boost_steps.1 = c.boost_steps.1.max(step);
+                            c.boost_rocket |= rockets > 0;
+                        }
+                        self.walk_mark = Some((p, now));
+                    }
+                }
+                if now >= self.use_tick0 + 20 {
+                    let corrections = self.session.as_ref().map_or(0, |s| s.corrections);
+                    let left = inventory_count(self, "minecraft:firework_rocket");
+                    let flying = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.local_player_view())
+                        .is_some_and(|v| v.fall_flying);
+                    if let Some(c) = self.check.as_mut() {
+                        c.boost_corrections.1 = corrections;
+                        c.boost_after = (left, flying);
+                    }
+                    cmd(self, "gamemode creative");
+                    cmd(
+                        self,
+                        "item replace entity @s armor.chest with minecraft:air",
+                    );
+                    cmd(self, &format!("tp @s {} {} {}", spot[0], spot[1], spot[2]));
                     self.use_stage = 60;
                 }
             }

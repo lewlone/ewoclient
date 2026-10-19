@@ -796,6 +796,9 @@ pub struct PlaySession {
     pub sheep_type_id: Option<i32>,
     /// M238 — `minecraft:armor_stand`, for its index-15 flags.
     pub armor_stand_type_id: Option<i32>,
+    /// M239 — `minecraft:firework_rocket`, for its attachment and the
+    /// elytra boost.
+    pub firework_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
     pub creaking_type_id: Option<i32>,
     /// `minecraft:bee` — gates the index-19 anger deadline, and names the kind
@@ -2007,6 +2010,7 @@ impl<'a> Connection<'a> {
             pillager_type_id: None,
             sheep_type_id: None,
             armor_stand_type_id: None,
+            firework_type_id: None,
             creaking_type_id: None,
             bee_type_id: None,
             guardian_type_id: None,
@@ -2971,6 +2975,17 @@ impl PlaySession {
                 &move_attrs,
                 &world,
             );
+            // M239 — each rocket attached to the local player pushes it
+            // while it glides (`FireworkRocketEntity.tick`, which runs after
+            // the player's own tick). The rocket entity exists only on the
+            // server's say-so (`add_entity` + index 9), so a rocket Rewo
+            // never heard of pushes nothing.
+            if self.local_fall_flying {
+                let rockets = self.attached_rockets();
+                for _ in 0..rockets {
+                    physics::firework_boost(&mut self.player);
+                }
+            }
             if phys.fall_flying && climbable {
                 // `travelFallFlying`'s climbable arm is `travelInAir(input);
                 // stopFallFlying();` — the tick above ran that arm (physics
@@ -3055,6 +3070,20 @@ impl PlaySession {
     /// M233 — the eased FOV modifier at `partial` (a witness reads it).
     pub fn fov_modifier(&self, partial: f32) -> f32 {
         self.fov.at(partial)
+    }
+
+    /// M239 — how many firework rockets are attached to the local player.
+    pub fn attached_rockets(&self) -> usize {
+        let (Some(me), Some(rocket)) = (self.player_id, self.firework_type_id) else {
+            return 0;
+        };
+        self.world
+            .entities
+            .iter()
+            .filter(|(id, e)| {
+                e.type_id == rocket && self.world.entities.attached_to(*id) == Some(me)
+            })
+            .count()
     }
 
     /// M231 — `isUsingItem()`'s speed multiplier (`None` when not using) and

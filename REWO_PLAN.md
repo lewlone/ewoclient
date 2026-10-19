@@ -2061,6 +2061,7 @@ this shape once.
 | M236 (2026-10-19) — a real anvil's cost line (red without levels, green with) and rename; a real enchanting table's offers and first row | **r102**, **r103** | — | — |
 | M237 (2026-10-19) — a real brewing stand takes a bottle, wart and powder (shift-clicked) and brews | **r104** | — | — |
 | M238 (2026-10-19) — armour stands draw as their model with their flags (arms, base plate) and worn armour | **r105** | — | — |
+| M239 (2026-10-19) — a firework rocket boosts the elytra glide (the client's push) and the server accepts it | **r106** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3895,6 +3896,37 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M239 — firework rockets boost an elytra glide (2026-10-19)
+
+Rockets did nothing in Rewo. In vanilla the push is the CLIENT's:
+`FireworkRocketEntity.tick` runs on the client too, and while the rocket is
+attached to the local player (`DATA_ATTACHED_TO_TARGET`) and the player
+glides, it adds `look * 0.1 + (look * 1.5 - v) * 0.5` to the player's
+velocity every tick. The server only replays the client's moves, so a client
+that never applies the push never goes faster.
+
+- `physics::firework_boost` (unit test: one tick from rest is 0.85 along
+  the look, the fixed point 1.7), applied once per attached rocket after the
+  player's own move, as vanilla's rocket ticks after the player.
+- The attachment decodes: index 9 OPTIONAL_UNSIGNED_INT (serializer 19,
+  `0` empty, else id + 1) kind-gated by `MetaKinds::firework_rocket`, kept
+  on `MobState::attached_to`; `PlaySession::attached_rockets` counts them.
+
+**r106**: in survival, an elytra, thirty blocks up, a jump press while
+falling (the existing take-off path), then a real right-click with a rocket:
+the server attaches it to the bot and the glide goes from 0.167 blocks a
+tick to 1.673 with no correction. **Control**: with the push disabled the
+rocket still attaches and the speed stays at 0.588; r106 fails.
+
+Found writing it: the tail's stages must stay below its done sentinel 100
+(the first cut used 110 and ended the run); r103 read the enchanting offers
+the tick row 0 arrived (the three data slots come one packet each), now
+waits for them and grades row 0 (rows 1-2 can be 0 with no bookshelves);
+and a chat command sent right behind a `container_close` ran while the
+server still had the brewing stand open, so its hotbar updates went to the
+stand's container id and were dropped (a server ordering vanilla shares;
+the witness now waits four ticks).
 
 ### M238 — the armour stand model (2026-10-19)
 
