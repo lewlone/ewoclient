@@ -153,6 +153,11 @@ PRECMD = (
     # M252 -- r111. A minecart off the rails, south-west of the spawn and
     # clear of the pool and the use tail.
     "summon minecraft:minecart ~-6 ~ ~-6;"
+    # M253 -- r112. A falling block and primed TNT, floating (NoGravity) so
+    # neither lands nor explodes during the run: the gravel's Time starts
+    # far below the 600-tick discard, the TNT's fuse is 32767 ticks.
+    "summon minecraft:falling_block ~-8 ~2 ~-6 {BlockState:{Name:\"minecraft:gravel\"},NoGravity:1b,Time:-100000};"
+    "summon minecraft:tnt ~-8 ~2 ~-8 {fuse:32767,NoGravity:1b};"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"

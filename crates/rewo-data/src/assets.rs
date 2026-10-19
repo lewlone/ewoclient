@@ -1706,6 +1706,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut carried: Vec<(usize, bool, u8)> = Vec::new();
     let mut particle_layer = vec![NO_PARTICLE_LAYER; max_id + 1];
     let mut models: Vec<Vec<Quad>> = Vec::new();
+    // M253 — the states an entity can carry as a block (a falling block,
+    // primed TNT) by their model references, baked as entity-pass models once
+    // every layer exists.
+    let mut entity_block_refs: Vec<(u32, Vec<ModelRef>)> = Vec::new();
     let mut stats = BakeStats::default();
 
     let no_occlude: std::collections::HashSet<&str> =
@@ -1875,6 +1879,11 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 continue;
             };
             let props = state.get("properties").and_then(|p| p.as_object());
+            if carried_block(short) {
+                if let Some(bs) = bs.as_ref() {
+                    entity_block_refs.push((id as u32, baker.state_refs(bs, props)));
+                }
+            }
             if block_name == "minecraft:bubble_column" {
                 // `drag`, not `drag_down`. Absent is not defaulted to the
                 // block's own default (`true`) — a column whose property we
@@ -2183,7 +2192,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     }
 
     // M22: held items, after every block layer exists (block items copy them).
-    let held_items = baker.bake_held_items(&trims);
+    let held_items = baker.bake_held_items(&trims, &entity_block_refs);
 
     stats.textures = baker.layers.len();
     log::info!(
@@ -4101,6 +4110,7 @@ impl<'a> Baker<'a> {
     fn bake_held_items(
         &mut self,
         trims: &crate::equipment::TrimAssets,
+        entity_block_refs: &[(u32, Vec<ModelRef>)],
     ) -> crate::held_items::HeldItems {
         use crate::held_items::{HeldItemModel, HeldItems, TexturePool};
         use crate::item_models::{
@@ -4385,6 +4395,36 @@ impl<'a> Baker<'a> {
                 None => log::warn!("rewo-data: item frame model block/{block} baked no quads"),
             }
         }
+        // M253 — the blocks an entity carries: `rewo:be/state/<id>`, the
+        // state's own model (rotations included), untinted.
+        for (id, refs) in entity_block_refs {
+            let tint = TintInfo {
+                foliage: false,
+                layers: &[],
+                upper_half: false,
+            };
+            let mut quads = Vec::new();
+            for r in refs {
+                self.append_model_quads(r, tint, &mut quads);
+            }
+            if let Some(q) = self.held_quads_of(quads, &mut pool) {
+                be_models.push((
+                    crate::block_entity_models::carried_block_model(*id),
+                    HeldItemModel {
+                        quads: q,
+                        right: crate::item_models::DisplayTransform::IDENTITY,
+                        left: crate::item_models::DisplayTransform::IDENTITY,
+                        ground: crate::item_models::DisplayTransform::IDENTITY,
+                        gui: crate::item_models::DisplayTransform::IDENTITY,
+                        first_right: crate::item_models::DisplayTransform::IDENTITY,
+                        first_left: crate::item_models::DisplayTransform::IDENTITY,
+                        fixed: crate::item_models::DisplayTransform::IDENTITY,
+                        from_block: true,
+                        gui_quads: None,
+                    },
+                ));
+            }
+        }
         let be_count = be_models.len();
         let block_entities: HashMap<String, HeldItemModel> = be_models.into_iter().collect();
         // M242/M243 — the multi-part items: each part's quads (a baked
@@ -4527,8 +4567,6 @@ impl<'a> Baker<'a> {
         block: &str,
         pool: &mut crate::held_items::TexturePool,
     ) -> Option<Vec<crate::held_items::HeldQuad>> {
-        use crate::held_items::{HeldQuad, HeldTexture};
-
         let mut quads = Vec::new();
         let r = ModelRef {
             model: format!("block/{block}"),
@@ -4543,6 +4581,19 @@ impl<'a> Baker<'a> {
             upper_half: false,
         };
         self.append_model_quads(&r, tint, &mut quads);
+        self.held_quads_of(quads, pool)
+    }
+
+    /// Block-bake quads as held quads: each layer's pixels copied into the
+    /// pool (the entity pass cannot sample the world texture array), the
+    /// 0..1 geometry scaled to 0..16 model units, the face renumbered.
+    /// `None` when there are none or a layer cannot be copied.
+    fn held_quads_of(
+        &self,
+        quads: Vec<Quad>,
+        pool: &mut crate::held_items::TexturePool,
+    ) -> Option<Vec<crate::held_items::HeldQuad>> {
+        use crate::held_items::{HeldQuad, HeldTexture};
         if quads.is_empty() {
             return None;
         }
@@ -5497,6 +5548,29 @@ fn model_collision(short: &str) -> Option<bool> {
         || short == "sticky_piston"
         || short == "piston_head";
     model_shaped.then_some(false)
+}
+
+/// M253 — the blocks an entity can carry as a block model: every block a
+/// `FallingBlockEntity` is made from (`FallingBlock` subclasses and the
+/// other `Fallable`s: sand, gravel and their suspicious forms, the sixteen
+/// concrete powders, the anvils, the dragon egg, pointed dripstone,
+/// scaffolding) and TNT (`PrimedTnt`'s block, by default).
+fn carried_block(short: &str) -> bool {
+    matches!(
+        short,
+        "sand"
+            | "red_sand"
+            | "gravel"
+            | "suspicious_sand"
+            | "suspicious_gravel"
+            | "anvil"
+            | "chipped_anvil"
+            | "damaged_anvil"
+            | "dragon_egg"
+            | "pointed_dripstone"
+            | "scaffolding"
+            | "tnt"
+    ) || short.ends_with("_concrete_powder")
 }
 
 /// One item's phase-1 resolution: its name, its hand model and, when the

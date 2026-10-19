@@ -1862,6 +1862,47 @@ pub(super) fn collect_projectiles(
     out
 }
 
+/// M253 — the entities drawn as a block model: a falling block
+/// (`FallingBlockRenderer`: its block state, from the spawn data, under
+/// `translate(-0.5, 0, -0.5)`) and primed TNT (`TntRenderer`'s chain
+/// `translate(0, 0.5, 0) · YP(-90) · translate(-0.5, -0.5, 0.5) · YP(90)`,
+/// which is the same `translate(-0.5, 0, -0.5)`, with the TNT block).
+/// Recorded: TNT's swell in its last ten fuse ticks and its white flash are
+/// not drawn, nor a primed block other than TNT (`DATA_BLOCK_STATE_ID`).
+pub(super) fn collect_carried_blocks(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    lightmap: &LightmapState,
+    alpha: f32,
+    tnt_state: Option<u32>,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::{translation, IDENTITY};
+    let mut out = Vec::new();
+    for (_, e) in session.world.entities.iter() {
+        let state = match etypes.name(e.type_id) {
+            Some("minecraft:falling_block") => Some(e.spawn_data as u32),
+            Some("minecraft:tnt") => tnt_state,
+            _ => continue,
+        };
+        let Some(state) = state else {
+            continue;
+        };
+        let p = e.render_pos(alpha);
+        out.push(super::block_entities::OwnedBlockEntityDraw {
+            pos: [p[0] as f32, p[1] as f32, p[2] as f32],
+            model: rewo_data::block_entity_models::carried_block_model(state),
+            transform: translation(-0.5, 0.0, -0.5),
+            light: entity_light(&session.world, p[0], p[1] + 0.5, p[2], lightmap),
+            part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+        });
+    }
+    out
+}
+
 pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
     Some(match name {
         "minecraft:snowball" => ("minecraft:snowball", 1.0, false),
@@ -2643,6 +2684,11 @@ pub(super) fn collect_entities<'a>(
         // M250 — an arrow or a thrown trident is a model on the block-entity
         // path (`collect_projectiles`), not a capsule here.
         if projectile_model_of(name).is_some() {
+            continue;
+        }
+        // M253 — a falling block or primed TNT is its block model on the
+        // block-entity path (`collect_carried_blocks`).
+        if matches!(name, "minecraft:falling_block" | "minecraft:tnt") {
             continue;
         }
         let mut thrown_model: Option<&'static str> = None;

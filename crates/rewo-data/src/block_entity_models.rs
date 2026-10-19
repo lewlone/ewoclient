@@ -1902,6 +1902,12 @@ fn arrow_quads(tex: u16) -> Vec<HeldQuad> {
     out
 }
 
+/// M253 — the entity-pass model of block state `id`, for an entity that
+/// carries a block (a falling block, primed TNT).
+pub fn carried_block_model(id: u32) -> String {
+    format!("rewo:be/state/{id}")
+}
+
 /// Bake the arrows (M250).
 pub fn bake_arrows(
     pool: &mut TexturePool,

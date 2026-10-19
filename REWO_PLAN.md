@@ -2067,6 +2067,7 @@ this shape once.
 | M247 (2026-10-19) — a placed chest emits every quad of its model in the windowed client | **r109** | — | — |
 | M250 (2026-10-19) — a shot arrow draws as `ArrowModel` in the windowed client | **r110** | — | — |
 | M252 (2026-10-19) — a summoned minecart draws as `MinecartModel` | **r111** | — | — |
+| M253 (2026-10-19) — a falling block and primed TNT draw their block models | **r112** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3901,6 +3902,31 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M253 — falling blocks and primed TNT (2026-10-19)
+
+Falling sand and gravel and primed TNT were capsules. `FallingBlockRenderer`
+draws the block state its spawn data names under `translate(-0.5, 0, -0.5)`;
+`TntRenderer`'s chain `translate(0, 0.5, 0) · YP(-90) · translate(-0.5, -0.5,
+0.5) · YP(90)` reduces to the same translation, with the TNT block.
+
+The entity pass cannot sample the world texture array, and a full cube keeps
+no quads in the block bake, so the states an entity can carry are baked as
+entity-pass models: the bake collects their model references (every state of
+sand, gravel and their suspicious forms, the sixteen concrete powders, the
+anvils, the dragon egg, pointed dripstone, scaffolding and TNT) and
+`bake_held_items` expands them into `rewo:be/state/<id>` through the block
+item's conversion (`held_quads_of`, factored out of `bake_block_item`).
+`live_cmd::collect_carried_blocks` draws them on the block-entity path and
+`collect_entities` drops their capsules.
+
+Recorded: TNT's swell in its last ten fuse ticks and its white flash are
+not drawn; a primed block other than TNT (`DATA_BLOCK_STATE_ID`) draws TNT;
+a falling block of any other state draws nothing.
+
+**r112**: a floating falling gravel block and primed TNT (both NoGravity; the
+gravel's `Time` far below the 600-tick discard, a 32767-tick fuse) each draw
+every quad of their block models in the windowed client.
 
 ### M252 — minecarts (2026-10-19)
 

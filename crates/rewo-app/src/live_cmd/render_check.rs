@@ -243,6 +243,10 @@ pub(super) struct RenderCheck {
     pub(super) arrow_quads: (u32, u32),
     /// M252 — r111: frames that drew a minecart as `MinecartModel`.
     pub(super) minecart_frames: usize,
+    /// M253 — r112: frames on which both staged carried blocks drew every
+    /// quad of their block model, and the most complete in one frame.
+    pub(super) carried_block_frames: usize,
+    pub(super) carried_blocks_max: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -995,7 +999,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 111;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 112;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1184,6 +1188,17 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M253 — r112: `render_check.py` summons a floating falling block
+        // (gravel) and primed TNT with a long fuse, both NoGravity. Each must
+        // draw its block model (every quad) where it was a capsule.
+        row(
+            "r112 a falling block and primed TNT drew their block models",
+            self.carried_block_frames >= 1,
+            format!(
+                "{} frames drew both completely (at most {} complete in a frame)",
+                self.carried_block_frames, self.carried_blocks_max
             ),
         );
         // M252 — r111: `render_check.py` summons a minecart; the live wire

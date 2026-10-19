@@ -893,6 +893,14 @@ impl LiveApp {
         bes.extend(frames.models);
         // M250 — arrows and thrown tridents, by their models.
         bes.extend(collect_projectiles(session, &self.etypes, &lightmap, alpha));
+        // M253 — falling blocks and primed TNT, by their block models.
+        bes.extend(collect_carried_blocks(
+            session,
+            &self.etypes,
+            &lightmap,
+            alpha,
+            self.blocks.default_state("minecraft:tnt"),
+        ));
         let frame_maps = frames.maps;
         // A spawner's caged mob rides the ENTITY pass, mounted inside its
         // block (M31), so it joins the entity draws rather than these.
@@ -1071,6 +1079,25 @@ impl LiveApp {
                 c.arrow_frames += 1;
             }
             c.arrow_quads = (c.arrow_quads.0.max(arrow_drew), arrow_want);
+            // M253 — r112: the staged falling gravel and primed TNT each drew
+            // every quad of their block model.
+            let complete: usize = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| d.model.starts_with("rewo:be/state/"))
+                .filter(|(d, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(d.model))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                })
+                .count();
+            if complete >= 2 {
+                c.carried_block_frames += 1;
+            }
+            c.carried_blocks_max = c.carried_blocks_max.max(complete);
         }
 
         let extent = state.renderer.swapchain.extent;
