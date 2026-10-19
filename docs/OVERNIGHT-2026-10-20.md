@@ -279,8 +279,12 @@ released.
   plainly visible. They are invisible now, with their armour, held items
   and names still showing, as in vanilla.
 - **M272**: placed player heads show their own skins (server head walls
-  and decorations all showed Steve). Heads on armour stands, in the
-  inventory and in a hand still show Steve.
+  and decorations all showed Steve).
+- **M273, a visible bug on servers**: a skull or head worn by an armour
+  stand, a mob or a player drew nothing, so the usual armour-stand NPC
+  stood headless. Worn skulls draw now, and a worn player head in its own
+  skin. A pumpkin or block worn on the head still draws nothing, and head
+  items in the inventory or a hand still show Steve.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -342,6 +346,8 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `5f8c2e9a` | Render check: the use tail shrinks slimes to size 1 before killing them (a killed big slime split, and its children hit the bot through r101-r106). |
+| `15df47eb` | **M273** — worn skulls: `minecraft:profile` decoded (`profile_textures`), the head slot's profile kept per entity, `EntityDraw::worn_head` and `emit_worn_head` (`CustomHeadLayer`'s skull branch, per-renderer transforms); mobtexshot **m18** (pixels from the skull sheet, centroid on the decompile's head position; a control without the scale fails) and render-check **r131** (a stand wearing a skinned head). |
 | `bbe57010` | **M272** — player heads wear their own skins: `HeadSkins` (a worker thread, one fetch per URL, vetted to `textures.minecraft.net`, at most 16), `HeldItems::add_skin_head_model` (a per-skin copy of the head model) and a per-position model in `collect_block_entities`; render-check **r130** (a synthetic skin from a local file). |
 | `4ab41389` | **M271** — invisible bodies: `EntityDraw::body_hidden` for an invisible living entity (not seen by a spectator); the model and capsule skip, layers and name stay; mobshot pixel check (fails on the old behaviour) and render-check **r129**. |
 | `cff0a842` | **M270** — armour stand poses: indices 16-21 into `MobState`, `Anim::StandPose` as a delta from the baked default, the body sticks on the body part; render-check **r128**. |
@@ -663,6 +669,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M273: **4,414 tests passed, 0 failed; gates 51/51** (mobtexshot 18); clippy (gates and default features) and `cargo fmt --check` clean; render check **131/131** on run 1 and on both runs after `5f8c2e9a`. Run 2 of the first chain read 126/131: slimes split by the use tail's own kill hit the bot from stage 70 on and r101-r104 and r106 timed out (fixed in `5f8c2e9a`, see Follow-ups). m18's control (no 1.1875 scale) fails at 2.52 px.
 - After M272: **4,413 tests passed, 0 failed; gates 51/51**; render check **130/130** on two runs (r130 drew on 33,296 and 35,912 frames); clippy (gates and default features) and `cargo fmt --check` clean. r130 cannot pass on the old code (the per-skin model it looks for did not exist). The first chain attempt was stopped to raise the witness pin; its gate process outlived the stop and held `rewo.exe`, so the rerun's build failed until it was killed (verified its command line first).
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
@@ -709,16 +716,25 @@ released.
   for a worker to open a stream; failed once under the full workspace run,
   5/5 alone) and render-check r96 (walking while eating read a 0.31 ratio
   once against 0.2000 on the next two runs).
-- A render-check flake seen once (M248's run 2): the bot took damage from
+- ~~A render-check flake seen once (M248's run 2): the bot took damage from
   an unlogged source while walking east for r96, and the whole use tail
-  failed after it. Since M249 every hit on you is logged (`net: you took
+  failed after it.~~ Found during M273 (`5f8c2e9a`): slimes. The
+  tail's `kill @e[type=minecraft:slime]` SPLIT any slime bigger than size 1
+  (`AbstractCubeMob.remove`), and the medium children it made (ids 53-55,
+  logged by M249's damage line) hit the bot through r101-r106. The tail now
+  shrinks every slime to size 1 (`Size:0`) before the kill; a tiny slime
+  neither splits nor deals damage. Why a slime exists at all with
+  `gamerule spawn_monsters false` staged is not known (most likely one
+  spawned in the seconds before the staging ran). Since M249 every hit on you is logged (`net: you took
   damage: damage type N, cause entity ..`; the type is the `damage_type`
   registry's wire index, the order of its `registry_data`), so the next
   sighting names the source.
 - ~~A boat model~~ (M223).
-- Player heads (M272): a name-only profile (vanilla asks Mojang's profile
-  service), the profile's `texture` skin patch, heads worn by armour stands
-  and mobs, and head items in the inventory or a hand still show Steve. The
+- Player heads (M272, M273): a name-only profile (vanilla asks Mojang's
+  profile service), the profile's `texture` skin patch, and head items in
+  the inventory or a hand still show Steve. A non-skull item worn on the
+  head (a pumpkin, a block: `CustomHeadLayer`'s item branch and the `head`
+  display context) draws nothing; worn skulls do not animate. The
   entity atlas's large band is a 64-slot ring, not an LRU: past 64 distinct
   big textures on screen at once it would recycle slots mid-frame.
 - Banner and shield items show no patterns (the stack's `banner_patterns`

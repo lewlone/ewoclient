@@ -3921,6 +3921,51 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M273 — worn skulls and heads (2026-10-20)
+
+A skull or head on an entity's head slot drew nothing at all: it has no
+equipment asset, so the armour layer skipped it, and Rewo had no
+`CustomHeadLayer`. Server NPCs are very often armour stands wearing a
+player head, and every one stood headless.
+
+- **Wire**: `minecraft:profile` (`DataComponentIds::profile`) is walked by
+  the table's own shape, then read again for its `textures` property
+  (`StackComponents::profile_textures`; the full and the partial profile
+  forms).
+- **Table**: `set_equipment`'s head slot records it
+  (`EntityTable::set_head_profile`, a side map cleared with the armour).
+- **Draw**: `EntityDraw::worn_head` (`WornHead`: the skull's block-entity
+  model and the renderer's `CustomHeadLayer.Transforms`). The app picks the
+  model with `chest_states::skull_model` (the placed skulls' table), a
+  player head's per-skin copy once its skin arrived (M272's `HeadSkins`,
+  `ready` / `request`), and the transforms per renderer
+  (`custom_head_transforms`: the villager's and the piglin's; `None` for a
+  renderer without the layer).
+- **GPU**: `emit_worn_head` hangs the skull off the `head` part: the skull
+  model is y-down and authored at the head's origin, so its px corners
+  scale by `SKULL_SCALE` 1.1875, shift by `skullYOffset`, and go through
+  the head part's transform and `horizontalScale`, then the held item's
+  model-to-world chain (death roll included). Drawn for an invisible body
+  too, as vanilla's layers are.
+- M272's skin-arrival block moved ahead of the entity collection (the
+  draws borrow `HeadSkins` for the rest of the frame).
+
+Not done (recorded): a non-skull item on the head (a carved pumpkin, any
+block: `CustomHeadLayer`'s item branch, the `head` display context, which
+the item bake does not read); the skull's animation (piglin ears, dragon
+jaw) at `wornHeadAnimationPos`.
+
+**Unit test**: the profile component's property in both forms and none
+for a bare name, with the whole value consumed. **mobtexshot m18** (17 to
+18): an armour stand with a worn skeleton skull against the same stand
+without; every added pixel is a colour the jar's skull sheet can produce,
+and their centroid sits within 1 px of the skull's centre as the
+decompile's literals place it (`PartPose.offset(0, 1, 0)`, `-1.501`,
+1.1875). 1,156 px, 0.02 px off; a control without the 1.1875 scale fails
+at 2.52 px. **r131**: a summoned armour stand wearing a player head whose
+`minecraft:profile` names r130's skin reaches the draws wearing the
+per-skin model, in that skin.
+
 ### M272 — player heads wear their own skins (2026-10-20)
 
 Every placed player head drew Steve. Servers decorate with custom heads by
