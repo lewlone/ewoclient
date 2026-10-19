@@ -1747,8 +1747,11 @@ mod tests {
             Duration::ZERO,
             Some(Box::new(move |mut s| {
                 let q = read_tcp_query(&mut s);
+                // Recorded before the answer goes out: the lookup returns as
+                // soon as it has the answer, and the test reads `seen` then
+                // (pushing after the write failed one full run, 2026-10-19).
+                seen2.lock().unwrap().push(q.clone());
                 s.write_all(&framed(&answer_for(&q))).unwrap();
-                seen2.lock().unwrap().push(q);
             })),
         );
         let got = lookup_with("hypixel.net", &[server], Duration::from_secs(2));
