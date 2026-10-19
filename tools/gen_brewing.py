@@ -1,0 +1,170 @@
+"""Generate `crates/rewo-data/src/brewing_table.rs` (M237).
+
+`BrewingStandMenu`'s three slot predicates, which the click arithmetic needs
+to predict a click (without them the menu cannot be clicked at all):
+
+    PotionSlot.mayPlaceItem    is(POTION) || is(SPLASH_POTION)
+                               || is(LINGERING_POTION) || is(GLASS_BOTTLE)
+    IngredientsSlot.mayPlace   level.potionBrewing().isIngredient(stack)
+    FuelSlot.mayPlaceItem      is(ItemTags.BREWING_FUEL)
+
+The first is code, read from `BrewingStandMenu.java`. The second is CODE too,
+not data: `PotionBrewing.bootstrap` runs `addVanillaMixes`, and
+`isIngredient` is "the ingredient of any container mix or potion mix". So the
+set is every `Items.X` that is the ingredient argument of an
+`addContainerRecipe(from, X, to)`, an `addMix(from, X, to)` or an
+`addStartMix(X, potion)` call in that method, read from the decompile. The
+third is a jar tag (`data/minecraft/tags/item/brewing_fuel.json`), expanded
+like `gen_beacon_payment.py`'s.
+
+Each item is checked against the item registry report, so a renamed `Items`
+constant fails here instead of silently dropping an ingredient.
+
+Caveats, repeated in the generated file: the builder skips a mix whose items
+or potions are not enabled by the world's feature flags, which this cannot
+see (every 26.2 item is enabled by default), and a datapack can retag
+`brewing_fuel`.
+
+Usage:  python tools/gen_brewing.py
+"""
+
+import json
+import os
+import re
+import sys
+import zipfile
+
+APPDATA = os.path.expandvars("%APPDATA%")
+JAR = os.path.join(APPDATA, "EwoClient", "shared", "versions", "26.2", "26.2.jar")
+DECOMP = os.path.join(APPDATA, "EwoClient", "rewo", "26.2", "decompiled", "net", "minecraft")
+REPORT = os.path.join(APPDATA, "EwoClient", "rewo", "26.2", "datagen", "generated", "reports", "registries.json")
+OUT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "crates", "rewo-data", "src", "brewing_table.rs",
+)
+
+
+def items_name(const):
+    """`Items.GLOWSTONE_DUST` -> `minecraft:glowstone_dust`."""
+    return "minecraft:" + const.lower()
+
+
+def tag_path(name):
+    ns, _, path = name.partition(":")
+    return f"data/{ns}/tags/item/{path}.json"
+
+
+def expand(jar, name, seen):
+    if name in seen:
+        raise SystemExit(f"tag cycle through {name}")
+    seen.add(name)
+    out = []
+    for entry in json.loads(jar.read(tag_path(name)).decode("utf-8"))["values"]:
+        value = entry["id"] if isinstance(entry, dict) else entry
+        out.extend(expand(jar, value[1:], seen) if value.startswith("#") else [value])
+    return out
+
+
+def method_body(src, signature):
+    i = src.index(signature)
+    j = src.index("{", i)
+    depth, k = 0, j
+    while True:
+        if src[k] == "{":
+            depth += 1
+        elif src[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[j:k]
+        k += 1
+
+
+def main():
+    brewing = open(os.path.join(DECOMP, "world", "item", "alchemy", "PotionBrewing.java"), encoding="utf-8").read()
+    menu = open(os.path.join(DECOMP, "world", "inventory", "BrewingStandMenu.java"), encoding="utf-8").read()
+    registry = set(json.load(open(REPORT, encoding="utf-8"))["minecraft:item"]["entries"])
+
+    mixes = method_body(brewing, "public static void addVanillaMixes(")
+    ingredients = []
+    for m in re.finditer(r"builder\.addContainerRecipe\(Items\.\w+, Items\.(\w+), Items\.\w+\)", mixes):
+        ingredients.append(items_name(m.group(1)))
+    for m in re.finditer(r"builder\.addMix\(Potions\.\w+, Items\.(\w+), Potions\.\w+\)", mixes):
+        ingredients.append(items_name(m.group(1)))
+    for m in re.finditer(r"builder\.addStartMix\(Items\.(\w+), Potions\.\w+\)", mixes):
+        ingredients.append(items_name(m.group(1)))
+    calls = len(re.findall(r"builder\.add(?:ContainerRecipe|Mix|StartMix)\(", mixes))
+    if calls != len(ingredients):
+        sys.exit(f"{calls} mix calls but {len(ingredients)} parsed: a call shape changed")
+    ingredients = sorted(set(ingredients))
+
+    bottle_src = method_body(menu, "public static boolean mayPlaceItem(final ItemStack itemStack) {\n         return itemStack.is(Items.POTION)")
+    bottles = sorted(items_name(c) for c in re.findall(r"Items\.(\w+)", bottle_src))
+    if len(bottles) != 4:
+        sys.exit(f"PotionSlot.mayPlaceItem names {bottles}, expected four items")
+
+    with zipfile.ZipFile(JAR) as jar:
+        fuel = sorted(set(expand(jar, "minecraft:brewing_fuel", set())))
+
+    for name in ingredients + bottles + fuel:
+        if name not in registry:
+            sys.exit(f"{name} is not in the item registry: an Items constant was renamed")
+    if not ingredients or not fuel:
+        sys.exit("an empty set would make the brewing stand refuse every ingredient or fuel")
+
+    def arr(name, values, doc):
+        body = "".join(f'    "{v}",\n' for v in values)
+        return f"{doc}\npub const {name}: &[&str] = &[\n{body}];\n"
+
+    out = f'''//! The brewing stand's slot predicates — GENERATED by `tools/gen_brewing.py`.
+//!
+//! Do not edit. Re-run the generator after a version bump.
+//!
+//! `INGREDIENTS` is `PotionBrewing.isIngredient`, which is code
+//! (`addVanillaMixes`), not data: every item that is the ingredient of a
+//! container mix or a potion mix. Caveats: the builder drops a mix whose items
+//! or potions are not enabled by the world's feature flags, which a table
+//! cannot see (every 26.2 item is enabled by default), and a datapack can
+//! retag `brewing_fuel`.
+
+{arr("INGREDIENTS", ingredients, "/// `IngredientsSlot.mayPlace` — `potionBrewing.isIngredient(stack)`.")}
+{arr("BOTTLES", bottles, "/// `PotionSlot.mayPlaceItem` — the four items a potion slot takes.")}
+{arr("FUEL", fuel, "/// `FuelSlot.mayPlaceItem` — `is(ItemTags.BREWING_FUEL)`.")}
+/// Whether `name` is a brewing ingredient.
+pub fn is_ingredient(name: &str) -> bool {{
+    INGREDIENTS.contains(&name)
+}}
+
+/// Whether `name` goes in a potion slot.
+pub fn is_bottle(name: &str) -> bool {{
+    BOTTLES.contains(&name)
+}}
+
+/// Whether `name` is brewing fuel.
+pub fn is_fuel(name: &str) -> bool {{
+    FUEL.contains(&name)
+}}
+
+#[cfg(test)]
+mod tests {{
+    use super::*;
+
+    #[test]
+    fn the_staples_are_where_vanilla_puts_them() {{
+        assert!(is_ingredient("minecraft:nether_wart"));
+        assert!(is_ingredient("minecraft:blaze_powder"));
+        assert!(is_ingredient("minecraft:gunpowder"));
+        assert!(!is_ingredient("minecraft:stick"));
+        assert!(is_bottle("minecraft:glass_bottle"));
+        assert!(is_bottle("minecraft:splash_potion"));
+        assert!(!is_bottle("minecraft:nether_wart"));
+        assert!(is_fuel("minecraft:blaze_powder"));
+        assert!(!is_fuel("minecraft:coal"));
+    }}
+}}
+'''
+    open(OUT, "w", encoding="utf-8", newline="\n").write(out)
+    print(f"{len(ingredients)} ingredients, {len(bottles)} bottles, {len(fuel)} fuel -> {OUT}")
+
+
+if __name__ == "__main__":
+    main()

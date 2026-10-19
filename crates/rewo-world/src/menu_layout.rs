@@ -943,6 +943,9 @@ pub enum QuickMove {
     /// `EnchantmentMenu` (M236): item 0 (one at a time), lapis 1, the
     /// player's 36 after.
     Enchantment,
+    /// `BrewingStandMenu` (M237): bottles 0..3, ingredient 3, fuel 4, the
+    /// player's 36 after.
+    Brewing,
     /// `GrindstoneMenu` — repair 0 and 1, result 2, then the player's 36.
     ///
     /// **Its `quickMoveStack` has no item predicate at all.** The guard is
@@ -1076,6 +1079,14 @@ impl MenuLayout {
                 3 => crate::inventory::SlotKind::Result,
                 _ => crate::inventory::SlotKind::Plain,
             }),
+            // M237 — the brewing stand: three one-bottle slots, the
+            // ingredient, the fuel.
+            QuickMove::Brewing => Some(match slot {
+                0..=2 => crate::inventory::SlotKind::BrewingBottle,
+                3 => crate::inventory::SlotKind::BrewingIngredient,
+                4 => crate::inventory::SlotKind::BrewingFuel,
+                _ => crate::inventory::SlotKind::Plain,
+            }),
             // M236 — the enchanting table: a one-item slot and the lapis.
             QuickMove::Enchantment => Some(match slot {
                 0 => crate::inventory::SlotKind::EnchantItem,
@@ -1146,6 +1157,8 @@ impl MenuLayout {
             // enchantment (M236) — every click was refused locally before
             // this arm, so nothing could be put on an enchanting table.
             13 => QuickMove::Enchantment,
+            // brewing_stand (M237) — the same gap: unclickable before.
+            11 => QuickMove::Brewing,
             _ => QuickMove::Unimplemented,
         }
     }

@@ -464,6 +464,11 @@ pub(super) struct RenderCheck {
     pub(super) enchant_costs: [i32; 3],
     pub(super) enchant_xp: (i32, i32),
     pub(super) enchant_result: (bool, i32),
+    /// M237 — r104: the brewing stand opened, its (brew time, fuel) once
+    /// brewing, and slots 0, 3 and 4 then.
+    pub(super) brew_opened: bool,
+    pub(super) brew_state: Option<(i16, i16)>,
+    pub(super) brew_slots: Vec<Option<(String, i32)>>,
     /// The cursor stack after the first press, and where the press was.
     pub(super) enchant_carried: Option<(Option<(String, i32)>, (f64, f64))>,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
@@ -951,7 +956,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 103;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 104;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1646,6 +1651,28 @@ impl RenderCheck {
             format!(
                 "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
+        );
+        // M237 — r104: a real brewing stand, in survival: a water bottle
+        // clicked into a bottle slot, nether wart and blaze powder
+        // shift-clicked (wart to the ingredient slot; powder, being fuel
+        // first, to the fuel slot), and the stand brews: data 0 (brew time,
+        // counting down from 400) and 1 (fuel, 20 less the brew's one) are up.
+        row(
+            "r104 a brewing stand took a water bottle, nether wart and blaze powder and started brewing",
+            self.brew_opened
+                && self.brew_state.is_some_and(|(t, f)| t > 0 && f > 0)
+                && self.brew_slots.first().cloned().flatten().is_some_and(|(n, _)| n == "minecraft:potion")
+                && self.brew_slots.get(1).cloned().flatten().is_some_and(|(n, _)| n == "minecraft:nether_wart"),
+            format!(
+                "opened {}, (brew time, fuel) {:?}, slots 0/3/4 {:?}{}",
+                self.brew_opened,
+                self.brew_state,
+                self.brew_slots,
+                self.use_skip
+                    .as_ref()
+                    .map(|s| format!(" (stopped: {s})"))
+                    .unwrap_or_default()
             ),
         );
         // M236 — r102: the anvil's cost line, drawn as `AnvilScreen.
@@ -2809,6 +2836,8 @@ impl LiveApp {
         // r102's anvil and r103's enchanting table (`render_check.py`).
         let anvil = [o[0].floor() + 12.5, o[1] + 0.5, o[2].floor() + 9.5];
         let enchanting = [o[0].floor() + 10.5, o[1] + 0.5, o[2].floor() + 9.5];
+        // r104's brewing stand (`render_check.py`).
+        let brewing = [o[0].floor() + 13.5, o[1] + 0.5, o[2].floor() + 5.5];
         let button = [o[0].floor() + 10.5, o[1] + 0.05, o[2].floor() + 4.5];
         let stage_before = self.use_stage;
         match self.use_stage {
@@ -3571,7 +3600,70 @@ impl LiveApp {
                     c.enchant_xp.1 = after;
                 }
                 self.close_container_screen();
-                self.use_stage = 60;
+                // r104 next: a water bottle, nether wart and blaze powder.
+                cmd(self, "clear @s minecraft:iron_pickaxe");
+                cmd(
+                    self,
+                    "item replace entity @s hotbar.0 with minecraft:potion[minecraft:potion_contents={potion:\"minecraft:water\"}] 1",
+                );
+                cmd(
+                    self,
+                    "item replace entity @s hotbar.1 with minecraft:nether_wart 1",
+                );
+                cmd(
+                    self,
+                    "item replace entity @s hotbar.2 with minecraft:blaze_powder 1",
+                );
+                self.use_tick0 = now;
+                self.use_stage = 95;
+            }
+            // r104 — the brewing stand: the bottle clicked into slot 0, the
+            // wart and the powder SHIFT-clicked (the wart to the ingredient
+            // slot, the powder to the fuel slot, `quickMoveStack`'s order),
+            // and the stand starts brewing (data 0 brew time, 1 fuel).
+            95 if now >= self.use_tick0 + 10 && !self.screen.inventory_open() => {
+                aim(self, brewing);
+                self.use_key_press();
+                self.use_down = false;
+                self.use_tick0 = now;
+                self.use_stage = 96;
+            }
+            96 => {
+                if shown(self) == Some("brewing_stand") {
+                    if let Some(c) = self.check.as_mut() {
+                        c.brew_opened = true;
+                    }
+                    // Hotbar 0, 1, 2 are menu slots 5 + 27 = 32, 33, 34.
+                    press(self, 32, false);
+                    press(self, 0, false);
+                    press(self, 33, true);
+                    press(self, 34, true);
+                    self.use_tick0 = now;
+                    self.use_stage = 97;
+                } else if now >= self.use_tick0 + 40 {
+                    let at = looking_at(self);
+                    if let Some(c) = self.check.as_mut() {
+                        c.use_skip.get_or_insert_with(|| {
+                            format!("the brewing stand never opened ({at})")
+                        });
+                    }
+                    self.use_stage = 60;
+                }
+            }
+            97 => {
+                let state = self.session.as_ref().and_then(|s| {
+                    let m = s.menus.open()?;
+                    Some((m.data(0), m.data(1)))
+                });
+                let slots: Vec<_> = [0, 3, 4].iter().map(|&i| menu_slot(self, i)).collect();
+                if state.is_some_and(|(t, f)| t > 0 && f > 0) || now >= self.use_tick0 + 40 {
+                    if let Some(c) = self.check.as_mut() {
+                        c.brew_state = state;
+                        c.brew_slots = slots;
+                    }
+                    self.close_container_screen();
+                    self.use_stage = 60;
+                }
             }
             60 => {
                 cmd(self, "gamemode creative");

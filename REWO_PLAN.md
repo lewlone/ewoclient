@@ -2059,6 +2059,7 @@ this shape once.
 | M234 (2026-10-19) — a fully drawn bow's first-person model is `bow_pulling_2` (item-model use variants) | **r100** | — | — |
 | M235 (2026-10-19) — a right-click raises the off-hand shield and the server blocks a hit from in front | **r101** | — | — |
 | M236 (2026-10-19) — a real anvil's cost line (red without levels, green with) and rename; a real enchanting table's offers and first row | **r102**, **r103** | — | — |
+| M237 (2026-10-19) — a real brewing stand takes a bottle, wart and powder (shift-clicked) and brews | **r104** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3893,6 +3894,32 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M237 — the brewing stand can be used (2026-10-19)
+
+The same gap as M236's enchanting table: `minecraft:menu` 11 had no
+`QuickMove` arm, so no click on a brewing stand was ever sent. Now
+`QuickMove::Brewing` and three slot kinds from `BrewingStandMenu`:
+`BrewingBottle` (slots 0..3, one each, the four bottle items),
+`BrewingIngredient` (slot 3, `potionBrewing.isIngredient`) and
+`BrewingFuel` (slot 4, `#brewing_fuel`). The shift-click follows
+`quickMoveStack`: fuel first (blaze powder is fuel AND an ingredient, and
+reaches the ingredient slot only when the fuel slot takes none; a success
+in the fuel slot returns EMPTY, which ends the shift-click), then
+ingredients, then bottles, then the main/hotbar cross-move.
+
+`isIngredient` is code, not data: `PotionBrewing.bootstrap` runs
+`addVanillaMixes`. `tools/gen_brewing.py` reads the ingredient argument of
+every `addContainerRecipe` / `addMix` / `addStartMix` call from the
+decompile (failing if a call shape changes), the bottle items from
+`PotionSlot.mayPlaceItem`, and `#brewing_fuel` from the jar, each checked
+against the item registry: `rewo_data::brewing_table` (21 ingredients).
+Recorded: the builder's feature-flag filter is not modelled (every 26.2
+item is enabled by default).
+
+**r104**: a real brewing stand in survival; a water bottle clicked into a
+bottle slot, nether wart and blaze powder shift-clicked; the stand brews
+(brew time 400, fuel 19: the powder became 20 fuel and the brew took one).
 
 ### M236 — the anvil's cost line, and the enchanting table can be used (2026-10-19)
 

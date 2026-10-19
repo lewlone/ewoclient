@@ -155,7 +155,7 @@ a self-check path.
 - **A menu whose `quick_move()` is `Unimplemented` cannot be clicked at
   all**: `slot_kind` is `None`, every click is "not predictable" and is
   never sent (`click_screen`). The enchanting table was unusable that way
-  until M236; the brewing stand (11) still is. A new menu needs its arm.
+  until M236 and the brewing stand until M237. A new menu needs its arm.
 - **The render-check server's seed is random** (`level-seed=` empty) and the
   harness stages `generate-structures=false` (M236): a village once put the
   spawn on a roof and two dozen witnesses failed with it. It also stages

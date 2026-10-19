@@ -144,6 +144,8 @@ PRECMD = (
     # M236 -- r102 / r103. An anvil and an enchanting table beside them.
     "setblock ~12 ~ ~9 minecraft:anvil[facing=north];"
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
+    # M237 -- r104. A brewing stand east of the use spot.
+    "setblock ~13 ~ ~5 minecraft:brewing_stand;"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

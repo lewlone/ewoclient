@@ -748,6 +748,13 @@ pub enum SlotKind {
     /// `moveItemStackTo`'s placement pass. That makes it load-bearing for the
     /// shift-click and not merely for an ordinary one.
     GrindstoneInput,
+    /// `BrewingStandMenu.PotionSlot` (M237), slots 0..3: `getMaxStackSize`
+    /// 1, `mayPlace` the four bottle items ([`ItemProps::brewing_bottle`]).
+    BrewingBottle,
+    /// `IngredientsSlot` (M237), slot 3: `potionBrewing.isIngredient`.
+    BrewingIngredient,
+    /// `FuelSlot` (M237), slot 4: `is(ItemTags.BREWING_FUEL)`.
+    BrewingFuel,
     /// `EnchantmentMenu`'s item slot 0 (M236): a `Slot` whose
     /// `getMaxStackSize` is 1 and whose `mayPlace` is the default (anything).
     EnchantItem,
@@ -874,7 +881,8 @@ pub fn slot_max_stack(kind: SlotKind) -> i32 {
         SlotKind::Armor(_)
         | SlotKind::MountSaddle
         | SlotKind::MountBody
-        | SlotKind::EnchantItem => 1,
+        | SlotKind::EnchantItem
+        | SlotKind::BrewingBottle => 1,
         _ => rewo_data::item_props_table::DEFAULT_MAX_STACK,
     }
 }
@@ -961,6 +969,10 @@ pub struct ItemProps {
     /// `is(Items.LAPIS_LAZULI)` (M236) — the enchanting table's lapis slot
     /// and its shift-click branch.
     pub enchant_lapis: bool,
+    /// M237 — the brewing stand's three predicates (`brewing_table`).
+    pub brewing_bottle: bool,
+    pub brewing_ingredient: bool,
+    pub brewing_fuel: bool,
     /// Whether the item's **prototype** carries `minecraft:max_damage` (M93e).
     /// From the per-item component table, which M56 already generates.
     pub proto_max_damage: bool,
@@ -1095,6 +1107,10 @@ impl Inventory {
             // M236 — listed for the same reason: the lapis slot refuses
             // everything else.
             SlotKind::EnchantLapis => props.enchant_lapis,
+            // M237 — the brewing stand's three, listed for the same reason.
+            SlotKind::BrewingBottle => props.brewing_bottle,
+            SlotKind::BrewingIngredient => props.brewing_ingredient,
+            SlotKind::BrewingFuel => props.brewing_fuel,
             SlotKind::SmithingTemplate => props.smithing_template,
             SlotKind::SmithingBase => props.smithing_base,
             SlotKind::SmithingAddition => props.smithing_addition,
@@ -1653,6 +1669,30 @@ impl Inventory {
                     _ => (player..hotbar, false),
                 }]);
             }
+            QuickMove::Brewing => {
+                // BrewingStandMenu: bottles 0..3, ingredient 3, fuel 4,
+                // player 5..41 (hotbar 32..41).
+                let (player, hotbar, end) = (5usize, 32usize, 41usize);
+                return Some(match slot {
+                    0..=4 => vec![(player..end, true)],
+                    // Fuel FIRST: `moveItemStackTo(4, 5) || (isIngredient &&
+                    // !moveItemStackTo(3, 4))` — blaze powder is both, and
+                    // goes to the ingredient slot only when the fuel slot
+                    // takes none. A success in the fuel slot returns EMPTY,
+                    // which ends the shift-click (`quick_move_single_pass`).
+                    _ if p.brewing_fuel => {
+                        let mut chain = vec![(4..5, false)];
+                        if p.brewing_ingredient {
+                            chain.push((3..4, false));
+                        }
+                        chain
+                    }
+                    _ if p.brewing_ingredient => vec![(3..4, false)],
+                    _ if p.brewing_bottle => vec![(0..3, false)],
+                    s if s < hotbar => vec![(hotbar..end, false)],
+                    _ => vec![(player..hotbar, false)],
+                });
+            }
             QuickMove::Enchantment => {
                 // EnchantmentMenu: item 0, lapis 1, player 2..38.
                 let (player, hotbar, end) = (2usize, 29usize, 38usize);
@@ -1810,6 +1850,9 @@ impl Inventory {
                 let player = 2 + container_slots;
                 slot >= player && range.start >= player
             }
+            // M237 — the brewing stand's fuel branch `return`s EMPTY after a
+            // successful move into the fuel slot.
+            crate::menu_layout::QuickMove::Brewing => slot >= 5 && range == (4..5),
             _ => false,
         }
     }
@@ -2062,6 +2105,12 @@ mod tests {
             cartography_additional: false,
 
             enchant_lapis: false,
+
+            brewing_bottle: false,
+
+            brewing_ingredient: false,
+
+            brewing_fuel: false,
             loom_banner: false,
             loom_dye: false,
             loom_pattern: false,
@@ -2087,6 +2136,12 @@ mod tests {
             cartography_additional: false,
 
             enchant_lapis: false,
+
+            brewing_bottle: false,
+
+            brewing_ingredient: false,
+
+            brewing_fuel: false,
             loom_banner: false,
             loom_dye: false,
             loom_pattern: false,
@@ -2112,6 +2167,12 @@ mod tests {
             cartography_additional: false,
 
             enchant_lapis: false,
+
+            brewing_bottle: false,
+
+            brewing_ingredient: false,
+
+            brewing_fuel: false,
             loom_banner: false,
             loom_dye: false,
             loom_pattern: false,
@@ -3005,6 +3066,9 @@ mod tests {
         Some(ItemProps {
             // Item 9 is the test's lapis.
             enchant_lapis: id == 9,
+            brewing_bottle: false,
+            brewing_ingredient: false,
+            brewing_fuel: false,
             ..plain_props(id).unwrap()
         })
     }
@@ -3068,6 +3132,96 @@ mod tests {
             .click_quick_move(0, &lapis_props)
             .expect("back to the player");
         assert!(p.changed.contains(&(0u16, None)), "{:?}", p.changed);
+    }
+
+    // -- M237: the brewing stand --------------------------------------------
+
+    /// Test items: 20 blaze powder (fuel AND ingredient), 21 nether wart
+    /// (ingredient), 22 a potion (bottle), 1 anything else.
+    fn brew_props(id: i32) -> Option<ItemProps> {
+        Some(ItemProps {
+            brewing_fuel: id == 20,
+            brewing_ingredient: id == 20 || id == 21,
+            brewing_bottle: id == 22,
+            max_stack: if id == 22 { 1 } else { 64 },
+            ..plain_props(id).unwrap()
+        })
+    }
+
+    fn brewing(content: &[(usize, Option<ItemSlot>)]) -> Inventory {
+        let mut s = Inventory::with_layout(crate::menu_layout::layout_of(11).unwrap());
+        let mut v = vec![None; s.slot_count()];
+        for (i, st) in content {
+            v[*i] = *st;
+        }
+        assert!(s.set_content(1, &v, None));
+        s
+    }
+
+    #[test]
+    fn a_brewing_stand_click_is_predictable_and_each_slot_keeps_its_own() {
+        let mut s = brewing(&[]);
+        s.set_carried(stack(21, 3));
+        let p = s
+            .click_pickup(3, 0, &brew_props)
+            .expect("predicted, so sent");
+        assert_eq!(
+            p.changed,
+            vec![(3u16, stack(21, 3))],
+            "wart is an ingredient"
+        );
+        let mut s = brewing(&[]);
+        s.set_carried(stack(21, 3));
+        let p = s.click_pickup(4, 0, &brew_props).expect("predictable");
+        assert!(p.changed.is_empty(), "wart is not fuel");
+        let mut s = brewing(&[]);
+        s.set_carried(stack(1, 3));
+        let p = s.click_pickup(0, 0, &brew_props).expect("predictable");
+        assert!(
+            p.changed.is_empty(),
+            "a bottle slot takes only the four bottles"
+        );
+    }
+
+    /// `quickMoveStack`: blaze powder fills the FUEL slot and stops there
+    /// (the branch returns EMPTY), and reaches the ingredient slot only when
+    /// the fuel slot takes none; wart goes to the ingredient slot; potions to
+    /// the bottle slots one each.
+    #[test]
+    fn a_brewing_stand_shift_click_follows_quick_move_stack() {
+        let s = brewing(&[(5, stack(20, 70))]);
+        let p = s.click_quick_move(5, &brew_props).expect("fuel moves");
+        assert!(
+            p.changed.contains(&(4u16, stack(20, 64))),
+            "{:?}",
+            p.changed
+        );
+        assert!(p.changed.contains(&(5u16, stack(20, 6))), "{:?}", p.changed);
+        assert!(
+            !p.changed.iter().any(|(i, _)| *i == 3),
+            "and stops: {:?}",
+            p.changed
+        );
+        let s = brewing(&[(4, stack(20, 64)), (5, stack(20, 5))]);
+        let p = s
+            .click_quick_move(5, &brew_props)
+            .expect("full fuel: ingredient");
+        assert!(p.changed.contains(&(3u16, stack(20, 5))), "{:?}", p.changed);
+        let s = brewing(&[(5, stack(21, 2))]);
+        let p = s.click_quick_move(5, &brew_props).expect("wart moves");
+        assert!(p.changed.contains(&(3u16, stack(21, 2))), "{:?}", p.changed);
+        let s = brewing(&[(32, stack(22, 1)), (33, stack(22, 1))]);
+        let p = s.click_quick_move(32, &brew_props).expect("a potion moves");
+        assert!(p.changed.contains(&(0u16, stack(22, 1))), "{:?}", p.changed);
+        let s = brewing(&[(5, stack(1, 2))]);
+        let p = s
+            .click_quick_move(5, &brew_props)
+            .expect("anything else cross-moves");
+        assert!(
+            p.changed.iter().any(|(i, _)| (32..41).contains(i)),
+            "{:?}",
+            p.changed
+        );
     }
 
     // -- M93g: the loom ----------------------------------------------------
@@ -3296,6 +3450,12 @@ mod tests {
             cartography_additional: true,
 
             enchant_lapis: false,
+
+            brewing_bottle: false,
+
+            brewing_ingredient: false,
+
+            brewing_fuel: false,
             ..plain_props(0).unwrap()
         })
     }

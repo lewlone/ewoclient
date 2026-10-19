@@ -808,6 +808,10 @@ pub(crate) fn item_props(
         ),
         // M236 — `is(Items.LAPIS_LAZULI)`.
         enchant_lapis: name == "minecraft:lapis_lazuli",
+        // M237 — the brewing stand's three slots.
+        brewing_bottle: rewo_data::brewing_table::is_bottle(name),
+        brewing_ingredient: rewo_data::brewing_table::is_ingredient(name),
+        brewing_fuel: rewo_data::brewing_table::is_fuel(name),
         // M93g — the loom. The banner half is item identity from the tag; the
         // other two are the CONJUNCTIONS, tag AND prototype component, and a
         // tag-only test would look correct on every vanilla item.
