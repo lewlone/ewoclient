@@ -313,6 +313,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // M52: the two kinds that disambiguate an otherwise-shared metadata slot —
     // the sheep's wool byte at 18 and the creaking's `IS_ACTIVE` at 17.
     session.sheep_type_id = data.entity_types.id_of("minecraft:sheep");
+    session.armor_stand_type_id = data.entity_types.id_of("minecraft:armor_stand");
     session.bee_type_id = data.entity_types.id_of("minecraft:bee");
     session.guardian_type_id = data.entity_types.id_of("minecraft:guardian");
     session.elder_guardian_type_id = data.entity_types.id_of("minecraft:elder_guardian");

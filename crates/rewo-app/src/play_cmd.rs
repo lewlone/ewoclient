@@ -724,6 +724,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     // M52: the two kinds that disambiguate an otherwise-shared metadata slot —
     // the sheep's wool byte at 18 and the creaking's `IS_ACTIVE` at 17.
     session.sheep_type_id = data.entity_types.id_of("minecraft:sheep");
+    session.armor_stand_type_id = data.entity_types.id_of("minecraft:armor_stand");
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);

@@ -843,6 +843,21 @@ impl LiveApp {
                     c.item_frame_frames += 1;
                 }
             }
+            // r105 — the two staged armour stands, as their model (not the
+            // capsule), each with its own flags off the wire: the plain one
+            // with the default parts, the posed one with arms, no base plate
+            // and its helmet.
+            let stand = |arms: bool, plate: bool, helmet: bool| {
+                draws.iter().any(|d| {
+                    d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
+                        && d.stand_parts.arms == arms
+                        && d.stand_parts.base_plate == plate
+                        && d.armor[0].is_some() == helmet
+                })
+            };
+            if stand(false, true, false) && stand(true, false, true) {
+                c.armor_stand_frames += 1;
+            }
         }
         bes.extend(frames.models);
         let frame_maps = frames.maps;

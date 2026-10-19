@@ -222,6 +222,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         gesture: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
+        stand_parts: Default::default(),
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,
@@ -256,8 +257,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// update them (and say why) in that commit.
 ///
 /// M223: 246 → 258, the four boat models (boat, chest boat, raft, chest raft)
-/// at three views each.
-const EXPECTED_MOB_VIEWS: usize = 258;
+/// at three views each. M238: 258 → 261, the armour stand.
+const EXPECTED_MOB_VIEWS: usize = 261;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.

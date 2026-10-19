@@ -219,6 +219,9 @@ pub struct EntityDraw<'a> {
     pub events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap (vanilla `isHidingInShell`).
     pub shell: bool,
+    /// M238 — the armour stand's arms and base plate
+    /// (`mobs::StandParts`); inert on every other kind.
+    pub stand_parts: mobs::StandParts,
     /// Allay dance inputs (`Some` only for a dancing Allay); `None` for every
     /// other entity and a non-dancing Allay (ordinary head-look / upright pose).
     pub allay_dance: Option<mobs::AllayDance>,
@@ -2012,6 +2015,7 @@ impl EntityPass {
             gesture: Option::None,
             events: [None; mobs::ModelEvent::COUNT],
             shell: false,
+            body_yaw: 0.0,
             allay_dance: Option::None,
             attack: mobs::SwingPose::NONE,
             arm_poses: mobs::ArmPoses::EMPTY,
@@ -2036,6 +2040,8 @@ impl EntityPass {
                             // the folded arms render and the loose pair does
                             // not — matching what `set_entities` draws.
                             | mobs::Show::IllagerCrossedOnly
+                            // The default armour stand: plate, no arms.
+                            | mobs::Show::StandBasePlate
                     )
                 })
                 .map(|q| {
@@ -2838,6 +2844,7 @@ impl EntityPass {
             gesture: d.gesture,
             events: d.events,
             shell: d.shell,
+            body_yaw: d.yaw.to_radians(),
             allay_dance: d.allay_dance,
             attack: d.attack,
             arm_poses: d.arm_poses,
@@ -2945,6 +2952,8 @@ impl EntityPass {
                 mobs::Show::IllagerNotCrossed => {
                     d.mob.illager_pose != mobs::IllagerArmPose::Crossed
                 }
+                mobs::Show::StandArms => d.stand_parts.arms,
+                mobs::Show::StandBasePlate => d.stand_parts.base_plate,
             }
         };
         // The pack variant this entity drew, if the atlas has a slot for it.
@@ -3957,6 +3966,9 @@ struct AnimCtx {
     events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap.
     shell: bool,
+    /// M238 — the entity's body yaw, radians, for
+    /// [`mobs::Anim::CounterBodyYaw`].
+    body_yaw: f32,
     /// Allay dance inputs (`Some` only for a dancing Allay) — drives
     /// [`mobs::Anim::AllayRoot`] / [`mobs::Anim::AllayHead`].
     allay_dance: Option<mobs::AllayDance>,
@@ -4140,6 +4152,7 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
     let mut off = [0.0f32; 3];
     match anim {
         None => {}
+        CounterBodyYaw => rot[1] = -c.body_yaw,
         Head => {
             rot[0] = c.pitch;
             rot[1] = c.net;
@@ -5617,6 +5630,7 @@ pub fn oracle_part_deltas(
         gesture: inputs.gesture,
         events: inputs.events,
         shell: inputs.shell,
+        body_yaw: 0.0,
         allay_dance: inputs.allay_dance,
         attack: inputs.attack,
         arm_poses: inputs.arm_poses,
@@ -7301,6 +7315,7 @@ mod tests {
             gesture: None,
             events: [None; mobs::ModelEvent::COUNT],
             shell: false,
+            body_yaw: 0.0,
             allay_dance: None,
             attack: mobs::SwingPose::NONE,
             arm_poses: mobs::ArmPoses::EMPTY,

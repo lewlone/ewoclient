@@ -146,6 +146,11 @@ PRECMD = (
     "setblock ~10 ~ ~9 minecraft:enchanting_table;"
     # M237 -- r104. A brewing stand east of the use spot.
     "setblock ~13 ~ ~5 minecraft:brewing_stand;"
+    # M238 -- r105. A plain armour stand and one with arms, no base plate
+    # and an iron helmet.
+    "summon minecraft:armor_stand ~-4 ~ ~3 {Rotation:[30f,0f]};"
+    "summon minecraft:armor_stand ~-6 ~ ~3 {ShowArms:1b,NoBasePlate:1b,"
+    "equipment:{head:{id:\"minecraft:iron_helmet\",count:1}}};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
     "summon minecraft:item_frame ~ ~1 ~ "

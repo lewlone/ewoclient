@@ -77,6 +77,9 @@ pub enum Anim {
     /// Static geometry (any static pose was folded in at build time, or
     /// lives in the part's base `rot`).
     None,
+    /// M238 — `ArmorStandModel`'s `basePlate.yRot = -yRot`: the plate turns
+    /// back by the stand's own yaw, so it stays aligned to the world grid.
+    CounterBodyYaw,
     /// Look pitch about X + net head yaw about Y (vanilla `rotateZYX(0,y,x)`).
     Head,
     /// Humanoid arms: `cos(f ± π) · 2.0 · amount · 0.5`.
@@ -784,6 +787,29 @@ pub enum Show {
     IllagerCrossedOnly,
     /// `leftArm.visible = rightArm.visible = !crossedArms` — the counterpart.
     IllagerNotCrossed,
+    /// M238 — `ArmorStandModel.setupAnim`: `leftArm.visible =
+    /// rightArm.visible = state.showArms`.
+    StandArms,
+    /// `basePlate.visible = state.showBasePlate`.
+    StandBasePlate,
+}
+
+/// M238 — the armour stand's two visibility flags (`DATA_CLIENT_FLAGS` 0x04
+/// show arms, 0x08 no base plate). The default is vanilla's flags byte 0:
+/// no arms, a base plate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandParts {
+    pub arms: bool,
+    pub base_plate: bool,
+}
+
+impl Default for StandParts {
+    fn default() -> Self {
+        Self {
+            arms: false,
+            base_plate: true,
+        }
+    }
 }
 
 /// When a keyframe animation plays — vanilla's `setupAnim` call patterns.
@@ -1445,11 +1471,14 @@ pub enum EntityModelKind {
     ChestBoat,
     Raft,
     ChestRaft,
+    /// M238 — `ArmorStandModel` at its default pose; its two flags arrive
+    /// per draw ([`StandParts`]), its small form as a half scale.
+    ArmorStand,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 95;
+    pub const COUNT: usize = 96;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1545,6 +1574,7 @@ impl EntityModelKind {
         EntityModelKind::ChestBoat,
         EntityModelKind::Raft,
         EntityModelKind::ChestRaft,
+        EntityModelKind::ArmorStand,
         EntityModelKind::Capsule,
     ];
 
@@ -1648,6 +1678,7 @@ impl EntityModelKind {
             EntityModelKind::ChestBoat => "chest_boat",
             EntityModelKind::Raft => "raft",
             EntityModelKind::ChestRaft => "chest_raft",
+            EntityModelKind::ArmorStand => "armor_stand",
             EntityModelKind::Capsule => "capsule",
         }
     }
@@ -2421,6 +2452,11 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ChestRaft,
         textures: &["chest_raft"],
         build: chest_raft,
+    },
+    MobDef {
+        kind: EntityModelKind::ArmorStand,
+        textures: &["armor_stand"],
+        build: armor_stand,
     },
     MobDef {
         kind: EntityModelKind::SnowGolem,
@@ -7829,6 +7865,156 @@ fn chest_raft() -> Model {
     b.finish(1.0)
 }
 
+// ---------------------------------------------------------------------------
+// The armour stand (M238): `ArmorStandModel.createBodyLayer`
+// ---------------------------------------------------------------------------
+
+/// `ArmorStandModel.createBodyLayer` with `ArmorStand`'s default poses as the
+/// parts' rotations (`DEFAULT_HEAD_POSE` .. `DEFAULT_RIGHT_LEG_POSE`, degrees
+/// as `Rotations`). The named head, body, arms and legs are what the armour
+/// layer hangs its pieces on. Recorded: the six synched poses
+/// (`DATA_*_POSE`) are not read, so a posed stand shows the default pose,
+/// and the hit wiggle is not modelled.
+fn armor_stand() -> Model {
+    let d = |x: f32, y: f32, z: f32| [x.to_radians(), y.to_radians(), z.to_radians()];
+    let mut b = ModelBuilder::new();
+    let head = b.part_named(
+        "head",
+        [0.0, 1.0, 0.0],
+        d(0.0, 0.0, 0.0),
+        Anim::None,
+        1.0,
+        None,
+    );
+    b.cube(
+        head,
+        0,
+        (0.0, 0.0),
+        [-1.0, -7.0, -1.0],
+        [2.0, 7.0, 2.0],
+        NONE,
+    );
+    let body = b.part_named("body", [0.0; 3], d(0.0, 0.0, 0.0), Anim::None, 1.0, None);
+    b.cube(
+        body,
+        0,
+        (0.0, 26.0),
+        [-6.0, 0.0, -1.5],
+        [12.0, 3.0, 3.0],
+        NONE,
+    );
+    let right_arm = b.part_named(
+        "right_arm",
+        [-5.0, 2.0, 0.0],
+        d(-15.0, 0.0, 10.0),
+        Anim::None,
+        1.0,
+        None,
+    );
+    b.cube(
+        right_arm,
+        0,
+        (24.0, 0.0),
+        [-2.0, -2.0, -1.0],
+        [2.0, 12.0, 2.0],
+        NONE,
+    );
+    b.show(right_arm, Show::StandArms);
+    let left_arm = b.part_named(
+        "left_arm",
+        [5.0, 2.0, 0.0],
+        d(-10.0, 0.0, -10.0),
+        Anim::None,
+        1.0,
+        None,
+    );
+    b.cube_m(
+        left_arm,
+        0,
+        (32.0, 16.0),
+        [0.0, -2.0, -1.0],
+        [2.0, 12.0, 2.0],
+        NONE,
+    );
+    b.show(left_arm, Show::StandArms);
+    let right_leg = b.part_named(
+        "right_leg",
+        [-1.9, 12.0, 0.0],
+        d(1.0, 0.0, 1.0),
+        Anim::None,
+        1.0,
+        None,
+    );
+    b.cube(
+        right_leg,
+        0,
+        (8.0, 0.0),
+        [-1.0, 0.0, -1.0],
+        [2.0, 11.0, 2.0],
+        NONE,
+    );
+    let left_leg = b.part_named(
+        "left_leg",
+        [1.9, 12.0, 0.0],
+        d(-1.0, 0.0, -1.0),
+        Anim::None,
+        1.0,
+        None,
+    );
+    b.cube_m(
+        left_leg,
+        0,
+        (40.0, 16.0),
+        [-1.0, 0.0, -1.0],
+        [2.0, 11.0, 2.0],
+        NONE,
+    );
+    // The three sticks take the BODY pose (0, 0, 0 by default) about the
+    // origin, so they are static here.
+    b.cube(
+        STATIC_PART,
+        0,
+        (16.0, 0.0),
+        [-3.0, 3.0, -1.0],
+        [2.0, 7.0, 2.0],
+        NONE,
+    );
+    b.cube(
+        STATIC_PART,
+        0,
+        (48.0, 16.0),
+        [1.0, 3.0, -1.0],
+        [2.0, 7.0, 2.0],
+        NONE,
+    );
+    b.cube(
+        STATIC_PART,
+        0,
+        (0.0, 48.0),
+        [-4.0, 10.0, -1.0],
+        [8.0, 2.0, 2.0],
+        NONE,
+    );
+    let plate = b.part_named(
+        "base_plate",
+        [0.0, 12.0, 0.0],
+        [0.0; 3],
+        Anim::CounterBodyYaw,
+        1.0,
+        None,
+    );
+    b.cube(
+        plate,
+        0,
+        (0.0, 32.0),
+        [-6.0, 11.0, -6.0],
+        [12.0, 1.0, 12.0],
+        NONE,
+    );
+    b.show(plate, Show::StandBasePlate);
+    b.finish(1.0)
+}
+
 fn equine_eared() -> Model {
     equine(true)
 }
@@ -9911,9 +10097,10 @@ mod tests {
             kind_for_entity_name("minecraft:warden"),
             EntityModelKind::Warden
         );
+        // M238 — the armour stand has its model now (it was the capsule).
         assert_eq!(
             kind_for_entity_name("minecraft:armor_stand"),
-            EntityModelKind::Capsule
+            EntityModelKind::ArmorStand
         );
         // M68: the wire name resolves to the *small* plan, and the large one
         // is unreachable by name — its own `name()` included, which is not a
@@ -10168,7 +10355,8 @@ pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
 /// ZombieVillagerRenderer               zombie_villager
 /// ZombifiedPiglinRenderer              zombified_piglin
 /// PiglinRenderer                       piglin, piglin_brute
-/// ArmorStandRenderer, GiantMobRenderer (Rewo models neither)
+/// ArmorStandRenderer                   armor_stand (M238)
+/// GiantMobRenderer                     (Rewo does not model the giant)
 /// ```
 ///
 /// Deliberately not a geometric test. An earlier form asked "does the model
@@ -10182,6 +10370,7 @@ pub fn wears_humanoid_armor(kind: EntityModelKind) -> bool {
         kind,
         EntityModelKind::Player
             | EntityModelKind::PlayerSlim
+            | EntityModelKind::ArmorStand
             | EntityModelKind::Zombie
             | EntityModelKind::Husk
             | EntityModelKind::Drowned

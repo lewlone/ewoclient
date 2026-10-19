@@ -1089,6 +1089,7 @@ fn run_entity_case(
         gesture: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
+        stand_parts: Default::default(),
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,

@@ -1360,6 +1360,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         gesture: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
+        stand_parts: Default::default(),
         allay_dance: None,
         attack,
         arm_poses: ArmPoses::EMPTY,
@@ -2624,6 +2625,7 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             // rigs, and neither the sheep's wool nor the creaking's eyes reach
             // them. `None` means the kind gate can never match.
             sheep: None,
+            armor_stand: None,
             creaking: None,
             // M60: likewise not exercised — no cape reaches an arm rig.
             player: None,

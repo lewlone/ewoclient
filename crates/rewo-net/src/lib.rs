@@ -2415,6 +2415,9 @@ pub struct MetaKinds<'a> {
     pub pillager: Option<i32>,
     /// `minecraft:sheep` type id (M52) — gates the index-18 BYTE.
     pub sheep: Option<i32>,
+    /// `minecraft:armor_stand` type id (M238) — gates the index-15 BYTE that
+    /// a `Mob` uses for its own flags.
+    pub armor_stand: Option<i32>,
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
@@ -2738,6 +2741,9 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(flags) = meta.mob_flags {
         if kinds.classes.is_some_and(|c| c.is_mob(type_id)) {
             entities.set_mob_flags(eid, flags);
+        } else if kinds.armor_stand == Some(type_id) {
+            // M238 — the armour stand's own flags at the same index.
+            entities.set_armor_stand_flags(eid, flags);
         }
     }
     // Slot 17 BYTE → `SpellcasterIllager.DATA_SPELL_CASTING_ID`. The gesture

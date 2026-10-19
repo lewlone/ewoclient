@@ -794,6 +794,8 @@ pub struct PlaySession {
     pub pillager_type_id: Option<i32>,
     /// `minecraft:sheep` — gates the index-18 wool byte (M52).
     pub sheep_type_id: Option<i32>,
+    /// M238 — `minecraft:armor_stand`, for its index-15 flags.
+    pub armor_stand_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
     pub creaking_type_id: Option<i32>,
     /// `minecraft:bee` — gates the index-19 anger deadline, and names the kind
@@ -2004,6 +2006,7 @@ impl<'a> Connection<'a> {
             allay_type_id: None,
             pillager_type_id: None,
             sheep_type_id: None,
+            armor_stand_type_id: None,
             creaking_type_id: None,
             bee_type_id: None,
             guardian_type_id: None,

@@ -2470,6 +2470,23 @@ pub(super) fn collect_entities<'a>(
             w *= 0.5;
             h *= 0.5;
         }
+        // M238 — the armour stand's client flags: 0x01 small (the half-scale
+        // `ARMOR_STAND_SMALL` layer, `MeshTransformer.scaling(0.5)`), 0x04
+        // show arms, 0x08 no base plate.
+        let stand_flags = if kind == EntityModelKind::ArmorStand {
+            session.world.entities.armor_stand_flags(id)
+        } else {
+            0
+        };
+        if stand_flags & 0x01 != 0 {
+            scale_mul *= 0.5;
+            w *= 0.5;
+            h *= 0.5;
+        }
+        let stand_parts = rewo_gpu::mobs::StandParts {
+            arms: stand_flags & 0x04 != 0,
+            base_plate: stand_flags & 0x08 == 0,
+        };
         let (limb_swing, limb_amount) = force_limb.unwrap_or_else(|| e.limb());
         // Gesture + wire-event rigs: pose/state → rig, timed from the observed
         // change; one-shot events (warden attack/sonic boom, armadillo peek)
@@ -2600,6 +2617,7 @@ pub(super) fn collect_entities<'a>(
             gesture,
             events,
             shell,
+            stand_parts,
             allay_dance,
             attack,
             arm_poses,

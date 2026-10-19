@@ -2072,6 +2072,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         gesture: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
+        stand_parts: Default::default(),
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
         mob: rewo_gpu::mobs::MobCombat::default(),

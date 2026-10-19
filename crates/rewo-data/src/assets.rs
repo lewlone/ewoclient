@@ -964,6 +964,8 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("chest_boat", "entity/chest_boat/oak.png", 128, 128),
     ("raft", "entity/boat/bamboo.png", 128, 64),
     ("chest_raft", "entity/chest_boat/bamboo.png", 128, 128),
+    // M238 — the armour stand.
+    ("armor_stand", "entity/armorstand/armorstand.png", 64, 64),
     ("snow_golem", "entity/snow_golem/snow_golem.png", 64, 64),
     ("iron_golem", "entity/iron_golem/iron_golem.png", 128, 128),
     ("allay", "entity/allay/allay.png", 32, 32),

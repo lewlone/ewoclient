@@ -216,6 +216,9 @@ pub(super) struct RenderCheck {
     /// M194 — frames on which the collector built the injected frame's model
     /// and its sword at that position, and no body was drawn for it (r70).
     pub(super) item_frame_frames: usize,
+    /// M238 — r105: frames whose draw list carried both staged armour stands
+    /// as their model with their flags.
+    pub(super) armor_stand_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -956,7 +959,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 104;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 105;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1145,6 +1148,19 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M238 — r105: two armour stands `render_check.py` summons, drawn as
+        // the armour stand model rather than the capsule, with their client
+        // flags decoded from index 15 (kind-gated away from `Mob`'s flags):
+        // a plain one (no arms, a base plate) and one with `ShowArms`,
+        // `NoBasePlate` and an iron helmet on the armour layer.
+        row(
+            "r105 two armour stands drew as the model, one plain and one with arms, no base plate and a helmet",
+            self.armor_stand_frames >= 3,
+            format!(
+                "{} frames carried both stands with their flags",
+                self.armor_stand_frames
             ),
         );
         // M194 — the frame `render_check.py` summons on the real server:

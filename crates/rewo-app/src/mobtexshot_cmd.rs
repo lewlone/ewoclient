@@ -175,9 +175,10 @@ const ITEM_PX: u32 = 16;
 const MIN_GRADED: usize = 82;
 const MIN_DISCRIMINATING: usize = 72;
 /// Kinds too small to grade at 1600x900, measured: fox, tadpole, cod, salmon,
-/// tropical_fish x2, parrot, allay, copper_golem. A tenth means something
-/// stopped drawing.
-const MAX_SMALL: usize = 9;
+/// tropical_fish x2, parrot, allay, copper_golem, and (M238) armor_stand,
+/// whose 2-px sticks draw under the floor (mobshot grades it from three
+/// views). An eleventh means something stopped drawing.
+const MAX_SMALL: usize = 10;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -417,6 +418,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         gesture: None,
         events: [None; rewo_gpu::mobs::ModelEvent::COUNT],
         shell: false,
+        stand_parts: Default::default(),
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
         arm_poses: rewo_gpu::mobs::ArmPoses::EMPTY,

@@ -2060,6 +2060,7 @@ this shape once.
 | M235 (2026-10-19) — a right-click raises the off-hand shield and the server blocks a hit from in front | **r101** | — | — |
 | M236 (2026-10-19) — a real anvil's cost line (red without levels, green with) and rename; a real enchanting table's offers and first row | **r102**, **r103** | — | — |
 | M237 (2026-10-19) — a real brewing stand takes a bottle, wart and powder (shift-clicked) and brews | **r104** | — | — |
+| M238 (2026-10-19) — armour stands draw as their model with their flags (arms, base plate) and worn armour | **r105** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3894,6 +3895,38 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M238 — the armour stand model (2026-10-19)
+
+Armour stands drew as the placeholder capsule. Now `EntityModelKind::
+ArmorStand`, `ArmorStandModel.createBodyLayer` transcribed: the head stick,
+the shoulder bar, the two body sticks, the hip bar, the legs, the arms and
+the 12x12 base plate (`entity/armorstand/armorstand.png`).
+
+- **Its default pose is the parts' rotations** (`ArmorStand.DEFAULT_*_POSE`:
+  arms (−15, 0, 10) / (−10, 0, −10), legs ±1°), on named head / body / arm
+  / leg parts, so the armour layer (`wears_humanoid_armor` now includes the
+  stand) hangs its pieces on them as vanilla's `HumanoidArmorLayer` does.
+- **Its client flags** (`DATA_CLIENT_FLAGS`, index 15 BYTE, the same index a
+  `Mob` uses for its own flags, so routed by kind through
+  `MetaKinds::armor_stand`) reach the draw: 0x04 shows the arms
+  (`Show::StandArms`; a stand placed in survival has none), 0x08 hides the
+  base plate (`Show::StandBasePlate`), 0x01 halves the scale (the small
+  layer is `MeshTransformer.scaling(0.5)`). They live on `MobState`.
+- **The base plate turns back by the stand's yaw** (`basePlate.yRot =
+  -yRot`), so it stays aligned to the world grid: `Anim::CounterBodyYaw`,
+  with the body yaw now in `AnimCtx`.
+
+Recorded: the six synched poses (`DATA_HEAD_POSE` .. `DATA_RIGHT_LEG_POSE`)
+are not read, so a posed stand shows the default pose; the hit wiggle is not
+modelled; the armour stand's armour model is the humanoid one (vanilla's
+`ArmorStandArmorModel` drops the head 1 px and the legs' pivots to 11).
+
+mobshot grades it from three views (pin 258 → 261); mobtexshot's
+too-small-to-grade bucket gains it (its 2-px sticks, 9 → 10). **r105**: two
+stands `render_check.py` summons reach the windowed draw list as the model
+with their own flags off the wire: a plain one (no arms, a base plate) and
+one with `ShowArms`, `NoBasePlate` and an iron helmet on the armour layer.
 
 ### M237 — the brewing stand can be used (2026-10-19)
 

@@ -1182,6 +1182,9 @@ pub struct MobState {
     /// `Mob.DATA_MOB_FLAGS_ID`. Bit 1 no-AI, bit 2 left-handed, bit 4
     /// aggressive.
     pub flags: u8,
+    /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15 BYTE too, a different
+    /// class): 0x01 small, 0x04 show arms, 0x08 no base plate, 0x10 marker.
+    pub stand_flags: u8,
     /// `Raider.isCelebrating()`.
     pub celebrating: bool,
     /// `SpellcasterIllager.DATA_SPELL_CASTING_ID`; `isCastingSpell()` is `> 0`.
@@ -2290,6 +2293,18 @@ impl EntityTable {
     /// Writes handedness through to the main-arm map because
     /// `Mob.getMainArm()` *is* `isLeftHanded()`; there is no separate mob arm
     /// field in vanilla either.
+    /// M238 — `ArmorStand.DATA_CLIENT_FLAGS` (index 15, BYTE). Kind-gated by
+    /// the caller: a `Mob`'s flags share the index.
+    pub fn set_armor_stand_flags(&mut self, id: i32, flags: u8) {
+        self.mob_state.entry(id).or_default().stand_flags = flags;
+    }
+
+    /// The armour stand's client flags, 0 (vanilla's `define` default: big,
+    /// no arms, base plate) when none were sent.
+    pub fn armor_stand_flags(&self, id: i32) -> u8 {
+        self.mob_state.get(&id).map_or(0, |s| s.stand_flags)
+    }
+
     pub fn set_mob_flags(&mut self, id: i32, flags: u8) {
         self.mob_state.entry(id).or_default().flags = flags;
         self.main_arms.insert(
