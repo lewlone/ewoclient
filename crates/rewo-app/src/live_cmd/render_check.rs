@@ -262,8 +262,16 @@ pub(super) struct RenderCheck {
     pub(super) attack_hurt_frames: usize,
     /// M217 — r78: the leaves' position, whether the press happened in
     /// survival, the client ticks from the press to the STOP, and whether the
-    /// server then turned them to air.
+    /// server then removed them.
     pub(super) mine_pos: Option<[i32; 3]>,
+    /// M224 — the first block the client saw in the leaves' place, and the
+    /// client ticks after the press it arrived. Air, or water: r53's flood
+    /// spreads around the spawn, and with a neighbour's fluid tick already
+    /// due the water fills the gap a tick after the break, so on a slow
+    /// frame the air and the water updates land in one frame and the client
+    /// never holds air (three runs in ten). Leaves that are not waterlogged
+    /// cannot hold flowing water, so water there means they are gone.
+    pub(super) mine_changed: Option<(u64, String)>,
     pub(super) mine_survival: bool,
     pub(super) mine_ticks: Option<u64>,
     pub(super) mine_broken: bool,
@@ -1157,7 +1165,7 @@ impl RenderCheck {
             self.mine_survival && self.mine_expected.is_some() && self.mine_ticks == self.mine_expected && self.mine_broken,
             format!(
                 "leaves at {:?}, held {:?}: pressed in survival {}, STOP {:?} ticks after the press (vanilla {:?}), \
-                 server turned it to air {} [{}]{}",
+                 the leaves were gone (air, or the flood's water) {} [{}]{}",
                 self.mine_pos,
                 self.mine_held,
                 self.mine_survival,
@@ -2725,6 +2733,10 @@ impl LiveApp {
                                 }
                                 self.attack_held = true;
                                 self.mining_press();
+                                // The block the machine actually started on
+                                // (the crosshair's raycast), which need not be
+                                // the scanned leaves: r78's failure detail.
+                                let mined = self.mining.target();
                                 self.mine_pressed_tick =
                                     self.session.as_ref().map_or(0, |s| s.ticks);
                                 // The press's own tick has run: the next
@@ -2743,10 +2755,16 @@ impl LiveApp {
                                     Some(n) if n.ends_with("_sword") => 1.5,
                                     _ => 1.0,
                                 };
+                                let waterlogged = self.session.as_ref().is_some_and(|s| {
+                                    let st = s.world.block_state_at(c[0], c[1], c[2]) as usize;
+                                    s.water_states.get(st).copied().unwrap_or(false)
+                                });
                                 let diag = self.session.as_ref().map(|s| {
                                     format!(
-                                        "pressed at {:.3} of the run, on ground {}, eye in water {}, pos ({:.2}, {:.2}, {:.2})",
+                                        "pressed at {:.3} of the run, mining {:?}, waterlogged {}, on ground {}, eye in water {}, pos ({:.2}, {:.2}, {:.2})",
                                         elapsed / limit,
+                                        mined,
+                                        waterlogged,
                                         s.player.on_ground,
                                         s.local_player_view().is_some_and(|v| v.underwater),
                                         s.player.x,
@@ -2800,29 +2818,81 @@ impl LiveApp {
                     self.attack_held = false;
                     self.mine_stage = 3;
                 }
-                if self.mine_stage == 3 {
-                    let broken = self
+                if self.mine_stage == 2 || self.mine_stage == 3 {
+                    let seen = self
                         .check
                         .as_ref()
                         .and_then(|c| c.mine_pos)
                         .zip(self.session.as_ref())
-                        .is_some_and(|([x, y, z], s)| {
-                            self.blocks.block_name(s.world.block_state_at(x, y, z))
-                                == Some("minecraft:air")
+                        .map(|([x, y, z], s)| {
+                            (
+                                s.ticks.saturating_sub(self.mine_pressed_tick),
+                                self.blocks
+                                    .block_name(s.world.block_state_at(x, y, z))
+                                    .unwrap_or("?")
+                                    .to_string(),
+                            )
                         });
+                    if let (Some((t, name)), Some(ch)) = (seen, self.check.as_mut()) {
+                        if ch.mine_changed.is_none() && name != "minecraft:oak_leaves" {
+                            ch.mine_changed = Some((t, name));
+                        }
+                    }
+                }
+                if self.mine_stage == 3 {
+                    let broken = self
+                        .check
+                        .as_ref()
+                        .and_then(|c| c.mine_changed.as_ref())
+                        .is_some_and(|(_, n)| n == "minecraft:air" || n == "minecraft:water");
                     // A STOP the server judges early (`progress >= 0.7` over
                     // ITS elapsed ticks) is finished by its own tick a few
                     // ticks later, so the wait runs past r76's camera move
                     // (which cannot matter: the key is released).
                     if broken || elapsed >= limit * 0.28 {
+                        let pos = self.check.as_ref().and_then(|c| c.mine_pos);
+                        let left = pos.zip(self.session.as_ref()).and_then(|([x, y, z], s)| {
+                            self.blocks.block_name(s.world.block_state_at(x, y, z))
+                        });
                         if let Some(ch) = self.check.as_mut() {
                             ch.mine_broken = broken;
+                            let first = ch.mine_changed.clone();
+                            if let Some(d) = ch.mine_diag.as_mut() {
+                                d.push_str(&format!(
+                                    ", first change {first:?} (ticks after the press), left {left:?}"
+                                ));
+                                log::info!("render-check: r78 broken {broken} [{d}]");
+                            }
                         }
                         self.attack_held = false;
                         if let Some(s) = self.session.as_mut() {
                             let _ = s.send_command("gamemode creative");
+                            // Does the SERVER still have the leaves? (Never
+                            // broken, or broken without the client seeing it.)
+                            if let (false, Some([x, y, z])) = (broken, pos) {
+                                let _ = s.send_command(&format!(
+                                    "execute if block {x} {y} {z} minecraft:oak_leaves"
+                                ));
+                            }
                         }
-                        self.mine_stage = 4;
+                        self.mine_probe_tick = self.session.as_ref().map_or(0, |s| s.ticks);
+                        self.mine_stage = if broken { 6 } else { 5 };
+                    }
+                }
+                if self.mine_stage == 5 {
+                    let now = self.session.as_ref().map_or(0, |s| s.ticks);
+                    let reply = self.session.as_ref().and_then(|s| {
+                        s.chat_log
+                            .iter()
+                            .rev()
+                            .find(|l| l.starts_with("Test passed") || l.starts_with("Test failed"))
+                            .cloned()
+                    });
+                    if reply.is_some() || now >= self.mine_probe_tick + 40 {
+                        if let Some(d) = self.check.as_mut().and_then(|c| c.mine_diag.as_mut()) {
+                            d.push_str(&format!(", server has the leaves: {reply:?}"));
+                        }
+                        self.mine_stage = 6;
                     }
                 }
                 // r83 — M219's bed, in the TAIL (after the timed run, once

@@ -3883,6 +3883,46 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M224 — r78's flake, pinned (2026-10-19)
+
+r78 (survival mining against the server) failed about one run in five
+since M217, always the same way: the client pressed on the staged leaves,
+sent STOP on vanilla's tick, and the leaves "stayed". Pinned by
+instrumenting the witness, one hypothesis at a time, each against a loop of
+render checks that stopped at the first failure:
+
+1. **The crosshair mined a different block** (the scan picks the first
+   leaves, not the nearest): no, the machine's target was the scanned block.
+2. **The server thinks the bot is airborne** (`getDestroySpeed` divides by
+   five, and the delayed destroy then outlasts the deadline): no, the
+   server's `OnGround` was `1b`.
+3. **Does the server still have the leaves?** `execute if block` at the
+   deadline: **"Test failed"**: the server had removed them.
+4. **Waterlogged leaves** (breaking one leaves its water): no, every failing
+   press read `waterlogged false`; yet the block left at the deadline was
+   water in each of the three failures of one ten-run loop.
+
+The cause: r53's waterlogged slab floods the spawn, and the staged leaves
+(two blocks from a spawn that moves with each fresh world) are sometimes at
+the flood's edge. With a neighbour's fluid tick already due, the water fills
+the gap a tick after the break; the debug build's slow frames drain both
+block updates in one frame, so the client never holds air. The client was
+right; r78 graded air when the property is "the leaves are gone".
+
+**Fix:** r78 records the first block it sees in the leaves' place (and when)
+and passes on air or water (unwaterlogged leaves cannot hold flowing water,
+so water there means they are gone). The press's waterlogged state, the
+mined target, the first change and, on a failure, the server's own answer
+stay in the failure detail. Ten consecutive runs after the fix: 88/88 each,
+one of them with the water case (first change water, 6 ticks after the
+press).
+
+**Also fixed, same class:** r20 (a container's panel is its own) kept the
+FIRST container panel of the run; r76's villager, a 166-tall merchant
+screen, sometimes opened before the chest injected at 0.4, and r20 failed
+twice in the 23 pre-fix runs reading 166. It now takes the first panel after the
+chest's injection.
+
 ### M223 — the boat model (2026-10-19)
 
 Boats drew as the placeholder capsule; M221 had to hide the ridden one

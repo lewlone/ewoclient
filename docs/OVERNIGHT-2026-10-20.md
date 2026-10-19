@@ -112,6 +112,12 @@ released.
   bamboo raft, and the chest versions), instead of a placeholder blob.
   Sitting in one shows the hull around you. The paddles don't row yet, and
   water can show inside a floating boat (vanilla masks it out; not done).
+- **M224**: the mining check that failed about one run in five is fixed, and
+  the client was not at fault. The spawn's flood water sometimes reaches the
+  test's leaves, so after the client breaks them the hole fills with water
+  within a tick, and the check only accepted air. Found by asking the server
+  directly. Ten runs in a row are clean now. A second flaky check (r20) had
+  the same kind of mistake and is fixed too.
 - Nothing needs a decision from you yet.
 
 ## What changed
@@ -164,6 +170,7 @@ released.
 | `7517ce5` | This summary through M219. |
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
+| *(M224)* | **M224** — r78's flake pinned (the flood's water fills the broken leaves within a tick; the witness graded air, the property is "gone") and fixed; r20 takes the first panel after its chest's injection, not r76's merchant screen. Render check 10/10 consecutive runs. |
 | `326b70d` | **M223** — the boat model: `BoatModel`, `RaftModel` and their chest variants for the twenty boat types, with the wood picked by type name; the entity atlas grown to 2112 rows for the eight wood sheets. |
 | `7ddc07e` | **M222** — horse steering: `physics::Body` and `tick_ridden` (`travelRidden`, `executeRidersJump`), the steered horse in the session with its own attributes, the jump meter's release as `onPlayerJump`; the render check's injected horse held still, r63 at its staged witness, r72's jump level and r16's ratio limited to the timed run; render-check **r88**. |
 | `26559a9` | **M219** — sleeping: `SLEEPING_POS_ID` (index 14) decoded for the local player, moved onto the bed, immobile while asleep; `InBedChatScreen` (Leave Bed button, Esc wakes, `closeOnSubmit` false) driven by `Gui.tick`'s rule; render-check **r83**. |
@@ -274,7 +281,8 @@ released.
 24. **M220 moved r83 into a new render-check tail** (after the timed 8 s,
    now capped at 15 s more). Its first home before the options pages kept
    missing its 0.11 deadline on slower runs. (It was also suspected of causing
-   r78's flakes; r78 failed again later without it, so that was wrong.) The
+   r78's flakes; r78 failed again later without it, so that was wrong; M224
+   found the real cause.) The
    tail costs about 9 s per run and holds r83-r88.
 25. **The horse screen's window stays empty** instead of showing the mount
    (vanilla draws it there, following the mouse). Building a single entity's
@@ -347,6 +355,10 @@ released.
 - After M223: **4,308 tests, 0 failed; gates 51/51** (demo hash
   unchanged); render check **88/88** with an in-boat F2 capture looked at;
   clippy (gates and default features) and `cargo fmt --check` clean.
+- After M224: render check **88/88 on ten consecutive runs** (no witness
+  failed in any of them); clippy (gates and default features) and
+  `cargo fmt --check` clean; `rewo-app` tests pass. In the 23 runs of the
+  loops before the fix, r78 failed six times and r20 twice.
 - M205's load test is a scratch script, not a gate (it needs a 3 GB
   server and minutes of world generation): a normal world, seed 20261018,
   render distance 16, 75 s. Before: `276 columns, 197 deferred` at 94% of
@@ -377,12 +389,10 @@ released.
   horse inventory~~ (M220), ~~steering boats~~ (M221), ~~steering horses~~
   (M222); still open: camels (their own dash and riding speed) and the
   nautilus (a water mount).
-- r78 (survival mining against the server) has failed three times in about
-  fifteen runs, in different positions, with the client's tick count right:
-  the server leaves the leaves standing until r78's 0.28 deadline. The
-  bed-teleport explanation in decision 24 did not hold (it failed again with
-  r83 moved to the tail). Unexplained; its message now prints the client's
-  state at the press.
+- ~~r78's survival-mining flake~~ (M224: the witness, not the client).
+- `tools/render_check.py`'s port probe lost a race once ("server FAILED TO
+  BIND"): it picks a free port, then the server binds it later. A retry on
+  that message would remove the one non-Rewo failure seen in the loops.
 - ~~A boat model~~ (M223). Still open on boats: the rowing animation, the
   hurt wobble, and the water mask (water can show inside a floating hull).
 - `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once

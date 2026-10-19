@@ -63,6 +63,10 @@ a self-check path.
   immobile and every timed slot already holds a screen or a key. Witnesses
   that click an entity check what the production pick hit first (r71's item
   frame and r72's horse each took a click meant for something else).
+  r53's waterlogged slab floods the spawn: a block a witness removes near it
+  can turn straight to water (r78's flake, M224), so grade "gone", not "air".
+  A witness that keeps the first sighting of a shared value (r20's panel)
+  must start looking after its own staging, not at the run's start.
   `REWO_RC_CAPTURE_AT=<fraction>` and `REWO_RC_CAPTURE_MOUNT` (gates knobs)
   save one F2 capture into the staged game directory for a person to look at
   (`render_check.py --keep`); a capture found M220's preview bug.

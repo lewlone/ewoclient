@@ -1199,13 +1199,18 @@ impl LiveApp {
                 #[cfg(feature = "gates")]
                 if let Some(h) = state.world_renderer.container_panel_height() {
                     let forced = self.screen_forced_open;
+                    let chest_injected = self.container_injected;
                     if let Some(c) = self.check.as_mut() {
                         c.container_frames += 1;
                         // FIRST sighting, not the last: M92 injects a
                         // second container late (a brewing stand, 166 tall
                         // like the player's), and r20's question is about the
-                        // chest that proved the panel builder runs.
-                        c.container_panel_h.get_or_insert(h);
+                        // chest that proved the panel builder runs. M224:
+                        // and only once the chest is in — r76's villager
+                        // (a 166-tall merchant screen) can open before 0.4.
+                        if chest_injected {
+                            c.container_panel_h.get_or_insert(h);
+                        }
                         c.container_overlays_max = c
                             .container_overlays_max
                             .max(state.world_renderer.container_panel_overlays());

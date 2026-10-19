@@ -782,11 +782,15 @@ struct LiveApp {
     #[cfg(feature = "gates")]
     trade_stage: u8,
     /// r78's stage (M217): 0 waiting, 1 survival asked, 2 pressed, 3 stopped,
-    /// 4 creative asked; and the client tick of the press.
+    /// 4 creative asked (5 asking the server about the leaves, 6 done); and
+    /// the client tick of the press.
     #[cfg(feature = "gates")]
     mine_stage: u8,
     #[cfg(feature = "gates")]
     mine_pressed_tick: u64,
+    /// The tick r78 asked the server about its leaves (stage 5).
+    #[cfg(feature = "gates")]
+    mine_probe_tick: u64,
     /// r79-r82's stage (M218) and the frame it entered its current stage.
     #[cfg(feature = "gates")]
     hands_stage: u8,
@@ -1137,6 +1141,8 @@ fn run_windowed(
         mine_stage: 0,
         #[cfg(feature = "gates")]
         mine_pressed_tick: 0,
+        #[cfg(feature = "gates")]
+        mine_probe_tick: 0,
         #[cfg(feature = "gates")]
         hands_stage: 0,
         #[cfg(feature = "gates")]
