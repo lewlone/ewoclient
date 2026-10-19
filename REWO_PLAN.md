@@ -2055,6 +2055,7 @@ this shape once.
 | M230 (2026-10-19) — a floor lever and a stone button are targeted (outline shapes) and pressed while holding food, and nothing is eaten | **r95** | — | — |
 | M231 (2026-10-19) — walking while eating goes at a fifth of the walking speed (`itemUseSpeedMultiplier`) | **r96** | — | — |
 | M232 (2026-10-19) — a real crafting table crafts and a real furnace lights, cooks and gives up its result, in survival (and what was taken reaches the player inventory) | **r97**, **r98** | — | — |
+| M233 (2026-10-19) — drawing a bow narrows the frame's FOV to 0.85 of the standing FOV (vanilla's dynamic FOV) | **r99** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3889,6 +3890,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M233 — the dynamic field of view (2026-10-19)
+
+Rewo drew every frame at the option's FOV. Vanilla's `Camera.tickFov` eases
+a modifier halfway each tick towards `AbstractClientPlayer.
+getFieldOfViewModifier` (flying ×1.1; the movement-speed attribute, sprint
+modifier included, over `Abilities.walkingSpeed`, averaged with 1; a drawn
+bow ×(1 − min(t/20, 1)²·0.15); a spyglass in first person 0.1 outright;
+then lerped by `fovEffectScale`), clamped to [0.1, 1.5], and
+`calculateFov` multiplies the option by it lerped across the partial tick,
+then `modifyFovBasedOnDeathOrFluid` narrows an eye in water by 6/7.
+Sprinting is a 15% wider view, so its absence was visible all the time.
+
+- `rewo_world::fov`: the modifier, the easing and the death/fluid step, unit
+  tested against the decompile's literals. The camera ticks before the
+  player (`Minecraft.tick` runs `gameRenderer.tick()` before
+  `level.tickEntities()`), so `PlaySession::tick_fov` runs at the top of the
+  tick. `Abilities::walking_speed` finally has its one reader.
+- The windowed frame and the headless render both go through
+  `PlaySession::fov_degrees`, after the modules' FOV and zoom.
+- Recorded: the modifier starts at 1.0 (vanilla's field starts at 0 and
+  opens out over the first ticks); `fovEffectScale` is its default 1.0 (no
+  slider yet); lava at the eye and the local death zoom are not applied (no
+  lava table, no local `deathTime`); only the first-person camera exists.
+
+**r99**: standing still with a bow, then 40 ticks drawing it in survival;
+the FOV the frame was projected with went from 77.000 to 65.450, a ratio of
+0.8500 (the bot's Speed I makes the standing value 70 × 1.1).
 
 ### M232 — crafting tables and furnaces, end to end (2026-10-19)
 

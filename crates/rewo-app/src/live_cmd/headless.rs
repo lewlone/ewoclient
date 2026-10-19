@@ -854,13 +854,17 @@ pub(super) fn run_headless(
         ),
         survival,
     );
+    // M233 — the same dynamic FOV the windowed frame uses.
+    let fov = session
+        .fov_degrees(crate::modules::VANILLA_FOV, 1.0)
+        .clamp(1.0, 179.0);
     {
         let scale = rewo_gpu::hud::gui_scale(1280.0, 720.0);
         world_renderer.set_locator_bar(resolve_locator_bar(
             &session,
             &session.world.entities,
             &locator_styles,
-            crate::modules::VANILLA_FOV,
+            fov,
             (1280.0 / scale) as i32,
             (720.0 / scale) as i32,
             0.0,
@@ -882,7 +886,7 @@ pub(super) fn run_headless(
     headless_text.extend(headless_screen_labels);
     world_renderer.set_text(headless_text);
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
-    let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0, crate::modules::VANILLA_FOV);
+    let vp = eye_view_proj(eye, yaw, pitch, 1280.0 / 720.0, fov);
     let ring = OverlayRing::default();
     let draw = OverlayDraw {
         samples_ms: &ring.data,

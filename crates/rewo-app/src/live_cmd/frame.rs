@@ -2217,7 +2217,17 @@ impl LiveApp {
         // defaults off, so an unconfigured client produces exactly the
         // constants this path used before -- which is what keeps the golden
         // PNGs byte-identical.
-        let render_modules = self.modules.render();
+        let mut render_modules = self.modules.render();
+        // M233 — vanilla's dynamic FOV (sprint, speed, flying, a drawn bow,
+        // the spyglass, water at the eye) multiplies the option the modules
+        // resolved; everything below reads the one result.
+        render_modules.fov_degrees = session
+            .fov_degrees(render_modules.fov_degrees, alpha)
+            .clamp(1.0, 179.0);
+        #[cfg(feature = "gates")]
+        {
+            self.last_frame_fov = render_modules.fov_degrees;
+        }
         // M83's locator bar. After `render_modules` because its bearing window
         // is measured against the same FOV the frame is projected through --
         // the Zoom module divides it, and a dot must not drift out of a strip

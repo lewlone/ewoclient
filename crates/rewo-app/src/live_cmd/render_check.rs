@@ -439,6 +439,10 @@ pub(super) struct RenderCheck {
     pub(super) furnace_opened: bool,
     pub(super) furnace_data: Option<(i16, i16)>,
     pub(super) furnace_taken: i32,
+    /// M233 — r99: the frame's FOV (standing, after 40 ticks drawing a bow)
+    /// and whether the bow was still being drawn at the second reading.
+    pub(super) bow_fov: (f32, f32),
+    pub(super) bow_drawing: bool,
     /// Frames, and inventory-screen frames, inside the timed run (r16).
     pub(super) timed_frames: u64,
     pub(super) timed_screen_frames: u64,
@@ -924,7 +928,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 98;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 99;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1619,6 +1623,21 @@ impl RenderCheck {
             format!(
                 "snowball entity {}, bobber cast {}, reeled in {}{uskip}",
                 self.snowball_seen, self.bobber_seen, self.bobber_gone
+            ),
+        );
+        // M233 — r99: vanilla's dynamic FOV, read from the FOV the frame was
+        // projected with: a drawn bow multiplies the modifier by
+        // `1 - min(t / 20, 1)² · 0.15`, so after 40 ticks the ratio to the
+        // standing FOV is 0.85 whatever the speed term (the bot carries
+        // Speed I, so both readings are above 70).
+        let (still, drawn) = self.bow_fov;
+        let bow_ratio = if still > 0.0 { drawn / still } else { 0.0 };
+        row(
+            "r99 drawing a bow narrowed the frame's FOV to 0.85 of the standing FOV (vanilla's getFieldOfViewModifier)",
+            self.bow_drawing && (bow_ratio - 0.85).abs() < 0.002,
+            format!(
+                "standing {still:.3} degrees, drawing {drawn:.3}, ratio {bow_ratio:.4} (vanilla 0.85), still drawing {}",
+                self.bow_drawing
             ),
         );
         // M232 — r97: a real crafting table, in survival: a right-click opens
@@ -3041,6 +3060,39 @@ impl LiveApp {
                 if let Some(c) = self.check.as_mut() {
                     c.furnace_taken = ingots;
                 }
+                // r99 next: a bow and arrows, looking level, standing still.
+                cmd(
+                    self,
+                    "item replace entity @s weapon.mainhand with minecraft:bow 1",
+                );
+                cmd(self, "give @s minecraft:arrow 4");
+                if let Some(s) = self.session.as_mut() {
+                    s.player.pitch = 0.0;
+                }
+                self.use_tick0 = now;
+                self.use_stage = 50;
+            }
+            // r99 — the bow's FOV: the frame's FOV standing still, then after
+            // 40 ticks of drawing (the narrowing is full at 20 and the eased
+            // modifier settles within a few more).
+            50 if now >= self.use_tick0 + 30 => {
+                if let Some(c) = self.check.as_mut() {
+                    c.bow_fov.0 = self.last_frame_fov;
+                }
+                self.use_key_press();
+                self.use_tick0 = now;
+                self.use_stage = 51;
+            }
+            51 if now >= self.use_tick0 + 40 => {
+                let drawing = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.local_use_state().using);
+                if let Some(c) = self.check.as_mut() {
+                    c.bow_fov.1 = self.last_frame_fov;
+                    c.bow_drawing = drawing;
+                }
+                self.use_down = false;
                 self.use_stage = 60;
             }
             60 => {

@@ -128,9 +128,8 @@ impl Abilities {
     /// `Abilities.getWalkingSpeed`.
     ///
     /// **Not the client's walk speed** — see the module note. It is the FOV
-    /// modifier's divisor. Rewo has no FOV modifier, so nothing reads this yet;
-    /// it is stored because the packet carries it and dropping a decoded field
-    /// is how a later reader ends up re-deriving it wrongly.
+    /// modifier's divisor, and that is its one reader here too
+    /// (`PlaySession::tick_fov`, M233).
     pub fn walking_speed(&self) -> f32 {
         self.walking_speed
     }

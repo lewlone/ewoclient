@@ -76,7 +76,7 @@ pub const AIR_SPEED_SPRINT: f64 = 0.025999999f32 as f64;
 /// `LivingEntity.MIN_MOVEMENT_DISTANCE`.
 const MIN_MOVEMENT_DISTANCE: f64 = 0.003;
 /// `AttributeModifier` `SPEED_MODIFIER_SPRINTING`: `ADD_MULTIPLIED_TOTAL 0.3`.
-const SPRINT_MODIFIER: f64 = 0.3;
+pub const SPRINT_MODIFIER: f64 = 0.3;
 /// `Entity.getFluidJumpThreshold()` for an eye height ≥ 0.4.
 const FLUID_JUMP_THRESHOLD: f64 = 0.4;
 pub(crate) const EPS: f64 = 1.0e-7;

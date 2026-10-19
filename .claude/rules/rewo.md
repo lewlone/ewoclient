@@ -152,6 +152,11 @@ a self-check path.
   `PlaySession::mirror_open_container_inventory` copies an open container's
   last 36 slots back every tick and before any close (M232). Anything that
   reads the player inventory while a container is open sees it a tick late.
+- **The frame's FOV is vanilla's dynamic FOV** (M233,
+  `PlaySession::fov_degrees`, `rewo_world::fov`): the option times the
+  eased `getFieldOfViewModifier` (sprint, speed, flying, a drawn bow, the
+  spyglass) and water at the eye. The render-check bot carries Speed I, so
+  its standing FOV is 77, not 70: never project a witness with a constant.
 - **One accessor per concept.** When two call sites each compute "which menu",
   "which origin" or "which conversion", they drift (M89, M106b, M112, M151).
 - **The M-numbers aren't a contiguous index** (M52, M61, M64, M66, M68 each

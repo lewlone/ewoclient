@@ -512,6 +512,10 @@ pub struct MotionStats {
 pub const INBOUND_QUEUE_FRAMES: usize = 4096;
 pub use inbound::INBOUND_QUEUE_BYTES;
 
+/// M233 — `options.fovEffectScale()`, at its default: Rewo has no slider for
+/// it yet.
+const FOV_EFFECT_SCALE: f32 = 1.0;
+
 /// How much inbound work one [`PlaySession::pump`] (or the drain inside
 /// [`PlaySession::tick`]) may do before yielding, so a backlog is spread over
 /// frames instead of hitching one.
@@ -1012,6 +1016,10 @@ pub struct PlaySession {
     /// M231 — `(item id, can_sprint, speed_multiplier)` for the items whose
     /// `use_effects` differ from `UseEffects.DEFAULT` (the spears).
     use_effects: Vec<(i32, bool, f32)>,
+    /// M233 — `Camera.fovModifier`, ticked at the top of [`Self::tick`], and
+    /// the bow and spyglass item ids its target reads.
+    fov: rewo_world::fov::FovModifier,
+    fov_items: (Option<i32>, Option<i32>),
     /// The block and item registries [`Self::send_command`]'s parse resolves
     /// `block_state` / `block_predicate` / `item_*` arguments against, as
     /// vanilla's tree is built with `CommandBuildContext.simple(registryAccess,
@@ -1899,6 +1907,10 @@ impl<'a> Connection<'a> {
             .iter()
             .filter_map(|(name, sprint, f)| Some((self.data.items.id(name)?, *sprint, *f)))
             .collect();
+        let fov_items = (
+            self.data.items.id("minecraft:bow"),
+            self.data.items.id("minecraft:spyglass"),
+        );
         let command_registries = CommandRegistries {
             blocks: Some(std::sync::Arc::new(self.data.blocks.clone())),
             items: Some(std::sync::Arc::new(self.data.items.clone())),
@@ -2048,6 +2060,8 @@ impl<'a> Connection<'a> {
             prev_rider_keys: TickInput::default(),
             glider_items,
             use_effects,
+            fov: rewo_world::fov::FovModifier::default(),
+            fov_items,
             command_registries,
             ambient_underwater: Default::default(),
             ambient_bubble: Default::default(),
@@ -2605,6 +2619,9 @@ impl PlaySession {
             return Ok(());
         }
         self.tick_chat_key()?;
+        // M233 — `GameRenderer.tick` (the camera) runs before
+        // `level.tickEntities`, so the FOV target is last tick's state.
+        self.tick_fov();
         // `ClientLevel.tickTime`: once the level exists, every running client
         // tick bumps the game time by one and ticks the world clock against it.
         // This is what advances the day/night cycle smoothly between the
@@ -2976,6 +2993,65 @@ impl PlaySession {
         self.prev_rider_keys = *input;
         self.ticks += 1;
         Ok(())
+    }
+
+    /// M233 — `Camera.tickFov` with `getFieldOfViewModifier`'s inputs: the
+    /// movement-speed attribute with the sprint modifier while sprinting
+    /// (`getAttributeValue` sees it; [`crate::attributes::move_attributes`]
+    /// strips it for the physics, which re-applies it), and the used item.
+    fn tick_fov(&mut self) {
+        let speed = match self.attribute_registry.as_deref() {
+            Some(reg) => {
+                crate::attributes::move_attributes(reg, &self.local_attributes).movement_speed
+            }
+            None => physics::MoveAttributes::default().movement_speed,
+        };
+        let speed = if self.was_sprinting {
+            speed * (1.0 + physics::SPRINT_MODIFIER)
+        } else {
+            speed
+        };
+        let state = self.local_use_state();
+        let using = match state.item_id {
+            Some(id) if state.using && Some(id) == self.fov_items.0 => {
+                rewo_world::fov::UsedItem::Bow {
+                    ticks: state.ticks_using_item(),
+                }
+            }
+            Some(id) if state.using && Some(id) == self.fov_items.1 => {
+                rewo_world::fov::UsedItem::Spyglass
+            }
+            _ => rewo_world::fov::UsedItem::Other,
+        };
+        let target = rewo_world::fov::field_of_view_modifier(&rewo_world::fov::FovInputs {
+            flying: self.abilities.flying,
+            walking_speed: self.abilities.walking_speed(),
+            movement_speed: speed,
+            using,
+            // Rewo has only the first-person camera.
+            first_person: true,
+            effect_scale: FOV_EFFECT_SCALE,
+        });
+        self.fov.tick(target);
+    }
+
+    /// M233 — `Camera.calculateFov`: `base` (the FOV option, after the zoom
+    /// module) times the eased modifier at `partial`, then
+    /// `modifyFovBasedOnDeathOrFluid` (water at the eye; see
+    /// [`rewo_world::fov`] for what is not modelled).
+    pub fn fov_degrees(&self, base: f32, partial: f32) -> f32 {
+        let underwater = self.local_player_view().is_some_and(|v| v.underwater);
+        rewo_world::fov::death_or_fluid(
+            base * self.fov.at(partial),
+            None,
+            underwater,
+            FOV_EFFECT_SCALE,
+        )
+    }
+
+    /// M233 — the eased FOV modifier at `partial` (a witness reads it).
+    pub fn fov_modifier(&self, partial: f32) -> f32 {
+        self.fov.at(partial)
     }
 
     /// M231 — `isUsingItem()`'s speed multiplier (`None` when not using) and

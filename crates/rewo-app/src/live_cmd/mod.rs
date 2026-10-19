@@ -901,6 +901,9 @@ struct LiveApp {
     /// r96's position mark (position, tick) for a tick's step.
     #[cfg(feature = "gates")]
     walk_mark: Option<([f64; 3], u64)>,
+    /// M233 — the FOV the last frame was projected with (r99).
+    #[cfg(feature = "gates")]
+    last_frame_fov: f32,
     /// Whether r69's off-hand map and r70's item frame have been injected.
     #[cfg(feature = "gates")]
     frames_injected: bool,
@@ -1293,6 +1296,8 @@ fn run_windowed(
         use_tick0: 0,
         #[cfg(feature = "gates")]
         walk_mark: None,
+        #[cfg(feature = "gates")]
+        last_frame_fov: 0.0,
         #[cfg(feature = "gates")]
         frames_injected: false,
         book: None,
