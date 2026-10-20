@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 27;
+const EXPECTED_WITNESSES: usize = 28;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2049,6 +2049,97 @@ fn run_check(
             "{chest_px} px added by the chests (want >= 150); first colour the donkey \
              sheet cannot produce: {:?}",
             chest_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m28 — M297: a llama's chests and carpet. Unchested, the bare llama
+    // draws no chest (Rewo drew them on every llama until M297); chested,
+    // they add pixels from the llama's own sheet; a red carpet
+    // (`LLAMA_BODY`'s layer over the 0.5 decor shell) adds pixels from the
+    // jar's `llama_body/red` alone.
+    const CARPET: &str = "llama_body/red";
+    let sheet_of = |key: &str, mob: bool| -> HashSet<u32> {
+        if mob {
+            baked
+                .mob_textures
+                .iter()
+                .find(|t| t.key == key)
+                .map(|t| producible(&t.rgba))
+                .unwrap_or_default()
+        } else {
+            baked
+                .equipment
+                .textures
+                .iter()
+                .find(|t| t.key == key)
+                .map(|t| producible(&t.rgba))
+                .unwrap_or_default()
+        }
+    };
+    let (llama_sheet, carpet_sheet) = (sheet_of("llama", true), sheet_of(CARPET, false));
+    let mut lst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.6, 1.9, 0.9),
+        Vec3::new(0.0, 1.1, 0.0),
+    )?;
+    let carpet_resident = lst
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(CARPET));
+    let mut lshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        lst.wr.set_entities(&[d], lst.right, lst.up, 0.0);
+        lst.off.render(gpu, Some((&mut lst.wr, lst.vp)), &ov, BG)?;
+        lst.off.read_rgba(gpu)
+    };
+    let mut clayers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    clayers[0] = Some((CARPET, [1.0, 1.0, 1.0]));
+    let l_bare = lshot(neutral_draw(EntityModelKind::Llama))?;
+    let l_chested = lshot(EntityDraw {
+        chested: true,
+        ..neutral_draw(EntityModelKind::Llama)
+    })?;
+    let l_carpet = lshot(EntityDraw {
+        body_armor: Some(rewo_gpu::entities::ArmorPiece {
+            layers: clayers,
+            ..Default::default()
+        }),
+        ..neutral_draw(EntityModelKind::Llama)
+    })?;
+    lst.destroy(gpu);
+    let added = |a: &[u8], b: &[u8], sheet: &HashSet<u32>| {
+        let (mut n, mut bad) = (0usize, None);
+        for (x, y) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
+            if x[..3] == y[..3] {
+                continue;
+            }
+            n += 1;
+            let c = pack(x[0], x[1], x[2]);
+            if bad.is_none() && !explains(sheet, c) {
+                bad = Some(c);
+            }
+        }
+        (n, bad)
+    };
+    let (chest_n, chest_bad) = added(&l_chested, &l_bare, &llama_sheet);
+    let (carpet_n, carpet_bad) = added(&l_carpet, &l_bare, &carpet_sheet);
+    w.push(wit(
+        "m28.a_llama_shows_its_chests_only_chested_and_its_carpet",
+        carpet_resident
+            && !llama_sheet.is_empty()
+            && !carpet_sheet.is_empty()
+            && chest_n >= 150
+            && chest_bad.is_none()
+            && carpet_n >= 300
+            && carpet_bad.is_none(),
+        format!(
+            "chests add {chest_n} px (want >= 150), first colour the llama sheet cannot \
+             produce {:?}; {CARPET} resident {carpet_resident}, the carpet adds {carpet_n} px \
+             (want >= 300), first colour its sheet cannot produce {:?}",
+            chest_bad.map(|c| format!("#{c:06x}")),
+            carpet_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

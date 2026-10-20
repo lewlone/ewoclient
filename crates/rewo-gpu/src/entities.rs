@@ -577,7 +577,13 @@ const ATLAS_W: u32 = 1024;
 /// M246 grew it by the large-item band (256 rows at the very bottom, under
 /// the map band, which is now anchored to it): M48's recipe, so every
 /// earlier address is unchanged.
-const ATLAS_H: u32 = 2368;
+///
+/// M297 is M64's and M223's case once more: the eighteen 128 x 64 llama
+/// decor sheets (with M294-M295's twelve 64 x 64 horse ones) filled the
+/// shelf region, and three mob variants (two chest boats, the wither's
+/// invulnerable sheet) stopped packing, so it grew by 256 rows and the pools
+/// below slid down with `ATLAS_H`.
+const ATLAS_H: u32 = 2624;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -725,7 +731,7 @@ const SKIN_SLOT: u32 = 64;
 const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
 const SKIN_POOL_ROWS: u32 = 2;
 const SKIN_SLOTS: u32 = SKIN_POOL_COLS * SKIN_POOL_ROWS; // 32
-const SKIN_POOL_Y: u32 = TRIM_POOL_Y - SKIN_POOL_ROWS * SKIN_SLOT; // 1152
+const SKIN_POOL_Y: u32 = TRIM_POOL_Y - SKIN_POOL_ROWS * SKIN_SLOT; // 1920
 
 // -- the trim pool (M48) ------------------------------------------------------
 //
@@ -742,7 +748,7 @@ const TRIM_SLOT_H: u32 = 32;
 const TRIM_POOL_COLS: u32 = ATLAS_W / TRIM_SLOT_W; // 16
 const TRIM_POOL_ROWS: u32 = 4;
 const TRIM_SLOTS: u32 = TRIM_POOL_COLS * TRIM_POOL_ROWS; // 64
-const TRIM_POOL_Y: u32 = CAPE_POOL_Y - TRIM_POOL_ROWS * TRIM_SLOT_H; // 1280
+const TRIM_POOL_Y: u32 = CAPE_POOL_Y - TRIM_POOL_ROWS * TRIM_SLOT_H; // 2048
 
 fn trim_slot_origin(slot: u32) -> (u32, u32) {
     (
@@ -771,7 +777,7 @@ const CAPE_SLOT_H: u32 = 32;
 const CAPE_POOL_COLS: u32 = ATLAS_W / CAPE_SLOT_W; // 16
 const CAPE_POOL_ROWS: u32 = 2;
 const CAPE_SLOTS: u32 = CAPE_POOL_COLS * CAPE_POOL_ROWS; // 32
-const CAPE_POOL_Y: u32 = MAP_POOL_Y - CAPE_POOL_ROWS * CAPE_SLOT_H; // 1536
+const CAPE_POOL_Y: u32 = MAP_POOL_Y - CAPE_POOL_ROWS * CAPE_SLOT_H; // 2176
 
 // -- the framed-map band (M194) -----------------------------------------------
 //
@@ -787,7 +793,7 @@ const MAP_SLOT: u32 = 128;
 const MAP_POOL_COLS: u32 = ATLAS_W / MAP_SLOT; // 8
 /// The last cell is the decoration sprites.
 const MAP_SLOTS: u32 = MAP_POOL_COLS - 1; // 7
-const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 1984
+const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 2240
 
 /// M246 — the large held-item pool: 64×64 slots for the textures the 16×16
 /// item pool cannot hold. Every block-entity model (a chest's 64×64 sheet, a
@@ -801,7 +807,7 @@ const BIG_SLOT: u32 = 64;
 const BIG_POOL_COLS: u32 = ATLAS_W / BIG_SLOT; // 16
 const BIG_POOL_ROWS: u32 = 4;
 const BIG_SLOTS: u32 = BIG_POOL_COLS * BIG_POOL_ROWS; // 64
-const BIG_POOL_Y: u32 = ATLAS_H - BIG_POOL_ROWS * BIG_SLOT; // 2112
+const BIG_POOL_Y: u32 = ATLAS_H - BIG_POOL_ROWS * BIG_SLOT; // 2368
 
 /// The large-item band's geometry, for the gate: `(atlas w, atlas h, slot,
 /// slots, band y)`.
@@ -875,7 +881,7 @@ const ITEM_SLOT: u32 = 16;
 const ITEM_POOL_COLS: u32 = ATLAS_W / ITEM_SLOT; // 64
 const ITEM_POOL_ROWS: u32 = 16;
 const ITEM_SLOTS: u32 = ITEM_POOL_COLS * ITEM_POOL_ROWS; // 1024
-const ITEM_POOL_Y: u32 = SKIN_POOL_Y - ITEM_POOL_ROWS * ITEM_SLOT; // 896
+const ITEM_POOL_Y: u32 = SKIN_POOL_Y - ITEM_POOL_ROWS * ITEM_SLOT; // 1664
 
 /// Atlas origin of dynamic skin slot `i` (0..SKIN_SLOTS).
 fn skin_slot_origin(i: u32) -> (u32, u32) {
@@ -1727,6 +1733,8 @@ impl EntityPass {
                 EntityModelKind::SkeletonHorse | EntityModelKind::ZombieHorse => {
                     Some(mobs::undead_horse_armor())
                 }
+                // M297 — the llamas' decor shell (`LLAMA_DECOR`).
+                EntityModelKind::Llama | EntityModelKind::TraderLlama => Some(mobs::llama_decor()),
                 _ => None,
             }
             .filter(|shell| !debug_tex && shell.parts.len() == m.parts.len())
@@ -1972,6 +1980,7 @@ impl EntityPass {
                     .filter(|(k, _)| {
                         k.starts_with("humanoid")
                             || k.starts_with("horse_body/")
+                            || k.starts_with("llama_body/")
                             || k.split('/').next().is_some_and(|d| d.ends_with("_saddle"))
                     })
                     .map(|(k, v)| ((*k).to_string(), *v))
@@ -3774,6 +3783,11 @@ impl EntityPass {
                     continue;
                 };
                 for q in shell.clone() {
+                    // M297 — a shell keeps the base model's parts, so the
+                    // decor's chests follow `hasChest` as the body's do.
+                    if model.parts[q.part as usize].show == mobs::Show::Chested && !d.chested {
+                        continue;
+                    }
                     if verts.len() + 6 > MAX_VERTS {
                         return;
                     }
@@ -8336,6 +8350,23 @@ mod tests {
                 assert!((a[i] - b[i]).abs() < 1e-5, "{a:?} vs {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_pool_origins_are_what_their_comments_say() {
+        // M297 — the bands below the shelf region, anchored to `ATLAS_H`
+        // (the trailing comments on them had drifted from these before M297).
+        assert_eq!(
+            [
+                ITEM_POOL_Y,
+                SKIN_POOL_Y,
+                TRIM_POOL_Y,
+                CAPE_POOL_Y,
+                MAP_POOL_Y,
+                BIG_POOL_Y
+            ],
+            [1664, 1920, 2048, 2176, 2240, 2368]
+        );
     }
 
     #[test]

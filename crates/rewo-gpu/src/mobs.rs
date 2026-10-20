@@ -7377,40 +7377,60 @@ fn camel() -> Model {
 }
 
 /// `LlamaModel`: tall neck + eared head, rotated body, side chest boxes
-/// (transparent on unchested skins), straight legs.
+/// (M297: shown only with `hasChest`, as `setupAnim` does), straight legs.
 fn llama() -> Model {
+    llama_with(0.0)
+}
+
+/// M297 — `ModelLayers.LLAMA_DECOR`: `LlamaModel.createBodyLayer(new
+/// CubeDeformation(0.5F))`, the carpet's (and the trader llama's blanket's)
+/// shell, `LLAMA_BODY`'s equipment layer. The same parts as [`llama`].
+pub fn llama_decor() -> Model {
+    llama_with(0.5)
+}
+
+/// `LlamaModel.createBodyLayer(g)`: `g` on every box.
+fn llama_with(g: f32) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 7.0, -6.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_f(
         head,
         0,
         (0.0, 0.0),
         [-2.0, -14.0, -10.0],
         [4.0, 4.0, 9.0],
+        g,
+        false,
         NONE,
     );
-    b.cube(
+    b.cube_f(
         head,
         0,
         (0.0, 14.0),
         [-4.0, -16.0, -6.0],
         [8.0, 18.0, 6.0],
+        g,
+        false,
         NONE,
     );
-    b.cube(
+    b.cube_f(
         head,
         0,
         (17.0, 0.0),
         [-4.0, -19.0, -4.0],
         [3.0, 3.0, 2.0],
+        g,
+        false,
         NONE,
     );
-    b.cube(
+    b.cube_f(
         head,
         0,
         (17.0, 0.0),
         [1.0, -19.0, -4.0],
         [3.0, 3.0, 2.0],
+        g,
+        false,
         NONE,
     );
     let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 5.0, 2.0]);
@@ -7420,30 +7440,25 @@ fn llama() -> Model {
         (29.0, 0.0),
         [-6.0, -10.0, -7.0],
         [12.0, 18.0, 10.0],
-        0.0,
+        g,
         false,
         &[body],
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (45.0, 28.0),
-        [-3.0, 0.0, 0.0],
-        [8.0, 8.0, 3.0],
-        0.0,
-        false,
-        &[Fold::rot([0.0, FRAC_PI_2, 0.0], [-8.5, 3.0, 3.0])],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (45.0, 41.0),
-        [-3.0, 0.0, 0.0],
-        [8.0, 8.0, 3.0],
-        0.0,
-        false,
-        &[Fold::rot([0.0, FRAC_PI_2, 0.0], [5.5, 3.0, 3.0])],
-    );
+    // M297 — `rightChest.visible = leftChest.visible = state.hasChest`.
+    let chest = b.part([0.0, 0.0, 0.0], Anim::None, 1.0);
+    b.show(chest, Show::Chested);
+    for (uv, x) in [((45.0, 28.0), -8.5), ((45.0, 41.0), 5.5)] {
+        b.cube_f(
+            chest,
+            0,
+            uv,
+            [-3.0, 0.0, 0.0],
+            [8.0, 8.0, 3.0],
+            g,
+            false,
+            &[Fold::rot([0.0, FRAC_PI_2, 0.0], [x, 3.0, 3.0])],
+        );
+    }
     let legs = [
         ([-3.5, 10.0, 6.0], Anim::QuadHindRight),
         ([3.5, 10.0, 6.0], Anim::QuadHindLeft),
@@ -7452,12 +7467,14 @@ fn llama() -> Model {
     ];
     for (pivot, anim) in legs {
         let p = b.part(pivot, anim, 1.0);
-        b.cube(
+        b.cube_f(
             p,
             0,
             (29.0, 29.0),
             [-2.0, 0.0, -2.0],
             [4.0, 14.0, 4.0],
+            g,
+            false,
             NONE,
         );
     }
@@ -11138,5 +11155,42 @@ mod donkey_chest_tests {
         assert_eq!(chested(&donkey()), 2 * 6);
         assert_eq!(chested(&mule()), 2 * 6);
         assert_eq!(chested(&horse()), 0);
+    }
+}
+
+#[cfg(test)]
+mod llama_decor_tests {
+    use super::*;
+
+    /// M297 — the llama's chests sit on a part shown only with `hasChest`,
+    /// and the decor shell is the llama at 0.5 (same parts and UVs, the legs
+    /// one wider).
+    #[test]
+    fn the_llama_hides_its_chests_and_its_decor_is_inflated_half() {
+        let (base, decor) = (llama(), llama_decor());
+        let chested: usize = base
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.show == Show::Chested)
+            .map(|(i, _)| base.quads.iter().filter(|q| q.part == i).count())
+            .sum();
+        assert_eq!(chested, 2 * 6);
+        assert_eq!(base.parts.len(), decor.parts.len());
+        assert_eq!(base.quads.len(), decor.quads.len());
+        for (a, b) in base.quads.iter().zip(&decor.quads) {
+            assert_eq!((a.part, a.uv), (b.part, b.uv));
+        }
+        let leg = base.quads.iter().map(|q| q.part).max().unwrap();
+        let width = |m: &Model| {
+            let xs = m
+                .quads
+                .iter()
+                .filter(|q| q.part == leg)
+                .flat_map(|q| q.pos.iter().map(|p| p[0]));
+            let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+            hi - lo
+        };
+        assert!((width(&decor) - width(&base) - 1.0).abs() < 1e-4);
     }
 }

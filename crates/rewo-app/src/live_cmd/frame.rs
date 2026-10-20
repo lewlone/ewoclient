@@ -948,6 +948,22 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M297 — r153: the staged llama, chested, in its red carpet.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Llama
+                    && d.chested
+                    && d.body_armor.is_some_and(|p| {
+                        p.layers.iter().flatten().any(|(k, _)| {
+                            *k == "llama_body/red"
+                                && state
+                                    .world_renderer
+                                    .entity_pass()
+                                    .is_some_and(|e| e.armor_sheet_resident(k))
+                        })
+                    })
+            }) {
+                c.llama_decor_frames += 1;
+            }
             // M296 — r152: r84's chested donkey, drawn with its chests.
             if draws
                 .iter()

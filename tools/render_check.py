@@ -233,6 +233,9 @@ PRECMD = (
     # M294 -- r150. A horse in iron horse armour, clear of the lanes.
     "summon minecraft:horse ~-18 ~ ~-6 {NoAI:1b,Tame:1b,Silent:1b,"
     "equipment:{body:{id:\"minecraft:iron_horse_armor\",count:1}}};"
+    # M297 -- r153. A chested llama in a red carpet, beside it.
+    "summon minecraft:llama ~-14 ~ ~-8 {NoAI:1b,Tame:1b,Silent:1b,ChestedHorse:1b,"
+    "equipment:{body:{id:\"minecraft:red_carpet\",count:1}}};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

@@ -72,6 +72,8 @@ pub enum ArmorLayer {
     MuleSaddle,
     SkeletonHorseSaddle,
     ZombieHorseSaddle,
+    /// M297 — `llama_body`, a llama's carpet or the trader llama's blanket.
+    LlamaBody,
 }
 
 impl ArmorLayer {
@@ -86,13 +88,14 @@ impl ArmorLayer {
             ArmorLayer::MuleSaddle => "mule_saddle",
             ArmorLayer::SkeletonHorseSaddle => "skeleton_horse_saddle",
             ArmorLayer::ZombieHorseSaddle => "zombie_horse_saddle",
+            ArmorLayer::LlamaBody => "llama_body",
         }
     }
 
     /// The layers a full load reads. `Wings` is last so the two humanoid
     /// entries keep the order they had, which keeps `textures` — a `Vec`
     /// the atlas packs in order — byte-for-byte what it was.
-    pub const ALL: [ArmorLayer; 9] = [
+    pub const ALL: [ArmorLayer; 10] = [
         ArmorLayer::Humanoid,
         ArmorLayer::Leggings,
         ArmorLayer::Wings,
@@ -102,6 +105,7 @@ impl ArmorLayer {
         ArmorLayer::MuleSaddle,
         ArmorLayer::SkeletonHorseSaddle,
         ArmorLayer::ZombieHorseSaddle,
+        ArmorLayer::LlamaBody,
     ];
 
     /// M294/M295 — the layers loaded after the original three, so the
