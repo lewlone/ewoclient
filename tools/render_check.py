@@ -271,6 +271,8 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M315 -- r170. A baby turtle.
+    "summon minecraft:turtle ~-27 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M314 -- r169. A ghastling (AgeableMob's negative Age), floating clear.
     "summon minecraft:happy_ghast ~-30 ~3 ~20 {NoAI:1b,Silent:1b,Age:-24000};"
     # M311 -- r167. A wolf in badly damaged armour (60 of 64 spent).

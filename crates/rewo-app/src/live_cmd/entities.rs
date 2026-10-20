@@ -3646,7 +3646,22 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
     match kind {
         EntityModelKind::SulfurCube if baby => EntityModelKind::SulfurCubeSmall,
         EntityModelKind::HappyGhast if baby => EntityModelKind::HappyGhastBaby,
+        // M315 — `TurtleRenderer`'s `BabyTurtleModel`.
+        EntityModelKind::Turtle if baby => EntityModelKind::TurtleBaby,
         k => k,
+    }
+}
+
+/// A baby's `(render scale, bounds scale)`. Rewo approximates a baby it has
+/// no model for as the adult at half size (both halves); a baby drawn by its
+/// own model takes no render scale (`AgeableMobRenderer` adds none) and its
+/// bounds shrink by the entity's `getAgeScale` (M307, M314, M315).
+pub(crate) fn baby_scales(kind: EntityModelKind) -> (f32, f32) {
+    match kind {
+        EntityModelKind::SulfurCubeSmall => (1.0, 0.5),
+        EntityModelKind::HappyGhastBaby => (1.0, 0.2375),
+        EntityModelKind::TurtleBaby => (1.0, 0.3),
+        _ => (0.5, 0.5),
     }
 }
 
@@ -4188,21 +4203,13 @@ pub(super) fn collect_entities<'a>(
         // larger (a per-part transform), deferred. M307 — not the baby
         // sulfur cube, whose own model is the small one (`getAgeScale`
         // halves only its bounds).
-        // M314 — nor the ghastling, whose `getAgeScale` is 0.2375.
+        // M314 / M315 — nor any other baby drawn by its own model
+        // (`baby_scales`).
         if !is_player && session.world.entities.is_baby(id) {
-            if !matches!(
-                kind,
-                EntityModelKind::SulfurCubeSmall | EntityModelKind::HappyGhastBaby
-            ) {
-                scale_mul *= 0.5;
-            }
-            let age = if kind == EntityModelKind::HappyGhastBaby {
-                0.2375
-            } else {
-                0.5
-            };
-            w *= age;
-            h *= age;
+            let (render, bounds) = baby_scales(kind);
+            scale_mul *= render;
+            w *= bounds;
+            h *= bounds;
         }
         // M238 — the armour stand's client flags: 0x01 small (the half-scale
         // `ARMOR_STAND_SMALL` layer, `MeshTransformer.scaling(0.5)`), 0x04

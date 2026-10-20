@@ -973,6 +973,13 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M315 — r170: the staged baby turtle, as its own model.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::TurtleBaby)
+            {
+                c.baby_turtle_frames += 1;
+            }
             // M314 — r169: the staged baby happy ghast, as the ghastling.
             if draws
                 .iter()

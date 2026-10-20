@@ -417,6 +417,8 @@ pub(super) struct RenderCheck {
     pub(super) ghast_rope_frames: usize,
     /// M314 — r169: frames on which a baby happy ghast drew as the ghastling.
     pub(super) ghastling_frames: usize,
+    /// M315 — r170: frames on which a baby turtle drew as its own model.
+    pub(super) baby_turtle_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1182,7 +1184,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 169;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 170;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1383,6 +1385,14 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M315 — r170: `render_check.py` summons a baby turtle; it must draw
+        // as `TurtleBaby` (`mobtexshot m42` checks its size and sheet).
+        // Until M315 it drew as the adult at half size.
+        row(
+            "r170 a baby turtle drew as its own model",
+            self.baby_turtle_frames >= 1,
+            format!("{} frames drew it", self.baby_turtle_frames),
         );
         // M314 — r169: `render_check.py` summons a baby happy ghast; its
         // synched baby flag must pick the ghastling's own model

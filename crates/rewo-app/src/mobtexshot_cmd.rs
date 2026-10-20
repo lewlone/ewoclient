@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 41;
+const EXPECTED_WITNESSES: usize = 42;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -180,8 +180,9 @@ const MIN_DISCRIMINATING: usize = 72;
 /// views), and (M252) minecart, a low open box that draws under the floor in
 /// the crowd (mobshot grades it from three views too), and (M307) the adult
 /// sulfur cube, half a block at size 1 under its translucent shell (m37
-/// grades it up close). A thirteenth means something stopped drawing.
-const MAX_SMALL: usize = 12;
+/// grades it up close), and (M315) the baby turtle, a quarter of a block (m42
+/// grades it up close). A fourteenth means something stopped drawing.
+const MAX_SMALL: usize = 13;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3137,6 +3138,63 @@ fn run_check(
             "the ghastling stands {baby_h} rows against the adult's {adult_h} (ratio \
              {ratio:.3}, want 0.18..0.30); {baby_px} px, first colour the baby sheet cannot \
              produce: {:?}",
+            baby_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m42 — M315: the baby turtle is its own model on its own 16 x 16 sheet:
+    // beside where an adult draws it covers well under a tenth of the adult's
+    // pixels (Rewo's half-size adult covered a quarter), every one a colour
+    // the baby sheet can produce. Until M315 it was the adult at half size.
+    let tbaby_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "turtle_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut tbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.6, 1.5, -1.6),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    tbst.wr.set_entities(&[], tbst.right, tbst.up, 0.0);
+    tbst.off
+        .render(gpu, Some((&mut tbst.wr, tbst.vp)), &ov, BG)?;
+    let tb_empty = tbst.off.read_rgba(gpu)?;
+    let mut tbshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        tbst.wr.set_entities(&[d], tbst.right, tbst.up, 0.0);
+        tbst.off
+            .render(gpu, Some((&mut tbst.wr, tbst.vp)), &ov, BG)?;
+        tbst.off.read_rgba(gpu)
+    };
+    let tb_adult = tbshot(neutral_draw(EntityModelKind::Turtle))?;
+    let tb_baby = tbshot(neutral_draw(EntityModelKind::TurtleBaby))?;
+    tbst.destroy(gpu);
+    let drawn = |f: &[u8], sheet: Option<&HashSet<u32>>| {
+        let (mut n, mut bad) = (0usize, None);
+        for (p, e) in f.as_chunks::<4>().0.iter().zip(tb_empty.as_chunks::<4>().0) {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            n += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && sheet.is_some_and(|s| !explains(s, c)) {
+                bad = Some(c);
+            }
+        }
+        (n, bad)
+    };
+    let (adult_px, _) = drawn(&tb_adult, None);
+    let (baby_px, baby_bad) = drawn(&tb_baby, Some(&tbaby_sheet));
+    w.push(wit(
+        "m42.the_baby_turtle_is_its_own_model_on_its_own_sheet",
+        !tbaby_sheet.is_empty() && baby_px >= 30 && baby_px * 10 < adult_px && baby_bad.is_none(),
+        format!(
+            "the baby covers {baby_px} px against the adult's {adult_px} (want >= 30 and under \
+             a tenth); first colour the baby sheet cannot produce: {:?}",
             baby_bad.map(|c| format!("#{c:06x}"))
         ),
     ));

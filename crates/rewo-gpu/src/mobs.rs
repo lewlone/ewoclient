@@ -1538,11 +1538,13 @@ pub enum EntityModelKind {
     /// M314 — `HAPPY_GHAST_BABY`, the ghastling's own model, which
     /// `AgeableMobRenderer` swaps in for a baby (chosen by the caller).
     HappyGhastBaby,
+    /// M315 — `BabyTurtleModel` (`TURTLE_BABY`), swapped in for a baby.
+    TurtleBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 102;
+    pub const COUNT: usize = 103;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1645,6 +1647,7 @@ impl EntityModelKind {
         EntityModelKind::SulfurCube,
         EntityModelKind::SulfurCubeSmall,
         EntityModelKind::HappyGhastBaby,
+        EntityModelKind::TurtleBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1748,6 +1751,7 @@ impl EntityModelKind {
             EntityModelKind::SulfurCube => "sulfur_cube",
             EntityModelKind::SulfurCubeSmall => "sulfur_cube_small",
             EntityModelKind::HappyGhastBaby => "happy_ghast_baby",
+            EntityModelKind::TurtleBaby => "turtle_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1791,6 +1795,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::TropicalFishLarge
                 | EntityModelKind::SulfurCubeSmall
                 | EntityModelKind::HappyGhastBaby
+                | EntityModelKind::TurtleBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2644,6 +2649,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::HappyGhastBaby,
         textures: &["happy_ghast_baby"],
         build: happy_ghast_baby,
+    },
+    // M315 — `TurtleRenderer.BABY_TURTLE_LOCATION`.
+    MobDef {
+        kind: EntityModelKind::TurtleBaby,
+        textures: &["turtle_baby"],
+        build: turtle_baby,
     },
 ];
 
@@ -6794,6 +6805,51 @@ fn dolphin() -> Model {
 }
 
 /// `AdultTurtleModel`: shell + belly plates, flipper legs, headed front.
+/// M315 — `BabyTurtleModel.createBodyLayer()` (16 x 16): the shell box, the
+/// head (which looks, as the adult's does), and four flat legs, which stay at
+/// rest as Rewo's adult turtle's do. Drawn at its own size: `AgeableMobRenderer`
+/// adds no scale (`getAgeScale`'s 0.3 is the bounds').
+fn turtle_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-2.0, -1.0, -2.0],
+        [4.0, 2.0, 4.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 22.9, 1.0])],
+    );
+    let head = b.part([0.0, 22.9, -1.0], Anim::Head, 1.0);
+    b.cube(
+        head,
+        0,
+        (0.0, 6.0),
+        [-1.5, -2.0, -3.0],
+        [3.0, 3.0, 3.0],
+        NONE,
+    );
+    for (uv, min, off) in [
+        ((-1.0, 0.0), [-2.0, 0.0, -0.5], [-2.0, 23.9, 2.5]),
+        ((-1.0, 1.0), [0.0, 0.0, -0.5], [2.0, 23.9, 2.5]),
+        ((8.0, 6.0), [-2.0, 0.0, -0.5], [-2.0, 23.9, -0.5]),
+        ((8.0, 7.0), [0.0, 0.0, -0.5], [2.0, 23.9, -0.5]),
+    ] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            min,
+            [2.0, 0.0, 1.0],
+            0.0,
+            false,
+            &[Fold::at(off)],
+        );
+    }
+    b.finish(1.0)
+}
+
 fn turtle() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 19.0, -10.0], Anim::Head, 1.0);
@@ -10963,8 +11019,9 @@ mod tests {
                     | EntityModelKind::TropicalFishLarge
                     // M307 — the baby sulfur cube's model, the same shape.
                     | EntityModelKind::SulfurCubeSmall
-                    // M314 — and the ghastling's.
+                    // M314 — and the ghastling's, M315 the baby turtle's.
                     | EntityModelKind::HappyGhastBaby
+                    | EntityModelKind::TurtleBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -11958,5 +12015,25 @@ mod ghastling_tests {
         assert!((baby.scale - 0.95).abs() < 1e-6);
         assert_eq!(adult.quads.iter().filter(|q| q.tex == 0).count(), 10 * 6);
         assert_eq!(adult.scale, 4.0);
+    }
+}
+
+#[cfg(test)]
+mod baby_turtle_tests {
+    use super::*;
+
+    /// M315 — the baby turtle's shell is 4 px wide, its head looks.
+    #[test]
+    fn the_baby_turtle_is_its_own_small_model() {
+        let m = turtle_baby();
+        assert_eq!(m.scale, 1.0);
+        let xs = m.quads.iter().flat_map(|q| q.pos.iter().map(|p| p[0]));
+        let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+        assert_eq!(
+            (lo, hi),
+            (-4.0, 4.0),
+            "the legs reach 2 px beyond the 4-px shell"
+        );
+        assert!(m.parts.iter().any(|p| p.anim == Anim::Head));
     }
 }

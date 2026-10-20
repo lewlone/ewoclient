@@ -275,8 +275,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// at three views each. M238: 258 → 261, the armour stand. M252: 261 → 264,
 /// the minecart. M303: 264 → 267, the camel husk. M304: 267 → 270, the giant.
 /// M307: 270 → 276, the sulfur cube and its small model. M314: 276 → 279,
-/// the ghastling.
-const EXPECTED_MOB_VIEWS: usize = 279;
+/// the ghastling. M315: 279 → 282, the baby turtle.
+const EXPECTED_MOB_VIEWS: usize = 282;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.
