@@ -4297,6 +4297,7 @@ fn an_unsent_variant_is_the_class_s_default() {
         angry: None,
         baby_wild: None,
         baby_tame: None,
+        baby_angry: None,
         model: None,
     };
     let cats = [
@@ -4460,4 +4461,19 @@ fn the_snow_golems_pumpkin_sits_on_its_head() {
     let turned = f(0.0, 90.0, 0.0, 0.0);
     assert!(near(at(&turned, [0.5; 3]), [0.0, 1.59475, 0.0]));
     assert!(!near(at(&turned, [0.0; 3]), c0));
+}
+
+/// M355 — `Wolf.getTailAngle()`: angry 1.5393804; tame by its missing
+/// health, (0.55 − damage · 0.4)·π (0.55π at full health, 0.15π at none);
+/// wild π/5.
+#[test]
+fn a_wolfs_tail_stands_by_its_mood_and_health() {
+    use std::f32::consts::PI;
+    let f = super::entities::wolf_tail_angle;
+    assert_eq!(f(true, true, Some((1.0, 40.0))), 1.539_380_4);
+    assert!((f(false, true, Some((40.0, 40.0))) - 0.55 * PI).abs() < 1e-6);
+    assert!((f(false, true, Some((20.0, 40.0))) - 0.35 * PI).abs() < 1e-6);
+    assert!((f(false, true, Some((0.0, 40.0))) - 0.15 * PI).abs() < 1e-6);
+    assert!((f(false, true, None) - 0.55 * PI).abs() < 1e-6);
+    assert!((f(false, false, Some((1.0, 8.0))) - PI / 5.0).abs() < 1e-6);
 }

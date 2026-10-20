@@ -2736,6 +2736,11 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_anger_end_time(eid, t);
         }
     }
+    // M355 — Slot 22 LONG → `Wolf.DATA_ANGER_END_TIME`, the same deadline
+    // (`NeutralMob`) as the bee's, one class over.
+    if let (Some(t), true) = (meta.long22, kinds.variant_kinds.wolf == Some(type_id)) {
+        entities.set_anger_end_time(eid, t);
+    }
     // Slot 17 INT → `Guardian.DATA_ID_ATTACK_TARGET` (M141g). A **third**
     // claimant of an index the spellcaster BYTE and the pillager BOOLEAN
     // already share, and a fourth reading of the INT specifically

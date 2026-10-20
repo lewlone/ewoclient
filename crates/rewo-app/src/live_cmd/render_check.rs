@@ -516,6 +516,8 @@ pub(super) struct RenderCheck {
     /// M354 — r208: a stung bee on the nectar sheet, and an angry bee on the
     /// angry sheet.
     pub(super) bees: (bool, bool),
+    /// M355 — r209: an angry wolf on pale's angry sheet, its tail raised.
+    pub(super) angry_wolf: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1281,7 +1283,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 208;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 209;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1481,6 +1483,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M355 — r209: `render_check.py` summons an angry wolf (index 22
+        // LONG's deadline): pale's angry sheet, its tail at 1.5393804.
+        row(
+            "r209 an angry wolf wore its anger and raised its tail",
+            self.angry_wolf,
+            format!(
+                "angry wolf on its angry sheet, tail raised, seen: {}",
+                self.angry_wolf
             ),
         );
         // M354 — r208: `render_check.py` summons a bee with nectar that has

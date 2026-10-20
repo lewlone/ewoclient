@@ -1662,6 +1662,9 @@ pub(crate) fn resolve_mob_combat(
         // M354 — set by the caller, which has the world clock the anger needs.
         bee_angry: false,
         bee_stung: false,
+        // M355 — likewise the wolf's.
+        wolf_tail: None,
+        wolf_angry: false,
     }
 }
 
@@ -4118,8 +4121,26 @@ pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> Ent
     }
 }
 
-/// M354 — `Bee.isAngry()`: `DATA_ANGER_END_TIME` against the world clock.
-pub(crate) fn bee_is_angry(session: &PlaySession, id: i32) -> bool {
+/// M355 — `Wolf.getTailAngle()`: an angry wolf's tail stands at 1.5393804,
+/// a tame one's at (0.55 − damage · 0.4)·π by its missing health (full
+/// health when unknown), a wild one's at π/5.
+pub(crate) fn wolf_tail_angle(angry: bool, tame: bool, health: Option<(f32, f32)>) -> f32 {
+    use std::f32::consts::PI;
+    if angry {
+        1.539_380_4
+    } else if tame {
+        let damage = health
+            .filter(|(_, max)| *max > 0.0)
+            .map_or(0.0, |(h, max)| ((max - h) / max).clamp(0.0, 1.0));
+        (0.55 - damage * 0.4) * PI
+    } else {
+        PI / 5.0
+    }
+}
+
+/// M354 — `Bee.isAngry()`, M355 the wolf's: `NeutralMob`'s
+/// `DATA_ANGER_END_TIME` against the world clock.
+pub(crate) fn mob_is_angry(session: &PlaySession, id: i32) -> bool {
     rewo_net::tickable::is_angry(
         session.world.entities.anger_end_time(id).unwrap_or(-1),
         session.game_time(),
@@ -4171,12 +4192,19 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
     match kind {
         EntityModelKind::Cat => registry(&session.cat_variants, false),
         EntityModelKind::CatBaby => registry_baby(&session.cat_variants, false),
-        EntityModelKind::Wolf => {
-            registry(&session.wolf_variants, session.world.entities.is_tame(id))
-        }
-        EntityModelKind::WolfBaby => {
-            registry_baby(&session.wolf_variants, session.world.entities.is_tame(id))
-        }
+        // M355 — `Wolf.getTexture` whole: tame, else angry, else wild.
+        EntityModelKind::Wolf | EntityModelKind::WolfBaby => usize::try_from(v)
+            .ok()
+            .and_then(|i| session.wolf_variants.get(i))
+            .and_then(|d| {
+                d.wolf_texture(
+                    kind == EntityModelKind::WolfBaby,
+                    session.world.entities.is_tame(id),
+                    mob_is_angry(session, id),
+                )
+            })
+            .and_then(rewo_data::mob_variants::variant_id)
+            .unwrap_or(0),
         EntityModelKind::Frog => registry(&session.frog_variants, false),
         // M348 — the cow's sheet, on whichever mesh its `model` picked, and
         // the calf's (`CowRenderer.getTextureLocation`).
@@ -4207,7 +4235,7 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         EntityModelKind::Bee | EntityModelKind::BeeBaby => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::bee_texture(
                 kind == EntityModelKind::BeeBaby,
-                bee_is_angry(session, id),
+                mob_is_angry(session, id),
                 session.world.entities.bee_flags(id) & 0x08 != 0,
             ))
             .unwrap_or(0)
@@ -4842,8 +4870,26 @@ pub(super) fn collect_entities<'a>(
         // M354 — the bee's mood and its stinger (the anger is a deadline on
         // the world clock, so it is read here, where the clock is).
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
-            mob.bee_angry = bee_is_angry(session, id);
+            mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M355 — the wolf's anger and `getTailAngle()` (a tame wolf's tail
+        // by its health, when both its health and its max health are known).
+        if matches!(kind, EntityModelKind::Wolf | EntityModelKind::WolfBaby) {
+            let ents = &session.world.entities;
+            let health = attr_reg
+                .and_then(|r| {
+                    rewo_world::attributes::resolve(
+                        ents.attributes(id),
+                        etypes.name(e.type_id),
+                        "max_health",
+                        r,
+                    )
+                })
+                .filter(|(_, s)| *s == rewo_world::attributes::Source::Synced)
+                .map(|(max, _)| (ents.death_state(id).health, max as f32));
+            mob.wolf_angry = mob_is_angry(session, id);
+            mob.wolf_tail = Some(wolf_tail_angle(mob.wolf_angry, ents.is_tame(id), health));
         }
         // M70: the label-visibility predicate, resolved once and consumed by
         // both the nametag and the health bar so the two cannot disagree.

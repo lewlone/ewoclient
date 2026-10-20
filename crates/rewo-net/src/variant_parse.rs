@@ -104,18 +104,36 @@ pub struct MobVariantDef {
     pub baby_wild: Option<String>,
     /// M340 — `baby_assets.tame`, wolves only.
     pub baby_tame: Option<String>,
-    /// `assets.angry`, wolves only. **Decoded and not rendered**: choosing it
-    /// needs `remainingPersistentAngerTime > 0`, i.e. `DATA_ANGER_END_TIME`
-    /// (index 22, LONG) against the world clock, which makes it a texture that
-    /// changes with time rather than with a synched value. Kept so the gap is
-    /// visible in the parsed data rather than only in a comment.
+    /// `assets.angry`, wolves only. M355: drawn while the wolf is angry and
+    /// not tame (`Wolf.getTexture`), the anger being `DATA_ANGER_END_TIME`
+    /// (index 22, LONG) against the world clock.
     pub angry: Option<String>,
+    /// M355 — `baby_assets.angry`, wolves only.
+    pub baby_angry: Option<String>,
     /// M348 — `ModelAndTexture.model` (`cow_variant`): `"cold"` or `"warm"`,
     /// absent for NORMAL. As written, not a texture path.
     pub model: Option<String>,
 }
 
 impl MobVariantDef {
+    /// M355 — `Wolf.getTexture` whole: `babyInfo` or `adultInfo`, then tame,
+    /// else angry, else wild (a missing sheet falls back to the wild one).
+    pub fn wolf_texture(&self, baby: bool, tame: bool, angry: bool) -> Option<&str> {
+        let (wild, tame_sheet, angry_sheet) = if baby {
+            (&self.baby_wild, &self.baby_tame, &self.baby_angry)
+        } else {
+            (&self.wild, &self.tame, &self.angry)
+        };
+        let pick = if tame {
+            tame_sheet
+        } else if angry {
+            angry_sheet
+        } else {
+            wild
+        };
+        pick.as_deref().or(wild.as_deref())
+    }
+
     /// `Wolf.getTexture`'s tame/wild branch, minus the angry one.
     pub fn texture(&self, tame: bool) -> Option<&str> {
         if tame {
@@ -185,6 +203,7 @@ pub fn parse_single_asset_registry(
         angry: None,
         baby_wild: string_at(data.as_ref(), "baby_asset_id"),
         baby_tame: None,
+        baby_angry: None,
         model: match data.as_ref().and_then(|d| d.get("model")) {
             Some(Nbt::String(s)) => Some(s.clone()),
             _ => None,
@@ -207,6 +226,7 @@ pub fn parse_wolf_variant_registry(
             angry: string_at(assets.as_ref(), "angry"),
             baby_wild: string_at(baby.as_ref(), "wild"),
             baby_tame: string_at(baby.as_ref(), "tame"),
+            baby_angry: string_at(baby.as_ref(), "angry"),
             model: None,
         }
     })
@@ -424,5 +444,30 @@ mod tests {
             Some("entity/cow/cow_cold_baby.png")
         );
         assert_eq!(v[1].model, None);
+    }
+
+    /// M355 — `Wolf.getTexture`: tame wins over angry, angry over wild, for
+    /// the adult's sheets and the puppy's.
+    #[test]
+    fn a_wolf_is_tame_or_angry_or_wild() {
+        let d = MobVariantDef {
+            wild: Some("w".into()),
+            tame: Some("t".into()),
+            angry: Some("a".into()),
+            baby_wild: Some("bw".into()),
+            baby_tame: Some("bt".into()),
+            baby_angry: Some("ba".into()),
+            ..Default::default()
+        };
+        assert_eq!(d.wolf_texture(false, false, false), Some("w"));
+        assert_eq!(d.wolf_texture(false, false, true), Some("a"));
+        assert_eq!(d.wolf_texture(false, true, true), Some("t"));
+        assert_eq!(d.wolf_texture(true, false, true), Some("ba"));
+        assert_eq!(d.wolf_texture(true, true, false), Some("bt"));
+        let bare = MobVariantDef {
+            wild: Some("w".into()),
+            ..Default::default()
+        };
+        assert_eq!(bare.wolf_texture(false, false, true), Some("w"));
     }
 }

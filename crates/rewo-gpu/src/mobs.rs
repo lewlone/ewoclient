@@ -608,7 +608,7 @@ pub enum IllagerArmPose {
 /// The synced mob state the M20 arm rigs read, mirrored into `rewo-gpu` so the
 /// renderer keeps no `rewo-world` dependency (the same pattern [`AllayDance`]
 /// and [`SwingKind`] use).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct MobCombat {
     /// `Mob.isAggressive()` — deepens the undead arm drop from −π/2.25 to
     /// −π/1.5 and gates the skeleton rig entirely.
@@ -636,6 +636,12 @@ pub struct MobCombat {
     pub bee_angry: bool,
     /// M354 — `Bee.hasStung()`: the stinger hidden.
     pub bee_stung: bool,
+    /// M355 — `Wolf.getTailAngle()` (angry, tame by health, or wild), the
+    /// tail's `xRot`; `None` leaves the part at its π/5 rest. An angry wolf
+    /// does not wag (`tail.yRot = 0`).
+    pub wolf_tail: Option<f32>,
+    /// M355 — the wolf is angry (no wag).
+    pub wolf_angry: bool,
 }
 
 impl Eq for Anim {}

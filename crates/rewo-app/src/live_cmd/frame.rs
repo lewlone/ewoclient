@@ -973,6 +973,17 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M355 — r209: the staged angry wolf, on pale's angry sheet with
+            // its tail up.
+            let angry_wolf = rewo_data::mob_variants::variant_id("entity/wolf/wolf_angry.png");
+            c.angry_wolf |= draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Wolf
+                    && Some(d.variant) == angry_wolf
+                    && d.mob.wolf_angry
+                    && d.mob
+                        .wolf_tail
+                        .is_some_and(|t| (t - 1.539_380_4).abs() < 1e-4)
+            });
             // M354 — r208: the staged bees: one with nectar that has stung
             // (on the nectar sheet, its stinger hidden) and an angry one (on
             // the angry sheet, not bobbing).

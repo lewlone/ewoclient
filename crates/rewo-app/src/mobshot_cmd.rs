@@ -1872,8 +1872,9 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 /// M343: 14 → 15, n10 (index 23 INT is a cat's collar). M352: 15 → 16, n11
 /// (index 16 OPTIONAL_BLOCK_STATE is an enderman's carried block). M353:
 /// 16 → 17, n12 (index 16 BYTE is a snow golem's pumpkin). M354: 17 → 18,
-/// n13 (index 18 BYTE is a bee's flags).
-const VARIANT_WITNESSES: usize = 18;
+/// n13 (index 18 BYTE is a bee's flags). M355: 18 → 19, n14 (index 22 LONG
+/// is a wolf's anger).
+const VARIANT_WITNESSES: usize = 19;
 
 /// The mobs whose texture a synched metadata field chooses, and the registry
 /// name each carries in the `entity_types` table.
@@ -1960,7 +1961,8 @@ fn run_variant_check(
         // the cold and warm calves. M349: 129 → 135, the warm pig and
         // chicken and the cold and warm piglets and chicks. M354: 135 → 141,
         // the bee's angry, nectar and angry-nectar sheets, adult and baby.
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 141,
+        // M355: 141 → 159, the wolves' eighteen angry sheets.
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 159,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \
@@ -2708,6 +2710,15 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         "n13.index_18_byte_is_a_bees_flags_and_not_on_a_wolf",
         bee18 == 0x0C && wolf18 == 0,
         format!("0x0C at index 18 BYTE gives a bee flags {bee18:#04x} (want 0x0c) and a wolf {wolf18:#04x} (want 0)"),
+    );
+    // M355 — index 22 LONG on a wolf is `Wolf.DATA_ANGER_END_TIME`; on a
+    // cat (whose 22 is no LONG of its own) nothing lands.
+    let wolf22 = send(wolf, 22, 2, 100, kinds).anger_end_time(1);
+    let cat22 = send(cat, 22, 2, 100, kinds).anger_end_time(1);
+    c.record(
+        "n14.index_22_long_is_a_wolfs_anger_and_nothing_on_a_cat",
+        wolf22 == Some(100) && cat22.is_none(),
+        format!("100 at index 22 LONG gives a wolf's anger deadline {wolf22:?} (want Some(100)) and a cat's {cat22:?} (want None)"),
     );
     Ok(())
 }

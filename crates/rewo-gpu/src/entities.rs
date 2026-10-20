@@ -5574,7 +5574,16 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             rot[1] = dir * swing;
             rot[2] = dir * step;
         }
-        TailWagY => rot[1] = c.f.cos() * 1.4 * c.amt,
+        TailWagY => {
+            // M355 — `WolfModel.setupAnim`: no wag while angry; the tail's
+            // `xRot` is `state.tailAngle` (the part rests at π/5).
+            if !c.mob.wolf_angry {
+                rot[1] = c.f.cos() * 1.4 * c.amt;
+            }
+            if let Some(a) = c.mob.wolf_tail {
+                rot[0] = a - PI / 5.0;
+            }
+        }
         GolemArmRight => rot[0] = (-0.2 + 1.5 * triangle_wave(c.pos, 13.0)) * c.amt,
         GolemArmLeft => rot[0] = (-0.2 - 1.5 * triangle_wave(c.pos, 13.0)) * c.amt,
         GolemLegRight => rot[0] = -1.5 * triangle_wave(c.pos, 13.0) * c.amt,
@@ -9429,5 +9438,43 @@ mod bee_bob_tests {
             let (r, o) = anim_delta(anim, 1.0, &ctx(3.0, true));
             assert_eq!((r, o), ([0.0; 3], [0.0; 3]));
         }
+    }
+}
+
+#[cfg(test)]
+mod wolf_tail_tests {
+    use super::*;
+
+    /// M355 — the tail takes `tailAngle` over its π/5 rest, and an angry
+    /// wolf's does not wag.
+    #[test]
+    fn the_wolfs_tail_takes_its_angle_and_an_angry_one_does_not_wag() {
+        use std::f32::consts::PI;
+        let ctx = |tail: Option<f32>, angry: bool| AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 1.0,
+            age: 0.0,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                wolf_tail: tail,
+                wolf_angry: angry,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        };
+        let (r, _) = anim_delta(mobs::Anim::TailWagY, 1.0, &ctx(None, false));
+        assert_eq!(r, [0.0, 1.4, 0.0]);
+        let (r, _) = anim_delta(mobs::Anim::TailWagY, 1.0, &ctx(Some(1.5393804), true));
+        assert!((r[0] + PI / 5.0 - 1.5393804).abs() < 1e-6 && r[1] == 0.0);
     }
 }

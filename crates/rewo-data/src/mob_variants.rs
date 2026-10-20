@@ -153,6 +153,26 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M355 — Wolf — the angry sheets, adult and puppy, of every coat
+    // (`assets.angry` / `baby_assets.angry`).
+    ("wolf", "entity/wolf/wolf_angry.png"),
+    ("wolf", "entity/wolf/wolf_ashen_angry.png"),
+    ("wolf", "entity/wolf/wolf_black_angry.png"),
+    ("wolf", "entity/wolf/wolf_chestnut_angry.png"),
+    ("wolf", "entity/wolf/wolf_rusty_angry.png"),
+    ("wolf", "entity/wolf/wolf_snowy_angry.png"),
+    ("wolf", "entity/wolf/wolf_spotted_angry.png"),
+    ("wolf", "entity/wolf/wolf_striped_angry.png"),
+    ("wolf", "entity/wolf/wolf_woods_angry.png"),
+    ("wolf_baby", "entity/wolf/wolf_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_ashen_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_black_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_chestnut_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_rusty_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_snowy_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_spotted_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_striped_angry_baby.png"),
+    ("wolf_baby", "entity/wolf/wolf_woods_angry_baby.png"),
     // M354 — Bee — `BeeRenderer.getTextureLocation`: angry, nectar, and
     // both, adult and baby (the plain bee is each key's base).
     ("bee", "entity/bee/bee_angry.png"),
@@ -998,6 +1018,33 @@ mod tests {
                 assert!(v != 0 && seen.insert(v));
                 let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
                 assert_eq!(k, key);
+            }
+        }
+    }
+
+    /// M355 — the eighteen angry wolf sheets: the adults' on `wolf`, the
+    /// puppies' on `wolf_baby`.
+    #[test]
+    fn every_coat_has_its_angry_sheets() {
+        for c in [
+            "",
+            "_ashen",
+            "_black",
+            "_chestnut",
+            "_rusty",
+            "_snowy",
+            "_spotted",
+            "_striped",
+            "_woods",
+        ] {
+            for (path, key) in [
+                (format!("entity/wolf/wolf{c}_angry.png"), "wolf"),
+                (format!("entity/wolf/wolf{c}_angry_baby.png"), "wolf_baby"),
+            ] {
+                let v = variant_id(&path).unwrap();
+                assert_ne!(v, 0, "{path}");
+                let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+                assert_eq!(k, key, "{path}");
             }
         }
     }

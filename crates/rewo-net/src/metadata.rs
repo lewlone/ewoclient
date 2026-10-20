@@ -57,6 +57,9 @@ pub struct EntityMeta {
     /// Index 20 **LONG** — `Camel.LAST_POSE_CHANGE_TICK` (M169), the
     /// camel's second own accessor, a `VAR_LONG` like the bee's at 19.
     pub long20: Option<i64>,
+    /// M355 — `Wolf.DATA_ANGER_END_TIME`, index 22 LONG (`TamableAnimal` 18
+    /// and 19, the wolf's interest 20 and collar 21), kind-gated by the caller.
+    pub long22: Option<i64>,
     /// `Entity.DATA_CUSTOM_NAME_VISIBLE` — index **3**, BOOLEAN (M70).
     ///
     /// This is `Entity.shouldShowName()` for everything except a player
@@ -619,6 +622,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (19, 8) => meta.bool19 = r.u8().ok().map(|b| b != 0),
             (20, 8) => meta.bool20 = r.u8().ok().map(|b| b != 0),
             (20, 2) => meta.long20 = r.varlong().ok(),
+            (22, 2) => meta.long22 = r.varlong().ok(),
             (20, 21) => meta.cat_variant = r.varint().ok(),
             (20, 1) => meta.int20 = r.varint().ok(),
             (21, 1) => meta.int21 = r.varint().ok(),

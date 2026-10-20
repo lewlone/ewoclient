@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 76;
+const EXPECTED_WITNESSES: usize = 77;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5631,6 +5631,94 @@ fn run_check(
         format!(
             "{} (want >= 200 px each, none foreign, all four different; the stinger some px)",
             b_rows.join("; ")
+        ),
+    ));
+
+    // m77 — M355: the wolf and the puppy draw their angry sheets (pale's)
+    // from their own, unlike the wild one, and an angry wolf's raised tail
+    // moves pixels.
+    let mut wst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.2, 0.9, -1.2),
+        Vec3::new(0.0, 0.4, 0.0),
+    )?;
+    wst.wr.set_entities(&[], wst.right, wst.up, 0.0);
+    wst.off.render(gpu, Some((&mut wst.wr, wst.vp)), &ov, BG)?;
+    let w_empty = wst.off.read_rgba(gpu)?;
+    let mut w_ok = true;
+    let mut w_rows = Vec::new();
+    for (kind, key, path) in [
+        (EntityModelKind::Wolf, "wolf", "entity/wolf/wolf_angry.png"),
+        (
+            EntityModelKind::WolfBaby,
+            "wolf_baby",
+            "entity/wolf/wolf_angry_baby.png",
+        ),
+    ] {
+        let angry = rewo_data::mob_variants::variant_id(path).unwrap_or(0);
+        let sheet: HashSet<u32> = baked
+            .mob_variant_textures
+            .iter()
+            .find(|t| t.key == key && t.index == angry)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            wst.wr.set_entities(&[d], wst.right, wst.up, 0.0);
+            wst.off.render(gpu, Some((&mut wst.wr, wst.vp)), &ov, BG)?;
+            wst.off.read_rgba(gpu)
+        };
+        let wild = shot(neutral_draw(kind))?;
+        let mad = shot(EntityDraw {
+            variant: angry,
+            ..neutral_draw(kind)
+        })?;
+        let raised = shot(EntityDraw {
+            variant: angry,
+            mob: rewo_gpu::mobs::MobCombat {
+                wolf_tail: Some(1.539_380_4),
+                wolf_angry: true,
+                ..Default::default()
+            },
+            ..neutral_draw(kind)
+        })?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in mad
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(w_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        let tail = diff_bytes(&mad, &raised);
+        w_ok &= angry != 0
+            && !sheet.is_empty()
+            && px >= 200
+            && bad.is_none()
+            && diff_bytes(&wild, &mad) > 0
+            && tail > 0;
+        w_rows.push(format!(
+            "{key} angry: {px} px, first colour it cannot produce {:?}, the raised tail moves {tail} bytes",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    wst.destroy(gpu);
+    w.push(wit(
+        "m77.the_wolf_and_puppy_wear_their_anger_and_raise_the_tail",
+        w_ok,
+        format!(
+            "{} (want >= 200 px, none foreign, unlike the wild sheet, the tail moving)",
+            w_rows.join("; ")
         ),
     ));
 
