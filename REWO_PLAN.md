@@ -4002,6 +4002,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M357 — sitting cats, and the feline's tail and gait (2026-10-21)
+
+No cat ever sat, every cat's and ocelot's tail tip hung straight down through
+the ground, and they walked a quadruped's gait. The tail:
+`AdultFelineModel.setupAnim` sets `tail2.xRot` to 1.7278761 every frame (plus
+π/4 · cos(walkPos) · speed while walking); Rewo had the layer's 0, so its
+eight pixels pointed down past the feet (the setupAnim trap again: the
+2026-10-20 rest-pose audit covered the babies only). The legs: the feline
+walks at amplitude 1 with the left hind and right front on cos(f); Rewo's
+adult used the quadruped's (1.4, phases swapped). Both are the feline's own
+anims now (`FelineTail2`, `FelineLeg { hind, left }`), and the kitten's legs,
+which faked the same gait through `amp`, use them too.
+
+Sitting (the tamable flags' 0x01, as the wolf's): the body and both tail
+segments became parts; `AdultFelineModel`'s pose moves the body (π/4, −4, +5),
+the head (−3.3, +1), the tail (1.7278761 and 2.670354, lowered), the front
+legs (−π/20) and the hind legs (−π/2), each offset times the age scale;
+`BabyFelineModel`'s own pose tilts the body −0.436 and drops it 1.25, moves
+the head 0.75, the tail by 0.545 and (4, −0.9), the hind legs −0.9. The collar
+copies share the builders (the kitten's 1.01 copy takes the offsets unscaled,
+a 1% difference).
+
+**Unit tests**: the tail tip's rest; every sitting delta and offset, adult
+and kitten; the walk's phases and amplitude and the tail's sway.
+**mobtexshot m79**: a sitting cat and kitten draw from their own sheets and
+move thousands of px of silhouette. **r211**: a staged `Sitting:1b` cat is
+drawn sitting.
+
 ### M356 — sitting wolves (2026-10-21)
 
 No wolf ever sat: the tamable flags' 0x01 (`isInSittingPose`, index 18 BYTE,
