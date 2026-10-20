@@ -2103,6 +2103,7 @@ this shape once.
 | M287 (2026-10-20) — a wither at half health draws its armour swirl | **r145** | — | — |
 | M288 (2026-10-20) — an invulnerable wither draws shrunk in its invulnerable sheet | **r146** | — | — |
 | M289 (2026-10-20) — a dropped and a framed player head draw in their own skin | **r147** | — | — |
+| M290 (2026-10-20) — an armour stand's held player head draws in its own skin | **r148** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3938,6 +3939,21 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M290 — held player heads in their own skin (2026-10-20)
+
+M289's swap, for a head another entity holds: the equipment packet's hand
+slots (0 and 1) keep the stack's profile `textures` value
+(`EntityTable::hand_profiles`, by `InteractionHand`, cleared with every
+side map), the frame requests those skins, and `resolve_held_items` passes
+the held name through `HeadSkins::item_model` before the use variant.
+
+Recorded: the local player's first-person hand and the cursor still draw
+Steve (the hand pass keeps its own copy of the held items).
+
+**r148**: `render_check.py` summons an armour stand holding r130's head in
+its main hand; its held item draws in a per-skin model sampling the
+synthetic skin. The side-map tests cover the new map.
+
 ### M289 — dropped and framed player heads in their own skin (2026-10-20)
 
 M275 gave inventory icons the skin a player head's `minecraft:profile`
@@ -3950,8 +3966,8 @@ with the worn and inventory ones, and `HeadSkins::item_model` swaps
 `minecraft:player_head` for its per-skin item model in the ground-item draw
 and the live frame collector (`FrameInputs::profile`).
 
-Recorded: a head in another entity's hand, in the first-person hand and
-on the cursor still draws Steve.
+Recorded: a head in another entity's hand (M290 since), in the
+first-person hand and on the cursor still draws Steve.
 
 **r147**: `render_check.py` drops a player head (never picked up or
 despawned) and frames another on the floor, both with r130's skin; each
