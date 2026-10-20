@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 107 Rewo milestones, M194 to M300, in about 236 commits on
+- **What happened**: 108 Rewo milestones, M194 to M301, in about 238 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`1de22b01`): 4443 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 156 of
-  156 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`c53406fd`): 4444 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 157 of
+  157 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -387,6 +387,7 @@ released.
   bleed between neighbouring mob sheets in Rewo's atlas is gone.
 - **M300**: a saddled camel shows its saddle and bridle, with reins while
   ridden.
+- **M301**: the nautilus shows its armour and saddle.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -448,6 +449,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `c53406fd` | **M301** — the nautilus's armour and saddle (both nautilus kinds): shell-only boxes split off `nautilus_with`, the flat panel lifted 0.002 px; a unit test, mobtexshot **m32** and render-check **r157**. |
 | `1de22b01` | **M300** — the camel's saddle: `CamelSaddleModel`'s saddle, bridle and ridden-only reins on the camel's parts, one more late layer; a unit test, mobtexshot **m31** and render-check **r156**. |
 | `dcbf91d7` | **M299** — wolf armour (`WOLF_BODY` over the wolf at 0.2) and the atlas's one-texel extruded gutters (the vex bleed m5 caught), `ATLAS_H` 2,880; unit tests, mobtexshot **m30** and render-check **r155**. |
 | `5087410f` | **M298** — pig and strider saddles: the pig at 0.5 and the strider's own mesh as saddle shells, two more late layers, the coplanar strider saddle through the trim range; a unit test, mobtexshot **m29** and render-check **r154**. |
@@ -799,6 +801,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M301: **4,444 tests passed, 0 failed; gates 51/51** (mobtexshot 32); render check **157/157** on two runs (r157 on 25,523 and 28,709 frames); clippy (both, pre-checked) and `cargo fmt --check` clean.
 - After M300: **4,443 tests passed, 0 failed; gates 51/51** (mobtexshot 31); render check **156/156** on two runs (r156: saddled on 30,700 and 17,328 frames, ridden on 2,089 and 1,678); clippy (both, pre-checked) and `cargo fmt --check` clean.
 - After M299: **4,442 tests passed, 0 failed; gates 51/51** (mobtexshot 30, m5 green again after the gutter; mobshot's ETF fixture packs with no warning after the second growth); render check **155/155** on two runs (r155 on 31,746 and 31,584 frames); clippy (both, pre-checked) and `cargo fmt --check` clean; the demo hash unchanged.
 - After M298: **4,440 tests passed, 0 failed; gates 51/51** (mobtexshot 29: its first run caught the strider saddle at 0 px, coplanar under the strict depth test); render check **154/154** on two runs (r154 on 28,239 and 28,800 frames); clippy (both, pre-checked) and `cargo fmt --check` clean.
@@ -897,8 +900,7 @@ released.
   and a worn item shows no enchantment glint. The
   entity atlas's large band is a 64-slot ring, not an LRU: past 64 distinct
   big textures on screen at once it would recycle slots mid-frame.
-- The nautilus's saddle and armour, the camel husk's saddle and the happy
-  ghast's harness are not drawn: each is an equipment layer like M294-M299's on its own mesh. Wolf
+- The camel husk's saddle and the happy ghast's harness are not drawn: each is an equipment layer like M294-M299's on its own mesh. Wolf
   armour's damage cracks are not drawn (no item damage on worn pieces).
 - Banner and shield items show no patterns (the stack's `banner_patterns`
   never reach the item path), and a pot item shows plain sides. A dropped

@@ -2112,6 +2112,7 @@ this shape once.
 | M298 (2026-10-20) — a saddled pig and a saddled strider draw their saddles | **r154** | — | — |
 | M299 (2026-10-20) — a wolf draws in its armour | **r155** | — | — |
 | M300 (2026-10-20) — a saddled camel draws its saddle, and its reins while ridden | **r156** | — | — |
+| M301 (2026-10-20) — the saddled nautilus draws its saddle | **r157** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3946,6 +3947,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M301 — the nautilus's armour and saddle (2026-10-20)
+
+`NautilusRenderer` and `ZombieNautilusRenderer` add `NAUTILUS_BODY` over
+`NautilusArmorModel` and `NAUTILUS_SADDLE` over `NautilusSaddleModel`, both
+of which replace the mesh's root with one holding only the shell: the armour
+is the shell's two boxes at 0.01 plus its flat panel, the saddle the top box
+at 0.2, on 128 x 128 sheets. `nautilus_with` appends them on the shell's
+folds and `nautilus_armor` / `nautilus_saddle` split them off; they ride the
+body-armour and saddle paths for both kinds.
+
+The armour's panel has no inflation in vanilla, so it is coplanar with the
+shell's own and drawn over it only by `LESS_THAN_OR_EQUAL` draw order;
+Rewo's solid range is strictly `GREATER`, so the panel is lifted 0.002 px
+(the strider's coplanar saddle used the trim range instead, which a mix of
+inflated and flat boxes in one shell cannot).
+
+**Unit test**: the armour's three boxes (the panel two-faced), the saddle's
+one, on the base's parts. **mobtexshot m32**: iron armour adds 1,803 px and
+the saddle 330, each from its own jar sheet, both resident. **r157**: r90's
+saddled nautilus draws its saddle.
 
 ### M300 — the camel's saddle (2026-10-20)
 
