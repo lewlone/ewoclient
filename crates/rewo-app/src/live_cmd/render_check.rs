@@ -446,6 +446,9 @@ pub(super) struct RenderCheck {
     /// M326 — r181: whether a baby squid and a baby glow squid drew as
     /// `BabySquidModel`.
     pub(super) baby_squids: (bool, bool),
+    /// M327 — r182: whether a hoglet and a baby zoglin drew as
+    /// `BabyHoglinModel`.
+    pub(super) hoglets: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1211,7 +1214,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 181;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 182;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1411,6 +1414,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M327 — r182: `render_check.py` summons a hoglet (immune to
+        // zombification) and a baby zoglin; both must draw as
+        // `BabyHoglinModel` (`mobtexshot m53`).
+        row(
+            "r182 a hoglet and a baby zoglin drew as BabyHoglinModel",
+            self.hoglets.0 && self.hoglets.1,
+            format!(
+                "hoglet seen: {}, baby zoglin seen: {}",
+                self.hoglets.0, self.hoglets.1
             ),
         );
         // M326 — r181: `render_check.py` summons a baby squid and a baby glow

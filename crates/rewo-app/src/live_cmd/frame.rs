@@ -973,6 +973,11 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M327 — r182: the staged hoglet and baby zoglin.
+            for d in draws.iter() {
+                c.hoglets.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::HoglinBaby;
+                c.hoglets.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::ZoglinBaby;
+            }
             // M326 — r181: the staged baby squid and baby glow squid.
             for d in draws.iter() {
                 c.baby_squids.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::SquidBaby;

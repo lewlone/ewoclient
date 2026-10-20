@@ -1573,11 +1573,14 @@ pub enum EntityModelKind {
     /// M326 — `BabySquidModel` (`SQUID_BABY`, `GLOW_SQUID_BABY`).
     SquidBaby,
     GlowSquidBaby,
+    /// M327 — `BabyHoglinModel` (`HOGLIN_BABY`, `ZOGLIN_BABY`).
+    HoglinBaby,
+    ZoglinBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 119;
+    pub const COUNT: usize = 121;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1697,6 +1700,8 @@ impl EntityModelKind {
         EntityModelKind::ZombieVillagerBaby,
         EntityModelKind::SquidBaby,
         EntityModelKind::GlowSquidBaby,
+        EntityModelKind::HoglinBaby,
+        EntityModelKind::ZoglinBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1817,6 +1822,8 @@ impl EntityModelKind {
             EntityModelKind::ZombieVillagerBaby => "zombie_villager_baby",
             EntityModelKind::SquidBaby => "squid_baby",
             EntityModelKind::GlowSquidBaby => "glow_squid_baby",
+            EntityModelKind::HoglinBaby => "hoglin_baby",
+            EntityModelKind::ZoglinBaby => "zoglin_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1877,6 +1884,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::ZombieVillagerBaby
                 | EntityModelKind::SquidBaby
                 | EntityModelKind::GlowSquidBaby
+                | EntityModelKind::HoglinBaby
+                | EntityModelKind::ZoglinBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2842,6 +2851,17 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::GlowSquidBaby,
         textures: &["glow_squid_baby"],
         build: squid_baby,
+    },
+    // M327 — the hoglet's and the baby zoglin's sheets.
+    MobDef {
+        kind: EntityModelKind::HoglinBaby,
+        textures: &["hoglin_baby"],
+        build: hoglin_baby,
+    },
+    MobDef {
+        kind: EntityModelKind::ZoglinBaby,
+        textures: &["zoglin_baby"],
+        build: hoglin_baby,
     },
 ];
 
@@ -5350,6 +5370,71 @@ fn squid_baby() -> Model {
             Option::None,
         );
         b.cube(p, 0, (0.0, 18.0), [-1.0, -0.5, -1.0], [2.0, 6.0, 2.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M327 — `BabyHoglinModel.createBodyLayer()` (64 x 64): a body grown 0.02
+/// with its 0-wide mane, a head tilted 0.8727 (10 x 4 x 12 with two tusks and
+/// two ears; looking, as Rewo's adult's does), and four 3 x 6 x 3 legs on the
+/// adult's walk. The ears' `PartPose` angle is not what draws:
+/// `HoglinModel.setupAnim` sets their `zRot` to ∓2π/9 every frame, so they
+/// rest there as the adult's do. The zoglin's baby is the same layer.
+fn hoglin_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = [Fold::at([0.0, 24.0, 0.0])];
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 16.0),
+        [-4.0, -14.0, -7.0],
+        [8.0, 8.0, 14.0],
+        0.02,
+        false,
+        &body,
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (24.0, 39.0),
+        [0.0, -18.0, -8.0],
+        [0.0, 6.0, 11.0],
+        0.02,
+        false,
+        &body,
+    );
+    let head = b.part([0.0, 13.0, -7.0], Anim::Head, 1.0);
+    let tilt = Fold::rot([0.8727, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    for (uv, min, dims) in [
+        ((0.0, 0.0), [-5.0, -2.2605, -10.547], [10.0, 4.0, 12.0]),
+        ((44.0, 29.0), [-7.0, -4.0981, -8.4879], [2.0, 5.0, 2.0]),
+        ((52.0, 29.0), [5.0, -4.0981, -8.4879], [2.0, 5.0, 2.0]),
+    ] {
+        b.cube_f(head, 0, uv, min, dims, 0.0, false, &[tilt]);
+    }
+    for (x, z_rot, uv, min_x, mirror) in [
+        (-5.0, -PI * 2.0 / 9.0, (32.0, 5.0), -5.1, false),
+        (5.0, PI * 2.0 / 9.0, (32.0, 0.0), -0.9, true),
+    ] {
+        b.cube_f(
+            head,
+            0,
+            uv,
+            [min_x, -0.5, -2.0],
+            [6.0, 1.0, 4.0],
+            0.0,
+            mirror,
+            &[Fold::rot([0.0, 0.0, z_rot], [x, -1.0, -1.5]), tilt],
+        );
+    }
+    for (pivot, anim, uv) in [
+        ([-2.5, 18.0, 4.5], Anim::QuadHindRight, (0.0, 47.0)),
+        ([2.5, 18.0, 4.5], Anim::QuadHindLeft, (12.0, 47.0)),
+        ([-2.5, 18.0, -4.5], Anim::QuadFrontRight, (0.0, 38.0)),
+        ([2.5, 18.0, -4.5], Anim::QuadFrontLeft, (12.0, 38.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 6.0, 3.0], NONE);
     }
     b.finish(1.0)
 }
@@ -11970,6 +12055,8 @@ mod tests {
                     | EntityModelKind::ZombieVillagerBaby
                     | EntityModelKind::SquidBaby
                     | EntityModelKind::GlowSquidBaby
+                    | EntityModelKind::HoglinBaby
+                    | EntityModelKind::ZoglinBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13346,6 +13433,46 @@ mod squid_baby_tests {
                 .filter(|r| **r == ((2.0, 4.0), (20.0, 26.0)))
                 .count(),
             8
+        );
+    }
+}
+
+#[cfg(test)]
+mod hoglet_tests {
+    use super::*;
+
+    /// M327 — `BabyHoglinModel`: eleven boxes, the mane a 0-wide plate (two
+    /// faces), so 10 x 6 + 2 faces; the head box's front at (12, 12)..
+    /// (22, 16) of its sheet; the right ear at the -2π/9 `setupAnim` rests
+    /// it at, not its `PartPose` -0.8727.
+    #[test]
+    fn the_hoglet_is_its_own_model() {
+        let m = hoglin_baby();
+        assert_eq!(m.quads.len(), 10 * 6 + 2);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m.quads.iter().any(|q| q.part == head
+            && q.facing == Facing::North
+            && (span(q, 0), span(q, 1)) == ((12.0, 22.0), (12.0, 16.0))));
+        // The right ear's (32+4, 5)..(32+4+6, 5+4) face (vanilla's box-UV
+        // `Down` rect): its normal is the head's vertical turned -2π/9 about
+        // z (then tilted about x), so its x component is sin(2π/9), where
+        // the `PartPose` -0.8727 would make it sin(0.8727).
+        let ear_top = m
+            .quads
+            .iter()
+            .find(|q| {
+                q.facing == Facing::Down && (span(q, 0), span(q, 1)) == ((36.0, 42.0), (5.0, 9.0))
+            })
+            .expect("the right ear's down face");
+        let nx = ear_top.normal[0].abs();
+        assert!(
+            (nx - (2.0 * PI / 9.0).sin()).abs() < 1e-3,
+            "ear normal x {nx}"
         );
     }
 }

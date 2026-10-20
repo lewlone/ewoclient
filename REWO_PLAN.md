@@ -2137,6 +2137,7 @@ this shape once.
 | M324 (2026-10-20) — a dolphin calf draws as BabyDolphinModel | **r179** | — | — |
 | M325 (2026-10-20) — a baby zombie villager draws as BabyZombieVillagerModel | **r180** | — | — |
 | M326 (2026-10-20) — a baby squid and a baby glow squid draw as BabySquidModel | **r181** | — | — |
+| M327 (2026-10-20) — a hoglet and a baby zoglin draw as BabyHoglinModel | **r182** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

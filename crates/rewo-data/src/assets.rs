@@ -1146,6 +1146,9 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M327 — the hoglet's and the baby zoglin's sheets.
+    ("hoglin_baby", "entity/hoglin/hoglin_baby.png", 64, 64),
+    ("zoglin_baby", "entity/hoglin/zoglin_baby.png", 64, 64),
     // M326 — the baby squids' sheets.
     ("squid_baby", "entity/squid/squid_baby.png", 32, 32),
     (

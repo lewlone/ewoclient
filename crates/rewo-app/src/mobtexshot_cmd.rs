@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 52;
+const EXPECTED_WITNESSES: usize = 53;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -205,8 +205,8 @@ const MAX_SMALL: usize = 28;
 /// and happy_ghast_baby/happy_ghast, which the smaller crowd cells left too
 /// few colours to tell apart (9 without the calves). M326 added squid/
 /// squid_baby: the baby's sheet, baked from M326 on, holds the adult's
-/// colours.
-const MAX_AMBIGUOUS: usize = 12;
+/// colours. M327 added zoglin_baby/zoglin (the hoglet's is told apart).
+const MAX_AMBIGUOUS: usize = 13;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -3843,6 +3843,67 @@ fn run_check(
         "m52.both_baby_squids_draw_from_their_own_sheets",
         sq_ok,
         format!("{} (want >= 200 px each, none foreign)", sq_rows.join("; ")),
+    ));
+
+    // m53 — M327: the hoglet and the baby zoglin draw, every pixel
+    // producible by their own sheet (the mesh rests on
+    // `the_hoglet_is_its_own_model`).
+    let mut hgst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.4, 1.1, -1.4),
+        Vec3::new(0.0, 0.4, 0.0),
+    )?;
+    hgst.wr.set_entities(&[], hgst.right, hgst.up, 0.0);
+    hgst.off
+        .render(gpu, Some((&mut hgst.wr, hgst.vp)), &ov, BG)?;
+    let hg_empty = hgst.off.read_rgba(gpu)?;
+    let mut hg_rows = Vec::new();
+    let mut hg_ok = true;
+    for (kind, key) in [
+        (EntityModelKind::HoglinBaby, "hoglin_baby"),
+        (EntityModelKind::ZoglinBaby, "zoglin_baby"),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        hgst.wr
+            .set_entities(&[neutral_draw(kind)], hgst.right, hgst.up, 0.0);
+        hgst.off
+            .render(gpu, Some((&mut hgst.wr, hgst.vp)), &ov, BG)?;
+        let frame = hgst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(hg_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        hg_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        hg_rows.push(format!(
+            "{key}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    hgst.destroy(gpu);
+    w.push(wit(
+        "m53.the_hoglet_and_the_baby_zoglin_draw_from_their_own_sheets",
+        hg_ok,
+        format!("{} (want >= 200 px each, none foreign)", hg_rows.join("; ")),
     ));
 
     // ---- report ----------------------------------------------------------

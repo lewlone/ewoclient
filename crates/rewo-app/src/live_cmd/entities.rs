@@ -3675,6 +3675,9 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         // M326 — `BabySquidModel`, the squid's and the glow squid's.
         EntityModelKind::Squid if baby => EntityModelKind::SquidBaby,
         EntityModelKind::GlowSquid if baby => EntityModelKind::GlowSquidBaby,
+        // M327 — `BabyHoglinModel`, the hoglin's and the zoglin's.
+        EntityModelKind::Hoglin if baby => EntityModelKind::HoglinBaby,
+        EntityModelKind::Zoglin if baby => EntityModelKind::ZoglinBaby,
         k => k,
     }
 }
@@ -3697,6 +3700,7 @@ pub(crate) fn baby_scales(kind: EntityModelKind) -> (f32, f32) {
         EntityModelKind::SheepBaby | EntityModelKind::DolphinBaby => (1.0, 0.5),
         EntityModelKind::ZombieVillagerBaby => (1.0, 0.5),
         EntityModelKind::SquidBaby | EntityModelKind::GlowSquidBaby => (1.0, 0.5),
+        EntityModelKind::HoglinBaby | EntityModelKind::ZoglinBaby => (1.0, 0.5),
         _ => (0.5, 0.5),
     }
 }
