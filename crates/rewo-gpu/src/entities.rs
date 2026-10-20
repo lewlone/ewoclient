@@ -1192,6 +1192,11 @@ pub struct EntityPass {
     swirl: Option<EntityGlint>,
     swirl_pipeline: Option<vk::Pipeline>,
     swirl_verts: u32,
+    /// M287 — the powered wither's sheet (`wither_armor.png`) on the same
+    /// pipeline, and how many of the swirl range's vertices are the
+    /// creeper's (they come first; the wither's follow).
+    wither_swirl: Option<EntityGlint>,
+    swirl_split: u32,
     /// M286 — the breeze's wind (`RenderPipelines.BREEZE_WIND`): its own
     /// sheet (`breeze_wind.png`, REPEAT and NEAREST), its own translucent
     /// gamma-space pipeline, the ninth range.
@@ -1301,6 +1306,8 @@ pub struct MobModel {
     /// sheet (not the atlas): drawn only while `EntityDraw::powered`. Empty
     /// for every other kind.
     swirl: Vec<GpuQuad>,
+    /// M287 — which swirl sheet [`Self::swirl`] samples.
+    swirl_sheet: SwirlSheet,
     /// M286 — the breeze's wind funnel (its texture slot 1), UVs in `0..1`
     /// of its own sheet: `BreezeWindLayer` draws it every frame. Empty for
     /// every other kind (and in the face-label mode, which keeps it in
@@ -1657,9 +1664,23 @@ impl EntityPass {
             // creeper (a pack model replaces the base geometry, and its parts
             // need not line up with the shell's) and only when its parts are
             // the base's, which the shell's transforms are indexed by.
-            let swirl = if def.kind == EntityModelKind::Creeper && !debug_tex {
-                let shell = mobs::creeper_armor();
-                let [tw, th] = mobs::CREEPER_ARMOR_TEXTURE;
+            // M287 — and the powered wither's (`WITHER_ARMOR`).
+            let shell = match def.kind {
+                EntityModelKind::Creeper => Some((
+                    mobs::creeper_armor(),
+                    mobs::CREEPER_ARMOR_TEXTURE,
+                    SwirlSheet::Creeper,
+                )),
+                EntityModelKind::Wither => Some((
+                    mobs::wither_armor(),
+                    mobs::WITHER_ARMOR_TEXTURE,
+                    SwirlSheet::Wither,
+                )),
+                _ => None,
+            }
+            .filter(|_| !debug_tex);
+            let swirl_sheet = shell.as_ref().map_or(SwirlSheet::Creeper, |s| s.2);
+            let swirl = if let Some((shell, [tw, th], _)) = shell {
                 if shell.parts.len() == m.parts.len() {
                     shell
                         .quads
@@ -1683,6 +1704,7 @@ impl EntityPass {
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 swirl,
+                swirl_sheet,
                 wind,
                 tinted_slot: mobs::tinted_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
@@ -1830,6 +1852,8 @@ impl EntityPass {
                 swirl: None,
                 swirl_pipeline: None,
                 swirl_verts: 0,
+                wither_swirl: None,
+                swirl_split: 0,
                 wind: None,
                 wind_pipeline: None,
                 wind_verts: 0,
@@ -2350,7 +2374,7 @@ impl EntityPass {
         // share the solid range's strict `GREATER`.
         let mut emissive_verts: Vec<Vertex> = Vec::new();
         // M285: the charged creeper's swirl, additive in gamma space.
-        let mut swirl_verts: Vec<Vertex> = Vec::new();
+        let mut swirl_verts: [Vec<Vertex>; 2] = [Vec::new(), Vec::new()];
         // M286: the breeze's wind, translucent in gamma space.
         let mut wind_verts: Vec<Vertex> = Vec::new();
         let glint_offsets =
@@ -2472,14 +2496,8 @@ impl EntityPass {
                         outline: None,
                         ..*d
                     };
-                    let (mut gv, mut gt, mut ge, mut gs, mut gg, mut ga) = (
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                    );
+                    let (mut gv, mut gt, mut ge, mut gg, mut ga) =
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
                     let mut gsink = GlintSink {
                         verts: &mut gg,
                         offsets: glint_offsets,
@@ -2494,7 +2512,7 @@ impl EntityPass {
                         &mut gv,
                         &mut gt,
                         &mut ge,
-                        &mut gs,
+                        &mut [Vec::new(), Vec::new()],
                         &mut Vec::new(),
                         &ghost,
                         model,
@@ -2611,8 +2629,13 @@ impl EntityPass {
         let outline_end = verts.len();
         // M285 — `energySwirl`'s `sortOnUpload`: far quads first, so the
         // shell's back faces add before its front ones pass the depth test.
-        sort_quads_back_to_front(&mut swirl_verts, cam_pos);
-        verts.append(&mut swirl_verts);
+        // M287 — one render type per sheet, each sorted on its own.
+        let [mut creeper_swirl, mut wither_swirl] = swirl_verts;
+        sort_quads_back_to_front(&mut creeper_swirl, cam_pos);
+        sort_quads_back_to_front(&mut wither_swirl, cam_pos);
+        let split = creeper_swirl.len() as u32;
+        verts.append(&mut creeper_swirl);
+        verts.append(&mut wither_swirl);
         let swirl_end = verts.len();
         // M286 — `breezeWind`'s `sortOnUpload`, likewise.
         sort_quads_back_to_front(&mut wind_verts, cam_pos);
@@ -2649,6 +2672,7 @@ impl EntityPass {
         self.emissive_verts = s5;
         self.outline_verts = s6;
         self.swirl_verts = s7;
+        self.swirl_split = split.min(s7);
         self.wind_verts = s8;
     }
 
@@ -3365,8 +3389,9 @@ impl EntityPass {
         // Vanilla emissive-layer geometry (M57). Its own range because it
         // needs its own pipeline (depth GREATER_OR_EQUAL, no depth write).
         emis: &mut Vec<Vertex>,
-        // M285 — the energy swirl's geometry (its own sheet and pipeline).
-        swirl: &mut Vec<Vertex>,
+        // M285 — the energy swirl's geometry (its own sheets and pipeline),
+        // by [`SwirlSheet`].
+        swirl: &mut [Vec<Vertex>; 2],
         // M286 — the breeze's wind (its own sheet and pipeline).
         wind_out: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
@@ -3767,18 +3792,21 @@ impl EntityPass {
         // `OffsetTextureTransform`, added to the layer's own UVs (the sheet's
         // REPEAT sampler wraps them). It is the layer's own model copy, so
         // the body's visibility (invisibility) does not hide it.
+        // M287 — the powered wither's `WitherArmorLayer` is the same layer
+        // class with its own `xOffset`.
         if d.powered && !model.swirl.is_empty() {
-            let off = (ctx.age * 0.01) % 1.0;
+            let [u_off, v_off] = swirl_offsets(model.swirl_sheet, ctx.age);
             let grey = SWIRL_GREY;
+            let out = &mut swirl[model.swirl_sheet as usize];
             for q in &model.swirl {
-                if swirl.len() + 6 > MAX_VERTS {
+                if out.len() + 6 > MAX_VERTS {
                     return;
                 }
                 let p4 = place(q);
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
-                    swirl.push(Vertex {
+                    out.push(Vertex {
                         pos: p4[i],
-                        uv: [q.uv[i][0] + off, q.uv[i][1] + off],
+                        uv: [q.uv[i][0] + u_off, q.uv[i][1] + v_off],
                         color: [grey, grey, grey, 1.0],
                         light_hurt: [1.0, 1.0, 1.0, 0.0],
                     });
@@ -4264,12 +4292,17 @@ impl EntityPass {
     pub fn init_swirl(
         &mut self,
         gpu: &mut Gpu,
+        which: SwirlSheet,
         rgba: &[u8],
         w: u32,
         h: u32,
         color_format: vk::Format,
     ) -> Result<(), String> {
-        if self.swirl.is_some() {
+        let slot = match which {
+            SwirlSheet::Creeper => &self.swirl,
+            SwirlSheet::Wither => &self.wither_swirl,
+        };
+        if slot.is_some() {
             return Ok(());
         }
         let sheet = self.load_sheet(gpu, rgba, w, h, color_format, vk::Filter::NEAREST)?;
@@ -4282,7 +4315,10 @@ impl EntityPass {
                 SheetBlend::Swirl,
             )?);
         }
-        self.swirl = Some(sheet);
+        match which {
+            SwirlSheet::Creeper => self.swirl = Some(sheet),
+            SwirlSheet::Wither => self.wither_swirl = Some(sheet),
+        }
         Ok(())
     }
 
@@ -4370,9 +4406,13 @@ impl EntityPass {
         self.swirl.is_some() && self.swirl_pipeline.is_some()
     }
 
-    /// Vertices in the swirl range for the last [`Self::set_entities`].
-    pub fn swirl_vertex_count(&self) -> u32 {
-        self.swirl_verts
+    /// Vertices in the swirl range for the last [`Self::set_entities`], on
+    /// one sheet (M287).
+    pub fn swirl_vertex_count(&self, which: SwirlSheet) -> u32 {
+        match which {
+            SwirlSheet::Creeper => self.swirl_split,
+            SwirlSheet::Wither => self.swirl_verts - self.swirl_split,
+        }
     }
 
     /// M285 — the energy swirl, right after the emissive layers (vanilla's
@@ -4385,41 +4425,47 @@ impl EntityPass {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        let (Some(g), Some(pipeline)) = (self.swirl.as_ref(), self.swirl_pipeline) else {
+        let Some(pipeline) = self.swirl_pipeline else {
             return;
         };
-        if self.swirl_verts == 0 {
-            return;
-        }
-        unsafe {
-            if !self.bind_common(gpu, cb, view_proj, extent) {
-                return;
+        let base = self.solid_verts
+            + self.text_verts
+            + self.glint_verts
+            + self.trim_verts
+            + self.armor_glint_verts
+            + self.emissive_verts
+            + self.outline_verts;
+        // M287 — the creeper's sub-range, then the wither's, each on its
+        // own sheet.
+        let parts = [
+            (self.swirl.as_ref(), self.swirl_split, base),
+            (
+                self.wither_swirl.as_ref(),
+                self.swirl_verts - self.swirl_split,
+                base + self.swirl_split,
+            ),
+        ];
+        for (sheet, count, first) in parts {
+            let Some(g) = sheet else { continue };
+            if count == 0 {
+                continue;
             }
-            let device = &gpu.device;
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            device.cmd_bind_descriptor_sets(
-                cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.layout,
-                0,
-                &[g.set],
-                &[],
-            );
-            // Last range in the buffer — see the storage comment in
-            // `set_draws`.
-            device.cmd_draw(
-                cb,
-                self.swirl_verts,
-                1,
-                self.solid_verts
-                    + self.text_verts
-                    + self.glint_verts
-                    + self.trim_verts
-                    + self.armor_glint_verts
-                    + self.emissive_verts
-                    + self.outline_verts,
-                0,
-            );
+            unsafe {
+                if !self.bind_common(gpu, cb, view_proj, extent) {
+                    return;
+                }
+                let device = &gpu.device;
+                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cb,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.layout,
+                    0,
+                    &[g.set],
+                    &[],
+                );
+                device.cmd_draw(cb, count, 1, first, 0);
+            }
         }
     }
 
@@ -4729,6 +4775,7 @@ impl EntityPass {
                 self.glint.take(),
                 self.armor_glint.take(),
                 self.swirl.take(),
+                self.wither_swirl.take(),
                 self.wind.take(),
             ] {
                 let Some(mut g) = sheet else { continue };
@@ -7713,6 +7760,27 @@ enum SheetBlend {
     Wind,
 }
 
+/// M287 — the energy-swirl sheets, one render type each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwirlSheet {
+    /// `CreeperPowerLayer`, `creeper_armor.png`.
+    Creeper = 0,
+    /// `WitherArmorLayer`, `wither_armor.png`.
+    Wither = 1,
+}
+
+/// `energySwirl(texture, xOffset(t) % 1, t * 0.01 % 1)`'s two offsets:
+/// `CreeperPowerLayer.xOffset(t) = t * 0.01`, `WitherArmorLayer.xOffset(t)
+/// = Mth.cos(t * 0.02) * 3` (Java's float `%` keeps the sign; the sampler
+/// repeats either way).
+pub fn swirl_offsets(which: SwirlSheet, t: f32) -> [f32; 2] {
+    let x = match which {
+        SwirlSheet::Creeper => t * 0.01,
+        SwirlSheet::Wither => mth_cos((t * 0.02) as f64) * 3.0,
+    };
+    [x % 1.0, (t * 0.01) % 1.0]
+}
+
 /// `0xFF808080`'s grey, the swirl's vertex colour (gamma; the pass is).
 pub(crate) const SWIRL_GREY: f32 = 128.0 / 255.0;
 
@@ -8629,6 +8697,19 @@ mod tests {
     /// *not* a multiple of the caps and drew the same conclusion from it, which
     /// is a non-sequitur — the test was right and the reasoning beside it was
     /// not. A cap that was not a power of two would genuinely skip here.
+    #[test]
+    fn the_swirl_offsets_follow_each_layer() {
+        let [u, v] = swirl_offsets(SwirlSheet::Creeper, 150.0);
+        assert!((u - 0.5).abs() < 1e-5 && (v - 0.5).abs() < 1e-5, "{u} {v}");
+        // `Mth.cos(0) * 3 = 3`, `3 % 1 = 0`; at t = 50 `cos(1) * 3` ~ 1.6209.
+        assert_eq!(swirl_offsets(SwirlSheet::Wither, 0.0), [0.0, 0.0]);
+        let [u, _] = swirl_offsets(SwirlSheet::Wither, 50.0);
+        assert!((u - (3.0 * 1f32.cos()) % 1.0).abs() < 1e-3, "{u}");
+        // A negative cosine keeps its sign through `%`, as Java's does.
+        let [u, _] = swirl_offsets(SwirlSheet::Wither, 100.0);
+        assert!(u < 0.0, "{u}");
+    }
+
     #[test]
     fn the_swirl_sorts_its_quads_farthest_first() {
         let quad = |z: f32| {

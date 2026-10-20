@@ -56,6 +56,7 @@ impl WorldRenderer {
     pub fn init_entity_swirl(
         &mut self,
         gpu: &mut Gpu,
+        which: crate::entities::SwirlSheet,
         rgba: &[u8],
         w: u32,
         h: u32,
@@ -64,7 +65,7 @@ impl WorldRenderer {
             return Ok(());
         };
         match self.entities.as_mut() {
-            Some(p) => p.init_swirl(gpu, rgba, w, h, format),
+            Some(p) => p.init_swirl(gpu, which, rgba, w, h, format),
             None => Ok(()),
         }
     }
@@ -96,10 +97,10 @@ impl WorldRenderer {
     }
 
     /// M285 — vertices in the swirl range after the last `set_entities`.
-    pub fn swirl_vertex_count(&self) -> u32 {
+    pub fn swirl_vertex_count(&self, which: crate::entities::SwirlSheet) -> u32 {
         self.entities
             .as_ref()
-            .map(|p| p.swirl_vertex_count())
+            .map(|p| p.swirl_vertex_count(which))
             .unwrap_or(0)
     }
 

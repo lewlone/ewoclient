@@ -1469,8 +1469,27 @@ impl LiveApp {
                 .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Creeper && d.powered)
             {
                 rc.powered_creeper_frames += 1;
-                if state.world_renderer.swirl_vertex_count() > 0 {
+                if state
+                    .world_renderer
+                    .swirl_vertex_count(rewo_gpu::entities::SwirlSheet::Creeper)
+                    > 0
+                {
                     rc.swirl_frames += 1;
+                }
+            }
+            // M287 — r145: the staged wither (at half health) drew its armour
+            // swirl on its own sheet.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Wither && d.powered)
+            {
+                rc.powered_wither_frames += 1;
+                if state
+                    .world_renderer
+                    .swirl_vertex_count(rewo_gpu::entities::SwirlSheet::Wither)
+                    > 0
+                {
+                    rc.wither_swirl_frames += 1;
                 }
             }
             // M286 — r144: the staged breeze drew its wind in its own range.

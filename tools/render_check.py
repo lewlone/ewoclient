@@ -224,6 +224,9 @@ PRECMD = (
     "summon minecraft:creeper ~-16 ~ ~-2 {NoAI:1b,Invulnerable:1b,Fuse:32767s,powered:1b};"
     # M286 -- r144. A breeze, NoAI (it never shoots), beside them.
     "summon minecraft:breeze ~-18 ~ ~-2 {NoAI:1b,Invulnerable:1b,Silent:1b};"
+    # M287 -- r145. A wither below half health (100 of 300), NoAI and silent,
+    # further along the same row.
+    "summon minecraft:wither ~-22 ~ ~-2 {NoAI:1b,Invulnerable:1b,Silent:1b,Health:100f};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

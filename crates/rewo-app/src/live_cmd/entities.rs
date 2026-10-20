@@ -4053,7 +4053,10 @@ pub(super) fn collect_entities<'a>(
             // M278 — the Glowing effect's outline, in the team's colour.
             outline: glow_colour(session, id),
             // M285 — a charged creeper's swirl.
-            powered: creeper_swelling.is_some() && session.world.entities.creeper_powered(id),
+            // M287 — and a wither at half health or less (`isPowered`).
+            powered: (creeper_swelling.is_some() && session.world.entities.creeper_powered(id))
+                || (name == "minecraft:wither"
+                    && wither_powered(&session.world.entities, id, attr_reg)),
             // M281 — burning: the flames, at the draw's light probe with
             // block light 15.
             on_fire: fire_draw(session, id, name, now).map(|frames| rewo_gpu::entities::FireDraw {
@@ -4197,8 +4200,17 @@ pub(crate) fn init_entities_maybe_cem(
         wr.init_entity_armor_glint(gpu, &g.rgba, g.w, g.h)?;
     }
     // M285: the charged creeper's swirl sheet, same ordering rule.
-    if let Some(g) = baked.creeper_armor.as_ref() {
-        wr.init_entity_swirl(gpu, &g.rgba, g.w, g.h)?;
+    // M287: and the powered wither's.
+    for (image, which) in [
+        (
+            &baked.creeper_armor,
+            rewo_gpu::entities::SwirlSheet::Creeper,
+        ),
+        (&baked.wither_armor, rewo_gpu::entities::SwirlSheet::Wither),
+    ] {
+        if let Some(g) = image.as_ref() {
+            wr.init_entity_swirl(gpu, which, &g.rgba, g.w, g.h)?;
+        }
     }
     // M286: the breeze wind's sheet, the jar texture the atlas also packs.
     if let Some(t) = breeze_wind_texture(baked) {
@@ -4274,6 +4286,27 @@ pub(crate) fn adult_key_of(swap: &rewo_data::baby_texture_table::BabySwap) -> Op
         .strip_prefix("textures/")
         .unwrap_or(swap.adult_path);
     rewo_data::assets::mob_texture_key(rel)
+}
+
+/// M287 — `WitherBoss.isPowered`: `getHealth() <= getMaxHealth() / 2`, the
+/// max health from the attribute (synced, or the registry's default when the
+/// server never sent it, as vanilla's client reads it). No registry: false.
+pub(crate) fn wither_powered(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    reg: Option<&rewo_data::attributes::AttributeRegistry>,
+) -> bool {
+    let Some((max, _)) = reg.and_then(|reg| {
+        rewo_world::attributes::resolve(
+            ents.attributes(id),
+            Some("minecraft:wither"),
+            "max_health",
+            reg,
+        )
+    }) else {
+        return false;
+    };
+    ents.death_state(id).health <= max as f32 / 2.0
 }
 
 /// M286 — `entity/breeze/breeze_wind.png` from the bake's mob textures.

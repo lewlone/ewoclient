@@ -735,6 +735,9 @@ pub struct BakedAssets {
     /// M285 — `textures/entity/creeper/creeper_armor.png`, the charged
     /// creeper's energy swirl. `None` draws no swirl.
     pub creeper_armor: Option<DecodedImage>,
+    /// M287 — `textures/entity/wither/wither_armor.png`, the powered
+    /// wither's swirl.
+    pub wither_armor: Option<DecodedImage>,
     /// `textures/map/map_background.png` (64 x 64) and
     /// `map_background_checkerboard.png` (128 x 128), the held map's two
     /// backgrounds (M192, `ItemInHandRenderer.MAP_BACKGROUND*`). `None` draws
@@ -1788,6 +1791,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let powder_snow = bake_misc_texture(&mut jar, "powder_snow_outline.png");
     let spyglass_scope = bake_misc_texture(&mut jar, "spyglass_scope.png");
     let creeper_armor = bake_texture_at(&mut jar, "entity/creeper/creeper_armor.png");
+    let wither_armor = bake_texture_at(&mut jar, "entity/wither/wither_armor.png");
     let map_background = bake_map_texture(&mut jar, "map_background.png");
     let map_background_checkerboard = bake_map_texture(&mut jar, "map_background_checkerboard.png");
     let map_decorations = crate::map_decoration_table::TYPES
@@ -2386,6 +2390,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         powder_snow,
         spyglass_scope,
         creeper_armor,
+        wither_armor,
         map_background,
         map_background_checkerboard,
         map_decorations,

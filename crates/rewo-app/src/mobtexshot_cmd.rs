@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 22;
+const EXPECTED_WITNESSES: usize = 23;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -1521,11 +1521,21 @@ fn run_check(
             Vec3::new(1.2, 1.3, 2.4),
             Vec3::new(0.0, 0.85, 0.0),
         )?;
-        st.wr.init_entity_swirl(gpu, sheet, armor.w, armor.h)?;
+        st.wr.init_entity_swirl(
+            gpu,
+            rewo_gpu::entities::SwirlSheet::Creeper,
+            sheet,
+            armor.w,
+            armor.h,
+        )?;
         let mut shot = |d: &[EntityDraw<'_>], time: f32| -> Result<(Vec<u8>, u32), String> {
             st.wr.set_entities(d, st.right, st.up, time);
             st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
-            Ok((st.off.read_rgba(gpu)?, st.wr.swirl_vertex_count()))
+            Ok((
+                st.off.read_rgba(gpu)?,
+                st.wr
+                    .swirl_vertex_count(rewo_gpu::entities::SwirlSheet::Creeper),
+            ))
         };
         let (empty, _) = shot(&[], 0.0)?;
         let (plain, plain_n) = shot(&[neutral_draw(EntityModelKind::Creeper)], 0.0)?;
@@ -1694,6 +1704,84 @@ fn run_check(
              opaque wind reaching the sheet colour only after many; and at most a tenth \
              at one, the far faces drawing first), first pixel no \
              layer count explains (under, got): {wind_bad:?}"
+        ),
+    ));
+
+    // m23 — M287: the powered wither's armour swirl (`WitherArmorLayer`, the
+    // same `ENERGY_SWIRL` as m21's) on its OWN sheet. A uniform sheet goes to
+    // the wither's slot alone (the creeper's stays empty): a powered wither
+    // must add exactly `k · round(u · 128 / 255)` (mostly one layer over the
+    // body) and an unpowered one nothing, so a wither sub-range drawn with
+    // the creeper's sheet, or not drawn, fails.
+    let Some(warmor) = baked.wither_armor.as_ref() else {
+        return Err("mobtexshot: the jar has no wither_armor.png".into());
+    };
+    const WITHER_U: [u8; 3] = [20, 70, 40];
+    let wr1 = WITHER_U.map(|c| (c as f32 * 128.0 / 255.0).round() as i32);
+    let wither_sheet: Vec<u8> = (0..warmor.w * warmor.h)
+        .flat_map(|_| [WITHER_U[0], WITHER_U[1], WITHER_U[2], 255])
+        .collect();
+    let mut wst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.0, 3.2, 5.0),
+        Vec3::new(0.0, 2.6, 0.0),
+    )?;
+    wst.wr.init_entity_swirl(
+        gpu,
+        rewo_gpu::entities::SwirlSheet::Wither,
+        &wither_sheet,
+        warmor.w,
+        warmor.h,
+    )?;
+    let mut wshot = |d: EntityDraw<'_>| -> Result<(Vec<u8>, u32), String> {
+        wst.wr.set_entities(&[d], wst.right, wst.up, 0.0);
+        wst.off.render(gpu, Some((&mut wst.wr, wst.vp)), &ov, BG)?;
+        Ok((
+            wst.off.read_rgba(gpu)?,
+            wst.wr
+                .swirl_vertex_count(rewo_gpu::entities::SwirlSheet::Wither),
+        ))
+    };
+    let (w_plain, w_plain_n) = wshot(neutral_draw(EntityModelKind::Wither))?;
+    let (w_lit, w_lit_n) = wshot(EntityDraw {
+        powered: true,
+        ..neutral_draw(EntityModelKind::Wither)
+    })?;
+    wst.destroy(gpu);
+    let (mut w_body, mut w_single, mut w_touched, mut w_bad) = (0usize, 0usize, 0usize, None);
+    for (a, b) in w_lit
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(w_plain.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        w_touched += 1;
+        if a[..3].contains(&255) {
+            continue;
+        }
+        let d = [0, 1, 2].map(|c| a[c] as i32 - b[c] as i32);
+        match (1..=6).find(|&k| (0..3).all(|c| (d[c] - k * wr1[c]).abs() <= k)) {
+            Some(k) => {
+                w_body += 1;
+                w_single += (k == 1) as usize;
+            }
+            None if w_bad.is_none() => w_bad = Some(d),
+            None => {}
+        }
+    }
+    w.push(wit(
+        "m23.a_powered_wither_adds_its_swirl_from_its_own_sheet",
+        w_plain_n == 0 && w_lit_n > 0 && w_bad.is_none() && w_body >= 200 && w_single * 2 >= w_body,
+        format!(
+            "wither swirl vertices plain {w_plain_n} / powered {w_lit_n}; {w_touched} px \
+             touched, {w_body} graded (want >= 200) of which {w_single} single layers of \
+             {wr1:?} (want >= half); first rise no layer count explains: {w_bad:?}"
         ),
     ));
 

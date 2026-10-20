@@ -350,6 +350,10 @@ pub(super) struct RenderCheck {
     /// them filled the wind range.
     pub(super) breeze_frames: usize,
     pub(super) wind_frames: usize,
+    /// M287 — r145: frames with the half-health wither drawn powered, and
+    /// how many of them filled its swirl sub-range.
+    pub(super) powered_wither_frames: usize,
+    pub(super) wither_swirl_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1115,7 +1119,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 144;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 145;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1315,6 +1319,18 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M287 — r145: `render_check.py` summons a NoAI wither at 100 of its
+        // 300 health. The client's `isPowered` (health <= max / 2, the max
+        // from the attribute) must hold and its armour swirl draw on the
+        // wither's own sheet. No wither swirl drew until M287.
+        row(
+            "r145 a wither at half health drew its armour swirl",
+            self.powered_wither_frames >= 1 && self.wither_swirl_frames >= 1,
+            format!(
+                "{} frames drew it powered, {} with swirl geometry",
+                self.powered_wither_frames, self.wither_swirl_frames
             ),
         );
         // M286 — r144: `render_check.py` summons a NoAI breeze. Its wind

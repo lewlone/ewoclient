@@ -9251,13 +9251,31 @@ fn ravager() -> Model {
 
 /// `WitherBossModel`: three skulls over a floating spine + ribs + tail.
 fn wither() -> Model {
+    wither_with(0.0)
+}
+
+/// M287 — `ModelLayers.WITHER_ARMOR`: `WitherBossModel.createBodyLayer(
+/// INNER_ARMOR_DEFORMATION)`, `CubeDeformation(0.5F)`: the powered wither's
+/// swirl shell, the same parts in the same order as [`wither`]. Its texture
+/// is `wither_armor.png` ([`WITHER_ARMOR_TEXTURE`]).
+pub fn wither_armor() -> Model {
+    wither_with(0.5)
+}
+
+/// `LayerDefinition.create(mesh, 64, 64)` for the wither layers.
+pub const WITHER_ARMOR_TEXTURE: [f32; 2] = [64.0, 64.0];
+
+/// `WitherBossModel.createBodyLayer(g)`.
+fn wither_with(g: f32) -> Model {
     let mut b = ModelBuilder::new();
-    b.cube(
+    b.cube_f(
         STATIC_PART,
         0,
         (0.0, 16.0),
         [-10.0, 3.9, -0.5],
         [20.0, 3.0, 3.0],
+        g,
+        false,
         NONE,
     );
     let spine = Fold::rot([0.20420352, 0.0, 0.0], [-2.0, 6.9, -0.5]);
@@ -9267,7 +9285,7 @@ fn wither() -> Model {
         (0.0, 22.0),
         [0.0, 0.0, 0.0],
         [3.0, 10.0, 3.0],
-        0.0,
+        g,
         false,
         &[spine],
     );
@@ -9277,7 +9295,7 @@ fn wither() -> Model {
         (24.0, 22.0),
         [-4.0, 1.5, 0.5],
         [11.0, 2.0, 2.0],
-        0.0,
+        g,
         false,
         &[spine],
     );
@@ -9287,7 +9305,7 @@ fn wither() -> Model {
         (24.0, 22.0),
         [-4.0, 4.0, 0.5],
         [11.0, 2.0, 2.0],
-        0.0,
+        g,
         false,
         &[spine],
     );
@@ -9297,7 +9315,7 @@ fn wither() -> Model {
         (24.0, 22.0),
         [-4.0, 6.5, 0.5],
         [11.0, 2.0, 2.0],
-        0.0,
+        g,
         false,
         &[spine],
     );
@@ -9313,37 +9331,43 @@ fn wither() -> Model {
         (12.0, 22.0),
         [0.0, 0.0, 0.0],
         [3.0, 6.0, 3.0],
-        0.0,
+        g,
         false,
         &[tail],
     );
     let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_f(
         head,
         0,
         (0.0, 0.0),
         [-4.0, -4.0, -4.0],
         [8.0, 8.0, 8.0],
+        g,
+        false,
         NONE,
     );
     // Side heads track the look too (vanilla gives them independent
     // targets; sharing the net yaw reads right).
     let head_r = b.part([-8.0, 4.0, 0.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_f(
         head_r,
         0,
         (32.0, 0.0),
         [-4.0, -4.0, -4.0],
         [6.0, 6.0, 6.0],
+        g,
+        false,
         NONE,
     );
     let head_l = b.part([10.0, 4.0, 0.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_f(
         head_l,
         0,
         (32.0, 0.0),
         [-4.0, -4.0, -4.0],
         [6.0, 6.0, 6.0],
+        g,
+        false,
         NONE,
     );
     b.finish(1.0)
@@ -10831,5 +10855,33 @@ mod breeze_wind_tests {
         let m = breeze();
         assert!(m.quads.iter().any(|q| q.tex == BREEZE_WIND_SLOT));
         assert!(m.quads.iter().any(|q| q.tex != BREEZE_WIND_SLOT));
+    }
+}
+
+#[cfg(test)]
+mod wither_armor_tests {
+    use super::*;
+
+    /// M287 — `WITHER_ARMOR` is the wither at `CubeDeformation(0.5F)`: the
+    /// centre head's cube spans `-4.5..4.5` against `-4..4`, the parts and
+    /// UVs are the base's.
+    #[test]
+    fn the_wither_armour_is_the_wither_inflated_half() {
+        let (base, shell) = (wither(), wither_armor());
+        assert_eq!(base.parts.len(), shell.parts.len());
+        assert_eq!(base.quads.len(), shell.quads.len());
+        for (a, b) in base.quads.iter().zip(&shell.quads) {
+            assert_eq!((a.part, a.uv), (b.part, b.uv), "same parts, same UVs");
+        }
+        // The centre head is the seventh cube (after the shoulders, the
+        // ribcage's four and the tail): quads 36..42, pivot at the origin.
+        let span = |m: &Model| {
+            m.quads[36..42]
+                .iter()
+                .flat_map(|q| q.pos.iter().map(|p| p[1]))
+                .fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)))
+        };
+        assert_eq!(span(&base), (-4.0, 4.0));
+        assert_eq!(span(&shell), (-4.5, 4.5));
     }
 }
