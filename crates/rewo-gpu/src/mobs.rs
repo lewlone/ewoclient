@@ -1548,11 +1548,14 @@ pub enum EntityModelKind {
     HuskBaby,
     /// M318 — `BabyVillagerModel` (`VILLAGER_BABY`), swapped in for a baby.
     VillagerBaby,
+    /// M319 — `BabyDrownedModel` (`BabyZombieModel`'s layer) with its outer
+    /// layer, swapped in for a baby.
+    DrownedBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 107;
+    pub const COUNT: usize = 108;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1660,6 +1663,7 @@ impl EntityModelKind {
         EntityModelKind::ZombieBaby,
         EntityModelKind::HuskBaby,
         EntityModelKind::VillagerBaby,
+        EntityModelKind::DrownedBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1768,6 +1772,7 @@ impl EntityModelKind {
             EntityModelKind::ZombieBaby => "zombie_baby",
             EntityModelKind::HuskBaby => "husk_baby",
             EntityModelKind::VillagerBaby => "villager_baby",
+            EntityModelKind::DrownedBaby => "drowned_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1816,6 +1821,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::ZombieBaby
                 | EntityModelKind::HuskBaby
                 | EntityModelKind::VillagerBaby
+                | EntityModelKind::DrownedBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2701,6 +2707,13 @@ pub static MOBS: &[MobDef] = &[
         textures: &["villager_baby"],
         build: villager_baby,
     },
+    // M319 — `DrownedRenderer.BABY_DROWNED_LOCATION` and
+    // `DrownedOuterLayer.BABY_DROWNED_OUTER_LAYER_LOCATION`.
+    MobDef {
+        kind: EntityModelKind::DrownedBaby,
+        textures: &["drowned_baby", "drowned_outer_baby"],
+        build: drowned_baby,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3082,70 +3095,83 @@ fn zombie() -> Model {
 /// offset (the left limbs not mirrored). Its layout is not the adult's: the
 /// baby sheet painted onto the adult mesh, which Rewo did from M175 to M316,
 /// scrambles it. At `scale` (the husk's renderer adds 1.0625).
-fn zombie_baby_like(scale: f32) -> Model {
+fn zombie_baby_like(scale: f32, outer: Option<usize>) -> Model {
     let mut b = ModelBuilder::new();
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (16.0, 16.0),
-        [-2.0, -2.5, -1.0],
-        [4.0, 5.0, 2.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 17.5, 0.0])],
-    );
+    // M319 — the drowned's outer layer is `BabyZombieModel.createBodyLayer`
+    // at 0.25 on texture slot `outer`; its head boxes keep their own fixed
+    // deformations (0 and 0.25), so they would be coplanar with the base
+    // head's: lifted 0.002 px under Rewo's strict depth test.
+    let layers: &[(usize, f32, f32)] = match outer {
+        Some(t) => &[(0, 0.0, 0.0), (t, 0.25, 0.002)],
+        None => &[(0, 0.0, 0.0)],
+    };
     let head = b.part([0.0, 15.25, 0.0], Anim::Head, 1.0);
-    b.cube(
-        head,
-        0,
-        (3.0, 3.0),
-        [-3.0, -6.25, -3.0],
-        [6.0, 6.0, 6.0],
-        NONE,
-    );
-    b.cube_g(
-        head,
-        0,
-        (35.0, 3.0),
-        [-3.0, -6.15, -3.0],
-        [6.0, 6.0, 6.0],
-        0.25,
-        NONE,
-    );
-    for (name, pivot, anim, uv) in [
-        (
-            "right_arm",
-            [-3.0, 15.5, 0.0],
-            Anim::UndeadArmRight,
-            (36.0, 16.0),
-        ),
-        (
-            "left_arm",
-            [3.0, 15.5, 0.0],
-            Anim::UndeadArmLeft,
-            (28.0, 16.0),
-        ),
-    ] {
-        let arm = b.part_named(name, pivot, [0.0; 3], anim, 1.0, None);
-        b.cube(arm, 0, uv, [-1.0, -0.5, -1.0], [2.0, 5.0, 2.0], NONE);
-    }
-    for (pivot, anim, uv) in [
-        ([-1.0, 20.0, 0.0], Anim::LegRight, (8.0, 16.0)),
-        ([1.0, 20.0, 0.0], Anim::LegLeft, (0.0, 16.0)),
-    ] {
-        let leg = b.part(pivot, anim, 1.0);
-        b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 4.0, 2.0], NONE);
+    let arms: Vec<usize> = [
+        ("right_arm", [-3.0, 15.5, 0.0], Anim::UndeadArmRight),
+        ("left_arm", [3.0, 15.5, 0.0], Anim::UndeadArmLeft),
+    ]
+    .into_iter()
+    .map(|(name, pivot, anim)| b.part_named(name, pivot, [0.0; 3], anim, 1.0, None))
+    .collect();
+    let legs: Vec<usize> = [
+        ([-1.0, 20.0, 0.0], Anim::LegRight),
+        ([1.0, 20.0, 0.0], Anim::LegLeft),
+    ]
+    .into_iter()
+    .map(|(pivot, anim)| b.part(pivot, anim, 1.0))
+    .collect();
+    for &(tex, g, lift) in layers {
+        b.cube_f(
+            STATIC_PART,
+            tex,
+            (16.0, 16.0),
+            [-2.0, -2.5, -1.0],
+            [4.0, 5.0, 2.0],
+            g,
+            false,
+            &[Fold::at([0.0, 17.5, 0.0])],
+        );
+        b.cube_g(
+            head,
+            tex,
+            (3.0, 3.0),
+            [-3.0, -6.25, -3.0],
+            [6.0, 6.0, 6.0],
+            lift,
+            NONE,
+        );
+        b.cube_g(
+            head,
+            tex,
+            (35.0, 3.0),
+            [-3.0, -6.15, -3.0],
+            [6.0, 6.0, 6.0],
+            0.25 + lift,
+            NONE,
+        );
+        for (&arm, uv) in arms.iter().zip([(36.0, 16.0), (28.0, 16.0)]) {
+            b.cube_g(arm, tex, uv, [-1.0, -0.5, -1.0], [2.0, 5.0, 2.0], g, NONE);
+        }
+        for (&leg, uv) in legs.iter().zip([(8.0, 16.0), (0.0, 16.0)]) {
+            b.cube_g(leg, tex, uv, [-1.0, 0.0, -1.0], [2.0, 4.0, 2.0], g, NONE);
+        }
     }
     b.finish(scale)
 }
 
+/// M319 — `BabyDrownedModel` is `BabyZombieModel`'s layer, with
+/// `DrownedOuterLayer`'s baby model (the same layer at 0.25) on its own sheet.
+fn drowned_baby() -> Model {
+    zombie_baby_like(1.0, Some(1))
+}
+
 fn zombie_baby() -> Model {
-    zombie_baby_like(1.0)
+    zombie_baby_like(1.0, None)
 }
 
 fn husk_baby() -> Model {
     // `HuskRenderer.scale` is 1.0625 for the baby too.
-    zombie_baby_like(1.0625)
+    zombie_baby_like(1.0625, None)
 }
 
 fn husk() -> Model {
@@ -11285,6 +11311,7 @@ mod tests {
                     | EntityModelKind::ZombieBaby
                     | EntityModelKind::HuskBaby
                     | EntityModelKind::VillagerBaby
+                    | EntityModelKind::DrownedBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12379,5 +12406,28 @@ mod baby_villager_tests {
                 .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
         };
         assert_eq!((span(0), span(1)), ((7.0, 15.0), (7.0, 15.0)));
+    }
+}
+
+#[cfg(test)]
+mod baby_drowned_tests {
+    use super::*;
+
+    /// M319 — the baby drowned is the baby zombie's seven boxes and their
+    /// outer layer on slot 1, the zombie's boxes unchanged.
+    #[test]
+    fn the_baby_drowned_is_the_baby_zombie_with_its_outer_layer() {
+        let (d, z) = (drowned_baby(), zombie_baby());
+        assert_eq!(d.quads.len(), 14 * 6);
+        assert_eq!(d.quads.iter().filter(|q| q.tex == 1).count(), 7 * 6);
+        let base = |m: &Model| {
+            m.quads
+                .iter()
+                .filter(|q| q.tex == 0)
+                .map(|q| (q.pos, q.uv))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(base(&d).len(), base(&z).len());
+        assert!(base(&d).iter().all(|q| base(&z).contains(q)));
     }
 }

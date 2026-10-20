@@ -277,8 +277,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// M307: 270 → 276, the sulfur cube and its small model. M314: 276 → 279,
 /// the ghastling. M315: 279 → 282, the baby turtle. M316: 282 → 285, the
 /// polar bear cub. M317: 285 → 291, the baby zombie and husk. M318: 291 →
-/// 294, the baby villager.
-const EXPECTED_MOB_VIEWS: usize = 294;
+/// 294, the baby villager. M319: 294 → 297, the baby drowned.
+const EXPECTED_MOB_VIEWS: usize = 297;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.

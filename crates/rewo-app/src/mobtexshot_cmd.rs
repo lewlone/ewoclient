@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 44;
+const EXPECTED_WITNESSES: usize = 45;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -183,9 +183,9 @@ const MIN_DISCRIMINATING: usize = 72;
 /// grades it up close), (M315) the baby turtle, a quarter of a block (m42
 /// grades it up close), (M316) the polar bear cub (m43 grades it up
 /// close), (M317) the baby zombie and baby husk (n1/n2 grade the baby
-/// zombie up close), and (M318) the baby villager (m44). An eighteenth means
-/// something stopped drawing.
-const MAX_SMALL: usize = 17;
+/// zombie up close), (M318) the baby villager (m44), and (M319) the baby
+/// drowned (m45). A nineteenth means something stopped drawing.
+const MAX_SMALL: usize = 18;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3319,6 +3319,71 @@ fn run_check(
         format!(
             "{vb_px} px (want >= 200), first colour `villager_baby` cannot produce: {:?}",
             vb_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m45 — M319: the baby drowned draws from its two sheets (the base and
+    // the outer layer), and the outer layer shows: some drawn pixels are
+    // colours only the outer layer's sheet can produce. Until M319 it was the
+    // adult mesh wearing the baby sheet's UV offset, which scrambled it.
+    let db_base: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "drowned_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let db_outer: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "drowned_outer_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut dbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.0, -2.2),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    dbst.wr.set_entities(&[], dbst.right, dbst.up, 0.0);
+    dbst.off
+        .render(gpu, Some((&mut dbst.wr, dbst.vp)), &ov, BG)?;
+    let db_empty = dbst.off.read_rgba(gpu)?;
+    let db_draw = neutral_draw(EntityModelKind::DrownedBaby);
+    dbst.wr.set_entities(&[db_draw], dbst.right, dbst.up, 0.0);
+    dbst.off
+        .render(gpu, Some((&mut dbst.wr, dbst.vp)), &ov, BG)?;
+    let db_frame = dbst.off.read_rgba(gpu)?;
+    dbst.destroy(gpu);
+    let (mut db_px, mut db_bad, mut db_outer_only) = (0usize, None, 0usize);
+    for (p, e) in db_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(db_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        db_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        let (in_base, in_outer) = (explains(&db_base, c), explains(&db_outer, c));
+        if db_bad.is_none() && !in_base && !in_outer {
+            db_bad = Some(c);
+        }
+        if in_outer && !in_base {
+            db_outer_only += 1;
+        }
+    }
+    w.push(wit(
+        "m45.the_baby_drowned_draws_its_base_and_outer_layer",
+        !db_base.is_empty() && db_px >= 200 && db_bad.is_none() && db_outer_only > 0,
+        format!(
+            "{db_px} px (want >= 200), first colour neither sheet can produce: {:?}; {} only \
+             the outer layer's sheet can produce (want > 0)",
+            db_bad.map(|c| format!("#{c:06x}")),
+            db_outer_only
         ),
     ));
 
