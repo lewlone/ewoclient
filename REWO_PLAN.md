@@ -3974,6 +3974,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M329 — the mobtexshot crowd, resized (2026-10-20)
+
+`mobtexshot`'s m5/m6 crowd draws every kind in one list and grades each by
+the pixels it alone contributes; a kind under `MIN_PIXELS` (40) goes to a
+pinned "too small" bucket. The camera backs off by a row's depth per ten
+kinds, so every new kind shrank every cell, and by M321 and M328 adding a
+baby was pushing *other* kinds, which still drew correctly, under the floor
+(cow_baby, raft, the small sulfur cube). The pins were tracking layout, not
+rendering. The crowd frame is now 2400 x 1350 instead of 1600 x 900, and all
+four pins are re-measured there: 104 kinds graded (91 before), 17 too small
+(30), 89 discriminating (79), 15 ambiguous (13; the newly graded babies whose
+sheets repaint their adults' palettes). Two runs measured the same. The gate
+takes 6.2 s instead of 5.0.
+
+**Mutant**: the adult cow's model at 1% scale (cow and mooshroom share it)
+moves two kinds to the small bucket and fails m5 and m6. The crowd will
+shrink again as kinds are added (about 8% of cell width per row of ten).
+
 ### M328 — the baby strider (2026-10-20)
 
 `StriderRenderer` swaps in `BabyStriderModel` (32 x 32: a 7 x 7 x 8 body with
