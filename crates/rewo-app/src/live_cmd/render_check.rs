@@ -496,6 +496,9 @@ pub(super) struct RenderCheck {
     /// M348 — r202: whether a cold cow and a warm cow drew on their own
     /// meshes, and a warm calf on its sheet.
     pub(super) farm_cows: (bool, bool, bool),
+    /// M349 — r203: a cold pig and a cold chicken on their own meshes, a
+    /// warm piglet and a warm chick on their sheets.
+    pub(super) farm_cold: (bool, bool, bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1261,7 +1264,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 202;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 203;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1461,6 +1464,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M349 — r203: `render_check.py` summons a cold pig, a cold chicken,
+        // a warm piglet and a warm chick on the z ~24 row.
+        row(
+            "r203 a cold pig and chicken drew their meshes, a warm piglet and chick their sheets",
+            self.farm_cold.0 && self.farm_cold.1 && self.farm_cold.2 && self.farm_cold.3,
+            format!(
+                "cold pig: {}, cold chicken: {}, warm piglet: {}, warm chick: {}",
+                self.farm_cold.0, self.farm_cold.1, self.farm_cold.2, self.farm_cold.3
             ),
         );
         // M348 — r202: `render_check.py` summons a cold cow, a warm cow and a

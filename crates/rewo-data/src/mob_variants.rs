@@ -153,6 +153,15 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M349 — Pig and Chicken — the warm adult (the base mesh on its own
+    // sheet) and the cold and warm young (`PigVariant` / `ChickenVariant`
+    // `babyTexture`); the cold adults' sheets are their meshes' bases.
+    ("pig", "entity/pig/pig_warm.png"),
+    ("pig_baby", "entity/pig/pig_cold_baby.png"),
+    ("pig_baby", "entity/pig/pig_warm_baby.png"),
+    ("chicken", "entity/chicken/chicken_warm.png"),
+    ("chicken_baby", "entity/chicken/chicken_cold_baby.png"),
+    ("chicken_baby", "entity/chicken/chicken_warm_baby.png"),
     // M348 — Cow — the cold and warm calves (`CowVariant.babyTexture`; every
     // calf is one `BabyCowModel`). The adults' sheets are their meshes'
     // bases.
@@ -640,6 +649,8 @@ mod tests {
             "entity/cow/cow_cold.png",
             "entity/cow/cow_warm.png",
             "entity/cow/cow_temperate_baby.png",
+            "entity/pig/pig_cold.png",
+            "entity/chicken/chicken_cold.png",
             "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -928,6 +939,25 @@ mod tests {
             assert_ne!(v, 0);
             let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
             assert_eq!(k, "cow_baby");
+        }
+    }
+
+    /// M349 — the warm pig and chicken are alternates of their adults' keys,
+    /// the cold and warm young of their babies'.
+    #[test]
+    fn the_pigs_and_chickens_alternates_are_on_their_keys() {
+        for (p, key) in [
+            ("entity/pig/pig_warm.png", "pig"),
+            ("entity/pig/pig_cold_baby.png", "pig_baby"),
+            ("entity/pig/pig_warm_baby.png", "pig_baby"),
+            ("entity/chicken/chicken_warm.png", "chicken"),
+            ("entity/chicken/chicken_cold_baby.png", "chicken_baby"),
+            ("entity/chicken/chicken_warm_baby.png", "chicken_baby"),
+        ] {
+            let v = variant_id(p).unwrap();
+            assert_ne!(v, 0, "{p}");
+            let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+            assert_eq!(k, key, "{p}");
         }
     }
 }

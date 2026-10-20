@@ -1056,6 +1056,10 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     // M348 — the cold and warm cows' meshes, each on its own sheet.
     ("cold_cow", "entity/cow/cow_cold.png", 64, 64),
     ("warm_cow", "entity/cow/cow_warm.png", 64, 64),
+    // M349 — the cold pig's and the cold chicken's meshes, each on its own
+    // sheet.
+    ("cold_pig", "entity/pig/pig_cold.png", 64, 64),
+    ("cold_chicken", "entity/chicken/chicken_cold.png", 64, 32),
     ("mooshroom", "entity/cow/mooshroom_red.png", 64, 64),
     ("pig", "entity/pig/pig_temperate.png", 64, 64),
     ("sheep", "entity/sheep/sheep.png", 64, 32),

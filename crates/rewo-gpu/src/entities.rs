@@ -1847,7 +1847,9 @@ impl EntityPass {
             // M298 — the pig's (the pig at 0.5) and the strider's (its own
             // mesh), with no reins.
             .or_else(|| match def.kind {
-                EntityModelKind::Pig if !debug_tex => {
+                // M349 — and the cold pig's: `PIG_SADDLE` is one layer
+                // whatever the variant's mesh.
+                EntityModelKind::Pig | EntityModelKind::ColdPig if !debug_tex => {
                     Some((mobs::pig_saddle(), mobs::empty_model()))
                 }
                 EntityModelKind::Strider if !debug_tex => {

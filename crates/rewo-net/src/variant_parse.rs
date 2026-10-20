@@ -42,6 +42,10 @@ pub const FROG_VARIANT_REGISTRY: &str = "minecraft:frog_variant";
 /// M348 — `CowVariant.NETWORK_CODEC`: `ModelAndTexture` (`asset_id`, and
 /// `model` for a non-NORMAL mesh) and `baby_asset_id`.
 pub const COW_VARIANT_REGISTRY: &str = "minecraft:cow_variant";
+/// M349 — `PigVariant.NETWORK_CODEC` and `ChickenVariant.NETWORK_CODEC`: the
+/// cow's shape (`asset_id`, `model`, `baby_asset_id`).
+pub const PIG_VARIANT_REGISTRY: &str = "minecraft:pig_variant";
+pub const CHICKEN_VARIANT_REGISTRY: &str = "minecraft:chicken_variant";
 /// M254 — the `painting_variant` registry (`PaintingVariant.NETWORK_CODEC`:
 /// `width`, `height`, `asset_id`, optional title and author).
 pub const PAINTING_VARIANT_REGISTRY: &str = "minecraft:painting_variant";
@@ -164,8 +168,9 @@ fn read_entries<T>(
     out
 }
 
-/// `cat_variant` / `frog_variant` / `cow_variant`: one `asset_id` per entry
-/// (M348: and the cow's `model`).
+/// `cat_variant` / `frog_variant` / `cow_variant` / `pig_variant` /
+/// `chicken_variant`: one `asset_id` per entry (M348: and the farm animals'
+/// `model`).
 pub fn parse_single_asset_registry(
     r: &mut rewo_proto::reader::PacketReader,
     count: usize,

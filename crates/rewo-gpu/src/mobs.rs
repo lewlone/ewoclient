@@ -1611,11 +1611,15 @@ pub enum EntityModelKind {
     /// the adult meshes a `cow_variant`'s `model` picks (`CowRenderer`).
     ColdCow,
     WarmCow,
+    /// M349 — `ColdPigModel` (`COLD_PIG`) and `ColdChickenModel`
+    /// (`COLD_CHICKEN`), the meshes a cold variant's `model` picks.
+    ColdPig,
+    ColdChicken,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 137;
+    pub const COUNT: usize = 139;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1753,6 +1757,8 @@ impl EntityModelKind {
         EntityModelKind::WolfBaby,
         EntityModelKind::ColdCow,
         EntityModelKind::WarmCow,
+        EntityModelKind::ColdPig,
+        EntityModelKind::ColdChicken,
         EntityModelKind::Capsule,
     ];
 
@@ -1891,6 +1897,8 @@ impl EntityModelKind {
             EntityModelKind::WolfBaby => "wolf_baby",
             EntityModelKind::ColdCow => "cold_cow",
             EntityModelKind::WarmCow => "warm_cow",
+            EntityModelKind::ColdPig => "cold_pig",
+            EntityModelKind::ColdChicken => "cold_chicken",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1969,6 +1977,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::WolfBaby
                 | EntityModelKind::ColdCow
                 | EntityModelKind::WarmCow
+                | EntityModelKind::ColdPig
+                | EntityModelKind::ColdChicken
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -3066,6 +3076,17 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::WarmCow,
         textures: &["warm_cow"],
         build: warm_cow,
+    },
+    // M349 — the cold pig's and the cold chicken's own meshes.
+    MobDef {
+        kind: EntityModelKind::ColdPig,
+        textures: &["cold_pig"],
+        build: cold_pig,
+    },
+    MobDef {
+        kind: EntityModelKind::ColdChicken,
+        textures: &["cold_chicken"],
+        build: cold_chicken,
     },
 ];
 
@@ -4211,6 +4232,16 @@ pub fn empty_model() -> Model {
 
 /// `PigModel.createBasePigModel(g)`: `g` on every box.
 fn pig_with(g: f32) -> Model {
+    pig_of(g, false)
+}
+
+/// M349 — `ColdPigModel.createBodyLayer(NONE)`: the base pig with its body
+/// replaced by the body and a 0.5-inflated coat at (28, 32) over it.
+fn cold_pig() -> Model {
+    pig_of(0.0, true)
+}
+
+fn pig_of(g: f32, cold: bool) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 12.0, -6.0], Anim::Head, 1.0);
     b.cube_f(
@@ -4244,6 +4275,18 @@ fn pig_with(g: f32) -> Model {
         false,
         &[body],
     );
+    if cold {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            (28.0, 32.0),
+            [-5.0, -10.0, -7.0],
+            [10.0, 16.0, 8.0],
+            0.5,
+            false,
+            &[body],
+        );
+    }
     quadruped_legs_g(&mut b, 0, (0.0, 16.0), 6.0, 3.0, true, false, g);
     b.finish(1.0)
 }
@@ -4357,6 +4400,19 @@ fn sheep() -> Model {
 /// `AdultChickenModel`: head with beak + wattle, rotated body, biped-swing
 /// legs, static wings (the flap animation is airborne-only).
 fn chicken() -> Model {
+    chicken_of(false)
+}
+
+/// M349 — `ColdChickenModel.createBodyLayer()`: the base chicken with its
+/// body replaced (the body and a 0 × 3 × 5 tail plane at (38, 9)) and its
+/// head replaced (the head and a 6 × 3 × 4 crest at (44, 0)); the beak and
+/// wattle are the head's children and survive the replacement
+/// (`PartDefinition.addOrReplaceChild` keeps them).
+fn cold_chicken() -> Model {
+    chicken_of(true)
+}
+
+fn chicken_of(cold: bool) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 15.0, -4.0], Anim::Head, 1.0);
     b.cube(
@@ -4367,6 +4423,16 @@ fn chicken() -> Model {
         [4.0, 6.0, 3.0],
         NONE,
     );
+    if cold {
+        b.cube(
+            head,
+            0,
+            (44.0, 0.0),
+            [-3.0, -7.0, -2.015],
+            [6.0, 3.0, 4.0],
+            NONE,
+        );
+    }
     b.cube(
         head,
         0,
@@ -4394,6 +4460,18 @@ fn chicken() -> Model {
         false,
         &[body],
     );
+    if cold {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            (38.0, 9.0),
+            [0.0, 3.0, -1.0],
+            [0.0, 3.0, 5.0],
+            0.0,
+            false,
+            &[body],
+        );
+    }
     let leg_r = b.part([-2.0, 19.0, 1.0], Anim::LegRight, 1.0);
     b.cube(
         leg_r,
@@ -13354,6 +13432,8 @@ mod tests {
                     | EntityModelKind::WolfBaby
                     | EntityModelKind::ColdCow
                     | EntityModelKind::WarmCow
+                    | EntityModelKind::ColdPig
+                    | EntityModelKind::ColdChicken
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -15289,5 +15369,39 @@ mod cow_variant_tests {
         assert!(has_face(&warm, (29.0, 33.0), (2.0, 4.0)));
         assert!(has_face(&warm, (41.0, 43.0), (2.0, 4.0)));
         assert!(has_face(&base, (23.0, 24.0), (1.0, 4.0)));
+    }
+}
+
+#[cfg(test)]
+mod cold_pig_chicken_tests {
+    use super::*;
+
+    fn has_face(m: &Model, u: (f32, f32), v: (f32, f32)) -> bool {
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|t| t[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        m.quads.iter().any(|q| span(q, 0) == u && span(q, 1) == v)
+    }
+
+    /// M349 — the cold pig is the pig plus its coat (28, 32) 10 x 16 x 8;
+    /// the cold chicken is the chicken plus its crest (44, 0) 6 x 3 x 4 and
+    /// its tail plane (38, 9) 0 x 3 x 5, which has two faces with area.
+    #[test]
+    fn the_cold_pig_and_chicken_are_their_own_models() {
+        let (pig, cold_pig) = (pig(), cold_pig());
+        assert_eq!(cold_pig.quads.len(), pig.quads.len() + 6);
+        assert_eq!(cold_pig.parts.len(), pig.parts.len());
+        assert!(has_face(&cold_pig, (36.0, 46.0), (40.0, 56.0)));
+        assert!(!has_face(&pig, (36.0, 46.0), (40.0, 56.0)));
+        let (chicken, cold) = (chicken(), cold_chicken());
+        assert_eq!(cold.quads.len(), chicken.quads.len() + 6 + 2);
+        assert_eq!(cold.parts.len(), chicken.parts.len());
+        assert!(has_face(&cold, (48.0, 54.0), (4.0, 7.0)));
+        assert!(has_face(&cold, (38.0, 43.0), (14.0, 17.0)));
+        assert!(has_face(&cold, (43.0, 48.0), (14.0, 17.0)));
+        // The beak (14, 0) 4 x 2 x 2 survives the head's replacement.
+        assert!(has_face(&cold, (16.0, 20.0), (2.0, 4.0)));
     }
 }

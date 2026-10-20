@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 73;
+const EXPECTED_WITNESSES: usize = 74;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -190,8 +190,10 @@ const MIN_DISCRIMINATING: usize = 88;
 /// villager and glow squid, (M330) the kit, (M332) the ocelot kitten,
 /// (M333) the baby bee, (M336) the rabbit kit, (M337) the goat kid, (M340)
 /// the kitten and (M341) the puppy. Each baby is graded up close by its own
-/// witness (m42..m66, n1/n2). A twenty-fifth means something stopped drawing.
-const MAX_SMALL: usize = 24;
+/// witness (m42..m66, n1/n2). M349: one more as the cold pig and chicken
+/// joined the crowd (by size, the cold chicken; both graded up close by
+/// m74). A twenty-sixth means something stopped drawing.
+const MAX_SMALL: usize = 25;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -5299,6 +5301,153 @@ fn run_check(
         format!(
             "{} (want >= 200 px each, none foreign, adults and calves each all different)",
             cv_rows.join("; ")
+        ),
+    ));
+
+    // m74 — M349: the pig and the chicken each draw temperate, cold (its
+    // own mesh's sheet) and warm (the base mesh's alternate), and their young
+    // the three young sheets: every frame producible by its own sheet, and
+    // each group of three all different.
+    let vid = |p: &str| rewo_data::mob_variants::variant_id(p).unwrap_or(0);
+    let mut fa_ok = true;
+    let mut fa_rows = Vec::new();
+    for (eye, look, groups) in [
+        (
+            Vec3::new(1.2, 1.0, -1.2),
+            Vec3::new(0.0, 0.45, 0.0),
+            [
+                [
+                    (EntityModelKind::Pig, "pig", 0u16, "pig"),
+                    (EntityModelKind::ColdPig, "cold_pig", 0, "cold pig"),
+                    (
+                        EntityModelKind::Pig,
+                        "pig",
+                        vid("entity/pig/pig_warm.png"),
+                        "warm pig",
+                    ),
+                ],
+                [
+                    (EntityModelKind::PigBaby, "pig_baby", 0, "piglet"),
+                    (
+                        EntityModelKind::PigBaby,
+                        "pig_baby",
+                        vid("entity/pig/pig_cold_baby.png"),
+                        "cold piglet",
+                    ),
+                    (
+                        EntityModelKind::PigBaby,
+                        "pig_baby",
+                        vid("entity/pig/pig_warm_baby.png"),
+                        "warm piglet",
+                    ),
+                ],
+            ],
+        ),
+        (
+            Vec3::new(0.8, 0.7, -0.8),
+            Vec3::new(0.0, 0.35, 0.0),
+            [
+                [
+                    (EntityModelKind::Chicken, "chicken", 0u16, "chicken"),
+                    (
+                        EntityModelKind::ColdChicken,
+                        "cold_chicken",
+                        0,
+                        "cold chicken",
+                    ),
+                    (
+                        EntityModelKind::Chicken,
+                        "chicken",
+                        vid("entity/chicken/chicken_warm.png"),
+                        "warm chicken",
+                    ),
+                ],
+                [
+                    (EntityModelKind::ChickenBaby, "chicken_baby", 0, "chick"),
+                    (
+                        EntityModelKind::ChickenBaby,
+                        "chicken_baby",
+                        vid("entity/chicken/chicken_cold_baby.png"),
+                        "cold chick",
+                    ),
+                    (
+                        EntityModelKind::ChickenBaby,
+                        "chicken_baby",
+                        vid("entity/chicken/chicken_warm_baby.png"),
+                        "warm chick",
+                    ),
+                ],
+            ],
+        ),
+    ] {
+        let mut st = stage_from(gpu, baked, cw, ch, eye, look)?;
+        st.wr.set_entities(&[], st.right, st.up, 0.0);
+        st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
+        let empty = st.off.read_rgba(gpu)?;
+        for group in groups {
+            let mut frames = Vec::new();
+            for (kind, key, variant, name) in group {
+                let sheet: HashSet<u32> = (if variant == 0 {
+                    baked
+                        .mob_textures
+                        .iter()
+                        .find(|t| t.key == key)
+                        .map(|t| producible(&t.rgba))
+                } else {
+                    baked
+                        .mob_variant_textures
+                        .iter()
+                        .find(|t| t.key == key && t.index == variant)
+                        .map(|t| producible(&t.rgba))
+                })
+                .unwrap_or_default();
+                // An alternate (every warm sheet, and the cold young's) must
+                // have resolved to a variant id; a mesh's base must not.
+                let alternate = name.starts_with("warm")
+                    || (name.starts_with("cold") && key.ends_with("_baby"));
+                fa_ok &= (variant != 0) == alternate;
+                let d = EntityDraw {
+                    variant,
+                    ..neutral_draw(kind)
+                };
+                st.wr.set_entities(&[d], st.right, st.up, 0.0);
+                st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
+                let frame = st.off.read_rgba(gpu)?;
+                let (mut px, mut bad) = (0usize, None);
+                for (p, e) in frame
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(empty.as_chunks::<4>().0)
+                {
+                    if p[..3] == e[..3] {
+                        continue;
+                    }
+                    px += 1;
+                    let c = pack(p[0], p[1], p[2]);
+                    if bad.is_none() && !explains(&sheet, c) {
+                        bad = Some(c);
+                    }
+                }
+                fa_ok &= !sheet.is_empty() && px >= 150 && bad.is_none();
+                fa_rows.push(format!(
+                    "{name}: {px} px, first colour it cannot produce {:?}",
+                    bad.map(|c| format!("#{c:06x}"))
+                ));
+                frames.push(frame);
+            }
+            fa_ok &= diff_bytes(&frames[0], &frames[1]) > 0
+                && diff_bytes(&frames[0], &frames[2]) > 0
+                && diff_bytes(&frames[1], &frames[2]) > 0;
+        }
+        st.destroy(gpu);
+    }
+    w.push(wit(
+        "m74.the_pigs_and_chickens_wear_their_variants",
+        fa_ok,
+        format!(
+            "{} (want >= 150 px each, none foreign, each group of three all different)",
+            fa_rows.join("; ")
         ),
     ));
 

@@ -278,6 +278,12 @@ pub struct EntityMeta {
     /// `Cow.DATA_VARIANT_ID` (`AbstractCow` adds none), a raw `cow_variant`
     /// holder id.
     pub cow_variant: Option<i32>,
+    /// M349 — index 19, **PIG_VARIANT** serializer (id 28):
+    /// `Pig.DATA_VARIANT_ID` (after `DATA_BOOST_TIME` at 18).
+    pub pig_variant: Option<i32>,
+    /// M349 — index 18, **CHICKEN_VARIANT** serializer (id 30):
+    /// `Chicken.DATA_VARIANT_ID`.
+    pub chicken_variant: Option<i32>,
     /// `ItemEntity.DATA_ITEM` — index 8, **ITEM_STACK** serializer (id 7).
     ///
     /// Index 8 is shared with `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, which is
@@ -585,6 +591,8 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (18, 1) => meta.int18 = r.varint().ok(),
             (18, 27) => meta.frog_variant = r.varint().ok(),
             (18, 23) => meta.cow_variant = r.varint().ok(),
+            (19, 28) => meta.pig_variant = r.varint().ok(),
+            (18, 30) => meta.chicken_variant = r.varint().ok(),
             (19, 1) => meta.int19 = r.varint().ok(),
             // M141f: `Bee.DATA_ANGER_END_TIME`, LONG (serializer **2**, a
             // `ByteBufCodecs.VAR_LONG` rather than a fixed i64). Index 19 is

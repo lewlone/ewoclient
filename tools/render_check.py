@@ -271,6 +271,14 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M349 -- r203. A cold pig, a cold chicken, a warm piglet and a warm
+    # chick, on a row of their own (z ~24).
+    "summon minecraft:pig ~0 ~ ~24 {NoAI:1b,Silent:1b,variant:\"minecraft:cold\"};"
+    "summon minecraft:chicken ~3 ~ ~24 {NoAI:1b,Silent:1b,variant:\"minecraft:cold\"};"
+    "summon minecraft:pig ~6 ~ ~24 {NoAI:1b,Silent:1b,Age:-24000,"
+    "variant:\"minecraft:warm\"};"
+    "summon minecraft:chicken ~9 ~ ~24 {NoAI:1b,Silent:1b,Age:-24000,"
+    "variant:\"minecraft:warm\"};"
     # M348 -- r202. A cold cow, a warm cow and a warm calf.
     "summon minecraft:cow ~94 ~ ~21 {NoAI:1b,Silent:1b,variant:\"minecraft:cold\"};"
     "summon minecraft:cow ~97 ~ ~21 {NoAI:1b,Silent:1b,variant:\"minecraft:warm\"};"

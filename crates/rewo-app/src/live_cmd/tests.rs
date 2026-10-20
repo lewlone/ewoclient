@@ -4322,7 +4322,9 @@ fn an_unsent_variant_is_the_class_s_default() {
     assert_eq!(f(K::Cow, &cows), Some(1));
     assert_eq!(f(K::ColdCow, &cows), Some(1));
     assert_eq!(f(K::CowBaby, &cows), Some(1));
-    assert_eq!(f(K::Pig, &cows), None);
+    assert_eq!(f(K::Pig, &cows), Some(1));
+    assert_eq!(f(K::ColdChicken, &cows), Some(1));
+    assert_eq!(f(K::Sheep, &cows), None);
     assert_eq!(f(K::Cat, &cats[..2]), Some(0));
 }
 
@@ -4341,4 +4343,11 @@ fn a_cows_variant_picks_its_mesh() {
     assert_eq!(b(f(K::Cow, Some("cold")), true), K::CowBaby);
     assert_eq!(b(f(K::Cow, Some("warm")), true), K::CowBaby);
     assert_eq!(b(f(K::Cow, Some("warm")), false), K::WarmCow);
+    // M349 — the pig's and the chicken's: only COLD has a mesh of its own.
+    assert_eq!(f(K::Pig, Some("cold")), K::ColdPig);
+    assert_eq!(f(K::Pig, Some("warm")), K::Pig);
+    assert_eq!(f(K::Chicken, Some("cold")), K::ColdChicken);
+    assert_eq!(f(K::Chicken, Some("warm")), K::Chicken);
+    assert_eq!(b(f(K::Pig, Some("cold")), true), K::PigBaby);
+    assert_eq!(b(f(K::Chicken, Some("cold")), true), K::ChickenBaby);
 }

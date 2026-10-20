@@ -973,6 +973,18 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M349 — r203: the staged cold pig and chicken on their meshes,
+            // and the warm piglet and chick on their sheets.
+            let warm_piglet = rewo_data::mob_variants::variant_id("entity/pig/pig_warm_baby.png");
+            let warm_chick =
+                rewo_data::mob_variants::variant_id("entity/chicken/chicken_warm_baby.png");
+            for d in draws.iter() {
+                use rewo_gpu::mobs::EntityModelKind as K;
+                c.farm_cold.0 |= d.kind == K::ColdPig;
+                c.farm_cold.1 |= d.kind == K::ColdChicken;
+                c.farm_cold.2 |= d.kind == K::PigBaby && Some(d.variant) == warm_piglet;
+                c.farm_cold.3 |= d.kind == K::ChickenBaby && Some(d.variant) == warm_chick;
+            }
             // M348 — r202: the staged cold and warm cows on their meshes, and
             // the warm calf on its sheet.
             let warm_calf = rewo_data::mob_variants::variant_id("entity/cow/cow_warm_baby.png");

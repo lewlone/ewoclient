@@ -66,6 +66,9 @@ pub struct ConfigData {
     pub frog_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// M348 — the `cow_variant` registry, index = holder id.
     pub cow_variants: Vec<crate::variant_parse::MobVariantDef>,
+    /// M349 — `pig_variant` and `chicken_variant`, index = holder id.
+    pub pig_variants: Vec<crate::variant_parse::MobVariantDef>,
+    pub chicken_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// M254 — the `painting_variant` registry, index = protocol id.
     pub painting_variants: Vec<crate::variant_parse::PaintingVariantDef>,
     /// The server's datapack tags (M69).
@@ -103,6 +106,8 @@ impl ConfigData {
             wolf_variants: Vec::new(),
             frog_variants: Vec::new(),
             cow_variants: Vec::new(),
+            pig_variants: Vec::new(),
+            chicken_variants: Vec::new(),
             painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
@@ -133,6 +138,8 @@ impl ConfigData {
             wolf_variants: Vec::new(),
             frog_variants: Vec::new(),
             cow_variants: Vec::new(),
+            pig_variants: Vec::new(),
+            chicken_variants: Vec::new(),
             painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
@@ -237,6 +244,23 @@ impl ConfigData {
             self.cow_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
             short_registry(&registry, self.cow_variants.len(), count);
             log::info!("net: {} cow variant(s) synced", self.cow_variants.len());
+            return Ok(());
+        }
+        // M349 — the pig's and the chicken's, the cow's shape.
+        if registry == crate::variant_parse::PIG_VARIANT_REGISTRY {
+            self.pig_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            short_registry(&registry, self.pig_variants.len(), count);
+            log::info!("net: {} pig variant(s) synced", self.pig_variants.len());
+            return Ok(());
+        }
+        if registry == crate::variant_parse::CHICKEN_VARIANT_REGISTRY {
+            self.chicken_variants =
+                crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            short_registry(&registry, self.chicken_variants.len(), count);
+            log::info!(
+                "net: {} chicken variant(s) synced",
+                self.chicken_variants.len()
+            );
             return Ok(());
         }
         if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {

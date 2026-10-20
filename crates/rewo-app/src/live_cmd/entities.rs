@@ -3471,7 +3471,8 @@ pub(crate) fn saddle_piece<'a>(
         EntityModelKind::SkeletonHorse => ArmorLayer::SkeletonHorseSaddle,
         EntityModelKind::ZombieHorse => ArmorLayer::ZombieHorseSaddle,
         // M298 — `PIG_SADDLE`, `STRIDER_SADDLE`.
-        EntityModelKind::Pig => ArmorLayer::PigSaddle,
+        // M349 — the cold pig wears the same `PIG_SADDLE`.
+        EntityModelKind::Pig | EntityModelKind::ColdPig => ArmorLayer::PigSaddle,
         EntityModelKind::Strider => ArmorLayer::StriderSaddle,
         // M300 — `CAMEL_SADDLE`.
         EntityModelKind::Camel => ArmorLayer::CamelSaddle,
@@ -3664,6 +3665,9 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         EntityModelKind::Cow if baby => EntityModelKind::CowBaby,
         // M348 — a cold or warm calf is the same `BabyCowModel`.
         EntityModelKind::ColdCow | EntityModelKind::WarmCow if baby => EntityModelKind::CowBaby,
+        // M349 — a cold piglet or chick is the one baby model too.
+        EntityModelKind::ColdPig if baby => EntityModelKind::PigBaby,
+        EntityModelKind::ColdChicken if baby => EntityModelKind::ChickenBaby,
         EntityModelKind::Mooshroom if baby => EntityModelKind::MooshroomBaby,
         // M322 — `BabyPigModel` and `BabyChickenModel`.
         EntityModelKind::Pig if baby => EntityModelKind::PigBaby,
@@ -3792,12 +3796,19 @@ pub(crate) fn default_variant(
     match kind {
         EntityModelKind::Cat | EntityModelKind::CatBaby => by_key("minecraft:black"),
         EntityModelKind::Wolf | EntityModelKind::WolfBaby => by_key("minecraft:pale"),
-        // M348 — `CowVariants.TEMPERATE` too, adult (any mesh) and calf.
+        // M348 — `CowVariants.TEMPERATE` too, adult (any mesh) and calf;
+        // M349 — the pig's and the chicken's.
         EntityModelKind::Frog
         | EntityModelKind::Cow
         | EntityModelKind::ColdCow
         | EntityModelKind::WarmCow
-        | EntityModelKind::CowBaby => by_key("minecraft:temperate"),
+        | EntityModelKind::CowBaby
+        | EntityModelKind::Pig
+        | EntityModelKind::ColdPig
+        | EntityModelKind::PigBaby
+        | EntityModelKind::Chicken
+        | EntityModelKind::ColdChicken
+        | EntityModelKind::ChickenBaby => by_key("minecraft:temperate"),
         EntityModelKind::Horse
         | EntityModelKind::HorseBaby
         | EntityModelKind::Llama
@@ -3828,6 +3839,13 @@ pub(crate) fn variant_registry(
         | EntityModelKind::ColdCow
         | EntityModelKind::WarmCow
         | EntityModelKind::CowBaby => &session.cow_variants,
+        // M349.
+        EntityModelKind::Pig | EntityModelKind::ColdPig | EntityModelKind::PigBaby => {
+            &session.pig_variants
+        }
+        EntityModelKind::Chicken | EntityModelKind::ColdChicken | EntityModelKind::ChickenBaby => {
+            &session.chicken_variants
+        }
         _ => &[],
     }
 }
@@ -3849,11 +3867,14 @@ pub(crate) fn variant_def(
 }
 
 /// M348 — `CowRenderer.models`: COLD and WARM have their own adult meshes;
-/// NORMAL (no `model`) and anything else is the base cow.
+/// NORMAL (no `model`) and anything else is the base cow. M349 —
+/// `PigRenderer` / `ChickenRenderer`: COLD has its own; WARM is NORMAL's.
 pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> EntityModelKind {
     match (kind, model) {
         (EntityModelKind::Cow, Some("cold")) => EntityModelKind::ColdCow,
         (EntityModelKind::Cow, Some("warm")) => EntityModelKind::WarmCow,
+        (EntityModelKind::Pig, Some("cold")) => EntityModelKind::ColdPig,
+        (EntityModelKind::Chicken, Some("cold")) => EntityModelKind::ColdChicken,
         _ => kind,
     }
 }
@@ -3916,6 +3937,13 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
             registry(&session.cow_variants, false)
         }
         EntityModelKind::CowBaby => registry_baby(&session.cow_variants, false),
+        // M349 — the pig's and the chicken's, the same way.
+        EntityModelKind::Pig | EntityModelKind::ColdPig => registry(&session.pig_variants, false),
+        EntityModelKind::PigBaby => registry_baby(&session.pig_variants, false),
+        EntityModelKind::Chicken | EntityModelKind::ColdChicken => {
+            registry(&session.chicken_variants, false)
+        }
+        EntityModelKind::ChickenBaby => registry_baby(&session.chicken_variants, false),
         EntityModelKind::Axolotl => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::axolotl_texture(v))
                 .unwrap_or(0)
