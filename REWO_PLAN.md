@@ -2106,6 +2106,7 @@ this shape once.
 | M290 (2026-10-20) — an armour stand's held player head draws in its own skin | **r148** | — | — |
 | M292 (2026-10-20) — the donkey's screen draws the donkey in its window | **r149** | — | — |
 | M294 (2026-10-20) — a horse draws in its iron horse armour | **r150** | — | — |
+| M295 (2026-10-20) — a saddled horse draws its saddle, and its reins while ridden | **r151** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3940,6 +3941,32 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M295 — the horse family's saddles (2026-10-20)
+
+`HorseRenderer`, `DonkeyRenderer` and `UndeadHorseRenderer` each add a
+`SimpleEquipmentLayer` of their own saddle layer (`HORSE_SADDLE`,
+`DONKEY_SADDLE`, `MULE_SADDLE`, `SKELETON_HORSE_SADDLE`,
+`ZOMBIE_HORSE_SADDLE`) over `EquineSaddleModel`: the equine body mesh plus
+the saddle (inflated 0.5), the two bit pieces, the head strap (0.22) and
+the mouth wrap (0.2), and two zero-thickness reins at `-π/6` shown only
+while `isRidden` (`isVehicle()`). The donkey and mule meshes carry the
+donkey ears, and each kind its layer scale (1.1 / 0.87 / 0.92 / 1.0).
+
+- the saddle slot (wire 7) keeps its piece beside the gameplay flag
+  (`EntityTable::saddles`);
+- the five saddle layers load with the other late sheets (`is_late`);
+- `mobs::equine_saddle` builds the saddle mesh and the reins;
+  `EntityDraw::saddle` and `ridden` drive them through M294's emitter.
+
+Recorded: the donkey's and mule's chests (`DonkeyModel`'s chest boxes, shown
+with `hasChest`) are not modelled, so a chested donkey shows no bags.
+
+**Unit test**: the saddle is the body mesh plus five boxes at the kind's
+scale; the reins are two faces each on the static part. **mobtexshot m26**:
+712 px of saddle and 175 more of reins when ridden, every colour from the
+jar's `horse_saddle/saddle`. **r151**: r88's saddled horse draws its saddle
+with the sheet resident, and its reins on the frames the bot rides it.
 
 ### M294 — horse body armour (2026-10-20)
 
