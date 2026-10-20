@@ -973,6 +973,11 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M334 — r188: the staged donkey and mule foals.
+            for d in draws.iter() {
+                c.foals.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::DonkeyBaby;
+                c.foals.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::MuleBaby;
+            }
             // M333 — r187: the staged baby bee.
             c.baby_bee |= draws
                 .iter()

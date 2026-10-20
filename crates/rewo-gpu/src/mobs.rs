@@ -1586,11 +1586,14 @@ pub enum EntityModelKind {
     OcelotBaby,
     /// M333 — `BabyBeeModel` (`BEE_BABY`).
     BeeBaby,
+    /// M334 — `BabyDonkeyModel` (`DONKEY_BABY`, `MULE_BABY`).
+    DonkeyBaby,
+    MuleBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 126;
+    pub const COUNT: usize = 128;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1717,6 +1720,8 @@ impl EntityModelKind {
         EntityModelKind::PandaBaby,
         EntityModelKind::OcelotBaby,
         EntityModelKind::BeeBaby,
+        EntityModelKind::DonkeyBaby,
+        EntityModelKind::MuleBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1844,6 +1849,8 @@ impl EntityModelKind {
             EntityModelKind::PandaBaby => "panda_baby",
             EntityModelKind::OcelotBaby => "ocelot_baby",
             EntityModelKind::BeeBaby => "bee_baby",
+            EntityModelKind::DonkeyBaby => "donkey_baby",
+            EntityModelKind::MuleBaby => "mule_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1911,6 +1918,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::PandaBaby
                 | EntityModelKind::OcelotBaby
                 | EntityModelKind::BeeBaby
+                | EntityModelKind::DonkeyBaby
+                | EntityModelKind::MuleBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2919,6 +2928,17 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::BeeBaby,
         textures: &["bee_baby"],
         build: bee_baby,
+    },
+    // M334 — the foals' sheets.
+    MobDef {
+        kind: EntityModelKind::DonkeyBaby,
+        textures: &["donkey_baby"],
+        build: donkey_baby,
+    },
+    MobDef {
+        kind: EntityModelKind::MuleBaby,
+        textures: &["mule_baby"],
+        build: donkey_baby,
     },
 ];
 
@@ -5784,6 +5804,104 @@ fn bee_baby() -> Model {
             false,
             &[tuck, Fold::at([0.0, 3.3333, z]), bone],
         );
+    }
+    b.finish(1.0)
+}
+
+/// M334 — `BabyDonkeyModel.createBabyLayer()` (64 x 64), the donkey's and
+/// the mule's: an 8 x 6 x 14 body, a tail tilted -0.7418, four 3 x 8 x 3 legs
+/// (children of the body; it never moves, so their pivots are the body's
+/// offset plus theirs) on the quadruped walk as Rewo's adult equine's, and
+/// the neck, head and ears. `BabyDonkeyModel.setupAnim` forces the look pitch
+/// to -30 degrees, so `head_parts`' π/6 base cancels and the neck rests at its
+/// own 0.3927 tilt; the head does not look, as Rewo's adult's does not. The
+/// chest parts carry no box (a foal carries no chest).
+fn donkey_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = Fold::at([1.0, 14.0, 0.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 13.0),
+        [-5.0, -3.0, -7.0],
+        [8.0, 6.0, 14.0],
+        0.0,
+        false,
+        &[body],
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (24.0, 33.0),
+        [-2.5, -1.0, -0.5],
+        [3.0, 3.0, 8.0],
+        0.0,
+        false,
+        &[
+            Fold::rot([-0.7418, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            Fold::at([0.0, -1.5, 6.5]),
+            body,
+        ],
+    );
+    let head_parts = Fold::at([0.0, -3.0, -5.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (30.0, 9.0),
+        [-3.0, -6.0, -3.0],
+        [4.0, 8.0, 4.0],
+        0.0,
+        false,
+        &[
+            Fold::rot([0.3927, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            head_parts,
+            body,
+        ],
+    );
+    let head = Fold::at([0.0, -5.0, -3.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-4.0, -3.6, -8.4],
+        [6.0, 4.0, 9.0],
+        0.0,
+        false,
+        &[
+            Fold::rot([0.3927, 0.0, 0.0], [0.0, -1.0, 1.0]),
+            head,
+            head_parts,
+            body,
+        ],
+    );
+    for (x, z_rot, uv, mirror) in [
+        (2.0, 0.48, (0.0, 0.0), false),
+        (-2.0, -0.48, (22.0, 0.0), true),
+    ] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [-2.0, -6.5, -0.3],
+            [2.0, 7.0, 1.0],
+            0.0,
+            mirror,
+            &[
+                Fold::rot([0.48, 0.0, z_rot], [x, -3.5, -1.0]),
+                head,
+                head_parts,
+                body,
+            ],
+        );
+    }
+    for (pivot, anim, uv) in [
+        ([3.25, 17.5, 5.25], Anim::QuadHindLeft, (12.0, 44.0)),
+        ([-1.4, 17.5, 5.4], Anim::QuadHindRight, (0.0, 44.0)),
+        ([3.4, 17.5, -5.3], Anim::QuadFrontLeft, (12.0, 33.0)),
+        ([-1.4, 17.5, -5.4], Anim::QuadFrontRight, (0.0, 33.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-2.5, -1.5, -1.5], [3.0, 8.0, 3.0], NONE);
     }
     b.finish(1.0)
 }
@@ -12411,6 +12529,8 @@ mod tests {
                     | EntityModelKind::PandaBaby
                     | EntityModelKind::OcelotBaby
                     | EntityModelKind::BeeBaby
+                    | EntityModelKind::DonkeyBaby
+                    | EntityModelKind::MuleBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -14029,5 +14149,37 @@ mod baby_bee_tests {
             assert!((w.pivot[2] - (-1.8567 + 0.8567)).abs() < 1e-4);
         }
         assert!(m.quads.iter().all(|q| q.uv.iter().all(|u| u[0] >= 0.0)));
+    }
+}
+
+#[cfg(test)]
+mod foal_tests {
+    use super::*;
+
+    /// M334 — `BabyDonkeyModel`: ten boxes, the body's top at (14, 13)..
+    /// (22, 27) of its sheet, and the legs' pivots the body's (1, 14, 0)
+    /// plus their own offsets (they are its children in vanilla).
+    #[test]
+    fn the_foal_is_its_own_model() {
+        let m = donkey_baby();
+        assert_eq!(m.quads.len(), 10 * 6);
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m.quads.iter().any(|q| q.part == STATIC_PART
+            && q.facing == Facing::Down
+            && (span(q, 0), span(q, 1)) == ((14.0, 22.0), (13.0, 27.0))));
+        let pivot = |a: Anim| m.parts.iter().find(|p| p.anim == a).unwrap().pivot;
+        let near = |p: [f32; 3], q: [f32; 3]| (0..3).all(|i| (p[i] - q[i]).abs() < 1e-5);
+        assert!(near(
+            pivot(Anim::QuadHindLeft),
+            [1.0 + 2.25, 14.0 + 3.5, 5.25]
+        ));
+        assert!(near(
+            pivot(Anim::QuadFrontRight),
+            [1.0 - 2.4, 14.0 + 3.5, -5.4]
+        ));
     }
 }
