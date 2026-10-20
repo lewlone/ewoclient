@@ -3965,6 +3965,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M319 — the baby drowned (2026-10-20)
+
+The third of M317's scrambled swaps. `BabyDrownedModel.createBodyLayer` is
+`BabyZombieModel`'s, and `DrownedOuterLayer` draws its baby model (the same
+layer at 0.25) on `drowned_outer_layer_baby.png`. `zombie_baby_like` takes an
+optional outer texture slot: every box again at 0.25, except the head's two,
+whose deformations `BabyZombieModel` fixes at 0 and 0.25 whatever the layer's,
+so the outer head would be coplanar with the base head and is lifted 0.002 px
+under Rewo's strict depth test. `DrownedBaby` is that model, picked by
+`baby_model_kind`; both sheets get spec rows. `mobshot` grades 297 views;
+`MAX_SMALL` 18.
+
+**Unit test**: the baby zombie's boxes unchanged plus seven outer ones on
+slot 1. **mobtexshot m45**: 1,146 px from the two sheets, 1,142 of them
+colours only the outer sheet can produce (without the outer layer: 0, and m45
+fails). **r174**: a staged baby drowned (helmeted against the sun) draws as
+its own model.
+
 ### M318 — the baby villager (2026-10-20)
 
 The second of M317's scrambled swaps. `VillagerRenderer` swaps in
