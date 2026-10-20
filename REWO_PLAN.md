@@ -2107,6 +2107,7 @@ this shape once.
 | M292 (2026-10-20) — the donkey's screen draws the donkey in its window | **r149** | — | — |
 | M294 (2026-10-20) — a horse draws in its iron horse armour | **r150** | — | — |
 | M295 (2026-10-20) — a saddled horse draws its saddle, and its reins while ridden | **r151** | — | — |
+| M296 (2026-10-20) — the chested donkey draws with its chests | **r152** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3941,6 +3942,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M296 — donkey and mule chests (2026-10-20)
+
+`DonkeyModel.modifyMesh` adds two chests to the body (`texOffs(26, 21)
+.addBox(-4, 0, -2, 8, 8, 3)` at `(±6, -8, 0)` turned `∓π/2`), and
+`setupAnim` shows them with `hasChest` (`AbstractChestedHorse.DATA_ID_CHEST`,
+index 19 BOOLEAN). Rewo modelled neither.
+
+- `tools/gen_entity_classes.py` gains `ABSTRACT_CHESTED_HORSE` (donkey,
+  mule, llama, trader llama; regenerated), `EntityTypes::is_chested_horse`
+  gates the index-19 boolean into `MobState::has_chest`;
+- the donkey/mule mesh (`equine_with` with the long ears) carries the two
+  boxes on a part shown by `Show::Chested`, driven by `EntityDraw::chested`.
+
+Recorded: the llamas' chests (`LlamaModel`'s, the same flag) are not
+modelled; the donkey's saddle mesh includes the chest boxes as vanilla's
+does (drawn in the saddle sheet, transparent there).
+
+**Unit test**: the donkey and mule carry two chest boxes on the shown-when-
+chested part, the horse none. **mobtexshot m27**: a chested donkey adds 477
+px, every colour from the jar's donkey sheet. **r152**: r84's donkey
+(`ChestedHorse:1b`) draws with its chests.
 
 ### M295 — the horse family's saddles (2026-10-20)
 
