@@ -3951,6 +3951,23 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M304 — the giant (2026-10-20)
+
+The second of M303's capsules. `GiantMobRenderer` draws `GiantZombieModel`
+(an `AbstractZombieModel`, so the zombie's arms) on the humanoid body layer
+through `MeshTransformer.scaling(6.0F)`, on the zombie's sheet, with an
+`ItemInHandLayer` and a `HumanoidArmorLayer` whose `GIANT_ARMOR` is the
+armour scaled the same way. `giant()` is `zombie_like(6.0, None)`; the giant
+joins `wears_humanoid_armor`, and since the armour boxes ride the mob's part
+transforms they scale with it. `Giant` follows `CamelHusk` before the
+capsule; `mobshot` grades 270 views.
+
+**Unit test**: the giant's quads and parts are the zombie's, its scale six
+times the zombie's, and its wire name maps to it. **mobtexshot m35**: a giant
+drawn beside where a zombie draws stands 99 rows against 16 (ratio 6.19),
+every colour from the zombie's sheet (a mutant at the zombie's scale reads
+1.00). **r160**: a staged giant draws as one.
+
 ### M303 — the camel husk (2026-10-20)
 
 `minecraft:camel_husk` had no `EntityModelKind`, so `kind_for_entity_name`
