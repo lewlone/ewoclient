@@ -2073,6 +2073,9 @@ pub fn tinted_texture(kind: EntityModelKind) -> Option<&'static str> {
 /// wool's nearer depth, which the undercoat then fails.
 pub fn coplanar_layer_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
+        // M342 — `WolfCollarLayer` draws the wolf's own model again.
+        EntityModelKind::Wolf => Some("wolf_collar"),
+        EntityModelKind::WolfBaby => Some("wolf_collar_baby"),
         EntityModelKind::Sheep => Some("sheep_wool_undercoat"),
         // M323 — and the lamb's fleece: `LayerDefinitions` maps
         // `SHEEP_BABY_WOOL` to `sheepBabyBodyLayer`, the lamb's own mesh at
@@ -2120,6 +2123,16 @@ pub fn fish_tint_textures(kind: EntityModelKind) -> Option<(&'static str, &'stat
 /// carries no `isSheared` test at all (M68), so shearing takes this layer and
 /// leaves that one — which is the whole reason a shorn dyed sheep still shows
 /// colour where a shorn white one is bare.
+/// M342 — which of a mob's textures is a collar: drawn only on a tame mob
+/// and tinted by its collar's `DyeColor.getTextureDiffuseColor()`.
+pub fn collar_texture(kind: EntityModelKind) -> Option<&'static str> {
+    match kind {
+        EntityModelKind::Wolf => Some("wolf_collar"),
+        EntityModelKind::WolfBaby => Some("wolf_collar_baby"),
+        _ => None,
+    }
+}
+
 pub fn shearable_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
         EntityModelKind::Sheep => Some("sheep_wool"),
@@ -2419,7 +2432,9 @@ pub static MOBS: &[MobDef] = &[
     },
     MobDef {
         kind: EntityModelKind::Wolf,
-        textures: &["wolf"],
+        // M342 — and the collar, `WolfCollarLayer`'s sheet on the wolf's own
+        // mesh (see `wolf`).
+        textures: &["wolf", "wolf_collar"],
         build: wolf,
     },
     MobDef {
@@ -3024,7 +3039,7 @@ pub static MOBS: &[MobDef] = &[
     // and tame, are its variants (`MobVariantDef::baby_texture`).
     MobDef {
         kind: EntityModelKind::WolfBaby,
-        textures: &["wolf_baby"],
+        textures: &["wolf_baby", "wolf_collar_baby"],
         build: wolf_baby,
     },
 ];
@@ -4327,8 +4342,24 @@ fn chicken() -> Model {
 
 /// `AdultWolfModel`: head (skull + ears + snout), two rotated body
 /// segments, 2×8×2 legs (right pair mirrored), angled tail.
+/// M342 — the wolf, with `WolfCollarLayer` on texture 1: that layer submits
+/// the wolf's own model (`getParentModel()`) in the collar's sheet, so its
+/// quads are the body's again, coplanar, drawn through the coplanar range
+/// (see [`coplanar_layer_texture`]) when the wolf is tame.
 fn wolf() -> Model {
-    wolf_with(0.0)
+    with_collar_copy(wolf_with(0.0), wolf_with(0.0))
+}
+
+/// M342 — `base` plus `copy`'s quads (the same builder run again, so the
+/// same parts in the same order) moved to texture 1.
+fn with_collar_copy(mut base: Model, copy: Model) -> Model {
+    assert_eq!(base.parts.len(), copy.parts.len());
+    base.quads
+        .extend(copy.quads.into_iter().filter(|q| q.tex == 0).map(|mut q| {
+            q.tex = 1;
+            q
+        }));
+    base
 }
 
 /// M299 — `ModelLayers.WOLF_ARMOR`: `AdultWolfModel.createBodyLayer(new
@@ -6444,7 +6475,13 @@ fn horse_baby() -> Model {
 /// -0.5236; it rests there and wags about y, as Rewo's adult wolf's does
 /// (a tame wolf's tail rises with its health in vanilla, which neither
 /// models). Under it `tail_r1` turns its box -3.1.
+/// M342 — the puppy with its collar (`WOLF_BABY_COLLAR_LOCATION` on the
+/// puppy's own mesh), as [`wolf`].
 fn wolf_baby() -> Model {
+    with_collar_copy(wolf_baby_mesh(), wolf_baby_mesh())
+}
+
+fn wolf_baby_mesh() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 18.25, -4.0], Anim::Head, 1.0);
     b.cube_g(
@@ -13207,6 +13244,7 @@ mod tests {
                 ("tinted", tinted_texture(def.kind)),
                 ("shearable", shearable_texture(def.kind)),
                 ("coplanar", coplanar_layer_texture(def.kind)),
+                ("collar", collar_texture(def.kind)),
             ] {
                 if let Some(k) = key {
                     assert!(
@@ -13903,7 +13941,8 @@ mod wolf_armor_tests {
     /// UVs, the legs 0.4 wider.
     #[test]
     fn the_wolf_armour_is_the_wolf_inflated_a_fifth() {
-        let (base, shell) = (wolf(), wolf_armor());
+        // M342: the bare wolf (its collar copy is not the armour's).
+        let (base, shell) = (wolf_with(0.0), wolf_armor());
         assert_eq!(base.parts.len(), shell.parts.len());
         assert_eq!(base.quads.len(), shell.quads.len());
         for (a, b) in base.quads.iter().zip(&shell.quads) {
@@ -14979,7 +15018,8 @@ mod puppy_tests {
     /// `tailAngle` π/5 (not the layer's -0.5236), wagging about y.
     #[test]
     fn the_puppy_is_its_own_model_with_a_wild_wolf_s_tail() {
-        let m = wolf_baby();
+        // M342: the bare mesh (the collar copy is `collar_tests`').
+        let m = wolf_baby_mesh();
         assert_eq!(m.quads.len(), 10 * 6);
         let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
         let span = |q: &RawQuad, i: usize| {
@@ -14992,5 +15032,23 @@ mod puppy_tests {
             && (span(q, 0), span(q, 1)) == ((5.0, 11.0), (17.0, 22.0))));
         let tail = m.parts.iter().find(|p| p.anim == Anim::TailWagY).unwrap();
         assert!((tail.rot[0] - PI / 5.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod collar_tests {
+    use super::*;
+
+    /// M342 — the wolf's and the puppy's collar is their own mesh again on
+    /// texture 1, quad for quad, so it is coplanar with them.
+    #[test]
+    fn the_wolf_s_collar_is_its_own_mesh_again() {
+        for (m, bare) in [(wolf(), wolf_with(0.0)), (wolf_baby(), wolf_baby_mesh())] {
+            let collar: Vec<_> = m.quads.iter().filter(|q| q.tex == 1).collect();
+            assert_eq!(collar.len(), bare.quads.len());
+            for (c, b) in collar.iter().zip(&bare.quads) {
+                assert_eq!((c.pos, c.uv, c.part), (b.pos, b.uv, b.part));
+            }
+        }
     }
 }

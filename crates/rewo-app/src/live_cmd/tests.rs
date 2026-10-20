@@ -4267,6 +4267,18 @@ fn a_baby_sulfur_cube_takes_the_small_model() {
     assert_eq!(s(K::Cow), (0.5, 0.5));
 }
 
+/// M342 — a collar only on a tame wolf, red when the server sent no colour.
+#[test]
+fn a_tame_wolf_wears_its_collar_and_a_wild_one_none() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let f = super::entities::wolf_collar;
+    assert_eq!(f(K::Wolf, true, Some(11)), Some(11));
+    assert_eq!(f(K::Wolf, true, None), Some(14));
+    assert_eq!(f(K::WolfBaby, true, None), Some(14));
+    assert_eq!(f(K::Wolf, false, Some(11)), None);
+    assert_eq!(f(K::Cat, true, Some(11)), None);
+}
+
 /// M340 — a mob the server sent no variant for holds its class's default:
 /// a cat the registry's black entry wherever it sits, a wolf the pale one,
 /// a horse 0 (WHITE, which is not Rewo's brown base sheet); a key missing

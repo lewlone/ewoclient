@@ -656,8 +656,14 @@ fn skip_value(r: &mut PacketReader, ty: i32) -> bool {
             Ok(false) => true,
             Err(_) => false,
         },
+        // OPTIONAL_LIVING_ENTITY_REFERENCE: a bool and, when set, the
+        // reference's UUID (`EntityReference.STREAM_CODEC` is
+        // `UUIDUtil.STREAM_CODEC`, two longs). Until M342 this skipped a
+        // varint, so every entity with an owner (a tame wolf, cat, parrot...)
+        // lost each field after its owner at 19: the tame cat's coat at 20,
+        // the wolf's collar at 21 and its coat at 23.
         13 => match r.bool() {
-            Ok(true) => r.varint().is_ok(), // OPTIONAL_LIVING_ENTITY_REF
+            Ok(true) => r.take(16).is_ok(),
             Ok(false) => true,
             Err(_) => false,
         },
@@ -693,6 +699,24 @@ mod tests {
             m.custom_name.as_ref().map(Option::as_deref),
             Some(Some("Bessie"))
         );
+    }
+
+    /// M342 — a tame wolf's owner (index 19, OPTIONAL_LIVING_ENTITY_REFERENCE,
+    /// a bool and a 16-byte UUID) is skipped whole, so the collar at 21 that
+    /// follows it is read. With the old varint skip the UUID's bytes were
+    /// read as the next entries.
+    #[test]
+    fn reads_past_an_owner_reference_to_the_wolfs_collar() {
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(&[19, 13, 0x01]); // idx19 owner present
+        b.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00]);
+        b.extend_from_slice(&[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x42]);
+        b.extend_from_slice(&[20, 8, 0x00]); // idx20 BOOLEAN interested=false
+        b.extend_from_slice(&[21, 1, 11]); // idx21 INT collar=blue
+        b.push(0xFF);
+        let m = parse(&mut PacketReader::new(&b), MetaKinds::default());
+        assert_eq!(m.int21, Some(11));
+        assert_eq!(m.bool20, Some(false));
     }
 
     #[test]

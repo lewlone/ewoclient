@@ -456,6 +456,9 @@ pub struct EntityDraw<'a> {
     ///
     /// `false` on every mob without such a layer, where it is inert.
     pub undercoat: bool,
+    /// M342 — a tame wolf's collar colour, a `DyeColor` id; `None` draws no
+    /// collar (vanilla's `collarColor` is null unless the wolf is tame).
+    pub collar: Option<u8>,
     /// A tropical fish's two dyes as `DyeColor` ids, `[body, pattern]` (M68) —
     /// `TropicalFishRenderState`'s `baseColor` and `patternColor`, which the
     /// renderer feeds to `getModelTint` and to `TropicalFishPatternLayer`
@@ -1394,6 +1397,8 @@ pub struct MobModel {
     /// quads leave the solid range for the `EQUAL`, no-write trim range,
     /// because they land at exactly the base model's depth.
     coplanar_slot: Option<u8>,
+    /// M342 — the collar's slot ([`mobs::collar_texture`]).
+    collar_slot: Option<u8>,
     /// A tropical fish's `(body, pattern)` texture slots — the two vanilla
     /// tints from its packed variant (M68).
     fish_slots: Option<(u8, u8)>,
@@ -1902,6 +1907,9 @@ impl EntityPass {
                     .textures
                     .iter()
                     .position(|t| *t == "happy_ghast_ropes")
+                    .map(|s| s as u8),
+                collar_slot: mobs::collar_texture(def.kind)
+                    .and_then(|k| def.textures.iter().position(|t| *t == k))
                     .map(|s| s as u8),
                 coplanar_slot: mobs::coplanar_layer_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
@@ -3861,9 +3869,16 @@ impl EntityPass {
         for s in [model.tinted_slot, model.coplanar_slot]
             .into_iter()
             .flatten()
+            .filter(|s| model.collar_slot != Some(*s))
         {
             if let Some(t) = slot_tint.get_mut(s as usize) {
                 *t = lin3(wool);
+            }
+        }
+        // M342 — the collar takes its own dye, `getTextureDiffuseColor`.
+        if let (Some(s), Some(c)) = (model.collar_slot, d.collar) {
+            if let Some(t) = slot_tint.get_mut(s as usize) {
+                *t = lin3(mobs::DYE_DIFFUSE_COLORS[(c & 15) as usize]);
             }
         }
         if let Some((body, pattern)) = model.fish_slots {
@@ -3899,7 +3914,13 @@ impl EntityPass {
             // M323 — the lamb's fleece is coplanar too, but it is
             // `SheepWoolLayer`'s: shearing gates it (`shorn_slot`, above) and
             // the undercoat's dye rule does not.
-            if coplanar && !d.undercoat && model.shearable_slot != Some(q.tex) {
+            // M342 — a collar is coplanar too, and its gate is the collar
+            // itself (`WolfCollarLayer`: only a tame wolf has one).
+            let collar = model.collar_slot == Some(q.tex);
+            if collar && d.collar.is_none() {
+                continue;
+            }
+            if coplanar && !collar && !d.undercoat && model.shearable_slot != Some(q.tex) {
                 continue;
             }
             let p4 = place(q);

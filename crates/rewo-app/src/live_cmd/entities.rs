@@ -3755,6 +3755,13 @@ pub(crate) fn fish_kind(v: rewo_data::mob_variants::FishVariant) -> EntityModelK
         rewo_data::mob_variants::FishBase::Large => EntityModelKind::TropicalFishLarge,
     }
 }
+/// M342 — a wolf's (or puppy's) collar: none unless tame, then the colour
+/// the server sent or `Wolf.DEFAULT_COLLAR_COLOR` (red, 14) when it sent none.
+pub(crate) fn wolf_collar(kind: EntityModelKind, tame: bool, sent: Option<i32>) -> Option<u8> {
+    let wolf = matches!(kind, EntityModelKind::Wolf | EntityModelKind::WolfBaby);
+    (wolf && tame).then(|| (sent.unwrap_or(14) & 15) as u8)
+}
+
 /// M340 — the variant a mob holds when the server sent none: each class's
 /// `defineSynchedData` default. The registry mobs' default is a key
 /// (`Cat.DEFAULT_VARIANT` = black, `WolfVariants.DEFAULT` = pale,
@@ -4623,6 +4630,14 @@ pub(super) fn collect_entities<'a>(
             // …and bit 0x10 of the same byte (M64), which drops the fleece
             // rather than recolouring it.
             sheared: session.world.entities.is_sheared(id),
+            // M342 — `WolfRenderer`: `collarColor = isTame() ?
+            // getCollarColor() : null`, the collar the server sent or its
+            // default red (14).
+            collar: wolf_collar(
+                kind,
+                session.world.entities.is_tame(id),
+                session.world.entities.collar(id),
+            ),
             // M68: `SheepWoolUndercoatLayer.submit`'s gate.
             undercoat: undercoat_visible(
                 kind,

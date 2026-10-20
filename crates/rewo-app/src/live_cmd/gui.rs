@@ -242,6 +242,7 @@ pub(super) fn preview_draw<'a>(
         variant: 0,
         dye: None,
         sheared: false,
+        collar: None,
         undercoat: false,
         fish_dye: None,
         cape: preview_cape(cape_origin),

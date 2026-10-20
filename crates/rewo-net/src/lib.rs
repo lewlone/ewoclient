@@ -3036,6 +3036,13 @@ pub(crate) fn apply_set_entity_data<'a>(
     // says which, which is why they all funnel through one setter the
     // renderer reads back with the kind in hand.
     let vk = kinds.variant_kinds;
+    // M342 — Slot 21 INT → `Wolf.DATA_COLLAR_COLOR` (`TamableAnimal` 18 and
+    // 19, then the wolf's `DATA_INTERESTED_ID` 20 and the collar 21). The
+    // llama's variant is the same index and serializer (read below, gated
+    // on the llama), so only the kind separates them.
+    if let (Some(c), true) = (meta.int21, vk.wolf == Some(type_id)) {
+        entities.set_collar(eid, c);
+    }
     for (value, kind) in [
         (meta.cat_variant, vk.cat),
         (meta.wolf_variant, vk.wolf),

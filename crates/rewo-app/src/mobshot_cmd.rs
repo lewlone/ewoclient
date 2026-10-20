@@ -254,6 +254,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         variant: 0,
         dye: None,
         sheared: false,
+        collar: None,
         undercoat: false,
         fish_dye: None,
         cape: None,
@@ -1862,7 +1863,8 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 // --variant-check: vanilla's metadata-driven texture variants (M64)
 // ---------------------------------------------------------------------------
 
-const VARIANT_WITNESSES: usize = 13;
+/// M342: 13 → 14, n9 (index 21 INT: a llama's variant or a wolf's collar).
+const VARIANT_WITNESSES: usize = 14;
 
 /// The mobs whose texture a synched metadata field chooses, and the registry
 /// name each carries in the `entity_types` table.
@@ -2580,6 +2582,27 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
             as_wolf.wool_color(1)
         ),
     );
+    // M342 — index 21 INT is the llama's variant AND the wolf's collar
+    // colour, the same serializer; only the kind separates them.
+    let llama = kinds.llama.ok_or("no minecraft:llama")?;
+    let wolf21 = send(wolf, 21, 1, 11, kinds);
+    let llama21 = send(llama, 21, 1, 3, kinds);
+    c.record(
+        "n9.index_21_int_is_a_llama_variant_or_a_wolf_collar_by_kind_alone",
+        wolf21.collar(1) == Some(11)
+            && wolf21.variant(1).is_none()
+            && llama21.variant(1) == Some(3)
+            && llama21.collar(1).is_none(),
+        format!(
+            "11 at index 21 gives a wolf collar {:?} (variant {:?}) and 3 a llama \
+             variant {:?} (collar {:?}): `Wolf.DATA_COLLAR_COLOR` and \
+             `Llama.DATA_VARIANT_ID` are both index 21 INT",
+            wolf21.collar(1),
+            wolf21.variant(1),
+            llama21.variant(1),
+            llama21.collar(1)
+        ),
+    );
     Ok(())
 }
 
@@ -2640,6 +2663,7 @@ fn run_tint_check(
         let d = EntityDraw {
             dye,
             sheared,
+            collar: None,
             undercoat: force.unwrap_or_else(|| crate::live_cmd::undercoat_visible(kind, dye, baby)),
             mob: rewo_gpu::mobs::MobCombat {
                 is_baby: baby,
@@ -2662,6 +2686,7 @@ fn run_tint_check(
         let d = EntityDraw {
             dye,
             sheared,
+            collar: None,
             undercoat: false,
             ..neutral_draw(kind)
         };

@@ -1393,6 +1393,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         variant: 0,
         dye: None,
         sheared: false,
+        collar: None,
         undercoat: false,
         fish_dye: None,
         cape: None,

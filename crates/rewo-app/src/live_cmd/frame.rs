@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M342 — r196: the staged tame wolf, wearing its blue collar.
+            c.blue_collar |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Wolf && d.collar == Some(11));
             // M341 — r195: the staged ashen puppy, on a coat variant.
             for d in draws.iter() {
                 if d.kind == rewo_gpu::mobs::EntityModelKind::WolfBaby {

@@ -1146,6 +1146,14 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M342 — the wolf's and the puppy's collars.
+    ("wolf_collar", "entity/wolf/wolf_collar.png", 64, 32),
+    (
+        "wolf_collar_baby",
+        "entity/wolf/wolf_collar_baby.png",
+        32,
+        32,
+    ),
     // M341 — the pale wild puppy's sheet (the base of its coat variants).
     ("wolf_baby", "entity/wolf/wolf_baby.png", 32, 32),
     // M340 — the tabby kitten's sheet (the base of its coat variants).

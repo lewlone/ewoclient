@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 66;
+const EXPECTED_WITNESSES: usize = 67;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -479,6 +479,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         variant: 0,
         dye: None,
         sheared: false,
+        collar: None,
         undercoat: false,
         fish_dye: None,
         cape: None,
@@ -4727,6 +4728,82 @@ fn run_check(
             "ashen variant id {pu_ashen_id}; {}; {pu_diff} bytes differ between the coats \
              (want >= 200 px each, none foreign, the coats different)",
             pu_rows.join("; ")
+        ),
+    ));
+
+    // m67 — M342: a tame wolf and a tame puppy wear a blue collar: against
+    // the same mob with no collar, at least 30 pixels change, and most of
+    // them are blue-dominant (blue's diffuse colour #3c44aa); with no collar
+    // nothing changes from the collarless frame (the gate).
+    let mut clst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.9, -0.9),
+        Vec3::new(0.0, 0.35, 0.0),
+    )?;
+    let mut cl_rows = Vec::new();
+    let mut cl_ok = true;
+    for kind in [EntityModelKind::Wolf, EntityModelKind::WolfBaby] {
+        let shoot = |st: &mut Stage, collar: Option<u8>| -> Result<Vec<u8>, String> {
+            let d = EntityDraw {
+                collar,
+                ..neutral_draw(kind)
+            };
+            st.wr.set_entities(&[d], st.right, st.up, 0.0);
+            st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
+            st.off.read_rgba(gpu)
+        };
+        let bare = shoot(&mut clst, None)?;
+        let blue = shoot(&mut clst, Some(11))?;
+        // The gate: with no collar, every pixel the mob adds over the empty
+        // stage is its coat sheet's (a collar drawn anyway adds the collar
+        // sheet's greys).
+        let coat_key = if kind == EntityModelKind::Wolf {
+            "wolf"
+        } else {
+            "wolf_baby"
+        };
+        let coat: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == coat_key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        clst.wr.set_entities(&[], clst.right, clst.up, 0.0);
+        clst.off
+            .render(gpu, Some((&mut clst.wr, clst.vp)), &ov, BG)?;
+        let empty = clst.off.read_rgba(gpu)?;
+        let bare_foreign = bare
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(empty.as_chunks::<4>().0)
+            .filter(|(p, e)| p[..3] != e[..3] && !explains(&coat, pack(p[0], p[1], p[2])))
+            .count();
+        let (mut px, mut bluish) = (0usize, 0usize);
+        for (p, e) in blue.as_chunks::<4>().0.iter().zip(bare.as_chunks::<4>().0) {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            bluish += usize::from(p[2] > p[0] && p[2] > p[1]);
+        }
+        cl_ok &= !coat.is_empty() && px >= 30 && bluish * 10 >= px * 8 && bare_foreign == 0;
+        cl_rows.push(format!(
+            "{}: {px} px change, {bluish} blue-dominant, {bare_foreign} px of the \
+             collarless one foreign to its coat",
+            kind.name()
+        ));
+    }
+    clst.destroy(gpu);
+    w.push(wit(
+        "m67.a_tame_wolf_and_puppy_wear_a_dyed_collar",
+        cl_ok,
+        format!(
+            "{} (want >= 30, >= 80% blue-dominant, and 0 foreign without a collar)",
+            cl_rows.join("; ")
         ),
     ));
 

@@ -2200,6 +2200,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         variant: 0,
         dye: None,
         sheared: false,
+        collar: None,
         undercoat: false,
         fish_dye: None,
         anim_id: 0.0,

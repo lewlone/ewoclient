@@ -1556,6 +1556,11 @@ pub struct MobState {
     /// a horse defaults to `DATA_ID_TYPE_VARIANT = 0`, i.e. WHITE, whereas an
     /// unresolved one keeps whatever Rewo baked.
     pub variant: Option<i32>,
+    /// M342 — `Wolf.DATA_COLLAR_COLOR` (index 21, INT), a `DyeColor` id.
+    /// `None` when the server sent none, which is vanilla's default
+    /// (`DEFAULT_COLLAR_COLOR`, red): the server sends only non-default
+    /// metadata, so the reader of this field supplies the default.
+    pub collar: Option<i32>,
     /// `TamableAnimal.DATA_FLAGS_ID` — index **18**, BYTE, bit 0x04 is
     /// `isTame()` and bit 0x01 `isInSittingPose()` (M64).
     ///
@@ -2948,6 +2953,17 @@ impl EntityTable {
     /// texture Rewo baked rather than on some default it invented.
     pub fn variant(&self, id: i32) -> Option<i32> {
         self.mob_state.get(&id).and_then(|s| s.variant)
+    }
+
+    /// M342 — a wolf's collar colour (`DATA_COLLAR_COLOR`). Kind-gated by the
+    /// caller: the llama's variant is the same index and serializer.
+    pub fn set_collar(&mut self, id: i32, color: i32) {
+        self.mob_state.entry(id).or_default().collar = Some(color);
+    }
+
+    /// M342 — the collar colour the server sent, `None` if it sent none.
+    pub fn collar(&self, id: i32) -> Option<i32> {
+        self.mob_state.get(&id).and_then(|s| s.collar)
     }
 
     /// `TamableAnimal.DATA_FLAGS_ID` (index 18, BYTE). Kind-gated by the

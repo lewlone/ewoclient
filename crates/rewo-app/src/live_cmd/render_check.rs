@@ -480,6 +480,8 @@ pub(super) struct RenderCheck {
     /// M341 — r195: whether a puppy drew as `BabyWolfModel`, and on a coat
     /// variant.
     pub(super) puppy: (bool, bool),
+    /// M342 — r196: whether a tame wolf drew with a blue collar.
+    pub(super) blue_collar: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1245,7 +1247,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 195;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 196;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1446,6 +1448,14 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M342 — r196: `render_check.py` summons a tame wolf with a blue
+        // collar; it must draw with collar 11 (the server's index 21 INT,
+        // routed on the wolf, and its tame flag; `mobtexshot m67`).
+        row(
+            "r196 a tame wolf drew wearing its blue collar",
+            self.blue_collar,
+            format!("tame wolf with collar 11 seen: {}", self.blue_collar),
         );
         // M341 — r195: `render_check.py` summons an ashen puppy; it must draw
         // as `BabyWolfModel` on a coat variant, the server's registry entry's
