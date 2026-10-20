@@ -3928,6 +3928,51 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M278 — the glowing outline (2026-10-20)
+
+The Glowing effect (spectral arrows, `/effect`, and every minigame that
+marks a team or a target) drew nothing: Rewo had no outline pass.
+
+- **Which entities**: `glow_colour` is `shouldEntityAppearGlowing`'s
+  `isCurrentlyGlowing` (shared flag 6, `FLAG_GLOWING`) and
+  `getTeamColor` (the team's `ChatFormatting` colour through
+  `NAMED_COLORS`, white without one), as `EntityDraw::outline`.
+- **Geometry**: every vertex a glowing entity emits (model, armour, held
+  items: `OutlineBufferSource` wraps all of its submits) is copied, in the
+  outline colour, into the entity buffer's seventh range;
+  `draw_outline_geometry` draws it with `outline_geometry.frag`
+  (`rendertype_outline`: discard where the texture's alpha is 0, else the
+  flat colour) into an RGBA8 UNORM target with its own depth, so outlines
+  show through walls.
+- **Post** (`world/outline.rs`, `OutlinePass`): `entity_outline.json`'s
+  chain as written: `entity_sobel` (nearest), the radius-2 box blur along x
+  then y (bilinear), and the composite (`blitAndBlendToTexture`,
+  `ENTITY_OUTLINE_BLIT`: SRC_ALPHA, ONE_MINUS_SRC_ALPHA; alpha ZERO, ONE)
+  through the frame's UNORM view, so the arithmetic is vanilla's
+  gamma-space one. The shaders address their input by `gl_FragCoord`;
+  because GL's `texCoord` y runs up the screen, the y blur's `BlurDir`
+  (0, 1) is (0, −1) here (the kernel is not symmetric). One set of images
+  serves every frame in flight, each use opening with a barrier from the
+  last frame's access; `ensure_outline` rebuilds them on a resize after the
+  device is idle.
+- Drawn after the whole world (vanilla's `doEntityOutline`), inside
+  `WorldRenderer::draw`, which ends and reopens the frame's rendering scope
+  as the gamma scope does.
+
+Recorded: an invisible glowing entity draws no outline (vanilla draws its
+outline alone; Rewo's hidden body emits nothing to copy), nor the
+spectator's player-outline key, nor block entities and trims and emissive
+layers in the outline; the headless `live --out` shot has no outline.
+
+**mobshot** (fail-closed: the check runs once): the armour stand glowing
+red against the same stand plain. Every rim pixel (outside the silhouette,
+within 1 px) changes to a red-dominated colour (1,194 of 1,194: the rim
+lands at full alpha and about 0.2–0.4 of the colour, the sobel's 0.2 per
+sample and the blur's divide by 2.5), no pixel 6+ px outside or 4+ px
+inside changes, and the pass ran; validation (with sync) clean. **r137**:
+a summoned armour stand with the `Glowing` tag reaches the draws with the
+white outline (no team) and the outline pass runs.
+
 ### M277 — the white flash: creepers and lit TNT (2026-10-20)
 
 Two of the game's loudest warnings never showed: a creeper about to blow
