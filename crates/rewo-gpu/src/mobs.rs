@@ -1589,11 +1589,13 @@ pub enum EntityModelKind {
     /// M334 — `BabyDonkeyModel` (`DONKEY_BABY`, `MULE_BABY`).
     DonkeyBaby,
     MuleBaby,
+    /// M335 — `BabyCamelModel` (`CAMEL_BABY`).
+    CamelBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 128;
+    pub const COUNT: usize = 129;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1722,6 +1724,7 @@ impl EntityModelKind {
         EntityModelKind::BeeBaby,
         EntityModelKind::DonkeyBaby,
         EntityModelKind::MuleBaby,
+        EntityModelKind::CamelBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1851,6 +1854,7 @@ impl EntityModelKind {
             EntityModelKind::BeeBaby => "bee_baby",
             EntityModelKind::DonkeyBaby => "donkey_baby",
             EntityModelKind::MuleBaby => "mule_baby",
+            EntityModelKind::CamelBaby => "camel_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1920,6 +1924,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::BeeBaby
                 | EntityModelKind::DonkeyBaby
                 | EntityModelKind::MuleBaby
+                | EntityModelKind::CamelBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2939,6 +2944,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::MuleBaby,
         textures: &["mule_baby"],
         build: donkey_baby,
+    },
+    // M335 — the camel calf's sheet.
+    MobDef {
+        kind: EntityModelKind::CamelBaby,
+        textures: &["camel_baby"],
+        build: camel_baby,
     },
 ];
 
@@ -5903,6 +5914,98 @@ fn donkey_baby() -> Model {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [-2.5, -1.5, -1.5], [3.0, 8.0, 3.0], NONE);
     }
+    b.finish(1.0)
+}
+
+/// M335 — `BabyCamelModel.createBodyLayer()` (64 x 64): a 9 x 8 x 16 body
+/// carrying its 3 x 9 x 0 tail and the head (a 5 x 5 x 7 neck base, a
+/// 5 x 9 x 5 neck and a 5 x 4 x 3 muzzle; looking) with two ears, and four
+/// 3 x 13 x 3 legs, all on `CamelBabyAnimation.CAMEL_BABY_WALK` through
+/// `CamelModel`'s `applyWalk(pos, speed, 2.0, 2.5)`. Its channels name the
+/// body, head, ears, tail, legs and `root` (which, as for Rewo's adult camel,
+/// is a part at the origin parenting the rest). Scale channels are dropped,
+/// as everywhere; sitting, standing up and dashing are not drawn, as Rewo's
+/// adult camel's are not.
+fn camel_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let root = b.part_named("root", [0.0; 3], [0.0; 3], Anim::None, 1.0, None);
+    let body = b.part_named(
+        "body",
+        [0.0, 7.0, 0.0],
+        [0.0; 3],
+        Anim::None,
+        1.0,
+        Some(root),
+    );
+    b.cube(
+        body,
+        0,
+        (0.0, 14.0),
+        [-4.5, -4.0, -8.0],
+        [9.0, 8.0, 16.0],
+        NONE,
+    );
+    let tail = b.part_named(
+        "tail",
+        [0.0, -1.5, 8.05],
+        [0.0; 3],
+        Anim::None,
+        1.0,
+        Some(body),
+    );
+    b.cube(
+        tail,
+        0,
+        (50.0, 38.0),
+        [-1.5, -0.5, 0.0],
+        [3.0, 9.0, 0.0],
+        NONE,
+    );
+    let head = b.part_named(
+        "head",
+        [0.0, 1.0, -7.5],
+        [0.0; 3],
+        Anim::Head,
+        1.0,
+        Some(body),
+    );
+    for (uv, min, dims) in [
+        ((20.0, 0.0), [-2.5, -3.0, -7.5], [5.0, 5.0, 7.0]),
+        ((0.0, 0.0), [-2.5, -12.0, -7.5], [5.0, 9.0, 5.0]),
+        ((0.0, 14.0), [-2.5, -12.0, -10.5], [5.0, 4.0, 3.0]),
+    ] {
+        b.cube(head, 0, uv, min, dims, NONE);
+    }
+    for (name, x, uv, min_x) in [
+        ("right_ear", -2.5, (37.0, 0.0), -3.0),
+        ("left_ear", 2.5, (47.0, 0.0), 0.0),
+    ] {
+        let ear = b.part_named(
+            name,
+            [x, -11.0, -4.0],
+            [0.0; 3],
+            Anim::None,
+            1.0,
+            Some(head),
+        );
+        b.cube(ear, 0, uv, [min_x, -0.5, -1.0], [3.0, 1.0, 2.0], NONE);
+    }
+    for (name, pivot, uv) in [
+        ("right_front_leg", [-3.0, 11.5, -5.5], (36.0, 14.0)),
+        ("left_front_leg", [3.0, 11.5, -5.5], (48.0, 14.0)),
+        ("left_hind_leg", [3.0, 11.5, 5.5], (12.0, 38.0)),
+        ("right_hind_leg", [-3.0, 11.5, 5.5], (0.0, 38.0)),
+    ] {
+        let leg = b.part_named(name, pivot, [0.0; 3], Anim::None, 1.0, Some(root));
+        b.cube(leg, 0, uv, [-1.5, -0.5, -1.5], [3.0, 13.0, 3.0], NONE);
+    }
+    b.keyframe(
+        &crate::anim_defs::CAMEL_BABY_WALK,
+        KfDriver::Walk {
+            speed_f: 2.0,
+            scale_f: 2.5,
+        },
+    );
     b.finish(1.0)
 }
 
@@ -12531,6 +12634,7 @@ mod tests {
                     | EntityModelKind::BeeBaby
                     | EntityModelKind::DonkeyBaby
                     | EntityModelKind::MuleBaby
+                    | EntityModelKind::CamelBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -14181,5 +14285,37 @@ mod foal_tests {
             pivot(Anim::QuadFrontRight),
             [1.0 - 2.4, 14.0 + 3.5, -5.4]
         ));
+    }
+}
+
+#[cfg(test)]
+mod camel_calf_tests {
+    use super::*;
+
+    /// M335 — `BabyCamelModel`: the body, three head boxes, two ears and four
+    /// legs (6 faces each) and the tail plate (2); the neck base's front at
+    /// (27, 7)..(32, 12) of its sheet; the head under the body; and
+    /// `CAMEL_BABY_WALK` on `Walk { 2.0, 2.5 }` with every channel bound.
+    #[test]
+    fn the_camel_calf_is_its_own_model_on_its_own_walk() {
+        let m = camel_baby();
+        assert_eq!(m.quads.len(), 10 * 6 + 2);
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let named = |n: &str| m.parts.iter().position(|p| p.name == n).unwrap();
+        assert!(m.quads.iter().any(|q| q.part == named("head")
+            && q.facing == Facing::North
+            && (span(q, 0), span(q, 1)) == ((27.0, 32.0), (7.0, 12.0))));
+        assert_eq!(m.parts[named("head")].parent, Some(named("body") as u16));
+        assert_eq!(m.parts[named("body")].parent, Some(named("root") as u16));
+        let kf = &m.keyframes[0];
+        assert!(std::ptr::eq(kf.def, &crate::anim_defs::CAMEL_BABY_WALK));
+        assert!(
+            matches!(kf.driver, KfDriver::Walk { speed_f, scale_f } if speed_f == 2.0 && scale_f == 2.5)
+        );
+        assert_eq!(kf.parts.len(), kf.def.channels.len());
     }
 }

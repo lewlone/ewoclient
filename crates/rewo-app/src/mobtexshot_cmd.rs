@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 59;
+const EXPECTED_WITNESSES: usize = 60;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -4240,6 +4240,62 @@ fn run_check(
         "m59.both_foals_draw_from_their_own_sheets",
         fl_ok,
         format!("{} (want >= 200 px each, none foreign)", fl_rows.join("; ")),
+    ));
+
+    // m60 — M335: the camel calf draws, every pixel producible by its own
+    // sheet; the mesh and walk rest on
+    // `the_camel_calf_is_its_own_model_on_its_own_walk`.
+    let mut ccst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.0, 1.6, -2.0),
+        Vec3::new(0.0, 0.8, 0.0),
+    )?;
+    ccst.wr.set_entities(&[], ccst.right, ccst.up, 0.0);
+    ccst.off
+        .render(gpu, Some((&mut ccst.wr, ccst.vp)), &ov, BG)?;
+    let cc_empty = ccst.off.read_rgba(gpu)?;
+    let cc_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "camel_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    ccst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::CamelBaby)],
+        ccst.right,
+        ccst.up,
+        0.0,
+    );
+    ccst.off
+        .render(gpu, Some((&mut ccst.wr, ccst.vp)), &ov, BG)?;
+    let cc_frame = ccst.off.read_rgba(gpu)?;
+    ccst.destroy(gpu);
+    let (mut cc_px, mut cc_bad) = (0usize, None);
+    for (p, e) in cc_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(cc_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        cc_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if cc_bad.is_none() && !explains(&cc_sheet, c) {
+            cc_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m60.the_camel_calf_draws_from_its_own_sheet",
+        !cc_sheet.is_empty() && cc_px >= 200 && cc_bad.is_none(),
+        format!(
+            "{cc_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            cc_bad.map(|c| format!("#{c:06x}"))
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

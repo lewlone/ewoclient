@@ -2144,6 +2144,7 @@ this shape once.
 | M332 (2026-10-20) — an ocelot kitten draws as BabyOcelotModel | **r186** | — | — |
 | M333 (2026-10-20) — a baby bee draws as BabyBeeModel | **r187** | — | — |
 | M334 (2026-10-20) — a donkey foal and a mule foal draw as BabyDonkeyModel | **r188** | — | — |
+| M335 (2026-10-20) — a camel calf draws as BabyCamelModel | **r189** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

@@ -3812,3 +3812,159 @@ pub static FOX_BABY_WALK: KfDef = KfDef {
     ],
 };
 
+/// CAMEL_BABY_WALK (C:\Users\valtteri\AppData\Roaming\EwoClient\rewo\26.2\decompiled\net\minecraft\client\animation\definitions\CamelBabyAnimation.java | 15 channels, 0 scale skipped)
+pub static CAMEL_BABY_WALK: KfDef = KfDef {
+    length: 1.5,
+    looping: true,
+    channels: &[
+        KfChannel {
+            part: "root",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0436332313], catmullrom: false },
+                KfFrame { t: 0.75, v: [0.0, 0.0, -0.0436332313], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.0, 0.0, 0.0436332313], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "head",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0436332313, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.375, v: [-0.0436332313, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.75, v: [0.0436332313, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.125, v: [-0.0436332313, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.0436332313, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "head",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.4583, v: [0.0, 0.0, 0.1], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "right_front_leg",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [-0.392699082, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.75, v: [0.392699082, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5, v: [-0.392699082, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "right_front_leg",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.075, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.75, v: [0.075, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.2083, v: [0.075, -4.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.075, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "left_front_leg",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.392699082, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.75, v: [-0.392699082, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.392699082, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "left_front_leg",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [-0.1, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.4583, v: [-0.1, -4.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.75, v: [-0.1, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5, v: [-0.1, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "left_hind_leg",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.392699082, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.375, v: [-0.165631746, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.5833, v: [-0.305432619, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.2083, v: [0.128805299, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 1.5, v: [0.392699082, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "left_hind_leg",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [-0.1, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.25, v: [-0.1, -5.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.5833, v: [-0.1, 0.0, -0.1], catmullrom: true },
+                KfFrame { t: 1.5, v: [-0.1, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_hind_leg",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [-0.276285621, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 0.75, v: [0.392699082, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.0, v: [-0.128805299, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.25, v: [-0.366519143, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.5, v: [-0.276285621, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_hind_leg",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.1, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.6667, v: [0.1, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.0, v: [0.1, -4.0, 0.17], catmullrom: true },
+                KfFrame { t: 1.2083, v: [0.1, 0.0, -0.11], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.1, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "left_ear",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.375, v: [0.0, 0.0, 0.392699082], catmullrom: true },
+                KfFrame { t: 0.75, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.125, v: [0.0, 0.0, 0.392699082], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.0, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "right_ear",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: false },
+                KfFrame { t: 0.375, v: [0.0, 0.0, -0.392699082], catmullrom: true },
+                KfFrame { t: 0.75, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.125, v: [0.0, 0.0, -0.392699082], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.0, 0.0, 0.0], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "tail",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.278205483, -0.146956723, 0.365471945], catmullrom: false },
+                KfFrame { t: 0.75, v: [0.278205483, 0.146956723, -0.365471945], catmullrom: true },
+                KfFrame { t: 1.5, v: [0.278205483, -0.146956723, 0.365471945], catmullrom: false },
+            ],
+        },
+        KfChannel {
+            part: "body",
+            target: KfTarget::Pos,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.6, 0.0], catmullrom: false },
+                KfFrame { t: 0.4583, v: [0.0, 0.6, 0.0], catmullrom: false },
+            ],
+        },
+    ],
+};
+

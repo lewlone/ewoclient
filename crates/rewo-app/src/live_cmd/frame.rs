@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M335 — r189: the staged camel calf.
+            c.camel_calf |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::CamelBaby);
             // M334 — r188: the staged donkey and mule foals.
             for d in draws.iter() {
                 c.foals.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::DonkeyBaby;

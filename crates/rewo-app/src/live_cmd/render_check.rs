@@ -462,6 +462,8 @@ pub(super) struct RenderCheck {
     /// M334 — r188: whether a donkey foal and a mule foal drew as
     /// `BabyDonkeyModel`.
     pub(super) foals: (bool, bool),
+    /// M335 — r189: whether a camel calf drew as `BabyCamelModel`.
+    pub(super) camel_calf: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1227,7 +1229,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 188;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 189;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1428,6 +1430,13 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M335 — r189: `render_check.py` summons a camel calf; it must draw
+        // as `BabyCamelModel` (`mobtexshot m60`).
+        row(
+            "r189 a camel calf drew as BabyCamelModel",
+            self.camel_calf,
+            format!("camel calf seen: {}", self.camel_calf),
         );
         // M334 — r188: `render_check.py` summons a donkey foal and a mule
         // foal; both must draw as `BabyDonkeyModel` (`mobtexshot m59`).

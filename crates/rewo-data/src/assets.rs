@@ -1146,6 +1146,8 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M335 — the camel calf's sheet.
+    ("camel_baby", "entity/camel/camel_baby.png", 64, 64),
     // M334 — the foals' sheets (64 x 64 like the adults', yet M175's table
     // has no row for them).
     ("donkey_baby", "entity/horse/donkey_baby.png", 64, 64),
