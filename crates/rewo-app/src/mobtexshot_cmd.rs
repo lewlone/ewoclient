@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 40;
+const EXPECTED_WITNESSES: usize = 41;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -940,10 +940,17 @@ fn run_check(
                 .any(|(_, p, w, h)| p == rel && w == s.w && h == s.h)
         })
         .count();
+    // A swap's baby sheet, not a baby model's own (M314's ghastling lists
+    // `happy_ghast_baby` as its texture; no swap is any model's texture).
     let baked_babies = baked
         .mob_textures
         .iter()
-        .filter(|t| t.key.ends_with("_baby"))
+        .filter(|t| {
+            t.key.ends_with("_baby")
+                && !rewo_gpu::mobs::MOBS
+                    .iter()
+                    .any(|d| d.textures.contains(&t.key))
+        })
         .count();
     let total_swaps = rewo_data::baby_texture_table::BABY_SWAPS.len();
     w.push(wit(
@@ -1027,18 +1034,21 @@ fn run_check(
         ),
     ));
     // n4 — the DEFERRED half is deliberate: a size-mismatched swap (happy
-    // ghast's 64² baby against a 128² adult) is NOT baked, because offsetting
-    // UVs across different sheet sizes samples the wrong texels. Its absence
-    // from the atlas is the assertion.
-    let deferred_missing = !baked
+    // ghast's 64² baby against a 128² adult) is NOT baked as a swap, because
+    // offsetting UVs across different sheet sizes samples the wrong texels.
+    // M314 built the BABY model layer that sheet belongs to, so the sheet is
+    // in the atlas now, as the ghastling kind's own texture at its own size,
+    // and no swap offset rides the adult.
+    let ghastling_own = baked
         .mob_textures
         .iter()
-        .any(|t| t.key == "happy_ghast_baby");
+        .any(|t| t.key == "happy_ghast_baby" && t.w == 64 && t.h == 64);
     w.push(wit(
         "n4.size_mismatched_baby_sheets_stay_unbaked_on_purpose",
-        deferred_missing && baked.baby_swap_skips > 0,
+        ghastling_own && baked.baby_swap_skips > 0,
         format!(
-            "happy_ghast_baby absent: {deferred_missing}, skips {} (need the BABY model layer first)",
+            "happy_ghast_baby baked at 64x64 for its own model: {ghastling_own}, swaps skipped \
+             {}",
             baked.baby_swap_skips
         ),
     ));
@@ -3058,6 +3068,76 @@ fn run_check(
              cannot produce: {:?}; a leash without a harness changes nothing: \
              {leash_alone_same}",
             rope_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m41 — M314: the ghastling is its own model on its own sheet: beside
+    // where an adult draws it stands about 0.2375 of the adult's height
+    // (`BABY_TRANSFORMER`; perspective keeps the ratio within 0.18..0.30),
+    // and every pixel is a colour the jar's baby sheet can produce. Until
+    // M314 a baby happy ghast drew as the adult at half size.
+    let baby_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "happy_ghast_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut bst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(6.5, 5.5, -6.5),
+        Vec3::new(0.0, 2.6, 0.0),
+    )?;
+    bst.wr.set_entities(&[], bst.right, bst.up, 0.0);
+    bst.off.render(gpu, Some((&mut bst.wr, bst.vp)), &ov, BG)?;
+    let b_empty = bst.off.read_rgba(gpu)?;
+    let mut bshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        bst.wr.set_entities(&[d], bst.right, bst.up, 0.0);
+        bst.off.render(gpu, Some((&mut bst.wr, bst.vp)), &ov, BG)?;
+        bst.off.read_rgba(gpu)
+    };
+    let b_adult = bshot(neutral_draw(EntityModelKind::HappyGhast))?;
+    let b_baby = bshot(neutral_draw(EntityModelKind::HappyGhastBaby))?;
+    bst.destroy(gpu);
+    let rows = |f: &[u8], sheet: Option<&HashSet<u32>>| {
+        let (mut top, mut bottom, mut n, mut bad) = (u32::MAX, 0u32, 0usize, None);
+        for (i, (p, e)) in f
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b_empty.as_chunks::<4>().0)
+            .enumerate()
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            let y = i as u32 / cw;
+            top = top.min(y);
+            bottom = bottom.max(y);
+            n += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && sheet.is_some_and(|s| !explains(s, c)) {
+                bad = Some(c);
+            }
+        }
+        (if n == 0 { 0 } else { bottom - top + 1 }, n, bad)
+    };
+    let (adult_h, _, _) = rows(&b_adult, None);
+    let (baby_h, baby_px, baby_bad) = rows(&b_baby, Some(&baby_sheet));
+    let ratio = baby_h as f32 / adult_h.max(1) as f32;
+    w.push(wit(
+        "m41.the_ghastling_is_its_own_model_on_its_own_sheet",
+        !baby_sheet.is_empty()
+            && baby_px >= 100
+            && baby_bad.is_none()
+            && (0.18..=0.30).contains(&ratio),
+        format!(
+            "the ghastling stands {baby_h} rows against the adult's {adult_h} (ratio \
+             {ratio:.3}, want 0.18..0.30); {baby_px} px, first colour the baby sheet cannot \
+             produce: {:?}",
+            baby_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

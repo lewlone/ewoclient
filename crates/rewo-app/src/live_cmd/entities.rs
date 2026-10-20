@@ -3639,11 +3639,13 @@ pub(crate) fn undercoat_visible(kind: EntityModelKind, dye: Option<u8>, is_baby:
     kind == EntityModelKind::Sheep && dye.unwrap_or(0) != 0 && !is_baby
 }
 
-/// M307 — `SulfurCubeRenderer.submit`'s `this.model = state.isBaby ?
-/// smallModel : normalModel`.
-pub(crate) fn sulfur_cube_kind(kind: EntityModelKind, baby: bool) -> EntityModelKind {
+/// The baby's own model, where vanilla's renderer swaps one in: M307 —
+/// `SulfurCubeRenderer.submit`'s `this.model = state.isBaby ? smallModel :
+/// normalModel`; M314 — `AgeableMobRenderer`'s for the happy ghast.
+pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelKind {
     match kind {
         EntityModelKind::SulfurCube if baby => EntityModelKind::SulfurCubeSmall,
+        EntityModelKind::HappyGhast if baby => EntityModelKind::HappyGhastBaby,
         k => k,
     }
 }
@@ -4046,7 +4048,7 @@ pub(super) fn collect_entities<'a>(
         });
         let kind = fish.map_or(kind, fish_kind);
         // M307: and the sulfur cube's small model for a baby.
-        let kind = sulfur_cube_kind(kind, session.world.entities.is_baby(id));
+        let kind = baby_model_kind(kind, session.world.entities.is_baby(id));
         // M24b: a dropped stack. `ItemEntity.DATA_ITEM` arrives as metadata
         // index 8 with the ITEM_STACK serializer; an entity with one renders
         // as the item and nothing else, so the model kind is never consulted.
@@ -4186,12 +4188,21 @@ pub(super) fn collect_entities<'a>(
         // larger (a per-part transform), deferred. M307 — not the baby
         // sulfur cube, whose own model is the small one (`getAgeScale`
         // halves only its bounds).
+        // M314 — nor the ghastling, whose `getAgeScale` is 0.2375.
         if !is_player && session.world.entities.is_baby(id) {
-            if kind != EntityModelKind::SulfurCubeSmall {
+            if !matches!(
+                kind,
+                EntityModelKind::SulfurCubeSmall | EntityModelKind::HappyGhastBaby
+            ) {
                 scale_mul *= 0.5;
             }
-            w *= 0.5;
-            h *= 0.5;
+            let age = if kind == EntityModelKind::HappyGhastBaby {
+                0.2375
+            } else {
+                0.5
+            };
+            w *= age;
+            h *= age;
         }
         // M238 — the armour stand's client flags: 0x01 small (the half-scale
         // `ARMOR_STAND_SMALL` layer, `MeshTransformer.scaling(0.5)`), 0x04

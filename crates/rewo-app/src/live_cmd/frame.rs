@@ -973,6 +973,13 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M314 — r169: the staged baby happy ghast, as the ghastling.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::HappyGhastBaby)
+            {
+                c.ghastling_frames += 1;
+            }
             // M312 — r168: r72's ghast, harnessed and holding the horse's
             // leash.
             if draws.iter().any(|d| {

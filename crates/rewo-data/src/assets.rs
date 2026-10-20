@@ -1146,6 +1146,14 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M314 — `HappyGhastRenderer.GHAST_BABY_LOCATION`, the ghastling's own
+    // model's sheet (its whole-sheet swap stays unbaked: 64 against 128).
+    (
+        "happy_ghast_baby",
+        "entity/ghast/happy_ghast_baby.png",
+        64,
+        64,
+    ),
     // M312 — `HappyGhastRenderer.GHAST_ROPES`.
     (
         "happy_ghast_ropes",

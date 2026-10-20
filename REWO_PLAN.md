@@ -2124,6 +2124,7 @@ this shape once.
 | M310 (2026-10-20) — a mannequin draws with its hidden layers hidden | **r166** | — | — |
 | M311 (2026-10-20) — a wolf draws its damaged armour's cracks | **r167** | — | — |
 | M312 (2026-10-20) — a harnessed happy ghast holding a leash draws its ropes | **r168** | — | — |
+| M314 (2026-10-20) — a baby happy ghast draws as the ghastling | **r169** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

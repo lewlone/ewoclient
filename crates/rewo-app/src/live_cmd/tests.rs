@@ -4213,17 +4213,15 @@ fn the_flame_frames_the_gpu_asks_for_are_the_ones_baked() {
     assert_eq!(fire_frame(1, 33), 1);
 }
 
-/// M307 — a baby sulfur cube takes the small model; nothing else moves.
+/// M307 / M314 — a baby sulfur cube takes the small model and a baby happy
+/// ghast the ghastling's; nothing else moves.
 #[test]
 fn a_baby_sulfur_cube_takes_the_small_model() {
     use rewo_gpu::mobs::EntityModelKind as K;
-    assert_eq!(
-        super::entities::sulfur_cube_kind(K::SulfurCube, true),
-        K::SulfurCubeSmall
-    );
-    assert_eq!(
-        super::entities::sulfur_cube_kind(K::SulfurCube, false),
-        K::SulfurCube
-    );
-    assert_eq!(super::entities::sulfur_cube_kind(K::Slime, true), K::Slime);
+    let f = super::entities::baby_model_kind;
+    assert_eq!(f(K::SulfurCube, true), K::SulfurCubeSmall);
+    assert_eq!(f(K::SulfurCube, false), K::SulfurCube);
+    assert_eq!(f(K::HappyGhast, true), K::HappyGhastBaby);
+    assert_eq!(f(K::HappyGhast, false), K::HappyGhast);
+    assert_eq!(f(K::Slime, true), K::Slime);
 }

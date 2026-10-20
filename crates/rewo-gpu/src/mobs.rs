@@ -1535,11 +1535,14 @@ pub enum EntityModelKind {
     /// swaps in for a baby: one wire name, two meshes, chosen by the caller
     /// as [`EntityModelKind::TropicalFishLarge`] is.
     SulfurCubeSmall,
+    /// M314 — `HAPPY_GHAST_BABY`, the ghastling's own model, which
+    /// `AgeableMobRenderer` swaps in for a baby (chosen by the caller).
+    HappyGhastBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 101;
+    pub const COUNT: usize = 102;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1641,6 +1644,7 @@ impl EntityModelKind {
         EntityModelKind::Giant,
         EntityModelKind::SulfurCube,
         EntityModelKind::SulfurCubeSmall,
+        EntityModelKind::HappyGhastBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1743,6 +1747,7 @@ impl EntityModelKind {
             EntityModelKind::Giant => "giant",
             EntityModelKind::SulfurCube => "sulfur_cube",
             EntityModelKind::SulfurCubeSmall => "sulfur_cube_small",
+            EntityModelKind::HappyGhastBaby => "happy_ghast_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1785,6 +1790,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::PlayerSlim
                 | EntityModelKind::TropicalFishLarge
                 | EntityModelKind::SulfurCubeSmall
+                | EntityModelKind::HappyGhastBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2632,6 +2638,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::SulfurCubeSmall,
         textures: &["sulfur_cube_outer_small", "sulfur_cube_inner_small"],
         build: sulfur_cube_small,
+    },
+    // M314 — `HappyGhastRenderer.GHAST_BABY_LOCATION`.
+    MobDef {
+        kind: EntityModelKind::HappyGhastBaby,
+        textures: &["happy_ghast_baby"],
+        build: happy_ghast_baby,
     },
 ];
 
@@ -10158,79 +10170,82 @@ fn ender_dragon() -> Model {
 
 /// `HappyGhastModel`: the tame ghast — body + big inner cube, nine short
 /// dangling legs. Mesh-scaled 4.0 (ground-anchored ≡ our scale).
-fn happy_ghast() -> Model {
-    let mut b = ModelBuilder::new();
+/// The happy ghast's tentacles: `(offset, length)` per `PartNames.tentacle(i)`.
+const HAPPY_GHAST_LEGS: [([f32; 3], f32); 9] = [
+    ([-3.75, 7.0, -5.0], 5.0),
+    ([1.25, 7.0, -5.0], 7.0),
+    ([6.25, 7.0, -5.0], 4.0),
+    ([-6.25, 7.0, 0.0], 5.0),
+    ([-1.25, 7.0, 0.0], 5.0),
+    ([3.75, 7.0, 0.0], 7.0),
+    ([-3.75, 7.0, 5.0], 8.0),
+    ([1.25, 7.0, 5.0], 8.0),
+    ([6.25, 7.0, 5.0], 5.0),
+];
+
+/// `HappyGhastModel.createBodyLayer(isBaby, g)` before its scaling: the body,
+/// the inner body (the baby's only, M314), and the nine tentacles, all on the
+/// static part, at deformation `g` (the inner body `g - 0.5`).
+fn happy_ghast_mesh(b: &mut ModelBuilder, tex: usize, g: f32, baby: bool) {
     let body = Fold::at([0.0, 16.0, 0.0]);
     b.cube_f(
         STATIC_PART,
-        0,
+        tex,
         (0.0, 0.0),
         [-8.0, -8.0, -8.0],
         [16.0, 16.0, 16.0],
-        0.0,
+        g,
         false,
         &[body],
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (0.0, 32.0),
-        [-8.0, -16.0, -8.0],
-        [16.0, 16.0, 16.0],
-        -0.5,
-        false,
-        &[Fold::at([0.0, 8.0, 0.0]), body],
-    );
-    let legs: [([f32; 3], f32); 9] = [
-        ([-3.75, 7.0, -5.0], 5.0),
-        ([1.25, 7.0, -5.0], 7.0),
-        ([6.25, 7.0, -5.0], 4.0),
-        ([-6.25, 7.0, 0.0], 5.0),
-        ([-1.25, 7.0, 0.0], 5.0),
-        ([3.75, 7.0, 0.0], 7.0),
-        ([-3.75, 7.0, 5.0], 8.0),
-        ([1.25, 7.0, 5.0], 8.0),
-        ([6.25, 7.0, 5.0], 5.0),
-    ];
-    for (off, len) in legs {
+    if baby {
         b.cube_f(
             STATIC_PART,
-            0,
+            tex,
+            (0.0, 32.0),
+            [-8.0, -16.0, -8.0],
+            [16.0, 16.0, 16.0],
+            g - 0.5,
+            false,
+            &[Fold::at([0.0, 8.0, 0.0]), body],
+        );
+    }
+    for (off, len) in HAPPY_GHAST_LEGS {
+        b.cube_f(
+            STATIC_PART,
+            tex,
             (0.0, 0.0),
             [-1.0, 0.0, -1.0],
             [2.0, len, 2.0],
-            0.0,
+            g,
             false,
             &[Fold::at(off), body],
         );
     }
+}
+
+/// `HAPPY_GHAST`: the adult body layer, scaled 4.0. (Until M314 it carried the
+/// inner body too, which vanilla gives only the baby; it lay wholly inside the
+/// body box and never showed.)
+fn happy_ghast() -> Model {
+    let mut b = ModelBuilder::new();
+    happy_ghast_mesh(&mut b, 0, 0.0, false);
     // M312 — `RopesLayer`: `HAPPY_GHAST_ROPES` is the adult body layer at
     // `CubeDeformation(0.2F)` (body and tentacles, no inner body) on its own
     // sheet, texture slot 1, which the renderer shows only while the ghast
     // holds a leash and wears a harness (`MobModel::ropes_slot`).
-    b.cube_f(
-        STATIC_PART,
-        1,
-        (0.0, 0.0),
-        [-8.0, -8.0, -8.0],
-        [16.0, 16.0, 16.0],
-        0.2,
-        false,
-        &[body],
-    );
-    for (off, len) in legs {
-        b.cube_f(
-            STATIC_PART,
-            1,
-            (0.0, 0.0),
-            [-1.0, 0.0, -1.0],
-            [2.0, len, 2.0],
-            0.2,
-            false,
-            &[Fold::at(off), body],
-        );
-    }
+    happy_ghast_mesh(&mut b, 1, 0.2, false);
     b.finish(4.0)
+}
+
+/// M314 — `HAPPY_GHAST_BABY`: `createBodyLayer(true, NONE)` (the inner body
+/// included) scaled 4.0 and then by `BABY_TRANSFORMER`'s 0.2375, on its own
+/// 64 x 64 sheet. `AgeableMobRenderer` swaps it in for a baby and scales it no
+/// further (`getAgeScale`'s 0.2375 shrinks only the bounds).
+fn happy_ghast_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    happy_ghast_mesh(&mut b, 0, 0.0, true);
+    b.finish(4.0 * 0.2375)
 }
 
 /// M302 — `HappyGhastHarnessModel.createHarnessLayer(false)` (64 x 64,
@@ -10948,6 +10963,8 @@ mod tests {
                     | EntityModelKind::TropicalFishLarge
                     // M307 — the baby sulfur cube's model, the same shape.
                     | EntityModelKind::SulfurCubeSmall
+                    // M314 — and the ghastling's.
+                    | EntityModelKind::HappyGhastBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -11924,5 +11941,22 @@ mod ghast_ropes_tests {
         let (lo, hi) = span(&ropes);
         let (blo, bhi) = span(&body);
         assert!((blo - lo - 0.2).abs() < 1e-4 && (hi - bhi - 0.2).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod ghastling_tests {
+    use super::*;
+
+    /// M314 — the ghastling is the body, the inner body and nine tentacles
+    /// at 4 x 0.2375; the adult has no inner body (vanilla's is the baby's
+    /// only).
+    #[test]
+    fn the_ghastling_is_the_baby_body_layer_at_its_own_scale() {
+        let (baby, adult) = (happy_ghast_baby(), happy_ghast());
+        assert_eq!(baby.quads.len(), 11 * 6);
+        assert!((baby.scale - 0.95).abs() < 1e-6);
+        assert_eq!(adult.quads.iter().filter(|q| q.tex == 0).count(), 10 * 6);
+        assert_eq!(adult.scale, 4.0);
     }
 }

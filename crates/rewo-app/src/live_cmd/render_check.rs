@@ -415,6 +415,8 @@ pub(super) struct RenderCheck {
     /// M312 — r168: frames on which a harnessed happy ghast holding a leash
     /// drew (its ropes shown).
     pub(super) ghast_rope_frames: usize,
+    /// M314 — r169: frames on which a baby happy ghast drew as the ghastling.
+    pub(super) ghastling_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1180,7 +1182,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 168;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 169;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1381,6 +1383,15 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M314 — r169: `render_check.py` summons a baby happy ghast; its
+        // synched baby flag must pick the ghastling's own model
+        // (`mobtexshot m41` checks its size and sheet). Until M314 it drew as
+        // the adult at half size.
+        row(
+            "r169 a baby happy ghast drew as the ghastling",
+            self.ghastling_frames >= 1,
+            format!("{} frames drew it", self.ghastling_frames),
         );
         // M312 — r168: r72's injected happy ghast (the horse leashed to it)
         // wears an injected white harness; it must draw as a leash holder in
