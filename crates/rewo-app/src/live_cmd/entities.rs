@@ -3662,6 +3662,8 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         EntityModelKind::ZombifiedPiglin if baby => EntityModelKind::ZombifiedPiglinBaby,
         // M321 — `BabyCowModel`, the cow's and the mooshroom's.
         EntityModelKind::Cow if baby => EntityModelKind::CowBaby,
+        // M348 — a cold or warm calf is the same `BabyCowModel`.
+        EntityModelKind::ColdCow | EntityModelKind::WarmCow if baby => EntityModelKind::CowBaby,
         EntityModelKind::Mooshroom if baby => EntityModelKind::MooshroomBaby,
         // M322 — `BabyPigModel` and `BabyChickenModel`.
         EntityModelKind::Pig if baby => EntityModelKind::PigBaby,
@@ -3777,20 +3779,25 @@ pub(crate) fn mob_collar(kind: EntityModelKind, tame: bool, sent: Option<i32>) -
 /// first) when the key is missing; the ordinal mobs' is 0 (horse WHITE with
 /// no markings, llama CREAMY, axolotl LUCY). `None` for a kind with no
 /// variant here.
+///
+/// M348: `defs` is the kind's own registry ([`variant_registry`]).
 pub(crate) fn default_variant(
     kind: EntityModelKind,
-    cats: &[rewo_net::variant_parse::MobVariantDef],
-    wolves: &[rewo_net::variant_parse::MobVariantDef],
-    frogs: &[rewo_net::variant_parse::MobVariantDef],
+    defs: &[rewo_net::variant_parse::MobVariantDef],
 ) -> Option<i32> {
-    let by_key = |defs: &[rewo_net::variant_parse::MobVariantDef], key: &str| {
+    let by_key = |key: &str| {
         let i = defs.iter().position(|d| d.id == key).unwrap_or(0);
         i32::try_from(i).ok()
     };
     match kind {
-        EntityModelKind::Cat | EntityModelKind::CatBaby => by_key(cats, "minecraft:black"),
-        EntityModelKind::Wolf | EntityModelKind::WolfBaby => by_key(wolves, "minecraft:pale"),
-        EntityModelKind::Frog => by_key(frogs, "minecraft:temperate"),
+        EntityModelKind::Cat | EntityModelKind::CatBaby => by_key("minecraft:black"),
+        EntityModelKind::Wolf | EntityModelKind::WolfBaby => by_key("minecraft:pale"),
+        // M348 — `CowVariants.TEMPERATE` too, adult (any mesh) and calf.
+        EntityModelKind::Frog
+        | EntityModelKind::Cow
+        | EntityModelKind::ColdCow
+        | EntityModelKind::WarmCow
+        | EntityModelKind::CowBaby => by_key("minecraft:temperate"),
         EntityModelKind::Horse
         | EntityModelKind::HorseBaby
         | EntityModelKind::Llama
@@ -3804,6 +3811,50 @@ pub(crate) fn default_variant(
         | EntityModelKind::Mooshroom
         | EntityModelKind::MooshroomBaby => Some(0),
         _ => None,
+    }
+}
+
+/// M348 — the datapack registry a kind's variant indexes (empty for the
+/// enum-variant mobs).
+pub(crate) fn variant_registry(
+    kind: EntityModelKind,
+    session: &PlaySession,
+) -> &[rewo_net::variant_parse::MobVariantDef] {
+    match kind {
+        EntityModelKind::Cat | EntityModelKind::CatBaby => &session.cat_variants,
+        EntityModelKind::Wolf | EntityModelKind::WolfBaby => &session.wolf_variants,
+        EntityModelKind::Frog => &session.frog_variants,
+        EntityModelKind::Cow
+        | EntityModelKind::ColdCow
+        | EntityModelKind::WarmCow
+        | EntityModelKind::CowBaby => &session.cow_variants,
+        _ => &[],
+    }
+}
+
+/// M348 — the registry entry a mob's variant names: the synched holder id,
+/// or the class's default when the server sent none.
+pub(crate) fn variant_def(
+    kind: EntityModelKind,
+    id: i32,
+    session: &PlaySession,
+) -> Option<&rewo_net::variant_parse::MobVariantDef> {
+    let defs = variant_registry(kind, session);
+    let v = session
+        .world
+        .entities
+        .variant(id)
+        .or_else(|| default_variant(kind, defs))?;
+    defs.get(usize::try_from(v).ok()?)
+}
+
+/// M348 — `CowRenderer.models`: COLD and WARM have their own adult meshes;
+/// NORMAL (no `model`) and anything else is the base cow.
+pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> EntityModelKind {
+    match (kind, model) {
+        (EntityModelKind::Cow, Some("cold")) => EntityModelKind::ColdCow,
+        (EntityModelKind::Cow, Some("warm")) => EntityModelKind::WarmCow,
+        _ => kind,
     }
 }
 
@@ -3824,14 +3875,12 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
     // client's `SynchedEntityData` starts at `defineSynchedData`'s value. A
     // black cat or a white horse is that default, so before M340 every one
     // drew Rewo's base sheet instead (tabby, brown).
-    let Some(v) = session.world.entities.variant(id).or_else(|| {
-        default_variant(
-            kind,
-            &session.cat_variants,
-            &session.wolf_variants,
-            &session.frog_variants,
-        )
-    }) else {
+    let Some(v) = session
+        .world
+        .entities
+        .variant(id)
+        .or_else(|| default_variant(kind, variant_registry(kind, session)))
+    else {
         return 0;
     };
     let registry = |defs: &[rewo_net::variant_parse::MobVariantDef], tame: bool| {
@@ -3861,6 +3910,12 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
             registry_baby(&session.wolf_variants, session.world.entities.is_tame(id))
         }
         EntityModelKind::Frog => registry(&session.frog_variants, false),
+        // M348 — the cow's sheet, on whichever mesh its `model` picked, and
+        // the calf's (`CowRenderer.getTextureLocation`).
+        EntityModelKind::Cow | EntityModelKind::ColdCow | EntityModelKind::WarmCow => {
+            registry(&session.cow_variants, false)
+        }
+        EntityModelKind::CowBaby => registry_baby(&session.cow_variants, false),
         EntityModelKind::Axolotl => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::axolotl_texture(v))
                 .unwrap_or(0)
@@ -4250,6 +4305,12 @@ pub(super) fn collect_entities<'a>(
             )
         });
         let kind = fish.map_or(kind, fish_kind);
+        // M348 — `CowRenderer.models`: the variant's `model` picks the adult
+        // mesh (every calf is one model).
+        let kind = farm_model_kind(
+            kind,
+            variant_def(kind, id, session).and_then(|d| d.model.as_deref()),
+        );
         // M307: and the sulfur cube's small model for a baby.
         let kind = baby_model_kind(kind, session.world.entities.is_baby(id));
         // M24b: a dropped stack. `ItemEntity.DATA_ITEM` arrives as metadata

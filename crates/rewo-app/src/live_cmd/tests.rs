@@ -4297,6 +4297,7 @@ fn an_unsent_variant_is_the_class_s_default() {
         angry: None,
         baby_wild: None,
         baby_tame: None,
+        model: None,
     };
     let cats = [
         def("minecraft:tabby"),
@@ -4304,14 +4305,40 @@ fn an_unsent_variant_is_the_class_s_default() {
         def("minecraft:black"),
     ];
     let wolves = [def("minecraft:ashen"), def("minecraft:pale")];
+    // M348 — the cow's registry, temperate not first.
+    let cows = [
+        def("minecraft:cold"),
+        def("minecraft:temperate"),
+        def("minecraft:warm"),
+    ];
     let f = super::entities::default_variant;
-    assert_eq!(f(K::Cat, &cats, &wolves, &[]), Some(2));
-    assert_eq!(f(K::CatBaby, &cats, &wolves, &[]), Some(2));
-    assert_eq!(f(K::Wolf, &cats, &wolves, &[]), Some(1));
-    assert_eq!(f(K::WolfBaby, &cats, &wolves, &[]), Some(1));
-    assert_eq!(f(K::Frog, &cats, &wolves, &[]), Some(0));
-    assert_eq!(f(K::Horse, &cats, &wolves, &[]), Some(0));
-    assert_eq!(f(K::HorseBaby, &cats, &wolves, &[]), Some(0));
-    assert_eq!(f(K::Cow, &cats, &wolves, &[]), None);
-    assert_eq!(f(K::Cat, &cats[..2], &wolves, &[]), Some(0));
+    assert_eq!(f(K::Cat, &cats), Some(2));
+    assert_eq!(f(K::CatBaby, &cats), Some(2));
+    assert_eq!(f(K::Wolf, &wolves), Some(1));
+    assert_eq!(f(K::WolfBaby, &wolves), Some(1));
+    assert_eq!(f(K::Frog, &[]), Some(0));
+    assert_eq!(f(K::Horse, &[]), Some(0));
+    assert_eq!(f(K::HorseBaby, &[]), Some(0));
+    assert_eq!(f(K::Cow, &cows), Some(1));
+    assert_eq!(f(K::ColdCow, &cows), Some(1));
+    assert_eq!(f(K::CowBaby, &cows), Some(1));
+    assert_eq!(f(K::Pig, &cows), None);
+    assert_eq!(f(K::Cat, &cats[..2]), Some(0));
+}
+
+/// M348 — `CowRenderer.models`: a cow's variant `model` picks its adult
+/// mesh, and any calf is the one `BabyCowModel`.
+#[test]
+fn a_cows_variant_picks_its_mesh() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let f = super::entities::farm_model_kind;
+    assert_eq!(f(K::Cow, None), K::Cow);
+    assert_eq!(f(K::Cow, Some("normal")), K::Cow);
+    assert_eq!(f(K::Cow, Some("cold")), K::ColdCow);
+    assert_eq!(f(K::Cow, Some("warm")), K::WarmCow);
+    assert_eq!(f(K::Mooshroom, Some("cold")), K::Mooshroom);
+    let b = super::entities::baby_model_kind;
+    assert_eq!(b(f(K::Cow, Some("cold")), true), K::CowBaby);
+    assert_eq!(b(f(K::Cow, Some("warm")), true), K::CowBaby);
+    assert_eq!(b(f(K::Cow, Some("warm")), false), K::WarmCow);
 }

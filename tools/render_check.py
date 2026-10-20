@@ -271,6 +271,11 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M348 -- r202. A cold cow, a warm cow and a warm calf.
+    "summon minecraft:cow ~94 ~ ~21 {NoAI:1b,Silent:1b,variant:\"minecraft:cold\"};"
+    "summon minecraft:cow ~97 ~ ~21 {NoAI:1b,Silent:1b,variant:\"minecraft:warm\"};"
+    "summon minecraft:cow ~100 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000,"
+    "variant:\"minecraft:warm\"};"
     # M347 -- r201. A brown mooshroom.
     "summon minecraft:mooshroom ~91 ~ ~21 {NoAI:1b,Silent:1b,Type:\"brown\"};"
     # M346 -- r200. A white rabbit, and a brown one named Toast.

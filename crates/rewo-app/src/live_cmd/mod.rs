@@ -361,6 +361,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         rabbit: data.entity_types.id_of("minecraft:rabbit"),
         // M347 — the mooshroom's colour.
         mooshroom: data.entity_types.id_of("minecraft:mooshroom"),
+        // M348 — the cow's variant.
+        cow: data.entity_types.id_of("minecraft:cow"),
         // M68: the index-17 INT. Not a texture id — the packed
         // (shape, pattern, body colour, pattern colour) — but it rides the
         // same setter, and the gate matters because index 17 already carries

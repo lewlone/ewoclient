@@ -611,7 +611,11 @@ const ATLAS_W: u32 = 1024;
 /// M307 grew it 256 rows more for the sulfur cube's four sheets (two
 /// 128 x 128, two 64 x 64), after which three of the ETF fixture's
 /// alternates stopped packing.
-const ATLAS_H: u32 = 3392;
+///
+/// M348 grew it 256 rows more: the cold and warm cows' sheets and calves
+/// filled the shelf region until the ETF fixture's emissive pig overlay
+/// stopped packing (`mobshot --etf-check` f6, f7).
+const ATLAS_H: u32 = 3648;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -759,7 +763,7 @@ const SKIN_SLOT: u32 = 64;
 const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
 const SKIN_POOL_ROWS: u32 = 2;
 const SKIN_SLOTS: u32 = SKIN_POOL_COLS * SKIN_POOL_ROWS; // 32
-const SKIN_POOL_Y: u32 = TRIM_POOL_Y - SKIN_POOL_ROWS * SKIN_SLOT; // 2688
+const SKIN_POOL_Y: u32 = TRIM_POOL_Y - SKIN_POOL_ROWS * SKIN_SLOT; // 2944
 
 // -- the trim pool (M48) ------------------------------------------------------
 //
@@ -776,7 +780,7 @@ const TRIM_SLOT_H: u32 = 32;
 const TRIM_POOL_COLS: u32 = ATLAS_W / TRIM_SLOT_W; // 16
 const TRIM_POOL_ROWS: u32 = 4;
 const TRIM_SLOTS: u32 = TRIM_POOL_COLS * TRIM_POOL_ROWS; // 64
-const TRIM_POOL_Y: u32 = CAPE_POOL_Y - TRIM_POOL_ROWS * TRIM_SLOT_H; // 2816
+const TRIM_POOL_Y: u32 = CAPE_POOL_Y - TRIM_POOL_ROWS * TRIM_SLOT_H; // 3072
 
 fn trim_slot_origin(slot: u32) -> (u32, u32) {
     (
@@ -805,7 +809,7 @@ const CAPE_SLOT_H: u32 = 32;
 const CAPE_POOL_COLS: u32 = ATLAS_W / CAPE_SLOT_W; // 16
 const CAPE_POOL_ROWS: u32 = 2;
 const CAPE_SLOTS: u32 = CAPE_POOL_COLS * CAPE_POOL_ROWS; // 32
-const CAPE_POOL_Y: u32 = MAP_POOL_Y - CAPE_POOL_ROWS * CAPE_SLOT_H; // 2944
+const CAPE_POOL_Y: u32 = MAP_POOL_Y - CAPE_POOL_ROWS * CAPE_SLOT_H; // 3200
 
 // -- the framed-map band (M194) -----------------------------------------------
 //
@@ -821,7 +825,7 @@ const MAP_SLOT: u32 = 128;
 const MAP_POOL_COLS: u32 = ATLAS_W / MAP_SLOT; // 8
 /// The last cell is the decoration sprites.
 const MAP_SLOTS: u32 = MAP_POOL_COLS - 1; // 7
-const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 3008
+const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 3264
 
 /// M246 — the large held-item pool: 64×64 slots for the textures the 16×16
 /// item pool cannot hold. Every block-entity model (a chest's 64×64 sheet, a
@@ -835,7 +839,7 @@ const BIG_SLOT: u32 = 64;
 const BIG_POOL_COLS: u32 = ATLAS_W / BIG_SLOT; // 16
 const BIG_POOL_ROWS: u32 = 4;
 const BIG_SLOTS: u32 = BIG_POOL_COLS * BIG_POOL_ROWS; // 64
-const BIG_POOL_Y: u32 = ATLAS_H - BIG_POOL_ROWS * BIG_SLOT; // 3136
+const BIG_POOL_Y: u32 = ATLAS_H - BIG_POOL_ROWS * BIG_SLOT; // 3392
 
 /// The large-item band's geometry, for the gate: `(atlas w, atlas h, slot,
 /// slots, band y)`.
@@ -909,7 +913,7 @@ const ITEM_SLOT: u32 = 16;
 const ITEM_POOL_COLS: u32 = ATLAS_W / ITEM_SLOT; // 64
 const ITEM_POOL_ROWS: u32 = 16;
 const ITEM_SLOTS: u32 = ITEM_POOL_COLS * ITEM_POOL_ROWS; // 1024
-const ITEM_POOL_Y: u32 = SKIN_POOL_Y - ITEM_POOL_ROWS * ITEM_SLOT; // 2432
+const ITEM_POOL_Y: u32 = SKIN_POOL_Y - ITEM_POOL_ROWS * ITEM_SLOT; // 2688
 
 /// Atlas origin of dynamic skin slot `i` (0..SKIN_SLOTS).
 fn skin_slot_origin(i: u32) -> (u32, u32) {
@@ -8738,7 +8742,7 @@ mod tests {
                 MAP_POOL_Y,
                 BIG_POOL_Y
             ],
-            [2432, 2688, 2816, 2944, 3008, 3136]
+            [2688, 2944, 3072, 3200, 3264, 3392]
         );
     }
 

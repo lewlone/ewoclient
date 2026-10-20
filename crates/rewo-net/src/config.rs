@@ -64,6 +64,8 @@ pub struct ConfigData {
     pub cat_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub frog_variants: Vec<crate::variant_parse::MobVariantDef>,
+    /// M348 — the `cow_variant` registry, index = holder id.
+    pub cow_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// M254 — the `painting_variant` registry, index = protocol id.
     pub painting_variants: Vec<crate::variant_parse::PaintingVariantDef>,
     /// The server's datapack tags (M69).
@@ -100,6 +102,7 @@ impl ConfigData {
             cat_variants: Vec::new(),
             wolf_variants: Vec::new(),
             frog_variants: Vec::new(),
+            cow_variants: Vec::new(),
             painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
@@ -129,6 +132,7 @@ impl ConfigData {
             cat_variants: Vec::new(),
             wolf_variants: Vec::new(),
             frog_variants: Vec::new(),
+            cow_variants: Vec::new(),
             painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
@@ -226,6 +230,13 @@ impl ConfigData {
             self.frog_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
             short_registry(&registry, self.frog_variants.len(), count);
             log::info!("net: {} frog variant(s) synced", self.frog_variants.len());
+            return Ok(());
+        }
+        // M348 — the cow's, the same shape plus a `model`.
+        if registry == crate::variant_parse::COW_VARIANT_REGISTRY {
+            self.cow_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            short_registry(&registry, self.cow_variants.len(), count);
+            log::info!("net: {} cow variant(s) synced", self.cow_variants.len());
             return Ok(());
         }
         if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {

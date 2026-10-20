@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 72;
+const EXPECTED_WITNESSES: usize = 73;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5210,6 +5210,95 @@ fn run_check(
         format!(
             "{} (want >= 200 px each, none foreign, the colours different)",
             ms_rows.join("; ")
+        ),
+    ));
+
+    // m73 — M348: the temperate, cold and warm cows each draw their own
+    // mesh's sheet (each frame producible by it, the three different), and
+    // the calf draws the cold and warm calf sheets on their variant ids.
+    let mut cvst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.6, 1.3, -1.6),
+        Vec3::new(0.0, 0.7, 0.0),
+    )?;
+    cvst.wr.set_entities(&[], cvst.right, cvst.up, 0.0);
+    cvst.off
+        .render(gpu, Some((&mut cvst.wr, cvst.vp)), &ov, BG)?;
+    let cv_empty = cvst.off.read_rgba(gpu)?;
+    let calf = |p: &str| rewo_data::mob_variants::variant_id(p).unwrap_or(0);
+    let (cold_calf, warm_calf) = (
+        calf("entity/cow/cow_cold_baby.png"),
+        calf("entity/cow/cow_warm_baby.png"),
+    );
+    let mut cv_ok = cold_calf != 0 && warm_calf != 0;
+    let mut cv_rows = Vec::new();
+    let mut cv_frames = Vec::new();
+    for (kind, key, variant, name) in [
+        (EntityModelKind::Cow, "cow", 0u16, "cow"),
+        (EntityModelKind::ColdCow, "cold_cow", 0, "cold cow"),
+        (EntityModelKind::WarmCow, "warm_cow", 0, "warm cow"),
+        (EntityModelKind::CowBaby, "cow_baby", 0, "calf"),
+        (EntityModelKind::CowBaby, "cow_baby", cold_calf, "cold calf"),
+        (EntityModelKind::CowBaby, "cow_baby", warm_calf, "warm calf"),
+    ] {
+        let sheet: HashSet<u32> = (if variant == 0 {
+            baked
+                .mob_textures
+                .iter()
+                .find(|t| t.key == key)
+                .map(|t| producible(&t.rgba))
+        } else {
+            baked
+                .mob_variant_textures
+                .iter()
+                .find(|t| t.key == key && t.index == variant)
+                .map(|t| producible(&t.rgba))
+        })
+        .unwrap_or_default();
+        let d = EntityDraw {
+            variant,
+            ..neutral_draw(kind)
+        };
+        cvst.wr.set_entities(&[d], cvst.right, cvst.up, 0.0);
+        cvst.off
+            .render(gpu, Some((&mut cvst.wr, cvst.vp)), &ov, BG)?;
+        let frame = cvst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(cv_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        cv_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        cv_rows.push(format!(
+            "{name}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+        cv_frames.push(frame);
+    }
+    for (a, b) in [(0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)] {
+        cv_ok &= diff_bytes(&cv_frames[a], &cv_frames[b]) > 0;
+    }
+    cvst.destroy(gpu);
+    w.push(wit(
+        "m73.the_cold_and_warm_cows_and_calves_wear_their_own",
+        cv_ok,
+        format!(
+            "{} (want >= 200 px each, none foreign, adults and calves each all different)",
+            cv_rows.join("; ")
         ),
     ));
 

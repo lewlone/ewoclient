@@ -973,6 +973,15 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M348 — r202: the staged cold and warm cows on their meshes, and
+            // the warm calf on its sheet.
+            let warm_calf = rewo_data::mob_variants::variant_id("entity/cow/cow_warm_baby.png");
+            for d in draws.iter() {
+                use rewo_gpu::mobs::EntityModelKind as K;
+                c.farm_cows.0 |= d.kind == K::ColdCow;
+                c.farm_cows.1 |= d.kind == K::WarmCow;
+                c.farm_cows.2 |= d.kind == K::CowBaby && Some(d.variant) == warm_calf;
+            }
             // M347 — r201: the staged brown mooshroom, on its colour variant.
             c.brown_mooshroom |= draws
                 .iter()

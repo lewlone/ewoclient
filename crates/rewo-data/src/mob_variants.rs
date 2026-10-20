@@ -153,6 +153,11 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M348 — Cow — the cold and warm calves (`CowVariant.babyTexture`; every
+    // calf is one `BabyCowModel`). The adults' sheets are their meshes'
+    // bases.
+    ("cow_baby", "entity/cow/cow_cold_baby.png"),
+    ("cow_baby", "entity/cow/cow_warm_baby.png"),
     // M347 — Mooshroom — `MushroomCow.Variant` RED (0, the baked base) and
     // BROWN (1), adult and calf (`MushroomCowRenderer.TEXTURES`).
     ("mooshroom", "entity/cow/mooshroom_brown.png"),
@@ -632,6 +637,9 @@ mod tests {
             "entity/rabbit/rabbit_brown_baby.png",
             "entity/cow/mooshroom_red.png",
             "entity/cow/mooshroom_red_baby.png",
+            "entity/cow/cow_cold.png",
+            "entity/cow/cow_warm.png",
+            "entity/cow/cow_temperate_baby.png",
             "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -906,6 +914,20 @@ mod tests {
             let v = variant_id(mooshroom_texture(1, baby)).unwrap();
             let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
             assert_eq!(k, key);
+        }
+    }
+
+    /// M348 — the cold and warm calves are alternates of the calf's key.
+    #[test]
+    fn the_cold_and_warm_calves_are_the_calfs_alternates() {
+        for p in [
+            "entity/cow/cow_cold_baby.png",
+            "entity/cow/cow_warm_baby.png",
+        ] {
+            let v = variant_id(p).unwrap();
+            assert_ne!(v, 0);
+            let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+            assert_eq!(k, "cow_baby");
         }
     }
 }

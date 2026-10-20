@@ -288,8 +288,9 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// 351, the baby bee. M334: 351 → 357, the foals. M335: 357 → 360, the
 /// camel calf. M336: 360 → 363, the rabbit kit. M337: 363 → 366, the goat
 /// kid. M338: 366 → 369, the baby llama. M339: 369 → 372, the horse foal.
-/// M340: 372 → 375, the kitten. M341: 375 → 378, the puppy.
-const EXPECTED_MOB_VIEWS: usize = 378;
+/// M340: 372 → 375, the kitten. M341: 375 → 378, the puppy. M348: 378 →
+/// 384, the cold and warm cows.
+const EXPECTED_MOB_VIEWS: usize = 384;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.
@@ -1948,8 +1949,9 @@ fn run_variant_check(
         // M341: 88 → 105, the puppies' seventeen. M344: 105 → 109, the
         // parrot's four colours. M345: 109 → 111, the snow fox and kit.
         // M346: 111 → 125, the rabbit's seven sheets, adult and kit.
-        // M347: 125 → 127, the brown mooshroom and calf.
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 127,
+        // M347: 125 → 127, the brown mooshroom and calf. M348: 127 → 129,
+        // the cold and warm calves.
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 129,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \
@@ -2502,6 +2504,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         rabbit: etypes.id_of("minecraft:rabbit"),
         // M347 — the mooshroom's colour.
         mooshroom: etypes.id_of("minecraft:mooshroom"),
+        // M348 — the cow's variant.
+        cow: etypes.id_of("minecraft:cow"),
         tropical_fish: etypes.id_of("minecraft:tropical_fish"),
     };
     let sheep = tid("minecraft:sheep")?;
@@ -2528,7 +2532,7 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     };
 
     // Each mob's own (index, serializer), and the value landing.
-    let rows: [(&str, Option<i32>, u8, u8); 10] = [
+    let rows: [(&str, Option<i32>, u8, u8); 11] = [
         ("cat", kinds.cat, 20, 21),
         ("wolf", kinds.wolf, 23, 25),
         ("frog", kinds.frog, 18, 27),
@@ -2543,6 +2547,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         ("rabbit", kinds.rabbit, 18, 1),
         // M347 — the mooshroom's colour, index 18 INT.
         ("mooshroom", kinds.mooshroom, 18, 1),
+        // M348 — the cow's variant, index 18 COW_VARIANT.
+        ("cow", kinds.cow, 18, 23),
     ];
     let mut landed = Vec::new();
     let mut wrong_index = Vec::new();
@@ -2562,10 +2568,10 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     }
     c.record(
         "n7.each_mobs_variant_arrives_at_its_own_index_and_nowhere_else",
-        landed.len() == 10 && wrong_index.is_empty(),
+        landed.len() == 11 && wrong_index.is_empty(),
         format!(
             "{landed:?} routed through the production dispatcher at cat 20 / \
-             wolf 23 / frog 18 / axolotl 18 / horse 19 / llama 21 / parrot 20 / fox 18 / rabbit 18 / mooshroom 18; \
+             wolf 23 / frog 18 / axolotl 18 / horse 19 / llama 21 / parrot 20 / fox 18 / rabbit 18 / mooshroom 18 / cow 18; \
              {} neighbouring slot(s) also accepted {wrong_index:?}. Counted \
              `defineId` up the 26.2 hierarchy — Entity 0..7, LivingEntity \
              8..14, Mob 15, AgeableMob 16 AND 17, TamableAnimal 18 and 19 — \

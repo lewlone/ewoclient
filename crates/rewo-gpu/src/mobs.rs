@@ -1607,11 +1607,15 @@ pub enum EntityModelKind {
     CatBaby,
     /// M341 — `BabyWolfModel` (`WOLF_BABY`).
     WolfBaby,
+    /// M348 — `ColdCowModel` (`COLD_COW`) and `WarmCowModel` (`WARM_COW`),
+    /// the adult meshes a `cow_variant`'s `model` picks (`CowRenderer`).
+    ColdCow,
+    WarmCow,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 135;
+    pub const COUNT: usize = 137;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1747,6 +1751,8 @@ impl EntityModelKind {
         EntityModelKind::HorseBaby,
         EntityModelKind::CatBaby,
         EntityModelKind::WolfBaby,
+        EntityModelKind::ColdCow,
+        EntityModelKind::WarmCow,
         EntityModelKind::Capsule,
     ];
 
@@ -1883,6 +1889,8 @@ impl EntityModelKind {
             EntityModelKind::HorseBaby => "horse_baby",
             EntityModelKind::CatBaby => "cat_baby",
             EntityModelKind::WolfBaby => "wolf_baby",
+            EntityModelKind::ColdCow => "cold_cow",
+            EntityModelKind::WarmCow => "warm_cow",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1959,6 +1967,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::HorseBaby
                 | EntityModelKind::CatBaby
                 | EntityModelKind::WolfBaby
+                | EntityModelKind::ColdCow
+                | EntityModelKind::WarmCow
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -3046,6 +3056,17 @@ pub static MOBS: &[MobDef] = &[
         textures: &["wolf_baby", "wolf_collar_baby"],
         build: wolf_baby,
     },
+    // M348 — the cold and warm cows' own meshes, each on its own sheet.
+    MobDef {
+        kind: EntityModelKind::ColdCow,
+        textures: &["cold_cow"],
+        build: cold_cow,
+    },
+    MobDef {
+        kind: EntityModelKind::WarmCow,
+        textures: &["warm_cow"],
+        build: warm_cow,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -4017,6 +4038,34 @@ fn quadruped_legs_g(
 /// quadruped: 8×8×6 head with muzzle + horns, 12×18×10 body with udder,
 /// 4×12×4 legs at ±4 (left pair mirrored).
 fn cow() -> Model {
+    cow_of(CowLook::Temperate)
+}
+
+/// M348 — the adult meshes `CowRenderer.models` picks by the variant's
+/// `model`: NORMAL (`CowModel`), COLD and WARM.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CowLook {
+    Temperate,
+    Cold,
+    Warm,
+}
+
+/// M348 — `ColdCowModel.createBodyLayer()`: the base cow with its body
+/// replaced (a 0.5-inflated coat at (20, 32) over the body and udder) and
+/// its head (the muzzle at (9, 33), and no horn boxes on the head: two
+/// 2 × 6 × 2 horns are child parts turned 1.5708 about x).
+fn cold_cow() -> Model {
+    cow_of(CowLook::Cold)
+}
+
+/// M348 — `WarmCowModel.createBodyLayer()`: the base cow with its head
+/// replaced (the muzzle, then a 4 × 2 × 2 horn and its 2 × 2 × 2 tip each
+/// side, the left pair mirrored).
+fn warm_cow() -> Model {
+    cow_of(CowLook::Warm)
+}
+
+fn cow_of(look: CowLook) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 4.0, -8.0], Anim::Head, 1.0);
     b.cube(
@@ -4027,31 +4076,73 @@ fn cow() -> Model {
         [8.0, 8.0, 6.0],
         NONE,
     );
-    b.cube(
-        head,
-        0,
-        (1.0, 33.0),
-        [-3.0, 1.0, -7.0],
-        [6.0, 3.0, 1.0],
-        NONE,
-    );
-    b.cube(
-        head,
-        0,
-        (22.0, 0.0),
-        [-5.0, -5.0, -5.0],
-        [1.0, 3.0, 1.0],
-        NONE,
-    );
-    b.cube(
-        head,
-        0,
-        (22.0, 0.0),
-        [4.0, -5.0, -5.0],
-        [1.0, 3.0, 1.0],
-        NONE,
-    );
+    let muzzle = if look == CowLook::Cold {
+        (9.0, 33.0)
+    } else {
+        (1.0, 33.0)
+    };
+    b.cube(head, 0, muzzle, [-3.0, 1.0, -7.0], [6.0, 3.0, 1.0], NONE);
+    match look {
+        CowLook::Temperate => {
+            for x in [-5.0, 4.0] {
+                b.cube(head, 0, (22.0, 0.0), [x, -5.0, -5.0], [1.0, 3.0, 1.0], NONE);
+            }
+        }
+        CowLook::Cold => {
+            for (uv, pos, pivot) in [
+                ((0.0, 40.0), [-1.5, -4.5, -0.5], [-4.5, -2.5, -3.5]),
+                ((0.0, 32.0), [-1.5, -3.0, -0.5], [5.5, -2.5, -5.0]),
+            ] {
+                b.cube_f(
+                    head,
+                    0,
+                    uv,
+                    pos,
+                    [2.0, 6.0, 2.0],
+                    0.0,
+                    false,
+                    &[Fold::rot([1.5708, 0.0, 0.0], pivot)],
+                );
+            }
+        }
+        CowLook::Warm => {
+            for (mirror, horn, tip) in [(false, -8.0, -8.0), (true, 4.0, 6.0)] {
+                b.cube_f(
+                    head,
+                    0,
+                    (27.0, 0.0),
+                    [horn, -3.0, -5.0],
+                    [4.0, 2.0, 2.0],
+                    0.0,
+                    mirror,
+                    NONE,
+                );
+                b.cube_f(
+                    head,
+                    0,
+                    (39.0, 0.0),
+                    [tip, -5.0, -5.0],
+                    [2.0, 2.0, 2.0],
+                    0.0,
+                    mirror,
+                    NONE,
+                );
+            }
+        }
+    }
     let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 5.0, 2.0]);
+    if look == CowLook::Cold {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            (20.0, 32.0),
+            [-6.0, -10.0, -7.0],
+            [12.0, 18.0, 10.0],
+            0.5,
+            false,
+            &[body],
+        );
+    }
     b.cube_f(
         STATIC_PART,
         0,
@@ -13261,6 +13352,8 @@ mod tests {
                     | EntityModelKind::HorseBaby
                     | EntityModelKind::CatBaby
                     | EntityModelKind::WolfBaby
+                    | EntityModelKind::ColdCow
+                    | EntityModelKind::WarmCow
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -15160,5 +15253,41 @@ mod cat_collar_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cow_variant_tests {
+    use super::*;
+
+    fn has_face(m: &Model, u: (f32, f32), v: (f32, f32)) -> bool {
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|t| t[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        m.quads.iter().any(|q| span(q, 0) == u && span(q, 1) == v)
+    }
+
+    /// M348 — the base cow's ten boxes; the cold cow's eleven (the coat, and
+    /// two child horns for the head's two); the warm cow's twelve (two boxes
+    /// a horn). Each new box's north face sits where its `texOffs` puts it.
+    #[test]
+    fn the_cold_and_warm_cows_are_their_own_models() {
+        let (base, cold, warm) = (cow(), cold_cow(), warm_cow());
+        assert_eq!(base.quads.len(), 10 * 6);
+        assert_eq!(cold.quads.len(), 11 * 6);
+        assert_eq!(warm.quads.len(), 12 * 6);
+        // The cold coat (20, 32) 12 x 18 x 10, its horns (0, 40) and (0, 32)
+        // 2 x 6 x 2, and its muzzle at (9, 33).
+        assert!(has_face(&cold, (30.0, 42.0), (42.0, 60.0)));
+        assert!(has_face(&cold, (2.0, 4.0), (42.0, 48.0)));
+        assert!(has_face(&cold, (2.0, 4.0), (34.0, 40.0)));
+        assert!(has_face(&cold, (10.0, 16.0), (34.0, 37.0)));
+        assert!(!has_face(&cold, (23.0, 24.0), (1.0, 4.0)));
+        // The warm horns (27, 0) 4 x 2 x 2 and tips (39, 0) 2 x 2 x 2.
+        assert!(has_face(&warm, (29.0, 33.0), (2.0, 4.0)));
+        assert!(has_face(&warm, (41.0, 43.0), (2.0, 4.0)));
+        assert!(has_face(&base, (23.0, 24.0), (1.0, 4.0)));
     }
 }

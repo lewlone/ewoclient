@@ -39,6 +39,9 @@ use rewo_proto::nbt::Nbt;
 pub const CAT_VARIANT_REGISTRY: &str = "minecraft:cat_variant";
 pub const WOLF_VARIANT_REGISTRY: &str = "minecraft:wolf_variant";
 pub const FROG_VARIANT_REGISTRY: &str = "minecraft:frog_variant";
+/// M348 — `CowVariant.NETWORK_CODEC`: `ModelAndTexture` (`asset_id`, and
+/// `model` for a non-NORMAL mesh) and `baby_asset_id`.
+pub const COW_VARIANT_REGISTRY: &str = "minecraft:cow_variant";
 /// M254 — the `painting_variant` registry (`PaintingVariant.NETWORK_CODEC`:
 /// `width`, `height`, `asset_id`, optional title and author).
 pub const PAINTING_VARIANT_REGISTRY: &str = "minecraft:painting_variant";
@@ -100,6 +103,9 @@ pub struct MobVariantDef {
     /// changes with time rather than with a synched value. Kept so the gap is
     /// visible in the parsed data rather than only in a comment.
     pub angry: Option<String>,
+    /// M348 — `ModelAndTexture.model` (`cow_variant`): `"cold"` or `"warm"`,
+    /// absent for NORMAL. As written, not a texture path.
+    pub model: Option<String>,
 }
 
 impl MobVariantDef {
@@ -158,7 +164,8 @@ fn read_entries<T>(
     out
 }
 
-/// `cat_variant` / `frog_variant`: one `asset_id` per entry.
+/// `cat_variant` / `frog_variant` / `cow_variant`: one `asset_id` per entry
+/// (M348: and the cow's `model`).
 pub fn parse_single_asset_registry(
     r: &mut rewo_proto::reader::PacketReader,
     count: usize,
@@ -170,6 +177,10 @@ pub fn parse_single_asset_registry(
         angry: None,
         baby_wild: string_at(data.as_ref(), "baby_asset_id"),
         baby_tame: None,
+        model: match data.as_ref().and_then(|d| d.get("model")) {
+            Some(Nbt::String(s)) => Some(s.clone()),
+            _ => None,
+        },
     })
 }
 
@@ -188,6 +199,7 @@ pub fn parse_wolf_variant_registry(
             angry: string_at(assets.as_ref(), "angry"),
             baby_wild: string_at(baby.as_ref(), "wild"),
             baby_tame: string_at(baby.as_ref(), "tame"),
+            model: None,
         }
     })
 }
@@ -371,5 +383,38 @@ mod tests {
         assert_eq!(v[0].id, "minecraft:cold");
         assert_eq!(v[0].wild, None);
         assert_eq!(v[1].wild.as_deref(), Some("entity/frog/frog_warm.png"));
+    }
+
+    /// M348 — a `cow_variant` entry keeps its `model` as written (absent for
+    /// NORMAL) beside its adult and calf sheets.
+    #[test]
+    fn a_cow_variant_keeps_its_model() {
+        let b = body(&[
+            (
+                "minecraft:cold",
+                Some(compound(&[
+                    ("asset_id", s("minecraft:entity/cow/cow_cold")),
+                    ("baby_asset_id", s("minecraft:entity/cow/cow_cold_baby")),
+                    ("model", s("cold")),
+                ])),
+            ),
+            (
+                "minecraft:temperate",
+                Some(compound(&[(
+                    "asset_id",
+                    s("minecraft:entity/cow/cow_temperate"),
+                )])),
+            ),
+        ]);
+        let mut r = PacketReader::new(&b);
+        let v = parse_single_asset_registry(&mut r, 2);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].model.as_deref(), Some("cold"));
+        assert_eq!(v[0].wild.as_deref(), Some("entity/cow/cow_cold.png"));
+        assert_eq!(
+            v[0].baby_texture(false),
+            Some("entity/cow/cow_cold_baby.png")
+        );
+        assert_eq!(v[1].model, None);
     }
 }

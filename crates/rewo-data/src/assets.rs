@@ -1053,6 +1053,9 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("slime", "entity/slime/slime.png", 64, 32),
     ("magma_cube", "entity/slime/magmacube.png", 64, 64),
     ("cow", "entity/cow/cow_temperate.png", 64, 64),
+    // M348 — the cold and warm cows' meshes, each on its own sheet.
+    ("cold_cow", "entity/cow/cow_cold.png", 64, 64),
+    ("warm_cow", "entity/cow/cow_warm.png", 64, 64),
     ("mooshroom", "entity/cow/mooshroom_red.png", 64, 64),
     ("pig", "entity/pig/pig_temperate.png", 64, 64),
     ("sheep", "entity/sheep/sheep.png", 64, 32),
