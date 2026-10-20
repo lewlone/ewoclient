@@ -2134,6 +2134,7 @@ this shape once.
 | M321 (2026-10-20) — a calf and a mooshroom calf draw as BabyCowModel | **r176** | — | — |
 | M322 (2026-10-20) — a piglet and a chick draw as BabyPigModel and BabyChickenModel | **r177** | — | — |
 | M323 (2026-10-20) — a lamb draws as BabySheepModel | **r178** | — | — |
+| M324 (2026-10-20) — a dolphin calf draws as BabyDolphinModel | **r179** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

@@ -1566,11 +1566,13 @@ pub enum EntityModelKind {
     /// M323 — `BabySheepModel` (`SHEEP_BABY`, and `SHEEP_BABY_WOOL`, the same
     /// layer, for the fleece).
     SheepBaby,
+    /// M324 — `BabyDolphinModel` (`DOLPHIN_BABY`).
+    DolphinBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 115;
+    pub const COUNT: usize = 116;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1686,6 +1688,7 @@ impl EntityModelKind {
         EntityModelKind::PigBaby,
         EntityModelKind::ChickenBaby,
         EntityModelKind::SheepBaby,
+        EntityModelKind::DolphinBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1802,6 +1805,7 @@ impl EntityModelKind {
             EntityModelKind::PigBaby => "pig_baby",
             EntityModelKind::ChickenBaby => "chicken_baby",
             EntityModelKind::SheepBaby => "sheep_baby",
+            EntityModelKind::DolphinBaby => "dolphin_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1858,6 +1862,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::PigBaby
                 | EntityModelKind::ChickenBaby
                 | EntityModelKind::SheepBaby
+                | EntityModelKind::DolphinBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2800,6 +2805,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::SheepBaby,
         textures: &["sheep_baby", "sheep_wool_baby"],
         build: sheep_baby,
+    },
+    // M324 — the dolphin calf's sheet.
+    MobDef {
+        kind: EntityModelKind::DolphinBaby,
+        textures: &["dolphin_baby"],
+        build: dolphin_baby,
     },
 ];
 
@@ -5085,6 +5096,103 @@ fn sheep_baby() -> Model {
             b.cube(leg, tex, uv, [-1.0, 0.0, -1.0], [2.0, 5.0, 2.0], NONE);
         }
     }
+    b.finish(1.0)
+}
+
+/// M324 — `BabyDolphinModel.createBodyLayer()` (64 x 64): the adult's part
+/// tree at the calf's size. A 6 x 5 x 8 body; under it the head with its nose,
+/// the two fins and the back fin (static, as Rewo's adult's are), and the
+/// two-segment tail on the swim stroke. Unlike the adult's, the tail has no
+/// base tilt.
+fn dolphin_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = Fold::at([0.0, 21.5, 0.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (20.0, 0.0),
+        [-3.0, -2.5, -4.0],
+        [6.0, 5.0, 8.0],
+        0.0,
+        false,
+        &[body],
+    );
+    let head = Fold::at([0.0, 1.0, -4.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-3.0, -3.5, -4.0],
+        [6.0, 5.0, 4.0],
+        0.0,
+        false,
+        &[head, body],
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 9.0),
+        [-1.0, -1.0, -2.0],
+        [2.0, 2.0, 2.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 0.5, -4.0]), head, body],
+    );
+    for (x, z_rot, uv, mirror) in [
+        (1.8, 1.7017, (34.0, 18.0), false),
+        (-1.8, -1.7017, (48.0, 18.0), true),
+    ] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [-0.5, -1.5, -0.5],
+            [1.0, 3.0, 6.0],
+            0.0,
+            mirror,
+            &[Fold::rot([0.8727, 0.0, z_rot], [x, 0.85, -2.6]), body],
+        );
+    }
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (42.0, 0.0),
+        [-0.5, -1.0, 1.0],
+        [1.0, 3.0, 4.0],
+        0.0,
+        false,
+        &[Fold::rot([0.8727, 0.0, 0.0], [0.0, -1.0, -2.7]), body],
+    );
+    let tail = b.part_ext(
+        [0.0, 22.5, 4.0],
+        [0.0; 3],
+        Anim::DolphinTail { k: 0.1 },
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        tail,
+        0,
+        (0.0, 13.0),
+        [-2.0, -1.5, 0.0],
+        [4.0, 3.0, 7.0],
+        NONE,
+    );
+    let tail_fin = b.part_ext(
+        [0.0, 0.0, 6.0],
+        [0.0; 3],
+        Anim::DolphinTail { k: 0.2 },
+        1.0,
+        Some(tail),
+    );
+    b.cube(
+        tail_fin,
+        0,
+        (22.0, 13.0),
+        [-4.0, -0.5, -1.0],
+        [8.0, 1.0, 4.0],
+        NONE,
+    );
     b.finish(1.0)
 }
 
@@ -11700,6 +11808,7 @@ mod tests {
                     | EntityModelKind::PigBaby
                     | EntityModelKind::ChickenBaby
                     | EntityModelKind::SheepBaby
+                    | EntityModelKind::DolphinBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12962,5 +13071,52 @@ mod lamb_tests {
                 .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
         };
         assert_eq!((span(0), span(1)), ((5.0, 10.0), (5.0, 10.0)));
+    }
+}
+
+#[cfg(test)]
+mod dolphin_calf_tests {
+    use super::*;
+
+    /// M324 — `BabyDolphinModel`'s eight boxes; its tail and tail fin on the
+    /// stroke (k 0.1 and 0.2, the fin under the tail); the head box's front
+    /// at (4, 4)..(10, 9) of its sheet and in front of the body's.
+    #[test]
+    fn the_dolphin_calf_is_its_own_model() {
+        let m = dolphin_baby();
+        assert_eq!(m.quads.len(), 8 * 6);
+        let tail = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::DolphinTail { k: 0.1 })
+            .unwrap();
+        let fin = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::DolphinTail { k: 0.2 })
+            .unwrap();
+        assert_eq!(m.parts[fin].parent, Some(tail as u16));
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let front = m
+            .quads
+            .iter()
+            .find(|q| q.facing == Facing::North && span(q, 0) == (4.0, 10.0))
+            .expect("the head box's front");
+        assert_eq!(span(front, 1), (4.0, 9.0));
+        // The body's front is (28, 8)..(34, 13); the head's sits 4 px ahead
+        // of it (body z -4, head z -4 under its -4 offset), whichever way
+        // the model's z runs.
+        let body_front = m
+            .quads
+            .iter()
+            .find(|q| q.facing == Facing::North && span(q, 0) == (28.0, 34.0))
+            .expect("the body box's front");
+        let z = |q: &RawQuad| q.pos[0][2];
+        assert!((z(front) - z(body_front)).abs() > 1e-4);
+        assert!(front.pos.iter().all(|p| (p[2] - z(front)).abs() < 1e-5));
     }
 }

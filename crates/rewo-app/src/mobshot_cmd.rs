@@ -279,8 +279,9 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// polar bear cub. M317: 285 → 291, the baby zombie and husk. M318: 291 →
 /// 294, the baby villager. M319: 294 → 297, the baby drowned. M320: 297 →
 /// 303, the baby piglins. M321: 303 → 309, the calves. M322: 309 → 315,
-/// the piglet and the chick. M323: 315 → 318, the lamb.
-const EXPECTED_MOB_VIEWS: usize = 318;
+/// the piglet and the chick. M323: 315 → 318, the lamb. M324: 318 → 321,
+/// the dolphin calf.
+const EXPECTED_MOB_VIEWS: usize = 321;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.

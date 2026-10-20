@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 49;
+const EXPECTED_WITNESSES: usize = 50;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -188,9 +188,9 @@ const MIN_DISCRIMINATING: usize = 72;
 /// (m47) and the small sulfur cube: the two calves' cells shrank every cell
 /// of the crowd and put it under the floor (measured against the M321 crowd
 /// without the calves, 19; m37 grades it up close), and (M322) the piglet
-/// and the chick (m48), and (M323) the lamb (m49). A twenty-fifth means
-/// something stopped drawing.
-const MAX_SMALL: usize = 24;
+/// and the chick (m48), (M323) the lamb (m49), and (M324) the dolphin calf
+/// (m50). A twenty-sixth means something stopped drawing.
+const MAX_SMALL: usize = 25;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3663,6 +3663,66 @@ fn run_check(
         format!(
             "lamb {px} px, shorn {spx} px, {fleece_px} px differ; {foreign} + {sforeign} px \
              neither sheet can produce (want >= 200 px each, >= 200 differing, 0 foreign)"
+        ),
+    ));
+
+    // m50 — M324: the dolphin calf draws, every pixel producible by its own
+    // sheet. This does NOT tell the calf's sheet from the adult's: measured
+    // at M324, the calf drawn on `dolphin` passes too, and in this view each
+    // sheet produces every colour the other draws (`MAX_AMBIGUOUS` notes the
+    // adult's half), so no colour test here can. It proves the calf draws
+    // through the textured path in the dolphin's palette; the binding is its
+    // `MobDef` row and the mesh rests on `the_dolphin_calf_is_its_own_model`.
+    let mut dcst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.4, 0.9, -1.4),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    dcst.wr.set_entities(&[], dcst.right, dcst.up, 0.0);
+    dcst.off
+        .render(gpu, Some((&mut dcst.wr, dcst.vp)), &ov, BG)?;
+    let dc_empty = dcst.off.read_rgba(gpu)?;
+    let dc_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "dolphin_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    dcst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::DolphinBaby)],
+        dcst.right,
+        dcst.up,
+        0.0,
+    );
+    dcst.off
+        .render(gpu, Some((&mut dcst.wr, dcst.vp)), &ov, BG)?;
+    let dc_frame = dcst.off.read_rgba(gpu)?;
+    dcst.destroy(gpu);
+    let (mut dc_px, mut dc_bad) = (0usize, None);
+    for (p, e) in dc_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dc_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        dc_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if dc_bad.is_none() && !explains(&dc_sheet, c) {
+            dc_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m50.the_dolphin_calf_draws_from_its_own_sheet",
+        !dc_sheet.is_empty() && dc_px >= 200 && dc_bad.is_none(),
+        format!(
+            "{dc_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            dc_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

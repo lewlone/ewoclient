@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M324 -- r179. A dolphin calf (NoAI on land: it does not dry out
+    # while its AI is off, and the witness reads only that it drew).
+    "summon minecraft:dolphin ~12 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M323 -- r178. A red lamb.
     "summon minecraft:sheep ~9 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000,Color:14b};"
     # M322 -- r177. A piglet and a chick.

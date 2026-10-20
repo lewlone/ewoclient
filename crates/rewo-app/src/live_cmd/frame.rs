@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M324 — r179: the staged dolphin calf.
+            c.dolphin_calf |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::DolphinBaby);
             // M323 — r178: the staged lamb.
             c.lamb |= draws
                 .iter()
