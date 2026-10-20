@@ -3932,6 +3932,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M283 — the other camera overlays and the sleep fade (2026-10-20)
+
+M282's pass now draws `Hud.extractCameraOverlays`' remaining images and
+`extractSleepOverlay`'s fill:
+
+- the carved pumpkin's `camera_overlay` (`misc/pumpkinblur`, bilinear)
+  while a carved pumpkin is on the player's head (vanilla's only such
+  item), unless scoping;
+- the spyglass scope while `isScoping` (using a spyglass;
+  `PlaySession::is_scoping`): `misc/spyglass_scope` on the centred square
+  `spyglass_rect` gives (`floor(min(w, h) · scopeScale)`, integer
+  division), black fills around it, `scopeScale` easing toward 1.125 by
+  `0.5 · deltaTicks` a frame (`step_scope_scale`) and reset to 0.5 when not
+  scoping;
+- the powder-snow frost (`misc/powder_snow_outline`, nearest) at
+  `percentFrozen` (`min(ticksFrozen, 140) / 140`) alpha;
+- the sleep fade: the client's `sleepCounter` (`step_sleep_counter`: to 100
+  asleep, then on to 110 and back to 0) as `(int)(220 · amount)` of
+  `0x101010` (`sleep_overlay_alpha`), after the HUD and before chat.
+
+The pass became a list of draws (`CameraDraw`: an image, a pixel rect
+clipped by the scissor, a colour, multiply or alpha) over five images.
+
+Recorded: the nether portal's swirl (its animated block sprite) and
+nausea's overlay are not drawn; any other item a datapack gives a
+`camera_overlay` is not read.
+
+**Unit test**: the sleep counter and fade, the frost fraction, the scope
+rect and its ease. **mobshot** (fail-closed, once): the pumpkin overlay
+over the empty scene, every pixel within 2 of `tex · a + frame · (1 - a)`
+with the jar texture bilinearly sampled (worst 1). **r141**: r83's bed
+fades the screen and the fade reaches its 220 cap (vanilla's counter
+keeps rising after the bot leaves the bed, to 100, before it falls).
+
 ### M282 — the HUD vignette (2026-10-20)
 
 Vanilla draws `misc/vignette.png` over every frame by default (the
