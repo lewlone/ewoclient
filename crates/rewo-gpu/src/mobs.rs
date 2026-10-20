@@ -1576,11 +1576,13 @@ pub enum EntityModelKind {
     /// M327 — `BabyHoglinModel` (`HOGLIN_BABY`, `ZOGLIN_BABY`).
     HoglinBaby,
     ZoglinBaby,
+    /// M328 — `BabyStriderModel` (`STRIDER_BABY`).
+    StriderBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 121;
+    pub const COUNT: usize = 122;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1702,6 +1704,7 @@ impl EntityModelKind {
         EntityModelKind::GlowSquidBaby,
         EntityModelKind::HoglinBaby,
         EntityModelKind::ZoglinBaby,
+        EntityModelKind::StriderBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1824,6 +1827,7 @@ impl EntityModelKind {
             EntityModelKind::GlowSquidBaby => "glow_squid_baby",
             EntityModelKind::HoglinBaby => "hoglin_baby",
             EntityModelKind::ZoglinBaby => "zoglin_baby",
+            EntityModelKind::StriderBaby => "strider_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1886,6 +1890,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::GlowSquidBaby
                 | EntityModelKind::HoglinBaby
                 | EntityModelKind::ZoglinBaby
+                | EntityModelKind::StriderBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2862,6 +2867,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ZoglinBaby,
         textures: &["zoglin_baby"],
         build: hoglin_baby,
+    },
+    // M328 — the baby strider's warm sheet (Rewo draws no cold strider).
+    MobDef {
+        kind: EntityModelKind::StriderBaby,
+        textures: &["strider_baby"],
+        build: strider_baby,
     },
 ];
 
@@ -5435,6 +5446,47 @@ fn hoglin_baby() -> Model {
     ] {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 6.0, 3.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M328 — `BabyStriderModel.createBodyLayer()` (32 x 32): a 7 x 7 x 8 body
+/// with three 7 x 3 x 0 bristles across its top (still, as Rewo's adult's
+/// are), and two 2 x 4 x 2 legs on the walk. The body is placed where
+/// `customAnimations` puts it, not where the layer does: it sets `body.y` to
+/// 17.25 every frame (the layer says 16.75), so at rest the body sits 0.5 px
+/// into the legs.
+fn strider_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = Fold::at([0.0, 17.25, 0.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-3.5, -3.75, -4.0],
+        [7.0, 7.0, 8.0],
+        0.0,
+        false,
+        &[body],
+    );
+    for (z, uv) in [(2.0, (0.0, 21.0)), (0.0, (0.0, 18.0)), (-2.0, (0.0, 15.0))] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [-3.5, -2.5, 0.0],
+            [7.0, 3.0, 0.0],
+            0.0,
+            false,
+            &[Fold::at([0.0, -4.25, z]), body],
+        );
+    }
+    for (x, anim, uv) in [
+        (-1.5, Anim::LegRight, (0.0, 24.0)),
+        (1.5, Anim::LegLeft, (8.0, 24.0)),
+    ] {
+        let leg = b.part([x, 20.0, 0.0], anim, 1.0);
+        b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 4.0, 2.0], NONE);
     }
     b.finish(1.0)
 }
@@ -12057,6 +12109,7 @@ mod tests {
                     | EntityModelKind::GlowSquidBaby
                     | EntityModelKind::HoglinBaby
                     | EntityModelKind::ZoglinBaby
+                    | EntityModelKind::StriderBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13473,6 +13526,53 @@ mod hoglet_tests {
         assert!(
             (nx - (2.0 * PI / 9.0).sin()).abs() < 1e-3,
             "ear normal x {nx}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod baby_strider_tests {
+    use super::*;
+
+    /// M328 — `BabyStriderModel`: the body (6 faces), three bristle plates
+    /// (2 each) and two legs; the body's front at (8, 8)..(15, 15); and the
+    /// body resting where `customAnimations` puts it (y 17.25), which sinks
+    /// it 0.5 px into the 4 px legs (an eighth of a leg).
+    #[test]
+    fn the_baby_strider_is_its_own_model() {
+        let m = strider_baby();
+        assert_eq!(m.quads.len(), 6 + 3 * 2 + 2 * 6);
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m
+            .quads
+            .iter()
+            .any(|q| q.facing == Facing::North
+                && (span(q, 0), span(q, 1)) == ((8.0, 15.0), (8.0, 15.0))));
+        let y_extent = |part: usize| {
+            // Quads are part-local: a part's extent adds its pivot.
+            let y0 = m.parts.get(part).map_or(0.0, |p| p.pivot[1]);
+            m.quads
+                .iter()
+                .filter(|q| q.part == part)
+                .flat_map(|q| q.pos.iter().map(move |p| y0 + p[1]))
+                .fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)))
+        };
+        let leg = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::LegRight)
+            .unwrap();
+        let (b0, b1) = y_extent(STATIC_PART);
+        let (l0, l1) = y_extent(leg);
+        let overlap = b1.min(l1) - b0.max(l0);
+        let ratio = overlap / (l1 - l0);
+        assert!(
+            (ratio - 0.125).abs() < 1e-4,
+            "body/leg overlap {ratio} of a leg"
         );
     }
 }

@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M328 — r183: the staged baby strider.
+            c.baby_strider |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::StriderBaby);
             // M327 — r182: the staged hoglet and baby zoglin.
             for d in draws.iter() {
                 c.hoglets.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::HoglinBaby;

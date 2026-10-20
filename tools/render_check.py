@@ -271,6 +271,8 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M328 -- r183. A baby strider.
+    "summon minecraft:strider ~30 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M327 -- r182. A hoglet (immune to zombification: the overworld
     # converts a hoglin as it does a piglin) and a baby zoglin.
     "summon minecraft:hoglin ~24 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000,"

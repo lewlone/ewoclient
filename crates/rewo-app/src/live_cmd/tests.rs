@@ -4242,6 +4242,7 @@ fn a_baby_sulfur_cube_takes_the_small_model() {
     assert_eq!(f(K::GlowSquid, true), K::GlowSquidBaby);
     assert_eq!(f(K::Hoglin, true), K::HoglinBaby);
     assert_eq!(f(K::Zoglin, true), K::ZoglinBaby);
+    assert_eq!(f(K::Strider, true), K::StriderBaby);
     assert_eq!(f(K::Slime, true), K::Slime);
     // And their scales: their own models take no render scale.
     let s = super::entities::baby_scales;

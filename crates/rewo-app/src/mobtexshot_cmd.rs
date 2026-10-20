@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 53;
+const EXPECTED_WITNESSES: usize = 54;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -189,9 +189,11 @@ const MIN_DISCRIMINATING: usize = 72;
 /// of the crowd and put it under the floor (measured against the M321 crowd
 /// without the calves, 19; m37 grades it up close), and (M322) the piglet
 /// and the chick (m48), (M323) the lamb (m49), (M324) the dolphin calf
-/// (m50), (M325) the baby zombie villager (m51), and (M326) both baby squids
-/// (m52). A twenty-ninth means something stopped drawing.
-const MAX_SMALL: usize = 28;
+/// (m50), (M325) the baby zombie villager (m51), (M326) both baby squids
+/// (m52), and (M328) the baby strider (m54), whose cell shrank the crowd's
+/// again: cow_baby and raft fell under the floor and sulfur_cube_small rose
+/// back over it. A thirty-first means something stopped drawing.
+const MAX_SMALL: usize = 30;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3904,6 +3906,61 @@ fn run_check(
         "m53.the_hoglet_and_the_baby_zoglin_draw_from_their_own_sheets",
         hg_ok,
         format!("{} (want >= 200 px each, none foreign)", hg_rows.join("; ")),
+    ));
+
+    // m54 — M328: the baby strider draws, every pixel producible by its own
+    // sheet; the mesh rests on `the_baby_strider_is_its_own_model`.
+    let mut bsst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.1, 0.9, -1.1),
+        Vec3::new(0.0, 0.4, 0.0),
+    )?;
+    bsst.wr.set_entities(&[], bsst.right, bsst.up, 0.0);
+    bsst.off
+        .render(gpu, Some((&mut bsst.wr, bsst.vp)), &ov, BG)?;
+    let bs_empty = bsst.off.read_rgba(gpu)?;
+    let bs_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "strider_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    bsst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::StriderBaby)],
+        bsst.right,
+        bsst.up,
+        0.0,
+    );
+    bsst.off
+        .render(gpu, Some((&mut bsst.wr, bsst.vp)), &ov, BG)?;
+    let bs_frame = bsst.off.read_rgba(gpu)?;
+    bsst.destroy(gpu);
+    let (mut bs_px, mut bs_bad) = (0usize, None);
+    for (p, e) in bs_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bs_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        bs_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if bs_bad.is_none() && !explains(&bs_sheet, c) {
+            bs_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m54.the_baby_strider_draws_from_its_own_sheet",
+        !bs_sheet.is_empty() && bs_px >= 200 && bs_bad.is_none(),
+        format!(
+            "{bs_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            bs_bad.map(|c| format!("#{c:06x}"))
+        ),
     ));
 
     // ---- report ----------------------------------------------------------
