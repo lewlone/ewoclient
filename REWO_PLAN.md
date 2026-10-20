@@ -3980,6 +3980,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M335 — the camel calf (2026-10-20)
+
+`CamelRenderer` swaps in `BabyCamelModel` (64 x 64: a 9 x 8 x 16 body
+carrying its 3 x 9 x 0 tail and the head, a neck base, neck and muzzle with
+two ears, looking; four 3 x 13 x 3 legs) on `camel_baby.png`, a sheet M175
+never baked (the adult's is 128 x 128). `CamelBaby` is that model, picked by
+`baby_model_kind`, walking on `CamelBabyAnimation.CAMEL_BABY_WALK` through
+`CamelModel`'s `applyWalk(pos, speed, 2.0, 2.5)`; `gen_anim_defs.ps1` now
+extracts it (the regenerated `anim_defs.rs` only gains it). Its channels
+name the body, head, ears, tail, legs and `root`, a part at the origin
+parenting the rest as for Rewo's adult camel. Sitting, standing up and
+dashing are not drawn, as the adult's are not. `mobshot` grades 360 views;
+the calf is graded and discriminating in the crowd (108 graded), so no pin
+moved.
+
+**Unit test**: the 62 faces, the neck base's front at (27, 7)..(32, 12), the
+head under the body under `root`, and `CAMEL_BABY_WALK` on `Walk { 2.0, 2.5 }`
+with every channel bound. **mobtexshot m60**: the calf draws (2,834 px) with
+no colour foreign to its sheet; on the adult's sheet it fails on `#ab7b2d`.
+**r189**: a staged camel calf draws as `BabyCamelModel`.
+
 ### M334 — the donkey and mule foals (2026-10-20)
 
 `DonkeyRenderer` swaps in `BabyDonkeyModel.createBabyLayer()` for both the
