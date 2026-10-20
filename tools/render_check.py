@@ -271,6 +271,10 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M358 -- r212. Two lambs with their AI on, to graze (on grass: the
+    # z ~24 row is the flat world's grass).
+    "summon minecraft:sheep ~42 ~ ~24 {Silent:1b,Age:-24000};"
+    "summon minecraft:sheep ~45 ~ ~24 {Silent:1b,Age:-24000};"
     # M357 -- r211. A sitting cat.
     "summon minecraft:cat ~39 ~ ~24 {NoAI:1b,Silent:1b,Sitting:1b};"
     # M356 -- r210. A sitting wolf.

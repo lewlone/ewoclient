@@ -4477,3 +4477,27 @@ fn a_wolfs_tail_stands_by_its_mood_and_health() {
     assert!((f(false, true, None) - 0.55 * PI).abs() < 1e-6);
     assert!((f(false, false, Some((1.0, 8.0))) - PI / 5.0).abs() < 1e-6);
 }
+
+/// M358 — `Sheep.getHeadEatPositionScale` / `getHeadEatAngleScale`: the head
+/// lowers over the first four ticks, holds at 1 from 36 down to 4 while the
+/// angle nibbles π/5 + 0.2199 · sin(...), rises over the last four, and the
+/// clock run out (0) gives the look back.
+#[test]
+fn a_sheep_grazes_on_vanillas_clock() {
+    use std::f32::consts::PI;
+    let f = super::entities::sheep_eat_pose;
+    assert_eq!(f(0, 0.0), None);
+    assert_eq!(f(-3, 0.5), None);
+    // 40 at the event, partial 0: -(40 - 40 - 0) / 4 = 0, the angle π/5.
+    assert_eq!(f(40, 0.0), Some((0.0, PI / 5.0)));
+    // 38, partial 0.5: (40 + 0.5 - 38) / 4 = 0.625.
+    let (p, a) = f(38, 0.5).unwrap();
+    assert!((p - 0.625).abs() < 1e-6 && (a - PI / 5.0).abs() < 1e-6);
+    // 20, partial 0: held at 1, the nibble at (20 - 4) / 32 · 28.7.
+    let (p, a) = f(20, 0.0).unwrap();
+    let want = PI / 5.0 + 0.219_911_49 * (16.0f32 / 32.0 * 28.7).sin();
+    assert!((p - 1.0).abs() < 1e-6 && (a - want).abs() < 1e-6);
+    // 2, partial 0.5: rising, (2 - 0.5) / 4.
+    let (p, _) = f(2, 0.5).unwrap();
+    assert!((p - 0.375).abs() < 1e-6);
+}

@@ -109,6 +109,10 @@ pub enum Anim {
     },
     /// Wolf tail wag while walking: `yRot = cos(f)·1.4·amt`.
     TailWagY,
+    /// M358 — `SheepModel.setupAnim` (and `SheepFurModel`'s): while grazing
+    /// the head's `y` grows by `headEatPositionScale` · 9 · the age scale
+    /// and its `xRot` is `headEatAngleScale`; otherwise it looks, as `Head`.
+    SheepHead,
     /// M357 — `AdultFelineModel` / `BabyFelineModel.setupAnim`: the head's
     /// look (as `Head`), and sitting its offset ((0, −3.3, 1) × the age
     /// scale for an adult, (0, 0, 0.75) for a kitten).
@@ -687,6 +691,9 @@ pub struct MobCombat {
     /// M356 — `LivingEntity.getAgeScale()`: 0.5 for a baby, else 1; the
     /// sitting pose's offsets scale by it.
     pub age_scale: f32,
+    /// M358 — a grazing sheep's `(headEatPositionScale,
+    /// headEatAngleScale)`; `None` when it is not eating (the head looks).
+    pub sheep_eat: Option<(f32, f32)>,
 }
 
 impl Eq for Anim {}
@@ -4401,7 +4408,7 @@ fn pig_of(g: f32, cold: bool) -> Model {
 /// itself (see [`coplanar_layer_texture`] for how it is drawn).
 fn sheep() -> Model {
     let mut b = ModelBuilder::new();
-    let head = b.part([0.0, 6.0, -8.0], Anim::Head, 1.0);
+    let head = b.part([0.0, 6.0, -8.0], Anim::SheepHead, 1.0);
     b.cube(
         head,
         0,
@@ -5657,7 +5664,7 @@ fn chicken_baby() -> Model {
 /// [`coplanar_layer_texture`]).
 fn sheep_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let head = b.part([0.0, 15.5, -2.5], Anim::Head, 1.0);
+    let head = b.part([0.0, 15.5, -2.5], Anim::SheepHead, 1.0);
     let legs = [
         ([-2.0, 19.0, 3.0], Anim::QuadHindRight, (0.0, 23.0)),
         ([2.0, 19.0, 3.0], Anim::QuadHindLeft, (24.0, 12.0)),
@@ -13890,7 +13897,7 @@ pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
         return Some(i);
     }
     let kinds: &[Anim] = match want {
-        "head" => &[Anim::Head, Anim::FelineHead],
+        "head" => &[Anim::Head, Anim::FelineHead, Anim::SheepHead],
         "body" => &[Anim::HumanoidBody],
         // The plain piglin swings the *generic* arm animation, so
         // `ArmRight`/`ArmLeft` are here too. Widening the list is safe because
@@ -14965,7 +14972,11 @@ mod lamb_tests {
         for (a, f) in body.iter().zip(fleece) {
             assert_eq!((a.pos, a.uv, a.part), (f.pos, f.uv, f.part));
         }
-        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let head = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::SheepHead)
+            .unwrap();
         let front = body
             .iter()
             .find(|q| q.part == head && q.facing == Facing::North)

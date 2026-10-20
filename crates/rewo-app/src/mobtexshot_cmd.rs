@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 79;
+const EXPECTED_WITNESSES: usize = 80;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5887,6 +5887,62 @@ fn run_check(
             "{} (want >= 200 px, none foreign, >= 100 px of silhouette moved)",
             c_rows.join("; ")
         ),
+    ));
+
+    // m80 — M358: a grazing sheep and lamb (the eat clock held at 20) draw
+    // from their own sheets with the head lowered: the silhouette moves.
+    let mut gst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.4, 0.8, -0.2),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    gst.wr.set_entities(&[], gst.right, gst.up, 0.0);
+    gst.off.render(gpu, Some((&mut gst.wr, gst.vp)), &ov, BG)?;
+    let g_empty = gst.off.read_rgba(gpu)?;
+    let mut g_ok = true;
+    let mut g_rows = Vec::new();
+    for (kind, scale) in [
+        (EntityModelKind::Sheep, 1.0f32),
+        (EntityModelKind::SheepBaby, 0.5),
+    ] {
+        let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            gst.wr.set_entities(&[d], gst.right, gst.up, 0.0);
+            gst.off.render(gpu, Some((&mut gst.wr, gst.vp)), &ov, BG)?;
+            gst.off.read_rgba(gpu)
+        };
+        let calm = shot(neutral_draw(kind))?;
+        let grazing = shot(EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                sheep_eat: crate::live_cmd::sheep_eat_pose(20, 0.0),
+                age_scale: scale,
+                ..Default::default()
+            },
+            ..neutral_draw(kind)
+        })?;
+        let mask = |f: &[u8]| -> Vec<bool> {
+            f.as_chunks::<4>()
+                .0
+                .iter()
+                .zip(g_empty.as_chunks::<4>().0)
+                .map(|(p, e)| p[..3] != e[..3])
+                .collect()
+        };
+        let moved = mask(&calm)
+            .iter()
+            .zip(&mask(&grazing))
+            .filter(|(x, y)| x != y)
+            .count();
+        g_ok &= moved >= 100;
+        g_rows.push(format!("{}: {moved} px of silhouette moved", kind.name()));
+    }
+    gst.destroy(gpu);
+    w.push(wit(
+        "m80.a_grazing_sheep_and_lamb_lower_their_heads",
+        g_ok,
+        format!("{} (want >= 100 each)", g_rows.join("; ")),
     ));
 
     // ---- report ----------------------------------------------------------

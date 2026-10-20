@@ -295,11 +295,15 @@ pub enum EntityEvent {
     /// Evoker fangs id 4 — `clientSideAttackStarted = true` (M259): the bite
     /// runs from here, `getAnimationProgress` reaching 1 twenty ticks on.
     EvokerFangsBite,
+    /// M358 — sheep id 10 — `eatAnimationTick = 40`, one less every client
+    /// tick: the head lowers and nibbles (`getHeadEatPositionScale` /
+    /// `getHeadEatAngleScale`).
+    SheepEat,
 }
 
 impl EntityEvent {
     /// Dense count for the fixed-size per-entity store.
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 6;
 
     /// Slot index into [`EntityEventStarts`].
     pub const fn index(self) -> usize {

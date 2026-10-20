@@ -5589,6 +5589,18 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 off = [0.0, 9.0 * s, -2.0 * s];
             }
         }
+        // M358 — `SheepModel.setupAnim`: grazing, the eat scales; else the
+        // look.
+        SheepHead => {
+            rot[1] = c.net;
+            match c.mob.sheep_eat {
+                Some((position, angle)) => {
+                    rot[0] = angle;
+                    off[1] = position * 9.0 * c.mob.age_scale;
+                }
+                Option::None => rot[0] = c.pitch,
+            }
+        }
         // M357 — `AdultFelineModel` / `BabyFelineModel.setupAnim`. A kitten
         // is the age scale's half; its sitting pose is its own.
         FelineHead => {
@@ -9747,5 +9759,44 @@ mod feline_sit_tests {
         assert!((r[0] - PI / 4.0).abs() < 1e-5);
         let (r, o) = anim_delta(A::FelineBody, 1.0, &walk);
         assert!(near(r, [0.0; 3]) && near(o, [0.0; 3]));
+    }
+}
+
+#[cfg(test)]
+mod sheep_head_tests {
+    use super::*;
+
+    /// M358 — a grazing sheep's head takes the eat angle and drops by the eat
+    /// position · 9 · the age scale; a calm one looks.
+    #[test]
+    fn a_grazing_sheep_lowers_its_head() {
+        let ctx = |eat: Option<(f32, f32)>, age_scale: f32| AnimCtx {
+            pitch: 0.3,
+            net: 0.2,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                sheep_eat: eat,
+                age_scale,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        };
+        let (r, o) = anim_delta(mobs::Anim::SheepHead, 1.0, &ctx(None, 1.0));
+        assert_eq!((r, o), ([0.3, 0.2, 0.0], [0.0; 3]));
+        let (r, o) = anim_delta(mobs::Anim::SheepHead, 1.0, &ctx(Some((1.0, 0.7)), 1.0));
+        assert_eq!((r, o), ([0.7, 0.2, 0.0], [0.0, 9.0, 0.0]));
+        let (_, o) = anim_delta(mobs::Anim::SheepHead, 1.0, &ctx(Some((0.5, 0.7)), 0.5));
+        assert_eq!(o, [0.0, 2.25, 0.0]);
     }
 }

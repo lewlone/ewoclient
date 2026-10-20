@@ -877,6 +877,8 @@ pub(crate) fn apply_entity_event(
             Some(EntityEvent::EvokerFangsBite)
         }
         62 if is(warden_type_id) => Some(EntityEvent::WardenSonicBoom),
+        // M358 — `Sheep.handleEntityEvent(10)`: `eatAnimationTick = 40`.
+        10 if classes.is_some_and(|c| c.is_sheep(type_id)) => Some(EntityEvent::SheepEat),
         64 if is(armadillo_type_id) => Some(EntityEvent::ArmadilloPeek),
         // `Warden.handleEntityEvent(61)` is `tendrilAnimation = 10` — a plain
         // 10-tick countdown rather than an `AnimationState`, but it is stamped

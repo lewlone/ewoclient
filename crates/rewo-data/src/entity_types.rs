@@ -221,6 +221,8 @@ pub struct EntityClasses {
     item_frame: std::collections::HashSet<i32>,
     /// M259 — `minecraft:evoker_fangs`: entity event 4 is its bite.
     evoker_fangs: std::collections::HashSet<i32>,
+    /// M358 — `minecraft:sheep`: entity event 10 is its grazing.
+    sheep: std::collections::HashSet<i32>,
     /// M219 — `instanceof HasCustomInventoryScreen`: its three implementors'
     /// subtrees (`AbstractHorse`, `AbstractNautilus`, `AbstractChestBoat`).
     /// Riding one turns the inventory key into `OPEN_INVENTORY`.
@@ -409,6 +411,7 @@ impl EntityClasses {
                 .filter_map(|n| types.id_of(n))
                 .collect(),
             evoker_fangs: types.id_of("minecraft:evoker_fangs").into_iter().collect(),
+            sheep: types.id_of("minecraft:sheep").into_iter().collect(),
             custom_inventory,
             abstract_horse,
             abstract_boat,
@@ -441,6 +444,7 @@ impl EntityClasses {
             nautilus: Default::default(),
             item_frame: Default::default(),
             evoker_fangs: Default::default(),
+            sheep: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -474,6 +478,7 @@ impl EntityClasses {
             nautilus: Default::default(),
             item_frame: Default::default(),
             evoker_fangs: Default::default(),
+            sheep: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -532,6 +537,11 @@ impl EntityClasses {
     /// M259 — `minecraft:evoker_fangs`, whose entity event 4 is its bite.
     pub fn is_evoker_fangs(&self, type_id: i32) -> bool {
         self.evoker_fangs.contains(&type_id)
+    }
+
+    /// M358 — `minecraft:sheep`, whose entity event 10 is its grazing.
+    pub fn is_sheep(&self, type_id: i32) -> bool {
+        self.sheep.contains(&type_id)
     }
 
     /// M194 — an `ItemFrame` (plain or glow).

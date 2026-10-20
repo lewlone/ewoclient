@@ -1668,6 +1668,8 @@ pub(crate) fn resolve_mob_combat(
         // M356 — set by the caller with the wolf's.
         sitting: false,
         age_scale: 1.0,
+        // M358 — set by the caller with the sheep's eat clock.
+        sheep_eat: None,
     }
 }
 
@@ -4124,6 +4126,31 @@ pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> Ent
     }
 }
 
+/// M358 — `Sheep.getHeadEatPositionScale(a)` and `getHeadEatAngleScale(a)`
+/// from the eat clock `k` (`eatAnimationTick`: 40 at entity event 10, one
+/// less each client tick) and the partial tick `a`; `None` once it has run
+/// out, when the head looks again (the angle's last branch, the pitch).
+pub(crate) fn sheep_eat_pose(k: i64, a: f32) -> Option<(f32, f32)> {
+    use std::f32::consts::PI;
+    if k <= 0 {
+        return None;
+    }
+    let kf = k as f32;
+    let position = if (4..=36).contains(&k) {
+        1.0
+    } else if k < 4 {
+        (kf - a) / 4.0
+    } else {
+        -(kf - 40.0 - a) / 4.0
+    };
+    let angle = if k > 4 && k <= 36 {
+        PI / 5.0 + 0.219_911_49 * ((kf - 4.0 - a) / 32.0 * 28.7).sin()
+    } else {
+        PI / 5.0
+    };
+    Some((position, angle))
+}
+
 /// M355 — `Wolf.getTailAngle()`: an angry wolf's tail stands at 1.5393804,
 /// a tame one's at (0.55 − damage · 0.4)·π by its missing health (full
 /// health when unknown), a wild one's at π/5.
@@ -4875,6 +4902,19 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M358 — a grazing sheep: the eat clock from entity event 10's
+        // receipt tick, and the age scale its head drop scales by.
+        if matches!(kind, EntityModelKind::Sheep | EntityModelKind::SheepBaby) {
+            let ents = &session.world.entities;
+            mob.sheep_eat = ents
+                .event_start(id, rewo_world::entities::EntityEvent::SheepEat)
+                .and_then(|start| sheep_eat_pose(40 - (session.ticks as i64 - start), alpha));
+            mob.age_scale = if kind == EntityModelKind::SheepBaby {
+                0.5
+            } else {
+                1.0
+            };
         }
         // M357 — a cat's (or kitten's) sitting pose.
         if matches!(kind, EntityModelKind::Cat | EntityModelKind::CatBaby) {

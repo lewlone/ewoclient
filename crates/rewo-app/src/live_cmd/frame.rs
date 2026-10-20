@@ -973,6 +973,15 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M358 — r212: a staged lamb (it grazes every couple of seconds)
+            // drawn grazing.
+            c.grazing_sheep |= draws.iter().any(|d| {
+                matches!(
+                    d.kind,
+                    rewo_gpu::mobs::EntityModelKind::Sheep
+                        | rewo_gpu::mobs::EntityModelKind::SheepBaby
+                ) && d.mob.sheep_eat.is_some()
+            });
             // M357 — r211: the staged sitting cat, drawn sitting.
             c.sitting_cat |= draws
                 .iter()
