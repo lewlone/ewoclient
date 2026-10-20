@@ -747,7 +747,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
-- After M282: **4,422 tests passed, 0 failed; gates 51/51** (mobshot's vignette check: worst pixel 1); clippy and `cargo fmt --check` clean. Render check: run 2 **140/140**; run 1 139/140, r89 (the camel sprint) reading a step of 0.8203 against vanilla's 0.4101, exactly two ticks' worth in one sample, nothing M282 touches; a third run is below.
+- After M282: **4,422 tests passed, 0 failed; gates 51/51** (mobshot's vignette check: worst pixel 1); clippy and `cargo fmt --check` clean. Render check: run 2 **140/140**; run 1 139/140, r89 (the camel sprint) reading a step of 0.8203 against vanilla's 0.4101, exactly two ticks' worth in one sample, nothing M282 touches; a third run read **140/140** with r89's step at 0.4101, vanilla's.
 - After M281: **4,421 tests passed, 0 failed; gates 51/51** (mobtexshot 20); render check **139/139** on two runs; clippy and `cargo fmt --check` clean.
 - After M280: **4,420 tests passed, 0 failed; gates 51/51** (inventoryshot 172); render check **138/138** on two runs; clippy and `cargo fmt --check` clean.
 - After M279: **4,419 tests passed, 0 failed; gates 51/51** (mobshot's outline-only check: 7,093 px, 0 stray, 0 inside); render check **138/138** on two runs (both with the port-race retry in place); clippy and `cargo fmt --check` clean.
@@ -798,6 +798,10 @@ released.
 - ~~`tools/render_check.py`'s port probe lost a race once ("server FAILED TO
   BIND"): it picks a free port, then the server binds it later. A retry on
   that message would remove the one non-Rewo failure seen in the loops.~~ Retried on a new port since `b783723f` (up to three ports).
+- r89 (the camel sprint) read a step of 0.8203 once (M282's first run),
+  exactly twice vanilla's 0.4101: two ticks' movement landed in one of its
+  samples. Its step measure should take the per-tick delta from the tick
+  counter, not from consecutive samples.
 - Two flakes seen during M245's checks, not investigated: `rewo-audio`'s
   `a_slow_read_is_not_re_requested_on_every_tick` (80 ms of wall-clock ticks
   for a worker to open a stream; failed once under the full workspace run,
