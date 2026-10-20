@@ -3997,6 +3997,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M352 — the enderman's carried block (2026-10-20)
+
+No enderman carried a block. `EnderMan.DATA_CARRY_STATE` is index 16
+OPTIONAL_BLOCK_STATE (`Monster` adds none after `Mob`'s 15; 0 is empty), now
+decoded and routed on the enderman into `MobState::carried_block` and mirrored
+into the draw as `MobCombat::carried_block`. `CarriedBlockLayer`'s block draws
+on the block-model path (`collect_mob_blocks`, beside M351's mushrooms)
+through `enderman_block_transform`: `LivingEntityRenderer`'s root, then
+`translate(0, 0.6875, -0.75)`, `XP(20)`, `YP(45)`, `translate(0.25, 0.1875,
+0.25)`, `scale(-0.5, -0.5, 0.5)`, `YP(90)`, the block from its corner.
+`EndermanModel.setupAnim` is now the enderman's own rig (it shared the generic
+humanoid swing at half amplitude): the limbs swing at half the humanoid's
+clamped to ±0.4, and while carrying both arms hold the block up (`xRot` -0.5,
+`zRot` ±0.05).
+
+**Unit tests**: the block's corner and centre through the chain against values
+worked out by hand (half a block, straight ahead at the lowered hands'
+height); the carrying pose and the clamp. **n11**: state 5 at index 16 carries
+on an enderman, 0 empties it, a cat carries nothing. **r206**: a staged
+enderman carrying a melon, drawn in the carrying pose with the melon whole.
+
 ### M351 — the mooshroom's mushrooms (2026-10-20)
 
 No mooshroom carried its mushrooms: `MushroomCowMushroomLayer` was not drawn.
