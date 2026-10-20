@@ -3959,6 +3959,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M313 — the first-person sleeve, restored and by the mask (2026-10-20)
+
+**A regression of M310's, found by reading:** `hand.rs`'s `append_arm`
+draws the first-person arm from the quads on the arm part alone, and M310
+moved the sleeve onto a child part, so from M310 the first-person arm drew
+no sleeve at all. No gate noticed: handshot counted the arm's vertices only
+as non-empty, and Steve's sleeve texels are few.
+
+`AvatarRenderer.renderHand` sets both sleeves' `visible` to `hasSleeve`,
+which `ItemInHandRenderer` passes as `isModelPartShown(RIGHT_SLEEVE)` for the
+right hand and `LEFT_SLEEVE` for the left. `ArmGeometry::parts` carries the
+local player's mask (the one the client sent), and `append_arm` draws the
+arm part and, when that arm's bit is set, its sleeve child.
+
+**handshot a4**: the right arm is 72 vertices with its sleeve's bit set, 36
+without and 36 with only the left sleeve's bit, and the default mask draws
+72 (the sleeve never drawn, M310's state: 36 in every case, and a4 fails).
+
 ### M312 — the happy ghast's ropes (2026-10-20)
 
 `RopesLayer` draws `HAPPY_GHAST_ROPES` (the adult body layer at

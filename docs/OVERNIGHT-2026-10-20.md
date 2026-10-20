@@ -13,10 +13,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 119 Rewo milestones, M194 to M312, in about 260 commits on
+- **What happened**: 120 Rewo milestones, M194 to M313, in about 262 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`a7b5c29c`): 4,458 tests pass (4,244 at the
+- **Checks at the end** (`f7e55cd7`): 4,458 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 168 of
   168 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -413,6 +413,8 @@ released.
   customisation; Rewo drew all of them always.
 - **M311**: damaged wolf armour shows its cracks.
 - **M312**: a harnessed happy ghast holding a leash shows its ropes.
+- **M313**: fixes a regression M310 introduced (the first-person arm had lost
+  its sleeve); the sleeve now also follows the skin customisation setting.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -474,6 +476,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `f7e55cd7` | **M313** — the first-person sleeve: M310 had moved it onto a child part `append_arm` never drew; now drawn by the local player's sleeve bits; handshot **a4**. |
 | `a7b5c29c` | **M312** — the happy ghast's ropes: `RopesLayer`'s inflated boxes on their own texture slot, shown while it holds a leash and wears a harness; a unit test, mobtexshot **m40** and render-check **r168** (r72's ghast, injected harness). |
 | `5a241a5c` | **M311** — wolf armour cracks: the worn piece's damage off the equipment packet, `Crackiness.WOLF_ARMOR`'s three sheets over the armour in the translucent range; a unit test, mobtexshot **m39** and render-check **r167**. |
 | `488762b1` | **M310** — the player model's six outer layers on their own parts shown by the customisation mask (players, mannequins, the inventory preview); a unit test, mobtexshot **m38** and render-check **r166**. |
@@ -837,6 +840,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M313: **4,458 tests passed, 0 failed; gates 51/51** (handshot 42); render check **168/168** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M312: **4,458 tests passed, 0 failed; gates 51/51** (mobtexshot 40, mobshot 276 views); render check **168/168** on two runs (r168 on 21,698 and 23,188 frames, r72 unchanged); clippy (both) and `cargo fmt --check` clean.
 - After M311: **4,457 tests passed, 0 failed; gates 51/51** (mobtexshot 39, the atlas still packing); render check **167/167** on two runs (r167 on 26,649 and 27,399 frames); clippy (both) and `cargo fmt --check` clean.
 - After M310: **4,456 tests passed, 0 failed** (after fixing the one test the chain caught: `player_world_orientation_at_yaw_zero` found the right arm's extent by the arm's animation, and the sleeve now rides a child part; the test follows the parent chain now, with the geometry unchanged); gates 51/51; render check **166/166** on two runs (r166 on 25,737 and 23,674 frames); clippy (both) and `cargo fmt --check` clean.
