@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 39;
+const EXPECTED_WITNESSES: usize = 40;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -434,6 +434,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         chested: false,
         avatar_hidden: 0,
         body_armor_crack: None,
+        leash_holder: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -1354,6 +1355,7 @@ fn run_check(
         chested: false,
         avatar_hidden: 0,
         body_armor_crack: None,
+        leash_holder: false,
         on_fire: Some(rewo_gpu::entities::FireDraw {
             light: [1.0; 3],
             frames: fire_frames,
@@ -2050,6 +2052,7 @@ fn run_check(
         chested: true,
         avatar_hidden: 0,
         body_armor_crack: None,
+        leash_holder: false,
         ..neutral_draw(EntityModelKind::Donkey)
     })?;
     dst.destroy(gpu);
@@ -2128,6 +2131,7 @@ fn run_check(
         chested: true,
         avatar_hidden: 0,
         body_armor_crack: None,
+        leash_holder: false,
         ..neutral_draw(EntityModelKind::Llama)
     })?;
     let l_carpet = lshot(EntityDraw {
@@ -2983,6 +2987,77 @@ fn run_check(
         format!(
             "{CRACK} resident: {crack_resident}; {c_verts} translucent vertices; {crack_px} px \
              changed by the cracks (want >= 20), {off_armour} of them off the armour (want 0)"
+        ),
+    ));
+
+    // m40 — M312: a harnessed happy ghast holding a leash shows its ropes
+    // (`RopesLayer`), every rope pixel a colour the jar's ropes sheet can
+    // produce; holding a leash without a harness, or a harness without a
+    // leash, shows none. No ropes drew until M312.
+    let ropes_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "happy_ghast_ropes")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut rst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(6.5, 5.5, -6.5),
+        Vec3::new(0.0, 2.6, 0.0),
+    )?;
+    let mut rshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        rst.wr.set_entities(&[d], rst.right, rst.up, 0.0);
+        rst.off.render(gpu, Some((&mut rst.wr, rst.vp)), &ov, BG)?;
+        rst.off.read_rgba(gpu)
+    };
+    let mut rlayers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    rlayers[0] = Some(("happy_ghast_body/white_harness", [1.0, 1.0, 1.0]));
+    let harnessed = EntityDraw {
+        body_armor: Some(rewo_gpu::entities::ArmorPiece {
+            layers: rlayers,
+            ..Default::default()
+        }),
+        ..neutral_draw(EntityModelKind::HappyGhast)
+    };
+    let r_bare = rshot(neutral_draw(EntityModelKind::HappyGhast))?;
+    let r_leash_only = rshot(EntityDraw {
+        leash_holder: true,
+        ..neutral_draw(EntityModelKind::HappyGhast)
+    })?;
+    let r_harness = rshot(harnessed)?;
+    let r_ropes = rshot(EntityDraw {
+        leash_holder: true,
+        ..harnessed
+    })?;
+    rst.destroy(gpu);
+    let (mut rope_px, mut rope_bad) = (0usize, None);
+    for (a, b) in r_ropes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(r_harness.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        rope_px += 1;
+        let c = pack(a[0], a[1], a[2]);
+        if rope_bad.is_none() && !explains(&ropes_sheet, c) {
+            rope_bad = Some(c);
+        }
+    }
+    let leash_alone_same = r_leash_only == r_bare;
+    w.push(wit(
+        "m40.a_harnessed_happy_ghast_holding_a_leash_shows_its_ropes",
+        !ropes_sheet.is_empty() && rope_px >= 200 && rope_bad.is_none() && leash_alone_same,
+        format!(
+            "{rope_px} px added by the ropes (want >= 200), first colour the ropes sheet \
+             cannot produce: {:?}; a leash without a harness changes nothing: \
+             {leash_alone_same}",
+            rope_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

@@ -323,6 +323,10 @@ pub struct EntityDraw<'a> {
     /// (`wolf_armor_crackiness_{low,medium,high}`) drawn `armorTranslucent`
     /// over the body armour's shell; `None` when undamaged or not a wolf.
     pub body_armor_crack: Option<&'a str>,
+    /// M312 — `HappyGhastRenderState.isLeashHolder`: something is leashed
+    /// to this entity (the happy ghast's ropes show while it also wears a
+    /// harness).
+    pub leash_holder: bool,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -1382,6 +1386,9 @@ pub struct MobModel {
     /// The texture slot belonging to a render layer a shorn mob skips
     /// (`mobs::shearable_texture`) — `EntityDraw::sheared` drops it (M64).
     shearable_slot: Option<u8>,
+    /// M312 — the happy ghast's ropes' texture slot: drawn only while it
+    /// holds a leash and wears a harness, with no overlay (`RopesLayer`).
+    ropes_slot: Option<u8>,
     /// The texture slot of a **coplanar** render layer
     /// (`mobs::coplanar_layer_texture`) — the sheep's undercoat (M68). Its
     /// quads leave the solid range for the `EQUAL`, no-write trim range,
@@ -1890,6 +1897,11 @@ impl EntityPass {
                     .map(|s| s as u8),
                 shearable_slot: mobs::shearable_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
+                    .map(|s| s as u8),
+                ropes_slot: def
+                    .textures
+                    .iter()
+                    .position(|t| *t == "happy_ghast_ropes")
                     .map(|s| s as u8),
                 coplanar_slot: mobs::coplanar_layer_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
@@ -3872,6 +3884,12 @@ impl EntityPass {
             if shorn_slot == Some(q.tex) {
                 continue;
             }
+            // M312 — `RopesLayer.submit`'s gate: `isLeashHolder` and a
+            // harness in the body slot.
+            let ropes = model.ropes_slot == Some(q.tex);
+            if ropes && !(d.leash_holder && d.body_armor.is_some()) {
+                continue;
+            }
             // The coplanar layer leaves the solid range: at the base model's
             // exact depth the solid pass's strict `GREATER` rejects every one
             // of its fragments. `trim_verts` is `CompareOp::EQUAL` with no
@@ -3917,7 +3935,8 @@ impl EntityPass {
                     pos: p4[i],
                     uv: [q.uv[i][0] + du[0], q.uv[i][1] + du[1]],
                     color: [c[0], c[1], c[2], 1.0],
-                    light_hurt: [light_r, light_g, light_b, hurt],
+                    // M312 — the ropes are submitted with `NO_OVERLAY`.
+                    light_hurt: [light_r, light_g, light_b, if ropes { 0.0 } else { hurt }],
                 });
             }
         }

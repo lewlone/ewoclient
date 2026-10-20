@@ -2182,6 +2182,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         chested: false,
         avatar_hidden: 0,
         body_armor_crack: None,
+        leash_holder: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,

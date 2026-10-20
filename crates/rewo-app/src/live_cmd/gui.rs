@@ -219,6 +219,7 @@ pub(super) fn preview_draw<'a>(
         // server (`options.txt`'s `modelPart_*`).
         avatar_hidden: !session.client_info.model_parts,
         body_armor_crack: None,
+        leash_holder: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,

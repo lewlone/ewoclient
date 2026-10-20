@@ -973,6 +973,15 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M312 — r168: r72's ghast, harnessed and holding the horse's
+            // leash.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::HappyGhast
+                    && d.leash_holder
+                    && d.body_armor.is_some()
+            }) {
+                c.ghast_rope_frames += 1;
+            }
             // M311 — r167: the staged wolf in badly damaged armour, its high
             // crack sheet resident.
             if draws.iter().any(|d| {

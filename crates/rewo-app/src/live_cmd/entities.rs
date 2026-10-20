@@ -3995,6 +3995,13 @@ pub(super) fn collect_entities<'a>(
             let age = it.next().and_then(|a| a.trim().parse().ok()).unwrap_or(0.0);
             Some((g, age))
         });
+    // M312 — every entity something is leashed to (`isLeashHolder`).
+    let leash_holders: std::collections::HashSet<i32> = session
+        .world
+        .entities
+        .iter()
+        .filter_map(|(id, _)| session.world.entities.leash_holder(id))
+        .collect();
     let mut out = Vec::new();
     for (id, e) in session.world.entities.iter() {
         // M194: an item frame has no body — `ItemFrameRenderer` draws its
@@ -4357,6 +4364,7 @@ pub(super) fn collect_entities<'a>(
             },
             // M311 — the wolf armour's cracks.
             body_armor_crack: wolf_armor_crack(session, id, kind, item_names),
+            leash_holder: leash_holders.contains(&id),
             held_glint: [
                 held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
                 held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),

@@ -2590,7 +2590,8 @@ pub static MOBS: &[MobDef] = &[
     },
     MobDef {
         kind: EntityModelKind::HappyGhast,
-        textures: &["happy_ghast"],
+        // M312 — and `HappyGhastRenderer.GHAST_ROPES`.
+        textures: &["happy_ghast", "happy_ghast_ropes"],
         build: happy_ghast,
     },
     MobDef {
@@ -10203,6 +10204,32 @@ fn happy_ghast() -> Model {
             &[Fold::at(off), body],
         );
     }
+    // M312 — `RopesLayer`: `HAPPY_GHAST_ROPES` is the adult body layer at
+    // `CubeDeformation(0.2F)` (body and tentacles, no inner body) on its own
+    // sheet, texture slot 1, which the renderer shows only while the ghast
+    // holds a leash and wears a harness (`MobModel::ropes_slot`).
+    b.cube_f(
+        STATIC_PART,
+        1,
+        (0.0, 0.0),
+        [-8.0, -8.0, -8.0],
+        [16.0, 16.0, 16.0],
+        0.2,
+        false,
+        &[body],
+    );
+    for (off, len) in legs {
+        b.cube_f(
+            STATIC_PART,
+            1,
+            (0.0, 0.0),
+            [-1.0, 0.0, -1.0],
+            [2.0, len, 2.0],
+            0.2,
+            false,
+            &[Fold::at(off), body],
+        );
+    }
     b.finish(4.0)
 }
 
@@ -11873,5 +11900,29 @@ mod avatar_layer_tests {
             );
             assert_eq!(m.quads.len(), 72, "twelve boxes, as before");
         }
+    }
+}
+
+#[cfg(test)]
+mod ghast_ropes_tests {
+    use super::*;
+
+    /// M312 — the ropes are the body and nine tentacles again, 0.2 larger,
+    /// on texture slot 1, after the body's own boxes; the parts stay one.
+    #[test]
+    fn the_happy_ghasts_ropes_are_its_body_inflated_on_their_own_sheet() {
+        let m = happy_ghast();
+        let ropes: Vec<_> = m.quads.iter().filter(|q| q.tex == 1).collect();
+        assert_eq!(ropes.len(), 60, "ten boxes");
+        assert_eq!(m.parts.len(), 1);
+        let span = |qs: &[&RawQuad]| {
+            qs.iter()
+                .flat_map(|q| q.pos.iter().map(|p| p[0]))
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let body: Vec<_> = m.quads.iter().filter(|q| q.tex == 0).take(6).collect();
+        let (lo, hi) = span(&ropes);
+        let (blo, bhi) = span(&body);
+        assert!((blo - lo - 0.2).abs() < 1e-4 && (hi - bhi - 0.2).abs() < 1e-4);
     }
 }

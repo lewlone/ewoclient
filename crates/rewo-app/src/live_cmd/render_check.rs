@@ -412,6 +412,9 @@ pub(super) struct RenderCheck {
     pub(super) hidden_layer_frames: usize,
     /// M311 — r167: frames on which a wolf drew its armour's high cracks.
     pub(super) wolf_crack_frames: usize,
+    /// M312 — r168: frames on which a harnessed happy ghast holding a leash
+    /// drew (its ropes shown).
+    pub(super) ghast_rope_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1177,7 +1180,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 167;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 168;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1378,6 +1381,15 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M312 — r168: r72's injected happy ghast (the horse leashed to it)
+        // wears an injected white harness; it must draw as a leash holder in
+        // its harness, which shows `RopesLayer`'s ropes (`mobtexshot m40`
+        // checks the pixels). No ropes drew until M312.
+        row(
+            "r168 a harnessed happy ghast holding a leash drew its ropes",
+            self.ghast_rope_frames >= 1,
+            format!("{} frames drew it", self.ghast_rope_frames),
         );
         // M311 — r167: `render_check.py` summons a wolf whose armour has 60 of
         // its 64 durability spent; the stack's damage must reach the draw as
@@ -7497,6 +7509,7 @@ impl LiveApp {
                 // `rideshot`; this proves the render path only a live frame
                 // reaches. Same injection technique as the horse above.
                 if !self.leash_injected && elapsed >= limit * 0.28 {
+                    let harness_item = self.items.id("minecraft:white_harness");
                     if let Some(session) = self.session.as_mut() {
                         let types = session.entity_types.clone();
                         if let Some(types) = types {
@@ -7547,6 +7560,20 @@ impl LiveApp {
                                     link.extend_from_slice(&g.to_be_bytes());
                                     session
                                         .inject_packet(session.ids.cb_play_set_entity_link, &link);
+                                    // M312 / r168 — and a white harness on the
+                                    // ghast (slot 6, BODY), so the leash it
+                                    // holds shows its ropes.
+                                    if let Some(harness) = harness_item {
+                                        let mut eq: Vec<u8> = Vec::new();
+                                        rewo_proto::varint::write_varint(&mut eq, g);
+                                        eq.push(6); // BODY ordinal, last
+                                        rewo_proto::varint::write_varint(&mut eq, 1);
+                                        rewo_proto::varint::write_varint(&mut eq, harness);
+                                        rewo_proto::varint::write_varint(&mut eq, 0);
+                                        rewo_proto::varint::write_varint(&mut eq, 0);
+                                        session
+                                            .inject_packet(session.ids.cb_play_set_equipment, &eq);
+                                    }
                                 }
                             }
                         }

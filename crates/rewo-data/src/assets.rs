@@ -1146,6 +1146,13 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M312 — `HappyGhastRenderer.GHAST_ROPES`.
+    (
+        "happy_ghast_ropes",
+        "entity/ghast/happy_ghast_ropes.png",
+        128,
+        128,
+    ),
     (
         "copper_golem",
         "entity/copper_golem/copper_golem.png",
