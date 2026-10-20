@@ -948,6 +948,12 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M307 — r163: the staged adult and baby sulfur cubes, as their
+            // two models.
+            for d in draws.iter() {
+                c.sulfur_cubes.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::SulfurCube;
+                c.sulfur_cubes.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::SulfurCubeSmall;
+            }
             // M306 — r162: a slime drew with the translucent range in use
             // (its shell).
             if draws

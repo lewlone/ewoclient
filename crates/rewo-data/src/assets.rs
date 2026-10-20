@@ -1158,6 +1158,31 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ),
     // M303 — `CamelHuskRenderer.CAMEL_HUSK_LOCATION`.
     ("camel_husk", "entity/camel/camel_husk.png", 128, 128),
+    // M307 — `SulfurCubeRenderer` and `SulfurCubeInnerLayer`, adult and small.
+    (
+        "sulfur_cube_outer",
+        "entity/sulfur_cube/sulfur_cube_outer.png",
+        128,
+        128,
+    ),
+    (
+        "sulfur_cube_inner",
+        "entity/sulfur_cube/sulfur_cube_inner.png",
+        128,
+        128,
+    ),
+    (
+        "sulfur_cube_outer_small",
+        "entity/sulfur_cube/sulfur_cube_outer_small.png",
+        64,
+        64,
+    ),
+    (
+        "sulfur_cube_inner_small",
+        "entity/sulfur_cube/sulfur_cube_inner_small.png",
+        64,
+        64,
+    ),
     // Emissive overlay layers (M52) — the textures vanilla's `EyesLayer` /
     // `LivingEntityEmissiveLayer` re-render the model with. Each is the
     // same size as its mob's base texture, which is what lets the emissive

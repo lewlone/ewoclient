@@ -398,6 +398,9 @@ pub(super) struct RenderCheck {
     /// M306 — r162: frames on which a slime drew and the translucent range
     /// held vertices (its shell).
     pub(super) slime_shell_frames: usize,
+    /// M307 — r163: whether a sulfur cube drew as the adult model and one as
+    /// the small (baby) model.
+    pub(super) sulfur_cubes: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1163,7 +1166,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 162;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 163;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1363,6 +1366,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M307 — r163: `render_check.py` summons an adult sulfur cube and a
+        // baby; they must draw as `SulfurCube` and `SulfurCubeSmall` (a capsule
+        // until M307; the baby's model is chosen from the synched baby flag).
+        row(
+            "r163 an adult and a baby sulfur cube drew as their two models",
+            self.sulfur_cubes.0 && self.sulfur_cubes.1,
+            format!(
+                "adult seen: {}, baby (small model) seen: {}",
+                self.sulfur_cubes.0, self.sulfur_cubes.1
             ),
         );
         // M306 — r162: `render_check.py` summons a slime; its shell must reach

@@ -1522,11 +1522,18 @@ pub enum EntityModelKind {
     /// (`LayerDefinitions`' `giantScale`) on the zombie's sheet. It drew as
     /// a capsule before.
     Giant,
+    /// M307 — `SulfurCubeRenderer`: `SulfurCubeModel`'s inner box under its
+    /// `entityTranslucent` outer box. It drew as a capsule before.
+    SulfurCube,
+    /// M307 — `SmallSulfurCubeModel`, which `SulfurCubeRenderer.submit`
+    /// swaps in for a baby: one wire name, two meshes, chosen by the caller
+    /// as [`EntityModelKind::TropicalFishLarge`] is.
+    SulfurCubeSmall,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 99;
+    pub const COUNT: usize = 101;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1626,6 +1633,8 @@ impl EntityModelKind {
         EntityModelKind::ArmorStand,
         EntityModelKind::CamelHusk,
         EntityModelKind::Giant,
+        EntityModelKind::SulfurCube,
+        EntityModelKind::SulfurCubeSmall,
         EntityModelKind::Capsule,
     ];
 
@@ -1726,6 +1735,8 @@ impl EntityModelKind {
             EntityModelKind::ZombieNautilus => "zombie_nautilus",
             EntityModelKind::CamelHusk => "camel_husk",
             EntityModelKind::Giant => "giant",
+            EntityModelKind::SulfurCube => "sulfur_cube",
+            EntityModelKind::SulfurCubeSmall => "sulfur_cube_small",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1767,6 +1778,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
             EntityModelKind::Player
                 | EntityModelKind::PlayerSlim
                 | EntityModelKind::TropicalFishLarge
+                | EntityModelKind::SulfurCubeSmall
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2602,6 +2614,18 @@ pub static MOBS: &[MobDef] = &[
         textures: &["zombie"],
         build: giant,
     },
+    // M307 — the outer sheet (the renderer's own texture) and the inner
+    // (`SulfurCubeInnerLayer`'s), adult and small.
+    MobDef {
+        kind: EntityModelKind::SulfurCube,
+        textures: &["sulfur_cube_outer", "sulfur_cube_inner"],
+        build: sulfur_cube,
+    },
+    MobDef {
+        kind: EntityModelKind::SulfurCubeSmall,
+        textures: &["sulfur_cube_outer_small", "sulfur_cube_inner_small"],
+        build: sulfur_cube_small,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2939,6 +2963,51 @@ fn zombie() -> Model {
 fn husk() -> Model {
     // Vanilla HuskRenderer scales the zombie model by 1.0625.
     zombie_like(1.0625, None)
+}
+
+/// M307 — `SulfurCubeRenderer`. The body is the outer box (`entityTranslucent`,
+/// `RenderTypes::entityTranslucent` in `SulfurCubeModel`'s constructor), and
+/// `SulfurCubeInnerLayer` draws the inner box opaque, `order(-1)` so before
+/// it. `scale` ends `scale(extra)` then `translate(0, vOffset - 1/16, 0)` in
+/// that scaled space, which is the boxes moved down by `vOffset - 1/16`
+/// blocks of model space (14.68 px adult, 18.84 small) with `extra` (0.5
+/// adult, 1.0 small) as the model scale; the size multiplies on top. Not
+/// drawn: a swallowed block in place of the inner box, the fuse's swell and
+/// flash, and the squish.
+fn sulfur_cube_with(small: bool) -> Model {
+    let (outer, inner, inner_uv, v_offset, extra) = if small {
+        (5.0, 4.0, (0.0, 20.0), 1.24, 1.0)
+    } else {
+        (9.0, 8.0, (0.0, 36.0), 0.98, 0.5)
+    };
+    let dy = (v_offset - 1.0 / 16.0) * 16.0;
+    let mut b = ModelBuilder::new();
+    b.cube(
+        STATIC_PART,
+        1,
+        inner_uv,
+        [-inner, -inner + dy, -inner],
+        [2.0 * inner; 3],
+        NONE,
+    );
+    b.begin_translucent();
+    b.cube(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-outer, -outer + dy, -outer],
+        [2.0 * outer; 3],
+        NONE,
+    );
+    b.finish(extra)
+}
+
+fn sulfur_cube() -> Model {
+    sulfur_cube_with(false)
+}
+
+fn sulfur_cube_small() -> Model {
+    sulfur_cube_with(true)
 }
 
 /// M304 — `GiantZombieModel` is an `AbstractZombieModel` on the humanoid
@@ -10784,6 +10853,8 @@ mod tests {
                 EntityModelKind::Player
                     | EntityModelKind::PlayerSlim
                     | EntityModelKind::TropicalFishLarge
+                    // M307 — the baby sulfur cube's model, the same shape.
+                    | EntityModelKind::SulfurCubeSmall
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -11671,5 +11742,34 @@ mod translucent_tests {
         assert_eq!(m.quads.len(), 30);
         assert_eq!(m.translucent_from, Some(24));
         assert_eq!(zombie().translucent_from, None);
+    }
+}
+
+#[cfg(test)]
+mod sulfur_cube_tests {
+    use super::*;
+
+    /// M307 — each sulfur cube is its opaque inner box, then its
+    /// translucent outer box, standing on the ground (model y 24) once the
+    /// renderer's `vOffset` is folded in.
+    #[test]
+    fn the_sulfur_cubes_stand_on_the_ground_inside_translucent_shells() {
+        for (m, scale, side) in [(sulfur_cube(), 0.5, 18.0), (sulfur_cube_small(), 1.0, 10.0)] {
+            assert_eq!(m.quads.len(), 12);
+            assert_eq!(m.translucent_from, Some(6));
+            assert_eq!(m.scale, scale);
+            assert!(m.quads[..6].iter().all(|q| q.tex == 1));
+            assert!(m.quads[6..].iter().all(|q| q.tex == 0));
+            let ys = m.quads[6..].iter().flat_map(|q| q.pos.iter().map(|p| p[1]));
+            let (lo, hi) = ys.fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)));
+            assert!((hi - lo - side).abs() < 1e-4, "outer box is {side} px tall");
+            // Vanilla's `vOffset` leaves the adult's bottom a third of a model
+            // pixel up (0.98 rather than 1 - 1/16 + 1/16 x 9/9).
+            assert!((hi - 24.0).abs() < 0.5, "its bottom is on the ground: {hi}");
+        }
+        assert_eq!(
+            kind_for_entity_name("minecraft:sulfur_cube"),
+            EntityModelKind::SulfurCube
+        );
     }
 }

@@ -4212,3 +4212,18 @@ fn the_flame_frames_the_gpu_asks_for_are_the_ones_baked() {
     );
     assert_eq!(fire_frame(1, 33), 1);
 }
+
+/// M307 — a baby sulfur cube takes the small model; nothing else moves.
+#[test]
+fn a_baby_sulfur_cube_takes_the_small_model() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    assert_eq!(
+        super::entities::sulfur_cube_kind(K::SulfurCube, true),
+        K::SulfurCubeSmall
+    );
+    assert_eq!(
+        super::entities::sulfur_cube_kind(K::SulfurCube, false),
+        K::SulfurCube
+    );
+    assert_eq!(super::entities::sulfur_cube_kind(K::Slime, true), K::Slime);
+}

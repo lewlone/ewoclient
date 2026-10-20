@@ -3488,6 +3488,15 @@ pub(crate) fn undercoat_visible(kind: EntityModelKind, dye: Option<u8>, is_baby:
     kind == EntityModelKind::Sheep && dye.unwrap_or(0) != 0 && !is_baby
 }
 
+/// M307 — `SulfurCubeRenderer.submit`'s `this.model = state.isBaby ?
+/// smallModel : normalModel`.
+pub(crate) fn sulfur_cube_kind(kind: EntityModelKind, baby: bool) -> EntityModelKind {
+    match kind {
+        EntityModelKind::SulfurCube if baby => EntityModelKind::SulfurCubeSmall,
+        k => k,
+    }
+}
+
 /// Which of the two tropical-fish meshes a packed variant selects (M68).
 ///
 /// `TropicalFishRenderer.submit` assigns `this.model` from
@@ -3875,6 +3884,8 @@ pub(super) fn collect_entities<'a>(
             )
         });
         let kind = fish.map_or(kind, fish_kind);
+        // M307: and the sulfur cube's small model for a baby.
+        let kind = sulfur_cube_kind(kind, session.world.entities.is_baby(id));
         // M24b: a dropped stack. `ItemEntity.DATA_ITEM` arrives as metadata
         // index 8 with the ITEM_STACK serializer; an entity with one renders
         // as the item and nothing else, so the model kind is never consulted.
@@ -3989,18 +4000,35 @@ pub(super) fn collect_entities<'a>(
         // default 1, which the server never sends; the model + bbox scale
         // linearly by it). Our slime model is baked at the size-2 look, so
         // scale_mul = size/2 (size 2 → 1.0).
-        let cube_size = matches!(kind, EntityModelKind::Slime | EntityModelKind::MagmaCube)
+        // M307 — the sulfur cube is a cube mob too, its model carrying the
+        // renderer's own downscale, so it scales by the whole size; its
+        // bounds are `getDefaultDimensions`, the type's times the size.
+        let sulfur = matches!(
+            kind,
+            EntityModelKind::SulfurCube | EntityModelKind::SulfurCubeSmall
+        );
+        let cube_size = (matches!(kind, EntityModelKind::Slime | EntityModelKind::MagmaCube)
+            || sulfur)
             .then(|| session.world.entities.size(id).unwrap_or(1).clamp(1, 32));
         let (mut w, mut h) = match cube_size {
+            Some(sz) if sulfur => {
+                let (tw, th) = etypes.dimensions(e.type_id);
+                (tw * sz as f32, th * sz as f32)
+            }
             Some(sz) => (0.51 * sz as f32, 0.51 * sz as f32),
             None => etypes.dimensions(e.type_id),
         };
-        let mut scale_mul = cube_size.map_or(1.0, |sz| sz as f32 / 2.0);
+        let mut scale_mul =
+            cube_size.map_or(1.0, |sz| if sulfur { sz as f32 } else { sz as f32 / 2.0 });
         // Baby mobs (ageable / zombie families) render at ~half scale.
         // Uniform approximation — vanilla keeps the head proportionally
-        // larger (a per-part transform), deferred.
+        // larger (a per-part transform), deferred. M307 — not the baby
+        // sulfur cube, whose own model is the small one (`getAgeScale`
+        // halves only its bounds).
         if !is_player && session.world.entities.is_baby(id) {
-            scale_mul *= 0.5;
+            if kind != EntityModelKind::SulfurCubeSmall {
+                scale_mul *= 0.5;
+            }
             w *= 0.5;
             h *= 0.5;
         }

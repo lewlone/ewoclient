@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 36;
+const EXPECTED_WITNESSES: usize = 37;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -178,9 +178,10 @@ const MIN_DISCRIMINATING: usize = 72;
 /// tropical_fish x2, parrot, allay, copper_golem, and (M238) armor_stand,
 /// whose 2-px sticks draw under the floor (mobshot grades it from three
 /// views), and (M252) minecart, a low open box that draws under the floor in
-/// the crowd (mobshot grades it from three views too). A twelfth means
-/// something stopped drawing.
-const MAX_SMALL: usize = 11;
+/// the crowd (mobshot grades it from three views too), and (M307) the adult
+/// sulfur cube, half a block at size 1 under its translucent shell (m37
+/// grades it up close). A thirteenth means something stopped drawing.
+const MAX_SMALL: usize = 12;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -2776,6 +2777,76 @@ fn run_check(
              (want >= 100; an opaque shell measured 34, through its cut-out texels), {held} \
              do not (the core through the shell, want >= 100)"
         ),
+    ));
+
+    // m37 — M307: each sulfur cube (it drew as a capsule until M307) is its
+    // opaque inner box under a translucent outer box, the small model for a
+    // baby: at size 2, with the ravager behind, the shell's pixels show it
+    // and the core's do not, for both models.
+    let mut cst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.6, -3.2),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    let mut cshot = |d: &[EntityDraw<'_>]| -> Result<(Vec<u8>, u32), String> {
+        cst.wr.set_entities(d, cst.right, cst.up, 0.0);
+        let n = cst
+            .wr
+            .entity_pass()
+            .map_or(0, |p| p.translucent_vertex_count());
+        cst.off.render(gpu, Some((&mut cst.wr, cst.vp)), &ov, BG)?;
+        Ok((cst.off.read_rgba(gpu)?, n))
+    };
+    let behind = EntityDraw {
+        pos: [0.0, 0.0, 1.6],
+        ..neutral_draw(EntityModelKind::Ravager)
+    };
+    let (cempty, _) = cshot(&[])?;
+    let (cback, _) = cshot(&[behind])?;
+    let mut cube_rows = Vec::new();
+    let mut cubes_ok = true;
+    for kind in [
+        EntityModelKind::SulfurCube,
+        EntityModelKind::SulfurCubeSmall,
+    ] {
+        let cube = EntityDraw {
+            scale_mul: 2.0,
+            ..neutral_draw(kind)
+        };
+        let (alone, tverts) = cshot(&[cube])?;
+        let (both, _) = cshot(&[cube, behind])?;
+        let (mut leak, mut held) = (0usize, 0usize);
+        for (((a, b), e), r) in alone
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(both.as_chunks::<4>().0)
+            .zip(cempty.as_chunks::<4>().0)
+            .zip(cback.as_chunks::<4>().0)
+        {
+            if a[..3] == e[..3] || r[..3] == e[..3] {
+                continue;
+            }
+            if a[..3] == b[..3] {
+                held += 1;
+            } else {
+                leak += 1;
+            }
+        }
+        cubes_ok &= tverts > 0 && leak >= 100 && held >= 100;
+        cube_rows.push(format!(
+            "{}: {tverts} translucent vertices, {leak} px show the ravager, {held} do not",
+            kind.name()
+        ));
+    }
+    cst.destroy(gpu);
+    w.push(wit(
+        "m37.both_sulfur_cubes_draw_a_core_under_a_translucent_shell",
+        cubes_ok,
+        format!("{} (want >= 100 of each)", cube_rows.join("; ")),
     ));
 
     // ---- report ----------------------------------------------------------
