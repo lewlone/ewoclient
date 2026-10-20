@@ -372,6 +372,8 @@ pub(super) struct RenderCheck {
     /// M295 — r151: frames on which a horse drew saddled, and those of them
     /// ridden (reins on).
     pub(super) saddle_frames: (usize, usize),
+    /// M296 — r152: frames on which r84's donkey drew with its chests.
+    pub(super) chested_donkey_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1137,7 +1139,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 151;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 152;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1338,6 +1340,14 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M296 — r152: r84's donkey is staged `ChestedHorse:1b`; the server's
+        // `DATA_ID_CHEST` must reach the draw (`mobtexshot m27` checks the
+        // pixels). No donkey showed its chests until M296.
+        row(
+            "r152 the chested donkey drew with its chests",
+            self.chested_donkey_frames >= 1,
+            format!("{} frames drew them", self.chested_donkey_frames),
         );
         // M295 — r151: r88's horse wears a saddle (its staging) and the bot
         // rides it in the tail. The saddle slot must reach the draw as the

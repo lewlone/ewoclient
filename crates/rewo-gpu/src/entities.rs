@@ -275,6 +275,9 @@ pub struct EntityDraw<'a> {
     pub events: [Option<f32>; mobs::ModelEvent::COUNT],
     /// Armadillo shell swap (vanilla `isHidingInShell`).
     pub shell: bool,
+    /// M296 — `AbstractChestedHorse.hasChest()`: a donkey's or mule's
+    /// chests show.
+    pub chested: bool,
     /// M238 — the armour stand's arms and base plate
     /// (`mobs::StandParts`); inert on every other kind.
     pub stand_parts: mobs::StandParts,
@@ -3621,6 +3624,7 @@ impl EntityPass {
                 }
                 mobs::Show::StandArms => d.stand_parts.arms,
                 mobs::Show::StandBasePlate => d.stand_parts.base_plate,
+                mobs::Show::Chested => d.chested,
             }
         };
         // The pack variant this entity drew, if the atlas has a slot for it.

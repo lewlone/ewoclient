@@ -948,6 +948,13 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M296 — r152: r84's chested donkey, drawn with its chests.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Donkey && d.chested)
+            {
+                c.chested_donkey_frames += 1;
+            }
             // M295 — r151: r88's saddled horse, its saddle sheet resident,
             // and with its reins while the bot rides it.
             for d in draws

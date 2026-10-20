@@ -4122,6 +4122,8 @@ pub(super) fn collect_entities<'a>(
             // M295 — the saddle's layers, and its reins while ridden.
             saddle: saddle_piece(session, id, kind, item_names, equipment),
             ridden: session.world.entities.is_vehicle(id),
+            // M296 — a donkey's or mule's chests.
+            chested: session.world.entities.has_chest(id),
             held_glint: [
                 held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
                 held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),

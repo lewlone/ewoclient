@@ -2649,6 +2649,13 @@ pub(crate) fn apply_set_entity_data<'a>(
     // M169 — the DASH flags arm a dash cooldown on the vehicle they name,
     // and nothing else: `Camel.onSyncedDataUpdated` fires on the accessor,
     // not on a value change, so the flag's value is deliberately not read.
+    // M296 — `AbstractChestedHorse.DATA_ID_CHEST` (index 19 BOOLEAN): the
+    // chests `DonkeyModel` shows.
+    if let Some(b) = meta.bool19 {
+        if kinds.classes.is_some_and(|c| c.is_chested_horse(type_id)) {
+            entities.set_has_chest(eid, b);
+        }
+    }
     if meta.bool19.is_some() && kinds.classes.is_some_and(|c| c.is_camel(type_id)) {
         entities.arm_dash_cooldown(eid, 55);
     }

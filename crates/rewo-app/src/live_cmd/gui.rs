@@ -214,6 +214,7 @@ pub(super) fn preview_draw<'a>(
         body_armor: None,
         saddle: None,
         ridden: false,
+        chested: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,

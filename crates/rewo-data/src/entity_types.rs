@@ -211,6 +211,8 @@ pub struct EntityClasses {
     /// M169 — `Camel`: the 55-tick dash cooldown off index 19, and the
     /// `refuseToMove()` clause in `canJump()`.
     camel: std::collections::HashSet<i32>,
+    /// M296 — `AbstractChestedHorse` (donkey, mule, the llamas).
+    chested_horse: std::collections::HashSet<i32>,
     /// M169 — `AbstractNautilus`: the 40-tick dash cooldown off index 20.
     nautilus: std::collections::HashSet<i32>,
     /// M194 — `minecraft:item_frame` and `minecraft:glow_item_frame`, the two
@@ -277,6 +279,7 @@ impl EntityClasses {
         let leashable = resolve_set(table::LEASHABLE, "leashable")?;
         let rideable_jumping = resolve_set(table::PLAYER_RIDEABLE_JUMPING, "rideable-jumping")?;
         let camel = resolve_set(table::CAMEL, "camel")?;
+        let chested_horse = resolve_set(table::ABSTRACT_CHESTED_HORSE, "chested-horse")?;
         let nautilus = resolve_set(table::ABSTRACT_NAUTILUS, "nautilus")?;
         let abstract_horse = resolve_set(table::ABSTRACT_HORSE, "horse")?;
         let abstract_boat = resolve_set(table::ABSTRACT_BOAT, "boat")?;
@@ -395,6 +398,7 @@ impl EntityClasses {
             leashable,
             rideable_jumping,
             camel,
+            chested_horse,
             nautilus,
             item_frame: ["minecraft:item_frame", "minecraft:glow_item_frame"]
                 .iter()
@@ -428,6 +432,7 @@ impl EntityClasses {
             leashable: Default::default(),
             rideable_jumping: Default::default(),
             camel: Default::default(),
+            chested_horse: Default::default(),
             nautilus: Default::default(),
             item_frame: Default::default(),
             evoker_fangs: Default::default(),
@@ -459,6 +464,7 @@ impl EntityClasses {
             leashable: Default::default(),
             rideable_jumping: Default::default(),
             camel: Default::default(),
+            chested_horse: Default::default(),
             nautilus: Default::default(),
             item_frame: Default::default(),
             evoker_fangs: Default::default(),
@@ -561,6 +567,11 @@ impl EntityClasses {
     /// `entity instanceof HasCustomInventoryScreen` (M219).
     pub fn has_custom_inventory(&self, type_id: i32) -> bool {
         self.custom_inventory.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractChestedHorse` (M296).
+    pub fn is_chested_horse(&self, type_id: i32) -> bool {
+        self.chested_horse.contains(&type_id)
     }
 
     /// `entity instanceof Camel` (M169).

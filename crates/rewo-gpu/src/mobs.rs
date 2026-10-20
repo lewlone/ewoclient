@@ -796,6 +796,9 @@ pub enum Show {
     StandArms,
     /// `basePlate.visible = state.showBasePlate`.
     StandBasePlate,
+    /// M296 — `DonkeyModel.setupAnim`: `leftChest.visible = rightChest.visible
+    /// = state.hasChest`.
+    Chested,
 }
 
 /// M238 — the armour stand's two visibility flags (`DATA_CLIENT_FLAGS` 0x04
@@ -7863,6 +7866,25 @@ fn equine_with(donkey_ears: bool, g: f32) -> Model {
         false,
         &[Fold::rot([PI / 6.0, 0.0, 0.0], [0.0, -5.0, 2.0]), body],
     );
+    // M296 — `DonkeyModel.modifyMesh`'s chests: `texOffs(26, 21)
+    // .addBox(-4, 0, -2, 8, 8, 3)` on the body at `(6, -8, 0)` turned `-π/2`
+    // (left) and `(-6, -8, 0)` turned `π/2` (right), shown with `hasChest`.
+    if donkey_ears {
+        let chest = b.part([0.0, 0.0, 0.0], Anim::None, 1.0);
+        b.show(chest, Show::Chested);
+        for (x, yaw) in [(6.0, -PI / 2.0), (-6.0, PI / 2.0)] {
+            b.cube_f(
+                chest,
+                0,
+                (26.0, 21.0),
+                [-4.0, 0.0, -2.0],
+                [8.0, 8.0, 3.0],
+                0.0,
+                false,
+                &[Fold::rot([0.0, yaw, 0.0], [x, -8.0, 0.0]), body],
+            );
+        }
+    }
     b.finish(1.0)
 }
 
@@ -11094,5 +11116,27 @@ mod saddle_tests {
         // (vanilla emits them, and they draw nothing).
         assert_eq!(reins.quads.len(), 2 * 2);
         assert!(reins.quads.iter().all(|q| q.part == STATIC_PART));
+    }
+}
+
+#[cfg(test)]
+mod donkey_chest_tests {
+    use super::*;
+
+    /// M296 — the donkey and mule meshes carry two chest boxes on a part
+    /// shown only with `hasChest`; the horse's does not.
+    #[test]
+    fn the_donkey_carries_its_chests_hidden_until_chested() {
+        let chested = |m: &Model| {
+            m.parts
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.show == Show::Chested)
+                .map(|(i, _)| m.quads.iter().filter(|q| q.part == i).count())
+                .sum::<usize>()
+        };
+        assert_eq!(chested(&donkey()), 2 * 6);
+        assert_eq!(chested(&mule()), 2 * 6);
+        assert_eq!(chested(&horse()), 0);
     }
 }

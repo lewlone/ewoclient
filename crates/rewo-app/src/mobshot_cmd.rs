@@ -232,6 +232,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         body_armor: None,
         saddle: None,
         ridden: false,
+        chested: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,

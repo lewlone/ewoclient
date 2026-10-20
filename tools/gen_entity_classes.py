@@ -217,6 +217,13 @@ ANCESTRY_SETS = [
         "`passengerAttachments`, so falling back to the default would put a",
         "rider at the top of its bounding box rather than on its back.",
     ]),
+    # ---- M296: `AbstractChestedHorse.DATA_ID_CHEST` (index 19, BOOLEAN),
+    # which `DonkeyModel` (and the llama's) shows the chests by.
+    ("ABSTRACT_CHESTED_HORSE", "AbstractChestedHorse", [
+        "Registry names whose class descends from `AbstractChestedHorse` (M296),",
+        "which declares `DATA_ID_CHEST` at **index 19, BOOLEAN** (`AbstractHorse`",
+        "owns 18) — `hasChest()`, the chests `DonkeyModel` shows.",
+    ]),
     # ---- M169: the jump bar's vehicle. `Camel` and `AbstractNautilus` both
     # keep a client-side `dashCooldown` armed from their DASH metadata and
     # read back by `getJumpCooldown()`; `AbstractHorse`'s is the interface

@@ -1518,6 +1518,8 @@ pub struct MobState {
     /// M285 — `Creeper.DATA_IS_POWERED` (index 17, BOOLEAN): a charged
     /// creeper. `Creeper` declares `DATA_SWELL_DIR` (16) first.
     pub creeper_powered: bool,
+    /// M296 — `AbstractChestedHorse.DATA_ID_CHEST` (index 19, BOOLEAN).
+    pub has_chest: bool,
     /// M288 — `WitherBoss.DATA_ID_INV` (index 19, INT): the invulnerable
     /// ticks of a freshly built wither (0 otherwise). `WitherBoss` declares
     /// the three head targets (16-18) first.
@@ -2937,6 +2939,17 @@ impl EntityTable {
     /// M288 — `WitherBoss.getInvulnerableTicks()`; the synched default is 0.
     pub fn wither_invulnerable(&self, id: i32) -> i32 {
         self.mob_state.get(&id).map_or(0, |s| s.wither_invulnerable)
+    }
+
+    /// M296 — `AbstractChestedHorse.DATA_ID_CHEST`. Kind-gated by the
+    /// caller.
+    pub fn set_has_chest(&mut self, id: i32, chest: bool) {
+        self.mob_state.entry(id).or_default().has_chest = chest;
+    }
+
+    /// M296 — `hasChest()`; the synched default is `false`.
+    pub fn has_chest(&self, id: i32) -> bool {
+        self.mob_state.get(&id).is_some_and(|s| s.has_chest)
     }
 
     /// M285 — `Creeper.DATA_IS_POWERED`. Kind-gated by the caller.

@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 26;
+const EXPECTED_WITNESSES: usize = 27;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -430,6 +430,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         body_armor: None,
         saddle: None,
         ridden: false,
+        chested: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -1327,6 +1328,7 @@ fn run_check(
         body_armor: None,
         saddle: None,
         ridden: false,
+        chested: false,
         on_fire: Some(rewo_gpu::entities::FireDraw {
             light: [1.0; 3],
             frames: fire_frames,
@@ -1992,6 +1994,61 @@ fn run_check(
              colour the sheet cannot produce: saddle {:?}, reins {:?}",
             saddle_bad.map(|c| format!("#{c:06x}")),
             reins_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m27 — M296: a chested donkey shows its two chests (`DonkeyModel`'s
+    // boxes, `visible = hasChest`): every pixel they add must be a colour the
+    // jar's donkey sheet can produce, and there must be plenty. No chest drew
+    // until M296.
+    let donkey_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "donkey")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut dst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.8, 1.6, 0.6),
+        Vec3::new(0.0, 1.0, 0.0),
+    )?;
+    let mut dshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        dst.wr.set_entities(&[d], dst.right, dst.up, 0.0);
+        dst.off.render(gpu, Some((&mut dst.wr, dst.vp)), &ov, BG)?;
+        dst.off.read_rgba(gpu)
+    };
+    let plain_donkey = dshot(neutral_draw(EntityModelKind::Donkey))?;
+    let chested_donkey = dshot(EntityDraw {
+        chested: true,
+        ..neutral_draw(EntityModelKind::Donkey)
+    })?;
+    dst.destroy(gpu);
+    let (mut chest_px, mut chest_bad) = (0usize, None);
+    for (a, b) in chested_donkey
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(plain_donkey.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        chest_px += 1;
+        let c = pack(a[0], a[1], a[2]);
+        if chest_bad.is_none() && !explains(&donkey_sheet, c) {
+            chest_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m27.a_chested_donkey_shows_its_chests_in_its_own_sheet",
+        !donkey_sheet.is_empty() && chest_px >= 150 && chest_bad.is_none(),
+        format!(
+            "{chest_px} px added by the chests (want >= 150); first colour the donkey \
+             sheet cannot produce: {:?}",
+            chest_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

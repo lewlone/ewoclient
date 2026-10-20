@@ -486,6 +486,16 @@ pub const CAMEL: &[&str] = &[
     "minecraft:camel_husk",
 ];
 
+/// Registry names whose class descends from `AbstractChestedHorse` (M296),
+/// which declares `DATA_ID_CHEST` at **index 19, BOOLEAN** (`AbstractHorse`
+/// owns 18) — `hasChest()`, the chests `DonkeyModel` shows.
+pub const ABSTRACT_CHESTED_HORSE: &[&str] = &[
+    "minecraft:donkey",
+    "minecraft:llama",
+    "minecraft:mule",
+    "minecraft:trader_llama",
+];
+
 /// Registry names whose class descends from `AbstractNautilus` (M169),
 /// which declares `DASH` at **index 20, BOOLEAN** (TamableAnimal owns 18
 /// and 19) and arms a 40-tick `dashCooldown` from it in
