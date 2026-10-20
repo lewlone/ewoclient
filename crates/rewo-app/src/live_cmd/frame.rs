@@ -593,6 +593,21 @@ impl LiveApp {
         for (uuid, info) in session.take_pending_skins() {
             self.skins.request(uuid, &info);
         }
+        // M308 — and `DefaultPlayerSkin.get` for every loaded player whose
+        // profile brought no textures (an offline server's), each mannequin
+        // (an empty profile, whose id is the nil UUID) and the local player
+        // (the inventory preview's).
+        let mannequin = self.etypes.id_of("minecraft:mannequin");
+        for (_, e) in session.world.entities.iter() {
+            if e.type_id == self.etypes.player_id {
+                self.skins.request_default(e.uuid, e.uuid);
+            } else if Some(e.type_id) == mannequin {
+                self.skins.request_default(e.uuid, 0);
+            }
+        }
+        if let Some(own) = session.own_uuid {
+            self.skins.request_default(own, own);
+        }
         self.skins.own = session.own_uuid;
         self.skins
             .poll_uploads(&mut state.gpu, &mut state.world_renderer);
@@ -615,8 +630,12 @@ impl LiveApp {
             // other guess (listed, a gamemode or latency entry, a loaded
             // entity) would drop an NPC-style player the table still holds
             // and leave them on the default skin for good.
+            // M308 — a default skin's key is in no skin table, so a loaded
+            // entity keeps its own (this only keeps more, never drops what the
+            // table holds).
             if self.skins.prune_due() {
-                self.skins.retain_players(|u| session.tracks_player_skin(u));
+                self.skins
+                    .retain_players(|u| session.tracks_player_skin(u) || loaded.contains(&u));
             }
         }
         // The inventory preview draws the local player from its own atlas, so
@@ -947,6 +966,14 @@ impl LiveApp {
                 .any(|d| d.fixed_display && skinned(&d.model))
             {
                 c.framed_skin_head_frames += 1;
+            }
+            // M308 — r164: the staged mannequin (the only avatar in the
+            // render check besides the unseen bot): the slim model wearing an
+            // uploaded skin, its empty profile's default (slim Alex).
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::PlayerSlim && d.skin_uv.is_some()
+            }) {
+                c.mannequin_frames += 1;
             }
             // M307 — r163: the staged adult and baby sulfur cubes, as their
             // two models.

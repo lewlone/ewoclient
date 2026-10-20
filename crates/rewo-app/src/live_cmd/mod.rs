@@ -1160,6 +1160,12 @@ fn run_windowed(
     // water and looked EXACTLY as before (`r48` is what asks) — and would
     // lose smooth lighting's emission/dampening the same way.
     let mut pool = MeshPool::new(MeshTables::from_baked(&baked))?;
+    // M308 — the jar's default skins, for the skin loader's worker.
+    let default_skins: Vec<Option<Vec<u8>>> = baked
+        .default_skins
+        .iter()
+        .map(|d| d.as_ref().map(|i| i.rgba.clone()))
+        .collect();
     // `options.txt`'s `ao` reaches the pool BEFORE the first submit, or a
     // player who turned Smooth Lighting off would see their world meshed with
     // it on. Vanilla carries the same option into the mesher
@@ -1428,7 +1434,7 @@ fn run_windowed(
         flicker: BlockLightFlicker::random(),
         gamma: args.gamma,
         darkness_option: args.darkness_effect_scale,
-        skins: SkinLoader::new(),
+        skins: SkinLoader::with_defaults(default_skins),
         pack: args.pack.clone(),
         etf: rewo_data::etf::EtfPack::default(),
         death: None,

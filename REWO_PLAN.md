@@ -2119,6 +2119,7 @@ this shape once.
 | M305 (2026-10-20) — magma cubes draw at their own sizes | **r161** | — | — |
 | M306 (2026-10-20) — a slime draws its translucent shell | **r162** | — | — |
 | M307 (2026-10-20) — an adult and a baby sulfur cube draw as their two models | **r163** | — | — |
+| M308 (2026-10-20) — a mannequin draws in its default skin | **r164** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

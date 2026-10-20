@@ -197,17 +197,47 @@ pub(crate) struct SkinLoader {
     own_changed: bool,
 }
 
+/// M308 — the pseudo-URL of a default skin, `rewo-default:<index into
+/// DEFAULT_SKIN_PATHS>`: answered by the worker from the jar's sheets, never
+/// fetched.
+const DEFAULT_SKIN_SCHEME: &str = "rewo-default:";
+
+/// M308 — `DefaultPlayerSkin.get(profileId)`'s index:
+/// `floorMod(UUID.hashCode(), 18)`, `hashCode` being the two halves XORed and
+/// folded to an `int`.
+pub(crate) fn default_skin_index(profile_id: u128) -> usize {
+    let hilo = ((profile_id >> 64) as u64) ^ (profile_id as u64);
+    let hash = ((hilo >> 32) as u32 ^ hilo as u32) as i32;
+    hash.rem_euclid(rewo_data::assets::DEFAULT_SKIN_PATHS.len() as i32) as usize
+}
+
 impl SkinLoader {
+    /// No default skins: the unit tests' loader.
+    #[cfg(test)]
     pub(super) fn new() -> Self {
+        Self::with_defaults(Vec::new())
+    }
+
+    /// M308 — with the jar's default skins (64 x 64 RGBA, in
+    /// `DEFAULT_SKIN_PATHS` order), which [`Self::request_default`] serves.
+    pub(super) fn with_defaults(defaults: Vec<Option<Vec<u8>>>) -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<(u128, TexKind, String, bool)>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<(u128, TexKind, bool, Vec<u8>)>();
         std::thread::Builder::new()
             .name("rewo-skin-fetch".into())
             .spawn(move || {
                 while let Ok((uuid, kind, url, slim)) = req_rx.recv() {
-                    let got = match kind {
-                        TexKind::Skin => crate::skin_fetch::fetch_rgba64(&url),
-                        TexKind::Cape => crate::skin_fetch::fetch_cape_rgba(&url),
+                    let got = match (kind, url.strip_prefix(DEFAULT_SKIN_SCHEME)) {
+                        // M308 — a default skin, from memory: nothing phones
+                        // home for it.
+                        (TexKind::Skin, Some(i)) => i
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|i| defaults.get(i).cloned().flatten())
+                            .filter(|rgba| rgba.len() == 64 * 64 * 4)
+                            .ok_or_else(|| format!("no default skin {i}")),
+                        (TexKind::Skin, None) => crate::skin_fetch::fetch_rgba64(&url),
+                        (TexKind::Cape, _) => crate::skin_fetch::fetch_cape_rgba(&url),
                     };
                     match got {
                         Ok(rgba) => {
@@ -244,14 +274,41 @@ impl SkinLoader {
             (TexKind::Cape, info.cape.as_ref()),
         ] {
             let Some(url) = url else { continue };
+            // M308 — a real skin replaces a default one queued before the
+            // profile's textures arrived.
+            let over_default = self
+                .urls
+                .get(&(uuid, kind))
+                .is_some_and(|(u, _)| u.starts_with(DEFAULT_SKIN_SCHEME));
             // Bounded like the session's own map (`MAX_TRACKED_SKINS`).
             if self.requested.len() < 2 * rewo_net::skins::MAX_TRACKED_SKINS
-                && self.requested.insert((uuid, kind))
+                && (self.requested.insert((uuid, kind)) || over_default)
             {
                 self.urls.insert((uuid, kind), (url.clone(), info.slim));
                 let _ = self.req_tx.send((uuid, kind, url.clone(), info.slim));
             }
         }
+    }
+
+    /// M308 — `DefaultPlayerSkin.get(profileId)`: a profile with no textures
+    /// (every player on an offline server, a mannequin's empty profile)
+    /// wears one of the jar's eighteen default skins, picked by the profile
+    /// id's hash. Queued under `key` (the entity's UUID) exactly as a fetched
+    /// skin is, so eviction, re-upload and the inventory preview work
+    /// unchanged; a key with any request of its own is left alone.
+    pub(super) fn request_default(&mut self, key: u128, profile_id: u128) {
+        if self.requested.contains(&(key, TexKind::Skin))
+            || self.requested.len() >= 2 * rewo_net::skins::MAX_TRACKED_SKINS
+        {
+            return;
+        }
+        let i = default_skin_index(profile_id);
+        let url = format!("{DEFAULT_SKIN_SCHEME}{i}");
+        // The first nine are the slim models.
+        let slim = i < 9;
+        self.requested.insert((key, TexKind::Skin));
+        self.urls.insert((key, TexKind::Skin), (url.clone(), slim));
+        let _ = self.req_tx.send((key, TexKind::Skin, url, slim));
     }
 
     /// Seconds on the loader's own clock.
@@ -3866,10 +3923,13 @@ pub(super) fn collect_entities<'a>(
         let p = e.render_pos(alpha);
         let name = etypes.name(e.type_id).unwrap_or("");
         let is_player = e.type_id == etypes.player_id;
+        // M308 — a mannequin is an `Avatar` too (`AvatarRenderer`, the
+        // player's model and skin rules); its skin is keyed by its own UUID.
+        let is_avatar = is_player || name == "minecraft:mannequin";
         // A player with a resolved skin wears it (slim → the Alex model);
-        // otherwise the default wide Steve.
-        let player_skin = if is_player { skins.get(&e.uuid) } else { None };
-        let kind = if is_player {
+        // otherwise the default wide Steve until one is uploaded.
+        let player_skin = if is_avatar { skins.get(&e.uuid) } else { None };
+        let kind = if is_avatar {
             match player_skin {
                 Some(ps) if ps.slim => EntityModelKind::PlayerSlim,
                 _ => EntityModelKind::Player,
@@ -4749,5 +4809,50 @@ mod skin_policy_tests {
         assert_eq!(l.registry.len(), 3);
         // And the freed room is usable: the cap is on live players.
         assert!(l.requested.len() < 2 * rewo_net::skins::MAX_TRACKED_SKINS);
+    }
+}
+
+#[cfg(test)]
+mod default_skin_tests {
+    use super::{default_skin_index, SkinLoader, TexKind, DEFAULT_SKIN_SCHEME};
+
+    /// M308 — a default queued before the profile's textures arrived gives
+    /// way to the real skin; a real request is never overwritten by a
+    /// default.
+    #[test]
+    fn a_real_skin_replaces_a_queued_default_and_not_the_reverse() {
+        let real = rewo_net::skins::SkinInfo {
+            url: Some("http://textures.minecraft.net/texture/ab".into()),
+            ..Default::default()
+        };
+        let mut l = SkinLoader::new();
+        l.request_default(5, 0);
+        assert!(l.urls[&(5, TexKind::Skin)]
+            .0
+            .starts_with(DEFAULT_SKIN_SCHEME));
+        assert!(l.urls[&(5, TexKind::Skin)].1, "index 0 is slim Alex");
+        l.request(5, &real);
+        assert_eq!(l.urls[&(5, TexKind::Skin)].0, real.url.clone().unwrap());
+        l.request_default(5, 0);
+        assert_eq!(l.urls[&(5, TexKind::Skin)].0, real.url.clone().unwrap());
+    }
+
+    /// M308 — `floorMod(UUID.hashCode(), 18)`, against values computed
+    /// independently from Java's definitions (the negative hashes are the
+    /// cases a plain `%` gets wrong).
+    #[test]
+    fn default_skins_are_chosen_by_the_profile_ids_java_hash() {
+        for (id, want) in [
+            (0u128, 0),
+            (0x069a79f4_44e9_4726_a5be_fca90e38aaf5, 0),
+            (0x853c80ef_3c37_49fd_aa49_938b674adae6, 1),
+            (0x11112222_3333_4444_5555_666677778888, 14),
+            (0xdeadbeef_cafe_babe_0011_223344556677, 5),
+            (0xdeadbeef_cafe_babe_8011_223344556677, 3),
+            (0x80000000_0000_0000_0000_000000000001, 17),
+            (0xf0f0f0f0_f0f0_f0f0_0000_000000000007, 7),
+        ] {
+            assert_eq!(default_skin_index(id), want, "{id:032x}");
+        }
     }
 }

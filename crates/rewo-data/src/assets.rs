@@ -738,6 +738,9 @@ pub struct BakedAssets {
     /// M287 — `textures/entity/wither/wither_armor.png`, the powered
     /// wither's swirl.
     pub wither_armor: Option<DecodedImage>,
+    /// M308 — `DefaultPlayerSkin`'s eighteen sheets, in its order
+    /// ([`DEFAULT_SKIN_PATHS`]): what a profile with no textures wears.
+    pub default_skins: Vec<Option<DecodedImage>>,
     /// `textures/map/map_background.png` (64 x 64) and
     /// `map_background_checkerboard.png` (128 x 128), the held map's two
     /// backgrounds (M192, `ItemInHandRenderer.MAP_BACKGROUND*`). `None` draws
@@ -1263,6 +1266,30 @@ pub struct HudSprite {
 }
 
 /// A decoded RGBA8 image + its pixel dimensions (celestial textures).
+/// M308 — `DefaultPlayerSkin.DEFAULT_SKINS`, in order: nine slim, then the
+/// same nine wide. `DefaultPlayerSkin.get(id)` indexes it by
+/// `floorMod(id.hashCode(), 18)`.
+pub const DEFAULT_SKIN_PATHS: [&str; 18] = [
+    "entity/player/slim/alex.png",
+    "entity/player/slim/ari.png",
+    "entity/player/slim/efe.png",
+    "entity/player/slim/kai.png",
+    "entity/player/slim/makena.png",
+    "entity/player/slim/noor.png",
+    "entity/player/slim/steve.png",
+    "entity/player/slim/sunny.png",
+    "entity/player/slim/zuri.png",
+    "entity/player/wide/alex.png",
+    "entity/player/wide/ari.png",
+    "entity/player/wide/efe.png",
+    "entity/player/wide/kai.png",
+    "entity/player/wide/makena.png",
+    "entity/player/wide/noor.png",
+    "entity/player/wide/steve.png",
+    "entity/player/wide/sunny.png",
+    "entity/player/wide/zuri.png",
+];
+
 pub struct DecodedImage {
     pub rgba: Vec<u8>,
     pub w: u32,
@@ -1819,6 +1846,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let spyglass_scope = bake_misc_texture(&mut jar, "spyglass_scope.png");
     let creeper_armor = bake_texture_at(&mut jar, "entity/creeper/creeper_armor.png");
     let wither_armor = bake_texture_at(&mut jar, "entity/wither/wither_armor.png");
+    let default_skins = DEFAULT_SKIN_PATHS
+        .iter()
+        .map(|p| bake_texture_at(&mut jar, p))
+        .collect();
     let map_background = bake_map_texture(&mut jar, "map_background.png");
     let map_background_checkerboard = bake_map_texture(&mut jar, "map_background_checkerboard.png");
     let map_decorations = crate::map_decoration_table::TYPES
@@ -2418,6 +2449,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         spyglass_scope,
         creeper_armor,
         wither_armor,
+        default_skins,
         map_background,
         map_background_checkerboard,
         map_decorations,

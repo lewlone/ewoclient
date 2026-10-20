@@ -401,6 +401,9 @@ pub(super) struct RenderCheck {
     /// M307 — r163: whether a sulfur cube drew as the adult model and one as
     /// the small (baby) model.
     pub(super) sulfur_cubes: (bool, bool),
+    /// M308 — r164: frames on which a slim avatar drew in an uploaded skin
+    /// (the staged mannequin's default).
+    pub(super) mannequin_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1166,7 +1169,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 163;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 164;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1367,6 +1370,16 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M308 — r164: `render_check.py` summons a mannequin. Its empty
+        // profile's id is the nil UUID, so `DefaultPlayerSkin.get` gives index
+        // 0, slim Alex: it must draw as `PlayerSlim` with a skin uploaded from
+        // the jar (it drew as a capsule until M308, and no skinless profile
+        // wore anything but wide Steve).
+        row(
+            "r164 a mannequin drew in its default skin (slim Alex)",
+            self.mannequin_frames >= 1,
+            format!("{} frames drew it", self.mannequin_frames),
         );
         // M307 — r163: `render_check.py` summons an adult sulfur cube and a
         // baby; they must draw as `SulfurCube` and `SulfurCubeSmall` (a capsule
