@@ -247,6 +247,31 @@ impl World {
         col.block_state_at(&self.shape, x & 15, y, z & 15)
     }
 
+    /// M362 — every projectile's client-side flight for one tick, clipped
+    /// against the blocks' collision boxes (`collide[state]`, block-local
+    /// `[x0, y0, z0, x1, y1, z1]`; an unloaded column is open air).
+    pub fn step_flights(&mut self, collide: &[Vec<[f32; 6]>]) {
+        let (columns, shape) = (&self.columns, &self.shape);
+        let solid = |p: [f64; 3]| -> bool {
+            let [x, y, z] = p.map(|c| c.floor() as i32);
+            let Some(col) = columns.get(&(x >> 4, z >> 4)) else {
+                return false;
+            };
+            let st = col.block_state_at(shape, x & 15, y, z & 15) as usize;
+            let l = [
+                (p[0] - f64::from(x)) as f32,
+                (p[1] - f64::from(y)) as f32,
+                (p[2] - f64::from(z)) as f32,
+            ];
+            collide.get(st).is_some_and(|boxes| {
+                boxes
+                    .iter()
+                    .any(|b| (0..3).all(|k| l[k] >= b[k] && l[k] <= b[k + 3]))
+            })
+        };
+        self.entities.step_flights(&solid);
+    }
+
     /// True when the column holding (x,z) is loaded.
     pub fn is_loaded(&self, x: i32, z: i32) -> bool {
         self.columns.contains_key(&(x >> 4, z >> 4))

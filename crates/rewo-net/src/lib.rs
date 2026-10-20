@@ -798,9 +798,10 @@ pub(crate) fn read_add_entity(
     let x = r.f64()?;
     let y = r.f64()?;
     let z = r.f64()?;
-    skip_lpvec3(r)?; // movement (LpVec3, variable length)
-                     // Wire order (decompiled read): xRot (pitch) first, THEN yRot (yaw),
-                     // then yHeadRot — packed-degree bytes.
+    // M362 — the movement (LpVec3), `setDeltaMovement` on the new entity.
+    let movement = crate::motion::read_lp_vec3(r)?;
+    // Wire order (decompiled read): xRot (pitch) first, THEN yRot (yaw),
+    // then yHeadRot — packed-degree bytes.
     let pitch = r.i8()? as f32 * (360.0 / 256.0);
     let yaw = r.i8()? as f32 * (360.0 / 256.0);
     let head_yaw = r.i8()? as f32 * (360.0 / 256.0);
@@ -809,6 +810,7 @@ pub(crate) fn read_add_entity(
     let data = r.varint().unwrap_or(0);
     let mut state = rewo_world::entities::EntityState::new(uuid, type_id, x, y, z, yaw, pitch);
     state.set_head_yaw(head_yaw);
+    state.set_spawn_motion([movement.x, movement.y, movement.z]);
     state.spawn_data = data;
     world.entities.add(id, state);
     Ok((id, type_id))
@@ -3087,6 +3089,11 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let (Some(s), true) = (meta.opt_block16, vk.enderman == Some(type_id)) {
         entities.set_carried_block(eid, u32::try_from(s).ok().filter(|s| *s != 0));
     }
+    // M362 — Slot 10 BOOLEAN → `AbstractArrow.IN_GROUND`; the table only
+    // lets it reach an entity flying an arrow's flight.
+    if let Some(b) = meta.bool10 {
+        entities.set_in_ground(eid, b);
+    }
     // M343 — Slot 23 INT → `Cat.DATA_COLLAR_COLOR`, gated on the cat.
     if let (Some(c), true) = (meta.int23, vk.cat == Some(type_id)) {
         entities.set_collar(eid, c);
@@ -4932,22 +4939,6 @@ pub fn route_hud_state(
         route_decode_failed("hud_state", format!("{kind:?} body"));
     }
     true
-}
-
-/// Skip an LpVec3 (entity movement). Layout (decompiled `LpVec3`):
-/// byte0; if 0 → zero vector (done); else read byte1 + u32, and if
-/// (byte0 & 4) continuation flag set, read a trailing VarInt.
-pub(crate) fn skip_lpvec3(r: &mut PacketReader) -> rewo_proto::Result<()> {
-    let lowest = r.u8()?;
-    if lowest == 0 {
-        return Ok(());
-    }
-    r.u8()?; // middle
-    r.take(4)?; // highest u32
-    if lowest & 4 == 4 {
-        r.varint()?; // scale continuation
-    }
-    Ok(())
 }
 
 #[cfg(test)]

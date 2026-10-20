@@ -528,6 +528,10 @@ pub(super) struct RenderCheck {
     /// riding, and the frames the mount moved / the camera moved with it.
     pub(super) ride_last: Option<([f64; 3], [f64; 3])>,
     pub(super) ride_frames: (u32, u32),
+    /// M362 — r214: the first arrow drawn: (first-seen time, first and last
+    /// position, frames and frames it moved on within 0.25 s, the farthest
+    /// it got from where it appeared).
+    pub(super) arrow_track: Option<(f32, [f32; 3], [f32; 3], u32, u32, f32)>,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1293,7 +1297,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 213;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 214;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1493,6 +1497,19 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M362 — r214: r99's full-draw shot flies from the frame it appears:
+        // within its first quarter second it is drawn at least 3 blocks from
+        // where it appeared, and it moved on at least 80% of those frames.
+        let (frames, moved, far) = self
+            .arrow_track
+            .map_or((0, 0, 0.0), |(_, _, _, f, m, d)| (f, m, d));
+        row(
+            "r214 a shot arrow flew from the frame it appeared",
+            frames >= 5 && far >= 3.0 && moved * 100 >= frames * 80,
+            format!(
+                "{far:.2} blocks from where it appeared within 0.25 s (want >= 3), moved on {moved} of {frames} frames (want >= 80%, >= 5 frames)"
             ),
         );
         // M361 — r213: the tail's rides (the boat, horse, camel, nautilus):

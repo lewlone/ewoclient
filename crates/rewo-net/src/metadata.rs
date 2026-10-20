@@ -366,6 +366,10 @@ pub struct EntityMeta {
     /// M352 — `EnderMan.DATA_CARRY_STATE` (16 OPTIONAL_BLOCK_STATE, 0 empty;
     /// `Monster` adds none after `Mob`'s 15), kind-gated by the caller.
     pub opt_block16: Option<i32>,
+    /// M362 — `AbstractArrow.IN_GROUND`, index 10 BOOLEAN (Entity 0..7, then
+    /// `ID_FLAGS` 8 and `PIERCE_LEVEL` 9); the entity table lets it reach
+    /// only an arrow (a `LivingEntity`'s 10 is its effect ambience).
+    pub bool10: Option<bool>,
     pub int12: Option<i32>,
     pub bool13: Option<bool>,
 }
@@ -541,6 +545,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             },
             (11, 15) => meta.opt_block11 = r.varint().ok(),
             (16, 15) => meta.opt_block16 = r.varint().ok(),
+            (10, 8) => meta.bool10 = r.u8().ok().map(|b| b != 0),
             (12, 1) => meta.int12 = r.varint().ok(),
             (13, 8) => meta.bool13 = r.u8().ok().map(|b| b != 0),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at

@@ -400,6 +400,59 @@ pub struct ItemFrameState {
     pub item: Option<FrameItem>,
 }
 
+/// M362 — a projectile's client-side flight. Vanilla gives projectiles no
+/// `InterpolationHandler` (a server position packet snaps them) and ticks
+/// their physics on the client between the server's updates, which for an
+/// arrow come once a second (`EntityType.ARROW`'s update interval 20).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flight {
+    /// `getDefaultGravity()`, taken off the velocity's y after each move.
+    pub gravity: f64,
+    /// `getAirDrag()` (`applyInertia`), the velocity's factor after each move.
+    pub drag: f64,
+    /// An `AbstractArrow` (its synced `IN_GROUND`, index 10 BOOLEAN, ends
+    /// the flight); a thrown item has none.
+    pub arrow: bool,
+}
+
+/// M362 — `AbstractArrow` (arrow, spectral arrow, trident): gravity 0.05,
+/// air drag 0.99.
+pub const ARROW_FLIGHT: Flight = Flight {
+    gravity: 0.05,
+    drag: 0.99,
+    arrow: true,
+};
+/// M362 — `ThrowableProjectile` (snowball, egg, ender pearl, potions,
+/// experience bottle): gravity 0.03, drag 0.99.
+pub const THROWN_FLIGHT: Flight = Flight {
+    gravity: 0.03,
+    drag: 0.99,
+    arrow: false,
+};
+
+/// M362 — the flight an entity type flies with, if it is a projectile the
+/// client ticks.
+pub fn flight_of(name: &str) -> Option<Flight> {
+    match name.strip_prefix("minecraft:").unwrap_or(name) {
+        "arrow" | "spectral_arrow" | "trident" => Some(ARROW_FLIGHT),
+        "snowball" | "egg" | "ender_pearl" | "splash_potion" | "lingering_potion"
+        | "experience_bottle" => Some(THROWN_FLIGHT),
+        _ => None,
+    }
+}
+
+/// M362 — `Projectile.lerpRotation(rotO, rot)`: the previous rotation
+/// unwound to within ±180° of the target, then a fifth of the way there.
+pub fn lerp_rotation(mut from: f32, to: f32) -> f32 {
+    while to - from < -180.0 {
+        from -= 360.0;
+    }
+    while to - from >= 180.0 {
+        from += 360.0;
+    }
+    from + 0.2 * (to - from)
+}
+
 /// M361 — `Mth.rotLerp(a, from, to)`: `from + a · wrapDegrees(to − from)`,
 /// so a turn across ±180° goes the short way round.
 pub fn rot_lerp(alpha: f32, from: f32, to: f32) -> f32 {
@@ -436,6 +489,11 @@ pub struct EntityState {
     prev_yaw: f32,
     prev_pitch: f32,
     prev_head_yaw: f32,
+    /// M362 — the flight the client ticks this entity with (a projectile).
+    flight: Option<Flight>,
+    /// M362 — `AbstractArrow.IN_GROUND` (or a block the client's own flight
+    /// hit): the flight has ended.
+    in_ground: bool,
     lerp_steps: u32,
     /// M266 — the `InterpolationHandler`'s length: vanilla's default 3, a
     /// display's 0 (it snaps) or its `teleport_duration`.
@@ -580,6 +638,8 @@ impl EntityState {
             prev_yaw: yaw,
             prev_pitch: pitch,
             prev_head_yaw: yaw,
+            flight: None,
+            in_ground: false,
             lerp_steps: 0,
             lerp_len: LERP_STEPS,
             cur: [x, y, z],
@@ -762,6 +822,75 @@ impl EntityState {
         self.cur = p;
         self.lerp_steps = 0;
         self.yaw = yaw;
+    }
+
+    /// M362 — `handleAddEntity`'s `setDeltaMovement(packet.getMovement())`:
+    /// the spawn packet's velocity (until M362 it was skipped, so an arrow
+    /// was born standing still). A non-finite one is ignored.
+    pub fn set_spawn_motion(&mut self, v: [f64; 3]) {
+        if v.iter().all(|c| c.is_finite()) {
+            self.delta_movement = v;
+        }
+    }
+
+    /// M362 — make this entity a projectile the client flies; its server
+    /// positions snap rather than lerp (no `InterpolationHandler`).
+    pub fn set_flight(&mut self, flight: Flight) {
+        self.flight = Some(flight);
+        self.lerp_len = 0;
+    }
+
+    /// M362 — one tick of the client's flight (`AbstractArrow.tick` /
+    /// `ThrowableProjectile.tick`'s movement): the rotation turns a fifth of
+    /// the way toward the movement (`lerpRotation`, `atan2(x, z)` and
+    /// `atan2(y, horizontal)`), the move is clipped against `solid` (a point
+    /// test on the blocks' collision boxes) and a hit ends the flight there,
+    /// else the entity moves by the whole movement; then the drag and the
+    /// gravity. Not modelled: water's inertia, entity hits (the server
+    /// removes the projectile).
+    pub fn step_flight(&mut self, solid: &dyn Fn([f64; 3]) -> bool) {
+        let Some(flight) = self.flight else {
+            return;
+        };
+        if self.in_ground {
+            return;
+        }
+        let m = self.delta_movement;
+        let horizontal = (m[0] * m[0] + m[2] * m[2]).sqrt();
+        if m.iter().any(|c| *c != 0.0) {
+            let yaw = m[0].atan2(m[2]).to_degrees() as f32;
+            let pitch = m[1].atan2(horizontal).to_degrees() as f32;
+            self.yaw = lerp_rotation(self.yaw, yaw);
+            self.pitch = lerp_rotation(self.pitch, pitch);
+        }
+        let len = (horizontal * horizontal + m[1] * m[1]).sqrt();
+        let steps = ((len / 0.05).ceil() as usize).clamp(1, 400);
+        let start = self.cur;
+        let mut hit = None;
+        for i in 1..=steps {
+            let t = i as f64 / steps as f64;
+            let p = [0, 1, 2].map(|k| start[k] + m[k] * t);
+            if solid(p) {
+                let t0 = (i - 1) as f64 / steps as f64;
+                hit = Some([0, 1, 2].map(|k| start[k] + m[k] * t0));
+                break;
+            }
+        }
+        match hit {
+            Some(p) => {
+                self.cur = p;
+                self.delta_movement = [0.0; 3];
+                self.in_ground = true;
+            }
+            None => {
+                self.cur = [0, 1, 2].map(|k| start[k] + m[k]);
+                for c in &mut self.delta_movement {
+                    *c *= flight.drag;
+                }
+                self.delta_movement[1] -= flight.gravity;
+            }
+        }
+        [self.x, self.y, self.z] = self.cur;
     }
 
     /// M361 — the frame's body yaw: last tick's blended toward this tick's
@@ -2358,6 +2487,31 @@ impl EntityTable {
         e.motion_player = player;
         if movement.iter().all(|c| c.is_finite()) {
             e.delta_movement = movement;
+        }
+    }
+
+    /// M362 — make `id` a projectile the client flies (see
+    /// [`EntityState::set_flight`]).
+    pub fn set_flight(&mut self, id: i32, flight: Flight) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.set_flight(flight);
+        }
+    }
+
+    /// M362 — `AbstractArrow.IN_GROUND` from the server; only an arrow's
+    /// flight reads it (index 10 BOOLEAN is another class's field elsewhere).
+    pub fn set_in_ground(&mut self, id: i32, in_ground: bool) {
+        if let Some(e) = self.map.get_mut(&id) {
+            if e.flight.is_some_and(|f| f.arrow) {
+                e.in_ground = in_ground;
+            }
+        }
+    }
+
+    /// M362 — one client tick of every projectile's flight.
+    pub fn step_flights(&mut self, solid: &dyn Fn([f64; 3]) -> bool) {
+        for e in self.map.values_mut() {
+            e.step_flight(solid);
         }
     }
 
@@ -5349,5 +5503,65 @@ mod render_rotation_tests {
         e.tick(false, false);
         assert_eq!(e.render_yaw(0.0), 50.0);
         assert_eq!(e.render_head_yaw(0.3), 30.0);
+    }
+}
+
+#[cfg(test)]
+mod flight_tests {
+    use super::*;
+
+    /// M362 — an arrow flies on the client: it moves by its velocity, turns
+    /// toward it, loses 1% to drag and 0.05 to gravity each tick; a block in
+    /// its path stops it just short; the server's `IN_GROUND` ends a flight;
+    /// a non-projectile does not fly.
+    #[test]
+    fn an_arrow_flies_between_server_updates() {
+        let none = |_: [f64; 3]| false;
+        let mut a = EntityState::new(0, 1, 0.0, 70.0, 0.0, 0.0, 0.0);
+        a.set_flight(ARROW_FLIGHT);
+        a.set_spawn_motion([0.0, 0.0, 3.0]);
+        a.step_flight(&none);
+        assert_eq!(a.render_pos(1.0), [0.0, 70.0, 3.0]);
+        let v = a.delta_movement;
+        assert!((v[2] - 2.97).abs() < 1e-9 && (v[1] + 0.05).abs() < 1e-9);
+        // The yaw toward +z is 0; the pitch turns down a fifth of the way.
+        a.step_flight(&none);
+        assert!(a.cur[2] > 5.9 && a.cur[1] < 70.0);
+        assert!(a.pitch < 0.0);
+        // A wall at z >= 8: the next step would cross it, so it stops short.
+        let wall = |p: [f64; 3]| p[2] >= 8.0;
+        a.step_flight(&wall);
+        assert!(a.cur[2] < 8.0 && a.in_ground && a.delta_movement == [0.0; 3]);
+        let still = a.cur;
+        a.step_flight(&none);
+        assert_eq!(a.cur, still);
+        // A plain entity never flies; a server position snaps a projectile.
+        let mut z = EntityState::new(0, 2, 0.0, 70.0, 0.0, 0.0, 0.0);
+        z.set_spawn_motion([1.0, 0.0, 0.0]);
+        z.step_flight(&none);
+        assert_eq!(z.render_pos(1.0), [0.0, 70.0, 0.0]);
+        let mut b = EntityState::new(0, 1, 0.0, 70.0, 0.0, 0.0, 0.0);
+        b.set_flight(THROWN_FLIGHT);
+        b.set_target(5.0, 71.0, 5.0);
+        assert_eq!(b.render_pos(0.0), [5.0, 71.0, 5.0]);
+        assert_eq!(flight_of("minecraft:trident"), Some(ARROW_FLIGHT));
+        assert_eq!(flight_of("minecraft:zombie"), None);
+        // Unwound to within 180 degrees first, as vanilla's: -190 toward -170.
+        assert!((lerp_rotation(170.0, -170.0) + 186.0).abs() < 1e-4);
+    }
+
+    /// M362 — the server's `IN_GROUND` stops an arrow's flight, and only an
+    /// arrow's.
+    #[test]
+    fn in_ground_reaches_only_an_arrow() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 1, 0.0, 70.0, 0.0, 0.0, 0.0));
+        t.add(2, EntityState::new(0, 2, 0.0, 70.0, 0.0, 0.0, 0.0));
+        t.set_flight(1, ARROW_FLIGHT);
+        t.set_flight(2, THROWN_FLIGHT);
+        t.set_in_ground(1, true);
+        t.set_in_ground(2, true);
+        assert!(t.get(1).unwrap().in_ground);
+        assert!(!t.get(2).unwrap().in_ground);
     }
 }

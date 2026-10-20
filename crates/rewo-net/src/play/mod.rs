@@ -2781,6 +2781,8 @@ impl PlaySession {
         self.tick_music();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
+        // M362 — and the projectiles' own flight, as the client ticks it.
+        self.world.step_flights(&self.collide);
         // `Display.tick` — the displays' transformation interpolation (M265).
         self.world.entities.tick_displays();
         // `PrimedTnt.tick`'s fuse countdown (M269).

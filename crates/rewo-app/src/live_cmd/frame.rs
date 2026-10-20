@@ -2205,6 +2205,27 @@ impl LiveApp {
                 c.arrow_frames += 1;
             }
             c.arrow_quads = (c.arrow_quads.0.max(arrow_drew), arrow_want);
+            // M362 — r214: the shot arrow flies from the frame it appears:
+            // over its first quarter second it covers ground and moves on
+            // nearly every frame (until M362 it hung where it spawned until
+            // the server's next update, a second later).
+            if let Some(d) = be_draws.iter().find(|d| d.model == "rewo:be/arrow") {
+                let now = self.started.elapsed().as_secs_f32();
+                let at = d.pos;
+                match c.arrow_track.as_mut() {
+                    None => c.arrow_track = Some((now, at, at, 0, 0, 0.0)),
+                    Some((t0, first, last, frames, moved, far)) if now - *t0 <= 0.25 => {
+                        *frames += 1;
+                        if (0..3).any(|i| (at[i] - last[i]).abs() > 1e-5) {
+                            *moved += 1;
+                        }
+                        let d2: f32 = (0..3).map(|i| (at[i] - first[i]).powi(2)).sum();
+                        *far = far.max(d2.sqrt());
+                        *last = at;
+                    }
+                    Some(_) => {}
+                }
+            }
             // M269 — r127: a primed TNT drawn swelling (its last ten fuse
             // ticks): any TNT draw scaled up.
             let tnt = self

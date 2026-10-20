@@ -429,6 +429,16 @@ impl PlaySession {
         } else if id == ids.cb_play_add_entity {
             let mut r = PacketReader::new(body);
             if let Ok((eid, type_id)) = crate::read_add_entity(&mut r, &mut self.world) {
+                // M362 — a projectile the client flies between the server's
+                // updates.
+                if let Some(f) = self
+                    .entity_types
+                    .as_deref()
+                    .and_then(|t| t.name(type_id))
+                    .and_then(rewo_world::entities::flight_of)
+                {
+                    self.world.entities.set_flight(eid, f);
+                }
                 self.post_add_entity_sound_instance(eid, type_id);
             } else {
                 self.decode_failed("add_entity", "malformed body");
