@@ -4006,6 +4006,31 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M363 — a floating boat masks the water inside its hull (2026-10-21)
+
+Enni's report: the water's surface showed through a floating boat "as if
+the boat is full of water". Vanilla's `BoatModel.createWaterPatch()` (a
+28 × 16 × 3 box at the waterline) is drawn with `RenderTypes.waterMask()`,
+depth only, unless the boat is under water, so the translucent water drawn
+later fails its depth test inside the hull. Rewo now builds the patch
+(`mobs::boat_water_patch`, boat and chest boat; not the raft), emits it into
+an eleventh vertex range and draws it with a colourless, depth-writing
+pipeline right after the solid models. `Boat.isUnderWater()` needed the
+water's surface: `World::is_water_at_point` tests only the block and reads a
+floating boat's eye (0.92 up its water block) as submerged, so
+`World::is_eye_under_water` compares against the source's 8/9.
+
+**Unit tests**: the patch's box; the eye at and below the surface.
+**r215**: a floating boat's patch drawn into depth (8184 and 9291 frames; the
+mutant 0). `REWO_RC_CAPTURE_BOAT` captures r87's ride: the hull shows its
+floor, and without the patch the water across it.
+
+The same pass made **r213** grade Enni's riding symptom directly (the
+rider's offset from its mount, frame to frame: 0.0000 blocks, the
+pre-M361 mutant 1.9979), and checked the tick order against vanilla's:
+the vehicle moves first, the rider is seated from it, and both share one
+(prev, cur) pair.
+
 ### M362 — arrows fly on the client (2026-10-21)
 
 Enni's report: arrows "struggle to fly". Two causes. **The spawn velocity
