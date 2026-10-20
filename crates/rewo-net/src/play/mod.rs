@@ -6686,6 +6686,17 @@ impl PlaySession {
 
     /// `LivingEntity.getUseItemRemainingTicks()` for the local player, and the
     /// hand it is using — what the first-person use poses are keyed on.
+    /// M283 — `Player.isScoping()`: using a spyglass.
+    pub fn is_scoping(&self) -> bool {
+        let s = self.local_use_state();
+        s.using && s.item_id.is_some() && s.item_id == self.fov_items.1
+    }
+
+    /// M283 — the local player's `Entity.getTicksFrozen()`.
+    pub fn ticks_frozen(&self) -> i32 {
+        self.local_player_data.ticks_frozen()
+    }
+
     pub fn local_use_state(&self) -> rewo_world::entities::UseState {
         self.player_id
             .map(|id| self.world.entities.use_state(id))

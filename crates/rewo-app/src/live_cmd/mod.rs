@@ -846,6 +846,11 @@ struct LiveApp {
     /// stepped on.
     vignette_brightness: f32,
     vignette_tick: u64,
+    /// M283 — `Player.sleepCounter` (client side) and `Hud.scopeScale`.
+    sleep_counter: i32,
+    scope_scale: f32,
+    /// M283 — the last frame's length in seconds (`frame_clock`).
+    last_dt: f32,
     /// M265 — r123's interpolation command has been sent.
     #[cfg(feature = "gates")]
     rc_interp_sent: bool,
@@ -1269,6 +1274,9 @@ fn run_windowed(
         rc_captured_at: false,
         vignette_brightness: rewo_world::vignette::VIGNETTE_START,
         vignette_tick: 0,
+        sleep_counter: 0,
+        scope_scale: 0.5,
+        last_dt: 0.0,
         #[cfg(feature = "gates")]
         rc_interp_sent: false,
         #[cfg(feature = "gates")]

@@ -332,6 +332,9 @@ pub(super) struct RenderCheck {
     pub(super) burning_frames: usize,
     /// M282 — r140: the lowest vignette brightness a frame drew with.
     pub(super) vignette_low: Option<f32>,
+    /// M283 — r141: frames on which the sleep fade drew, and its peak alpha.
+    pub(super) sleep_fade_frames: usize,
+    pub(super) sleep_fade_peak: i32,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1097,7 +1100,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 140;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 141;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1286,6 +1289,17 @@ impl RenderCheck {
             format!(
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
+            ),
+        );
+        // M283 — r141: r83's bed: while the bot sleeps the screen fades to
+        // `(int)(220 · counter / 100)` alpha (`extractSleepOverlay`); it must
+        // draw and reach its 220 cap. No fade drew until M283.
+        row(
+            "r141 sleeping faded the screen to the sleep overlay",
+            self.sleep_fade_frames >= 1 && self.sleep_fade_peak == 220,
+            format!(
+                "{} frames drew it, peak alpha {}",
+                self.sleep_fade_frames, self.sleep_fade_peak
             ),
         );
         // M282 — r140: the HUD vignette is drawn every frame (the option is

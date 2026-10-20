@@ -68,6 +68,7 @@ impl LiveApp {
             .unwrap_or(0.0)
             .min(0.1);
         self.last_frame = Some(now);
+        self.last_dt = dt;
         if dt > 0.0 {
             self.cpu.push(dt * 1000.0);
             self.ring.push(dt * 1000.0);
@@ -1086,8 +1087,94 @@ impl LiveApp {
         }
         while self.vignette_tick < session.ticks {
             self.vignette_brightness = vignette_step(session, self.vignette_brightness);
+            self.sleep_counter =
+                rewo_world::vignette::step_sleep_counter(self.sleep_counter, session.is_sleeping());
             self.vignette_tick += 1;
         }
+        // M283 — the other camera overlays and the sleep fade.
+        let (ew, eh) = (
+            state.renderer.swapchain.extent.width as f32,
+            state.renderer.swapchain.extent.height as f32,
+        );
+        let full = [0.0, 0.0, ew, eh];
+        let mut early = Vec::new();
+        if session.is_scoping() {
+            // `scopeScale` eases toward 1.125 a frame at a time
+            // (`getGameTimeDeltaTicks`).
+            self.scope_scale = rewo_world::vignette::step_scope_scale(
+                self.scope_scale,
+                (self.last_dt * 20.0).min(10.0),
+            );
+            let scale = rewo_gpu::hud::gui_scale(ew, eh);
+            let (gw, gh) = ((ew / scale).ceil() as i32, (eh / scale).ceil() as i32);
+            let (l, t, r, b) = rewo_world::vignette::spyglass_rect(gw, gh, self.scope_scale);
+            let px = |v: i32| v as f32 * scale;
+            let black = [0.0, 0.0, 0.0, 1.0];
+            let fill = |rect: [f32; 4]| rewo_gpu::world::CameraDraw {
+                image: rewo_gpu::world::OverlayImage::White,
+                rect,
+                color: black,
+                multiply: false,
+            };
+            early.push(rewo_gpu::world::CameraDraw {
+                image: rewo_gpu::world::OverlayImage::SpyglassScope,
+                rect: [px(l), px(t), px(r), px(b)],
+                color: [1.0; 4],
+                multiply: false,
+            });
+            early.push(fill([0.0, px(b), ew, eh]));
+            early.push(fill([0.0, 0.0, ew, px(t)]));
+            early.push(fill([0.0, px(t), px(l), px(b)]));
+            early.push(fill([px(r), px(t), ew, px(b)]));
+        } else {
+            self.scope_scale = 0.5;
+            // The equipped items' `camera_overlay`: in vanilla only the
+            // carved pumpkin's (`misc/pumpkinblur`).
+            if session
+                .inventory
+                .armor(0)
+                .and_then(|s| self.items.name(s.item_id))
+                == Some("minecraft:carved_pumpkin")
+            {
+                early.push(rewo_gpu::world::CameraDraw {
+                    image: rewo_gpu::world::OverlayImage::PumpkinBlur,
+                    rect: full,
+                    color: [1.0; 4],
+                    multiply: false,
+                });
+            }
+        }
+        if session.ticks_frozen() > 0 {
+            early.push(rewo_gpu::world::CameraDraw {
+                image: rewo_gpu::world::OverlayImage::PowderSnow,
+                rect: full,
+                color: [
+                    1.0,
+                    1.0,
+                    1.0,
+                    rewo_world::vignette::percent_frozen(session.ticks_frozen()),
+                ],
+                multiply: false,
+            });
+        }
+        let sleep_alpha = rewo_world::vignette::sleep_overlay_alpha(self.sleep_counter);
+        let late = if sleep_alpha > 0 {
+            // `fill(.., (int)(220 · amount) << 24 | 0x101010)`.
+            vec![rewo_gpu::world::CameraDraw {
+                image: rewo_gpu::world::OverlayImage::White,
+                rect: full,
+                color: [
+                    16.0 / 255.0,
+                    16.0 / 255.0,
+                    16.0 / 255.0,
+                    sleep_alpha as f32 / 255.0,
+                ],
+                multiply: false,
+            }]
+        } else {
+            Vec::new()
+        };
+        state.world_renderer.set_camera_overlays(early, late);
         state.world_renderer.set_vignette(
             self.options
                 .vignette
@@ -1238,6 +1325,12 @@ impl LiveApp {
                 })
             {
                 rc.ghost_outline_frames += 1;
+            }
+            // M283 — r141: the sleep fade this frame drew with.
+            let sleep = rewo_world::vignette::sleep_overlay_alpha(self.sleep_counter);
+            if sleep > 0 {
+                rc.sleep_fade_frames += 1;
+                rc.sleep_fade_peak = rc.sleep_fade_peak.max(sleep);
             }
             // M282 — r140: the vignette this frame drew with.
             if self.options.vignette {

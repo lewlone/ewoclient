@@ -68,6 +68,61 @@ pub fn vignette_color(brightness: f32, warning: f32) -> [f32; 3] {
     }
 }
 
+/// M283 — `Entity.getPercentFrozen`: `min(ticksFrozen, 140) / 140`
+/// (`getTicksRequiredToFreeze` is 140).
+pub fn percent_frozen(ticks_frozen: i32) -> f32 {
+    ticks_frozen.clamp(0, 140) as f32 / 140.0
+}
+
+/// M283 — `Player.tick`'s sleep counter, one tick: up to 100 while asleep,
+/// then on to 110 and back to 0 once awake.
+pub fn step_sleep_counter(counter: i32, sleeping: bool) -> i32 {
+    if sleeping {
+        (counter + 1).min(100)
+    } else if counter > 0 {
+        let c = counter + 1;
+        if c >= 110 {
+            0
+        } else {
+            c
+        }
+    } else {
+        0
+    }
+}
+
+/// M283 — `Hud.extractSleepOverlay`'s fill alpha (0..=255) for a sleep
+/// counter: `amount = counter / 100`, past 1 falling over ten ticks, and
+/// `(int)(220 · amount)`; 0 for a counter of 0.
+pub fn sleep_overlay_alpha(counter: i32) -> i32 {
+    if counter <= 0 {
+        return 0;
+    }
+    let mut amount = counter as f32 / 100.0;
+    if amount > 1.0 {
+        amount = 1.0 - (counter as f32 - 100.0) / 10.0;
+    }
+    (220.0 * amount) as i32
+}
+
+/// M283 — `Hud.extractSpyglassOverlay`'s scope rect in GUI px, `(left, top,
+/// right, bottom)`: a square of `floor(min(w, h) · scale)` centred (integer
+/// division), the black fills around it.
+pub fn spyglass_rect(gui_w: i32, gui_h: i32, scale: f32) -> (i32, i32, i32, i32) {
+    let src = gui_w.min(gui_h) as f32;
+    let ratio = (gui_w as f32 / src).min(gui_h as f32 / src) * scale;
+    let size = (src * ratio).floor() as i32;
+    let left = (gui_w - size) / 2;
+    let top = (gui_h - size) / 2;
+    (left, top, left + size, top + size)
+}
+
+/// M283 — `Hud.scopeScale`'s per-frame ease toward 1.125 while scoping:
+/// `lerp(0.5 · deltaTicks, scale, 1.125)`.
+pub fn step_scope_scale(scale: f32, delta_ticks: f32) -> f32 {
+    scale + 0.5 * delta_ticks * (1.125 - scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,6 +130,30 @@ mod tests {
     /// Full light gives no vignette and darkness a full one (in a dimension
     /// with no ambient light); the follow is a hundredth a tick; the border
     /// mix is vanilla's arithmetic at its two ends and the middle.
+    /// M283 — the sleep fade rises over 100 ticks and falls over ten; frost
+    /// caps at 140 ticks; the spyglass square is centred and scales.
+    #[test]
+    fn the_sleep_fade_frost_and_scope_follow_vanilla() {
+        let mut c = 0;
+        for _ in 0..150 {
+            c = step_sleep_counter(c, true);
+        }
+        assert_eq!((c, sleep_overlay_alpha(c)), (100, 220));
+        assert_eq!(sleep_overlay_alpha(50), 110);
+        c = step_sleep_counter(c, false);
+        assert_eq!((c, sleep_overlay_alpha(c)), (101, 198));
+        for _ in 0..9 {
+            c = step_sleep_counter(c, false);
+        }
+        assert_eq!(c, 0, "back to 0 at 110");
+        assert_eq!(percent_frozen(70), 0.5);
+        assert_eq!(percent_frozen(500), 1.0);
+        assert_eq!(spyglass_rect(480, 270, 1.0), (105, 0, 375, 270));
+        assert_eq!(spyglass_rect(480, 270, 0.5), (172, 67, 307, 202));
+        let s = step_scope_scale(0.5, 1.0);
+        assert!((s - 0.8125).abs() < 1e-6);
+    }
+
     #[test]
     fn the_vignette_follows_the_light_and_reddens_at_the_border() {
         assert_eq!(level_brightness(0.0, 15), 1.0);

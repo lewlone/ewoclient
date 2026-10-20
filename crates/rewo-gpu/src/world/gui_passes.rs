@@ -45,6 +45,10 @@ pub struct OwnedTextLine {
 pub(super) struct GuiFrame {
     /// M282 — the vignette's colour this frame, `None` for none.
     pub(super) vignette: Option<[f32; 3]>,
+    /// M283 — the other camera overlays (before the HUD) and the late ones
+    /// (after it: the sleep fade).
+    pub(super) camera_overlays: Vec<super::vignette::CameraDraw>,
+    pub(super) late_overlays: Vec<super::vignette::CameraDraw>,
     /// This frame's screen chrome. Empty = nothing to draw, which is the
     /// in-game case and also a screen that draws only text.
     pub(super) screen_draw: crate::screen::ScreenDraw,
@@ -647,6 +651,9 @@ impl WorldRenderer {
         // M282 — the vignette, first of the HUD (`extractCameraOverlays`).
         self.draw_vignette(gpu, cb, extent);
         self.draw_hud_and_container(gpu, cb, extent);
+        // M283 — the sleep fade (`extractSleepOverlay`), after the hotbar and
+        // before chat and titles.
+        self.draw_late_overlays(gpu, cb, extent);
         self.draw_chrome_and_text(gpu, cb, extent);
     }
 

@@ -727,6 +727,11 @@ pub struct BakedAssets {
     pub armor_glint: Option<DecodedImage>,
     /// M282 — `misc/vignette.png`, the HUD vignette.
     pub vignette: Option<DecodedImage>,
+    /// M283 — the other camera overlays: `misc/pumpkinblur.png`,
+    /// `misc/powder_snow_outline.png`, `misc/spyglass_scope.png`.
+    pub pumpkin_blur: Option<DecodedImage>,
+    pub powder_snow: Option<DecodedImage>,
+    pub spyglass_scope: Option<DecodedImage>,
     /// `textures/map/map_background.png` (64 x 64) and
     /// `map_background_checkerboard.png` (128 x 128), the held map's two
     /// backgrounds (M192, `ItemInHandRenderer.MAP_BACKGROUND*`). `None` draws
@@ -1776,6 +1781,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     // different scale, it is a different texture at a different scale.
     let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
     let vignette = bake_misc_texture(&mut jar, "vignette.png");
+    let pumpkin_blur = bake_misc_texture(&mut jar, "pumpkinblur.png");
+    let powder_snow = bake_misc_texture(&mut jar, "powder_snow_outline.png");
+    let spyglass_scope = bake_misc_texture(&mut jar, "spyglass_scope.png");
     let map_background = bake_map_texture(&mut jar, "map_background.png");
     let map_background_checkerboard = bake_map_texture(&mut jar, "map_background_checkerboard.png");
     let map_decorations = crate::map_decoration_table::TYPES
@@ -2370,6 +2378,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         glint,
         armor_glint,
         vignette,
+        pumpkin_blur,
+        powder_snow,
+        spyglass_scope,
         map_background,
         map_background_checkerboard,
         map_decorations,

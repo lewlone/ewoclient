@@ -81,6 +81,7 @@ use terrain::TerrainPass;
 pub(crate) use textures::upload_texture_array;
 use textures::TextureArray;
 pub use textures::{LayerAnimation, FLOW_TEX_SIZE};
+pub use vignette::{CameraDraw, OverlayImage};
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 

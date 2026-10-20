@@ -656,6 +656,76 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             at(&dark, w / 2, h / 2)
         );
     }
+    // M283 — the carved pumpkin's overlay: alpha-blended, every pixel within
+    // 2 of `tex · a + frame · (1 - a)` (gamma bytes, the jar's
+    // `pumpkinblur.png` sampled bilinearly, all four channels).
+    let mut pumpkin_checked = 0usize;
+    if let (Some(_), Some(pb)) = (baked.vignette.as_ref(), baked.pumpkin_blur.as_ref()) {
+        pumpkin_checked += 1;
+        wr.init_overlay_image(
+            gpu,
+            rewo_gpu::world::OverlayImage::PumpkinBlur,
+            &pb.rgba,
+            pb.w,
+            pb.h,
+            true,
+        )?;
+        let vp = Mat4::IDENTITY.to_cols_array_2d();
+        wr.set_vignette(None);
+        wr.set_camera_overlays(Vec::new(), Vec::new());
+        off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+        let plain = off.read_rgba(gpu)?;
+        wr.set_camera_overlays(
+            vec![rewo_gpu::world::CameraDraw {
+                image: rewo_gpu::world::OverlayImage::PumpkinBlur,
+                rect: [0.0, 0.0, w as f32, h as f32],
+                color: [1.0; 4],
+                multiply: false,
+            }],
+            Vec::new(),
+        );
+        off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+        let blurred = off.read_rgba(gpu)?;
+        wr.set_camera_overlays(Vec::new(), Vec::new());
+        let texel = |x: i32, y: i32, c: usize| -> f32 {
+            let (x, y) = (x.clamp(0, pb.w as i32 - 1), y.clamp(0, pb.h as i32 - 1));
+            pb.rgba[((y as u32 * pb.w + x as u32) * 4) as usize + c] as f32 / 255.0
+        };
+        let sample = |u: f32, t: f32, c: usize| -> f32 {
+            let (fx, fy) = (u * pb.w as f32 - 0.5, t * pb.h as f32 - 0.5);
+            let (x0, y0) = (fx.floor(), fy.floor());
+            let (ax, ay) = (fx - x0, fy - y0);
+            let (x0, y0) = (x0 as i32, y0 as i32);
+            let top = texel(x0, y0, c) * (1.0 - ax) + texel(x0 + 1, y0, c) * ax;
+            let bot = texel(x0, y0 + 1, c) * (1.0 - ax) + texel(x0 + 1, y0 + 1, c) * ax;
+            top * (1.0 - ay) + bot * ay
+        };
+        let (mut worst, mut changed) = (0i32, 0usize);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let (u, t) = ((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+                let a = sample(u, t, 3);
+                changed += usize::from(blurred[i..i + 3] != plain[i..i + 3]);
+                for c in 0..3 {
+                    let want = (sample(u, t, c) * 255.0 * a + plain[i + c] as f32 * (1.0 - a))
+                        .round() as i32;
+                    worst = worst.max((blurred[i + c] as i32 - want).abs());
+                }
+            }
+        }
+        if !(worst <= 2 && changed > (w * h / 4) as usize) {
+            failures.push(format!(
+                "pumpkin blur: worst pixel {worst} off the alpha-blend prediction (want <= 2), {changed} px changed"
+            ));
+        }
+        println!("[mobshot] pumpkin blur: worst {worst}, {changed} px changed");
+    }
+    if pumpkin_checked != 1 {
+        failures.push(format!(
+            "graded {pumpkin_checked} pumpkin-blur renders, expected 1 (M283)"
+        ));
+    }
     if vignette_checked != 1 {
         failures.push(format!(
             "graded {vignette_checked} vignette renders, expected 1 (M282)"
