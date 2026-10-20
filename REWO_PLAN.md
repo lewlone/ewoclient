@@ -3930,6 +3930,41 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M281 — burning entities (2026-10-20)
+
+`EntityRenderDispatcher` submits a flame over every entity whose
+`displayFireAnimation` holds (`isOnFire() && !isSpectator()`; the
+client's `isOnFire` is `!fireImmune() && getSharedFlag(0)`). Rewo drew no
+fire on anything: a burning player, a zombie in daylight, a mob in lava.
+
+- `fire_draw`: shared flag 0 and not one of the fifteen types
+  `EntityTypes` builds `.fireImmune()` (`FIRE_IMMUNE`, read from the
+  decompile), as the two frames to show (`fire_frame`: one a tick,
+  `fire_0.png.mcmeta`'s order 16..=31 then 0..=15, `fire_1`'s in order),
+  and the light: the draw's probe with block light 15
+  (`LightCoordsUtil.withBlock(lightCoords, 15)`).
+- Bake: every frame of `block/fire_0` and `fire_1`'s 16x512 strips as a
+  16x16 texture and a one-quad model (`bake_fire_frames`,
+  `rewo:be/fire_<s>/<frame>`), paged in like held models;
+  `rewo_gpu::entities::fire_model_name` builds the same name (rewo-gpu
+  cannot see rewo-data; a test pins the two).
+- `emit_flame` is `FlameFeatureRenderer.prepare`: scale `width · 1.4`,
+  turned about Y to the camera, pushed `0.3 - (int)h · 0.02` toward it,
+  then layers of `fire_0` and `fire_1` alternately, every other pair
+  mirrored, each 0.9 the last one's width, 0.45 higher and 0.03 further
+  back, until the height is covered. Emitted after every entity, outside
+  the outline copy (`submitFlame` is its own feature).
+
+Recorded: the burning player's own first-person fire overlay
+(`ScreenEffectRenderer.renderFire`) and an item entity's fire immunity
+by its item are not done; remote spectators still burn visibly.
+
+**Unit test**: the flame model names the GPU asks for are the baked ones,
+and the frame order. **mobtexshot m20** (19 to 20): a burning armour
+stand adds 7,815 px, every one a colour the two fire frames can produce.
+**r139**: a summoned armour stand with `Fire` 32767 reaches the draws
+burning.
+
 ### M280 — empty-slot icons (2026-10-20)
 
 `AbstractContainerScreen.extractSlot` blits `slot.getNoItemIcon()` 16x16
