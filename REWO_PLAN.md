@@ -4000,6 +4000,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M355 — angry wolves and the wolf's tail (2026-10-20)
+
+No wolf ever looked angry, and every wolf held its tail at the wild π/5.
+`Wolf.DATA_ANGER_END_TIME` is index 22 LONG (`TamableAnimal` 18 and 19, the
+wolf's interest 20 and collar 21), now decoded and routed on the wolf into the
+same deadline the bee's uses. `Wolf.getTexture` is now whole: tame, else
+angry, else wild, for the adult's and the puppy's sheets
+(`MobVariantDef::wolf_texture`; the registry's `baby_assets.angry` now
+parsed): eighteen angry sheets, every coat's adult and puppy. The tail takes
+`Wolf.getTailAngle()` (`wolf_tail_angle`): 1.5393804 angry; tame by its
+missing health, (0.55 − damage · 0.4)·π, when both its health and its max
+health are known (full health otherwise); π/5 wild. An angry wolf does not
+wag (`tail.yRot = 0`). `MobCombat` drops `Eq` for the tail's `f32`.
+
+**Unit tests**: the texture order (tame over angry over wild, adult and puppy,
+the wild fallback); the eighteen sheets on their keys; the tail angles; the
+tail's `xRot` over its rest and no wag when angry. **n14**: 100 at index 22
+LONG is a wolf's deadline and a cat's nothing (without the routing it fails).
+**mobtexshot m77**: the angry wolf and puppy draw from their own sheets, unlike
+the wild ones, and the raised tail moves pixels. **r209**: a staged angry
+wolf on pale's angry sheet, tail up.
+
 ### M354 — the bee's mood, nectar, stinger and bob (2026-10-20)
 
 Every bee drew calm, empty and armed, and held still. `Bee.DATA_FLAGS_ID` is
