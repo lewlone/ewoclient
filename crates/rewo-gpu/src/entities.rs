@@ -5583,6 +5583,42 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             if let Some(a) = c.mob.wolf_tail {
                 rot[0] = a - PI / 5.0;
             }
+            // M356 — and `setSittingPose`'s `tail.y += 9`, `z -= 2`.
+            if c.mob.sitting {
+                let s = c.mob.age_scale;
+                off = [0.0, 9.0 * s, -2.0 * s];
+            }
+        }
+        // M356 — `WolfModel.setSittingPose` (and `AdultWolfModel`'s mane).
+        WolfBody if c.mob.sitting => {
+            let s = c.mob.age_scale;
+            rot[0] = -PI / 4.0;
+            off = [0.0, 4.0 * s, -2.0 * s];
+        }
+        WolfMane if c.mob.sitting => {
+            rot[0] = 2.0 * PI / 5.0 - PI / 2.0;
+            off = [0.0, 2.0, 0.0];
+        }
+        WolfBody | WolfMane => {}
+        WolfHind { left } => {
+            if c.mob.sitting {
+                let s = c.mob.age_scale;
+                rot[0] = 3.0 * PI / 2.0;
+                off = [0.0, 6.7 * s, -5.0 * s];
+            } else {
+                let phase = if left { PI } else { 0.0 };
+                rot[0] = (c.f + phase).cos() * 1.4 * c.amt * amp;
+            }
+        }
+        WolfFront { left } => {
+            if c.mob.sitting {
+                let s = c.mob.age_scale;
+                rot[0] = 5.811_947;
+                off = [if left { -0.01 } else { 0.01 } * s, 1.0 * s, 0.0];
+            } else {
+                let phase = if left { 0.0 } else { PI };
+                rot[0] = (c.f + phase).cos() * 1.4 * c.amt * amp;
+            }
         }
         GolemArmRight => rot[0] = (-0.2 + 1.5 * triangle_wave(c.pos, 13.0)) * c.amt,
         GolemArmLeft => rot[0] = (-0.2 - 1.5 * triangle_wave(c.pos, 13.0)) * c.amt,
@@ -9476,5 +9512,61 @@ mod wolf_tail_tests {
         assert_eq!(r, [0.0, 1.4, 0.0]);
         let (r, _) = anim_delta(mobs::Anim::TailWagY, 1.0, &ctx(Some(1.5393804), true));
         assert!((r[0] + PI / 5.0 - 1.5393804).abs() < 1e-6 && r[1] == 0.0);
+    }
+}
+
+#[cfg(test)]
+mod wolf_sit_tests {
+    use super::*;
+
+    /// M356 — `WolfModel.setSittingPose`: the body pitched to π/4 from its
+    /// π/2 rest and moved (4, −2), the hind legs folded to 3π/2 and moved
+    /// (6.7, −5), the front legs at 5.811947, the tail lowered 9; a puppy's
+    /// offsets halved; standing, the legs walk as the quadruped's.
+    #[test]
+    fn a_sitting_wolf_folds_its_legs_and_drops_its_rump() {
+        use std::f32::consts::PI;
+        let ctx = |sitting: bool, age_scale: f32| AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 1.0,
+            age: 0.0,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                sitting,
+                age_scale,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        };
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        let (r, o) = anim_delta(mobs::Anim::WolfBody, 1.0, &ctx(true, 1.0));
+        assert!(near(r, [-PI / 4.0, 0.0, 0.0]) && near(o, [0.0, 4.0, -2.0]));
+        let (r, o) = anim_delta(mobs::Anim::WolfHind { left: true }, 1.0, &ctx(true, 0.5));
+        assert!(near(r, [3.0 * PI / 2.0, 0.0, 0.0]) && near(o, [0.0, 3.35, -2.5]));
+        let (r, o) = anim_delta(mobs::Anim::WolfFront { left: false }, 1.0, &ctx(true, 1.0));
+        assert!(near(r, [5.811_947, 0.0, 0.0]) && near(o, [0.01, 1.0, 0.0]));
+        let (_, o) = anim_delta(mobs::Anim::TailWagY, 1.0, &ctx(true, 1.0));
+        assert!(near(o, [0.0, 9.0, -2.0]));
+        let (r, o) = anim_delta(mobs::Anim::WolfMane, 1.0, &ctx(true, 1.0));
+        assert!(near(r, [2.0 * PI / 5.0 - PI / 2.0, 0.0, 0.0]) && near(o, [0.0, 2.0, 0.0]));
+        // Standing: the body and mane at rest, the legs on the walk.
+        let (r, o) = anim_delta(mobs::Anim::WolfBody, 1.0, &ctx(false, 1.0));
+        assert!(near(r, [0.0; 3]) && near(o, [0.0; 3]));
+        let (r, _) = anim_delta(mobs::Anim::WolfHind { left: false }, 1.0, &ctx(false, 1.0));
+        let (q, _) = anim_delta(mobs::Anim::QuadHindRight, 1.0, &ctx(false, 1.0));
+        assert_eq!(r, q);
+        let (r, _) = anim_delta(mobs::Anim::WolfFront { left: true }, 1.0, &ctx(false, 1.0));
+        let (q, _) = anim_delta(mobs::Anim::QuadFrontLeft, 1.0, &ctx(false, 1.0));
+        assert_eq!(r, q);
     }
 }

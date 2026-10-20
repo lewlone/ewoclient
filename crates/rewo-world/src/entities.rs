@@ -1612,6 +1612,11 @@ impl MobState {
     pub fn is_tame(self) -> bool {
         self.tamable_flags & 4 != 0
     }
+
+    /// M356 — `TamableAnimal.isInSittingPose()` — `(DATA_FLAGS_ID & 1) != 0`.
+    pub fn is_in_sitting_pose(self) -> bool {
+        self.tamable_flags & 1 != 0
+    }
 }
 
 /// `LivingEntity.getCurrentSwingDuration()` for one entity, over borrowed
@@ -3023,6 +3028,13 @@ impl EntityTable {
     /// `TamableAnimal.isTame()`, which is what `Wolf.getTexture` branches on.
     pub fn is_tame(&self, id: i32) -> bool {
         self.mob_state.get(&id).is_some_and(|s| s.is_tame())
+    }
+
+    /// M356 — a tamable mob's sitting pose (`DATA_FLAGS_ID` bit 0x01).
+    pub fn is_in_sitting_pose(&self, id: i32) -> bool {
+        self.mob_state
+            .get(&id)
+            .is_some_and(|s| s.is_in_sitting_pose())
     }
 
     /// `Creaking.IS_ACTIVE` (index 17, BOOLEAN). Kind-gated by the caller.

@@ -271,6 +271,8 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M356 -- r210. A sitting wolf.
+    "summon minecraft:wolf ~36 ~ ~24 {NoAI:1b,Silent:1b,Sitting:1b};"
     # M355 -- r209. An angry wolf (pale, the default coat).
     "summon minecraft:wolf ~33 ~ ~24 {NoAI:1b,Silent:1b,AngerTime:999999};"
     # M354 -- r208. A bee with nectar that has stung, and an angry bee.

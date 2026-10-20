@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 77;
+const EXPECTED_WITNESSES: usize = 78;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5719,6 +5719,88 @@ fn run_check(
         format!(
             "{} (want >= 200 px, none foreign, unlike the wild sheet, the tail moving)",
             w_rows.join("; ")
+        ),
+    ));
+
+    // m78 — M356: a sitting wolf and puppy draw from their own sheets, and
+    // their silhouette moves from a standing one's by a body's worth of
+    // pixels (the rump drops and the legs fold).
+    let mut sst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.4, 0.8, -0.2),
+        Vec3::new(0.0, 0.4, 0.0),
+    )?;
+    sst.wr.set_entities(&[], sst.right, sst.up, 0.0);
+    sst.off.render(gpu, Some((&mut sst.wr, sst.vp)), &ov, BG)?;
+    let s_empty = sst.off.read_rgba(gpu)?;
+    let mut s_ok = true;
+    let mut s_rows = Vec::new();
+    for (kind, key, scale) in [
+        (EntityModelKind::Wolf, "wolf", 1.0f32),
+        (EntityModelKind::WolfBaby, "wolf_baby", 0.5),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            sst.wr.set_entities(&[d], sst.right, sst.up, 0.0);
+            sst.off.render(gpu, Some((&mut sst.wr, sst.vp)), &ov, BG)?;
+            sst.off.read_rgba(gpu)
+        };
+        let standing = shot(neutral_draw(kind))?;
+        let sitting = shot(EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                sitting: true,
+                age_scale: scale,
+                ..Default::default()
+            },
+            ..neutral_draw(kind)
+        })?;
+        let mask = |f: &[u8]| -> Vec<bool> {
+            f.as_chunks::<4>()
+                .0
+                .iter()
+                .zip(s_empty.as_chunks::<4>().0)
+                .map(|(p, e)| p[..3] != e[..3])
+                .collect()
+        };
+        let (a, b) = (mask(&standing), mask(&sitting));
+        let moved = a.iter().zip(&b).filter(|(x, y)| x != y).count();
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in sitting
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(s_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        s_ok &= !sheet.is_empty() && px >= 200 && bad.is_none() && moved >= 100;
+        s_rows.push(format!(
+            "{key} sitting: {px} px, first colour it cannot produce {:?}, {moved} px of silhouette moved",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    sst.destroy(gpu);
+    w.push(wit(
+        "m78.the_wolf_and_puppy_sit",
+        s_ok,
+        format!(
+            "{} (want >= 200 px, none foreign, >= 100 px of silhouette moved)",
+            s_rows.join("; ")
         ),
     ));
 

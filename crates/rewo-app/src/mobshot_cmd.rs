@@ -89,6 +89,10 @@ pub struct MobshotArgs {
     /// visibility swap the gestures drive in live play).
     #[arg(long, default_value_t = false)]
     shell: bool,
+    /// M356 — sheet mode: pose the tamable mobs that model it sitting
+    /// (`isInSittingPose`), a baby at half the offsets.
+    #[arg(long, default_value_t = false)]
+    sit: bool,
     /// Sheet mode: pose the Allay dancing at this `spinningProgress` (0..1) —
     /// `is_spinning = progress > 0` (so `0` = the swaying pose, a positive value
     /// = the spin at that progress). Combine with `--time` for the beat phase.
@@ -1023,6 +1027,12 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             d.limb_amount = walk_amt;
             d.gesture = gesture;
             d.shell = args.shell;
+            d.mob.sitting = args.sit;
+            d.mob.age_scale = if *k == EntityModelKind::WolfBaby {
+                0.5
+            } else {
+                1.0
+            };
             d.variant = args.variant;
             d.dye = args.dye;
             d.emissive = rewo_gpu::entities::EmissiveState {

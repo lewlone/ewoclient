@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M356 — r210: the staged sitting wolf, drawn sitting.
+            c.sitting_wolf |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Wolf && d.mob.sitting);
             // M355 — r209: the staged angry wolf, on pale's angry sheet with
             // its tail up.
             let angry_wolf = rewo_data::mob_variants::variant_id("entity/wolf/wolf_angry.png");

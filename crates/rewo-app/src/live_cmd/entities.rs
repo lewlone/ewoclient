@@ -1665,6 +1665,9 @@ pub(crate) fn resolve_mob_combat(
         // M355 — likewise the wolf's.
         wolf_tail: None,
         wolf_angry: false,
+        // M356 — set by the caller with the wolf's.
+        sitting: false,
+        age_scale: 1.0,
     }
 }
 
@@ -4889,6 +4892,13 @@ pub(super) fn collect_entities<'a>(
                 .filter(|(_, s)| *s == rewo_world::attributes::Source::Synced)
                 .map(|(max, _)| (ents.death_state(id).health, max as f32));
             mob.wolf_angry = mob_is_angry(session, id);
+            // M356 — `TamableAnimal.isInSittingPose()` and the age scale.
+            mob.sitting = ents.is_in_sitting_pose(id);
+            mob.age_scale = if kind == EntityModelKind::WolfBaby {
+                0.5
+            } else {
+                1.0
+            };
             mob.wolf_tail = Some(wolf_tail_angle(mob.wolf_angry, ents.is_tame(id), health));
         }
         // M70: the label-visibility predicate, resolved once and consumed by

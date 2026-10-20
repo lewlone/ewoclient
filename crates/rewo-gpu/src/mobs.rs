@@ -109,6 +109,20 @@ pub enum Anim {
     },
     /// Wolf tail wag while walking: `yRot = cos(f)·1.4·amt`.
     TailWagY,
+    /// M356 — `WolfModel.setSittingPose`, on the wolf's and the puppy's
+    /// body (`y` + 4, `z` − 2, `xRot` π/4, the puppy's then − π/2: the same
+    /// −π/4 from either rest), the adult's mane (`y` + 2, `xRot` 2π/5) and
+    /// legs (hind: `y` + 6.7, `z` − 5, `xRot` 3π/2; front: `xRot` 5.811947,
+    /// `x` ± 0.01, `y` + 1), every offset times the age scale except the
+    /// mane's. Standing, the legs walk as the quadruped's.
+    WolfBody,
+    WolfMane,
+    WolfHind {
+        left: bool,
+    },
+    WolfFront {
+        left: bool,
+    },
     /// M354 — `BeeModel.bobUpAndDown` (flying and not angry), with `s =
     /// cos(age · 0.18)`: the bone's `xRot` is 0.1 + s·π·0.025 and its `y`
     /// drops by s·0.9; the front legs' `xRot` is π/8 − s·π·0.1 and the back
@@ -642,6 +656,11 @@ pub struct MobCombat {
     pub wolf_tail: Option<f32>,
     /// M355 — the wolf is angry (no wag).
     pub wolf_angry: bool,
+    /// M356 — `TamableAnimal.isInSittingPose()` (the wolf's sitting pose).
+    pub sitting: bool,
+    /// M356 — `LivingEntity.getAgeScale()`: 0.5 for a baby, else 1; the
+    /// sitting pose's offsets scale by it.
+    pub age_scale: f32,
 }
 
 impl Eq for Anim {}
@@ -4700,33 +4719,47 @@ fn wolf_with(g: f32) -> Model {
         false,
         NONE,
     );
-    let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 14.0, 2.0]);
+    // M356 — the body and the mane are parts now: the sitting pose moves
+    // them.
+    let body = b.part_ext(
+        [0.0, 14.0, 2.0],
+        [FRAC_PI_2, 0.0, 0.0],
+        Anim::WolfBody,
+        1.0,
+        Option::None,
+    );
     b.cube_f(
-        STATIC_PART,
+        body,
         0,
         (18.0, 14.0),
         [-3.0, -2.0, -3.0],
         [6.0, 9.0, 6.0],
         g,
         false,
-        &[body],
+        NONE,
     );
-    let mane = Fold::rot([FRAC_PI_2, 0.0, 0.0], [-1.0, 14.0, -3.0]);
+    let mane = b.part_ext(
+        [-1.0, 14.0, -3.0],
+        [FRAC_PI_2, 0.0, 0.0],
+        Anim::WolfMane,
+        1.0,
+        Option::None,
+    );
     b.cube_f(
-        STATIC_PART,
+        mane,
         0,
         (21.0, 0.0),
         [-3.0, -3.0, -3.0],
         [8.0, 6.0, 7.0],
         g,
         false,
-        &[mane],
+        NONE,
     );
     let legs = [
-        ([-2.5, 16.0, 7.0], Anim::QuadHindRight, true),
-        ([0.5, 16.0, 7.0], Anim::QuadHindLeft, false),
-        ([-2.5, 16.0, -4.0], Anim::QuadFrontRight, true),
-        ([0.5, 16.0, -4.0], Anim::QuadFrontLeft, false),
+        ([-2.5, 16.0, 7.0], Anim::WolfHind { left: false }, true),
+        ([0.5, 16.0, 7.0], Anim::WolfHind { left: true }, false),
+        ([-2.5, 16.0, -4.0], Anim::WolfFront { left: false }, true),
+        ([0.5, 16.0, -4.0], Anim::WolfFront { left: true }, false),
     ];
     for (pivot, anim, mirror) in legs {
         let p = b.part(pivot, anim, 1.0);
@@ -6805,21 +6838,39 @@ fn wolf_baby_mesh() -> Model {
             &[Fold::at([x, -4.25, -0.5])],
         );
     }
-    b.cube_f(
-        STATIC_PART,
+    // M356 — the body is a part: the sitting pose moves it.
+    let body = b.part_ext(
+        [0.0, 19.0, 0.0],
+        [0.0; 3],
+        Anim::WolfBody,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        body,
         0,
         (0.0, 0.0),
         [-3.0, -2.0, -4.0],
         [6.0, 4.0, 8.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 19.0, 0.0])],
+        NONE,
     );
     for (pivot, anim, uv) in [
-        ([-1.5, 21.0, 3.0], Anim::QuadHindRight, (0.0, 22.0)),
-        ([1.5, 21.0, 3.0], Anim::QuadHindLeft, (8.0, 22.0)),
-        ([-1.5, 21.0, -3.0], Anim::QuadFrontRight, (0.0, 0.0)),
-        ([1.5, 21.0, -3.0], Anim::QuadFrontLeft, (20.0, 0.0)),
+        (
+            [-1.5, 21.0, 3.0],
+            Anim::WolfHind { left: false },
+            (0.0, 22.0),
+        ),
+        ([1.5, 21.0, 3.0], Anim::WolfHind { left: true }, (8.0, 22.0)),
+        (
+            [-1.5, 21.0, -3.0],
+            Anim::WolfFront { left: false },
+            (0.0, 0.0),
+        ),
+        (
+            [1.5, 21.0, -3.0],
+            Anim::WolfFront { left: true },
+            (20.0, 0.0),
+        ),
     ] {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 3.0, 2.0], NONE);
@@ -14364,7 +14415,7 @@ mod wolf_armor_tests {
         let leg = base
             .parts
             .iter()
-            .position(|p| p.anim == Anim::QuadFrontLeft)
+            .position(|p| p.anim == Anim::WolfFront { left: true })
             .unwrap();
         let width = |m: &Model| {
             let xs = m
