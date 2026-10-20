@@ -4021,8 +4021,13 @@ pub(super) fn collect_entities<'a>(
                 .render_death_time(alpha),
             // M24b: a dropped stack. `Some` makes the renderer draw the item
             // instead of a model — `ItemEntityRenderer` has no body of its own.
-            ground_item: thrown_model
-                .or_else(|| ground_stack.and_then(|(i, _, _)| item_names.name(i))),
+            // M289 — a dropped player head in its profile's skin.
+            ground_item: thrown_model.or_else(|| {
+                let name = ground_stack.and_then(|(i, _, _)| item_names.name(i))?;
+                Some(head_skins.map_or(name, |h| {
+                    h.item_model(name, session.world.entities.stack_profile(id))
+                }))
+            }),
             // `ItemStack.hasFoil()` (M45), decoded at the wire because it
             // lives only in the component patch.
             armor: armor_keys(session, id, item_names, equipment, trim_slots),

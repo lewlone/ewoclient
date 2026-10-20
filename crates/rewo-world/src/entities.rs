@@ -958,6 +958,10 @@ pub struct EntityTable {
     /// M273 — the `textures` property of a worn player head's profile, the
     /// skin `CustomHeadLayer` draws it in. Cleared with the armour.
     head_profiles: HashMap<i32, String>,
+    /// M289 — the `textures` property of a dropped or framed player head's
+    /// profile (`ItemEntity.DATA_ITEM` / `ItemFrame.DATA_ITEM`). Cleared on
+    /// removal.
+    stack_profiles: HashMap<i32, String>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -1660,6 +1664,7 @@ impl EntityTable {
             item_frames,
             armor,
             head_profiles,
+            stack_profiles,
             dances,
             events,
             swings: _,
@@ -1694,6 +1699,7 @@ impl EntityTable {
         deaths.remove(&id);
         item_stacks.remove(&id);
         item_frames.remove(&id);
+        stack_profiles.remove(&id);
         attributes.remove(&id);
         shared_flags.remove(&id);
         custom_name_visible.remove(&id);
@@ -2544,6 +2550,29 @@ impl EntityTable {
                 self.head_profiles.remove(&id);
             }
         }
+    }
+
+    /// M289 — a dropped or framed stack's player-head skin (`None` clears).
+    pub fn set_stack_profile(&mut self, id: i32, textures: Option<String>) {
+        match textures {
+            Some(t) => {
+                self.stack_profiles.insert(id, t);
+            }
+            None => {
+                self.stack_profiles.remove(&id);
+            }
+        }
+    }
+
+    /// M289 — the `textures` property of the dropped or framed stack `id`
+    /// carries.
+    pub fn stack_profile(&self, id: i32) -> Option<&str> {
+        self.stack_profiles.get(&id).map(String::as_str)
+    }
+
+    /// M289 — every dropped or framed head's skin, to request.
+    pub fn stack_profiles(&self) -> impl Iterator<Item = &str> {
+        self.stack_profiles.values().map(String::as_str)
     }
 
     /// M273 — the `textures` property of the player head `id` wears.
@@ -4748,6 +4777,7 @@ mod side_state_tests {
             item_frames,
             armor,
             head_profiles,
+            stack_profiles,
             dances,
             events,
             swings,
@@ -4786,6 +4816,7 @@ mod side_state_tests {
             item_stacks.contains_key(&id),
             armor.contains_key(&id),
             head_profiles.contains_key(&id),
+            stack_profiles.contains_key(&id),
             dances.contains_key(&id),
             events.contains_key(&id),
             swings.contains_key(&id),
@@ -4844,6 +4875,7 @@ mod side_state_tests {
         t.minecart_displays.insert(id, MinecartDisplay::default());
         t.primed.insert(id, PrimedState::default());
         t.item_stacks.insert(id, (1, 1, false));
+        t.stack_profiles.insert(id, "e30=".to_string());
         t.hurts.insert(id, HurtState::default());
         t.hurt_dirs.insert(id, 45.0);
         t.model_customisation.insert(id, 0x7f);

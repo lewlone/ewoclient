@@ -57,6 +57,8 @@ pub(crate) struct FrameInputs {
     pub map: Option<FramedMap>,
     /// `(block, sky)` light at the entity.
     pub light: (u8, u8),
+    /// M289 — the framed stack's player-head skin (`textures` property).
+    pub profile: Option<String>,
 }
 
 /// A framed map with data.
@@ -254,6 +256,7 @@ pub(crate) fn collect_frame_inputs(
                 p[1].floor() as i32,
                 p[2].floor() as i32,
             ),
+            profile: ents.stack_profile(id).map(str::to_string),
         });
     }
     // Stable order (the table is a hash map), so a still frame's vertex soup
@@ -269,7 +272,7 @@ pub(crate) fn collect_frame_inputs(
 }
 
 /// The draws for every frame in the level.
-pub(crate) fn collect_item_frames(
+pub(super) fn collect_item_frames(
     world: &rewo_world::World,
     maps: &rewo_world::maps::MapStore,
     lang: Option<&rewo_data::lang::Language>,
@@ -277,9 +280,14 @@ pub(crate) fn collect_item_frames(
     item_names: &rewo_data::items::Items,
     lightmap: &LightmapState,
     alpha: f32,
+    // M289 — framed player heads take their skins.
+    head_skins: Option<&super::block_entities::HeadSkins>,
 ) -> ItemFrameDraws {
     let mut out = ItemFrameDraws::default();
-    for f in collect_frame_inputs(world, maps, lang, etypes, item_names, alpha) {
+    for mut f in collect_frame_inputs(world, maps, lang, etypes, item_names, alpha) {
+        if let (Some(h), Some(item)) = (head_skins, f.item.as_deref()) {
+            f.item = Some(h.item_model(item, f.profile.as_deref()).to_string());
+        }
         frame_draws(&f, lightmap, &mut out);
     }
     out
@@ -315,6 +323,7 @@ mod tests {
             foil: false,
             map,
             light: (7, 9),
+            profile: None,
         }
     }
 

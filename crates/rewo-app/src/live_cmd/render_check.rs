@@ -357,6 +357,10 @@ pub(super) struct RenderCheck {
     /// M288 — r146: frames with the invulnerable wither drawn in its
     /// invulnerable sheet (resolved in the atlas) at its shrunk scale.
     pub(super) invulnerable_wither_frames: usize,
+    /// M289 — r147: frames on which the dropped and the framed player head
+    /// drew in their skin.
+    pub(super) dropped_skin_head_frames: usize,
+    pub(super) framed_skin_head_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1122,7 +1126,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 146;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 147;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1322,6 +1326,18 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M289 — r147: `render_check.py` drops a player head item and frames
+        // another, both with r130's skin in their profile. Each must draw in a
+        // per-skin item model that samples the synthetic skin (the model
+        // M275's icons use); both drew Steve until M289.
+        row(
+            "r147 a dropped and a framed player head drew in their own skin",
+            self.dropped_skin_head_frames >= 1 && self.framed_skin_head_frames >= 1,
+            format!(
+                "{} frames drew the dropped head skinned, {} the framed one",
+                self.dropped_skin_head_frames, self.framed_skin_head_frames
             ),
         );
         // M288 — r146: `render_check.py` summons a NoAI wither with `Invul`

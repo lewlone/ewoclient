@@ -300,7 +300,13 @@ HEAD_STAGING = (
     # main-inventory slot (clear of the hotbar the use tail fills).
     ";item replace entity @s inventory.26 with minecraft:player_head"
     "[minecraft:profile={properties:[{name:\"textures\",value:\"%s\"}]}]"
-    % (HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES)
+    # M289 -- r147. The same head dropped (never picked up or despawned) and
+    # in a floor-mounted item frame.
+    ";summon minecraft:item ~-11 ~ ~6 {PickupDelay:32767,Age:-32768,Item:{id:\"minecraft:player_head\","
+    "count:1,components:{\"minecraft:profile\":{properties:[{name:\"textures\",value:\"%s\"}]}}}}"
+    ";summon minecraft:item_frame ~-11 ~ ~8 {Facing:1b,Fixed:1b,Item:{id:\"minecraft:player_head\","
+    "count:1,components:{\"minecraft:profile\":{properties:[{name:\"textures\",value:\"%s\"}]}}}}"
+    % (HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES)
 )
 
 

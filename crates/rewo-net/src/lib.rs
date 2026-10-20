@@ -2746,6 +2746,8 @@ pub(crate) fn apply_set_entity_data<'a>(
         }
         if let Some(item) = meta.frame_item {
             entities.set_frame_item(eid, item);
+            // M289 — and the framed stack's player-head skin.
+            entities.set_stack_profile(eid, meta.stack_profile.clone().flatten());
         }
         if let Some(r) = meta.int10 {
             entities.set_frame_rotation(eid, r);
@@ -2755,6 +2757,8 @@ pub(crate) fn apply_set_entity_data<'a>(
     // serializer is unique to it among the classes that claim slot 8.
     if let Some(stack) = meta.item_stack {
         entities.set_item_stack(eid, stack);
+        // M289 — and the dropped stack's player-head skin.
+        entities.set_stack_profile(eid, meta.stack_profile.clone().flatten());
     }
     // Slot 9 FLOAT → `LivingEntity.DATA_HEALTH_ID` (M24 death). Same living
     // gate as slot 8, for the same reason.

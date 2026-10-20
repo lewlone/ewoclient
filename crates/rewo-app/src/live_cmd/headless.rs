@@ -766,6 +766,7 @@ pub(super) fn run_headless(
         &items,
         &lightmap,
         1.0,
+        None,
     );
     prepare_frame_maps(&mut world_renderer, &mut gpu, &frames, &session.maps);
     bes.extend(frames.models);

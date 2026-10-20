@@ -480,6 +480,7 @@ fn check_draws(
         foil: false,
         map: None,
         light: (15, 15),
+        profile: None,
     };
     let mut out = ItemFrameDraws::default();
     frame_draws(&inv, &lm, &mut out);
@@ -509,6 +510,7 @@ fn check_draws(
         foil: false,
         map,
         light: (0, 0),
+        profile: None,
     };
     // The lightmap's `0/0` black texel is NaN, which every entity light
     // clamps to 0 (`live_cmd::entity_light`'s guard), so the expectation does
@@ -751,6 +753,7 @@ fn check_pixels(
             foil: false,
             map,
             light: (15, 15),
+            profile: None,
         };
 
     // p1-p3: an empty north frame. Its plate's front is at the entity's plane

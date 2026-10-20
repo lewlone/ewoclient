@@ -281,6 +281,10 @@ pub struct EntityMeta {
     pub direction8: Option<u8>,
     /// M194 — ITEM_STACK at 9, `ItemFrame.DATA_ITEM`; `Some(None)` = empty.
     pub frame_item: Option<Option<rewo_world::entities::FrameItem>>,
+    /// M289 — the `minecraft:profile` component's `textures` property of the
+    /// stack at slot 8 (a dropped item) or 9 (a framed one): `Some(None)` for
+    /// a stack without one, `None` when neither slot came.
+    pub stack_profile: Option<Option<String>>,
     /// M194 — INT at 10, `ItemFrame.DATA_ROTATION`.
     pub int10: Option<i32>,
     /// M251 — INT at 8: `ExperienceOrb.DATA_VALUE` (kind-gated by the
@@ -422,8 +426,12 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             // ids to walk the stack; without them the entry is unwalkable and
             // the parse must stop rather than desynchronise.
             (8, 7) => match components.and_then(|c| crate::item_stack::read_optional(r, c).ok()) {
-                Some(crate::item_stack::WireSlot::Empty) => meta.item_stack = Some(None),
+                Some(crate::item_stack::WireSlot::Empty) => {
+                    meta.stack_profile = Some(None);
+                    meta.item_stack = Some(None)
+                }
                 Some(crate::item_stack::WireSlot::Stack(s)) if s.aligned_stack() => {
+                    meta.stack_profile = Some(s.components.profile_textures.clone());
                     meta.item_stack = Some(Some((s.item_id, s.count, s.components.has_foil())))
                 }
                 _ => break,
@@ -435,8 +443,12 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             // types.
             (8, 12) => meta.direction8 = r.varint().ok().map(|v| v as u8),
             (9, 7) => match components.and_then(|c| crate::item_stack::read_optional(r, c).ok()) {
-                Some(crate::item_stack::WireSlot::Empty) => meta.frame_item = Some(None),
+                Some(crate::item_stack::WireSlot::Empty) => {
+                    meta.stack_profile = Some(None);
+                    meta.frame_item = Some(None)
+                }
                 Some(crate::item_stack::WireSlot::Stack(s)) if s.aligned_stack() => {
+                    meta.stack_profile = Some(s.components.profile_textures.clone());
                     meta.frame_item = Some(Some(rewo_world::entities::FrameItem {
                         item_id: s.item_id,
                         map_id: s.components.map_id,

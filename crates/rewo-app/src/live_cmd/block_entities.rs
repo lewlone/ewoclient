@@ -102,6 +102,16 @@ impl HeadSkins {
         self.items.get(url).map(String::as_str)
     }
 
+    /// M289 — the item model a stack named `name` draws in: a player head
+    /// whose profile's skin has arrived takes its per-skin model (M275's,
+    /// for a dropped or framed stack too), anything else keeps `name`.
+    pub(super) fn item_model<'a>(&'a self, name: &'a str, profile: Option<&str>) -> &'a str {
+        if name != "minecraft:player_head" {
+            return name;
+        }
+        profile.and_then(|v| self.ready_item(v)).unwrap_or(name)
+    }
+
     /// Ask for the skin of this `textures` value, the first time it is seen.
     pub(super) fn request(&mut self, value: &str) {
         if !self.urls.contains_key(value) {

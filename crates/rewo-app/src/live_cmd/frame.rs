@@ -704,6 +704,7 @@ impl LiveApp {
             .world
             .entities
             .head_profiles()
+            .chain(session.world.entities.stack_profiles())
             .chain(session.inventory.profile_skins())
         {
             self.head_skins.request(v);
@@ -873,6 +874,7 @@ impl LiveApp {
             &self.items,
             &lightmap,
             alpha,
+            Some(&self.head_skins),
         );
         prepare_frame_maps(
             &mut state.world_renderer,
@@ -917,6 +919,31 @@ impl LiveApp {
                 {
                     c.item_frame_frames += 1;
                 }
+            }
+            // M289 — r147: the staged dropped and framed player heads drew
+            // in a per-skin model that samples the synthetic skin.
+            let skinned = |m: &str| {
+                m.starts_with("minecraft:player_head#skin")
+                    && self.baked.as_ref().is_some_and(|b| {
+                        b.held_items.get(m).is_some_and(|mm| {
+                            mm.quads.iter().any(|q| {
+                                b.held_items
+                                    .textures
+                                    .get(q.tex as usize)
+                                    .is_some_and(super::render_check::is_synthetic_skin)
+                            })
+                        })
+                    })
+            };
+            if draws.iter().any(|d| d.ground_item.is_some_and(skinned)) {
+                c.dropped_skin_head_frames += 1;
+            }
+            if frames
+                .models
+                .iter()
+                .any(|d| d.fixed_display && skinned(&d.model))
+            {
+                c.framed_skin_head_frames += 1;
             }
             // r105 — the two staged armour stands, as their model (not the
             // capsule), each with its own flags off the wire: the plain one
