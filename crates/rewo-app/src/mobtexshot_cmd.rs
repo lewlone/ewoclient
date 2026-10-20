@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 34;
+const EXPECTED_WITNESSES: usize = 35;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2617,6 +2617,79 @@ fn run_check(
              colour it cannot produce: {:?}",
             husk_bad.map(|c| format!("#{c:06x}")),
             hsad_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m35 — M304: a giant draws as a zombie six times the size (it was a
+    // capsule until M304): every pixel is a colour the jar's zombie sheet can
+    // produce, and beside a zombie at the same spot its silhouette stands
+    // about six times as tall (perspective at this distance keeps the ratio
+    // within 5..7).
+    let zombie_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "zombie")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut gst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 6.0, -16.0),
+        Vec3::new(0.0, 6.0, 0.0),
+    )?;
+    gst.wr.set_entities(&[], gst.right, gst.up, 0.0);
+    gst.off.render(gpu, Some((&mut gst.wr, gst.vp)), &ov, BG)?;
+    let g_empty = gst.off.read_rgba(gpu)?;
+    let mut gshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        gst.wr.set_entities(&[d], gst.right, gst.up, 0.0);
+        gst.off.render(gpu, Some((&mut gst.wr, gst.vp)), &ov, BG)?;
+        gst.off.read_rgba(gpu)
+    };
+    let g_giant = gshot(neutral_draw(EntityModelKind::Giant))?;
+    let g_zombie = gshot(neutral_draw(EntityModelKind::Zombie))?;
+    gst.destroy(gpu);
+    // The drawn rows' span, and the first colour the zombie sheet cannot
+    // produce.
+    let span = |f: &[u8]| {
+        let (mut top, mut bottom, mut n, mut bad) = (u32::MAX, 0u32, 0usize, None);
+        for (i, (p, e)) in f
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(g_empty.as_chunks::<4>().0)
+            .enumerate()
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            let y = i as u32 / cw;
+            top = top.min(y);
+            bottom = bottom.max(y);
+            n += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&zombie_sheet, c) {
+                bad = Some(c);
+            }
+        }
+        (if n == 0 { 0 } else { bottom - top + 1 }, n, bad)
+    };
+    let (giant_h, giant_px, giant_bad) = span(&g_giant);
+    let (zombie_h, _, _) = span(&g_zombie);
+    let ratio = giant_h as f32 / zombie_h.max(1) as f32;
+    w.push(wit(
+        "m35.a_giant_draws_as_a_zombie_six_times_the_size",
+        !zombie_sheet.is_empty()
+            && giant_px >= 2000
+            && giant_bad.is_none()
+            && zombie_h >= 10
+            && (5.0..=7.0).contains(&ratio),
+        format!(
+            "{giant_px} px drawn (want >= 2000), first colour the zombie sheet cannot produce: \
+             {:?}; {giant_h} rows tall against a zombie's {zombie_h} (ratio {ratio:.2}, want \
+             5..7)",
+            giant_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

@@ -1505,11 +1505,15 @@ pub enum EntityModelKind {
     /// Last before the capsule so every earlier kind keeps its index (and
     /// its cell in `mobtexshot m5`'s crowd).
     CamelHusk,
+    /// M304 — `GiantMobRenderer`: the humanoid mesh scaled 6.0
+    /// (`LayerDefinitions`' `giantScale`) on the zombie's sheet. It drew as
+    /// a capsule before.
+    Giant,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 98;
+    pub const COUNT: usize = 99;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1608,6 +1612,7 @@ impl EntityModelKind {
         EntityModelKind::Minecart,
         EntityModelKind::ArmorStand,
         EntityModelKind::CamelHusk,
+        EntityModelKind::Giant,
         EntityModelKind::Capsule,
     ];
 
@@ -1707,6 +1712,7 @@ impl EntityModelKind {
             EntityModelKind::Nautilus => "nautilus",
             EntityModelKind::ZombieNautilus => "zombie_nautilus",
             EntityModelKind::CamelHusk => "camel_husk",
+            EntityModelKind::Giant => "giant",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -2577,6 +2583,12 @@ pub static MOBS: &[MobDef] = &[
         textures: &["camel_husk"],
         build: camel,
     },
+    // M304 — `GiantMobRenderer.ZOMBIE_LOCATION`.
+    MobDef {
+        kind: EntityModelKind::Giant,
+        textures: &["zombie"],
+        build: giant,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2914,6 +2926,13 @@ fn zombie() -> Model {
 fn husk() -> Model {
     // Vanilla HuskRenderer scales the zombie model by 1.0625.
     zombie_like(1.0625, None)
+}
+
+/// M304 — `GiantZombieModel` is an `AbstractZombieModel` on the humanoid
+/// body layer through `MeshTransformer.scaling(6.0F)`: the zombie's mesh,
+/// arms and all, six times the size.
+fn giant() -> Model {
+    zombie_like(6.0, None)
 }
 
 fn drowned() -> Model {
@@ -10974,7 +10993,7 @@ pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
 /// ZombifiedPiglinRenderer              zombified_piglin
 /// PiglinRenderer                       piglin, piglin_brute
 /// ArmorStandRenderer                   armor_stand (M238)
-/// GiantMobRenderer                     (Rewo does not model the giant)
+/// GiantMobRenderer                     giant (M304; `GIANT_ARMOR` is the armour scaled 6.0, as the mob)
 /// ```
 ///
 /// Deliberately not a geometric test. An earlier form asked "does the model
@@ -11001,6 +11020,7 @@ pub fn wears_humanoid_armor(kind: EntityModelKind) -> bool {
             | EntityModelKind::Parched
             | EntityModelKind::Piglin
             | EntityModelKind::PiglinBrute
+            | EntityModelKind::Giant
     )
 }
 
@@ -11589,6 +11609,29 @@ mod harness_tests {
         assert!(
             low(&down) > low(&up),
             "ridden goggles sit lower on screen (larger model y)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod giant_tests {
+    use super::*;
+
+    /// M304 — the giant is the zombie six times over: the same quads and
+    /// parts, the model scale six times the zombie's.
+    #[test]
+    fn the_giant_is_the_zombie_at_six_times_the_size() {
+        let (z, g) = (zombie(), giant());
+        assert_eq!(g.scale, z.scale * 6.0);
+        assert_eq!(g.parts.len(), z.parts.len());
+        assert_eq!(
+            g.quads.iter().map(|q| (q.pos, q.uv)).collect::<Vec<_>>(),
+            z.quads.iter().map(|q| (q.pos, q.uv)).collect::<Vec<_>>()
+        );
+        assert!(wears_humanoid_armor(EntityModelKind::Giant));
+        assert_eq!(
+            kind_for_entity_name("minecraft:giant"),
+            EntityModelKind::Giant
         );
     }
 }

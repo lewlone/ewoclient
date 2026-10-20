@@ -251,6 +251,8 @@ PRECMD = (
     # M303 -- r159. A saddled camel husk, clear of r89's camel lane (z ~-12).
     "summon minecraft:camel_husk ~-20 ~ ~-17 {NoAI:1b,Silent:1b,"
     "equipment:{saddle:{id:\"minecraft:saddle\",count:1}}};"
+    # M304 -- r160. A giant (12 blocks tall), well clear of every lane.
+    "summon minecraft:giant ~-34 ~ ~-24 {NoAI:1b,Silent:1b};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

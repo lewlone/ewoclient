@@ -948,6 +948,13 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M304 — r160: the staged giant.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Giant)
+            {
+                c.giant_frames += 1;
+            }
             // M303 — r159: the staged saddled camel husk.
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::CamelHusk

@@ -390,6 +390,8 @@ pub(super) struct RenderCheck {
     pub(super) harness_frames: usize,
     /// M303 — r159: frames on which the staged camel husk drew saddled.
     pub(super) camel_husk_frames: usize,
+    /// M304 — r160: frames on which the staged giant drew as a giant.
+    pub(super) giant_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1155,7 +1157,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 159;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 160;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1356,6 +1358,14 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M304 — r160: `render_check.py` summons a giant; it must draw as
+        // `Giant` (a capsule until M304; `mobtexshot m35` checks its sheet
+        // and size).
+        row(
+            "r160 a giant drew as a giant",
+            self.giant_frames >= 1,
+            format!("{} frames drew it", self.giant_frames),
         );
         // M303 — r159: `render_check.py` summons a saddled camel husk; it
         // must draw as `CamelHusk` (it was a capsule until M303) with
