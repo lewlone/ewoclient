@@ -3957,6 +3957,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M310 — an avatar's outer layers follow its customisation mask (2026-10-20)
+
+`Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16 BYTE) gated only the cape
+(M60): the hat, jacket, sleeves and trouser legs always drew, for every
+player. `PlayerModel.setupAnim` shows each by its `PlayerModelPart` bit, so
+each of the six outer boxes now rides its own child part (at its parent's
+pivot, so the same transform: twelve boxes, as before) with
+`Show::AvatarPart(bit)`, and `EntityDraw::avatar_hidden` carries the
+complement of the mask. A player or mannequin draws by its synched mask
+(the gate now admits the mannequin, `MetaKinds::mannequin`; an unsent mask is
+`Avatar`'s default 0, as in vanilla), and the inventory preview by the mask
+the client sent (`options.txt`'s `modelPart_*`). Not done: the first-person
+arm's sleeve.
+
+**Unit test**: the six layers each one box on a child part shown by its bit.
+**mobtexshot m38**: in wide Kai (default skin 12, with a jacket and sleeves
+and no hat texels) hiding the jacket changes 664 px, all six layers 1,116,
+and the transparent hat 0 (layers always shown: 0, 0, 0, and m38 fails).
+**r166**: a mannequin staged with `hidden_layers:["hat","jacket"]` draws with
+exactly those two hidden.
+
 ### M309 — a mannequin's own profile (2026-10-20)
 
 `Mannequin.DATA_PROFILE` is index 17 with `RESOLVABLE_PROFILE` (serializer
