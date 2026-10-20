@@ -3968,6 +3968,26 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M322 — the piglet and the chick (2026-10-20)
+
+`PigRenderer` and `ChickenRenderer` swap in `BabyPigModel` (32 x 32: a body,
+a 7 x 6 x 6 head grown 0.025 with its snout grown 0.015, four 2 x 2 x 2
+legs) and `BabyChickenModel` (16 x 16: a 4 x 4 x 4 body that is the chick's
+head too, with no head part, so it never looks; its beak; two legs of a
+1 x 2 x 0 plate and a 1 x 0 x 1 foot; two 1 x 0 x 2 wings) on
+`pig_temperate_baby.png` and `chicken_temperate_baby.png`. Neither sheet was
+in the swap table, so each was the half-size adult. `PigBaby` and
+`ChickenBaby` are those models, picked by `baby_model_kind`; the chick's
+wings stay still as Rewo's adult chicken's do. `mobshot` grades 315 views;
+`MAX_SMALL` 23 (both are under the crowd's pixel floor).
+
+**Unit tests**: the piglet's seven boxes and its head box's front at
+(6, 21)..(13, 27); the chick's 24 faces (plates draw two each), no head part,
+and its body's front at (4, 4)..(8, 8). **mobtexshot m48**: both draw (4,231
+and 921 px) with no colour foreign to their own sheet; the piglet on the
+adult pig's sheet fails on `#e6918b`. **r177**: a staged piglet and chick
+draw as their baby models.
+
 ### M321 — the calves (2026-10-20)
 
 `CowRenderer` and `MushroomCowRenderer` swap in `BabyCowModel` (a 6 x 6 x 5
