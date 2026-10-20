@@ -2105,6 +2105,7 @@ this shape once.
 | M289 (2026-10-20) — a dropped and a framed player head draw in their own skin | **r147** | — | — |
 | M290 (2026-10-20) — an armour stand's held player head draws in its own skin | **r148** | — | — |
 | M292 (2026-10-20) — the donkey's screen draws the donkey in its window | **r149** | — | — |
+| M294 (2026-10-20) — a horse draws in its iron horse armour | **r150** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3939,6 +3940,39 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M294 — horse body armour (2026-10-20)
+
+`HorseRenderer` and `UndeadHorseRenderer` add a `SimpleEquipmentLayer` of
+`EquipmentClientInfo.LayerType.HORSE_BODY` over `ModelLayers.HORSE_ARMOR`
+(`createBodyMesh(new CubeDeformation(0.1F))` with `livingHorseScale`) or
+`UNDEAD_HORSE_ARMOR` (the same without it). Rewo drew none: the equipment
+packet's body slot (wire 6) was discarded and the equipment table skipped
+`horse_body`.
+
+- the body slot is a `WornPiece` per entity (`EntityTable::body_armor`,
+  cleared with every side map);
+- `ArmorLayer::HorseBody` loads `entity/equipment/horse_body/*.png` (seven
+  sheets, the leather pair dyeable), sorted after every other sheet so the
+  atlas keeps every earlier slot;
+- the shells (`mobs::horse_armor`, `undead_horse_armor`: `equine_with(g)`,
+  the body's own 0.05, the neck 0 and the ears -0.001 kept) ride
+  `MobModel::body_shell`, placed by the worn layer's atlas slot as humanoid
+  armour is, the dye as the vertex colour, lit and overlaid like the body;
+- `body_armor_piece` resolves the layers (`color_for_layer`, zero for no
+  draw) into `EntityDraw::body_armor`.
+
+Recorded: the saddle (`HORSE_SADDLE`'s `EquineSaddleModel`), a llama's
+carpet, a wolf's armour and the happy ghast's harness are other layers on
+the same slot family and still not drawn; horse armour shows no glint
+(none is enchantable in survival).
+
+**Unit test**: the shell is the horse at 0.1 (parts, UVs, scale, the legs'
+boxes 0.2 wider). **mobtexshot m25**: a horse in iron armour against a bare
+one changes 839 px, every colour producible from the jar's
+`horse_body/iron`, the sheet resident in the atlas. **r150**:
+`render_check.py` summons a horse wearing iron horse armour; its body slot
+reaches the draw as that layer with the sheet resident.
 
 ### M293 — the equines' model scales (2026-10-20)
 
