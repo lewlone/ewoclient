@@ -3929,6 +3929,30 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M279 — an invisible glowing entity is its outline (2026-10-20)
+
+`LivingEntityRenderer.getRenderType`: a body the viewer cannot see draws
+nothing unless it glows, and then it draws `RenderTypes.outline(texture)`,
+its outline alone. That is how a spectral arrow reveals an invisible
+player. M278's outline copied only what an entity emitted, and a hidden
+body (M271) emits nothing, so it showed no outline.
+
+- After a hidden, glowing entity's normal emit (its layers), the model
+  emits again with the body shown and no layers into scratch buffers, and
+  only its outline copies are kept. `EntityDraw` derives `Clone, Copy` for
+  the copy; CEM's same-frame guard keeps the second emit from stepping the
+  animation state twice.
+
+Recorded: `isInvisibleTo` with a team that sees friendly invisibles
+(vanilla draws those translucent) is still unhandled.
+
+**mobshot** (fail-closed, once): the armour stand invisible and glowing
+red against the empty background: 7,093 px changed, every one within 3 px
+of the plain stand's edge, none in its core (the body is not drawn). With
+the second emit removed nothing changes and the check fails. **r138**: a
+summoned invisible stand with the `Glowing` tag reaches the draws hidden
+and outlined, and the outline pass runs.
+
 ### M278 — the glowing outline (2026-10-20)
 
 The Glowing effect (spectral arrows, `/effect`, and every minigame that

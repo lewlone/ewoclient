@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 85 Rewo milestones, M194 to M278, in about 189 commits on
+- **What happened**: 86 Rewo milestones, M194 to M279, in about 192 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`cda37fcd`): 4,419 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 137 of
-  137 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`22ba2d7c`): 4,419 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 138 of
+  138 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -341,6 +341,8 @@ released.
 - **M278, a big one for servers**: the Glowing effect's outline (team
   colours, spectral arrows, minigames) now draws, through walls, as
   vanilla's outline post-process does. Rewo drew nothing for it.
+- **M279**: an invisible player or mob that glows (hit by a spectral
+  arrow, say) now shows as its outline alone, as in vanilla.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -402,6 +404,8 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `22ba2d7c` | **M279** — an invisible glowing entity draws as its outline alone (the model emitted again, outline copies only); mobshot's outline-only check and render-check **r138**. |
+| `b783723f` | Render check: a lost port race (`FAILED TO BIND`) retries on a new port, up to three. |
 | `cda37fcd` | **M278** — the glowing outline: `glow_colour` (shared flag 6, team colour), the outline vertex range, `world/outline.rs` (`OutlinePass`: geometry into its own UNORM target and depth, `entity_sobel`, the two box blurs, the alpha composite through the UNORM view), five shaders; mobshot's rim/far/core pixel check and render-check **r137**. |
 | `73b09728` | **M277** — the white flash: `overlay_value` and the shader's white columns (red alpha corrected 179 → 178), the creeper's client swell (`tick_creepers`, `creeper_swelling`, `EntityDraw::stretch` and `white_overlay`), TNT's `isLit` on the block-entity draw; unit tests, hurtshot **c6** and render-check **r135** / **r136**. |
 | `96db1636` | **M276** — the enchanting table's book: `EnchantBook` (`bookAnimationTick` and its render interpolation), `World::tick_enchanting_books`, the book baked at rest with six animated groups posed by `enchanting_book_parts`, `MAX_PARTS` 4 → 7; unit tests (the tick; the posed book equals the lectern's) and render-check **r134**. |
@@ -730,6 +734,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M279: **4,419 tests passed, 0 failed; gates 51/51** (mobshot's outline-only check: 7,093 px, 0 stray, 0 inside); render check **138/138** on two runs (both with the port-race retry in place); clippy and `cargo fmt --check` clean.
 - After M278: **4,419 tests passed, 0 failed; gates 51/51** (mobshot's outline check: 1,194 of 1,194 rim px, 0 far, 0 core); render check **137/137** on two runs, validation clean; clippy and `cargo fmt --check` clean. The mobshot criterion's first draft expected the rim to brighten toward red; vanilla's chain leaves 0.2–0.4 of the colour at full alpha, so over a light background the rim darkens to red, and the check grades the hue.
 - After M277: **4,419 tests passed, 0 failed; gates 51/51** (hurtshot 57: c1 predicts [208, 116, 87] with 178 and the GPU gives it exactly; c6's white flash [223, 189, 143] exactly); render check **136/136** on two runs (r136: 39,271 / 33,180 swollen frames, 214 / 221 white); clippy and `cargo fmt --check` clean.
 - After M276: **4,417 tests passed, 0 failed; gates 51/51**; render check **134/134** on two runs (r134's turn range 0.347, the full ±cos 80° a turning book gives); clippy (gates and default features) and `cargo fmt --check` clean.
@@ -774,9 +779,9 @@ released.
   horse inventory~~ (M220), ~~steering boats~~ (M221), ~~steering horses~~
   (M222), ~~camels~~ (M225), ~~the nautilus~~ (M227). That list is done.
 - ~~r78's survival-mining flake~~ (M224: the witness, not the client).
-- `tools/render_check.py`'s port probe lost a race once ("server FAILED TO
+- ~~`tools/render_check.py`'s port probe lost a race once ("server FAILED TO
   BIND"): it picks a free port, then the server binds it later. A retry on
-  that message would remove the one non-Rewo failure seen in the loops.
+  that message would remove the one non-Rewo failure seen in the loops.~~ Retried on a new port since `b783723f` (up to three ports).
 - Two flakes seen during M245's checks, not investigated: `rewo-audio`'s
   `a_slow_read_is_not_re_requested_on_every_tick` (80 ms of wall-clock ticks
   for a worker to open a stream; failed once under the full workspace run,
