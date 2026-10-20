@@ -1074,3 +1074,13 @@ released.
   the server (its log shows no command at all), so this is the script's
   stdin handling, not the client; a gates knob that stages the camera
   would be the clean way.
+- **A render-check flake seen in M329's run 2** (174/183, then 183/183 on a
+  third run, with no live code changed): nine tail witnesses (r42, r61,
+  r75-r78, r81, r88, r91) found nothing where `REWO_PRECMD` had staged it
+  near the bot ("no lectern block entity near the bot", "no villager near
+  the bot"). The use tail's stage sequence matched run 1's; what differed is
+  that the 105-command batch took 232 ms to send (2 ms in run 1) and the
+  spawn sat at a (-3, +4) offset. Suspect: relative (`~`) placements landing
+  while the bot's server-side position is still settling, now that the
+  batch is longer (about 15 summons were added on 2026-10-20). Not
+  investigated further.
