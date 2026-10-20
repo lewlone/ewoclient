@@ -3977,6 +3977,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M332 — the ocelot kitten (2026-10-20)
+
+`OcelotRenderer` swaps in `BabyOcelotModel`, whose layer is `BabyFelineModel
+.createBabyLayer()` (32 x 32; the cat's kittens share it): a 5 x 4 x 4 head
+with its ears and nose, looking; a 4 x 3 x 7 body; a tail tilted -0.5672
+(its second segment has no box); four 1 x 2 x 2 legs, on `ocelot_baby.png`,
+a sheet M175 never baked (the adult's is 64 x 32). `OcelotBaby` is that
+model, picked by `baby_model_kind`. The legs follow vanilla's feline walk
+exactly: amplitude 1.0 (`amp` = 1/1.4 undoes `Anim`'s 1.4), the left hind
+and right front legs in phase. Rewo's adult feline swings its legs at 1.4,
+not vanilla's 1.0 (a follow-up). The cat's kittens wait for baby-keyed
+variant sheets. `mobshot` grades 348 views; `MAX_SMALL` 19.
+
+**Unit test**: ten boxes, the head box's front at (4, 4)..(9, 8), the four
+legs' phases and amplitude. **mobtexshot m57**: the kitten draws (2,840 px)
+with no colour foreign to its sheet; on the adult's sheet it fails on
+`#d7d7d6`. **r186**: a staged ocelot kitten draws as `BabyOcelotModel`.
+
 ### M331 — the panda cub (2026-10-20)
 
 `PandaRenderer` swaps in `BabyPandaModel` (64 x 64: a 9 x 7 x 11 body
