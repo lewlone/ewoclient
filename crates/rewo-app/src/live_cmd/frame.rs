@@ -973,6 +973,14 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M338 — r192: the staged gray baby llama, drawn on a coat
+            // variant (the app's `vanilla_variant` routing for the baby).
+            for d in draws.iter() {
+                if d.kind == rewo_gpu::mobs::EntityModelKind::LlamaBaby {
+                    c.baby_llama.0 = true;
+                    c.baby_llama.1 |= d.variant != 0;
+                }
+            }
             // M337 — r191: the staged goat kid.
             c.goat_kid |= draws
                 .iter()

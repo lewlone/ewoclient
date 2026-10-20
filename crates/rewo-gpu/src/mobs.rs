@@ -1599,11 +1599,13 @@ pub enum EntityModelKind {
     RabbitBaby,
     /// M337 — `BabyGoatModel` (`GOAT_BABY`).
     GoatBaby,
+    /// M338 — `BabyLlamaModel` (`LLAMA_BABY`).
+    LlamaBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 131;
+    pub const COUNT: usize = 132;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1735,6 +1737,7 @@ impl EntityModelKind {
         EntityModelKind::CamelBaby,
         EntityModelKind::RabbitBaby,
         EntityModelKind::GoatBaby,
+        EntityModelKind::LlamaBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1867,6 +1870,7 @@ impl EntityModelKind {
             EntityModelKind::CamelBaby => "camel_baby",
             EntityModelKind::RabbitBaby => "rabbit_baby",
             EntityModelKind::GoatBaby => "goat_baby",
+            EntityModelKind::LlamaBaby => "llama_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1939,6 +1943,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::CamelBaby
                 | EntityModelKind::RabbitBaby
                 | EntityModelKind::GoatBaby
+                | EntityModelKind::LlamaBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2977,6 +2982,13 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::GoatBaby,
         textures: &["goat_baby"],
         build: goat_baby,
+    },
+    // M338 — the creamy kit's sheet; the other three coats are its variants
+    // (`mob_variants::llama_baby_texture`).
+    MobDef {
+        kind: EntityModelKind::LlamaBaby,
+        textures: &["llama_baby"],
+        build: llama_baby,
     },
 ];
 
@@ -6262,6 +6274,45 @@ fn goat_baby() -> Model {
         false,
         &[Fold::at([0.0, -1.3126, -1.1548])],
     );
+    b.finish(1.0)
+}
+
+/// M338 — `BabyLlamaModel.createBodyLayer(CubeDeformation.NONE)` (64 x 64):
+/// the head (an 6 x 11 x 4 neck-and-skull, its muzzle and two ears; looking),
+/// an 8 x 6 x 13 body authored level and four 3 x 8 x 3 legs on
+/// `LlamaModel`'s walk, which is the quadruped's leg for leg. The two chest
+/// boxes are left out: `LlamaRenderer` sets `hasChest` only for an adult, so
+/// a baby never shows them.
+fn llama_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let head = b.part([0.0, 12.0, -4.0], Anim::Head, 1.0);
+    for (uv, min, dims) in [
+        ((0.0, 0.0), [-3.0, -9.0, -4.0], [6.0, 11.0, 4.0]),
+        ((0.0, 15.0), [-1.5, -7.0, -7.0], [3.0, 3.0, 3.0]),
+        ((20.0, 4.0), [0.5, -11.0, -3.0], [2.0, 2.0, 2.0]),
+        ((20.0, 0.0), [-2.5, -11.0, -3.0], [2.0, 2.0, 2.0]),
+    ] {
+        b.cube(head, 0, uv, min, dims, NONE);
+    }
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 15.0),
+        [-4.0, -3.0, -8.5],
+        [8.0, 6.0, 13.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 14.0, 2.5])],
+    );
+    for (pivot, anim, uv, min_x) in [
+        ([-2.5, 16.5, 4.5], Anim::QuadHindRight, (0.0, 45.0), -1.4),
+        ([2.5, 16.5, 4.5], Anim::QuadHindLeft, (12.0, 45.0), -1.6),
+        ([-2.5, 16.5, -3.5], Anim::QuadFrontRight, (0.0, 34.0), -1.4),
+        ([2.5, 16.5, -3.5], Anim::QuadFrontLeft, (12.0, 34.0), -1.6),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [min_x, -0.5, -1.5], [3.0, 8.0, 3.0], NONE);
+    }
     b.finish(1.0)
 }
 
@@ -12893,6 +12944,7 @@ mod tests {
                     | EntityModelKind::CamelBaby
                     | EntityModelKind::RabbitBaby
                     | EntityModelKind::GoatBaby
+                    | EntityModelKind::LlamaBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -14646,5 +14698,28 @@ mod goat_kid_tests {
         for (a, b) in fronts[0].pos.iter().zip(fronts[1].pos.iter()) {
             assert!((0..3).all(|i| (a[i] - b[i]).abs() < 1e-4));
         }
+    }
+}
+
+#[cfg(test)]
+mod llama_kid_tests {
+    use super::*;
+
+    /// M338 — `BabyLlamaModel`: nine boxes (no chests), the head's front at
+    /// (4, 4)..(10, 15) of its sheet, and no part shown only when chested.
+    #[test]
+    fn the_baby_llama_is_its_own_model_without_chests() {
+        let m = llama_baby();
+        assert_eq!(m.quads.len(), 9 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m.quads.iter().any(|q| q.part == head
+            && q.facing == Facing::North
+            && (span(q, 0), span(q, 1)) == ((4.0, 10.0), (4.0, 15.0))));
+        assert!(m.parts.iter().all(|p| !matches!(p.show, Show::Chested)));
     }
 }

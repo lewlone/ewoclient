@@ -116,6 +116,11 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama", "entity/llama/llama_white.png"),
     ("llama", "entity/llama/llama_brown.png"),
     ("llama", "entity/llama/llama_gray.png"),
+    // M338 — the baby llama's coats, `LlamaRenderer.BABY_TEXTURES`; the
+    // creamy kit (0) is the baked base of `llama_baby`.
+    ("llama_baby", "entity/llama/llama_white_baby.png"),
+    ("llama_baby", "entity/llama/llama_brown_baby.png"),
+    ("llama_baby", "entity/llama/llama_gray_baby.png"),
     // Horse — `equine::Variant` 0..6; `brown` (3) is the baked base.
     ("horse", "entity/horse/horse_white.png"),
     ("horse", "entity/horse/horse_creamy.png"),
@@ -344,6 +349,14 @@ const LLAMA_BY_ID: &[&str] = &[
     "entity/llama/llama_gray.png",
 ];
 
+/// M338 — `LlamaRenderer.BABY_TEXTURES`, by the same `Llama.Variant` id.
+const LLAMA_BABY_BY_ID: &[&str] = &[
+    "entity/llama/llama_creamy_baby.png",
+    "entity/llama/llama_white_baby.png",
+    "entity/llama/llama_brown_baby.png",
+    "entity/llama/llama_gray_baby.png",
+];
+
 /// `HorseRenderer.LOCATION_BY_VARIANT`, by `equine::Variant` id.
 /// `OutOfBoundsStrategy.WRAP`.
 const HORSE_BY_ID: &[&str] = &[
@@ -405,6 +418,13 @@ pub fn llama_texture(id: i32) -> &'static str {
     LLAMA_BY_ID[i]
 }
 
+/// M338 — a baby llama's texture: `getTextureLocation` picks `BABY_TEXTURES`
+/// for a baby, by the same variant id and the same CLAMP.
+pub fn llama_baby_texture(id: i32) -> &'static str {
+    let i = id.clamp(0, LLAMA_BABY_BY_ID.len() as i32 - 1) as usize;
+    LLAMA_BABY_BY_ID[i]
+}
+
 /// `Horse.getVariant()` → its texture.
 ///
 /// Two vanilla details in one line: the variant is the **low byte** of the
@@ -443,6 +463,7 @@ mod tests {
             "entity/frog/frog_temperate.png",
             "entity/axolotl/axolotl_lucy.png",
             "entity/llama/llama_creamy.png",
+            "entity/llama/llama_creamy_baby.png",
             "entity/horse/horse_brown.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -565,5 +586,32 @@ mod tests {
         }
         assert_eq!(fish_pattern_key(FishBase::Small), "tropical_fish_pattern_a");
         assert_eq!(fish_pattern_key(FishBase::Large), "tropical_fish_pattern_b");
+    }
+
+    /// M338 — the baby llama's coats follow the adult's ids and CLAMP, each
+    /// to its own baby sheet, every one an alternate of `llama_baby` but the
+    /// creamy base.
+    #[test]
+    fn a_baby_llama_wears_its_coat_s_baby_sheet() {
+        for (id, coat) in [
+            (-1, "creamy"),
+            (0, "creamy"),
+            (1, "white"),
+            (2, "brown"),
+            (3, "gray"),
+            (9, "gray"),
+        ] {
+            assert_eq!(
+                llama_baby_texture(id),
+                format!("entity/llama/llama_{coat}_baby.png")
+            );
+        }
+        assert_eq!(variant_id(llama_baby_texture(0)), Some(0));
+        for id in 1..=3 {
+            let v = variant_id(llama_baby_texture(id)).unwrap();
+            assert!(v >= VANILLA_VARIANT_BASE);
+            let (key, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+            assert_eq!(key, "llama_baby");
+        }
     }
 }

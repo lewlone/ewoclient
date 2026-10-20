@@ -1146,6 +1146,8 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M338 — the creamy baby llama's sheet (the base of its coat variants).
+    ("llama_baby", "entity/llama/llama_creamy_baby.png", 64, 64),
     // M337 — the goat kid's sheet.
     ("goat_baby", "entity/goat/goat_baby.png", 64, 64),
     // M336 — the brown kit's sheet.

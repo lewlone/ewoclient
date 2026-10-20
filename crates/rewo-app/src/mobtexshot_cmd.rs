@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 62;
+const EXPECTED_WITNESSES: usize = 63;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -4410,6 +4410,88 @@ fn run_check(
         format!(
             "{gk_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             gk_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m63 — M338: the baby llama draws its creamy base, and with the gray
+    // coat's variant id (`mob_variants::llama_baby_texture(3)`, the id the
+    // app routes a gray baby to) it draws the gray baby sheet: every pixel
+    // of each frame is producible by its own sheet, and the two differ. The
+    // mesh rests on `the_baby_llama_is_its_own_model_without_chests`.
+    let mut lkst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.5, 1.2, -1.5),
+        Vec3::new(0.0, 0.6, 0.0),
+    )?;
+    lkst.wr.set_entities(&[], lkst.right, lkst.up, 0.0);
+    lkst.off
+        .render(gpu, Some((&mut lkst.wr, lkst.vp)), &ov, BG)?;
+    let lk_empty = lkst.off.read_rgba(gpu)?;
+    let gray_id =
+        rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_baby_texture(3))
+            .unwrap_or(0);
+    let mut lk_rows = Vec::new();
+    let mut lk_frames = Vec::new();
+    let mut lk_ok = gray_id != 0;
+    // The creamy base is `llama_baby`'s own sheet; the gray coat is the
+    // variant sheet the bake made for that key and id.
+    let lk_base: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "llama_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let lk_gray: HashSet<u32> = baked
+        .mob_variant_textures
+        .iter()
+        .find(|t| t.key == "llama_baby" && t.index == gray_id)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    for (variant, rel, sheet) in [(0u16, "creamy", lk_base), (gray_id, "gray", lk_gray)] {
+        let d = EntityDraw {
+            variant,
+            ..neutral_draw(EntityModelKind::LlamaBaby)
+        };
+        lkst.wr.set_entities(&[d], lkst.right, lkst.up, 0.0);
+        lkst.off
+            .render(gpu, Some((&mut lkst.wr, lkst.vp)), &ov, BG)?;
+        let frame = lkst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(lk_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        lk_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        lk_rows.push(format!(
+            "{rel}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+        lk_frames.push(frame);
+    }
+    lkst.destroy(gpu);
+    let lk_diff = diff_bytes(&lk_frames[0], &lk_frames[1]);
+    lk_ok &= lk_diff > 0;
+    w.push(wit(
+        "m63.the_baby_llama_wears_its_coat_s_baby_sheet",
+        lk_ok,
+        format!(
+            "gray variant id {gray_id}; {}; {lk_diff} bytes differ between the coats \
+             (want >= 200 px each, none foreign, the coats different)",
+            lk_rows.join("; ")
         ),
     ));
 
