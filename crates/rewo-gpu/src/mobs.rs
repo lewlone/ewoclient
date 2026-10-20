@@ -7311,6 +7311,30 @@ fn polar_bear() -> Model {
 /// stilt legs — walking on the vanilla CAMEL_WALK keyframe rig (which also
 /// bobs the whole "root" and flicks the ears).
 fn camel() -> Model {
+    camel_with(CamelSaddle::None)
+}
+
+/// M300 — which of `CamelSaddleModel`'s boxes [`camel_with`] adds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CamelSaddle {
+    None,
+    Saddle,
+    WithReins,
+}
+
+/// M300 — `CamelRenderer`'s `CAMEL_SADDLE` layer: `CamelSaddleModel` is the
+/// camel's mesh (`createBodyMesh()`, drawn in the saddle's sheet,
+/// transparent there) plus the saddle and bridle (inflated 0.05), and the
+/// reins shown only while ridden, on a 128 x 128 sheet. Returns the saddle
+/// model and the reins alone; both keep the camel's parts.
+pub fn camel_saddle() -> (Model, Model) {
+    let saddle = camel_with(CamelSaddle::Saddle);
+    let mut reins = camel_with(CamelSaddle::WithReins);
+    reins.quads.drain(..saddle.quads.len());
+    (saddle, reins)
+}
+
+fn camel_with(saddle: CamelSaddle) -> Model {
     let mut b = ModelBuilder::new();
     let root = b.part_named(
         "root",
@@ -7438,6 +7462,67 @@ fn camel() -> Model {
             scale_f: 2.5,
         },
     );
+    // M300 — `CamelSaddleModel.createSaddleLayer()`'s boxes (the saddle on
+    // the body, the bridle on the head, then the reins, `visible =
+    // isRidden`, last so `camel_saddle` can split them off).
+    if saddle != CamelSaddle::None {
+        let g = 0.05;
+        for (uv, min, dims) in [
+            ((74.0, 64.0), [-4.5, -17.0, -15.5], [9.0, 5.0, 11.0]),
+            ((92.0, 114.0), [-3.5, -20.0, -15.5], [7.0, 3.0, 11.0]),
+            ((0.0, 89.0), [-7.5, -12.0, -23.5], [15.0, 12.0, 27.0]),
+        ] {
+            b.cube_f(root, 0, uv, min, dims, g, false, &[body]);
+        }
+        for (uv, min, dims, g, mirror) in [
+            (
+                (60.0, 87.0),
+                [-3.5, -7.0, -15.0],
+                [7.0, 8.0, 19.0],
+                g,
+                false,
+            ),
+            (
+                (21.0, 64.0),
+                [-3.5, -21.0, -15.0],
+                [7.0, 14.0, 7.0],
+                g,
+                false,
+            ),
+            (
+                (50.0, 64.0),
+                [-2.5, -21.0, -21.0],
+                [5.0, 5.0, 6.0],
+                g,
+                false,
+            ),
+            (
+                (74.0, 70.0),
+                [2.5, -19.0, -18.0],
+                [1.0, 2.0, 2.0],
+                0.0,
+                false,
+            ),
+            (
+                (74.0, 70.0),
+                [-3.5, -19.0, -18.0],
+                [1.0, 2.0, 2.0],
+                0.0,
+                true,
+            ),
+        ] {
+            b.cube_f(head, 0, uv, min, dims, g, mirror, NONE);
+        }
+        if saddle == CamelSaddle::WithReins {
+            for (uv, min, dims) in [
+                ((98.0, 42.0), [3.51, -18.0, -17.0], [0.0, 7.0, 15.0]),
+                ((84.0, 57.0), [-3.5, -18.0, -2.0], [7.0, 7.0, 0.0]),
+                ((98.0, 42.0), [-3.51, -18.0, -17.0], [0.0, 7.0, 15.0]),
+            ] {
+                b.cube_f(head, 0, uv, min, dims, 0.0, false, NONE);
+            }
+        }
+    }
     b.finish(1.0)
 }
 
@@ -11318,5 +11403,24 @@ mod wolf_armor_tests {
             hi - lo
         };
         assert!((width(&shell) - width(&base) - 0.4).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod camel_saddle_tests {
+    use super::*;
+
+    /// M300 — the camel saddle is the camel plus eight boxes (three saddle,
+    /// five bridle); the reins are three zero-thickness boxes (two faces
+    /// each), all on the camel's own parts.
+    #[test]
+    fn the_camel_saddle_is_the_camel_plus_its_boxes() {
+        let base = camel();
+        let (saddle, reins) = camel_saddle();
+        assert_eq!(saddle.parts.len(), base.parts.len());
+        assert_eq!(saddle.quads.len(), base.quads.len() + 8 * 6);
+        assert_eq!(reins.quads.len(), 3 * 2);
+        let head = base.parts.iter().position(|p| p.name == "head").unwrap();
+        assert!(reins.quads.iter().all(|q| q.part == head));
     }
 }

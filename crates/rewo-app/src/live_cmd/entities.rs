@@ -3317,6 +3317,8 @@ pub(crate) fn saddle_piece<'a>(
         // M298 — `PIG_SADDLE`, `STRIDER_SADDLE`.
         EntityModelKind::Pig => ArmorLayer::PigSaddle,
         EntityModelKind::Strider => ArmorLayer::StriderSaddle,
+        // M300 — `CAMEL_SADDLE`.
+        EntityModelKind::Camel => ArmorLayer::CamelSaddle,
         _ => return None,
     };
     let piece = session.world.entities.saddle_piece(id)?;

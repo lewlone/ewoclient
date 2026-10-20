@@ -1803,6 +1803,8 @@ impl EntityPass {
                 EntityModelKind::Strider if !debug_tex => {
                     Some((mobs::strider_saddle(), mobs::empty_model()))
                 }
+                // M300 — the camel's saddle, bridle and reins.
+                EntityModelKind::Camel if !debug_tex => Some(mobs::camel_saddle()),
                 _ => None,
             })
             .filter(|(saddle, _)| saddle.parts.len() == m.parts.len())

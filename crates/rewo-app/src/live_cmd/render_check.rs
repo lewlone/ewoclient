@@ -381,6 +381,9 @@ pub(super) struct RenderCheck {
     pub(super) small_saddle_frames: [usize; 2],
     /// M299 — r155: frames on which the staged wolf drew in its armour.
     pub(super) wolf_armor_frames: usize,
+    /// M300 — r156: frames on which a camel drew saddled, and those of them
+    /// ridden (reins on).
+    pub(super) camel_saddle_frames: (usize, usize),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1146,7 +1149,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 155;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 156;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1346,6 +1349,19 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M300 — r156: r89's camel is saddled (its staging) and the bot rides
+        // it in the tail. Its saddle slot must reach the draw as
+        // `camel_saddle/saddle`, resident, with the reins while ridden
+        // (`mobtexshot m31` checks the pixels). No camel saddle drew until
+        // M300.
+        row(
+            "r156 a saddled camel drew its saddle, and its reins while ridden",
+            self.camel_saddle_frames.0 >= 1 && self.camel_saddle_frames.1 >= 1,
+            format!(
+                "{} frames drew it saddled, {} of them ridden",
+                self.camel_saddle_frames.0, self.camel_saddle_frames.1
             ),
         );
         // M299 — r155: `render_check.py` summons a wolf in wolf armour; the

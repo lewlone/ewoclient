@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 30;
+const EXPECTED_WITNESSES: usize = 31;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2285,6 +2285,82 @@ fn run_check(
             "{SCUTE} resident: {scute_resident}; {scute_px} px changed by the armour (want \
              >= 200); first colour the sheet cannot produce: {:?}",
             scute_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m31 — M300: a saddled camel (`CAMEL_SADDLE` over `CamelSaddleModel`):
+    // the saddle and bridle's pixels all come from the jar's
+    // `camel_saddle/saddle`, and riding adds the reins from the same sheet.
+    // No camel saddle drew until M300.
+    const CAMEL_SADDLE: &str = "camel_saddle/saddle";
+    let camel_sheet: HashSet<u32> = baked
+        .equipment
+        .textures
+        .iter()
+        .find(|t| t.key == CAMEL_SADDLE)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut cst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(3.6, 3.4, -2.6),
+        Vec3::new(0.0, 1.8, -0.6),
+    )?;
+    let camel_resident = cst
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(CAMEL_SADDLE));
+    let mut cshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        cst.wr.set_entities(&[d], cst.right, cst.up, 0.0);
+        cst.off.render(gpu, Some((&mut cst.wr, cst.vp)), &ov, BG)?;
+        cst.off.read_rgba(gpu)
+    };
+    let mut camel_layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    camel_layers[0] = Some((CAMEL_SADDLE, [1.0, 1.0, 1.0]));
+    let camel_saddled = |ridden: bool| EntityDraw {
+        saddle: Some(rewo_gpu::entities::ArmorPiece {
+            layers: camel_layers,
+            ..Default::default()
+        }),
+        ridden,
+        ..neutral_draw(EntityModelKind::Camel)
+    };
+    let c_bare = cshot(neutral_draw(EntityModelKind::Camel))?;
+    let c_on = cshot(camel_saddled(false))?;
+    let c_ridden = cshot(camel_saddled(true))?;
+    cst.destroy(gpu);
+    let camel_grade = |a: &[u8], b: &[u8]| {
+        let (mut n, mut bad) = (0usize, None);
+        for (x, y) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
+            if x[..3] == y[..3] {
+                continue;
+            }
+            n += 1;
+            let c = pack(x[0], x[1], x[2]);
+            if bad.is_none() && !explains(&camel_sheet, c) {
+                bad = Some(c);
+            }
+        }
+        (n, bad)
+    };
+    let (camel_px, camel_bad) = camel_grade(&c_on, &c_bare);
+    let (creins_px, creins_bad) = camel_grade(&c_ridden, &c_on);
+    w.push(wit(
+        "m31.a_saddled_camel_wears_its_saddle_and_reins_when_ridden",
+        camel_resident
+            && !camel_sheet.is_empty()
+            && camel_px >= 200
+            && camel_bad.is_none()
+            && creins_px >= 10
+            && creins_bad.is_none(),
+        format!(
+            "{CAMEL_SADDLE} resident: {camel_resident}; {camel_px} px added by the saddle and \
+             bridle (want >= 200), {creins_px} more by the reins when ridden (want >= 10); \
+             first colour the sheet cannot produce: saddle {:?}, reins {:?}",
+            camel_bad.map(|c| format!("#{c:06x}")),
+            creins_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

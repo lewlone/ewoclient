@@ -79,6 +79,8 @@ pub enum ArmorLayer {
     StriderSaddle,
     /// M299 — `wolf_body`, a wolf's armour.
     WolfBody,
+    /// M300 — `camel_saddle`.
+    CamelSaddle,
 }
 
 impl ArmorLayer {
@@ -97,13 +99,14 @@ impl ArmorLayer {
             ArmorLayer::PigSaddle => "pig_saddle",
             ArmorLayer::StriderSaddle => "strider_saddle",
             ArmorLayer::WolfBody => "wolf_body",
+            ArmorLayer::CamelSaddle => "camel_saddle",
         }
     }
 
     /// The layers a full load reads. `Wings` is last so the two humanoid
     /// entries keep the order they had, which keeps `textures` — a `Vec`
     /// the atlas packs in order — byte-for-byte what it was.
-    pub const ALL: [ArmorLayer; 13] = [
+    pub const ALL: [ArmorLayer; 14] = [
         ArmorLayer::Humanoid,
         ArmorLayer::Leggings,
         ArmorLayer::Wings,
@@ -117,6 +120,7 @@ impl ArmorLayer {
         ArmorLayer::PigSaddle,
         ArmorLayer::StriderSaddle,
         ArmorLayer::WolfBody,
+        ArmorLayer::CamelSaddle,
     ];
 
     /// M294/M295 — the layers loaded after the original three, so the
