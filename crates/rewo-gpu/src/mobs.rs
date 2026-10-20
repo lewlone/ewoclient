@@ -109,6 +109,14 @@ pub enum Anim {
     },
     /// Wolf tail wag while walking: `yRot = cos(f)·1.4·amt`.
     TailWagY,
+    /// M354 — `BeeModel.bobUpAndDown` (flying and not angry), with `s =
+    /// cos(age · 0.18)`: the bone's `xRot` is 0.1 + s·π·0.025 and its `y`
+    /// drops by s·0.9; the front legs' `xRot` is π/8 − s·π·0.1 and the back
+    /// legs' π/4 − s·π·0.05 (both rest at π/4, the flying pose). An angry
+    /// bee holds the flying pose without the bob.
+    BeeBone,
+    BeeFrontLegs,
+    BeeBackLegs,
     /// M352 — `EndermanModel.setupAnim`: the humanoid swing halved and
     /// clamped to ±0.4; while carrying a block both arms hold it up (`xRot`
     /// -0.5, `zRot` ±0.05).
@@ -623,6 +631,11 @@ pub struct MobCombat {
     /// M353 — `SnowGolem.hasPumpkin()` (`SnowGolemHeadLayer`; the app draws
     /// the carved pumpkin).
     pub pumpkin: bool,
+    /// M354 — `Bee.isAngry()` (the anger deadline against the world clock):
+    /// no `bobUpAndDown`.
+    pub bee_angry: bool,
+    /// M354 — `Bee.hasStung()`: the stinger hidden.
+    pub bee_stung: bool,
 }
 
 impl Eq for Anim {}
@@ -817,6 +830,8 @@ pub enum Show {
     /// M296 — `DonkeyModel.setupAnim`: `leftChest.visible = rightChest.visible
     /// = state.hasChest`.
     Chested,
+    /// M354 — `BeeModel.setupAnim`: `stinger.visible = state.hasStinger`.
+    HasStinger,
     /// M350 — `ZombieNautilusCoralModel.setupAnim`: `corals.visible =
     /// state.bodyArmorItem.isEmpty()`. Shown unless the draw has body armour.
     Unarmoured,
@@ -6113,53 +6128,60 @@ fn feline_baby() -> Model {
 /// drawn.
 fn bee_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let bone = Fold::at([0.0, 19.6667, -1.8567]);
+    let bone = b.part_named(
+        "bone",
+        [0.0, 19.6667, -1.8567],
+        [0.0; 3],
+        Anim::BeeBone,
+        1.0,
+        Option::None,
+    );
     for (uv, min) in [
         ((6.0, 12.0), [1.0, -1.6667, -2.1633]),
         ((0.0, 12.0), [-2.0, -1.6667, -2.1933]),
     ] {
-        b.cube_f(
-            STATIC_PART,
-            0,
-            uv,
-            min,
-            [1.0, 2.0, 2.0],
-            0.0,
-            false,
-            &[bone],
-        );
+        b.cube(bone, 0, uv, min, [1.0, 2.0, 2.0], NONE);
     }
     let body = Fold::at([0.0, 1.3333, 2.3567]);
     b.cube_f(
-        STATIC_PART,
+        bone,
         0,
         (0.0, 0.0),
         [-2.0, -2.0, -2.5],
         [4.0, 4.0, 5.0],
         0.0,
         false,
-        &[body, bone],
+        &[body],
     );
-    b.cube_f(
-        STATIC_PART,
+    // The stinger is the body's child: the body's offset plus its own.
+    let stinger = b.part_named(
+        "stinger",
+        [0.0, 1.3333 + 0.5, 2.3567 + 2.5],
+        [0.0; 3],
+        Anim::None,
+        1.0,
+        Some(bone),
+    );
+    b.show(stinger, Show::HasStinger);
+    b.cube(
+        stinger,
         0,
         (13.0, 2.0),
         [0.0, -0.5, 0.0],
         [0.0, 1.0, 1.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 0.5, 2.5]), body, bone],
+        NONE,
     );
-    for (x, left, uv, min_x) in [
-        (-1.0, false, (3.0, 9.0), -3.0),
-        (1.0, true, (-3.0, 9.0), 0.0),
+    for (name, x, left, uv, min_x) in [
+        ("right_wing", -1.0, false, (3.0, 9.0), -3.0),
+        ("left_wing", 1.0, true, (-3.0, 9.0), 0.0),
     ] {
-        let wing = b.part_ext(
-            [x, 19.0, -1.0],
+        let wing = b.part_named(
+            name,
+            [x, -0.6667, 0.8567],
             [0.2182, 0.0, 0.0],
             Anim::BeeWing { left },
             1.0,
-            Option::None,
+            Some(bone),
         );
         b.cube_f(
             wing,
@@ -6172,22 +6194,20 @@ fn bee_baby() -> Model {
             NONE,
         );
     }
-    let tuck = Fold::rot([PI / 4.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
-    for (z, uv) in [
-        (1.8567, (13.0, 0.0)),
-        (2.8567, (13.0, 1.0)),
-        (3.8567, (13.0, 2.0)),
+    for (name, z, uv, anim) in [
+        ("front_legs", 1.8567, (13.0, 0.0), Anim::BeeFrontLegs),
+        ("middle_legs", 2.8567, (13.0, 1.0), Anim::None),
+        ("back_legs", 3.8567, (13.0, 2.0), Anim::BeeBackLegs),
     ] {
-        b.cube_f(
-            STATIC_PART,
-            0,
-            uv,
-            [-1.5, 0.0, 0.0],
-            [3.0, 1.0, 0.0],
-            0.0,
-            false,
-            &[tuck, Fold::at([0.0, 3.3333, z]), bone],
+        let leg = b.part_named(
+            name,
+            [0.0, 3.3333, z],
+            [PI / 4.0, 0.0, 0.0],
+            anim,
+            1.0,
+            Some(bone),
         );
+        b.cube(leg, 0, uv, [-1.5, 0.0, 0.0], [3.0, 1.0, 0.0], NONE);
     }
     b.finish(1.0)
 }
@@ -8473,53 +8493,63 @@ fn goat() -> Model {
 
 /// `AdultBeeModel`: fat body with antennae + stinger, spread 0-thick
 /// wings, dangling leg plates. Everything hangs off the hovering bone.
+/// M354 — the bone is a part (`bobUpAndDown` pitches and lifts it), the
+/// wings and the three leg plates its children, the stinger a part of its
+/// own (hidden once the bee has stung).
 fn bee() -> Model {
     let mut b = ModelBuilder::new();
-    let bone = Fold::at([0.0, 19.0, 0.0]);
-    b.cube_f(
-        STATIC_PART,
+    let bone = b.part_named(
+        "bone",
+        [0.0, 19.0, 0.0],
+        [0.0; 3],
+        Anim::BeeBone,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        bone,
         0,
         (0.0, 0.0),
         [-3.5, -4.0, -5.0],
         [7.0, 7.0, 10.0],
-        0.0,
-        false,
-        &[bone],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    let stinger = b.part_named("stinger", [0.0; 3], [0.0; 3], Anim::None, 1.0, Some(bone));
+    b.show(stinger, Show::HasStinger);
+    b.cube(
+        stinger,
         0,
         (26.0, 7.0),
         [0.0, -1.0, 5.0],
         [0.0, 1.0, 2.0],
-        0.0,
-        false,
-        &[bone],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (2.0, 0.0),
-        [1.5, -2.0, -3.0],
-        [1.0, 2.0, 3.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, -2.0, -5.0]), bone],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (2.0, 3.0),
-        [-2.5, -2.0, -3.0],
-        [1.0, 2.0, 3.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, -2.0, -5.0]), bone],
-    );
+    for (uv, min) in [
+        ((2.0, 0.0), [1.5, -2.0, -3.0]),
+        ((2.0, 3.0), [-2.5, -2.0, -3.0]),
+    ] {
+        b.cube_f(
+            bone,
+            0,
+            uv,
+            min,
+            [1.0, 2.0, 3.0],
+            0.0,
+            false,
+            &[Fold::at([0.0, -2.0, -5.0])],
+        );
+    }
     // Airborne pose (our bees always hover): wings flutter about Z with
     // yRot reset to 0 (vanilla overrides the ±0.2618 rest splay in
     // flight), legs tucked at π/4.
-    let wing_r = b.part([-1.5, 15.0, -3.0], Anim::BeeWing { left: false }, 1.0);
+    let wing_r = b.part_named(
+        "right_wing",
+        [-1.5, -4.0, -3.0],
+        [0.0; 3],
+        Anim::BeeWing { left: false },
+        1.0,
+        Some(bone),
+    );
     b.cube_g(
         wing_r,
         0,
@@ -8529,7 +8559,14 @@ fn bee() -> Model {
         0.001,
         NONE,
     );
-    let wing_l = b.part([1.5, 15.0, -3.0], Anim::BeeWing { left: true }, 1.0);
+    let wing_l = b.part_named(
+        "left_wing",
+        [1.5, -4.0, -3.0],
+        [0.0; 3],
+        Anim::BeeWing { left: true },
+        1.0,
+        Some(bone),
+    );
     b.cube_f(
         wing_l,
         0,
@@ -8540,37 +8577,21 @@ fn bee() -> Model {
         true,
         NONE,
     );
-    let legs = Fold::rot([PI / 4.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (26.0, 1.0),
-        [-5.0, 0.0, 0.0],
-        [7.0, 2.0, 0.0],
-        0.0,
-        false,
-        &[legs, Fold::at([1.5, 3.0, -2.0]), bone],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (26.0, 3.0),
-        [-5.0, 0.0, 0.0],
-        [7.0, 2.0, 0.0],
-        0.0,
-        false,
-        &[legs, Fold::at([1.5, 3.0, 0.0]), bone],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (26.0, 5.0),
-        [-5.0, 0.0, 0.0],
-        [7.0, 2.0, 0.0],
-        0.0,
-        false,
-        &[legs, Fold::at([1.5, 3.0, 2.0]), bone],
-    );
+    for (name, z, uv, anim) in [
+        ("front_legs", -2.0, (26.0, 1.0), Anim::BeeFrontLegs),
+        ("middle_legs", 0.0, (26.0, 3.0), Anim::None),
+        ("back_legs", 2.0, (26.0, 5.0), Anim::BeeBackLegs),
+    ] {
+        let leg = b.part_named(
+            name,
+            [1.5, 3.0, z],
+            [PI / 4.0, 0.0, 0.0],
+            anim,
+            1.0,
+            Some(bone),
+        );
+        b.cube(leg, 0, uv, [-5.0, 0.0, 0.0], [7.0, 2.0, 0.0], NONE);
+    }
     b.finish(1.0)
 }
 
@@ -15184,10 +15205,19 @@ mod baby_bee_tests {
             .filter(|p| matches!(p.anim, Anim::BeeWing { .. }))
             .collect();
         assert_eq!(wings.len(), 2);
+        // M354 — the wings are the bone's children, at its offset plus their
+        // own (the bone at (0, 19.6667, -1.8567)).
+        let bone = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::BeeBone)
+            .unwrap();
+        assert_eq!(m.parts[bone].pivot, [0.0, 19.6667, -1.8567]);
         for w in wings {
             assert_eq!(w.rot, [0.2182, 0.0, 0.0]);
-            assert!((w.pivot[1] - (19.6667 - 0.6667)).abs() < 1e-4);
-            assert!((w.pivot[2] - (-1.8567 + 0.8567)).abs() < 1e-4);
+            assert_eq!(w.parent, Some(bone as u16));
+            assert!((w.pivot[1] - -0.6667).abs() < 1e-4);
+            assert!((w.pivot[2] - 0.8567).abs() < 1e-4);
         }
         assert!(m.quads.iter().all(|q| q.uv.iter().all(|u| u[0] >= 0.0)));
     }

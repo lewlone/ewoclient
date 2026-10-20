@@ -153,6 +153,14 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M354 — Bee — `BeeRenderer.getTextureLocation`: angry, nectar, and
+    // both, adult and baby (the plain bee is each key's base).
+    ("bee", "entity/bee/bee_angry.png"),
+    ("bee", "entity/bee/bee_nectar.png"),
+    ("bee", "entity/bee/bee_angry_nectar.png"),
+    ("bee_baby", "entity/bee/bee_angry_baby.png"),
+    ("bee_baby", "entity/bee/bee_nectar_baby.png"),
+    ("bee_baby", "entity/bee/bee_angry_nectar_baby.png"),
     // M349 — Pig and Chicken — the warm adult (the base mesh on its own
     // sheet) and the cold and warm young (`PigVariant` / `ChickenVariant`
     // `babyTexture`); the cold adults' sheets are their meshes' bases.
@@ -517,6 +525,21 @@ pub fn llama_texture(id: i32) -> &'static str {
     LLAMA_BY_ID[i]
 }
 
+/// M354 — `BeeRenderer.getTextureLocation`: angry first, then nectar, adult
+/// or baby.
+pub fn bee_texture(baby: bool, angry: bool, nectar: bool) -> &'static str {
+    match (baby, angry, nectar) {
+        (false, false, false) => "entity/bee/bee.png",
+        (false, false, true) => "entity/bee/bee_nectar.png",
+        (false, true, false) => "entity/bee/bee_angry.png",
+        (false, true, true) => "entity/bee/bee_angry_nectar.png",
+        (true, false, false) => "entity/bee/bee_baby.png",
+        (true, false, true) => "entity/bee/bee_nectar_baby.png",
+        (true, true, false) => "entity/bee/bee_angry_baby.png",
+        (true, true, true) => "entity/bee/bee_angry_nectar_baby.png",
+    }
+}
+
 /// M347 — `MushroomCowRenderer`'s sheet by `MushroomCow.Variant` id, adult
 /// or calf. `BY_ID` is `OutOfBoundsStrategy.CLAMP`: below 0 is RED, above 1
 /// BROWN.
@@ -651,6 +674,8 @@ mod tests {
             "entity/cow/cow_temperate_baby.png",
             "entity/pig/pig_cold.png",
             "entity/chicken/chicken_cold.png",
+            "entity/bee/bee.png",
+            "entity/bee/bee_baby.png",
             "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -958,6 +983,22 @@ mod tests {
             assert_ne!(v, 0, "{p}");
             let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
             assert_eq!(k, key, "{p}");
+        }
+    }
+
+    /// M354 — the bee's four sheets a size: each alternate on its age's key,
+    /// the plain one each key's base.
+    #[test]
+    fn a_bee_wears_its_mood_and_its_nectar() {
+        for (baby, key) in [(false, "bee"), (true, "bee_baby")] {
+            assert_eq!(variant_id(bee_texture(baby, false, false)), Some(0));
+            let mut seen = std::collections::HashSet::new();
+            for (angry, nectar) in [(true, false), (false, true), (true, true)] {
+                let v = variant_id(bee_texture(baby, angry, nectar)).unwrap();
+                assert!(v != 0 && seen.insert(v));
+                let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+                assert_eq!(k, key);
+            }
         }
     }
 }

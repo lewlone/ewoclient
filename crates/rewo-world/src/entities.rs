@@ -1567,6 +1567,9 @@ pub struct MobState {
     /// M353 — `SnowGolem.DATA_PUMPKIN_ID` (index 16, BYTE; 0x10 is the
     /// pumpkin). `None` when the server sent none: vanilla's default has it.
     pub snow_golem_flags: Option<u8>,
+    /// M354 — `Bee.DATA_FLAGS_ID` (index 18, BYTE): 0x02 rolling, 0x04 has
+    /// stung, 0x08 has nectar; 0 by default.
+    pub bee_flags: Option<u8>,
     /// `TamableAnimal.DATA_FLAGS_ID` — index **18**, BYTE, bit 0x04 is
     /// `isTame()` and bit 0x01 `isInSittingPose()` (M64).
     ///
@@ -2981,6 +2984,19 @@ impl EntityTable {
     /// M352 — the block state an enderman carries, if any.
     pub fn carried_block(&self, id: i32) -> Option<u32> {
         self.mob_state.get(&id).and_then(|s| s.carried_block)
+    }
+
+    /// M354 — a bee's `DATA_FLAGS_ID` byte. Kind-gated by the caller.
+    pub fn set_bee_flags(&mut self, id: i32, flags: u8) {
+        self.mob_state.entry(id).or_default().bee_flags = Some(flags);
+    }
+
+    /// M354 — the bee's flags, 0 (vanilla's default) when none were sent.
+    pub fn bee_flags(&self, id: i32) -> u8 {
+        self.mob_state
+            .get(&id)
+            .and_then(|s| s.bee_flags)
+            .unwrap_or(0)
     }
 
     /// M353 — a snow golem's `DATA_PUMPKIN_ID` byte. Kind-gated by the caller.

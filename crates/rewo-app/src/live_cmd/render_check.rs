@@ -513,6 +513,9 @@ pub(super) struct RenderCheck {
     /// of each was drawn.
     pub(super) snow_golems: (u32, u32),
     pub(super) snow_golem_frames: u32,
+    /// M354 — r208: a stung bee on the nectar sheet, and an angry bee on the
+    /// angry sheet.
+    pub(super) bees: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1278,7 +1281,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 207;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 208;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1478,6 +1481,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M354 — r208: `render_check.py` summons a bee with nectar that has
+        // stung and an angry one (index 18 BYTE, index 19 LONG's deadline).
+        row(
+            "r208 a stung bee wore its nectar and an angry bee its anger",
+            self.bees.0 && self.bees.1,
+            format!(
+                "stung nectar bee seen: {}, angry bee seen: {}",
+                self.bees.0, self.bees.1
             ),
         );
         // M353 — r207: `render_check.py` summons a snow golem (its pumpkin

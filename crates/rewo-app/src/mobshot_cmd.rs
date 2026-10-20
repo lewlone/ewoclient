@@ -1871,8 +1871,9 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 /// M342: 13 → 14, n9 (index 21 INT: a llama's variant or a wolf's collar).
 /// M343: 14 → 15, n10 (index 23 INT is a cat's collar). M352: 15 → 16, n11
 /// (index 16 OPTIONAL_BLOCK_STATE is an enderman's carried block). M353:
-/// 16 → 17, n12 (index 16 BYTE is a snow golem's pumpkin).
-const VARIANT_WITNESSES: usize = 17;
+/// 16 → 17, n12 (index 16 BYTE is a snow golem's pumpkin). M354: 17 → 18,
+/// n13 (index 18 BYTE is a bee's flags).
+const VARIANT_WITNESSES: usize = 18;
 
 /// The mobs whose texture a synched metadata field chooses, and the registry
 /// name each carries in the `entity_types` table.
@@ -1957,8 +1958,9 @@ fn run_variant_check(
         // M346: 111 → 125, the rabbit's seven sheets, adult and kit.
         // M347: 125 → 127, the brown mooshroom and calf. M348: 127 → 129,
         // the cold and warm calves. M349: 129 → 135, the warm pig and
-        // chicken and the cold and warm piglets and chicks.
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 135,
+        // chicken and the cold and warm piglets and chicks. M354: 135 → 141,
+        // the bee's angry, nectar and angry-nectar sheets, adult and baby.
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 141,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \
@@ -2527,6 +2529,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     let sheep = tid("minecraft:sheep")?;
 
     // eid, then (index, serializer, varint value), then the 0xFF terminator.
+    // M354 — the bee's type, for n13's flags (`MetaKinds::bee`).
+    let bee_type = etypes.id_of("minecraft:bee");
     let send = |type_id: i32, index: u8, ser: u8, value: u8, k: VariantKinds| {
         let mut t = rewo_world::entities::EntityTable::default();
         t.add(
@@ -2540,6 +2544,7 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
             &mut t,
             rewo_net::MetaKinds {
                 sheep: Some(sheep),
+                bee: bee_type,
                 variant_kinds: k,
                 ..Default::default()
             },
@@ -2693,6 +2698,16 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         format!(
             "a snow golem sent 0 wears its pumpkin: {sheared} (want false), sent 0x10: {crowned} (want true); a cat sent 0 at index 16 BYTE still reads the default: {cat16} (want true)"
         ),
+    );
+    // M354 — index 18 BYTE on a bee is `Bee.DATA_FLAGS_ID` (0x0C: stung
+    // and nectar); on a wolf the same byte is its tamable flags, not a bee's.
+    let bee = bee_type.ok_or("no minecraft:bee")?;
+    let bee18 = send(bee, 18, 0, 0x0C, kinds).bee_flags(1);
+    let wolf18 = send(wolf, 18, 0, 0x0C, kinds).bee_flags(1);
+    c.record(
+        "n13.index_18_byte_is_a_bees_flags_and_not_on_a_wolf",
+        bee18 == 0x0C && wolf18 == 0,
+        format!("0x0C at index 18 BYTE gives a bee flags {bee18:#04x} (want 0x0c) and a wolf {wolf18:#04x} (want 0)"),
     );
     Ok(())
 }

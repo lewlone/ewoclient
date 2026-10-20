@@ -3814,6 +3814,8 @@ impl EntityPass {
                 mobs::Show::AvatarPart(bit) => d.avatar_hidden & bit == 0,
                 // M350 — the coral nautilus's corals.
                 mobs::Show::Unarmoured => d.body_armor.is_none(),
+                // M354 — the bee's stinger.
+                mobs::Show::HasStinger => !d.mob.bee_stung,
             }
         };
         // The pack variant this entity drew, if the atlas has a slot for it.
@@ -5669,6 +5671,19 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let z = (c.age * 120.32113 * DEG).cos() * PI * 0.15;
             rot[2] = if left { -z } else { z };
         }
+        // M354 — `BeeModel.bobUpAndDown`, deltas on the flying pose.
+        BeeBone | BeeFrontLegs | BeeBackLegs if !c.mob.bee_angry => {
+            let s = (c.age * 0.18).cos();
+            match anim {
+                BeeBone => {
+                    rot[0] = 0.1 + s * PI * 0.025;
+                    off[1] = -s * 0.9;
+                }
+                BeeFrontLegs => rot[0] = -s * PI * 0.1 + PI / 8.0 - PI / 4.0,
+                _ => rot[0] = -s * PI * 0.05,
+            }
+        }
+        BeeBone | BeeFrontLegs | BeeBackLegs => {}
         FishTail { amp: a, speed } => rot[1] = -a * (speed * c.age).sin(),
         PufferFin { left } => {
             let s = (c.age * 0.2).sin();
@@ -9362,5 +9377,57 @@ mod enderman_pose_tests {
         assert_eq!(leg[0], 0.4);
         let small = rig(mobs::Anim::EndermanLegRight, false, 0.0, 0.2);
         assert!((small[0] - 1.4 * 0.2 * 0.5).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod bee_bob_tests {
+    use super::*;
+
+    /// M354 — `BeeModel.bobUpAndDown` at age 0 (`s` = 1) and a quarter
+    /// period on (`s` = 0), and nothing while angry.
+    #[test]
+    fn a_calm_bee_bobs_and_an_angry_one_does_not() {
+        use std::f32::consts::PI;
+        let ctx = |age: f32, angry: bool| AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                bee_angry: angry,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        };
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        let (bone, off) = anim_delta(mobs::Anim::BeeBone, 1.0, &ctx(0.0, false));
+        assert!(near(bone[0], 0.1 + PI * 0.025) && near(off[1], -0.9));
+        let (front, _) = anim_delta(mobs::Anim::BeeFrontLegs, 1.0, &ctx(0.0, false));
+        assert!(near(front[0] + PI / 4.0, -PI * 0.1 + PI / 8.0));
+        let (back, _) = anim_delta(mobs::Anim::BeeBackLegs, 1.0, &ctx(0.0, false));
+        assert!(near(back[0] + PI / 4.0, -PI * 0.05 + PI / 4.0));
+        // A quarter period on: `s` = cos(π/2) = 0.
+        let quarter = PI / 2.0 / 0.18;
+        let (bone, off) = anim_delta(mobs::Anim::BeeBone, 1.0, &ctx(quarter, false));
+        assert!(near(bone[0], 0.1) && near(off[1], 0.0));
+        for anim in [
+            mobs::Anim::BeeBone,
+            mobs::Anim::BeeFrontLegs,
+            mobs::Anim::BeeBackLegs,
+        ] {
+            let (r, o) = anim_delta(anim, 1.0, &ctx(3.0, true));
+            assert_eq!((r, o), ([0.0; 3], [0.0; 3]));
+        }
     }
 }

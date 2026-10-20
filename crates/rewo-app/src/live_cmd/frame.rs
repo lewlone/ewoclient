@@ -973,6 +973,21 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M354 — r208: the staged bees: one with nectar that has stung
+            // (on the nectar sheet, its stinger hidden) and an angry one (on
+            // the angry sheet, not bobbing).
+            let nectar = rewo_data::mob_variants::variant_id(rewo_data::mob_variants::bee_texture(
+                false, false, true,
+            ));
+            let angry = rewo_data::mob_variants::variant_id(rewo_data::mob_variants::bee_texture(
+                false, true, false,
+            ));
+            for d in draws.iter() {
+                if d.kind == rewo_gpu::mobs::EntityModelKind::Bee {
+                    c.bees.0 |= Some(d.variant) == nectar && d.mob.bee_stung;
+                    c.bees.1 |= Some(d.variant) == angry && d.mob.bee_angry;
+                }
+            }
             // M353 — r207: the staged snow golems, (with a pumpkin, without).
             c.snow_golems = draws
                 .iter()

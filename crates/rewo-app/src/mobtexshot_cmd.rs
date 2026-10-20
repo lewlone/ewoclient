@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 75;
+const EXPECTED_WITNESSES: usize = 76;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5523,6 +5523,114 @@ fn run_check(
              produce {:?}; {coral_only} px only the corals cover (want >= 100), {kept} of \
              them still covered in iron armour (want at most a twentieth)",
             foreign.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m76 — M354: the bee and the baby each draw their four sheets (plain,
+    // angry, nectar, angry nectar) from their own sheets, all four
+    // different, and a bee that has stung loses its stinger (the frames
+    // differ, by a stinger's worth of pixels at most).
+    let mut bst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.7, 0.6, -0.9),
+        Vec3::new(0.0, 0.3, 0.0),
+    )?;
+    bst.wr.set_entities(&[], bst.right, bst.up, 0.0);
+    bst.off.render(gpu, Some((&mut bst.wr, bst.vp)), &ov, BG)?;
+    let b_empty = bst.off.read_rgba(gpu)?;
+    let mut b_ok = true;
+    let mut b_rows = Vec::new();
+    let mut stinger = 0usize;
+    for (kind, key, baby) in [
+        (EntityModelKind::Bee, "bee", false),
+        (EntityModelKind::BeeBaby, "bee_baby", true),
+    ] {
+        let mut frames = Vec::new();
+        for (angry, nectar) in [(false, false), (true, false), (false, true), (true, true)] {
+            let variant = rewo_data::mob_variants::variant_id(
+                rewo_data::mob_variants::bee_texture(baby, angry, nectar),
+            )
+            .unwrap_or(0);
+            let sheet: HashSet<u32> = (if variant == 0 {
+                baked
+                    .mob_textures
+                    .iter()
+                    .find(|t| t.key == key)
+                    .map(|t| producible(&t.rgba))
+            } else {
+                baked
+                    .mob_variant_textures
+                    .iter()
+                    .find(|t| t.key == key && t.index == variant)
+                    .map(|t| producible(&t.rgba))
+            })
+            .unwrap_or_default();
+            b_ok &= (variant == 0) == (!angry && !nectar);
+            let d = EntityDraw {
+                variant,
+                ..neutral_draw(kind)
+            };
+            bst.wr.set_entities(&[d], bst.right, bst.up, 0.0);
+            bst.off.render(gpu, Some((&mut bst.wr, bst.vp)), &ov, BG)?;
+            let frame = bst.off.read_rgba(gpu)?;
+            let (mut px, mut bad) = (0usize, None);
+            for (p, e) in frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(b_empty.as_chunks::<4>().0)
+            {
+                if p[..3] == e[..3] {
+                    continue;
+                }
+                px += 1;
+                let c = pack(p[0], p[1], p[2]);
+                if bad.is_none() && !explains(&sheet, c) {
+                    bad = Some(c);
+                }
+            }
+            b_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+            b_rows.push(format!(
+                "{key} angry {angry} nectar {nectar}: {px} px, first colour it cannot produce {:?}",
+                bad.map(|c| format!("#{c:06x}"))
+            ));
+            frames.push(frame);
+        }
+        for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+            b_ok &= diff_bytes(&frames[a], &frames[b]) > 0;
+        }
+        // The stinger: a bee that has stung draws without it.
+        let stung = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                bee_stung: true,
+                ..Default::default()
+            },
+            ..neutral_draw(kind)
+        };
+        bst.wr.set_entities(&[stung], bst.right, bst.up, 0.0);
+        bst.off.render(gpu, Some((&mut bst.wr, bst.vp)), &ov, BG)?;
+        let without = bst.off.read_rgba(gpu)?;
+        let changed = frames[0]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(without.as_chunks::<4>().0)
+            .filter(|(a, b)| a[..3] != b[..3])
+            .count();
+        b_ok &= changed > 0 && changed < 200;
+        stinger += changed;
+        b_rows.push(format!("{key} without its stinger: {changed} px change"));
+    }
+    bst.destroy(gpu);
+    w.push(wit(
+        "m76.the_bee_and_baby_wear_their_mood_and_nectar_and_lose_the_stinger",
+        b_ok && stinger > 0,
+        format!(
+            "{} (want >= 200 px each, none foreign, all four different; the stinger some px)",
+            b_rows.join("; ")
         ),
     ));
 

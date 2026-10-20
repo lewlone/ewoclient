@@ -3054,6 +3054,11 @@ pub(crate) fn apply_set_entity_data<'a>(
             // (M18's rule). Reading a wolf's flags as a wool byte would give
             // it dye 4 — yellow — and a shorn fleece it does not have.
             entities.set_tamable_flags(eid, wool);
+        } else if kinds.bee == Some(type_id) {
+            // M354 — and `Bee.DATA_FLAGS_ID`: `Bee extends Animal` too, so
+            // its first byte is 18 as well (rolling 0x02, stung 0x04,
+            // nectar 0x08).
+            entities.set_bee_flags(eid, wool);
         }
     }
     // M64: the six metadata-driven texture variants. Three carry a `Holder`

@@ -1659,6 +1659,9 @@ pub(crate) fn resolve_mob_combat(
             .flatten(),
         // M353 — only a snow golem's is synched.
         pumpkin: kind == K::SnowGolem && entities.has_pumpkin(id),
+        // M354 — set by the caller, which has the world clock the anger needs.
+        bee_angry: false,
+        bee_stung: false,
     }
 }
 
@@ -4046,7 +4049,11 @@ pub(crate) fn default_variant(
         | EntityModelKind::Rabbit
         | EntityModelKind::RabbitBaby
         | EntityModelKind::Mooshroom
-        | EntityModelKind::MooshroomBaby => Some(0),
+        | EntityModelKind::MooshroomBaby
+        // M354 — the bee's sheet is not a synched variant; any value reaches
+        // its arm, which reads the flags and the anger.
+        | EntityModelKind::Bee
+        | EntityModelKind::BeeBaby => Some(0),
         _ => None,
     }
 }
@@ -4109,6 +4116,14 @@ pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> Ent
         (EntityModelKind::ZombieNautilus, Some("warm")) => EntityModelKind::ZombieNautilusCoral,
         _ => kind,
     }
+}
+
+/// M354 — `Bee.isAngry()`: `DATA_ANGER_END_TIME` against the world clock.
+pub(crate) fn bee_is_angry(session: &PlaySession, id: i32) -> bool {
+    rewo_net::tickable::is_angry(
+        session.world.entities.anger_end_time(id).unwrap_or(-1),
+        session.game_time(),
+    )
 }
 
 pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySession) -> u16 {
@@ -4187,6 +4202,15 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         EntityModelKind::Llama => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
                 .unwrap_or(0)
+        }
+        // M354 — `BeeRenderer`: angry, then nectar, adult or baby.
+        EntityModelKind::Bee | EntityModelKind::BeeBaby => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::bee_texture(
+                kind == EntityModelKind::BeeBaby,
+                bee_is_angry(session, id),
+                session.world.entities.bee_flags(id) & 0x08 != 0,
+            ))
+            .unwrap_or(0)
         }
         // M347 — `MushroomCowRenderer`: red or brown, adult or calf.
         EntityModelKind::Mooshroom | EntityModelKind::MooshroomBaby => {
@@ -4814,7 +4838,13 @@ pub(super) fn collect_entities<'a>(
             crossbow_item_id(),
         );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
-        let mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        let mut mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        // M354 — the bee's mood and its stinger (the anger is a deadline on
+        // the world clock, so it is read here, where the clock is).
+        if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
+            mob.bee_angry = bee_is_angry(session, id);
+            mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
         // M70: the label-visibility predicate, resolved once and consumed by
         // both the nametag and the health bar so the two cannot disagree.
         // `EntityRenderDispatcher.distanceToSqr` measures from the camera,

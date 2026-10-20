@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M354 -- r208. A bee with nectar that has stung, and an angry bee.
+    "summon minecraft:bee ~27 ~1 ~24 {NoAI:1b,Silent:1b,HasNectar:1b,HasStung:1b};"
+    "summon minecraft:bee ~30 ~1 ~24 {NoAI:1b,Silent:1b,AngerTime:999999};"
     # M353 -- r207. A snow golem with its pumpkin and a sheared one.
     "summon minecraft:snow_golem ~21 ~ ~24 {NoAI:1b,Silent:1b};"
     "summon minecraft:snow_golem ~24 ~ ~24 {NoAI:1b,Silent:1b,Pumpkin:0b};"
