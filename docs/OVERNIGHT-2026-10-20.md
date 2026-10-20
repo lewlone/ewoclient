@@ -23,12 +23,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 162 Rewo milestones, M194 to M355, in about 349 commits on
+- **What happened**: 163 Rewo milestones, M194 to M356, in about 351 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`ad48fcdf`): 4516 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 209 of
-  209 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`1145f1fb`): 4517 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 210 of
+  210 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M356**: wolves and puppies sit (no pet ever sat before).
 - **M355**: angry wolves look angry and raise their tails; a tame wolf's tail droops as it loses health.
 - **M354**: bees bob as they hover, turn red-eyed when angry, carry pollen, and lose the stinger once they sting.
 - **M353**: snow golems wear their pumpkins (a sheared one shows its face).
@@ -548,6 +549,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `1145f1fb` | **M356** — sitting wolves and puppies (`setSittingPose`; the body and mane now parts); unit tests, mobtexshot **m78**, render-check **r210** and `mobshot --sit`. |
 | `ad48fcdf` | **M355** — angry wolves (index 22 LONG, eighteen angry sheets) and `getTailAngle()` (angry, tame by health, wild); unit tests, variant check **n14**, mobtexshot **m77** and render-check **r209**. |
 | `800a1d72` | **M354** — the bee: flags (index 18 BYTE) and anger pick its four sheets, the stinger hides, the bone bobs (`bobUpAndDown`); unit tests, variant check **n13**, mobtexshot **m76** and render-check **r208**. |
 | `8ea530c3` | **M353** — the snow golem's pumpkin (index 16 BYTE 0x10, `SnowGolemHeadLayer`); unit tests, variant check **n12** and render-check **r207**. |
@@ -954,6 +956,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M356: **4,517 tests passed, 0 failed; gates 51/51** (mobtexshot 78); render check **210/210** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M355: **4,516 tests passed, 0 failed; gates 51/51** (mobtexshot 77, the variant check 19 with n14, n1 at 159); render check **209/209** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M354: **4,512 tests passed, 0 failed; gates 51/51** (mobtexshot 76, the variant check 18 with n13, n1 at 141); render check **208/208** on two runs; `cargo fmt --check` clean; clippy (both) clean after a doc-comment rewording (the chain's run caught `doc_lazy_continuation` on a line starting "+ π/4").
 - After M353: **4,510 tests passed, 0 failed** (on a rerun: the chain's run had five `srv` loopback tests fail to find a port free for both UDP and TCP, an environmental flake, see Follow-ups)**; gates 51/51** (the variant check at 17 witnesses with n12; without the snow golem's routing n12 fails); render check **207/207** on two runs; clippy (both) and `cargo fmt --check` clean.

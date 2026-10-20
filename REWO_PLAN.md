@@ -4001,6 +4001,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M356 — sitting wolves (2026-10-21)
+
+No wolf ever sat: the tamable flags' 0x01 (`isInSittingPose`, index 18 BYTE,
+already decoded for tameness) was never read. `WolfModel.setSittingPose` now
+poses the wolf and the puppy: the body and the adult's mane became parts
+(they were static folds); the body pitches to π/4 and moves (+4, −2), the mane
+(`AdultWolfModel`) to 2π/5 and +2, the hind legs fold to 3π/2 and move (+6.7,
+−5), the front legs go to 5.811947 and +1, the tail drops 9. Every offset but
+the mane's scales by `LivingEntity.getAgeScale()` (0.5 for the puppy, whose
+`BabyWolfModel` then takes π/2 off the body: the same −π/4 from its rest).
+Standing, the wolf's own leg anims walk exactly as the quadruped's did. The
+armour shell and the collar copy share the builder, so they sit with it.
+`mobshot --sit` (sheet mode) shows the pose.
+
+**Unit tests**: every sitting delta and offset (the puppy's halved), the
+standing legs equal to the quadruped's. **mobtexshot m78**: a sitting wolf and
+puppy draw from their own sheets and move thousands of px of silhouette.
+**r210**: a staged `Sitting:1b` wolf is drawn sitting.
+
 ### M355 — angry wolves and the wolf's tail (2026-10-20)
 
 No wolf ever looked angry, and every wolf held its tail at the wild π/5.
