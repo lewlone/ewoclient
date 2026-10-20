@@ -757,7 +757,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
-- After M285: **4,427 tests passed, 0 failed; gates 51/51** (mobtexshot 21: m21 over 2,292 body px, 1,653 single layers, 1,631 sky px all with two or more); render check **143/143** on two runs (r143: the swirl range filled on every frame the charged creeper drew); `cargo fmt --check` clean. Clippy failed once on the new quad sort (`iter_cloned_collect`); after the one-line fix (`.to_vec()`) both clippy configurations are clean, rewo-gpu's 360 tests pass and mobtexshot reads 21/21 again. Before the chain, three mutants of the swirl (a white colour, no sort, a face shade) each failed m21; its first draft, graded against the jar's ramp texture, had let two of them through.
+- After M285: **4,427 tests passed, 0 failed; gates 51/51** (mobtexshot 21: m21 over 2,292 body px, 1,653 single layers, 1,631 sky px all with two or more); render check **143/143** on two runs (r143: the swirl range filled on every frame the charged creeper drew); `cargo fmt --check` clean. Clippy failed once on the new quad sort (`iter_cloned_collect`); after the one-line fix (`.to_vec()`) both clippy configurations are clean, rewo-gpu's 360 tests pass and mobtexshot reads 21/21 again. Before the chain, three mutants of the swirl (a white colour, no sort, a face shade) each failed m21; its first draft, graded against the jar's ramp texture, had let two of them through. One process slip: a single incremental `cargo check` for M285 started about three minutes after another session's `G4-RUNNING` marker appeared at 05:19 (the check was issued without re-reading the marker); every heavy step after that waited for it, and it cleared at 05:38.
 - After M284: **4,424 tests passed** (the full run: 4,419 passed and 5 `rewo-net` `srv` TCP tests failed at "a port free for both UDP and TCP" under machine load; rerun alone and as the whole `rewo-net` library, 1,392/1,392 passed); **gates 51/51**; render check **142/142** on two runs (r142: camera yaw −90 against the player's ~0, no hand on 129 and 187 asleep frames); clippy and `cargo fmt --check` clean.
 - After M283: **4,423 tests passed, 0 failed; gates 51/51** (mobshot's pumpkin-blur check: worst pixel 1); render check **141/141** on two runs; clippy and `cargo fmt --check` clean. The unit test's first draft expected the half-scale scope square one pixel off; vanilla's integer division puts it at (172, 67), which the code had.
 - After M282: **4,422 tests passed, 0 failed; gates 51/51** (mobshot's vignette check: worst pixel 1); clippy and `cargo fmt --check` clean. Render check: run 2 **140/140**; run 1 139/140, r89 (the camel sprint) reading a step of 0.8203 against vanilla's 0.4101, exactly two ticks' worth in one sample, nothing M282 touches; a third run read **140/140** with r89's step at 0.4101, vanilla's.
@@ -872,6 +872,14 @@ released.
 - `rewo-net`'s `reconfigure` test `start_configuration_round_trips_back_to_play`
   failed once under full-suite load ("connection closed") and passed five
   times alone; the same class as the `play::inbound` timing tests.
+- Skinned player heads in the first-person hand, on the cursor, dropped and
+  in item frames still draw Steve: only inventory icons (M275) and worn
+  heads (M273) take the skin. The hand needs the hand pass's own held-item
+  copy rebuilt when a skin arrives, and a live witness that holds the head
+  without the bot's right-clicks placing it.
+- M285's swirl: a glowing charged creeper's swirl is not in the outline,
+  fog is not applied to it, and the wither's and breeze's swirls (the same
+  layer class) are not drawn.
 - ~~The sleeping camera~~: done in M284. Left: vanilla eases the camera's
   eye height half the gap a tick (crouching too); Rewo's camera snaps.
 - Several gate failure messages carry runs of spaces where a `\` line
