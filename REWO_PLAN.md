@@ -3955,6 +3955,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M308 — default skins by profile; the mannequin (2026-10-20)
+
+A profile with no `textures` property got nothing queued, so Rewo drew it as
+the one baked skin, wide Steve. That is every player on an offline server,
+Rewo's main target. Vanilla's `DefaultPlayerSkin.get(id)` picks one of
+eighteen jar skins (nine slim, then the same nine wide) by
+`floorMod(id.hashCode(), 18)` (`default_skin_index`). The bake decodes the
+eighteen (`BakedAssets::default_skins`), and the skin loader serves them
+through the path a fetched skin takes: `request_default` queues a
+`rewo-default:<i>` pseudo-URL that the worker answers from memory (nothing is
+fetched), so the LRU pool, eviction, re-upload, the tab face and the
+inventory preview work unchanged. The frame requests one for every loaded
+player and the local player; a real textures URL arriving later replaces a
+queued default and never the reverse, and the prune keeps a loaded entity's
+key (a default's is in no skin table).
+
+The fourth of M303's capsules: `minecraft:mannequin` is an `Avatar` drawn by
+`AvatarRenderer`, so it now takes the player's model and skin rules, keyed
+by its own UUID. Its default profile is `ResolvableProfile.Static.EMPTY`,
+whose id is the nil UUID, so it wears index 0, slim Alex. Not done,
+recorded: a mannequin's explicit profile (its skin by name, id or textures),
+its hidden layers and pose, and its description label.
+
+**Unit tests**: the index against values computed independently from
+Java's definitions, the negative hashes included (a plain `%` fails them); a
+real URL replaces a queued default and not the reverse. **r164**: a staged
+mannequin draws as the slim model in an uploaded skin.
+
 ### M307 — the sulfur cube (2026-10-20)
 
 The third of M303's capsules, on M306's range. `SulfurCubeRenderer` draws
