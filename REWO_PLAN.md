@@ -3976,6 +3976,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M331 — the panda cub (2026-10-20)
+
+`PandaRenderer` swaps in `BabyPandaModel` (64 x 64: a 9 x 7 x 11 body
+authored level, a 7 x 6 x 5 head with its muzzle and ears, looking, and four
+3 x 2 x 3 legs on the quadruped walk) on `panda_baby.png`, the normal gene's.
+The panda's baby sheet goes through a variant record M175's generator could
+not read, so a cub was the half-size adult. `PandaBaby` is that model,
+picked by `baby_model_kind`; like Rewo's adult it draws the normal gene only
+and no sitting or rolling pose. `mobshot` grades 345 views; the cub is graded
+in the m5 crowd (105), and `MAX_AMBIGUOUS` is 16 (panda_baby, whose colours
+the adult's sheet can produce).
+
+**Unit test**: nine boxes, the head box's front at (5, 5)..(12, 11), the
+body's top at (11, 11)..(20, 22), the four legs on the walk. **mobtexshot
+m56**: the cub draws (3,359 px) with no colour foreign to its sheet; on the
+adult's sheet it fails on `#ffffff`. **r185**: a staged normal-gene cub draws
+as `BabyPandaModel`.
+
 ### M330 — the kit (2026-10-20)
 
 `FoxRenderer` swaps in `BabyFoxModel` (32 x 32: a 6 x 5 x 5 head with its
