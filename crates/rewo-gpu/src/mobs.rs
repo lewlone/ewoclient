@@ -1605,11 +1605,13 @@ pub enum EntityModelKind {
     HorseBaby,
     /// M340 — `BabyCatModel` (`CAT_BABY`, `BabyFelineModel`'s layer).
     CatBaby,
+    /// M341 — `BabyWolfModel` (`WOLF_BABY`).
+    WolfBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 134;
+    pub const COUNT: usize = 135;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1744,6 +1746,7 @@ impl EntityModelKind {
         EntityModelKind::LlamaBaby,
         EntityModelKind::HorseBaby,
         EntityModelKind::CatBaby,
+        EntityModelKind::WolfBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1879,6 +1882,7 @@ impl EntityModelKind {
             EntityModelKind::LlamaBaby => "llama_baby",
             EntityModelKind::HorseBaby => "horse_baby",
             EntityModelKind::CatBaby => "cat_baby",
+            EntityModelKind::WolfBaby => "wolf_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1954,6 +1958,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::LlamaBaby
                 | EntityModelKind::HorseBaby
                 | EntityModelKind::CatBaby
+                | EntityModelKind::WolfBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -3014,6 +3019,13 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::CatBaby,
         textures: &["cat_baby"],
         build: feline_baby,
+    },
+    // M341 — the pale wild puppy's sheet; the registry's other coats, wild
+    // and tame, are its variants (`MobVariantDef::baby_texture`).
+    MobDef {
+        kind: EntityModelKind::WolfBaby,
+        textures: &["wolf_baby"],
+        build: wolf_baby,
     },
 ];
 
@@ -6421,6 +6433,85 @@ fn horse_baby() -> Model {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [-1.5, -1.0, -1.5], [3.0, 9.0, 3.0], NONE);
     }
+    b.finish(1.0)
+}
+
+/// M341 — `BabyWolfModel.createBodyLayer()` (32 x 32): a 6 x 5 x 5 head
+/// grown 0.025 with its snout and two ears (looking), a 6 x 4 x 8 body,
+/// four 2 x 3 x 2 legs on `WolfModel`'s walk (the quadruped's, leg for leg),
+/// and the tail. `WolfModel.setupAnim` sets the tail's `xRot` to
+/// `state.tailAngle` every frame, π/5 for a wild wolf, not the layer's
+/// -0.5236; it rests there and wags about y, as Rewo's adult wolf's does
+/// (a tame wolf's tail rises with its health in vanilla, which neither
+/// models). Under it `tail_r1` turns its box -3.1.
+fn wolf_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let head = b.part([0.0, 18.25, -4.0], Anim::Head, 1.0);
+    b.cube_g(
+        head,
+        0,
+        (0.0, 12.0),
+        [-2.99, -3.25, -3.0],
+        [6.0, 5.0, 5.0],
+        0.025,
+        NONE,
+    );
+    b.cube(
+        head,
+        0,
+        (17.0, 12.0),
+        [-1.5, -0.24, -5.0],
+        [3.0, 2.0, 2.0],
+        NONE,
+    );
+    for (x, uv) in [(-2.0, (0.0, 5.0)), (2.0, (20.0, 5.0))] {
+        b.cube_f(
+            head,
+            0,
+            uv,
+            [-1.0, -1.0, -0.5],
+            [2.0, 2.0, 1.0],
+            0.0,
+            false,
+            &[Fold::at([x, -4.25, -0.5])],
+        );
+    }
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-3.0, -2.0, -4.0],
+        [6.0, 4.0, 8.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 19.0, 0.0])],
+    );
+    for (pivot, anim, uv) in [
+        ([-1.5, 21.0, 3.0], Anim::QuadHindRight, (0.0, 22.0)),
+        ([1.5, 21.0, 3.0], Anim::QuadHindLeft, (8.0, 22.0)),
+        ([-1.5, 21.0, -3.0], Anim::QuadFrontRight, (0.0, 0.0)),
+        ([1.5, 21.0, -3.0], Anim::QuadFrontLeft, (20.0, 0.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 3.0, 2.0], NONE);
+    }
+    let tail = b.part_ext(
+        [0.0, 19.0, 3.0],
+        [PI / 5.0, 0.0, 0.0],
+        Anim::TailWagY,
+        1.0,
+        Option::None,
+    );
+    b.cube_f(
+        tail,
+        0,
+        (22.0, 16.0),
+        [-1.0, -5.7, -1.0],
+        [2.0, 6.0, 2.0],
+        0.0,
+        false,
+        &[Fold::rot([-3.1, 0.0, 0.0], [0.0, -0.6, 0.2])],
+    );
     b.finish(1.0)
 }
 
@@ -13055,6 +13146,7 @@ mod tests {
                     | EntityModelKind::LlamaBaby
                     | EntityModelKind::HorseBaby
                     | EntityModelKind::CatBaby
+                    | EntityModelKind::WolfBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -14875,5 +14967,30 @@ mod equine_foal_rest_tests {
             (tilt - (0.7418 + PI / 12.0)).abs() < 1e-4,
             "tail tilt {tilt}"
         );
+    }
+}
+
+#[cfg(test)]
+mod puppy_tests {
+    use super::*;
+
+    /// M341 — `BabyWolfModel`: ten boxes, the head box's front at (5, 17)..
+    /// (11, 22) of its sheet, and the tail resting at a wild wolf's
+    /// `tailAngle` π/5 (not the layer's -0.5236), wagging about y.
+    #[test]
+    fn the_puppy_is_its_own_model_with_a_wild_wolf_s_tail() {
+        let m = wolf_baby();
+        assert_eq!(m.quads.len(), 10 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m.quads.iter().any(|q| q.part == head
+            && q.facing == Facing::North
+            && (span(q, 0), span(q, 1)) == ((5.0, 11.0), (17.0, 22.0))));
+        let tail = m.parts.iter().find(|p| p.anim == Anim::TailWagY).unwrap();
+        assert!((tail.rot[0] - PI / 5.0).abs() < 1e-6);
     }
 }

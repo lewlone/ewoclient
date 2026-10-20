@@ -973,6 +973,13 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M341 — r195: the staged ashen puppy, on a coat variant.
+            for d in draws.iter() {
+                if d.kind == rewo_gpu::mobs::EntityModelKind::WolfBaby {
+                    c.puppy.0 = true;
+                    c.puppy.1 |= d.variant != 0;
+                }
+            }
             // M340 — r194: the staged black kitten, on a coat variant (its
             // registry entry's `baby_asset_id`, from the real server).
             for d in draws.iter() {

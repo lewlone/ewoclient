@@ -4255,6 +4255,7 @@ fn a_baby_sulfur_cube_takes_the_small_model() {
     assert_eq!(f(K::Llama, true), K::LlamaBaby);
     assert_eq!(f(K::Horse, true), K::HorseBaby);
     assert_eq!(f(K::Cat, true), K::CatBaby);
+    assert_eq!(f(K::Wolf, true), K::WolfBaby);
     assert_eq!(f(K::Slime, true), K::Slime);
     // And their scales: their own models take no render scale.
     let s = super::entities::baby_scales;
@@ -4291,6 +4292,7 @@ fn an_unsent_variant_is_the_class_s_default() {
     assert_eq!(f(K::Cat, &cats, &wolves, &[]), Some(2));
     assert_eq!(f(K::CatBaby, &cats, &wolves, &[]), Some(2));
     assert_eq!(f(K::Wolf, &cats, &wolves, &[]), Some(1));
+    assert_eq!(f(K::WolfBaby, &cats, &wolves, &[]), Some(1));
     assert_eq!(f(K::Frog, &cats, &wolves, &[]), Some(0));
     assert_eq!(f(K::Horse, &cats, &wolves, &[]), Some(0));
     assert_eq!(f(K::HorseBaby, &cats, &wolves, &[]), Some(0));

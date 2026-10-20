@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 65;
+const EXPECTED_WITNESSES: usize = 66;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -188,10 +188,10 @@ const MIN_DISCRIMINATING: usize = 88;
 /// thin enough to lose their attributed pixels to their neighbours: turtle,
 /// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
 /// villager and glow squid, (M330) the kit, (M332) the ocelot kitten,
-/// (M333) the baby bee, (M336) the rabbit kit, (M337) the goat kid and
-/// (M340) the kitten. Each baby is graded up close by its own witness
-/// (m42..m65, n1/n2). A twenty-fourth means something stopped drawing.
-const MAX_SMALL: usize = 23;
+/// (M333) the baby bee, (M336) the rabbit kit, (M337) the goat kid, (M340)
+/// the kitten and (M341) the puppy. Each baby is graded up close by its own
+/// witness (m42..m66, n1/n2). A twenty-fifth means something stopped drawing.
+const MAX_SMALL: usize = 24;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -4649,6 +4649,84 @@ fn run_check(
             "black variant id {kt_black_id}; {}; {kt_diff} bytes differ between the coats \
              (want >= 200 px each, none foreign, the coats different)",
             kt_rows.join("; ")
+        ),
+    ));
+
+    // m66 — M341: the puppy draws its pale base, and on the ashen coat's
+    // variant id (`wolf_ashen_baby`, what a wild ashen puppy's registry
+    // entry names) the ashen puppy sheet: each frame is producible by its
+    // own sheet, and the two differ.
+    let mut pust = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.8, 0.6, -0.8),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    pust.wr.set_entities(&[], pust.right, pust.up, 0.0);
+    pust.off
+        .render(gpu, Some((&mut pust.wr, pust.vp)), &ov, BG)?;
+    let pu_empty = pust.off.read_rgba(gpu)?;
+    let pu_ashen_id =
+        rewo_data::mob_variants::variant_id("entity/wolf/wolf_ashen_baby.png").unwrap_or(0);
+    let pu_base: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "wolf_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let pu_ashen: HashSet<u32> = baked
+        .mob_variant_textures
+        .iter()
+        .find(|t| t.key == "wolf_baby" && t.index == pu_ashen_id)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut pu_rows = Vec::new();
+    let mut pu_frames = Vec::new();
+    let mut pu_ok = pu_ashen_id != 0;
+    for (variant, coat, sheet) in [(0u16, "pale", pu_base), (pu_ashen_id, "ashen", pu_ashen)] {
+        let d = EntityDraw {
+            variant,
+            ..neutral_draw(EntityModelKind::WolfBaby)
+        };
+        pust.wr.set_entities(&[d], pust.right, pust.up, 0.0);
+        pust.off
+            .render(gpu, Some((&mut pust.wr, pust.vp)), &ov, BG)?;
+        let frame = pust.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pu_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        pu_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        pu_rows.push(format!(
+            "{coat}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+        pu_frames.push(frame);
+    }
+    pust.destroy(gpu);
+    let pu_diff = diff_bytes(&pu_frames[0], &pu_frames[1]);
+    pu_ok &= pu_diff > 0;
+    w.push(wit(
+        "m66.the_puppy_wears_its_coat_s_baby_sheet",
+        pu_ok,
+        format!(
+            "ashen variant id {pu_ashen_id}; {}; {pu_diff} bytes differ between the coats \
+             (want >= 200 px each, none foreign, the coats different)",
+            pu_rows.join("; ")
         ),
     ));
 

@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M341 -- r195. An ashen puppy.
+    "summon minecraft:wolf ~69 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000,"
+    "variant:\"minecraft:ashen\"};"
     # M340 -- r194. A black kitten.
     "summon minecraft:cat ~66 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000,"
     "variant:\"minecraft:black\"};"

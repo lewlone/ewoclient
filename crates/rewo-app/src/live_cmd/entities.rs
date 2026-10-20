@@ -3703,6 +3703,8 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         EntityModelKind::Horse if baby => EntityModelKind::HorseBaby,
         // M340 — `BabyCatModel`, the ocelot kitten's layer.
         EntityModelKind::Cat if baby => EntityModelKind::CatBaby,
+        // M341 — `BabyWolfModel`.
+        EntityModelKind::Wolf if baby => EntityModelKind::WolfBaby,
         k => k,
     }
 }
@@ -3733,6 +3735,7 @@ pub(crate) fn baby_scales(kind: EntityModelKind) -> (f32, f32) {
         EntityModelKind::CamelBaby | EntityModelKind::RabbitBaby => (1.0, 0.5),
         EntityModelKind::GoatBaby | EntityModelKind::LlamaBaby => (1.0, 0.5),
         EntityModelKind::HorseBaby | EntityModelKind::CatBaby => (1.0, 0.5),
+        EntityModelKind::WolfBaby => (1.0, 0.5),
         _ => (0.5, 0.5),
     }
 }
@@ -3772,7 +3775,7 @@ pub(crate) fn default_variant(
     };
     match kind {
         EntityModelKind::Cat | EntityModelKind::CatBaby => by_key(cats, "minecraft:black"),
-        EntityModelKind::Wolf => by_key(wolves, "minecraft:pale"),
+        EntityModelKind::Wolf | EntityModelKind::WolfBaby => by_key(wolves, "minecraft:pale"),
         EntityModelKind::Frog => by_key(frogs, "minecraft:temperate"),
         EntityModelKind::Horse
         | EntityModelKind::HorseBaby
@@ -3832,6 +3835,9 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         EntityModelKind::CatBaby => registry_baby(&session.cat_variants, false),
         EntityModelKind::Wolf => {
             registry(&session.wolf_variants, session.world.entities.is_tame(id))
+        }
+        EntityModelKind::WolfBaby => {
+            registry_baby(&session.wolf_variants, session.world.entities.is_tame(id))
         }
         EntityModelKind::Frog => registry(&session.frog_variants, false),
         EntityModelKind::Axolotl => {
