@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 19;
+const EXPECTED_WITNESSES: usize = 20;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -426,6 +426,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         white_overlay: 0.0,
         stretch: [1.0, 1.0],
         outline: None,
+        on_fire: None,
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -1275,6 +1276,13 @@ fn run_check(
     let ov = overlay_offscreen(&ring);
     const PUMPKIN: &str = "minecraft:carved_pumpkin";
     st.wr.prepare_held_items(gpu, &[PUMPKIN])?;
+    // M281 — the flames' two frames at animation time 0.
+    let fire_frames = [16usize, 0];
+    let fire_names: Vec<String> = (0..2)
+        .map(|s| rewo_gpu::entities::fire_model_name(s, fire_frames[s]))
+        .collect();
+    let fire_refs: Vec<&str> = fire_names.iter().map(String::as_str).collect();
+    st.wr.prepare_held_items(gpu, &fire_refs)?;
     let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
         st.wr.set_entities(&[d], st.right, st.up, 0.0);
         st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
@@ -1306,6 +1314,40 @@ fn run_check(
         }),
         ..neutral_draw(EntityModelKind::ArmorStand)
     })?;
+    // m20 — M281: the stand burning. The flames are the two frames' texels
+    // drawn at full light (the gate's light is `[1, 1, 1]`, block light 15
+    // changes nothing here): every pixel they add must be one their textures
+    // can produce, and there must be plenty of them, rising over the stand.
+    let burning = shot(EntityDraw {
+        on_fire: Some(rewo_gpu::entities::FireDraw {
+            light: [1.0; 3],
+            frames: fire_frames,
+        }),
+        ..neutral_draw(EntityModelKind::ArmorStand)
+    })?;
+    let fire_sheet: HashSet<u32> = fire_names
+        .iter()
+        .filter_map(|n| baked.held_items.any(n))
+        .filter_map(|m| m.quads.first())
+        .filter_map(|q| baked.held_items.textures.get(q.tex as usize))
+        .flat_map(|t| producible(&t.rgba))
+        .collect();
+    let (mut fire_n, mut fire_bad) = (0usize, None);
+    for (a, b) in burning
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bare.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        fire_n += 1;
+        let c = pack(a[0], a[1], a[2]);
+        if fire_bad.is_none() && !explains(&fire_sheet, c) {
+            fire_bad = Some(c);
+        }
+    }
     let skull_sheet: HashSet<u32> = baked
         .held_items
         .any(SKULL)
@@ -1415,6 +1457,16 @@ fn run_check(
             p_centre.0,
             p_centre.1,
             p_unexplained.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    w.push(wit(
+        "m20.a_burning_stand_draws_its_flames_in_their_own_textures",
+        fire_names.len() == 2 && !fire_sheet.is_empty() && fire_n >= 300 && fire_bad.is_none(),
+        format!(
+            "{fire_n} px added by the flames (want >= 300); first colour the two fire \
+             frames cannot produce: {:?}",
+            fire_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

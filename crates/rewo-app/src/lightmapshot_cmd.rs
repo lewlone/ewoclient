@@ -1095,6 +1095,7 @@ fn run_entity_case(
         white_overlay: 0.0,
         stretch: [1.0, 1.0],
         outline: None,
+        on_fire: None,
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,

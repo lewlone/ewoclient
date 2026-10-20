@@ -191,6 +191,22 @@ pub fn overlay_value(hurt: bool, white: f32) -> f32 {
     }
 }
 
+/// M281 — a burning entity's flames: their light (the entity's with block
+/// light 15, `LightCoordsUtil.withBlock(lightCoords, 15)`) and the frame each
+/// of `fire_0` and `fire_1` shows this tick (`rewo_data`'s `fire_frame`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FireDraw {
+    pub light: [f32; 3],
+    pub frames: [usize; 2],
+}
+
+/// M281 — the baked model of one flame frame; must name what
+/// `rewo_data::block_entity_models::fire_frame_model` bakes (pinned by a
+/// test in `rewo-app`).
+pub fn fire_model_name(sprite: usize, frame: usize) -> String {
+    format!("rewo:be/fire_{sprite}/{frame}")
+}
+
 /// `CustomHeadLayer.SKULL_SCALE`.
 pub const WORN_SKULL_SCALE: f32 = 1.1875;
 /// `CustomHeadLayer.ITEM_SCALE` (M274).
@@ -281,6 +297,9 @@ pub struct EntityDraw<'a> {
     /// M278 — the glowing outline's colour (`Entity.getTeamColor()`, gamma
     /// rgb in `0..1`), `None` for an entity that does not glow.
     pub outline: Option<[f32; 3]>,
+    /// M281 — `displayFireAnimation` (burning, not fire-immune, not a
+    /// spectator); `None` for none.
+    pub on_fire: Option<FireDraw>,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -2424,6 +2443,12 @@ impl EntityPass {
             }
         }
         close_outline(&verts, &mut outline_open, &mut outline_verts);
+        // M281 — the flames, after every entity and outside the outline copy:
+        // `submitFlame` is its own feature, not one `OutlineBufferSource`
+        // wraps.
+        for d in draws {
+            self.emit_flame(&mut verts, d, cam_right);
+        }
         // M25b: block entities. Solid geometry, so they belong with the mob
         // and item quads rather than after the transparent nametags.
         {
@@ -2739,6 +2764,81 @@ impl EntityPass {
                     light_hurt: [light_r, light_g, light_b, hurt],
                 });
             }
+        }
+    }
+
+    /// M281 — `FlameFeatureRenderer.prepare`: layers of `fire_0` and
+    /// `fire_1` (alternating, every other pair mirrored), each 0.9 times the
+    /// last one's width, 0.45 apart and 0.03 further back, scaled by
+    /// `width · 1.4`, turned about Y to the camera and pushed
+    /// `0.3 - (int)h · 0.02` toward it, until the entity's height is covered.
+    fn emit_flame(&self, verts: &mut Vec<Vertex>, d: &EntityDraw<'_>, cam_right: [f32; 3]) {
+        let Some(fire) = d.on_fire else {
+            return;
+        };
+        let light = fire.light;
+        let Some(items) = self.held_items.as_ref() else {
+            return;
+        };
+        let uv = |sprite: usize| {
+            let name = fire_model_name(sprite, fire.frames[sprite]);
+            self.item_uv(items.any(&name)?.quads.first()?.tex)
+        };
+        let (Some(fire1), Some(fire2)) = (uv(0), uv(1)) else {
+            return;
+        };
+        // The camera's yaw alone (`rotationAroundAxis(Y, camera.orientation)`):
+        // its horizontal right, and the horizontal direction back toward it.
+        let rl = (cam_right[0] * cam_right[0] + cam_right[2] * cam_right[2]).sqrt();
+        if rl < 1.0e-6 {
+            return;
+        }
+        let r = [cam_right[0] / rl, 0.0, cam_right[2] / rl];
+        let back = [-r[2], 0.0, r[0]];
+        let s = d.width * 1.4;
+        if s <= 0.0 {
+            return;
+        }
+        let mut h = d.height / s;
+        let z0 = 0.3 - (h as i32) as f32 * 0.02;
+        let (mut half, mut yo, mut zo, mut ss) = (0.5f32, 0.0f32, 0.0f32, 0u32);
+        let place = |x: f32, y: f32, z: f32| {
+            [
+                d.pos[0] + s * (x * r[0] + z * back[0]),
+                d.pos[1] + s * y,
+                d.pos[2] + s * (x * r[2] + z * back[2]),
+            ]
+        };
+        while h > 0.0 {
+            if verts.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let [u0, v0, du, dv] = if ss % 2 == 0 { fire1 } else { fire2 };
+            let (mut ua, mut ub) = (u0 + du, u0);
+            if (ss / 2) % 2 == 0 {
+                std::mem::swap(&mut ua, &mut ub);
+            }
+            let (va, vb) = (v0 + dv, v0);
+            let z = z0 + zo;
+            let quad = [
+                (place(-half, -yo, z), [ua, va]),
+                (place(half, -yo, z), [ub, va]),
+                (place(half, 1.4 - yo, z), [ub, vb]),
+                (place(-half, 1.4 - yo, z), [ua, vb]),
+            ];
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                verts.push(Vertex {
+                    pos: quad[i].0,
+                    uv: quad[i].1,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    light_hurt: [light[0], light[1], light[2], 0.0],
+                });
+            }
+            h -= 0.45;
+            yo -= 0.45;
+            half *= 0.9;
+            zo -= 0.03;
+            ss += 1;
         }
     }
 

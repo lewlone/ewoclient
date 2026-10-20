@@ -1905,6 +1905,84 @@ pub fn bake_bell_and_book(
     out
 }
 
+/// M281 — the frames of `block/fire_0` and `block/fire_1`'s 16x512 strips,
+/// `ModelBakery.FIRE_0` / `FIRE_1`, which `FlameFeatureRenderer` draws on a
+/// burning entity: 32 frames each.
+pub const FIRE_FRAMES: usize = 32;
+
+/// M281 — the model holding one flame frame (a single quad sampling that
+/// frame's 16x16 texture).
+pub fn fire_frame_model(sprite: u8, frame: usize) -> String {
+    format!("rewo:be/fire_{sprite}/{frame}")
+}
+
+/// M281 — the frame a flame sprite shows on animation tick `tick`: one
+/// frame a tick (no `frametime`), `fire_0.png.mcmeta` listing frames 16..=31
+/// then 0..=15, `fire_1`'s in order.
+pub fn fire_frame(sprite: u8, tick: u32) -> usize {
+    let i = tick as usize % FIRE_FRAMES;
+    if sprite == 0 {
+        (i + 16) % FIRE_FRAMES
+    } else {
+        i
+    }
+}
+
+/// M281 — bake each flame frame as its own 16x16 texture and one-quad model.
+pub fn bake_fire_frames(
+    pool: &mut TexturePool,
+    load: &mut dyn FnMut(&str) -> Option<HeldTexture>,
+) -> Vec<(String, HeldItemModel)> {
+    let mut out = Vec::new();
+    for sprite in 0..2u8 {
+        let name = format!("block/fire_{sprite}");
+        let Some(strip) = load(&name) else {
+            log::error!("fire: no texture {name:?}");
+            continue;
+        };
+        if strip.w != 16 || strip.h != 16 * FIRE_FRAMES as u32 {
+            log::error!("fire: {name} is {}x{}, not 16x512", strip.w, strip.h);
+            continue;
+        }
+        for frame in 0..FIRE_FRAMES {
+            let start = frame * 16 * 16 * 4;
+            let rgba = strip.rgba[start..start + 16 * 16 * 4].to_vec();
+            let key = format!("{name}#{frame}");
+            let Some(tex) = pool.intern(&key, || Some(HeldTexture { w: 16, h: 16, rgba })) else {
+                continue;
+            };
+            out.push((
+                fire_frame_model(sprite, frame),
+                HeldItemModel {
+                    quads: vec![HeldQuad {
+                        verts: [
+                            [0.0, 0.0, 0.0],
+                            [16.0, 0.0, 0.0],
+                            [16.0, 16.0, 0.0],
+                            [0.0, 16.0, 0.0],
+                        ],
+                        uv: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+                        tex,
+                        part: 0,
+                        dir: 3,
+                    }],
+                    right: DisplayTransform::IDENTITY,
+                    left: DisplayTransform::IDENTITY,
+                    ground: DisplayTransform::IDENTITY,
+                    gui: DisplayTransform::IDENTITY,
+                    first_right: DisplayTransform::IDENTITY,
+                    first_left: DisplayTransform::IDENTITY,
+                    fixed: DisplayTransform::IDENTITY,
+                    head: DisplayTransform::IDENTITY,
+                    from_block: false,
+                    gui_quads: None,
+                },
+            ));
+        }
+    }
+    out
+}
+
 /// The camera-facing quad `(-0.5, -0.25)..(0.5, 0.75)` that
 /// `ExperienceOrbRenderer` and `DragonFireballRenderer` both build, as the
 /// billboard path takes a model (centred on `(8, 8, 8)` px): `x 0..16, y

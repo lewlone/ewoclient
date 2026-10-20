@@ -212,6 +212,9 @@ PRECMD = (
     "equipment:{head:{id:\"minecraft:iron_helmet\",count:1}}};"
     # M278 -- r137. A glowing armour stand (the Glowing tag: shared flag 6).
     "summon minecraft:armor_stand ~-14 ~ ~2 {Glowing:1b,NoGravity:1b};"
+    # M281 -- r139. A burning armour stand (invulnerable, so it burns the
+    # whole run).
+    "summon minecraft:armor_stand ~-16 ~ ~3 {Fire:32767s,Invulnerable:1b,NoGravity:1b};"
     # M279 -- r138. And one invisible as well: its outline alone.
     "summon minecraft:armor_stand ~-14 ~ ~5 {Glowing:1b,Invisible:1b,NoGravity:1b};"
     # M277 -- r136. A creeper the run ignites at 2 s: NoAI and invulnerable,

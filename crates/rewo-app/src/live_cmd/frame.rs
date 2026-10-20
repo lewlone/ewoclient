@@ -1059,7 +1059,14 @@ impl LiveApp {
             alpha,
             anim_time,
         ));
+        // M281 — the burning entities' flame frames page in like held models.
+        let fire_names: Vec<String> = draws
+            .iter()
+            .filter_map(|d| d.on_fire)
+            .flat_map(|f| [0, 1].map(|s| rewo_gpu::entities::fire_model_name(s, f.frames[s])))
+            .collect();
         let mut held: Vec<&str> = draws.iter().flat_map(|d| d.held).flatten().collect();
+        held.extend(fire_names.iter().map(String::as_str));
         // M273 — worn skulls page their sheets in like any held model.
         held.extend(draws.iter().filter_map(|d| d.worn_head.map(|w| w.model)));
         held.extend(draws.iter().filter_map(|d| d.ground_item));
@@ -1217,6 +1224,12 @@ impl LiveApp {
                 })
             {
                 rc.ghost_outline_frames += 1;
+            }
+            // M281 — r139: the staged burning armour stand drew its flames.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand && d.on_fire.is_some()
+            }) {
+                rc.burning_frames += 1;
             }
             // M277 — r136: the ignited creeper swollen, and flashing.
             for d in draws

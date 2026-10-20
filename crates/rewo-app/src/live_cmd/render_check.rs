@@ -327,6 +327,9 @@ pub(super) struct RenderCheck {
     /// M279 — r138: frames on which the invisible glowing armour stand drew
     /// as its outline alone.
     pub(super) ghost_outline_frames: usize,
+    /// M281 — r139: frames on which the burning armour stand drew with its
+    /// flames.
+    pub(super) burning_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1092,7 +1095,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 138;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 139;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1282,6 +1285,15 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M281 — r139: an armour stand set burning (`Fire` 32767): the server
+        // sets shared flag 0, and the client must draw its flames
+        // (`mobtexshot m20` checks their pixels). Nothing burned visibly until
+        // M281.
+        row(
+            "r139 a burning armour stand drew its flames",
+            self.burning_frames >= 1,
+            format!("{} frames drew them", self.burning_frames),
         );
         // M279 — r138: an invisible armour stand with the `Glowing` tag: its
         // body hidden, its outline drawn (`mobshot` checks that only the rim

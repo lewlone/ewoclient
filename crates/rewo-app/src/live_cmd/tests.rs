@@ -4190,3 +4190,25 @@ fn a_creeper_swells_and_flashes_and_tnt_blinks_as_vanilla_draws_them() {
         "u = (int)(0.75) = 0: no overlay"
     );
 }
+
+/// M281 — the GPU's flame model name is the one the bake writes, for every
+/// frame of both sprites; `fire_0` starts at frame 16 and `fire_1` at 0, a
+/// frame a tick.
+#[test]
+fn the_flame_frames_the_gpu_asks_for_are_the_ones_baked() {
+    use rewo_data::block_entity_models::{fire_frame, fire_frame_model, FIRE_FRAMES};
+    for s in 0..2u8 {
+        for f in 0..FIRE_FRAMES {
+            assert_eq!(
+                rewo_gpu::entities::fire_model_name(s as usize, f),
+                fire_frame_model(s, f)
+            );
+        }
+    }
+    assert_eq!((fire_frame(0, 0), fire_frame(1, 0)), (16, 0));
+    assert_eq!(
+        (fire_frame(0, 15), fire_frame(0, 16), fire_frame(0, 33)),
+        (31, 0, 17)
+    );
+    assert_eq!(fire_frame(1, 33), 1);
+}

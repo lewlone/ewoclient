@@ -2353,6 +2353,45 @@ pub(super) fn collect_carried_blocks(
     out
 }
 
+/// M281 — the entity types `EntityTypes` builds `.fireImmune()`: they never
+/// burn, so never show flames.
+pub(crate) const FIRE_IMMUNE: &[&str] = &[
+    "area_effect_cloud",
+    "blaze",
+    "ender_dragon",
+    "end_crystal",
+    "ghast",
+    "magma_cube",
+    "shulker",
+    "strider",
+    "tnt",
+    "vex",
+    "warden",
+    "wither",
+    "wither_skeleton",
+    "zoglin",
+    "zombified_piglin",
+];
+
+/// M281 — `Entity.displayFireAnimation` (`isOnFire() && !isSpectator()`;
+/// the client's `isOnFire` is `!fireImmune() && getSharedFlag(0)`), as the
+/// two flame frames to show at animation time `now` (seconds, a frame a
+/// tick); `None` for an entity that does not burn.
+pub(crate) fn fire_draw(
+    session: &PlaySession,
+    id: i32,
+    entity: &str,
+    now: f32,
+) -> Option<[usize; 2]> {
+    if !session.world.entities.shared_flag(id, 0)
+        || FIRE_IMMUNE.contains(&entity.strip_prefix("minecraft:").unwrap_or(entity))
+    {
+        return None;
+    }
+    let tick = (now * 20.0).max(0.0) as u32;
+    Some([0, 1].map(|s| rewo_data::block_entity_models::fire_frame(s, tick)))
+}
+
 /// M278 — `Minecraft.shouldEntityAppearGlowing` (`isCurrentlyGlowing`, the
 /// client's reading of shared flag 6, `FLAG_GLOWING`) and
 /// `Entity.getTeamColor()`: the team's `ChatFormatting` colour, white with no
@@ -4013,6 +4052,19 @@ pub(super) fn collect_entities<'a>(
             stretch: creeper_swelling.map_or([1.0, 1.0], creeper_stretch),
             // M278 — the Glowing effect's outline, in the team's colour.
             outline: glow_colour(session, id),
+            // M281 — burning: the flames, at the draw's light probe with
+            // block light 15.
+            on_fire: fire_draw(session, id, name, now).map(|frames| rewo_gpu::entities::FireDraw {
+                light: entity_light_boosted(
+                    &session.world,
+                    p[0],
+                    p[1] + h as f64 * 0.85,
+                    p[2],
+                    lightmap,
+                    15,
+                ),
+                frames,
+            }),
             billboard,
             allay_dance,
             attack,
