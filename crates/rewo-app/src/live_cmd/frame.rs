@@ -973,6 +973,19 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M310 — r166: the staged mannequin with its hat and jacket hidden
+            // (`hidden_layers`): an avatar draw hiding exactly those layers'
+            // bits among the six.
+            if draws.iter().any(|d| {
+                matches!(
+                    d.kind,
+                    rewo_gpu::mobs::EntityModelKind::Player
+                        | rewo_gpu::mobs::EntityModelKind::PlayerSlim
+                ) && d.avatar_hidden & 0x7e
+                    == rewo_gpu::mobs::AVATAR_HAT | rewo_gpu::mobs::AVATAR_JACKET
+            }) {
+                c.hidden_layer_frames += 1;
+            }
             // M309 — r165: the staged named mannequin (RewoDummyA's offline
             // UUID picks wide Kai): the wide model in an uploaded skin.
             if draws

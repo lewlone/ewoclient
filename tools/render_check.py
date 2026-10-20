@@ -268,6 +268,9 @@ PRECMD = (
     # M309 -- r165. A mannequin with a profile known only by a name no
     # account has.
     "summon minecraft:mannequin ~-24 ~ ~18 {immovable:1b,profile:\"RewoDummyA\"};"
+    # M310 -- r166. A mannequin with two outer layers hidden.
+    "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
+    "hidden_layers:[\"hat\",\"jacket\"]};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

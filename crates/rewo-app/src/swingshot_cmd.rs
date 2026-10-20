@@ -1371,6 +1371,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         saddle: None,
         ridden: false,
         chested: false,
+        avatar_hidden: 0,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -2650,6 +2651,7 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             wither: None,
             // M60: likewise not exercised — no cape reaches an arm rig.
             player: None,
+            mannequin: None,
             bee: None,
             guardian: None,
             elder_guardian: None,

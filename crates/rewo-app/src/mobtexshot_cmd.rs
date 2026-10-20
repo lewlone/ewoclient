@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 37;
+const EXPECTED_WITNESSES: usize = 38;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -432,6 +432,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         saddle: None,
         ridden: false,
         chested: false,
+        avatar_hidden: 0,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -1350,6 +1351,7 @@ fn run_check(
         saddle: None,
         ridden: false,
         chested: false,
+        avatar_hidden: 0,
         on_fire: Some(rewo_gpu::entities::FireDraw {
             light: [1.0; 3],
             frames: fire_frames,
@@ -2044,6 +2046,7 @@ fn run_check(
     let plain_donkey = dshot(neutral_draw(EntityModelKind::Donkey))?;
     let chested_donkey = dshot(EntityDraw {
         chested: true,
+        avatar_hidden: 0,
         ..neutral_draw(EntityModelKind::Donkey)
     })?;
     dst.destroy(gpu);
@@ -2120,6 +2123,7 @@ fn run_check(
     let l_bare = lshot(neutral_draw(EntityModelKind::Llama))?;
     let l_chested = lshot(EntityDraw {
         chested: true,
+        avatar_hidden: 0,
         ..neutral_draw(EntityModelKind::Llama)
     })?;
     let l_carpet = lshot(EntityDraw {
@@ -2847,6 +2851,66 @@ fn run_check(
         "m37.both_sulfur_cubes_draw_a_core_under_a_translucent_shell",
         cubes_ok,
         format!("{} (want >= 100 of each)", cube_rows.join("; ")),
+    ));
+
+    // m38 — M310: an avatar's outer layers follow its customisation mask. In
+    // wide Kai (the jar's default skin 12: a 296-texel jacket, sleeves, no
+    // hat texels), hiding the jacket changes pixels, hiding all six layers
+    // changes more, and hiding the hat (transparent in this skin) changes
+    // nothing at all. Until M310 every layer always drew.
+    use rewo_gpu::mobs::{AVATAR_HAT, AVATAR_JACKET};
+    let kai = baked
+        .default_skins
+        .get(12)
+        .and_then(|d| d.as_ref())
+        .ok_or("mobtexshot: the jar has no wide/kai.png")?;
+    let mut pst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.0, -3.0),
+        Vec3::new(0.0, 0.9, 0.0),
+    )?;
+    let kai_uv = pst
+        .wr
+        .upload_player_skin(gpu, 12, &kai.rgba)
+        .ok_or("mobtexshot: no skin slot for Kai")?;
+    let mut pshot = |hidden: u8| -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            skin_uv: Some(kai_uv),
+            avatar_hidden: hidden,
+            ..neutral_draw(EntityModelKind::Player)
+        };
+        pst.wr.set_entities(&[d], pst.right, pst.up, 0.0);
+        pst.off.render(gpu, Some((&mut pst.wr, pst.vp)), &ov, BG)?;
+        pst.off.read_rgba(gpu)
+    };
+    let all_shown = pshot(0)?;
+    let no_jacket = pshot(AVATAR_JACKET)?;
+    let no_hat = pshot(AVATAR_HAT)?;
+    let none_shown = pshot(0x7e)?;
+    pst.destroy(gpu);
+    let changed = |a: &[u8], b: &[u8]| {
+        a.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.as_chunks::<4>().0)
+            .filter(|(x, y)| x[..3] != y[..3])
+            .count()
+    };
+    let (jacket_px, all_px, hat_px) = (
+        changed(&all_shown, &no_jacket),
+        changed(&all_shown, &none_shown),
+        changed(&all_shown, &no_hat),
+    );
+    w.push(wit(
+        "m38.an_avatars_outer_layers_follow_its_customisation_mask",
+        jacket_px >= 50 && all_px > jacket_px && hat_px == 0,
+        format!(
+            "hiding the jacket changes {jacket_px} px (want >= 50), all six layers {all_px} \
+             (want more), the transparent hat {hat_px} (want 0)"
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

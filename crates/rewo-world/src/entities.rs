@@ -2325,6 +2325,12 @@ impl EntityTable {
         self.model_customisation.get(&id).copied().unwrap_or(0) & 1 != 0
     }
 
+    /// M310 — the whole `DATA_PLAYER_MODE_CUSTOMISATION` mask (`Avatar`'s
+    /// synched default 0 until the server sends one).
+    pub fn model_customisation(&self, id: i32) -> u8 {
+        self.model_customisation.get(&id).copied().unwrap_or(0)
+    }
+
     /// `LivingEntity.handleEntityEvent(3)` — the death event.
     ///
     /// ```text

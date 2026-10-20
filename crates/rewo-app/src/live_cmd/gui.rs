@@ -215,6 +215,9 @@ pub(super) fn preview_draw<'a>(
         saddle: None,
         ridden: false,
         chested: false,
+        // M310 — the local player's own outer layers, as it told the
+        // server (`options.txt`'s `modelPart_*`).
+        avatar_hidden: !session.client_info.model_parts,
         on_fire: None,
         billboard: None,
         allay_dance: None,

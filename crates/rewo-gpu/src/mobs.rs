@@ -799,6 +799,12 @@ pub enum Show {
     /// M296 — `DonkeyModel.setupAnim`: `leftChest.visible = rightChest.visible
     /// = state.hasChest`.
     Chested,
+    /// M310 — `PlayerModel.setupAnim`: `hat.visible = state.showHat`,
+    /// `jacket.visible = state.showJacket` and so on, each a
+    /// `PlayerModelPart` bit of the avatar's customisation mask (the bit
+    /// here). Shown unless [`crate::entities::EntityDraw::avatar_hidden`]
+    /// has it.
+    AvatarPart(u8),
 }
 
 /// M238 — the armour stand's two visibility flags (`DATA_CLIENT_FLAGS` 0x04
@@ -2695,9 +2701,45 @@ fn player_slim() -> Model {
 
 /// Shared `PlayerModel.createMesh` — head/hat/body/jacket/legs are identical
 /// between the two arm widths; only the arm + sleeve boxes differ.
+/// M310 — `PlayerModelPart`'s mask bits (`1 << ordinal`); bit 0 is the cape.
+pub const AVATAR_JACKET: u8 = 1 << 1;
+pub const AVATAR_LEFT_SLEEVE: u8 = 1 << 2;
+pub const AVATAR_RIGHT_SLEEVE: u8 = 1 << 3;
+pub const AVATAR_LEFT_PANTS: u8 = 1 << 4;
+pub const AVATAR_RIGHT_PANTS: u8 = 1 << 5;
+pub const AVATAR_HAT: u8 = 1 << 6;
+
+/// M310 — an outer-layer part: a child of `parent` at its pivot (so the same
+/// transform), shown by the customisation mask's `bit`, as `PlayerModel`'s
+/// `hat`, `jacket`, sleeves and trouser legs are.
+fn avatar_layer(b: &mut ModelBuilder, name: &'static str, parent: usize, bit: u8) -> usize {
+    let p = b.part_named(name, [0.0; 3], [0.0; 3], Anim::None, 1.0, Some(parent));
+    b.show(p, Show::AvatarPart(bit));
+    p
+}
+
 fn player_model(slim: bool) -> Model {
     let mut b = ModelBuilder::new();
-    humanoid_head(&mut b, 0);
+    // `humanoid_head`, with the hat on its own part (M310).
+    let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
+    b.cube(
+        head,
+        0,
+        (0.0, 0.0),
+        [-4.0, -8.0, -4.0],
+        [8.0, 8.0, 8.0],
+        NONE,
+    );
+    let hat = avatar_layer(&mut b, "hat", head, AVATAR_HAT);
+    b.cube_g(
+        hat,
+        0,
+        (32.0, 0.0),
+        [-4.0, -8.0, -4.0],
+        [8.0, 8.0, 8.0],
+        0.5,
+        NONE,
+    );
     // `body` is a real articulated part (pivot 0,0,0 / no base rotation, so the
     // rest pose is byte-identical to the static root it replaced) because
     // `HumanoidModel.setupAttackAnimation` rotates it during a combat swing.
@@ -2718,8 +2760,9 @@ fn player_model(slim: bool) -> Model {
         NONE,
     );
     // Jacket overlay on the body.
+    let jacket = avatar_layer(&mut b, "jacket", body, AVATAR_JACKET);
     b.cube_g(
-        body,
+        jacket,
         0,
         (16.0, 32.0),
         [-4.0, 0.0, -2.0],
@@ -2749,8 +2792,9 @@ fn player_model(slim: bool) -> Model {
         [aw, 12.0, 4.0],
         NONE,
     );
+    let right_sleeve = avatar_layer(&mut b, "right_sleeve", arm_r, AVATAR_RIGHT_SLEEVE);
     b.cube_g(
-        arm_r,
+        right_sleeve,
         0,
         (40.0, 32.0),
         [rmin, -2.0, -2.0],
@@ -2774,8 +2818,9 @@ fn player_model(slim: bool) -> Model {
         [aw, 12.0, 4.0],
         NONE,
     );
+    let left_sleeve = avatar_layer(&mut b, "left_sleeve", arm_l, AVATAR_LEFT_SLEEVE);
     b.cube_g(
-        arm_l,
+        left_sleeve,
         0,
         (48.0, 48.0),
         [lmin, -2.0, -2.0],
@@ -2792,8 +2837,9 @@ fn player_model(slim: bool) -> Model {
         [4.0, 12.0, 4.0],
         NONE,
     );
+    let right_pants = avatar_layer(&mut b, "right_pants", leg_r, AVATAR_RIGHT_PANTS);
     b.cube_g(
-        leg_r,
+        right_pants,
         0,
         (0.0, 32.0),
         [-2.0, 0.0, -2.0],
@@ -2810,8 +2856,9 @@ fn player_model(slim: bool) -> Model {
         [4.0, 12.0, 4.0],
         NONE,
     );
+    let left_pants = avatar_layer(&mut b, "left_pants", leg_l, AVATAR_LEFT_PANTS);
     b.cube_g(
-        leg_l,
+        left_pants,
         0,
         (0.0, 48.0),
         [-2.0, 0.0, -2.0],
@@ -10693,12 +10740,24 @@ mod tests {
     #[test]
     fn player_world_orientation_at_yaw_zero() {
         let m = player();
-        let to_world = |p: [f32; 3], part: &Part| -> [f32; 3] {
-            let v = [
-                p[0] + part.pivot[0],
-                p[1] + part.pivot[1],
-                p[2] + part.pivot[2],
-            ];
+        // M310 — the outer layers are child parts at their parent's pivot
+        // (no rotation), so a part's pivot is summed up its parent chain.
+        let pivot_of = |mut i: usize| -> [f32; 3] {
+            let mut acc = [0.0f32; 3];
+            loop {
+                let part = &m.parts[i];
+                for (a, p) in acc.iter_mut().zip(part.pivot) {
+                    *a += p;
+                }
+                match part.parent {
+                    Some(par) => i = par as usize,
+                    None => return acc,
+                }
+            }
+        };
+        let to_world = |p: [f32; 3], part: usize| -> [f32; 3] {
+            let pivot = pivot_of(part);
+            let v = [p[0] + pivot[0], p[1] + pivot[1], p[2] + pivot[2]];
             // model → entity local: (−x, 24.016−y, z); yaw 0 ⇒ rotY(180°).
             let e = [-v[0], MODEL_EYE_Y - v[1], v[2]];
             [-e[0], e[1], -e[2]]
@@ -10710,17 +10769,24 @@ mod tests {
             .find(|q| q.facing == Facing::North && m.parts[q.part].anim == Anim::Head)
             .unwrap();
         for corner in head_north.pos {
-            let w = to_world(corner, &m.parts[head_north.part]);
+            let w = to_world(corner, head_north.part);
             assert!(w[2] > 0.0, "front face must face +Z, got {w:?}");
             // Head spans model-px y 24.016..32.016 above the feet.
             assert!(w[1] >= MODEL_EYE_Y - 0.1 && w[1] <= MODEL_EYE_Y + 8.1);
         }
-        // Right arm reaches to x −8.25 px (west side; −8 base + 0.25 sleeve).
+        // Right arm reaches to x −8.25 px (west side; −8 base + 0.25 sleeve,
+        // the sleeve on the arm's child part since M310).
+        let on_right_arm = |i: usize| {
+            m.parts[i].anim == Anim::HumanoidArmRight
+                || m.parts[i]
+                    .parent
+                    .is_some_and(|p| m.parts[p as usize].anim == Anim::HumanoidArmRight)
+        };
         let arm = m
             .quads
             .iter()
-            .filter(|q| m.parts[q.part].anim == Anim::HumanoidArmRight)
-            .flat_map(|q| q.pos.iter().map(|p| to_world(*p, &m.parts[q.part])[0]))
+            .filter(|q| on_right_arm(q.part))
+            .flat_map(|q| q.pos.iter().map(|p| to_world(*p, q.part)[0]))
             .fold(f32::MAX, f32::min);
         assert_eq!(arm, -8.25);
     }
@@ -11771,5 +11837,41 @@ mod sulfur_cube_tests {
             kind_for_entity_name("minecraft:sulfur_cube"),
             EntityModelKind::SulfurCube
         );
+    }
+}
+
+#[cfg(test)]
+mod avatar_layer_tests {
+    use super::*;
+
+    /// M310 — each of the six outer layers is one inflated box on its own
+    /// part, a child at its parent's pivot shown by its mask bit; the base
+    /// boxes stay on parts shown always.
+    #[test]
+    fn the_players_outer_layers_each_ride_a_part_shown_by_their_bit() {
+        for m in [player(), player_slim()] {
+            let mut bits = Vec::new();
+            for (i, part) in m.parts.iter().enumerate() {
+                if let Show::AvatarPart(bit) = part.show {
+                    assert_eq!(part.pivot, [0.0; 3]);
+                    assert!(part.parent.is_some());
+                    assert_eq!(m.quads.iter().filter(|q| q.part == i).count(), 6);
+                    bits.push(bit);
+                }
+            }
+            bits.sort_unstable();
+            assert_eq!(
+                bits,
+                [
+                    AVATAR_JACKET,
+                    AVATAR_LEFT_SLEEVE,
+                    AVATAR_RIGHT_SLEEVE,
+                    AVATAR_LEFT_PANTS,
+                    AVATAR_RIGHT_PANTS,
+                    AVATAR_HAT
+                ]
+            );
+            assert_eq!(m.quads.len(), 72, "twelve boxes, as before");
+        }
     }
 }

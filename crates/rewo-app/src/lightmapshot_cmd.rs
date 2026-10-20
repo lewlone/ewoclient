@@ -1100,6 +1100,7 @@ fn run_entity_case(
         saddle: None,
         ridden: false,
         chested: false,
+        avatar_hidden: 0,
         on_fire: None,
         billboard: None,
         allay_dance: None,

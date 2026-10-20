@@ -588,6 +588,7 @@ impl PlaySession {
                 creeper: self.creeper_type_id,
                 wither: self.wither_type_id,
                 player: self.player_type_id,
+                mannequin: self.mannequin_type_id,
                 bee: self.bee_type_id,
                 guardian: self.guardian_type_id,
                 elder_guardian: self.elder_guardian_type_id,

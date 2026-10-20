@@ -315,6 +315,10 @@ pub struct EntityDraw<'a> {
     /// M285 — `CreeperRenderState.isPowered`: a charged creeper draws
     /// `CreeperPowerLayer`'s energy swirl. Ignored for other kinds.
     pub powered: bool,
+    /// M310 — the `PlayerModelPart` bits an avatar does NOT show (the
+    /// customisation mask's complement): its outer layers hide by them
+    /// ([`mobs::Show::AvatarPart`]). 0 shows every layer.
+    pub avatar_hidden: u8,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -3771,6 +3775,7 @@ impl EntityPass {
                 mobs::Show::StandArms => d.stand_parts.arms,
                 mobs::Show::StandBasePlate => d.stand_parts.base_plate,
                 mobs::Show::Chested => d.chested,
+                mobs::Show::AvatarPart(bit) => d.avatar_hidden & bit == 0,
             }
         };
         // The pack variant this entity drew, if the atlas has a slot for it.

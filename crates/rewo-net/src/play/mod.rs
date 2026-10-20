@@ -838,6 +838,8 @@ pub struct PlaySession {
     /// also what an unsent mask means, so a harness that never resolves it
     /// behaves like one whose players never sent one.
     pub player_type_id: Option<i32>,
+    /// M310 — `minecraft:mannequin`'s type id (its customisation mask).
+    pub mannequin_type_id: Option<i32>,
     /// The six mobs whose texture a metadata field chooses (M64). Default-
     /// empty routes every variant nowhere, which leaves those mobs on the
     /// texture Rewo baked — the same "`None` means don't interpret" rule the
@@ -2051,6 +2053,7 @@ impl<'a> Connection<'a> {
             happy_ghast_type_id: None,
             nautilus_type_ids: [None; 2],
             player_type_id: None,
+            mannequin_type_id: None,
             variant_type_ids: crate::VariantKinds::default(),
             take_item_kinds: crate::TakeItemKinds::default(),
             block_event_types: Default::default(),

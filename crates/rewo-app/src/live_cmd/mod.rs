@@ -334,6 +334,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);
+    session.mannequin_type_id = data.entity_types.id_of("minecraft:mannequin");
     // M81: `handleTakeItemEntity` branches three ways on the collected
     // entity's class — an item's stack is shrunk and only then removed, an
     // experience orb is never removed here at all, and anything else goes

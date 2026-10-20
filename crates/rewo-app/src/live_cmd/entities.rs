@@ -4313,6 +4313,12 @@ pub(super) fn collect_entities<'a>(
             ridden: session.world.entities.is_vehicle(id),
             // M296 — a donkey's or mule's chests.
             chested: session.world.entities.has_chest(id),
+            // M310 — an avatar's outer layers by its customisation mask.
+            avatar_hidden: if is_avatar {
+                !session.world.entities.model_customisation(id)
+            } else {
+                0
+            },
             held_glint: [
                 held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
                 held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),

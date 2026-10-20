@@ -2121,6 +2121,7 @@ this shape once.
 | M307 (2026-10-20) — an adult and a baby sulfur cube draw as their two models | **r163** | — | — |
 | M308 (2026-10-20) — a mannequin draws in its default skin | **r164** | — | — |
 | M309 (2026-10-20) — a named mannequin draws in its profile's default skin | **r165** | — | — |
+| M310 (2026-10-20) — a mannequin draws with its hidden layers hidden | **r166** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

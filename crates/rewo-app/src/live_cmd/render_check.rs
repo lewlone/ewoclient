@@ -407,6 +407,9 @@ pub(super) struct RenderCheck {
     /// M309 — r165: frames on which a wide avatar drew in an uploaded skin
     /// (the staged named mannequin's default).
     pub(super) named_mannequin_frames: usize,
+    /// M310 — r166: frames on which an avatar drew with exactly its hat and
+    /// jacket hidden.
+    pub(super) hidden_layer_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1172,7 +1175,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 165;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 166;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1373,6 +1376,15 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M310 — r166: `render_check.py` summons a mannequin with
+        // `hidden_layers:["hat","jacket"]`; its synched customisation mask
+        // (index 16, now read for mannequins too) must reach the draw as
+        // exactly those two layers hidden. Until M310 every layer drew.
+        row(
+            "r166 a mannequin drew with its hat and jacket hidden",
+            self.hidden_layer_frames >= 1,
+            format!("{} frames drew it", self.hidden_layer_frames),
         );
         // M309 — r165: `render_check.py` summons a mannequin whose profile
         // names RewoDummyA (no such account, so nothing can resolve it): its

@@ -2452,6 +2452,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:player` type id (M60) — gates the index-16 BYTE, the
     /// skin-part customisation mask whose bit 0 shows the cape.
     pub player: Option<i32>,
+    /// M310 — `minecraft:mannequin`, the other rendered `Avatar`: the same
+    /// index-16 BYTE.
+    pub mannequin: Option<i32>,
     /// `minecraft:bee` type id (M141f) — gates the index-19 LONG,
     /// `Bee.DATA_ANGER_END_TIME`.
     pub bee: Option<i32>,
@@ -2686,7 +2689,7 @@ pub(crate) fn apply_set_entity_data<'a>(
     // reading would toggle some mob's cape off a byte that means something
     // else entirely. An unresolved player id leaves the slot alone.
     if let Some(b) = meta.byte16 {
-        if kinds.player == Some(type_id) {
+        if kinds.player == Some(type_id) || kinds.mannequin == Some(type_id) {
             entities.set_model_customisation(eid, b);
         }
     }
