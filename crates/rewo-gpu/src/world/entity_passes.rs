@@ -456,9 +456,19 @@ impl WorldRenderer {
                     [0.0, 0.0, 0.0],
                 );
                 self.gui.preview_state = Some((vp, rect));
+                self.gui.preview_kind = Some(d.kind);
             }
-            _ => self.gui.preview_state = None,
+            _ => {
+                self.gui.preview_state = None;
+                self.gui.preview_kind = None;
+            }
         }
+    }
+
+    /// M292 — the kind of model this frame's preview poses (the player in
+    /// the inventory, the mount in a mount screen), `None` with no preview.
+    pub fn preview_kind(&self) -> Option<crate::mobs::EntityModelKind> {
+        self.gui.preview_kind
     }
 
     pub fn preview_ready(&self) -> bool {

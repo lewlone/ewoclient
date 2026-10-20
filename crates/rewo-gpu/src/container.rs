@@ -275,10 +275,41 @@ pub const PREVIEW_SIZE: f32 = 30.0;
 /// bottom of the window rather than its centre.
 pub const PREVIEW_OFFSET_Y: f32 = 0.0625;
 
+/// One `extractEntityInInventoryFollowsMouse` call's window, `size` and
+/// `offsetY` (M292: the mount screen's as well as the inventory's).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreviewWindow {
+    /// `(x0, y0, x1, y1)` in GUI pixels relative to a 176x166 panel.
+    pub rect: (i32, i32, i32, i32),
+    pub size: f32,
+    pub offset_y: f32,
+}
+
+/// `InventoryScreen`'s: `(26, 8)..(75, 78)`, 30, 0.0625.
+pub const INVENTORY_PREVIEW: PreviewWindow = PreviewWindow {
+    rect: PREVIEW,
+    size: PREVIEW_SIZE,
+    offset_y: PREVIEW_OFFSET_Y,
+};
+
+/// M292 — `AbstractMountInventoryScreen.extractBackground`'s:
+/// `extractEntityInInventoryFollowsMouse(graphics, xo + 26, yo + 18, xo + 78,
+/// yo + 70, 17, 0.25F, xMouse, yMouse, mount)`.
+pub const MOUNT_PREVIEW: PreviewWindow = PreviewWindow {
+    rect: (26, 18, 78, 70),
+    size: 17.0,
+    offset_y: 0.25,
+};
+
 /// Where the preview window lands on screen, as `(x, y, w, h)` in pixels.
 pub fn preview_rect(w: f32, h: f32) -> (f32, f32, f32, f32) {
+    preview_rect_for(&INVENTORY_PREVIEW, w, h)
+}
+
+/// [`preview_rect`] for any window (M292).
+pub fn preview_rect_for(win: &PreviewWindow, w: f32, h: f32) -> (f32, f32, f32, f32) {
     let (left, top, scale) = gui_origin(w, h);
-    let (x0, y0, x1, y1) = PREVIEW;
+    let (x0, y0, x1, y1) = win.rect;
     (
         left + x0 as f32 * scale,
         top + y0 as f32 * scale,
@@ -294,8 +325,13 @@ pub fn preview_rect(w: f32, h: f32) -> (f32, f32, f32, f32) {
 /// cursor is converted back into that space first — at GUI scale 3 a mouse a
 /// third of the way across the window turns the model as far as vanilla does.
 pub fn preview_angles(mouse: (f64, f64), w: f32, h: f32) -> (f32, f32) {
+    preview_angles_for(&INVENTORY_PREVIEW, mouse, w, h)
+}
+
+/// [`preview_angles`] for any window (M292).
+pub fn preview_angles_for(win: &PreviewWindow, mouse: (f64, f64), w: f32, h: f32) -> (f32, f32) {
     let (left, top, scale) = gui_origin(w, h);
-    let (x0, y0, x1, y1) = PREVIEW;
+    let (x0, y0, x1, y1) = win.rect;
     let centre_x = (x0 + x1) as f32 / 2.0;
     let centre_y = (y0 + y1) as f32 / 2.0;
     let mx = (mouse.0 as f32 - left) / scale;
@@ -333,16 +369,33 @@ pub fn preview_view_proj(
     bb_height: f32,
     y_angle_deg: f32,
 ) -> [[f32; 4]; 4] {
-    let (rx, ry, rw, rh) = preview_rect(screen_w, screen_h);
+    preview_view_proj_for(
+        &INVENTORY_PREVIEW,
+        screen_w,
+        screen_h,
+        bb_height,
+        y_angle_deg,
+    )
+}
+
+/// [`preview_view_proj`] for any window (M292).
+pub fn preview_view_proj_for(
+    win: &PreviewWindow,
+    screen_w: f32,
+    screen_h: f32,
+    bb_height: f32,
+    y_angle_deg: f32,
+) -> [[f32; 4]; 4] {
+    let (rx, ry, rw, rh) = preview_rect_for(win, screen_w, screen_h);
     let (_, _, gui_scale) = gui_origin(screen_w, screen_h);
-    let s = gui_scale * PREVIEW_SIZE;
+    let s = gui_scale * win.size;
 
     // Model → preview-local pixels, y down, origin at the window's top-left.
     let model_view = glam::Mat4::from_translation(glam::Vec3::new(rw / 2.0, rh / 2.0, 0.0))
         * glam::Mat4::from_scale(glam::Vec3::new(s, s, -s))
         * glam::Mat4::from_translation(glam::Vec3::new(
             0.0,
-            bb_height / 2.0 + PREVIEW_OFFSET_Y,
+            bb_height / 2.0 + win.offset_y,
             0.0,
         ))
         * glam::Mat4::from_rotation_z(std::f32::consts::PI)

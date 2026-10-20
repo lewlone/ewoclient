@@ -46,7 +46,7 @@ use crate::stats::OverlayRing;
 
 /// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 5 for M64 (the
 /// re-projected collision + the inventory preview's cape).
-const EXPECTED_WITNESSES: usize = 69;
+const EXPECTED_WITNESSES: usize = 70;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -2042,6 +2042,71 @@ fn check_pixels(
                      `chest_humanoid` is false because the preview draws no \
                      armour at all, so neither of `CapeLayer`'s other two \
                      gates has anything to act on"
+                ),
+            );
+            // M292 — the mount screen's window: a donkey, through the
+            // production `mount_preview_draw` (`MOUNT_PREVIEW`, size 17,
+            // offset 0.25), must draw, inside that window alone, centred on
+            // it. The cursor sits at the window's centre, so the model faces
+            // straight out: head-on at 17 px a block, a donkey covers a few
+            // hundred pixels of the 52x52 window at this gate's scale (294
+            // measured), so 150 is the floor.
+            let win = rewo_gpu::container::MOUNT_PREVIEW;
+            let (mx, my, mw, mh) = rewo_gpu::container::preview_rect_for(&win, W as f32, H as f32);
+            let donkey = EntityDraw {
+                kind: rewo_gpu::mobs::EntityModelKind::Donkey,
+                width: 1.3965,
+                height: 1.5,
+                skin_uv: None,
+                cape: None,
+                held: [None, None],
+                ..player_draw(None)
+            };
+            let centre = ((mx + mw / 2.0) as f64, (my + mh / 2.0) as f64);
+            let (pd, mvp, mrect) =
+                crate::live_cmd::mount_preview_draw(&donkey, W as f32, H as f32, centre);
+            wr.set_preview(None);
+            off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
+            let without = off.read_rgba(gpu)?;
+            wr.set_preview(Some((&pd, mvp, mrect)));
+            off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
+            let with = off.read_rgba(gpu)?;
+            let posed = wr.preview_kind();
+            let (mut n, mut out, mut sx) = (0usize, 0usize, 0f64);
+            for (i, (a, b)) in with
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(without.as_chunks::<4>().0)
+                .enumerate()
+            {
+                if a[..3] == b[..3] {
+                    continue;
+                }
+                let (x, y) = ((i as u32 % W) as f32, (i as u32 / W) as f32);
+                if x < mx.floor()
+                    || x >= (mx + mw).ceil()
+                    || y < my.floor()
+                    || y >= (my + mh).ceil()
+                {
+                    out += 1;
+                } else {
+                    n += 1;
+                    sx += x as f64 + 0.5;
+                }
+            }
+            let cx = sx / n.max(1) as f64;
+            let off_centre = (cx - (mx + mw / 2.0) as f64).abs();
+            c.record(
+                "p5.a_mount_screen_poses_the_mount_in_its_own_window",
+                posed == Some(rewo_gpu::mobs::EntityModelKind::Donkey)
+                    && n >= 150
+                    && out == 0
+                    && off_centre <= mw as f64 * 0.1,
+                format!(
+                    "posed {posed:?}; {n} px drawn inside the {mw:.0}x{mh:.0} mount window, \
+                     {out} outside it; their centroid {off_centre:.1} px from the window's \
+                     centre (want <= a tenth of its width)"
                 ),
             );
             wr.set_preview(None);

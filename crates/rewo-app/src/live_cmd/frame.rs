@@ -1497,6 +1497,39 @@ impl LiveApp {
             cu,
             anim_time,
         );
+        // M292 — a mount screen's window: this frame's draw of the mount
+        // (matched by its stable id and position), posed for the preview.
+        if let Some(mount) = session.menus.shown_open().and_then(|m| m.mount) {
+            if state.world_renderer.preview_ready() {
+                let want = (mount.entity_id & 0xffff) as f32;
+                let at = session
+                    .world
+                    .entities
+                    .get(mount.entity_id)
+                    .map(|e| e.render_pos(alpha));
+                let found = draws.iter().find(|d| {
+                    d.anim_id == want
+                        && d.kind != rewo_gpu::mobs::EntityModelKind::Capsule
+                        && at.is_some_and(|p| {
+                            (d.pos[0] - p[0] as f32).abs() < 1e-3
+                                && (d.pos[2] - p[2] as f32).abs() < 1e-3
+                        })
+                });
+                let ex = state.renderer.swapchain.extent;
+                match found {
+                    Some(d) => {
+                        let (pd, vp, rect) = mount_preview_draw(
+                            d,
+                            ex.width as f32,
+                            ex.height as f32,
+                            self.screen.mouse,
+                        );
+                        state.world_renderer.set_preview(Some((&pd, vp, rect)));
+                    }
+                    None => state.world_renderer.set_preview(None),
+                }
+            }
+        }
         // M285 — r143: the staged charged creeper drew its swirl, read back
         // off the pass's own range.
         #[cfg(feature = "gates")]
@@ -2246,8 +2279,30 @@ impl LiveApp {
                         ));
                     }
                     // r86 — a container's frame carries no player preview.
+                    // M292 — r149: a mount screen's carries the mount.
                     if let Some(c) = self.check.as_mut() {
-                        if state.world_renderer.preview_active() {
+                        let kind = state.world_renderer.preview_kind();
+                        let mount_kind = session
+                            .menus
+                            .shown_open()
+                            .and_then(|m| m.mount)
+                            .and_then(|m| session.world.entities.get(m.entity_id))
+                            .and_then(|e| self.etypes.name(e.type_id))
+                            .map(|n| n.trim_start_matches("minecraft:").to_string());
+                        if let (Some(k), Some(n)) = (kind, mount_kind.as_deref()) {
+                            if k.name() == n {
+                                c.mount_preview_frames += 1;
+                            }
+                        }
+                        if state.world_renderer.preview_active()
+                            && matches!(
+                                kind,
+                                Some(
+                                    rewo_gpu::mobs::EntityModelKind::Player
+                                        | rewo_gpu::mobs::EntityModelKind::PlayerSlim
+                                )
+                            )
+                        {
                             c.container_preview_frames += 1;
                         }
                     }

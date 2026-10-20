@@ -73,6 +73,8 @@ pub(super) struct GuiFrame {
     pub(super) item_bars: Vec<crate::container::ItemBar>,
     /// This frame's preview matrix and window, or `None` when it is closed.
     pub(super) preview_state: Option<([[f32; 4]; 4], vk::Rect2D)>,
+    /// M292 — the posed model's kind, for read-back.
+    pub(super) preview_kind: Option<crate::mobs::EntityModelKind>,
     /// This frame's hand view-projection, or `None` when nothing is drawn.
     pub(super) hand_vp: Option<[[f32; 4]; 4]>,
     pub(super) locator_state: Option<crate::locator_bar::LocatorBarState>,

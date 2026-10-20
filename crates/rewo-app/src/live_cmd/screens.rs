@@ -941,8 +941,12 @@ pub(super) fn apply_screen(
     // container screen draws no entity at all (a mount screen draws the
     // MOUNT, which Rewo does not yet). Before this the player was painted in
     // the inventory's window position over every container's slots.
-    if session.menus.shown_open().is_some() {
-        wr.set_preview(None);
+    // M292 — a mount screen's window shows the mount: the world pass, which
+    // holds this frame's draws, posed it there, so it is left alone here.
+    if let Some(m) = session.menus.shown_open() {
+        if m.mount.is_none() {
+            wr.set_preview(None);
+        }
     } else if wr.preview_ready() {
         let held = [
             session.inventory.held().and_then(|s| items.name(s.item_id)),

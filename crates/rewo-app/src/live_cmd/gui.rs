@@ -253,6 +253,50 @@ pub(super) fn preview_draw<'a>(
     (draw, vp, rect)
 }
 
+/// M292 — the mount in a mount screen's window
+/// (`AbstractMountInventoryScreen`: `extractEntityInInventoryFollowsMouse`
+/// with the mount, in [`rewo_gpu::container::MOUNT_PREVIEW`]): this frame's
+/// draw of it, posed as the inventory's player is (the body `180 +
+/// xAngle`, the pitch `-yAngle`), at the box height over its scale with the
+/// scale then 1, lit by the GUI's full light, with no name, bar or outline.
+pub(crate) fn mount_preview_draw<'a>(
+    mount: &EntityDraw<'a>,
+    w: f32,
+    h: f32,
+    mouse: (f64, f64),
+) -> (EntityDraw<'a>, [[f32; 4]; 4], ash::vk::Rect2D) {
+    let win = rewo_gpu::container::MOUNT_PREVIEW;
+    let (x_angle, y_angle) = rewo_gpu::container::preview_angles_for(&win, mouse, w, h);
+    let height = mount.height / mount.scale_mul.max(1e-3);
+    let draw = EntityDraw {
+        pos: [0.0, 0.0, 0.0],
+        height,
+        scale_mul: 1.0,
+        yaw: 180.0 + x_angle,
+        head_yaw: 180.0 + x_angle,
+        pitch: -y_angle,
+        name: None,
+        health: None,
+        outline: None,
+        mount: None,
+        light: [1.0, 1.0, 1.0],
+        ..*mount
+    };
+    let vp = rewo_gpu::container::preview_view_proj_for(&win, w, h, height, y_angle);
+    let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect_for(&win, w, h);
+    let rect = ash::vk::Rect2D {
+        offset: ash::vk::Offset2D {
+            x: rx as i32,
+            y: ry as i32,
+        },
+        extent: ash::vk::Extent2D {
+            width: rw as u32,
+            height: rh as u32,
+        },
+    };
+    (draw, vp, rect)
+}
+
 // -- the first-person hand (M38) ----------------------------------------------
 
 /// The hand's atlas: the same 64-px grid the GUI icons use, with the player's

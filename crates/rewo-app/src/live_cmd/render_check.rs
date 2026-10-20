@@ -364,6 +364,9 @@ pub(super) struct RenderCheck {
     /// M290 — r148: frames on which the armour stand's held head drew in
     /// its skin.
     pub(super) held_skin_head_frames: usize,
+    /// M292 — r149: frames of a mount screen whose window posed the mount's
+    /// own kind.
+    pub(super) mount_preview_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1129,7 +1132,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 148;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 149;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1330,6 +1333,16 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M292 — r149: r84's donkey screen draws the donkey in its window
+        // (`AbstractMountInventoryScreen` poses the mount there), read back
+        // as the preview's model kind against the mount's entity type. The
+        // window stayed empty until M292; r86 still holds that no container
+        // screen draws the player.
+        row(
+            "r149 the donkey's screen drew the donkey in its window",
+            self.mount_preview_frames >= 1,
+            format!("{} frames posed the mount", self.mount_preview_frames),
         );
         // M290 — r148: `render_check.py` summons an armour stand holding a
         // player head with r130's skin in its main hand. Its held item must
