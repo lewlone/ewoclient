@@ -3653,6 +3653,8 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         // M317 — `ZombieRenderer`'s `BabyZombieModel` (the husk's too).
         EntityModelKind::Zombie if baby => EntityModelKind::ZombieBaby,
         EntityModelKind::Husk if baby => EntityModelKind::HuskBaby,
+        // M318 — `VillagerRenderer`'s `BabyVillagerModel`.
+        EntityModelKind::Villager if baby => EntityModelKind::VillagerBaby,
         k => k,
     }
 }
@@ -3668,6 +3670,7 @@ pub(crate) fn baby_scales(kind: EntityModelKind) -> (f32, f32) {
         EntityModelKind::TurtleBaby => (1.0, 0.3),
         EntityModelKind::PolarBearBaby => (1.0, 0.5),
         EntityModelKind::ZombieBaby | EntityModelKind::HuskBaby => (1.0, 0.5),
+        EntityModelKind::VillagerBaby => (1.0, 0.5),
         _ => (0.5, 0.5),
     }
 }

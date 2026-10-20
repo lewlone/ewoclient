@@ -2128,6 +2128,7 @@ this shape once.
 | M315 (2026-10-20) — a baby turtle draws as its own model | **r170** | — | — |
 | M316 (2026-10-20) — a polar bear cub draws as its own model | **r171** | — | — |
 | M317 (2026-10-20) — a baby zombie and a baby husk draw as BabyZombieModel | **r172** | — | — |
+| M318 (2026-10-20) — a baby villager draws as its own model | **r173** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

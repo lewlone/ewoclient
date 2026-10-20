@@ -424,6 +424,8 @@ pub(super) struct RenderCheck {
     /// M317 — r172: whether a baby zombie and a baby husk drew as
     /// `BabyZombieModel`.
     pub(super) baby_zombies: (bool, bool),
+    /// M318 — r173: frames on which a baby villager drew as its own model.
+    pub(super) baby_villager_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1189,7 +1191,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 172;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 173;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1390,6 +1392,14 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M318 — r173: `render_check.py` summons a baby villager; it must draw
+        // as `BabyVillagerModel` (`mobtexshot m44`). Until M318 it was the
+        // adult mesh wearing the baby sheet's UV offset.
+        row(
+            "r173 a baby villager drew as its own model",
+            self.baby_villager_frames >= 1,
+            format!("{} frames drew it", self.baby_villager_frames),
         );
         // M317 — r172: `render_check.py` summons a baby zombie (helmeted, so
         // the sun does not burn it) and a baby husk; both must draw as

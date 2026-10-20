@@ -271,6 +271,8 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M318 -- r173. A baby villager.
+    "summon minecraft:villager ~-15 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M317 -- r172. A baby zombie (a helmet keeps the sun off it) and a baby
     # husk.
     "summon minecraft:zombie ~-21 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b,"

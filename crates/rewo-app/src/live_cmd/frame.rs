@@ -973,6 +973,13 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M318 — r173: the staged baby villager, as its own model.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::VillagerBaby)
+            {
+                c.baby_villager_frames += 1;
+            }
             // M317 — r172: the staged baby zombie and baby husk, as their own
             // model.
             for d in draws.iter() {

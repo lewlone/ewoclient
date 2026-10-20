@@ -4227,6 +4227,7 @@ fn a_baby_sulfur_cube_takes_the_small_model() {
     assert_eq!(f(K::PolarBear, true), K::PolarBearBaby);
     assert_eq!(f(K::Zombie, true), K::ZombieBaby);
     assert_eq!(f(K::Husk, true), K::HuskBaby);
+    assert_eq!(f(K::Villager, true), K::VillagerBaby);
     assert_eq!(
         f(K::Drowned, true),
         K::Drowned,

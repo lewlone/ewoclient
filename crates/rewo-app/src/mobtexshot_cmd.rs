@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 43;
+const EXPECTED_WITNESSES: usize = 44;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -182,9 +182,10 @@ const MIN_DISCRIMINATING: usize = 72;
 /// sulfur cube, half a block at size 1 under its translucent shell (m37
 /// grades it up close), (M315) the baby turtle, a quarter of a block (m42
 /// grades it up close), (M316) the polar bear cub (m43 grades it up
-/// close), and (M317) the baby zombie and baby husk (n1/n2 grade the baby
-/// zombie up close). A seventeenth means something stopped drawing.
-const MAX_SMALL: usize = 16;
+/// close), (M317) the baby zombie and baby husk (n1/n2 grade the baby
+/// zombie up close), and (M318) the baby villager (m44). An eighteenth means
+/// something stopped drawing.
+const MAX_SMALL: usize = 17;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3263,6 +3264,61 @@ fn run_check(
         format!(
             "{cub_px} cub px (want >= 200), first colour the cub sheet cannot produce: {:?}",
             cub_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m44 — M318: the baby villager draws, every pixel producible by
+    // `villager_baby`. (Its mesh and texel layout are pinned by the unit test
+    // `the_baby_villager_is_its_own_model`; the baby's palette lies wholly
+    // inside the adult's, so no pixel can tell the two sheets apart.) Until
+    // M318 it was the adult mesh wearing the baby sheet's UV offset, which
+    // scrambled it.
+    let vb_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "villager_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut vbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.0, -2.2),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    vbst.wr.set_entities(&[], vbst.right, vbst.up, 0.0);
+    vbst.off
+        .render(gpu, Some((&mut vbst.wr, vbst.vp)), &ov, BG)?;
+    let vb_empty = vbst.off.read_rgba(gpu)?;
+    let vb_draw = neutral_draw(EntityModelKind::VillagerBaby);
+    vbst.wr.set_entities(&[vb_draw], vbst.right, vbst.up, 0.0);
+    vbst.off
+        .render(gpu, Some((&mut vbst.wr, vbst.vp)), &ov, BG)?;
+    let vb_frame = vbst.off.read_rgba(gpu)?;
+    vbst.destroy(gpu);
+    let (mut vb_px, mut vb_bad) = (0usize, None);
+    for (p, e) in vb_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(vb_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        vb_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if vb_bad.is_none() && !explains(&vb_sheet, c) {
+            vb_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m44.the_baby_villager_draws_from_its_own_sheet",
+        !vb_sheet.is_empty() && vb_px >= 200 && vb_bad.is_none(),
+        format!(
+            "{vb_px} px (want >= 200), first colour `villager_baby` cannot produce: {:?}",
+            vb_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 
