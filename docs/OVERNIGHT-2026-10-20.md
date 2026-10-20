@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 94 Rewo milestones, M194 to M287, in about 210 commits on
+- **What happened**: 95 Rewo milestones, M194 to M288, in about 212 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`0d8b1c17`): 4430 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 145 of
-  145 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`98e31255`): 4432 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 146 of
+  146 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -363,6 +363,8 @@ released.
 - **M286**: a breeze's wind funnel is now see-through and swirls, as in
   vanilla; Rewo drew it as a solid, still shell.
 - **M287**: a wither below half health now shows its blue armour swirl.
+- **M288**: a freshly built wither now grows from its smaller, blinking
+  blue form, as in vanilla.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -424,6 +426,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `98e31255` | **M288** — the wither's invulnerable phase: `DATA_ID_INV` read, `wither_invulnerable.png` as an appended vanilla variant chosen by the renderer's blink rule, the `2 - t / 220 · 0.5` shrink through the draw's stretch; two unit tests, the wither in mobshot's variant check and render-check **r146**. |
 | `0d8b1c17` | **M287** — the powered wither's armour swirl: `isPowered` from health and the max-health attribute, the wither shell at deformation 0.5, `wither_armor.png` on its own sheet with `Mth.cos(t · 0.02) · 3` as its u offset, in the swirl range after the creeper's; two unit tests, mobtexshot **m23** and render-check **r145**. |
 | `c6cf0346` | **M286** — the breeze's wind as its own layer: the slot-1 funnel leaves the body for `BREEZE_WIND` (own REPEAT sheet scrolled by `ageInTicks · 0.02`, lit, unshaded, translucent in gamma space, sorted), the pass's ninth range; a unit test, mobtexshot **m22** and render-check **r144**. |
 | `a9b60422` | **M285** — the charged creeper's energy swirl: `DATA_IS_POWERED`, the creeper shell at deformation 2, `creeper_armor.png` (REPEAT, NEAREST) scrolled by `ageInTicks`, `0xFF808080`, additive in gamma space as the pass's eighth range; three unit tests, mobtexshot **m21** and render-check **r143**. |
@@ -762,6 +765,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M288: **4,432 tests passed, 0 failed; gates 51/51** (mobshot's variant check: 69 declared sheets, the wither's in its own atlas slot); clippy and `cargo fmt --check` clean. Render check: run 1 145/146, r142 failing its own control (the bot's yaw happened to be -90.0, the bed camera's, left so by an earlier tail stage) and run 2 146/146; after the witness fix (the bot faces south before the bed click) two more runs read **146/146** (r146 on every run; r142's own yaw back at ~0).
 - After M287: **4,430 tests passed, 0 failed; gates 51/51** (mobtexshot 23); render check **145/145** on two runs (r145: the wither's swirl sub-range filled on every frame it drew powered); clippy (both configurations, also run before the chain this time) and `cargo fmt --check` clean.
 - After M286: **4,428 tests passed, 0 failed; gates 51/51** (mobtexshot 22: m22 over 2,631 wind px, by layer count 26 / 1,299 / 275 / 555 / 466 / 10); render check **144/144** on two runs (r144: the wind range filled on every frame the breeze drew); `cargo fmt --check` clean. Clippy failed once (`needless_borrows_for_generic_args` on the new emitter call); after the one-character fix both clippy configurations are clean, rewo-gpu's 361 tests pass and mobtexshot reads 22/22. Mutants: an opaque wind and an unsorted funnel each fail m22 (its first criterion, "half need two or more layers", let the unsorted one through).
 - After M285: **4,427 tests passed, 0 failed; gates 51/51** (mobtexshot 21: m21 over 2,292 body px, 1,653 single layers, 1,631 sky px all with two or more); render check **143/143** on two runs (r143: the swirl range filled on every frame the charged creeper drew); `cargo fmt --check` clean. Clippy failed once on the new quad sort (`iter_cloned_collect`); after the one-line fix (`.to_vec()`) both clippy configurations are clean, rewo-gpu's 360 tests pass and mobtexshot reads 21/21 again. Before the chain, three mutants of the swirl (a white colour, no sort, a face shade) each failed m21; its first draft, graded against the jar's ramp texture, had let two of them through. One process slip: a single incremental `cargo check` for M285 started about three minutes after another session's `G4-RUNNING` marker appeared at 05:19 (the check was issued without re-reading the marker); every heavy step after that waited for it, and it cleared at 05:38.
@@ -886,8 +890,7 @@ released.
   without the bot's right-clicks placing it.
 - The swirls (M285, M287) and the breeze's wind (M286): a glowing
   entity's layer is not copied into its outline, and fog is not applied to
-  them. The wither's invulnerable phase (blinking texture, shrink) is not
-  drawn.
+  them.
 - ~~The sleeping camera~~: done in M284. Left: vanilla eases the camera's
   eye height half the gap a tick (crouching too); Rewo's camera snaps.
 - Several gate failure messages carry runs of spaces where a `\` line

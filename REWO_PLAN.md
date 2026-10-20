@@ -2101,6 +2101,7 @@ this shape once.
 | M285 (2026-10-20) — a charged creeper draws its energy swirl | **r143** | — | — |
 | M286 (2026-10-20) — a breeze draws its wind as its own layer | **r144** | — | — |
 | M287 (2026-10-20) — a wither at half health draws its armour swirl | **r145** | — | — |
+| M288 (2026-10-20) — an invulnerable wither draws shrunk in its invulnerable sheet | **r146** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3935,6 +3936,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M288 — the wither's invulnerable phase (2026-10-20)
+
+`WitherBossRenderer` during a new wither's invulnerable phase
+(`DATA_ID_INV`, index 19 INT, kind-gated; `MobState::wither_invulnerable`),
+with `t = invulnerableTicks - partialTicks` while above 0:
+
+- `getTextureLocation`: `wither_invulnerable.png` while `floor(t) > 0` and
+  (`> 80` or `floor(t) / 5 % 2 != 1`): steady, then blinking. The sheet is a
+  vanilla variant (appended to `mob_variants`' table, so every earlier id
+  keeps its value), chosen in the collector ahead of the registry variants;
+- `scale`: `2 - t / 220 · 0.5` against the model's 2, through
+  `EntityDraw::stretch`.
+
+**Unit tests**: the blink and the scale at their edges; index 19 INT is the
+wither's ticks only on a wither. **mobshot variant check**: the wither joins
+`VARIANT_MOBS` (69 declared sheets, the new one baked at the base's size,
+in its own atlas slot, rendering differently from the base and only in its
+own slot). **r146**: `render_check.py` summons a NoAI wither with `Invul`
+220 (NoAI skips `customServerAiStep`, so it neither counts down nor
+explodes); it draws in the invulnerable sheet, resolved in the atlas, at
+0.75 of its size.
 
 ### M287 — the powered wither's armour swirl (2026-10-20)
 
