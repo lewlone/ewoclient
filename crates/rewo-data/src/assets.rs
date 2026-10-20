@@ -2935,7 +2935,55 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     // drawn under each active equipment slot.
     "gui/sprites/container/horse/chest_slots.png",
     "gui/sprites/container/slot.png",
+    // 134..=148 — the empty-slot icons (M280), `Slot.getNoItemIcon` and the
+    // loom's three, in [`EMPTY_SLOT_ICONS`]' order.
+    "gui/sprites/container/slot/helmet.png",
+    "gui/sprites/container/slot/chestplate.png",
+    "gui/sprites/container/slot/leggings.png",
+    "gui/sprites/container/slot/boots.png",
+    "gui/sprites/container/slot/shield.png",
+    "gui/sprites/container/slot/saddle.png",
+    "gui/sprites/container/slot/horse_armor.png",
+    "gui/sprites/container/slot/llama_armor.png",
+    "gui/sprites/container/slot/nautilus_armor_inventory.png",
+    "gui/sprites/container/slot/brewing_fuel.png",
+    "gui/sprites/container/slot/potion.png",
+    "gui/sprites/container/slot/lapis_lazuli.png",
+    "gui/sprites/container/slot/banner.png",
+    "gui/sprites/container/slot/dye.png",
+    "gui/sprites/container/slot/banner_pattern.png",
 ];
+
+/// M280 — the empty-slot icons' stems, in their [`MENU_OVERLAY_SPRITES`]
+/// order from [`EMPTY_SLOT_ICON_START`].
+pub const EMPTY_SLOT_ICONS: &[&str] = &[
+    "helmet",
+    "chestplate",
+    "leggings",
+    "boots",
+    "shield",
+    "saddle",
+    "horse_armor",
+    "llama_armor",
+    "nautilus_armor_inventory",
+    "brewing_fuel",
+    "potion",
+    "lapis_lazuli",
+    "banner",
+    "dye",
+    "banner_pattern",
+];
+
+/// M280 — where the empty-slot icons start in [`MENU_OVERLAY_SPRITES`].
+pub const EMPTY_SLOT_ICON_START: usize = 134;
+
+/// M280 — an empty-slot icon's index in [`MENU_OVERLAY_SPRITES`].
+pub fn empty_slot_icon_index(stem: &str) -> Option<usize> {
+    EMPTY_SLOT_ICONS
+        .iter()
+        .position(|s| *s == stem)
+        .map(|i| EMPTY_SLOT_ICON_START + i)
+}
 
 /// `AbstractMountInventoryScreen`'s chest strip (M220): the 90 x 54
 /// `container/horse/chest_slots`, sub-rect `(0, 0, columns * 18, 54)`.
@@ -6160,7 +6208,18 @@ mod tests {
             MENU_OVERLAY_SPRITES[MOUNT_SLOT],
             "gui/sprites/container/slot.png"
         );
-        assert_eq!(MENU_OVERLAY_SPRITES.len(), MOUNT_SLOT + 1);
+        // M280 — the empty-slot icons follow, each at its stem's path.
+        assert_eq!(EMPTY_SLOT_ICON_START, MOUNT_SLOT + 1);
+        for (i, stem) in EMPTY_SLOT_ICONS.iter().enumerate() {
+            assert_eq!(
+                MENU_OVERLAY_SPRITES[EMPTY_SLOT_ICON_START + i],
+                format!("gui/sprites/container/slot/{stem}.png")
+            );
+        }
+        assert_eq!(
+            MENU_OVERLAY_SPRITES.len(),
+            EMPTY_SLOT_ICON_START + EMPTY_SLOT_ICONS.len()
+        );
     }
 
     // -- M164: the waterlogging rule ---------------------------------------

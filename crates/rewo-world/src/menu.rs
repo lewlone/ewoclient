@@ -83,6 +83,9 @@ pub struct MountMenu {
     pub columns: i32,
     pub saddle_active: bool,
     pub body_active: bool,
+    /// M280 — a llama's (or trader llama's) menu, whose body slot shows the
+    /// carpet outline (`HorseInventoryMenu`'s `isLlama`).
+    pub llama: bool,
 }
 
 impl OpenMenu {

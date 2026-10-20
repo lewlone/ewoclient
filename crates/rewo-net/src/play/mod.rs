@@ -5896,6 +5896,10 @@ impl PlaySession {
             columns: p.columns,
             saddle_active,
             body_active,
+            llama: matches!(
+                type_name.as_str(),
+                "minecraft:llama" | "minecraft:trader_llama"
+            ),
         };
         log::info!(
             "net: mount_screen_open: {type_name} {} ({} column(s), saddle slot {saddle_active}, body slot {body_active})",

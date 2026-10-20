@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 171;
+const EXPECTED_WITNESSES: usize = 172;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -4380,6 +4380,62 @@ fn pixels_inner(
         "gb3.no_widgets_is_the_bare_panel_again",
         cleared == open && with_button != open,
         "clearing the widget list restores the panel frame byte for byte, and the frame with the button differs from it — the button is the only thing the widget list added",
+    );
+
+    // -- the empty-slot icons (M280) ---------------------------------------
+    //
+    // The production `empty_slot_icons` over the player's layout, every slot
+    // empty, into the widget layer `apply_screen` uses; graded against the
+    // jar's sprites at vanilla's literal positions (`InventoryMenu`: armour at
+    // `(8, 8 + i * 18)`, the off-hand at `(77, 62)`), opaque texels only.
+    let icons = |empty: &dyn Fn(usize) -> bool| {
+        crate::live_cmd::empty_slot_widgets(&rewo_world::menu_layout::PLAYER, None, empty)
+    };
+    let sprite_at = |img: &[u8], stem: &str, (px, py): (i32, i32)| -> (usize, usize) {
+        let Some(idx) = rewo_data::assets::empty_slot_icon_index(stem) else {
+            return (0, 0);
+        };
+        let sp = &sprites.overlays[idx];
+        let (mut ok, mut n) = (0, 0);
+        for y in 0..sp.h.min(16) as i32 {
+            for x in 0..sp.w.min(16) as i32 {
+                let i = ((y as u32 * sp.w + x as u32) * 4) as usize;
+                if sp.rgba[i + 3] != 255 {
+                    continue;
+                }
+                n += 1;
+                ok += usize::from(
+                    at(img, px + x, py + y) == [sp.rgba[i], sp.rgba[i + 1], sp.rgba[i + 2]],
+                );
+            }
+        }
+        (ok, n)
+    };
+    let expect = [
+        ("helmet", (8, 8)),
+        ("chestplate", (8, 26)),
+        ("leggings", (8, 44)),
+        ("boots", (8, 62)),
+        ("shield", (77, 62)),
+    ];
+    wr.set_container_widgets(icons(&|_| true));
+    let empties = shot(gpu, off, wr, &[])?;
+    let found: Vec<(usize, usize)> = expect
+        .iter()
+        .map(|&(stem, at)| sprite_at(&empties, stem, at))
+        .collect();
+    // A worn helmet: its slot holds an item, so its icon goes.
+    wr.set_container_widgets(icons(&|slot| slot != 5));
+    let worn = shot(gpu, off, wr, &[])?;
+    let (helmet_left, helmet_n) = sprite_at(&worn, "helmet", (8, 8));
+    wr.set_container_widgets(Vec::new());
+    c.record(
+        "ge1.empty_equipment_slots_show_their_icons_and_a_filled_one_does_not",
+        found.iter().all(|&(ok, n)| n > 10 && ok == n) && helmet_left < helmet_n / 2,
+        format!(
+            "{:?} opaque texels matched for helmet, chestplate, leggings, boots, shield at vanilla's slot positions; with the helmet slot filled {helmet_left}/{helmet_n} of its texels remain",
+            found
+        ),
     );
 
     // And the closed screen is not merely a dimmer world: the panel is gone.

@@ -691,7 +691,15 @@ pub(super) fn apply_screen(
         ),
     );
     let gui_w = (w / rewo_gpu::container::recipe_book_origin(w, h).2) as i32;
-    wr.set_container_widgets(book_button_widgets(
+    // M280 — the empty-slot icons ride the widget layer: vanilla draws them
+    // in `extractSlot`, after the background and in the slot's place, which
+    // is where the widgets land, for the player's inventory too.
+    let empty_icons = empty_slot_widgets(
+        layout,
+        session.menus.shown_open().and_then(|m| m.mount),
+        |slot| menu.menu_slot(slot).is_none(),
+    );
+    let mut widgets = book_button_widgets(
         book_button_host(
             layout,
             session.own_game_mode().is_some_and(|g| g.is_creative()),
@@ -700,7 +708,9 @@ pub(super) fn apply_screen(
         rewo_ui::recipe_book_screen::width_too_narrow(gui_w),
         Some(panel_mouse),
         book_button_focused,
-    ));
+    );
+    widgets.extend(empty_icons);
+    wr.set_container_widgets(widgets);
     wr.set_container_panel(container_panel(
         layout,
         session.menus.shown_open(),

@@ -61,6 +61,20 @@ pub(super) fn container_panel(
     })
 }
 
+/// M280 — the empty-slot icons as widget-layer blits (overlay sprite index,
+/// blit): `apply_screen` appends them to the container widgets, which draw
+/// after the background and before the slots, the player's inventory too.
+pub(crate) fn empty_slot_widgets(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    mount: Option<rewo_world::menu::MountMenu>,
+    empty: impl Fn(usize) -> bool,
+) -> Vec<(usize, rewo_gpu::container::PanelBlit)> {
+    rewo_ui::menu_screen::empty_slot_icons(layout, mount, empty)
+        .into_iter()
+        .filter_map(|(stem, b)| Some((rewo_data::assets::empty_slot_icon_index(stem)?, to_blit(b))))
+        .collect()
+}
+
 /// A `menu_screen::ProgressBlit` in the render's own units.
 pub(super) fn to_blit(b: rewo_ui::menu_screen::ProgressBlit) -> rewo_gpu::container::PanelBlit {
     rewo_gpu::container::PanelBlit {

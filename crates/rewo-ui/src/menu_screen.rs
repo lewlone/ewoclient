@@ -1310,6 +1310,64 @@ pub const BEACON_PAYMENT_ICON_Y: i32 = 109;
 mod tests {
     use super::*;
 
+    /// M280 — which empty slots show which icon: the player's armour (head
+    /// first) and off-hand at vanilla's positions, a filled slot none; the
+    /// brewing stand's potions and fuel, not its ingredient; the loom's three;
+    /// a llama's body slot its carpet outline.
+    #[test]
+    fn empty_slot_icons_follow_each_menus_get_no_item_icon() {
+        use rewo_world::menu_layout as ml;
+        let stems = |v: Vec<(&'static str, ProgressBlit)>| -> Vec<(&str, i32, i32)> {
+            v.into_iter().map(|(s, b)| (s, b.dx, b.dy)).collect()
+        };
+        assert_eq!(
+            stems(empty_slot_icons(&ml::PLAYER, None, |_| true)),
+            [
+                ("helmet", 8, 8),
+                ("chestplate", 8, 26),
+                ("leggings", 8, 44),
+                ("boots", 8, 62),
+                ("shield", 77, 62)
+            ]
+        );
+        assert_eq!(empty_slot_icons(&ml::PLAYER, None, |s| s != 6).len(), 4);
+        let by_name = |n: &str| {
+            (0..64)
+                .filter_map(ml::layout_of)
+                .find(|l| l.name == n)
+                .unwrap()
+        };
+        let brew = stems(empty_slot_icons(by_name("brewing_stand"), None, |_| true));
+        assert_eq!(
+            brew.iter().map(|t| t.0).collect::<Vec<_>>(),
+            ["potion", "potion", "potion", "brewing_fuel"]
+        );
+        assert_eq!(brew[3], ("brewing_fuel", 17, 17));
+        let loom = stems(empty_slot_icons(by_name("loom"), None, |_| true));
+        assert_eq!(
+            loom,
+            [
+                ("banner", 13, 26),
+                ("dye", 33, 26),
+                ("banner_pattern", 23, 45)
+            ]
+        );
+        let layout = ml::mount_layout(ml::MountKind::Horse, 3, true, true).unwrap();
+        let llama = rewo_world::menu::MountMenu {
+            entity_id: 1,
+            kind: ml::MountKind::Horse,
+            columns: 3,
+            saddle_active: true,
+            body_active: true,
+            llama: true,
+        };
+        let m = stems(empty_slot_icons(layout, Some(llama), |_| true));
+        assert_eq!(
+            m.iter().map(|t| t.0).collect::<Vec<_>>(),
+            ["saddle", "llama_armor"]
+        );
+    }
+
     /// This table's texture paths, deduplicated, in first-appearance order.
     fn distinct_textures() -> Vec<&'static str> {
         let mut out: Vec<&'static str> = Vec::new();
@@ -2317,6 +2375,81 @@ mod tests {
             .collect();
         assert_eq!(moved, vec!["merchant"]);
     }
+}
+
+// -- empty-slot icons (M280) ------------------------------------------------
+
+/// M280 — `AbstractContainerScreen.extractSlot`'s empty-slot icon:
+/// `if (itemStack.isEmpty() && slot.isActive())` it blits
+/// `slot.getNoItemIcon()` 16x16 at the slot, for
+///
+/// * the player's inventory: `InventoryMenu`'s armour slots 5..=8 (helmet,
+///   chestplate, leggings, boots, `SLOT_IDS` head first) and the off-hand 45
+///   (shield);
+/// * the brewing stand: the three potion slots 0..=2 and the fuel slot 4;
+/// * the enchanting table: the lapis slot 1;
+/// * a mount: the saddle slot 0 and the body slot 1 (horse armour, a
+///   llama's carpet, or the nautilus's armour), when active;
+/// * the loom (`LoomScreen.extractBackground`'s own three): banner 0, dye 1
+///   and pattern 2.
+///
+/// `empty(slot)` is whether the menu's slot holds nothing; an inactive slot
+/// has no position in the layout and draws nothing. Returns `(stem, blit)`,
+/// the stem naming the `container/slot/<stem>` sprite.
+pub fn empty_slot_icons(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    mount: Option<rewo_world::menu::MountMenu>,
+    empty: impl Fn(usize) -> bool,
+) -> Vec<(&'static str, ProgressBlit)> {
+    use rewo_world::menu_layout::MountKind;
+    let slots: Vec<(usize, &'static str)> = match (layout.name, mount) {
+        (_, Some(m)) => vec![
+            (0, "saddle"),
+            (
+                1,
+                match (m.kind, m.llama) {
+                    (MountKind::Nautilus, _) => "nautilus_armor_inventory",
+                    (MountKind::Horse, true) => "llama_armor",
+                    (MountKind::Horse, false) => "horse_armor",
+                },
+            ),
+        ],
+        ("player", None) => vec![
+            (5, "helmet"),
+            (6, "chestplate"),
+            (7, "leggings"),
+            (8, "boots"),
+            (45, "shield"),
+        ],
+        ("brewing_stand", None) => vec![
+            (0, "potion"),
+            (1, "potion"),
+            (2, "potion"),
+            (4, "brewing_fuel"),
+        ],
+        ("enchantment", None) => vec![(1, "lapis_lazuli")],
+        ("loom", None) => vec![(0, "banner"), (1, "dye"), (2, "banner_pattern")],
+        _ => Vec::new(),
+    };
+    slots
+        .into_iter()
+        .filter(|&(slot, _)| empty(slot))
+        .filter_map(|(slot, stem)| {
+            let (x, y) = layout.position(slot)?;
+            Some((
+                stem,
+                ProgressBlit {
+                    dx: x as i32,
+                    dy: y as i32,
+                    w: 16,
+                    h: 16,
+                    sx: 0,
+                    sy: 0,
+                    src: None,
+                },
+            ))
+        })
+        .collect()
 }
 
 // -- CrafterScreen (M93j) ---------------------------------------------------
