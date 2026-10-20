@@ -533,3 +533,36 @@ pub(super) fn celestial_state_of(day_ticks: Option<i64>) -> CelestialState {
         rain_brightness: 1.0,
     }
 }
+
+/// M282 — `Hud.updateVignetteBrightness` for one tick: the light at the
+/// camera's eye (`getMaxLocalRawBrightness` with the day's `skyDarken`),
+/// curved by the dimension's ambient light.
+pub(super) fn vignette_step(session: &PlaySession, current: f32) -> f32 {
+    let dim = session.active_dimension_type.as_ref();
+    let darken = dimension_timeline(session.day_ticks, &dimension_light(dim)).sky_darken();
+    let (block, sky) = session.world.light_at(
+        session.player.x.floor() as i32,
+        session.player.eye_y().floor() as i32,
+        session.player.z.floor() as i32,
+    );
+    rewo_world::vignette::step_vignette(
+        current,
+        dim.map_or(0.0, |d| d.ambient_light),
+        rewo_world::vignette::raw_brightness(block, sky, darken),
+    )
+}
+
+/// M282 — `Hud.extractVignette`'s colour, with the world border's warning
+/// at the camera.
+pub(super) fn vignette_color_now(session: &PlaySession, brightness: f32) -> [f32; 3] {
+    let b = &session.border;
+    let warning = rewo_world::vignette::border_warning(
+        b.distance_to_border(session.player.x, session.player.z) as f32,
+        b.warning_blocks(),
+        b.lerp_speed(),
+        b.warning_time(),
+        b.lerp_target(),
+        b.size(),
+    );
+    rewo_world::vignette::vignette_color(brightness, warning)
+}

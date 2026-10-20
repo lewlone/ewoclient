@@ -39,6 +39,15 @@ const SKY_LIGHT_COLOR: &[(i64, [f32; 3])] = &[
 /// `SKY_COLOR` multiplier track — the rendered sky fades to black at night.
 const SKY_COLOR: &[(i64, [f32; 3])] =
     &[(133, WHITE), (11867, WHITE), (13670, BLACK), (22330, BLACK)];
+/// M282 — `minecraft:gameplay/sky_light_level`'s multiplier track (the
+/// dimension's 15 times this is `SKY_LIGHT_LEVEL`, and `Level.skyDarken` is
+/// `(int)(15 - SKY_LIGHT_LEVEL)`).
+const SKY_LEVEL: &[(i64, f32)] = &[
+    (133, 1.0),
+    (11867, 1.0),
+    (13670, 0.266_666_68),
+    (22330, 0.266_666_68),
+];
 /// `FOG_COLOR` multiplier track.
 const FOG_COLOR: &[(i64, [f32; 3])] = &[
     (133, WHITE),
@@ -58,6 +67,8 @@ pub struct SkyLighting {
     pub sky_color: [f32; 3],
     /// Multiplies the distance-fog colour.
     pub fog_color: [f32; 3],
+    /// M282 — multiplies the sky light level (1 by day, 4/15 at night).
+    pub sky_level: f32,
 }
 
 impl SkyLighting {
@@ -68,7 +79,13 @@ impl SkyLighting {
         light_color: WHITE,
         sky_color: WHITE,
         fog_color: WHITE,
+        sky_level: 1.0,
     };
+
+    /// M282 — `Level.skyDarken`: `(int)(15 - 15 · sky_level)`.
+    pub fn sky_darken(&self) -> i32 {
+        (15.0 - 15.0 * self.sky_level) as i32
+    }
 }
 
 /// Sample a linear keyframe track at `t` (0..`DAY_TICKS`), wrapping.
@@ -112,6 +129,7 @@ pub fn sky_lighting(total_ticks: i64) -> SkyLighting {
         light_color: sample(SKY_LIGHT_COLOR, t, lerp_rgb),
         sky_color: sample(SKY_COLOR, t, lerp_rgb),
         fog_color: sample(FOG_COLOR, t, lerp_rgb),
+        sky_level: sample(SKY_LEVEL, t, lerp_f32),
     }
 }
 

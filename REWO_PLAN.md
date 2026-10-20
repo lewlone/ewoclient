@@ -2095,6 +2095,7 @@ this shape once.
 | M278 (2026-10-20) — a glowing armour stand draws its outline | **r137** | — | — |
 | M279 (2026-10-20) — an invisible glowing armour stand draws as its outline alone | **r138** | — | — |
 | M281 (2026-10-20) — a burning armour stand draws its flames | **r139** | — | — |
+| M282 (2026-10-20) — the HUD vignette draws and follows the daylight | **r140** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

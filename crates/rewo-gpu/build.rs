@@ -17,6 +17,7 @@ fn main() {
         ("shaders/entity.vert", "entity.vert.spv"),
         ("shaders/entity.frag", "entity.frag.spv"),
         ("shaders/outline_post.vert", "outline_post.vert.spv"),
+        ("shaders/vignette.frag", "vignette.frag.spv"),
         ("shaders/outline_geometry.frag", "outline_geometry.frag.spv"),
         ("shaders/outline_sobel.frag", "outline_sobel.frag.spv"),
         ("shaders/outline_blur.frag", "outline_blur.frag.spv"),

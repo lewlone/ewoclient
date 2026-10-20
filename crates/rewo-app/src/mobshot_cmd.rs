@@ -595,6 +595,72 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         }
     }
 
+    // M282 — the HUD vignette: the empty scene with and without it. Every
+    // pixel must be the frame times `1 - t` (gamma bytes; `t` is the jar's
+    // `vignette.png` sampled bilinearly at the pixel's centre, the blend
+    // `ZERO, ONE_MINUS_SRC_COLOR`), the corners darker, the centre untouched.
+    let mut vignette_checked = 0usize;
+    if let Some(v) = baked.vignette.as_ref() {
+        vignette_checked += 1;
+        wr.init_vignette(gpu, &v.rgba, v.w, v.h)?;
+        let vp = Mat4::IDENTITY.to_cols_array_2d();
+        wr.set_entities(&[], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0);
+        wr.set_vignette(None);
+        off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+        let plain = off.read_rgba(gpu)?;
+        wr.set_vignette(Some([1.0, 1.0, 1.0]));
+        off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+        let dark = off.read_rgba(gpu)?;
+        wr.set_vignette(None);
+        let texel = |x: i32, y: i32| -> f32 {
+            let (x, y) = (x.clamp(0, v.w as i32 - 1), y.clamp(0, v.h as i32 - 1));
+            v.rgba[((y as u32 * v.w + x as u32) * 4) as usize] as f32 / 255.0
+        };
+        let sample = |u: f32, t: f32| -> f32 {
+            let (fx, fy) = (u * v.w as f32 - 0.5, t * v.h as f32 - 0.5);
+            let (x0, y0) = (fx.floor(), fy.floor());
+            let (ax, ay) = (fx - x0, fy - y0);
+            let (x0, y0) = (x0 as i32, y0 as i32);
+            let top = texel(x0, y0) * (1.0 - ax) + texel(x0 + 1, y0) * ax;
+            let bot = texel(x0, y0 + 1) * (1.0 - ax) + texel(x0 + 1, y0 + 1) * ax;
+            top * (1.0 - ay) + bot * ay
+        };
+        let mut worst = 0i32;
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let t = sample((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+                for c in 0..3 {
+                    let want = (plain[i + c] as f32 * (1.0 - t)).round() as i32;
+                    worst = worst.max((dark[i + c] as i32 - want).abs());
+                }
+            }
+        }
+        let at = |b: &[u8], x: u32, y: u32| b[((y * w + x) * 4) as usize];
+        let corner_dim = at(&dark, 2, 2) as i32 + 20 < at(&plain, 2, 2) as i32;
+        let centre_same = at(&dark, w / 2, h / 2) == at(&plain, w / 2, h / 2);
+        if !(worst <= 2 && corner_dim && centre_same) {
+            failures.push(format!(
+                "vignette: worst pixel {worst} off the `1 - t` prediction (want <= 2), corner {} -> {} (want darker by 20+), centre {} -> {} (want equal)",
+                at(&plain, 2, 2),
+                at(&dark, 2, 2),
+                at(&plain, w / 2, h / 2),
+                at(&dark, w / 2, h / 2)
+            ));
+        }
+        println!(
+            "[mobshot] vignette: worst {worst}, corner {} -> {}, centre {} -> {}",
+            at(&plain, 2, 2),
+            at(&dark, 2, 2),
+            at(&plain, w / 2, h / 2),
+            at(&dark, w / 2, h / 2)
+        );
+    }
+    if vignette_checked != 1 {
+        failures.push(format!(
+            "graded {vignette_checked} vignette renders, expected 1 (M282)"
+        ));
+    }
     wr.destroy(gpu);
     off.destroy(gpu);
     if ghost_checked != 1 {

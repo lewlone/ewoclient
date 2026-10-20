@@ -48,6 +48,8 @@ pub struct Options {
     /// by `LightningBolt.tick` rather than by a packet. Rewo has no lightning
     /// entity, so the second is recorded rather than wired.
     pub hide_lightning_flash: bool,
+    /// M282 — `options.vignette`, default on.
+    pub vignette: bool,
     /// `options.ambientOcclusion` — vanilla's "Smooth Lighting" (`options.ao`).
     ///
     /// Off, every block takes vanilla's FLAT lighting (`tesselateFlat`'s
@@ -113,6 +115,7 @@ impl Default for Options {
         Self {
             music_frequency: MusicFrequency::Default,
             hide_lightning_flash: false,
+            vignette: true,
             // `OptionInstance.createBoolean("options.ao", true, ..)`
             // (`Options.java:236`) — ON unless the file says otherwise.
             smooth_lighting: true,
@@ -137,6 +140,9 @@ pub const KEY_MUSIC_FREQUENCY: &str = "musicFrequency";
 pub const KEY_CHAT_LINKS: &str = "chatLinks";
 /// `options.chat.links.prompt`'s key (`Options.java:1551`).
 pub const KEY_CHAT_LINKS_PROMPT: &str = "chatLinksPrompt";
+/// M282 — `options.vignette`'s key (`Options.java:1539`). Read, not
+/// written: Rewo has no control for it, so the line passes through.
+pub const KEY_VIGNETTE: &str = "vignette";
 /// `options.hideLightningFlashes`' key in the file.
 pub const KEY_HIDE_LIGHTNING: &str = "hideLightningFlashes";
 /// `options.ambientOcclusion`'s key in the file — the two-letter `ao`, not
@@ -228,6 +234,17 @@ impl Options {
                     None => false,
                 }
             }
+            KEY_VIGNETTE => match raw.trim() {
+                "true" => {
+                    self.vignette = true;
+                    true
+                }
+                "false" => {
+                    self.vignette = false;
+                    true
+                }
+                _ => false,
+            },
             KEY_HIDE_LIGHTNING => match raw.trim() {
                 "true" => {
                     self.hide_lightning_flash = true;

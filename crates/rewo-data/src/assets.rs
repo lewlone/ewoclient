@@ -725,6 +725,8 @@ pub struct BakedAssets {
     /// item one above, which is the first of the three things that separate a
     /// worn piece's foil from a held stack's. `None` means no armour glint.
     pub armor_glint: Option<DecodedImage>,
+    /// M282 — `misc/vignette.png`, the HUD vignette.
+    pub vignette: Option<DecodedImage>,
     /// `textures/map/map_background.png` (64 x 64) and
     /// `map_background_checkerboard.png` (128 x 128), the held map's two
     /// backgrounds (M192, `ItemInHandRenderer.MAP_BACKGROUND*`). `None` draws
@@ -1773,6 +1775,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     // they are different images — the worn foil is not the item foil at a
     // different scale, it is a different texture at a different scale.
     let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
+    let vignette = bake_misc_texture(&mut jar, "vignette.png");
     let map_background = bake_map_texture(&mut jar, "map_background.png");
     let map_background_checkerboard = bake_map_texture(&mut jar, "map_background_checkerboard.png");
     let map_decorations = crate::map_decoration_table::TYPES
@@ -2366,6 +2369,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         enchantment_text,
         glint,
         armor_glint,
+        vignette,
         map_background,
         map_background_checkerboard,
         map_decorations,

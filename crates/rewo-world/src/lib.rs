@@ -52,6 +52,7 @@ pub mod stacked_contents;
 pub mod stats;
 pub mod string_splitter;
 pub mod suggestions;
+pub mod vignette;
 pub mod wavy_cape;
 pub mod weather;
 

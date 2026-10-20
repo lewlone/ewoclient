@@ -330,6 +330,8 @@ pub(super) struct RenderCheck {
     /// M281 — r139: frames on which the burning armour stand drew with its
     /// flames.
     pub(super) burning_frames: usize,
+    /// M282 — r140: the lowest vignette brightness a frame drew with.
+    pub(super) vignette_low: Option<f32>,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1095,7 +1097,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 139;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 140;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1285,6 +1287,16 @@ impl RenderCheck {
                 "{} frames carried the frame and its sword at {:?}",
                 self.item_frame_frames, self.item_frame_pos
             ),
+        );
+        // M282 — r140: the HUD vignette is drawn every frame (the option is
+        // on by default) and follows the light: it starts at 1 and, in the
+        // render check's daylight, must fall toward 0 a hundredth of the gap a
+        // tick (`mobshot` checks its pixels). There was no vignette until M282.
+        let low = self.vignette_low.unwrap_or(1.0);
+        row(
+            "r140 the HUD vignette drew and followed the daylight down",
+            self.vignette_low.is_some() && low < 0.8,
+            format!("lowest brightness drawn {low:.3} (started at 1)"),
         );
         // M281 — r139: an armour stand set burning (`Fire` 32767): the server
         // sets shared flag 0, and the client must draw its flames

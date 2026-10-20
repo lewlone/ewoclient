@@ -842,6 +842,10 @@ struct LiveApp {
     mount_captured: bool,
     #[cfg(feature = "gates")]
     rc_captured_at: bool,
+    /// M282 — `Hud.vignetteBrightness`, and the session tick it was last
+    /// stepped on.
+    vignette_brightness: f32,
+    vignette_tick: u64,
     /// M265 — r123's interpolation command has been sent.
     #[cfg(feature = "gates")]
     rc_interp_sent: bool,
@@ -1263,6 +1267,8 @@ fn run_windowed(
         mount_captured: false,
         #[cfg(feature = "gates")]
         rc_captured_at: false,
+        vignette_brightness: rewo_world::vignette::VIGNETTE_START,
+        vignette_tick: 0,
         #[cfg(feature = "gates")]
         rc_interp_sent: false,
         #[cfg(feature = "gates")]

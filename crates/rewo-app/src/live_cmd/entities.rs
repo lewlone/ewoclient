@@ -4194,6 +4194,10 @@ pub(crate) fn init_entities_maybe_cem(
     if let Some(g) = baked.armor_glint.as_ref() {
         wr.init_entity_armor_glint(gpu, &g.rgba, g.w, g.h)?;
     }
+    // M282: the HUD vignette's texture.
+    if let Some(v) = baked.vignette.as_ref() {
+        wr.init_vignette(gpu, &v.rgba, v.w, v.h)?;
+    }
     // M194: the map decoration sprites a framed map draws, into the entity
     // atlas's map band (the held map has its own copy in the hand atlas).
     let decorations: Vec<Option<&[u8]>> = baked

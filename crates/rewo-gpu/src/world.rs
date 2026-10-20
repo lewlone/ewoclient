@@ -61,6 +61,7 @@ mod scene_passes;
 mod sky;
 mod terrain;
 mod textures;
+mod vignette;
 
 use arena::Arena;
 pub use arena::{MAX_COLUMNS, MAX_INDICES, MAX_VERTS, VERTEX_STRIDE};
@@ -113,6 +114,8 @@ pub struct WorldRenderer {
     color_format: vk::Format,
     /// This frame's attachment views for the glint's gamma-space scope (M50).
     gamma: Option<GammaScope>,
+    /// M282 — the HUD vignette (`init_vignette`).
+    vignette: Option<vignette::VignettePass>,
     /// M278 — the glowing outline's targets and passes (`ensure_outline`).
     outline: Option<OutlinePass>,
     /// M278 — whether the last frame drew an outline.

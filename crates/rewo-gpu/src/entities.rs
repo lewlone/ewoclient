@@ -7117,7 +7117,7 @@ pub(crate) fn create_glint_texture(
     create_texture_fmt(gpu, rgba, width, height, vk::Format::R8G8B8A8_UNORM)
 }
 
-fn create_texture_fmt(
+pub(crate) fn create_texture_fmt(
     gpu: &mut Gpu,
     rgba: &[u8],
     width: u32,

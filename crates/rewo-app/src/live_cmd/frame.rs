@@ -1079,6 +1079,20 @@ impl LiveApp {
         {
             log::warn!("live: held-item texture upload: {e}");
         }
+        // M282 — the vignette: one `updateVignetteBrightness` per game tick
+        // (a long gap is a fresh session: start over rather than replay it).
+        if session.ticks < self.vignette_tick || session.ticks - self.vignette_tick > 200 {
+            self.vignette_tick = session.ticks;
+        }
+        while self.vignette_tick < session.ticks {
+            self.vignette_brightness = vignette_step(session, self.vignette_brightness);
+            self.vignette_tick += 1;
+        }
+        state.world_renderer.set_vignette(
+            self.options
+                .vignette
+                .then(|| vignette_color_now(session, self.vignette_brightness)),
+        );
         // M278 — the glowing outline's targets, at the swapchain's size.
         if let Err(e) = state.world_renderer.ensure_outline(
             &mut state.gpu,
@@ -1224,6 +1238,11 @@ impl LiveApp {
                 })
             {
                 rc.ghost_outline_frames += 1;
+            }
+            // M282 — r140: the vignette this frame drew with.
+            if self.options.vignette {
+                let v = self.vignette_brightness;
+                rc.vignette_low = Some(rc.vignette_low.map_or(v, |l| l.min(v)));
             }
             // M281 — r139: the staged burning armour stand drew its flames.
             if draws.iter().any(|d| {
