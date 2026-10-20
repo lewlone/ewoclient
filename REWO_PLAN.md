@@ -3969,6 +3969,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M323 — the lamb (2026-10-20)
+
+`SheepRenderer` swaps in `BabySheepModel` (a 5 x 5 x 5 head, a 6 x 4 x 9
+body authored level, four 2 x 5 x 2 legs, none mirrored) on
+`sheep_baby.png`, and `SheepWoolLayer` draws `SHEEP_BABY_WOOL`, which
+`LayerDefinitions` maps to the same `sheepBabyBodyLayer`, on
+`sheep_wool_baby.png`; `SheepWoolUndercoatLayer` skips a baby. The sheep was
+one of M317's scrambled swaps (the baby sheet on the adult mesh, under the
+adult's fleece). `SheepBaby` is that model with the fleece as a second,
+coplanar texture slot that is tinted and shearable. Rewo's coplanar range
+was gated by the undercoat's dye rule alone, which a baby never passes, so
+`emit_model` now lets a coplanar slot that is also the shearable one through
+on shearing alone. `mobshot` grades 318 views; `MAX_SMALL` 24.
+
+**Unit test**: the six boxes twice, the fleece quad for quad on the body,
+and the head box's front at (5, 5)..(10, 10). **mobtexshot m49**: the lamb
+and a shorn lamb draw (2,295 px each) from the two sheets, and 1,976 px
+differ between them; with the gate reverted, 0 differ. A colour test could
+not see the fleece: the lamb's own sheet carries its greys. **r178**: a
+staged red lamb draws as `BabySheepModel`.
+
 ### M322 — the piglet and the chick (2026-10-20)
 
 `PigRenderer` and `ChickenRenderer` swap in `BabyPigModel` (32 x 32: a body,
