@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M343 — r197: the staged tame cat, wearing its blue collar.
+            c.cat_collar |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Cat && d.collar == Some(11));
             // M342 — r196: the staged tame wolf, wearing its blue collar.
             c.blue_collar |= draws
                 .iter()

@@ -3755,11 +3755,18 @@ pub(crate) fn fish_kind(v: rewo_data::mob_variants::FishVariant) -> EntityModelK
         rewo_data::mob_variants::FishBase::Large => EntityModelKind::TropicalFishLarge,
     }
 }
-/// M342 — a wolf's (or puppy's) collar: none unless tame, then the colour
-/// the server sent or `Wolf.DEFAULT_COLLAR_COLOR` (red, 14) when it sent none.
-pub(crate) fn wolf_collar(kind: EntityModelKind, tame: bool, sent: Option<i32>) -> Option<u8> {
-    let wolf = matches!(kind, EntityModelKind::Wolf | EntityModelKind::WolfBaby);
-    (wolf && tame).then(|| (sent.unwrap_or(14) & 15) as u8)
+/// M342/M343 — a wolf's or a cat's collar (and their young's): none unless
+/// tame, then the colour the server sent or the class's
+/// `DEFAULT_COLLAR_COLOR` (red, 14, for both) when it sent none.
+pub(crate) fn mob_collar(kind: EntityModelKind, tame: bool, sent: Option<i32>) -> Option<u8> {
+    let collared = matches!(
+        kind,
+        EntityModelKind::Wolf
+            | EntityModelKind::WolfBaby
+            | EntityModelKind::Cat
+            | EntityModelKind::CatBaby
+    );
+    (collared && tame).then(|| (sent.unwrap_or(14) & 15) as u8)
 }
 
 /// M340 — the variant a mob holds when the server sent none: each class's
@@ -4633,7 +4640,7 @@ pub(super) fn collect_entities<'a>(
             // M342 — `WolfRenderer`: `collarColor = isTame() ?
             // getCollarColor() : null`, the collar the server sent or its
             // default red (14).
-            collar: wolf_collar(
+            collar: mob_collar(
                 kind,
                 session.world.entities.is_tame(id),
                 session.world.entities.collar(id),

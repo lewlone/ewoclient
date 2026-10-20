@@ -4271,12 +4271,16 @@ fn a_baby_sulfur_cube_takes_the_small_model() {
 #[test]
 fn a_tame_wolf_wears_its_collar_and_a_wild_one_none() {
     use rewo_gpu::mobs::EntityModelKind as K;
-    let f = super::entities::wolf_collar;
+    let f = super::entities::mob_collar;
     assert_eq!(f(K::Wolf, true, Some(11)), Some(11));
     assert_eq!(f(K::Wolf, true, None), Some(14));
     assert_eq!(f(K::WolfBaby, true, None), Some(14));
     assert_eq!(f(K::Wolf, false, Some(11)), None);
-    assert_eq!(f(K::Cat, true, Some(11)), None);
+    // M343 — and the cat's.
+    assert_eq!(f(K::Cat, true, Some(11)), Some(11));
+    assert_eq!(f(K::CatBaby, true, None), Some(14));
+    assert_eq!(f(K::Cat, false, Some(11)), None);
+    assert_eq!(f(K::Ocelot, true, Some(11)), None);
 }
 
 /// M340 — a mob the server sent no variant for holds its class's default:

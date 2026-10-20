@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 67;
+const EXPECTED_WITNESSES: usize = 68;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -4804,6 +4804,82 @@ fn run_check(
         format!(
             "{} (want >= 30, >= 80% blue-dominant, and 0 foreign without a collar)",
             cl_rows.join("; ")
+        ),
+    ));
+
+    // m68 — M343: a tame cat and a tame kitten wear a blue collar: against
+    // the same mob with no collar, at least 30 pixels change, and most of
+    // them are blue-dominant (blue's diffuse colour #3c44aa); with no collar
+    // nothing changes from the collarless frame (the gate).
+    let mut ccst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.9, -0.9),
+        Vec3::new(0.0, 0.35, 0.0),
+    )?;
+    let mut cc_rows = Vec::new();
+    let mut cc_ok = true;
+    for kind in [EntityModelKind::Cat, EntityModelKind::CatBaby] {
+        let shoot = |st: &mut Stage, collar: Option<u8>| -> Result<Vec<u8>, String> {
+            let d = EntityDraw {
+                collar,
+                ..neutral_draw(kind)
+            };
+            st.wr.set_entities(&[d], st.right, st.up, 0.0);
+            st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
+            st.off.read_rgba(gpu)
+        };
+        let bare = shoot(&mut ccst, None)?;
+        let blue = shoot(&mut ccst, Some(11))?;
+        // The gate: with no collar, every pixel the mob adds over the empty
+        // stage is its coat sheet's (a collar drawn anyway adds the collar
+        // sheet's greys).
+        let coat_key = if kind == EntityModelKind::Cat {
+            "cat"
+        } else {
+            "cat_baby"
+        };
+        let coat: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == coat_key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        ccst.wr.set_entities(&[], ccst.right, ccst.up, 0.0);
+        ccst.off
+            .render(gpu, Some((&mut ccst.wr, ccst.vp)), &ov, BG)?;
+        let empty = ccst.off.read_rgba(gpu)?;
+        let bare_foreign = bare
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(empty.as_chunks::<4>().0)
+            .filter(|(p, e)| p[..3] != e[..3] && !explains(&coat, pack(p[0], p[1], p[2])))
+            .count();
+        let (mut px, mut bluish) = (0usize, 0usize);
+        for (p, e) in blue.as_chunks::<4>().0.iter().zip(bare.as_chunks::<4>().0) {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            bluish += usize::from(p[2] > p[0] && p[2] > p[1]);
+        }
+        cc_ok &= !coat.is_empty() && px >= 30 && bluish * 10 >= px * 8 && bare_foreign == 0;
+        cc_rows.push(format!(
+            "{}: {px} px change, {bluish} blue-dominant, {bare_foreign} px of the \
+             collarless one foreign to its coat",
+            kind.name()
+        ));
+    }
+    ccst.destroy(gpu);
+    w.push(wit(
+        "m68.a_tame_cat_and_kitten_wear_a_dyed_collar",
+        cc_ok,
+        format!(
+            "{} (want >= 30, >= 80% blue-dominant, and 0 foreign without a collar)",
+            cc_rows.join("; ")
         ),
     ));
 

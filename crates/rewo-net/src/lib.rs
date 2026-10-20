@@ -3043,6 +3043,10 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let (Some(c), true) = (meta.int21, vk.wolf == Some(type_id)) {
         entities.set_collar(eid, c);
     }
+    // M343 — Slot 23 INT → `Cat.DATA_COLLAR_COLOR`, gated on the cat.
+    if let (Some(c), true) = (meta.int23, vk.cat == Some(type_id)) {
+        entities.set_collar(eid, c);
+    }
     for (value, kind) in [
         (meta.cat_variant, vk.cat),
         (meta.wolf_variant, vk.wolf),

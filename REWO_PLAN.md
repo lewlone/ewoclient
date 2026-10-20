@@ -2152,6 +2152,7 @@ this shape once.
 | M340 (2026-10-20) — a black kitten draws as BabyCatModel on its coat's baby sheet | **r194** | — | — |
 | M341 (2026-10-20) — an ashen puppy draws as BabyWolfModel on its coat's baby sheet | **r195** | — | — |
 | M342 (2026-10-20) — a tame wolf draws wearing its blue collar | **r196** | — | — |
+| M343 (2026-10-20) — a tame cat draws wearing its blue collar | **r197** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

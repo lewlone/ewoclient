@@ -2127,6 +2127,9 @@ pub fn fish_tint_textures(kind: EntityModelKind) -> Option<(&'static str, &'stat
 /// and tinted by its collar's `DyeColor.getTextureDiffuseColor()`.
 pub fn collar_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
+        // M343 — `CatCollarLayer`: an inflated copy, so not coplanar.
+        EntityModelKind::Cat => Some("cat_collar"),
+        EntityModelKind::CatBaby => Some("cat_collar_baby"),
         EntityModelKind::Wolf => Some("wolf_collar"),
         EntityModelKind::WolfBaby => Some("wolf_collar_baby"),
         _ => None,
@@ -2569,8 +2572,9 @@ pub static MOBS: &[MobDef] = &[
     },
     MobDef {
         kind: EntityModelKind::Cat,
-        textures: &["cat"],
-        build: feline,
+        // M343 — and the collar (`CatCollarLayer`, inflated, see `cat`).
+        textures: &["cat", "cat_collar"],
+        build: cat,
     },
     MobDef {
         kind: EntityModelKind::Ocelot,
@@ -3032,8 +3036,8 @@ pub static MOBS: &[MobDef] = &[
     // drawn, as on Rewo's adult cat.
     MobDef {
         kind: EntityModelKind::CatBaby,
-        textures: &["cat_baby"],
-        build: feline_baby,
+        textures: &["cat_baby", "cat_collar_baby"],
+        build: cat_baby,
     },
     // M341 — the pale wild puppy's sheet; the registry's other coats, wild
     // and tame, are its variants (`MobVariantDef::baby_texture`).
@@ -4348,6 +4352,69 @@ fn chicken() -> Model {
 /// (see [`coplanar_layer_texture`]) when the wolf is tame.
 fn wolf() -> Model {
     with_collar_copy(wolf_with(0.0), wolf_with(0.0))
+}
+
+/// M343 — the adult cat: `ModelLayers.CAT` is the feline body layer through
+/// `AdultCatModel.CAT_TRANSFORMER`, `MeshTransformer.scaling(0.8)` about
+/// y 24.016 (the renderer's 1.501-block origin, so a model scale is the same
+/// transform); until M343 Rewo drew the cat at the ocelot's full size. On
+/// texture 1, `CatCollarLayer`'s `CAT_COLLAR` mesh: the same body grown
+/// `COLLAR_DEFORMATION` (0.01) through the same scaling, so it sits just
+/// outside the cat and draws in the solid range.
+fn cat() -> Model {
+    let mut m = with_collar_copy(feline_with(0.0), feline_with(0.01));
+    m.scale = 0.8;
+    m
+}
+
+/// M343 — the kitten with `CatCollarLayer`'s `CAT_BABY_COLLAR`: the kitten's
+/// own layer through `BabyCatModel.COLLAR_TRANSFORMER`,
+/// `MeshTransformer.scaling(1.01)`, so the collar is the kitten scaled 1.01
+/// about y 24.016. A part-local quad cannot scale on its own parts, so the
+/// copy brings its own (see [`with_scaled_copy`]).
+fn cat_baby() -> Model {
+    with_scaled_copy(feline_baby(), feline_baby(), 1.01)
+}
+
+/// M343 — `base` plus `copy` scaled by `s` about (0, 24.016, 0) the way a
+/// `MeshTransformer.scaling(s)` scales a layer, on texture 1 and on its own
+/// parts (appended after `base`'s: a root part's pivot scaled about that
+/// point, a child's pivot and every quad scaled about its parent's frame,
+/// the rotations and animations unchanged, since a uniform scale commutes
+/// with them).
+fn with_scaled_copy(mut base: Model, copy: Model, s: f32) -> Model {
+    const C: f32 = 24.016;
+    let n = base.parts.len() as u16;
+    for mut part in copy.parts {
+        part.pivot = match part.parent {
+            None => [
+                part.pivot[0] * s,
+                C + (part.pivot[1] - C) * s,
+                part.pivot[2] * s,
+            ],
+            Some(_) => part.pivot.map(|v| v * s),
+        };
+        part.parent = part.parent.map(|p| p + n);
+        base.parts.push(part);
+    }
+    // `STATIC_PART` quads sit in model space: scale them about the same
+    // point and keep them static.
+    base.quads.extend(copy.quads.into_iter().map(|mut q| {
+        let root = q.part == STATIC_PART;
+        q.pos = q.pos.map(|p| {
+            if root {
+                [p[0] * s, C + (p[1] - C) * s, p[2] * s]
+            } else {
+                p.map(|v| v * s)
+            }
+        });
+        if !root {
+            q.part += n as usize;
+        }
+        q.tex = 1;
+        q
+    }));
+    base
 }
 
 /// M342 — `base` plus `copy`'s quads (the same builder run again, so the
@@ -7910,38 +7977,48 @@ fn bat() -> Model {
 /// `AdultFelineModel` (cat + ocelot): slinky body, two-segment tail,
 /// tall front legs.
 fn feline() -> Model {
+    feline_with(0.0)
+}
+
+/// M343 — `AdultFelineModel.createBodyMesh(g)`: `g` on every box but the
+/// tail's second segment, which keeps its own -0.02 (`tail_g`).
+fn feline_with(g: f32) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 15.0, -9.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_g(
         head,
         0,
         (0.0, 0.0),
         [-2.5, -2.0, -3.0],
         [5.0, 4.0, 5.0],
+        g,
         NONE,
     );
-    b.cube(
+    b.cube_g(
         head,
         0,
         (0.0, 24.0),
         [-1.5, -0.001, -4.0],
         [3.0, 2.0, 2.0],
+        g,
         NONE,
     );
-    b.cube(
+    b.cube_g(
         head,
         0,
         (0.0, 10.0),
         [-2.0, -3.0, 0.0],
         [1.0, 1.0, 2.0],
+        g,
         NONE,
     );
-    b.cube(
+    b.cube_g(
         head,
         0,
         (6.0, 10.0),
         [1.0, -3.0, 0.0],
         [1.0, 1.0, 2.0],
+        g,
         NONE,
     );
     let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 12.0, -10.0]);
@@ -7951,7 +8028,7 @@ fn feline() -> Model {
         (20.0, 0.0),
         [-2.0, 3.0, -8.0],
         [4.0, 16.0, 6.0],
-        0.0,
+        g,
         false,
         &[body],
     );
@@ -7961,7 +8038,7 @@ fn feline() -> Model {
         (0.0, 15.0),
         [-0.5, 0.0, 0.0],
         [1.0, 8.0, 1.0],
-        0.0,
+        g,
         false,
         &[Fold::rot([0.9, 0.0, 0.0], [0.0, 15.0, 8.0])],
     );
@@ -8007,7 +8084,7 @@ fn feline() -> Model {
     ];
     for (uv, min, dims, pivot, anim) in legs {
         let p = b.part(pivot, anim, 1.0);
-        b.cube(p, 0, uv, min, dims, NONE);
+        b.cube_g(p, 0, uv, min, dims, g, NONE);
     }
     b.finish(1.0)
 }
@@ -15048,6 +15125,39 @@ mod collar_tests {
             assert_eq!(collar.len(), bare.quads.len());
             for (c, b) in collar.iter().zip(&bare.quads) {
                 assert_eq!((c.pos, c.uv, c.part), (b.pos, b.uv, b.part));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cat_collar_tests {
+    use super::*;
+
+    /// M343 — the adult cat is the feline at 0.8 (the ocelot stays at 1),
+    /// its collar the same parts grown 0.01; the kitten's collar is the
+    /// kitten scaled 1.01 about the feet on parts of its own.
+    #[test]
+    fn the_cat_is_four_fifths_of_an_ocelot_and_wears_its_collar() {
+        let (cat, ocelot) = (cat(), feline());
+        assert_eq!((cat.scale, ocelot.scale), (0.8, 1.0));
+        assert_eq!(cat.parts.len(), ocelot.parts.len());
+        assert_eq!(
+            cat.quads.iter().filter(|q| q.tex == 1).count(),
+            ocelot.quads.len()
+        );
+        let kit = cat_baby();
+        let bare = feline_baby();
+        assert_eq!(kit.parts.len(), 2 * bare.parts.len());
+        let collar: Vec<_> = kit.quads.iter().filter(|q| q.tex == 1).collect();
+        assert_eq!(collar.len(), bare.quads.len());
+        for (c, b) in collar.iter().zip(&bare.quads) {
+            for (cp, bp) in c.pos.iter().zip(&b.pos) {
+                if b.part == STATIC_PART {
+                    assert!((cp[1] - (24.016 + (bp[1] - 24.016) * 1.01)).abs() < 1e-4);
+                } else {
+                    assert!((cp[0] - bp[0] * 1.01).abs() < 1e-4);
+                }
             }
         }
     }

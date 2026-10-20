@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M343 -- r197. A tame cat with a blue collar.
+    "summon minecraft:cat ~75 ~ ~21 {NoAI:1b,Silent:1b,"
+    "Owner:\"00000000-0000-4000-8000-000000000343\",CollarColor:11b};"
     # M342 -- r196. A tame wolf (any owner tames it; the UUID is a string,
     # as r90's, since REWO_PRECMD splits on `;`) with a blue collar.
     "summon minecraft:wolf ~72 ~ ~21 {NoAI:1b,Silent:1b,"

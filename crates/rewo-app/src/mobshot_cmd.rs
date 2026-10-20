@@ -1864,7 +1864,8 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// M342: 13 → 14, n9 (index 21 INT: a llama's variant or a wolf's collar).
-const VARIANT_WITNESSES: usize = 14;
+/// M343: 14 → 15, n10 (index 23 INT is a cat's collar).
+const VARIANT_WITNESSES: usize = 15;
 
 /// The mobs whose texture a synched metadata field chooses, and the registry
 /// name each carries in the `entity_types` table.
@@ -2601,6 +2602,22 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
             wolf21.variant(1),
             llama21.variant(1),
             llama21.collar(1)
+        ),
+    );
+    // M343 — index 23 INT is the cat's collar; the wolf's index 23 is its
+    // variant, under its own serializer, and an INT there means nothing.
+    let cat = kinds.cat.ok_or("no minecraft:cat")?;
+    let cat23 = send(cat, 23, 1, 11, kinds);
+    let wolf23 = send(wolf, 23, 1, 11, kinds);
+    c.record(
+        "n10.index_23_int_is_a_cats_collar_and_nothing_on_a_wolf",
+        cat23.collar(1) == Some(11) && cat23.variant(1).is_none() && wolf23.collar(1).is_none(),
+        format!(
+            "11 at index 23 INT gives a cat collar {:?} (variant {:?}) and a wolf \
+             collar {:?}",
+            cat23.collar(1),
+            cat23.variant(1),
+            wolf23.collar(1)
         ),
     );
     Ok(())
