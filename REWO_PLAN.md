@@ -2110,6 +2110,7 @@ this shape once.
 | M296 (2026-10-20) — the chested donkey draws with its chests | **r152** | — | — |
 | M297 (2026-10-20) — a chested llama draws in its red carpet | **r153** | — | — |
 | M298 (2026-10-20) — a saddled pig and a saddled strider draw their saddles | **r154** | — | — |
+| M299 (2026-10-20) — a wolf draws in its armour | **r155** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3944,6 +3945,36 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M299 — wolf armour, and the atlas's edge gutter (2026-10-20)
+
+`WolfArmorLayer` draws the body slot's `WOLF_BODY` layers over
+`ModelLayers.WOLF_ARMOR` (`AdultWolfModel.createBodyLayer(new
+CubeDeformation(0.2F))`, 64 x 32), adults only: the scute sheet always, its
+dyeable overlay only when dyed (`color_for_layer`). `wolf_with(g)` builds
+the shell; `ArmorLayer::WolfBody` loads late; `body_armor_piece` picks it
+for a wolf.
+
+The two new sheets moved the vex's atlas slot, and mobtexshot m5 caught 106
+vex pixels in a colour no vex texel has: a few vanilla UV rects stray
+outside their texture, the bake clamps them to its edge, and a zero-width
+rect at the far edge sampled the first texel of the next sheet, where
+vanilla's clamp-to-edge sampler repeats the last. Every sheet now carries a
+one-texel gutter of its own edge texels (`blit_tex_extruded`; the packer
+places padded cells, every origin and variant offset relative as before),
+which made the bleed impossible rather than moving it. The padding filled
+the shelf region until a resource pack's alternates (mobshot's ETF fixture)
+stopped packing, so `ATLAS_H` grew 256 more rows (2,880; capeshot f2's
+history and the pool-origin pins follow).
+
+Recorded: the armour's crack overlays (`Crackiness.WOLF_ARMOR` by damage)
+are not drawn: Rewo keeps no item damage on worn pieces.
+
+**Unit tests**: the shell is the wolf at 0.2; an extruded blit repeats the
+edge texels around a sheet and nothing past them. **mobtexshot m30**: an
+armoured wolf changes 2,441 px, every colour from `wolf_body/armadillo_scute`,
+resident; m5 passes again. **r155**: `render_check.py` summons a wolf in wolf
+armour.
 
 ### M298 — pig and strider saddles (2026-10-20)
 
