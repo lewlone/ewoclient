@@ -4005,6 +4005,29 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M362 — arrows fly on the client (2026-10-21)
+
+Enni's report: arrows "struggle to fly". Two causes. **The spawn velocity
+was skipped**: `read_add_entity` stepped over the packet's `LpVec3`
+movement, so every projectile was born standing still. **No client-side
+flight**: Rewo moved a projectile only on server packets, and an arrow's
+come once a second (`EntityType.ARROW`'s update interval 20), so it hung
+where it spawned and then jumped. Vanilla ticks the flight on the client
+and gives projectiles no `InterpolationHandler`. Now the spawn movement
+reaches `setDeltaMovement`, and `EntityState::step_flight` runs each tick
+for arrows, spectral arrows and tridents (gravity 0.05, drag 0.99) and
+thrown items (0.03, 0.99): the rotation turns a fifth of the way toward
+the movement (`lerpRotation`), the move is sampled every 0.05 blocks
+against the blocks' collision boxes (a hit stops it short and ends the
+flight), then drag and gravity. The server's `IN_GROUND` (index 10
+BOOLEAN) ends an arrow's flight, and a server position snaps a projectile.
+Not modelled: water's inertia, entity hits (the server removes the
+arrow).
+
+**Unit tests**: the flight's move, drag, gravity, turn, wall stop and
+snap; `IN_GROUND` reaching only an arrow. **r214**: r99's shot arrow,
+within its first quarter second (14.28 blocks out, moving on 57/58 and 97/98 frames; with the client flight removed, 0.00 blocks and 0/102).
+
 ### M361 — the camera and every entity's rotation blend between ticks (2026-10-21)
 
 Enni's report: riding a horse or camel, and watching arrows, moved "super
