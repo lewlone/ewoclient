@@ -1756,6 +1756,10 @@ impl EntityPass {
                 EntityModelKind::Llama | EntityModelKind::TraderLlama => Some(mobs::llama_decor()),
                 // M299 — the wolf's armour shell (`WOLF_ARMOR`).
                 EntityModelKind::Wolf => Some(mobs::wolf_armor()),
+                // M301 — the nautilus's (`NAUTILUS_ARMOR`), the zombie's too.
+                EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => {
+                    Some(mobs::nautilus_armor())
+                }
                 _ => None,
             }
             .filter(|shell| !debug_tex && shell.parts.len() == m.parts.len())
@@ -1805,6 +1809,10 @@ impl EntityPass {
                 }
                 // M300 — the camel's saddle, bridle and reins.
                 EntityModelKind::Camel if !debug_tex => Some(mobs::camel_saddle()),
+                // M301 — the nautilus's saddle (the zombie's too).
+                EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus if !debug_tex => {
+                    Some((mobs::nautilus_saddle(), mobs::empty_model()))
+                }
                 _ => None,
             })
             .filter(|(saddle, _)| saddle.parts.len() == m.parts.len())
@@ -2017,6 +2025,7 @@ impl EntityPass {
                             || k.starts_with("horse_body/")
                             || k.starts_with("llama_body/")
                             || k.starts_with("wolf_body/")
+                            || k.starts_with("nautilus_body/")
                             || k.split('/').next().is_some_and(|d| d.ends_with("_saddle"))
                     })
                     .map(|(k, v)| ((*k).to_string(), *v))

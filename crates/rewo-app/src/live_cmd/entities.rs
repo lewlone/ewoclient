@@ -3253,6 +3253,8 @@ pub(crate) fn body_armor_piece<'a>(
         EntityModelKind::Llama | EntityModelKind::TraderLlama => ArmorLayer::LlamaBody,
         // M299 — `WolfArmorLayer`'s `WOLF_BODY`, on an adult only.
         EntityModelKind::Wolf => ArmorLayer::WolfBody,
+        // M301 — `NAUTILUS_BODY` (both nautilus renderers).
+        EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => ArmorLayer::NautilusBody,
         _ => return None,
     };
     let adult_only = matches!(layer, ArmorLayer::LlamaBody | ArmorLayer::WolfBody);
@@ -3319,6 +3321,8 @@ pub(crate) fn saddle_piece<'a>(
         EntityModelKind::Strider => ArmorLayer::StriderSaddle,
         // M300 — `CAMEL_SADDLE`.
         EntityModelKind::Camel => ArmorLayer::CamelSaddle,
+        // M301 — `NAUTILUS_SADDLE` (both nautilus renderers).
+        EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => ArmorLayer::NautilusSaddle,
         _ => return None,
     };
     let piece = session.world.entities.saddle_piece(id)?;

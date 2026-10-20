@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 31;
+const EXPECTED_WITNESSES: usize = 32;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2361,6 +2361,84 @@ fn run_check(
              first colour the sheet cannot produce: saddle {:?}, reins {:?}",
             camel_bad.map(|c| format!("#{c:06x}")),
             creins_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m32 — M301: a nautilus in iron armour and a saddled one: each layer's
+    // pixels come from its own jar sheet alone. Neither drew until M301.
+    let mut naut_rows = Vec::new();
+    for (key, saddle) in [
+        ("nautilus_body/iron", false),
+        ("nautilus_saddle/saddle", true),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .equipment
+            .textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let mut nst = stage_from(
+            gpu,
+            baked,
+            cw,
+            ch,
+            Vec3::new(2.4, 2.6, 2.2),
+            Vec3::new(0.0, 1.0, 0.0),
+        )?;
+        let resident = nst
+            .wr
+            .entity_pass()
+            .is_some_and(|p| p.armor_sheet_resident(key));
+        let mut nshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            nst.wr.set_entities(&[d], nst.right, nst.up, 0.0);
+            nst.off.render(gpu, Some((&mut nst.wr, nst.vp)), &ov, BG)?;
+            nst.off.read_rgba(gpu)
+        };
+        let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+        layers[0] = Some((key, [1.0, 1.0, 1.0]));
+        let piece = Some(rewo_gpu::entities::ArmorPiece {
+            layers,
+            ..Default::default()
+        });
+        let bare = nshot(neutral_draw(EntityModelKind::Nautilus))?;
+        let worn = nshot(if saddle {
+            EntityDraw {
+                saddle: piece,
+                ..neutral_draw(EntityModelKind::Nautilus)
+            }
+        } else {
+            EntityDraw {
+                body_armor: piece,
+                ..neutral_draw(EntityModelKind::Nautilus)
+            }
+        })?;
+        nst.destroy(gpu);
+        let (mut n, mut bad) = (0usize, None);
+        for (a, b) in worn.as_chunks::<4>().0.iter().zip(bare.as_chunks::<4>().0) {
+            if a[..3] == b[..3] {
+                continue;
+            }
+            n += 1;
+            let c = pack(a[0], a[1], a[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        naut_rows.push((key, resident, !sheet.is_empty(), n, bad));
+    }
+    w.push(wit(
+        "m32.a_nautilus_wears_its_armour_and_saddle_in_their_own_sheets",
+        naut_rows
+            .iter()
+            .all(|&(_, resident, sheet, n, bad)| resident && sheet && n >= 150 && bad.is_none()),
+        format!(
+            "(sheet, resident, sheet read, px added (want >= 150), first colour it cannot \
+             produce): {:?}",
+            naut_rows
+                .iter()
+                .map(|(k, r, s, n, b)| (k, r, s, n, b.map(|c| format!("#{c:06x}"))))
+                .collect::<Vec<_>>()
         ),
     ));
 

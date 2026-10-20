@@ -10177,6 +10177,37 @@ fn copper_golem() -> Model {
 /// `NautilusModel` (128²): spiral shell + soft body with layered tentacle
 /// slabs. The zombie variant shares the mesh.
 fn nautilus() -> Model {
+    nautilus_with(NautilusLayer::None)
+}
+
+/// M301 — which of the nautilus layers' boxes [`nautilus_with`] adds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NautilusLayer {
+    None,
+    Armor,
+    Saddle,
+}
+
+/// M301 — `ModelLayers.NAUTILUS_ARMOR`: the shell boxes at 0.01 (and its
+/// panel), `NAUTILUS_BODY`'s equipment layer shell on a 128 x 128 sheet; the
+/// base model's parts, its boxes alone.
+pub fn nautilus_armor() -> Model {
+    let base = nautilus().quads.len();
+    let mut m = nautilus_with(NautilusLayer::Armor);
+    m.quads.drain(..base);
+    m
+}
+
+/// M301 — `ModelLayers.NAUTILUS_SADDLE`: the shell's top box at 0.2,
+/// `NAUTILUS_SADDLE`'s layer shell.
+pub fn nautilus_saddle() -> Model {
+    let base = nautilus().quads.len();
+    let mut m = nautilus_with(NautilusLayer::Saddle);
+    m.quads.drain(..base);
+    m
+}
+
+fn nautilus_with(layer: NautilusLayer) -> Model {
     let mut b = ModelBuilder::new();
     let root = Fold::at([0.0, 29.0, -6.0]);
     let shell = Fold::at([0.0, -13.0, 5.0]);
@@ -10286,6 +10317,37 @@ fn nautilus() -> Model {
             scale_f: 3.0,
         },
     );
+    // M301 — `NautilusArmorModel` / `NautilusSaddleModel`: the root replaced
+    // by one holding only the shell, i.e. boxes on the shell's pose alone,
+    // appended last so `nautilus_armor` / `nautilus_saddle` split them off.
+    match layer {
+        NautilusLayer::None => {}
+        NautilusLayer::Armor => {
+            for (uv, min, dims, g) in [
+                ((0.0, 0.0), [-7.0, -10.0, -7.0], [14.0, 10.0, 16.0], 0.01),
+                ((0.0, 26.0), [-7.0, 0.0, -7.0], [14.0, 8.0, 20.0], 0.01),
+                // `CubeDeformation(0.0F)`: coplanar with the shell's own
+                // panel, which vanilla's `LESS_THAN_OR_EQUAL` draws over;
+                // Rewo's solid range is strictly `GREATER`, so the panel is
+                // lifted two thousandths of a pixel instead.
+                ((48.0, 26.0), [-7.0, 0.0, 6.0], [14.0, 8.0, 0.0], 0.002),
+            ] {
+                b.cube_f(STATIC_PART, 0, uv, min, dims, g, false, &[shell, root]);
+            }
+        }
+        NautilusLayer::Saddle => {
+            b.cube_f(
+                STATIC_PART,
+                0,
+                (0.0, 0.0),
+                [-7.0, -10.0, -7.0],
+                [14.0, 10.0, 16.0],
+                0.2,
+                false,
+                &[shell, root],
+            );
+        }
+    }
     b.finish(1.0)
 }
 
@@ -11422,5 +11484,29 @@ mod camel_saddle_tests {
         assert_eq!(reins.quads.len(), 3 * 2);
         let head = base.parts.iter().position(|p| p.name == "head").unwrap();
         assert!(reins.quads.iter().all(|q| q.part == head));
+    }
+}
+
+#[cfg(test)]
+mod nautilus_layer_tests {
+    use super::*;
+
+    /// M301 — the armour is the shell's three boxes (the panel's two faces
+    /// only), the saddle one box, on the static part with the base's parts.
+    #[test]
+    fn the_nautilus_layers_are_boxes_on_the_shell() {
+        let base = nautilus();
+        let (armor, saddle) = (nautilus_armor(), nautilus_saddle());
+        assert_eq!(armor.parts.len(), base.parts.len());
+        assert_eq!(saddle.parts.len(), base.parts.len());
+        // The panel is zero-thick: its two broad faces only (vanilla's other
+        // four have no area).
+        assert_eq!(armor.quads.len(), 6 + 6 + 2);
+        assert_eq!(saddle.quads.len(), 6);
+        assert!(armor
+            .quads
+            .iter()
+            .chain(&saddle.quads)
+            .all(|q| q.part == STATIC_PART));
     }
 }

@@ -948,6 +948,21 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M301 — r157: r90's saddled nautilus.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Nautilus
+                    && d.saddle.is_some_and(|p| {
+                        p.layers.iter().flatten().any(|(k, _)| {
+                            *k == "nautilus_saddle/saddle"
+                                && state
+                                    .world_renderer
+                                    .entity_pass()
+                                    .is_some_and(|e| e.armor_sheet_resident(k))
+                        })
+                    })
+            }) {
+                c.nautilus_saddle_frames += 1;
+            }
             // M300 — r156: r89's saddled camel, and with its reins while the
             // bot rides it.
             for d in draws
