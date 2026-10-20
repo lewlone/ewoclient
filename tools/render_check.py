@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M353 -- r207. A snow golem with its pumpkin and a sheared one.
+    "summon minecraft:snow_golem ~21 ~ ~24 {NoAI:1b,Silent:1b};"
+    "summon minecraft:snow_golem ~24 ~ ~24 {NoAI:1b,Silent:1b,Pumpkin:0b};"
     # M352 -- r206. An enderman carrying a melon, on the z ~24 row.
     "summon minecraft:enderman ~17 ~ ~24 {NoAI:1b,Silent:1b,"
     "carriedBlockState:{Name:\"minecraft:melon\"}};"

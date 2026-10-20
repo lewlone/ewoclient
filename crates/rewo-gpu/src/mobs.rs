@@ -620,6 +620,9 @@ pub struct MobCombat {
     /// M352 — the block state an enderman carries (`CarriedBlockLayer`;
     /// the app draws the block, the enderman's arm rig reads its presence).
     pub carried_block: Option<u32>,
+    /// M353 — `SnowGolem.hasPumpkin()` (`SnowGolemHeadLayer`; the app draws
+    /// the carved pumpkin).
+    pub pumpkin: bool,
 }
 
 impl Eq for Anim {}

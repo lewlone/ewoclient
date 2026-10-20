@@ -1657,6 +1657,8 @@ pub(crate) fn resolve_mob_combat(
         carried_block: (kind == K::Enderman)
             .then(|| entities.carried_block(id))
             .flatten(),
+        // M353 — only a snow golem's is synched.
+        pumpkin: kind == K::SnowGolem && entities.has_pumpkin(id),
     }
 }
 
@@ -2055,9 +2057,47 @@ pub(crate) fn enderman_block_transform(yaw: f32, roll: f32) -> rewo_data::be_tra
     mul(&root, &layer)
 }
 
+/// M353 — `SnowGolemHeadLayer.submit`'s carved pumpkin, block-local →
+/// entity-relative (block units), for a snow golem drawn at body `yaw`,
+/// head turned `net_head_yaw` and pitched `pitch` (degrees), toppled `roll`:
+/// `LivingEntityRenderer`'s root, `getHead().translateAndRotate` (the head's
+/// pivot (0, 4, 0) px, its pitch and net yaw), `translate(0, -0.34375, 0)`,
+/// `YP(180)`, `scale(0.625, -0.625, -0.625)`, `translate(-0.5, -0.5, -0.5)`.
+pub(crate) fn snow_golem_pumpkin_transform(
+    yaw: f32,
+    net_head_yaw: f32,
+    pitch: f32,
+    roll: f32,
+) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_y, rot_z, rot_zyx, scale, translation};
+    let root = mul(
+        &rot_y(180.0 - yaw),
+        &mul(
+            &rot_z(roll),
+            &mul(&scale(-1.0, -1.0, 1.0), &translation(0.0, -1.501, 0.0)),
+        ),
+    );
+    let head = mul(
+        &translation(0.0, 0.25, 0.0),
+        &rot_zyx(pitch.to_radians(), net_head_yaw.to_radians(), 0.0),
+    );
+    let layer = mul(
+        &translation(0.0, -0.34375, 0.0),
+        &mul(
+            &rot_y(180.0),
+            &mul(
+                &scale(0.625, -0.625, -0.625),
+                &translation(-0.5, -0.5, -0.5),
+            ),
+        ),
+    );
+    mul(&root, &mul(&head, &layer))
+}
+
 /// M351 — the blocks the mobs drawn this frame carry, built from their own
-/// draws so a block follows exactly the pose its mob drew in: M352 — an
-/// enderman's carried block (`MobCombat::carried_block`); an adult
+/// draws so a block follows exactly the pose its mob drew in: M353 — a snow
+/// golem's carved pumpkin (`MobCombat::pumpkin`); M352 — an enderman's
+/// carried block (`MobCombat::carried_block`); an adult
 /// mooshroom's three mushrooms (`MushroomCowMushroomLayer`: none on a calf
 /// or an invisible body), red, or brown on the brown colour's sheet. A
 /// mooshroom caged in a spawner (a mounted draw) carries none here.
@@ -2065,6 +2105,7 @@ pub(super) fn collect_mob_blocks(
     draws: &[rewo_gpu::entities::EntityDraw<'_>],
     red_mushroom: Option<u32>,
     brown_mushroom: Option<u32>,
+    carved_pumpkin: Option<u32>,
 ) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
     use rewo_data::be_transform::IDENTITY;
     let brown =
@@ -2084,6 +2125,20 @@ pub(super) fn collect_mob_blocks(
     };
     for d in draws {
         if d.body_hidden || d.mount.is_some() {
+            continue;
+        }
+        // M353 — a snow golem's carved pumpkin (`SnowGolemHeadLayer`).
+        if let (EntityModelKind::SnowGolem, true, Some(state)) =
+            (d.kind, d.mob.pumpkin, carved_pumpkin)
+        {
+            let roll = rewo_gpu::entities::death_roll_for(d.kind, d.death_time);
+            let net = (d.head_yaw - d.yaw + 180.0).rem_euclid(360.0) - 180.0;
+            out.push(block(
+                d.pos,
+                state,
+                snow_golem_pumpkin_transform(d.yaw, net, d.pitch, roll),
+                d.light,
+            ));
             continue;
         }
         // M352 — an enderman's carried block (`CarriedBlockLayer`).
@@ -2137,6 +2192,10 @@ pub(super) fn block_display_states(
             "minecraft:tnt" => ents.primed(id).block,
             // M352 — an enderman's carried block.
             "minecraft:enderman" => ents.carried_block(id),
+            // M353 — a snow golem's carved pumpkin.
+            "minecraft:snow_golem" if ents.has_pumpkin(id) => {
+                blocks.default_state("minecraft:carved_pumpkin")
+            }
             // M351 — a mooshroom's mushroom (`MushroomCow.Variant`, CLAMP).
             "minecraft:mooshroom" => blocks.default_state(if ents.variant(id).unwrap_or(0) >= 1 {
                 "minecraft:brown_mushroom"

@@ -1870,8 +1870,9 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 
 /// M342: 13 → 14, n9 (index 21 INT: a llama's variant or a wolf's collar).
 /// M343: 14 → 15, n10 (index 23 INT is a cat's collar). M352: 15 → 16, n11
-/// (index 16 OPTIONAL_BLOCK_STATE is an enderman's carried block).
-const VARIANT_WITNESSES: usize = 16;
+/// (index 16 OPTIONAL_BLOCK_STATE is an enderman's carried block). M353:
+/// 16 → 17, n12 (index 16 BYTE is a snow golem's pumpkin).
+const VARIANT_WITNESSES: usize = 17;
 
 /// The mobs whose texture a synched metadata field chooses, and the registry
 /// name each carries in the `entity_types` table.
@@ -2519,6 +2520,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         zombie_nautilus: etypes.id_of("minecraft:zombie_nautilus"),
         // M352 — the enderman's carried block.
         enderman: etypes.id_of("minecraft:enderman"),
+        // M353 — the snow golem's pumpkin.
+        snow_golem: etypes.id_of("minecraft:snow_golem"),
         tropical_fish: etypes.id_of("minecraft:tropical_fish"),
     };
     let sheep = tid("minecraft:sheep")?;
@@ -2675,6 +2678,20 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         carried == Some(5) && emptied.is_none() && on_cat.is_none(),
         format!(
             "state 5 at index 16 OPTIONAL_BLOCK_STATE gives an enderman {carried:?} (want Some(5)), 0 gives {emptied:?} (want None), and a cat {on_cat:?} (want None): `EnderMan.DATA_CARRY_STATE` (`Monster` adds none after `Mob`'s 15)"
+        ),
+    );
+    // M353 — index 16 BYTE on a snow golem is `DATA_PUMPKIN_ID`: 0x10 wears
+    // the pumpkin, 0 takes it off; on a cat the same byte is not routed, so
+    // its (default) answer stays "wears it".
+    let golem = kinds.snow_golem.ok_or("no minecraft:snow_golem")?;
+    let sheared = send(golem, 16, 0, 0x00, kinds).has_pumpkin(1);
+    let crowned = send(golem, 16, 0, 0x10, kinds).has_pumpkin(1);
+    let cat16 = send(cat, 16, 0, 0x00, kinds).has_pumpkin(1);
+    c.record(
+        "n12.index_16_byte_is_a_snow_golems_pumpkin_and_nothing_on_a_cat",
+        !sheared && crowned && cat16,
+        format!(
+            "a snow golem sent 0 wears its pumpkin: {sheared} (want false), sent 0x10: {crowned} (want true); a cat sent 0 at index 16 BYTE still reads the default: {cat16} (want true)"
         ),
     );
     Ok(())

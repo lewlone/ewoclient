@@ -1564,6 +1564,9 @@ pub struct MobState {
     /// M352 — `EnderMan.DATA_CARRY_STATE` (index 16, OPTIONAL_BLOCK_STATE):
     /// the block state an enderman carries; `None` for empty (the wire's 0).
     pub carried_block: Option<u32>,
+    /// M353 — `SnowGolem.DATA_PUMPKIN_ID` (index 16, BYTE; 0x10 is the
+    /// pumpkin). `None` when the server sent none: vanilla's default has it.
+    pub snow_golem_flags: Option<u8>,
     /// `TamableAnimal.DATA_FLAGS_ID` — index **18**, BYTE, bit 0x04 is
     /// `isTame()` and bit 0x01 `isInSittingPose()` (M64).
     ///
@@ -2978,6 +2981,21 @@ impl EntityTable {
     /// M352 — the block state an enderman carries, if any.
     pub fn carried_block(&self, id: i32) -> Option<u32> {
         self.mob_state.get(&id).and_then(|s| s.carried_block)
+    }
+
+    /// M353 — a snow golem's `DATA_PUMPKIN_ID` byte. Kind-gated by the caller.
+    pub fn set_snow_golem_flags(&mut self, id: i32, flags: u8) {
+        self.mob_state.entry(id).or_default().snow_golem_flags = Some(flags);
+    }
+
+    /// M353 — `SnowGolem.hasPumpkin()`: the 0x10 bit, set by default
+    /// (`defineSynchedData` defines `PUMPKIN_FLAG`), so a golem the server
+    /// sent nothing for wears it.
+    pub fn has_pumpkin(&self, id: i32) -> bool {
+        self.mob_state
+            .get(&id)
+            .and_then(|s| s.snow_golem_flags)
+            .is_none_or(|b| b & 0x10 != 0)
     }
 
     /// `TamableAnimal.DATA_FLAGS_ID` (index 18, BYTE). Kind-gated by the
@@ -5209,5 +5227,23 @@ mod side_state_tests {
         spawned(&mut t, 1);
         assert_eq!(side_rows(&t, 3), before);
         assert!(t.armor(3)[1].is_some());
+    }
+}
+
+#[cfg(test)]
+mod snow_golem_tests {
+    use super::*;
+
+    /// M353 — a snow golem wears its pumpkin by default; the 0x10 bit of
+    /// `DATA_PUMPKIN_ID` takes it off and puts it back.
+    #[test]
+    fn a_snow_golem_wears_its_pumpkin_until_sheared() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 7, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert!(t.has_pumpkin(1));
+        t.set_snow_golem_flags(1, 0x00);
+        assert!(!t.has_pumpkin(1));
+        t.set_snow_golem_flags(1, 0x10);
+        assert!(t.has_pumpkin(1));
     }
 }

@@ -4430,3 +4430,34 @@ fn the_endermans_block_sits_in_front_of_its_chest() {
         "{mid:?}"
     );
 }
+
+/// M353 — `SnowGolemHeadLayer`'s pumpkin, worked out by hand: at body yaw 0
+/// with the head level the block's centre goes (0.5, 0.5, 0.5) → 0 →
+/// (0, -0.34375, 0) → the head pivot (0, -0.09375, 0) → the root's lift and
+/// flip (0, 1.59475, 0) → `YP(180)` leaves it; the head box spans y 0..-8
+/// px above the pivot at 4 px (world 1.25 .. 1.75, centre 1.501), so the
+/// pumpkin's 0.625 block sits over it 1.5 px high (`-0.34375` is 5.5 px up
+/// from the pivot, the head's centre 4). Its corners are 0.625 apart, and
+/// turning the
+/// head 90 degrees keeps the centre (it is on the head's axis) but moves the
+/// corners.
+#[test]
+fn the_snow_golems_pumpkin_sits_on_its_head() {
+    let f = super::entities::snow_golem_pumpkin_transform;
+    let at = |a: &rewo_data::be_transform::Affine, p: [f32; 3]| {
+        [0, 1, 2].map(|r| a[r][0] * p[0] + a[r][1] * p[1] + a[r][2] * p[2] + a[r][3])
+    };
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+    let level = f(0.0, 0.0, 0.0, 0.0);
+    assert!(
+        near(at(&level, [0.5; 3]), [0.0, 1.59475, 0.0]),
+        "{:?}",
+        at(&level, [0.5; 3])
+    );
+    let (c0, c1) = (at(&level, [0.0; 3]), at(&level, [1.0, 0.0, 0.0]));
+    let edge = ((c1[0] - c0[0]).powi(2) + (c1[1] - c0[1]).powi(2) + (c1[2] - c0[2]).powi(2)).sqrt();
+    assert!((edge - 0.625).abs() < 1e-3, "{edge}");
+    let turned = f(0.0, 90.0, 0.0, 0.0);
+    assert!(near(at(&turned, [0.5; 3]), [0.0, 1.59475, 0.0]));
+    assert!(!near(at(&turned, [0.0; 3]), c0));
+}

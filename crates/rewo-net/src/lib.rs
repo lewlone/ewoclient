@@ -2558,6 +2558,8 @@ pub struct VariantKinds {
     pub zombie_nautilus: Option<i32>,
     /// M352 — `minecraft:enderman`, for its carried block (index 16).
     pub enderman: Option<i32>,
+    /// M353 — `minecraft:snow_golem`, for its pumpkin (index 16 BYTE).
+    pub snow_golem: Option<i32>,
     /// `minecraft:tropical_fish` (M68). Its index-17 INT is not a texture id
     /// at all — it is `TropicalFish.packVariant`'s four packed fields — but it
     /// arrives through the same setter, and the renderer unpacks it with the
@@ -2712,6 +2714,10 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(b) = meta.byte16 {
         if kinds.player == Some(type_id) || kinds.mannequin == Some(type_id) {
             entities.set_model_customisation(eid, b);
+        } else if kinds.variant_kinds.snow_golem == Some(type_id) {
+            // M353 — a fourth reading: `SnowGolem.DATA_PUMPKIN_ID`
+            // (`AbstractGolem` adds none after `Mob`'s 15).
+            entities.set_snow_golem_flags(eid, b);
         }
     }
     // Slot 0 BYTE → `Entity.DATA_SHARED_FLAGS_ID` (M59). **No kind gate**, and

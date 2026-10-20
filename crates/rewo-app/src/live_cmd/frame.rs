@@ -973,6 +973,17 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M353 — r207: the staged snow golems, (with a pumpkin, without).
+            c.snow_golems = draws
+                .iter()
+                .filter(|d| d.kind == rewo_gpu::mobs::EntityModelKind::SnowGolem)
+                .fold((0, 0), |(w, b), d| {
+                    if d.mob.pumpkin {
+                        (w + 1, b)
+                    } else {
+                        (w, b + 1)
+                    }
+                });
             // M352 — r206: an enderman drawn carrying a block.
             c.enderman_carrying = draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::Enderman && d.mob.carried_block.is_some()
@@ -1570,6 +1581,7 @@ impl LiveApp {
             &draws,
             self.blocks.default_state("minecraft:red_mushroom"),
             self.blocks.default_state("minecraft:brown_mushroom"),
+            self.blocks.default_state("minecraft:carved_pumpkin"),
         ));
         let frame_maps = frames.maps;
         // A spawner's caged mob rides the ENTITY pass, mounted inside its
@@ -2204,6 +2216,28 @@ impl LiveApp {
                 });
             if held && c.enderman_carrying {
                 c.enderman_block_frames += 1;
+            }
+            // M353 — r207: the staged snow golem's carved pumpkin drew every
+            // quad of its block model, and a sheared golem drew none.
+            let pumpkin = self
+                .blocks
+                .default_state("minecraft:carved_pumpkin")
+                .map(rewo_data::block_entity_models::carried_block_model);
+            let worn = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| Some(d.model) == pumpkin.as_deref())
+                .filter(|(d, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(d.model))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                })
+                .count();
+            if worn == 1 && c.snow_golems == (1, 1) {
+                c.snow_golem_frames += 1;
             }
             // M254 — r113: the staged painting drew every quad of its
             // variant's model.

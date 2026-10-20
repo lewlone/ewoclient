@@ -508,6 +508,11 @@ pub(super) struct RenderCheck {
     /// frames its melon drew whole while it did.
     pub(super) enderman_carrying: bool,
     pub(super) enderman_block_frames: u32,
+    /// M353 — r207: this frame's snow golem draws (with a pumpkin, without),
+    /// and the frames that drew exactly one pumpkin, whole, while one golem
+    /// of each was drawn.
+    pub(super) snow_golems: (u32, u32),
+    pub(super) snow_golem_frames: u32,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1273,7 +1278,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 206;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 207;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1473,6 +1478,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M353 — r207: `render_check.py` summons a snow golem (its pumpkin
+        // by default) and one with `Pumpkin:0b`: one pumpkin, drawn whole.
+        row(
+            "r207 a snow golem wore its pumpkin and a sheared one none",
+            self.snow_golem_frames > 0,
+            format!(
+                "{} frames with one golem of each drawn and exactly one pumpkin, whole",
+                self.snow_golem_frames
             ),
         );
         // M352 — r206: `render_check.py` summons an enderman carrying a
