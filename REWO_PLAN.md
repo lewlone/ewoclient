@@ -3992,6 +3992,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M347 — the brown mooshroom (2026-10-20)
+
+Every mooshroom drew red. `MushroomCow.DATA_TYPE` is index 18 INT
+(`AbstractCow` adds none), now routed on the mooshroom
+(`VariantKinds::mooshroom`). `MushroomCowRenderer.TEXTURES` maps RED and
+BROWN (`BY_ID` CLAMP) to an adult and a calf sheet each: the brown ones are
+the `mooshroom` and `mooshroom_baby` keys' variant sheets
+(`mob_variants::mooshroom_texture`); an unsent colour is RED. The mushrooms
+on the adult's back (`MushroomCowMushroomLayer`, block models on the body
+and head) are not drawn: no mob carries a block in Rewo yet. n7 routes ten
+mobs; n1 counts 127 declared sheets.
+
+**Unit test**: red and brown, adult and calf, CLAMP at both ends, keys.
+**n7**: the colour lands at 18 and not at 17 or 19; without the routing it
+fails. **mobtexshot m72**: the mooshroom and the calf each draw both colours
+from their own sheets, and they differ. **r201**: a staged brown mooshroom
+draws on its colour variant.
+
 ### M346 — rabbit coats and Toast (2026-10-20)
 
 Every rabbit drew brown. `Rabbit.DATA_TYPE_ID` is index 18 INT, now routed
