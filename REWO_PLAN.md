@@ -3958,6 +3958,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M311 — wolf armour cracks (2026-10-20)
+
+`WolfArmorLayer.maybeRenderCracks` draws one of three crack sheets over the
+armour by `Crackiness.WOLF_ARMOR` (below 0.95, 0.69 and 0.32 of the
+durability left: low, medium, high), `armorTranslucent`. A worn piece now
+keeps `isDamageableItem`'s inputs from the equipment packet's patch
+(`WornPiece::wear`: none when unbreakable or a damage component is removed,
+else the patched damage and maximum); the app takes the item prototype's
+maximum when the patch has none (`wolf_armor_crack`, `wolf_crack_level`). The
+bake adds the three sheets beside the equipment sheets
+(`wolf_armor_crackiness_*`), and the emitter draws the armour shell once more
+in the crack sheet into M306's translucent range, untinted and with no
+overlay; the crack is coplanar with the armour, which the range's
+`GREATER_OR_EQUAL` accepts.
+
+**Unit test**: the thresholds on the 64-point armour (61 left none, 60 low,
+44 medium, 20 high). **mobtexshot m39**: the high sheet adds 396 translucent
+vertices and changes 833 px, none off the armour (the emission disabled: 0,
+and m39 fails). **r167**: a wolf staged in armour with 60 of 64 spent draws
+the high cracks.
+
 ### M310 — an avatar's outer layers follow its customisation mask (2026-10-20)
 
 `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16 BYTE) gated only the cape
