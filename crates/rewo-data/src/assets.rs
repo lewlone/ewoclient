@@ -1146,6 +1146,8 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M316 — the polar bear cub's sheet (`PolarBearRenderer`).
+    ("polar_bear_baby", "entity/bear/polarbear_baby.png", 64, 64),
     // M315 — `TurtleRenderer.BABY_TURTLE_LOCATION`.
     ("turtle_baby", "entity/turtle/turtle_baby.png", 16, 16),
     // M314 — `HappyGhastRenderer.GHAST_BABY_LOCATION`, the ghastling's own

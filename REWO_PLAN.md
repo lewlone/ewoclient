@@ -2126,6 +2126,7 @@ this shape once.
 | M312 (2026-10-20) — a harnessed happy ghast holding a leash draws its ropes | **r168** | — | — |
 | M314 (2026-10-20) — a baby happy ghast draws as the ghastling | **r169** | — | — |
 | M315 (2026-10-20) — a baby turtle draws as its own model | **r170** | — | — |
+| M316 (2026-10-20) — a polar bear cub draws as its own model | **r171** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

@@ -1540,11 +1540,13 @@ pub enum EntityModelKind {
     HappyGhastBaby,
     /// M315 — `BabyTurtleModel` (`TURTLE_BABY`), swapped in for a baby.
     TurtleBaby,
+    /// M316 — `BabyPolarBearModel` (`POLAR_BEAR_BABY`), swapped in for a cub.
+    PolarBearBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 103;
+    pub const COUNT: usize = 104;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1648,6 +1650,7 @@ impl EntityModelKind {
         EntityModelKind::SulfurCubeSmall,
         EntityModelKind::HappyGhastBaby,
         EntityModelKind::TurtleBaby,
+        EntityModelKind::PolarBearBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1752,6 +1755,7 @@ impl EntityModelKind {
             EntityModelKind::SulfurCubeSmall => "sulfur_cube_small",
             EntityModelKind::HappyGhastBaby => "happy_ghast_baby",
             EntityModelKind::TurtleBaby => "turtle_baby",
+            EntityModelKind::PolarBearBaby => "polar_bear_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1796,6 +1800,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::SulfurCubeSmall
                 | EntityModelKind::HappyGhastBaby
                 | EntityModelKind::TurtleBaby
+                | EntityModelKind::PolarBearBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2655,6 +2660,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::TurtleBaby,
         textures: &["turtle_baby"],
         build: turtle_baby,
+    },
+    // M316 — `PolarBearRenderer`'s baby sheet.
+    MobDef {
+        kind: EntityModelKind::PolarBearBaby,
+        textures: &["polar_bear_baby"],
+        build: polar_bear_baby,
     },
 ];
 
@@ -6850,6 +6861,43 @@ fn turtle_baby() -> Model {
     b.finish(1.0)
 }
 
+/// M316 — `BabyPolarBearModel.createBodyLayer()` (64 x 64): the body, the
+/// head with its snout and ears (looking, as the adult's does), and four
+/// 3-px legs on the quadruped walk. At its own size (`AgeableMobRenderer`
+/// adds none). Like Rewo's adult bear it does not rear.
+fn polar_bear_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 9.0),
+        [-4.0, -3.5, -6.0],
+        [8.0, 7.0, 12.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 17.5, 0.0])],
+    );
+    let head = b.part([0.0, 18.625, -5.75], Anim::Head, 1.0);
+    for (uv, min, dims) in [
+        ((0.0, 0.0), [-3.0, -2.625, -4.25], [6.0, 5.0, 4.0]),
+        ((20.0, 3.0), [-2.0, 0.375, -6.25], [4.0, 2.0, 2.0]),
+        ((20.0, 0.0), [-4.0, -3.625, -2.75], [2.0, 2.0, 1.0]),
+        ((26.0, 0.0), [2.0, -3.625, -2.75], [2.0, 2.0, 1.0]),
+    ] {
+        b.cube(head, 0, uv, min, dims, NONE);
+    }
+    for (uv, pivot, anim) in [
+        ((0.0, 34.0), [-2.5, 21.5, 4.5], Anim::QuadHindRight),
+        ((12.0, 34.0), [2.5, 21.5, 4.5], Anim::QuadHindLeft),
+        ((0.0, 28.0), [-2.5, 21.5, -4.5], Anim::QuadFrontRight),
+        ((12.0, 28.0), [2.5, 21.5, -4.5], Anim::QuadFrontLeft),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.5, -0.5, -1.5], [3.0, 3.0, 3.0], NONE);
+    }
+    b.finish(1.0)
+}
+
 fn turtle() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 19.0, -10.0], Anim::Head, 1.0);
@@ -11022,6 +11070,7 @@ mod tests {
                     // M314 — and the ghastling's, M315 the baby turtle's.
                     | EntityModelKind::HappyGhastBaby
                     | EntityModelKind::TurtleBaby
+                    | EntityModelKind::PolarBearBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12035,5 +12084,28 @@ mod baby_turtle_tests {
             "the legs reach 2 px beyond the 4-px shell"
         );
         assert!(m.parts.iter().any(|p| p.anim == Anim::Head));
+    }
+}
+
+#[cfg(test)]
+mod polar_cub_tests {
+    use super::*;
+
+    /// M316 — the cub: a static body, a looking head of four boxes, four
+    /// walking legs.
+    #[test]
+    fn the_polar_bear_cub_is_its_own_model() {
+        let m = polar_bear_baby();
+        assert_eq!(m.quads.len(), 9 * 6);
+        let anims: Vec<Anim> = m.parts.iter().map(|p| p.anim).collect();
+        for a in [
+            Anim::Head,
+            Anim::QuadHindRight,
+            Anim::QuadHindLeft,
+            Anim::QuadFrontRight,
+            Anim::QuadFrontLeft,
+        ] {
+            assert!(anims.contains(&a), "{a:?}");
+        }
     }
 }

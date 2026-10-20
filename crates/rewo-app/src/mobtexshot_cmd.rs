@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 42;
+const EXPECTED_WITNESSES: usize = 43;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -180,9 +180,10 @@ const MIN_DISCRIMINATING: usize = 72;
 /// views), and (M252) minecart, a low open box that draws under the floor in
 /// the crowd (mobshot grades it from three views too), and (M307) the adult
 /// sulfur cube, half a block at size 1 under its translucent shell (m37
-/// grades it up close), and (M315) the baby turtle, a quarter of a block (m42
-/// grades it up close). A fourteenth means something stopped drawing.
-const MAX_SMALL: usize = 13;
+/// grades it up close), (M315) the baby turtle, a quarter of a block (m42
+/// grades it up close), and (M316) the polar bear cub (m43 grades it up
+/// close). A fifteenth means something stopped drawing.
+const MAX_SMALL: usize = 14;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -190,8 +191,9 @@ const MAX_SMALL: usize = 13;
 /// grey palette outright). Sound but not discriminating, so the count is
 /// pinned rather than left to drift. M223 added boat/chest_boat and
 /// raft/chest_raft: the same wood sheet drawn on two models (and the floors
-/// above rose by the four new kinds, two of them discriminating).
-const MAX_AMBIGUOUS: usize = 8;
+/// above rose by the four new kinds, two of them discriminating). M316 added
+/// polar_bear/polar_bear_baby: the cub's sheet is the adult's white fur.
+const MAX_AMBIGUOUS: usize = 9;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -3196,6 +3198,60 @@ fn run_check(
             "the baby covers {baby_px} px against the adult's {adult_px} (want >= 30 and under \
              a tenth); first colour the baby sheet cannot produce: {:?}",
             baby_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m43 — M316: the polar bear cub draws, every pixel a colour the cub
+    // sheet can produce. (Its mesh is pinned box for box by the unit test
+    // `the_polar_bear_cub_is_its_own_model`; a pixel comparison against the
+    // half-size adult could not tell the meshes apart, since a wrong mesh on
+    // the cub sheet differs by its cut-outs too.)
+    let cub_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "polar_bear_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut pcst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.4, 1.6, -2.4),
+        Vec3::new(0.0, 0.4, 0.0),
+    )?;
+    pcst.wr.set_entities(&[], pcst.right, pcst.up, 0.0);
+    pcst.off
+        .render(gpu, Some((&mut pcst.wr, pcst.vp)), &ov, BG)?;
+    let pc_empty = pcst.off.read_rgba(gpu)?;
+    let cub = neutral_draw(EntityModelKind::PolarBearBaby);
+    pcst.wr.set_entities(&[cub], pcst.right, pcst.up, 0.0);
+    pcst.off
+        .render(gpu, Some((&mut pcst.wr, pcst.vp)), &ov, BG)?;
+    let pc_cub = pcst.off.read_rgba(gpu)?;
+    pcst.destroy(gpu);
+    let (mut cub_px, mut cub_bad) = (0usize, None);
+    for (p, e) in pc_cub
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(pc_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        cub_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if cub_bad.is_none() && !explains(&cub_sheet, c) {
+            cub_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m43.the_polar_bear_cub_draws_from_its_own_sheet",
+        !cub_sheet.is_empty() && cub_px >= 200 && cub_bad.is_none(),
+        format!(
+            "{cub_px} cub px (want >= 200), first colour the cub sheet cannot produce: {:?}",
+            cub_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 
