@@ -10035,6 +10035,46 @@ fn happy_ghast() -> Model {
     b.finish(4.0)
 }
 
+/// M302 — `HappyGhastHarnessModel.createHarnessLayer(false)` (64 x 64,
+/// `MeshTransformer.scaling(4.0F)`, which the happy ghast's own model scale
+/// carries): the harness cube on the body's box, and the goggles (inflated
+/// 0.15), which `setupAnim` lowers to `y = 14` level while ridden and raises
+/// to `y = 9` tilted `-0.7854` otherwise. The harness cube coincides with the
+/// ghast's body box; vanilla draws it over by `LESS_THAN_OR_EQUAL`, so under
+/// Rewo's strict `GREATER` it is lifted 0.002 px (M301's panel's reading).
+/// On the static part, the only part the happy ghast's mesh has.
+pub fn happy_ghast_harness(ridden: bool) -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-8.0, -16.0, -8.0],
+        [16.0, 16.0, 16.0],
+        0.002,
+        false,
+        &[Fold::at([0.0, 24.0, 0.0])],
+    );
+    let goggles = if ridden {
+        Fold::at([0.0, 14.0, -5.5])
+    } else {
+        Fold::rot([-0.7854, 0.0, 0.0], [0.0, 9.0, -5.5])
+    };
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 32.0),
+        [-8.0, -2.5, -2.5],
+        [16.0, 5.0, 5.0],
+        0.15,
+        false,
+        &[goggles],
+    );
+    let mut m = b.finish(1.0);
+    m.scale = happy_ghast().scale;
+    m
+}
+
 /// `CopperGolemModel`: the little statue — antennaed head, slab body,
 /// mitten arms, stub legs. The whole mesh rides a +24 root translate.
 fn copper_golem() -> Model {
@@ -11508,5 +11548,34 @@ mod nautilus_layer_tests {
             .iter()
             .chain(&saddle.quads)
             .all(|q| q.part == STATIC_PART));
+    }
+}
+
+#[cfg(test)]
+mod harness_tests {
+    use super::*;
+
+    /// M302 — the harness is two boxes on the static part at the ghast's
+    /// scale, and only the goggles move between ridden and not.
+    #[test]
+    fn the_harness_goggles_drop_when_ridden() {
+        let (up, down) = (happy_ghast_harness(false), happy_ghast_harness(true));
+        assert_eq!(up.quads.len(), 12);
+        assert_eq!(up.scale, happy_ghast().scale);
+        assert!(up.quads.iter().all(|q| q.part == STATIC_PART));
+        assert_eq!(
+            up.quads[..6].iter().map(|q| q.pos).collect::<Vec<_>>(),
+            down.quads[..6].iter().map(|q| q.pos).collect::<Vec<_>>()
+        );
+        let low = |m: &Model| {
+            m.quads[6..]
+                .iter()
+                .flat_map(|q| q.pos.iter().map(|p| p[1]))
+                .fold(f32::MAX, f32::min)
+        };
+        assert!(
+            low(&down) > low(&up),
+            "ridden goggles sit lower on screen (larger model y)"
+        );
     }
 }

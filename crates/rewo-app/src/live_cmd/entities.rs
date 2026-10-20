@@ -3255,6 +3255,9 @@ pub(crate) fn body_armor_piece<'a>(
         EntityModelKind::Wolf => ArmorLayer::WolfBody,
         // M301 — `NAUTILUS_BODY` (both nautilus renderers).
         EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => ArmorLayer::NautilusBody,
+        // M302 — `HAPPY_GHAST_BODY` (Rewo draws a baby at the adult size,
+        // so with the adult harness).
+        EntityModelKind::HappyGhast => ArmorLayer::HappyGhastBody,
         _ => return None,
     };
     let adult_only = matches!(layer, ArmorLayer::LlamaBody | ArmorLayer::WolfBody);

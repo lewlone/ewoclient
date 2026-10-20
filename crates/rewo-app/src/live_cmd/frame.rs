@@ -948,6 +948,21 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M302 — r158: the staged harnessed happy ghast.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::HappyGhast
+                    && d.body_armor.is_some_and(|p| {
+                        p.layers.iter().flatten().any(|(k, _)| {
+                            *k == "happy_ghast_body/white_harness"
+                                && state
+                                    .world_renderer
+                                    .entity_pass()
+                                    .is_some_and(|e| e.armor_sheet_resident(k))
+                        })
+                    })
+            }) {
+                c.harness_frames += 1;
+            }
             // M301 — r157: r90's saddled nautilus.
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::Nautilus

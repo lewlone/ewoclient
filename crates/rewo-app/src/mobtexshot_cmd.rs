@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 32;
+const EXPECTED_WITNESSES: usize = 33;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2439,6 +2439,81 @@ fn run_check(
                 .iter()
                 .map(|(k, r, s, n, b)| (k, r, s, n, b.map(|c| format!("#{c:06x}"))))
                 .collect::<Vec<_>>()
+        ),
+    ));
+
+    // m33 — M302: a happy ghast in a white harness: the harness and goggles'
+    // pixels come from the jar's `happy_ghast_body/white_harness` alone, and
+    // riding moves the goggles (the frame changes). No harness drew until
+    // M302.
+    const HARNESS: &str = "happy_ghast_body/white_harness";
+    let harness_sheet: HashSet<u32> = baked
+        .equipment
+        .textures
+        .iter()
+        .find(|t| t.key == HARNESS)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut hst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(6.5, 5.5, -6.5),
+        Vec3::new(0.0, 2.6, 0.0),
+    )?;
+    let harness_resident = hst
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(HARNESS));
+    let mut hshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        hst.wr.set_entities(&[d], hst.right, hst.up, 0.0);
+        hst.off.render(gpu, Some((&mut hst.wr, hst.vp)), &ov, BG)?;
+        hst.off.read_rgba(gpu)
+    };
+    let mut hlayers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    hlayers[0] = Some((HARNESS, [1.0, 1.0, 1.0]));
+    let harnessed = |ridden: bool| EntityDraw {
+        body_armor: Some(rewo_gpu::entities::ArmorPiece {
+            layers: hlayers,
+            ..Default::default()
+        }),
+        ridden,
+        ..neutral_draw(EntityModelKind::HappyGhast)
+    };
+    let g_bare = hshot(neutral_draw(EntityModelKind::HappyGhast))?;
+    let g_up = hshot(harnessed(false))?;
+    let g_down = hshot(harnessed(true))?;
+    hst.destroy(gpu);
+    let (mut harness_px, mut harness_bad) = (0usize, None);
+    for (a, b) in g_up
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(g_bare.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        harness_px += 1;
+        let c = pack(a[0], a[1], a[2]);
+        if harness_bad.is_none() && !explains(&harness_sheet, c) {
+            harness_bad = Some(c);
+        }
+    }
+    let goggles_moved = g_up != g_down;
+    w.push(wit(
+        "m33.a_happy_ghast_wears_its_harness_and_its_goggles_drop_when_ridden",
+        harness_resident
+            && !harness_sheet.is_empty()
+            && harness_px >= 300
+            && harness_bad.is_none()
+            && goggles_moved,
+        format!(
+            "{HARNESS} resident: {harness_resident}; {harness_px} px changed by the harness \
+             (want >= 300); first colour the sheet cannot produce: {:?}; the goggles moved \
+             when ridden: {goggles_moved}",
+            harness_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

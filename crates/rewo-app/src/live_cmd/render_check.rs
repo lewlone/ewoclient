@@ -386,6 +386,8 @@ pub(super) struct RenderCheck {
     pub(super) camel_saddle_frames: (usize, usize),
     /// M301 — r157: frames on which r90's nautilus drew saddled.
     pub(super) nautilus_saddle_frames: usize,
+    /// M302 — r158: frames on which the staged happy ghast drew harnessed.
+    pub(super) harness_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1151,7 +1153,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 157;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 158;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1352,6 +1354,15 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M302 — r158: `render_check.py` summons a happy ghast in a white
+        // harness; the body slot must reach the draw as
+        // `happy_ghast_body/white_harness`, resident (`mobtexshot m33` checks
+        // the pixels and the goggles). No harness drew until M302.
+        row(
+            "r158 a happy ghast drew in its harness",
+            self.harness_frames >= 1,
+            format!("{} frames drew it", self.harness_frames),
         );
         // M301 — r157: r90's nautilus is saddled (its staging); its saddle slot
         // must reach the draw as `nautilus_saddle/saddle`, resident

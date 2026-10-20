@@ -84,6 +84,8 @@ pub enum ArmorLayer {
     /// M301 — the nautilus's armour and saddle.
     NautilusBody,
     NautilusSaddle,
+    /// M302 — `happy_ghast_body`, a happy ghast's harness.
+    HappyGhastBody,
 }
 
 impl ArmorLayer {
@@ -105,13 +107,14 @@ impl ArmorLayer {
             ArmorLayer::CamelSaddle => "camel_saddle",
             ArmorLayer::NautilusBody => "nautilus_body",
             ArmorLayer::NautilusSaddle => "nautilus_saddle",
+            ArmorLayer::HappyGhastBody => "happy_ghast_body",
         }
     }
 
     /// The layers a full load reads. `Wings` is last so the two humanoid
     /// entries keep the order they had, which keeps `textures` — a `Vec`
     /// the atlas packs in order — byte-for-byte what it was.
-    pub const ALL: [ArmorLayer; 16] = [
+    pub const ALL: [ArmorLayer; 17] = [
         ArmorLayer::Humanoid,
         ArmorLayer::Leggings,
         ArmorLayer::Wings,
@@ -128,6 +131,7 @@ impl ArmorLayer {
         ArmorLayer::CamelSaddle,
         ArmorLayer::NautilusBody,
         ArmorLayer::NautilusSaddle,
+        ArmorLayer::HappyGhastBody,
     ];
 
     /// M294/M295 — the layers loaded after the original three, so the
