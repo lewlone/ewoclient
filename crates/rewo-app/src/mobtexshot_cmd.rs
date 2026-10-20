@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 50;
+const EXPECTED_WITNESSES: usize = 51;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -188,9 +188,10 @@ const MIN_DISCRIMINATING: usize = 72;
 /// (m47) and the small sulfur cube: the two calves' cells shrank every cell
 /// of the crowd and put it under the floor (measured against the M321 crowd
 /// without the calves, 19; m37 grades it up close), and (M322) the piglet
-/// and the chick (m48), (M323) the lamb (m49), and (M324) the dolphin calf
-/// (m50). A twenty-sixth means something stopped drawing.
-const MAX_SMALL: usize = 25;
+/// and the chick (m48), (M323) the lamb (m49), (M324) the dolphin calf
+/// (m50), and (M325) the baby zombie villager (m51). A twenty-seventh means
+/// something stopped drawing.
+const MAX_SMALL: usize = 26;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3723,6 +3724,62 @@ fn run_check(
         format!(
             "{dc_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             dc_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m51 — M325: the baby zombie villager draws, every pixel producible by
+    // its own sheet; the mesh rests on
+    // `the_baby_zombie_villager_is_its_own_model`.
+    let mut zvst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.2, 1.0, -1.2),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    zvst.wr.set_entities(&[], zvst.right, zvst.up, 0.0);
+    zvst.off
+        .render(gpu, Some((&mut zvst.wr, zvst.vp)), &ov, BG)?;
+    let zv_empty = zvst.off.read_rgba(gpu)?;
+    let zv_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "zombie_villager_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    zvst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::ZombieVillagerBaby)],
+        zvst.right,
+        zvst.up,
+        0.0,
+    );
+    zvst.off
+        .render(gpu, Some((&mut zvst.wr, zvst.vp)), &ov, BG)?;
+    let zv_frame = zvst.off.read_rgba(gpu)?;
+    zvst.destroy(gpu);
+    let (mut zv_px, mut zv_bad) = (0usize, None);
+    for (p, e) in zv_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(zv_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        zv_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if zv_bad.is_none() && !explains(&zv_sheet, c) {
+            zv_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m51.the_baby_zombie_villager_draws_from_its_own_sheet",
+        !zv_sheet.is_empty() && zv_px >= 200 && zv_bad.is_none(),
+        format!(
+            "{zv_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            zv_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

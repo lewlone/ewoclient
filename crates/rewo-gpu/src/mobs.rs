@@ -1568,11 +1568,13 @@ pub enum EntityModelKind {
     SheepBaby,
     /// M324 — `BabyDolphinModel` (`DOLPHIN_BABY`).
     DolphinBaby,
+    /// M325 — `BabyZombieVillagerModel` (`ZOMBIE_VILLAGER_BABY`).
+    ZombieVillagerBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 116;
+    pub const COUNT: usize = 117;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1689,6 +1691,7 @@ impl EntityModelKind {
         EntityModelKind::ChickenBaby,
         EntityModelKind::SheepBaby,
         EntityModelKind::DolphinBaby,
+        EntityModelKind::ZombieVillagerBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1806,6 +1809,7 @@ impl EntityModelKind {
             EntityModelKind::ChickenBaby => "chicken_baby",
             EntityModelKind::SheepBaby => "sheep_baby",
             EntityModelKind::DolphinBaby => "dolphin_baby",
+            EntityModelKind::ZombieVillagerBaby => "zombie_villager_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1863,6 +1867,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::ChickenBaby
                 | EntityModelKind::SheepBaby
                 | EntityModelKind::DolphinBaby
+                | EntityModelKind::ZombieVillagerBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2811,6 +2816,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::DolphinBaby,
         textures: &["dolphin_baby"],
         build: dolphin_baby,
+    },
+    // M325 — the baby zombie villager's sheet.
+    MobDef {
+        kind: EntityModelKind::ZombieVillagerBaby,
+        textures: &["zombie_villager_baby"],
+        build: zombie_villager_baby,
     },
 ];
 
@@ -5193,6 +5204,101 @@ fn dolphin_baby() -> Model {
         [8.0, 1.0, 4.0],
         NONE,
     );
+    b.finish(1.0)
+}
+
+/// M325 — `BabyZombieVillagerModel.createBodyLayer()` (64 x 64): the baby
+/// villager's head (8 x 8 x 7, looking) with its hat (0.3), brim and nose on
+/// child folds, a body with its robe (0.1), two 2 x 5 x 2 arms on
+/// `animateZombieArms` (named, as the adult's are) and two short legs on the
+/// humanoid walk. Only the base sheet, as Rewo's adult draws (no type or
+/// profession layer).
+fn zombie_villager_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = [Fold::at([0.0, 18.75, 0.0])];
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 15.0),
+        [-2.0, -2.75, -1.5],
+        [4.0, 5.0, 3.0],
+        0.0,
+        false,
+        &body,
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (16.0, 22.0),
+        [-2.0, -2.75, -1.5],
+        [4.0, 6.0, 3.0],
+        0.1,
+        false,
+        &body,
+    );
+    let head = b.part([0.0, 16.0, 0.0], Anim::Head, 1.0);
+    b.cube(
+        head,
+        0,
+        (0.0, 0.0),
+        [-4.0, -8.0, -3.5],
+        [8.0, 8.0, 7.0],
+        NONE,
+    );
+    b.cube_f(
+        head,
+        0,
+        (0.0, 31.0),
+        [-4.0, -4.0, -3.5],
+        [8.0, 8.0, 7.0],
+        0.3,
+        false,
+        &[Fold::at([0.0, -4.0, 0.0])],
+    );
+    b.cube_f(
+        head,
+        0,
+        (0.0, 46.0),
+        [-7.0, -0.5, -6.0],
+        [14.0, 1.0, 12.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, -4.5, 0.0])],
+    );
+    b.cube_f(
+        head,
+        0,
+        (23.0, 0.0),
+        [-1.0, -1.0, -0.5],
+        [2.0, 2.0, 1.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, -1.0, -4.0])],
+    );
+    for (name, pivot, anim, uv) in [
+        (
+            "right_arm",
+            [-3.0, 15.5, 0.0],
+            Anim::UndeadArmRight,
+            (24.0, 15.0),
+        ),
+        (
+            "left_arm",
+            [3.0, 15.5, 0.0],
+            Anim::UndeadArmLeft,
+            (16.0, 15.0),
+        ),
+    ] {
+        let arm = b.part_named(name, pivot, [0.0; 3], anim, 1.0, None);
+        b.cube(arm, 0, uv, [-1.0, -0.5, -1.0], [2.0, 5.0, 2.0], NONE);
+    }
+    for (pivot, anim, uv) in [
+        ([-1.0, 21.5, 0.0], Anim::LegRight, (8.0, 23.0)),
+        ([1.0, 21.5, 0.0], Anim::LegLeft, (0.0, 23.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.0, -0.5, -1.0], [2.0, 3.0, 2.0], NONE);
+    }
     b.finish(1.0)
 }
 
@@ -11809,6 +11915,7 @@ mod tests {
                     | EntityModelKind::ChickenBaby
                     | EntityModelKind::SheepBaby
                     | EntityModelKind::DolphinBaby
+                    | EntityModelKind::ZombieVillagerBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13118,5 +13225,33 @@ mod dolphin_calf_tests {
         let z = |q: &RawQuad| q.pos[0][2];
         assert!((z(front) - z(body_front)).abs() > 1e-4);
         assert!(front.pos.iter().all(|p| (p[2] - z(front)).abs() < 1e-5));
+    }
+}
+
+#[cfg(test)]
+mod zombie_villager_baby_tests {
+    use super::*;
+
+    /// M325 — `BabyZombieVillagerModel`'s ten boxes, its arms on the undead
+    /// pose, and the head box's front at (7, 7)..(15, 15) of its sheet.
+    #[test]
+    fn the_baby_zombie_villager_is_its_own_model() {
+        let m = zombie_villager_baby();
+        assert_eq!(m.quads.len(), 10 * 6);
+        for a in [Anim::UndeadArmRight, Anim::UndeadArmLeft] {
+            assert_eq!(m.parts.iter().filter(|p| p.anim == a).count(), 1);
+        }
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let front = m
+            .quads
+            .iter()
+            .find(|q| q.part == head && q.facing == Facing::North && span(q, 1) == (7.0, 15.0))
+            .expect("the head box's front");
+        assert_eq!(span(front, 0), (7.0, 15.0));
     }
 }

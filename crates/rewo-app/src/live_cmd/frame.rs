@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M325 — r180: the staged baby zombie villager.
+            c.baby_zombie_villager |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::ZombieVillagerBaby);
             // M324 — r179: the staged dolphin calf.
             c.dolphin_calf |= draws
                 .iter()
