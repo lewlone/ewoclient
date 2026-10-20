@@ -3993,6 +3993,32 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M348 — cold and warm cows (2026-10-20)
+
+Every cow drew temperate. `Cow.DATA_VARIANT_ID` is index 18 with its own
+`COW_VARIANT` serializer (23), a raw `cow_variant` holder id, now decoded and
+routed on the cow (`VariantKinds::cow`). The `cow_variant` registry parses as
+the cat's does plus `ModelAndTexture`'s `model` (`MobVariantDef::model`).
+`CowRenderer.models` picks the adult mesh by it: two new kinds, `ColdCow`
+(`ColdCowModel`: a 0.5-inflated coat over the body, the muzzle at (9, 33),
+two child horns turned 1.5708 about x) and `WarmCow` (`WarmCowModel`:
+two-box horns each side), each on its own sheet; every calf is the one
+`BabyCowModel`, on `cow_cold_baby` / `cow_warm_baby` as `cow_baby`'s
+alternates. An unsent variant is TEMPERATE by name. `default_variant` now
+takes the kind's own registry (`variant_registry`), and `variant_def` /
+`farm_model_kind` pick the mesh before the baby swap.
+
+The entity atlas grew 256 rows (3392 → 3648; the pools below slid down,
+M64's recipe): the new sheets filled the shelf region until the ETF
+fixture's emissive pig overlay stopped packing (`--etf-check` f6, f7);
+`capeshot`'s f2 ledger of shelf growths gains M348's.
+
+**Unit tests**: the meshes' box counts and new faces' UVs; the registry keeps
+`model`; the default is temperate by name; the mesh pick and calf swap.
+**n7**: the cow at 18 / serializer 23 (without the routing it fails).
+**mobtexshot m73**: the three adults and three calves each draw their own
+sheet, all different. **r202**: a staged cold cow, warm cow and warm calf.
+
 ### M347 — the brown mooshroom (2026-10-20)
 
 Every mooshroom drew red. `MushroomCow.DATA_TYPE` is index 18 INT
