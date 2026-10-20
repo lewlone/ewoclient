@@ -342,7 +342,23 @@ def main():
     # check, or a gate sweep, on the same desktop would share the GPU, the
     # window focus and this script's report path.
     with machine_lock("tools/render_check.py"):
-        run(args)
+        # The port probe can lose a race: `free_port` binds and releases a
+        # port, and the server binds it seconds later. A lost race is the
+        # harness's, not the client's, so it retries on a new port (seen
+        # twice in the 2026-10-20 run).
+        for attempt in range(3):
+            if run(args) is not BIND_RACE:
+                break
+            print("server FAILED TO BIND (attempt %d) -- retrying on a new port" % (attempt + 1))
+        else:
+            sys.exit("server FAILED TO BIND three times")
+
+
+class BindRace(Exception):
+    """The server lost the port to another process before binding it."""
+
+
+BIND_RACE = "bind-race"
 
 
 # M206 -- r73: the client's staged render distance. Below the test server's
@@ -440,7 +456,7 @@ def run(args):
             time.sleep(2)
             txt = io.open(os.path.join(dest, "server-run.log"), "rb").read().decode("utf-8", "replace")
             if "FAILED TO BIND" in txt:
-                sys.exit("server FAILED TO BIND on %d -- the probe lost a race" % port)
+                raise BindRace(port)
             if srv.poll() is not None:
                 sys.exit("server exited early with %s" % srv.returncode)
             if 'Done (' in txt:
@@ -540,6 +556,10 @@ def run(args):
             print("removed %s" % dest)
         else:
             print("kept %s" % dest)
+        # A lost port race is retried by `main`: swallow it here (a `return`
+        # in `finally` discards the in-flight exception) rather than exit.
+        if isinstance(sys.exc_info()[1], BindRace):
+            return BIND_RACE
     sys.exit(code if code is not None else 1)
 
 
