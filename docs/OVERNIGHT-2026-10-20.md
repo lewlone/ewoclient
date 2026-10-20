@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 88 Rewo milestones, M194 to M281, in about 196 commits on
+- **What happened**: 89 Rewo milestones, M194 to M282, in about 198 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`381b7f15`): 4,421 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 139 of
-  139 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`7fadf105`): 4,422 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 140 of
+  140 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -43,6 +43,7 @@ released.
   - the Glowing effect's outline, in team colours, through walls;
   - empty-slot icons in the inventory and container screens;
   - flames on burning entities;
+  - the vanilla vignette (dark corners in dark places, red near the border);
   - steering boats, horses, camels and the nautilus;
   - everyday actions that were never sent (drop, swap hands, pick block,
     sprint, leave bed).
@@ -350,6 +351,8 @@ released.
   loom and mount slots).
 - **M281**: things on fire show flames (a burning player, a zombie in the
   sun). Rewo drew no fire on entities at all.
+- **M282**: the vanilla vignette (darker screen corners in dark places,
+  red near a world border) is drawn; Rewo had none.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -411,6 +414,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `7fadf105` | **M282** — the HUD vignette: `rewo_world::vignette` (vanilla's brightness follow, border warning and colour), the `sky_light_level` track, the `vignette` option, `VignettePass` (multiply blend through the UNORM view); a unit test, mobshot's per-pixel check and render-check **r140**. |
 | `381b7f15` | **M281** — burning entities: `fire_draw` (shared flag 0, the fire-immune list), the flame frames baked as textures, `emit_flame` (`FlameFeatureRenderer`); a unit test, mobtexshot **m20** and render-check **r139**. |
 | `5a498f53` | **M280** — empty-slot icons: `empty_slot_icons` (per-menu `getNoItemIcon` rules), fifteen `container/slot/*` sprites, `empty_slot_widgets` on the widget layer; a unit test and inventoryshot **ge1** (jar texels at vanilla's positions). |
 | `22ba2d7c` | **M279** — an invisible glowing entity draws as its outline alone (the model emitted again, outline copies only); mobshot's outline-only check and render-check **r138**. |
@@ -743,6 +747,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M282: **4,422 tests passed, 0 failed; gates 51/51** (mobshot's vignette check: worst pixel 1); clippy and `cargo fmt --check` clean. Render check: run 2 **140/140**; run 1 139/140, r89 (the camel sprint) reading a step of 0.8203 against vanilla's 0.4101, exactly two ticks' worth in one sample, nothing M282 touches; a third run is below.
 - After M281: **4,421 tests passed, 0 failed; gates 51/51** (mobtexshot 20); render check **139/139** on two runs; clippy and `cargo fmt --check` clean.
 - After M280: **4,420 tests passed, 0 failed; gates 51/51** (inventoryshot 172); render check **138/138** on two runs; clippy and `cargo fmt --check` clean.
 - After M279: **4,419 tests passed, 0 failed; gates 51/51** (mobshot's outline-only check: 7,093 px, 0 stray, 0 inside); render check **138/138** on two runs (both with the port-race retry in place); clippy and `cargo fmt --check` clean.

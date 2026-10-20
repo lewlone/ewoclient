@@ -3931,6 +3931,44 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M282 — the HUD vignette (2026-10-20)
+
+Vanilla draws `misc/vignette.png` over every frame by default (the
+`vignette` option is on): the corners darken as the camera's light falls,
+easing over seconds, and turn red as the player nears a world border.
+Rewo had no vignette at all.
+
+- `rewo_world::vignette`: `raw_brightness` (`getMaxLocalRawBrightness`:
+  block light, or sky light less `skyDarken`), `level_brightness`
+  (`Lightmap.getBrightness` with the dimension's `ambientLight`),
+  `step_vignette` (`updateVignetteBrightness`: a hundredth of the gap a
+  tick), `border_warning` and `vignette_color` (`extractVignette`'s grey,
+  or its red-to-cyan mix near the border).
+- `daylight::SkyLighting::sky_level` samples the day timeline's
+  `gameplay/sky_light_level` track, and `sky_darken` is
+  `(int)(15 - 15 · sky_level)` (`Level.skyDarken`).
+- The client steps the brightness once per session tick at the player's
+  eye and sets the frame's colour (`Options::vignette`, read from
+  `options.txt`, default on, not written back).
+- `world/vignette.rs` (`VignettePass`): the texture uploaded UNORM and
+  sampled bilinearly (its mcmeta asks for `blur`), the frame multiplied
+  by `1 - texture · colour` (`RenderPipelines.VIGNETTE`: `ZERO,
+  ONE_MINUS_SRC_COLOR`) through the UNORM view, after the hand and before
+  the HUD.
+
+Recorded: the other camera overlays (pumpkin blur, powder snow, spyglass
+scope, portal, nausea, sleep fade) are not drawn; the vignette follows
+the player, not a spectated camera entity.
+
+**Unit test**: the light curve, the follow, the border warning (still and
+moving border) and the colour mix. **mobshot** (fail-closed, once): the
+empty scene with the vignette at full strength against without it, every
+pixel within 2 of `frame · (1 - t)` with `t` the jar texture bilinearly
+sampled at the pixel centre (worst 1), the corner 192 → 35 and the centre
+unchanged. **r140**: the live vignette draws every frame and, in the
+render check's daylight, its brightness falls below 0.8 from its start
+at 1.
+
 ### M281 — burning entities (2026-10-20)
 
 `EntityRenderDispatcher` submits a flame over every entity whose
