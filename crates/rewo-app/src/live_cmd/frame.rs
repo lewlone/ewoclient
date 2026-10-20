@@ -948,6 +948,15 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M306 — r162: a slime drew with the translucent range in use
+            // (its shell).
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Slime)
+                && state.world_renderer.translucent_vertex_count() > 0
+            {
+                c.slime_shell_frames += 1;
+            }
             // M305 — r161: the staged size-1 and size-4 magma cubes, by the
             // scale their draws carry (size / 2).
             for d in draws

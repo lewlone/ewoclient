@@ -6,7 +6,7 @@ use std::{env, path::PathBuf, process::Command};
 fn main() {
     let out: PathBuf = env::var("OUT_DIR").unwrap().into();
     let glslc = find_glslc();
-    for (src, dst) in [
+    for (src, dst, define) in [
         ("shaders/border.vert", "border.vert.spv"),
         ("shaders/border.frag", "border.frag.spv"),
         ("shaders/overlay.vert", "overlay.vert.spv"),
@@ -68,14 +68,25 @@ fn main() {
         ("shaders/leash.vert", "leash.vert.spv"),
         ("shaders/leash.frag", "leash.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
-    ] {
+    ]
+    .into_iter()
+    .map(|(src, dst)| (src, dst, None))
+    // M306 — `ENTITY_TRANSLUCENT`: the entity shader again, its cutout at
+    // vanilla's 0.1 and its colour encoded for the gamma-space blend.
+    .chain([(
+        "shaders/entity.frag",
+        "entity_translucent.frag.spv",
+        Some("-DGAMMA_OUT"),
+    )]) {
         println!("cargo:rerun-if-changed=shaders/lightmap.glsl");
         println!("cargo:rerun-if-changed={src}");
         let output = Command::new(&glslc)
             // `-Ishaders` lets passes share `lightmap.glsl` — the vanilla
             // lightmap formula has to read identically in the world and water
             // passes or translucent blocks light differently from solid ones.
-            .args(["--target-env=vulkan1.3", "-O", "-Ishaders", src, "-o"])
+            .args(["--target-env=vulkan1.3", "-O", "-Ishaders"])
+            .args(define)
+            .args([src, "-o"])
             .arg(out.join(dst))
             .output()
             .unwrap_or_else(|e| panic!("could not run {glslc:?}: {e}"));

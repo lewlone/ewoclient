@@ -1278,6 +1278,13 @@ fn run_emissive_check(
 
     for kind in kinds {
         let layers = rewo_gpu::mobs::emissive_layers(kind);
+        // M306 — a kind with an `entityTranslucent` tail (the slime's shell)
+        // shows what lies behind it through the black texels it draws at
+        // light zero, as vanilla's does: read off the model's own marker.
+        let translucent = rewo_gpu::mobs::MOBS
+            .iter()
+            .find(|d| d.kind == kind)
+            .is_some_and(|d| (d.build)().translucent_from.is_some());
         // What the decompiled alpha functions say this mob does at rest
         // (vanilla synched defaults) — computed from the layer table itself,
         // independently of the renderer.
@@ -1355,6 +1362,15 @@ fn run_emissive_check(
                 // Outside the silhouette everything is sky, which is bright —
                 // only count pixels the mob covers.
                 if silhouette[i] {
+                    // M306 — through a translucent layer at light zero the
+                    // pixel is a black texel at some alpha over the sky: it
+                    // may darken what is behind and never lighten it, so only
+                    // a pixel brighter than the background glows.
+                    if translucent
+                        && (0..3).all(|k| img[i * 4 + k] <= bg[i * 4 + k].saturating_add(1))
+                    {
+                        continue;
+                    }
                     inside += 1;
                 } else if img[i * 4..i * 4 + 3] != bg[i * 4..i * 4 + 3] {
                     outside += 1;

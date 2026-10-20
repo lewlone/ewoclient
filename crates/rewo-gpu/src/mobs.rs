@@ -929,6 +929,10 @@ pub struct Model {
     /// Per-bone flag: is this a top-level `part` (vs a submodel)? The two obey
     /// different translate conventions, so the runtime needs to tell them apart.
     pub cem_top: Vec<bool>,
+    /// M306 — the first of the quads vanilla draws `entityTranslucent` (a
+    /// layer such as `SlimeOuterLayer`); every quad from here on goes to the
+    /// translucent range. `None` for a model with none.
+    pub translucent_from: Option<usize>,
 }
 
 /// A static fold applied to cube vertices at build time: `v → R_zyx(rot)·v +
@@ -1100,6 +1104,7 @@ pub struct ModelBuilder {
     quads: Vec<RawQuad>,
     keyframes: Vec<KfAnim>,
     event_rigs: Vec<EventRig>,
+    translucent_from: Option<usize>,
 }
 
 impl ModelBuilder {
@@ -1117,7 +1122,14 @@ impl ModelBuilder {
             quads: Vec::new(),
             keyframes: Vec::new(),
             event_rigs: Vec::new(),
+            translucent_from: None,
         }
+    }
+
+    /// M306 — every cube added after this is drawn `entityTranslucent`
+    /// ([`Model::translucent_from`]).
+    pub(crate) fn begin_translucent(&mut self) {
+        self.translucent_from = Some(self.quads.len());
     }
 
     /// Register an animated part at the model root with no base rotation
@@ -1345,6 +1357,7 @@ impl ModelBuilder {
             cem_translate: Vec::new(),
             cem_names: Vec::new(),
             cem_top: Vec::new(),
+            translucent_from: self.translucent_from,
         }
     }
 
@@ -3304,11 +3317,21 @@ fn cave_spider() -> Model {
     spider_like(0.7)
 }
 
-/// `SlimeModel.createOuterBodyLayer`: the 8³ shell. The inner cube + face
-/// live behind a translucent shell vanilla-side; we render the shell opaque
-/// until an entity translucent pass exists.
-fn slime() -> Model {
+/// `SlimeRenderer`'s body is `SlimeModel.createInnerBodyLayer` (the 6³
+/// core, two eyes and the mouth), and `SlimeOuterLayer` draws
+/// `createOuterBodyLayer`'s 8³ shell over it `entityTranslucent`. Until M306
+/// Rewo had no translucent entity range and drew the shell alone, opaque.
+pub(crate) fn slime() -> Model {
     let mut b = ModelBuilder::new();
+    for (uv, min, dims) in [
+        ((0.0, 16.0), [-3.0, 17.0, -3.0], [6.0, 6.0, 6.0]),
+        ((32.0, 0.0), [-3.25, 18.0, -3.5], [2.0, 2.0, 2.0]),
+        ((32.0, 4.0), [1.25, 18.0, -3.5], [2.0, 2.0, 2.0]),
+        ((32.0, 8.0), [0.0, 21.0, -3.5], [1.0, 1.0, 1.0]),
+    ] {
+        b.cube(STATIC_PART, 0, uv, min, dims, NONE);
+    }
+    b.begin_translucent();
     b.cube(
         STATIC_PART,
         0,
@@ -11633,5 +11656,20 @@ mod giant_tests {
             kind_for_entity_name("minecraft:giant"),
             EntityModelKind::Giant
         );
+    }
+}
+
+#[cfg(test)]
+mod translucent_tests {
+    use super::*;
+
+    /// M306 — the slime is its inner body (core, eyes, mouth: 24 quads),
+    /// then the translucent shell (6).
+    #[test]
+    fn the_slime_is_its_inner_body_under_a_translucent_shell() {
+        let m = slime();
+        assert_eq!(m.quads.len(), 30);
+        assert_eq!(m.translucent_from, Some(24));
+        assert_eq!(zombie().translucent_from, None);
     }
 }

@@ -395,6 +395,9 @@ pub(super) struct RenderCheck {
     /// M305 — r161: whether a magma cube drew at size 1 (scale 0.5) and one
     /// at size 4 (scale 2.0).
     pub(super) cube_sizes: (bool, bool),
+    /// M306 — r162: frames on which a slime drew and the translucent range
+    /// held vertices (its shell).
+    pub(super) slime_shell_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1160,7 +1163,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 161;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 162;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1361,6 +1364,14 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M306 — r162: `render_check.py` summons a slime; its shell must reach
+        // the translucent range (`mobtexshot m36` checks it blends). Until
+        // M306 the shell was opaque and the core undrawn.
+        row(
+            "r162 a slime drew its translucent shell",
+            self.slime_shell_frames >= 1,
+            format!("{} frames drew it", self.slime_shell_frames),
         );
         // M305 — r161: `render_check.py` summons magma cubes of size 1
         // (`Size:0`, which the server never sends: the default) and size 4;

@@ -70,6 +70,11 @@ impl WorldRenderer {
             self.in_gamma_space(gpu, cb, extent, || {
                 pass.draw_wind(gpu, cb, view_proj, extent)
             });
+            // M306: the `entityTranslucent` layers (the slime's shell),
+            // likewise blended in gamma space.
+            self.in_gamma_space(gpu, cb, extent, || {
+                pass.draw_translucent(gpu, cb, view_proj, extent)
+            });
             // M50: the worn-armour foil, then the trim. All three depth-test
             // `EQUAL` against the solid geometry just written, so all three
             // must follow it — and the foil precedes the trim because

@@ -50,10 +50,20 @@ vec3 to_linear(vec3 c) {
                greaterThan(c, vec3(0.04045)));
 }
 
+// M306 — compiled a second time with GAMMA_OUT for `ENTITY_TRANSLUCENT`:
+// vanilla's `ALPHA_CUTOUT` 0.1, and the colour leaves sRGB-encoded because
+// that pass blends through the UNORM view (vanilla blends gamma-encoded
+// values; the solid pass's attachment encodes the same colour on store).
+#ifdef GAMMA_OUT
+const float ALPHA_MIN = 0.1;
+#else
+const float ALPHA_MIN = 0.004;
+#endif
+
 void main() {
     vec4 t = texture(u_font, v_uv);
     float a = t.a * v_color.a;
-    if (a < 0.004) {
+    if (a < ALPHA_MIN) {
         discard;
     }
     vec3 c = t.rgb * v_color.rgb;
@@ -71,5 +81,9 @@ void main() {
         c = to_linear(s);
     }
     c *= v_light_hurt.rgb;
+#ifdef GAMMA_OUT
+    out_color = vec4(to_srgb(c), a);
+#else
     out_color = vec4(c, a);
+#endif
 }

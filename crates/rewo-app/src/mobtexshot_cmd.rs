@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 35;
+const EXPECTED_WITNESSES: usize = 36;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -600,7 +600,26 @@ fn run_check(
                     blends.push((l.tex, a));
                 }
             }
-            (d.kind, OwnSheets { keys, blends })
+            // M306 — the sheets its `entityTranslucent` quads sample, read off
+            // the model's own marker (no mob is named).
+            let model = (d.build)();
+            let mut translucent: Vec<&'static str> = Vec::new();
+            if let Some(from) = model.translucent_from {
+                for q in &model.quads[from..] {
+                    let k = d.textures[q.tex];
+                    if !translucent.contains(&k) {
+                        translucent.push(k);
+                    }
+                }
+            }
+            (
+                d.kind,
+                OwnSheets {
+                    keys,
+                    blends,
+                    translucent,
+                },
+            )
         })
         .collect();
     let lin: HashMap<&str, Vec<([f32; 3], f32)>> = baked
@@ -759,6 +778,7 @@ fn run_check(
     for (i, s) in cast.iter().enumerate() {
         let wo = big.shoot(gpu, &cast, Some(i))?;
         let px = attributed(&full, &wo);
+        let under = attributed(&wo, &full);
         let Some(keys) = own.get(&s.kind) else {
             // The other fail-open path: `continue` here dropped a kind from
             // the sweep without printing it and without counting it in
@@ -777,7 +797,7 @@ fn run_check(
             continue;
         }
         graded += 1;
-        if let Some(c) = first_unexplained(&px, keys, &sheets, &lin) {
+        if let Some(c) = first_unexplained_over(&px, Some(&under), keys, &sheets, &lin) {
             bad.push(format!(
                 "{}: colour #{:06X} of {} px is not producible by {:?}",
                 s.kind.name(),
@@ -2693,6 +2713,71 @@ fn run_check(
         ),
     ));
 
+    // m36 — M306: the slime's shell is `entityTranslucent` over its inner
+    // body. With a ravager standing behind it, the shell's pixels outside the
+    // core show the ravager through them and those over the core do not; an
+    // opaque shell (all Rewo drew until M306) hides the ravager everywhere and
+    // the core too. (The stage draws a sky, so a second clear colour would
+    // show nothing.)
+    let mut tst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.6, -3.2),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    let mut tshot = |d: &[EntityDraw<'_>]| -> Result<(Vec<u8>, u32), String> {
+        tst.wr.set_entities(d, tst.right, tst.up, 0.0);
+        let n = tst
+            .wr
+            .entity_pass()
+            .map_or(0, |p| p.translucent_vertex_count());
+        tst.off.render(gpu, Some((&mut tst.wr, tst.vp)), &ov, BG)?;
+        Ok((tst.off.read_rgba(gpu)?, n))
+    };
+    let behind = EntityDraw {
+        pos: [0.0, 0.0, 1.6],
+        ..neutral_draw(EntityModelKind::Ravager)
+    };
+    let slime = neutral_draw(EntityModelKind::Slime);
+    let (empty, _) = tshot(&[])?;
+    let (alone, tverts) = tshot(&[slime])?;
+    let (back, _) = tshot(&[behind])?;
+    let (both, _) = tshot(&[slime, behind])?;
+    if let Some(d) = &args.out_dir {
+        save_png(&both, cw, ch, &d.join("slime_over_ravager.png"))?;
+    }
+    tst.destroy(gpu);
+    let (mut leak, mut held) = (0usize, 0usize);
+    for (((a, b), e), r) in alone
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(both.as_chunks::<4>().0)
+        .zip(empty.as_chunks::<4>().0)
+        .zip(back.as_chunks::<4>().0)
+    {
+        // A slime pixel with the ravager behind it.
+        if a[..3] == e[..3] || r[..3] == e[..3] {
+            continue;
+        }
+        if a[..3] == b[..3] {
+            held += 1;
+        } else {
+            leak += 1;
+        }
+    }
+    w.push(wit(
+        "m36.the_slimes_shell_is_translucent_over_its_inner_body",
+        tverts > 0 && leak >= 100 && held >= 100,
+        format!(
+            "{tverts} translucent vertices; {leak} slime px show the ravager behind \
+             (want >= 100; an opaque shell measured 34, through its cut-out texels), {held} \
+             do not (the core through the shell, want >= 100)"
+        ),
+    ));
+
     // ---- report ----------------------------------------------------------
     let pass = w.iter().filter(|x| x.ok).count();
     for x in &w {
@@ -2737,10 +2822,27 @@ struct OwnSheets {
     /// is strictly between 0 and 1 — derived from [`neutral_alpha`], so no mob
     /// is named and the list cannot rot into a way of hiding a failure.
     blends: Vec<(&'static str, f32)>,
+    /// M306 — the sheets of the model's `entityTranslucent` tail, blended in
+    /// gamma space ([`translucent_explains`]).
+    translucent: Vec<&'static str>,
 }
 
 fn first_unexplained(
     px: &[u32],
+    own: &OwnSheets,
+    sheets: &HashMap<&str, HashSet<u32>>,
+    lin: &HashMap<&str, Vec<([f32; 3], f32)>>,
+) -> Option<u32> {
+    first_unexplained_over(px, None, own, sheets, lin)
+}
+
+/// [`first_unexplained`], with `beneath[i]` the colour the frame without
+/// this mob has where `px[i]` was drawn: what a translucent layer blended
+/// over when nothing of the mob's own lay under it (M306; the stage draws a
+/// sky, so there is no constant to assume).
+fn first_unexplained_over(
+    px: &[u32],
+    beneath: Option<&[u32]>,
     own: &OwnSheets,
     sheets: &HashMap<&str, HashSet<u32>>,
     lin: &HashMap<&str, Vec<([f32; 3], f32)>>,
@@ -2755,9 +2857,11 @@ fn first_unexplained(
         // and the (empty) key list beside it.
         return px.first().copied();
     }
-    let mut seen: HashSet<u32> = HashSet::new();
-    for c in px {
-        if !seen.insert(*c) {
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut translucent_tables: Option<(Vec<([f32; 3], f32)>, Vec<[f32; 3]>)> = None;
+    for (j, c) in px.iter().enumerate() {
+        let under = beneath.and_then(|b| b.get(j).copied());
+        if !seen.insert((*c as u64) << 32 | under.unwrap_or(u32::MAX) as u64) {
             continue;
         }
         if sets.iter().any(|s| explains(s, *c)) {
@@ -2774,11 +2878,81 @@ fn first_unexplained(
             };
             blend_explains(*c, e, &dst, *a)
         });
-        if !blended {
-            return Some(*c);
+        if blended {
+            continue;
         }
+        // M306 — a translucent layer's pixel: its texel blended in gamma space
+        // over what lay beneath: this mob's own colour, the frame without the
+        // mob at this pixel, or (a shell's back face first) the same layer
+        // over that pixel. The tables are built once, on the first colour that
+        // needs them.
+        if !own.translucent.is_empty() {
+            let (src, own_dst) = translucent_tables.get_or_insert_with(|| {
+                let src: Vec<([f32; 3], f32)> = own
+                    .translucent
+                    .iter()
+                    .filter_map(|k| lin.get(k))
+                    .flatten()
+                    .filter(|(_, a)| *a >= 0.1)
+                    .copied()
+                    .collect();
+                let own_dst: Vec<[f32; 3]> = sets
+                    .iter()
+                    .flat_map(|s| s.iter())
+                    .map(|c| unpack_gamma(*c))
+                    .collect();
+                (src, own_dst)
+            });
+            let over_under = under.is_some_and(|u| {
+                let u = unpack_gamma(u);
+                let mut dst = vec![u];
+                dst.extend(
+                    src.iter()
+                        .map(|(s, a)| gamma_blend(*s, *a, u).map(|b| b as f32 / 255.0)),
+                );
+                translucent_explains(*c, src, &dst)
+            });
+            if over_under || translucent_explains(*c, src, own_dst) {
+                continue;
+            }
+        }
+        return Some(*c);
     }
     None
+}
+
+/// M306 — `ENTITY_TRANSLUCENT`'s store: `entity.frag` (GAMMA_OUT) leaves the
+/// lit colour sRGB-encoded and the UNORM view blends it with the stored byte,
+/// `a * src + (1 - a) * dst`, rounded to a byte.
+fn gamma_blend(lin: [f32; 3], a: f32, dst: [f32; 3]) -> [u8; 3] {
+    let enc = |c: f32| {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.0031308 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    [0, 1, 2].map(|i| ((a * enc(lin[i]) + (1.0 - a) * dst[i]) * 255.0).round() as u8)
+}
+
+fn unpack_gamma(c: u32) -> [f32; 3] {
+    [
+        ((c >> 16) & 255) as f32 / 255.0,
+        ((c >> 8) & 255) as f32 / 255.0,
+        (c & 255) as f32 / 255.0,
+    ]
+}
+
+/// Whether `c` is some translucent texel over some candidate beneath, ±1.
+fn translucent_explains(c: u32, src: &[([f32; 3], f32)], dst: &[[f32; 3]]) -> bool {
+    let want = [(c >> 16) as u8, ((c >> 8) & 255) as u8, (c & 255) as u8];
+    src.iter().any(|(s, a)| {
+        dst.iter().any(|d| {
+            let got = gamma_blend(*s, *a, *d);
+            (0..3).all(|i| (got[i] as i32 - want[i] as i32).abs() <= 1)
+        })
+    })
 }
 
 /// Whether `c` is `encode(a * src + (1 - a) * dst)` for some producible pair,

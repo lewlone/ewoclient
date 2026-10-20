@@ -257,6 +257,8 @@ PRECMD = (
     # and size 4, clear of the lanes.
     "summon minecraft:magma_cube ~-30 ~ ~0 {NoAI:1b,Silent:1b,Size:0};"
     "summon minecraft:magma_cube ~-30 ~ ~4 {NoAI:1b,Silent:1b,Size:3};"
+    # M306 -- r162. A slime (size 2), clear of the lanes.
+    "summon minecraft:slime ~-30 ~ ~8 {NoAI:1b,Silent:1b,Size:1};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

@@ -88,6 +88,15 @@ impl WorldRenderer {
         }
     }
 
+    /// M306 — vertices in the translucent range after the last
+    /// `set_entities`.
+    pub fn translucent_vertex_count(&self) -> u32 {
+        self.entities
+            .as_ref()
+            .map(|p| p.translucent_vertex_count())
+            .unwrap_or(0)
+    }
+
     /// M286 — vertices in the wind range after the last `set_entities`.
     pub fn wind_vertex_count(&self) -> u32 {
         self.entities

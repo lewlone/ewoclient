@@ -1230,6 +1230,12 @@ pub struct EntityPass {
     wind: Option<EntityGlint>,
     wind_pipeline: Option<vk::Pipeline>,
     wind_verts: u32,
+    /// M306 — `RenderPipelines.ENTITY_TRANSLUCENT` over the atlas: the
+    /// translucent blend in gamma space, depth tested and written, no
+    /// culling, sorted on upload; the tenth range. `None` without a UNORM
+    /// view of the target, where no gamma-space pass draws.
+    translucent_pipeline: Option<vk::Pipeline>,
+    translucent_verts: u32,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -1329,6 +1335,9 @@ const CEM_STATE_TTL: u64 = 600;
 /// atlas-normalized UVs, the animated parts, and the px→block scale.
 pub struct MobModel {
     quads: Vec<GpuQuad>,
+    /// M306 — `quads[translucent_from..]` draw in the translucent range
+    /// (`entityTranslucent`); `quads.len()` when none do.
+    translucent_from: usize,
     /// M285 — `CreeperPowerLayer`'s armour shell, UVs in `0..1` of its own
     /// sheet (not the atlas): drawn only while `EntityDraw::powered`. Empty
     /// for every other kind.
@@ -1647,7 +1656,7 @@ impl EntityPass {
                     }
                 })
                 .collect();
-            let quads = m
+            let quads: Vec<GpuQuad> = m
                 .quads
                 .iter()
                 .filter(|q| wind_slot != Some(q.tex))
@@ -1835,6 +1844,13 @@ impl EntityPass {
                 )
             })
             .unwrap_or_default();
+            // M306 — the translucent tail. Kept opaque under the face-label
+            // debug texture (a blend would mix the labels it decodes) and on a
+            // pack model (its own geometry carries no marker).
+            let translucent_from = match (debug_tex, m.translucent_from) {
+                (false, Some(i)) if wind_slot.is_none() => i.min(quads.len()),
+                _ => quads.len(),
+            };
             // M302 — and its goggles-down twin while ridden.
             let body_shell_ridden: Vec<GpuQuad> =
                 if def.kind == EntityModelKind::HappyGhast && !body_shell.is_empty() {
@@ -1848,6 +1864,7 @@ impl EntityPass {
                 };
             models[def.kind.index()] = Some(MobModel {
                 quads,
+                translucent_from,
                 body_shell,
                 body_shell_ridden,
                 saddle_shell,
@@ -1983,6 +2000,23 @@ impl EntityPass {
                 false,
                 vk::CompareOp::GREATER_OR_EQUAL,
             )?;
+            // M306 — `DepthStencilState.DEFAULT` (LEQUAL with writes, so
+            // reversed-Z `GREATER_OR_EQUAL`) and `BlendFunction.TRANSLUCENT`.
+            let translucent_pipeline = match crate::world::unorm_of(color_format) {
+                Some(f) => Some(build_pipeline_full(
+                    &device,
+                    layout,
+                    f,
+                    PipelineState {
+                        blend: true,
+                        depth_write: true,
+                    },
+                    vk::CompareOp::GREATER_OR_EQUAL,
+                    include_bytes!(concat!(env!("OUT_DIR"), "/entity_translucent.frag.spv")),
+                    false,
+                )?),
+                None => None,
+            };
 
             let ring = crate::buf_ring::BufRing::with_capacity(
                 gpu,
@@ -1998,6 +2032,8 @@ impl EntityPass {
                 text_pipeline,
                 emissive_pipeline,
                 emissive_verts: 0,
+                translucent_pipeline,
+                translucent_verts: 0,
                 outline_verts: 0,
                 swirl: None,
                 swirl_pipeline: None,
@@ -2537,6 +2573,8 @@ impl EntityPass {
         let mut swirl_verts: [Vec<Vertex>; 2] = [Vec::new(), Vec::new()];
         // M286: the breeze's wind, translucent in gamma space.
         let mut wind_verts: Vec<Vertex> = Vec::new();
+        // M306: `entityTranslucent` model layers (the slime's shell).
+        let mut translucent_verts: Vec<Vertex> = Vec::new();
         let glint_offsets =
             crate::gui_item::glint_offsets((time as f64) * 1000.0, crate::gui_item::GLINT_SPEED);
 
@@ -2629,12 +2667,14 @@ impl EntityPass {
                     offsets: glint_offsets,
                     scale: crate::gui_item::GLINT_SCALE_ARMOR,
                 };
+                let t0 = translucent_verts.len();
                 self.emit_model(
                     &mut verts,
                     &mut trim_verts,
                     &mut emissive_verts,
                     &mut swirl_verts,
                     &mut wind_verts,
+                    &mut translucent_verts,
                     d,
                     model,
                     time,
@@ -2642,6 +2682,14 @@ impl EntityPass {
                     Some(&mut sink),
                     &mut armor_sink,
                 );
+                // M306 — a translucent layer affects the outline too
+                // (`entityTranslucent(texture)` is `AFFECTS_OUTLINE`).
+                if let Some(c) = d.outline {
+                    outline_verts.extend(translucent_verts[t0..].iter().map(|v| Vertex {
+                        color: [c[0], c[1], c[2], 1.0],
+                        ..*v
+                    }));
+                }
                 // M279 — an invisible body that glows draws as its outline
                 // alone (`getRenderType`'s `appearsGlowing` arm,
                 // `RenderTypes.outline`): the model again with the body shown
@@ -2656,8 +2704,14 @@ impl EntityPass {
                         outline: None,
                         ..*d
                     };
-                    let (mut gv, mut gt, mut ge, mut gg, mut ga) =
-                        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    let (mut gv, mut gt, mut ge, mut gg, mut ga, mut gtr) = (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    );
                     let mut gsink = GlintSink {
                         verts: &mut gg,
                         offsets: glint_offsets,
@@ -2674,6 +2728,7 @@ impl EntityPass {
                         &mut ge,
                         &mut [Vec::new(), Vec::new()],
                         &mut Vec::new(),
+                        &mut gtr,
                         &ghost,
                         model,
                         time,
@@ -2681,7 +2736,7 @@ impl EntityPass {
                         Some(&mut gsink),
                         &mut gasink,
                     );
-                    outline_verts.extend(gv.iter().map(|v| Vertex {
+                    outline_verts.extend(gv.iter().chain(&gtr).map(|v| Vertex {
                         color: [c[0], c[1], c[2], 1.0],
                         ..*v
                     }));
@@ -2800,6 +2855,10 @@ impl EntityPass {
         // M286 — `breezeWind`'s `sortOnUpload`, likewise.
         sort_quads_back_to_front(&mut wind_verts, cam_pos);
         verts.append(&mut wind_verts);
+        let wind_end = verts.len();
+        // M306 — `entityTranslucent`'s `sortOnUpload`, likewise.
+        sort_quads_back_to_front(&mut translucent_verts, cam_pos);
+        verts.append(&mut translucent_verts);
         let counts = [
             solid,
             text_end - solid,
@@ -2809,7 +2868,8 @@ impl EntityPass {
             emissive_end - armor_glint_end,
             outline_end - emissive_end,
             swirl_end - outline_end,
-            verts.len() - swirl_end,
+            wind_end - swirl_end,
+            verts.len() - wind_end,
         ]
         .map(|c| c as u32);
         // The per-emitter `MAX_VERTS` guards bound each range on its own, but
@@ -2823,7 +2883,7 @@ impl EntityPass {
             )
         };
         let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
-        let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = clamp_ranges(counts, kept as u32);
+        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = clamp_ranges(counts, kept as u32);
         self.solid_verts = s0;
         self.text_verts = s1;
         self.glint_verts = s2;
@@ -2834,6 +2894,7 @@ impl EntityPass {
         self.swirl_verts = s7;
         self.swirl_split = split.min(s7);
         self.wind_verts = s8;
+        self.translucent_verts = s9;
     }
 
     // Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -3554,6 +3615,8 @@ impl EntityPass {
         swirl: &mut [Vec<Vertex>; 2],
         // M286 — the breeze's wind (its own sheet and pipeline).
         wind_out: &mut Vec<Vertex>,
+        // M306 — the `entityTranslucent` tail of the model.
+        translucent_out: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
@@ -3785,8 +3848,8 @@ impl EntityPass {
                 }
             }
         }
-        for q in &model.quads {
-            if verts.len() + 6 > MAX_VERTS {
+        for (qi, q) in model.quads.iter().enumerate() {
+            if verts.len() + 6 > MAX_VERTS || translucent_out.len() + 6 > MAX_VERTS {
                 return;
             }
             if !visible(q.part as usize) {
@@ -3828,7 +3891,13 @@ impl EntityPass {
                     None => base,
                 }
             };
-            let out: &mut Vec<Vertex> = if coplanar { trim_verts } else { verts };
+            let out: &mut Vec<Vertex> = if coplanar {
+                trim_verts
+            } else if qi >= model.translucent_from {
+                translucent_out
+            } else {
+                verts
+            };
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 out.push(Vertex {
                     pos: p4[i],
@@ -4569,6 +4638,53 @@ impl EntityPass {
         self.wind_verts
     }
 
+    /// M306 — vertices in the translucent range for the last
+    /// [`Self::set_entities`].
+    pub fn translucent_vertex_count(&self) -> u32 {
+        self.translucent_verts
+    }
+
+    /// M306 — the `entityTranslucent` layers, after the wind, in gamma
+    /// space: `BlendFunction.TRANSLUCENT` over the atlas, depth
+    /// `GREATER_OR_EQUAL` with writes, no culling.
+    pub fn draw_translucent(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        let Some(pipeline) = self.translucent_pipeline else {
+            return;
+        };
+        if self.translucent_verts == 0 {
+            return;
+        }
+        unsafe {
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            // Last range in the buffer.
+            device.cmd_draw(
+                cb,
+                self.translucent_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts
+                    + self.emissive_verts
+                    + self.outline_verts
+                    + self.swirl_verts
+                    + self.wind_verts,
+                0,
+            );
+        }
+    }
+
     /// M286 — the breeze's wind, after the swirl (both `order(1)`), in gamma
     /// space: `BlendFunction.TRANSLUCENT`, depth `GREATER_OR_EQUAL` with
     /// writes, no culling.
@@ -5014,6 +5130,9 @@ impl EntityPass {
                 device.destroy_pipeline(p, None);
             }
             if let Some(p) = self.wind_pipeline.take() {
+                device.destroy_pipeline(p, None);
+            }
+            if let Some(p) = self.translucent_pipeline.take() {
                 device.destroy_pipeline(p, None);
             }
             device.destroy_pipeline(self.solid_pipeline, None);
@@ -8211,6 +8330,37 @@ fn build_pipeline_with(
     // M278 — write alpha too (the outline target's alpha is the silhouette).
     write_alpha: bool,
 ) -> Result<vk::Pipeline, String> {
+    build_pipeline_full(
+        device,
+        layout,
+        color_format,
+        PipelineState {
+            blend: !solid,
+            depth_write: solid,
+        },
+        compare,
+        frag_spv,
+        write_alpha,
+    )
+}
+
+/// M306 — blend and depth write chosen apart: `ENTITY_TRANSLUCENT` is the
+/// first entity pipeline that both blends and writes depth.
+#[derive(Clone, Copy)]
+struct PipelineState {
+    blend: bool,
+    depth_write: bool,
+}
+
+fn build_pipeline_full(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+    state: PipelineState,
+    compare: vk::CompareOp,
+    frag_spv: &[u8],
+    write_alpha: bool,
+) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
             device,
@@ -8268,10 +8418,10 @@ fn build_pipeline_with(
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
         let depth = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
-            .depth_write_enable(solid)
+            .depth_write_enable(state.depth_write)
             .depth_compare_op(compare);
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .blend_enable(!solid)
+            .blend_enable(state.blend)
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
             .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .color_blend_op(vk::BlendOp::ADD)

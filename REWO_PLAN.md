@@ -2117,6 +2117,7 @@ this shape once.
 | M303 (2026-10-20) — a saddled camel husk draws as a camel husk | **r159** | — | — |
 | M304 (2026-10-20) — a giant draws as a giant | **r160** | — | — |
 | M305 (2026-10-20) — magma cubes draw at their own sizes | **r161** | — | — |
+| M306 (2026-10-20) — a slime draws its translucent shell | **r162** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
