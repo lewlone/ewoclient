@@ -1555,11 +1555,15 @@ pub enum EntityModelKind {
     /// on the same layer, swapped in for a baby.
     PiglinBaby,
     ZombifiedPiglinBaby,
+    /// M321 — `BabyCowModel` (`COW_BABY`, `MOOSHROOM_BABY`), swapped in for
+    /// a calf.
+    CowBaby,
+    MooshroomBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 110;
+    pub const COUNT: usize = 112;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1670,6 +1674,8 @@ impl EntityModelKind {
         EntityModelKind::DrownedBaby,
         EntityModelKind::PiglinBaby,
         EntityModelKind::ZombifiedPiglinBaby,
+        EntityModelKind::CowBaby,
+        EntityModelKind::MooshroomBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1781,6 +1787,8 @@ impl EntityModelKind {
             EntityModelKind::DrownedBaby => "drowned_baby",
             EntityModelKind::PiglinBaby => "piglin_baby",
             EntityModelKind::ZombifiedPiglinBaby => "zombified_piglin_baby",
+            EntityModelKind::CowBaby => "cow_baby",
+            EntityModelKind::MooshroomBaby => "mooshroom_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1832,6 +1840,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::DrownedBaby
                 | EntityModelKind::PiglinBaby
                 | EntityModelKind::ZombifiedPiglinBaby
+                | EntityModelKind::CowBaby
+                | EntityModelKind::MooshroomBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2735,6 +2745,18 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ZombifiedPiglinBaby,
         textures: &["zombified_piglin_baby"],
         build: zombified_piglin_baby,
+    },
+    // M321 — the calves' sheets, the temperate cow's and the red mooshroom's
+    // (the adults' own: Rewo draws no other cow variant).
+    MobDef {
+        kind: EntityModelKind::CowBaby,
+        textures: &["cow_baby"],
+        build: cow_baby,
+    },
+    MobDef {
+        kind: EntityModelKind::MooshroomBaby,
+        textures: &["mooshroom_baby"],
+        build: cow_baby,
     },
 ];
 
@@ -4822,6 +4844,67 @@ fn piglin_baby() -> Model {
 
 fn zombified_piglin_baby() -> Model {
     piglin_baby_like(true)
+}
+
+/// M321 — `BabyCowModel.createBodyLayer()` (64 x 64): the head (a 6 x 6 x 5
+/// box, two horns, the left mirrored, and the muzzle; looking), the body and
+/// four 3 x 6 x 3 legs on the quadruped walk. The mooshroom calf is the same
+/// layer (`MOOSHROOM_BABY`) and wears no mushrooms.
+fn cow_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let head = b.part([0.0, 13.569, -5.1667], Anim::Head, 1.0);
+    b.cube(
+        head,
+        0,
+        (0.0, 18.0),
+        [-3.0, -4.569, -4.8333],
+        [6.0, 6.0, 5.0],
+        NONE,
+    );
+    b.cube(
+        head,
+        0,
+        (8.0, 29.0),
+        [3.0, -5.569, -3.8333],
+        [1.0, 2.0, 1.0],
+        NONE,
+    );
+    b.cube_m(
+        head,
+        0,
+        (4.0, 29.0),
+        [-4.0, -5.569, -3.8333],
+        [1.0, 2.0, 1.0],
+        NONE,
+    );
+    b.cube(
+        head,
+        0,
+        (12.0, 29.0),
+        [-2.0, -1.569, -5.8333],
+        [4.0, 3.0, 1.0],
+        NONE,
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-7.0, -7.0, -1.0],
+        [8.0, 6.0, 12.0],
+        0.0,
+        false,
+        &[Fold::at([3.0, 19.0, -5.0])],
+    );
+    for (pivot, anim, uv) in [
+        ([-2.5, 18.0, -3.5], Anim::QuadFrontRight, (22.0, 18.0)),
+        ([2.5, 18.0, -3.5], Anim::QuadFrontLeft, (34.0, 18.0)),
+        ([-2.5, 18.0, 3.5], Anim::QuadHindRight, (22.0, 27.0)),
+        ([2.5, 18.0, 3.5], Anim::QuadHindLeft, (34.0, 27.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 6.0, 3.0], NONE);
+    }
+    b.finish(1.0)
 }
 
 fn piglin_normal() -> Model {
@@ -11431,6 +11514,8 @@ mod tests {
                     | EntityModelKind::DrownedBaby
                     | EntityModelKind::PiglinBaby
                     | EntityModelKind::ZombifiedPiglinBaby
+                    | EntityModelKind::CowBaby
+                    | EntityModelKind::MooshroomBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12584,5 +12669,37 @@ mod baby_piglin_tests {
         };
         assert_eq!((span(0), span(1)), ((7.0, 16.0), (7.0, 13.0)));
         assert_eq!(zombified_piglin_baby().quads.len(), 9 * 6);
+    }
+}
+
+#[cfg(test)]
+mod calf_tests {
+    use super::*;
+
+    /// M321 — `BabyCowModel`'s nine boxes and the head box's front at
+    /// (5, 23)..(11, 29) of its sheet.
+    #[test]
+    fn the_calf_is_its_own_model() {
+        let m = cow_baby();
+        assert_eq!(m.quads.len(), 9 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let front = m
+            .quads
+            .iter()
+            .filter(|q| q.part == head && q.facing == Facing::North)
+            .max_by(|a, b| {
+                let w = |q: &RawQuad| span(q, 0).1 - span(q, 0).0;
+                w(a).total_cmp(&w(b))
+            })
+            .unwrap();
+        assert_eq!(
+            (span(front, 0), span(front, 1)),
+            ((5.0, 11.0), (23.0, 29.0))
+        );
     }
 }

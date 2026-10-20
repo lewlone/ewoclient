@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M321 -- r176. A calf and a mooshroom calf.
+    "summon minecraft:cow ~-3 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
+    "summon minecraft:mooshroom ~0 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M320 -- r175. A baby piglin (immune to zombification: the overworld
     # converts a piglin after 15 s, whatever its AI) and a baby zombified
     # piglin.

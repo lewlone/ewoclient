@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 46;
+const EXPECTED_WITNESSES: usize = 47;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -184,9 +184,12 @@ const MIN_DISCRIMINATING: usize = 72;
 /// grades it up close), (M316) the polar bear cub (m43 grades it up
 /// close), (M317) the baby zombie and baby husk (n1/n2 grade the baby
 /// zombie up close), (M318) the baby villager (m44), (M319) the baby
-/// drowned (m45), and (M320) a baby piglin (m46). A twentieth means
+/// drowned (m45), (M320) a baby piglin (m46), and (M321) the mooshroom calf
+/// (m47) and the small sulfur cube: the two calves' cells shrank every cell
+/// of the crowd and put it under the floor (measured against the M321 crowd
+/// without the calves, 19; m37 grades it up close). A twenty-second means
 /// something stopped drawing.
-const MAX_SMALL: usize = 19;
+const MAX_SMALL: usize = 21;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -196,7 +199,10 @@ const MAX_SMALL: usize = 19;
 /// raft/chest_raft: the same wood sheet drawn on two models (and the floors
 /// above rose by the four new kinds, two of them discriminating). M316 added
 /// polar_bear/polar_bear_baby: the cub's sheet is the adult's white fur.
-const MAX_AMBIGUOUS: usize = 9;
+/// M321 added cow_baby/cow (the calf's sheet repaints the adult's palette)
+/// and happy_ghast_baby/happy_ghast, which the smaller crowd cells left too
+/// few colours to tell apart (9 without the calves).
+const MAX_AMBIGUOUS: usize = 11;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -212,7 +218,21 @@ pub struct MobtexshotArgs {
     no_validation: bool,
 }
 
+/// The gate runs on its own thread with a 64 MiB stack. `run_check` is one
+/// long function and a debug build gives every witness's `Stage` (a whole
+/// `WorldRenderer` by value) its own slot, so by m47 (M321) its frame
+/// overflowed the 1 MiB Windows main thread.
 pub fn run(args: MobtexshotArgs) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("mobtexshot".into())
+        .stack_size(64 << 20)
+        .spawn(move || run_gate(args))
+        .map_err(|e| format!("mobtexshot: spawn: {e}"))?
+        .join()
+        .map_err(|_| "mobtexshot: the gate thread panicked".to_string())?
+}
+
+fn run_gate(args: MobtexshotArgs) -> Result<(), String> {
     if !args.check {
         return Err("mobtexshot: pass --check (this command is a gate)".into());
     }
@@ -3452,6 +3472,67 @@ fn run_check(
         "m46.both_baby_piglins_draw_from_their_own_sheets",
         pg_ok,
         format!("{} (want >= 200 px each, none foreign)", pg_rows.join("; ")),
+    ));
+
+    // m47 — M321: both calves draw, every pixel producible by their own
+    // sheet (the meshes rest on the unit test `the_calf_is_its_own_model`).
+    // Until M321 a calf was the half-size adult on the adult's sheet.
+    let mut cbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.6, 1.2, -1.6),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    cbst.wr.set_entities(&[], cbst.right, cbst.up, 0.0);
+    cbst.off
+        .render(gpu, Some((&mut cbst.wr, cbst.vp)), &ov, BG)?;
+    let cb_empty = cbst.off.read_rgba(gpu)?;
+    let mut cb_rows = Vec::new();
+    let mut cb_ok = true;
+    for (kind, key) in [
+        (EntityModelKind::CowBaby, "cow_baby"),
+        (EntityModelKind::MooshroomBaby, "mooshroom_baby"),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        cbst.wr
+            .set_entities(&[neutral_draw(kind)], cbst.right, cbst.up, 0.0);
+        cbst.off
+            .render(gpu, Some((&mut cbst.wr, cbst.vp)), &ov, BG)?;
+        let frame = cbst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(cb_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        cb_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        cb_rows.push(format!(
+            "{key}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    cbst.destroy(gpu);
+    w.push(wit(
+        "m47.both_calves_draw_from_their_own_sheets",
+        cb_ok,
+        format!("{} (want >= 200 px each, none foreign)", cb_rows.join("; ")),
     ));
 
     // ---- report ----------------------------------------------------------

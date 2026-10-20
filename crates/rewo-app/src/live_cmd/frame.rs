@@ -973,6 +973,11 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M321 — r176: the staged calf and mooshroom calf.
+            for d in draws.iter() {
+                c.calves.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::CowBaby;
+                c.calves.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::MooshroomBaby;
+            }
             // M320 — r175: the staged baby piglin and baby zombified piglin.
             for d in draws.iter() {
                 c.baby_piglins.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::PiglinBaby;

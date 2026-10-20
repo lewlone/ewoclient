@@ -431,6 +431,8 @@ pub(super) struct RenderCheck {
     /// M320 — r175: whether a baby piglin and a baby zombified piglin drew
     /// as `BabyPiglinModel`.
     pub(super) baby_piglins: (bool, bool),
+    /// M321 — r176: whether a calf and a mooshroom calf drew as `BabyCowModel`.
+    pub(super) calves: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1196,7 +1198,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 175;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 176;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1396,6 +1398,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M321 — r176: `render_check.py` summons a calf and a mooshroom calf;
+        // both must draw as `BabyCowModel` (`mobtexshot m47`).
+        row(
+            "r176 a calf and a mooshroom calf drew as BabyCowModel",
+            self.calves.0 && self.calves.1,
+            format!(
+                "calf seen: {}, mooshroom calf seen: {}",
+                self.calves.0, self.calves.1
             ),
         );
         // M320 — r175: `render_check.py` summons a baby piglin and a baby
