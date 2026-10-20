@@ -2468,10 +2468,9 @@ pub(super) fn collect_small_projectiles(
     let mut out = Vec::new();
     for (id, e) in session.world.entities.iter() {
         let age = session.game_time() as f32 + alpha + (id & 0xff) as f32 * 7.0;
-        let Some((model, transform, bright)) = etypes
-            .name(e.type_id)
-            .and_then(|n| small_projectile_pose(n, e.yaw, e.pitch, age))
-        else {
+        let Some((model, transform, bright)) = etypes.name(e.type_id).and_then(|n| {
+            small_projectile_pose(n, e.render_yaw(alpha), e.render_pitch(alpha), age)
+        }) else {
             continue;
         };
         let p = e.render_pos(alpha);
@@ -2633,7 +2632,10 @@ pub(super) fn collect_projectiles(
         out.push(super::block_entities::OwnedBlockEntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             model: model.to_string(),
-            transform: mul(&rot_y(e.yaw - 90.0), &rot_z((e.pitch + extra).to_radians())),
+            transform: mul(
+                &rot_y(e.render_yaw(alpha) - 90.0),
+                &rot_z((e.render_pitch(alpha) + extra).to_radians()),
+            ),
             light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
             part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
             part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
@@ -4996,7 +4998,8 @@ pub(super) fn collect_entities<'a>(
             name: label_name,
             health: label_health,
             kind,
-            yaw: e.yaw,
+            // M361 — the frame's rotations, blended between ticks.
+            yaw: e.render_yaw(alpha),
             // M24: `state.deathTime = entity.deathTime > 0 ? deathTime + partial : 0`.
             death_time: session
                 .world
@@ -5046,8 +5049,8 @@ pub(super) fn collect_entities<'a>(
             // A live item entity turns on the shared clock; only a pickup
             // animation freezes it (M81).
             ground_age: None,
-            head_yaw: force_head.map_or(e.head_yaw, |off| e.yaw + off),
-            pitch: e.pitch,
+            head_yaw: force_head.map_or(e.render_head_yaw(alpha), |off| e.render_yaw(alpha) + off),
+            pitch: e.render_pitch(alpha),
             limb_swing,
             limb_amount,
             gesture,

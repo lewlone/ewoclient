@@ -4501,3 +4501,22 @@ fn a_sheep_grazes_on_vanillas_clock() {
     let (p, _) = f(2, 0.5).unwrap();
     assert!((p - 0.375).abs() < 1e-6);
 }
+
+/// M361 — the camera's render position is the tick's start blended into its
+/// end by the partial tick: at 0 the start, at 1 the end, between them the
+/// straight line, so a camera riding a mount moves every frame rather than
+/// twenty times a second.
+#[test]
+fn the_camera_moves_every_frame_between_ticks() {
+    let f = super::view::render_feet;
+    let (a, b) = ([0.0, 64.0, 0.0], [0.8, 64.0, -0.4]);
+    assert_eq!(f(a, b, 0.0), a);
+    assert_eq!(f(a, b, 1.0), b);
+    let mid = f(a, b, 0.25);
+    assert!((mid[0] - 0.2).abs() < 1e-9 && (mid[2] + 0.1).abs() < 1e-9);
+    // Eight frames across one tick: eight distinct, evenly spaced positions.
+    let xs: Vec<f64> = (0..8).map(|i| f(a, b, i as f32 / 8.0)[0]).collect();
+    assert!(xs.windows(2).all(|w| (w[1] - w[0] - 0.1).abs() < 1e-9));
+    // The partial tick is clamped.
+    assert_eq!(f(a, b, 1.5), b);
+}

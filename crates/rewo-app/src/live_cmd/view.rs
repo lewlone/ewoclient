@@ -348,8 +348,20 @@ pub(super) fn sleeping_camera_yaw(facing: Option<&str>) -> f32 {
 /// and view vector (`Entity.pick`), as vanilla's does. Vanilla's camera also
 /// eases its eye height half the gap a tick (`Camera.tick`); Rewo's camera
 /// does not ease, so the drop into the bed is immediate.
-pub(super) fn camera_pose(session: &PlaySession, blocks: &rewo_data::blocks::Blocks) -> CameraPose {
+///
+/// M361 — and the position is the render position: last tick's start
+/// blended into this tick's end by the partial tick `alpha`
+/// ([`render_feet`]), as `Camera.setup` lerps `xo → getX()`. Until M361 the
+/// camera stood on the tick position, so it moved twenty times a second
+/// while every entity it looked at moved every frame: riding, the mount
+/// (blended) shook against the view (stepped).
+pub(super) fn camera_pose(
+    session: &PlaySession,
+    blocks: &rewo_data::blocks::Blocks,
+    alpha: f32,
+) -> CameraPose {
     let p = &session.player;
+    let [x, y, z] = render_feet(session.player_prev, [p.x, p.y, p.z], alpha);
     if session.is_sleeping() {
         let facing = session.sleeping_pos().and_then(|(x, y, z)| {
             let st = session.world.block_state_at(x, y, z);
@@ -359,16 +371,24 @@ pub(super) fn camera_pose(session: &PlaySession, blocks: &rewo_data::blocks::Blo
                 .and_then(|_| blocks.property(st, "facing"))
         });
         return CameraPose {
-            eye: [p.x, p.y + SLEEPING_EYE_HEIGHT + SLEEPING_CAMERA_LIFT, p.z],
+            eye: [x, y + SLEEPING_EYE_HEIGHT + SLEEPING_CAMERA_LIFT, z],
             yaw: sleeping_camera_yaw(facing),
             pitch: 0.0,
         };
     }
     CameraPose {
-        eye: [p.x, p.eye_y(), p.z],
+        eye: [x, y + (p.eye_y() - p.y), z],
         yaw: p.yaw,
         pitch: p.pitch,
     }
+}
+
+/// M361 — the local player's render position: `prev` (the tick's start)
+/// blended toward `cur` (its end) by the partial tick, `Mth.lerp(partial,
+/// xo, x)` per axis.
+pub(super) fn render_feet(prev: [f64; 3], cur: [f64; 3], alpha: f32) -> [f64; 3] {
+    let a = f64::from(alpha.clamp(0.0, 1.0));
+    [0, 1, 2].map(|i| prev[i] + (cur[i] - prev[i]) * a)
 }
 
 pub(super) fn player_eye(session: &PlaySession) -> Vec3 {

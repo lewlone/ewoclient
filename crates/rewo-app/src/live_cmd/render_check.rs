@@ -524,6 +524,10 @@ pub(super) struct RenderCheck {
     pub(super) sitting_cat: bool,
     /// M358 — r212: a sheep drawn grazing (entity event 10).
     pub(super) grazing_sheep: bool,
+    /// M361 — r213: last frame's (mount render position, camera eye) while
+    /// riding, and the frames the mount moved / the camera moved with it.
+    pub(super) ride_last: Option<([f64; 3], [f64; 3])>,
+    pub(super) ride_frames: (u32, u32),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1289,7 +1293,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 212;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 213;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1489,6 +1493,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M361 — r213: the tail's rides (the boat, horse, camel, nautilus):
+        // on every frame the mount's drawn position moved, the camera moved
+        // too (at least 95% of them, and at least 20 frames seen).
+        row(
+            "r213 riding, the camera moved on the frames its mount moved",
+            self.ride_frames.0 >= 20 && self.ride_frames.1 * 100 >= self.ride_frames.0 * 95,
+            format!(
+                "the camera moved on {} of the {} frames the mount moved (want >= 95%, >= 20 frames)",
+                self.ride_frames.1, self.ride_frames.0
             ),
         );
         // M358 — r212: `render_check.py` summons lambs with their AI on

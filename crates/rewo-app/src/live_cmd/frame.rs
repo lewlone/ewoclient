@@ -789,9 +789,33 @@ impl LiveApp {
         // M284 — the camera this frame renders from (`Camera.alignWithEntity`):
         // the player's eye, or the bed's while asleep. Picking keeps the
         // player's eye (`target_block` below).
-        let cam = camera_pose(session, &self.blocks);
+        let cam = camera_pose(session, &self.blocks, alpha);
         let (cr, cu) = camera_basis(cam.yaw, cam.pitch);
         let eye = cam.eye_vec();
+        // M361 — r213: while riding, the camera moves on every frame its
+        // mount's drawn position does. Until M361 the camera stood on the
+        // tick position and moved on one frame in (frame rate / 20), while
+        // the mount it rode was blended every frame.
+        #[cfg(feature = "gates")]
+        if let Some(c) = self.check.as_mut() {
+            let mount = session
+                .local_vehicle()
+                .and_then(|v| session.world.entities.get(v))
+                .map(|m| m.render_pos(alpha));
+            match (mount, c.ride_last) {
+                (Some(at), Some((last_mount, last_eye))) => {
+                    if (0..3).any(|i| (at[i] - last_mount[i]).abs() > 1e-6) {
+                        c.ride_frames.0 += 1;
+                        if (0..3).any(|i| (cam.eye[i] - last_eye[i]).abs() > 1e-6) {
+                            c.ride_frames.1 += 1;
+                        }
+                    }
+                    c.ride_last = Some((at, cam.eye));
+                }
+                (Some(at), None) => c.ride_last = Some((at, cam.eye)),
+                (None, _) => c.ride_last = None,
+            }
+        }
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             if session.is_sleeping() {

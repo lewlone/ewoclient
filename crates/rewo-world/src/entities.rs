@@ -400,6 +400,20 @@ pub struct ItemFrameState {
     pub item: Option<FrameItem>,
 }
 
+/// M361 — `Mth.rotLerp(a, from, to)`: `from + a · wrapDegrees(to − from)`,
+/// so a turn across ±180° goes the short way round.
+pub fn rot_lerp(alpha: f32, from: f32, to: f32) -> f32 {
+    let a = alpha.clamp(0.0, 1.0);
+    let mut d = (to - from) % 360.0;
+    if d >= 180.0 {
+        d -= 360.0;
+    }
+    if d < -180.0 {
+        d += 360.0;
+    }
+    from + a * d
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct EntityState {
     pub uuid: u128,
@@ -413,6 +427,15 @@ pub struct EntityState {
     /// Head yaw (degrees) — the server points it at nearby players, so the
     /// model can turn its head toward the viewer. Defaults to the body yaw.
     pub head_yaw: f32,
+    /// M361 — `yRotO` / `xRotO` / `yHeadRotO`: the rotations at the start
+    /// of the current tick, which the render blends toward `yaw` / `pitch` /
+    /// `head_yaw` by the partial tick (`Mth.rotLerp(partialTick, yRotO,
+    /// yRot)`). Until M361 every entity was drawn at its tick rotation, so a
+    /// turning mob (and a mount steered by the mouse) turned twenty times a
+    /// second.
+    prev_yaw: f32,
+    prev_pitch: f32,
+    prev_head_yaw: f32,
     lerp_steps: u32,
     /// M266 — the `InterpolationHandler`'s length: vanilla's default 3, a
     /// display's 0 (it snaps) or its `teleport_duration`.
@@ -554,6 +577,9 @@ impl EntityState {
             yaw,
             pitch,
             head_yaw: yaw,
+            prev_yaw: yaw,
+            prev_pitch: pitch,
+            prev_head_yaw: yaw,
             lerp_steps: 0,
             lerp_len: LERP_STEPS,
             cur: [x, y, z],
@@ -687,6 +713,10 @@ impl EntityState {
             self.fall_fly_ticks = 0;
         }
         self.prev = self.cur;
+        // M361 — and `setOldPosAndRot()`'s rotation half.
+        self.prev_yaw = self.yaw;
+        self.prev_pitch = self.pitch;
+        self.prev_head_yaw = self.head_yaw;
         // `aiStep`'s interpolate-or-decay branch: the velocity step shares
         // this `if`, because in vanilla they ARE one if/else.
         self.tick_motion(self.lerp_steps > 0, authoritative);
@@ -732,6 +762,24 @@ impl EntityState {
         self.cur = p;
         self.lerp_steps = 0;
         self.yaw = yaw;
+    }
+
+    /// M361 — the frame's body yaw: last tick's blended toward this tick's
+    /// along the short way round (`Mth.rotLerp`).
+    pub fn render_yaw(&self, alpha: f32) -> f32 {
+        rot_lerp(alpha, self.prev_yaw, self.yaw)
+    }
+
+    /// M361 — the frame's pitch (`Mth.lerp(partialTick, xRotO, xRot)`).
+    pub fn render_pitch(&self, alpha: f32) -> f32 {
+        let a = alpha.clamp(0.0, 1.0);
+        self.prev_pitch + (self.pitch - self.prev_pitch) * a
+    }
+
+    /// M361 — the frame's head yaw (`Mth.rotLerp(partialTick, yHeadRotO,
+    /// yHeadRot)`).
+    pub fn render_head_yaw(&self, alpha: f32) -> f32 {
+        rot_lerp(alpha, self.prev_head_yaw, self.head_yaw)
     }
 
     /// Frame position: last tick's `prev` blended toward `cur` by the
@@ -5277,5 +5325,29 @@ mod snow_golem_tests {
         assert!(!t.has_pumpkin(1));
         t.set_snow_golem_flags(1, 0x10);
         assert!(t.has_pumpkin(1));
+    }
+}
+
+#[cfg(test)]
+mod render_rotation_tests {
+    use super::*;
+
+    /// M361 — an entity's drawn rotation is last tick's blended into this
+    /// tick's: the yaw the short way round across ±180°, the pitch straight,
+    /// the head yaw like the body's; a tick rolls this tick's into last.
+    #[test]
+    fn an_entity_turns_every_frame_between_ticks() {
+        assert_eq!(rot_lerp(0.5, 170.0, -170.0), 180.0);
+        assert_eq!(rot_lerp(0.25, -170.0, 170.0), -175.0);
+        assert_eq!(rot_lerp(2.0, 0.0, 90.0), 90.0);
+        let mut e = EntityState::new(0, 1, 0.0, 0.0, 0.0, 10.0, 0.0);
+        e.set_rot(50.0, 20.0);
+        e.set_head_yaw(30.0);
+        assert_eq!(e.render_yaw(0.5), 30.0);
+        assert_eq!(e.render_pitch(0.5), 10.0);
+        assert_eq!(e.render_head_yaw(0.5), 20.0);
+        e.tick(false, false);
+        assert_eq!(e.render_yaw(0.0), 50.0);
+        assert_eq!(e.render_head_yaw(0.3), 30.0);
     }
 }

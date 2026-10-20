@@ -761,6 +761,12 @@ pub struct PlaySession {
     pub own_uuid: Option<u128>,
     pub world: World,
     pub player: PlayerState,
+    /// M361 — `Entity.xo / yo / zo` for the local player: its position at
+    /// the start of the current tick (`setOldPosAndRot`), which the render
+    /// blends toward `player` by the partial tick (`Camera.setup`'s
+    /// `Mth.lerp(partialTick, entity.xo, entity.getX())`). A teleport snaps
+    /// it, so a jump across the world is not smeared over a frame.
+    pub player_prev: [f64; 3],
     /// state id → collision boxes in block-local `0..1` (`BakedAssets::
     /// collide`): empty = no collision, one unit box = a full cube, several =
     /// a stair. An id past the end falls back to "non-air is a full cube",
@@ -2042,6 +2048,7 @@ impl<'a> Connection<'a> {
             tags,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
+            player_prev: [0.5, 80.0, 0.5],
             collide,
             outline: Vec::new(),
             block_physics: Vec::new(),
@@ -2693,6 +2700,10 @@ impl PlaySession {
             return Ok(());
         }
         self.tick_chat_key()?;
+        // M361 — `setOldPosAndRot()` for the local player: everything below
+        // (its physics, its seat on a vehicle) moves it from here, and the
+        // frame blends this tick's start into its end.
+        self.player_prev = [self.player.x, self.player.y, self.player.z];
         // M233 — `GameRenderer.tick` (the camera) runs before
         // `level.tickEntities`, so the FOV target is last tick's state.
         self.tick_fov();
@@ -3622,6 +3633,8 @@ impl PlaySession {
         self.player.x = resolved.pos[0];
         self.player.y = resolved.pos[1];
         self.player.z = resolved.pos[2];
+        // M361 — a teleport snaps the render position too.
+        self.player_prev = resolved.pos;
         self.player.yaw = resolved.yaw;
         self.player.pitch = resolved.pitch;
         self.player.vx = resolved.vel[0];
