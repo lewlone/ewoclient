@@ -3966,6 +3966,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M320 — the baby piglins (2026-10-20)
+
+`PiglinRenderer` and `ZombifiedPiglinRenderer` both swap in `BabyPiglinModel`
+(a body, a 9 x 6 x 7 head with its snout, two ears tilted 0.6109 under ear
+parts at the baby's 5 degrees, 2 x 5 x 3 arms, 3 x 4 x 3 legs), on
+`piglin_baby.png` and `zombified_piglin_baby.png`. The zombified piglin's was
+one of M317's scrambled swaps; the piglin's sheet was never in Rewo's swap
+table (its `getTextureLocation` picks the brute first), so a baby piglin was
+the half-size adult. `PiglinBaby` and `ZombifiedPiglinBaby` are that model
+(the zombified one with the zombie arms), picked by `baby_model_kind`; the
+ears stay still as Rewo's adult ears do. `mobshot` grades 303 views;
+`MAX_SMALL` 19.
+
+**Unit test**: the nine boxes and the head box's front at (7, 7)..(16, 13).
+**mobtexshot m46**: both draw (1,752 and 1,503 px) with no colour foreign to
+their own sheet; the meshes rest on the unit test. **r175**: a staged baby
+piglin (immune to zombification) and baby zombified piglin draw as
+`BabyPiglinModel`.
+
 ### M319 — the baby drowned (2026-10-20)
 
 The third of M317's scrambled swaps. `BabyDrownedModel.createBodyLayer` is
