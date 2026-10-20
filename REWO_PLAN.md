@@ -3985,6 +3985,40 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M340 — the kitten, in its coat (2026-10-20)
+
+The cat's coats are a datapack registry, and 26.2's `CatVariant
+.NETWORK_CODEC` sends each entry's `baby_asset_id` beside its `asset_id`;
+`WolfVariant`'s sends `baby_assets { wild, tame, angry }` beside `assets`.
+`variant_parse::MobVariantDef` now keeps both baby sheets (`baby_wild`,
+`baby_tame`, chosen by `baby_texture(tame)` as `texture` chooses the
+adult's); a frog's entry has none. `CatRenderer` swaps in `BabyCatModel`,
+whose layer is `BabyFelineModel`'s (M332's `feline_baby`). `CatBaby` is that
+model; the tabby kitten is `cat_baby`'s base and the other ten coats its
+variant sheets, and `vanilla_variant` routes a kitten through its registry
+entry's baby sheet. The collar is not drawn, as on Rewo's adult cat.
+`mobshot` grades 375 views; the variant check counts 88 declared sheets;
+`MAX_SMALL` 23.
+
+**A bug r194 found, older than this run**: the server sends only
+non-default metadata (`getNonDefaultValues`), and `Cat.DEFAULT_VARIANT` is
+black, so a black cat's variant never reaches the client; Rewo treated the
+missing value as its base sheet, so every black cat (adult or kitten) drew
+tabby. The horse's default (0) is WHITE with no markings, so every such white
+horse drew Rewo's brown base. `vanilla_variant` now starts from the class's
+default when none was sent (`default_variant`: the cat's black, the wolf's
+pale and the frog's temperate entries by name, `getDefaultOrAny`'s first
+entry if missing; 0 for the horse, llama and axolotl). r194's first two runs
+failed on exactly this (the black kitten drew on variant 0).
+
+**Unit tests**: the cat entry's baby sheet and a wolf entry's baby wild and
+tame sheets from the wire (reading the adult key for the kitten fails it);
+the default variant per class.
+**mobtexshot m65**: the tabby and the black kitten each draw (2,840 px) from
+their own sheet and differ. **r194**: a staged black kitten draws as
+`BabyCatModel` on a coat variant: the real server's registry entry, through
+the parser and the app's routing.
+
 ### M339 — the horse foal, in its coat; the donkey foal's tail (2026-10-20)
 
 `HorseRenderer` swaps in `BabyHorseModel` (64 x 64: an 8 x 7 x 14 body with
