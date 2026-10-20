@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M336 — r190: the staged rabbit kit.
+            c.rabbit_kit |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::RabbitBaby);
             // M335 — r189: the staged camel calf.
             c.camel_calf |= draws
                 .iter()

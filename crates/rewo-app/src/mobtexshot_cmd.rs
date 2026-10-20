@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 60;
+const EXPECTED_WITNESSES: usize = 61;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -187,10 +187,11 @@ const MIN_DISCRIMINATING: usize = 88;
 /// the last two from three views), and the babies under a quarter block or
 /// thin enough to lose their attributed pixels to their neighbours: turtle,
 /// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
-/// villager and glow squid, (M330) the kit, (M332) the ocelot kitten and
-/// (M333) the baby bee. Each baby is graded up close by its own witness
-/// (m42..m58, n1/n2). A twenty-first means something stopped drawing.
-const MAX_SMALL: usize = 20;
+/// villager and glow squid, (M330) the kit, (M332) the ocelot kitten,
+/// (M333) the baby bee and (M336) the rabbit kit. Each baby is graded up
+/// close by its own witness (m42..m61, n1/n2). A twenty-second means
+/// something stopped drawing.
+const MAX_SMALL: usize = 21;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -4295,6 +4296,65 @@ fn run_check(
         format!(
             "{cc_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             cc_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m61 — M336: the rabbit kit draws, every pixel producible by its own
+    // sheet. Like m50 this does NOT tell its sheet from the adult's: drawn
+    // on `rabbit` it passes too, and measured at M336 none of its 4,630
+    // pixels is one only the kit's sheet can produce (the brown coats cover
+    // each other). The mesh and hop rest on
+    // `the_rabbit_kit_is_its_own_model_on_its_own_hop`.
+    let mut rkst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.7, 0.6, -0.7),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    rkst.wr.set_entities(&[], rkst.right, rkst.up, 0.0);
+    rkst.off
+        .render(gpu, Some((&mut rkst.wr, rkst.vp)), &ov, BG)?;
+    let rk_empty = rkst.off.read_rgba(gpu)?;
+    let rk_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "rabbit_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    rkst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::RabbitBaby)],
+        rkst.right,
+        rkst.up,
+        0.0,
+    );
+    rkst.off
+        .render(gpu, Some((&mut rkst.wr, rkst.vp)), &ov, BG)?;
+    let rk_frame = rkst.off.read_rgba(gpu)?;
+    rkst.destroy(gpu);
+    let (mut rk_px, mut rk_bad) = (0usize, None);
+    for (p, e) in rk_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(rk_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        rk_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if rk_bad.is_none() && !explains(&rk_sheet, c) {
+            rk_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m61.the_rabbit_kit_draws_from_its_own_sheet",
+        !rk_sheet.is_empty() && rk_px >= 200 && rk_bad.is_none(),
+        format!(
+            "{rk_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            rk_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

@@ -1591,11 +1591,13 @@ pub enum EntityModelKind {
     MuleBaby,
     /// M335 — `BabyCamelModel` (`CAMEL_BABY`).
     CamelBaby,
+    /// M336 — `BabyRabbitModel` (`RABBIT_BABY`).
+    RabbitBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 129;
+    pub const COUNT: usize = 130;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1725,6 +1727,7 @@ impl EntityModelKind {
         EntityModelKind::DonkeyBaby,
         EntityModelKind::MuleBaby,
         EntityModelKind::CamelBaby,
+        EntityModelKind::RabbitBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1855,6 +1858,7 @@ impl EntityModelKind {
             EntityModelKind::DonkeyBaby => "donkey_baby",
             EntityModelKind::MuleBaby => "mule_baby",
             EntityModelKind::CamelBaby => "camel_baby",
+            EntityModelKind::RabbitBaby => "rabbit_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1925,6 +1929,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::DonkeyBaby
                 | EntityModelKind::MuleBaby
                 | EntityModelKind::CamelBaby
+                | EntityModelKind::RabbitBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2950,6 +2955,13 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::CamelBaby,
         textures: &["camel_baby"],
         build: camel_baby,
+    },
+    // M336 — the brown kit's sheet (Rewo's adult rabbit draws the brown
+    // coat only).
+    MobDef {
+        kind: EntityModelKind::RabbitBaby,
+        textures: &["rabbit_baby"],
+        build: rabbit_baby,
     },
 ];
 
@@ -6005,6 +6017,144 @@ fn camel_baby() -> Model {
             speed_f: 2.0,
             scale_f: 2.5,
         },
+    );
+    b.finish(1.0)
+}
+
+/// M336 — `BabyRabbitModel.createBodyLayer()` (32 x 32): a body (its box on
+/// `body_r1`, tilted -0.5236) carrying the tail, the head (5 x 4 x 4, looking:
+/// `RabbitModel.setupAnim` turns it unless the idle tilt plays, which Rewo
+/// does not) with two ears, and the front legs (each part tilted 0.3927 over
+/// a box tilted back -0.3927); the hind legs hang from `backlegs`, each turned
+/// π about y over a haunch turned ∓0.7854. Every part `BabyRabbitAnimation
+/// .HOP` names is a real part; the `_r1` and haunch children, which it never
+/// names, are folds. The hop plays as the adult's does
+/// (`AgeGatedByWalk { gate: 5.0 }`).
+fn rabbit_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = b.part_named("body", [0.0, 23.0, 1.6], [0.0; 3], Anim::None, 1.0, None);
+    b.cube_f(
+        body,
+        0,
+        (0.0, 8.0),
+        [-2.0, -2.0, -3.0],
+        [4.0, 3.0, 6.0],
+        0.0,
+        false,
+        &[Fold::rot([-0.5236, 0.0, 0.0], [0.0, -2.0, -1.6])],
+    );
+    let tail = b.part_named(
+        "tail",
+        [0.0, -2.2, 2.0],
+        [0.0; 3],
+        Anim::None,
+        1.0,
+        Some(body),
+    );
+    b.cube_f(
+        tail,
+        0,
+        (0.0, 21.0),
+        [-1.4, -2.0268, -1.0177],
+        [3.0, 3.0, 3.0],
+        0.0,
+        false,
+        &[Fold::rot([-0.5236, 0.0, 0.0], [-0.1, 0.0, 0.0])],
+    );
+    let head = b.part_named(
+        "head",
+        [0.0, -5.0, -2.6],
+        [0.0; 3],
+        Anim::Head,
+        1.0,
+        Some(body),
+    );
+    b.cube(
+        head,
+        0,
+        (0.0, 0.0),
+        [-2.5, -3.0, -3.0],
+        [5.0, 4.0, 4.0],
+        NONE,
+    );
+    for (name, x, uv) in [
+        ("right_ear", -1.5, (18.0, 0.0)),
+        ("left_ear", 1.5, (24.0, 0.0)),
+    ] {
+        let ear = b.part_named(name, [x, -3.5, -0.5], [0.0; 3], Anim::None, 1.0, Some(head));
+        b.cube(ear, 0, uv, [-1.0, -3.5, -0.5], [2.0, 4.0, 1.0], NONE);
+    }
+    let front = b.part_named(
+        "frontlegs",
+        [0.0, -2.5, -2.6],
+        [0.0; 3],
+        Anim::None,
+        1.0,
+        Some(body),
+    );
+    for (name, x, uv) in [
+        ("left_front_leg", 1.0, (18.0, 8.0)),
+        ("right_front_leg", -1.0, (14.0, 8.0)),
+    ] {
+        let leg = b.part_named(
+            name,
+            [x, 1.0, -0.5],
+            [0.3927, 0.0, 0.0],
+            Anim::None,
+            1.0,
+            Some(front),
+        );
+        b.cube_f(
+            leg,
+            0,
+            uv,
+            [-0.5, -1.5, -0.5],
+            [1.0, 3.0, 1.0],
+            0.0,
+            false,
+            &[Fold::rot([-0.3927, 0.0, 0.0], [0.0, 1.0, 0.0])],
+        );
+    }
+    let back = b.part_named(
+        "backlegs",
+        [0.0, 23.0, 2.0],
+        [0.0; 3],
+        Anim::None,
+        1.0,
+        None,
+    );
+    for (name, x, uv, haunch_y, haunch_off) in [
+        ("left_hind_leg", 1.5, (10.0, 17.0), -0.7854, [1.0, 0.0, 0.5]),
+        (
+            "right_hind_leg",
+            -1.5,
+            (0.0, 17.0),
+            0.7854,
+            [0.5, 0.0, -0.9],
+        ),
+    ] {
+        let leg = b.part_named(
+            name,
+            [x, 0.5, 0.5],
+            [0.0, 3.1416, 0.0],
+            Anim::None,
+            1.0,
+            Some(back),
+        );
+        b.cube_f(
+            leg,
+            0,
+            uv,
+            [-2.0, -0.5, 0.0],
+            [2.0, 1.0, 3.0],
+            0.0,
+            false,
+            &[Fold::rot([0.0, haunch_y, 0.0], haunch_off)],
+        );
+    }
+    b.keyframe(
+        &crate::anim_defs::BABY_RABBIT_HOP,
+        KfDriver::AgeGatedByWalk { gate: 5.0 },
     );
     b.finish(1.0)
 }
@@ -12635,6 +12785,7 @@ mod tests {
                     | EntityModelKind::DonkeyBaby
                     | EntityModelKind::MuleBaby
                     | EntityModelKind::CamelBaby
+                    | EntityModelKind::RabbitBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -14316,6 +14467,38 @@ mod camel_calf_tests {
         assert!(
             matches!(kf.driver, KfDriver::Walk { speed_f, scale_f } if speed_f == 2.0 && scale_f == 2.5)
         );
+        assert_eq!(kf.parts.len(), kf.def.channels.len());
+    }
+}
+
+#[cfg(test)]
+mod rabbit_kit_tests {
+    use super::*;
+
+    /// M336 — `BabyRabbitModel`: nine boxes; the head box's front at (4, 4)..
+    /// (9, 8) of its sheet; the hind legs turned π under `backlegs`; and
+    /// `BABY_RABBIT_HOP` with every channel bound to a named part.
+    #[test]
+    fn the_rabbit_kit_is_its_own_model_on_its_own_hop() {
+        let m = rabbit_baby();
+        assert_eq!(m.quads.len(), 9 * 6);
+        let named = |n: &str| m.parts.iter().position(|p| p.name == n).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m.quads.iter().any(|q| q.part == named("head")
+            && q.facing == Facing::North
+            && (span(q, 0), span(q, 1)) == ((4.0, 9.0), (4.0, 8.0))));
+        for leg in ["left_hind_leg", "right_hind_leg"] {
+            let p = &m.parts[named(leg)];
+            assert_eq!(p.parent, Some(named("backlegs") as u16));
+            assert_eq!(p.rot, [0.0, 3.1416, 0.0]);
+        }
+        assert_eq!(m.parts[named("head")].anim, Anim::Head);
+        let kf = &m.keyframes[0];
+        assert!(std::ptr::eq(kf.def, &crate::anim_defs::BABY_RABBIT_HOP));
         assert_eq!(kf.parts.len(), kf.def.channels.len());
     }
 }
