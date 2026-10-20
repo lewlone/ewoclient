@@ -1560,6 +1560,13 @@ impl LiveApp {
             alpha,
             self.blocks.default_state("minecraft:tnt"),
         ));
+        // M351 — the blocks mobs carry (the mooshroom's mushrooms), from the
+        // mobs' own draws.
+        bes.extend(collect_mob_blocks(
+            &draws,
+            self.blocks.default_state("minecraft:red_mushroom"),
+            self.blocks.default_state("minecraft:brown_mushroom"),
+        ));
         let frame_maps = frames.maps;
         // A spawner's caged mob rides the ENTITY pass, mounted inside its
         // block (M31), so it joins the entity draws rather than these.
@@ -2153,6 +2160,26 @@ impl LiveApp {
             if complete >= 2 {
                 c.carried_block_frames += 1;
             }
+            // M351 — r205: the staged brown mooshroom's three brown
+            // mushrooms each drew every quad of the mushroom's block model.
+            let brown = self
+                .blocks
+                .default_state("minecraft:brown_mushroom")
+                .map(rewo_data::block_entity_models::carried_block_model);
+            let mushrooms = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| Some(d.model) == brown.as_deref())
+                .filter(|(d, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(d.model))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                })
+                .count();
+            c.mooshroom_mushrooms = c.mooshroom_mushrooms.max(mushrooms);
             // M254 — r113: the staged painting drew every quad of its
             // variant's model.
             let painting = be_draws

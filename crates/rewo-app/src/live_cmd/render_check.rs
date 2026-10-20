@@ -501,6 +501,9 @@ pub(super) struct RenderCheck {
     pub(super) farm_cold: (bool, bool, bool, bool),
     /// M350 — r204: whether a zombie nautilus drew on the coral mesh.
     pub(super) coral_nautilus: bool,
+    /// M351 — r205: the most brown-mushroom block draws that each drew
+    /// their whole model in one frame.
+    pub(super) mooshroom_mushrooms: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1266,7 +1269,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 204;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 205;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1466,6 +1469,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M351 — r205: r201's brown mooshroom carries three brown mushrooms
+        // (`MushroomCowMushroomLayer`), each drawn whole.
+        row(
+            "r205 the brown mooshroom carried its three brown mushrooms",
+            self.mooshroom_mushrooms >= 3,
+            format!(
+                "{} brown mushroom draws, each its whole model, in one frame (want >= 3)",
+                self.mooshroom_mushrooms
             ),
         );
         // M350 — r204: `render_check.py` summons a warm zombie nautilus; it

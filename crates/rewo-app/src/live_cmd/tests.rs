@@ -4356,3 +4356,37 @@ fn a_cows_variant_picks_its_mesh() {
     assert_eq!(f(K::ZombieNautilus, None), K::ZombieNautilus);
     assert_eq!(f(K::Nautilus, Some("warm")), K::Nautilus);
 }
+
+/// M351 — `MushroomCowMushroomLayer`'s three mushrooms, by the block's
+/// centre (0.5, 0.5, 0.5) run through the chain by hand: at body yaw 0 (the
+/// mooshroom faces +z) the two body mushrooms sit on the back, one at the
+/// rear (0.2, 1.851, -0.5) and one mid-back (-0.127, 1.851, 0.013); the head
+/// one above the head (0, 1.951, 0.7). A body yaw of 90 turns the first to
+/// (0.5, 1.851, 0.2). The head one keeps its 0.728 from the head's pivot
+/// (0, 1.251, 0.5) however the head turns.
+#[test]
+fn the_mooshrooms_mushrooms_sit_on_its_back_and_head() {
+    let f = super::entities::mooshroom_mushroom_transforms;
+    let at = |a: &rewo_data::be_transform::Affine| {
+        let p = [0.5f32, 0.5, 0.5];
+        [0, 1, 2].map(|r| a[r][0] * p[0] + a[r][1] * p[1] + a[r][2] * p[2] + a[r][3])
+    };
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+    let [first, second, head] = f(0.0, 0.0, 0.0, 0.0);
+    assert!(near(at(&first), [0.2, 1.851, -0.5]), "{:?}", at(&first));
+    assert!(
+        near(at(&second), [-0.1272, 1.851, 0.0128]),
+        "{:?}",
+        at(&second)
+    );
+    assert!(near(at(&head), [0.0, 1.951, 0.7]), "{:?}", at(&head));
+    let [turned, _, _] = f(90.0, 0.0, 0.0, 0.0);
+    assert!(near(at(&turned), [0.5, 1.851, 0.2]), "{:?}", at(&turned));
+    for (net, pitch) in [(0.0, 45.0), (30.0, -20.0), (-60.0, 80.0)] {
+        let [_, _, h] = f(0.0, net, pitch, 0.0);
+        let c = at(&h);
+        let d = ((c[0]).powi(2) + (c[1] - 1.251).powi(2) + (c[2] - 0.5).powi(2)).sqrt();
+        assert!((d - 0.728).abs() < 1e-3, "{net} {pitch}: {d}");
+        assert!(!near(c, [0.0, 1.951, 0.7]));
+    }
+}

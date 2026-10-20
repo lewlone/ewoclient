@@ -1965,6 +1965,108 @@ pub(super) fn collect_minecart_contents(
     out
 }
 
+/// M351 — `MushroomCowMushroomLayer.submit`'s three mushroom blocks, as
+/// block-local → entity-relative transforms (block units), for an adult
+/// mooshroom drawn at body `yaw` with its head turned `net_head_yaw` and
+/// pitched `pitch` (degrees) and toppled `roll` (radians, the mob pass's
+/// `death_roll_for`). `LivingEntityRenderer`'s root first — `YP(180 -
+/// bodyRot)`, the topple `ZP`, `scale(-1, -1, 1)`, `translate(0, -1.501, 0)`,
+/// the same chain the mob pass applies to the model — then the layer's: two
+/// on the body, `translate(0.2, -0.35, 0.5)` then (the second only)
+/// `YP(42)`, `translate(0.1, 0, -0.6)`; and one on the head,
+/// `getHead().translateAndRotate` (the cow head's pivot (0, 4, -8) px, its
+/// `xRot` = pitch and `yRot` = net head yaw), `translate(0, -0.7, -0.2)`.
+/// Each ends `YP(-48)` (the head's `YP(-78)`), `scale(-1, -1, 1)`,
+/// `translate(-0.5, -0.5, -0.5)` around the block model.
+pub(crate) fn mooshroom_mushroom_transforms(
+    yaw: f32,
+    net_head_yaw: f32,
+    pitch: f32,
+    roll: f32,
+) -> [rewo_data::be_transform::Affine; 3] {
+    use rewo_data::be_transform::{mul, rot_y, rot_z, rot_zyx, scale, translation};
+    let root = mul(
+        &rot_y(180.0 - yaw),
+        &mul(
+            &rot_z(roll),
+            &mul(&scale(-1.0, -1.0, 1.0), &translation(0.0, -1.501, 0.0)),
+        ),
+    );
+    let block = |deg: f32| {
+        mul(
+            &rot_y(deg),
+            &mul(&scale(-1.0, -1.0, 1.0), &translation(-0.5, -0.5, -0.5)),
+        )
+    };
+    let back = translation(0.2, -0.35, 0.5);
+    let first = mul(&root, &mul(&back, &block(-48.0)));
+    let second = mul(
+        &root,
+        &mul(
+            &back,
+            &mul(
+                &rot_y(42.0),
+                &mul(&translation(0.1, 0.0, -0.6), &block(-48.0)),
+            ),
+        ),
+    );
+    let head = mul(
+        &translation(0.0, 0.25, -0.5),
+        &rot_zyx(pitch.to_radians(), net_head_yaw.to_radians(), 0.0),
+    );
+    let third = mul(
+        &root,
+        &mul(&head, &mul(&translation(0.0, -0.7, -0.2), &block(-78.0))),
+    );
+    [first, second, third]
+}
+
+/// M351 — the blocks the mobs drawn this frame carry, built from their own
+/// draws so a block follows exactly the pose its mob drew in: an adult
+/// mooshroom's three mushrooms (`MushroomCowMushroomLayer`: none on a calf
+/// or an invisible body), red, or brown on the brown colour's sheet. A
+/// mooshroom caged in a spawner (a mounted draw) carries none here.
+pub(super) fn collect_mob_blocks(
+    draws: &[rewo_gpu::entities::EntityDraw<'_>],
+    red_mushroom: Option<u32>,
+    brown_mushroom: Option<u32>,
+) -> Vec<super::block_entities::OwnedBlockEntityDraw> {
+    use rewo_data::be_transform::IDENTITY;
+    let brown =
+        rewo_data::mob_variants::variant_id(rewo_data::mob_variants::mooshroom_texture(1, false));
+    let mut out = Vec::new();
+    for d in draws {
+        if d.kind != EntityModelKind::Mooshroom || d.body_hidden || d.mount.is_some() {
+            continue;
+        }
+        let state = if Some(d.variant) == brown {
+            brown_mushroom
+        } else {
+            red_mushroom
+        };
+        let Some(state) = state else {
+            continue;
+        };
+        let roll = rewo_gpu::entities::death_roll_for(d.kind, d.death_time);
+        let net = (d.head_yaw - d.yaw + 180.0).rem_euclid(360.0) - 180.0;
+        for transform in mooshroom_mushroom_transforms(d.yaw, net, d.pitch, roll) {
+            out.push(super::block_entities::OwnedBlockEntityDraw {
+                pos: d.pos,
+                model: rewo_data::block_entity_models::carried_block_model(state),
+                transform,
+                light: d.light,
+                part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+                part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+                tint: [1.0; 3],
+                fixed_display: false,
+                glint: false,
+                white: 0.0,
+            });
+        }
+    }
+    out
+}
+
 /// M260 — every block display's state this frame, for
 /// [`rewo_data::assets::BakedAssets::add_state_model`] to build before the
 /// draws are collected.
@@ -1983,6 +2085,12 @@ pub(super) fn block_display_states(
             // makes only the gravity blocks and TNT.
             "minecraft:falling_block" => Some(e.spawn_data as u32),
             "minecraft:tnt" => ents.primed(id).block,
+            // M351 — a mooshroom's mushroom (`MushroomCow.Variant`, CLAMP).
+            "minecraft:mooshroom" => blocks.default_state(if ents.variant(id).unwrap_or(0) >= 1 {
+                "minecraft:brown_mushroom"
+            } else {
+                "minecraft:red_mushroom"
+            }),
             name => minecart_contents(name, ents.minecart_display(id), blocks).map(|(s, _)| s),
         })
         .collect();
