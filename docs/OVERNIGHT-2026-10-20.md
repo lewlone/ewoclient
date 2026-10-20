@@ -11,14 +11,24 @@ released.
 
 *(Kept current through the run; the last update is the one that counts.)*
 
+> **Headline (2026-10-20 18:07 checkpoint):** M194–M345 (152 Rewo
+> milestones, ~330 commits, nothing pushed). Themes: displays, item frames,
+> heads and worn blocks, steering vehicles, missing player actions, about
+> thirty baby-mob models, and lately mob variants (collars, black cats, white
+> horses, parrot, fox and rabbit coats). Figures at `43217330` (M345): 4,496 tests,
+> gates 51/51, render check 199/199 (from ~67). Needs you: nothing blocking;
+> the listening pass, a fresh-machine release zip and the in-game HUD are
+> still yours. Next: rabbit coats and Toast (M346, in verification), the
+> brown mooshroom, then the mob-held block layers.
+
 ### In one minute
 
-- **What happened**: 152 Rewo milestones, M194 to M345, in about 329 commits on
+- **What happened**: 153 Rewo milestones, M194 to M346, in about 331 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`43217330`): 4496 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 199 of
-  199 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`8420ac42`): 4497 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 200 of
+  200 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -467,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M346**: rabbits wear their six coats, the killer bunny included, and a rabbit named Toast is Toast (every rabbit was brown).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -528,6 +539,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `8420ac42` | **M346** — rabbit coats and Toast (index 18 INT on the rabbit, the custom name); a unit test, variant check n7 with the rabbit, mobtexshot **m71** and render-check **r200**. |
 | `43217330` | **M345** — the snow fox and kit (index 18 INT on the fox); a unit test, variant check n7 with the fox, mobtexshot **m70** and render-check **r199**. |
 | `2505550f` | **M344** — the parrot's five colours (index 20 INT, newly decoded); a unit test, variant check n7 with the parrot, mobtexshot **m69** and render-check **r198**. |
 | `0f7fe4ea` | **M343** — the cat's and the kitten's collar (inflated copies; index 23 INT on the cat); the adult cat at vanilla's 0.8 (it was drawn at the ocelot's size); two unit tests, variant check n10, mobtexshot **m68** and render-check **r197**. |
@@ -924,6 +936,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M346: **4,497 tests passed, 0 failed; gates 51/51** (mobtexshot 71, the variant check's n7 over nine mobs and n1 at 125); render check **200/200** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M345: **4,496 tests passed, 0 failed; gates 51/51** (mobtexshot 70, the variant check's n7 over eight mobs and n1 at 111); render check **199/199** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M344: **4,495 tests passed, 0 failed; gates 51/51** (mobtexshot 69, the variant check's n7 over seven mobs and n1 at 109); render check **198/198** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M343: **4,494 tests passed, 0 failed; gates 51/51** (mobtexshot 68, the variant check's 15 witnesses); render check **197/197** on two runs; clippy (both) and `cargo fmt --check` clean.

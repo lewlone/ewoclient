@@ -3991,6 +3991,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M346 — rabbit coats and Toast (2026-10-20)
+
+Every rabbit drew brown. `Rabbit.DATA_TYPE_ID` is index 18 INT, now routed
+on the rabbit (`VariantKinds::rabbit`). `RabbitRenderer` checks "Toast"
+first (`checkMagicName`: the custom name's string is exactly that), then
+the coat by `Rabbit.Variant`'s sparse ids (0..5, and 99 the killer bunny,
+`caerbannog`; anything else BROWN, `ByIdMap.sparse`), adult and kit: the
+seven other sheets of each are the `rabbit` and `rabbit_baby` keys' variant
+sheets (`mob_variants::rabbit_texture`); an unsent coat is BROWN. n7 routes
+nine mobs; n1 counts 125 declared sheets.
+
+**Unit test**: coats, the sparse fallback, the killer bunny, Toast over a
+coat, keys. **n7**: the rabbit's coat lands at 18 and not at 17 or 19;
+without the routing it fails. **mobtexshot m71**: the rabbit and the kit
+each draw brown, white and Toast from their own sheets, all different.
+**r200**: a staged white rabbit and a brown one named Toast each draw on
+their sheet.
+
 ### M345 — the snow fox (2026-10-20)
 
 Every fox drew red. `Fox.DATA_TYPE_ID` is index 18 INT (the axolotl's
