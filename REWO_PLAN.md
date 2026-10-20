@@ -3974,6 +3974,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M328 — the baby strider (2026-10-20)
+
+`StriderRenderer` swaps in `BabyStriderModel` (32 x 32: a 7 x 7 x 8 body with
+three 7 x 3 x 0 bristles across its top, still as Rewo's adult's are, and two
+2 x 4 x 2 legs on the walk) on `strider_baby.png`. The sheet is 32 x 32
+against the adult's 64 x 128, so M175 never baked it. `StriderBaby` is that
+model, picked by `baby_model_kind`. The body is placed where
+`customAnimations` puts it: it sets `body.y` to 17.25 every frame, not the
+layer's 16.75, so at rest the body sits 0.5 px into the legs. `mobshot`
+grades 339 views; `MAX_SMALL` 30. The strider's cell shrank the m5 crowd's
+again (cow_baby and raft fell under the pixel floor, sulfur_cube_small rose
+back over it), so the crowd's buckets now move with layout as much as with
+rendering (M329).
+
+**Unit test**: the 24 faces (three bristle plates of two), the body's front
+at (8, 8)..(15, 15), and the body sunk an eighth of a leg into the legs (the
+layer's 16.75 gives 0, and that mutant fails it). **mobtexshot m54**: it
+draws (2,280 px) with no colour foreign to its sheet; on the adult's sheet it
+fails on `#595359`. **r183**: a staged baby strider draws as
+`BabyStriderModel`.
+
 ### M327 — the hoglet and the baby zoglin (2026-10-20)
 
 `HoglinRenderer` and `ZoglinRenderer` swap in `BabyHoglinModel` (64 x 64: a
