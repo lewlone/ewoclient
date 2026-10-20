@@ -57,6 +57,9 @@ impl WorldRenderer {
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
+            // M363 — the boats' water patches into depth, before the
+            // translucent water below tests against it.
+            pass.draw_water_mask(gpu, cb, view_proj, extent);
             // M52: the vanilla emissive mob layers (mob eyes, the warden's
             // glow) ride straight on top of the solid models — that is where
             // vanilla's `order(1)` layer submits land, under everything below.

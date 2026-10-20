@@ -2215,6 +2215,23 @@ impl LiveApp {
                 c.arrow_frames += 1;
             }
             c.arrow_quads = (c.arrow_quads.0.max(arrow_drew), arrow_want);
+            // M363 — r215: a boat floating on water drew its water patch into
+            // depth (the frames that drew a boat on the surface and emitted a
+            // whole patch, six faces).
+            let afloat = session.world.entities.iter().any(|(_, e)| {
+                matches!(
+                    self.etypes.name(e.type_id),
+                    Some(n) if n.ends_with("_boat") && !n.ends_with("_chest_boat")
+                ) && {
+                    let p = e.render_pos(alpha);
+                    session
+                        .world
+                        .is_water_at_point(p[0], p[1] - 0.2, p[2], &session.water_states)
+                }
+            });
+            if afloat && state.world_renderer.water_mask_vertex_count() >= 36 {
+                c.water_mask_frames += 1;
+            }
             // M362 — r214: the shot arrow flies from the frame it appears:
             // over its first quarter second it covers ground and moves on
             // nearly every frame (until M362 it hung where it spawned until

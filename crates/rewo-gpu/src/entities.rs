@@ -1259,6 +1259,10 @@ pub struct EntityPass {
     /// view of the target, where no gamma-space pass draws.
     translucent_pipeline: Option<vk::Pipeline>,
     translucent_verts: u32,
+    /// M363 — `RenderTypes.waterMask()`: depth written, no colour, the
+    /// boat's water patch.
+    water_mask_pipeline: vk::Pipeline,
+    water_mask_verts: u32,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -1378,6 +1382,9 @@ pub struct MobModel {
     /// placed by the worn layer's slot). Empty for every other kind.
     saddle_shell: Vec<GpuQuad>,
     saddle_reins: Vec<GpuQuad>,
+    /// M363 — the boat's water patch (`BOAT_WATER_PATCH`), drawn depth
+    /// only. Empty for every other kind.
+    water_patch: Vec<GpuQuad>,
     /// M298 — the saddle shell is the body's own mesh (the strider's), so
     /// it lies exactly on the body: it rides the trim range (`EQUAL`, no
     /// write, after the solid one) as M68's coplanar layers do.
@@ -1837,6 +1844,13 @@ impl EntityPass {
                 facing: q.facing,
                 normal: q.normal,
             };
+            // M363 — the boat's (and the chest boat's) water patch.
+            let water_patch: Vec<GpuQuad> = match def.kind {
+                EntityModelKind::Boat | EntityModelKind::ChestBoat if !debug_tex => {
+                    mobs::boat_water_patch().quads.iter().map(raw).collect()
+                }
+                _ => Vec::new(),
+            };
             let (saddle_shell, saddle_reins): (Vec<GpuQuad>, Vec<GpuQuad>) = match def.kind {
                 EntityModelKind::Horse => Some((false, mobs::HORSE_SCALE)),
                 EntityModelKind::Donkey => Some((true, mobs::DONKEY_SCALE)),
@@ -1904,6 +1918,7 @@ impl EntityPass {
                 body_shell_ridden,
                 saddle_shell,
                 saddle_reins,
+                water_patch,
                 saddle_coplanar: def.kind == EntityModelKind::Strider,
                 swirl,
                 swirl_sheet,
@@ -2053,6 +2068,7 @@ impl EntityPass {
                     PipelineState {
                         blend: true,
                         depth_write: true,
+                        color_write: true,
                     },
                     vk::CompareOp::GREATER_OR_EQUAL,
                     include_bytes!(concat!(env!("OUT_DIR"), "/entity_translucent.frag.spv")),
@@ -2060,6 +2076,24 @@ impl EntityPass {
                 )?),
                 None => None,
             };
+
+            // M363 — `RenderTypes.waterMask()`: `DepthStencilState.DEFAULT`
+            // (reversed-Z `GREATER_OR_EQUAL` with writes) and no colour
+            // write; the frag shader only for its alpha test, which the
+            // patch's white texel passes.
+            let water_mask_pipeline = build_pipeline_full(
+                &device,
+                layout,
+                color_format,
+                PipelineState {
+                    blend: false,
+                    depth_write: true,
+                    color_write: false,
+                },
+                vk::CompareOp::GREATER_OR_EQUAL,
+                include_bytes!(concat!(env!("OUT_DIR"), "/entity.frag.spv")),
+                false,
+            )?;
 
             let ring = crate::buf_ring::BufRing::with_capacity(
                 gpu,
@@ -2077,6 +2111,8 @@ impl EntityPass {
                 emissive_verts: 0,
                 translucent_pipeline,
                 translucent_verts: 0,
+                water_mask_pipeline,
+                water_mask_verts: 0,
                 outline_verts: 0,
                 swirl: None,
                 swirl_pipeline: None,
@@ -2619,6 +2655,8 @@ impl EntityPass {
         let mut wind_verts: Vec<Vertex> = Vec::new();
         // M306: `entityTranslucent` model layers (the slime's shell).
         let mut translucent_verts: Vec<Vertex> = Vec::new();
+        // M363 — the boats' water patches, depth only.
+        let mut water_mask_verts: Vec<Vertex> = Vec::new();
         let glint_offsets =
             crate::gui_item::glint_offsets((time as f64) * 1000.0, crate::gui_item::GLINT_SPEED);
 
@@ -2719,6 +2757,7 @@ impl EntityPass {
                     &mut swirl_verts,
                     &mut wind_verts,
                     &mut translucent_verts,
+                    &mut water_mask_verts,
                     d,
                     model,
                     time,
@@ -2773,6 +2812,7 @@ impl EntityPass {
                         &mut [Vec::new(), Vec::new()],
                         &mut Vec::new(),
                         &mut gtr,
+                        &mut Vec::new(),
                         &ghost,
                         model,
                         time,
@@ -2903,6 +2943,9 @@ impl EntityPass {
         // M306 — `entityTranslucent`'s `sortOnUpload`, likewise.
         sort_quads_back_to_front(&mut translucent_verts, cam_pos);
         verts.append(&mut translucent_verts);
+        let translucent_end = verts.len();
+        // M363 — the water patches, last.
+        verts.append(&mut water_mask_verts);
         let counts = [
             solid,
             text_end - solid,
@@ -2913,7 +2956,8 @@ impl EntityPass {
             outline_end - emissive_end,
             swirl_end - outline_end,
             wind_end - swirl_end,
-            verts.len() - wind_end,
+            translucent_end - wind_end,
+            verts.len() - translucent_end,
         ]
         .map(|c| c as u32);
         // The per-emitter `MAX_VERTS` guards bound each range on its own, but
@@ -2927,7 +2971,7 @@ impl EntityPass {
             )
         };
         let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
-        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = clamp_ranges(counts, kept as u32);
+        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10] = clamp_ranges(counts, kept as u32);
         self.solid_verts = s0;
         self.text_verts = s1;
         self.glint_verts = s2;
@@ -2939,6 +2983,7 @@ impl EntityPass {
         self.swirl_split = split.min(s7);
         self.wind_verts = s8;
         self.translucent_verts = s9;
+        self.water_mask_verts = s10;
     }
 
     // Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -3661,6 +3706,8 @@ impl EntityPass {
         wind_out: &mut Vec<Vertex>,
         // M306 — the `entityTranslucent` tail of the model.
         translucent_out: &mut Vec<Vertex>,
+        // M363 — the depth-only water patch (`waterMask`).
+        mask_out: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
@@ -4030,6 +4077,26 @@ impl EntityPass {
                             light_hurt: [light_r, light_g, light_b, hurt],
                         });
                     }
+                }
+            }
+        }
+        // M363 — `BoatRenderer.submit`: the water patch with
+        // `RenderTypes.waterMask()` unless the boat is under water. Depth
+        // only, so the white texel stands in for the sheet (it passes the
+        // alpha test the frag shader still runs).
+        if !d.mob.under_water {
+            for q in &model.water_patch {
+                if mask_out.len() + 6 > MAX_VERTS {
+                    break;
+                }
+                let p4 = place(q);
+                for &i in &[0usize, 1, 2, 0, 2, 3] {
+                    mask_out.push(Vertex {
+                        pos: p4[i],
+                        uv: self.white_uv,
+                        color: [1.0; 4],
+                        light_hurt: [1.0, 1.0, 1.0, 0.0],
+                    });
                 }
             }
         }
@@ -4734,6 +4801,56 @@ impl EntityPass {
         self.wind_verts
     }
 
+    /// M363 — vertices in the water-mask range for the last
+    /// [`Self::set_entities`].
+    pub fn water_mask_vertex_count(&self) -> u32 {
+        self.water_mask_verts
+    }
+
+    /// M363 — the boats' water patches: depth written, no colour
+    /// (`RenderTypes.waterMask()`), after the solid models and before the
+    /// translucent terrain, so the water surface inside a floating hull
+    /// fails its depth test.
+    pub fn draw_water_mask(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        if self.water_mask_verts == 0 {
+            return;
+        }
+        unsafe {
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.water_mask_pipeline,
+            );
+            // The last range in the buffer.
+            device.cmd_draw(
+                cb,
+                self.water_mask_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts
+                    + self.emissive_verts
+                    + self.outline_verts
+                    + self.swirl_verts
+                    + self.wind_verts
+                    + self.translucent_verts,
+                0,
+            );
+        }
+    }
+
     /// M306 — vertices in the translucent range for the last
     /// [`Self::set_entities`].
     pub fn translucent_vertex_count(&self) -> u32 {
@@ -5231,6 +5348,7 @@ impl EntityPass {
             if let Some(p) = self.translucent_pipeline.take() {
                 device.destroy_pipeline(p, None);
             }
+            device.destroy_pipeline(self.water_mask_pipeline, None);
             device.destroy_pipeline(self.solid_pipeline, None);
             device.destroy_pipeline(self.text_pipeline, None);
             device.destroy_pipeline(self.emissive_pipeline, None);
@@ -8604,6 +8722,7 @@ fn build_pipeline_with(
         PipelineState {
             blend: !solid,
             depth_write: solid,
+            color_write: true,
         },
         compare,
         frag_spv,
@@ -8617,6 +8736,8 @@ fn build_pipeline_with(
 struct PipelineState {
     blend: bool,
     depth_write: bool,
+    /// M363 — `false` for a depth-only draw (`RenderTypes.waterMask()`).
+    color_write: bool,
 }
 
 fn build_pipeline_full(
@@ -8695,7 +8816,9 @@ fn build_pipeline_full(
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD)
-            .color_write_mask(if write_alpha {
+            .color_write_mask(if !state.color_write {
+                vk::ColorComponentFlags::empty()
+            } else if write_alpha {
                 vk::ColorComponentFlags::RGBA
             } else {
                 vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B

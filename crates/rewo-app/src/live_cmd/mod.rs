@@ -861,6 +861,9 @@ struct LiveApp {
     mount_serial: u64,
     #[cfg(feature = "gates")]
     mount_captured: bool,
+    /// M363 — `REWO_RC_CAPTURE_BOAT`'s one capture was taken.
+    #[cfg(feature = "gates")]
+    boat_captured: bool,
     #[cfg(feature = "gates")]
     rc_captured_at: bool,
     /// M282 — `Hud.vignetteBrightness`, and the session tick it was last
@@ -1297,6 +1300,8 @@ fn run_windowed(
         mount_serial: 0,
         #[cfg(feature = "gates")]
         mount_captured: false,
+        #[cfg(feature = "gates")]
+        boat_captured: false,
         #[cfg(feature = "gates")]
         rc_captured_at: false,
         vignette_brightness: rewo_world::vignette::VIGNETTE_START,

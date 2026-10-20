@@ -1670,6 +1670,8 @@ pub(crate) fn resolve_mob_combat(
         age_scale: 1.0,
         // M358 — set by the caller with the sheep's eat clock.
         sheep_eat: None,
+        // M363 — set by the caller for a boat.
+        under_water: false,
     }
 }
 
@@ -4904,6 +4906,17 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M363 — `Boat.isUnderWater()`: the eye (0.85 of the boat's 0.5625
+        // height) in water; a sunk boat draws no water patch.
+        if matches!(kind, EntityModelKind::Boat | EntityModelKind::ChestBoat) {
+            let p = e.render_pos(alpha);
+            mob.under_water = session.world.is_eye_under_water(
+                p[0],
+                p[1] + 0.5625 * 0.85,
+                p[2],
+                &session.water_states,
+            );
         }
         // M358 — a grazing sheep: the eat clock from entity event 10's
         // receipt tick, and the age scale its head drop scales by.

@@ -709,6 +709,8 @@ pub struct MobCombat {
     /// M358 — a grazing sheep's `(headEatPositionScale,
     /// headEatAngleScale)`; `None` when it is not eating (the head looks).
     pub sheep_eat: Option<(f32, f32)>,
+    /// M363 — `Boat.isUnderWater()` (the eye in water): no water patch.
+    pub under_water: bool,
 }
 
 impl Eq for Anim {}
@@ -11086,6 +11088,30 @@ fn boat() -> Model {
     b.finish(1.0)
 }
 
+/// M363 — `BoatModel.createWaterPatch()`: one 28 x 16 x 3 box turned π/2
+/// about x at (0, −3, 1), under the boat's root, which `BoatRenderer` draws
+/// with `RenderTypes.waterMask()` (depth only) unless the boat is under
+/// water: it fills the hull at the waterline in the depth buffer, so the
+/// translucent water drawn after the entities is hidden inside the boat.
+/// A raft has none (`RaftRenderer`).
+pub fn boat_water_patch() -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-14.0, -9.0, -3.0],
+        [28.0, 16.0, 3.0],
+        0.0,
+        false,
+        &[
+            Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, -3.0, 1.0]),
+            BOAT_ROOT,
+        ],
+    );
+    b.finish(1.0)
+}
+
 // ---------------------------------------------------------------------------
 // Minecarts (M252): `MinecartModel`, placed by `AbstractMinecartRenderer`
 // ---------------------------------------------------------------------------
@@ -15856,5 +15882,33 @@ mod equine_head_tests {
             donkey.quads.iter().filter(|q| q.part == head).count(),
             6 * 6
         );
+    }
+}
+
+#[cfg(test)]
+mod boat_patch_tests {
+    use super::*;
+
+    /// M363 — the water patch is one box (six faces) lying flat in the hull:
+    /// its 28 px run along the boat's length and 16 across, 3 px thick, at
+    /// the hull's waterline (model y 21..24 under the root's 18 px lift).
+    #[test]
+    fn the_boat_water_patch_lies_flat_in_the_hull() {
+        let m = boat_water_patch();
+        assert_eq!(m.quads.len(), 6);
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for q in &m.quads {
+            for p in &q.pos {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+        }
+        let span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        let mut horizontal = [span[0], span[2]];
+        horizontal.sort_by(f32::total_cmp);
+        assert!((horizontal[0] - 16.0).abs() < 1e-3 && (horizontal[1] - 28.0).abs() < 1e-3);
+        assert!((span[1] - 3.0).abs() < 1e-3, "{span:?}");
     }
 }

@@ -105,6 +105,14 @@ pub struct World {
     pub pickups: pickup::Pickups,
 }
 
+/// M363 — `EntityFluidInteraction`'s eye test within one block: the eye
+/// `frac` of the way up a fluid block is inside it below the fluid's top,
+/// 8/9 for a source (`FlowingFluid.getOwnHeight`) or the whole block when
+/// the same fluid is above.
+pub fn eye_below_fluid_top(frac: f64, here: bool, above: bool) -> bool {
+    here && (above || frac < 8.0 / 9.0)
+}
+
 impl World {
     /// A world with the Overworld lighting contract (sky light on, DEFAULT
     /// cardinal lighting). Every pre-M16 caller — demos, tests, snapshot
@@ -388,6 +396,24 @@ impl World {
         let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
         let state = self.block_state_at(bx, by, bz) as usize;
         water.get(state).copied().unwrap_or(false)
+    }
+
+    /// M363 — `isUnderWater()` with the free surface: the eye's block is
+    /// water and the eye is below its top, a source block's 8/9 unless the
+    /// block above is water too ([`eye_below_fluid_top`]). Every water state
+    /// is taken as a source (the bake carries no level), so in flowing water
+    /// it reads slightly deep. [`Self::is_water_at_point`]'s block test reads
+    /// a floating boat's eye (0.92 of the way up its water block) as
+    /// submerged; this one does not.
+    pub fn is_eye_under_water(&self, x: f64, y: f64, z: f64, water: &[bool]) -> bool {
+        let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+        let is_water = |y: i32| {
+            water
+                .get(self.block_state_at(bx, y, bz) as usize)
+                .copied()
+                .unwrap_or(false)
+        };
+        eye_below_fluid_top(y - f64::from(by), is_water(by), is_water(by + 1))
     }
 
     /// `environmentAttributes().getValue(AMBIENT_SOUNDS, player.position())`
@@ -1091,5 +1117,21 @@ mod ambient_sounds_at_tests {
             additions: Vec::new(),
         };
         assert_eq!(w.ambient_sounds_at([1.0, 2.0, 3.0], &base), base);
+    }
+}
+
+#[cfg(test)]
+mod eye_fluid_tests {
+    use super::eye_below_fluid_top;
+
+    /// M363 — a floating boat's eye (0.92 up its surface water block) is not
+    /// under water; just below the 8/9 surface it is; with water above, the
+    /// whole block is; no water, never.
+    #[test]
+    fn the_eye_is_under_water_only_below_the_surface() {
+        assert!(!eye_below_fluid_top(0.92, true, false));
+        assert!(eye_below_fluid_top(0.88, true, false));
+        assert!(eye_below_fluid_top(0.99, true, true));
+        assert!(!eye_below_fluid_top(0.1, false, true));
     }
 }

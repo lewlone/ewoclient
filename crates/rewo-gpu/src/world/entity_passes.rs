@@ -97,6 +97,15 @@ impl WorldRenderer {
             .unwrap_or(0)
     }
 
+    /// M363 — vertices in the water-mask range (the boats' water patches)
+    /// after the last `set_entities`.
+    pub fn water_mask_vertex_count(&self) -> u32 {
+        self.entities
+            .as_ref()
+            .map(|p| p.water_mask_vertex_count())
+            .unwrap_or(0)
+    }
+
     /// M286 — vertices in the wind range after the last `set_entities`.
     pub fn wind_vertex_count(&self) -> u32 {
         self.entities

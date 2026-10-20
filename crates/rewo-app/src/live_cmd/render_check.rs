@@ -535,6 +535,9 @@ pub(super) struct RenderCheck {
     /// position, frames and frames it moved on within 0.25 s, the farthest
     /// it got from where it appeared).
     pub(super) arrow_track: Option<(f32, [f32; 3], [f32; 3], u32, u32, f32)>,
+    /// M363 — r215: frames a boat floated on water with its water patch
+    /// drawn into depth.
+    pub(super) water_mask_frames: u32,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1300,7 +1303,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 214;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 215;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1504,6 +1507,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M363 — r215: r87's boat pool: a boat on the water draws its water
+        // patch depth-only (`RenderTypes.waterMask()`), which hides the water
+        // surface inside the hull.
+        row(
+            "r215 a boat on water drew its water patch into depth",
+            self.water_mask_frames > 0,
+            format!(
+                "{} frames with a floating boat's patch drawn",
+                self.water_mask_frames
             ),
         );
         // M362 — r214: r99's full-draw shot flies from the frame it appears:
@@ -6671,6 +6685,18 @@ impl LiveApp {
                         self.boat_tick0 = now;
                         self.boat_stage = 3;
                     }
+                }
+                // M363 — `REWO_RC_CAPTURE_BOAT`: one F2 capture five ticks
+                // into the ride (the bot still pitched down at the hull it
+                // boarded), for a person to look at the water inside it
+                // (`render_check.py --keep`).
+                if self.boat_stage == 3
+                    && now >= self.boat_tick0 + 5
+                    && !self.boat_captured
+                    && crate::knobs::var("REWO_RC_CAPTURE_BOAT").is_ok()
+                {
+                    self.capture_pending = true;
+                    self.boat_captured = true;
                 }
                 if self.boat_stage == 3 && now >= self.boat_tick0 + 20 {
                     self.keys.w = false;
