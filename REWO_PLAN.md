@@ -3996,6 +3996,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M351 — the mooshroom's mushrooms (2026-10-20)
+
+No mooshroom carried its mushrooms: `MushroomCowMushroomLayer` was not drawn.
+An adult mooshroom (not a calf, nor an invisible body) now carries three
+blocks of its colour's mushroom (`red_mushroom` / `brown_mushroom`,
+`MushroomCow.Variant` CLAMP) on the block-model path the falling blocks use
+(`rewo:be/state/<id>`, built at run time like a block display's).
+`mooshroom_mushroom_transforms` composes `LivingEntityRenderer`'s root
+(`YP(180 - bodyRot)`, the topple, `scale(-1, -1, 1)`, `translate(0, -1.501,
+0)`: the chain the mob pass applies to the model) with the layer's two body
+chains and its head chain (`getHead().translateAndRotate`: the cow head's
+pivot and its pitch and net yaw). `collect_mob_blocks` builds them from the
+mobs' own draws, so the blocks follow exactly the pose the mob drew in. A
+mooshroom caged in a spawner carries none (a mounted draw).
+
+**Unit test**: the block centre through the chain against positions worked
+out by hand from the layer (two on the back and one above the head at body yaw
+0, turned at yaw 90, the head one a constant 0.728 from the head's pivot
+however the head turns). **r205**: r201's brown mooshroom draws three brown
+mushrooms, each every quad of its model. No pixel gate looks at where they
+land; the unit test is the placement's witness.
+
 ### M350 — the coral zombie nautilus (2026-10-20)
 
 Every zombie nautilus drew the plain one. `ZombieNautilus.DATA_VARIANT_ID` is
