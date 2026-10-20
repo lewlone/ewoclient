@@ -5513,6 +5513,7 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             rot[0] = c.pitch;
             rot[1] = c.net;
         }
+        HeadYaw => rot[1] = c.net,
         ArmRight => rot[0] = (c.f + PI).cos() * 2.0 * c.amt * 0.5 * amp,
         ArmLeft => rot[0] = c.f.cos() * 2.0 * c.amt * 0.5 * amp,
         LegRight | QuadHindRight | QuadFrontLeft => rot[0] = c.f.cos() * 1.4 * c.amt * amp,

@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M337 — r191: the staged goat kid.
+            c.goat_kid |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::GoatBaby);
             // M336 — r190: the staged rabbit kit.
             c.rabbit_kit |= draws
                 .iter()

@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 61;
+const EXPECTED_WITNESSES: usize = 62;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -188,10 +188,10 @@ const MIN_DISCRIMINATING: usize = 88;
 /// thin enough to lose their attributed pixels to their neighbours: turtle,
 /// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
 /// villager and glow squid, (M330) the kit, (M332) the ocelot kitten,
-/// (M333) the baby bee and (M336) the rabbit kit. Each baby is graded up
-/// close by its own witness (m42..m61, n1/n2). A twenty-second means
-/// something stopped drawing.
-const MAX_SMALL: usize = 21;
+/// (M333) the baby bee, (M336) the rabbit kit and (M337) the goat kid. Each
+/// baby is graded up close by its own witness (m42..m62, n1/n2). A
+/// twenty-third means something stopped drawing.
+const MAX_SMALL: usize = 22;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -4355,6 +4355,61 @@ fn run_check(
         format!(
             "{rk_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             rk_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m62 — M337: the goat kid draws, every pixel producible by its own
+    // sheet; the mesh rests on `the_kid_is_its_own_model`.
+    let mut gkst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.0, 0.8, -1.0),
+        Vec3::new(0.0, 0.4, 0.0),
+    )?;
+    gkst.wr.set_entities(&[], gkst.right, gkst.up, 0.0);
+    gkst.off
+        .render(gpu, Some((&mut gkst.wr, gkst.vp)), &ov, BG)?;
+    let gk_empty = gkst.off.read_rgba(gpu)?;
+    let gk_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "goat_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    gkst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::GoatBaby)],
+        gkst.right,
+        gkst.up,
+        0.0,
+    );
+    gkst.off
+        .render(gpu, Some((&mut gkst.wr, gkst.vp)), &ov, BG)?;
+    let gk_frame = gkst.off.read_rgba(gpu)?;
+    gkst.destroy(gpu);
+    let (mut gk_px, mut gk_bad) = (0usize, None);
+    for (p, e) in gk_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(gk_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        gk_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if gk_bad.is_none() && !explains(&gk_sheet, c) {
+            gk_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m62.the_goat_kid_draws_from_its_own_sheet",
+        !gk_sheet.is_empty() && gk_px >= 200 && gk_bad.is_none(),
+        format!(
+            "{gk_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            gk_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

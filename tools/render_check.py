@@ -271,6 +271,8 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M337 -- r191. A goat kid.
+    "summon minecraft:goat ~57 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M336 -- r190. A brown rabbit kit.
     "summon minecraft:rabbit ~54 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000,"
     "RabbitType:0};"

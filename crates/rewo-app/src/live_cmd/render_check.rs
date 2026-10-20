@@ -466,6 +466,8 @@ pub(super) struct RenderCheck {
     pub(super) camel_calf: bool,
     /// M336 — r190: whether a rabbit kit drew as `BabyRabbitModel`.
     pub(super) rabbit_kit: bool,
+    /// M337 — r191: whether a goat kid drew as `BabyGoatModel`.
+    pub(super) goat_kid: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1231,7 +1233,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 190;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 191;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1432,6 +1434,13 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M337 — r191: `render_check.py` summons a goat kid; it must draw as
+        // `BabyGoatModel` (`mobtexshot m62`).
+        row(
+            "r191 a goat kid drew as BabyGoatModel",
+            self.goat_kid,
+            format!("goat kid seen: {}", self.goat_kid),
         );
         // M336 — r190: `render_check.py` summons a brown rabbit kit; it must
         // draw as `BabyRabbitModel` (`mobtexshot m61`).

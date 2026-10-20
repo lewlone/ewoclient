@@ -2146,6 +2146,7 @@ this shape once.
 | M334 (2026-10-20) — a donkey foal and a mule foal draw as BabyDonkeyModel | **r188** | — | — |
 | M335 (2026-10-20) — a camel calf draws as BabyCamelModel | **r189** | — | — |
 | M336 (2026-10-20) — a rabbit kit draws as BabyRabbitModel | **r190** | — | — |
+| M337 (2026-10-20) — a goat kid draws as BabyGoatModel | **r191** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

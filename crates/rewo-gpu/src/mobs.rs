@@ -86,6 +86,10 @@ pub enum Anim {
     StandPose(u8),
     /// Look pitch about X + net head yaw about Y (vanilla `rotateZYX(0,y,x)`).
     Head,
+    /// M337 — the look's yaw alone: `BabyGoatModel.setupAnim` sets the
+    /// head's `xRot` to π/8 after `QuadrupedModel` set it to the pitch, so the
+    /// part carries π/8 as its base and only the yaw moves.
+    HeadYaw,
     /// Humanoid arms: `cos(f ± π) · 2.0 · amount · 0.5`.
     ArmRight,
     ArmLeft,
@@ -1593,11 +1597,13 @@ pub enum EntityModelKind {
     CamelBaby,
     /// M336 — `BabyRabbitModel` (`RABBIT_BABY`).
     RabbitBaby,
+    /// M337 — `BabyGoatModel` (`GOAT_BABY`).
+    GoatBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 130;
+    pub const COUNT: usize = 131;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1728,6 +1734,7 @@ impl EntityModelKind {
         EntityModelKind::MuleBaby,
         EntityModelKind::CamelBaby,
         EntityModelKind::RabbitBaby,
+        EntityModelKind::GoatBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1859,6 +1866,7 @@ impl EntityModelKind {
             EntityModelKind::MuleBaby => "mule_baby",
             EntityModelKind::CamelBaby => "camel_baby",
             EntityModelKind::RabbitBaby => "rabbit_baby",
+            EntityModelKind::GoatBaby => "goat_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1930,6 +1938,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::MuleBaby
                 | EntityModelKind::CamelBaby
                 | EntityModelKind::RabbitBaby
+                | EntityModelKind::GoatBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2962,6 +2971,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::RabbitBaby,
         textures: &["rabbit_baby"],
         build: rabbit_baby,
+    },
+    // M337 — the kid's sheet (one of M175's scrambled swaps).
+    MobDef {
+        kind: EntityModelKind::GoatBaby,
+        textures: &["goat_baby"],
+        build: goat_baby,
     },
 ];
 
@@ -6155,6 +6170,97 @@ fn rabbit_baby() -> Model {
     b.keyframe(
         &crate::anim_defs::BABY_RABBIT_HOP,
         KfDriver::AgeGatedByWalk { gate: 5.0 },
+    );
+    b.finish(1.0)
+}
+
+/// M337 — `BabyGoatModel.createBodyLayer()` (64 x 64): four 2 x 5 x 2 legs on
+/// the quadruped walk (named as Rewo's adult goat's), a two-box body, and the
+/// head: a 4 x 4 x 6 skull, two horns tilted -π/8, two ears turned ±0.5236
+/// about y, and `HeadMain`, the skull's own box again (vanilla authors it
+/// twice, coplanar). The layer tilts the head 0.4363, but `setupAnim` sets its
+/// `xRot` to π/8 every frame after the look's pitch, so the head rests at π/8
+/// and only its yaw follows the look (`Anim::HeadYaw`). Ramming and the horns'
+/// visibility are not drawn, as Rewo's adult goat's are not.
+fn goat_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    for (pivot, anim, uv) in [
+        ([1.5, 19.5, 3.0], Anim::QuadHindLeft, (29.0, 12.0)),
+        ([-1.5, 19.5, 3.0], Anim::QuadHindRight, (21.0, 12.0)),
+        ([-1.5, 19.5, -2.0], Anim::QuadFrontRight, (21.0, 5.0)),
+        ([1.5, 19.5, -2.0], Anim::QuadFrontLeft, (29.0, 5.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.0, -0.5, -1.0], [2.0, 5.0, 2.0], NONE);
+    }
+    let body = [Fold::at([0.0, 17.8, 0.0])];
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 10.0),
+        [-3.0, -2.3, -4.5],
+        [6.0, 5.0, 9.0],
+        0.0,
+        false,
+        &body,
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 24.0),
+        [-2.5, -2.2, -4.0],
+        [5.0, 4.0, 8.0],
+        0.0,
+        false,
+        &body,
+    );
+    let head = b.part_ext(
+        [0.0, 15.5, -3.0],
+        [PI / 8.0, 0.0, 0.0],
+        Anim::HeadYaw,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        head,
+        0,
+        (0.0, 0.0),
+        [-2.0, -3.8126, -5.1548],
+        [4.0, 4.0, 6.0],
+        NONE,
+    );
+    let horn = Fold::rot([-PI / 8.0, 0.0, 0.0], [-1.5, -1.5, -1.0]);
+    for min_x in [0.0, 2.0] {
+        b.cube_m(
+            head,
+            0,
+            (24.0, 0.0),
+            [min_x, -4.5, 0.0],
+            [1.0, 2.0, 1.0],
+            &[horn],
+        );
+    }
+    for (x, y_rot, min_x, mirror) in [(-1.7, -0.5236, -2.0, true), (1.7, 0.5236, 0.0, false)] {
+        b.cube_f(
+            head,
+            0,
+            (0.0, 12.0),
+            [min_x, -0.5, -0.5],
+            [2.0, 1.0, 1.0],
+            0.0,
+            mirror,
+            &[Fold::rot([0.0, y_rot, 0.0], [x, -2.3126, 0.1452])],
+        );
+    }
+    b.cube_f(
+        head,
+        0,
+        (0.0, 0.0),
+        [-2.0, -2.5, -4.0],
+        [4.0, 4.0, 6.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, -1.3126, -1.1548])],
     );
     b.finish(1.0)
 }
@@ -12786,6 +12892,7 @@ mod tests {
                     | EntityModelKind::MuleBaby
                     | EntityModelKind::CamelBaby
                     | EntityModelKind::RabbitBaby
+                    | EntityModelKind::GoatBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -14500,5 +14607,44 @@ mod rabbit_kit_tests {
         let kf = &m.keyframes[0];
         assert!(std::ptr::eq(kf.def, &crate::anim_defs::BABY_RABBIT_HOP));
         assert_eq!(kf.parts.len(), kf.def.channels.len());
+    }
+}
+
+#[cfg(test)]
+mod goat_kid_tests {
+    use super::*;
+
+    /// M337 — `BabyGoatModel`: twelve boxes; the head at `setupAnim`'s π/8
+    /// (not the layer's 0.4363) on the yaw-only look; the skull's front at
+    /// (6, 6)..(10, 10) of its sheet, twice (`HeadMain` repeats it, at the
+    /// same place).
+    #[test]
+    fn the_kid_is_its_own_model() {
+        let m = goat_baby();
+        assert_eq!(m.quads.len(), 12 * 6);
+        let head = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::HeadYaw)
+            .unwrap();
+        assert!((m.parts[head].rot[0] - PI / 8.0).abs() < 1e-6);
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let fronts: Vec<_> = m
+            .quads
+            .iter()
+            .filter(|q| {
+                q.part == head
+                    && q.facing == Facing::North
+                    && (span(q, 0), span(q, 1)) == ((6.0, 10.0), (6.0, 10.0))
+            })
+            .collect();
+        assert_eq!(fronts.len(), 2);
+        for (a, b) in fronts[0].pos.iter().zip(fronts[1].pos.iter()) {
+            assert!((0..3).all(|i| (a[i] - b[i]).abs() < 1e-4));
+        }
     }
 }
