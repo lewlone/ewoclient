@@ -23,10 +23,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 165 Rewo milestones, M194 to M358, in about 355 commits on
+- **What happened**: 166 Rewo milestones, M194 to M359, in about 357 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`cc07efb7`): 4522 tests pass (4,244 at the
+- **Checks at the end** (`533092da`): 4524 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 212 of
   212 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M359**: horses, donkeys and mules look around (with their bridles), walk with vanilla's stride and lift their tails.
 - **M358**: sheep graze (head down, nibbling); an audit of every adult mob's pose against vanilla found ~35 more to fix (`docs/rewo/rest-pose-audit-2026-10-21.md`).
 - **M357**: cats and kittens sit; every cat's and ocelot's tail tip had hung straight down through the ground, and they walked like a cow (fixed).
 - **M356**: wolves and puppies sit (no pet ever sat before).
@@ -551,6 +552,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `533092da` | **M359** — the horse family's head group (a part, the bridle and reins on it), legs and tail; unit tests and mobtexshot **m81**. |
 | `cc07efb7` | **M358** — grazing sheep (entity event 10, `sheep_eat_pose`, `SheepHead`) and the adult rest-pose audit document; unit tests, mobtexshot **m80** and render-check **r212**. |
 | `e503ea97` | **M357** — sitting cats and kittens, the feline tail tip's rest (it hung through the ground) and the feline gait; unit tests, mobtexshot **m79** and render-check **r211**. |
 | `1145f1fb` | **M356** — sitting wolves and puppies (`setSittingPose`; the body and mane now parts); unit tests, mobtexshot **m78**, render-check **r210** and `mobshot --sit`. |
@@ -960,6 +962,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M359: **4,524 tests passed, 0 failed; gates 51/51** (mobtexshot 81); render check **212/212** on runs 2 and 3 (run 1 read 211/212: r78's survival leaf break stopped 5 ticks after the press against vanilla's 4, a timing flake in a witness the horse does not touch); clippy (both) and `cargo fmt --check` clean.
 - After M358: **4,522 tests passed, 0 failed; gates 51/51** (mobtexshot 80); render check **212/212** on two runs (r212's lambs grazed in both); clippy (both) and `cargo fmt --check` clean.
 - After M357: **4,520 tests passed, 0 failed; gates 51/51** (mobtexshot 79); render check **211/211** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M356: **4,517 tests passed, 0 failed; gates 51/51** (mobtexshot 78); render check **210/210** on two runs; clippy (both) and `cargo fmt --check` clean.

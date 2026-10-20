@@ -17,9 +17,9 @@ The baby layers had their own audit on 2026-10-20 (see
 
 | Mob | Finding | Vanilla | Status |
 |---|---|---|---|
-| horse, donkey, mule, skeleton/zombie horse | head and neck never look (pitch + π/6, yaw clamped ±20°, a walk nod) | `AbstractEquineModel` 121-127 | open |
-| horse family | legs swing 1.4×; vanilla front 0.8, hind 0.5 | `AbstractEquineModel` 124-125, 138-143 | open |
-| horse family | tail does not lift while walking (`π/6 + speed·0.75`, y/z offsets) | `AbstractEquineModel` 146-148 | open |
+| horse, donkey, mule, skeleton/zombie horse | head and neck never look (pitch + π/6, yaw clamped ±20°, a walk nod) | `AbstractEquineModel` 121-127 | M359 (adults; the foals still hold still) |
+| horse family | legs swing 1.4×; vanilla front 0.8, hind 0.5 | `AbstractEquineModel` 124-125, 138-143 | M359 |
+| horse family | tail does not lift while walking (`π/6 + speed·0.75`, y/z offsets) | `AbstractEquineModel` 146-148 | M359 (the random `animateTail` swish not modelled) |
 | rabbit | head pitched 0.3927 (layer) and never looks; `setupAnim` assigns the look | `RabbitModel` 28-29 | open |
 | turtle | flippers never move (land paddle `cos(pos·5)·8·speed` yRot, water swim) | `TurtleModel` 20-36 | open |
 | turtle | egg belly drawn on every adult; vanilla `eggBelly.visible = hasEgg` (and the root 1 px up) | `AdultTurtleModel` 24-26 | open |

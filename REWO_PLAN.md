@@ -4003,6 +4003,26 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M359 — the horse family looks, walks and lifts its tail (2026-10-21)
+
+From the adult rest-pose audit: every horse, donkey, mule, skeleton horse and
+zombie horse held its head group still (static under a fixed π/6 fold), swung
+its legs at the quadruped's 1.4 and never lifted its tail.
+`AbstractEquineModel.setupAnim`, standing (Rewo draws no eating or rearing):
+`headParts` is now a part (`Anim::EquineHead`): `xRot` π/6 + the pitch, plus
+cos(walkPos · 0.8) · 0.15 · speed above 0.2; `yRot` the net head yaw clamped to
+±20°. It is created first in every equine builder (`equine_head_part`), so
+the saddle's bridle and the reins (separate builders joined to the body's
+parts) share its index and turn with the head; the armour shells keep the
+part list. Legs (`EquineLeg`): front ±cos(f + π) · 0.8 · speed, hind ∓0.5.
+Tail (`EquineTail`): π/6 + speed · 0.75, `y` + speed, `z` + 2 · speed.
+
+**Unit tests**: the head part, its boxes and the bridle's and reins' on it;
+the look, clamp and nod, the leg amplitudes, the tail lift. **mobtexshot m81**:
+a horse looking down and aside moves 583 px of silhouette and the saddle layer
+292 px with it (a bridle left on the static body, the mutant, measured 89; the
+bound is 200).
+
 ### M358 — grazing sheep (2026-10-21)
 
 No sheep ever ate: entity event 10 (`Sheep.handleEntityEvent`:
