@@ -3572,6 +3572,19 @@ pub(crate) fn apply_set_equipment(
         // because the client has no other source for it.
         if slot_id & 127 == 7 {
             entities.set_saddled(eid, !matches!(slot, WireSlot::Empty));
+            // M295 — and the piece, for its equipment layer.
+            entities.set_saddle_piece(
+                eid,
+                match &slot {
+                    WireSlot::Empty => None,
+                    WireSlot::Stack(s) => Some(rewo_world::entities::WornPiece {
+                        item: s.item_id,
+                        dye: s.components.dyed_color,
+                        trim: s.components.trim,
+                        foil: s.components.has_foil(),
+                    }),
+                },
+            );
         }
         if let Some(hand) = hand {
             // M290 — a held player head's skin, from its `profile`.

@@ -969,6 +969,10 @@ pub struct EntityTable {
     /// M294 — the body slot (`EquipmentSlot.BODY`, wire 6): a horse's armour,
     /// a wolf's, a llama's carpet. Cleared on removal.
     body_armor: HashMap<i32, WornPiece>,
+    /// M295 — the saddle slot's piece (`EquipmentSlot.SADDLE`, wire 7), for
+    /// its equipment layer; `saddled` stays the gameplay flag. Cleared on
+    /// removal.
+    saddles: HashMap<i32, WornPiece>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -1674,6 +1678,7 @@ impl EntityTable {
             stack_profiles,
             hand_profiles,
             body_armor,
+            saddles,
             dances,
             events,
             swings: _,
@@ -1711,6 +1716,7 @@ impl EntityTable {
         stack_profiles.remove(&id);
         hand_profiles.remove(&id);
         body_armor.remove(&id);
+        saddles.remove(&id);
         attributes.remove(&id);
         shared_flags.remove(&id);
         custom_name_visible.remove(&id);
@@ -2579,6 +2585,23 @@ impl EntityTable {
     /// carries.
     pub fn stack_profile(&self, id: i32) -> Option<&str> {
         self.stack_profiles.get(&id).map(String::as_str)
+    }
+
+    /// M295 — the saddle slot's piece (`None` clears).
+    pub fn set_saddle_piece(&mut self, id: i32, piece: Option<WornPiece>) {
+        match piece {
+            Some(p) => {
+                self.saddles.insert(id, p);
+            }
+            None => {
+                self.saddles.remove(&id);
+            }
+        }
+    }
+
+    /// M295 — what `id` wears in its saddle slot.
+    pub fn saddle_piece(&self, id: i32) -> Option<WornPiece> {
+        self.saddles.get(&id).copied()
     }
 
     /// M294 — the body slot's piece (`None` clears).
@@ -4832,6 +4855,7 @@ mod side_state_tests {
             stack_profiles,
             hand_profiles,
             body_armor,
+            saddles,
             dances,
             events,
             swings,
@@ -4873,6 +4897,7 @@ mod side_state_tests {
             stack_profiles.contains_key(&id),
             hand_profiles.contains_key(&id),
             body_armor.contains_key(&id),
+            saddles.contains_key(&id),
             dances.contains_key(&id),
             events.contains_key(&id),
             swings.contains_key(&id),
@@ -4937,6 +4962,15 @@ mod side_state_tests {
             id,
             WornPiece {
                 item: 1,
+                dye: None,
+                trim: None,
+                foil: false,
+            },
+        );
+        t.saddles.insert(
+            id,
+            WornPiece {
+                item: 2,
                 dye: None,
                 trim: None,
                 foil: false,

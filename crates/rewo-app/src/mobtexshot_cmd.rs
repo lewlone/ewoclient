@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 25;
+const EXPECTED_WITNESSES: usize = 26;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -428,6 +428,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         outline: None,
         powered: false,
         body_armor: None,
+        saddle: None,
+        ridden: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -1323,6 +1325,8 @@ fn run_check(
     let burning = shot(EntityDraw {
         powered: false,
         body_armor: None,
+        saddle: None,
+        ridden: false,
         on_fire: Some(rewo_gpu::entities::FireDraw {
             light: [1.0; 3],
             frames: fire_frames,
@@ -1912,6 +1916,82 @@ fn run_check(
             "{IRON} resident: {resident}; {armour_px} px changed by the armour (want >= \
              300); first colour the sheet cannot produce: {:?}",
             armour_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m26 — M295: a saddled horse (`HORSE_SADDLE`'s layer over
+    // `EquineSaddleModel`). The saddle's pixels must all be colours the jar's
+    // `horse_saddle/saddle` sheet can produce, and riding adds the reins
+    // (`visible = isRidden`), in the same sheet. No saddle drew until M295.
+    const SADDLE: &str = "horse_saddle/saddle";
+    let saddle_sheet: HashSet<u32> = baked
+        .equipment
+        .textures
+        .iter()
+        .find(|t| t.key == SADDLE)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut sst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.6, 2.4, 1.2),
+        Vec3::new(0.0, 1.3, -0.3),
+    )?;
+    let saddle_resident = sst
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(SADDLE));
+    let mut sshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        sst.wr.set_entities(&[d], sst.right, sst.up, 0.0);
+        sst.off.render(gpu, Some((&mut sst.wr, sst.vp)), &ov, BG)?;
+        sst.off.read_rgba(gpu)
+    };
+    let mut slayers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    slayers[0] = Some((SADDLE, [1.0, 1.0, 1.0]));
+    let saddled = |ridden: bool| EntityDraw {
+        saddle: Some(rewo_gpu::entities::ArmorPiece {
+            layers: slayers,
+            ..Default::default()
+        }),
+        ridden,
+        ..neutral_draw(EntityModelKind::Horse)
+    };
+    let s_bare = sshot(neutral_draw(EntityModelKind::Horse))?;
+    let s_on = sshot(saddled(false))?;
+    let s_ridden = sshot(saddled(true))?;
+    sst.destroy(gpu);
+    let grade = |a: &[u8], b: &[u8]| {
+        let (mut n, mut bad) = (0usize, None);
+        for (x, y) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
+            if x[..3] == y[..3] {
+                continue;
+            }
+            n += 1;
+            let c = pack(x[0], x[1], x[2]);
+            if bad.is_none() && !explains(&saddle_sheet, c) {
+                bad = Some(c);
+            }
+        }
+        (n, bad)
+    };
+    let (saddle_px, saddle_bad) = grade(&s_on, &s_bare);
+    let (reins_px, reins_bad) = grade(&s_ridden, &s_on);
+    w.push(wit(
+        "m26.a_saddled_horse_wears_its_saddle_and_reins_when_ridden",
+        saddle_resident
+            && !saddle_sheet.is_empty()
+            && saddle_px >= 150
+            && saddle_bad.is_none()
+            && reins_px >= 10
+            && reins_bad.is_none(),
+        format!(
+            "{SADDLE} resident: {saddle_resident}; {saddle_px} px added by the saddle \
+             (want >= 150), {reins_px} more by the reins when ridden (want >= 10); first \
+             colour the sheet cannot produce: saddle {:?}, reins {:?}",
+            saddle_bad.map(|c| format!("#{c:06x}")),
+            reins_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

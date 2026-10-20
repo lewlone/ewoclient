@@ -948,6 +948,26 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M295 — r151: r88's saddled horse, its saddle sheet resident,
+            // and with its reins while the bot rides it.
+            for d in draws
+                .iter()
+                .filter(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Horse)
+            {
+                let saddled = d.saddle.is_some_and(|p| {
+                    p.layers.iter().flatten().any(|(k, _)| {
+                        *k == "horse_saddle/saddle"
+                            && state
+                                .world_renderer
+                                .entity_pass()
+                                .is_some_and(|e| e.armor_sheet_resident(k))
+                    })
+                });
+                if saddled {
+                    c.saddle_frames.0 += 1;
+                    c.saddle_frames.1 += d.ridden as usize;
+                }
+            }
             // M294 — r150: the staged horse in iron armour, its sheet resident.
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::Horse

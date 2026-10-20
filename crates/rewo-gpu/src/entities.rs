@@ -303,6 +303,12 @@ pub struct EntityDraw<'a> {
     /// M294 — the body slot's equipment layers (`HORSE_BODY`) over the
     /// horse family's armour shell; `None` for none or another kind.
     pub body_armor: Option<ArmorPiece<'a>>,
+    /// M295 — the saddle slot's equipment layers over the horse family's
+    /// saddle mesh; `None` for none or another kind.
+    pub saddle: Option<ArmorPiece<'a>>,
+    /// M295 — `EquineRenderState.isRidden` (`isVehicle()`): the saddle's
+    /// reins show.
+    pub ridden: bool,
     /// M285 — `CreeperRenderState.isPowered`: a charged creeper draws
     /// `CreeperPowerLayer`'s energy swirl. Ignored for other kinds.
     pub powered: bool,
@@ -1315,6 +1321,10 @@ pub struct MobModel {
     /// UVs in texels of a 64x64 equipment sheet, placed at draw time by the
     /// worn layer's atlas slot. Empty for every other kind.
     body_shell: Vec<GpuQuad>,
+    /// M295 — the saddle mesh and its reins (texel UVs of a 64x64 sheet,
+    /// placed by the worn layer's slot). Empty for every other kind.
+    saddle_shell: Vec<GpuQuad>,
+    saddle_reins: Vec<GpuQuad>,
     /// M286 — the breeze's wind funnel (its texture slot 1), UVs in `0..1`
     /// of its own sheet: `BreezeWindLayer` draws it every frame. Empty for
     /// every other kind (and in the face-label mode, which keeps it in
@@ -1733,9 +1743,38 @@ impl EntityPass {
                     .collect()
             })
             .unwrap_or_default();
+            // M295 — the horse family's saddle and reins.
+            let raw = |q: &mobs::RawQuad| GpuQuad {
+                pos: q.pos,
+                uv: q.uv,
+                shade: q.shade,
+                part: q.part as u16,
+                tex: 0,
+                facing: q.facing,
+                normal: q.normal,
+            };
+            let (saddle_shell, saddle_reins): (Vec<GpuQuad>, Vec<GpuQuad>) = match def.kind {
+                EntityModelKind::Horse => Some((false, mobs::HORSE_SCALE)),
+                EntityModelKind::Donkey => Some((true, mobs::DONKEY_SCALE)),
+                EntityModelKind::Mule => Some((true, mobs::MULE_SCALE)),
+                EntityModelKind::SkeletonHorse | EntityModelKind::ZombieHorse => Some((false, 1.0)),
+                _ => None,
+            }
+            .filter(|_| !debug_tex)
+            .map(|(ears, scale)| mobs::equine_saddle(ears, scale))
+            .filter(|(saddle, _)| saddle.parts.len() == m.parts.len())
+            .map(|(saddle, reins)| {
+                (
+                    saddle.quads.iter().map(raw).collect(),
+                    reins.quads.iter().map(raw).collect(),
+                )
+            })
+            .unwrap_or_default();
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 body_shell,
+                saddle_shell,
+                saddle_reins,
                 swirl,
                 swirl_sheet,
                 wind,
@@ -1926,7 +1965,12 @@ impl EntityPass {
                     // `<layer dir>/<texture>` — both humanoid layer types
                     // start with `humanoid`, and no mob texture does.
                     // M294 — and the horse's body armour.
-                    .filter(|(k, _)| k.starts_with("humanoid") || k.starts_with("horse_body/"))
+                    // M295 — and the saddles' (`<kind>_saddle/`).
+                    .filter(|(k, _)| {
+                        k.starts_with("humanoid")
+                            || k.starts_with("horse_body/")
+                            || k.split('/').next().is_some_and(|d| d.ends_with("_saddle"))
+                    })
                     .map(|(k, v)| ((*k).to_string(), *v))
                     .collect(),
                 skin_lru: LruSlots::new(SKIN_SLOTS),
@@ -3713,13 +3757,19 @@ impl EntityPass {
         }
         // M294: `SimpleEquipmentLayer`'s `HORSE_BODY`: the shell in each
         // worn layer's sheet, dyed by the vertex colour, lit and overlaid as
-        // the armour below is.
-        if let Some(piece) = d.body_armor {
+        // the armour below is. M295: the saddle the same way, with its reins
+        // while ridden.
+        let reins: &[GpuQuad] = if d.ridden { &model.saddle_reins } else { &[] };
+        for (piece, shell) in [
+            (d.body_armor, model.body_shell.iter().chain([].iter())),
+            (d.saddle, model.saddle_shell.iter().chain(reins.iter())),
+        ] {
+            let Some(piece) = piece else { continue };
             for (key, tint) in piece.layers.iter().flatten() {
                 let Some(&(ax, ay, _, _)) = self.armor_slots.get(*key) else {
                     continue;
                 };
-                for q in &model.body_shell {
+                for q in shell.clone() {
                     if verts.len() + 6 > MAX_VERTS {
                         return;
                     }

@@ -7628,6 +7628,92 @@ pub fn undead_horse_armor() -> Model {
     equine_with(false, 0.1)
 }
 
+/// M295 — `EquineSaddleModel.createSaddleLayer()`: the equine body mesh
+/// (`createBodyMesh(NONE)`, drawn in the saddle's sheet, transparent there)
+/// plus the saddle's own boxes; with `DonkeyModel`'s transformer (the long
+/// ears; its chests are not modelled) for the donkey and the mule, and each
+/// kind's layer scale (`HORSE_SADDLE` with `livingHorseScale`,
+/// `DonkeyModel.createSaddleLayer(0.87F / 0.92F)`, the undead horses bare).
+/// The two reins (`left/right_saddle_line`, `visible = isRidden`) are a
+/// second model, drawn only while ridden. Both keep the base model's parts.
+pub fn equine_saddle(donkey_ears: bool, scale: f32) -> (Model, Model) {
+    let mut saddle = equine_with(donkey_ears, 0.0);
+    {
+        let mut b = ModelBuilder::new();
+        saddle_boxes(&mut b);
+        let extra = b.finish(1.0);
+        saddle.quads.extend(extra.quads);
+    }
+    saddle.scale *= scale;
+    let mut b = ModelBuilder::new();
+    let neck = Fold::rot([PI / 6.0, 0.0, 0.0], [0.0, 4.0, -12.0]);
+    let line = Fold::rot([-PI / 6.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    for x in [3.1, -3.1] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            (32.0, 2.0),
+            [x, -6.0, -8.0],
+            [0.0, 3.0, 16.0],
+            0.0,
+            false,
+            &[line, neck],
+        );
+    }
+    let mut reins = b.finish(1.0);
+    reins.scale = saddle.scale;
+    (saddle, reins)
+}
+
+/// `createSaddleLayer`'s boxes, on the static part with the body's or the
+/// neck's fold.
+fn saddle_boxes(b: &mut ModelBuilder) {
+    let body = Fold::at([0.0, 11.0, 5.0]);
+    let neck = Fold::rot([PI / 6.0, 0.0, 0.0], [0.0, 4.0, -12.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (26.0, 0.0),
+        [-5.0, -8.0, -9.0],
+        [10.0, 9.0, 9.0],
+        0.5,
+        false,
+        &[body],
+    );
+    for x in [2.0, -3.0] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            (29.0, 5.0),
+            [x, -9.0, -6.0],
+            [1.0, 2.0, 2.0],
+            0.0,
+            false,
+            &[neck],
+        );
+    }
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (1.0, 1.0),
+        [-3.0, -11.0, -1.9],
+        [6.0, 5.0, 6.0],
+        0.22,
+        false,
+        &[neck],
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (19.0, 0.0),
+        [-2.0, -11.0, -4.0],
+        [4.0, 5.0, 2.0],
+        0.2,
+        false,
+        &[neck],
+    );
+}
+
 /// `LayerDefinition.create(..., 64, 64)` for the horse armour layers.
 pub const HORSE_ARMOR_TEXTURE: [f32; 2] = [64.0, 64.0];
 
@@ -10985,5 +11071,28 @@ mod horse_armor_tests {
         let leg = base.quads.iter().map(|q| q.part).max().unwrap();
         assert!((width(&shell, leg) - width(&base, leg) - 0.2).abs() < 1e-4);
         assert_eq!(undead_horse_armor().scale, equine(false).scale);
+    }
+}
+
+#[cfg(test)]
+mod saddle_tests {
+    use super::*;
+
+    /// M295 — the saddle mesh is the body mesh plus six boxes (the saddle,
+    /// the two bit pieces, the head strap and the mouth wrap — five quads
+    /// lists of six), at the kind's scale; the reins are two zero-thickness
+    /// boxes on the static part, two faces each.
+    #[test]
+    fn the_saddle_is_the_body_plus_its_boxes() {
+        let base = horse();
+        let (saddle, reins) = equine_saddle(false, HORSE_SCALE);
+        assert_eq!(saddle.parts.len(), base.parts.len());
+        assert_eq!(saddle.quads.len(), base.quads.len() + 5 * 6);
+        assert_eq!(saddle.scale, base.scale);
+        assert_eq!(reins.scale, base.scale);
+        // Two faces each: a zero-thickness box's other four have no area
+        // (vanilla emits them, and they draw nothing).
+        assert_eq!(reins.quads.len(), 2 * 2);
+        assert!(reins.quads.iter().all(|q| q.part == STATIC_PART));
     }
 }

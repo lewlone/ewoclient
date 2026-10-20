@@ -498,6 +498,8 @@ pub(crate) fn neutral_draw() -> EntityDraw<'static> {
         outline: None,
         powered: false,
         body_armor: None,
+        saddle: None,
+        ridden: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,

@@ -1368,6 +1368,8 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         outline: None,
         powered: false,
         body_armor: None,
+        saddle: None,
+        ridden: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,

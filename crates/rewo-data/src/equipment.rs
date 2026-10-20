@@ -66,6 +66,12 @@ pub enum ArmorLayer {
     Wings,
     /// M294 — `horse_body`, a horse's body armour (`HORSE_BODY`).
     HorseBody,
+    /// M295 — the horse family's saddles, one sheet per kind.
+    HorseSaddle,
+    DonkeySaddle,
+    MuleSaddle,
+    SkeletonHorseSaddle,
+    ZombieHorseSaddle,
 }
 
 impl ArmorLayer {
@@ -75,18 +81,42 @@ impl ArmorLayer {
             ArmorLayer::Leggings => "humanoid_leggings",
             ArmorLayer::Wings => "wings",
             ArmorLayer::HorseBody => "horse_body",
+            ArmorLayer::HorseSaddle => "horse_saddle",
+            ArmorLayer::DonkeySaddle => "donkey_saddle",
+            ArmorLayer::MuleSaddle => "mule_saddle",
+            ArmorLayer::SkeletonHorseSaddle => "skeleton_horse_saddle",
+            ArmorLayer::ZombieHorseSaddle => "zombie_horse_saddle",
         }
     }
 
     /// The layers a full load reads. `Wings` is last so the two humanoid
     /// entries keep the order they had, which keeps `textures` — a `Vec`
     /// the atlas packs in order — byte-for-byte what it was.
-    pub const ALL: [ArmorLayer; 4] = [
+    pub const ALL: [ArmorLayer; 9] = [
         ArmorLayer::Humanoid,
         ArmorLayer::Leggings,
         ArmorLayer::Wings,
         ArmorLayer::HorseBody,
+        ArmorLayer::HorseSaddle,
+        ArmorLayer::DonkeySaddle,
+        ArmorLayer::MuleSaddle,
+        ArmorLayer::SkeletonHorseSaddle,
+        ArmorLayer::ZombieHorseSaddle,
     ];
+
+    /// M294/M295 — the layers loaded after the original three, so the
+    /// atlas, which packs the sheets in order, keeps every earlier slot.
+    pub fn is_late(self) -> bool {
+        !matches!(
+            self,
+            ArmorLayer::Humanoid | ArmorLayer::Leggings | ArmorLayer::Wings
+        )
+    }
+
+    /// Whether this layer's sheets are drawn over a model (not `Wings`).
+    pub fn is_drawn(self) -> bool {
+        self != ArmorLayer::Wings
+    }
 }
 
 /// `DyedItemColor.LEATHER_COLOR` — the `color_when_undyed` every leather layer
@@ -240,7 +270,7 @@ impl EquipmentAssets {
         }
         // M294 — the horse_body sheets after every other: the atlas packs
         // `textures` in order, so the earlier sheets keep their places.
-        wanted.sort_by_key(|((_, layer), _, _)| *layer == ArmorLayer::HorseBody);
+        wanted.sort_by_key(|((_, layer), _, _)| layer.is_late());
         for ((asset, layer), tex, dyeable) in wanted {
             // Keyed by the **texture**, not by the asset: two assets naming the
             // same sheet share one atlas entry, and one asset's two layers name
