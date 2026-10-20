@@ -1578,11 +1578,13 @@ pub enum EntityModelKind {
     ZoglinBaby,
     /// M328 — `BabyStriderModel` (`STRIDER_BABY`).
     StriderBaby,
+    /// M330 — `BabyFoxModel` (`FOX_BABY`).
+    FoxBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 122;
+    pub const COUNT: usize = 123;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1705,6 +1707,7 @@ impl EntityModelKind {
         EntityModelKind::HoglinBaby,
         EntityModelKind::ZoglinBaby,
         EntityModelKind::StriderBaby,
+        EntityModelKind::FoxBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1828,6 +1831,7 @@ impl EntityModelKind {
             EntityModelKind::HoglinBaby => "hoglin_baby",
             EntityModelKind::ZoglinBaby => "zoglin_baby",
             EntityModelKind::StriderBaby => "strider_baby",
+            EntityModelKind::FoxBaby => "fox_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1891,6 +1895,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::HoglinBaby
                 | EntityModelKind::ZoglinBaby
                 | EntityModelKind::StriderBaby
+                | EntityModelKind::FoxBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2873,6 +2878,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::StriderBaby,
         textures: &["strider_baby"],
         build: strider_baby,
+    },
+    // M330 — the kit's red sheet (Rewo's adult fox draws no snow variant).
+    MobDef {
+        kind: EntityModelKind::FoxBaby,
+        textures: &["fox_baby"],
+        build: fox_baby,
     },
 ];
 
@@ -5488,6 +5499,76 @@ fn strider_baby() -> Model {
         let leg = b.part([x, 20.0, 0.0], anim, 1.0);
         b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 4.0, 2.0], NONE);
     }
+    b.finish(1.0)
+}
+
+/// M330 — `BabyFoxModel.createBodyLayer()` (32 x 32): a 6 x 5 x 5 head
+/// (looking) with its snout and two ears, a 5 x 4 x 6 body with its tail,
+/// and four 2 x 2 x 2 legs. The kit has no procedural gait:
+/// `FoxModel.setWalkingPose` moves no leg, and `BabyFoxModel` adds
+/// `FOX_BABY_WALK` through `applyWalk(pos, speed, 1.0, 2.5)`, so every part
+/// is named for that rig. Its four leg `SCALE` channels (a 1.15 stretch) are
+/// dropped, as the generator drops every scale channel; sitting and sleeping
+/// are not posed, as Rewo's adult fox's are not.
+fn fox_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let head = b.part_named(
+        "head",
+        [0.0, 18.125, 0.125],
+        [0.0; 3],
+        Anim::Head,
+        1.0,
+        None,
+    );
+    for (uv, min, dims) in [
+        ((0.0, 0.0), [-3.0, -2.125, -5.125], [6.0, 5.0, 5.0]),
+        ((18.0, 20.0), [-1.0, 0.875, -7.125], [2.0, 2.0, 2.0]),
+        ((22.0, 8.0), [-3.0, -4.125, -4.125], [2.0, 2.0, 1.0]),
+        ((22.0, 11.0), [1.0, -4.125, -4.125], [2.0, 2.0, 1.0]),
+    ] {
+        b.cube(head, 0, uv, min, dims, NONE);
+    }
+    for (name, pivot, uv) in [
+        ("right_hind_leg", [-1.5, 22.0, 4.0], (22.0, 4.0)),
+        ("left_hind_leg", [1.5, 22.0, 4.0], (22.0, 0.0)),
+        ("right_front_leg", [-1.5, 22.0, 0.0], (22.0, 4.0)),
+        ("left_front_leg", [1.5, 22.0, 0.0], (22.0, 0.0)),
+    ] {
+        let leg = b.part_named(name, pivot, [0.0; 3], Anim::None, 1.0, None);
+        b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 2.0, 2.0], NONE);
+    }
+    let body = b.part_named("body", [0.0, 20.0, 2.0], [0.0; 3], Anim::None, 1.0, None);
+    b.cube(
+        body,
+        0,
+        (0.0, 10.0),
+        [-2.5, -2.0, -3.0],
+        [5.0, 4.0, 6.0],
+        NONE,
+    );
+    let tail = b.part_named(
+        "tail",
+        [0.0, -0.5, 3.0],
+        [0.0; 3],
+        Anim::None,
+        1.0,
+        Some(body),
+    );
+    b.cube(
+        tail,
+        0,
+        (0.0, 20.0),
+        [-1.5, -1.48, -1.0],
+        [3.0, 3.0, 6.0],
+        NONE,
+    );
+    b.keyframe(
+        &crate::anim_defs::FOX_BABY_WALK,
+        KfDriver::Walk {
+            speed_f: 1.0,
+            scale_f: 2.5,
+        },
+    );
     b.finish(1.0)
 }
 
@@ -12110,6 +12191,7 @@ mod tests {
                     | EntityModelKind::HoglinBaby
                     | EntityModelKind::ZoglinBaby
                     | EntityModelKind::StriderBaby
+                    | EntityModelKind::FoxBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13574,5 +13656,49 @@ mod baby_strider_tests {
             (ratio - 0.125).abs() < 1e-4,
             "body/leg overlap {ratio} of a leg"
         );
+    }
+}
+
+#[cfg(test)]
+mod kit_tests {
+    use super::*;
+
+    /// M330 — `BabyFoxModel`: ten boxes, the head box's front at (5, 5)..
+    /// (11, 10) of its sheet, the tail under the body, and `FOX_BABY_WALK`
+    /// on the walk with every one of its channels bound to a part (the
+    /// build panics on a name it cannot find), the legs among them.
+    #[test]
+    fn the_kit_is_its_own_model_on_its_own_walk() {
+        let m = fox_baby();
+        assert_eq!(m.quads.len(), 10 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m.quads.iter().any(|q| q.part == head
+            && q.facing == Facing::North
+            && (span(q, 0), span(q, 1)) == ((5.0, 11.0), (5.0, 10.0))));
+        let named = |n: &str| m.parts.iter().position(|p| p.name == n).unwrap();
+        assert_eq!(m.parts[named("tail")].parent, Some(named("body") as u16));
+        assert_eq!(m.keyframes.len(), 1);
+        let kf = &m.keyframes[0];
+        assert!(std::ptr::eq(kf.def, &crate::anim_defs::FOX_BABY_WALK));
+        assert!(
+            matches!(kf.driver, KfDriver::Walk { speed_f, scale_f } if speed_f == 1.0 && scale_f == 2.5)
+        );
+        assert_eq!(kf.parts.len(), kf.def.channels.len());
+        for leg in [
+            "right_hind_leg",
+            "left_hind_leg",
+            "right_front_leg",
+            "left_front_leg",
+        ] {
+            assert!(
+                kf.parts.contains(&(named(leg) as u16)),
+                "{leg} is not on the walk"
+            );
+        }
     }
 }

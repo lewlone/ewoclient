@@ -451,6 +451,8 @@ pub(super) struct RenderCheck {
     pub(super) hoglets: (bool, bool),
     /// M328 — r183: whether a baby strider drew as `BabyStriderModel`.
     pub(super) baby_strider: bool,
+    /// M330 — r184: whether a kit drew as `BabyFoxModel`.
+    pub(super) kit: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1216,7 +1218,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 183;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 184;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1417,6 +1419,13 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M330 — r184: `render_check.py` summons a kit; it must draw as
+        // `BabyFoxModel` (`mobtexshot m55`).
+        row(
+            "r184 a kit drew as BabyFoxModel",
+            self.kit,
+            format!("kit seen: {}", self.kit),
         );
         // M328 — r183: `render_check.py` summons a baby strider; it must
         // draw as `BabyStriderModel` (`mobtexshot m54`).

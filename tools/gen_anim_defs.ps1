@@ -42,7 +42,8 @@ $targets = @(
     @{ File = "SnifferAnimation.java";     Const = "SNIFFER_STAND_UP" },
     @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_ROLL_UP" },
     @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_PEEK" },
-    @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_ROLL_OUT" }
+    @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_ROLL_OUT" },
+    @{ File = "FoxBabyAnimation.java";     Const = "FOX_BABY_WALK" }
 )
 
 $out = New-Object System.Text.StringBuilder

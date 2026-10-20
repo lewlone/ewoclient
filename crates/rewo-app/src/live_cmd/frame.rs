@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M330 — r184: the staged kit.
+            c.kit |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::FoxBaby);
             // M328 — r183: the staged baby strider.
             c.baby_strider |= draws
                 .iter()

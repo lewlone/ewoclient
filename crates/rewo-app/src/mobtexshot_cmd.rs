@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 54;
+const EXPECTED_WITNESSES: usize = 55;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -186,9 +186,10 @@ const MIN_DISCRIMINATING: usize = 89;
 /// the last two from three views), and the babies under a quarter block or
 /// thin enough to lose their attributed pixels to their neighbours: turtle,
 /// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
-/// villager and glow squid. Each baby is graded up close by its own witness
-/// (m42..m54, n1/n2). An eighteenth means something stopped drawing.
-const MAX_SMALL: usize = 17;
+/// villager and glow squid, and (M330) the kit. Each baby is graded up close
+/// by its own witness (m42..m55, n1/n2). A nineteenth means something stopped
+/// drawing.
+const MAX_SMALL: usize = 18;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -3954,6 +3955,62 @@ fn run_check(
         format!(
             "{bs_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             bs_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m55 — M330: the kit draws, every pixel producible by its own sheet;
+    // the mesh and its walk rig rest on
+    // `the_kit_is_its_own_model_on_its_own_walk`.
+    let mut kfst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.7, -0.9),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    kfst.wr.set_entities(&[], kfst.right, kfst.up, 0.0);
+    kfst.off
+        .render(gpu, Some((&mut kfst.wr, kfst.vp)), &ov, BG)?;
+    let kf_empty = kfst.off.read_rgba(gpu)?;
+    let kf_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "fox_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    kfst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::FoxBaby)],
+        kfst.right,
+        kfst.up,
+        0.0,
+    );
+    kfst.off
+        .render(gpu, Some((&mut kfst.wr, kfst.vp)), &ov, BG)?;
+    let kf_frame = kfst.off.read_rgba(gpu)?;
+    kfst.destroy(gpu);
+    let (mut kf_px, mut kf_bad) = (0usize, None);
+    for (p, e) in kf_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(kf_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        kf_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if kf_bad.is_none() && !explains(&kf_sheet, c) {
+            kf_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m55.the_kit_draws_from_its_own_sheet",
+        !kf_sheet.is_empty() && kf_px >= 200 && kf_bad.is_none(),
+        format!(
+            "{kf_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            kf_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 
