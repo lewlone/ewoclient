@@ -1146,6 +1146,8 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M340 — the tabby kitten's sheet (the base of its coat variants).
+    ("cat_baby", "entity/cat/cat_tabby_baby.png", 32, 32),
     // M339 — the brown foal's sheet (the base of its coat variants).
     ("horse_baby", "entity/horse/horse_brown_baby.png", 64, 64),
     // M338 — the creamy baby llama's sheet (the base of its coat variants).

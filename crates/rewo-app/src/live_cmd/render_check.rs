@@ -474,6 +474,9 @@ pub(super) struct RenderCheck {
     /// M339 — r193: whether a horse foal drew as `BabyHorseModel`, and on a
     /// coat variant.
     pub(super) horse_foal: (bool, bool),
+    /// M340 — r194: whether a kitten drew as `BabyCatModel`, and on a coat
+    /// variant.
+    pub(super) kitten: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1239,7 +1242,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 193;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 194;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1439,6 +1442,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M340 — r194: `render_check.py` summons a black kitten; it must draw
+        // as `BabyCatModel` on a coat variant, the server's registry entry's
+        // `baby_asset_id` (`mobtexshot m65`).
+        row(
+            "r194 a black kitten drew as BabyCatModel on its coat's baby sheet",
+            self.kitten.0 && self.kitten.1,
+            format!(
+                "kitten seen: {}, on a coat variant: {}",
+                self.kitten.0, self.kitten.1
             ),
         );
         // M339 — r193: `render_check.py` summons a black horse foal; it must

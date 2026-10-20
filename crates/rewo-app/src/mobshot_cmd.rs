@@ -287,7 +287,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// 351, the baby bee. M334: 351 → 357, the foals. M335: 357 → 360, the
 /// camel calf. M336: 360 → 363, the rabbit kit. M337: 363 → 366, the goat
 /// kid. M338: 366 → 369, the baby llama. M339: 369 → 372, the horse foal.
-const EXPECTED_MOB_VIEWS: usize = 372;
+/// M340: 372 → 375, the kitten.
+const EXPECTED_MOB_VIEWS: usize = 375;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.
@@ -1940,8 +1941,8 @@ fn run_variant_check(
         "n1.every_declared_variant_sheet_baked_at_its_bases_size",
         // M223: 52 → 68, the eight boat and eight chest-boat woods. M338:
         // 69 → 72, the baby llama's white, brown and gray coats. M339: 72 →
-        // 78, the horse foal's six coats.
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 78,
+        // 78, the horse foal's six coats. M340: 78 → 88, the kittens' ten.
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 88,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \

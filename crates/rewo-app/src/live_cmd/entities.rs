@@ -3701,6 +3701,8 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         EntityModelKind::Llama if baby => EntityModelKind::LlamaBaby,
         // M339 — `BabyHorseModel`.
         EntityModelKind::Horse if baby => EntityModelKind::HorseBaby,
+        // M340 — `BabyCatModel`, the ocelot kitten's layer.
+        EntityModelKind::Cat if baby => EntityModelKind::CatBaby,
         k => k,
     }
 }
@@ -3730,7 +3732,7 @@ pub(crate) fn baby_scales(kind: EntityModelKind) -> (f32, f32) {
         EntityModelKind::DonkeyBaby | EntityModelKind::MuleBaby => (1.0, 0.5),
         EntityModelKind::CamelBaby | EntityModelKind::RabbitBaby => (1.0, 0.5),
         EntityModelKind::GoatBaby | EntityModelKind::LlamaBaby => (1.0, 0.5),
-        EntityModelKind::HorseBaby => (1.0, 0.5),
+        EntityModelKind::HorseBaby | EntityModelKind::CatBaby => (1.0, 0.5),
         _ => (0.5, 0.5),
     }
 }
@@ -3750,6 +3752,37 @@ pub(crate) fn fish_kind(v: rewo_data::mob_variants::FishVariant) -> EntityModelK
         rewo_data::mob_variants::FishBase::Large => EntityModelKind::TropicalFishLarge,
     }
 }
+/// M340 — the variant a mob holds when the server sent none: each class's
+/// `defineSynchedData` default. The registry mobs' default is a key
+/// (`Cat.DEFAULT_VARIANT` = black, `WolfVariants.DEFAULT` = pale,
+/// `Frog.DEFAULT_VARIANT` = temperate) resolved in the synced registry by
+/// `VariantUtils.getDefaultOrAny`, which falls back to any entry (the
+/// first) when the key is missing; the ordinal mobs' is 0 (horse WHITE with
+/// no markings, llama CREAMY, axolotl LUCY). `None` for a kind with no
+/// variant here.
+pub(crate) fn default_variant(
+    kind: EntityModelKind,
+    cats: &[rewo_net::variant_parse::MobVariantDef],
+    wolves: &[rewo_net::variant_parse::MobVariantDef],
+    frogs: &[rewo_net::variant_parse::MobVariantDef],
+) -> Option<i32> {
+    let by_key = |defs: &[rewo_net::variant_parse::MobVariantDef], key: &str| {
+        let i = defs.iter().position(|d| d.id == key).unwrap_or(0);
+        i32::try_from(i).ok()
+    };
+    match kind {
+        EntityModelKind::Cat | EntityModelKind::CatBaby => by_key(cats, "minecraft:black"),
+        EntityModelKind::Wolf => by_key(wolves, "minecraft:pale"),
+        EntityModelKind::Frog => by_key(frogs, "minecraft:temperate"),
+        EntityModelKind::Horse
+        | EntityModelKind::HorseBaby
+        | EntityModelKind::Llama
+        | EntityModelKind::LlamaBaby
+        | EntityModelKind::Axolotl => Some(0),
+        _ => None,
+    }
+}
+
 pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySession) -> u16 {
     // M223 — a boat's wood is its TYPE, not a metadata variant.
     if matches!(kind, EntityModelKind::Boat | EntityModelKind::ChestBoat) {
@@ -3762,7 +3795,19 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
             .and_then(|t| rewo_data::mob_variants::variant_id(&t))
             .unwrap_or(0);
     }
-    let Some(v) = session.world.entities.variant(id) else {
+    // M340 — a variant the server never sent is the class's default: it
+    // sends only non-default metadata (`getNonDefaultValues`), and the
+    // client's `SynchedEntityData` starts at `defineSynchedData`'s value. A
+    // black cat or a white horse is that default, so before M340 every one
+    // drew Rewo's base sheet instead (tabby, brown).
+    let Some(v) = session.world.entities.variant(id).or_else(|| {
+        default_variant(
+            kind,
+            &session.cat_variants,
+            &session.wolf_variants,
+            &session.frog_variants,
+        )
+    }) else {
         return 0;
     };
     let registry = |defs: &[rewo_net::variant_parse::MobVariantDef], tame: bool| {
@@ -3773,8 +3818,18 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
             .and_then(rewo_data::mob_variants::variant_id)
             .unwrap_or(0)
     };
+    // M340 — the same entry's baby sheet (`assetInfo(isBaby)`).
+    let registry_baby = |defs: &[rewo_net::variant_parse::MobVariantDef], tame: bool| {
+        usize::try_from(v)
+            .ok()
+            .and_then(|i| defs.get(i))
+            .and_then(|d| d.baby_texture(tame))
+            .and_then(rewo_data::mob_variants::variant_id)
+            .unwrap_or(0)
+    };
     match kind {
         EntityModelKind::Cat => registry(&session.cat_variants, false),
+        EntityModelKind::CatBaby => registry_baby(&session.cat_variants, false),
         EntityModelKind::Wolf => {
             registry(&session.wolf_variants, session.world.entities.is_tame(id))
         }

@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 64;
+const EXPECTED_WITNESSES: usize = 65;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -188,10 +188,10 @@ const MIN_DISCRIMINATING: usize = 88;
 /// thin enough to lose their attributed pixels to their neighbours: turtle,
 /// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
 /// villager and glow squid, (M330) the kit, (M332) the ocelot kitten,
-/// (M333) the baby bee, (M336) the rabbit kit and (M337) the goat kid. Each
-/// baby is graded up close by its own witness (m42..m62, n1/n2). A
-/// twenty-third means something stopped drawing.
-const MAX_SMALL: usize = 22;
+/// (M333) the baby bee, (M336) the rabbit kit, (M337) the goat kid and
+/// (M340) the kitten. Each baby is graded up close by its own witness
+/// (m42..m65, n1/n2). A twenty-fourth means something stopped drawing.
+const MAX_SMALL: usize = 23;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -4571,6 +4571,84 @@ fn run_check(
             "black variant id {black_id}; {}; {hf_diff} bytes differ between the coats \
              (want >= 200 px each, none foreign, the coats different)",
             hf_rows.join("; ")
+        ),
+    ));
+
+    // m65 — M340: the kitten draws its tabby base, and on the black coat's
+    // variant id (the id `vanilla_variant` gives a kitten whose registry
+    // entry's `baby_asset_id` is `cat_black_baby`) the black kitten sheet:
+    // each frame is producible by its own sheet, and the two differ.
+    let mut ktst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.8, 0.6, -0.8),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    ktst.wr.set_entities(&[], ktst.right, ktst.up, 0.0);
+    ktst.off
+        .render(gpu, Some((&mut ktst.wr, ktst.vp)), &ov, BG)?;
+    let kt_empty = ktst.off.read_rgba(gpu)?;
+    let kt_black_id =
+        rewo_data::mob_variants::variant_id("entity/cat/cat_black_baby.png").unwrap_or(0);
+    let kt_base: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "cat_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let kt_black: HashSet<u32> = baked
+        .mob_variant_textures
+        .iter()
+        .find(|t| t.key == "cat_baby" && t.index == kt_black_id)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut kt_rows = Vec::new();
+    let mut kt_frames = Vec::new();
+    let mut kt_ok = kt_black_id != 0;
+    for (variant, coat, sheet) in [(0u16, "tabby", kt_base), (kt_black_id, "black", kt_black)] {
+        let d = EntityDraw {
+            variant,
+            ..neutral_draw(EntityModelKind::CatBaby)
+        };
+        ktst.wr.set_entities(&[d], ktst.right, ktst.up, 0.0);
+        ktst.off
+            .render(gpu, Some((&mut ktst.wr, ktst.vp)), &ov, BG)?;
+        let frame = ktst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(kt_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        kt_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        kt_rows.push(format!(
+            "{coat}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+        kt_frames.push(frame);
+    }
+    ktst.destroy(gpu);
+    let kt_diff = diff_bytes(&kt_frames[0], &kt_frames[1]);
+    kt_ok &= kt_diff > 0;
+    w.push(wit(
+        "m65.the_kitten_wears_its_coat_s_baby_sheet",
+        kt_ok,
+        format!(
+            "black variant id {kt_black_id}; {}; {kt_diff} bytes differ between the coats \
+             (want >= 200 px each, none foreign, the coats different)",
+            kt_rows.join("; ")
         ),
     ));
 

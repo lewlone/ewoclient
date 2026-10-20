@@ -1603,11 +1603,13 @@ pub enum EntityModelKind {
     LlamaBaby,
     /// M339 — `BabyHorseModel` (`HORSE_BABY`).
     HorseBaby,
+    /// M340 — `BabyCatModel` (`CAT_BABY`, `BabyFelineModel`'s layer).
+    CatBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 133;
+    pub const COUNT: usize = 134;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1741,6 +1743,7 @@ impl EntityModelKind {
         EntityModelKind::GoatBaby,
         EntityModelKind::LlamaBaby,
         EntityModelKind::HorseBaby,
+        EntityModelKind::CatBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1875,6 +1878,7 @@ impl EntityModelKind {
             EntityModelKind::GoatBaby => "goat_baby",
             EntityModelKind::LlamaBaby => "llama_baby",
             EntityModelKind::HorseBaby => "horse_baby",
+            EntityModelKind::CatBaby => "cat_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1949,6 +1953,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::GoatBaby
                 | EntityModelKind::LlamaBaby
                 | EntityModelKind::HorseBaby
+                | EntityModelKind::CatBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -3001,6 +3006,14 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::HorseBaby,
         textures: &["horse_baby"],
         build: horse_baby,
+    },
+    // M340 — the tabby kitten's sheet; the registry's other coats are its
+    // variants, through `MobVariantDef::baby_texture`. The collar is not
+    // drawn, as on Rewo's adult cat.
+    MobDef {
+        kind: EntityModelKind::CatBaby,
+        textures: &["cat_baby"],
+        build: feline_baby,
     },
 ];
 
@@ -13041,6 +13054,7 @@ mod tests {
                     | EntityModelKind::GoatBaby
                     | EntityModelKind::LlamaBaby
                     | EntityModelKind::HorseBaby
+                    | EntityModelKind::CatBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat

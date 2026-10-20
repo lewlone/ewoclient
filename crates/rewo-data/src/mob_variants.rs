@@ -85,6 +85,18 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("cat", "entity/cat/cat_red.png"),
     ("cat", "entity/cat/cat_siamese.png"),
     ("cat", "entity/cat/cat_white.png"),
+    // M340 — the kittens' sheets (`CatVariant.babyAssetInfo`); the tabby
+    // kitten is the baked base of `cat_baby`.
+    ("cat_baby", "entity/cat/cat_all_black_baby.png"),
+    ("cat_baby", "entity/cat/cat_black_baby.png"),
+    ("cat_baby", "entity/cat/cat_british_shorthair_baby.png"),
+    ("cat_baby", "entity/cat/cat_calico_baby.png"),
+    ("cat_baby", "entity/cat/cat_jellie_baby.png"),
+    ("cat_baby", "entity/cat/cat_persian_baby.png"),
+    ("cat_baby", "entity/cat/cat_ragdoll_baby.png"),
+    ("cat_baby", "entity/cat/cat_red_baby.png"),
+    ("cat_baby", "entity/cat/cat_siamese_baby.png"),
+    ("cat_baby", "entity/cat/cat_white_baby.png"),
     // Wolf — 9 registry entries x {wild, tame}; `wolf.png` (pale wild) is the
     // baked base. The nine `_angry` sheets are excluded; see the module docs.
     ("wolf", "entity/wolf/wolf_tame.png"),
@@ -485,6 +497,7 @@ mod tests {
         }
         for base in [
             "entity/cat/cat_tabby.png",
+            "entity/cat/cat_tabby_baby.png",
             "entity/wolf/wolf.png",
             "entity/frog/frog_temperate.png",
             "entity/axolotl/axolotl_lucy.png",

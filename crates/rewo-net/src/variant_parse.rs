@@ -88,6 +88,12 @@ pub struct MobVariantDef {
     pub wild: Option<String>,
     /// `assets.tame`, wolves only.
     pub tame: Option<String>,
+    /// M340 — the baby's sheet: `baby_asset_id` (cat; `CatVariant
+    /// .NETWORK_CODEC` sends it) or `baby_assets.wild` (wolf). A frog has
+    /// none (its young is the tadpole).
+    pub baby_wild: Option<String>,
+    /// M340 — `baby_assets.tame`, wolves only.
+    pub baby_tame: Option<String>,
     /// `assets.angry`, wolves only. **Decoded and not rendered**: choosing it
     /// needs `remainingPersistentAngerTime > 0`, i.e. `DATA_ANGER_END_TIME`
     /// (index 22, LONG) against the world clock, which makes it a texture that
@@ -103,6 +109,16 @@ impl MobVariantDef {
             self.tame.as_deref().or(self.wild.as_deref())
         } else {
             self.wild.as_deref()
+        }
+    }
+
+    /// M340 — `CatVariant.assetInfo(true)` / `WolfVariant`'s `babyInfo`: the
+    /// same tame-or-wild choice on the baby's sheets.
+    pub fn baby_texture(&self, tame: bool) -> Option<&str> {
+        if tame {
+            self.baby_tame.as_deref().or(self.baby_wild.as_deref())
+        } else {
+            self.baby_wild.as_deref()
         }
     }
 }
@@ -152,6 +168,8 @@ pub fn parse_single_asset_registry(
         wild: string_at(data.as_ref(), "asset_id"),
         tame: None,
         angry: None,
+        baby_wild: string_at(data.as_ref(), "baby_asset_id"),
+        baby_tame: None,
     })
 }
 
@@ -162,11 +180,14 @@ pub fn parse_wolf_variant_registry(
 ) -> Vec<MobVariantDef> {
     read_entries(r, count, |id, data| {
         let assets = data.as_ref().and_then(|n| n.get("assets")).cloned();
+        let baby = data.as_ref().and_then(|n| n.get("baby_assets")).cloned();
         MobVariantDef {
             id,
             wild: string_at(assets.as_ref(), "wild"),
             tame: string_at(assets.as_ref(), "tame"),
             angry: string_at(assets.as_ref(), "angry"),
+            baby_wild: string_at(baby.as_ref(), "wild"),
+            baby_tame: string_at(baby.as_ref(), "tame"),
         }
     })
 }
@@ -258,6 +279,47 @@ mod tests {
         // the prefix, so the adult sheet is the jar-relative path.
         assert_eq!(v[0].wild.as_deref(), Some("entity/cat/cat_jellie.png"));
         assert_eq!(v[0].tame, None, "a cat has no tame sheet");
+        // M340 — and the kitten's sheet, from `baby_asset_id`.
+        assert_eq!(
+            v[0].baby_texture(false),
+            Some("entity/cat/cat_jellie_baby.png")
+        );
+        assert_eq!(
+            v[0].baby_texture(true),
+            Some("entity/cat/cat_jellie_baby.png")
+        );
+    }
+
+    /// M340 — a wolf entry's `baby_assets` give the puppy's wild and tame
+    /// sheets, chosen by tameness as the adult's are.
+    #[test]
+    fn a_wolf_entry_reads_its_baby_assets() {
+        let b = body(&[(
+            "minecraft:ashen",
+            Some(compound(&[
+                (
+                    "assets",
+                    compound(&[("wild", s("minecraft:entity/wolf/wolf_ashen"))]),
+                ),
+                (
+                    "baby_assets",
+                    compound(&[
+                        ("wild", s("minecraft:entity/wolf/wolf_ashen_baby")),
+                        ("tame", s("minecraft:entity/wolf/wolf_ashen_tame_baby")),
+                        ("angry", s("minecraft:entity/wolf/wolf_ashen_angry_baby")),
+                    ]),
+                ),
+            ])),
+        )]);
+        let v = parse_wolf_variant_registry(&mut PacketReader::new(&b), 1);
+        assert_eq!(
+            v[0].baby_texture(false),
+            Some("entity/wolf/wolf_ashen_baby.png")
+        );
+        assert_eq!(
+            v[0].baby_texture(true),
+            Some("entity/wolf/wolf_ashen_tame_baby.png")
+        );
     }
 
     #[test]

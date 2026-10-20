@@ -4254,6 +4254,7 @@ fn a_baby_sulfur_cube_takes_the_small_model() {
     assert_eq!(f(K::Goat, true), K::GoatBaby);
     assert_eq!(f(K::Llama, true), K::LlamaBaby);
     assert_eq!(f(K::Horse, true), K::HorseBaby);
+    assert_eq!(f(K::Cat, true), K::CatBaby);
     assert_eq!(f(K::Slime, true), K::Slime);
     // And their scales: their own models take no render scale.
     let s = super::entities::baby_scales;
@@ -4263,4 +4264,36 @@ fn a_baby_sulfur_cube_takes_the_small_model() {
     assert_eq!(s(K::HappyGhastBaby), (1.0, 0.2375));
     assert_eq!(s(K::SulfurCubeSmall), (1.0, 0.5));
     assert_eq!(s(K::Cow), (0.5, 0.5));
+}
+
+/// M340 — a mob the server sent no variant for holds its class's default:
+/// a cat the registry's black entry wherever it sits, a wolf the pale one,
+/// a horse 0 (WHITE, which is not Rewo's brown base sheet); a key missing
+/// from the registry falls back to the first entry, as `getDefaultOrAny`.
+#[test]
+fn an_unsent_variant_is_the_class_s_default() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let def = |id: &str| rewo_net::variant_parse::MobVariantDef {
+        id: id.into(),
+        wild: None,
+        tame: None,
+        angry: None,
+        baby_wild: None,
+        baby_tame: None,
+    };
+    let cats = [
+        def("minecraft:tabby"),
+        def("minecraft:jellie"),
+        def("minecraft:black"),
+    ];
+    let wolves = [def("minecraft:ashen"), def("minecraft:pale")];
+    let f = super::entities::default_variant;
+    assert_eq!(f(K::Cat, &cats, &wolves, &[]), Some(2));
+    assert_eq!(f(K::CatBaby, &cats, &wolves, &[]), Some(2));
+    assert_eq!(f(K::Wolf, &cats, &wolves, &[]), Some(1));
+    assert_eq!(f(K::Frog, &cats, &wolves, &[]), Some(0));
+    assert_eq!(f(K::Horse, &cats, &wolves, &[]), Some(0));
+    assert_eq!(f(K::HorseBaby, &cats, &wolves, &[]), Some(0));
+    assert_eq!(f(K::Cow, &cats, &wolves, &[]), None);
+    assert_eq!(f(K::Cat, &cats[..2], &wolves, &[]), Some(0));
 }

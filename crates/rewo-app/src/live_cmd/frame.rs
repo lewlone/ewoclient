@@ -973,6 +973,14 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M340 — r194: the staged black kitten, on a coat variant (its
+            // registry entry's `baby_asset_id`, from the real server).
+            for d in draws.iter() {
+                if d.kind == rewo_gpu::mobs::EntityModelKind::CatBaby {
+                    c.kitten.0 = true;
+                    c.kitten.1 |= d.variant != 0;
+                }
+            }
             // M339 — r193: the staged black horse foal, on a coat variant.
             for d in draws.iter() {
                 if d.kind == rewo_gpu::mobs::EntityModelKind::HorseBaby {
