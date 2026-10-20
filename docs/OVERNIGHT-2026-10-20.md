@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 149 Rewo milestones, M194 to M342, in about 322 commits on
+- **What happened**: 150 Rewo milestones, M194 to M343, in about 325 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`5e8c2d3e`): 4493 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 196 of
-  196 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`0f7fe4ea`): 4494 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 197 of
+  197 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -32,7 +32,8 @@ released.
   - every tamed or owned mob losing the data after its owner, so a tame
     cat's or wolf's coat (and the wolf's collar) never arrived (M342);
   - black cats drawn tabby and white horses drawn brown, because the server
-    never sends a mob's default variant (M340).
+    never sends a mob's default variant (M340);
+  - every adult cat drawn a quarter too big (M343).
 - **New, broadly**:
   - item frames;
   - blended animated textures and flowing water and lava;
@@ -463,6 +464,7 @@ released.
 - **M340**: kittens are their own model, in all eleven coats (read from the server's cat registry); and a fix: black cats and white horses had always been drawn tabby and brown (the server never sends a mob's default variant).
 - **M341**: wolf puppies too, in every coat, wild or tame.
 - **M342**: tame wolves and puppies wear their collar, in its colour (Rewo drew none before); and a decode fix: every tamed or owned mob had lost the metadata after its owner (a tame cat's or wolf's coat, among others).
+- **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -524,6 +526,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `0f7fe4ea` | **M343** — the cat's and the kitten's collar (inflated copies; index 23 INT on the cat); the adult cat at vanilla's 0.8 (it was drawn at the ocelot's size); two unit tests, variant check n10, mobtexshot **m68** and render-check **r197**. |
 | `5e8c2d3e` | **M342** — the wolf's and the puppy's collar (index 21 INT on the wolf, default red, the wolf's mesh again in the coplanar range, tinted); the owner-reference skip fixed (16 bytes, not a varint: every owned mob lost its later metadata); four unit tests, `mobshot --variant-check` n9, mobtexshot **m67** and render-check **r196**. |
 | `ea22f1f1` | **M341** — the puppy on `BabyWolfModel` in its coat's baby sheet (wild or tame), tail at a wild wolf's π/5; two unit tests, mobshot 378 views, mobtexshot **m66** and render-check **r195**. |
 | `b3f2c7fd` | **M340** — the kitten on `BabyCatModel` in its coat's baby sheet; the cat and wolf registries' baby assets parsed; a missing variant is the class's default (black cats drew tabby, white horses brown); four unit tests, mobshot 375 views, mobtexshot **m65** and render-check **r194**. |
@@ -917,6 +920,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M343: **4,494 tests passed, 0 failed; gates 51/51** (mobtexshot 68, the variant check's 15 witnesses); render check **197/197** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M342: **4,493 tests passed, 0 failed; gates 51/51** (mobtexshot 67, the variant check's 14 witnesses); render check **196/196** on two runs after the owner-reference fix (the first chain's runs read 195/196: r196's tame wolf had no collar, which is how the decode bug was found; that chain also failed two unit tests whose counts now include the collar copy, fixed to count the bare mesh); clippy (both) and `cargo fmt --check` clean.
 - After M341: **4,490 tests passed, 0 failed; gates 51/51** (mobtexshot 66, mobshot 378 views, the variant check at 105); render check **195/195** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M340: **4,489 tests passed, 0 failed; gates 51/51** (mobtexshot 65, mobshot 375 views, the variant check at 88); render check **194/194** on two runs, after the default-variant fix (the first chain's two runs read 193/194, r194's black kitten on variant 0, which is how the bug was found); clippy (both) and `cargo fmt --check` clean.
