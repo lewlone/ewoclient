@@ -3999,6 +3999,29 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M354 — the bee's mood, nectar, stinger and bob (2026-10-20)
+
+Every bee drew calm, empty and armed, and held still. `Bee.DATA_FLAGS_ID` is
+index 18 BYTE (`Bee extends Animal`: a third reading of 18 after the sheep's
+wool and the tamable flags), now routed on the bee into `MobState` (0x04 has
+stung, 0x08 has nectar). `BeeRenderer`'s sheet is angry first (`Bee.isAngry()`:
+`DATA_ANGER_END_TIME` against the world clock), then nectar: three alternates
+per age on the `bee` and `bee_baby` keys (`mob_variants::bee_texture`). The
+stinger is its own part, hidden once the bee has stung (`Show::HasStinger`).
+The bone is now a part (both bees, vanilla's part names), the wings and the
+three leg plates its children, so `BeeModel.bobUpAndDown` runs: with `s =
+cos(age · 0.18)` the bone pitches 0.1 + s·π·0.025 and drops s·0.9 px, the front
+legs swing to −s·π·0.1 + π/8 and the back legs to −s·π·0.05 + π/4; an angry
+bee keeps the flying pose without the bob. Rewo still poses every bee
+airborne (`state.isOnGround` is not modelled).
+
+**Unit tests**: the four sheets a size on their keys; the bob at `s` = 1 and
+`s` = 0, none while angry; the baby's wings now the bone's children. **n13**:
+0x0C at index 18 is a bee's flags, a wolf's byte is not. **mobtexshot m76**:
+the bee and the baby draw all four sheets from their own, all different, and
+lose a few px with the stinger (with the stinger always shown it fails).
+**r208**: a staged stung bee with nectar and an angry bee.
+
 ### M353 — the snow golem's pumpkin (2026-10-20)
 
 No snow golem wore its pumpkin. `SnowGolem.DATA_PUMPKIN_ID` is index 16 BYTE
