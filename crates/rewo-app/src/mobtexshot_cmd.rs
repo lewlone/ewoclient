@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 63;
+const EXPECTED_WITNESSES: usize = 64;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -4492,6 +4492,85 @@ fn run_check(
             "gray variant id {gray_id}; {}; {lk_diff} bytes differ between the coats \
              (want >= 200 px each, none foreign, the coats different)",
             lk_rows.join("; ")
+        ),
+    ));
+
+    // m64 — M339: the horse foal draws its brown base, and on the black
+    // coat's variant id (`horse_baby_texture(4)`) the black foal sheet: each
+    // frame is producible by its own sheet, and the two differ. The mesh's
+    // rest angles rest on `the_horse_foal_rests_where_setup_anim_puts_it`.
+    let mut hfst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.8, 1.4, -1.8),
+        Vec3::new(0.0, 0.7, 0.0),
+    )?;
+    hfst.wr.set_entities(&[], hfst.right, hfst.up, 0.0);
+    hfst.off
+        .render(gpu, Some((&mut hfst.wr, hfst.vp)), &ov, BG)?;
+    let hf_empty = hfst.off.read_rgba(gpu)?;
+    let black_id =
+        rewo_data::mob_variants::variant_id(rewo_data::mob_variants::horse_baby_texture(4))
+            .unwrap_or(0);
+    let hf_base: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "horse_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let hf_black: HashSet<u32> = baked
+        .mob_variant_textures
+        .iter()
+        .find(|t| t.key == "horse_baby" && t.index == black_id)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut hf_rows = Vec::new();
+    let mut hf_frames = Vec::new();
+    let mut hf_ok = black_id != 0;
+    for (variant, coat, sheet) in [(0u16, "brown", hf_base), (black_id, "black", hf_black)] {
+        let d = EntityDraw {
+            variant,
+            ..neutral_draw(EntityModelKind::HorseBaby)
+        };
+        hfst.wr.set_entities(&[d], hfst.right, hfst.up, 0.0);
+        hfst.off
+            .render(gpu, Some((&mut hfst.wr, hfst.vp)), &ov, BG)?;
+        let frame = hfst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(hf_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        hf_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        hf_rows.push(format!(
+            "{coat}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+        hf_frames.push(frame);
+    }
+    hfst.destroy(gpu);
+    let hf_diff = diff_bytes(&hf_frames[0], &hf_frames[1]);
+    hf_ok &= hf_diff > 0;
+    w.push(wit(
+        "m64.the_horse_foal_wears_its_coat_s_baby_sheet",
+        hf_ok,
+        format!(
+            "black variant id {black_id}; {}; {hf_diff} bytes differ between the coats \
+             (want >= 200 px each, none foreign, the coats different)",
+            hf_rows.join("; ")
         ),
     ));
 

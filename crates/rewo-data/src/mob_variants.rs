@@ -128,6 +128,14 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("horse", "entity/horse/horse_black.png"),
     ("horse", "entity/horse/horse_gray.png"),
     ("horse", "entity/horse/horse_darkbrown.png"),
+    // M339 — the foal's coats, `HorseRenderer`'s `HorseTextures.baby`; the
+    // brown foal (3) is the baked base of `horse_baby`.
+    ("horse_baby", "entity/horse/horse_white_baby.png"),
+    ("horse_baby", "entity/horse/horse_creamy_baby.png"),
+    ("horse_baby", "entity/horse/horse_chestnut_baby.png"),
+    ("horse_baby", "entity/horse/horse_black_baby.png"),
+    ("horse_baby", "entity/horse/horse_gray_baby.png"),
+    ("horse_baby", "entity/horse/horse_darkbrown_baby.png"),
     // Tropical-fish patterns (M68). Six sheets per body plan, of which
     // `_pattern_1` is the baked base of that plan's pattern slot — so five
     // alternates each, in `TropicalFish.Pattern` declaration order within the
@@ -369,6 +377,17 @@ const HORSE_BY_ID: &[&str] = &[
     "entity/horse/horse_darkbrown.png",
 ];
 
+/// M339 — the foals' sheets, by the same `equine::Variant` id.
+const HORSE_BABY_BY_ID: &[&str] = &[
+    "entity/horse/horse_white_baby.png",
+    "entity/horse/horse_creamy_baby.png",
+    "entity/horse/horse_chestnut_baby.png",
+    "entity/horse/horse_brown_baby.png",
+    "entity/horse/horse_black_baby.png",
+    "entity/horse/horse_gray_baby.png",
+    "entity/horse/horse_darkbrown_baby.png",
+];
+
 /// The variant id for a jar-relative texture path.
 ///
 /// `Some(0)` when it is the mob's own baked base texture — the vanilla slot,
@@ -437,6 +456,13 @@ pub fn horse_texture(type_variant: i32) -> &'static str {
     HORSE_BY_ID[((type_variant & 0xFF).rem_euclid(n)) as usize]
 }
 
+/// M339 — a foal's texture: the same low byte and WRAP, on the foal sheets
+/// (`HorseRenderer.getTextureLocation` picks `variant.baby` for a baby).
+pub fn horse_baby_texture(type_variant: i32) -> &'static str {
+    let n = HORSE_BABY_BY_ID.len() as i32;
+    HORSE_BABY_BY_ID[((type_variant & 0xFF).rem_euclid(n)) as usize]
+}
+
 /// Every alternate as `(key, variant id, jar-relative path)`, for the bake.
 pub fn specs() -> impl Iterator<Item = (&'static str, u16, &'static str)> {
     VARIANT_TEXTURES
@@ -465,6 +491,7 @@ mod tests {
             "entity/llama/llama_creamy.png",
             "entity/llama/llama_creamy_baby.png",
             "entity/horse/horse_brown.png",
+            "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
         }
@@ -612,6 +639,30 @@ mod tests {
             assert!(v >= VANILLA_VARIANT_BASE);
             let (key, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
             assert_eq!(key, "llama_baby");
+        }
+    }
+
+    /// M339 — a foal's coat follows the adult's low byte and WRAP onto its
+    /// own sheet; every coat but the brown base is a `horse_baby` alternate.
+    #[test]
+    fn a_foal_wears_its_coat_s_baby_sheet() {
+        for (v, coat) in [
+            (0, "white"),
+            (3, "brown"),
+            (4, "black"),
+            (7, "white"),
+            (0x104, "black"),
+        ] {
+            assert_eq!(
+                horse_baby_texture(v),
+                format!("entity/horse/horse_{coat}_baby.png")
+            );
+        }
+        assert_eq!(variant_id(horse_baby_texture(3)), Some(0));
+        for v in [0, 1, 2, 4, 5, 6] {
+            let id = variant_id(horse_baby_texture(v)).unwrap();
+            let (key, _, _) = specs().find(|(_, i, _)| *i == id).unwrap();
+            assert_eq!(key, "horse_baby");
         }
     }
 }

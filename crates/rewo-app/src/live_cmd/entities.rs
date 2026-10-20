@@ -3699,6 +3699,8 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         EntityModelKind::Goat if baby => EntityModelKind::GoatBaby,
         // M338 — `BabyLlamaModel`.
         EntityModelKind::Llama if baby => EntityModelKind::LlamaBaby,
+        // M339 — `BabyHorseModel`.
+        EntityModelKind::Horse if baby => EntityModelKind::HorseBaby,
         k => k,
     }
 }
@@ -3728,6 +3730,7 @@ pub(crate) fn baby_scales(kind: EntityModelKind) -> (f32, f32) {
         EntityModelKind::DonkeyBaby | EntityModelKind::MuleBaby => (1.0, 0.5),
         EntityModelKind::CamelBaby | EntityModelKind::RabbitBaby => (1.0, 0.5),
         EntityModelKind::GoatBaby | EntityModelKind::LlamaBaby => (1.0, 0.5),
+        EntityModelKind::HorseBaby => (1.0, 0.5),
         _ => (0.5, 0.5),
     }
 }
@@ -3782,6 +3785,11 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         }
         EntityModelKind::Llama => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
+                .unwrap_or(0)
+        }
+        // M339 — the same low byte on the foal sheets.
+        EntityModelKind::HorseBaby => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::horse_baby_texture(v))
                 .unwrap_or(0)
         }
         // M338 — the same id on `BABY_TEXTURES` (this is the swapped kind).

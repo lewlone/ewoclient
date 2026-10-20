@@ -1601,11 +1601,13 @@ pub enum EntityModelKind {
     GoatBaby,
     /// M338 — `BabyLlamaModel` (`LLAMA_BABY`).
     LlamaBaby,
+    /// M339 — `BabyHorseModel` (`HORSE_BABY`).
+    HorseBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 132;
+    pub const COUNT: usize = 133;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1738,6 +1740,7 @@ impl EntityModelKind {
         EntityModelKind::RabbitBaby,
         EntityModelKind::GoatBaby,
         EntityModelKind::LlamaBaby,
+        EntityModelKind::HorseBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1871,6 +1874,7 @@ impl EntityModelKind {
             EntityModelKind::RabbitBaby => "rabbit_baby",
             EntityModelKind::GoatBaby => "goat_baby",
             EntityModelKind::LlamaBaby => "llama_baby",
+            EntityModelKind::HorseBaby => "horse_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1944,6 +1948,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::RabbitBaby
                 | EntityModelKind::GoatBaby
                 | EntityModelKind::LlamaBaby
+                | EntityModelKind::HorseBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2989,6 +2994,13 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::LlamaBaby,
         textures: &["llama_baby"],
         build: llama_baby,
+    },
+    // M339 — the brown foal's sheet; the other six coats are its variants
+    // (`mob_variants::horse_baby_texture`).
+    MobDef {
+        kind: EntityModelKind::HorseBaby,
+        textures: &["horse_baby"],
+        build: horse_baby,
     },
 ];
 
@@ -5865,7 +5877,10 @@ fn bee_baby() -> Model {
 /// the neck, head and ears. `BabyDonkeyModel.setupAnim` forces the look pitch
 /// to -30 degrees, so `head_parts`' π/6 base cancels and the neck rests at its
 /// own 0.3927 tilt; the head does not look, as Rewo's adult's does not. The
-/// chest parts carry no box (a foal carries no chest).
+/// chest parts carry no box (a foal carries no chest). M339: the box-less
+/// `tail` part rests where `AbstractEquineModel.setupAnim` puts it,
+/// `getTailXRotOffset()` (-π/4 for this model) + π/6 = -π/12, under its
+/// box's own -0.7418; M334 had left that term out.
 fn donkey_baby() -> Model {
     let mut b = ModelBuilder::new();
     let body = Fold::at([1.0, 14.0, 0.0]);
@@ -5889,7 +5904,7 @@ fn donkey_baby() -> Model {
         false,
         &[
             Fold::rot([-0.7418, 0.0, 0.0], [0.0, 0.0, 0.0]),
-            Fold::at([0.0, -1.5, 6.5]),
+            Fold::rot([-PI / 12.0, 0.0, 0.0], [0.0, -1.5, 6.5]),
             body,
         ],
     );
@@ -6312,6 +6327,86 @@ fn llama_baby() -> Model {
     ] {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [min_x, -0.5, -1.5], [3.0, 8.0, 3.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M339 — `BabyHorseModel.createBabyMesh(CubeDeformation.NONE)` (64 x 64):
+/// an 8 x 7 x 14 body with its tail, four 3 x 9 x 3 legs on the quadruped
+/// walk as Rewo's adult equine's, and the neck, head and two ears. Two rest
+/// angles are `AbstractEquineModel.setupAnim`'s, not the layer's: the neck
+/// (`head_parts`) at π/6 (the layer says 0.6109), and the tail at
+/// `getTailXRotOffset()` (-π/2 here) + π/6 = -π/3 (the layer says -0.7418).
+/// The head does not look, as the adult's does not; markings are not drawn,
+/// as the adult's are not; a foal wears no saddle or armour.
+fn horse_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = Fold::at([0.0, 12.5, 0.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 13.0),
+        [-4.0, -3.5, -7.0],
+        [8.0, 7.0, 14.0],
+        0.0,
+        false,
+        &[body],
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (24.0, 34.0),
+        [-1.5, -1.5, -1.0],
+        [3.0, 3.0, 8.0],
+        0.0,
+        false,
+        &[Fold::rot([-PI / 3.0, 0.0, 0.0], [0.0, -1.0, 7.0]), body],
+    );
+    let neck = Fold::rot([PI / 6.0, 0.0, 0.0], [0.0, 10.0, -6.0]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (30.0, 0.0),
+        [-2.0, -6.0, -2.0],
+        [4.0, 8.0, 4.0],
+        0.0,
+        false,
+        &[neck],
+    );
+    let head = Fold::at([0.0, -6.0516, -0.2951]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-3.0, -3.9484, -6.705],
+        [6.0, 4.0, 9.0],
+        0.0,
+        false,
+        &[head, neck],
+    );
+    for (x, z, z_rot, uv, min_z) in [
+        (2.0, 1.9451, 0.2618, (0.0, 4.0), -0.8),
+        (-2.0, 1.645, -0.2618, (0.0, 0.0), -0.5),
+    ] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [-1.0, -2.5, min_z],
+            [2.0, 3.0, 1.0],
+            0.0,
+            false,
+            &[Fold::rot([0.0, 0.0, z_rot], [x, -4.2484, z]), head, neck],
+        );
+    }
+    for (pivot, anim, uv) in [
+        ([2.4, 16.0, 5.4], Anim::QuadHindLeft, (12.0, 46.0)),
+        ([-2.4, 16.0, 5.4], Anim::QuadHindRight, (0.0, 46.0)),
+        ([2.4, 16.0, -5.4], Anim::QuadFrontLeft, (12.0, 34.0)),
+        ([-2.4, 16.0, -5.4], Anim::QuadFrontRight, (0.0, 34.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.5, -1.0, -1.5], [3.0, 9.0, 3.0], NONE);
     }
     b.finish(1.0)
 }
@@ -12945,6 +13040,7 @@ mod tests {
                     | EntityModelKind::RabbitBaby
                     | EntityModelKind::GoatBaby
                     | EntityModelKind::LlamaBaby
+                    | EntityModelKind::HorseBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -14721,5 +14817,49 @@ mod llama_kid_tests {
             && q.facing == Facing::North
             && (span(q, 0), span(q, 1)) == ((4.0, 10.0), (4.0, 15.0))));
         assert!(m.parts.iter().all(|p| !matches!(p.show, Show::Chested)));
+    }
+}
+
+#[cfg(test)]
+mod equine_foal_rest_tests {
+    use super::*;
+
+    fn span(q: &RawQuad, i: usize) -> (f32, f32) {
+        q.uv.iter()
+            .map(|u| u[i])
+            .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+    }
+
+    /// The tilt about x of the static north face with this UV rect: its
+    /// normal is (0, sin θ, -cos θ) after `rotateZYX(0, 0, θ)`.
+    fn north_tilt(m: &Model, rect: ((f32, f32), (f32, f32))) -> f32 {
+        let q = m
+            .quads
+            .iter()
+            .find(|q| q.facing == Facing::North && (span(q, 0), span(q, 1)) == rect)
+            .expect("the face");
+        (-q.normal[2]).clamp(-1.0, 1.0).acos()
+    }
+
+    /// M339 — `BabyHorseModel`: ten boxes; the neck at `setupAnim`'s π/6
+    /// (not the layer's 0.6109) and the tail at -π/2 + π/6 (not -0.7418).
+    #[test]
+    fn the_horse_foal_rests_where_setup_anim_puts_it() {
+        let m = horse_baby();
+        assert_eq!(m.quads.len(), 10 * 6);
+        assert!((north_tilt(&m, ((34.0, 38.0), (4.0, 12.0))) - PI / 6.0).abs() < 1e-4);
+        assert!((north_tilt(&m, ((32.0, 35.0), (42.0, 45.0))) - PI / 3.0).abs() < 1e-4);
+    }
+
+    /// M339 — the donkey foal's tail: -π/12 on the box-less part
+    /// (`getTailXRotOffset` -π/4 + π/6) under the box's -0.7418.
+    #[test]
+    fn the_donkey_foal_s_tail_rests_where_setup_anim_puts_it() {
+        let m = donkey_baby();
+        let tilt = north_tilt(&m, ((32.0, 35.0), (41.0, 44.0)));
+        assert!(
+            (tilt - (0.7418 + PI / 12.0)).abs() < 1e-4,
+            "tail tilt {tilt}"
+        );
     }
 }
