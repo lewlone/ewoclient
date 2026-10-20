@@ -3994,6 +3994,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M349 — cold and warm pigs and chickens (2026-10-20)
+
+Every pig and chicken drew temperate. `Pig.DATA_VARIANT_ID` is index 19
+(after `DATA_BOOST_TIME`) with `PIG_VARIANT` (28), `Chicken.DATA_VARIANT_ID`
+index 18 with `CHICKEN_VARIANT` (30); both decoded and routed, and the
+`pig_variant` / `chicken_variant` registries parse as the cow's. Only COLD
+has its own mesh (`PigRenderer` / `ChickenRenderer`): `ColdPig`
+(`ColdPigModel`, the body under a 0.5 coat at (28, 32)) and `ColdChicken`
+(`ColdChickenModel`, a crest at (44, 0) and a 0-wide tail plane at (38, 9);
+the beak and wattle are the replaced head's children and survive, since
+`PartDefinition.addOrReplaceChild` keeps them). The warm pig and chicken are
+alternates of the base keys, the cold and warm young of the young's keys. A
+cold pig wears the same `PIG_SADDLE`. Unsent variants are TEMPERATE by name.
+
+**Unit tests**: the meshes' extra boxes and faces (the beak kept), the
+alternates' keys, the defaults and mesh picks. **n7**: the pig at 19 / 28,
+the chicken at 18 / 30 (without the pig's routing it fails). **mobtexshot
+m74**: the pig, the chicken and their young each draw all three sheets, every
+group of three different; m5's cap on kinds too small to grade in the crowd
+went 24 → 25 as the two new adults joined it. **r203**: a staged cold pig,
+cold chicken, warm piglet and warm chick, on a new z ~24 row.
+
 ### M348 — cold and warm cows (2026-10-20)
 
 Every cow drew temperate. `Cow.DATA_VARIANT_ID` is index 18 with its own
