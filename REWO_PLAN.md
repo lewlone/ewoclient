@@ -2097,6 +2097,7 @@ this shape once.
 | M281 (2026-10-20) — a burning armour stand draws its flames | **r139** | — | — |
 | M282 (2026-10-20) — the HUD vignette draws and follows the daylight | **r140** | — | — |
 | M283 (2026-10-20) — sleeping fades the screen | **r141** | — | — |
+| M284 (2026-10-20) — sleeping lays the camera in the bed and hides the hand | **r142** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3931,6 +3932,31 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M284 — the sleeping camera (2026-10-20)
+
+`Camera.alignWithEntity`'s sleeper branch: while `isSleeping` the camera
+turns to `bedOrientation.toYRot() - 180` (0 with no bed under the sleeping
+position: `BedBlock.getBedOrientation` reads `FACING` only off a bed) with
+the pitch levelled, at the SLEEPING pose's 0.2 eye height lifted
+`move(0, 0.15, 0)`. `camera_pose` (live_cmd/view.rs) is the one accessor:
+the view and projection, the billboard basis, the particles' view and the
+sound listener (`updateSource(camera)`) all read it; the crosshair's pick
+keeps the player's eye (`Entity.pick`). `renderItemInHand`'s `!isSleeping`
+hides the first-person hand.
+
+The listener now takes the camera's eye height (`eye_y()`), not a fixed
+1.62, so a crouching player's ears drop with the camera as vanilla's do.
+
+Recorded: vanilla eases the camera's eye height half the gap a tick
+(`Camera.tick`); Rewo's camera does not ease (crouching included), so the
+drop into the bed is immediate.
+
+**Unit test**: the yaw per facing and with no bed, the 0.35 lift, a
+west bed looking east. **r142**: r83's `red_bed[facing=west]`: the sleeping
+frame's camera yaw −90, pitch 0, eye 0.35 above the feet, with the player's
+own yaw different (the control); no hand drawn on an asleep frame, read back
+off the hand pass, and a hand drawn awake.
 
 ### M283 — the other camera overlays and the sleep fade (2026-10-20)
 
