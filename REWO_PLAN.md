@@ -2109,6 +2109,7 @@ this shape once.
 | M295 (2026-10-20) — a saddled horse draws its saddle, and its reins while ridden | **r151** | — | — |
 | M296 (2026-10-20) — the chested donkey draws with its chests | **r152** | — | — |
 | M297 (2026-10-20) — a chested llama draws in its red carpet | **r153** | — | — |
+| M298 (2026-10-20) — a saddled pig and a saddled strider draw their saddles | **r154** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3943,6 +3944,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M298 — pig and strider saddles (2026-10-20)
+
+`PigRenderer` adds `PIG_SADDLE`'s `SimpleEquipmentLayer` over
+`ModelLayers.PIG_SADDLE` (`PigModel.createBodyLayer(new CubeDeformation(
+0.5F))`, whatever the pig's variant model), `StriderRenderer`
+`STRIDER_SADDLE`'s over `STRIDER_SADDLE`, which is the strider's own layer.
+`pig_with(g)` / `quadruped_legs_g` build the pig's shell, `strider_saddle`
+is the strider; both ride M295's saddle path with no reins, the layers
+loaded late.
+
+The strider's saddle lies exactly on the body (no inflation), so the solid
+range's strict `GREATER` rejected all of it (mobtexshot's first run: 0 px);
+vanilla draws it after the body under `LESS_THAN_OR_EQUAL`. A coplanar
+saddle (`MobModel::saddle_coplanar`) now rides the trim range (`EQUAL`, no
+write), M68's reading of a coplanar layer.
+
+**Unit test**: the pig's shell is the pig at 0.5, the strider's the strider.
+**mobtexshot m29**: a saddled pig adds 628 px and a saddled strider 281,
+each only from its own jar saddle sheet, both resident. **r154**:
+`render_check.py` summons a saddled pig and a saddled strider.
 
 ### M297 — llama chests and carpets (2026-10-20)
 
