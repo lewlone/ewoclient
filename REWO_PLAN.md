@@ -3964,6 +3964,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M318 — the baby villager (2026-10-20)
+
+The second of M317's scrambled swaps. `VillagerRenderer` swaps in
+`BabyVillagerModel` (an 8 x 8 x 7 head with its hat, brim and nose, folded
+arms on rotated child folds, a body, a robe at 0.2, short legs) on
+`villager_baby.png`. `VillagerBaby` is that model, picked by
+`baby_model_kind`, with the base sheet only, as Rewo's adult villager (no type
+or profession layer); its sheet gets a spec row (the swap bake skips it).
+`mobshot` grades 294 views; the baby is m5's seventeenth small kind
+(`MAX_SMALL` 17).
+
+**Unit test**: the eleven boxes, and the head front at (7, 7)..(15, 15) of
+its sheet. **mobtexshot m44**: 1,390 px with no colour the baby sheet cannot
+produce; a clause asking for a colour the adult sheet cannot produce found
+none (the baby's palette lies inside the adult's) and was dropped, so the
+texel layout rests on the unit test. **r173**: a staged baby villager draws as
+its own model.
+
 ### M317 — the baby zombie and husk; M175's same-size swaps scramble (2026-10-20)
 
 **A finding about M175.** Its whole-sheet swaps were baked only for baby
