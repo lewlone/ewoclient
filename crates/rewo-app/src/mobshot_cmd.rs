@@ -270,8 +270,8 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 ///
 /// M223: 246 → 258, the four boat models (boat, chest boat, raft, chest raft)
 /// at three views each. M238: 258 → 261, the armour stand. M252: 261 → 264,
-/// the minecart.
-const EXPECTED_MOB_VIEWS: usize = 264;
+/// the minecart. M303: 264 → 267, the camel husk.
+const EXPECTED_MOB_VIEWS: usize = 267;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.

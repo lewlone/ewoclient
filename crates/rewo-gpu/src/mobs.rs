@@ -1500,11 +1500,16 @@ pub enum EntityModelKind {
     /// M238 — `ArmorStandModel` at its default pose; its two flags arrive
     /// per draw ([`StandParts`]), its small form as a half scale.
     ArmorStand,
+    /// M303 — `CamelHuskRenderer`: the camel's `AdultCamelModel` with the
+    /// husk's sheet. Its wire name had no kind, so it drew as a capsule.
+    /// Last before the capsule so every earlier kind keeps its index (and
+    /// its cell in `mobtexshot m5`'s crowd).
+    CamelHusk,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 97;
+    pub const COUNT: usize = 98;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1602,6 +1607,7 @@ impl EntityModelKind {
         EntityModelKind::ChestRaft,
         EntityModelKind::Minecart,
         EntityModelKind::ArmorStand,
+        EntityModelKind::CamelHusk,
         EntityModelKind::Capsule,
     ];
 
@@ -1700,6 +1706,7 @@ impl EntityModelKind {
             EntityModelKind::CopperGolem => "copper_golem",
             EntityModelKind::Nautilus => "nautilus",
             EntityModelKind::ZombieNautilus => "zombie_nautilus",
+            EntityModelKind::CamelHusk => "camel_husk",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -2563,6 +2570,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ZombieNautilus,
         textures: &["zombie_nautilus"],
         build: nautilus,
+    },
+    // M303 — the camel's mesh (walk rig included) on the husk's sheet.
+    MobDef {
+        kind: EntityModelKind::CamelHusk,
+        textures: &["camel_husk"],
+        build: camel,
     },
 ];
 

@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 33;
+const EXPECTED_WITNESSES: usize = 34;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2514,6 +2514,109 @@ fn run_check(
              (want >= 300); first colour the sheet cannot produce: {:?}; the goggles moved \
              when ridden: {goggles_moved}",
             harness_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m34 — M303: a camel husk draws as a camel on its own sheet (it drew as
+    // a capsule until M303): its frame differs from a camel's, every pixel
+    // is a colour the jar's `camel_husk` sheet can produce, and its saddle's
+    // pixels come from `camel_husk_saddle/saddle`.
+    const HUSK_SADDLE: &str = "camel_husk_saddle/saddle";
+    let husk_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "camel_husk")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let husk_saddle_sheet: HashSet<u32> = baked
+        .equipment
+        .textures
+        .iter()
+        .find(|t| t.key == HUSK_SADDLE)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut kst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(3.6, 3.4, -2.6),
+        Vec3::new(0.0, 1.8, -0.6),
+    )?;
+    let husk_saddle_resident = kst
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(HUSK_SADDLE));
+    kst.wr.set_entities(&[], kst.right, kst.up, 0.0);
+    kst.off.render(gpu, Some((&mut kst.wr, kst.vp)), &ov, BG)?;
+    let k_empty = kst.off.read_rgba(gpu)?;
+    let mut kshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        kst.wr.set_entities(&[d], kst.right, kst.up, 0.0);
+        kst.off.render(gpu, Some((&mut kst.wr, kst.vp)), &ov, BG)?;
+        kst.off.read_rgba(gpu)
+    };
+    let mut husk_layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    husk_layers[0] = Some((HUSK_SADDLE, [1.0, 1.0, 1.0]));
+    let k_camel = kshot(neutral_draw(EntityModelKind::Camel))?;
+    let k_bare = kshot(neutral_draw(EntityModelKind::CamelHusk))?;
+    let k_saddled = kshot(EntityDraw {
+        saddle: Some(rewo_gpu::entities::ArmorPiece {
+            layers: husk_layers,
+            ..Default::default()
+        }),
+        ..neutral_draw(EntityModelKind::CamelHusk)
+    })?;
+    kst.destroy(gpu);
+    let (mut husk_px, mut husk_bad) = (0usize, None);
+    for (p, e) in k_bare
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(k_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        husk_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if husk_bad.is_none() && !explains(&husk_sheet, c) {
+            husk_bad = Some(c);
+        }
+    }
+    let (mut hsad_px, mut hsad_bad) = (0usize, None);
+    for (a, b) in k_saddled
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(k_bare.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        hsad_px += 1;
+        let c = pack(a[0], a[1], a[2]);
+        if hsad_bad.is_none() && !explains(&husk_saddle_sheet, c) {
+            hsad_bad = Some(c);
+        }
+    }
+    let husk_not_camel = k_bare != k_camel;
+    w.push(wit(
+        "m34.a_camel_husk_draws_as_a_camel_on_its_own_sheet_and_wears_its_saddle",
+        !husk_sheet.is_empty()
+            && !husk_saddle_sheet.is_empty()
+            && husk_saddle_resident
+            && husk_not_camel
+            && husk_px >= 2000
+            && husk_bad.is_none()
+            && hsad_px >= 200
+            && hsad_bad.is_none(),
+        format!(
+            "{husk_px} px drawn (want >= 2000), first colour `camel_husk` cannot produce: {:?}; \
+             differs from a camel: {husk_not_camel}; {HUSK_SADDLE} resident: \
+             {husk_saddle_resident}, {hsad_px} px added by the saddle (want >= 200), first \
+             colour it cannot produce: {:?}",
+            husk_bad.map(|c| format!("#{c:06x}")),
+            hsad_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

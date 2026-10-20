@@ -948,6 +948,21 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M303 — r159: the staged saddled camel husk.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::CamelHusk
+                    && d.saddle.is_some_and(|p| {
+                        p.layers.iter().flatten().any(|(k, _)| {
+                            *k == "camel_husk_saddle/saddle"
+                                && state
+                                    .world_renderer
+                                    .entity_pass()
+                                    .is_some_and(|e| e.armor_sheet_resident(k))
+                        })
+                    })
+            }) {
+                c.camel_husk_frames += 1;
+            }
             // M302 — r158: the staged harnessed happy ghast.
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::HappyGhast

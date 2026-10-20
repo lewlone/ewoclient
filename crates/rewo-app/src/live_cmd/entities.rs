@@ -3324,6 +3324,8 @@ pub(crate) fn saddle_piece<'a>(
         EntityModelKind::Strider => ArmorLayer::StriderSaddle,
         // M300 — `CAMEL_SADDLE`.
         EntityModelKind::Camel => ArmorLayer::CamelSaddle,
+        // M303 — `CAMEL_HUSK_SADDLE`.
+        EntityModelKind::CamelHusk => ArmorLayer::CamelHuskSaddle,
         // M301 — `NAUTILUS_SADDLE` (both nautilus renderers).
         EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => ArmorLayer::NautilusSaddle,
         _ => return None,

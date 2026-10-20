@@ -1156,6 +1156,8 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
         128,
         128,
     ),
+    // M303 — `CamelHuskRenderer.CAMEL_HUSK_LOCATION`.
+    ("camel_husk", "entity/camel/camel_husk.png", 128, 128),
     // Emissive overlay layers (M52) — the textures vanilla's `EyesLayer` /
     // `LivingEntityEmissiveLayer` re-render the model with. Each is the
     // same size as its mob's base texture, which is what lets the emissive

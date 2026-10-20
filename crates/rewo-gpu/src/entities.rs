@@ -1817,7 +1817,10 @@ impl EntityPass {
                     Some((mobs::strider_saddle(), mobs::empty_model()))
                 }
                 // M300 — the camel's saddle, bridle and reins.
-                EntityModelKind::Camel if !debug_tex => Some(mobs::camel_saddle()),
+                // M303 — the camel husk's (`createCamelSaddleLayer` again).
+                EntityModelKind::Camel | EntityModelKind::CamelHusk if !debug_tex => {
+                    Some(mobs::camel_saddle())
+                }
                 // M301 — the nautilus's saddle (the zombie's too).
                 EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus if !debug_tex => {
                     Some((mobs::nautilus_saddle(), mobs::empty_model()))

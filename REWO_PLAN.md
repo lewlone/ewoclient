@@ -2114,6 +2114,7 @@ this shape once.
 | M300 (2026-10-20) — a saddled camel draws its saddle, and its reins while ridden | **r156** | — | — |
 | M301 (2026-10-20) — the saddled nautilus draws its saddle | **r157** | — | — |
 | M302 (2026-10-20) — a happy ghast draws in its harness | **r158** | — | — |
+| M303 (2026-10-20) — a saddled camel husk draws as a camel husk | **r159** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
