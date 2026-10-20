@@ -421,6 +421,9 @@ pub(super) struct RenderCheck {
     pub(super) baby_turtle_frames: usize,
     /// M316 — r171: frames on which a polar bear cub drew as its own model.
     pub(super) polar_cub_frames: usize,
+    /// M317 — r172: whether a baby zombie and a baby husk drew as
+    /// `BabyZombieModel`.
+    pub(super) baby_zombies: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1186,7 +1189,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 171;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 172;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1386,6 +1389,18 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M317 — r172: `render_check.py` summons a baby zombie (helmeted, so
+        // the sun does not burn it) and a baby husk; both must draw as
+        // `BabyZombieModel`. Until M317 they drew as the adult mesh wearing
+        // the baby sheet's UV offset, which scrambled it.
+        row(
+            "r172 a baby zombie and a baby husk drew as BabyZombieModel",
+            self.baby_zombies.0 && self.baby_zombies.1,
+            format!(
+                "baby zombie seen: {}, baby husk seen: {}",
+                self.baby_zombies.0, self.baby_zombies.1
             ),
         );
         // M316 — r171: `render_check.py` summons a polar bear cub; it must

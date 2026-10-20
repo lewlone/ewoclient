@@ -271,6 +271,11 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M317 -- r172. A baby zombie (a helmet keeps the sun off it) and a baby
+    # husk.
+    "summon minecraft:zombie ~-21 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b,"
+    "equipment:{head:{id:\"minecraft:leather_helmet\",count:1}}};"
+    "summon minecraft:husk ~-18 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b};"
     # M316 -- r171. A polar bear cub.
     "summon minecraft:polar_bear ~-24 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M315 -- r170. A baby turtle.

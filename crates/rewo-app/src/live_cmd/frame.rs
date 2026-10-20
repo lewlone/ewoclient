@@ -973,6 +973,12 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M317 — r172: the staged baby zombie and baby husk, as their own
+            // model.
+            for d in draws.iter() {
+                c.baby_zombies.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::ZombieBaby;
+                c.baby_zombies.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::HuskBaby;
+            }
             // M316 — r171: the staged polar bear cub, as its own model.
             if draws
                 .iter()

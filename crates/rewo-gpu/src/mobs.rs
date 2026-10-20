@@ -1542,11 +1542,15 @@ pub enum EntityModelKind {
     TurtleBaby,
     /// M316 — `BabyPolarBearModel` (`POLAR_BEAR_BABY`), swapped in for a cub.
     PolarBearBaby,
+    /// M317 — `BabyZombieModel` (`ZOMBIE_BABY`), and the husk's on it
+    /// (`HUSK_BABY` is the same layer), swapped in for a baby.
+    ZombieBaby,
+    HuskBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 104;
+    pub const COUNT: usize = 106;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1651,6 +1655,8 @@ impl EntityModelKind {
         EntityModelKind::HappyGhastBaby,
         EntityModelKind::TurtleBaby,
         EntityModelKind::PolarBearBaby,
+        EntityModelKind::ZombieBaby,
+        EntityModelKind::HuskBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1756,6 +1762,8 @@ impl EntityModelKind {
             EntityModelKind::HappyGhastBaby => "happy_ghast_baby",
             EntityModelKind::TurtleBaby => "turtle_baby",
             EntityModelKind::PolarBearBaby => "polar_bear_baby",
+            EntityModelKind::ZombieBaby => "zombie_baby",
+            EntityModelKind::HuskBaby => "husk_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1801,6 +1809,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::HappyGhastBaby
                 | EntityModelKind::TurtleBaby
                 | EntityModelKind::PolarBearBaby
+                | EntityModelKind::ZombieBaby
+                | EntityModelKind::HuskBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2667,6 +2677,19 @@ pub static MOBS: &[MobDef] = &[
         textures: &["polar_bear_baby"],
         build: polar_bear_baby,
     },
+    // M317 — the baby zombie's and husk's sheets (baked by their whole-sheet
+    // swaps, which until M317 painted them onto the ADULT mesh, whose UV
+    // layout they do not share).
+    MobDef {
+        kind: EntityModelKind::ZombieBaby,
+        textures: &["zombie_baby"],
+        build: zombie_baby,
+    },
+    MobDef {
+        kind: EntityModelKind::HuskBaby,
+        textures: &["husk_baby"],
+        build: husk_baby,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3040,6 +3063,78 @@ fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
 
 fn zombie() -> Model {
     zombie_like(1.0, None)
+}
+
+/// M317 — `BabyZombieModel.createBodyLayer(NONE)` (64 x 64): a 4 x 5 x 2
+/// body, a 6-px head with its 0.25 outer layer (looking), 2 x 5 x 2 arms on
+/// the zombie's arm animation, 2 x 4 x 2 legs, every box at its own texture
+/// offset (the left limbs not mirrored). Its layout is not the adult's: the
+/// baby sheet painted onto the adult mesh, which Rewo did from M175 to M316,
+/// scrambles it. At `scale` (the husk's renderer adds 1.0625).
+fn zombie_baby_like(scale: f32) -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (16.0, 16.0),
+        [-2.0, -2.5, -1.0],
+        [4.0, 5.0, 2.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 17.5, 0.0])],
+    );
+    let head = b.part([0.0, 15.25, 0.0], Anim::Head, 1.0);
+    b.cube(
+        head,
+        0,
+        (3.0, 3.0),
+        [-3.0, -6.25, -3.0],
+        [6.0, 6.0, 6.0],
+        NONE,
+    );
+    b.cube_g(
+        head,
+        0,
+        (35.0, 3.0),
+        [-3.0, -6.15, -3.0],
+        [6.0, 6.0, 6.0],
+        0.25,
+        NONE,
+    );
+    for (name, pivot, anim, uv) in [
+        (
+            "right_arm",
+            [-3.0, 15.5, 0.0],
+            Anim::UndeadArmRight,
+            (36.0, 16.0),
+        ),
+        (
+            "left_arm",
+            [3.0, 15.5, 0.0],
+            Anim::UndeadArmLeft,
+            (28.0, 16.0),
+        ),
+    ] {
+        let arm = b.part_named(name, pivot, [0.0; 3], anim, 1.0, None);
+        b.cube(arm, 0, uv, [-1.0, -0.5, -1.0], [2.0, 5.0, 2.0], NONE);
+    }
+    for (pivot, anim, uv) in [
+        ([-1.0, 20.0, 0.0], Anim::LegRight, (8.0, 16.0)),
+        ([1.0, 20.0, 0.0], Anim::LegLeft, (0.0, 16.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 4.0, 2.0], NONE);
+    }
+    b.finish(scale)
+}
+
+fn zombie_baby() -> Model {
+    zombie_baby_like(1.0)
+}
+
+fn husk_baby() -> Model {
+    // `HuskRenderer.scale` is 1.0625 for the baby too.
+    zombie_baby_like(1.0625)
 }
 
 fn husk() -> Model {
@@ -11071,6 +11166,8 @@ mod tests {
                     | EntityModelKind::HappyGhastBaby
                     | EntityModelKind::TurtleBaby
                     | EntityModelKind::PolarBearBaby
+                    | EntityModelKind::ZombieBaby
+                    | EntityModelKind::HuskBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12107,5 +12204,35 @@ mod polar_cub_tests {
         ] {
             assert!(anims.contains(&a), "{a:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod baby_zombie_tests {
+    use super::*;
+
+    /// M317 — `BabyZombieModel`'s seven boxes at their own texture offsets:
+    /// the head's front face samples (9, 9)..(15, 15) of the 64-px sheet,
+    /// not the adult's (8, 8)..(16, 16).
+    #[test]
+    fn the_baby_zombie_is_its_own_model() {
+        let m = zombie_baby();
+        assert_eq!(m.quads.len(), 7 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let front = m
+            .quads
+            .iter()
+            .find(|q| q.part == head && q.facing == Facing::North)
+            .unwrap();
+        let us: Vec<f32> = front.uv.iter().map(|u| u[0]).collect();
+        let vs: Vec<f32> = front.uv.iter().map(|u| u[1]).collect();
+        let span = |v: &[f32]| {
+            v.iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(*x), b.max(*x)))
+        };
+        assert_eq!(span(&us), (9.0, 15.0));
+        assert_eq!(span(&vs), (9.0, 15.0));
+        assert_eq!(husk_baby().scale, 1.0625);
+        assert!(!wears_humanoid_armor(EntityModelKind::ZombieBaby));
     }
 }

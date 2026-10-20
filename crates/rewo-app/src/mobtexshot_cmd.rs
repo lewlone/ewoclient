@@ -181,9 +181,10 @@ const MIN_DISCRIMINATING: usize = 72;
 /// the crowd (mobshot grades it from three views too), and (M307) the adult
 /// sulfur cube, half a block at size 1 under its translucent shell (m37
 /// grades it up close), (M315) the baby turtle, a quarter of a block (m42
-/// grades it up close), and (M316) the polar bear cub (m43 grades it up
-/// close). A fifteenth means something stopped drawing.
-const MAX_SMALL: usize = 14;
+/// grades it up close), (M316) the polar bear cub (m43 grades it up
+/// close), and (M317) the baby zombie and baby husk (n1/n2 grade the baby
+/// zombie up close). A seventeenth means something stopped drawing.
+const MAX_SMALL: usize = 16;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -943,16 +944,23 @@ fn run_check(
                 .any(|(_, p, w, h)| p == rel && w == s.w && h == s.h)
         })
         .count();
-    // A swap's baby sheet, not a baby model's own (M314's ghastling lists
-    // `happy_ghast_baby` as its texture; no swap is any model's texture).
+    // The sheets the same-size swaps baked (M314's ghastling sheet is baked
+    // as its own model's texture, by no swap; M317's baby zombie and husk
+    // sheets are still baked by their swaps, now for their own models).
     let baked_babies = baked
         .mob_textures
         .iter()
         .filter(|t| {
-            t.key.ends_with("_baby")
-                && !rewo_gpu::mobs::MOBS
-                    .iter()
-                    .any(|d| d.textures.contains(&t.key))
+            rewo_data::baby_texture_table::BABY_SWAPS.iter().any(|s| {
+                s.baby_key == t.key && {
+                    let rel = s
+                        .adult_path
+                        .strip_prefix("textures/")
+                        .unwrap_or(s.adult_path);
+                    rewo_data::assets::mob_texture_specs()
+                        .any(|(_, p, w, h)| p == rel && w == s.w && h == s.h)
+                }
+            })
         })
         .count();
     let total_swaps = rewo_data::baby_texture_table::BABY_SWAPS.len();
@@ -991,8 +999,11 @@ fn run_check(
     let full_a = baby_stage.shoot(gpu, &[zrow], None)?;
     let sans_a = baby_stage.shoot(gpu, &[zrow], Some(0))?;
     let adult_px = attributed(&full_a, &sans_a);
-    let mut zb = zrow;
-    zb.baby = true;
+    // M317 — the baby is its own model (`BabyZombieModel`), which is what
+    // the client now draws for one; until M317 this was the adult mesh with
+    // the baby sheet's UV offset, which scrambled the sheet and still passed
+    // n1/n2 (the colours were the right sheet's).
+    let zb = row(EntityModelKind::ZombieBaby, 0);
     let full_b = baby_stage.shoot(gpu, &[zb], None)?;
     let sans_b = baby_stage.shoot(gpu, &[zb], Some(0))?;
     let baby_px = attributed(&full_b, &sans_b);

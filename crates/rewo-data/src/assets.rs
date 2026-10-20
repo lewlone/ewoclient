@@ -1146,6 +1146,9 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M317 — the baby zombie's and husk's sheets, `BabyZombieModel`'s.
+    ("zombie_baby", "entity/zombie/zombie_baby.png", 64, 64),
+    ("husk_baby", "entity/zombie/husk_baby.png", 64, 64),
     // M316 — the polar bear cub's sheet (`PolarBearRenderer`).
     ("polar_bear_baby", "entity/bear/polarbear_baby.png", 64, 64),
     // M315 — `TurtleRenderer.BABY_TURTLE_LOCATION`.
@@ -1803,6 +1806,15 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             .any(|&(_, path, w, h)| path == adult_rel && w == swap.w && h == swap.h);
         if !same_size {
             baby_swap_skips += 1;
+            continue;
+        }
+        // M317 — a sheet a baby model lists as its own (a spec row above)
+        // is baked once, there; the swap's offset still finds it by key.
+        if MOB_TEXTURE_SPECS
+            .iter()
+            .any(|&(k, _, _, _)| k == swap.baby_key)
+        {
+            baby_swap_baked += 1;
             continue;
         }
         let baby_rel = swap
