@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 23;
+const EXPECTED_WITNESSES: usize = 24;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -1782,6 +1782,67 @@ fn run_check(
             "wither swirl vertices plain {w_plain_n} / powered {w_lit_n}; {w_touched} px \
              touched, {w_body} graded (want >= 200) of which {w_single} single layers of \
              {wr1:?} (want >= half); first rise no layer count explains: {w_bad:?}"
+        ),
+    ));
+
+    // m24 — M293: the equines' layer scales reach the screen. The horse and
+    // the zombie horse share one mesh (the skeleton horse's sheet is
+    // see-through between its bones, so its silhouette is not the mesh's), as
+    // do the donkey and the mule, so side-on from far away
+    // (near-orthographic) each pair's silhouette heights must stand in
+    // vanilla's ratio: 1.1 (`livingHorseScale`) and 0.92 / 0.87
+    // (`DonkeyModel.createBodyLayer`). All four drew at one size until M293.
+    let (ew, eh) = (512u32, 512u32);
+    let mut est = stage_from(
+        gpu,
+        baked,
+        ew,
+        eh,
+        Vec3::new(9.0, 1.1, 0.0),
+        Vec3::new(0.0, 1.1, 0.0),
+    )?;
+    let mut eshot = |d: &[EntityDraw<'_>]| -> Result<Vec<u8>, String> {
+        est.wr.set_entities(d, est.right, est.up, 0.0);
+        est.off.render(gpu, Some((&mut est.wr, est.vp)), &ov, BG)?;
+        est.off.read_rgba(gpu)
+    };
+    let empty_eq = eshot(&[])?;
+    let mut heights = Vec::new();
+    for kind in [
+        EntityModelKind::Horse,
+        EntityModelKind::ZombieHorse,
+        EntityModelKind::Mule,
+        EntityModelKind::Donkey,
+    ] {
+        let img = eshot(&[neutral_draw(kind)])?;
+        let rows: Vec<u32> = img
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(empty_eq.as_chunks::<4>().0)
+            .enumerate()
+            .filter(|(_, (a, b))| a[..3] != b[..3])
+            .map(|(i, _)| i as u32 / ew)
+            .collect();
+        let h = match (rows.iter().min(), rows.iter().max()) {
+            (Some(lo), Some(hi)) => (hi - lo + 1) as f32,
+            _ => 0.0,
+        };
+        heights.push(h);
+    }
+    est.destroy(gpu);
+    let horse_ratio = heights[0] / heights[1].max(1.0);
+    let mule_ratio = heights[2] / heights[3].max(1.0);
+    let want_mule = 0.92 / 0.87;
+    w.push(wit(
+        "m24.the_equines_draw_at_vanillas_layer_scales",
+        heights.iter().all(|&h| h >= 30.0)
+            && (horse_ratio - 1.1).abs() <= 0.03
+            && (mule_ratio - want_mule).abs() <= 0.03,
+        format!(
+            "silhouette heights horse / zombie horse / mule / donkey {heights:?} px; horse \
+             / zombie {horse_ratio:.3} (want 1.1 +- 0.03), mule / donkey {mule_ratio:.3} \
+             (want {want_mule:.3} +- 0.03)"
         ),
     ));
 

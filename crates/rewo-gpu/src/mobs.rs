@@ -2436,17 +2436,17 @@ pub static MOBS: &[MobDef] = &[
     MobDef {
         kind: EntityModelKind::Horse,
         textures: &["horse"],
-        build: equine_plain,
+        build: horse,
     },
     MobDef {
         kind: EntityModelKind::Donkey,
         textures: &["donkey"],
-        build: equine_eared,
+        build: donkey,
     },
     MobDef {
         kind: EntityModelKind::Mule,
         textures: &["mule"],
-        build: equine_eared,
+        build: mule,
     },
     MobDef {
         kind: EntityModelKind::SkeletonHorse,
@@ -7577,6 +7577,35 @@ fn parrot() -> Model {
     b.finish(1.0)
 }
 
+/// M293 — `LayerDefinitions`' equine scales: `ModelLayers.HORSE` is
+/// `horseBodyLayer.apply(livingHorseScale)` with `MeshTransformer.scaling(
+/// 1.1F)`, `DONKEY` and `MULE` are `DonkeyModel.createBodyLayer(0.87F)` and
+/// `(0.92F)`, and the skeleton and zombie horses take the bare
+/// `horseBodyLayer`. `MeshTransformer.scaling(s)` scales every root pose by
+/// `s` and lifts it `24.016 · (1 - s)`, i.e. scales about the feet, which is
+/// what a model's `scale` does here.
+pub const HORSE_SCALE: f32 = 1.1;
+pub const DONKEY_SCALE: f32 = 0.87;
+pub const MULE_SCALE: f32 = 0.92;
+
+fn horse() -> Model {
+    let mut m = equine(false);
+    m.scale *= HORSE_SCALE;
+    m
+}
+
+fn donkey() -> Model {
+    let mut m = equine(true);
+    m.scale *= DONKEY_SCALE;
+    m
+}
+
+fn mule() -> Model {
+    let mut m = equine(true);
+    m.scale *= MULE_SCALE;
+    m
+}
+
 /// `AbstractEquineModel` (horse family). `donkey_ears` swaps the horse
 /// ears for the long donkey pair (vanilla `DonkeyModel`).
 fn equine(donkey_ears: bool) -> Model {
@@ -8166,10 +8195,6 @@ fn armor_stand() -> Model {
     );
     b.show(plate, Show::StandBasePlate);
     b.finish(1.0)
-}
-
-fn equine_eared() -> Model {
-    equine(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -10883,5 +10908,26 @@ mod wither_armor_tests {
         };
         assert_eq!(span(&base), (-4.0, 4.0));
         assert_eq!(span(&shell), (-4.5, 4.5));
+    }
+}
+
+#[cfg(test)]
+mod equine_scale_tests {
+    use super::*;
+
+    /// M293 — the horse family's model scales, from `LayerDefinitions`
+    /// (`livingHorseScale` 1.1, `createBodyLayer(0.87F)` / `(0.92F)`); the
+    /// undead horses keep the bare body layer.
+    #[test]
+    fn the_equines_carry_vanillas_layer_scales() {
+        let scale = |k: EntityModelKind| {
+            let def = MOBS.iter().find(|d| d.kind == k).unwrap();
+            (def.build)().scale
+        };
+        let base = scale(EntityModelKind::SkeletonHorse);
+        assert_eq!(base, scale(EntityModelKind::ZombieHorse));
+        assert!((scale(EntityModelKind::Horse) - base * 1.1).abs() < 1e-6);
+        assert!((scale(EntityModelKind::Donkey) - base * 0.87).abs() < 1e-6);
+        assert!((scale(EntityModelKind::Mule) - base * 0.92).abs() < 1e-6);
     }
 }
