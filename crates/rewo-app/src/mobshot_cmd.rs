@@ -227,6 +227,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         worn_head: None,
         white_overlay: 0.0,
         stretch: [1.0, 1.0],
+        outline: None,
         billboard: None,
         allay_dance: None,
         attack: rewo_gpu::mobs::SwingPose::NONE,
@@ -279,6 +280,15 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         crate::live_cmd::font_data(baked),
         crate::live_cmd::entity_textures(baked),
     )?;
+    // M278 — the glowing outline's targets, at the offscreen size.
+    wr.ensure_outline(
+        gpu,
+        ash::vk::Extent2D {
+            width: w,
+            height: h,
+        },
+        rewo_gpu::world::unorm_of(off.format),
+    )?;
     let mut kinds = wr.entity_pass().expect("entity pass").available_kinds();
     // Textures that reuse the same texels across face labels (breeze wind's
     // concentric shells) can't be color-checked — skip those mobs loudly.
@@ -317,6 +327,8 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let mut checked = 0usize;
     // M271 — how many hidden-body renders were graded (fail-closed).
     let mut hidden_checked = 0usize;
+    // M278 — and outline renders.
+    let mut outline_checked = 0usize;
 
     for kind in kinds {
         let quads = wr
@@ -382,6 +394,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
                     worn_head: None,
                     white_overlay: 0.0,
                     stretch: [1.0, 1.0],
+                    outline: None,
                     ..neutral_draw(kind)
                 };
                 wr.set_entities(&[hidden], right, upv, 0.0);
@@ -400,6 +413,86 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
                         "ArmorStand/front with body_hidden: {px} px changed (want 0)"
                     ));
                 }
+            }
+            // M278 — the same stand glowing red: vanilla's outline is a soft
+            // rim OUTSIDE the silhouette (sobel then a box blur of radius 2),
+            // so the pixels just outside it redden, the pixels well outside
+            // and well inside are untouched, and the pass must have run.
+            if kind == EntityModelKind::ArmorStand && view_name == "front" {
+                let glow = EntityDraw {
+                    outline: Some([1.0, 0.0, 0.0]),
+                    ..neutral_draw(kind)
+                };
+                wr.set_entities(&[glow], right, upv, 0.0);
+                off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+                let lit = off.read_rgba(gpu)?;
+                let ran = wr.outline_drawn();
+                outline_checked += 1;
+                let (wi, hi) = (w as i32, h as i32);
+                let px = |b: &[u8], x: i32, y: i32| {
+                    let i = ((y * wi + x) * 4) as usize;
+                    [b[i], b[i + 1], b[i + 2]]
+                };
+                let inside = |x: i32, y: i32| px(&img, x, y) != px(&bg, x, y);
+                // Chebyshev distance to the silhouette (outside) or to its
+                // edge (inside), capped at 8.
+                let near = |x: i32, y: i32, want: bool, r: i32| {
+                    (-r..=r).any(|dy| {
+                        (-r..=r).any(|dx| {
+                            let (u, v) = (x + dx, y + dy);
+                            u >= 0 && v >= 0 && u < wi && v < hi && inside(u, v) == want
+                        })
+                    })
+                };
+                let (mut rim, mut rim_red, mut far_changed, mut core_changed) = (0, 0, 0, 0);
+                let mut rim_changed = 0;
+                let mut sample = None;
+                for y in 0..hi {
+                    for x in 0..wi {
+                        let (a, b) = (px(&img, x, y), px(&lit, x, y));
+                        let changed = a != b;
+                        if !inside(x, y) {
+                            if near(x, y, true, 1) {
+                                rim += 1;
+                                rim_changed += usize::from(changed);
+                                if changed && sample.is_none() {
+                                    sample = Some((a, b));
+                                }
+                                // The rim's hue is the outline colour's: vanilla's
+                                // sobel and blur leave about 0.4 of it at full
+                                // alpha, so red dominates and green and blue drop.
+                                if changed
+                                    && b[1] < a[1]
+                                    && b[2] < a[2]
+                                    && b[0] as i32 > b[1] as i32 + 40
+                                    && b[0] as i32 > b[2] as i32 + 40
+                                {
+                                    rim_red += 1;
+                                }
+                            } else if !near(x, y, true, 6) && changed {
+                                far_changed += 1;
+                            }
+                        } else if !near(x, y, false, 4) && changed {
+                            core_changed += 1;
+                        }
+                    }
+                }
+                if !(ran
+                    && rim > 0
+                    && rim_red * 10 >= rim * 9
+                    && far_changed == 0
+                    && core_changed == 0)
+                {
+                    failures.push(format!(
+                        "ArmorStand/front glowing red: pass ran {ran}, {rim_red} of {rim} rim px \
+                         reddened (want >= 90%), {far_changed} px changed 6+ px outside (want 0), \
+                         {core_changed} px changed 4+ px inside (want 0)"
+                    ));
+                }
+                println!(
+                    "[mobshot] outline: {rim_red}/{rim} rim px red ({rim_changed} changed, e.g. {sample:?}), {far_changed} far, \
+                     {core_changed} core changed (pass ran {ran})"
+                );
             }
             if let Some(dir) = &args.out_dir {
                 save_png(
@@ -446,6 +539,11 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
 
     wr.destroy(gpu);
     off.destroy(gpu);
+    if outline_checked != 1 {
+        failures.push(format!(
+            "graded {outline_checked} outline renders, expected 1 (M278)"
+        ));
+    }
     if hidden_checked != 1 {
         failures.push(format!(
             "graded {hidden_checked} hidden-body renders, expected 1 (M271)"

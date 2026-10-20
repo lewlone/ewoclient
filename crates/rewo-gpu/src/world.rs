@@ -55,6 +55,7 @@ mod gamma;
 mod gui_passes;
 mod lightmap;
 mod lines;
+mod outline;
 mod resources;
 mod scene_passes;
 mod sky;
@@ -72,6 +73,7 @@ pub use gui_passes::OwnedTextLine;
 use lightmap::LightmapRing;
 pub use lightmap::{WorldLightmapState, BLOCK_LIGHT_FACTOR};
 use lines::{LeashRibbon, SelectOutline};
+pub use outline::{OutlinePass, OUTLINE_FORMAT};
 use sky::SkyGradient;
 pub use sky::{SkyMode, DEFAULT_FOG, DEFAULT_SKY, DEFAULT_SKY_END};
 use terrain::TerrainPass;
@@ -111,6 +113,10 @@ pub struct WorldRenderer {
     color_format: vk::Format,
     /// This frame's attachment views for the glint's gamma-space scope (M50).
     gamma: Option<GammaScope>,
+    /// M278 — the glowing outline's targets and passes (`ensure_outline`).
+    outline: Option<OutlinePass>,
+    /// M278 — whether the last frame drew an outline.
+    outline_drawn: std::cell::Cell<bool>,
     entities: Option<EntityPass>,
     /// Sun/moon/star pass (M12), drawn between the gradient sky and terrain.
     /// `None` when celestial textures were unavailable (degrade to bare sky).

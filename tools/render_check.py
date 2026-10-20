@@ -210,6 +210,8 @@ PRECMD = (
     "summon minecraft:armor_stand ~-4 ~ ~3 {Rotation:[30f,0f]};"
     "summon minecraft:armor_stand ~-6 ~ ~3 {ShowArms:1b,NoBasePlate:1b,"
     "equipment:{head:{id:\"minecraft:iron_helmet\",count:1}}};"
+    # M278 -- r137. A glowing armour stand (the Glowing tag: shared flag 6).
+    "summon minecraft:armor_stand ~-14 ~ ~2 {Glowing:1b,NoGravity:1b};"
     # M277 -- r136. A creeper the run ignites at 2 s: NoAI and invulnerable,
     # with a fuse the server never reaches, clear of the lanes.
     "summon minecraft:creeper ~-14 ~ ~-2 {NoAI:1b,Invulnerable:1b,Fuse:32767s,Tags:[\"rewo_creeper\"]};"

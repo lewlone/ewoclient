@@ -106,6 +106,8 @@ impl WorldRenderer {
             ),
             color_format,
             gamma: None,
+            outline: None,
+            outline_drawn: std::cell::Cell::new(false),
             entities: None,
             celestial: None,
             end_sky: None,
@@ -134,6 +136,9 @@ impl WorldRenderer {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
+        if let Some(mut pass) = self.outline.take() {
+            pass.destroy(gpu);
+        }
         if let Some(mut pass) = self.celestial.take() {
             pass.destroy(gpu);
         }

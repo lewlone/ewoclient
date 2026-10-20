@@ -1072,6 +1072,14 @@ impl LiveApp {
         {
             log::warn!("live: held-item texture upload: {e}");
         }
+        // M278 — the glowing outline's targets, at the swapchain's size.
+        if let Err(e) = state.world_renderer.ensure_outline(
+            &mut state.gpu,
+            state.renderer.swapchain.extent,
+            rewo_gpu::world::unorm_of(state.renderer.swapchain.format),
+        ) {
+            log::warn!("live: outline targets: {e}");
+        }
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
         let frame_map_draws: Vec<_> = frame_maps.iter().map(|m| m.as_draw()).collect();
         let sign_lines = match state.world_renderer.font_advance() {
@@ -1188,6 +1196,17 @@ impl LiveApp {
                         .is_some_and(|w| w.item && w.model == "minecraft:carved_pumpkin")
             }) {
                 rc.worn_item_head_frames += 1;
+            }
+            // M278 — r137: the staged glowing armour stand reached the draws
+            // with its outline colour (white: no team), and the outline pass
+            // ran.
+            if state.world_renderer.outline_drawn()
+                && draws.iter().any(|d| {
+                    d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
+                        && d.outline == Some([1.0, 1.0, 1.0])
+                })
+            {
+                rc.outline_frames += 1;
             }
             // M277 — r136: the ignited creeper swollen, and flashing.
             for d in draws

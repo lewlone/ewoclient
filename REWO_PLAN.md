@@ -2092,6 +2092,7 @@ this shape once.
 | M276 (2026-10-20) — an enchanting table draws its book, turning | **r134** | — | — |
 | M277 (2026-10-20) — primed TNT flashes white | **r135** | — | — |
 | M277 (2026-10-20) — an ignited creeper swells and flashes | **r136** | — | — |
+| M278 (2026-10-20) — a glowing armour stand draws its outline | **r137** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

@@ -129,5 +129,8 @@ impl WorldRenderer {
         if let Some(pass) = &self.entities {
             pass.draw_text(gpu, cb, view_proj, extent);
         }
+        // M278 — the glowing outline, over the whole world (vanilla's
+        // `doEntityOutline` runs after the level).
+        self.draw_outline(gpu, cb, view_proj, extent);
     }
 }

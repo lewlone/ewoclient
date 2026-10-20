@@ -277,6 +277,9 @@ pub struct EntityDraw<'a> {
     /// model flip (the creeper's swell: wider by `s`, taller by `hs`),
     /// `[horizontal, vertical]`; `[1, 1]` for every other entity.
     pub stretch: [f32; 2],
+    /// M278 — the glowing outline's colour (`Entity.getTeamColor()`, gamma
+    /// rgb in `0..1`), `None` for an entity that does not glow.
+    pub outline: Option<[f32; 3]>,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -1158,6 +1161,8 @@ pub struct EntityPass {
     /// model's own depth instead of being rejected by it.
     emissive_pipeline: vk::Pipeline,
     emissive_verts: u32,
+    /// M278 — the glowing entities' outline copies, the seventh range.
+    outline_verts: u32,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -1725,6 +1730,7 @@ impl EntityPass {
                 text_pipeline,
                 emissive_pipeline,
                 emissive_verts: 0,
+                outline_verts: 0,
                 glint_pipeline: None,
                 glint: None,
                 glint_verts: 0,
@@ -2282,7 +2288,24 @@ impl EntityPass {
 
         // Fixed sun for capsule shading (matches the terrain's lit look).
         let sun = norm3([0.45, 0.8, 0.35]);
+        // M278 — every vertex a glowing entity emits (model, armour, held
+        // items: `OutlineBufferSource` wraps all of its submits), copied in its
+        // outline colour. A draw's vertices are contiguous in `verts`, so the
+        // range is closed when the next draw starts.
+        let mut outline_verts: Vec<Vertex> = Vec::new();
+        let mut outline_open: Option<(usize, [f32; 3])> = None;
+        let close_outline =
+            |verts: &[Vertex], open: &mut Option<(usize, [f32; 3])>, out: &mut Vec<Vertex>| {
+                if let Some((start, c)) = open.take() {
+                    out.extend(verts[start..].iter().map(|v| Vertex {
+                        color: [c[0], c[1], c[2], 1.0],
+                        ..*v
+                    }));
+                }
+            };
         for d in draws {
+            close_outline(&verts, &mut outline_open, &mut outline_verts);
+            outline_open = d.outline.map(|c| (verts.len(), c));
             // `OverlayTexture.v(hasRedOverlay)` as a 0/1 flag (M21).
             let hurt = overlay_value(d.hurt, d.white_overlay);
             // A dropped stack is drawn by `ItemEntityRenderer` and has no
@@ -2357,6 +2380,7 @@ impl EntityPass {
                 });
             }
         }
+        close_outline(&verts, &mut outline_open, &mut outline_verts);
         // M25b: block entities. Solid geometry, so they belong with the mob
         // and item quads rather than after the transparent nametags.
         {
@@ -2418,13 +2442,16 @@ impl EntityPass {
         verts.append(&mut armor_glint_verts);
         let armor_glint_end = verts.len();
         verts.append(&mut emissive_verts);
+        let emissive_end = verts.len();
+        verts.append(&mut outline_verts);
         let counts = [
             solid,
             text_end - solid,
             glint_end - text_end,
             trim_end - glint_end,
             armor_glint_end - trim_end,
-            verts.len() - armor_glint_end,
+            emissive_end - armor_glint_end,
+            verts.len() - emissive_end,
         ]
         .map(|c| c as u32);
         // The per-emitter `MAX_VERTS` guards bound each range on its own, but
@@ -2438,13 +2465,14 @@ impl EntityPass {
             )
         };
         let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
-        let [s0, s1, s2, s3, s4, s5] = clamp_ranges(counts, kept as u32);
+        let [s0, s1, s2, s3, s4, s5, s6] = clamp_ranges(counts, kept as u32);
         self.solid_verts = s0;
         self.text_verts = s1;
         self.glint_verts = s2;
         self.trim_verts = s3;
         self.armor_glint_verts = s4;
         self.emissive_verts = s5;
+        self.outline_verts = s6;
     }
 
     // Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -3806,6 +3834,51 @@ impl EntityPass {
         true
     }
 
+    /// M278 — the entity pass's pipeline layout, which the outline's
+    /// geometry pipeline shares.
+    pub fn layout(&self) -> vk::PipelineLayout {
+        self.layout
+    }
+
+    /// M278 — whether any entity glows this frame.
+    pub fn has_outline(&self) -> bool {
+        self.outline_verts > 0
+    }
+
+    /// M278 — the glowing entities' outline copies, the last range, with
+    /// `pipeline` (the outline pass's, rendering into the outline target).
+    pub fn draw_outline_geometry(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+        pipeline: vk::Pipeline,
+    ) {
+        if self.outline_verts == 0 {
+            return;
+        }
+        unsafe {
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
+            gpu.device
+                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            gpu.device.cmd_draw(
+                cb,
+                self.outline_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts
+                    + self.emissive_verts,
+                0,
+            );
+        }
+    }
+
     /// Opaque capsules — draw before any translucent content.
     pub fn draw_solid(
         &self,
@@ -4184,9 +4257,9 @@ impl EntityPass {
 /// cut is a prefix, so the range it falls in is shortened (to whole triangles)
 /// and every later range is empty; offsets derived by summing the earlier
 /// counts stay correct.
-fn clamp_ranges(counts: [u32; 6], kept: u32) -> [u32; 6] {
+fn clamp_ranges<const N: usize>(counts: [u32; N], kept: u32) -> [u32; N] {
     let mut left = kept;
-    let mut out = [0u32; 6];
+    let mut out = [0u32; N];
     for (o, &c) in out.iter_mut().zip(&counts) {
         if c <= left {
             *o = c;
@@ -7194,6 +7267,25 @@ fn build_glint_pipeline(
 /// one is `GREATER`; the trim pass (M48) uses `EQUAL` with no write, which is
 /// `ARMOR_DECAL_CUTOUT_NO_CULL`'s `DepthStencilState(CompareOp.EQUAL, false)`
 /// and lands the decoration on exactly the armour fragments that won.
+/// M278 — the outline geometry's pipeline: the entity vertex layout and
+/// vertex shader, `outline_geometry.frag` (flat outline colour where the
+/// texture is not transparent), into the UNORM outline target with its own
+/// reversed-Z depth, unblended.
+pub(crate) fn build_outline_pipeline(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+) -> Result<vk::Pipeline, String> {
+    build_pipeline_with(
+        device,
+        layout,
+        crate::world::OUTLINE_FORMAT,
+        true,
+        vk::CompareOp::GREATER,
+        include_bytes!(concat!(env!("OUT_DIR"), "/outline_geometry.frag.spv")),
+        true,
+    )
+}
+
 fn build_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
@@ -7201,15 +7293,33 @@ fn build_pipeline(
     solid: bool,
     compare: vk::CompareOp,
 ) -> Result<vk::Pipeline, String> {
+    build_pipeline_with(
+        device,
+        layout,
+        color_format,
+        solid,
+        compare,
+        include_bytes!(concat!(env!("OUT_DIR"), "/entity.frag.spv")),
+        false,
+    )
+}
+
+fn build_pipeline_with(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+    solid: bool,
+    compare: vk::CompareOp,
+    frag_spv: &[u8],
+    // M278 — write alpha too (the outline target's alpha is the silhouette).
+    write_alpha: bool,
+) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
             device,
             include_bytes!(concat!(env!("OUT_DIR"), "/entity.vert.spv")),
         )?;
-        let frag = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/entity.frag.spv")),
-        )?;
+        let frag = crate::overlay::create_shader(device, frag_spv)?;
         let entry = c"main";
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -7271,11 +7381,11 @@ fn build_pipeline(
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
             .alpha_blend_op(vk::BlendOp::ADD)
-            .color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B,
-            )];
+            .color_write_mask(if write_alpha {
+                vk::ColorComponentFlags::RGBA
+            } else {
+                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B
+            })];
         let blend =
             vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];

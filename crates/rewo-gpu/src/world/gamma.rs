@@ -42,7 +42,7 @@ impl WorldRenderer {
     /// `LOAD`/`STORE` on both, and no clear: the colour already holds the frame
     /// so far, and the depth already holds what the solid pass wrote — which is
     /// the whole point, since the glint depth-tests `EQUAL` against it.
-    unsafe fn reopen_scope(
+    pub(super) unsafe fn reopen_scope(
         &self,
         gpu: &Gpu,
         cb: vk::CommandBuffer,
@@ -104,7 +104,7 @@ impl WorldRenderer {
     /// hazard — on the colour image through a different (sRGB vs UNORM) view,
     /// so the barrier is a global memory barrier rather than one per view. No
     /// layout changes: both instances use the attachment-optimal layouts.
-    unsafe fn scope_barrier(gpu: &Gpu, cb: vk::CommandBuffer) {
+    pub(super) unsafe fn scope_barrier(gpu: &Gpu, cb: vk::CommandBuffer) {
         let stages = vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
             | vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
             | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;

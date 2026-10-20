@@ -2353,6 +2353,35 @@ pub(super) fn collect_carried_blocks(
     out
 }
 
+/// M278 — `Minecraft.shouldEntityAppearGlowing` (`isCurrentlyGlowing`, the
+/// client's reading of shared flag 6, `FLAG_GLOWING`) and
+/// `Entity.getTeamColor()`: the team's `ChatFormatting` colour, white with no
+/// team or a colourless one — as gamma rgb for the outline pass.
+pub(crate) fn glow_colour(session: &PlaySession, id: i32) -> Option<[f32; 3]> {
+    if !session.world.entities.shared_flag(id, 6) {
+        return None;
+    }
+    let rgb = session
+        .scoreboard_name_of(id)
+        .and_then(|n| {
+            let team = session.team_of_name(&n)?;
+            session
+                .scoreboard
+                .teams
+                .team(team)?
+                .parameters
+                .as_ref()?
+                .color
+        })
+        .and_then(|c| rewo_world::chat_style::NAMED_COLORS.get(c as usize))
+        .map_or(0xFF_FFFF, |(_, v)| *v);
+    Some([
+        ((rgb >> 16) & 255) as f32 / 255.0,
+        ((rgb >> 8) & 255) as f32 / 255.0,
+        (rgb & 255) as f32 / 255.0,
+    ])
+}
+
 /// M277 — `CreeperRenderer.scale`: `wobble = 1 + sin(g · 100) · g · 0.01`,
 /// then `g` clamped and raised to the fourth, `s = (1 + g · 0.4) · wobble`,
 /// `hs = (1 + g · 0.1) / wobble` — as `[s, hs]` for `EntityDraw::stretch`.
@@ -3982,6 +4011,8 @@ pub(super) fn collect_entities<'a>(
             // M277 — a swelling creeper's flash and swell.
             white_overlay: creeper_swelling.map_or(0.0, creeper_white_overlay),
             stretch: creeper_swelling.map_or([1.0, 1.0], creeper_stretch),
+            // M278 — the Glowing effect's outline, in the team's colour.
+            outline: glow_colour(session, id),
             billboard,
             allay_dance,
             attack,
