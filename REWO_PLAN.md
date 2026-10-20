@@ -3989,6 +3989,23 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M344 — the parrot's colours (2026-10-20)
+
+Every parrot drew red-blue. `Parrot.DATA_VARIANT_ID` is index 20 INT
+(`TamableAnimal` 18 and 19; `ShoulderRidingEntity` adds none), newly decoded
+(`int20`) and gated on the parrot (`VariantKinds::parrot`);
+`ParrotRenderer.getVariantTexture` maps the five `Parrot.Variant`s (CLAMP)
+onto `parrot_red_blue`, the baked base, and the blue, green, yellow-blue and
+grey sheets, which are now its variant sheets (`mob_variants::
+parrot_texture`); an unsent variant is RED_BLUE (0). n7 routes seven mobs
+through the production dispatcher; n1 counts 109 declared sheets.
+
+**Unit test**: the five colours, CLAMP, keys. **n7**: the parrot's colour
+lands at index 20 and not at 19 or 21; without the routing it fails.
+**mobtexshot m69**: the red-blue and the blue parrot each draw (2,191 px)
+from their own sheet and differ. **r198**: a staged blue parrot draws on a
+colour variant.
+
 ### M343 — the cat's collar, and the cat's size (2026-10-20)
 
 **A size bug, older than this run**: `ModelLayers.CAT` is the feline body
