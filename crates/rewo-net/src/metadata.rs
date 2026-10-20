@@ -360,6 +360,9 @@ pub struct EntityMeta {
     /// M261 — `AbstractMinecart` (11 OPTIONAL_BLOCK_STATE, 0 empty; 12 INT)
     /// and `MinecartFurnace` (13 BOOLEAN), kind-gated by the caller.
     pub opt_block11: Option<i32>,
+    /// M352 — `EnderMan.DATA_CARRY_STATE` (16 OPTIONAL_BLOCK_STATE, 0 empty;
+    /// `Monster` adds none after `Mob`'s 15), kind-gated by the caller.
+    pub opt_block16: Option<i32>,
     pub int12: Option<i32>,
     pub bool13: Option<bool>,
 }
@@ -534,6 +537,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
                 None => break,
             },
             (11, 15) => meta.opt_block11 = r.varint().ok(),
+            (16, 15) => meta.opt_block16 = r.varint().ok(),
             (12, 1) => meta.int12 = r.varint().ok(),
             (13, 8) => meta.bool13 = r.u8().ok().map(|b| b != 0),
             // HUMANOID_ARM at 15 = `Avatar.DATA_PLAYER_MAIN_HAND`; the BYTE at

@@ -368,6 +368,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         chicken: data.entity_types.id_of("minecraft:chicken"),
         // M350 — the zombie nautilus's variant.
         zombie_nautilus: data.entity_types.id_of("minecraft:zombie_nautilus"),
+        // M352 — the enderman's carried block.
+        enderman: data.entity_types.id_of("minecraft:enderman"),
         // M68: the index-17 INT. Not a texture id — the packed
         // (shape, pattern, body colour, pattern colour) — but it rides the
         // same setter, and the gate matters because index 17 already carries

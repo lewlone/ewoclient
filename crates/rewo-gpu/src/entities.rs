@@ -5550,6 +5550,19 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         HeadYaw => rot[1] = c.net,
         ArmRight => rot[0] = (c.f + PI).cos() * 2.0 * c.amt * 0.5 * amp,
         ArmLeft => rot[0] = c.f.cos() * 2.0 * c.amt * 0.5 * amp,
+        // M352 — `EndermanModel.setupAnim`.
+        EndermanArmRight | EndermanArmLeft => {
+            let left = anim == EndermanArmLeft;
+            if c.mob.carried_block.is_some() {
+                rot[0] = -0.5;
+                rot[2] = if left { -0.05 } else { 0.05 };
+            } else {
+                let phase = if left { 0.0 } else { PI };
+                rot[0] = ((c.f + phase).cos() * 2.0 * c.amt * 0.5 * 0.5).clamp(-0.4, 0.4);
+            }
+        }
+        EndermanLegRight => rot[0] = (c.f.cos() * 1.4 * c.amt * 0.5).clamp(-0.4, 0.4),
+        EndermanLegLeft => rot[0] = ((c.f + PI).cos() * 1.4 * c.amt * 0.5).clamp(-0.4, 0.4),
         LegRight | QuadHindRight | QuadFrontLeft => rot[0] = c.f.cos() * 1.4 * c.amt * amp,
         LegLeft | QuadHindLeft | QuadFrontRight => rot[0] = (c.f + PI).cos() * 1.4 * c.amt * amp,
         SpiderLeg { left, phase } => {
@@ -9299,5 +9312,55 @@ mod tests {
         assert_eq!(b, u32::MAX % 64);
         assert_eq!(c, 0);
         assert!([a, b, c].iter().all(|s| *s < 64));
+    }
+}
+
+#[cfg(test)]
+mod enderman_pose_tests {
+    use super::*;
+
+    /// M352 — `EndermanModel.setupAnim`: a carrying enderman holds both arms
+    /// at `xRot` -0.5, `zRot` ±0.05 whatever its walk; otherwise its arms and
+    /// legs swing at half the humanoid's and never past ±0.4.
+    #[test]
+    fn the_enderman_holds_its_block_and_clamps_its_swing() {
+        use std::f32::consts::PI;
+        let rig = |anim: mobs::Anim, carrying: bool, f: f32, amt: f32| {
+            let c = AnimCtx {
+                pitch: 0.0,
+                net: 0.0,
+                f,
+                pos: 0.0,
+                amt,
+                age: 0.0,
+                gesture: None,
+                events: [None; mobs::ModelEvent::COUNT],
+                shell: false,
+                body_yaw: 0.0,
+                stand_pose: mobs::STAND_DEFAULT_POSE,
+                allay_dance: None,
+                attack: mobs::SwingPose::NONE,
+                arm_poses: mobs::ArmPoses::EMPTY,
+                mob: mobs::MobCombat {
+                    carried_block: carrying.then_some(1),
+                    ..Default::default()
+                },
+                tendril: 0.0,
+            };
+            anim_delta(anim, 1.0, &c).0
+        };
+        for f in [0.0, 1.0, 2.5] {
+            let r = rig(mobs::Anim::EndermanArmRight, true, f, 1.0);
+            assert_eq!((r[0], r[2]), (-0.5, 0.05));
+            let l = rig(mobs::Anim::EndermanArmLeft, true, f, 1.0);
+            assert_eq!((l[0], l[2]), (-0.5, -0.05));
+        }
+        // A full-speed stride (amount 1.5): the raw half-swing reaches 0.75.
+        let a = rig(mobs::Anim::EndermanArmRight, false, PI, 1.5);
+        assert_eq!(a[0], 0.4);
+        let leg = rig(mobs::Anim::EndermanLegLeft, false, PI, 1.5);
+        assert_eq!(leg[0], 0.4);
+        let small = rig(mobs::Anim::EndermanLegRight, false, 0.0, 0.2);
+        assert!((small[0] - 1.4 * 0.2 * 0.5).abs() < 1e-6);
     }
 }

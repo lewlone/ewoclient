@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M352 -- r206. An enderman carrying a melon, on the z ~24 row.
+    "summon minecraft:enderman ~17 ~ ~24 {NoAI:1b,Silent:1b,"
+    "carriedBlockState:{Name:\"minecraft:melon\"}};"
     # M350 -- r204. A warm (coral) zombie nautilus, on the z ~24 row.
     "summon minecraft:zombie_nautilus ~13 ~ ~24 {NoAI:1b,Silent:1b,"
     "variant:\"minecraft:warm\"};"

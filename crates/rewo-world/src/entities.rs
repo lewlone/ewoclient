@@ -1561,6 +1561,9 @@ pub struct MobState {
     /// (`DEFAULT_COLLAR_COLOR`, red): the server sends only non-default
     /// metadata, so the reader of this field supplies the default.
     pub collar: Option<i32>,
+    /// M352 — `EnderMan.DATA_CARRY_STATE` (index 16, OPTIONAL_BLOCK_STATE):
+    /// the block state an enderman carries; `None` for empty (the wire's 0).
+    pub carried_block: Option<u32>,
     /// `TamableAnimal.DATA_FLAGS_ID` — index **18**, BYTE, bit 0x04 is
     /// `isTame()` and bit 0x01 `isInSittingPose()` (M64).
     ///
@@ -2964,6 +2967,17 @@ impl EntityTable {
     /// M342 — the collar colour the server sent, `None` if it sent none.
     pub fn collar(&self, id: i32) -> Option<i32> {
         self.mob_state.get(&id).and_then(|s| s.collar)
+    }
+
+    /// M352 — an enderman's carried block (`DATA_CARRY_STATE`); the wire's
+    /// empty (0) clears it. Kind-gated by the caller.
+    pub fn set_carried_block(&mut self, id: i32, state: Option<u32>) {
+        self.mob_state.entry(id).or_default().carried_block = state;
+    }
+
+    /// M352 — the block state an enderman carries, if any.
+    pub fn carried_block(&self, id: i32) -> Option<u32> {
+        self.mob_state.get(&id).and_then(|s| s.carried_block)
     }
 
     /// `TamableAnimal.DATA_FLAGS_ID` (index 18, BYTE). Kind-gated by the

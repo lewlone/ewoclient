@@ -4390,3 +4390,43 @@ fn the_mooshrooms_mushrooms_sit_on_its_back_and_head() {
         assert!(!near(c, [0.0, 1.951, 0.7]));
     }
 }
+
+/// M352 — `CarriedBlockLayer`'s block by its corners, through the chain by
+/// hand: at body yaw 0 (the enderman faces +z) the corner (0, 0, 0)
+/// goes to the layer's `translate(0.25, 0.1875, 0.25)` point turned
+/// `YP(45)` then `XP(20)`, offset (0, 0.6875, -0.75), then the root's
+/// flip and 1.501 lift and the `YP(180)`. Its far corner (1, 1, 1) is half a
+/// block further along each of the layer's scaled axes, so the block is half
+/// size (its diagonal is √3 / 2).
+#[test]
+fn the_endermans_block_sits_in_front_of_its_chest() {
+    let a = super::entities::enderman_block_transform(0.0, 0.0);
+    let at =
+        |p: [f32; 3]| [0, 1, 2].map(|r| a[r][0] * p[0] + a[r][1] * p[1] + a[r][2] * p[2] + a[r][3]);
+    // translate(0.25, 0.1875, 0.25) turned YP(45): x = 0.25 cos45 + 0.25 sin45
+    // = 0.35355, z = -0.25 sin45 + 0.25 cos45 = 0; then XP(20): y = 0.1875
+    // cos20 - 0 = 0.17619, z = 0.1875 sin20 + 0 = 0.06413; offset: (0.35355,
+    // 0.86369, -0.68587); the root: (x, 1.501 - y, z) = (-0.35355, 0.63731,
+    // -0.68587) after the flip, then YP(180): (0.35355, 0.63731, 0.68587).
+    let corner = at([0.0, 0.0, 0.0]);
+    let want = [0.35355, 0.63731, 0.68587];
+    assert!(
+        corner.iter().zip(want).all(|(x, y)| (x - y).abs() < 1e-3),
+        "{corner:?}"
+    );
+    let far = at([1.0, 1.0, 1.0]);
+    let d = ((far[0] - corner[0]).powi(2)
+        + (far[1] - corner[1]).powi(2)
+        + (far[2] - corner[2]).powi(2))
+    .sqrt();
+    assert!((d - 3f32.sqrt() / 2.0).abs() < 1e-3, "{d}");
+    // Its centre: straight ahead of the enderman (+z at yaw 0), at the
+    // height of its lowered hands.
+    let mid = at([0.5, 0.5, 0.5]);
+    assert!(
+        mid.iter()
+            .zip([0.0, 0.87223, 0.77138])
+            .all(|(x, y)| (x - y).abs() < 1e-3),
+        "{mid:?}"
+    );
+}

@@ -1869,8 +1869,9 @@ fn encode_png(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// M342: 13 → 14, n9 (index 21 INT: a llama's variant or a wolf's collar).
-/// M343: 14 → 15, n10 (index 23 INT is a cat's collar).
-const VARIANT_WITNESSES: usize = 15;
+/// M343: 14 → 15, n10 (index 23 INT is a cat's collar). M352: 15 → 16, n11
+/// (index 16 OPTIONAL_BLOCK_STATE is an enderman's carried block).
+const VARIANT_WITNESSES: usize = 16;
 
 /// The mobs whose texture a synched metadata field chooses, and the registry
 /// name each carries in the `entity_types` table.
@@ -2516,6 +2517,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         chicken: etypes.id_of("minecraft:chicken"),
         // M350 — the zombie nautilus's variant.
         zombie_nautilus: etypes.id_of("minecraft:zombie_nautilus"),
+        // M352 — the enderman's carried block.
+        enderman: etypes.id_of("minecraft:enderman"),
         tropical_fish: etypes.id_of("minecraft:tropical_fish"),
     };
     let sheep = tid("minecraft:sheep")?;
@@ -2659,6 +2662,19 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
             cat23.collar(1),
             cat23.variant(1),
             wolf23.collar(1)
+        ),
+    );
+    // M352 — index 16 OPTIONAL_BLOCK_STATE is the enderman's carried block,
+    // 0 its empty; on another kind (a cat) the same bytes carry nothing.
+    let enderman = kinds.enderman.ok_or("no minecraft:enderman")?;
+    let carried = send(enderman, 16, 15, 5, kinds).carried_block(1);
+    let emptied = send(enderman, 16, 15, 0, kinds).carried_block(1);
+    let on_cat = send(cat, 16, 15, 5, kinds).carried_block(1);
+    c.record(
+        "n11.index_16_optional_block_state_is_an_endermans_carried_block",
+        carried == Some(5) && emptied.is_none() && on_cat.is_none(),
+        format!(
+            "state 5 at index 16 OPTIONAL_BLOCK_STATE gives an enderman {carried:?} (want Some(5)), 0 gives {emptied:?} (want None), and a cat {on_cat:?} (want None): `EnderMan.DATA_CARRY_STATE` (`Monster` adds none after `Mob`'s 15)"
         ),
     );
     Ok(())

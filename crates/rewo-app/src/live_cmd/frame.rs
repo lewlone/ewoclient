@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M352 — r206: an enderman drawn carrying a block.
+            c.enderman_carrying = draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Enderman && d.mob.carried_block.is_some()
+            });
             // M350 — r204: the staged coral zombie nautilus, on its mesh.
             c.coral_nautilus |= draws
                 .iter()
@@ -2180,6 +2184,27 @@ impl LiveApp {
                 })
                 .count();
             c.mooshroom_mushrooms = c.mooshroom_mushrooms.max(mushrooms);
+            // M352 — r206: the staged enderman's carried melon drew every quad
+            // of its block model, and the enderman drew carrying it.
+            let melon = self
+                .blocks
+                .default_state("minecraft:melon")
+                .map(rewo_data::block_entity_models::carried_block_model);
+            let held = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| Some(d.model) == melon.as_deref())
+                .any(|(d, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(d.model))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                });
+            if held && c.enderman_carrying {
+                c.enderman_block_frames += 1;
+            }
             // M254 — r113: the staged painting drew every quad of its
             // variant's model.
             let painting = be_draws

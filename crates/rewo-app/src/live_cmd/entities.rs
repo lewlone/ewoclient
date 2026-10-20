@@ -1653,6 +1653,10 @@ pub(crate) fn resolve_mob_combat(
         is_baby: entities.is_baby(id),
         main_arm_left: entities.main_arm(id) == HumanoidArm::Left,
         illager_pose,
+        // M352 — only an enderman's is synched (index 16, kind-gated).
+        carried_block: (kind == K::Enderman)
+            .then(|| entities.carried_block(id))
+            .flatten(),
     }
 }
 
@@ -2021,8 +2025,39 @@ pub(crate) fn mooshroom_mushroom_transforms(
     [first, second, third]
 }
 
+/// M352 — `CarriedBlockLayer.submit`'s block, block-local → entity-relative
+/// (block units), for an enderman drawn at body `yaw` and toppled `roll`:
+/// `LivingEntityRenderer`'s root, then `translate(0, 0.6875, -0.75)`,
+/// `XP(20)`, `YP(45)`, `translate(0.25, 0.1875, 0.25)`, `scale(-0.5, -0.5,
+/// 0.5)`, `YP(90)`, and the block model from its corner (no centring).
+pub(crate) fn enderman_block_transform(yaw: f32, roll: f32) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_x, rot_y, rot_z, scale, translation};
+    let root = mul(
+        &rot_y(180.0 - yaw),
+        &mul(
+            &rot_z(roll),
+            &mul(&scale(-1.0, -1.0, 1.0), &translation(0.0, -1.501, 0.0)),
+        ),
+    );
+    let layer = mul(
+        &translation(0.0, 0.6875, -0.75),
+        &mul(
+            &rot_x(20f32.to_radians()),
+            &mul(
+                &rot_y(45.0),
+                &mul(
+                    &translation(0.25, 0.1875, 0.25),
+                    &mul(&scale(-0.5, -0.5, 0.5), &rot_y(90.0)),
+                ),
+            ),
+        ),
+    );
+    mul(&root, &layer)
+}
+
 /// M351 — the blocks the mobs drawn this frame carry, built from their own
-/// draws so a block follows exactly the pose its mob drew in: an adult
+/// draws so a block follows exactly the pose its mob drew in: M352 — an
+/// enderman's carried block (`MobCombat::carried_block`); an adult
 /// mooshroom's three mushrooms (`MushroomCowMushroomLayer`: none on a calf
 /// or an invisible body), red, or brown on the brown colour's sheet. A
 /// mooshroom caged in a spawner (a mounted draw) carries none here.
@@ -2035,8 +2070,34 @@ pub(super) fn collect_mob_blocks(
     let brown =
         rewo_data::mob_variants::variant_id(rewo_data::mob_variants::mooshroom_texture(1, false));
     let mut out = Vec::new();
+    let block = |pos, state, transform, light| super::block_entities::OwnedBlockEntityDraw {
+        pos,
+        model: rewo_data::block_entity_models::carried_block_model(state),
+        transform,
+        light,
+        part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
+        part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+        tint: [1.0; 3],
+        fixed_display: false,
+        glint: false,
+        white: 0.0,
+    };
     for d in draws {
-        if d.kind != EntityModelKind::Mooshroom || d.body_hidden || d.mount.is_some() {
+        if d.body_hidden || d.mount.is_some() {
+            continue;
+        }
+        // M352 — an enderman's carried block (`CarriedBlockLayer`).
+        if let (EntityModelKind::Enderman, Some(state)) = (d.kind, d.mob.carried_block) {
+            let roll = rewo_gpu::entities::death_roll_for(d.kind, d.death_time);
+            out.push(block(
+                d.pos,
+                state,
+                enderman_block_transform(d.yaw, roll),
+                d.light,
+            ));
+            continue;
+        }
+        if d.kind != EntityModelKind::Mooshroom {
             continue;
         }
         let state = if Some(d.variant) == brown {
@@ -2050,18 +2111,7 @@ pub(super) fn collect_mob_blocks(
         let roll = rewo_gpu::entities::death_roll_for(d.kind, d.death_time);
         let net = (d.head_yaw - d.yaw + 180.0).rem_euclid(360.0) - 180.0;
         for transform in mooshroom_mushroom_transforms(d.yaw, net, d.pitch, roll) {
-            out.push(super::block_entities::OwnedBlockEntityDraw {
-                pos: d.pos,
-                model: rewo_data::block_entity_models::carried_block_model(state),
-                transform,
-                light: d.light,
-                part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
-                part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
-                tint: [1.0; 3],
-                fixed_display: false,
-                glint: false,
-                white: 0.0,
-            });
+            out.push(block(d.pos, state, transform, d.light));
         }
     }
     out
@@ -2085,6 +2135,8 @@ pub(super) fn block_display_states(
             // makes only the gravity blocks and TNT.
             "minecraft:falling_block" => Some(e.spawn_data as u32),
             "minecraft:tnt" => ents.primed(id).block,
+            // M352 — an enderman's carried block.
+            "minecraft:enderman" => ents.carried_block(id),
             // M351 — a mooshroom's mushroom (`MushroomCow.Variant`, CLAMP).
             "minecraft:mooshroom" => blocks.default_state(if ents.variant(id).unwrap_or(0) >= 1 {
                 "minecraft:brown_mushroom"

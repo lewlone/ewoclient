@@ -109,6 +109,14 @@ pub enum Anim {
     },
     /// Wolf tail wag while walking: `yRot = cos(f)·1.4·amt`.
     TailWagY,
+    /// M352 — `EndermanModel.setupAnim`: the humanoid swing halved and
+    /// clamped to ±0.4; while carrying a block both arms hold it up (`xRot`
+    /// -0.5, `zRot` ±0.05).
+    EndermanArmRight,
+    EndermanArmLeft,
+    /// M352 — the legs' swing halved and clamped to ±0.4.
+    EndermanLegRight,
+    EndermanLegLeft,
     /// Iron golem limbs: `triangleWave(pos, 13)` on the raw walk position.
     GolemArmRight,
     GolemArmLeft,
@@ -609,6 +617,9 @@ pub struct MobCombat {
     pub main_arm_left: bool,
     /// The derived `IllagerArmPose`; ignored by the non-illager rigs.
     pub illager_pose: IllagerArmPose,
+    /// M352 — the block state an enderman carries (`CarriedBlockLayer`;
+    /// the app draws the block, the enderman's arm rig reads its presence).
+    pub carried_block: Option<u32>,
 }
 
 impl Eq for Anim {}
@@ -3771,7 +3782,8 @@ fn wither_skeleton() -> Model {
     skeleton_like(1.2, false)
 }
 
-/// `EndermanModel`: stretched humanoid, half-amplitude limb swing.
+/// `EndermanModel`: stretched humanoid, half-amplitude limb swing clamped to
+/// ±0.4 (M352), and the carrying pose.
 fn enderman() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, -13.0, 0.0], Anim::Head, 1.0);
@@ -3802,7 +3814,7 @@ fn enderman() -> Model {
         false,
         &[Fold::at([0.0, -14.0, 0.0])],
     );
-    let arm_r = b.part([-5.0, -12.0, 0.0], Anim::ArmRight, 0.5);
+    let arm_r = b.part([-5.0, -12.0, 0.0], Anim::EndermanArmRight, 1.0);
     b.cube(
         arm_r,
         0,
@@ -3811,7 +3823,7 @@ fn enderman() -> Model {
         [2.0, 30.0, 2.0],
         NONE,
     );
-    let arm_l = b.part([5.0, -12.0, 0.0], Anim::ArmLeft, 0.5);
+    let arm_l = b.part([5.0, -12.0, 0.0], Anim::EndermanArmLeft, 1.0);
     b.cube_m(
         arm_l,
         0,
@@ -3820,7 +3832,7 @@ fn enderman() -> Model {
         [2.0, 30.0, 2.0],
         NONE,
     );
-    let leg_r = b.part([-2.0, -5.0, 0.0], Anim::LegRight, 0.5);
+    let leg_r = b.part([-2.0, -5.0, 0.0], Anim::EndermanLegRight, 1.0);
     b.cube(
         leg_r,
         0,
@@ -3829,7 +3841,7 @@ fn enderman() -> Model {
         [2.0, 30.0, 2.0],
         NONE,
     );
-    let leg_l = b.part([2.0, -5.0, 0.0], Anim::LegLeft, 0.5);
+    let leg_l = b.part([2.0, -5.0, 0.0], Anim::EndermanLegLeft, 1.0);
     b.cube_m(
         leg_l,
         0,
@@ -13738,10 +13750,20 @@ pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
         // the caller has already filtered to the fourteen kinds vanilla gives
         // an armour layer — the enderman and villager also carry `ArmRight`
         // and are never asked.
-        "right_arm" => &[Anim::HumanoidArmRight, Anim::UndeadArmRight, Anim::ArmRight],
-        "left_arm" => &[Anim::HumanoidArmLeft, Anim::UndeadArmLeft, Anim::ArmLeft],
-        "right_leg" => &[Anim::LegRight],
-        "left_leg" => &[Anim::LegLeft],
+        "right_arm" => &[
+            Anim::HumanoidArmRight,
+            Anim::UndeadArmRight,
+            Anim::ArmRight,
+            Anim::EndermanArmRight,
+        ],
+        "left_arm" => &[
+            Anim::HumanoidArmLeft,
+            Anim::UndeadArmLeft,
+            Anim::ArmLeft,
+            Anim::EndermanArmLeft,
+        ],
+        "right_leg" => &[Anim::LegRight, Anim::EndermanLegRight],
+        "left_leg" => &[Anim::LegLeft, Anim::EndermanLegLeft],
         _ => return None,
     };
     if let Some(i) = parts.iter().position(|p| {

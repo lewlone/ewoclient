@@ -2556,6 +2556,8 @@ pub struct VariantKinds {
     pub chicken: Option<i32>,
     /// M350 — `minecraft:zombie_nautilus` (index 21 ZOMBIE_NAUTILUS_VARIANT).
     pub zombie_nautilus: Option<i32>,
+    /// M352 — `minecraft:enderman`, for its carried block (index 16).
+    pub enderman: Option<i32>,
     /// `minecraft:tropical_fish` (M68). Its index-17 INT is not a texture id
     /// at all — it is `TropicalFish.packVariant`'s four packed fields — but it
     /// arrives through the same setter, and the renderer unpacks it with the
@@ -3061,6 +3063,11 @@ pub(crate) fn apply_set_entity_data<'a>(
     // on the llama), so only the kind separates them.
     if let (Some(c), true) = (meta.int21, vk.wolf == Some(type_id)) {
         entities.set_collar(eid, c);
+    }
+    // M352 — Slot 16 OPTIONAL_BLOCK_STATE → `EnderMan.DATA_CARRY_STATE`
+    // (0 is empty), gated on the enderman.
+    if let (Some(s), true) = (meta.opt_block16, vk.enderman == Some(type_id)) {
+        entities.set_carried_block(eid, u32::try_from(s).ok().filter(|s| *s != 0));
     }
     // M343 — Slot 23 INT → `Cat.DATA_COLLAR_COLOR`, gated on the cat.
     if let (Some(c), true) = (meta.int23, vk.cat == Some(type_id)) {

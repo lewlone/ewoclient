@@ -504,6 +504,10 @@ pub(super) struct RenderCheck {
     /// M351 — r205: the most brown-mushroom block draws that each drew
     /// their whole model in one frame.
     pub(super) mooshroom_mushrooms: usize,
+    /// M352 — r206: this frame's enderman draw carries a block, and the
+    /// frames its melon drew whole while it did.
+    pub(super) enderman_carrying: bool,
+    pub(super) enderman_block_frames: u32,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1269,7 +1273,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 205;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 206;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1469,6 +1473,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M352 — r206: `render_check.py` summons an enderman carrying a
+        // melon (index 16 OPTIONAL_BLOCK_STATE); it draws in the carrying
+        // pose and its melon draws whole (`CarriedBlockLayer`).
+        row(
+            "r206 an enderman carried its melon, drawn whole",
+            self.enderman_block_frames > 0,
+            format!(
+                "{} frames with the enderman carrying and its melon drawn whole",
+                self.enderman_block_frames
             ),
         );
         // M351 — r205: r201's brown mooshroom carries three brown mushrooms
