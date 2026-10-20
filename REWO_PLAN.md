@@ -2102,6 +2102,7 @@ this shape once.
 | M286 (2026-10-20) — a breeze draws its wind as its own layer | **r144** | — | — |
 | M287 (2026-10-20) — a wither at half health draws its armour swirl | **r145** | — | — |
 | M288 (2026-10-20) — an invulnerable wither draws shrunk in its invulnerable sheet | **r146** | — | — |
+| M289 (2026-10-20) — a dropped and a framed player head draw in their own skin | **r147** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3936,6 +3937,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M289 — dropped and framed player heads in their own skin (2026-10-20)
+
+M275 gave inventory icons the skin a player head's `minecraft:profile`
+names; a dropped head (`ItemEntity.DATA_ITEM`, slot 8) and a framed one
+(`ItemFrame.DATA_ITEM`, slot 9) still drew Steve. The metadata decode now
+keeps the stack's profile `textures` value (`stack_profile`) beside the
+item, the entity table holds it per entity (`stack_profiles`, classified in
+`clear_side_state` like every side map), the frame asks for those skins
+with the worn and inventory ones, and `HeadSkins::item_model` swaps
+`minecraft:player_head` for its per-skin item model in the ground-item draw
+and the live frame collector (`FrameInputs::profile`).
+
+Recorded: a head in another entity's hand, in the first-person hand and
+on the cursor still draws Steve.
+
+**r147**: `render_check.py` drops a player head (never picked up or
+despawned) and frames another on the floor, both with r130's skin; each
+draws in a `minecraft:player_head#skin…` model whose quads sample the
+synthetic skin. The side-map tests cover the new map's clearing on removal
+and on id reuse.
 
 ### M288 — the wither's invulnerable phase (2026-10-20)
 

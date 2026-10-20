@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 95 Rewo milestones, M194 to M288, in about 212 commits on
+- **What happened**: 96 Rewo milestones, M194 to M289, in about 214 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`98e31255`): 4432 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 146 of
-  146 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`33e8b0c6`): 4432 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 147 of
+  147 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -365,6 +365,8 @@ released.
 - **M287**: a wither below half health now shows its blue armour swirl.
 - **M288**: a freshly built wither now grows from its smaller, blinking
   blue form, as in vanilla.
+- **M289**: a player head dropped on the ground or put in an item frame now
+  shows its own skin instead of Steve's.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -426,6 +428,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `33e8b0c6` | **M289** — dropped and framed player heads in their own skin: the slot-8 and slot-9 stacks' profile kept (`stack_profiles`), requested, and swapped to the per-skin item model by `HeadSkins::item_model`; render-check **r147**. |
 | `98e31255` | **M288** — the wither's invulnerable phase: `DATA_ID_INV` read, `wither_invulnerable.png` as an appended vanilla variant chosen by the renderer's blink rule, the `2 - t / 220 · 0.5` shrink through the draw's stretch; two unit tests, the wither in mobshot's variant check and render-check **r146**. |
 | `0d8b1c17` | **M287** — the powered wither's armour swirl: `isPowered` from health and the max-health attribute, the wither shell at deformation 0.5, `wither_armor.png` on its own sheet with `Mth.cos(t · 0.02) · 3` as its u offset, in the swirl range after the creeper's; two unit tests, mobtexshot **m23** and render-check **r145**. |
 | `c6cf0346` | **M286** — the breeze's wind as its own layer: the slot-1 funnel leaves the body for `BREEZE_WIND` (own REPEAT sheet scrolled by `ageInTicks · 0.02`, lit, unshaded, translucent in gamma space, sorted), the pass's ninth range; a unit test, mobtexshot **m22** and render-check **r144**. |
@@ -765,6 +768,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M289: **4,432 tests passed, 0 failed; gates 51/51**; render check **147/147** on two runs (r147: the dropped head skinned on 27,848 and 33,113 frames, the framed one on 4,187 and 4,422); clippy (both configurations, pre-checked) and `cargo fmt --check` clean.
 - After M288: **4,432 tests passed, 0 failed; gates 51/51** (mobshot's variant check: 69 declared sheets, the wither's in its own atlas slot); clippy and `cargo fmt --check` clean. Render check: run 1 145/146, r142 failing its own control (the bot's yaw happened to be -90.0, the bed camera's, left so by an earlier tail stage) and run 2 146/146; after the witness fix (the bot faces south before the bed click) two more runs read **146/146** (r146 on every run; r142's own yaw back at ~0).
 - After M287: **4,430 tests passed, 0 failed; gates 51/51** (mobtexshot 23); render check **145/145** on two runs (r145: the wither's swirl sub-range filled on every frame it drew powered); clippy (both configurations, also run before the chain this time) and `cargo fmt --check` clean.
 - After M286: **4,428 tests passed, 0 failed; gates 51/51** (mobtexshot 22: m22 over 2,631 wind px, by layer count 26 / 1,299 / 275 / 555 / 466 / 10); render check **144/144** on two runs (r144: the wind range filled on every frame the breeze drew); `cargo fmt --check` clean. Clippy failed once (`needless_borrows_for_generic_args` on the new emitter call); after the one-character fix both clippy configurations are clean, rewo-gpu's 361 tests pass and mobtexshot reads 22/22. Mutants: an opaque wind and an unsorted funnel each fail m22 (its first criterion, "half need two or more layers", let the unsorted one through).
@@ -883,9 +887,9 @@ released.
 - `rewo-net`'s `reconfigure` test `start_configuration_round_trips_back_to_play`
   failed once under full-suite load ("connection closed") and passed five
   times alone; the same class as the `play::inbound` timing tests.
-- Skinned player heads in the first-person hand, on the cursor, dropped and
-  in item frames still draw Steve: only inventory icons (M275) and worn
-  heads (M273) take the skin. The hand needs the hand pass's own held-item
+- Skinned player heads in the first-person hand, in another entity's hand
+  and on the cursor still draw Steve: inventory icons (M275), worn heads
+  (M273) and dropped and framed heads (M289) take the skin. The hand needs the hand pass's own held-item
   copy rebuilt when a skin arrives, and a live witness that holds the head
   without the bot's right-clicks placing it.
 - The swirls (M285, M287) and the breeze's wind (M286): a glowing
