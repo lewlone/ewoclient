@@ -3972,6 +3972,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M326 — the baby squids (2026-10-20)
+
+`SquidRenderer` and `GlowSquidRenderer` swap in `BabySquidModel` (32 x 32:
+an 8 x 10 x 8 body and eight 2 x 6 x 2 tentacles on a radius-3 ring, each
+yawed outward and waving as the adult's do) on `squid_baby.png` and
+`glow_squid_baby.png`. Both sheets are 32 x 32 against the adults' 64 x 32,
+so M175 never baked them and both babies were half-size adults. `SquidBaby`
+and `GlowSquidBaby` are that model, picked by `baby_model_kind`. `mobshot`
+grades 330 views; `MAX_SMALL` 28 (both babies), `MAX_AMBIGUOUS` 12 (the adult
+squid, now that the baby's sheet holding its colours is baked).
+
+**Unit test**: the nine boxes, eight tentacles on the wave, the body's front
+at (8, 8)..(16, 18) and every tentacle's at (2, 20)..(4, 26). **mobtexshot
+m52**: both draw (2,664 px each) with no colour foreign to their own sheet;
+the baby squid on the adult's sheet fails on `#324c60`. **r181**: a staged
+baby squid and baby glow squid (given 27 minutes of air, since a squid on
+land loses air in `baseTick` whatever its AI) draw as `BabySquidModel`.
+
 ### M325 — the baby zombie villager (2026-10-20)
 
 `ZombieVillagerRenderer` swaps in `BabyZombieVillagerModel` (the baby

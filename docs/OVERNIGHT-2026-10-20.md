@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 132 Rewo milestones, M194 to M325, in about 286 commits on
+- **What happened**: 133 Rewo milestones, M194 to M326, in about 288 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`cfbbbc37`): 4471 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 180 of
-  180 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`2249cd5e`): 4472 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 181 of
+  181 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -434,6 +434,7 @@ released.
 - **M323**: lambs look right, fleece and all (and lose the fleece when shorn).
 - **M324**: dolphin calves look right.
 - **M325**: baby zombie villagers look right.
+- **M326**: baby squids and baby glow squids are their own model, not half-size adults.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -495,6 +496,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `2249cd5e` | **M326** — the baby squid and glow squid on `BabySquidModel` (both sheets differ in size from the adults', so M175 never baked them); a unit test, mobshot 330 views, mobtexshot **m52** and render-check **r181**. |
 | `cfbbbc37` | **M325** — the baby zombie villager on `BabyZombieVillagerModel` (one of M317's scrambled swaps); a unit test, mobshot 324 views, mobtexshot **m51** and render-check **r180**. |
 | `1ad317b0` | **M324** — the dolphin calf on `BabyDolphinModel` (one of M317's scrambled swaps); a unit test, mobshot 321 views, mobtexshot **m50** (which cannot tell the calf's sheet from the adult's: their palettes cover each other) and render-check **r179**. |
 | `6728fca8` | **M323** — the lamb on `BabySheepModel` with its coplanar fleece (one of M317's scrambled swaps); the coplanar range now admits a shearable layer; a unit test, mobshot 318 views, mobtexshot **m49** and render-check **r178**. |
@@ -871,6 +873,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M326: **4,472 tests passed, 0 failed; gates 51/51** (mobtexshot 52, mobshot 330 views); render check **181/181** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M325: **4,471 tests passed, 0 failed; gates 51/51** (mobtexshot 51, mobshot 324 views); render check **180/180** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M324: **4,470 tests passed, 0 failed; gates 51/51** (mobtexshot 50, mobshot 321 views); render check **179/179** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M323: **4,469 tests passed, 0 failed; gates 51/51** (mobtexshot 49, mobshot 318 views); render check **178/178** on two runs; clippy (both) and `cargo fmt --check` clean.
