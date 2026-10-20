@@ -3978,6 +3978,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M333 — the baby bee (2026-10-20)
+
+`BeeRenderer` swaps in `BabyBeeModel` (32 x 32: on the hovering `bone`, two
+antennae, a 4 x 4 x 5 body with its 0-wide stinger, two 3 x 0 x 3 wings,
+three 3 x 1 x 0 leg plates) on `bee_baby.png`, a sheet M175 never baked (the
+adult's is 64 x 64). `BeeBaby` is that model in the airborne pose Rewo's
+adult bee always takes: `BeeModel.setupAnim` resets the wings' y splay to 0
+and flutters them about z (both keep the right wing's 0.2182 tilt), and sets
+every leg plate's `xRot` to π/4. The left wing's `texOffs(-3, 9)` only
+reaches faces of zero area, which are not drawn. Like the adult it draws the
+calm sheet only. `mobshot` grades 351 views; `MAX_SMALL` 20.
+
+**Unit test**: the 30 faces (three boxes, six plates), the body's front at
+(5, 5)..(9, 9), both wings on the flutter from the bone's offset plus their
+own, tilted 0.2182 with no splay, and no UV below 0. **mobtexshot m58**: the
+bee draws (1,806 px) with no colour foreign to its sheet; on the adult's
+sheet it fails on `#e4ae3b`. **r187**: a staged baby bee draws as
+`BabyBeeModel`.
+
 ### M332 — the ocelot kitten (2026-10-20)
 
 `OcelotRenderer` swaps in `BabyOcelotModel`, whose layer is `BabyFelineModel
