@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 113 Rewo milestones, M194 to M306, in about 248 commits on
+- **What happened**: 114 Rewo milestones, M194 to M307, in about 250 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`26864a9a`): 4,448 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 162 of
-  162 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`473285e2`): 4,450 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 163 of
+  163 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -400,6 +400,8 @@ released.
 - **M306**: see-through mob layers are drawn see-through. A slime now shows
   its core, eyes and mouth through a translucent shell (it was a solid
   green block).
+- **M307**: the sulfur cube is drawn (core inside a see-through shell, the
+  small model for babies); it was a placeholder capsule.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -461,6 +463,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `473285e2` | **M307** — the sulfur cube: adult and small (baby) kinds on the translucent range, its scale and offset folded into the model, the atlas 256 rows taller; unit tests, mobshot 276 views, mobtexshot **m37** and render-check **r163**. |
 | `26864a9a` | **M306** — the `entityTranslucent` range (gamma-space blend after the wind, `entity.frag` with `GAMMA_OUT`, sorted, depth written), `Model::translucent_from`, the slime's inner body; mobtexshot's blend oracle reads the pixel beneath; a unit test, mobtexshot **m36** and render-check **r162**. |
 | `36856ebe` | **M305** — cube-mob size at index 18 (26.2's `AbstractCubeMob extends AgeableMob`), class-gated, default 1; two unit tests and render-check **r161** (magma cubes of size 1 and 4). |
 | `7b27deb8` | **M304** — the giant: the zombie's mesh at scale 6.0 on its sheet, with humanoid armour; a unit test, mobshot 270 views, mobtexshot **m35** and render-check **r160**. |
@@ -818,6 +821,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M307: **4,450 tests passed, 0 failed; gates 51/51** (mobtexshot 37, mobshot 276 views, the ETF fixture packing); render check **163/163** on two runs (both sulfur cube models seen on both); clippy (both) and `cargo fmt --check` clean.
 - After M306: **4,448 tests passed, 0 failed; gates 51/51** after the emissive gate learned translucency (it read 50/51 first: the slime counted as glowing at light zero); render check **162/162** on two runs (r162 on 16,165 and 15,455 frames); clippy (both) and `cargo fmt --check` clean.
 - After M305: **4,447 tests passed, 0 failed; gates 51/51**; render check **161/161** on two runs (r161: both sizes seen on both); clippy (both) and `cargo fmt --check` clean.
 - After M304: **4,446 tests passed, 0 failed; gates 51/51** (mobtexshot 35, mobshot 270 views); render check **160/160** on two runs (r160 on 26,105 and 27,652 frames); clippy (both) and `cargo fmt --check` clean.
@@ -922,8 +926,8 @@ released.
   and a worn item shows no enchantment glint. The
   entity atlas's large band is a 64-slot ring, not an LRU: past 64 distinct
   big textures on screen at once it would recycle slots mid-frame.
-- The sulfur cube and the mannequin draw as capsules (their wire names
-  have no model kind), and the happy ghast's leash ropes
+- The mannequin draws as a capsule (its wire name has no model kind); the
+  sulfur cube's swallowed block, fuse swell and squish are not drawn, and the happy ghast's leash ropes
   (`RopesLayer`) are not drawn. Wolf
   armour's damage cracks are not drawn (no item damage on worn pieces).
 - Banner and shield items show no patterns (the stack's `banner_patterns`

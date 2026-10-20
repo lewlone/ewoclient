@@ -3954,6 +3954,33 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M307 — the sulfur cube (2026-10-20)
+
+The third of M303's capsules, on M306's range. `SulfurCubeRenderer` draws
+`SulfurCubeModel`'s outer box `entityTranslucent` over `SulfurCubeInnerLayer`'s
+inner box (its own sheet, opaque), and `submit` swaps in `SmallSulfurCubeModel`
+and the small sheets for a baby: two kinds, `SulfurCube` and
+`SulfurCubeSmall`, the second chosen by the app from the synched baby flag
+(`sulfur_cube_kind`), as the tropical fish's large body is. `scale` ends
+`scale(extra)` and `translate(0, vOffset - 1/16, 0)`, folded into the model
+as its scale (0.5 adult, 1.0 small) and a downward shift (14.68 / 18.84 px);
+the cube size multiplies on top, and the bounds are the type's dimensions
+times the size (`getDefaultDimensions`). A baby takes no extra half scale:
+vanilla's render scale is the SCALE attribute alone, and `getAgeScale`
+halves only the bounds.
+
+Not drawn, recorded: a swallowed block in place of the inner box, the fuse's
+swell and white flash, and the squish. The four sheets grew the atlas 256 rows
+again (`ATLAS_H` 3392), after which the ETF fixture packs; the adult at size 1
+is m5's twelfth too-small kind in the crowd (`MAX_SMALL` 12) and m37 grades it
+close up. `mobshot` grades 276 views.
+
+**Unit tests**: both models' boxes, tails and ground line; the baby picks the
+small model. **mobtexshot m37**: at size 2 with a ravager behind, the adult
+shows it through 378 shell pixels and the small model through 622, both cores
+holding (without the translucent marker: 74 and 42, and m37 fails).
+**r163**: a staged adult and a staged baby draw as their two models.
+
 ### M306 — a translucent entity range; the slime's inner body (2026-10-20)
 
 Rewo had no `entityTranslucent` pass, so the slime drew its 8³ shell alone
