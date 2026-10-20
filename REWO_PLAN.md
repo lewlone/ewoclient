@@ -3970,6 +3970,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M324 — the dolphin calf (2026-10-20)
+
+`DolphinRenderer` swaps in `BabyDolphinModel`: the adult's part tree at the
+calf's size (a 6 x 5 x 8 body; the head with its nose, two fins and the back
+fin under it; the two-segment tail on the swim stroke, with no base tilt),
+on `dolphin_baby.png`. The dolphin was one of M317's scrambled swaps.
+`DolphinBaby` is that model, picked by `baby_model_kind`. `mobshot` grades
+321 views; `MAX_SMALL` 25.
+
+**Unit test**: the eight boxes, the tail fin under the tail on the stroke,
+and the head box's front at (4, 4)..(10, 9), ahead of the body's; a one-texel
+UV shift of the head fails it. **mobtexshot m50**: the calf draws (1,867 px)
+with no colour foreign to its sheet. **m50 does not tell the calf's sheet
+from the adult's**: drawn on `dolphin` it passes too, and in this view each
+sheet produces every colour the other draws, so a "pixels only the calf's
+sheet can produce" clause measured 0 and was dropped. The binding is the
+`MobDef` row. **r179**: a staged dolphin calf draws as `BabyDolphinModel`.
+
 ### M323 — the lamb (2026-10-20)
 
 `SheepRenderer` swaps in `BabySheepModel` (a 5 x 5 x 5 head, a 6 x 4 x 9
