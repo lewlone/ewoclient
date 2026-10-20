@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 55;
+const EXPECTED_WITNESSES: usize = 56;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -195,12 +195,12 @@ const MAX_SMALL: usize = 18;
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
 /// boat/chest_boat and raft/chest_raft (one wood sheet on two models), and the
 /// adult/baby pairs whose baby sheet repaints the adult's palette: dolphin,
-/// polar bear (both ways), squid (both ways), cow_baby, sheep_baby and
-/// strider_baby. The imposter named for a kind can change between runs (the
+/// polar bear (both ways), squid (both ways), cow_baby, sheep_baby,
+/// strider_baby and (M331) panda_baby. The imposter named for a kind can change between runs (the
 /// sheets are a hash map; any one that explains it is reported), the count
 /// does not. Sound but not discriminating, so the count is pinned rather than
 /// left to drift.
-const MAX_AMBIGUOUS: usize = 15;
+const MAX_AMBIGUOUS: usize = 16;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -4011,6 +4011,61 @@ fn run_check(
         format!(
             "{kf_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             kf_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m56 — M331: the panda cub draws, every pixel producible by its own
+    // sheet; the mesh rests on `the_panda_cub_is_its_own_model`.
+    let mut pdst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.2, 0.9, -1.2),
+        Vec3::new(0.0, 0.3, 0.0),
+    )?;
+    pdst.wr.set_entities(&[], pdst.right, pdst.up, 0.0);
+    pdst.off
+        .render(gpu, Some((&mut pdst.wr, pdst.vp)), &ov, BG)?;
+    let pd_empty = pdst.off.read_rgba(gpu)?;
+    let pd_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "panda_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    pdst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::PandaBaby)],
+        pdst.right,
+        pdst.up,
+        0.0,
+    );
+    pdst.off
+        .render(gpu, Some((&mut pdst.wr, pdst.vp)), &ov, BG)?;
+    let pd_frame = pdst.off.read_rgba(gpu)?;
+    pdst.destroy(gpu);
+    let (mut pd_px, mut pd_bad) = (0usize, None);
+    for (p, e) in pd_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(pd_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        pd_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if pd_bad.is_none() && !explains(&pd_sheet, c) {
+            pd_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m56.the_panda_cub_draws_from_its_own_sheet",
+        !pd_sheet.is_empty() && pd_px >= 200 && pd_bad.is_none(),
+        format!(
+            "{pd_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            pd_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

@@ -1580,11 +1580,13 @@ pub enum EntityModelKind {
     StriderBaby,
     /// M330 — `BabyFoxModel` (`FOX_BABY`).
     FoxBaby,
+    /// M331 — `BabyPandaModel` (`PANDA_BABY`).
+    PandaBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 123;
+    pub const COUNT: usize = 124;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1708,6 +1710,7 @@ impl EntityModelKind {
         EntityModelKind::ZoglinBaby,
         EntityModelKind::StriderBaby,
         EntityModelKind::FoxBaby,
+        EntityModelKind::PandaBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1832,6 +1835,7 @@ impl EntityModelKind {
             EntityModelKind::ZoglinBaby => "zoglin_baby",
             EntityModelKind::StriderBaby => "strider_baby",
             EntityModelKind::FoxBaby => "fox_baby",
+            EntityModelKind::PandaBaby => "panda_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1896,6 +1900,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::ZoglinBaby
                 | EntityModelKind::StriderBaby
                 | EntityModelKind::FoxBaby
+                | EntityModelKind::PandaBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2884,6 +2889,13 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::FoxBaby,
         textures: &["fox_baby"],
         build: fox_baby,
+    },
+    // M331 — the cub's normal-gene sheet (Rewo's adult panda draws no
+    // other gene).
+    MobDef {
+        kind: EntityModelKind::PandaBaby,
+        textures: &["panda_baby"],
+        build: panda_baby,
     },
 ];
 
@@ -5569,6 +5581,43 @@ fn fox_baby() -> Model {
             scale_f: 2.5,
         },
     );
+    b.finish(1.0)
+}
+
+/// M331 — `BabyPandaModel.createBodyLayer()` (64 x 64): a 9 x 7 x 11 body
+/// authored level, a 7 x 6 x 5 head (looking) with its muzzle and two ears,
+/// and four 3 x 2 x 3 legs on the quadruped walk. Sitting, rolling and the
+/// other panda poses are not drawn, as Rewo's adult panda's are not.
+fn panda_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 11.0),
+        [-4.5, -3.5, -5.5],
+        [9.0, 7.0, 11.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 18.5, 2.5])],
+    );
+    let head = b.part([0.0, 19.0, -3.0], Anim::Head, 1.0);
+    for (uv, min, dims) in [
+        ((0.0, 0.0), [-3.5, -3.0, -5.0], [7.0, 6.0, 5.0]),
+        ((24.0, 6.0), [-2.0, 1.0, -6.0], [4.0, 2.0, 1.0]),
+        ((24.0, 0.0), [-4.5, -4.0, -3.5], [3.0, 3.0, 1.0]),
+        ((33.0, 0.0), [1.5, -4.0, -3.5], [3.0, 3.0, 1.0]),
+    ] {
+        b.cube(head, 0, uv, min, dims, NONE);
+    }
+    for (pivot, anim, uv) in [
+        ([-3.0, 22.0, 6.5], Anim::QuadHindRight, (0.0, 34.0)),
+        ([3.0, 22.0, 6.5], Anim::QuadHindLeft, (12.0, 34.0)),
+        ([-3.0, 22.0, -1.5], Anim::QuadFrontRight, (0.0, 29.0)),
+        ([3.0, 22.0, -1.5], Anim::QuadFrontLeft, (12.0, 29.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 2.0, 3.0], NONE);
+    }
     b.finish(1.0)
 }
 
@@ -12192,6 +12241,7 @@ mod tests {
                     | EntityModelKind::ZoglinBaby
                     | EntityModelKind::StriderBaby
                     | EntityModelKind::FoxBaby
+                    | EntityModelKind::PandaBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13699,6 +13749,41 @@ mod kit_tests {
                 kf.parts.contains(&(named(leg) as u16)),
                 "{leg} is not on the walk"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod panda_cub_tests {
+    use super::*;
+
+    /// M331 — `BabyPandaModel`: nine boxes, the head box's front at (5, 5)..
+    /// (12, 11) of its sheet, the body's top at (11, 11)..(20, 22), and the
+    /// four legs on the quadruped walk.
+    #[test]
+    fn the_panda_cub_is_its_own_model() {
+        let m = panda_baby();
+        assert_eq!(m.quads.len(), 9 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let rect = |q: &RawQuad| (span(q, 0), span(q, 1));
+        assert!(m.quads.iter().any(|q| q.part == head
+            && q.facing == Facing::North
+            && rect(q) == ((5.0, 12.0), (5.0, 11.0))));
+        assert!(m.quads.iter().any(|q| q.part == STATIC_PART
+            && q.facing == Facing::Down
+            && rect(q) == ((11.0, 20.0), (11.0, 22.0))));
+        for a in [
+            Anim::QuadHindRight,
+            Anim::QuadHindLeft,
+            Anim::QuadFrontRight,
+            Anim::QuadFrontLeft,
+        ] {
+            assert_eq!(m.parts.iter().filter(|p| p.anim == a).count(), 1);
         }
     }
 }

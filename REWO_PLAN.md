@@ -2140,6 +2140,7 @@ this shape once.
 | M327 (2026-10-20) — a hoglet and a baby zoglin draw as BabyHoglinModel | **r182** | — | — |
 | M328 (2026-10-20) — a baby strider draws as BabyStriderModel | **r183** | — | — |
 | M330 (2026-10-20) — a kit draws as BabyFoxModel | **r184** | — | — |
+| M331 (2026-10-20) — a panda cub draws as BabyPandaModel | **r185** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

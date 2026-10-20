@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M331 — r185: the staged panda cub.
+            c.panda_cub |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::PandaBaby);
             // M330 — r184: the staged kit.
             c.kit |= draws
                 .iter()
