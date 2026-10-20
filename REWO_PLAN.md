@@ -3998,6 +3998,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M353 — the snow golem's pumpkin (2026-10-20)
+
+No snow golem wore its pumpkin. `SnowGolem.DATA_PUMPKIN_ID` is index 16 BYTE
+(`AbstractGolem` adds none after `Mob`'s 15; 0x10 is the pumpkin, set by
+default), a fourth reading of slot 16 after the player's customisation mask,
+now routed on the snow golem into `MobState`; an unsent byte wears the pumpkin
+(`EntityTable::has_pumpkin`). `SnowGolemRenderer`'s head block, the carved
+pumpkin's default state, draws on the block-model path (`collect_mob_blocks`)
+through `snow_golem_pumpkin_transform`: `LivingEntityRenderer`'s root,
+`getHead().translateAndRotate` (the head's pivot, pitch and net yaw),
+`translate(0, -0.34375, 0)`, `YP(180)`, `scale(0.625, -0.625, -0.625)`,
+`translate(-0.5, -0.5, -0.5)`. With M351 and M352 this closes the blocks mobs
+carry.
+
+**Unit tests**: the pumpkin by default, off at 0, back at 0x10; its centre
+worked out by hand (over the head, 1.5 px above the head's centre, on the
+head's axis however it turns) and its 0.625 edge. **n12**: 0 and 0x10 on a
+snow golem, and the byte on a cat untouched (without the routing it fails).
+**r207**: a staged snow golem and a sheared one draw exactly one pumpkin,
+whole.
+
 ### M352 — the enderman's carried block (2026-10-20)
 
 No enderman carried a block. `EnderMan.DATA_CARRY_STATE` is index 16

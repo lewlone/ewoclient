@@ -23,12 +23,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 159 Rewo milestones, M194 to M352, in about 343 commits on
+- **What happened**: 160 Rewo milestones, M194 to M353, in about 345 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`27d53c05`): 4508 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 206 of
-  206 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`8ea530c3`): 4510 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 207 of
+  207 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M353**: snow golems wear their pumpkins (a sheared one shows its face).
 - **M352**: endermen carry their blocks, arms up (they were empty-handed, and swung their arms too far).
 - **M351**: mooshrooms carry their mushrooms (two on the back, one on the head).
 - **M350**: warm zombie nautili wear their corals (and hide them under armour).
@@ -545,6 +546,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `8ea530c3` | **M353** — the snow golem's pumpkin (index 16 BYTE 0x10, `SnowGolemHeadLayer`); unit tests, variant check **n12** and render-check **r207**. |
 | `27d53c05` | **M352** — the enderman's carried block (index 16 OPTIONAL_BLOCK_STATE, `CarriedBlockLayer`) and its own arm and leg rig; unit tests, variant check **n11** and render-check **r206**. |
 | `be59d7f5` | **M351** — the mooshroom's three mushrooms on the block-model path, posed by the mob's own draw; a unit test against hand-worked positions and render-check **r205**. |
 | `5079b77a` | **M350** — the coral zombie nautilus (registry and holder, the coral mesh with a new `Show::Unarmoured`, shell twins); unit tests, n7, mobtexshot **m75** and render-check **r204**; mobshot's ambiguous kinds 9, m5's small cap 26. |
@@ -948,6 +950,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M353: **4,510 tests passed, 0 failed** (on a rerun: the chain's run had five `srv` loopback tests fail to find a port free for both UDP and TCP, an environmental flake, see Follow-ups)**; gates 51/51** (the variant check at 17 witnesses with n12; without the snow golem's routing n12 fails); render check **207/207** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M352: **4,508 tests passed, 0 failed; gates 51/51** (the variant check at 16 witnesses with n11; without the enderman's routing n11 fails); render check **206/206** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M351: **4,506 tests passed, 0 failed; gates 51/51**; render check **205/205** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M350: **4,505 tests passed, 0 failed; gates 51/51** (mobshot 390 views with nine ambiguous kinds, mobtexshot 75, the variant check's n7 over fourteen mobs); render check **204/204** on two runs; clippy (both) and `cargo fmt --check` clean.
@@ -1216,13 +1219,20 @@ released.
   draw. One gap left, adult and baby alike: a hovering bee's `bobUpAndDown`
   tilts its body 0.1 and sets its front legs to π/8 (Rewo holds the body
   level and every leg at π/4).
+- **A test flake on the shared PC (M353's chain, 23:1x)**: five
+  `rewo-net` `srv::tests` (the loopback fake nameservers) could not find a
+  port free for both UDP and TCP in 100 tries (`srv.rs` "a port free for both
+  UDP and TCP"); all 34 passed on an immediate rerun. Environmental (other
+  jobs holding loopback ports), but a hundred tries is the test's whole
+  budget, so it can recur on a busy machine.
 - **Gate messages with runs of spaces**: a few `format!` strings were written
   with `\` line continuations through a shell heredoc that turned each into a
   run of spaces (`gaugeshot`'s speed/poison row, `inventoryshot`'s description-
   key row); cosmetic, the pass/fail logic is unaffected (found in M352, whose
   own n11 message was fixed).
 - **Blocks that mobs carry are not drawn** (found in M347): ~~the mooshroom's
-  mushrooms~~ (M351), ~~the enderman's held block~~ (M352)
+  mushrooms~~ (M351), ~~the enderman's held block~~ (M352) ~~and the snow
+  golem's pumpkin~~ (M353); all three done
   (`CarriedBlockLayer`) and the snow golem's pumpkin. Rewo draws block
   models for entities only as whole-entity blocks (falling blocks, TNT,
   minecart contents); a carried block needs the mob's part transform
