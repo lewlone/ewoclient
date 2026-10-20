@@ -803,6 +803,9 @@ pub enum Show {
     /// M296 — `DonkeyModel.setupAnim`: `leftChest.visible = rightChest.visible
     /// = state.hasChest`.
     Chested,
+    /// M350 — `ZombieNautilusCoralModel.setupAnim`: `corals.visible =
+    /// state.bodyArmorItem.isEmpty()`. Shown unless the draw has body armour.
+    Unarmoured,
     /// M310 — `PlayerModel.setupAnim`: `hat.visible = state.showHat`,
     /// `jacket.visible = state.showJacket` and so on, each a
     /// `PlayerModelPart` bit of the avatar's customisation mask (the bit
@@ -1615,11 +1618,14 @@ pub enum EntityModelKind {
     /// (`COLD_CHICKEN`), the meshes a cold variant's `model` picks.
     ColdPig,
     ColdChicken,
+    /// M350 — `ZombieNautilusCoralModel` (`ZOMBIE_NAUTILUS_CORAL`), the mesh
+    /// a warm `zombie_nautilus_variant` picks.
+    ZombieNautilusCoral,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 139;
+    pub const COUNT: usize = 140;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1759,6 +1765,7 @@ impl EntityModelKind {
         EntityModelKind::WarmCow,
         EntityModelKind::ColdPig,
         EntityModelKind::ColdChicken,
+        EntityModelKind::ZombieNautilusCoral,
         EntityModelKind::Capsule,
     ];
 
@@ -1899,6 +1906,7 @@ impl EntityModelKind {
             EntityModelKind::WarmCow => "warm_cow",
             EntityModelKind::ColdPig => "cold_pig",
             EntityModelKind::ColdChicken => "cold_chicken",
+            EntityModelKind::ZombieNautilusCoral => "zombie_nautilus_coral",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1979,6 +1987,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::WarmCow
                 | EntityModelKind::ColdPig
                 | EntityModelKind::ColdChicken
+                | EntityModelKind::ZombieNautilusCoral
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -3087,6 +3096,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ColdChicken,
         textures: &["cold_chicken"],
         build: cold_chicken,
+    },
+    // M350 — the coral zombie nautilus's mesh, on its own sheet.
+    MobDef {
+        kind: EntityModelKind::ZombieNautilusCoral,
+        textures: &["zombie_nautilus_coral"],
+        build: nautilus_coral,
     },
 ];
 
@@ -12883,6 +12898,32 @@ pub fn nautilus_armor() -> Model {
     m
 }
 
+/// M350 — `ZombieNautilusCoralModel.createBodyLayer()`: the nautilus mesh
+/// with a `corals` part under the shell (offset (8, 4.5, -8)) holding four
+/// corals of two zero-thickness planes each (yellow, pink, blue, red, each
+/// plane turned about y or, the pink's second, z), on a 128 x 128 sheet.
+/// The corals hide under body armour ([`Show::Unarmoured`]).
+fn nautilus_coral() -> Model {
+    nautilus_of(NautilusLayer::None, true)
+}
+
+/// M350 — the armour and saddle shells over the coral mesh: the same boxes
+/// as [`nautilus_armor`] / [`nautilus_saddle`], on a part list that matches
+/// the coral mesh's (its extra, empty corals part).
+pub fn nautilus_coral_armor() -> Model {
+    let base = nautilus().quads.len();
+    let mut m = nautilus_of(NautilusLayer::Armor, true);
+    m.quads.drain(..base);
+    m
+}
+
+pub fn nautilus_coral_saddle() -> Model {
+    let base = nautilus().quads.len();
+    let mut m = nautilus_of(NautilusLayer::Saddle, true);
+    m.quads.drain(..base);
+    m
+}
+
 /// M301 — `ModelLayers.NAUTILUS_SADDLE`: the shell's top box at 0.2,
 /// `NAUTILUS_SADDLE`'s layer shell.
 pub fn nautilus_saddle() -> Model {
@@ -12893,6 +12934,10 @@ pub fn nautilus_saddle() -> Model {
 }
 
 fn nautilus_with(layer: NautilusLayer) -> Model {
+    nautilus_of(layer, false)
+}
+
+fn nautilus_of(layer: NautilusLayer, coral: bool) -> Model {
     let mut b = ModelBuilder::new();
     let root = Fold::at([0.0, 29.0, -6.0]);
     let shell = Fold::at([0.0, -13.0, 5.0]);
@@ -13002,6 +13047,71 @@ fn nautilus_with(layer: NautilusLayer) -> Model {
             scale_f: 3.0,
         },
     );
+    // M350 — the coral mesh's `corals` part; its planes only on the mesh
+    // itself, so the layer shells keep the base boxes' count ahead of theirs.
+    if coral {
+        let c = b.part([0.0; 3], Anim::None, 1.0);
+        b.show(c, Show::Unarmoured);
+        if layer == NautilusLayer::None {
+            let corals = Fold::at([8.0, 4.5, -8.0]);
+            let (yellow, pink, blue) = (
+                Fold::at([0.0, -11.0, 11.0]),
+                Fold::at([-12.5, -18.0, 11.0]),
+                Fold::at([-14.0, 0.0, 5.5]),
+            );
+            let y = |a: f32, p: [f32; 3]| Fold::rot([0.0, a, 0.0], p);
+            for (uv, min, dims, folds) in [
+                (
+                    (0.0, 85.0),
+                    [-4.5, -3.5, 0.0],
+                    [6.0, 8.0, 0.0],
+                    vec![y(-0.7854, [0.0, 0.0, 2.0]), yellow],
+                ),
+                (
+                    (0.0, 85.0),
+                    [-4.5, -3.5, 0.0],
+                    [6.0, 8.0, 0.0],
+                    vec![y(0.7854, [0.0; 3]), yellow],
+                ),
+                ((-8.0, 94.0), [-4.5, 4.5, 0.0], [6.0, 0.0, 8.0], vec![pink]),
+                (
+                    (-8.0, 94.0),
+                    [-3.0, 0.0, -4.0],
+                    [6.0, 0.0, 8.0],
+                    vec![Fold::rot([0.0, 0.0, 1.5708], [-1.5, 4.5, 4.0]), pink],
+                ),
+                (
+                    (0.0, 102.0),
+                    [-3.5, -5.5, 0.0],
+                    [5.0, 10.0, 0.0],
+                    vec![y(0.7854, [0.0, 0.0, -2.0]), blue],
+                ),
+                (
+                    (0.0, 102.0),
+                    [-3.5, -5.5, 0.0],
+                    [5.0, 10.0, 0.0],
+                    vec![y(-0.7854, [0.0; 3]), blue],
+                ),
+                // The red coral's own part sits at the corals' origin.
+                (
+                    (0.0, 112.0),
+                    [-2.5, -5.5, 0.0],
+                    [4.0, 10.0, 0.0],
+                    vec![y(-0.829, [-0.5, -1.0, 1.5])],
+                ),
+                (
+                    (0.0, 112.0),
+                    [-4.5, -5.5, 0.0],
+                    [6.0, 10.0, 0.0],
+                    vec![y(0.7854, [0.0; 3])],
+                ),
+            ] {
+                let mut chain = folds;
+                chain.extend([corals, shell, root]);
+                b.cube_f(c, 0, uv, min, dims, 0.0, false, &chain);
+            }
+        }
+    }
     // M301 — `NautilusArmorModel` / `NautilusSaddleModel`: the root replaced
     // by one holding only the shell, i.e. boxes on the shell's pose alone,
     // appended last so `nautilus_armor` / `nautilus_saddle` split them off.
@@ -13434,6 +13544,7 @@ mod tests {
                     | EntityModelKind::WarmCow
                     | EntityModelKind::ColdPig
                     | EntityModelKind::ColdChicken
+                    | EntityModelKind::ZombieNautilusCoral
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -15403,5 +15514,48 @@ mod cold_pig_chicken_tests {
         assert!(has_face(&cold, (43.0, 48.0), (14.0, 17.0)));
         // The beak (14, 0) 4 x 2 x 2 survives the head's replacement.
         assert!(has_face(&cold, (16.0, 20.0), (2.0, 4.0)));
+    }
+}
+
+#[cfg(test)]
+mod coral_nautilus_tests {
+    use super::*;
+
+    fn has_face(m: &Model, u: (f32, f32), v: (f32, f32)) -> bool {
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|t| t[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        m.quads.iter().any(|q| span(q, 0) == u && span(q, 1) == v)
+    }
+
+    /// M350 — the coral mesh is the nautilus plus one part holding eight
+    /// zero-thickness planes (two faces each), shown only unarmoured; its
+    /// armour and saddle shells have its part list and the base shells' boxes.
+    #[test]
+    fn the_coral_nautilus_is_the_nautilus_plus_its_corals() {
+        let (base, coral) = (nautilus(), nautilus_coral());
+        assert_eq!(coral.parts.len(), base.parts.len() + 1);
+        assert_eq!(coral.quads.len(), base.quads.len() + 8 * 2);
+        let c = coral.parts.len() - 1;
+        assert_eq!(coral.parts[c].show, Show::Unarmoured);
+        assert!(coral.quads[base.quads.len()..].iter().all(|q| q.part == c));
+        for (u, v) in [
+            ((0.0, 6.0), (85.0, 93.0)),
+            ((0.0, 6.0), (94.0, 102.0)),
+            ((0.0, 5.0), (102.0, 112.0)),
+            ((0.0, 4.0), (112.0, 122.0)),
+            ((0.0, 6.0), (112.0, 122.0)),
+        ] {
+            assert!(has_face(&coral, u, v), "{u:?} {v:?}");
+        }
+        for (shell, plain) in [
+            (nautilus_coral_armor(), nautilus_armor()),
+            (nautilus_coral_saddle(), nautilus_saddle()),
+        ] {
+            assert_eq!(shell.parts.len(), coral.parts.len());
+            assert_eq!(shell.quads.len(), plain.quads.len());
+        }
     }
 }

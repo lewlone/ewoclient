@@ -284,6 +284,10 @@ pub struct EntityMeta {
     /// M349 — index 18, **CHICKEN_VARIANT** serializer (id 30):
     /// `Chicken.DATA_VARIANT_ID`.
     pub chicken_variant: Option<i32>,
+    /// M350 — index 21, **ZOMBIE_NAUTILUS_VARIANT** serializer (id 32):
+    /// `ZombieNautilus.DATA_VARIANT_ID` (`TamableAnimal` 18 and 19,
+    /// `AbstractNautilus.DASH` 20).
+    pub zombie_nautilus_variant: Option<i32>,
     /// `ItemEntity.DATA_ITEM` — index 8, **ITEM_STACK** serializer (id 7).
     ///
     /// Index 8 is shared with `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, which is
@@ -593,6 +597,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (18, 23) => meta.cow_variant = r.varint().ok(),
             (19, 28) => meta.pig_variant = r.varint().ok(),
             (18, 30) => meta.chicken_variant = r.varint().ok(),
+            (21, 32) => meta.zombie_nautilus_variant = r.varint().ok(),
             (19, 1) => meta.int19 = r.varint().ok(),
             // M141f: `Bee.DATA_ANGER_END_TIME`, LONG (serializer **2**, a
             // `ByteBufCodecs.VAR_LONG` rather than a fixed i64). Index 19 is

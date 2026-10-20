@@ -1804,6 +1804,8 @@ impl EntityPass {
                 EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => {
                     Some(mobs::nautilus_armor())
                 }
+                // M350 — the same shell on the coral mesh's part list.
+                EntityModelKind::ZombieNautilusCoral => Some(mobs::nautilus_coral_armor()),
                 // M302 — the happy ghast's harness (goggles up).
                 EntityModelKind::HappyGhast => Some(mobs::happy_ghast_harness(false)),
                 _ => None,
@@ -1863,6 +1865,9 @@ impl EntityPass {
                 // M301 — the nautilus's saddle (the zombie's too).
                 EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus if !debug_tex => {
                     Some((mobs::nautilus_saddle(), mobs::empty_model()))
+                }
+                EntityModelKind::ZombieNautilusCoral if !debug_tex => {
+                    Some((mobs::nautilus_coral_saddle(), mobs::empty_model()))
                 }
                 _ => None,
             })
@@ -3807,6 +3812,8 @@ impl EntityPass {
                 mobs::Show::StandBasePlate => d.stand_parts.base_plate,
                 mobs::Show::Chested => d.chested,
                 mobs::Show::AvatarPart(bit) => d.avatar_hidden & bit == 0,
+                // M350 — the coral nautilus's corals.
+                mobs::Show::Unarmoured => d.body_armor.is_none(),
             }
         };
         // The pack variant this entity drew, if the atlas has a slot for it.

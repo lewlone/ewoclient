@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M350 — r204: the staged coral zombie nautilus, on its mesh.
+            c.coral_nautilus |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::ZombieNautilusCoral);
             // M349 — r203: the staged cold pig and chicken on their meshes,
             // and the warm piglet and chick on their sheets.
             let warm_piglet = rewo_data::mob_variants::variant_id("entity/pig/pig_warm_baby.png");

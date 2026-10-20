@@ -1060,6 +1060,13 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     // sheet.
     ("cold_pig", "entity/pig/pig_cold.png", 64, 64),
     ("cold_chicken", "entity/chicken/chicken_cold.png", 64, 32),
+    // M350 — the coral zombie nautilus's mesh, on its own sheet.
+    (
+        "zombie_nautilus_coral",
+        "entity/nautilus/zombie_nautilus_coral.png",
+        128,
+        128,
+    ),
     ("mooshroom", "entity/cow/mooshroom_red.png", 64, 64),
     ("pig", "entity/pig/pig_temperate.png", 64, 64),
     ("sheep", "entity/sheep/sheep.png", 64, 32),

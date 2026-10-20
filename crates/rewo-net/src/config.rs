@@ -69,6 +69,8 @@ pub struct ConfigData {
     /// M349 — `pig_variant` and `chicken_variant`, index = holder id.
     pub pig_variants: Vec<crate::variant_parse::MobVariantDef>,
     pub chicken_variants: Vec<crate::variant_parse::MobVariantDef>,
+    /// M350 — `zombie_nautilus_variant`, index = holder id.
+    pub zombie_nautilus_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// M254 — the `painting_variant` registry, index = protocol id.
     pub painting_variants: Vec<crate::variant_parse::PaintingVariantDef>,
     /// The server's datapack tags (M69).
@@ -108,6 +110,7 @@ impl ConfigData {
             cow_variants: Vec::new(),
             pig_variants: Vec::new(),
             chicken_variants: Vec::new(),
+            zombie_nautilus_variants: Vec::new(),
             painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
@@ -140,6 +143,7 @@ impl ConfigData {
             cow_variants: Vec::new(),
             pig_variants: Vec::new(),
             chicken_variants: Vec::new(),
+            zombie_nautilus_variants: Vec::new(),
             painting_variants: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
@@ -260,6 +264,17 @@ impl ConfigData {
             log::info!(
                 "net: {} chicken variant(s) synced",
                 self.chicken_variants.len()
+            );
+            return Ok(());
+        }
+        // M350 — the zombie nautilus's (no baby sheet; `model` "warm").
+        if registry == crate::variant_parse::ZOMBIE_NAUTILUS_VARIANT_REGISTRY {
+            self.zombie_nautilus_variants =
+                crate::variant_parse::parse_single_asset_registry(&mut r, count);
+            short_registry(&registry, self.zombie_nautilus_variants.len(), count);
+            log::info!(
+                "net: {} zombie nautilus variant(s) synced",
+                self.zombie_nautilus_variants.len()
             );
             return Ok(());
         }

@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M350 -- r204. A warm (coral) zombie nautilus, on the z ~24 row.
+    "summon minecraft:zombie_nautilus ~13 ~ ~24 {NoAI:1b,Silent:1b,"
+    "variant:\"minecraft:warm\"};"
     # M349 -- r203. A cold pig, a cold chicken, a warm piglet and a warm
     # chick, on a row of their own (z ~24).
     "summon minecraft:pig ~0 ~ ~24 {NoAI:1b,Silent:1b,variant:\"minecraft:cold\"};"

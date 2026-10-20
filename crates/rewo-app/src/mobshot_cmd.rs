@@ -290,11 +290,15 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// kid. M338: 366 → 369, the baby llama. M339: 369 → 372, the horse foal.
 /// M340: 372 → 375, the kitten. M341: 375 → 378, the puppy. M348: 378 →
 /// 384, the cold and warm cows. M349: 384 → 390, the cold pig and chicken.
+/// M350: still 390 — the coral zombie nautilus is an ambiguous kind (below).
 const EXPECTED_MOB_VIEWS: usize = 390;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
-/// breeze_wind): each one is a mob this gate does NOT grade.
-const EXPECTED_AMBIGUOUS_KINDS: usize = 8;
+/// breeze_wind; M350 zombie_nautilus_coral, whose red coral's two planes
+/// overlap one's north face with the other's south): each one is a mob this
+/// gate does NOT grade. The coral mesh's base is the nautilus's, graded under
+/// `nautilus` and `zombie_nautilus`; its corals are `mobtexshot m75`'s.
+const EXPECTED_AMBIGUOUS_KINDS: usize = 9;
 
 fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> Result<(), String> {
     let (w, h) = (512u32, 512u32);
@@ -2510,6 +2514,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         // M349 — the pig's and the chicken's variants.
         pig: etypes.id_of("minecraft:pig"),
         chicken: etypes.id_of("minecraft:chicken"),
+        // M350 — the zombie nautilus's variant.
+        zombie_nautilus: etypes.id_of("minecraft:zombie_nautilus"),
         tropical_fish: etypes.id_of("minecraft:tropical_fish"),
     };
     let sheep = tid("minecraft:sheep")?;
@@ -2536,7 +2542,7 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     };
 
     // Each mob's own (index, serializer), and the value landing.
-    let rows: [(&str, Option<i32>, u8, u8); 13] = [
+    let rows: [(&str, Option<i32>, u8, u8); 14] = [
         ("cat", kinds.cat, 20, 21),
         ("wolf", kinds.wolf, 23, 25),
         ("frog", kinds.frog, 18, 27),
@@ -2557,6 +2563,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         // CHICKEN_VARIANT).
         ("pig", kinds.pig, 19, 28),
         ("chicken", kinds.chicken, 18, 30),
+        // M350 — the zombie nautilus's (21, ZOMBIE_NAUTILUS_VARIANT).
+        ("zombie_nautilus", kinds.zombie_nautilus, 21, 32),
     ];
     let mut landed = Vec::new();
     let mut wrong_index = Vec::new();
@@ -2576,10 +2584,10 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     }
     c.record(
         "n7.each_mobs_variant_arrives_at_its_own_index_and_nowhere_else",
-        landed.len() == 13 && wrong_index.is_empty(),
+        landed.len() == 14 && wrong_index.is_empty(),
         format!(
             "{landed:?} routed through the production dispatcher at cat 20 / \
-             wolf 23 / frog 18 / axolotl 18 / horse 19 / llama 21 / parrot 20 / fox 18 / rabbit 18 / mooshroom 18 / cow 18 / pig 19 / chicken 18; \
+             wolf 23 / frog 18 / axolotl 18 / horse 19 / llama 21 / parrot 20 / fox 18 / rabbit 18 / mooshroom 18 / cow 18 / pig 19 / chicken 18 / zombie_nautilus 21; \
              {} neighbouring slot(s) also accepted {wrong_index:?}. Counted \
              `defineId` up the 26.2 hierarchy — Entity 0..7, LivingEntity \
              8..14, Mob 15, AgeableMob 16 AND 17, TamableAnimal 18 and 19 — \

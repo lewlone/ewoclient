@@ -46,6 +46,9 @@ pub const COW_VARIANT_REGISTRY: &str = "minecraft:cow_variant";
 /// cow's shape (`asset_id`, `model`, `baby_asset_id`).
 pub const PIG_VARIANT_REGISTRY: &str = "minecraft:pig_variant";
 pub const CHICKEN_VARIANT_REGISTRY: &str = "minecraft:chicken_variant";
+/// M350 — `ZombieNautilusVariant.NETWORK_CODEC`: `ModelAndTexture` alone
+/// (`asset_id`, and `model` "warm" for the coral one; no baby sheet).
+pub const ZOMBIE_NAUTILUS_VARIANT_REGISTRY: &str = "minecraft:zombie_nautilus_variant";
 /// M254 — the `painting_variant` registry (`PaintingVariant.NETWORK_CODEC`:
 /// `width`, `height`, `asset_id`, optional title and author).
 pub const PAINTING_VARIANT_REGISTRY: &str = "minecraft:painting_variant";

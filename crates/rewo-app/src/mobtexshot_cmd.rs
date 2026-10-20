@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 74;
+const EXPECTED_WITNESSES: usize = 75;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -190,10 +190,11 @@ const MIN_DISCRIMINATING: usize = 88;
 /// villager and glow squid, (M330) the kit, (M332) the ocelot kitten,
 /// (M333) the baby bee, (M336) the rabbit kit, (M337) the goat kid, (M340)
 /// the kitten and (M341) the puppy. Each baby is graded up close by its own
-/// witness (m42..m66, n1/n2). M349: one more as the cold pig and chicken
-/// joined the crowd (by size, the cold chicken; both graded up close by
-/// m74). A twenty-sixth means something stopped drawing.
-const MAX_SMALL: usize = 25;
+/// witness (m42..m66, n1/n2). M349: the cold chicken (graded up close by
+/// m74); M350: the coral zombie nautilus, mostly hidden by its neighbours in
+/// the crowd (graded up close by m75). A twenty-seventh means something
+/// stopped drawing.
+const MAX_SMALL: usize = 26;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -5448,6 +5449,80 @@ fn run_check(
         format!(
             "{} (want >= 150 px each, none foreign, each group of three all different)",
             fa_rows.join("; ")
+        ),
+    ));
+
+    // m75 — M350: the coral zombie nautilus draws from its own sheet, its
+    // corals reach past the plain zombie nautilus's silhouette, and body
+    // armour hides them (`corals.visible = bodyArmorItem.isEmpty()`): the
+    // pixels only the corals cover come back as background once armoured
+    // (the armour is the shell at 0.01, inside the plain silhouette). Most of
+    // each plane sits inside the shell, so four views are summed.
+    let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    layers[0] = Some(("nautilus_body/iron", [1.0, 1.0, 1.0]));
+    let iron = Some(rewo_gpu::entities::ArmorPiece {
+        layers,
+        ..Default::default()
+    });
+    let coral_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "zombie_nautilus_coral")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let (mut drawn, mut foreign, mut coral_only, mut kept) = (0usize, None, 0usize, 0usize);
+    for eye in [
+        Vec3::new(2.4, 2.6, 2.2),
+        Vec3::new(-2.4, 2.0, 2.4),
+        Vec3::new(2.4, 1.2, -2.4),
+        Vec3::new(-2.4, 0.6, -2.4),
+    ] {
+        let mut znst = stage_from(gpu, baked, cw, ch, eye, Vec3::new(0.0, 1.0, 0.0))?;
+        znst.wr.set_entities(&[], znst.right, znst.up, 0.0);
+        znst.off
+            .render(gpu, Some((&mut znst.wr, znst.vp)), &ov, BG)?;
+        let empty = znst.off.read_rgba(gpu)?;
+        let mut zshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            znst.wr.set_entities(&[d], znst.right, znst.up, 0.0);
+            znst.off
+                .render(gpu, Some((&mut znst.wr, znst.vp)), &ov, BG)?;
+            znst.off.read_rgba(gpu)
+        };
+        let plain = zshot(neutral_draw(EntityModelKind::ZombieNautilus))?;
+        let coral = zshot(neutral_draw(EntityModelKind::ZombieNautilusCoral))?;
+        let armoured = zshot(EntityDraw {
+            body_armor: iron,
+            ..neutral_draw(EntityModelKind::ZombieNautilusCoral)
+        })?;
+        znst.destroy(gpu);
+        let at = |f: &[u8], i: usize| f[i * 4..i * 4 + 3] != empty[i * 4..i * 4 + 3];
+        for i in 0..empty.len() / 4 {
+            if !at(&coral, i) {
+                continue;
+            }
+            drawn += 1;
+            let c = pack(coral[i * 4], coral[i * 4 + 1], coral[i * 4 + 2]);
+            if foreign.is_none() && !explains(&coral_sheet, c) {
+                foreign = Some(c);
+            }
+            if !at(&plain, i) {
+                coral_only += 1;
+                kept += usize::from(at(&armoured, i));
+            }
+        }
+    }
+    w.push(wit(
+        "m75.the_coral_nautilus_wears_its_corals_and_hides_them_under_armour",
+        !coral_sheet.is_empty()
+            && drawn >= 4000
+            && foreign.is_none()
+            && coral_only >= 100
+            && kept * 20 <= coral_only,
+        format!(
+            "{drawn} px drawn over four views (want >= 4000), first colour its sheet cannot \
+             produce {:?}; {coral_only} px only the corals cover (want >= 100), {kept} of \
+             them still covered in iron armour (want at most a twentieth)",
+            foreign.map(|c| format!("#{c:06x}"))
         ),
     ));
 

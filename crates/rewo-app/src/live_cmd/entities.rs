@@ -3405,7 +3405,9 @@ pub(crate) fn body_armor_piece<'a>(
         // M299 — `WolfArmorLayer`'s `WOLF_BODY`, on an adult only.
         EntityModelKind::Wolf => ArmorLayer::WolfBody,
         // M301 — `NAUTILUS_BODY` (both nautilus renderers).
-        EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => ArmorLayer::NautilusBody,
+        EntityModelKind::Nautilus
+        | EntityModelKind::ZombieNautilus
+        | EntityModelKind::ZombieNautilusCoral => ArmorLayer::NautilusBody,
         // M302 — `HAPPY_GHAST_BODY` (Rewo draws a baby at the adult size,
         // so with the adult harness).
         EntityModelKind::HappyGhast => ArmorLayer::HappyGhastBody,
@@ -3479,7 +3481,9 @@ pub(crate) fn saddle_piece<'a>(
         // M303 — `CAMEL_HUSK_SADDLE`.
         EntityModelKind::CamelHusk => ArmorLayer::CamelHuskSaddle,
         // M301 — `NAUTILUS_SADDLE` (both nautilus renderers).
-        EntityModelKind::Nautilus | EntityModelKind::ZombieNautilus => ArmorLayer::NautilusSaddle,
+        EntityModelKind::Nautilus
+        | EntityModelKind::ZombieNautilus
+        | EntityModelKind::ZombieNautilusCoral => ArmorLayer::NautilusSaddle,
         _ => return None,
     };
     let piece = session.world.entities.saddle_piece(id)?;
@@ -3808,7 +3812,10 @@ pub(crate) fn default_variant(
         | EntityModelKind::PigBaby
         | EntityModelKind::Chicken
         | EntityModelKind::ColdChicken
-        | EntityModelKind::ChickenBaby => by_key("minecraft:temperate"),
+        | EntityModelKind::ChickenBaby
+        // M350 — `ZombieNautilusVariants.TEMPERATE`.
+        | EntityModelKind::ZombieNautilus
+        | EntityModelKind::ZombieNautilusCoral => by_key("minecraft:temperate"),
         EntityModelKind::Horse
         | EntityModelKind::HorseBaby
         | EntityModelKind::Llama
@@ -3846,6 +3853,10 @@ pub(crate) fn variant_registry(
         EntityModelKind::Chicken | EntityModelKind::ColdChicken | EntityModelKind::ChickenBaby => {
             &session.chicken_variants
         }
+        // M350.
+        EntityModelKind::ZombieNautilus | EntityModelKind::ZombieNautilusCoral => {
+            &session.zombie_nautilus_variants
+        }
         _ => &[],
     }
 }
@@ -3869,12 +3880,14 @@ pub(crate) fn variant_def(
 /// M348 — `CowRenderer.models`: COLD and WARM have their own adult meshes;
 /// NORMAL (no `model`) and anything else is the base cow. M349 —
 /// `PigRenderer` / `ChickenRenderer`: COLD has its own; WARM is NORMAL's.
+/// M350 — `ZombieNautilusRenderer`: WARM is the coral mesh.
 pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> EntityModelKind {
     match (kind, model) {
         (EntityModelKind::Cow, Some("cold")) => EntityModelKind::ColdCow,
         (EntityModelKind::Cow, Some("warm")) => EntityModelKind::WarmCow,
         (EntityModelKind::Pig, Some("cold")) => EntityModelKind::ColdPig,
         (EntityModelKind::Chicken, Some("cold")) => EntityModelKind::ColdChicken,
+        (EntityModelKind::ZombieNautilus, Some("warm")) => EntityModelKind::ZombieNautilusCoral,
         _ => kind,
     }
 }
@@ -3944,6 +3957,10 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
             registry(&session.chicken_variants, false)
         }
         EntityModelKind::ChickenBaby => registry_baby(&session.chicken_variants, false),
+        // M350 — the zombie nautilus's sheet, on either mesh.
+        EntityModelKind::ZombieNautilus | EntityModelKind::ZombieNautilusCoral => {
+            registry(&session.zombie_nautilus_variants, false)
+        }
         EntityModelKind::Axolotl => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::axolotl_texture(v))
                 .unwrap_or(0)

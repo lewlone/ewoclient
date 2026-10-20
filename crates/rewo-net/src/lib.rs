@@ -2554,6 +2554,8 @@ pub struct VariantKinds {
     /// (index 18 CHICKEN_VARIANT).
     pub pig: Option<i32>,
     pub chicken: Option<i32>,
+    /// M350 — `minecraft:zombie_nautilus` (index 21 ZOMBIE_NAUTILUS_VARIANT).
+    pub zombie_nautilus: Option<i32>,
     /// `minecraft:tropical_fish` (M68). Its index-17 INT is not a texture id
     /// at all — it is `TropicalFish.packVariant`'s four packed fields — but it
     /// arrives through the same setter, and the renderer unpacks it with the
@@ -3085,6 +3087,8 @@ pub(crate) fn apply_set_entity_data<'a>(
         // M349 — the pig's and the chicken's holders.
         (meta.pig_variant, vk.pig),
         (meta.chicken_variant, vk.chicken),
+        // M350 — the zombie nautilus's holder.
+        (meta.zombie_nautilus_variant, vk.zombie_nautilus),
         // M68. Index 17 INT — a third serializer at an index the spellcaster
         // BYTE and the pillager/creaking BOOLEAN already claim, so the gate is
         // doing real work here even though the serializer differs.

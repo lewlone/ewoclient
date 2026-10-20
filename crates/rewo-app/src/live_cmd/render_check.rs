@@ -499,6 +499,8 @@ pub(super) struct RenderCheck {
     /// M349 — r203: a cold pig and a cold chicken on their own meshes, a
     /// warm piglet and a warm chick on their sheets.
     pub(super) farm_cold: (bool, bool, bool, bool),
+    /// M350 — r204: whether a zombie nautilus drew on the coral mesh.
+    pub(super) coral_nautilus: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1264,7 +1266,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 203;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 204;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1465,6 +1467,13 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M350 — r204: `render_check.py` summons a warm zombie nautilus; it
+        // must draw on the coral mesh (index 21, ZOMBIE_NAUTILUS_VARIANT).
+        row(
+            "r204 a warm zombie nautilus drew on the coral mesh",
+            self.coral_nautilus,
+            format!("coral zombie nautilus seen: {}", self.coral_nautilus),
         );
         // M349 — r203: `render_check.py` summons a cold pig, a cold chicken,
         // a warm piglet and a warm chick on the z ~24 row.
