@@ -3939,6 +3939,35 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M291 — the smithing table's cycling slot icons (2026-10-20)
+
+`SmithingScreen`'s three `CyclingSlotBackground`s: an empty template slot
+cycles the armour-trim and netherite-upgrade templates; with a
+`SmithingTemplateItem` in it (`netherite_upgrade_smithing_template`, or any
+`*_armor_trim_smithing_template`) the base and addition slots cycle that
+template's lists (trim: the four armour pieces; the seven materials;
+netherite: eleven pieces of equipment including the spear and nautilus
+armour; the ingot). A step every 30 ticks, crossfading over four
+(`min(tick % 30 + a, 4) / 4`, the previous icon under it); a new list
+restarts at its first icon.
+
+`rewo_ui::menu_screen::CyclingSlotBackground` is the port, ticked once a
+client tick while the smithing screen shows (`menus::tick_smithing`, state
+in `ScreenState::smithing`, fresh for each container) and drawn on M280's
+widget layer as blits tinted by the fade's alpha (`cycling_slot_widgets`).
+The fifteen missing slot sprites are appended to `MENU_OVERLAY_SPRITES`
+(149..=163) and `EMPTY_SLOT_ICONS`.
+
+Recorded: no render-check stage opens a smithing table, so the live tick
+plumbing has no live witness (the gate drives the same functions).
+
+**Unit test**: the cycle and its fade at their edges, the restart on a new
+list, the three templates' lists. **inventoryshot gc1**: through the
+production ticks and widgets, the armour-trim template's icon fresh, the
+netherite upgrade's 34 ticks in, and with a netherite template placed the
+helmet and the ingot, nothing in the filled slot (every opaque texel of
+each jar sprite matched).
+
 ### M290 — held player heads in their own skin (2026-10-20)
 
 M289's swap, for a head another entity holds: the equipment packet's hand

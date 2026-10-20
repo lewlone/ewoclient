@@ -13,10 +13,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 97 Rewo milestones, M194 to M290, in about 216 commits on
+- **What happened**: 98 Rewo milestones, M194 to M291, in about 218 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`e4506ce7`): 4432 tests pass (4,244 at the
+- **Checks at the end** (`30c0ffd9`): 4433 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 148 of
   148 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -368,6 +368,8 @@ released.
 - **M289**: a player head dropped on the ground or put in an item frame now
   shows its own skin instead of Steve's.
 - **M290**: so does a player head held by another player or mob.
+- **M291**: the smithing table's empty slots now show their cycling hints
+  (templates, then the armour or tools and materials a template takes).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -429,6 +431,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `30c0ffd9` | **M291** — the smithing table's cycling slot icons: a `CyclingSlotBackground` port (30-tick steps, four-tick crossfade), vanilla's template lists, fifteen appended slot sprites, ticked per client tick and drawn on the widget layer; a unit test and inventoryshot **gc1**. |
 | `e4506ce7` | **M290** — held player heads in their own skin: the equipment hand slots' profile kept (`hand_profiles`), requested, and swapped in `resolve_held_items`; render-check **r148**. |
 | `33e8b0c6` | **M289** — dropped and framed player heads in their own skin: the slot-8 and slot-9 stacks' profile kept (`stack_profiles`), requested, and swapped to the per-skin item model by `HeadSkins::item_model`; render-check **r147**. |
 | `98e31255` | **M288** — the wither's invulnerable phase: `DATA_ID_INV` read, `wither_invulnerable.png` as an appended vanilla variant chosen by the renderer's blink rule, the `2 - t / 220 · 0.5` shrink through the draw's stretch; two unit tests, the wither in mobshot's variant check and render-check **r146**. |
@@ -770,6 +773,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M291: **4,433 tests passed, 0 failed; gates 51/51** (inventoryshot 173: gc1 matched every opaque texel of each sprite); render check **148/148** on two runs (unchanged: no stage opens a smithing table); clippy (both, pre-checked) and `cargo fmt --check` clean.
 - After M290: **4,432 tests passed, 0 failed; gates 51/51**; render check **148/148** on two runs (r148 on 35,426 and 32,182 frames); clippy (both configurations, pre-checked) and `cargo fmt --check` clean.
 - After M289: **4,432 tests passed, 0 failed; gates 51/51**; render check **147/147** on two runs (r147: the dropped head skinned on 27,848 and 33,113 frames, the framed one on 4,187 and 4,422); clippy (both configurations, pre-checked) and `cargo fmt --check` clean.
 - After M288: **4,432 tests passed, 0 failed; gates 51/51** (mobshot's variant check: 69 declared sheets, the wither's in its own atlas slot); clippy and `cargo fmt --check` clean. Render check: run 1 145/146, r142 failing its own control (the bot's yaw happened to be -90.0, the bed camera's, left so by an earlier tail stage) and run 2 146/146; after the witness fix (the bot faces south before the bed click) two more runs read **146/146** (r146 on every run; r142's own yaw back at ~0).
