@@ -3896,7 +3896,10 @@ impl EntityPass {
             // depth write, drawn after the solid range — the reversed-Z
             // reading of vanilla's `entityCutout` for coplanar geometry.
             let coplanar = coplanar_slot == Some(q.tex);
-            if coplanar && !d.undercoat {
+            // M323 — the lamb's fleece is coplanar too, but it is
+            // `SheepWoolLayer`'s: shearing gates it (`shorn_slot`, above) and
+            // the undercoat's dye rule does not.
+            if coplanar && !d.undercoat && model.shearable_slot != Some(q.tex) {
                 continue;
             }
             let p4 = place(q);

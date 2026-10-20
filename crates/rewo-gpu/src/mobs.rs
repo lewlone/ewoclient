@@ -1563,11 +1563,14 @@ pub enum EntityModelKind {
     /// (`CHICKEN_BABY`).
     PigBaby,
     ChickenBaby,
+    /// M323 — `BabySheepModel` (`SHEEP_BABY`, and `SHEEP_BABY_WOOL`, the same
+    /// layer, for the fleece).
+    SheepBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 114;
+    pub const COUNT: usize = 115;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1682,6 +1685,7 @@ impl EntityModelKind {
         EntityModelKind::MooshroomBaby,
         EntityModelKind::PigBaby,
         EntityModelKind::ChickenBaby,
+        EntityModelKind::SheepBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1797,6 +1801,7 @@ impl EntityModelKind {
             EntityModelKind::MooshroomBaby => "mooshroom_baby",
             EntityModelKind::PigBaby => "pig_baby",
             EntityModelKind::ChickenBaby => "chicken_baby",
+            EntityModelKind::SheepBaby => "sheep_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1852,6 +1857,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::MooshroomBaby
                 | EntityModelKind::PigBaby
                 | EntityModelKind::ChickenBaby
+                | EntityModelKind::SheepBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -1939,6 +1945,8 @@ pub const DYE_DIFFUSE_COLORS: [[u8; 3]; 16] = [
 pub fn tinted_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
         EntityModelKind::Sheep => Some("sheep_wool"),
+        // M323 — the lamb's fleece, `SheepWoolLayer` again.
+        EntityModelKind::SheepBaby => Some("sheep_wool_baby"),
         _ => None,
     }
 }
@@ -1965,6 +1973,11 @@ pub fn tinted_texture(kind: EntityModelKind) -> Option<&'static str> {
 pub fn coplanar_layer_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
         EntityModelKind::Sheep => Some("sheep_wool_undercoat"),
+        // M323 — and the lamb's fleece: `LayerDefinitions` maps
+        // `SHEEP_BABY_WOOL` to `sheepBabyBodyLayer`, the lamb's own mesh at
+        // `CubeDeformation.NONE`. It is `SheepWoolLayer`'s, so shearing gates
+        // it and the undercoat's dye rule does not (`emit_model`).
+        EntityModelKind::SheepBaby => Some("sheep_wool_baby"),
         _ => None,
     }
 }
@@ -2009,6 +2022,7 @@ pub fn fish_tint_textures(kind: EntityModelKind) -> Option<(&'static str, &'stat
 pub fn shearable_texture(kind: EntityModelKind) -> Option<&'static str> {
     match kind {
         EntityModelKind::Sheep => Some("sheep_wool"),
+        EntityModelKind::SheepBaby => Some("sheep_wool_baby"),
         _ => None,
     }
 }
@@ -2779,6 +2793,13 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ChickenBaby,
         textures: &["chicken_baby"],
         build: chicken_baby,
+    },
+    // M323 — the lamb and its fleece (`SheepWoolLayer`'s baby sheet; the
+    // undercoat layer skips a baby).
+    MobDef {
+        kind: EntityModelKind::SheepBaby,
+        textures: &["sheep_baby", "sheep_wool_baby"],
+        build: sheep_baby,
     },
 ];
 
@@ -5022,6 +5043,47 @@ fn chicken_baby() -> Model {
             false,
             &[Fold::at([x, 20.0, 0.0])],
         );
+    }
+    b.finish(1.0)
+}
+
+/// M323 — `BabySheepModel.createBodyLayer()` (64 x 32): a 5 x 5 x 5 head
+/// (looking), a 6 x 4 x 9 body authored level, and four 2 x 5 x 2 legs on the
+/// quadruped walk, none mirrored. Texture 1 is the fleece: `SHEEP_BABY_WOOL`
+/// is the same layer, so every box is repeated there, coplanar (see
+/// [`coplanar_layer_texture`]).
+fn sheep_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let head = b.part([0.0, 15.5, -2.5], Anim::Head, 1.0);
+    let legs = [
+        ([-2.0, 19.0, 3.0], Anim::QuadHindRight, (0.0, 23.0)),
+        ([2.0, 19.0, 3.0], Anim::QuadHindLeft, (24.0, 12.0)),
+        ([-2.0, 19.0, -2.0], Anim::QuadFrontRight, (8.0, 23.0)),
+        ([2.0, 19.0, -2.0], Anim::QuadFrontLeft, (24.0, 5.0)),
+    ]
+    .map(|(pivot, anim, uv)| (b.part(pivot, anim, 1.0), uv));
+    for tex in [0, 1] {
+        b.cube(
+            head,
+            tex,
+            (0.0, 0.0),
+            [-2.5, -4.5, -3.5],
+            [5.0, 5.0, 5.0],
+            NONE,
+        );
+        b.cube_f(
+            STATIC_PART,
+            tex,
+            (0.0, 10.0),
+            [-3.0, -2.0, -4.5],
+            [6.0, 4.0, 9.0],
+            0.0,
+            false,
+            &[Fold::at([0.0, 17.0, 0.5])],
+        );
+        for (leg, uv) in legs {
+            b.cube(leg, tex, uv, [-1.0, 0.0, -1.0], [2.0, 5.0, 2.0], NONE);
+        }
     }
     b.finish(1.0)
 }
@@ -11637,6 +11699,7 @@ mod tests {
                     | EntityModelKind::MooshroomBaby
                     | EntityModelKind::PigBaby
                     | EntityModelKind::ChickenBaby
+                    | EntityModelKind::SheepBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12867,5 +12930,37 @@ mod piglet_chick_tests {
         assert_eq!(m.quads.len(), 6 + 6 + 4 * 2 + 2 * 2);
         assert!(m.parts.iter().all(|p| p.anim != Anim::Head));
         assert_eq!(widest_north(&m, STATIC_PART), ((4.0, 8.0), (4.0, 8.0)));
+    }
+}
+
+#[cfg(test)]
+mod lamb_tests {
+    use super::*;
+
+    /// M323 — `BabySheepModel`'s six boxes twice (the body, then the fleece
+    /// on the same mesh, quad for quad), and the head box's front at
+    /// (5, 5)..(10, 10) of its sheet.
+    #[test]
+    fn the_lamb_is_its_own_model_and_its_fleece_is_coplanar() {
+        let m = sheep_baby();
+        assert_eq!(m.quads.len(), 2 * 6 * 6);
+        let (body, fleece) = m.quads.split_at(36);
+        assert!(body.iter().all(|q| q.tex == 0) && fleece.iter().all(|q| q.tex == 1));
+        for (a, f) in body.iter().zip(fleece) {
+            assert_eq!((a.pos, a.uv, a.part), (f.pos, f.uv, f.part));
+        }
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let front = body
+            .iter()
+            .find(|q| q.part == head && q.facing == Facing::North)
+            .unwrap();
+        let span = |i: usize| {
+            front
+                .uv
+                .iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert_eq!((span(0), span(1)), ((5.0, 10.0), (5.0, 10.0)));
     }
 }

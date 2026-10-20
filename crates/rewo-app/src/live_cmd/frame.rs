@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M323 — r178: the staged lamb.
+            c.lamb |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::SheepBaby);
             // M322 — r177: the staged piglet and chick.
             for d in draws.iter() {
                 c.piglet_chick.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::PigBaby;

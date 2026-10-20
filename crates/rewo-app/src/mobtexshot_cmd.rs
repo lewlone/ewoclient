@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 48;
+const EXPECTED_WITNESSES: usize = 49;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -188,8 +188,9 @@ const MIN_DISCRIMINATING: usize = 72;
 /// (m47) and the small sulfur cube: the two calves' cells shrank every cell
 /// of the crowd and put it under the floor (measured against the M321 crowd
 /// without the calves, 19; m37 grades it up close), and (M322) the piglet
-/// and the chick (m48). A twenty-fourth means something stopped drawing.
-const MAX_SMALL: usize = 23;
+/// and the chick (m48), and (M323) the lamb (m49). A twenty-fifth means
+/// something stopped drawing.
+const MAX_SMALL: usize = 24;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3594,6 +3595,75 @@ fn run_check(
         "m48.the_piglet_and_the_chick_draw_from_their_own_sheets",
         pc_ok,
         format!("{} (want >= 200 px each, none foreign)", pc_rows.join("; ")),
+    ));
+
+    // m49 — M323: the lamb draws from its own two sheets, its fleece draws,
+    // and shearing takes it away: the unshorn and shorn frames must differ.
+    // (A colour test cannot see the fleece: `sheep_baby.png` already carries
+    // its greys.) The fleece is coplanar, so it draws only through the EQUAL
+    // range and the shearing gate M323 put in front of it; the mesh rests on
+    // `the_lamb_is_its_own_model_and_its_fleece_is_coplanar`.
+    let mut lbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.2, 0.9, -1.2),
+        Vec3::new(0.0, 0.4, 0.0),
+    )?;
+    lbst.wr.set_entities(&[], lbst.right, lbst.up, 0.0);
+    lbst.off
+        .render(gpu, Some((&mut lbst.wr, lbst.vp)), &ov, BG)?;
+    let lb_empty = lbst.off.read_rgba(gpu)?;
+    let lb_own: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .filter(|t| t.key == "sheep_baby" || t.key == "sheep_wool_baby")
+        .flat_map(|t| producible(&t.rgba))
+        .collect();
+    let mut lb_rows = Vec::new();
+    let mut lb_frames = Vec::new();
+    for sheared in [false, true] {
+        let d = EntityDraw {
+            sheared,
+            ..neutral_draw(EntityModelKind::SheepBaby)
+        };
+        lbst.wr.set_entities(&[d], lbst.right, lbst.up, 0.0);
+        lbst.off
+            .render(gpu, Some((&mut lbst.wr, lbst.vp)), &ov, BG)?;
+        let frame = lbst.off.read_rgba(gpu)?;
+        let (mut px, mut foreign) = (0usize, 0usize);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(lb_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            foreign += usize::from(!explains(&lb_own, pack(p[0], p[1], p[2])));
+        }
+        lb_rows.push((px, foreign));
+        lb_frames.push(frame);
+    }
+    lbst.destroy(gpu);
+    let fleece_px = lb_frames[0]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(lb_frames[1].as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    let [(px, foreign), (spx, sforeign)] = [lb_rows[0], lb_rows[1]];
+    w.push(wit(
+        "m49.the_lamb_draws_its_fleece_and_a_shorn_lamb_none",
+        lb_own.len() > 1 && px >= 200 && spx >= 200 && fleece_px >= 200 && foreign + sforeign == 0,
+        format!(
+            "lamb {px} px, shorn {spx} px, {fleece_px} px differ; {foreign} + {sforeign} px \
+             neither sheet can produce (want >= 200 px each, >= 200 differing, 0 foreign)"
+        ),
     ));
 
     // ---- report ----------------------------------------------------------
