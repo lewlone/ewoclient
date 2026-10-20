@@ -2100,6 +2100,7 @@ this shape once.
 | M284 (2026-10-20) — sleeping lays the camera in the bed and hides the hand | **r142** | — | — |
 | M285 (2026-10-20) — a charged creeper draws its energy swirl | **r143** | — | — |
 | M286 (2026-10-20) — a breeze draws its wind as its own layer | **r144** | — | — |
+| M287 (2026-10-20) — a wither at half health draws its armour swirl | **r145** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3934,6 +3935,33 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M287 — the powered wither's armour swirl (2026-10-20)
+
+`WitherArmorLayer`, M285's `EnergySwirlLayer` class again: while
+`isPowered` (`getHealth() <= getMaxHealth() / 2`; `wither_powered` reads the
+health from `DATA_HEALTH_ID` and the max from the attribute, synced or the
+registry default, as vanilla's client does) the wither draws
+`ModelLayers.WITHER_ARMOR`, the wither at `CubeDeformation(0.5F)`
+(`mobs::wither_armor`), through `energySwirl(wither_armor.png,
+Mth.cos(t · 0.02) · 3 % 1, t · 0.01 % 1)` (`swirl_offsets`; Java's float `%`
+keeps the sign).
+
+A render type per texture: the swirl range is the creeper's quads then the
+wither's (`swirl_split`), each sorted on its own and drawn with its own
+sheet (`SwirlSheet`) on the one additive pipeline.
+
+Recorded: the wither's invulnerable phase (the blinking
+`wither_invulnerable.png` and the shrink, `WitherBossRenderer`, from
+`DATA_ID_INV`) is not drawn.
+
+**Unit tests**: the shell is the wither inflated 0.5 (parts, UVs, the centre
+head's `-4.5..4.5`); both layers' offsets, the wither's sign kept through `%`.
+**mobtexshot m23**: a uniform sheet on the wither's slot alone: a powered
+wither adds `k · round(u · 128 / 255)` (495 of 598 graded body pixels at one
+layer), an unpowered one nothing; drawing its sub-range with the creeper's
+sheet fails it. **r145**: `render_check.py` summons a NoAI wither at 100 of
+300 health; the client computes it powered and its sub-range fills.
 
 ### M286 — the breeze's wind as its own layer (2026-10-20)
 
