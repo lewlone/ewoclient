@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 69;
+const EXPECTED_WITNESSES: usize = 70;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -4958,6 +4958,88 @@ fn run_check(
             "blue variant id {pr_blue_id}; {}; {pr_diff} bytes differ (want >= 200 px \
              each, none foreign, the colours different)",
             pr_rows.join("; ")
+        ),
+    ));
+
+    // m70 — M345: the fox and the kit draw their red base, and on the snow
+    // coat's variant id their snow sheet: each frame is producible by its
+    // own sheet, and red and snow differ.
+    let mut fxst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.0, 0.8, -1.0),
+        Vec3::new(0.0, 0.3, 0.0),
+    )?;
+    fxst.wr.set_entities(&[], fxst.right, fxst.up, 0.0);
+    fxst.off
+        .render(gpu, Some((&mut fxst.wr, fxst.vp)), &ov, BG)?;
+    let fx_empty = fxst.off.read_rgba(gpu)?;
+    let mut fx_rows = Vec::new();
+    let mut fx_ok = true;
+    for (kind, key, kit) in [
+        (EntityModelKind::Fox, "fox", false),
+        (EntityModelKind::FoxBaby, "fox_baby", true),
+    ] {
+        let snow_id =
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::fox_texture(1, kit))
+                .unwrap_or(0);
+        let red: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let snow: HashSet<u32> = baked
+            .mob_variant_textures
+            .iter()
+            .find(|t| t.key == key && t.index == snow_id)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let mut frames = Vec::new();
+        fx_ok &= snow_id != 0;
+        for (variant, sheet) in [(0u16, red), (snow_id, snow)] {
+            let d = EntityDraw {
+                variant,
+                ..neutral_draw(kind)
+            };
+            fxst.wr.set_entities(&[d], fxst.right, fxst.up, 0.0);
+            fxst.off
+                .render(gpu, Some((&mut fxst.wr, fxst.vp)), &ov, BG)?;
+            let frame = fxst.off.read_rgba(gpu)?;
+            let (mut px, mut bad) = (0usize, None);
+            for (p, e) in frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(fx_empty.as_chunks::<4>().0)
+            {
+                if p[..3] == e[..3] {
+                    continue;
+                }
+                px += 1;
+                let c = pack(p[0], p[1], p[2]);
+                if bad.is_none() && !explains(&sheet, c) {
+                    bad = Some(c);
+                }
+            }
+            fx_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+            fx_rows.push(format!(
+                "{key} variant {variant}: {px} px, first colour it cannot produce {:?}",
+                bad.map(|c| format!("#{c:06x}"))
+            ));
+            frames.push(frame);
+        }
+        fx_ok &= diff_bytes(&frames[0], &frames[1]) > 0;
+    }
+    fxst.destroy(gpu);
+    w.push(wit(
+        "m70.the_fox_and_kit_wear_their_coat",
+        fx_ok,
+        format!(
+            "{} (want >= 200 px each, none foreign, the coats different)",
+            fx_rows.join("; ")
         ),
     ));
 

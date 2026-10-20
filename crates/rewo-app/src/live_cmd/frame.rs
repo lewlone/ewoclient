@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M345 — r199: the staged snow fox, on a coat variant.
+            c.snow_fox |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Fox && d.variant != 0);
             // M344 — r198: the staged blue parrot, on a colour variant.
             c.blue_parrot |= draws
                 .iter()

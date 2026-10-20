@@ -2154,6 +2154,7 @@ this shape once.
 | M342 (2026-10-20) — a tame wolf draws wearing its blue collar | **r196** | — | — |
 | M343 (2026-10-20) — a tame cat draws wearing its blue collar | **r197** | — | — |
 | M344 (2026-10-20) — a blue parrot draws on its colour's sheet | **r198** | — | — |
+| M345 (2026-10-20) — a snow fox draws on its coat's sheet | **r199** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

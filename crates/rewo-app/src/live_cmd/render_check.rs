@@ -486,6 +486,8 @@ pub(super) struct RenderCheck {
     pub(super) cat_collar: bool,
     /// M344 — r198: whether a parrot drew on a colour variant.
     pub(super) blue_parrot: bool,
+    /// M345 — r199: whether a fox drew on a coat variant.
+    pub(super) snow_fox: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1251,7 +1253,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 198;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 199;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1452,6 +1454,13 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M345 — r199: `render_check.py` summons a snow fox; it must draw on
+        // a coat variant (index 18 INT, `mobtexshot m70`).
+        row(
+            "r199 a snow fox drew on its coat's sheet",
+            self.snow_fox,
+            format!("fox on a coat variant seen: {}", self.snow_fox),
         );
         // M344 — r198: `render_check.py` summons a blue parrot; it must draw
         // on a colour variant (index 20 INT, `mobtexshot m69`).

@@ -3796,7 +3796,9 @@ pub(crate) fn default_variant(
         | EntityModelKind::Llama
         | EntityModelKind::LlamaBaby
         | EntityModelKind::Axolotl
-        | EntityModelKind::Parrot => Some(0),
+        | EntityModelKind::Parrot
+        | EntityModelKind::Fox
+        | EntityModelKind::FoxBaby => Some(0),
         _ => None,
     }
 }
@@ -3861,6 +3863,12 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         }
         EntityModelKind::Llama => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
+                .unwrap_or(0)
+        }
+        // M345 — `FoxRenderer`'s idle sheet for the coat, adult or kit.
+        EntityModelKind::Fox | EntityModelKind::FoxBaby => {
+            let kit = kind == EntityModelKind::FoxBaby;
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::fox_texture(v, kit))
                 .unwrap_or(0)
         }
         // M344 — `ParrotRenderer.getVariantTexture`.

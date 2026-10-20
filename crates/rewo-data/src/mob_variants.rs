@@ -153,6 +153,11 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M345 — Fox — `Fox.Variant` RED (0, the baked base) and SNOW (1), the
+    // adult's and the kit's (`FoxRenderer`'s idle sheets; Rewo poses no
+    // sleeping fox, so the sleep sheets are not used).
+    ("fox", "entity/fox/fox_snow.png"),
+    ("fox_baby", "entity/fox/fox_snow_baby.png"),
     // M344 — Parrot — `Parrot.Variant` 0..4; `red_blue` (0) is the baked
     // base (`ParrotRenderer.getVariantTexture`; GRAY's sheet is `grey`).
     ("parrot", "entity/parrot/parrot_blue.png"),
@@ -475,6 +480,22 @@ pub fn llama_texture(id: i32) -> &'static str {
     LLAMA_BY_ID[i]
 }
 
+/// M345 — the fox's idle sheet by `Fox.Variant` id, adult and kit.
+const FOX_BY_ID: &[[&str; 2]] = &[
+    ["entity/fox/fox.png", "entity/fox/fox_baby.png"],
+    ["entity/fox/fox_snow.png", "entity/fox/fox_snow_baby.png"],
+];
+
+/// M345 — `Fox.Variant.BY_ID` is `OutOfBoundsStrategy.ZERO`: an id out of
+/// range is RED.
+pub fn fox_texture(id: i32, baby: bool) -> &'static str {
+    let row = usize::try_from(id)
+        .ok()
+        .and_then(|i| FOX_BY_ID.get(i))
+        .unwrap_or(&FOX_BY_ID[0]);
+    row[usize::from(baby)]
+}
+
 /// M344 — `ParrotRenderer.getVariantTexture`, by `Parrot.Variant` id.
 const PARROT_BY_ID: &[&str] = &[
     "entity/parrot/parrot_red_blue.png",
@@ -548,6 +569,8 @@ mod tests {
             "entity/llama/llama_creamy_baby.png",
             "entity/horse/horse_brown.png",
             "entity/parrot/parrot_red_blue.png",
+            "entity/fox/fox.png",
+            "entity/fox/fox_baby.png",
             "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -743,6 +766,23 @@ mod tests {
             let v = variant_id(parrot_texture(id)).unwrap();
             let (key, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
             assert_eq!(key, "parrot");
+        }
+    }
+
+    /// M345 — a fox is red or snow, adult or kit; out of range is red (ZERO).
+    #[test]
+    fn a_fox_wears_its_coat() {
+        assert_eq!(fox_texture(0, false), "entity/fox/fox.png");
+        assert_eq!(fox_texture(1, false), "entity/fox/fox_snow.png");
+        assert_eq!(fox_texture(1, true), "entity/fox/fox_snow_baby.png");
+        assert_eq!(fox_texture(2, true), "entity/fox/fox_baby.png");
+        assert_eq!(fox_texture(-1, false), "entity/fox/fox.png");
+        assert_eq!(variant_id(fox_texture(0, false)), Some(0));
+        assert_eq!(variant_id(fox_texture(0, true)), Some(0));
+        for (baby, key) in [(false, "fox"), (true, "fox_baby")] {
+            let v = variant_id(fox_texture(1, baby)).unwrap();
+            let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+            assert_eq!(k, key);
         }
     }
 }

@@ -1946,8 +1946,8 @@ fn run_variant_check(
         // 69 → 72, the baby llama's white, brown and gray coats. M339: 72 →
         // 78, the horse foal's six coats. M340: 78 → 88, the kittens' ten.
         // M341: 88 → 105, the puppies' seventeen. M344: 105 → 109, the
-        // parrot's four colours.
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 109,
+        // parrot's four colours. M345: 109 → 111, the snow fox and kit.
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 111,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \
@@ -2494,6 +2494,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         llama: etypes.id_of("minecraft:llama"),
         // M344 — the parrot's colour.
         parrot: etypes.id_of("minecraft:parrot"),
+        // M345 — the fox's coat.
+        fox: etypes.id_of("minecraft:fox"),
         tropical_fish: etypes.id_of("minecraft:tropical_fish"),
     };
     let sheep = tid("minecraft:sheep")?;
@@ -2520,7 +2522,7 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     };
 
     // Each mob's own (index, serializer), and the value landing.
-    let rows: [(&str, Option<i32>, u8, u8); 7] = [
+    let rows: [(&str, Option<i32>, u8, u8); 8] = [
         ("cat", kinds.cat, 20, 21),
         ("wolf", kinds.wolf, 23, 25),
         ("frog", kinds.frog, 18, 27),
@@ -2529,6 +2531,8 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
         ("llama", kinds.llama, 21, 1),
         // M344 — the parrot's colour, index 20 INT.
         ("parrot", kinds.parrot, 20, 1),
+        // M345 — the fox's coat, index 18 INT.
+        ("fox", kinds.fox, 18, 1),
     ];
     let mut landed = Vec::new();
     let mut wrong_index = Vec::new();
@@ -2548,10 +2552,10 @@ fn check_variant_routing(c: &mut Checker) -> Result<(), String> {
     }
     c.record(
         "n7.each_mobs_variant_arrives_at_its_own_index_and_nowhere_else",
-        landed.len() == 7 && wrong_index.is_empty(),
+        landed.len() == 8 && wrong_index.is_empty(),
         format!(
             "{landed:?} routed through the production dispatcher at cat 20 / \
-             wolf 23 / frog 18 / axolotl 18 / horse 19 / llama 21 / parrot 20; \
+             wolf 23 / frog 18 / axolotl 18 / horse 19 / llama 21 / parrot 20 / fox 18; \
              {} neighbouring slot(s) also accepted {wrong_index:?}. Counted \
              `defineId` up the 26.2 hierarchy — Entity 0..7, LivingEntity \
              8..14, Mob 15, AgeableMob 16 AND 17, TamableAnimal 18 and 19 — \
