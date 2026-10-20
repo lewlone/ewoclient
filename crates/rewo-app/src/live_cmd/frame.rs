@@ -1473,6 +1473,16 @@ impl LiveApp {
                     rc.swirl_frames += 1;
                 }
             }
+            // M286 — r144: the staged breeze drew its wind in its own range.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Breeze)
+            {
+                rc.breeze_frames += 1;
+                if state.world_renderer.wind_vertex_count() > 0 {
+                    rc.wind_frames += 1;
+                }
+            }
         }
         drop(draws);
         // M247 — r109: the staged chest (and, since M248, a bell and a

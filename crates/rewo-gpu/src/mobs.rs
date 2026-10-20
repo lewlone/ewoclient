@@ -3140,6 +3140,12 @@ pub fn creeper_armor() -> Model {
     creeper_with(2.0)
 }
 
+/// M286 — `BreezeWindLayer`: the breeze's wind funnel is texture slot 1 of
+/// [`breeze`] (`breeze_wind.png`, `createWindLayer`'s 128 x 128), drawn as
+/// its own layer through `RenderTypes.breezeWind` rather than with the body.
+pub const BREEZE_WIND_SLOT: usize = 1;
+pub const BREEZE_WIND_TEXTURE: [f32; 2] = [128.0, 128.0];
+
 /// `LayerDefinition.create(mesh, 64, 32)` for the creeper layers.
 pub const CREEPER_ARMOR_TEXTURE: [f32; 2] = [64.0, 32.0];
 
@@ -10806,5 +10812,24 @@ mod creeper_armor_tests {
         for (a, b) in base.quads.iter().zip(&shell.quads) {
             assert_eq!((a.part, a.uv), (b.part, b.uv), "same parts, same UVs");
         }
+    }
+}
+
+#[cfg(test)]
+mod breeze_wind_tests {
+    use super::*;
+
+    /// M286 — the breeze's wind slot is `breeze_wind.png`, and the model has
+    /// quads on it (the funnel the wind layer draws) as well as off it.
+    #[test]
+    fn the_breeze_wind_slot_is_its_wind_sheet() {
+        let def = MOBS
+            .iter()
+            .find(|d| d.kind == EntityModelKind::Breeze)
+            .unwrap();
+        assert_eq!(def.textures[BREEZE_WIND_SLOT], "breeze_wind");
+        let m = breeze();
+        assert!(m.quads.iter().any(|q| q.tex == BREEZE_WIND_SLOT));
+        assert!(m.quads.iter().any(|q| q.tex != BREEZE_WIND_SLOT));
     }
 }

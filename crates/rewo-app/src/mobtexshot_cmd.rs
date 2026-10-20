@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 21;
+const EXPECTED_WITNESSES: usize = 22;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -1604,6 +1604,96 @@ fn run_check(
              layers (want >= half), {sky} sky px graded (want >= 50), {sky_single} single \
              layers (want 0, the back face adds too), first rise no layer count explains \
              (rise, on the sky): {bad:?}"
+        ),
+    ));
+
+    // m22 — M286: the breeze's wind, `RenderPipelines.BREEZE_WIND`: a
+    // TRANSLUCENT blend (`SRC_ALPHA, ONE_MINUS_SRC_ALPHA`) in vanilla's gamma
+    // space of the texel times the lightmap (white here), one layer per
+    // funnel face the depth test lets through (no culling, far quads first).
+    // Graded through the production upload with a uniform sheet `u` at alpha
+    // `a`: a layer takes a pixel `p` to `round(u · a + p · (1 - a))`, so every
+    // pixel the wind touches must be that applied one to eight times to the
+    // frame without the wind (±1 a layer; the funnel is concentric shells,
+    // each with a front and a back face), with plenty at one layer and at
+    // two. Sorted far to near, a face behind a nearer one always draws first,
+    // so single layers happen only at the funnel's edges: at most a tenth.
+    // An opaque wind (the body geometry it was before M286) gives the sheet
+    // colour everywhere, explained only by many layers; an unsorted funnel
+    // gives four in ten single layers; a linear-space blend misses the
+    // formula. The frame without the wind is the same
+    // breeze on a stage with no wind sheet, whose layer then draws nothing.
+    let Some(wind_tex) = crate::live_cmd::breeze_wind_texture(baked) else {
+        return Err("mobtexshot: the jar has no breeze_wind.png".into());
+    };
+    const WIND_U: [u8; 4] = [220, 120, 40, 128];
+    let wind_sheet: Vec<u8> = (0..wind_tex.w * wind_tex.h).flat_map(|_| WIND_U).collect();
+    let wind_frame = |gpu: &mut Gpu, sheet: Option<&[u8]>| -> Result<(Vec<u8>, u32), String> {
+        let mut st = stage_from(
+            gpu,
+            baked,
+            cw,
+            ch,
+            Vec3::new(1.0, 1.4, 2.6),
+            Vec3::new(0.0, 0.8, 0.0),
+        )?;
+        if let Some(sheet) = sheet {
+            st.wr.init_entity_wind(gpu, sheet, wind_tex.w, wind_tex.h)?;
+        }
+        st.wr.set_entities(
+            &[neutral_draw(EntityModelKind::Breeze)],
+            st.right,
+            st.up,
+            0.0,
+        );
+        st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
+        let img = st.off.read_rgba(gpu)?;
+        let n = st.wr.wind_vertex_count();
+        st.destroy(gpu);
+        Ok((img, n))
+    };
+    let (bare, _) = wind_frame(gpu, None)?;
+    let (windy, wind_n) = wind_frame(gpu, Some(&wind_sheet))?;
+    let a = WIND_U[3] as f32 / 255.0;
+    let layer = |p: [f32; 3]| [0, 1, 2].map(|c| (WIND_U[c] as f32 * a + p[c] * (1.0 - a)).round());
+    let (mut wind_px, mut wind_bad) = (0usize, None);
+    let mut by_k = [0usize; 8];
+    for (w2, b) in windy.as_chunks::<4>().0.iter().zip(bare.as_chunks::<4>().0) {
+        if w2[..3] == b[..3] {
+            continue;
+        }
+        wind_px += 1;
+        let got = [0, 1, 2].map(|c| w2[c] as f32);
+        let mut p = [0, 1, 2].map(|c| b[c] as f32);
+        let mut k_found = None;
+        for k in 1..=8 {
+            p = layer(p);
+            if (0..3).all(|c| (got[c] - p[c]).abs() <= k as f32) {
+                k_found = Some(k);
+                break;
+            }
+        }
+        match k_found {
+            Some(k) => by_k[k - 1] += 1,
+            None if wind_bad.is_none() => {
+                wind_bad = Some(([b[0], b[1], b[2]], [w2[0], w2[1], w2[2]]))
+            }
+            None => {}
+        }
+    }
+    w.push(wit(
+        "m22.a_breeze_blends_its_wind_as_vanilla_does",
+        wind_n > 0
+            && wind_px >= 300
+            && wind_bad.is_none()
+            && by_k[0] + by_k[1] >= 300
+            && by_k[0] * 10 <= wind_px,
+        format!(
+            "wind vertices {wind_n}; uniform sheet {WIND_U:?}: {wind_px} px touched (want \
+             >= 300), by layer count 1..8 {by_k:?} (want >= 300 at one or two, an \
+             opaque wind reaching the sheet colour only after many; and at most a tenth \
+             at one, the far faces drawing first), first pixel no \
+             layer count explains (under, got): {wind_bad:?}"
         ),
     ));
 

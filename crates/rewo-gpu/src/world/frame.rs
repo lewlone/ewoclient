@@ -66,6 +66,10 @@ impl WorldRenderer {
             self.in_gamma_space(gpu, cb, extent, || {
                 pass.draw_swirl(gpu, cb, view_proj, extent)
             });
+            // M286: the breeze's wind, a translucent `order(1)` layer.
+            self.in_gamma_space(gpu, cb, extent, || {
+                pass.draw_wind(gpu, cb, view_proj, extent)
+            });
             // M50: the worn-armour foil, then the trim. All three depth-test
             // `EQUAL` against the solid geometry just written, so all three
             // must follow it — and the foil precedes the trim because

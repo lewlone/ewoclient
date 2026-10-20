@@ -4200,6 +4200,10 @@ pub(crate) fn init_entities_maybe_cem(
     if let Some(g) = baked.creeper_armor.as_ref() {
         wr.init_entity_swirl(gpu, &g.rgba, g.w, g.h)?;
     }
+    // M286: the breeze wind's sheet, the jar texture the atlas also packs.
+    if let Some(t) = breeze_wind_texture(baked) {
+        wr.init_entity_wind(gpu, &t.rgba, t.w, t.h)?;
+    }
     // M282: the HUD vignette's texture; M283: the other camera overlays'
     // (`blur` in the pumpkin's mcmeta, none in the other two).
     if let Some(v) = baked.vignette.as_ref() {
@@ -4270,6 +4274,11 @@ pub(crate) fn adult_key_of(swap: &rewo_data::baby_texture_table::BabySwap) -> Op
         .strip_prefix("textures/")
         .unwrap_or(swap.adult_path);
     rewo_data::assets::mob_texture_key(rel)
+}
+
+/// M286 — `entity/breeze/breeze_wind.png` from the bake's mob textures.
+pub(crate) fn breeze_wind_texture(baked: &assets::BakedAssets) -> Option<&assets::MobTexture> {
+    baked.mob_textures.iter().find(|t| t.key == "breeze_wind")
 }
 
 pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {

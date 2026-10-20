@@ -1192,6 +1192,12 @@ pub struct EntityPass {
     swirl: Option<EntityGlint>,
     swirl_pipeline: Option<vk::Pipeline>,
     swirl_verts: u32,
+    /// M286 — the breeze's wind (`RenderPipelines.BREEZE_WIND`): its own
+    /// sheet (`breeze_wind.png`, REPEAT and NEAREST), its own translucent
+    /// gamma-space pipeline, the ninth range.
+    wind: Option<EntityGlint>,
+    wind_pipeline: Option<vk::Pipeline>,
+    wind_verts: u32,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -1295,6 +1301,11 @@ pub struct MobModel {
     /// sheet (not the atlas): drawn only while `EntityDraw::powered`. Empty
     /// for every other kind.
     swirl: Vec<GpuQuad>,
+    /// M286 — the breeze's wind funnel (its texture slot 1), UVs in `0..1`
+    /// of its own sheet: `BreezeWindLayer` draws it every frame. Empty for
+    /// every other kind (and in the face-label mode, which keeps it in
+    /// `quads`).
+    wind: Vec<GpuQuad>,
     /// The texture slot vanilla renders through a dye tint (the sheep's
     /// wool), if any — `EntityDraw::dye` multiplies only that slot.
     tinted_slot: Option<u8>,
@@ -1555,9 +1566,32 @@ impl EntityPass {
             } else {
                 build_emissive(&m, def, &slots, &pack_emissive)
             };
+            // M286 — the breeze's wind funnel leaves the body for its own
+            // layer (`BreezeWindLayer`), keeping its texel UVs over its own
+            // sheet.
+            let wind_slot = (def.kind == EntityModelKind::Breeze && !debug_tex)
+                .then_some(mobs::BREEZE_WIND_SLOT);
+            let wind: Vec<GpuQuad> = m
+                .quads
+                .iter()
+                .filter(|q| wind_slot == Some(q.tex))
+                .map(|q| {
+                    let [tw, th] = mobs::BREEZE_WIND_TEXTURE;
+                    GpuQuad {
+                        pos: q.pos,
+                        uv: q.uv.map(|[u, v]| [u / tw, v / th]),
+                        shade: q.shade,
+                        part: q.part as u16,
+                        tex: q.tex as u8,
+                        facing: q.facing,
+                        normal: q.normal,
+                    }
+                })
+                .collect();
             let quads = m
                 .quads
                 .iter()
+                .filter(|q| wind_slot != Some(q.tex))
                 .map(|q| {
                     let (ox, oy, tw, th) = origins[q.tex];
                     // Clamp into the texture rect — a couple of vanilla fin
@@ -1649,6 +1683,7 @@ impl EntityPass {
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 swirl,
+                wind,
                 tinted_slot: mobs::tinted_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
                     .map(|s| s as u8),
@@ -1795,6 +1830,9 @@ impl EntityPass {
                 swirl: None,
                 swirl_pipeline: None,
                 swirl_verts: 0,
+                wind: None,
+                wind_pipeline: None,
+                wind_verts: 0,
                 glint_pipeline: None,
                 glint: None,
                 glint_verts: 0,
@@ -2313,6 +2351,8 @@ impl EntityPass {
         let mut emissive_verts: Vec<Vertex> = Vec::new();
         // M285: the charged creeper's swirl, additive in gamma space.
         let mut swirl_verts: Vec<Vertex> = Vec::new();
+        // M286: the breeze's wind, translucent in gamma space.
+        let mut wind_verts: Vec<Vertex> = Vec::new();
         let glint_offsets =
             crate::gui_item::glint_offsets((time as f64) * 1000.0, crate::gui_item::GLINT_SPEED);
 
@@ -2410,6 +2450,7 @@ impl EntityPass {
                     &mut trim_verts,
                     &mut emissive_verts,
                     &mut swirl_verts,
+                    &mut wind_verts,
                     d,
                     model,
                     time,
@@ -2454,6 +2495,7 @@ impl EntityPass {
                         &mut gt,
                         &mut ge,
                         &mut gs,
+                        &mut Vec::new(),
                         &ghost,
                         model,
                         time,
@@ -2571,6 +2613,10 @@ impl EntityPass {
         // shell's back faces add before its front ones pass the depth test.
         sort_quads_back_to_front(&mut swirl_verts, cam_pos);
         verts.append(&mut swirl_verts);
+        let swirl_end = verts.len();
+        // M286 — `breezeWind`'s `sortOnUpload`, likewise.
+        sort_quads_back_to_front(&mut wind_verts, cam_pos);
+        verts.append(&mut wind_verts);
         let counts = [
             solid,
             text_end - solid,
@@ -2579,7 +2625,8 @@ impl EntityPass {
             armor_glint_end - trim_end,
             emissive_end - armor_glint_end,
             outline_end - emissive_end,
-            verts.len() - outline_end,
+            swirl_end - outline_end,
+            verts.len() - swirl_end,
         ]
         .map(|c| c as u32);
         // The per-emitter `MAX_VERTS` guards bound each range on its own, but
@@ -2593,7 +2640,7 @@ impl EntityPass {
             )
         };
         let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
-        let [s0, s1, s2, s3, s4, s5, s6, s7] = clamp_ranges(counts, kept as u32);
+        let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = clamp_ranges(counts, kept as u32);
         self.solid_verts = s0;
         self.text_verts = s1;
         self.glint_verts = s2;
@@ -2602,6 +2649,7 @@ impl EntityPass {
         self.emissive_verts = s5;
         self.outline_verts = s6;
         self.swirl_verts = s7;
+        self.wind_verts = s8;
     }
 
     // Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -3319,6 +3367,8 @@ impl EntityPass {
         emis: &mut Vec<Vertex>,
         // M285 — the energy swirl's geometry (its own sheet and pipeline).
         swirl: &mut Vec<Vertex>,
+        // M286 — the breeze's wind (its own sheet and pipeline).
+        wind_out: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
@@ -3733,6 +3783,43 @@ impl EntityPass {
                         light_hurt: [1.0, 1.0, 1.0, 0.0],
                     });
                 }
+            }
+        }
+        // M286 — the breeze's wind layer.
+        self.emit_wind(wind_out, d, model, ctx.age, place);
+    }
+
+    /// M286 — `BreezeWindLayer.submit`, every frame: the wind model (the
+    /// breeze mesh kept to `wind_body`, posed by the same `setupAnim`)
+    /// through `breezeWind(texture, xOffset(t) % 1, 0)` with `xOffset(t) = t
+    /// · 0.02`, `t = ageInTicks`, in the default white. The pipeline keeps the
+    /// lightmap but drops the face shade (`NO_CARDINAL_LIGHTING`) and the
+    /// overlay; it is the layer's own copy, so invisibility does not hide it.
+    fn emit_wind(
+        &self,
+        out: &mut Vec<Vertex>,
+        d: &EntityDraw<'_>,
+        model: &MobModel,
+        age: f32,
+        place: impl Fn(&GpuQuad) -> [[f32; 3]; 4],
+    ) {
+        if model.wind.is_empty() {
+            return;
+        }
+        let off = (age * 0.02) % 1.0;
+        let [lr, lg, lb] = d.light;
+        for q in &model.wind {
+            if out.len() + 6 > MAX_VERTS {
+                return;
+            }
+            let p4 = place(q);
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                out.push(Vertex {
+                    pos: p4[i],
+                    uv: [q.uv[i][0] + off, q.uv[i][1]],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    light_hurt: [lr, lg, lb, 0.0],
+                });
             }
         }
     }
@@ -4199,6 +4286,86 @@ impl EntityPass {
         Ok(())
     }
 
+    /// M286 — the breeze wind's sheet (`breeze_wind.png`) and its pipeline
+    /// (`RenderPipelines.BREEZE_WIND`), in the UNORM view's format.
+    pub fn init_wind(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        color_format: vk::Format,
+    ) -> Result<(), String> {
+        if self.wind.is_some() {
+            return Ok(());
+        }
+        let sheet = self.load_sheet(gpu, rgba, w, h, color_format, vk::Filter::NEAREST)?;
+        if self.wind_pipeline.is_none() {
+            self.wind_pipeline = Some(build_sheet_pipeline(
+                &gpu.device,
+                self.layout,
+                color_format,
+                include_bytes!(concat!(env!("OUT_DIR"), "/entity_wind.frag.spv")),
+                SheetBlend::Wind,
+            )?);
+        }
+        self.wind = Some(sheet);
+        Ok(())
+    }
+
+    /// Vertices in the wind range for the last [`Self::set_entities`].
+    pub fn wind_vertex_count(&self) -> u32 {
+        self.wind_verts
+    }
+
+    /// M286 — the breeze's wind, after the swirl (both `order(1)`), in gamma
+    /// space: `BlendFunction.TRANSLUCENT`, depth `GREATER_OR_EQUAL` with
+    /// writes, no culling.
+    pub fn draw_wind(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        let (Some(g), Some(pipeline)) = (self.wind.as_ref(), self.wind_pipeline) else {
+            return;
+        };
+        if self.wind_verts == 0 {
+            return;
+        }
+        unsafe {
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[g.set],
+                &[],
+            );
+            // Last range in the buffer.
+            device.cmd_draw(
+                cb,
+                self.wind_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts
+                    + self.emissive_verts
+                    + self.outline_verts
+                    + self.swirl_verts,
+                0,
+            );
+        }
+    }
+
     pub fn swirl_ready(&self) -> bool {
         self.swirl.is_some() && self.swirl_pipeline.is_some()
     }
@@ -4562,6 +4729,7 @@ impl EntityPass {
                 self.glint.take(),
                 self.armor_glint.take(),
                 self.swirl.take(),
+                self.wind.take(),
             ] {
                 let Some(mut g) = sheet else { continue };
                 device.destroy_descriptor_pool(g.pool, None);
@@ -4576,6 +4744,9 @@ impl EntityPass {
                 device.destroy_pipeline(p, None);
             }
             if let Some(p) = self.swirl_pipeline.take() {
+                device.destroy_pipeline(p, None);
+            }
+            if let Some(p) = self.wind_pipeline.take() {
                 device.destroy_pipeline(p, None);
             }
             device.destroy_pipeline(self.solid_pipeline, None);
@@ -7537,6 +7708,9 @@ enum SheetBlend {
     /// M285 — `ENERGY_SWIRL`: `BlendFunction.ADDITIVE` `(ONE, ONE)`, depth
     /// `GREATER_OR_EQUAL` with writes (`DepthStencilState.DEFAULT`).
     Swirl,
+    /// M286 — `BREEZE_WIND`: `BlendFunction.TRANSLUCENT` `(SRC_ALPHA,
+    /// ONE_MINUS_SRC_ALPHA)`, depth `GREATER_OR_EQUAL` with writes.
+    Wind,
 }
 
 /// `0xFF808080`'s grey, the swirl's vertex colour (gamma; the pass is).
@@ -7611,19 +7785,26 @@ fn build_sheet_pipeline(
                 .depth_test_enable(true)
                 .depth_write_enable(false)
                 .depth_compare_op(vk::CompareOp::EQUAL),
-            SheetBlend::Swirl => vk::PipelineDepthStencilStateCreateInfo::default()
-                .depth_test_enable(true)
-                .depth_write_enable(true)
-                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            SheetBlend::Swirl | SheetBlend::Wind => {
+                vk::PipelineDepthStencilStateCreateInfo::default()
+                    .depth_test_enable(true)
+                    .depth_write_enable(true)
+                    .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
+            }
         };
         let src = match blend {
             SheetBlend::Glint => vk::BlendFactor::SRC_COLOR,
             SheetBlend::Swirl => vk::BlendFactor::ONE,
+            SheetBlend::Wind => vk::BlendFactor::SRC_ALPHA,
+        };
+        let dst = match blend {
+            SheetBlend::Glint | SheetBlend::Swirl => vk::BlendFactor::ONE,
+            SheetBlend::Wind => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
         };
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
             .src_color_blend_factor(src)
-            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(dst)
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ZERO)
             .dst_alpha_blend_factor(vk::BlendFactor::ONE)

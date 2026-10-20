@@ -69,6 +69,32 @@ impl WorldRenderer {
         }
     }
 
+    /// M286 — the breeze wind's sheet (`entity/breeze/breeze_wind.png`), in
+    /// the UNORM view's format like the swirl's.
+    pub fn init_entity_wind(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<(), String> {
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
+        match self.entities.as_mut() {
+            Some(p) => p.init_wind(gpu, rgba, w, h, format),
+            None => Ok(()),
+        }
+    }
+
+    /// M286 — vertices in the wind range after the last `set_entities`.
+    pub fn wind_vertex_count(&self) -> u32 {
+        self.entities
+            .as_ref()
+            .map(|p| p.wind_vertex_count())
+            .unwrap_or(0)
+    }
+
     /// M285 — vertices in the swirl range after the last `set_entities`.
     pub fn swirl_vertex_count(&self) -> u32 {
         self.entities

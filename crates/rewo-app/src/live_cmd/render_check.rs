@@ -346,6 +346,10 @@ pub(super) struct RenderCheck {
     /// many of them filled the swirl range.
     pub(super) powered_creeper_frames: usize,
     pub(super) swirl_frames: usize,
+    /// M286 — r144: frames with the breeze among the draws, and how many of
+    /// them filled the wind range.
+    pub(super) breeze_frames: usize,
+    pub(super) wind_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1111,7 +1115,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 143;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 144;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1311,6 +1315,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M286 — r144: `render_check.py` summons a NoAI breeze. Its wind
+        // funnel must draw as its own translucent layer (`mobtexshot m22`
+        // checks the blend); it was opaque body geometry until M286.
+        row(
+            "r144 a breeze drew its wind as its own layer",
+            self.breeze_frames >= 1 && self.wind_frames >= 1,
+            format!(
+                "{} frames drew the breeze, {} with wind geometry",
+                self.breeze_frames, self.wind_frames
             ),
         );
         // M285 — r143: `render_check.py` summons a charged creeper
