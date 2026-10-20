@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 41;
+const EXPECTED_WITNESSES: usize = 42;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -698,6 +698,7 @@ fn check_placement(c: &mut Checker) {
     let geo = rewo_gpu::hand::ArmGeometry {
         skin_uv: [0.25, 0.5, 0.25, 0.25],
         slim: false,
+        parts: 0x7f,
     };
     let bare = |main_hand: bool| {
         build_vertices(
@@ -723,6 +724,51 @@ fn check_placement(c: &mut Checker) {
         !arm_verts.is_empty() && bare(false).is_empty(),
         format!(
             "{} verts for the main hand, none for the off hand.              `submitArmWithItem` renders the player's arm only when `isMainHand`              — an empty off-hand shows nothing at all, not a second arm",
+            arm_verts.len()
+        ),
+    );
+
+    // a4 — M313: `renderRightHand(..., isModelPartShown(RIGHT_SLEEVE))`. The
+    // sleeve is the arm's child part since M310 and drew nowhere until M313;
+    // with the bit set the arm carries exactly one box more (the sleeve,
+    // 0.25 larger) than with it clear, and the left-sleeve bit alone changes
+    // nothing on the right arm.
+    let with_mask = |parts: u8| {
+        let g = rewo_gpu::hand::ArmGeometry { parts, ..geo };
+        build_vertices(
+            Mat4::IDENTITY,
+            &[HandDraw {
+                arm: Arm::Right,
+                item: None,
+                attack: 0.0,
+                inverse_height: 0.0,
+                swings: SwingKind::Whack,
+                main_hand: true,
+                glint: false,
+                using: None,
+                is_shield: false,
+            }],
+            &|_| Some([0.0, 0.0, 1.0, 1.0]),
+            Some(&g),
+        )
+    };
+    let (sleeved, bare_arm, left_only) = (
+        with_mask(rewo_gpu::mobs::AVATAR_RIGHT_SLEEVE),
+        with_mask(0),
+        with_mask(rewo_gpu::mobs::AVATAR_LEFT_SLEEVE),
+    );
+    let box_verts = bare_arm.len();
+    c.record(
+        "a4.the_first_person_sleeve_follows_the_right_sleeve_bit",
+        box_verts > 0
+            && sleeved.len() == 2 * box_verts
+            && left_only.len() == box_verts
+            && arm_verts.len() == sleeved.len(),
+        format!(
+            "{} verts with the right sleeve shown, {box_verts} without, {} with only the \
+             left sleeve's bit (want twice, once, once); the default mask draws {}",
+            sleeved.len(),
+            left_only.len(),
             arm_verts.len()
         ),
     );
@@ -1151,6 +1197,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 64.0 / a,
             ],
             slim: false,
+            parts: 0x7f,
         };
         let armed = shot(
             &mut gpu,

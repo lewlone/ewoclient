@@ -1024,6 +1024,8 @@ pub(super) fn apply_hand(
                 64.0 / HAND_ATLAS as f32,
             ],
             slim: *slim,
+            // M313 — the sleeves by the mask the client sent.
+            parts: session.client_info.model_parts,
         });
     // M192 — the map's hand leaves the ordinary list (the map branch
     // replaces the item branch; two-handed, the off-hand is empty and draws

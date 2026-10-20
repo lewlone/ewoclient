@@ -736,6 +736,10 @@ pub struct ArmGeometry {
     /// Whether the player model is the slim variant — the arm box is 3 px
     /// wide rather than 4, and its UVs differ.
     pub slim: bool,
+    /// M313 — the local player's customisation mask (`PlayerModelPart`
+    /// bits): `renderRightHand` draws the right sleeve by `RIGHT_SLEEVE`,
+    /// `renderLeftHand` the left by `LEFT_SLEEVE`.
+    pub parts: u8,
 }
 
 fn quad_verts(
@@ -1070,15 +1074,25 @@ pub fn build_map_vertices(
 /// The arm cuboid and its sleeve, from the player model's own mesh.
 ///
 /// Only the one named part, which is exactly what `renderRightHand` submits —
-/// not the whole model with the rest hidden.
+/// not the whole model with the rest hidden. M313 — the sleeve is the arm's
+/// child part since M310 (at the arm's pivot, so the same transform), drawn
+/// when `hasSleeve`: the player shows that arm's sleeve. M310 had dropped it.
 fn append_arm(out: &mut Vec<GuiItemVertex>, m: &Mat4, arm: Arm, geo: &ArmGeometry) {
     let model = crate::mobs::player_model_for_hand(geo.slim);
-    let want = match arm {
-        Arm::Right => "right_arm",
-        Arm::Left => "left_arm",
+    let (want, sleeve_bit) = match arm {
+        Arm::Right => ("right_arm", crate::mobs::AVATAR_RIGHT_SLEEVE),
+        Arm::Left => ("left_arm", crate::mobs::AVATAR_LEFT_SLEEVE),
     };
     let Some(part_index) = model.parts.iter().position(|p| p.name == want) else {
         return;
+    };
+    let has_sleeve = geo.parts & sleeve_bit != 0;
+    let drawn = |i: usize| {
+        i == part_index
+            || (has_sleeve
+                && model.parts[i]
+                    .parent
+                    .is_some_and(|p| p as usize == part_index))
     };
     let part = &model.parts[part_index];
     // `arm.resetPose()` then the fixed tilt — the rest pivot, no animation.
@@ -1091,7 +1105,7 @@ fn append_arm(out: &mut Vec<GuiItemVertex>, m: &Mat4, arm: Arm, geo: &ArmGeometr
         Arm::Left => -HAND_ARM_Z_ROT,
     });
     let m = *m * local;
-    for q in model.quads.iter().filter(|q| q.part == part_index) {
+    for q in model.quads.iter().filter(|q| drawn(q.part)) {
         let pos: [[f32; 3]; 4] = std::array::from_fn(|i| {
             [
                 q.pos[i][0] * MODEL_UNIT,
