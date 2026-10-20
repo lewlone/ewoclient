@@ -3987,6 +3987,45 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M342 — the wolf's collar (2026-10-20)
+
+Rewo drew no collars: every tame wolf looked wild. `WolfCollarLayer`
+submits the wolf's own model (`getParentModel()`) in `wolf_collar.png`
+(`wolf_collar_baby.png` for a puppy), tinted by the collar's
+`DyeColor.getTextureDiffuseColor()`, only when `collarColor` is set, which
+`WolfRenderer` does only for a tame wolf. The collar colour is
+`Wolf.DATA_COLLAR_COLOR`, index 21 INT (`TamableAnimal` 18 and 19, then
+`DATA_INTERESTED_ID` 20), which the llama's variant shares by index and
+serializer, so it is read kind-gated on the wolf; its default is red, which
+the server never sends (M340's rule), so the reader supplies it. The wolf
+and the puppy now carry their own mesh again on a collar slot, quad for
+quad, drawn through the coplanar range (as the sheep's undercoat) when the
+draw has a collar and tinted by it (`mobs::collar_texture`, `EntityDraw
+.collar`, `wolf_collar` in the app). `mobshot --variant-check` gains n9 (14
+witnesses).
+
+**A decode bug r196 found, older than this run**: the metadata skipper read
+`OPTIONAL_LIVING_ENTITY_REFERENCE` (serializer 13) as a bool and a varint,
+but 26.2's `EntityReference.STREAM_CODEC` is `UUIDUtil.STREAM_CODEC`, a bool
+and 16 bytes. Every entity with an owner set therefore lost each metadata
+field after its owner (index 19): a tame wolf's collar (21) and coat (23), a
+tame cat's coat (20), and the same on every other tamed or owned mob. r196's
+first two runs failed on it (the staged wolf was tame with no collar sent);
+`skip_value` now takes the UUID.
+
+**Unit tests**: an owner reference is skipped whole and the collar after
+it read (the old varint skip fails it); the collar is the wolf's and the
+puppy's own mesh again;
+the collar is the sent colour or red, and only on a tame wolf. **n9**: index
+21 INT gives a wolf a collar and a llama a variant, never the other.
+**mobtexshot m67**: a blue collar on a tame wolf and puppy changes 119 and 154
+pixels, all blue-dominant, and a collarless one draws nothing foreign to its
+coat; with the collar's gate removed the collarless wolf shows 47 foreign
+pixels and the puppy 101, and m67 fails (its first version, which only
+compared the two collars, passed that mutant and was strengthened).
+**r196**: a staged tame wolf with a blue collar draws with collar 11, through
+the server's metadata, the kind gate and the tame flag.
+
 ### M341 — the puppy, in its coat (2026-10-20)
 
 `WolfRenderer` swaps in `BabyWolfModel` (32 x 32: a 6 x 5 x 5 head grown
