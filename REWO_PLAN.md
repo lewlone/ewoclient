@@ -2098,6 +2098,7 @@ this shape once.
 | M282 (2026-10-20) — the HUD vignette draws and follows the daylight | **r140** | — | — |
 | M283 (2026-10-20) — sleeping fades the screen | **r141** | — | — |
 | M284 (2026-10-20) — sleeping lays the camera in the bed and hides the hand | **r142** | — | — |
+| M285 (2026-10-20) — a charged creeper draws its energy swirl | **r143** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3932,6 +3933,54 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M285 — the charged creeper's energy swirl (2026-10-20)
+
+`CreeperPowerLayer` (`EnergySwirlLayer`): while `isPowered`
+(`Creeper.DATA_IS_POWERED`, index 17 BOOLEAN, kind-gated in
+`route_set_entity_data` and kept in `MobState`) the creeper draws its
+armour shell, `ModelLayers.CREEPER_ARMOR` = the creeper model at
+`CubeDeformation(2.0F)` (`mobs::creeper_armor`, the base's parts in order,
+posed by the base's transforms), through `RenderTypes.energySwirl`:
+
+- `creeper_armor.png` on its own sheet, REPEAT and NEAREST (no `.mcmeta`,
+  so `ReloadableTexture`'s defaults);
+- UVs offset by `t · 0.01 % 1` in both axes (`xOffset(t) = t · 0.01` and
+  `t · 0.01`), `t = ageInTicks` (the pass's shared clock: Rewo keeps no
+  per-entity age);
+- colour `0xFF808080`, no lightmap (`EMISSIVE`), no face shade
+  (`NO_CARDINAL_LIGHTING`), no overlay, alpha cutout 0.1;
+- `BlendFunction.ADDITIVE`, depth `GREATER_OR_EQUAL` with writes
+  (`DepthStencilState.DEFAULT`), no culling, through the UNORM view (the
+  sum is vanilla's gamma-space one), right after the emissive layers
+  (`order(1)`);
+- quads sorted far to near (`sortOnUpload`, `VertexSorting.DISTANCE_TO_ORIGIN`:
+  centroid distance, stable), so over the sky a shell's back face adds
+  before its front face passes the depth test.
+
+The pass's eighth vertex range; the glint pipeline builder became
+`build_sheet_pipeline` with the two blends.
+
+Recorded: a glowing charged creeper's swirl is not copied into the outline
+(vanilla passes `outlineColor` to it); fog is not applied to it (as with the
+glints); the wither's and the breeze's swirls (the same layer class) are not
+drawn.
+
+**Unit tests**: the shell is the creeper inflated 2 (parts, UVs, the head's
+`-6..6` span); index 17 BOOLEAN is the charge only on a creeper; the swirl's
+quads sort farthest first.
+**mobtexshot m21**, in two parts. The jar's sheet: the swirl draws, never
+darkens a pixel, reaches past the body onto the bare sky (1,466 px; an empty
+frame locates the sky) and scrolls when the clock moves 1.37 s. Exactness,
+through the same upload with a uniform sheet `(60, 30, 10)` (the jar's
+texels are a self-similar blue ramp, under which a doubled swirl passes for
+a brighter texel; the first draft of m21 graded against it and let a white
+vertex colour and a missing sort survive): every unsaturated pixel rises by
+`k · (30, 15, 5)`, a body pixel mostly with `k = 1`, every sky pixel with
+`k ≥ 2` (the back face adds too). Mutants of a white colour, no sort and a
+face-shaded swirl each fail it.
+**r143**: `render_check.py` summons a `powered:1b` creeper; the server's flag
+reaches the draw and the swirl range fills.
 
 ### M284 — the sleeping camera (2026-10-20)
 
