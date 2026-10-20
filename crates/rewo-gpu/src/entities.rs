@@ -5589,6 +5589,30 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 off = [0.0, 9.0 * s, -2.0 * s];
             }
         }
+        // M359 — `AbstractEquineModel.setupAnim` (standing, not eating or
+        // rearing: Rewo draws neither).
+        EquineHead => {
+            rot[0] = c.pitch
+                + if c.amt > 0.2 {
+                    (c.pos * 0.8).cos() * 0.15 * c.amt
+                } else {
+                    0.0
+                };
+            rot[1] = c.net.clamp(-20f32.to_radians(), 20f32.to_radians());
+        }
+        EquineLeg { hind, left } => {
+            let leg = (c.f + PI).cos();
+            rot[0] = match (hind, left) {
+                (false, true) => leg * 0.8 * c.amt,
+                (false, false) => -leg * 0.8 * c.amt,
+                (true, true) => -leg * 0.5 * c.amt,
+                (true, false) => leg * 0.5 * c.amt,
+            };
+        }
+        EquineTail => {
+            rot[0] = c.amt * 0.75;
+            off = [0.0, c.amt, 2.0 * c.amt];
+        }
         // M358 — `SheepModel.setupAnim`: grazing, the eat scales; else the
         // look.
         SheepHead => {
@@ -9798,5 +9822,60 @@ mod sheep_head_tests {
         assert_eq!((r, o), ([0.7, 0.2, 0.0], [0.0, 9.0, 0.0]));
         let (_, o) = anim_delta(mobs::Anim::SheepHead, 1.0, &ctx(Some((0.5, 0.7)), 0.5));
         assert_eq!(o, [0.0, 2.25, 0.0]);
+    }
+}
+
+#[cfg(test)]
+mod equine_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(pitch: f32, net: f32, f: f32, pos: f32, amt: f32) -> AnimCtx {
+        AnimCtx {
+            pitch,
+            net,
+            f,
+            pos,
+            amt,
+            age: 0.0,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        }
+    }
+
+    /// M359 — the head looks (the yaw clamped to ±20°) and nods while
+    /// walking faster than 0.2; the legs swing at 0.8 (front) and 0.5
+    /// (hind); the tail lifts with the speed.
+    #[test]
+    fn a_horse_looks_and_walks_as_vanillas() {
+        use mobs::Anim as A;
+        let (r, _) = anim_delta(A::EquineHead, 1.0, &ctx(0.3, 1.0, 0.0, 0.0, 0.0));
+        assert!((r[0] - 0.3).abs() < 1e-6 && (r[1] - 20f32.to_radians()).abs() < 1e-6);
+        let (r, _) = anim_delta(A::EquineHead, 1.0, &ctx(0.0, -0.1, 0.0, 0.0, 0.5));
+        assert!((r[0] - 0.15 * 0.5).abs() < 1e-6 && (r[1] + 0.1).abs() < 1e-6);
+        let (r, _) = anim_delta(A::EquineHead, 1.0, &ctx(0.0, 0.0, 0.0, 0.0, 0.2));
+        assert_eq!(r[0], 0.0);
+        // f = 0: legAnim1 = cos(π) = −1.
+        let walk = ctx(0.0, 0.0, 0.0, 0.0, 1.0);
+        for (hind, left, want) in [
+            (false, true, -0.8),
+            (false, false, 0.8),
+            (true, true, 0.5),
+            (true, false, -0.5),
+        ] {
+            let (r, _) = anim_delta(A::EquineLeg { hind, left }, 1.0, &walk);
+            assert!((r[0] - want).abs() < 1e-6, "{hind} {left}: {}", r[0]);
+        }
+        let (r, o) = anim_delta(A::EquineTail, 1.0, &ctx(0.0, 0.0, 0.0, 0.0, 0.4));
+        assert!((r[0] - 0.3).abs() < 1e-6 && o == [0.0, 0.4, 0.8]);
+        let _ = PI;
     }
 }

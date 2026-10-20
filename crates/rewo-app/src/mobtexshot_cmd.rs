@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 80;
+const EXPECTED_WITNESSES: usize = 81;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5943,6 +5943,84 @@ fn run_check(
         "m80.a_grazing_sheep_and_lamb_lower_their_heads",
         g_ok,
         format!("{} (want >= 100 each)", g_rows.join("; ")),
+    ));
+
+    // m81 — M359: a horse that looks down and to the side moves its head
+    // group (silhouette), and a saddled one's bridle goes with it: the
+    // saddle sheet's pixels move as far as the head's do.
+    let mut hst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.4, 1.8, -1.0),
+        Vec3::new(0.0, 1.2, 0.0),
+    )?;
+    hst.wr.set_entities(&[], hst.right, hst.up, 0.0);
+    hst.off.render(gpu, Some((&mut hst.wr, hst.vp)), &ov, BG)?;
+    let h_empty = hst.off.read_rgba(gpu)?;
+    let mut hshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        hst.wr.set_entities(&[d], hst.right, hst.up, 0.0);
+        hst.off.render(gpu, Some((&mut hst.wr, hst.vp)), &ov, BG)?;
+        hst.off.read_rgba(gpu)
+    };
+    let ahead = hshot(neutral_draw(EntityModelKind::Horse))?;
+    let looking = hshot(EntityDraw {
+        pitch: 35.0,
+        head_yaw: 15.0,
+        ..neutral_draw(EntityModelKind::Horse)
+    })?;
+    let mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(h_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let moved = mask(&ahead)
+        .iter()
+        .zip(&mask(&looking))
+        .filter(|(x, y)| x != y)
+        .count();
+    let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    layers[0] = Some(("horse_saddle/saddle", [1.0, 1.0, 1.0]));
+    let saddle = Some(rewo_gpu::entities::ArmorPiece {
+        layers,
+        ..Default::default()
+    });
+    let saddled = hshot(EntityDraw {
+        saddle,
+        ..neutral_draw(EntityModelKind::Horse)
+    })?;
+    let saddled_looking = hshot(EntityDraw {
+        saddle,
+        pitch: 35.0,
+        head_yaw: 15.0,
+        ..neutral_draw(EntityModelKind::Horse)
+    })?;
+    hst.destroy(gpu);
+    // The bridle's own pixels: what the saddle adds over the bare horse, in
+    // each pose; looking, the added set must move (a bridle left behind on a
+    // turned head adds the same pixels in both).
+    let added = |with: &[u8], bare: &[u8]| -> Vec<bool> {
+        with.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(bare.as_chunks::<4>().0)
+            .map(|(a, b)| a[..3] != b[..3])
+            .collect()
+    };
+    let (a0, a1) = (added(&saddled, &ahead), added(&saddled_looking, &looking));
+    let bridle_moved = a0.iter().zip(&a1).filter(|(x, y)| x != y).count();
+    w.push(wit(
+        "m81.a_horse_looks_and_its_bridle_goes_with_its_head",
+        // A bridle left on the static body (the M359 mutant) still moves 89
+        // px by occlusion as the head turns over it; the real one 292.
+        moved >= 200 && bridle_moved >= 200,
+        format!(
+            "{moved} px of silhouette moved by the look (want >= 200), {bridle_moved} px of the saddle layer moved with it (want >= 200; a bridle left behind measured 89)"
+        ),
     ));
 
     // ---- report ----------------------------------------------------------
