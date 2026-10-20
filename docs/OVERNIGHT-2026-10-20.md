@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 140 Rewo milestones, M194 to M333, in about 303 commits on
+- **What happened**: 141 Rewo milestones, M194 to M334, in about 305 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`b6cb8bd1`): 4478 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 187 of
-  187 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`4aedc64a`): 4479 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 188 of
+  188 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -442,6 +442,7 @@ released.
 - **M331**: panda cubs are their own model.
 - **M332**: ocelot kittens too (cat kittens need their coat variants first).
 - **M333**: baby bees too.
+- **M334**: donkey and mule foals too.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -503,6 +504,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `4aedc64a` | **M334** — the donkey and mule foals on `BabyDonkeyModel` (their 64 x 64 sheets had no swap row); a unit test, mobshot 357 views, mobtexshot **m59** and render-check **r188**. |
 | `b6cb8bd1` | **M333** — the baby bee on `BabyBeeModel`, airborne; a unit test, mobshot 351 views, mobtexshot **m58** and render-check **r187**. |
 | `d09c8e83` | **M332** — the ocelot kitten on `BabyFelineModel`'s layer, walking on vanilla's feline gait; a unit test, mobshot 348 views, mobtexshot **m57** and render-check **r186**. |
 | `d146e9ce` | **M331** — the panda cub on `BabyPandaModel` (its sheet goes through a variant record M175 could not read); a unit test, mobshot 345 views, mobtexshot **m56** and render-check **r185**. |
@@ -887,6 +889,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M334: **4,479 tests passed, 0 failed; gates 51/51** (mobtexshot 59, mobshot 357 views); render check **188/188** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M333: **4,478 tests passed, 0 failed; gates 51/51** (mobtexshot 58, mobshot 351 views); render check **187/187** on runs 1 and 3; **run 2 read 186/187**: r91's horse seat was 0.7 off in x from the server's marker (boat, camel and nautilus matched), the horse still moving between the two samples; M333 touches no riding code (recorded under Follow-ups). Clippy (both) and `cargo fmt --check` clean.
 - After M332: **4,477 tests passed, 0 failed; gates 51/51** (mobtexshot 57, mobshot 348 views); render check **186/186** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M331: **4,476 tests passed, 0 failed; gates 51/51** (mobtexshot 56, mobshot 345 views); render check **185/185** on two runs; clippy (both) and `cargo fmt --check` clean.

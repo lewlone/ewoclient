@@ -3979,6 +3979,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M334 — the donkey and mule foals (2026-10-20)
+
+`DonkeyRenderer` swaps in `BabyDonkeyModel.createBabyLayer()` for both the
+donkey and the mule (64 x 64: an 8 x 6 x 14 body, a tail tilted -0.7418,
+four 3 x 8 x 3 legs that are the body's children, the neck, head and ears) on
+`donkey_baby.png` and `mule_baby.png`. Both sheets are 64 x 64 like the
+adults', yet M175's table has no row for them, so a foal was the half-size
+adult. `DonkeyBaby` and `MuleBaby` are that model, picked by
+`baby_model_kind`. `BabyDonkeyModel.setupAnim` forces the look pitch to -30
+degrees, so `head_parts`' π/6 base cancels and the neck rests at its own
+0.3927 tilt; the head does not look and the legs take the quadruped walk, as
+Rewo's adult equine's do (vanilla's equine gait, 0.5 and 0.8 amplitudes, is
+not modelled for either: a follow-up). `mobshot` grades 357 views; both foals
+are graded in the crowd (107), and the adult donkey is now explained by the
+foal's sheet too, so `MAX_AMBIGUOUS` is 19 and `MIN_DISCRIMINATING` 88.
+
+**Unit test**: ten boxes, the body's top at (14, 13)..(22, 27), the legs'
+pivots the body's offset plus theirs. **mobtexshot m59**: both foals draw
+(2,562 px each) with no colour foreign to their own sheet; the donkey foal on
+the adult's sheet fails on `#35322f`. **r188**: a staged donkey foal and mule
+foal draw as `BabyDonkeyModel`.
+
 ### M333 — the baby bee (2026-10-20)
 
 `BeeRenderer` swaps in `BabyBeeModel` (32 x 32: on the hovering `bone`, two
