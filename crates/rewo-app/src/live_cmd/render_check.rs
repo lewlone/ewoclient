@@ -528,6 +528,9 @@ pub(super) struct RenderCheck {
     /// riding, and the frames the mount moved / the camera moved with it.
     pub(super) ride_last: Option<([f64; 3], [f64; 3])>,
     pub(super) ride_frames: (u32, u32),
+    /// M361 — r213: the largest frame-to-frame change, in blocks, of the
+    /// camera's horizontal offset from its mount's drawn position.
+    pub(super) ride_lead_jump: f64,
     /// M362 — r214: the first arrow drawn: (first-seen time, first and last
     /// position, frames and frames it moved on within 0.25 s, the farthest
     /// it got from where it appeared).
@@ -1298,6 +1301,10 @@ impl RenderCheck {
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
     const EXPECTED_RENDER_CHECK_WITNESSES: usize = 214;
+    /// M361 — r213: the rider's offset from its mount may change this much
+    /// a frame (blocks, horizontal): a camel's seat swings with its body
+    /// yaw. Before M361 it jumped by a tick's travel at every tick.
+    const RIDE_LEAD_JUMP_MAX: f64 = 0.05;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1517,10 +1524,12 @@ impl RenderCheck {
         // too (at least 95% of them, and at least 20 frames seen).
         row(
             "r213 riding, the camera moved on the frames its mount moved",
-            self.ride_frames.0 >= 20 && self.ride_frames.1 * 100 >= self.ride_frames.0 * 95,
+            self.ride_frames.0 >= 20
+                && self.ride_frames.1 * 100 >= self.ride_frames.0 * 95
+                && self.ride_lead_jump <= Self::RIDE_LEAD_JUMP_MAX,
             format!(
-                "the camera moved on {} of the {} frames the mount moved (want >= 95%, >= 20 frames)",
-                self.ride_frames.1, self.ride_frames.0
+                "the camera moved on {} of the {} frames the mount moved (want >= 95%, >= 20 frames); its offset from the mount changed by at most {:.4} blocks a frame (want <= {})",
+                self.ride_frames.1, self.ride_frames.0, self.ride_lead_jump, Self::RIDE_LEAD_JUMP_MAX
             ),
         );
         // M358 — r212: `render_check.py` summons lambs with their AI on

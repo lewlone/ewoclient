@@ -796,6 +796,14 @@ impl LiveApp {
         // mount's drawn position does. Until M361 the camera stood on the
         // tick position and moved on one frame in (frame rate / 20), while
         // the mount it rode was blended every frame.
+        //
+        // And (Enni: "the player moves first and then the mount follows")
+        // the rider never leads: vanilla moves the vehicle, then
+        // `positionRider` seats the rider from it, and both are drawn from
+        // the same partial tick, so the camera's horizontal offset from the
+        // mount's drawn position holds still from frame to frame. Until
+        // M361 it opened by up to a tick's travel and closed again twenty
+        // times a second. The largest frame-to-frame change is kept.
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             let mount = session
@@ -809,6 +817,8 @@ impl LiveApp {
                         if (0..3).any(|i| (cam.eye[i] - last_eye[i]).abs() > 1e-6) {
                             c.ride_frames.1 += 1;
                         }
+                        let lead = |k: usize| (cam.eye[k] - at[k]) - (last_eye[k] - last_mount[k]);
+                        c.ride_lead_jump = c.ride_lead_jump.max(lead(0).hypot(lead(2)));
                     }
                     c.ride_last = Some((at, cam.eye));
                 }
