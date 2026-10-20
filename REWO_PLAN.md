@@ -3959,6 +3959,32 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M312 — the happy ghast's ropes (2026-10-20)
+
+`RopesLayer` draws `HAPPY_GHAST_ROPES` (the adult body layer at
+`CubeDeformation(0.2F)`: body and tentacles) on `happy_ghast_ropes.png` while
+the ghast `isLeashHolder` and wears a harness. Rewo adds those ten boxes to
+the happy ghast on texture slot 1 (the harness shell needs the base model's
+parts unchanged, so not a part of their own) and `emit_model` skips that slot
+(`MobModel::ropes_slot`) unless `EntityDraw::leash_holder` (something is
+leashed to the entity, collected once a frame) and a body piece are both
+there, drawing the ropes with no overlay as `NO_OVERLAY` does.
+
+The ropes sheet is 128 x 128 under the model's 64-unit UV space, like the
+ghast's own; declared at 64 x 64 it failed to bake, and the happy ghast fell
+back to a capsule (a mob draws only when every listed sheet is present). The
+fail-closed counts caught it: m5 graded one kind fewer, mobshot three views
+fewer, and m33's harness drew nothing. (Rewo's adult also carries the inner
+body vanilla gives only the baby; it lies wholly inside the body box and never
+shows.)
+
+**Unit test**: the ropes are ten boxes 0.2 larger on slot 1, the parts
+still one. **mobtexshot m40**: harnessed and holding a leash, the ropes add
+799 px, every colour from the jar's ropes sheet, and a leash without a harness
+changes nothing (the ropes never drawn: 0 px, and m40 fails). **r168**: r72's
+injected happy ghast, given an injected white harness, draws as a harnessed
+leash holder.
+
 ### M311 — wolf armour cracks (2026-10-20)
 
 `WolfArmorLayer.maybeRenderCracks` draws one of three crack sheets over the
