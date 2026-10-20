@@ -1559,11 +1559,15 @@ pub enum EntityModelKind {
     /// a calf.
     CowBaby,
     MooshroomBaby,
+    /// M322 — `BabyPigModel` (`PIG_BABY`) and `BabyChickenModel`
+    /// (`CHICKEN_BABY`).
+    PigBaby,
+    ChickenBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 112;
+    pub const COUNT: usize = 114;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1676,6 +1680,8 @@ impl EntityModelKind {
         EntityModelKind::ZombifiedPiglinBaby,
         EntityModelKind::CowBaby,
         EntityModelKind::MooshroomBaby,
+        EntityModelKind::PigBaby,
+        EntityModelKind::ChickenBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1789,6 +1795,8 @@ impl EntityModelKind {
             EntityModelKind::ZombifiedPiglinBaby => "zombified_piglin_baby",
             EntityModelKind::CowBaby => "cow_baby",
             EntityModelKind::MooshroomBaby => "mooshroom_baby",
+            EntityModelKind::PigBaby => "pig_baby",
+            EntityModelKind::ChickenBaby => "chicken_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1842,6 +1850,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::ZombifiedPiglinBaby
                 | EntityModelKind::CowBaby
                 | EntityModelKind::MooshroomBaby
+                | EntityModelKind::PigBaby
+                | EntityModelKind::ChickenBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2757,6 +2767,18 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::MooshroomBaby,
         textures: &["mooshroom_baby"],
         build: cow_baby,
+    },
+    // M322 — the temperate piglet's and chick's sheets (Rewo draws no other
+    // pig or chicken variant).
+    MobDef {
+        kind: EntityModelKind::PigBaby,
+        textures: &["pig_baby"],
+        build: pig_baby,
+    },
+    MobDef {
+        kind: EntityModelKind::ChickenBaby,
+        textures: &["chicken_baby"],
+        build: chicken_baby,
     },
 ];
 
@@ -4903,6 +4925,103 @@ fn cow_baby() -> Model {
     ] {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 6.0, 3.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M322 — `BabyPigModel.createBodyLayer(CubeDeformation.NONE)` (32 x 32):
+/// the body, the head (a 7 x 6 x 6 box grown 0.025 and the snout grown
+/// 0.015; looking) and four 2 x 2 x 2 legs on the quadruped walk. Two legs
+/// share the body's (0, 0) as vanilla authors them.
+fn pig_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-3.5, -3.0, -4.5],
+        [7.0, 6.0, 9.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 19.0, 0.5])],
+    );
+    let head = b.part([0.0, 19.0, -2.0], Anim::Head, 1.0);
+    b.cube_g(
+        head,
+        0,
+        (0.0, 15.0),
+        [-3.5, -5.0, -5.0],
+        [7.0, 6.0, 6.0],
+        0.025,
+        NONE,
+    );
+    b.cube_g(
+        head,
+        0,
+        (6.0, 27.0),
+        [-1.5, -1.975, -6.0],
+        [3.0, 2.0, 1.0],
+        0.015,
+        NONE,
+    );
+    for (pivot, anim, uv) in [
+        ([2.5, 22.0, -3.0], Anim::QuadFrontLeft, (0.0, 0.0)),
+        ([-2.5, 22.0, -3.0], Anim::QuadFrontRight, (23.0, 0.0)),
+        ([2.5, 22.0, 4.0], Anim::QuadHindLeft, (0.0, 4.0)),
+        ([-2.5, 22.0, 4.0], Anim::QuadHindRight, (23.0, 4.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 2.0, 2.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M322 — `BabyChickenModel.createBodyLayer()` (16 x 16): a 4 x 4 x 4 body
+/// that is the chick's head too (no head part, so it never looks) with its
+/// beak, two legs (a 1 x 2 x 0 plate and a 1 x 0 x 1 foot each) on the walk,
+/// and two 1 x 0 x 2 wings, still as Rewo's adult wings are.
+fn chicken_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let body = [Fold::at([0.0, 20.25, -1.25])];
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-2.0, -2.25, -0.75],
+        [4.0, 4.0, 4.0],
+        0.0,
+        false,
+        &body,
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (10.0, 8.0),
+        [-1.0, -0.25, -1.75],
+        [2.0, 1.0, 1.0],
+        0.0,
+        false,
+        &body,
+    );
+    for (x, anim, leg_uv, foot_uv) in [
+        (1.0, Anim::LegLeft, (2.0, 2.0), (0.0, 1.0)),
+        (-1.0, Anim::LegRight, (0.0, 2.0), (0.0, 0.0)),
+    ] {
+        let leg = b.part([x, 22.0, 0.5], anim, 1.0);
+        b.cube(leg, 0, leg_uv, [-0.5, 0.0, 0.0], [1.0, 2.0, 0.0], NONE);
+        b.cube(leg, 0, foot_uv, [-0.5, 2.0, -1.0], [1.0, 0.0, 1.0], NONE);
+    }
+    for (x, uv, min_x) in [(2.0, (6.0, 8.0), 0.0), (-2.0, (4.0, 8.0), -1.0)] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [min_x, 0.0, -1.0],
+            [1.0, 0.0, 2.0],
+            0.0,
+            false,
+            &[Fold::at([x, 20.0, 0.0])],
+        );
     }
     b.finish(1.0)
 }
@@ -11516,6 +11635,8 @@ mod tests {
                     | EntityModelKind::ZombifiedPiglinBaby
                     | EntityModelKind::CowBaby
                     | EntityModelKind::MooshroomBaby
+                    | EntityModelKind::PigBaby
+                    | EntityModelKind::ChickenBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12701,5 +12822,50 @@ mod calf_tests {
             (span(front, 0), span(front, 1)),
             ((5.0, 11.0), (23.0, 29.0))
         );
+    }
+}
+
+#[cfg(test)]
+mod piglet_chick_tests {
+    use super::*;
+
+    fn span(q: &RawQuad, i: usize) -> (f32, f32) {
+        q.uv.iter()
+            .map(|u| u[i])
+            .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+    }
+
+    fn widest_north(m: &Model, part: usize) -> ((f32, f32), (f32, f32)) {
+        let q = m
+            .quads
+            .iter()
+            .filter(|q| q.part == part && q.facing == Facing::North)
+            .max_by(|a, b| {
+                let w = |q: &RawQuad| span(q, 0).1 - span(q, 0).0;
+                w(a).total_cmp(&w(b))
+            })
+            .unwrap();
+        (span(q, 0), span(q, 1))
+    }
+
+    /// M322 — `BabyPigModel`'s seven boxes, the head box's front at
+    /// (6, 21)..(13, 27) of its sheet.
+    #[test]
+    fn the_piglet_is_its_own_model() {
+        let m = pig_baby();
+        assert_eq!(m.quads.len(), 7 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        assert_eq!(widest_north(&m, head), ((6.0, 13.0), (21.0, 27.0)));
+    }
+
+    /// M322 — `BabyChickenModel`: the body and beak (6 faces each), four
+    /// plates of 2 faces (the legs and feet) and two wings of 2; no head
+    /// part; the body's front at (4, 4)..(8, 8).
+    #[test]
+    fn the_chick_is_its_own_model() {
+        let m = chicken_baby();
+        assert_eq!(m.quads.len(), 6 + 6 + 4 * 2 + 2 * 2);
+        assert!(m.parts.iter().all(|p| p.anim != Anim::Head));
+        assert_eq!(widest_north(&m, STATIC_PART), ((4.0, 8.0), (4.0, 8.0)));
     }
 }

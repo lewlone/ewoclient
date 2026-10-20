@@ -271,6 +271,9 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M322 -- r177. A piglet and a chick.
+    "summon minecraft:pig ~3 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
+    "summon minecraft:chicken ~6 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M321 -- r176. A calf and a mooshroom calf.
     "summon minecraft:cow ~-3 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     "summon minecraft:mooshroom ~0 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"

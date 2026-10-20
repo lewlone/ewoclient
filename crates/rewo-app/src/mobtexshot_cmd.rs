@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 47;
+const EXPECTED_WITNESSES: usize = 48;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -187,9 +187,9 @@ const MIN_DISCRIMINATING: usize = 72;
 /// drowned (m45), (M320) a baby piglin (m46), and (M321) the mooshroom calf
 /// (m47) and the small sulfur cube: the two calves' cells shrank every cell
 /// of the crowd and put it under the floor (measured against the M321 crowd
-/// without the calves, 19; m37 grades it up close). A twenty-second means
-/// something stopped drawing.
-const MAX_SMALL: usize = 21;
+/// without the calves, 19; m37 grades it up close), and (M322) the piglet
+/// and the chick (m48). A twenty-fourth means something stopped drawing.
+const MAX_SMALL: usize = 23;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3533,6 +3533,67 @@ fn run_check(
         "m47.both_calves_draw_from_their_own_sheets",
         cb_ok,
         format!("{} (want >= 200 px each, none foreign)", cb_rows.join("; ")),
+    ));
+
+    // m48 — M322: the piglet and the chick draw, every pixel producible by
+    // their own sheet (the meshes rest on the unit tests in
+    // `piglet_chick_tests`). Until M322 each was the half-size adult.
+    let mut pcst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.7, -0.9),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    pcst.wr.set_entities(&[], pcst.right, pcst.up, 0.0);
+    pcst.off
+        .render(gpu, Some((&mut pcst.wr, pcst.vp)), &ov, BG)?;
+    let pc_empty = pcst.off.read_rgba(gpu)?;
+    let mut pc_rows = Vec::new();
+    let mut pc_ok = true;
+    for (kind, key) in [
+        (EntityModelKind::PigBaby, "pig_baby"),
+        (EntityModelKind::ChickenBaby, "chicken_baby"),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        pcst.wr
+            .set_entities(&[neutral_draw(kind)], pcst.right, pcst.up, 0.0);
+        pcst.off
+            .render(gpu, Some((&mut pcst.wr, pcst.vp)), &ov, BG)?;
+        let frame = pcst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pc_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        pc_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        pc_rows.push(format!(
+            "{key}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    pcst.destroy(gpu);
+    w.push(wit(
+        "m48.the_piglet_and_the_chick_draw_from_their_own_sheets",
+        pc_ok,
+        format!("{} (want >= 200 px each, none foreign)", pc_rows.join("; ")),
     ));
 
     // ---- report ----------------------------------------------------------
