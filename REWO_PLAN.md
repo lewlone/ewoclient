@@ -3986,6 +3986,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M341 — the puppy, in its coat (2026-10-20)
+
+`WolfRenderer` swaps in `BabyWolfModel` (32 x 32: a 6 x 5 x 5 head grown
+0.025 with its snout and ears, looking; a 6 x 4 x 8 body; four 2 x 3 x 2 legs
+on `WolfModel`'s walk, the quadruped's leg for leg; the tail). `WolfBaby` is
+that model; the pale wild puppy is `wolf_baby`'s base and the other
+seventeen sheets (eight coats wild and tame, and the pale tame) its variants,
+routed through the registry entry's `baby_assets` (M340's parser) by
+tameness. `WolfModel.setupAnim` sets the tail's `xRot` to `tailAngle` every
+frame, π/5 for a wild wolf, not the layer's -0.5236, so the tail rests there
+and wags about y as Rewo's adult wolf's does (a tame wolf's tail rises with
+its health in vanilla; neither models that). The angry sheets stay out, as
+for the adult. `mobshot` grades 378 views; the variant check counts 105
+declared sheets; `MAX_SMALL` 24.
+
+**Unit tests**: ten boxes, the head box's front at (5, 17)..(11, 22), the
+tail at π/5 on the wag; the puppy's default variant is the pale entry.
+**mobtexshot m66**: the pale and the ashen puppy each draw (4,591 px) from
+their own sheet and differ. **r195**: a staged ashen puppy draws as
+`BabyWolfModel` on a coat variant, from the real server's registry.
+
 ### M340 — the kitten, in its coat (2026-10-20)
 
 The cat's coats are a datapack registry, and 26.2's `CatVariant
