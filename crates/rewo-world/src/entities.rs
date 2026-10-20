@@ -1500,6 +1500,9 @@ pub struct MobState {
     /// `Creaking.IS_ACTIVE` (index 17, BOOLEAN) — the eyes' emissive layer
     /// alpha. `Creaking` declares `CAN_MOVE` (16) first, so `IS_ACTIVE` is 17.
     pub creaking_active: bool,
+    /// M285 — `Creeper.DATA_IS_POWERED` (index 17, BOOLEAN): a charged
+    /// creeper. `Creeper` declares `DATA_SWELL_DIR` (16) first.
+    pub creeper_powered: bool,
     /// The mob's synched texture variant (M64), if it has one.
     ///
     /// **The units differ by mob and only the caller knows which**: for a cat,
@@ -2816,6 +2819,16 @@ impl EntityTable {
     /// untracked entity reads as a creaking that has not woken.
     pub fn creaking_active(&self, id: i32) -> bool {
         self.mob_state.get(&id).is_some_and(|s| s.creaking_active)
+    }
+
+    /// M285 — `Creeper.DATA_IS_POWERED`. Kind-gated by the caller.
+    pub fn set_creeper_powered(&mut self, id: i32, powered: bool) {
+        self.mob_state.entry(id).or_default().creeper_powered = powered;
+    }
+
+    /// M285 — `Creeper.isPowered()`; the synched default is `false`.
+    pub fn creeper_powered(&self, id: i32) -> bool {
+        self.mob_state.get(&id).is_some_and(|s| s.creeper_powered)
     }
 
     pub fn set_charging_crossbow(&mut self, id: i32, charging: bool) {

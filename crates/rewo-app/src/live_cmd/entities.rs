@@ -4052,6 +4052,8 @@ pub(super) fn collect_entities<'a>(
             stretch: creeper_swelling.map_or([1.0, 1.0], creeper_stretch),
             // M278 — the Glowing effect's outline, in the team's colour.
             outline: glow_colour(session, id),
+            // M285 — a charged creeper's swirl.
+            powered: creeper_swelling.is_some() && session.world.entities.creeper_powered(id),
             // M281 — burning: the flames, at the draw's light probe with
             // block light 15.
             on_fire: fire_draw(session, id, name, now).map(|frames| rewo_gpu::entities::FireDraw {
@@ -4193,6 +4195,10 @@ pub(crate) fn init_entities_maybe_cem(
     // M50: the worn-armour foil's own sheet, same ordering rule.
     if let Some(g) = baked.armor_glint.as_ref() {
         wr.init_entity_armor_glint(gpu, &g.rgba, g.w, g.h)?;
+    }
+    // M285: the charged creeper's swirl sheet, same ordering rule.
+    if let Some(g) = baked.creeper_armor.as_ref() {
+        wr.init_entity_swirl(gpu, &g.rgba, g.w, g.h)?;
     }
     // M282: the HUD vignette's texture; M283: the other camera overlays'
     // (`blur` in the pumpkin's mcmeta, none in the other two).

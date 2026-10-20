@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 20;
+const EXPECTED_WITNESSES: usize = 21;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -426,6 +426,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         white_overlay: 0.0,
         stretch: [1.0, 1.0],
         outline: None,
+        powered: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -1319,6 +1320,7 @@ fn run_check(
     // changes nothing here): every pixel they add must be one their textures
     // can produce, and there must be plenty of them, rising over the stand.
     let burning = shot(EntityDraw {
+        powered: false,
         on_fire: Some(rewo_gpu::entities::FireDraw {
             light: [1.0; 3],
             frames: fire_frames,
@@ -1467,6 +1469,141 @@ fn run_check(
             "{fire_n} px added by the flames (want >= 300); first colour the two fire \
              frames cannot produce: {:?}",
             fire_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m21 — M285: a charged creeper's energy swirl. `ENERGY_SWIRL` adds
+    // `texel · 0xFF808080` (`BlendFunction.ADDITIVE`) in vanilla's gamma
+    // space, one layer per shell face the depth test lets through: no
+    // culling, and `sortOnUpload` draws far quads first, so over the bare sky
+    // a closed shell adds its back face AND its front face, while over the
+    // body the body hides the back faces.
+    //
+    // Part one, the jar's `creeper_armor.png`: the swirl draws, never darkens
+    // a pixel, reaches past the body onto the bare sky (the shell is inflated
+    // 2 px; an empty frame says where the sky is) and scrolls with
+    // `ageInTicks`.
+    //
+    // Part two, exactness, through the same production upload with a
+    // uniform sheet of one colour `u` (the jar's texels are a self-similar
+    // blue ramp, under which a doubled swirl looks like a brighter texel): a
+    // layer adds exactly `r = round(u · 128 / 255)`, so every unsaturated
+    // pixel must rise by `k · r` (±k; up to six where the leg, body and head
+    // shells overlap), a body pixel mostly with `k = 1`, and every
+    // sky pixel by `k ≥ 2` (graded on red and green, the sky's blue being
+    // saturated). A white vertex colour gives `2r` everywhere, a linear-space
+    // add a rise that depends on the pixel under it, a face shade a scaled
+    // one, and a missing sort single layers on the sky.
+    let Some(armor) = baked.creeper_armor.as_ref() else {
+        return Err("mobtexshot: the jar has no creeper_armor.png".into());
+    };
+    const SWIRL_U: [u8; 3] = [60, 30, 10];
+    let r1 = SWIRL_U.map(|c| (c as f32 * 128.0 / 255.0).round() as i32);
+    let uniform: Vec<u8> = (0..armor.w * armor.h)
+        .flat_map(|_| [SWIRL_U[0], SWIRL_U[1], SWIRL_U[2], 255])
+        .collect();
+    let (cw, ch) = (128u32, 128u32);
+    let ring = OverlayRing::default();
+    let ov = overlay_offscreen(&ring);
+    let charged = || EntityDraw {
+        powered: true,
+        ..neutral_draw(EntityModelKind::Creeper)
+    };
+    // (empty, plain, charged at t = 0, charged at t = 27.4, the swirl's
+    // vertex counts plain and charged), for one sheet.
+    type Frames = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, u32, u32);
+    let mut frames = |sheet: &[u8]| -> Result<Frames, String> {
+        let mut st = stage_from(
+            gpu,
+            baked,
+            cw,
+            ch,
+            Vec3::new(1.2, 1.3, 2.4),
+            Vec3::new(0.0, 0.85, 0.0),
+        )?;
+        st.wr.init_entity_swirl(gpu, sheet, armor.w, armor.h)?;
+        let mut shot = |d: &[EntityDraw<'_>], time: f32| -> Result<(Vec<u8>, u32), String> {
+            st.wr.set_entities(d, st.right, st.up, time);
+            st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
+            Ok((st.off.read_rgba(gpu)?, st.wr.swirl_vertex_count()))
+        };
+        let (empty, _) = shot(&[], 0.0)?;
+        let (plain, plain_n) = shot(&[neutral_draw(EntityModelKind::Creeper)], 0.0)?;
+        let (lit, lit_n) = shot(&[charged()], 0.0)?;
+        let (later, _) = shot(&[charged()], 1.37)?;
+        st.destroy(gpu);
+        Ok((empty, plain, lit, later, plain_n, lit_n))
+    };
+    let px = |v: &[u8]| -> Vec<[i32; 3]> {
+        v.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| [p[0] as i32, p[1] as i32, p[2] as i32])
+            .collect()
+    };
+    // Part one.
+    let (empty, plain, lit, later, plain_n, lit_n) = frames(&armor.rgba)?;
+    let (empty, plain, lit, later) = (px(&empty), px(&plain), px(&lit), px(&later));
+    let (mut touched, mut outside, mut darker) = (0usize, 0usize, 0usize);
+    for i in 0..lit.len() {
+        if lit[i] == plain[i] {
+            continue;
+        }
+        touched += 1;
+        darker += (0..3).any(|c| lit[i][c] + 1 < plain[i][c]) as usize;
+        outside += (plain[i] == empty[i]) as usize;
+    }
+    let scrolled = (0..lit.len()).filter(|&i| lit[i] != later[i]).count();
+    // Part two.
+    let (u_empty, u_plain, u_lit, _, _, _) = frames(&uniform)?;
+    let (u_empty, u_plain, u_lit) = (px(&u_empty), px(&u_plain), px(&u_lit));
+    let layers = |d: [i32; 3], chans: usize| {
+        (1..=6).find(|&k| (0..chans).all(|c| (d[c] - k * r1[c]).abs() <= k))
+    };
+    let (mut body, mut body_single, mut sky, mut sky_single, mut bad) =
+        (0usize, 0usize, 0usize, 0usize, None);
+    for i in 0..u_lit.len() {
+        if u_lit[i] == u_plain[i] {
+            continue;
+        }
+        let d = [0, 1, 2].map(|c| u_lit[i][c] - u_plain[i][c]);
+        let on_sky = u_plain[i] == u_empty[i];
+        let chans = if on_sky { 2 } else { 3 };
+        if (0..chans).any(|c| u_lit[i][c] == 255) {
+            continue;
+        }
+        let k = layers(d, chans);
+        if k.is_none() && bad.is_none() {
+            bad = Some((d, on_sky));
+        }
+        if on_sky {
+            sky += 1;
+            sky_single += (k == Some(1)) as usize;
+        } else {
+            body += 1;
+            body_single += (k == Some(1)) as usize;
+        }
+    }
+    w.push(wit(
+        "m21.a_charged_creeper_adds_its_scrolling_swirl_in_gamma_space",
+        plain_n == 0
+            && lit_n > 0
+            && darker == 0
+            && outside >= 50
+            && scrolled >= 50
+            && bad.is_none()
+            && body >= 200
+            && body_single * 2 >= body
+            && sky >= 50
+            && sky_single == 0,
+        format!(
+            "jar sheet: swirl vertices plain {plain_n} / charged {lit_n}, {touched} px \
+             touched, {darker} darkened (want 0), {outside} on the bare sky (want >= 50), \
+             {scrolled} changed after 1.37 s (want >= 50); uniform sheet {SWIRL_U:?} (a \
+             layer adds {r1:?}): {body} body px graded (want >= 200), {body_single} single \
+             layers (want >= half), {sky} sky px graded (want >= 50), {sky_single} single \
+             layers (want 0, the back face adds too), first rise no layer count explains \
+             (rise, on the sky): {bad:?}"
         ),
     ));
 

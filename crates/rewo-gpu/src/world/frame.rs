@@ -61,6 +61,11 @@ impl WorldRenderer {
             // glow) ride straight on top of the solid models — that is where
             // vanilla's `order(1)` layer submits land, under everything below.
             pass.draw_emissive(gpu, cb, view_proj, extent);
+            // M285: the charged creeper's swirl, an `order(1)` layer too,
+            // added in gamma space (`BlendFunction.ADDITIVE`).
+            self.in_gamma_space(gpu, cb, extent, || {
+                pass.draw_swirl(gpu, cb, view_proj, extent)
+            });
             // M50: the worn-armour foil, then the trim. All three depth-test
             // `EQUAL` against the solid geometry just written, so all three
             // must follow it — and the foil precedes the trim because

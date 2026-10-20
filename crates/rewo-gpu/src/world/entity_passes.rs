@@ -50,6 +50,33 @@ impl WorldRenderer {
         }
     }
 
+    /// M285 — the charged creeper's energy swirl sheet
+    /// (`textures/entity/creeper/creeper_armor.png`). Like the glints it
+    /// renders into the UNORM view; no counterpart format draws no swirl.
+    pub fn init_entity_swirl(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<(), String> {
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
+        match self.entities.as_mut() {
+            Some(p) => p.init_swirl(gpu, rgba, w, h, format),
+            None => Ok(()),
+        }
+    }
+
+    /// M285 — vertices in the swirl range after the last `set_entities`.
+    pub fn swirl_vertex_count(&self) -> u32 {
+        self.entities
+            .as_ref()
+            .map(|p| p.swirl_vertex_count())
+            .unwrap_or(0)
+    }
+
     /// Vertices in the worn-armour foil range after the last `set_entities`
     /// (M50). `0` with no entity pass. See
     /// [`crate::entities::EntityPass::armor_glint_vertex_count`].

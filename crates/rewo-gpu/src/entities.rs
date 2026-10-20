@@ -300,6 +300,9 @@ pub struct EntityDraw<'a> {
     /// M281 — `displayFireAnimation` (burning, not fire-immune, not a
     /// spectator); `None` for none.
     pub on_fire: Option<FireDraw>,
+    /// M285 — `CreeperRenderState.isPowered`: a charged creeper draws
+    /// `CreeperPowerLayer`'s energy swirl. Ignored for other kinds.
+    pub powered: bool,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -1183,6 +1186,12 @@ pub struct EntityPass {
     emissive_verts: u32,
     /// M278 — the glowing entities' outline copies, the seventh range.
     outline_verts: u32,
+    /// M285 — the energy swirl (`RenderPipelines.ENERGY_SWIRL`): its own
+    /// sheet (`creeper_armor.png`, REPEAT and NEAREST: no `.mcmeta`), its own
+    /// additive pipeline, the eighth range.
+    swirl: Option<EntityGlint>,
+    swirl_pipeline: Option<vk::Pipeline>,
+    swirl_verts: u32,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -1282,6 +1291,10 @@ const CEM_STATE_TTL: u64 = 600;
 /// atlas-normalized UVs, the animated parts, and the px→block scale.
 pub struct MobModel {
     quads: Vec<GpuQuad>,
+    /// M285 — `CreeperPowerLayer`'s armour shell, UVs in `0..1` of its own
+    /// sheet (not the atlas): drawn only while `EntityDraw::powered`. Empty
+    /// for every other kind.
+    swirl: Vec<GpuQuad>,
     /// The texture slot vanilla renders through a dye tint (the sheep's
     /// wool), if any — `EntityDraw::dye` multiplies only that slot.
     tinted_slot: Option<u8>,
@@ -1606,8 +1619,36 @@ impl EntityPass {
                         ];
                         Some(v)
                     });
+            // M285 — the charged creeper's shell, built only for the vanilla
+            // creeper (a pack model replaces the base geometry, and its parts
+            // need not line up with the shell's) and only when its parts are
+            // the base's, which the shell's transforms are indexed by.
+            let swirl = if def.kind == EntityModelKind::Creeper && !debug_tex {
+                let shell = mobs::creeper_armor();
+                let [tw, th] = mobs::CREEPER_ARMOR_TEXTURE;
+                if shell.parts.len() == m.parts.len() {
+                    shell
+                        .quads
+                        .iter()
+                        .map(|q| GpuQuad {
+                            pos: q.pos,
+                            uv: q.uv.map(|[u, v]| [u / tw, v / th]),
+                            shade: q.shade,
+                            part: q.part as u16,
+                            tex: 0,
+                            facing: q.facing,
+                            normal: q.normal,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
             models[def.kind.index()] = Some(MobModel {
                 quads,
+                swirl,
                 tinted_slot: mobs::tinted_texture(def.kind)
                     .and_then(|k| def.textures.iter().position(|t| *t == k))
                     .map(|s| s as u8),
@@ -1751,6 +1792,9 @@ impl EntityPass {
                 emissive_pipeline,
                 emissive_verts: 0,
                 outline_verts: 0,
+                swirl: None,
+                swirl_pipeline: None,
+                swirl_verts: 0,
                 glint_pipeline: None,
                 glint: None,
                 glint_verts: 0,
@@ -2267,6 +2311,8 @@ impl EntityPass {
         // `GREATER_OR_EQUAL` with no depth write, so like the trim they cannot
         // share the solid range's strict `GREATER`.
         let mut emissive_verts: Vec<Vertex> = Vec::new();
+        // M285: the charged creeper's swirl, additive in gamma space.
+        let mut swirl_verts: Vec<Vertex> = Vec::new();
         let glint_offsets =
             crate::gui_item::glint_offsets((time as f64) * 1000.0, crate::gui_item::GLINT_SPEED);
 
@@ -2363,6 +2409,7 @@ impl EntityPass {
                     &mut verts,
                     &mut trim_verts,
                     &mut emissive_verts,
+                    &mut swirl_verts,
                     d,
                     model,
                     time,
@@ -2384,8 +2431,14 @@ impl EntityPass {
                         outline: None,
                         ..*d
                     };
-                    let (mut gv, mut gt, mut ge, mut gg, mut ga) =
-                        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    let (mut gv, mut gt, mut ge, mut gs, mut gg, mut ga) = (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    );
                     let mut gsink = GlintSink {
                         verts: &mut gg,
                         offsets: glint_offsets,
@@ -2400,6 +2453,7 @@ impl EntityPass {
                         &mut gv,
                         &mut gt,
                         &mut ge,
+                        &mut gs,
                         &ghost,
                         model,
                         time,
@@ -2512,6 +2566,11 @@ impl EntityPass {
         verts.append(&mut emissive_verts);
         let emissive_end = verts.len();
         verts.append(&mut outline_verts);
+        let outline_end = verts.len();
+        // M285 — `energySwirl`'s `sortOnUpload`: far quads first, so the
+        // shell's back faces add before its front ones pass the depth test.
+        sort_quads_back_to_front(&mut swirl_verts, cam_pos);
+        verts.append(&mut swirl_verts);
         let counts = [
             solid,
             text_end - solid,
@@ -2519,7 +2578,8 @@ impl EntityPass {
             trim_end - glint_end,
             armor_glint_end - trim_end,
             emissive_end - armor_glint_end,
-            verts.len() - emissive_end,
+            outline_end - emissive_end,
+            verts.len() - outline_end,
         ]
         .map(|c| c as u32);
         // The per-emitter `MAX_VERTS` guards bound each range on its own, but
@@ -2533,7 +2593,7 @@ impl EntityPass {
             )
         };
         let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
-        let [s0, s1, s2, s3, s4, s5, s6] = clamp_ranges(counts, kept as u32);
+        let [s0, s1, s2, s3, s4, s5, s6, s7] = clamp_ranges(counts, kept as u32);
         self.solid_verts = s0;
         self.text_verts = s1;
         self.glint_verts = s2;
@@ -2541,6 +2601,7 @@ impl EntityPass {
         self.armor_glint_verts = s4;
         self.emissive_verts = s5;
         self.outline_verts = s6;
+        self.swirl_verts = s7;
     }
 
     // Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -3256,6 +3317,8 @@ impl EntityPass {
         // Vanilla emissive-layer geometry (M57). Its own range because it
         // needs its own pipeline (depth GREATER_OR_EQUAL, no depth write).
         emis: &mut Vec<Vertex>,
+        // M285 — the energy swirl's geometry (its own sheet and pipeline).
+        swirl: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
@@ -3639,6 +3702,34 @@ impl EntityPass {
                         pos: p4[i],
                         uv: q.uv[i],
                         color: [c, c, c, alpha],
+                        light_hurt: [1.0, 1.0, 1.0, 0.0],
+                    });
+                }
+            }
+        }
+        // ---- M285: `CreeperPowerLayer` (`EnergySwirlLayer.submit`) -------
+        // `if (isPowered)`: the armour shell (the model at deformation 2,
+        // posed by the same `setupAnim`) through `energySwirl(texture,
+        // xOffset(t) % 1, t * 0.01 % 1)` with `xOffset(t) = t * 0.01` and
+        // `t = ageInTicks`, coloured `-8355712` (0xFF808080). The pipeline is
+        // `EMISSIVE` and `NO_CARDINAL_LIGHTING` (no light, no face shade),
+        // `NO_OVERLAY`, so the vertex is the grey alone; the offset is the
+        // `OffsetTextureTransform`, added to the layer's own UVs (the sheet's
+        // REPEAT sampler wraps them). It is the layer's own model copy, so
+        // the body's visibility (invisibility) does not hide it.
+        if d.powered && !model.swirl.is_empty() {
+            let off = (ctx.age * 0.01) % 1.0;
+            let grey = SWIRL_GREY;
+            for q in &model.swirl {
+                if swirl.len() + 6 > MAX_VERTS {
+                    return;
+                }
+                let p4 = place(q);
+                for &i in &[0usize, 1, 2, 0, 2, 3] {
+                    swirl.push(Vertex {
+                        pos: p4[i],
+                        uv: [q.uv[i][0] + off, q.uv[i][1] + off],
+                        color: [grey, grey, grey, 1.0],
                         light_hurt: [1.0, 1.0, 1.0, 0.0],
                     });
                 }
@@ -4080,6 +4171,91 @@ impl EntityPass {
         }
     }
 
+    /// M285 — the energy swirl's sheet (`creeper_armor.png`) and its
+    /// pipeline (`RenderPipelines.ENERGY_SWIRL`). `color_format` is the UNORM
+    /// view's: the swirl blends in gamma space, as vanilla's does.
+    pub fn init_swirl(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        color_format: vk::Format,
+    ) -> Result<(), String> {
+        if self.swirl.is_some() {
+            return Ok(());
+        }
+        let sheet = self.load_sheet(gpu, rgba, w, h, color_format, vk::Filter::NEAREST)?;
+        if self.swirl_pipeline.is_none() {
+            self.swirl_pipeline = Some(build_sheet_pipeline(
+                &gpu.device,
+                self.layout,
+                color_format,
+                include_bytes!(concat!(env!("OUT_DIR"), "/entity_swirl.frag.spv")),
+                SheetBlend::Swirl,
+            )?);
+        }
+        self.swirl = Some(sheet);
+        Ok(())
+    }
+
+    pub fn swirl_ready(&self) -> bool {
+        self.swirl.is_some() && self.swirl_pipeline.is_some()
+    }
+
+    /// Vertices in the swirl range for the last [`Self::set_entities`].
+    pub fn swirl_vertex_count(&self) -> u32 {
+        self.swirl_verts
+    }
+
+    /// M285 — the energy swirl, right after the emissive layers (vanilla's
+    /// `order(1)`), in gamma space. Depth `GREATER_OR_EQUAL` with writes
+    /// (`DepthStencilState.DEFAULT`), no culling, `BlendFunction.ADDITIVE`.
+    pub fn draw_swirl(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        let (Some(g), Some(pipeline)) = (self.swirl.as_ref(), self.swirl_pipeline) else {
+            return;
+        };
+        if self.swirl_verts == 0 {
+            return;
+        }
+        unsafe {
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[g.set],
+                &[],
+            );
+            // Last range in the buffer — see the storage comment in
+            // `set_draws`.
+            device.cmd_draw(
+                cb,
+                self.swirl_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts
+                    + self.emissive_verts
+                    + self.outline_verts,
+                0,
+            );
+        }
+    }
+
     pub fn init_glint(
         &mut self,
         gpu: &mut Gpu,
@@ -4123,14 +4299,37 @@ impl EntityPass {
         h: u32,
         color_format: vk::Format,
     ) -> Result<EntityGlint, String> {
+        let sheet = self.load_sheet(gpu, rgba, w, h, color_format, vk::Filter::LINEAR)?;
+        if self.glint_pipeline.is_none() {
+            self.glint_pipeline = Some(build_glint_pipeline(
+                &gpu.device,
+                self.layout,
+                color_format,
+            )?);
+        }
+        Ok(sheet)
+    }
+
+    /// Upload one UNORM sheet with a REPEAT sampler at `filter` and point a
+    /// descriptor set at it (the glints' LINEAR from their `blur` mcmeta;
+    /// M285's swirl NEAREST, having none).
+    fn load_sheet(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        _color_format: vk::Format,
+        filter: vk::Filter,
+    ) -> Result<EntityGlint, String> {
         let device = gpu.device.clone();
         let (image, image_alloc, view) = create_glint_texture(gpu, rgba, w, h)?;
         let sampler = unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
+                        .mag_filter(filter)
+                        .min_filter(filter)
                         .address_mode_u(vk::SamplerAddressMode::REPEAT)
                         .address_mode_v(vk::SamplerAddressMode::REPEAT)
                         .address_mode_w(vk::SamplerAddressMode::REPEAT),
@@ -4174,9 +4373,6 @@ impl EntityPass {
                     .image_info(&info)],
                 &[],
             );
-        }
-        if self.glint_pipeline.is_none() {
-            self.glint_pipeline = Some(build_glint_pipeline(&device, self.layout, color_format)?);
         }
         Ok(EntityGlint {
             sampler,
@@ -4362,7 +4558,11 @@ impl EntityPass {
             // Both sheets, then the one pipeline they share. M48's leak was a
             // pipeline that outlived its `destroy` and showed up only as a
             // `vkDestroyDevice` VUID with every witness still green.
-            for sheet in [self.glint.take(), self.armor_glint.take()] {
+            for sheet in [
+                self.glint.take(),
+                self.armor_glint.take(),
+                self.swirl.take(),
+            ] {
                 let Some(mut g) = sheet else { continue };
                 device.destroy_descriptor_pool(g.pool, None);
                 device.destroy_sampler(g.sampler, None);
@@ -4373,6 +4573,9 @@ impl EntityPass {
                 }
             }
             if let Some(p) = self.glint_pipeline.take() {
+                device.destroy_pipeline(p, None);
+            }
+            if let Some(p) = self.swirl_pipeline.take() {
                 device.destroy_pipeline(p, None);
             }
             device.destroy_pipeline(self.solid_pipeline, None);
@@ -4393,6 +4596,26 @@ impl EntityPass {
             let _ = gpu.allocator.free(a);
         }
     }
+}
+
+/// M285 — `MeshData.sortQuads` with `VertexSorting.DISTANCE_TO_ORIGIN` in
+/// camera-relative space: each quad (six vertices here, `0 1 2 0 2 3`) keyed
+/// by its centroid's squared distance from the camera, farthest first, by a
+/// stable sort (`IntArrays.mergeSort`).
+fn sort_quads_back_to_front(verts: &mut Vec<Vertex>, cam: [f32; 3]) {
+    let mut quads: Vec<[Vertex; 6]> = verts.as_chunks::<6>().0.to_vec();
+    let key = |q: &[Vertex; 6]| {
+        let mut c = [0f32; 3];
+        for v in [q[0], q[1], q[2], q[5]] {
+            for (a, p) in c.iter_mut().zip(v.pos) {
+                *a += p * 0.25;
+            }
+        }
+        (0..3).map(|i| (c[i] - cam[i]).powi(2)).sum::<f32>()
+    };
+    quads.sort_by(|a, b| key(b).total_cmp(&key(a)));
+    verts.clear();
+    verts.extend(quads.into_iter().flatten());
 }
 
 /// Clamp the six storage-ordered vertex ranges (solid | text | glint | trim |
@@ -7297,15 +7520,41 @@ fn build_glint_pipeline(
     layout: vk::PipelineLayout,
     color_format: vk::Format,
 ) -> Result<vk::Pipeline, String> {
+    build_sheet_pipeline(
+        device,
+        layout,
+        color_format,
+        include_bytes!(concat!(env!("OUT_DIR"), "/entity_glint.frag.spv")),
+        SheetBlend::Glint,
+    )
+}
+
+/// The two gamma-space sheet pipelines over entity geometry.
+#[derive(Clone, Copy, PartialEq)]
+enum SheetBlend {
+    /// `RenderPipelines.GLINT`: `(SRC_COLOR, ONE)`, depth `EQUAL`, no write.
+    Glint,
+    /// M285 — `ENERGY_SWIRL`: `BlendFunction.ADDITIVE` `(ONE, ONE)`, depth
+    /// `GREATER_OR_EQUAL` with writes (`DepthStencilState.DEFAULT`).
+    Swirl,
+}
+
+/// `0xFF808080`'s grey, the swirl's vertex colour (gamma; the pass is).
+pub(crate) const SWIRL_GREY: f32 = 128.0 / 255.0;
+
+fn build_sheet_pipeline(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+    frag_spv: &[u8],
+    blend: SheetBlend,
+) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
             device,
             include_bytes!(concat!(env!("OUT_DIR"), "/entity.vert.spv")),
         )?;
-        let frag = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/entity_glint.frag.spv")),
-        )?;
+        let frag = crate::overlay::create_shader(device, frag_spv)?;
         let entry = c"main";
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -7357,13 +7606,23 @@ fn build_glint_pipeline(
         // EQUAL, no write. The world pass is reversed-Z, so its ordinary test
         // is GREATER — but equality is equality either way, and it is what
         // lands the sheen on the item's own fragments.
-        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::EQUAL);
+        let depth = match blend {
+            SheetBlend::Glint => vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::EQUAL),
+            SheetBlend::Swirl => vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+        };
+        let src = match blend {
+            SheetBlend::Glint => vk::BlendFactor::SRC_COLOR,
+            SheetBlend::Swirl => vk::BlendFactor::ONE,
+        };
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_COLOR)
+            .src_color_blend_factor(src)
             .dst_color_blend_factor(vk::BlendFactor::ONE)
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ZERO)
@@ -8189,6 +8448,33 @@ mod tests {
     /// *not* a multiple of the caps and drew the same conclusion from it, which
     /// is a non-sequitur — the test was right and the reasoning beside it was
     /// not. A cap that was not a power of two would genuinely skip here.
+    #[test]
+    fn the_swirl_sorts_its_quads_farthest_first() {
+        let quad = |z: f32| {
+            let v = |x: f32, y: f32| Vertex {
+                pos: [x, y, z],
+                uv: [z, 0.0],
+                color: [1.0; 4],
+                light_hurt: [1.0, 1.0, 1.0, 0.0],
+            };
+            [
+                v(0.0, 0.0),
+                v(1.0, 0.0),
+                v(1.0, 1.0),
+                v(0.0, 0.0),
+                v(1.0, 1.0),
+                v(0.0, 1.0),
+            ]
+        };
+        let mut verts: Vec<Vertex> = [1.0, 5.0, 3.0, 5.0].into_iter().flat_map(quad).collect();
+        sort_quads_back_to_front(&mut verts, [0.5, 0.5, 0.0]);
+        let order: Vec<f32> = verts.chunks(6).map(|q| q[0].uv[0]).collect();
+        assert_eq!(order, vec![5.0, 5.0, 3.0, 1.0]);
+        assert!(verts
+            .chunks(6)
+            .all(|q| q.iter().all(|v| v.pos[2] == q[0].pos[2])));
+    }
+
     #[test]
     fn clamped_ranges_never_exceed_the_upload() {
         // Everything fits: untouched.

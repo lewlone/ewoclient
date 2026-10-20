@@ -3127,14 +3127,34 @@ fn enderman() -> Model {
 
 /// `CreeperModel`: head + tall body + four stubby legs on the quad gait.
 fn creeper() -> Model {
+    creeper_with(0.0)
+}
+
+/// M285 — `ModelLayers.CREEPER_ARMOR`: `CreeperModel.createBodyLayer(new
+/// CubeDeformation(2.0F))`, the charged creeper's swirl shell. The same
+/// parts in the same order as [`creeper`], so the base model's part
+/// transforms pose it (`CreeperPowerLayer` runs the same `setupAnim` on its
+/// own copy). Its texture is `creeper_armor.png`, sized by the layer
+/// ([`CREEPER_ARMOR_TEXTURE`]).
+pub fn creeper_armor() -> Model {
+    creeper_with(2.0)
+}
+
+/// `LayerDefinition.create(mesh, 64, 32)` for the creeper layers.
+pub const CREEPER_ARMOR_TEXTURE: [f32; 2] = [64.0, 32.0];
+
+/// `CreeperModel.createBodyLayer(g)`.
+fn creeper_with(g: f32) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 6.0, 0.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_f(
         head,
         0,
         (0.0, 0.0),
         [-4.0, -8.0, -4.0],
         [8.0, 8.0, 8.0],
+        g,
+        false,
         NONE,
     );
     b.cube_f(
@@ -3143,7 +3163,7 @@ fn creeper() -> Model {
         (16.0, 16.0),
         [-4.0, 0.0, -2.0],
         [8.0, 12.0, 4.0],
-        0.0,
+        g,
         false,
         &[Fold::at([0.0, 6.0, 0.0])],
     );
@@ -3155,7 +3175,16 @@ fn creeper() -> Model {
     ];
     for (pivot, anim) in legs {
         let p = b.part(pivot, anim, 1.0);
-        b.cube(p, 0, (0.0, 16.0), [-2.0, 0.0, -2.0], [4.0, 6.0, 4.0], NONE);
+        b.cube_f(
+            p,
+            0,
+            (0.0, 16.0),
+            [-2.0, 0.0, -2.0],
+            [4.0, 6.0, 4.0],
+            g,
+            false,
+            NONE,
+        );
     }
     b.finish(1.0)
 }
@@ -10752,5 +10781,30 @@ pub fn player_model_for_hand(slim: bool) -> &'static Model {
         SLIM.get_or_init(|| player_model(true))
     } else {
         WIDE.get_or_init(|| player_model(false))
+    }
+}
+
+#[cfg(test)]
+mod creeper_armor_tests {
+    use super::*;
+
+    /// M285 — `CREEPER_ARMOR` is the creeper at `CubeDeformation(2.0F)`: the
+    /// head cube spans `-6..6` (8 px, 2 more each side), and the shell keeps
+    /// the base model's parts in order (its transforms index them) and its
+    /// UVs (vanilla's box UVs ignore the deformation).
+    #[test]
+    fn the_creeper_armour_is_the_creeper_inflated_two() {
+        let (base, shell) = (creeper(), creeper_armor());
+        assert_eq!(base.parts.len(), shell.parts.len());
+        assert_eq!(base.quads.len(), shell.quads.len());
+        let span = |m: &Model| {
+            let xs = m.quads.iter().flat_map(|q| q.pos.iter().map(|p| p[0]));
+            xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
+        };
+        assert_eq!(span(&base), (-4.0, 4.0));
+        assert_eq!(span(&shell), (-6.0, 6.0));
+        for (a, b) in base.quads.iter().zip(&shell.quads) {
+            assert_eq!((a.part, a.uv), (b.part, b.uv), "same parts, same UVs");
+        }
     }
 }

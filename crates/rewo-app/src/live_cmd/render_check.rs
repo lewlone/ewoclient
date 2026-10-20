@@ -342,6 +342,10 @@ pub(super) struct RenderCheck {
     /// awake that drew one (the control).
     pub(super) asleep_hand_frames: (usize, usize),
     pub(super) awake_hand_frames: usize,
+    /// M285 — r143: frames with the charged creeper among the draws, and how
+    /// many of them filled the swirl range.
+    pub(super) powered_creeper_frames: usize,
+    pub(super) swirl_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1107,7 +1111,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 142;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 143;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1307,6 +1311,18 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M285 — r143: `render_check.py` summons a charged creeper
+        // (`powered:1b`). The server's `DATA_IS_POWERED` must reach the draw
+        // and the pass must fill its swirl range (`mobtexshot m21` checks the
+        // pixels). No swirl drew until M285.
+        row(
+            "r143 a charged creeper drew its energy swirl",
+            self.powered_creeper_frames >= 1 && self.swirl_frames >= 1,
+            format!(
+                "{} frames drew it powered, {} with swirl geometry",
+                self.powered_creeper_frames, self.swirl_frames
             ),
         );
         // M284 — r142: r83's bed (`red_bed[facing=west]`, staged in

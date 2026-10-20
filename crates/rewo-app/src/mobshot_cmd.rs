@@ -228,6 +228,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         white_overlay: 0.0,
         stretch: [1.0, 1.0],
         outline: None,
+        powered: false,
         on_fire: None,
         billboard: None,
         allay_dance: None,

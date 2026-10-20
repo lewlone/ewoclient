@@ -220,6 +220,8 @@ PRECMD = (
     # M277 -- r136. A creeper the run ignites at 2 s: NoAI and invulnerable,
     # with a fuse the server never reaches, clear of the lanes.
     "summon minecraft:creeper ~-14 ~ ~-2 {NoAI:1b,Invulnerable:1b,Fuse:32767s,Tags:[\"rewo_creeper\"]};"
+    # M285 -- r143. A charged creeper (never ignited: no tag), beside it.
+    "summon minecraft:creeper ~-16 ~ ~-2 {NoAI:1b,Invulnerable:1b,Fuse:32767s,powered:1b};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

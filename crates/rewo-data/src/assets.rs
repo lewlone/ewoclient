@@ -732,6 +732,9 @@ pub struct BakedAssets {
     pub pumpkin_blur: Option<DecodedImage>,
     pub powder_snow: Option<DecodedImage>,
     pub spyglass_scope: Option<DecodedImage>,
+    /// M285 — `textures/entity/creeper/creeper_armor.png`, the charged
+    /// creeper's energy swirl. `None` draws no swirl.
+    pub creeper_armor: Option<DecodedImage>,
     /// `textures/map/map_background.png` (64 x 64) and
     /// `map_background_checkerboard.png` (128 x 128), the held map's two
     /// backgrounds (M192, `ItemInHandRenderer.MAP_BACKGROUND*`). `None` draws
@@ -1784,6 +1787,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let pumpkin_blur = bake_misc_texture(&mut jar, "pumpkinblur.png");
     let powder_snow = bake_misc_texture(&mut jar, "powder_snow_outline.png");
     let spyglass_scope = bake_misc_texture(&mut jar, "spyglass_scope.png");
+    let creeper_armor = bake_texture_at(&mut jar, "entity/creeper/creeper_armor.png");
     let map_background = bake_map_texture(&mut jar, "map_background.png");
     let map_background_checkerboard = bake_map_texture(&mut jar, "map_background_checkerboard.png");
     let map_decorations = crate::map_decoration_table::TYPES
@@ -2381,6 +2385,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         pumpkin_blur,
         powder_snow,
         spyglass_scope,
+        creeper_armor,
         map_background,
         map_background_checkerboard,
         map_decorations,
@@ -2546,6 +2551,17 @@ fn upscale_to_tex_size(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
 fn bake_misc_texture(jar: Jar, rel: &str) -> Option<DecodedImage> {
     let mut bytes = Vec::new();
     jar.by_name(&format!("assets/minecraft/textures/misc/{rel}"))
+        .ok()?
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let (rgba, w, h) = decode_png_any(&bytes)?;
+    Some(DecodedImage { rgba, w, h })
+}
+
+/// M285 — a texture under `assets/minecraft/textures/`.
+fn bake_texture_at(jar: Jar, rel: &str) -> Option<DecodedImage> {
+    let mut bytes = Vec::new();
+    jar.by_name(&format!("assets/minecraft/textures/{rel}"))
         .ok()?
         .read_to_end(&mut bytes)
         .ok()?;

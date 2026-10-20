@@ -2443,6 +2443,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:creaking` type id (M52) — gates the index-17 BOOLEAN, which
     /// `Pillager` also claims.
     pub creaking: Option<i32>,
+    /// `minecraft:creeper` type id (M285) — gates the index-17 BOOLEAN,
+    /// `Creeper.DATA_IS_POWERED`.
+    pub creeper: Option<i32>,
     /// `minecraft:player` type id (M60) — gates the index-16 BYTE, the
     /// skin-part customisation mask whose bit 0 shows the cape.
     pub player: Option<i32>,
@@ -2964,6 +2967,9 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_charging_crossbow(eid, b);
         } else if kinds.creaking == Some(type_id) {
             entities.set_creaking_active(eid, b);
+        } else if kinds.creeper == Some(type_id) {
+            // M285 — `Creeper.DATA_IS_POWERED`: a charged creeper.
+            entities.set_creeper_powered(eid, b);
         }
     }
     // Slot 18 BYTE → `Sheep.DATA_WOOL_ID` (M52): low nibble the dye, 0x10 the
@@ -5466,6 +5472,28 @@ mod set_entity_data_tests {
         apply_set_entity_data(&index16_bool_true(2), &mut t, Some(ALLAY));
         assert!(t.is_baby(2), "a zombie's index-16 BOOLEAN is DATA_BABY_ID");
         assert_eq!(t.allay_dance_render(2, 1.0), None, "a zombie never dances");
+    }
+
+    /// M285 — index 17 BOOLEAN is `Creeper.DATA_IS_POWERED` on a creeper
+    /// (after `DATA_SWELL_DIR` at 16), and is left alone on any other kind
+    /// (the M18 rule: the index is polymorphic).
+    #[test]
+    fn index17_boolean_is_a_creepers_charge_only_on_a_creeper() {
+        const CREEPER: i32 = 910;
+        let kinds = crate::MetaKinds {
+            creeper: Some(CREEPER),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(9, EntityState::new(0, CREEPER, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(10, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert!(!t.creeper_powered(9), "the synched default is false");
+        apply_set_entity_data(&body(9, 17, 8, &[0x01]), &mut t, kinds);
+        apply_set_entity_data(&body(10, 17, 8, &[0x01]), &mut t, kinds);
+        assert!(t.creeper_powered(9));
+        assert!(!t.creeper_powered(10));
+        apply_set_entity_data(&body(9, 17, 8, &[0x00]), &mut t, kinds);
+        assert!(!t.creeper_powered(9));
     }
 
     /// M251 — index 8 INT is `ExperienceOrb.DATA_VALUE` on an orb, and is

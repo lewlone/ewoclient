@@ -585,6 +585,7 @@ impl PlaySession {
                 tnt: self.tnt_type_id,
                 block_display: self.block_display_type_id,
                 creaking: self.creaking_type_id,
+                creeper: self.creeper_type_id,
                 player: self.player_type_id,
                 bee: self.bee_type_id,
                 guardian: self.guardian_type_id,

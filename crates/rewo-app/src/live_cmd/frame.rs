@@ -1460,6 +1460,20 @@ impl LiveApp {
             cu,
             anim_time,
         );
+        // M285 — r143: the staged charged creeper drew its swirl, read back
+        // off the pass's own range.
+        #[cfg(feature = "gates")]
+        if let Some(rc) = self.check.as_mut() {
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Creeper && d.powered)
+            {
+                rc.powered_creeper_frames += 1;
+                if state.world_renderer.swirl_vertex_count() > 0 {
+                    rc.swirl_frames += 1;
+                }
+            }
+        }
         drop(draws);
         // M247 — r109: the staged chest (and, since M248, a bell and a
         // lectern's book) drew every quad of its baked model. Graded on what
