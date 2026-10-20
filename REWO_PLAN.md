@@ -3973,6 +3973,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M327 — the hoglet and the baby zoglin (2026-10-20)
+
+`HoglinRenderer` and `ZoglinRenderer` swap in `BabyHoglinModel` (64 x 64: a
+body grown 0.02 with its 0-wide mane; a head tilted 0.8727 with two tusks and
+two ears; four 3 x 6 x 3 legs) on `hoglin_baby.png` and `zoglin_baby.png`.
+Both sheets are 64 x 64 against the adults' 128 x 64, so M175 never baked
+them. `HoglinBaby` and `ZoglinBaby` are that model, picked by
+`baby_model_kind`. The ears' `PartPose` angle (∓0.8727) is not what draws:
+`HoglinModel.setupAnim` sets their `zRot` to ∓2π/9 every frame, so they rest
+there, as Rewo's adult's do. `mobshot` grades 336 views; both hoglets are big
+enough for the m5 crowd (92 graded); `MAX_AMBIGUOUS` 13 (zoglin_baby, whose
+colours the adult zoglin's sheet can produce).
+
+**Unit test**: eleven boxes (the mane a 2-face plate), the head box's front
+at (12, 12)..(22, 16), and the right ear's normal at sin(2π/9) in x
+(0.6428; the `PartPose` angle gives 0.766, and that mutant fails it).
+**mobtexshot m53**: both draw (3,814 and 3,547 px) with no colour foreign to
+their own sheet; the hoglet on the adult's sheet fails on `#dcc473`.
+**r182**: a staged hoglet (immune to zombification) and baby zoglin draw as
+`BabyHoglinModel`.
+
 ### M326 — the baby squids (2026-10-20)
 
 `SquidRenderer` and `GlowSquidRenderer` swap in `BabySquidModel` (32 x 32:
