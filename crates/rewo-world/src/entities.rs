@@ -966,6 +966,9 @@ pub struct EntityTable {
     /// (`ClientboundSetEquipmentPacket`, slots 0 and 1), by
     /// `InteractionHand`. Cleared on removal.
     hand_profiles: HashMap<i32, [Option<String>; 2]>,
+    /// M294 — the body slot (`EquipmentSlot.BODY`, wire 6): a horse's armour,
+    /// a wolf's, a llama's carpet. Cleared on removal.
+    body_armor: HashMap<i32, WornPiece>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -1670,6 +1673,7 @@ impl EntityTable {
             head_profiles,
             stack_profiles,
             hand_profiles,
+            body_armor,
             dances,
             events,
             swings: _,
@@ -1706,6 +1710,7 @@ impl EntityTable {
         item_frames.remove(&id);
         stack_profiles.remove(&id);
         hand_profiles.remove(&id);
+        body_armor.remove(&id);
         attributes.remove(&id);
         shared_flags.remove(&id);
         custom_name_visible.remove(&id);
@@ -2574,6 +2579,23 @@ impl EntityTable {
     /// carries.
     pub fn stack_profile(&self, id: i32) -> Option<&str> {
         self.stack_profiles.get(&id).map(String::as_str)
+    }
+
+    /// M294 — the body slot's piece (`None` clears).
+    pub fn set_body_armor(&mut self, id: i32, piece: Option<WornPiece>) {
+        match piece {
+            Some(p) => {
+                self.body_armor.insert(id, p);
+            }
+            None => {
+                self.body_armor.remove(&id);
+            }
+        }
+    }
+
+    /// M294 — what `id` wears in its body slot.
+    pub fn body_armor(&self, id: i32) -> Option<WornPiece> {
+        self.body_armor.get(&id).copied()
     }
 
     /// M290 — the skin of a player head held in `hand` (`None` clears).
@@ -4809,6 +4831,7 @@ mod side_state_tests {
             head_profiles,
             stack_profiles,
             hand_profiles,
+            body_armor,
             dances,
             events,
             swings,
@@ -4849,6 +4872,7 @@ mod side_state_tests {
             head_profiles.contains_key(&id),
             stack_profiles.contains_key(&id),
             hand_profiles.contains_key(&id),
+            body_armor.contains_key(&id),
             dances.contains_key(&id),
             events.contains_key(&id),
             swings.contains_key(&id),
@@ -4909,6 +4933,15 @@ mod side_state_tests {
         t.item_stacks.insert(id, (1, 1, false));
         t.stack_profiles.insert(id, "e30=".to_string());
         t.hand_profiles.insert(id, [Some("e30=".to_string()), None]);
+        t.body_armor.insert(
+            id,
+            WornPiece {
+                item: 1,
+                dye: None,
+                trim: None,
+                foil: false,
+            },
+        );
         t.hurts.insert(id, HurtState::default());
         t.hurt_dirs.insert(id, 45.0);
         t.model_customisation.insert(id, 0x7f);

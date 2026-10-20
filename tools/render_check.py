@@ -230,6 +230,9 @@ PRECMD = (
     # M288 -- r146. A wither frozen in its invulnerable phase: Invul 220 never
     # counts down under NoAI (no `customServerAiStep`), so it never explodes.
     "summon minecraft:wither ~-26 ~ ~-2 {NoAI:1b,Silent:1b,Invul:220};"
+    # M294 -- r150. A horse in iron horse armour, clear of the lanes.
+    "summon minecraft:horse ~-18 ~ ~-6 {NoAI:1b,Tame:1b,Silent:1b,"
+    "equipment:{body:{id:\"minecraft:iron_horse_armor\",count:1}}};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

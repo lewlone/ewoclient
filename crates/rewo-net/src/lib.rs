@@ -3551,6 +3551,22 @@ pub(crate) fn apply_set_equipment(
                 entities.set_head_profile(eid, profile);
             }
         }
+        // M294: slot 6 is BODY — a horse's armour (and a wolf's, a llama's
+        // carpet), drawn by `HORSE_BODY`'s equipment layer.
+        if slot_id & 127 == 6 {
+            entities.set_body_armor(
+                eid,
+                match &slot {
+                    WireSlot::Empty => None,
+                    WireSlot::Stack(s) => Some(rewo_world::entities::WornPiece {
+                        item: s.item_id,
+                        dye: s.components.dyed_color,
+                        trim: s.components.trim,
+                        foil: s.components.has_foil(),
+                    }),
+                },
+            );
+        }
         // M169: slot 7 is SADDLE — `Mob.isSaddled()`, the whole of a horse's
         // `canJump()` and half of `getControllingPassenger()`. Read here
         // because the client has no other source for it.

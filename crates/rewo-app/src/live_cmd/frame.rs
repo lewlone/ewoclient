@@ -948,6 +948,21 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M294 — r150: the staged horse in iron armour, its sheet resident.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Horse
+                    && d.body_armor.is_some_and(|p| {
+                        p.layers.iter().flatten().any(|(k, _)| {
+                            *k == "horse_body/iron"
+                                && state
+                                    .world_renderer
+                                    .entity_pass()
+                                    .is_some_and(|e| e.armor_sheet_resident(k))
+                        })
+                    })
+            }) {
+                c.horse_armor_frames += 1;
+            }
             // M290 — r148: the staged armour stand's held head, skinned.
             if draws
                 .iter()

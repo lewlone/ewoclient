@@ -211,6 +211,7 @@ pub(super) fn preview_draw<'a>(
         stretch: [1.0, 1.0],
         outline: None,
         powered: false,
+        body_armor: None,
         on_fire: None,
         billboard: None,
         allay_dance: None,

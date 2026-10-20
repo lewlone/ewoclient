@@ -3231,6 +3231,43 @@ pub(crate) fn armor_keys<'a>(
     })
 }
 
+/// M294 — the body slot's equipment layers (`HORSE_BODY`), resolved as
+/// [`armor_keys`] resolves a humanoid piece's: the item's asset, its
+/// `horse_body` layer list, each layer's colour (`color_for_layer`, zero for
+/// no draw).
+pub(crate) fn body_armor_piece<'a>(
+    session: &PlaySession,
+    id: i32,
+    items: &rewo_data::items::Items,
+    equipment: &'a rewo_data::equipment::EquipmentAssets,
+) -> Option<rewo_gpu::entities::ArmorPiece<'a>> {
+    use rewo_data::equipment::{color_for_layer, dye_argb, ArmorLayer};
+    let piece = session.world.entities.body_armor(id)?;
+    let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
+    let dye = dye_argb(piece.dye);
+    let mut out = rewo_gpu::entities::ArmorPiece {
+        foil: piece.foil,
+        ..Default::default()
+    };
+    let mut n = 0;
+    for def in equipment.layers(asset, ArmorLayer::HorseBody) {
+        let color = color_for_layer(def.dyeable, dye);
+        if color == 0 || n == rewo_gpu::entities::MAX_ARMOR_SUBLAYERS {
+            continue;
+        }
+        out.layers[n] = Some((
+            def.key.as_str(),
+            [
+                ((color >> 16) & 0xFF) as f32 / 255.0,
+                ((color >> 8) & 0xFF) as f32 / 255.0,
+                (color & 0xFF) as f32 / 255.0,
+            ],
+        ));
+        n += 1;
+    }
+    (n > 0).then_some(out)
+}
+
 pub(crate) fn held_foil(
     session: &PlaySession,
     id: i32,
@@ -4034,6 +4071,8 @@ pub(super) fn collect_entities<'a>(
             // `ItemStack.hasFoil()` (M45), decoded at the wire because it
             // lives only in the component patch.
             armor: armor_keys(session, id, item_names, equipment, trim_slots),
+            // M294 — the body slot's layers (a horse's armour).
+            body_armor: body_armor_piece(session, id, item_names, equipment),
             held_glint: [
                 held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
                 held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),

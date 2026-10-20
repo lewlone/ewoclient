@@ -367,6 +367,8 @@ pub(super) struct RenderCheck {
     /// M292 — r149: frames of a mount screen whose window posed the mount's
     /// own kind.
     pub(super) mount_preview_frames: usize,
+    /// M294 — r150: frames on which the staged horse drew in its iron armour.
+    pub(super) horse_armor_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1132,7 +1134,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 149;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 150;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1333,6 +1335,15 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M294 — r150: `render_check.py` summons a horse wearing iron horse
+        // armour. The equipment packet's body slot must reach the draw as the
+        // `horse_body/iron` layer, its sheet resident (`mobtexshot m25`
+        // checks the pixels). No horse armour drew until M294.
+        row(
+            "r150 a horse drew in its iron horse armour",
+            self.horse_armor_frames >= 1,
+            format!("{} frames drew it", self.horse_armor_frames),
         );
         // M292 — r149: r84's donkey screen draws the donkey in its window
         // (`AbstractMountInventoryScreen` poses the mount there), read back

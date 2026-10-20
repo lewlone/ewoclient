@@ -64,6 +64,8 @@ pub enum ArmorLayer {
     /// `wings` — the elytra. Read for `CapeLayer`'s suppression test, never
     /// drawn (see the module header).
     Wings,
+    /// M294 — `horse_body`, a horse's body armour (`HORSE_BODY`).
+    HorseBody,
 }
 
 impl ArmorLayer {
@@ -72,16 +74,18 @@ impl ArmorLayer {
             ArmorLayer::Humanoid => "humanoid",
             ArmorLayer::Leggings => "humanoid_leggings",
             ArmorLayer::Wings => "wings",
+            ArmorLayer::HorseBody => "horse_body",
         }
     }
 
     /// The layers a full load reads. `Wings` is last so the two humanoid
     /// entries keep the order they had, which keeps `textures` — a `Vec`
     /// the atlas packs in order — byte-for-byte what it was.
-    pub const ALL: [ArmorLayer; 3] = [
+    pub const ALL: [ArmorLayer; 4] = [
         ArmorLayer::Humanoid,
         ArmorLayer::Leggings,
         ArmorLayer::Wings,
+        ArmorLayer::HorseBody,
     ];
 }
 
@@ -234,6 +238,9 @@ impl EquipmentAssets {
                 }
             }
         }
+        // M294 — the horse_body sheets after every other: the atlas packs
+        // `textures` in order, so the earlier sheets keep their places.
+        wanted.sort_by_key(|((_, layer), _, _)| *layer == ArmorLayer::HorseBody);
         for ((asset, layer), tex, dyeable) in wanted {
             // Keyed by the **texture**, not by the asset: two assets naming the
             // same sheet share one atlas entry, and one asset's two layers name

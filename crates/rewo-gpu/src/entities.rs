@@ -300,6 +300,9 @@ pub struct EntityDraw<'a> {
     /// M281 — `displayFireAnimation` (burning, not fire-immune, not a
     /// spectator); `None` for none.
     pub on_fire: Option<FireDraw>,
+    /// M294 — the body slot's equipment layers (`HORSE_BODY`) over the
+    /// horse family's armour shell; `None` for none or another kind.
+    pub body_armor: Option<ArmorPiece<'a>>,
     /// M285 — `CreeperRenderState.isPowered`: a charged creeper draws
     /// `CreeperPowerLayer`'s energy swirl. Ignored for other kinds.
     pub powered: bool,
@@ -1308,6 +1311,10 @@ pub struct MobModel {
     swirl: Vec<GpuQuad>,
     /// M287 — which swirl sheet [`Self::swirl`] samples.
     swirl_sheet: SwirlSheet,
+    /// M294 — the body-armour shell (`HORSE_ARMOR` / `UNDEAD_HORSE_ARMOR`),
+    /// UVs in texels of a 64x64 equipment sheet, placed at draw time by the
+    /// worn layer's atlas slot. Empty for every other kind.
+    body_shell: Vec<GpuQuad>,
     /// M286 — the breeze's wind funnel (its texture slot 1), UVs in `0..1`
     /// of its own sheet: `BreezeWindLayer` draws it every frame. Empty for
     /// every other kind (and in the face-label mode, which keeps it in
@@ -1701,8 +1708,34 @@ impl EntityPass {
             } else {
                 Vec::new()
             };
+            // M294 — the horse family's body-armour shell.
+            let body_shell: Vec<GpuQuad> = match def.kind {
+                EntityModelKind::Horse => Some(mobs::horse_armor()),
+                EntityModelKind::SkeletonHorse | EntityModelKind::ZombieHorse => {
+                    Some(mobs::undead_horse_armor())
+                }
+                _ => None,
+            }
+            .filter(|shell| !debug_tex && shell.parts.len() == m.parts.len())
+            .map(|shell| {
+                shell
+                    .quads
+                    .iter()
+                    .map(|q| GpuQuad {
+                        pos: q.pos,
+                        uv: q.uv,
+                        shade: q.shade,
+                        part: q.part as u16,
+                        tex: 0,
+                        facing: q.facing,
+                        normal: q.normal,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
             models[def.kind.index()] = Some(MobModel {
                 quads,
+                body_shell,
                 swirl,
                 swirl_sheet,
                 wind,
@@ -1892,7 +1925,8 @@ impl EntityPass {
                     .iter()
                     // `<layer dir>/<texture>` — both humanoid layer types
                     // start with `humanoid`, and no mob texture does.
-                    .filter(|(k, _)| k.starts_with("humanoid"))
+                    // M294 — and the horse's body armour.
+                    .filter(|(k, _)| k.starts_with("humanoid") || k.starts_with("horse_body/"))
                     .map(|(k, v)| ((*k).to_string(), *v))
                     .collect(),
                 skin_lru: LruSlots::new(SKIN_SLOTS),
@@ -3677,6 +3711,34 @@ impl EntityPass {
                 });
             }
         }
+        // M294: `SimpleEquipmentLayer`'s `HORSE_BODY`: the shell in each
+        // worn layer's sheet, dyed by the vertex colour, lit and overlaid as
+        // the armour below is.
+        if let Some(piece) = d.body_armor {
+            for (key, tint) in piece.layers.iter().flatten() {
+                let Some(&(ax, ay, _, _)) = self.armor_slots.get(*key) else {
+                    continue;
+                };
+                for q in &model.body_shell {
+                    if verts.len() + 6 > MAX_VERTS {
+                        return;
+                    }
+                    let p4 = place(q);
+                    let c = [q.shade * tint[0], q.shade * tint[1], q.shade * tint[2]];
+                    for &i in &[0usize, 1, 2, 0, 2, 3] {
+                        verts.push(Vertex {
+                            pos: p4[i],
+                            uv: [
+                                (ax as f32 + q.uv[i][0]) / ATLAS_W as f32,
+                                (ay as f32 + q.uv[i][1]) / ATLAS_H as f32,
+                            ],
+                            color: [c[0], c[1], c[2], 1.0],
+                            light_hurt: [light_r, light_g, light_b, hurt],
+                        });
+                    }
+                }
+            }
+        }
         // M46: worn armour, a render layer over the body, before the held
         // item so a chestplate does not paint over a sword.
         self.emit_armor(
@@ -4404,6 +4466,11 @@ impl EntityPass {
 
     pub fn swirl_ready(&self) -> bool {
         self.swirl.is_some() && self.swirl_pipeline.is_some()
+    }
+
+    /// M294 — whether an equipment sheet's key has a slot in the atlas.
+    pub fn armor_sheet_resident(&self, key: &str) -> bool {
+        self.armor_slots.contains_key(key)
     }
 
     /// Vertices in the swirl range for the last [`Self::set_entities`], on

@@ -7609,6 +7609,32 @@ fn mule() -> Model {
 /// `AbstractEquineModel` (horse family). `donkey_ears` swaps the horse
 /// ears for the long donkey pair (vanilla `DonkeyModel`).
 fn equine(donkey_ears: bool) -> Model {
+    equine_with(donkey_ears, 0.0)
+}
+
+/// M294 — `ModelLayers.HORSE_ARMOR`: `AbstractEquineModel.createBodyMesh(new
+/// CubeDeformation(0.1F))` with `livingHorseScale`, the horse's body-armour
+/// shell (`HorseRenderer`'s `HORSE_BODY` `SimpleEquipmentLayer`). The body
+/// keeps its own 0.05, the neck and the ears theirs, as in vanilla.
+pub fn horse_armor() -> Model {
+    let mut m = equine_with(false, 0.1);
+    m.scale *= HORSE_SCALE;
+    m
+}
+
+/// M294 — `ModelLayers.UNDEAD_HORSE_ARMOR`: the same mesh without the
+/// living scale (`UndeadHorseRenderer`'s `HORSE_BODY` layer).
+pub fn undead_horse_armor() -> Model {
+    equine_with(false, 0.1)
+}
+
+/// `LayerDefinition.create(..., 64, 64)` for the horse armour layers.
+pub const HORSE_ARMOR_TEXTURE: [f32; 2] = [64.0, 64.0];
+
+/// `AbstractEquineModel.createBodyMesh(g)`: `g` on the head, mane, upper
+/// mouth, legs and tail; the body is always 0.05, the neck 0 and the ears
+/// -0.001.
+fn equine_with(donkey_ears: bool, g: f32) -> Model {
     let mut b = ModelBuilder::new();
     let body = Fold::at([0.0, 11.0, 5.0]);
     b.cube_f(
@@ -7638,7 +7664,7 @@ fn equine(donkey_ears: bool) -> Model {
         (0.0, 13.0),
         [-3.0, -11.0, -2.0],
         [6.0, 5.0, 7.0],
-        0.0,
+        g,
         false,
         &[neck],
     );
@@ -7648,7 +7674,7 @@ fn equine(donkey_ears: bool) -> Model {
         (56.0, 36.0),
         [-1.0, -11.0, 5.01],
         [2.0, 16.0, 2.0],
-        0.0,
+        g,
         false,
         &[neck],
     );
@@ -7658,7 +7684,7 @@ fn equine(donkey_ears: bool) -> Model {
         (0.0, 25.0),
         [-2.0, -11.0, -7.0],
         [4.0, 5.0, 5.0],
-        0.0,
+        g,
         false,
         &[neck],
     );
@@ -7739,7 +7765,7 @@ fn equine(donkey_ears: bool) -> Model {
     ];
     for (min, pivot, mirror, anim) in legs {
         let p = b.part(pivot, anim, 1.0);
-        b.cube_f(p, 0, (48.0, 21.0), min, [4.0, 11.0, 4.0], 0.0, mirror, NONE);
+        b.cube_f(p, 0, (48.0, 21.0), min, [4.0, 11.0, 4.0], g, mirror, NONE);
     }
     b.cube_f(
         STATIC_PART,
@@ -7747,7 +7773,7 @@ fn equine(donkey_ears: bool) -> Model {
         (42.0, 36.0),
         [-1.5, 0.0, 0.0],
         [3.0, 14.0, 4.0],
-        0.0,
+        g,
         false,
         &[Fold::rot([PI / 6.0, 0.0, 0.0], [0.0, -5.0, 2.0]), body],
     );
@@ -10929,5 +10955,35 @@ mod equine_scale_tests {
         assert!((scale(EntityModelKind::Horse) - base * 1.1).abs() < 1e-6);
         assert!((scale(EntityModelKind::Donkey) - base * 0.87).abs() < 1e-6);
         assert!((scale(EntityModelKind::Mule) - base * 0.92).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod horse_armor_tests {
+    use super::*;
+
+    /// M294 — `HORSE_ARMOR` is the horse at 0.1 (the body still 0.05): the
+    /// same parts and UVs, and the legs' boxes 0.2 wider.
+    #[test]
+    fn the_horse_armour_is_the_horse_inflated_a_tenth() {
+        let (base, shell) = (horse(), horse_armor());
+        assert_eq!(base.parts.len(), shell.parts.len());
+        assert_eq!(base.quads.len(), shell.quads.len());
+        assert_eq!(base.scale, shell.scale);
+        for (a, b) in base.quads.iter().zip(&shell.quads) {
+            assert_eq!((a.part, a.uv), (b.part, b.uv));
+        }
+        let width = |m: &Model, part: usize| {
+            let xs = m
+                .quads
+                .iter()
+                .filter(|q| q.part == part)
+                .flat_map(|q| q.pos.iter().map(|p| p[0]));
+            let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+            hi - lo
+        };
+        let leg = base.quads.iter().map(|q| q.part).max().unwrap();
+        assert!((width(&shell, leg) - width(&base, leg) - 0.2).abs() < 1e-4);
+        assert_eq!(undead_horse_armor().scale, equine(false).scale);
     }
 }

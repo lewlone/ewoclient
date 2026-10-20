@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 24;
+const EXPECTED_WITNESSES: usize = 25;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -427,6 +427,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         stretch: [1.0, 1.0],
         outline: None,
         powered: false,
+        body_armor: None,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -1321,6 +1322,7 @@ fn run_check(
     // can produce, and there must be plenty of them, rising over the stand.
     let burning = shot(EntityDraw {
         powered: false,
+        body_armor: None,
         on_fire: Some(rewo_gpu::entities::FireDraw {
             light: [1.0; 3],
             frames: fire_frames,
@@ -1843,6 +1845,73 @@ fn run_check(
             "silhouette heights horse / zombie horse / mule / donkey {heights:?} px; horse \
              / zombie {horse_ratio:.3} (want 1.1 +- 0.03), mule / donkey {mule_ratio:.3} \
              (want {want_mule:.3} +- 0.03)"
+        ),
+    ));
+
+    // m25 — M294: a horse in iron horse armour (`HORSE_BODY`'s
+    // `SimpleEquipmentLayer` over the 0.1 shell). Every pixel the armour
+    // changes must be a colour the jar's `horse_body/iron` sheet can produce
+    // (the gate's light is full), there must be plenty of them, and the sheet
+    // must be resident in the atlas. No horse armour drew until M294.
+    const IRON: &str = "horse_body/iron";
+    let iron_sheet: HashSet<u32> = baked
+        .equipment
+        .textures
+        .iter()
+        .find(|t| t.key == IRON)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut ast = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(3.2, 1.8, 2.2),
+        Vec3::new(0.0, 1.0, 0.0),
+    )?;
+    let resident = ast
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(IRON));
+    let mut ashot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        ast.wr.set_entities(&[d], ast.right, ast.up, 0.0);
+        ast.off.render(gpu, Some((&mut ast.wr, ast.vp)), &ov, BG)?;
+        ast.off.read_rgba(gpu)
+    };
+    let bare_horse = ashot(neutral_draw(EntityModelKind::Horse))?;
+    let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    layers[0] = Some((IRON, [1.0, 1.0, 1.0]));
+    let armoured = ashot(EntityDraw {
+        body_armor: Some(rewo_gpu::entities::ArmorPiece {
+            layers,
+            ..Default::default()
+        }),
+        ..neutral_draw(EntityModelKind::Horse)
+    })?;
+    ast.destroy(gpu);
+    let (mut armour_px, mut armour_bad) = (0usize, None);
+    for (a, b) in armoured
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bare_horse.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        armour_px += 1;
+        let c = pack(a[0], a[1], a[2]);
+        if armour_bad.is_none() && !explains(&iron_sheet, c) {
+            armour_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m25.a_horse_wears_its_body_armour_in_its_own_sheet",
+        resident && !iron_sheet.is_empty() && armour_px >= 300 && armour_bad.is_none(),
+        format!(
+            "{IRON} resident: {resident}; {armour_px} px changed by the armour (want >= \
+             300); first colour the sheet cannot produce: {:?}",
+            armour_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 
