@@ -3960,6 +3960,30 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M314 — the ghastling (2026-10-20)
+
+A baby happy ghast drew as the adult at Rewo's generic half size, on the
+adult's sheet. `HappyGhastRenderer` is an `AgeableMobRenderer`: a baby takes
+`HAPPY_GHAST_BABY`, `createBodyLayer(true, NONE)` (with the inner body)
+scaled 4.0 and then by `BABY_TRANSFORMER`'s 0.2375, on
+`happy_ghast_baby.png`, 64 x 64 under the same 64-unit UV space, with no
+further render scale (`getAgeScale`'s 0.2375 shrinks only the bounds). Its
+whole-sheet swap stayed unbaked on purpose (64 against the adult's 128), the
+deferral mobtexshot n4 recorded as "need the BABY model layer first".
+
+`HappyGhastBaby` is that model (`happy_ghast_mesh` builds both), chosen by
+the app from the synched baby flag (`baby_model_kind`, which M307's sulfur
+cube swap became), skipping the generic half scale and taking the 0.2375 age
+scale for its bounds. The adult lost the inner body vanilla gives only the
+baby (it never showed). n4 now asserts the sheet is baked at its own size
+for its own model while the swap stays skipped, and m8 counts a swap's
+sheets apart from a baby model's own. `mobshot` grades 279 views.
+
+**Unit test**: the ghastling is eleven boxes at 0.95, the adult ten at 4.0
+plus its ropes. **mobtexshot m41**: beside an adult it stands 20 rows against
+83 (ratio 0.241), every colour from the baby sheet (at half scale: 0.494, and
+m41 fails). **r169**: a staged baby happy ghast draws as the ghastling.
+
 ### M313 — the first-person sleeve, restored and by the mask (2026-10-20)
 
 **A regression of M310's, found by reading:** `hand.rs`'s `append_arm`
