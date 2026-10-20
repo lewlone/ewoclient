@@ -3971,6 +3971,22 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M325 — the baby zombie villager (2026-10-20)
+
+`ZombieVillagerRenderer` swaps in `BabyZombieVillagerModel` (the baby
+villager's 8 x 8 x 7 head with its hat, brim and nose; a body with its robe
+grown 0.1; two 2 x 5 x 2 arms on `animateZombieArms`, named as the adult's
+are; two short legs on the humanoid walk) on `zombie_villager_baby.png`. It
+was one of M317's scrambled swaps. `ZombieVillagerBaby` is that model,
+picked by `baby_model_kind`; like the adult it draws the base sheet only.
+`mobshot` grades 324 views; `MAX_SMALL` 26.
+
+**Unit test**: the ten boxes, both arms on the undead pose, and the head
+box's front at (7, 7)..(15, 15). **mobtexshot m51**: it draws (2,486 px)
+with no colour foreign to its sheet; on the adult's sheet it fails on
+`#557334`. **r180**: a staged, helmeted baby zombie villager draws as
+`BabyZombieVillagerModel`.
+
 ### M324 — the dolphin calf (2026-10-20)
 
 `DolphinRenderer` swaps in `BabyDolphinModel`: the adult's part tree at the
