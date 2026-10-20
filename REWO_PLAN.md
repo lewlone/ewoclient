@@ -2104,6 +2104,7 @@ this shape once.
 | M288 (2026-10-20) — an invulnerable wither draws shrunk in its invulnerable sheet | **r146** | — | — |
 | M289 (2026-10-20) — a dropped and a framed player head draw in their own skin | **r147** | — | — |
 | M290 (2026-10-20) — an armour stand's held player head draws in its own skin | **r148** | — | — |
+| M292 (2026-10-20) — the donkey's screen draws the donkey in its window | **r149** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3938,6 +3939,32 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M292 — the mount in the horse screen's window (2026-10-20)
+
+`AbstractMountInventoryScreen.extractBackground` draws the mount in its
+window: `extractEntityInInventoryFollowsMouse(graphics, xo + 26, yo + 18,
+xo + 78, yo + 70, 17, 0.25F, ...)`. M220 left the window empty because a
+single entity's draw was only built inside the world pass; since M278
+`EntityDraw` is `Copy`, so the world pass now copies this frame's draw of
+the mount (matched by its stable id and position) and poses it
+(`mount_preview_draw`: the body `180 + xAngle`, the pitch `-yAngle`, the box
+height over its scale with the scale then 1, the GUI's full light, no name,
+bar or outline) into the existing preview pass, which the GUI pass leaves
+alone on a mount screen. The preview geometry became
+`rewo_gpu::container::PreviewWindow` (`INVENTORY_PREVIEW`,
+`MOUNT_PREVIEW`) with `preview_{rect,angles,view_proj}_for`.
+
+Recorded: horse armour does not draw in the window (the preview pass holds
+no equipment textures), and the mount's legs keep their live swing (as
+vanilla's do; noted because the player preview's stand still).
+
+**capeshot p5**: a donkey through `mount_preview_draw` draws inside the
+mount window alone (294 px, none outside, centroid on the window's centre),
+read back as a donkey preview. **r149**: r84's donkey screen poses the
+donkey, read back as the preview's kind against the mount's entity type.
+r86 now counts only a player-kind preview in a container screen (it still
+holds at zero).
 
 ### M291 — the smithing table's cycling slot icons (2026-10-20)
 
