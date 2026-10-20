@@ -3984,6 +3984,31 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M339 — the horse foal, in its coat; the donkey foal's tail (2026-10-20)
+
+`HorseRenderer` swaps in `BabyHorseModel` (64 x 64: an 8 x 7 x 14 body with
+its tail, four 3 x 9 x 3 legs, the neck, head and ears) and picks
+`variant.baby` for a baby, by the same `equine::Variant` low byte (WRAP) as
+the adult. `HorseBaby` is that model; the brown foal is `horse_baby`'s base
+and the other six coats its variant sheets (`mob_variants::
+horse_baby_texture`), routed by a `vanilla_variant` arm as M338's llama.
+Two rest angles are `AbstractEquineModel.setupAnim`'s, not the layer's: the
+neck at π/6 (the layer says 0.6109) and the tail at `getTailXRotOffset()`
+(-π/2 here) + π/6 = -π/3 (the layer says -0.7418). The same rule found a
+mistake in M334: `BabyDonkeyModel`'s box-less `tail` part rests at -π/4 +
+π/6 = -π/12 under its box's -0.7418, and M334 had left that term out, so the
+donkey and mule foals' tails sat 15 degrees too high; fixed. Markings are not
+drawn, as the adult's are not. `mobshot` grades 372 views; `mobshot
+--variant-check` n1 counts 78 declared variant sheets.
+
+**Unit tests**: the foal's ten boxes, its neck and tail tilts read off their
+faces' normals (π/6 and π/3); the donkey foal's tail tilt 0.7418 + π/12 (the
+M334 value fails it); the foal coats' low byte, WRAP and keys. **mobtexshot
+m64**: the brown and the black foal each draw (2,670 px) from their own sheet
+and differ; with the adult's paths the black foal draws brown and fails on
+`#3d1907`. **r193**: a staged black foal draws as `BabyHorseModel` on a coat
+variant, through the app's routing.
+
 ### M338 — the baby llama, in its coat (2026-10-20)
 
 The first baby with coat variants. `LlamaRenderer` swaps in `BabyLlamaModel`
