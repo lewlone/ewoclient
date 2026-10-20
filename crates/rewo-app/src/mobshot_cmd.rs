@@ -327,8 +327,9 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     let mut checked = 0usize;
     // M271 — how many hidden-body renders were graded (fail-closed).
     let mut hidden_checked = 0usize;
-    // M278 — and outline renders.
+    // M278 — and outline renders; M279 — and outline-only ones.
     let mut outline_checked = 0usize;
+    let mut ghost_checked = 0usize;
 
     for kind in kinds {
         let quads = wr
@@ -494,6 +495,62 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
                      {core_changed} core changed (pass ran {ran})"
                 );
             }
+            // M279 — the same stand invisible AND glowing: its outline
+            // alone. Against the empty background, every changed pixel lies
+            // within 3 px of the visible stand's edge, the core (4+ px inside)
+            // shows the background, and the rim changed.
+            if kind == EntityModelKind::ArmorStand && view_name == "front" {
+                let ghost = EntityDraw {
+                    body_hidden: true,
+                    outline: Some([1.0, 0.0, 0.0]),
+                    ..neutral_draw(kind)
+                };
+                wr.set_entities(&[ghost], right, upv, 0.0);
+                off.render(gpu, Some((&mut wr, vp)), &draw, BG)?;
+                let only = off.read_rgba(gpu)?;
+                let ran = wr.outline_drawn();
+                ghost_checked += 1;
+                let (wi, hi) = (w as i32, h as i32);
+                let px = |b: &[u8], x: i32, y: i32| {
+                    let i = ((y * wi + x) * 4) as usize;
+                    [b[i], b[i + 1], b[i + 2]]
+                };
+                let inside = |x: i32, y: i32| px(&img, x, y) != px(&bg, x, y);
+                let edge_near = |x: i32, y: i32, r: i32| {
+                    let here = inside(x, y);
+                    (-r..=r).any(|dy| {
+                        (-r..=r).any(|dx| {
+                            let (u, v) = (x + dx, y + dy);
+                            u >= 0 && v >= 0 && u < wi && v < hi && inside(u, v) != here
+                        })
+                    })
+                };
+                let (mut changed, mut stray, mut core_body) = (0, 0, 0);
+                for y in 0..hi {
+                    for x in 0..wi {
+                        let c = px(&only, x, y) != px(&bg, x, y);
+                        changed += usize::from(c);
+                        if c && !edge_near(x, y, 3) {
+                            if inside(x, y) {
+                                core_body += 1;
+                            } else {
+                                stray += 1;
+                            }
+                        }
+                    }
+                }
+                if !(ran && changed > 0 && stray == 0 && core_body == 0) {
+                    failures.push(format!(
+                        "ArmorStand/front invisible and glowing: pass ran {ran}, {changed} px \
+                         changed, {stray} of them 4+ px from the edge outside and {core_body} \
+                         inside (want only the rim)"
+                    ));
+                }
+                println!(
+                    "[mobshot] outline alone: {changed} px changed, {stray} stray, {core_body} \
+                     inside (pass ran {ran})"
+                );
+            }
             if let Some(dir) = &args.out_dir {
                 save_png(
                     &img,
@@ -539,6 +596,11 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
 
     wr.destroy(gpu);
     off.destroy(gpu);
+    if ghost_checked != 1 {
+        failures.push(format!(
+            "graded {ghost_checked} outline-only renders, expected 1 (M279)"
+        ));
+    }
     if outline_checked != 1 {
         failures.push(format!(
             "graded {outline_checked} outline renders, expected 1 (M278)"

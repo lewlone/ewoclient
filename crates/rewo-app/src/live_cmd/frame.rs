@@ -1208,6 +1208,16 @@ impl LiveApp {
             {
                 rc.outline_frames += 1;
             }
+            // M279 — r138: the invisible glowing stand, hidden and outlined.
+            if state.world_renderer.outline_drawn()
+                && draws.iter().any(|d| {
+                    d.kind == rewo_gpu::mobs::EntityModelKind::ArmorStand
+                        && d.body_hidden
+                        && d.outline.is_some()
+                })
+            {
+                rc.ghost_outline_frames += 1;
+            }
             // M277 — r136: the ignited creeper swollen, and flashing.
             for d in draws
                 .iter()

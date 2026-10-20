@@ -214,6 +214,7 @@ pub struct WornHead<'a> {
     pub horizontal_scale: f32,
 }
 
+#[derive(Clone, Copy)]
 pub struct EntityDraw<'a> {
     /// Feet-center world position.
     pub pos: [f32; 3],
@@ -2350,6 +2351,48 @@ impl EntityPass {
                     Some(&mut sink),
                     &mut armor_sink,
                 );
+                // M279 — an invisible body that glows draws as its outline
+                // alone (`getRenderType`'s `appearsGlowing` arm,
+                // `RenderTypes.outline`): the model again with the body shown
+                // and no layers (they drew above), into scratch buffers, kept
+                // only as outline copies.
+                if let (true, Some(c)) = (d.body_hidden, d.outline) {
+                    let ghost = EntityDraw {
+                        body_hidden: false,
+                        armor: [None; 4],
+                        held: [None, None],
+                        worn_head: None,
+                        outline: None,
+                        ..*d
+                    };
+                    let (mut gv, mut gt, mut ge, mut gg, mut ga) =
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    let mut gsink = GlintSink {
+                        verts: &mut gg,
+                        offsets: glint_offsets,
+                        scale: crate::gui_item::GLINT_SCALE_ENTITY,
+                    };
+                    let mut gasink = GlintSink {
+                        verts: &mut ga,
+                        offsets: glint_offsets,
+                        scale: crate::gui_item::GLINT_SCALE_ARMOR,
+                    };
+                    self.emit_model(
+                        &mut gv,
+                        &mut gt,
+                        &mut ge,
+                        &ghost,
+                        model,
+                        time,
+                        &mut cem_state,
+                        Some(&mut gsink),
+                        &mut gasink,
+                    );
+                    outline_verts.extend(gv.iter().map(|v| Vertex {
+                        color: [c[0], c[1], c[2], 1.0],
+                        ..*v
+                    }));
+                }
                 continue;
             }
             let base = d.color;
