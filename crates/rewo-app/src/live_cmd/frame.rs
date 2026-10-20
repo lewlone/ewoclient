@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M344 — r198: the staged blue parrot, on a colour variant.
+            c.blue_parrot |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Parrot && d.variant != 0);
             // M343 — r197: the staged tame cat, wearing its blue collar.
             c.cat_collar |= draws
                 .iter()

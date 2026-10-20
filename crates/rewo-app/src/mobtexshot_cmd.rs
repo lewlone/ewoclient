@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 68;
+const EXPECTED_WITNESSES: usize = 69;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -4880,6 +4880,84 @@ fn run_check(
         format!(
             "{} (want >= 30, >= 80% blue-dominant, and 0 foreign without a collar)",
             cc_rows.join("; ")
+        ),
+    ));
+
+    // m69 — M344: the parrot draws its red-blue base, and on the blue
+    // colour's variant id (`parrot_texture(1)`) the blue sheet: each frame
+    // is producible by its own sheet, and the two differ.
+    let mut prst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.8, 0.8, -0.8),
+        Vec3::new(0.0, 0.35, 0.0),
+    )?;
+    prst.wr.set_entities(&[], prst.right, prst.up, 0.0);
+    prst.off
+        .render(gpu, Some((&mut prst.wr, prst.vp)), &ov, BG)?;
+    let pr_empty = prst.off.read_rgba(gpu)?;
+    let pr_blue_id =
+        rewo_data::mob_variants::variant_id(rewo_data::mob_variants::parrot_texture(1))
+            .unwrap_or(0);
+    let pr_base: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "parrot")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let pr_blue: HashSet<u32> = baked
+        .mob_variant_textures
+        .iter()
+        .find(|t| t.key == "parrot" && t.index == pr_blue_id)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut pr_rows = Vec::new();
+    let mut pr_frames = Vec::new();
+    let mut pr_ok = pr_blue_id != 0;
+    for (variant, colour, sheet) in [(0u16, "red-blue", pr_base), (pr_blue_id, "blue", pr_blue)] {
+        let d = EntityDraw {
+            variant,
+            ..neutral_draw(EntityModelKind::Parrot)
+        };
+        prst.wr.set_entities(&[d], prst.right, prst.up, 0.0);
+        prst.off
+            .render(gpu, Some((&mut prst.wr, prst.vp)), &ov, BG)?;
+        let frame = prst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pr_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        pr_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        pr_rows.push(format!(
+            "{colour}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+        pr_frames.push(frame);
+    }
+    prst.destroy(gpu);
+    let pr_diff = diff_bytes(&pr_frames[0], &pr_frames[1]);
+    pr_ok &= pr_diff > 0;
+    w.push(wit(
+        "m69.the_parrot_wears_its_colour",
+        pr_ok,
+        format!(
+            "blue variant id {pr_blue_id}; {}; {pr_diff} bytes differ (want >= 200 px \
+             each, none foreign, the colours different)",
+            pr_rows.join("; ")
         ),
     ));
 

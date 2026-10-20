@@ -153,6 +153,12 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M344 — Parrot — `Parrot.Variant` 0..4; `red_blue` (0) is the baked
+    // base (`ParrotRenderer.getVariantTexture`; GRAY's sheet is `grey`).
+    ("parrot", "entity/parrot/parrot_blue.png"),
+    ("parrot", "entity/parrot/parrot_green.png"),
+    ("parrot", "entity/parrot/parrot_yellow_blue.png"),
+    ("parrot", "entity/parrot/parrot_grey.png"),
     // Horse — `equine::Variant` 0..6; `brown` (3) is the baked base.
     ("horse", "entity/horse/horse_white.png"),
     ("horse", "entity/horse/horse_creamy.png"),
@@ -469,6 +475,22 @@ pub fn llama_texture(id: i32) -> &'static str {
     LLAMA_BY_ID[i]
 }
 
+/// M344 — `ParrotRenderer.getVariantTexture`, by `Parrot.Variant` id.
+const PARROT_BY_ID: &[&str] = &[
+    "entity/parrot/parrot_red_blue.png",
+    "entity/parrot/parrot_blue.png",
+    "entity/parrot/parrot_green.png",
+    "entity/parrot/parrot_yellow_blue.png",
+    "entity/parrot/parrot_grey.png",
+];
+
+/// M344 — `Parrot.Variant.BY_ID`: CLAMP, so a negative id is RED_BLUE and
+/// anything past the end GRAY.
+pub fn parrot_texture(id: i32) -> &'static str {
+    let i = id.clamp(0, PARROT_BY_ID.len() as i32 - 1) as usize;
+    PARROT_BY_ID[i]
+}
+
 /// M338 — a baby llama's texture: `getTextureLocation` picks `BABY_TEXTURES`
 /// for a baby, by the same variant id and the same CLAMP.
 pub fn llama_baby_texture(id: i32) -> &'static str {
@@ -525,6 +547,7 @@ mod tests {
             "entity/llama/llama_creamy.png",
             "entity/llama/llama_creamy_baby.png",
             "entity/horse/horse_brown.png",
+            "entity/parrot/parrot_red_blue.png",
             "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -697,6 +720,29 @@ mod tests {
             let id = variant_id(horse_baby_texture(v)).unwrap();
             let (key, _, _) = specs().find(|(_, i, _)| *i == id).unwrap();
             assert_eq!(key, "horse_baby");
+        }
+    }
+
+    /// M344 — the parrot's five colours by id, CLAMP, every one but red-blue
+    /// an alternate of `parrot`.
+    #[test]
+    fn a_parrot_wears_its_colour() {
+        for (id, c) in [
+            (-1, "red_blue"),
+            (0, "red_blue"),
+            (1, "blue"),
+            (2, "green"),
+            (3, "yellow_blue"),
+            (4, "grey"),
+            (9, "grey"),
+        ] {
+            assert_eq!(parrot_texture(id), format!("entity/parrot/parrot_{c}.png"));
+        }
+        assert_eq!(variant_id(parrot_texture(0)), Some(0));
+        for id in 1..=4 {
+            let v = variant_id(parrot_texture(id)).unwrap();
+            let (key, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+            assert_eq!(key, "parrot");
         }
     }
 }

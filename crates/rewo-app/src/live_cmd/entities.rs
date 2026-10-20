@@ -3795,7 +3795,8 @@ pub(crate) fn default_variant(
         | EntityModelKind::HorseBaby
         | EntityModelKind::Llama
         | EntityModelKind::LlamaBaby
-        | EntityModelKind::Axolotl => Some(0),
+        | EntityModelKind::Axolotl
+        | EntityModelKind::Parrot => Some(0),
         _ => None,
     }
 }
@@ -3860,6 +3861,11 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         }
         EntityModelKind::Llama => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
+                .unwrap_or(0)
+        }
+        // M344 — `ParrotRenderer.getVariantTexture`.
+        EntityModelKind::Parrot => {
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::parrot_texture(v))
                 .unwrap_or(0)
         }
         // M339 — the same low byte on the foal sheets.

@@ -484,6 +484,8 @@ pub(super) struct RenderCheck {
     pub(super) blue_collar: bool,
     /// M343 — r197: whether a tame cat drew with a blue collar.
     pub(super) cat_collar: bool,
+    /// M344 — r198: whether a parrot drew on a colour variant.
+    pub(super) blue_parrot: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1249,7 +1251,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 197;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 198;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1450,6 +1452,13 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M344 — r198: `render_check.py` summons a blue parrot; it must draw
+        // on a colour variant (index 20 INT, `mobtexshot m69`).
+        row(
+            "r198 a blue parrot drew on its colour's sheet",
+            self.blue_parrot,
+            format!("parrot on a colour variant seen: {}", self.blue_parrot),
         );
         // M343 — r197: `render_check.py` summons a tame cat with a blue
         // collar; it must draw with collar 11 (index 23 INT on the cat, after

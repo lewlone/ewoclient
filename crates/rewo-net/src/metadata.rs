@@ -248,6 +248,8 @@ pub struct EntityMeta {
     /// AbstractChestedHorse extends AbstractHorse`: 18 flags, 19 chest, 20
     /// `DATA_STRENGTH_ID`, 21 the variant.
     pub int21: Option<i32>,
+    /// M344 — Index 20 **INT**: `Parrot.DATA_VARIANT_ID`.
+    pub int20: Option<i32>,
     /// M343 — Index 23 **INT**: `Cat.DATA_COLLAR_COLOR` (`TamableAnimal` 18
     /// and 19, then the cat's variant 20, `IS_LYING` 21, `RELAX_STATE_ONE`
     /// 22, the collar 23). The wolf's variant is index 23 too, with its own
@@ -596,6 +598,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (20, 8) => meta.bool20 = r.u8().ok().map(|b| b != 0),
             (20, 2) => meta.long20 = r.varlong().ok(),
             (20, 21) => meta.cat_variant = r.varint().ok(),
+            (20, 1) => meta.int20 = r.varint().ok(),
             (21, 1) => meta.int21 = r.varint().ok(),
             (23, 1) => meta.int23 = r.varint().ok(),
             (23, 25) => meta.wolf_variant = r.varint().ok(),

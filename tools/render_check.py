@@ -271,6 +271,8 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M344 -- r198. A blue parrot (Variant 1).
+    "summon minecraft:parrot ~78 ~ ~21 {NoAI:1b,Silent:1b,Variant:1};"
     # M343 -- r197. A tame cat with a blue collar.
     "summon minecraft:cat ~75 ~ ~21 {NoAI:1b,Silent:1b,"
     "Owner:\"00000000-0000-4000-8000-000000000343\",CollarColor:11b};"
