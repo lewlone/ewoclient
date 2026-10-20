@@ -3949,6 +3949,32 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M302 — the happy ghast's harness (2026-10-20)
+
+`HappyGhastRenderer`'s `HAPPY_GHAST_BODY` layer over `HappyGhastHarnessModel`
+(`createHarnessLayer(false)`, 64 x 64, scaled 4.0 like the ghast): the harness
+box on the body's and the goggles (inflated 0.15), which `setupAnim` lowers to
+`y = 14` while ridden and raises to `y = 9`, tilted -45 degrees, otherwise.
+`happy_ghast_harness(ridden)` builds both on the ghast's one static part;
+`MobModel::body_shell_ridden` holds the goggles-down twin, picked by
+`EntityDraw::ridden`. The harness box coincides with the body's, so it is
+lifted 0.002 px as M301's panel was.
+
+The sixteen harness colours (66 x 66 with their gutters) pushed eight
+chest-boat woods out of the shelf region, so the atlas grew 256 rows
+(`ATLAS_H` 3136; the pools below slid down; capeshot f2 has the new term).
+
+Recorded: the ropes layer (`happy_ghast_ropes`, drawn while the ghast holds
+a leash) is not drawn; a baby happy ghast wears the adult harness at the
+adult size, as Rewo draws babies.
+
+**Unit test**: the harness is twelve quads on the static part at the ghast's
+scale, and only the goggles move when ridden. **mobtexshot m33**: a white
+harness changes 4,356 px, every colour from the jar's
+`happy_ghast_body/white_harness`, and riding moves the goggles (a mutant that
+never lowers them fails it). **r158**: a staged happy ghast in a white harness
+draws harnessed.
+
 ### M301 — the nautilus's armour and saddle (2026-10-20)
 
 `NautilusRenderer` and `ZombieNautilusRenderer` add `NAUTILUS_BODY` over
