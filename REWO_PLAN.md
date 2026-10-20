@@ -3940,6 +3940,30 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M293 — the equines' model scales (2026-10-20)
+
+Found while scoping horse armour: `LayerDefinitions` builds
+`ModelLayers.HORSE` as `horseBodyLayer.apply(livingHorseScale)`
+(`MeshTransformer.scaling(1.1F)`) and `DONKEY` / `MULE` as
+`DonkeyModel.createBodyLayer(0.87F)` / `(0.92F)`; only the skeleton and zombie
+horses take the bare body layer. Rewo drew all five at 1.0, so every horse
+was a tenth too small and donkeys and mules too big. `MeshTransformer.scaling`
+scales the root poses and lifts them `24.016 · (1 - s)`, i.e. about the
+feet, which is what the model's own `scale` does, so the fix is the three
+factors on the built models (`HORSE_SCALE`, `DONKEY_SCALE`, `MULE_SCALE`).
+The hitbox, the rider's seat and the nametag are the entity's and do not
+move.
+
+Recorded: Rewo draws baby mobs at the adult mesh's size (only the M175
+sheet swaps), so a foal is still wrong; vanilla's baby layers carry no
+living scale.
+
+**Unit test**: the four factors against the undead horses' 1.0. **mobtexshot
+m24**: side-on from 9 blocks, the horse's silhouette is 1.102 times the zombie
+horse's (same mesh, opaque sheet; want 1.1) and the mule's 1.064 times the
+donkey's (want 0.92 / 0.87 = 1.057). The skeleton horse was the first
+reference and read 1.161: its sheet is see-through between the bones.
+
 ### M292 — the mount in the horse screen's window (2026-10-20)
 
 `AbstractMountInventoryScreen.extractBackground` draws the mount in its
