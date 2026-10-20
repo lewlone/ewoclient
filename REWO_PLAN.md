@@ -2111,6 +2111,7 @@ this shape once.
 | M297 (2026-10-20) — a chested llama draws in its red carpet | **r153** | — | — |
 | M298 (2026-10-20) — a saddled pig and a saddled strider draw their saddles | **r154** | — | — |
 | M299 (2026-10-20) — a wolf draws in its armour | **r155** | — | — |
+| M300 (2026-10-20) — a saddled camel draws its saddle, and its reins while ridden | **r156** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3945,6 +3946,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M300 — the camel's saddle (2026-10-20)
+
+`CamelRenderer`'s `CAMEL_SADDLE` layer over `CamelSaddleModel`: the camel's
+mesh plus the saddle on the body (three boxes inflated 0.05), the bridle on
+the head (three at 0.05, the two bit pieces bare) and the reins (three
+zero-thickness boxes, `visible = isRidden`), on a 128 x 128 sheet.
+`camel_with` adds them on Rewo's flattened root (with the body fold) and the
+named head part; `camel_saddle` splits the reins off for M295's
+ridden-only list.
+
+Recorded: the camel husk's own saddle layer (`CAMEL_HUSK_SADDLE`) is not
+drawn.
+
+**Unit test**: the saddle is the camel plus eight boxes, the reins three
+two-faced boxes on the head part. **mobtexshot m31**: 663 px of saddle and
+bridle and 43 more of reins when ridden, every colour from the jar's
+`camel_saddle/saddle`. **r156**: r89's saddled camel draws its saddle, with
+the reins on the frames the bot rides it.
 
 ### M299 — wolf armour, and the atlas's edge gutter (2026-10-20)
 
