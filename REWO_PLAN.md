@@ -3962,6 +3962,28 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M316 — the polar bear cub (2026-10-20)
+
+`PolarBearRenderer` swaps in `BabyPolarBearModel` (`POLAR_BEAR_BABY`: the
+body, a head with snout and ears, four 3-px legs) on `polarbear_baby.png`,
+64 x 64, at its own size. `PolarBearBaby` is that model, picked by
+`baby_model_kind`, its head looking and its legs on the quadruped walk; like
+Rewo's adult bear it does not rear. `baby_scales` gives it no render scale and
+the default half bounds. `mobshot` grades 285 views; in m5's crowd the cub is
+the fourteenth too-small kind (`MAX_SMALL` 14), and the adult bear is m6's
+ninth ambiguous kind (`MAX_AMBIGUOUS` 9): the cub's sheet is the same white
+fur.
+
+**What the witnesses can and cannot see.** The unit test pins the mesh box
+for box (nine boxes, the head and four leg animations). mobtexshot m43 proves
+the cub draws 752 px with no colour its sheet cannot produce, but it cannot
+tell the cub's sheet from the adult's (their palettes overlap): the cub mesh on
+the adult sheet passes m43 and is caught only incidentally, by m8 (the cub sheet
+then stops being a model's texture). A first version also compared the cub
+against a half-size adult; a wrong mesh on the cub sheet differed by its
+cut-outs and passed, so the clause was dropped. **r171**: a staged cub draws
+as its own model.
+
 ### M315 — the baby turtle (2026-10-20)
 
 The second of the deferred baby models (M314's list): `TurtleRenderer` is an
