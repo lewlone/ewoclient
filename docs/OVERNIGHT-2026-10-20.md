@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 144 Rewo milestones, M194 to M337, in about 311 commits on
+- **What happened**: 145 Rewo milestones, M194 to M338, in about 313 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`cd556190`): 4482 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 191 of
-  191 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`86216028`): 4484 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 192 of
+  192 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -454,6 +454,7 @@ released.
 - **M335**: camel calves too, on their own walk animation.
 - **M336**: rabbit kits too, on their own hop.
 - **M337**: goat kids look right (their skins were scrambled since M175).
+- **M338**: baby llamas are their own model and wear their own coat (creamy, white, brown or gray).
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -515,6 +516,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `86216028` | **M338** — the baby llama on `BabyLlamaModel` in its coat's baby sheet, the first baby with coat variants (`llama_baby_texture`, routed by `vanilla_variant`); two unit tests, mobshot 369 views, mobtexshot **m63** and render-check **r192**. |
 | `cd556190` | **M337** — the goat kid on `BabyGoatModel` (one of M175's scrambled swaps), its head on a new yaw-only look at `setupAnim`'s π/8; a unit test, mobshot 366 views, mobtexshot **m62** and render-check **r191**. |
 | `2159b9c5` | **M336** — the rabbit kit on `BabyRabbitModel`, hopping on `BABY_RABBIT_HOP`; a unit test, mobshot 363 views, mobtexshot **m61** (which cannot tell the kit's sheet from the adult's) and render-check **r190**. |
 | `74e100a2` | **M335** — the camel calf on `BabyCamelModel`, walking on `CAMEL_BABY_WALK`; a unit test, mobshot 360 views, mobtexshot **m60** and render-check **r189**. |
@@ -903,6 +905,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M338: **4,484 tests passed, 0 failed; gates 51/51** (mobtexshot 63, mobshot 369 views; the chain's first sweep read 50/51 on `mobshot --variant-check` n1, whose pinned count of declared variant sheets was still 69 against the three new coats' 72, fixed and re-swept); render check **192/192** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M337: **4,482 tests passed, 0 failed; gates 51/51** (mobtexshot 62, mobshot 366 views); render check **191/191** on two runs; clippy (both) and `cargo fmt --check` clean. The chain paused 28 min (17:37-18:05) for another project's G4 run, per the shared-PC rule.
 - After M336: **4,481 tests passed, 0 failed; gates 51/51** (mobtexshot 61, mobshot 363 views); render check **190/190** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M335: **4,480 tests passed, 0 failed; gates 51/51** (mobtexshot 60, mobshot 360 views); render check **189/189** on two runs; clippy (both) and `cargo fmt --check` clean. The chain paused about 31 min (16:38-17:09) for another project's G4 run, per the shared-PC rule.
@@ -1121,8 +1124,9 @@ released.
   camel and nautilus matched; runs 1 and 3 passed. It reads the seat and
   the marker on different ticks while the horse can still be moving.
 - **Baby models still to do** (the sweep M314-M337 covered the
-  rest): kittens (cat), puppies (wolf), baby llamas, horses and axolotls
-  need baby-keyed variant sheets first (their adults draw one of several
+  rest): kittens (cat), puppies (wolf), baby horses and axolotls need
+  baby-keyed variant sheets (M338 did the llama's; the others follow its
+  shape) (their adults draw one of several
   coats through `vanilla_variant`, and the baby sheets are separate files);
   the baby armadillo needs its own keyframe rigs (`BabyArmadilloAnimation`)
   and the shell swap. Until then those draw as half-size adults, and the

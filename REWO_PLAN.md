@@ -3983,6 +3983,29 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M338 — the baby llama, in its coat (2026-10-20)
+
+The first baby with coat variants. `LlamaRenderer` swaps in `BabyLlamaModel`
+(64 x 64: the head with its muzzle and ears, looking; an 8 x 6 x 13 body
+authored level; four 3 x 8 x 3 legs on `LlamaModel`'s walk, which is the
+quadruped's leg for leg) and picks `BABY_TEXTURES` for a baby, by the same
+`Llama.Variant` id as the adult's `TEXTURES`. `LlamaBaby` is that model; its
+chests are left out, since `hasChest` is set only for an adult. The creamy
+kit's sheet is `llama_baby`'s base, and the white, brown and gray kits are
+its variant sheets (`mob_variants::llama_baby_texture`, CLAMP like the
+adult's); `vanilla_variant` already receives the swapped kind, so a
+`LlamaBaby` arm routes the id to them. The other variant families (cat,
+wolf, horse, axolotl) can follow the same shape. `mobshot` grades 369 views.
+The m5 crowd crossed 130 kinds (a 14th row) and reshuffled within its pins.
+
+**Unit tests**: nine boxes and no chested part; the baby coats' ids, CLAMP,
+and keys. **mobtexshot m63**: the creamy and the gray kit (the gray coat's
+variant id) each draw (3,151 px) with no colour foreign to their own sheet,
+and the two frames differ; with `llama_baby_texture` returning the adult's
+paths the gray kit draws creamy and fails on `#cfbe9b`. **r192**: a staged
+gray baby llama draws as `BabyLlamaModel` on a coat variant, through the
+app's routing.
+
 ### M337 — the goat kid (2026-10-20)
 
 `GoatRenderer` swaps in `BabyGoatModel` (64 x 64: four 2 x 5 x 2 legs, a
