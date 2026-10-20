@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 28;
+const EXPECTED_WITNESSES: usize = 29;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2140,6 +2140,85 @@ fn run_check(
              (want >= 300), first colour its sheet cannot produce {:?}",
             chest_bad.map(|c| format!("#{c:06x}")),
             carpet_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m29 — M298: a saddled pig (`PIG_SADDLE` over the pig at 0.5) and a
+    // saddled strider (`STRIDER_SADDLE` over its own mesh): each adds pixels
+    // from its own jar saddle sheet alone. Neither drew until M298.
+    let mut saddle_rows = Vec::new();
+    for (kind, key, eye, at) in [
+        (
+            EntityModelKind::Pig,
+            "pig_saddle/saddle",
+            Vec3::new(1.8, 1.5, 1.0),
+            Vec3::new(0.0, 0.6, 0.0),
+        ),
+        (
+            EntityModelKind::Strider,
+            "strider_saddle/saddle",
+            Vec3::new(2.2, 2.4, 1.4),
+            Vec3::new(0.0, 1.2, 0.0),
+        ),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .equipment
+            .textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let mut pst = stage_from(gpu, baked, cw, ch, eye, at)?;
+        let resident = pst
+            .wr
+            .entity_pass()
+            .is_some_and(|p| p.armor_sheet_resident(key));
+        let mut pshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            pst.wr.set_entities(&[d], pst.right, pst.up, 0.0);
+            pst.off.render(gpu, Some((&mut pst.wr, pst.vp)), &ov, BG)?;
+            pst.off.read_rgba(gpu)
+        };
+        let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+        layers[0] = Some((key, [1.0, 1.0, 1.0]));
+        let bare = pshot(neutral_draw(kind))?;
+        let saddled = pshot(EntityDraw {
+            saddle: Some(rewo_gpu::entities::ArmorPiece {
+                layers,
+                ..Default::default()
+            }),
+            ..neutral_draw(kind)
+        })?;
+        pst.destroy(gpu);
+        let (mut n, mut bad) = (0usize, None);
+        for (a, b) in saddled
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(bare.as_chunks::<4>().0)
+        {
+            if a[..3] == b[..3] {
+                continue;
+            }
+            n += 1;
+            let c = pack(a[0], a[1], a[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        saddle_rows.push((key, resident, !sheet.is_empty(), n, bad));
+    }
+    w.push(wit(
+        "m29.a_pig_and_a_strider_wear_their_saddles_in_their_own_sheets",
+        saddle_rows
+            .iter()
+            .all(|&(_, resident, sheet, n, bad)| resident && sheet && n >= 100 && bad.is_none()),
+        format!(
+            "(sheet, resident, sheet read, px added (want >= 100), first colour it cannot \
+             produce): {:?}",
+            saddle_rows
+                .iter()
+                .map(|(k, r, s, n, b)| (k, r, s, n, b.map(|c| format!("#{c:06x}"))))
+                .collect::<Vec<_>>()
         ),
     ));
 

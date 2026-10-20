@@ -3311,6 +3311,9 @@ pub(crate) fn saddle_piece<'a>(
         EntityModelKind::Mule => ArmorLayer::MuleSaddle,
         EntityModelKind::SkeletonHorse => ArmorLayer::SkeletonHorseSaddle,
         EntityModelKind::ZombieHorse => ArmorLayer::ZombieHorseSaddle,
+        // M298 — `PIG_SADDLE`, `STRIDER_SADDLE`.
+        EntityModelKind::Pig => ArmorLayer::PigSaddle,
+        EntityModelKind::Strider => ArmorLayer::StriderSaddle,
         _ => return None,
     };
     let piece = session.world.entities.saddle_piece(id)?;

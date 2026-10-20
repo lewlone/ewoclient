@@ -377,6 +377,8 @@ pub(super) struct RenderCheck {
     /// M297 — r153: frames on which the staged llama drew chested in its
     /// red carpet.
     pub(super) llama_decor_frames: usize,
+    /// M298 — r154: frames on which the staged pig and strider drew saddled.
+    pub(super) small_saddle_frames: [usize; 2],
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1142,7 +1144,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 153;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 154;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1342,6 +1344,18 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M298 — r154: `render_check.py` summons a saddled pig and a saddled
+        // strider; each saddle slot must reach the draw as its own layer, the
+        // sheet resident (`mobtexshot m29` checks the pixels). Neither saddle
+        // drew until M298.
+        row(
+            "r154 a saddled pig and a saddled strider drew their saddles",
+            self.small_saddle_frames.iter().all(|&n| n >= 1),
+            format!(
+                "{} frames drew the pig's, {} the strider's",
+                self.small_saddle_frames[0], self.small_saddle_frames[1]
             ),
         );
         // M297 — r153: `render_check.py` summons a chested llama in a red

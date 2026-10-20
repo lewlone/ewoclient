@@ -948,6 +948,34 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M298 — r154: the staged saddled pig and strider.
+            for (kind, key, slot) in [
+                (
+                    rewo_gpu::mobs::EntityModelKind::Pig,
+                    "pig_saddle/saddle",
+                    0usize,
+                ),
+                (
+                    rewo_gpu::mobs::EntityModelKind::Strider,
+                    "strider_saddle/saddle",
+                    1,
+                ),
+            ] {
+                if draws.iter().any(|d| {
+                    d.kind == kind
+                        && d.saddle.is_some_and(|p| {
+                            p.layers.iter().flatten().any(|(k, _)| {
+                                *k == key
+                                    && state
+                                        .world_renderer
+                                        .entity_pass()
+                                        .is_some_and(|e| e.armor_sheet_resident(k))
+                            })
+                        })
+                }) {
+                    c.small_saddle_frames[slot] += 1;
+                }
+            }
             // M297 — r153: the staged llama, chested, in its red carpet.
             if draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::Llama

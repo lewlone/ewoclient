@@ -236,6 +236,11 @@ PRECMD = (
     # M297 -- r153. A chested llama in a red carpet, beside it.
     "summon minecraft:llama ~-14 ~ ~-8 {NoAI:1b,Tame:1b,Silent:1b,ChestedHorse:1b,"
     "equipment:{body:{id:\"minecraft:red_carpet\",count:1}}};"
+    # M298 -- r154. A saddled pig and a saddled strider, clear of the lanes.
+    "summon minecraft:pig ~-10 ~ ~-8 {NoAI:1b,Silent:1b,"
+    "equipment:{saddle:{id:\"minecraft:saddle\",count:1}}};"
+    "summon minecraft:strider ~-17 ~ ~-9 {NoAI:1b,Silent:1b,"
+    "equipment:{saddle:{id:\"minecraft:saddle\",count:1}}};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

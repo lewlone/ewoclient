@@ -1334,6 +1334,10 @@ pub struct MobModel {
     /// placed by the worn layer's slot). Empty for every other kind.
     saddle_shell: Vec<GpuQuad>,
     saddle_reins: Vec<GpuQuad>,
+    /// M298 — the saddle shell is the body's own mesh (the strider's), so
+    /// it lies exactly on the body: it rides the trim range (`EQUAL`, no
+    /// write, after the solid one) as M68's coplanar layers do.
+    saddle_coplanar: bool,
     /// M286 — the breeze's wind funnel (its texture slot 1), UVs in `0..1`
     /// of its own sheet: `BreezeWindLayer` draws it every frame. Empty for
     /// every other kind (and in the face-label mode, which keeps it in
@@ -1773,6 +1777,17 @@ impl EntityPass {
             }
             .filter(|_| !debug_tex)
             .map(|(ears, scale)| mobs::equine_saddle(ears, scale))
+            // M298 — the pig's (the pig at 0.5) and the strider's (its own
+            // mesh), with no reins.
+            .or_else(|| match def.kind {
+                EntityModelKind::Pig if !debug_tex => {
+                    Some((mobs::pig_saddle(), mobs::empty_model()))
+                }
+                EntityModelKind::Strider if !debug_tex => {
+                    Some((mobs::strider_saddle(), mobs::empty_model()))
+                }
+                _ => None,
+            })
             .filter(|(saddle, _)| saddle.parts.len() == m.parts.len())
             .map(|(saddle, reins)| {
                 (
@@ -1786,6 +1801,7 @@ impl EntityPass {
                 body_shell,
                 saddle_shell,
                 saddle_reins,
+                saddle_coplanar: def.kind == EntityModelKind::Strider,
                 swirl,
                 swirl_sheet,
                 wind,
@@ -3773,9 +3789,17 @@ impl EntityPass {
         // the armour below is. M295: the saddle the same way, with its reins
         // while ridden.
         let reins: &[GpuQuad] = if d.ridden { &model.saddle_reins } else { &[] };
-        for (piece, shell) in [
-            (d.body_armor, model.body_shell.iter().chain([].iter())),
-            (d.saddle, model.saddle_shell.iter().chain(reins.iter())),
+        for (piece, shell, coplanar) in [
+            (
+                d.body_armor,
+                model.body_shell.iter().chain([].iter()),
+                false,
+            ),
+            (
+                d.saddle,
+                model.saddle_shell.iter().chain(reins.iter()),
+                model.saddle_coplanar,
+            ),
         ] {
             let Some(piece) = piece else { continue };
             for (key, tint) in piece.layers.iter().flatten() {
@@ -3788,13 +3812,14 @@ impl EntityPass {
                     if model.parts[q.part as usize].show == mobs::Show::Chested && !d.chested {
                         continue;
                     }
-                    if verts.len() + 6 > MAX_VERTS {
+                    let out: &mut Vec<Vertex> = if coplanar { trim_verts } else { verts };
+                    if out.len() + 6 > MAX_VERTS {
                         return;
                     }
                     let p4 = place(q);
                     let c = [q.shade * tint[0], q.shade * tint[1], q.shade * tint[2]];
                     for &i in &[0usize, 1, 2, 0, 2, 3] {
-                        verts.push(Vertex {
+                        out.push(Vertex {
                             pos: p4[i],
                             uv: [
                                 (ax as f32 + q.uv[i][0]) / ATLAS_W as f32,

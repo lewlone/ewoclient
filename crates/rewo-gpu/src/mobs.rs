@@ -3305,6 +3305,22 @@ fn quadruped_legs(
     mirror_left: bool,
     mirror_right: bool,
 ) {
+    quadruped_legs_g(b, tex, uv, leg, x, mirror_left, mirror_right, 0.0);
+}
+
+/// [`quadruped_legs`] at a deformation (M298: `QuadrupedModel.createLegs(...,
+/// g)`).
+#[allow(clippy::too_many_arguments)]
+fn quadruped_legs_g(
+    b: &mut ModelBuilder,
+    tex: usize,
+    uv: (f32, f32),
+    leg: f32,
+    x: f32,
+    mirror_left: bool,
+    mirror_right: bool,
+    g: f32,
+) {
     let y = 24.0 - leg;
     let legs = [
         ([-x, y, 7.0], Anim::QuadHindRight, mirror_right),
@@ -3320,7 +3336,7 @@ fn quadruped_legs(
             uv,
             [-2.0, 0.0, -2.0],
             [4.0, leg, 4.0],
-            0.0,
+            g,
             mirror,
             NONE,
         );
@@ -3411,22 +3427,49 @@ fn cow() -> Model {
 /// `PigModel`: generic quadruped (legSize 6, left legs mirrored) with the
 /// snouted head.
 fn pig() -> Model {
+    pig_with(0.0)
+}
+
+/// M298 — `ModelLayers.PIG_SADDLE`: `PigModel.createBodyLayer(new
+/// CubeDeformation(0.5F))`, `PigRenderer`'s `PIG_SADDLE` equipment layer
+/// shell (whatever the pig's variant model). The same parts as [`pig`].
+pub fn pig_saddle() -> Model {
+    pig_with(0.5)
+}
+
+/// M298 — `StriderRenderer`'s `STRIDER_SADDLE` layer draws over
+/// `ModelLayers.STRIDER_SADDLE`, which is the strider's own layer.
+pub fn strider_saddle() -> Model {
+    strider()
+}
+
+/// M298 — a model with no boxes (a saddle with no reins).
+pub fn empty_model() -> Model {
+    ModelBuilder::new().finish(1.0)
+}
+
+/// `PigModel.createBasePigModel(g)`: `g` on every box.
+fn pig_with(g: f32) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 12.0, -6.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_f(
         head,
         0,
         (0.0, 0.0),
         [-4.0, -4.0, -8.0],
         [8.0, 8.0, 8.0],
+        g,
+        false,
         NONE,
     );
-    b.cube(
+    b.cube_f(
         head,
         0,
         (16.0, 16.0),
         [-2.0, 0.0, -9.0],
         [4.0, 3.0, 1.0],
+        g,
+        false,
         NONE,
     );
     let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 11.0, 2.0]);
@@ -3436,11 +3479,11 @@ fn pig() -> Model {
         (28.0, 8.0),
         [-5.0, -10.0, -7.0],
         [10.0, 16.0, 8.0],
-        0.0,
+        g,
         false,
         &[body],
     );
-    quadruped_legs(&mut b, 0, (0.0, 16.0), 6.0, 3.0, true, false);
+    quadruped_legs_g(&mut b, 0, (0.0, 16.0), 6.0, 3.0, true, false, g);
     b.finish(1.0)
 }
 
@@ -11192,5 +11235,34 @@ mod llama_decor_tests {
             hi - lo
         };
         assert!((width(&decor) - width(&base) - 1.0).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod pig_saddle_tests {
+    use super::*;
+
+    /// M298 — the pig's saddle shell is the pig at 0.5 (same parts and UVs,
+    /// the body box one wider); the strider's is the strider.
+    #[test]
+    fn the_pig_saddle_is_the_pig_inflated_half() {
+        let (base, shell) = (pig(), pig_saddle());
+        assert_eq!(base.parts.len(), shell.parts.len());
+        assert_eq!(base.quads.len(), shell.quads.len());
+        for (a, b) in base.quads.iter().zip(&shell.quads) {
+            assert_eq!((a.part, a.uv), (b.part, b.uv));
+        }
+        let leg = base.quads.iter().map(|q| q.part).max().unwrap();
+        let width = |m: &Model| {
+            let xs = m
+                .quads
+                .iter()
+                .filter(|q| q.part == leg)
+                .flat_map(|q| q.pos.iter().map(|p| p[0]));
+            let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+            hi - lo
+        };
+        assert!((width(&shell) - width(&base) - 1.0).abs() < 1e-4);
+        assert_eq!(strider_saddle().quads.len(), strider().quads.len());
     }
 }
