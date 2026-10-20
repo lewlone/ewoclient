@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 115 Rewo milestones, M194 to M308, in about 252 commits on
+- **What happened**: 116 Rewo milestones, M194 to M309, in about 254 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`12deb50c`): 4,452 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 164 of
-  164 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`cf6de374`): 4,455 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 165 of
+  165 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -405,6 +405,9 @@ released.
 - **M308**: players without a skin (everyone on an offline server) wear
   vanilla's default skins, chosen by their UUID as vanilla does, instead of
   all being Steve; mannequins are drawn (as slim Alex by default).
+- **M309**: a mannequin given a profile wears that profile's skin: its real
+  skin when the profile carries one, otherwise the default skin vanilla
+  derives from the name.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -466,6 +469,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `cf6de374` | **M309** — a mannequin's own profile: the `RESOLVABLE_PROFILE` metadata value read whole, `avatar_skin` (real textures, else the default of its id or its name's offline UUID, with a hand-rolled MD5); unit tests and render-check **r165**. |
 | `12deb50c` | **M308** — default skins by profile id (`DefaultPlayerSkin.get`: the jar's eighteen, served from memory through the skin loader's own path) for skinless players and the local player; the mannequin as an avatar; unit tests and render-check **r164**. |
 | `473285e2` | **M307** — the sulfur cube: adult and small (baby) kinds on the translucent range, its scale and offset folded into the model, the atlas 256 rows taller; unit tests, mobshot 276 views, mobtexshot **m37** and render-check **r163**. |
 | `26864a9a` | **M306** — the `entityTranslucent` range (gamma-space blend after the wind, `entity.frag` with `GAMMA_OUT`, sorted, depth written), `Model::translucent_from`, the slime's inner body; mobtexshot's blend oracle reads the pixel beneath; a unit test, mobtexshot **m36** and render-check **r162**. |
@@ -825,6 +829,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M309: **4,455 tests, 5 failed in the chain's run**: `rewo-net` `srv::tests`' loopback TCP cases panicked on their fixture's `expect("a port free for both UDP and TCP")` while other jobs held ports (the flake recorded at M285); alone they passed 34/34 three times. Gates 51/51; render check **165/165** on two runs (r165 on 26,277 and 24,433 frames); clippy (both) and `cargo fmt --check` clean.
 - After M308: **4,452 tests passed, 0 failed; gates 51/51**; render check **164/164** on two runs (r164 on 27,059 and 25,660 frames); clippy (both) and `cargo fmt --check` clean.
 - After M307: **4,450 tests passed, 0 failed; gates 51/51** (mobtexshot 37, mobshot 276 views, the ETF fixture packing); render check **163/163** on two runs (both sulfur cube models seen on both); clippy (both) and `cargo fmt --check` clean.
 - After M306: **4,448 tests passed, 0 failed; gates 51/51** after the emissive gate learned translucency (it read 50/51 first: the slime counted as glowing at light zero); render check **162/162** on two runs (r162 on 16,165 and 15,455 frames); clippy (both) and `cargo fmt --check` clean.
@@ -931,8 +936,9 @@ released.
   and a worn item shows no enchantment glint. The
   entity atlas's large band is a 64-slot ring, not an LRU: past 64 distinct
   big textures on screen at once it would recycle slots mid-frame.
-- A mannequin's explicit profile (a named skin), hidden layers, pose and
-  description label are not drawn (it wears its default skin); the sulfur
+- A mannequin's hidden layers, pose and description label are not drawn,
+  and a bare name is not resolved to the account's real skin (Rewo phones
+  nothing, so it shows the name's default skin); the sulfur
   cube's swallowed block, fuse swell and squish are not drawn, and the happy ghast's leash ropes
   (`RopesLayer`) are not drawn. Wolf
   armour's damage cracks are not drawn (no item damage on worn pieces).

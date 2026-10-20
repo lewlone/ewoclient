@@ -3956,6 +3956,33 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M309 — a mannequin's own profile (2026-10-20)
+
+`Mannequin.DATA_PROFILE` is index 17 with `RESOLVABLE_PROFILE` (serializer
+41, the mannequin's alone), which the metadata parser could not size, so a
+mannequin's parse stopped there. `item_stack::read_resolvable_profile` walks
+the whole value (either game profile or partial, properties, then the
+`PlayerSkin.Patch`: body, cape and elytra texture ids and the model), and
+`EntityTable` keeps it per mannequin (`avatar_profiles`, cleared on
+removal).
+
+`avatar_skin` is `ClientMannequin.updateSkin`'s lookup with every network
+resolution removed: a `textures` property is a real skin, fetched like a
+player's (only from the allowed host); otherwise the default skin of the
+profile's id, where a profile known only by name is keyed by its offline
+UUID (`UUIDUtil.createOfflinePlayerUUID`: a version-3 MD5 UUID; MD5 is
+hand-rolled in `rewo-net`, with RFC test vectors) and the empty profile by
+the nil UUID; a patch's body texture naming a default skin, and its model,
+override. A changed default replaces the queued one. (Vanilla would resolve a
+bare name through Mojang's services; Rewo, which phones nothing, shows what
+vanilla shows when that lookup fails.)
+
+**Unit tests**: MD5's vectors and two offline UUIDs (Notch's published one);
+the profile parse walks the value whole and the next entry still reads;
+`avatar_skin` over none, a name, an id, a patch and a textures property.
+**r165**: a mannequin staged with `profile:"RewoDummyA"` (no such account)
+draws as the wide model in an uploaded skin, its offline UUID's index 12.
+
 ### M308 — default skins by profile; the mannequin (2026-10-20)
 
 A profile with no `textures` property got nothing queued, so Rewo drew it as
