@@ -2452,6 +2452,221 @@ pub fn empty_slot_icons(
         .collect()
 }
 
+// -- SmithingScreen's cycling slot icons (M291) ------------------------------
+
+/// `CyclingSlotBackground.ICON_CHANGE_TICK_RATE`.
+pub const ICON_CHANGE_TICK_RATE: u32 = 30;
+/// `CyclingSlotBackground.ICON_TRANSITION_TICK_DURATION`.
+pub const ICON_TRANSITION_TICKS: f32 = 4.0;
+
+/// `CyclingSlotBackground`: an empty slot's icon, stepping through a list
+/// every 30 ticks with a four-tick crossfade from the one before.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CyclingSlotBackground {
+    pub slot: usize,
+    icons: &'static [&'static str],
+    tick: u32,
+    icon_index: usize,
+}
+
+impl CyclingSlotBackground {
+    pub const fn new(slot: usize) -> Self {
+        Self {
+            slot,
+            icons: &[],
+            tick: 0,
+            icon_index: 0,
+        }
+    }
+
+    /// `tick(newIcons)`: a new list restarts at its first icon (the tick
+    /// count runs on); `++tick % 30 == 0` steps the index, counted only
+    /// while there are icons.
+    pub fn tick(&mut self, new_icons: &'static [&'static str]) {
+        if self.icons != new_icons {
+            self.icons = new_icons;
+            self.icon_index = 0;
+        }
+        if !self.icons.is_empty() {
+            self.tick += 1;
+            if self.tick.is_multiple_of(ICON_CHANGE_TICK_RATE) {
+                self.icon_index = (self.icon_index + 1) % self.icons.len();
+            }
+        }
+    }
+
+    /// `extractRenderState`'s icons for an empty slot, `(stem, alpha)`: with
+    /// more than one icon and 30 ticks gone, the current one fades in over
+    /// `min(tick % 30 + a, 4) / 4` and the previous one out under it.
+    pub fn icons(&self, a: f32) -> Vec<(&'static str, f32)> {
+        if self.icons.is_empty() {
+            return Vec::new();
+        }
+        let transition = self.icons.len() > 1 && self.tick >= ICON_CHANGE_TICK_RATE;
+        let alpha = if transition {
+            ((self.tick % ICON_CHANGE_TICK_RATE) as f32 + a).min(ICON_TRANSITION_TICKS)
+                / ICON_TRANSITION_TICKS
+        } else {
+            1.0
+        };
+        let mut out = Vec::with_capacity(2);
+        if alpha < 1.0 {
+            let n = self.icons.len();
+            out.push((self.icons[(self.icon_index + n - 1) % n], 1.0 - alpha));
+        }
+        out.push((self.icons[self.icon_index], alpha));
+        out
+    }
+}
+
+/// `SmithingScreen.EMPTY_SLOT_SMITHING_TEMPLATES`.
+pub const SMITHING_TEMPLATE_ICONS: &[&str] = &[
+    "smithing_template_armor_trim",
+    "smithing_template_netherite_upgrade",
+];
+/// `SmithingTemplateItem.createTrimmableArmorIconList`.
+const ARMOR_TRIM_BASE_ICONS: &[&str] = &["helmet", "chestplate", "leggings", "boots"];
+/// `createTrimmableMaterialIconList`.
+const ARMOR_TRIM_ADDITION_ICONS: &[&str] = &[
+    "ingot",
+    "redstone_dust",
+    "lapis_lazuli",
+    "quartz",
+    "diamond",
+    "emerald",
+    "amethyst_shard",
+];
+/// `createNetheriteUpgradeIconList`.
+const NETHERITE_BASE_ICONS: &[&str] = &[
+    "helmet",
+    "sword",
+    "chestplate",
+    "pickaxe",
+    "leggings",
+    "axe",
+    "boots",
+    "hoe",
+    "shovel",
+    "nautilus_armor",
+    "spear",
+];
+/// `createNetheriteUpgradeMaterialList`.
+const NETHERITE_ADDITION_ICONS: &[&str] = &["ingot"];
+
+/// `SmithingScreen.containerTick`'s three lists for the item in the template
+/// slot (its registry name): the templates always; the base and addition
+/// lists from a `SmithingTemplateItem` (`netherite_upgrade_smithing_template`
+/// is `createNetheriteUpgradeTemplate`, every `*_armor_trim_smithing_template`
+/// `createArmorTrimTemplate`), none otherwise.
+pub fn smithing_slot_icons(template: Option<&str>) -> [&'static [&'static str]; 3] {
+    let (base, addition): (&'static [&'static str], &'static [&'static str]) = match template {
+        Some("minecraft:netherite_upgrade_smithing_template") => {
+            (NETHERITE_BASE_ICONS, NETHERITE_ADDITION_ICONS)
+        }
+        Some(n) if n.ends_with("_armor_trim_smithing_template") => {
+            (ARMOR_TRIM_BASE_ICONS, ARMOR_TRIM_ADDITION_ICONS)
+        }
+        _ => (&[], &[]),
+    };
+    [SMITHING_TEMPLATE_ICONS, base, addition]
+}
+
+/// The cycling icons of every empty slot as blits at the slot's position,
+/// `(stem, blit, alpha)`.
+pub fn cycling_slot_blits(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    cycles: &[CyclingSlotBackground],
+    empty: impl Fn(usize) -> bool,
+    a: f32,
+) -> Vec<(&'static str, ProgressBlit, f32)> {
+    let mut out = Vec::new();
+    for c in cycles {
+        if !empty(c.slot) {
+            continue;
+        }
+        let Some((x, y)) = layout.position(c.slot) else {
+            continue;
+        };
+        for (stem, alpha) in c.icons(a) {
+            out.push((
+                stem,
+                ProgressBlit {
+                    dx: x as i32,
+                    dy: y as i32,
+                    w: 16,
+                    h: 16,
+                    sx: 0,
+                    sy: 0,
+                    src: None,
+                },
+                alpha,
+            ));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod cycling_tests {
+    use super::*;
+
+    /// M291 — vanilla's cycle: the first icon steady for 30 ticks, then each
+    /// step crossfades over four; a new list restarts at its first icon; an
+    /// empty list counts no ticks; the netherite template's lists.
+    #[test]
+    fn the_smithing_icons_cycle_as_vanillas_do() {
+        let mut c = CyclingSlotBackground::new(0);
+        assert!(c.icons(0.0).is_empty());
+        c.tick(&[]);
+        assert_eq!(c.tick, 0, "an empty list counts nothing");
+        c.tick(SMITHING_TEMPLATE_ICONS);
+        assert_eq!(c.icons(0.5), vec![("smithing_template_armor_trim", 1.0)]);
+        for _ in 1..30 {
+            c.tick(SMITHING_TEMPLATE_ICONS);
+        }
+        // tick 30: stepped to the second, fading in from 0 + a over four.
+        assert_eq!(
+            c.icons(1.0),
+            vec![
+                ("smithing_template_armor_trim", 0.75),
+                ("smithing_template_netherite_upgrade", 0.25)
+            ]
+        );
+        for _ in 0..4 {
+            c.tick(SMITHING_TEMPLATE_ICONS);
+        }
+        assert_eq!(
+            c.icons(0.0),
+            vec![("smithing_template_netherite_upgrade", 1.0)]
+        );
+        for _ in 0..26 {
+            c.tick(SMITHING_TEMPLATE_ICONS);
+        }
+        // tick 60: stepped back to the first, at the very start of its fade.
+        assert_eq!(
+            c.icons(0.0),
+            vec![
+                ("smithing_template_netherite_upgrade", 1.0),
+                ("smithing_template_armor_trim", 0.0)
+            ]
+        );
+        let [t, b, a] = smithing_slot_icons(Some("minecraft:netherite_upgrade_smithing_template"));
+        assert_eq!((t.len(), b.len(), a), (2, 11, &["ingot"][..]));
+        let [_, b, a] = smithing_slot_icons(Some("minecraft:coast_armor_trim_smithing_template"));
+        assert_eq!((b.len(), a.len()), (4, 7));
+        let [_, b, a] = smithing_slot_icons(Some("minecraft:diamond"));
+        assert!(b.is_empty() && a.is_empty());
+        // A new list restarts at its first icon.
+        let mut base = CyclingSlotBackground::new(1);
+        base.tick(NETHERITE_BASE_ICONS);
+        for _ in 0..40 {
+            base.tick(NETHERITE_BASE_ICONS);
+        }
+        base.tick(ARMOR_TRIM_BASE_ICONS);
+        assert_eq!(base.icon_index, 0);
+    }
+}
+
 // -- CrafterScreen (M93j) ---------------------------------------------------
 
 /// `CrafterScreen.extractDisabledSlot` —

@@ -98,6 +98,8 @@ pub struct ScreenState {
     pub book_button_focus: Option<i32>,
     /// The loom's screen-local scroll (M189), the stonecutter's shape.
     pub loom: Option<LoomLocal>,
+    /// M291 — the smithing screen's cycling slot icons.
+    pub smithing: Option<super::menus::SmithingLocal>,
 }
 
 impl Default for ScreenState {
@@ -124,6 +126,7 @@ impl Default for ScreenState {
             ui_sounds: Default::default(),
             book_button_focus: Default::default(),
             loom: Default::default(),
+            smithing: Default::default(),
         }
     }
 }
@@ -565,6 +568,9 @@ pub(super) fn apply_screen(
     book_button_focused: bool,
     // M189 — the loom's `(scrollOffs, startRow)`, screen-local like the rest.
     loom_scroll: (f32, i32),
+    // M291 — the smithing screen's cycling icons and the frame's partial
+    // tick, screen-local like the rest.
+    smithing: Option<(&super::menus::SmithingLocal, f32)>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -710,6 +716,15 @@ pub(super) fn apply_screen(
         book_button_focused,
     );
     widgets.extend(empty_icons);
+    // M291 — and the smithing table's cycling ones, the same layer.
+    if let Some((s, a)) = smithing {
+        widgets.extend(super::menus::cycling_slot_widgets(
+            layout,
+            &s.cycles,
+            |slot| menu.menu_slot(slot).is_none(),
+            a,
+        ));
+    }
     wr.set_container_widgets(widgets);
     wr.set_container_panel(container_panel(
         layout,

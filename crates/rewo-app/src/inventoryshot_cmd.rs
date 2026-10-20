@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 172;
+const EXPECTED_WITNESSES: usize = 173;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -4437,6 +4437,80 @@ fn pixels_inner(
             found
         ),
     );
+
+    // -- the smithing table's cycling icons (M291) ---------------------------
+    //
+    // The production `CyclingSlotBackground` ticks and `cycling_slot_widgets`
+    // over the smithing layout, into the same widget layer, graded as ge1
+    // against the jar's sprites at the layout's slot positions: fresh, the
+    // template slot shows the armour-trim template opaque; 34 ticks in (the
+    // step at 30 and its four-tick fade done) the netherite upgrade's; with
+    // a netherite template in place its own slot shows nothing and the base
+    // and addition slots start their lists, the helmet and the ingot.
+    {
+        use rewo_ui::menu_screen::{smithing_slot_icons, CyclingSlotBackground as Cyc};
+        let smithing = (0..64)
+            .filter_map(rewo_world::menu_layout::layout_of)
+            .find(|l| l.name == "smithing")
+            .ok_or("inventoryshot: no smithing layout")?;
+        let pos = |slot: usize| {
+            smithing
+                .position(slot)
+                .map_or((0, 0), |(x, y)| (x as i32, y as i32))
+        };
+        let tick_all = |cycles: &mut [Cyc; 3], template: Option<&str>| {
+            for (c, list) in cycles.iter_mut().zip(smithing_slot_icons(template)) {
+                c.tick(list);
+            }
+        };
+        let mut cycles = [Cyc::new(0), Cyc::new(1), Cyc::new(2)];
+        tick_all(&mut cycles, None);
+        wr.set_container_widgets(crate::live_cmd::cycling_slot_widgets(
+            smithing,
+            &cycles,
+            |_| true,
+            0.0,
+        ));
+        let fresh = shot(gpu, off, wr, &[])?;
+        let t0 = sprite_at(&fresh, "smithing_template_armor_trim", pos(0));
+        for _ in 0..33 {
+            tick_all(&mut cycles, None);
+        }
+        wr.set_container_widgets(crate::live_cmd::cycling_slot_widgets(
+            smithing,
+            &cycles,
+            |_| true,
+            0.0,
+        ));
+        let later = shot(gpu, off, wr, &[])?;
+        let t1 = sprite_at(&later, "smithing_template_netherite_upgrade", pos(0));
+        tick_all(
+            &mut cycles,
+            Some("minecraft:netherite_upgrade_smithing_template"),
+        );
+        wr.set_container_widgets(crate::live_cmd::cycling_slot_widgets(
+            smithing,
+            &cycles,
+            |slot| slot != 0,
+            0.0,
+        ));
+        let placed = shot(gpu, off, wr, &[])?;
+        let base = sprite_at(&placed, "helmet", pos(1));
+        let addition = sprite_at(&placed, "ingot", pos(2));
+        let gone = sprite_at(&placed, "smithing_template_netherite_upgrade", pos(0));
+        wr.set_container_widgets(Vec::new());
+        let full = |(ok, n): (usize, usize)| n > 10 && ok == n;
+        c.record(
+            "gc1.the_smithing_tables_empty_slots_cycle_their_icons",
+            full(t0) && full(t1) && full(base) && full(addition) && gone.0 < gone.1 / 2,
+            format!(
+                "opaque texels matched: armour-trim template fresh {t0:?}, netherite template \
+                 after 34 ticks {t1:?}; with a netherite template placed, helmet {base:?} \
+                 and ingot {addition:?}, and {}/{} of the template icon left in its filled slot",
+                gone.0, gone.1
+            ),
+        );
+    }
 
     // And the closed screen is not merely a dimmer world: the panel is gone.
     c.record(

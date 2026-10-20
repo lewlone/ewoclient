@@ -2988,6 +2988,23 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/container/slot/banner.png",
     "gui/sprites/container/slot/dye.png",
     "gui/sprites/container/slot/banner_pattern.png",
+    // 149..=163 — M291: the smithing table's cycling slot icons
+    // (`SmithingScreen`, `SmithingTemplateItem`) not already above.
+    "gui/sprites/container/slot/smithing_template_armor_trim.png",
+    "gui/sprites/container/slot/smithing_template_netherite_upgrade.png",
+    "gui/sprites/container/slot/sword.png",
+    "gui/sprites/container/slot/pickaxe.png",
+    "gui/sprites/container/slot/axe.png",
+    "gui/sprites/container/slot/hoe.png",
+    "gui/sprites/container/slot/shovel.png",
+    "gui/sprites/container/slot/spear.png",
+    "gui/sprites/container/slot/nautilus_armor.png",
+    "gui/sprites/container/slot/ingot.png",
+    "gui/sprites/container/slot/redstone_dust.png",
+    "gui/sprites/container/slot/quartz.png",
+    "gui/sprites/container/slot/diamond.png",
+    "gui/sprites/container/slot/emerald.png",
+    "gui/sprites/container/slot/amethyst_shard.png",
 ];
 
 /// M280 — the empty-slot icons' stems, in their [`MENU_OVERLAY_SPRITES`]
@@ -3008,6 +3025,21 @@ pub const EMPTY_SLOT_ICONS: &[&str] = &[
     "banner",
     "dye",
     "banner_pattern",
+    "smithing_template_armor_trim",
+    "smithing_template_netherite_upgrade",
+    "sword",
+    "pickaxe",
+    "axe",
+    "hoe",
+    "shovel",
+    "spear",
+    "nautilus_armor",
+    "ingot",
+    "redstone_dust",
+    "quartz",
+    "diamond",
+    "emerald",
+    "amethyst_shard",
 ];
 
 /// M280 — where the empty-slot icons start in [`MENU_OVERLAY_SPRITES`].

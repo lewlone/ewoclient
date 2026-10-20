@@ -365,6 +365,68 @@ pub(super) fn loom_has_max_patterns(
         .is_some_and(|n| n >= 6)
 }
 
+/// M291 — the smithing screen's three `CyclingSlotBackground`s, screen
+/// state no packet carries (a new container starts them afresh).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmithingLocal {
+    pub(super) container_id: i32,
+    pub cycles: [rewo_ui::menu_screen::CyclingSlotBackground; 3],
+}
+
+/// M291 — `SmithingScreen.containerTick`, once a client tick while the
+/// smithing screen is shown: the template slot's item picks the base and
+/// addition lists. Any other screen drops the state.
+pub(super) fn tick_smithing(
+    screen: &mut ScreenState,
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+) {
+    let Some(m) = session
+        .menus
+        .shown_open()
+        .filter(|m| m.layout.name == "smithing")
+    else {
+        screen.smithing = None;
+        return;
+    };
+    if screen
+        .smithing
+        .as_ref()
+        .is_none_or(|s| s.container_id != m.container_id)
+    {
+        use rewo_ui::menu_screen::CyclingSlotBackground as C;
+        screen.smithing = Some(SmithingLocal {
+            container_id: m.container_id,
+            cycles: [C::new(0), C::new(1), C::new(2)],
+        });
+    }
+    let template = m.menu.menu_slot(0).and_then(|s| items.name(s.item_id));
+    let lists = rewo_ui::menu_screen::smithing_slot_icons(template);
+    if let Some(s) = screen.smithing.as_mut() {
+        for (c, list) in s.cycles.iter_mut().zip(lists) {
+            c.tick(list);
+        }
+    }
+}
+
+/// M291 — the cycling icons as widget blits (sprite index, blit tinted by
+/// the fade's alpha: `ARGB.white(alpha)`).
+pub(crate) fn cycling_slot_widgets(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    cycles: &[rewo_ui::menu_screen::CyclingSlotBackground],
+    empty: impl Fn(usize) -> bool,
+    a: f32,
+) -> Vec<(usize, rewo_gpu::container::PanelBlit)> {
+    rewo_ui::menu_screen::cycling_slot_blits(layout, cycles, empty, a)
+        .into_iter()
+        .filter_map(|(stem, b, alpha)| {
+            let mut blit = to_blit(b);
+            blit.tint = [1.0, 1.0, 1.0, alpha];
+            Some((rewo_data::assets::empty_slot_icon_index(stem)?, blit))
+        })
+        .collect()
+}
+
 /// The loom screen's own scroll (M189) — `LoomScreen.scrollOffs`,
 /// `startRow` and `scrolling`, screen state that no packet carries.
 #[derive(Debug, Clone, Copy)]

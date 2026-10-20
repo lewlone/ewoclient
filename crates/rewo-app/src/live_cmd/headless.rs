@@ -701,6 +701,8 @@ pub(super) fn run_headless(
             false,
             // …nor scroll a loom.
             (0.0, 0),
+            // …nor tick a smithing screen's icons.
+            None,
         );
         headless_screen_labels = labels;
     } else {

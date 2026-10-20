@@ -390,6 +390,8 @@ impl LiveApp {
             }
             // Advance the block-light flicker exactly once per successful tick.
             self.flicker.tick();
+            // M291 — `SmithingScreen.containerTick`'s cycling icons.
+            super::menus::tick_smithing(&mut self.screen, session, &self.items);
             // M131 — and drain the tick's sounds. Per *tick*, not per frame:
             // `MIN_SOURCE_LIFETIME` is 20 ticks, so a per-frame drive would tie
             // a channel's grace period to the frame rate.
@@ -2146,6 +2148,7 @@ impl LiveApp {
                     self.screen.book_overlay.as_ref(),
                     self.screen.book_button_focus == Some(session.shown_container_id()),
                     loom_scroll,
+                    self.screen.smithing.as_ref().map(|s| (s, alpha)),
                 );
                 // r102 — the anvil's cost line as drawn this frame.
                 #[cfg(feature = "gates")]
