@@ -109,6 +109,32 @@ pub enum Anim {
     },
     /// Wolf tail wag while walking: `yRot = cos(f)·1.4·amt`.
     TailWagY,
+    /// M357 — `AdultFelineModel` / `BabyFelineModel.setupAnim`: the head's
+    /// look (as `Head`), and sitting its offset ((0, −3.3, 1) × the age
+    /// scale for an adult, (0, 0, 0.75) for a kitten).
+    FelineHead,
+    /// M357 — the feline body: sitting, an adult's pitches to π/4 (from its
+    /// π/2 rest) and moves (−4, +5) × the age scale; a kitten's pitches by
+    /// −0.43633232 and drops 1.25.
+    FelineBody,
+    /// M357 — the first tail segment: sitting, an adult's goes to
+    /// 1.7278761 and moves (+8, −2) × the age scale; a kitten's tilts by
+    /// 0.5454154 and moves (+4, −0.9).
+    FelineTail1,
+    /// M357 — the second tail segment: it rests at 1.7278761 (`setupAnim`
+    /// sets it every frame, not the layer) and sways π/4 · cos(walkPos) ·
+    /// speed while walking; sitting, an adult's goes to 2.670354 and moves
+    /// (+2, −0.8) × the age scale.
+    FelineTail2,
+    /// M357 — the feline's legs: the walk at amplitude 1 (left hind and
+    /// right front on cos(f), the others on cos(f + π)); sitting, an
+    /// adult's front legs go to −π/20 and move (+2, −2), its hind legs to
+    /// −π/2 and (+3, −4), × the age scale; a kitten's hind legs move −0.9
+    /// in z.
+    FelineLeg {
+        hind: bool,
+        left: bool,
+    },
     /// M356 — `WolfModel.setSittingPose`, on the wolf's and the puppy's
     /// body (`y` + 4, `z` − 2, `xRot` π/4, the puppy's then − π/2: the same
     /// −π/4 from either rest), the adult's mane (`y` + 2, `xRot` 2π/5) and
@@ -6107,15 +6133,13 @@ fn panda_baby() -> Model {
 /// 5 x 4 x 4 head (looking) with its ears and nose, a 4 x 3 x 7 body, a tail
 /// tilted -0.5672 (its second segment has no box), and four 1 x 2 x 2 legs.
 ///
-/// The legs follow `BabyFelineModel.setupAnim`'s walk exactly: amplitude 1.0
-/// (so `amp` undoes `Anim`'s 1.4), the left hind and right front leg in phase
-/// on `cos(f)`, the other two on `cos(f + π)`. `Anim` names its phases after
-/// the quadruped's legs, so the left hind leg takes `QuadHindRight`'s.
-/// Sitting, crouching, sprinting and lying down are not posed, as Rewo's
-/// adult feline's are not.
+/// The legs follow `BabyFelineModel.setupAnim`'s walk exactly: amplitude 1.0,
+/// the left hind and right front leg in phase on `cos(f)`, the other two on
+/// `cos(f + π)` (M357: `Anim::FelineLeg`, which says so by name). M357 also
+/// poses it sitting; crouching, sprinting and lying down are not posed.
 fn feline_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let head = b.part([0.0, 20.0, -3.125], Anim::Head, 1.0);
+    let head = b.part([0.0, 20.0, -3.125], Anim::FelineHead, 1.0);
     for (uv, min, dims) in [
         ((0.0, 0.0), [-2.5, -3.0, -2.875], [5.0, 4.0, 4.0]),
         ((18.0, 0.0), [-2.0, -4.0, -0.875], [1.0, 1.0, 2.0]),
@@ -6124,34 +6148,44 @@ fn feline_baby() -> Model {
     ] {
         b.cube(head, 0, uv, min, dims, NONE);
     }
-    b.cube_f(
-        STATIC_PART,
+    // M357 — the body and the tail are parts: sitting moves them.
+    let body = b.part_ext(
+        [0.0, 20.5, 0.5],
+        [0.0; 3],
+        Anim::FelineBody,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        body,
         0,
         (0.0, 8.0),
         [-2.0, -1.5, -3.5],
         [4.0, 3.0, 7.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 20.5, 0.5])],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    let tail1 = b.part_ext(
+        [0.0, 19.107, 3.9151],
+        [-0.567232, 0.0, 0.0],
+        Anim::FelineTail1,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        tail1,
         0,
         (0.0, 18.0),
         [-0.5, -0.107, 0.0849],
         [1.0, 1.0, 5.0],
-        0.0,
-        false,
-        &[Fold::rot([-0.567232, 0.0, 0.0], [0.0, 19.107, 3.9151])],
+        NONE,
     );
-    let amp = 1.0 / 1.4;
-    for (pivot, anim, uv) in [
-        ([1.0, 22.0, -1.5], Anim::QuadFrontRight, (18.0, 18.0)),
-        ([-1.0, 22.0, -1.5], Anim::QuadFrontLeft, (12.0, 18.0)),
-        ([1.0, 22.0, 2.5], Anim::QuadHindRight, (18.0, 22.0)),
-        ([-1.0, 22.0, 2.5], Anim::QuadHindLeft, (12.0, 22.0)),
+    for (pivot, hind, left, uv) in [
+        ([1.0, 22.0, -1.5], false, true, (18.0, 18.0)),
+        ([-1.0, 22.0, -1.5], false, false, (12.0, 18.0)),
+        ([1.0, 22.0, 2.5], true, true, (18.0, 22.0)),
+        ([-1.0, 22.0, 2.5], true, false, (12.0, 22.0)),
     ] {
-        let leg = b.part(pivot, anim, amp);
+        let leg = b.part(pivot, Anim::FelineLeg { hind, left }, 1.0);
         b.cube(leg, 0, uv, [-0.5, 0.0, -1.0], [1.0, 2.0, 2.0], NONE);
     }
     b.finish(1.0)
@@ -8260,7 +8294,7 @@ fn feline() -> Model {
 /// tail's second segment, which keeps its own -0.02 (`tail_g`).
 fn feline_with(g: f32) -> Model {
     let mut b = ModelBuilder::new();
-    let head = b.part([0.0, 15.0, -9.0], Anim::Head, 1.0);
+    let head = b.part([0.0, 15.0, -9.0], Anim::FelineHead, 1.0);
     b.cube_g(
         head,
         0,
@@ -8297,36 +8331,56 @@ fn feline_with(g: f32) -> Model {
         g,
         NONE,
     );
-    let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 12.0, -10.0]);
-    b.cube_f(
-        STATIC_PART,
+    // M357 — the body and both tail segments are parts: sitting moves
+    // them, and the second segment rests where `setupAnim` puts it
+    // (1.7278761, not the layer's 0: until M357 it hung straight down).
+    let body = b.part_ext(
+        [0.0, 12.0, -10.0],
+        [FRAC_PI_2, 0.0, 0.0],
+        Anim::FelineBody,
+        1.0,
+        Option::None,
+    );
+    b.cube_g(
+        body,
         0,
         (20.0, 0.0),
         [-2.0, 3.0, -8.0],
         [4.0, 16.0, 6.0],
         g,
-        false,
-        &[body],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    let tail1 = b.part_ext(
+        [0.0, 15.0, 8.0],
+        [0.9, 0.0, 0.0],
+        Anim::FelineTail1,
+        1.0,
+        Option::None,
+    );
+    b.cube_g(
+        tail1,
         0,
         (0.0, 15.0),
         [-0.5, 0.0, 0.0],
         [1.0, 8.0, 1.0],
         g,
-        false,
-        &[Fold::rot([0.9, 0.0, 0.0], [0.0, 15.0, 8.0])],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    let tail2 = b.part_ext(
+        [0.0, 20.0, 14.0],
+        [1.727_876_1, 0.0, 0.0],
+        Anim::FelineTail2,
+        1.0,
+        Option::None,
+    );
+    b.cube_g(
+        tail2,
         0,
         (4.0, 15.0),
         [-0.5, 0.0, 0.0],
         [1.0, 8.0, 1.0],
         -0.02,
-        false,
-        &[Fold::at([0.0, 20.0, 14.0])],
+        NONE,
     );
     let legs = [
         (
@@ -8334,28 +8388,40 @@ fn feline_with(g: f32) -> Model {
             [-1.0, 0.0, 1.0],
             [2.0, 6.0, 2.0],
             [1.1, 18.0, 5.0],
-            Anim::QuadHindLeft,
+            Anim::FelineLeg {
+                hind: true,
+                left: true,
+            },
         ),
         (
             (8.0, 13.0),
             [-1.0, 0.0, 1.0],
             [2.0, 6.0, 2.0],
             [-1.1, 18.0, 5.0],
-            Anim::QuadHindRight,
+            Anim::FelineLeg {
+                hind: true,
+                left: false,
+            },
         ),
         (
             (40.0, 0.0),
             [-1.0, 0.0, 0.0],
             [2.0, 10.0, 2.0],
             [1.2, 14.1, -5.0],
-            Anim::QuadFrontLeft,
+            Anim::FelineLeg {
+                hind: false,
+                left: true,
+            },
         ),
         (
             (40.0, 0.0),
             [-1.0, 0.0, 0.0],
             [2.0, 10.0, 2.0],
             [-1.2, 14.1, -5.0],
-            Anim::QuadFrontRight,
+            Anim::FelineLeg {
+                hind: false,
+                left: false,
+            },
         ),
     ];
     for (uv, min, dims, pivot, anim) in legs {
@@ -13824,7 +13890,7 @@ pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
         return Some(i);
     }
     let kinds: &[Anim] = match want {
-        "head" => &[Anim::Head],
+        "head" => &[Anim::Head, Anim::FelineHead],
         "body" => &[Anim::HumanoidBody],
         // The plain piglin swings the *generic* arm animation, so
         // `ArmRight`/`ArmLeft` are here too. Widening the list is safe because
@@ -15208,7 +15274,11 @@ mod kitten_tests {
     fn the_kitten_is_its_own_model_on_vanilla_s_walk() {
         let m = feline_baby();
         assert_eq!(m.quads.len(), 10 * 6);
-        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let head = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::FelineHead)
+            .unwrap();
         let span = |q: &RawQuad, i: usize| {
             q.uv.iter()
                 .map(|u| u[i])
@@ -15225,11 +15295,13 @@ mod kitten_tests {
         };
         let (lh, rf) = (leg(1.0, 2.5), leg(-1.0, -1.5));
         let (rh, lf) = (leg(-1.0, 2.5), leg(1.0, -1.5));
-        // `Anim`'s cos(f) phase is QuadHindRight / QuadFrontLeft.
-        assert!(matches!(lh.anim, Anim::QuadHindRight) && matches!(rf.anim, Anim::QuadFrontLeft));
-        assert!(matches!(rh.anim, Anim::QuadHindLeft) && matches!(lf.anim, Anim::QuadFrontRight));
+        // M357 — the feline's own legs (`FelineLeg`, amplitude 1 by itself;
+        // its phases are graded in `entities::feline_sit_tests`).
+        let is = |p: &Part, hind: bool, left: bool| p.anim == Anim::FelineLeg { hind, left };
+        assert!(is(lh, true, true) && is(rf, false, false));
+        assert!(is(rh, true, false) && is(lf, false, true));
         for p in [lh, rf, rh, lf] {
-            assert!((p.amp * 1.4 - 1.0).abs() < 1e-6);
+            assert_eq!(p.amp, 1.0);
         }
     }
 }
@@ -15668,6 +15740,26 @@ mod coral_nautilus_tests {
         ] {
             assert_eq!(shell.parts.len(), coral.parts.len());
             assert_eq!(shell.quads.len(), plain.quads.len());
+        }
+    }
+}
+
+#[cfg(test)]
+mod feline_rest_tests {
+    use super::*;
+
+    /// M357 — the adult feline's second tail segment rests at 1.7278761
+    /// (`AdultFelineModel.setupAnim` sets it every frame); until M357 it was
+    /// the layer's 0 and hung its eight pixels straight down past the feet.
+    #[test]
+    fn the_cats_tail_tip_rests_where_setup_anim_puts_it() {
+        for m in [feline(), cat()] {
+            let tail2 = m
+                .parts
+                .iter()
+                .find(|p| p.anim == Anim::FelineTail2)
+                .unwrap();
+            assert_eq!(tail2.rot, [1.727_876_1, 0.0, 0.0]);
         }
     }
 }

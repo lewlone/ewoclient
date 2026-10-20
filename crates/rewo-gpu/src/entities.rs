@@ -5589,6 +5589,69 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 off = [0.0, 9.0 * s, -2.0 * s];
             }
         }
+        // M357 — `AdultFelineModel` / `BabyFelineModel.setupAnim`. A kitten
+        // is the age scale's half; its sitting pose is its own.
+        FelineHead => {
+            rot[0] = c.pitch;
+            rot[1] = c.net;
+            if c.mob.sitting {
+                let s = c.mob.age_scale;
+                off = if s < 1.0 {
+                    [0.0, 0.0, 0.75]
+                } else {
+                    [0.0, -3.3 * s, 1.0 * s]
+                };
+            }
+        }
+        FelineBody if c.mob.sitting => {
+            let s = c.mob.age_scale;
+            if s < 1.0 {
+                rot[0] = -0.436_332_32;
+                off = [0.0, 1.25, 0.0];
+            } else {
+                rot[0] = PI / 4.0 - PI / 2.0;
+                off = [0.0, -4.0 * s, 5.0 * s];
+            }
+        }
+        FelineTail1 if c.mob.sitting => {
+            let s = c.mob.age_scale;
+            if s < 1.0 {
+                rot[0] = 0.545_415_4;
+                off = [0.0, 4.0, -0.9];
+            } else {
+                rot[0] = 1.727_876_1 - 0.9;
+                off = [0.0, 8.0 * s, -2.0 * s];
+            }
+        }
+        FelineBody | FelineTail1 => {}
+        FelineTail2 => {
+            let s = c.mob.age_scale;
+            if c.mob.sitting && s >= 1.0 {
+                rot[0] = 2.670_354 - 1.727_876_1;
+                off = [0.0, 2.0 * s, -0.8 * s];
+            } else if !c.mob.sitting {
+                rot[0] = PI / 4.0 * c.pos.cos() * c.amt;
+            }
+        }
+        FelineLeg { hind, left } => {
+            if c.mob.sitting {
+                let s = c.mob.age_scale;
+                if s < 1.0 {
+                    if hind {
+                        off = [0.0, 0.0, -0.9];
+                    }
+                } else if hind {
+                    rot[0] = -PI / 2.0;
+                    off = [0.0, 3.0 * s, -4.0 * s];
+                } else {
+                    rot[0] = -PI / 20.0;
+                    off = [0.0, 2.0 * s, -2.0 * s];
+                }
+            } else {
+                let phase = if hind == left { 0.0 } else { PI };
+                rot[0] = (c.f + phase).cos() * c.amt * amp;
+            }
+        }
         // M356 — `WolfModel.setSittingPose` (and `AdultWolfModel`'s mane).
         WolfBody if c.mob.sitting => {
             let s = c.mob.age_scale;
@@ -9568,5 +9631,121 @@ mod wolf_sit_tests {
         let (r, _) = anim_delta(mobs::Anim::WolfFront { left: true }, 1.0, &ctx(false, 1.0));
         let (q, _) = anim_delta(mobs::Anim::QuadFrontLeft, 1.0, &ctx(false, 1.0));
         assert_eq!(r, q);
+    }
+}
+
+#[cfg(test)]
+mod feline_sit_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(sitting: bool, age_scale: f32, f: f32, pos: f32, amt: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f,
+            pos,
+            amt,
+            age: 0.0,
+            gesture: None,
+            events: [None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                sitting,
+                age_scale,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    fn near(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
+    }
+
+    /// M357 — the adult's sitting pose (every absolute angle less its rest)
+    /// and the kitten's, from `AdultFelineModel` / `BabyFelineModel`.
+    #[test]
+    fn a_sitting_cat_and_kitten_take_vanillas_pose() {
+        use mobs::Anim as A;
+        let adult = ctx(true, 1.0, 0.0, 0.0, 0.0);
+        let (r, o) = anim_delta(A::FelineBody, 1.0, &adult);
+        assert!(near(r, [-PI / 4.0, 0.0, 0.0]) && near(o, [0.0, -4.0, 5.0]));
+        let (r, o) = anim_delta(A::FelineTail1, 1.0, &adult);
+        assert!(near(r, [1.727_876_1 - 0.9, 0.0, 0.0]) && near(o, [0.0, 8.0, -2.0]));
+        let (r, o) = anim_delta(A::FelineTail2, 1.0, &adult);
+        assert!(near(r, [2.670_354 - 1.727_876_1, 0.0, 0.0]) && near(o, [0.0, 2.0, -0.8]));
+        let (r, o) = anim_delta(
+            A::FelineLeg {
+                hind: true,
+                left: true,
+            },
+            1.0,
+            &adult,
+        );
+        assert!(near(r, [-PI / 2.0, 0.0, 0.0]) && near(o, [0.0, 3.0, -4.0]));
+        let (r, o) = anim_delta(
+            A::FelineLeg {
+                hind: false,
+                left: false,
+            },
+            1.0,
+            &adult,
+        );
+        assert!(near(r, [-PI / 20.0, 0.0, 0.0]) && near(o, [0.0, 2.0, -2.0]));
+        let (_, o) = anim_delta(A::FelineHead, 1.0, &adult);
+        assert!(near(o, [0.0, -3.3, 1.0]));
+        let kitten = ctx(true, 0.5, 0.0, 0.0, 0.0);
+        let (r, o) = anim_delta(A::FelineBody, 1.0, &kitten);
+        assert!(near(r, [-0.436_332_32, 0.0, 0.0]) && near(o, [0.0, 1.25, 0.0]));
+        let (r, o) = anim_delta(A::FelineTail1, 1.0, &kitten);
+        assert!(near(r, [0.545_415_4, 0.0, 0.0]) && near(o, [0.0, 4.0, -0.9]));
+        let (r, o) = anim_delta(
+            A::FelineLeg {
+                hind: true,
+                left: false,
+            },
+            1.0,
+            &kitten,
+        );
+        assert!(near(r, [0.0; 3]) && near(o, [0.0, 0.0, -0.9]));
+        let (r, o) = anim_delta(
+            A::FelineLeg {
+                hind: false,
+                left: true,
+            },
+            1.0,
+            &kitten,
+        );
+        assert!(near(r, [0.0; 3]) && near(o, [0.0; 3]));
+        let (_, o) = anim_delta(A::FelineHead, 1.0, &kitten);
+        assert!(near(o, [0.0, 0.0, 0.75]));
+    }
+
+    /// M357 — standing, the legs walk at amplitude 1 (left hind and right
+    /// front on cos(f), the others on cos(f + π)) and the second tail
+    /// segment sways π/4 · cos(walkPos) · speed over its 1.7278761 rest.
+    #[test]
+    fn a_walking_cat_sways_its_tail_and_steps_at_amplitude_one() {
+        use mobs::Anim as A;
+        let walk = ctx(false, 1.0, 0.0, 0.0, 1.0);
+        for (hind, left, want) in [
+            (true, true, 1.0),
+            (true, false, -1.0),
+            (false, true, -1.0),
+            (false, false, 1.0),
+        ] {
+            let (r, _) = anim_delta(A::FelineLeg { hind, left }, 1.0, &walk);
+            assert!((r[0] - want).abs() < 1e-5, "{hind} {left}: {}", r[0]);
+        }
+        let (r, _) = anim_delta(A::FelineTail2, 1.0, &walk);
+        assert!((r[0] - PI / 4.0).abs() < 1e-5);
+        let (r, o) = anim_delta(A::FelineBody, 1.0, &walk);
+        assert!(near(r, [0.0; 3]) && near(o, [0.0; 3]));
     }
 }

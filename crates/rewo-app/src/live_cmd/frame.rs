@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M357 — r211: the staged sitting cat, drawn sitting.
+            c.sitting_cat |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Cat && d.mob.sitting);
             // M356 — r210: the staged sitting wolf, drawn sitting.
             c.sitting_wolf |= draws
                 .iter()

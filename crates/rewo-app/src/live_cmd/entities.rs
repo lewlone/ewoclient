@@ -4876,6 +4876,15 @@ pub(super) fn collect_entities<'a>(
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
         }
+        // M357 — a cat's (or kitten's) sitting pose.
+        if matches!(kind, EntityModelKind::Cat | EntityModelKind::CatBaby) {
+            mob.sitting = session.world.entities.is_in_sitting_pose(id);
+            mob.age_scale = if kind == EntityModelKind::CatBaby {
+                0.5
+            } else {
+                1.0
+            };
+        }
         // M355 — the wolf's anger and `getTailAngle()` (a tame wolf's tail
         // by its health, when both its health and its max health are known).
         if matches!(kind, EntityModelKind::Wolf | EntityModelKind::WolfBaby) {

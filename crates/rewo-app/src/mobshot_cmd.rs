@@ -1028,7 +1028,10 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             d.gesture = gesture;
             d.shell = args.shell;
             d.mob.sitting = args.sit;
-            d.mob.age_scale = if *k == EntityModelKind::WolfBaby {
+            d.mob.age_scale = if matches!(
+                *k,
+                EntityModelKind::WolfBaby | EntityModelKind::CatBaby | EntityModelKind::OcelotBaby
+            ) {
                 0.5
             } else {
                 1.0

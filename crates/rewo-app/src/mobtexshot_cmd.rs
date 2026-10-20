@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 78;
+const EXPECTED_WITNESSES: usize = 79;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5801,6 +5801,91 @@ fn run_check(
         format!(
             "{} (want >= 200 px, none foreign, >= 100 px of silhouette moved)",
             s_rows.join("; ")
+        ),
+    ));
+
+    // m79 — M357: a sitting cat and kitten draw from their own sheets, and
+    // their silhouette moves from a standing one's by a body's worth of
+    // pixels.
+    let mut cst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.2, 0.6, -0.2),
+        Vec3::new(0.0, 0.3, 0.0),
+    )?;
+    cst.wr.set_entities(&[], cst.right, cst.up, 0.0);
+    cst.off.render(gpu, Some((&mut cst.wr, cst.vp)), &ov, BG)?;
+    let c_empty = cst.off.read_rgba(gpu)?;
+    let mut c_ok = true;
+    let mut c_rows = Vec::new();
+    for (kind, key, scale) in [
+        (EntityModelKind::Cat, "cat", 1.0f32),
+        (EntityModelKind::CatBaby, "cat_baby", 0.5),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            cst.wr.set_entities(&[d], cst.right, cst.up, 0.0);
+            cst.off.render(gpu, Some((&mut cst.wr, cst.vp)), &ov, BG)?;
+            cst.off.read_rgba(gpu)
+        };
+        let standing = shot(neutral_draw(kind))?;
+        let sitting = shot(EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                sitting: true,
+                age_scale: scale,
+                ..Default::default()
+            },
+            ..neutral_draw(kind)
+        })?;
+        let mask = |f: &[u8]| -> Vec<bool> {
+            f.as_chunks::<4>()
+                .0
+                .iter()
+                .zip(c_empty.as_chunks::<4>().0)
+                .map(|(p, e)| p[..3] != e[..3])
+                .collect()
+        };
+        let moved = mask(&standing)
+            .iter()
+            .zip(&mask(&sitting))
+            .filter(|(x, y)| x != y)
+            .count();
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in sitting
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(c_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        c_ok &= !sheet.is_empty() && px >= 200 && bad.is_none() && moved >= 100;
+        c_rows.push(format!(
+            "{key} sitting: {px} px, first colour it cannot produce {:?}, {moved} px of silhouette moved",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    cst.destroy(gpu);
+    w.push(wit(
+        "m79.the_cat_and_kitten_sit",
+        c_ok,
+        format!(
+            "{} (want >= 200 px, none foreign, >= 100 px of silhouette moved)",
+            c_rows.join("; ")
         ),
     ));
 
