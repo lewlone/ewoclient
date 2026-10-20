@@ -2446,6 +2446,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:creeper` type id (M285) — gates the index-17 BOOLEAN,
     /// `Creeper.DATA_IS_POWERED`.
     pub creeper: Option<i32>,
+    /// `minecraft:wither` type id (M288) — gates the index-19 INT,
+    /// `WitherBoss.DATA_ID_INV`.
+    pub wither: Option<i32>,
     /// `minecraft:player` type id (M60) — gates the index-16 BYTE, the
     /// skin-part customisation mask whose bit 0 shows the cape.
     pub player: Option<i32>,
@@ -2970,6 +2973,14 @@ pub(crate) fn apply_set_entity_data<'a>(
         } else if kinds.creeper == Some(type_id) {
             // M285 — `Creeper.DATA_IS_POWERED`: a charged creeper.
             entities.set_creeper_powered(eid, b);
+        }
+    }
+    // Slot 19 INT → `WitherBoss.DATA_ID_INV` (M288), the invulnerable
+    // phase's ticks. Kind-gated: the horse's variant shares index and
+    // serializer (read below, gated on the horse).
+    if let Some(ticks) = meta.int19 {
+        if kinds.wither == Some(type_id) {
+            entities.set_wither_invulnerable(eid, ticks);
         }
     }
     // Slot 18 BYTE → `Sheep.DATA_WOOL_ID` (M52): low nibble the dye, 0x10 the
@@ -5472,6 +5483,25 @@ mod set_entity_data_tests {
         apply_set_entity_data(&index16_bool_true(2), &mut t, Some(ALLAY));
         assert!(t.is_baby(2), "a zombie's index-16 BOOLEAN is DATA_BABY_ID");
         assert_eq!(t.allay_dance_render(2, 1.0), None, "a zombie never dances");
+    }
+
+    /// M288 — index 19 INT is `WitherBoss.DATA_ID_INV` on a wither, and is
+    /// left alone on any other kind.
+    #[test]
+    fn index19_int_is_a_withers_invulnerable_ticks_only_on_a_wither() {
+        const WITHER: i32 = 911;
+        let kinds = crate::MetaKinds {
+            wither: Some(WITHER),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(11, EntityState::new(0, WITHER, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(12, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.wither_invulnerable(11), 0, "the synched default is 0");
+        apply_set_entity_data(&body(11, 19, 1, &[0xDC, 0x01]), &mut t, kinds);
+        apply_set_entity_data(&body(12, 19, 1, &[0xDC, 0x01]), &mut t, kinds);
+        assert_eq!(t.wither_invulnerable(11), 220);
+        assert_eq!(t.wither_invulnerable(12), 0);
     }
 
     /// M285 — index 17 BOOLEAN is `Creeper.DATA_IS_POWERED` on a creeper

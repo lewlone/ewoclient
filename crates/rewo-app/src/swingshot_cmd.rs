@@ -2643,6 +2643,7 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             block_display: None,
             creaking: None,
             creeper: None,
+            wither: None,
             // M60: likewise not exercised — no cape reaches an arm rig.
             player: None,
             bee: None,

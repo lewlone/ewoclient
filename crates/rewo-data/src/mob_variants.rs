@@ -184,6 +184,11 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("chest_boat", "entity/chest_boat/dark_oak.png"),
     ("chest_boat", "entity/chest_boat/mangrove.png"),
     ("chest_boat", "entity/chest_boat/pale_oak.png"),
+    // M288 — `WitherBossRenderer.WITHER_INVULNERABLE_LOCATION`, the blinking
+    // sheet of a wither's invulnerable phase (`getTextureLocation`); chosen
+    // from `DATA_ID_INV`, not a registry. Appended, so every id above keeps
+    // its value.
+    ("wither", "entity/wither/wither_invulnerable.png"),
 ];
 
 // ---------------------------------------------------------------------------

@@ -809,6 +809,8 @@ pub struct PlaySession {
     pub tnt_type_id: Option<i32>,
     /// M277 — `minecraft:creeper`, whose swell the client counts.
     pub creeper_type_id: Option<i32>,
+    /// M288 — `minecraft:wither`, whose invulnerable ticks the client reads.
+    pub wither_type_id: Option<i32>,
     /// `minecraft:block_display`'s type id (M260).
     pub block_display_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
@@ -2039,6 +2041,7 @@ impl<'a> Connection<'a> {
             end_crystal_type_id: None,
             tnt_type_id: None,
             creeper_type_id: None,
+            wither_type_id: None,
             block_display_type_id: None,
             creaking_type_id: None,
             bee_type_id: None,

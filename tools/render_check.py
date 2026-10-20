@@ -227,6 +227,9 @@ PRECMD = (
     # M287 -- r145. A wither below half health (100 of 300), NoAI and silent,
     # further along the same row.
     "summon minecraft:wither ~-22 ~ ~-2 {NoAI:1b,Invulnerable:1b,Silent:1b,Health:100f};"
+    # M288 -- r146. A wither frozen in its invulnerable phase: Invul 220 never
+    # counts down under NoAI (no `customServerAiStep`), so it never explodes.
+    "summon minecraft:wither ~-26 ~ ~-2 {NoAI:1b,Silent:1b,Invul:220};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

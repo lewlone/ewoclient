@@ -1834,7 +1834,7 @@ const VARIANT_WITNESSES: usize = 13;
 /// **layer**'s sheet, which is the same "one per-draw variant id addresses N
 /// sheets" mechanism, applied to a mob's *second* texture slot rather than its
 /// first. Two entries because one wire name has two meshes.
-const VARIANT_MOBS: [(EntityModelKind, &str); 8] = [
+const VARIANT_MOBS: [(EntityModelKind, &str); 9] = [
     (EntityModelKind::Cat, "minecraft:cat"),
     (EntityModelKind::Wolf, "minecraft:wolf"),
     (EntityModelKind::Frog, "minecraft:frog"),
@@ -1846,6 +1846,8 @@ const VARIANT_MOBS: [(EntityModelKind, &str); 8] = [
         EntityModelKind::TropicalFishLarge,
         "minecraft:tropical_fish",
     ),
+    // M288 — the invulnerable sheet, chosen from `DATA_ID_INV`.
+    (EntityModelKind::Wither, "minecraft:wither"),
 ];
 
 /// Every texture key a kind lists — M64's mobs vary their *first* slot, M68's
@@ -1901,7 +1903,7 @@ fn run_variant_check(
     c.record(
         "n1.every_declared_variant_sheet_baked_at_its_bases_size",
         // M223: 52 → 68, the eight boat and eight chest-boat woods.
-        missing.is_empty() && wrong_size.is_empty() && declared.len() == 68,
+        missing.is_empty() && wrong_size.is_empty() && declared.len() == 69,
         format!(
             "{} declared, {} baked, {} missing {missing:?}, {} the wrong size \
              {wrong_size:?}. Size is not a formality: a variant reuses its \

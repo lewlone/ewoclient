@@ -731,6 +731,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     session.end_crystal_type_id = data.entity_types.id_of("minecraft:end_crystal");
     session.tnt_type_id = data.entity_types.id_of("minecraft:tnt");
     session.creeper_type_id = data.entity_types.id_of("minecraft:creeper");
+    session.wither_type_id = data.entity_types.id_of("minecraft:wither");
     session.block_display_type_id = data.entity_types.id_of("minecraft:block_display");
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).

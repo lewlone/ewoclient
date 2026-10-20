@@ -354,6 +354,9 @@ pub(super) struct RenderCheck {
     /// how many of them filled its swirl sub-range.
     pub(super) powered_wither_frames: usize,
     pub(super) wither_swirl_frames: usize,
+    /// M288 — r146: frames with the invulnerable wither drawn in its
+    /// invulnerable sheet (resolved in the atlas) at its shrunk scale.
+    pub(super) invulnerable_wither_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1119,7 +1122,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 145;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 146;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1320,6 +1323,16 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M288 — r146: `render_check.py` summons a NoAI wither with `Invul`
+        // 220 (NoAI stops `customServerAiStep`, so it never counts down or
+        // explodes). The client reads `DATA_ID_INV` and draws it in
+        // `wither_invulnerable.png` at `(2 - 219.x / 220 · 0.5) / 2` of its
+        // size. Both were missing until M288.
+        row(
+            "r146 an invulnerable wither drew shrunk in its invulnerable sheet",
+            self.invulnerable_wither_frames >= 1,
+            format!("{} frames drew it", self.invulnerable_wither_frames),
         );
         // M287 — r145: `render_check.py` summons a NoAI wither at 100 of its
         // 300 health. The client's `isPowered` (health <= max / 2, the max
@@ -5290,6 +5303,12 @@ impl LiveApp {
                             });
                         if due {
                             if let Some(s) = self.session.as_mut() {
+                                // M288 — r142's control: face south first, so
+                                // the bed camera's -90 (the west bed's) cannot
+                                // coincide with wherever an earlier tail stage
+                                // left the bot looking (it once left it at -90
+                                // exactly, and the row failed closed).
+                                s.player.yaw = 0.0;
                                 let _ = s.use_item_on(x, y, z, 1);
                             }
                             if let Some(c) = self.check.as_mut() {

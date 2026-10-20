@@ -3900,6 +3900,10 @@ pub(super) fn collect_entities<'a>(
         // M277 — `CreeperRenderer`'s `state.swelling`.
         let creeper_swelling = (name == "minecraft:creeper")
             .then(|| session.world.entities.creeper_swelling(id, alpha));
+        // M288 — a wither's invulnerable phase (`DATA_ID_INV`).
+        let wither_inv = (name == "minecraft:wither").then(|| {
+            wither_invulnerable_ticks(session.world.entities.wither_invulnerable(id), alpha)
+        });
         let stand_pose = session.world.entities.armor_stand_pose(id);
         let stand_parts = rewo_gpu::mobs::StandParts {
             arms: stand_flags & 0x04 != 0,
@@ -4049,7 +4053,12 @@ pub(super) fn collect_entities<'a>(
             worn_head: worn_head(session, id, name, item_names, head_skins),
             // M277 — a swelling creeper's flash and swell.
             white_overlay: creeper_swelling.map_or(0.0, creeper_white_overlay),
-            stretch: creeper_swelling.map_or([1.0, 1.0], creeper_stretch),
+            stretch: match (creeper_swelling, wither_inv) {
+                (Some(s), _) => creeper_stretch(s),
+                // M288 — and a wither shrunk by its invulnerable phase.
+                (_, Some(t)) => wither_stretch(t),
+                _ => [1.0, 1.0],
+            },
             // M278 — the Glowing effect's outline, in the team's colour.
             outline: glow_colour(session, id),
             // M285 — a charged creeper's swirl.
@@ -4103,6 +4112,10 @@ pub(super) fn collect_entities<'a>(
             // so the two never mean the same slot. Vanilla first, ETF only
             // where vanilla has nothing to say.
             variant: match vanilla_variant(kind, id, session) {
+                // M288 — the wither's invulnerable sheet, from its ticks.
+                _ if wither_inv.is_some_and(wither_shows_invulnerable) => {
+                    rewo_data::mob_variants::variant_id(WITHER_INVULNERABLE).unwrap_or(0)
+                }
                 0 if !etf.is_empty() => etf_variant(etf, kind, e, id, session, cube_size),
                 v => v,
             },
@@ -4288,6 +4301,34 @@ pub(crate) fn adult_key_of(swap: &rewo_data::baby_texture_table::BabySwap) -> Op
     rewo_data::assets::mob_texture_key(rel)
 }
 
+/// M288 — `WitherBossRenderer.WITHER_INVULNERABLE_LOCATION`.
+pub(crate) const WITHER_INVULNERABLE: &str = "entity/wither/wither_invulnerable.png";
+
+/// M288 — `WitherBossRenderer.extractRenderState`'s
+/// `invulnerableTicks > 0 ? invulnerableTicks - partialTicks : 0`.
+pub(crate) fn wither_invulnerable_ticks(raw: i32, partial: f32) -> f32 {
+    if raw > 0 {
+        raw as f32 - partial
+    } else {
+        0.0
+    }
+}
+
+/// M288 — `WitherBossRenderer.getTextureLocation`: the invulnerable sheet
+/// while `floor(t) > 0` and (`> 80` or not on the off fifth of each ten):
+/// steady for the first 140 ticks of the 220, then blinking.
+pub(crate) fn wither_shows_invulnerable(t: f32) -> bool {
+    let ticks = t.floor() as i32;
+    ticks > 0 && (ticks > 80 || ticks / 5 % 2 != 1)
+}
+
+/// M288 — `WitherBossRenderer.scale`: `2 - t / 220 · 0.5` against the
+/// model's own 2, as `EntityDraw::stretch` (uniform).
+pub(crate) fn wither_stretch(t: f32) -> [f32; 2] {
+    let s = (2.0 - t / 220.0 * 0.5) / 2.0;
+    [s, s]
+}
+
 /// M287 — `WitherBoss.isPowered`: `getHealth() <= getMaxHealth() / 2`, the
 /// max health from the attribute (synced, or the registry's default when the
 /// server never sent it, as vanilla's client reads it). No registry: false.
@@ -4398,6 +4439,30 @@ pub(crate) fn font_data(baked: &assets::BakedAssets) -> Option<FontData<'_>> {
         advance: &f.advance,
         white_texel: f.white_texel,
     })
+}
+
+#[cfg(test)]
+mod wither_phase_tests {
+    use super::*;
+
+    /// M288 — the invulnerable sheet is steady above 80 ticks, then off on
+    /// the odd fifths (`ticks / 5 % 2 == 1`); none at 0. The scale runs
+    /// from 1.5 (relative 0.75) at 220 to the plain 2 at 0.
+    #[test]
+    fn the_withers_invulnerable_phase_blinks_and_shrinks() {
+        assert_eq!(wither_invulnerable_ticks(0, 0.5), 0.0);
+        assert_eq!(wither_invulnerable_ticks(220, 0.25), 219.75);
+        assert!(wither_shows_invulnerable(219.75));
+        assert!(wither_shows_invulnerable(81.0));
+        assert!(wither_shows_invulnerable(80.0), "80 / 5 = 16, even: on");
+        assert!(!wither_shows_invulnerable(75.0), "75 / 5 = 15, odd: off");
+        assert!(!wither_shows_invulnerable(79.9), "floor 79 / 5 = 15: off");
+        assert!(wither_shows_invulnerable(70.0));
+        assert!(!wither_shows_invulnerable(0.5), "floor 0: none");
+        assert_eq!(wither_stretch(220.0), [0.75, 0.75]);
+        assert_eq!(wither_stretch(0.0), [1.0, 1.0]);
+        assert!(rewo_data::mob_variants::variant_id(WITHER_INVULNERABLE).is_some_and(|v| v != 0));
+    }
 }
 
 #[cfg(test)]

@@ -1477,6 +1477,22 @@ impl LiveApp {
                     rc.swirl_frames += 1;
                 }
             }
+            // M288 — r146: the staged invulnerable wither drew shrunk in its
+            // invulnerable sheet, which the atlas holds.
+            let inv_variant =
+                rewo_data::mob_variants::variant_id(super::entities::WITHER_INVULNERABLE)
+                    .unwrap_or(0);
+            let in_atlas = state.world_renderer.entity_pass().is_some_and(|p| {
+                p.variant_offsets(rewo_gpu::mobs::EntityModelKind::Wither, inv_variant)
+                    .is_some()
+            });
+            for d in draws.iter().filter(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Wither && d.variant == inv_variant
+            }) {
+                if in_atlas && (0.74..0.76).contains(&d.stretch[0]) {
+                    rc.invulnerable_wither_frames += 1;
+                }
+            }
             // M287 — r145: the staged wither (at half health) drew its armour
             // swirl on its own sheet.
             if draws

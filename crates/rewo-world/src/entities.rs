@@ -1503,6 +1503,10 @@ pub struct MobState {
     /// M285 — `Creeper.DATA_IS_POWERED` (index 17, BOOLEAN): a charged
     /// creeper. `Creeper` declares `DATA_SWELL_DIR` (16) first.
     pub creeper_powered: bool,
+    /// M288 — `WitherBoss.DATA_ID_INV` (index 19, INT): the invulnerable
+    /// ticks of a freshly built wither (0 otherwise). `WitherBoss` declares
+    /// the three head targets (16-18) first.
+    pub wither_invulnerable: i32,
     /// The mob's synched texture variant (M64), if it has one.
     ///
     /// **The units differ by mob and only the caller knows which**: for a cat,
@@ -2819,6 +2823,16 @@ impl EntityTable {
     /// untracked entity reads as a creaking that has not woken.
     pub fn creaking_active(&self, id: i32) -> bool {
         self.mob_state.get(&id).is_some_and(|s| s.creaking_active)
+    }
+
+    /// M288 — `WitherBoss.DATA_ID_INV`. Kind-gated by the caller.
+    pub fn set_wither_invulnerable(&mut self, id: i32, ticks: i32) {
+        self.mob_state.entry(id).or_default().wither_invulnerable = ticks;
+    }
+
+    /// M288 — `WitherBoss.getInvulnerableTicks()`; the synched default is 0.
+    pub fn wither_invulnerable(&self, id: i32) -> i32 {
+        self.mob_state.get(&id).map_or(0, |s| s.wither_invulnerable)
     }
 
     /// M285 — `Creeper.DATA_IS_POWERED`. Kind-gated by the caller.
