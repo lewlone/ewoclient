@@ -973,6 +973,11 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M320 — r175: the staged baby piglin and baby zombified piglin.
+            for d in draws.iter() {
+                c.baby_piglins.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::PiglinBaby;
+                c.baby_piglins.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::ZombifiedPiglinBaby;
+            }
             // M319 — r174: the staged baby drowned, as its own model.
             if draws
                 .iter()

@@ -2130,6 +2130,7 @@ this shape once.
 | M317 (2026-10-20) — a baby zombie and a baby husk draw as BabyZombieModel | **r172** | — | — |
 | M318 (2026-10-20) — a baby villager draws as its own model | **r173** | — | — |
 | M319 (2026-10-20) — a baby drowned draws as its own model | **r174** | — | — |
+| M320 (2026-10-20) — a baby piglin and a baby zombified piglin draw as BabyPiglinModel | **r175** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

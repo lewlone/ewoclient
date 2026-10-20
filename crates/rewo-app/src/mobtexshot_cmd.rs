@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 45;
+const EXPECTED_WITNESSES: usize = 46;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -183,9 +183,10 @@ const MIN_DISCRIMINATING: usize = 72;
 /// grades it up close), (M315) the baby turtle, a quarter of a block (m42
 /// grades it up close), (M316) the polar bear cub (m43 grades it up
 /// close), (M317) the baby zombie and baby husk (n1/n2 grade the baby
-/// zombie up close), (M318) the baby villager (m44), and (M319) the baby
-/// drowned (m45). A nineteenth means something stopped drawing.
-const MAX_SMALL: usize = 18;
+/// zombie up close), (M318) the baby villager (m44), (M319) the baby
+/// drowned (m45), and (M320) a baby piglin (m46). A twentieth means
+/// something stopped drawing.
+const MAX_SMALL: usize = 19;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -3385,6 +3386,72 @@ fn run_check(
             db_bad.map(|c| format!("#{c:06x}")),
             db_outer_only
         ),
+    ));
+
+    // m46 — M320: both baby piglins draw, every pixel producible by their
+    // own sheet. (The mesh and texel layout are pinned by the unit test
+    // `the_baby_piglin_is_its_own_model`.) Until M320 the baby piglin was the
+    // half-size adult and the baby zombified piglin the adult mesh wearing
+    // the baby sheet's UV offset.
+    let mut pgst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.0, -2.2),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    pgst.wr.set_entities(&[], pgst.right, pgst.up, 0.0);
+    pgst.off
+        .render(gpu, Some((&mut pgst.wr, pgst.vp)), &ov, BG)?;
+    let pg_empty = pgst.off.read_rgba(gpu)?;
+    let mut pg_rows = Vec::new();
+    let mut pg_ok = true;
+    for (kind, key) in [
+        (EntityModelKind::PiglinBaby, "piglin_baby"),
+        (
+            EntityModelKind::ZombifiedPiglinBaby,
+            "zombified_piglin_baby",
+        ),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        pgst.wr
+            .set_entities(&[neutral_draw(kind)], pgst.right, pgst.up, 0.0);
+        pgst.off
+            .render(gpu, Some((&mut pgst.wr, pgst.vp)), &ov, BG)?;
+        let frame = pgst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pg_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        pg_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        pg_rows.push(format!(
+            "{key}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    pgst.destroy(gpu);
+    w.push(wit(
+        "m46.both_baby_piglins_draw_from_their_own_sheets",
+        pg_ok,
+        format!("{} (want >= 200 px each, none foreign)", pg_rows.join("; ")),
     ));
 
     // ---- report ----------------------------------------------------------

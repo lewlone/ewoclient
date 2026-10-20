@@ -1551,11 +1551,15 @@ pub enum EntityModelKind {
     /// M319 — `BabyDrownedModel` (`BabyZombieModel`'s layer) with its outer
     /// layer, swapped in for a baby.
     DrownedBaby,
+    /// M320 — `BabyPiglinModel` (`PIGLIN_BABY`), and the zombified piglin's
+    /// on the same layer, swapped in for a baby.
+    PiglinBaby,
+    ZombifiedPiglinBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 108;
+    pub const COUNT: usize = 110;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1664,6 +1668,8 @@ impl EntityModelKind {
         EntityModelKind::HuskBaby,
         EntityModelKind::VillagerBaby,
         EntityModelKind::DrownedBaby,
+        EntityModelKind::PiglinBaby,
+        EntityModelKind::ZombifiedPiglinBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1773,6 +1779,8 @@ impl EntityModelKind {
             EntityModelKind::HuskBaby => "husk_baby",
             EntityModelKind::VillagerBaby => "villager_baby",
             EntityModelKind::DrownedBaby => "drowned_baby",
+            EntityModelKind::PiglinBaby => "piglin_baby",
+            EntityModelKind::ZombifiedPiglinBaby => "zombified_piglin_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1822,6 +1830,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::HuskBaby
                 | EntityModelKind::VillagerBaby
                 | EntityModelKind::DrownedBaby
+                | EntityModelKind::PiglinBaby
+                | EntityModelKind::ZombifiedPiglinBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2713,6 +2723,18 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::DrownedBaby,
         textures: &["drowned_baby", "drowned_outer_baby"],
         build: drowned_baby,
+    },
+    // M320 — `PiglinRenderer.PIGLIN_BABY_LOCATION` and
+    // `ZombifiedPiglinRenderer.BABY_ZOMBIFIED_PIGLIN_LOCATION`.
+    MobDef {
+        kind: EntityModelKind::PiglinBaby,
+        textures: &["piglin_baby"],
+        build: piglin_baby,
+    },
+    MobDef {
+        kind: EntityModelKind::ZombifiedPiglinBaby,
+        textures: &["zombified_piglin_baby"],
+        build: zombified_piglin_baby,
     },
 ];
 
@@ -4705,6 +4727,101 @@ fn piglin_like(arms_forward: bool) -> Model {
         NONE,
     );
     b.finish(1.0)
+}
+
+/// M320 — `BabyPiglinModel.createBodyLayer()` (64 x 64): the body, the head
+/// (a 9 x 6 x 7 box and its snout, looking), its two ears (each a box tilted
+/// 0.6109 on a child of an ear part at `getDefaultEarAngleInDegrees`' 5
+/// degrees, still as Rewo's adult ears are), 2 x 5 x 3 arms, 3 x 4 x 3 legs.
+/// The zombified piglin's baby is the same layer with the zombie arms.
+fn piglin_baby_like(zombified: bool) -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 13.0),
+        [-3.0, -3.0, -1.0],
+        [6.0, 5.0, 3.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 18.0, -0.5])],
+    );
+    let head = b.part([0.0, 15.0, 0.0], Anim::Head, 1.0);
+    b.cube(
+        head,
+        0,
+        (21.0, 30.0),
+        [-1.5, -3.0, -4.5],
+        [3.0, 1.0, 1.0],
+        NONE,
+    );
+    b.cube(
+        head,
+        0,
+        (0.0, 0.0),
+        [-4.5, -6.0, -3.5],
+        [9.0, 6.0, 7.0],
+        NONE,
+    );
+    let ear = 5.0f32.to_radians();
+    for (uv, tilt, ear_rot, ear_at, child_at) in [
+        (
+            (0.0, 21.0),
+            -0.6109,
+            -ear,
+            [4.2, -4.0, 0.0],
+            [1.0, 1.75, 0.0],
+        ),
+        (
+            (18.0, 13.0),
+            0.6109,
+            ear,
+            [-4.2, -4.0, 0.0],
+            [-1.0, 1.75, 0.0],
+        ),
+    ] {
+        b.cube_f(
+            head,
+            0,
+            uv,
+            [-0.5, -3.0, -2.0],
+            [1.0, 6.0, 4.0],
+            0.0,
+            false,
+            &[
+                Fold::rot([0.0, 0.0, tilt], child_at),
+                Fold::rot([0.0, 0.0, ear_rot], ear_at),
+            ],
+        );
+    }
+    let (arm_r_anim, arm_l_anim) = if zombified {
+        (Anim::UndeadArmRight, Anim::UndeadArmLeft)
+    } else {
+        (Anim::ArmRight, Anim::ArmLeft)
+    };
+    for (name, pivot, anim, uv) in [
+        ("left_arm", [4.0, 15.0, 0.0], arm_l_anim, (28.0, 13.0)),
+        ("right_arm", [-4.0, 15.0, 0.0], arm_r_anim, (10.0, 30.0)),
+    ] {
+        let arm = b.part_named(name, pivot, [0.0; 3], anim, 1.0, None);
+        b.cube(arm, 0, uv, [-1.0, 0.0, -1.5], [2.0, 5.0, 3.0], NONE);
+    }
+    for (pivot, anim, uv) in [
+        ([-1.5, 20.0, 0.0], Anim::LegRight, (22.0, 23.0)),
+        ([1.5, 20.0, 0.0], Anim::LegLeft, (10.0, 23.0)),
+    ] {
+        let leg = b.part(pivot, anim, 1.0);
+        b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 4.0, 3.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+fn piglin_baby() -> Model {
+    piglin_baby_like(false)
+}
+
+fn zombified_piglin_baby() -> Model {
+    piglin_baby_like(true)
 }
 
 fn piglin_normal() -> Model {
@@ -11312,6 +11429,8 @@ mod tests {
                     | EntityModelKind::HuskBaby
                     | EntityModelKind::VillagerBaby
                     | EntityModelKind::DrownedBaby
+                    | EntityModelKind::PiglinBaby
+                    | EntityModelKind::ZombifiedPiglinBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -12429,5 +12548,41 @@ mod baby_drowned_tests {
         };
         assert_eq!(base(&d).len(), base(&z).len());
         assert!(base(&d).iter().all(|q| base(&z).contains(q)));
+    }
+}
+
+#[cfg(test)]
+mod baby_piglin_tests {
+    use super::*;
+
+    /// M320 — `BabyPiglinModel`'s nine boxes; the head box's front samples
+    /// (7, 7)..(16, 13) of its sheet.
+    #[test]
+    fn the_baby_piglin_is_its_own_model() {
+        let m = piglin_baby();
+        assert_eq!(m.quads.len(), 9 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let fronts: Vec<_> = m
+            .quads
+            .iter()
+            .filter(|q| q.part == head && q.facing == Facing::North)
+            .collect();
+        // The head box's front is the widest north face (the snout's is 3 px).
+        let width = |q: &&&RawQuad| {
+            let us = q.uv.iter().map(|u| u[0]);
+            us.clone().fold(f32::MIN, f32::max) - us.fold(f32::MAX, f32::min)
+        };
+        let big = fronts
+            .iter()
+            .max_by(|a, b| width(a).total_cmp(&width(b)))
+            .expect("the head box's front");
+        let span = |i: usize| {
+            big.uv
+                .iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert_eq!((span(0), span(1)), ((7.0, 16.0), (7.0, 13.0)));
+        assert_eq!(zombified_piglin_baby().quads.len(), 9 * 6);
     }
 }

@@ -428,6 +428,9 @@ pub(super) struct RenderCheck {
     pub(super) baby_villager_frames: usize,
     /// M319 — r174: frames on which a baby drowned drew as its own model.
     pub(super) baby_drowned_frames: usize,
+    /// M320 — r175: whether a baby piglin and a baby zombified piglin drew
+    /// as `BabyPiglinModel`.
+    pub(super) baby_piglins: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1193,7 +1196,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 174;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 175;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1393,6 +1396,17 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M320 — r175: `render_check.py` summons a baby piglin and a baby
+        // zombified piglin; both must draw as `BabyPiglinModel` (`mobtexshot
+        // m46`).
+        row(
+            "r175 a baby piglin and a baby zombified piglin drew as BabyPiglinModel",
+            self.baby_piglins.0 && self.baby_piglins.1,
+            format!(
+                "baby piglin seen: {}, baby zombified piglin seen: {}",
+                self.baby_piglins.0, self.baby_piglins.1
             ),
         );
         // M319 — r174: `render_check.py` summons a baby drowned (helmeted

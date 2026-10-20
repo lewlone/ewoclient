@@ -271,6 +271,12 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M320 -- r175. A baby piglin (immune to zombification: the overworld
+    # converts a piglin after 15 s, whatever its AI) and a baby zombified
+    # piglin.
+    "summon minecraft:piglin ~-9 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b,"
+    "IsImmuneToZombification:1b};"
+    "summon minecraft:zombified_piglin ~-6 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b};"
     # M319 -- r174. A baby drowned (helmeted against the sun).
     "summon minecraft:drowned ~-12 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b,"
     "equipment:{head:{id:\"minecraft:leather_helmet\",count:1}}};"
