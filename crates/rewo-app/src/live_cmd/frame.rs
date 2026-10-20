@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M333 — r187: the staged baby bee.
+            c.baby_bee |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::BeeBaby);
             // M332 — r186: the staged ocelot kitten.
             c.ocelot_kitten |= draws
                 .iter()

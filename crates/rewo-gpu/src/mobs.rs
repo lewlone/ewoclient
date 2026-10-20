@@ -1584,11 +1584,13 @@ pub enum EntityModelKind {
     PandaBaby,
     /// M332 — `BabyOcelotModel` (`OCELOT_BABY`, `BabyFelineModel`'s layer).
     OcelotBaby,
+    /// M333 — `BabyBeeModel` (`BEE_BABY`).
+    BeeBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 125;
+    pub const COUNT: usize = 126;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1714,6 +1716,7 @@ impl EntityModelKind {
         EntityModelKind::FoxBaby,
         EntityModelKind::PandaBaby,
         EntityModelKind::OcelotBaby,
+        EntityModelKind::BeeBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1840,6 +1843,7 @@ impl EntityModelKind {
             EntityModelKind::FoxBaby => "fox_baby",
             EntityModelKind::PandaBaby => "panda_baby",
             EntityModelKind::OcelotBaby => "ocelot_baby",
+            EntityModelKind::BeeBaby => "bee_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1906,6 +1910,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::FoxBaby
                 | EntityModelKind::PandaBaby
                 | EntityModelKind::OcelotBaby
+                | EntityModelKind::BeeBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2907,6 +2912,13 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::OcelotBaby,
         textures: &["ocelot_baby"],
         build: feline_baby,
+    },
+    // M333 — the baby bee's calm sheet (Rewo's adult bee draws no angry or
+    // nectar sheet either).
+    MobDef {
+        kind: EntityModelKind::BeeBaby,
+        textures: &["bee_baby"],
+        build: bee_baby,
     },
 ];
 
@@ -5683,6 +5695,95 @@ fn feline_baby() -> Model {
     ] {
         let leg = b.part(pivot, anim, amp);
         b.cube(leg, 0, uv, [-0.5, 0.0, -1.0], [1.0, 2.0, 2.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M333 — `BabyBeeModel.createBodyLayer()` (32 x 32), in the airborne pose
+/// Rewo's adult bee always takes: on the hovering `bone`, two antennae, a
+/// 4 x 4 x 5 body with its 0-wide stinger, two 3 x 0 x 3 wings and three
+/// 3 x 1 x 0 leg plates. In flight `BeeModel.setupAnim` resets the wings'
+/// `yRot` splay to 0 and flutters them about z, keeping the right wing's
+/// 0.2182 tilt on both, and sets every leg plate's `xRot` to π/4. The left
+/// wing's `texOffs(-3, 9)` only reaches its zero-area faces, which are not
+/// drawn.
+fn bee_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let bone = Fold::at([0.0, 19.6667, -1.8567]);
+    for (uv, min) in [
+        ((6.0, 12.0), [1.0, -1.6667, -2.1633]),
+        ((0.0, 12.0), [-2.0, -1.6667, -2.1933]),
+    ] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            min,
+            [1.0, 2.0, 2.0],
+            0.0,
+            false,
+            &[bone],
+        );
+    }
+    let body = Fold::at([0.0, 1.3333, 2.3567]);
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-2.0, -2.0, -2.5],
+        [4.0, 4.0, 5.0],
+        0.0,
+        false,
+        &[body, bone],
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (13.0, 2.0),
+        [0.0, -0.5, 0.0],
+        [0.0, 1.0, 1.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 0.5, 2.5]), body, bone],
+    );
+    for (x, left, uv, min_x) in [
+        (-1.0, false, (3.0, 9.0), -3.0),
+        (1.0, true, (-3.0, 9.0), 0.0),
+    ] {
+        let wing = b.part_ext(
+            [x, 19.0, -1.0],
+            [0.2182, 0.0, 0.0],
+            Anim::BeeWing { left },
+            1.0,
+            Option::None,
+        );
+        b.cube_f(
+            wing,
+            0,
+            uv,
+            [min_x, 0.0, 0.0],
+            [3.0, 0.0, 3.0],
+            0.0,
+            left,
+            NONE,
+        );
+    }
+    let tuck = Fold::rot([PI / 4.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    for (z, uv) in [
+        (1.8567, (13.0, 0.0)),
+        (2.8567, (13.0, 1.0)),
+        (3.8567, (13.0, 2.0)),
+    ] {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            uv,
+            [-1.5, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            0.0,
+            false,
+            &[tuck, Fold::at([0.0, 3.3333, z]), bone],
+        );
     }
     b.finish(1.0)
 }
@@ -12309,6 +12410,7 @@ mod tests {
                     | EntityModelKind::FoxBaby
                     | EntityModelKind::PandaBaby
                     | EntityModelKind::OcelotBaby
+                    | EntityModelKind::BeeBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13890,5 +13992,42 @@ mod kitten_tests {
         for p in [lh, rf, rh, lf] {
             assert!((p.amp * 1.4 - 1.0).abs() < 1e-6);
         }
+    }
+}
+
+#[cfg(test)]
+mod baby_bee_tests {
+    use super::*;
+
+    /// M333 — `BabyBeeModel` airborne: two antennae and the body (6 faces
+    /// each), the stinger, two wings and three leg plates (2 each); the
+    /// body's front at (5, 5)..(9, 9) of its sheet; both wings fluttering
+    /// from the bone's offset plus their own, tilted 0.2182 with no splay.
+    #[test]
+    fn the_baby_bee_is_its_own_model() {
+        let m = bee_baby();
+        assert_eq!(m.quads.len(), 3 * 6 + 6 * 2);
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m
+            .quads
+            .iter()
+            .any(|q| q.facing == Facing::North
+                && (span(q, 0), span(q, 1)) == ((5.0, 9.0), (5.0, 9.0))));
+        let wings: Vec<_> = m
+            .parts
+            .iter()
+            .filter(|p| matches!(p.anim, Anim::BeeWing { .. }))
+            .collect();
+        assert_eq!(wings.len(), 2);
+        for w in wings {
+            assert_eq!(w.rot, [0.2182, 0.0, 0.0]);
+            assert!((w.pivot[1] - (19.6667 - 0.6667)).abs() < 1e-4);
+            assert!((w.pivot[2] - (-1.8567 + 0.8567)).abs() < 1e-4);
+        }
+        assert!(m.quads.iter().all(|q| q.uv.iter().all(|u| u[0] >= 0.0)));
     }
 }

@@ -3686,6 +3686,8 @@ pub(crate) fn baby_model_kind(kind: EntityModelKind, baby: bool) -> EntityModelK
         EntityModelKind::Panda if baby => EntityModelKind::PandaBaby,
         // M332 — `BabyOcelotModel` (the cat's kittens wait for their variants).
         EntityModelKind::Ocelot if baby => EntityModelKind::OcelotBaby,
+        // M333 — `BabyBeeModel`.
+        EntityModelKind::Bee if baby => EntityModelKind::BeeBaby,
         k => k,
     }
 }
@@ -3711,6 +3713,7 @@ pub(crate) fn baby_scales(kind: EntityModelKind) -> (f32, f32) {
         EntityModelKind::HoglinBaby | EntityModelKind::ZoglinBaby => (1.0, 0.5),
         EntityModelKind::StriderBaby | EntityModelKind::FoxBaby => (1.0, 0.5),
         EntityModelKind::PandaBaby | EntityModelKind::OcelotBaby => (1.0, 0.5),
+        EntityModelKind::BeeBaby => (1.0, 0.5),
         _ => (0.5, 0.5),
     }
 }

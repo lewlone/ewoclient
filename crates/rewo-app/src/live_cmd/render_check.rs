@@ -457,6 +457,8 @@ pub(super) struct RenderCheck {
     pub(super) panda_cub: bool,
     /// M332 — r186: whether an ocelot kitten drew as `BabyOcelotModel`.
     pub(super) ocelot_kitten: bool,
+    /// M333 — r187: whether a baby bee drew as `BabyBeeModel`.
+    pub(super) baby_bee: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1222,7 +1224,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 186;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 187;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1423,6 +1425,13 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M333 — r187: `render_check.py` summons a baby bee; it must draw as
+        // `BabyBeeModel` (`mobtexshot m58`).
+        row(
+            "r187 a baby bee drew as BabyBeeModel",
+            self.baby_bee,
+            format!("baby bee seen: {}", self.baby_bee),
         );
         // M332 — r186: `render_check.py` summons an ocelot kitten; it must
         // draw as `BabyOcelotModel` (`mobtexshot m57`).

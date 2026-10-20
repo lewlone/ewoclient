@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 57;
+const EXPECTED_WITNESSES: usize = 58;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -186,10 +186,10 @@ const MIN_DISCRIMINATING: usize = 89;
 /// the last two from three views), and the babies under a quarter block or
 /// thin enough to lose their attributed pixels to their neighbours: turtle,
 /// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
-/// villager and glow squid, (M330) the kit and (M332) the ocelot kitten.
-/// Each baby is graded up close by its own witness (m42..m57, n1/n2). A
-/// twentieth means something stopped drawing.
-const MAX_SMALL: usize = 19;
+/// villager and glow squid, (M330) the kit, (M332) the ocelot kitten and
+/// (M333) the baby bee. Each baby is graded up close by its own witness
+/// (m42..m58, n1/n2). A twenty-first means something stopped drawing.
+const MAX_SMALL: usize = 20;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -4122,6 +4122,61 @@ fn run_check(
         format!(
             "{oc_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             oc_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m58 — M333: the baby bee draws, every pixel producible by its own
+    // sheet; the mesh rests on `the_baby_bee_is_its_own_model`.
+    let mut bbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.7, 0.7, -0.7),
+        Vec3::new(0.0, 0.25, 0.0),
+    )?;
+    bbst.wr.set_entities(&[], bbst.right, bbst.up, 0.0);
+    bbst.off
+        .render(gpu, Some((&mut bbst.wr, bbst.vp)), &ov, BG)?;
+    let bb_empty = bbst.off.read_rgba(gpu)?;
+    let bb_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "bee_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    bbst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::BeeBaby)],
+        bbst.right,
+        bbst.up,
+        0.0,
+    );
+    bbst.off
+        .render(gpu, Some((&mut bbst.wr, bbst.vp)), &ov, BG)?;
+    let bb_frame = bbst.off.read_rgba(gpu)?;
+    bbst.destroy(gpu);
+    let (mut bb_px, mut bb_bad) = (0usize, None);
+    for (p, e) in bb_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bb_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        bb_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if bb_bad.is_none() && !explains(&bb_sheet, c) {
+            bb_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m58.the_baby_bee_draws_from_its_own_sheet",
+        !bb_sheet.is_empty() && bb_px >= 200 && bb_bad.is_none(),
+        format!(
+            "{bb_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            bb_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

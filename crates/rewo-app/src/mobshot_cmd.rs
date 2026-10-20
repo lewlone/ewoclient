@@ -283,8 +283,9 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// the dolphin calf. M325: 321 → 324, the baby zombie villager. M326: 324 →
 /// 330, the baby squids. M327: 330 → 336, the hoglet and the baby zoglin.
 /// M328: 336 → 339, the baby strider. M330: 339 → 342, the kit. M331: 342
-/// → 345, the panda cub. M332: 345 → 348, the ocelot kitten.
-const EXPECTED_MOB_VIEWS: usize = 348;
+/// → 345, the panda cub. M332: 345 → 348, the ocelot kitten. M333: 348 →
+/// 351, the baby bee.
+const EXPECTED_MOB_VIEWS: usize = 351;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind): each one is a mob this gate does NOT grade.
