@@ -172,43 +172,34 @@ const ITEM_PX: u32 = 16;
 /// floor is now stated the other way round — the two escape buckets are
 /// **pinned at their measured sizes** and the sweep must account for every
 /// kind — which turns "a mob stopped rendering" from a SKIP into a red gate.
-const MIN_GRADED: usize = 82;
-const MIN_DISCRIMINATING: usize = 72;
-/// Kinds too small to grade at 1600x900, measured: fox, tadpole, cod, salmon,
-/// tropical_fish x2, parrot, allay, copper_golem, and (M238) armor_stand,
-/// whose 2-px sticks draw under the floor (mobshot grades it from three
-/// views), and (M252) minecart, a low open box that draws under the floor in
-/// the crowd (mobshot grades it from three views too), and (M307) the adult
-/// sulfur cube, half a block at size 1 under its translucent shell (m37
-/// grades it up close), (M315) the baby turtle, a quarter of a block (m42
-/// grades it up close), (M316) the polar bear cub (m43 grades it up
-/// close), (M317) the baby zombie and baby husk (n1/n2 grade the baby
-/// zombie up close), (M318) the baby villager (m44), (M319) the baby
-/// drowned (m45), (M320) a baby piglin (m46), and (M321) the mooshroom calf
-/// (m47) and the small sulfur cube: the two calves' cells shrank every cell
-/// of the crowd and put it under the floor (measured against the M321 crowd
-/// without the calves, 19; m37 grades it up close), and (M322) the piglet
-/// and the chick (m48), (M323) the lamb (m49), (M324) the dolphin calf
-/// (m50), (M325) the baby zombie villager (m51), (M326) both baby squids
-/// (m52), and (M328) the baby strider (m54), whose cell shrank the crowd's
-/// again: cow_baby and raft fell under the floor and sulfur_cube_small rose
-/// back over it. A thirty-first means something stopped drawing.
-const MAX_SMALL: usize = 30;
+///
+/// M329 re-measured all four at the crowd's 2400 x 1350 (see `lw`/`lh`).
+/// At 1600 x 900 every new kind had begun moving other kinds between the
+/// buckets: the camera backs off by a row's depth per ten kinds, so each row
+/// shrank every cell, and M321 and M328 each pushed a kind that still drew
+/// fine under the pixel floor. The bigger frame grades 104 kinds where the
+/// smaller graded 91.
+const MIN_GRADED: usize = 104;
+const MIN_DISCRIMINATING: usize = 89;
+/// Kinds too small to grade in the 2400 x 1350 crowd, measured at M329: fox,
+/// tadpole, cod, tropical_fish x2, minecart and armor_stand (mobshot grades
+/// the last two from three views), and the babies under a quarter block or
+/// thin enough to lose their attributed pixels to their neighbours: turtle,
+/// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
+/// villager and glow squid. Each baby is graded up close by its own witness
+/// (m42..m54, n1/n2). An eighteenth means something stopped drawing.
+const MAX_SMALL: usize = 17;
 /// Kinds whose whole render some *other* single sheet could also explain,
-/// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
-/// (both directions) and piglin/piglin_brute — plus, since M175 baked the
-/// same-size baby sheets, dolphin/dolphin_baby (the baby shares the adult's
-/// grey palette outright). Sound but not discriminating, so the count is
-/// pinned rather than left to drift. M223 added boat/chest_boat and
-/// raft/chest_raft: the same wood sheet drawn on two models (and the floors
-/// above rose by the four new kinds, two of them discriminating). M316 added
-/// polar_bear/polar_bear_baby: the cub's sheet is the adult's white fur.
-/// M321 added cow_baby/cow (the calf's sheet repaints the adult's palette)
-/// and happy_ghast_baby/happy_ghast, which the smaller crowd cells left too
-/// few colours to tell apart (9 without the calves). M326 added squid/
-/// squid_baby: the baby's sheet, baked from M326 on, holds the adult's
-/// colours. M327 added zoglin_baby/zoglin (the hoglet's is told apart).
-const MAX_AMBIGUOUS: usize = 13;
+/// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
+/// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
+/// boat/chest_boat and raft/chest_raft (one wood sheet on two models), and the
+/// adult/baby pairs whose baby sheet repaints the adult's palette: dolphin,
+/// polar bear (both ways), squid (both ways), cow_baby, sheep_baby and
+/// strider_baby. The imposter named for a kind can change between runs (the
+/// sheets are a hash map; any one that explains it is reported), the count
+/// does not. Sound but not discriminating, so the count is pinned rather than
+/// left to drift.
+const MAX_AMBIGUOUS: usize = 15;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -792,7 +783,10 @@ fn run_check(
 
     // ---- the whole cast in one draw list ---------------------------------
     let cols = 10usize;
-    let (lw, lh) = (1600u32, 900u32);
+    // M329: 2400 x 1350, not 1600 x 900. The camera backs off by a row per
+    // ten kinds, so a bigger cast shrinks every cell; at the smaller frame
+    // new kinds had begun pushing others under `MIN_PIXELS`.
+    let (lw, lh) = (2400u32, 1350u32);
     let rows = kinds_all.len().div_ceil(cols) as f32;
     let center = Vec3::new(0.0, 2.0, -(rows - 1.0) * GRID_Z / 2.0);
     let eye = center + Vec3::new(0.0, 13.0, rows * GRID_Z * 0.6 + 16.0);
