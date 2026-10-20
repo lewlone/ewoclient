@@ -4003,6 +4003,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M358 — grazing sheep (2026-10-21)
+
+No sheep ever ate: entity event 10 (`Sheep.handleEntityEvent`:
+`eatAnimationTick = 40`) was unmodelled. It now maps (on the sheep,
+`EntityClasses::is_sheep`) to `EntityEvent::SheepEat`; the app turns the
+receipt tick into the eat clock and vanilla's `getHeadEatPositionScale` /
+`getHeadEatAngleScale` (`sheep_eat_pose`), and `Anim::SheepHead`
+(`SheepModel.setupAnim`, the fleece's `SheepFurModel` too) lowers the head
+by position · 9 · the age scale and sets its `xRot`, the look otherwise.
+`docs/rewo/rest-pose-audit-2026-10-21.md` holds a read-only audit of every
+adult mob against the decompile (after M357's tail tip): its confirmed
+findings are the next milestones' list.
+
+**Unit tests**: the eat clock's three phases and its end; the head's look,
+angle and drop (a lamb's halved). **mobtexshot m80**: a grazing sheep and lamb
+move their silhouettes. **r212**: lambs with their AI on are drawn grazing
+(`EatBlockGoal` grazes a lamb about once every fifty ticks).
+
 ### M357 — sitting cats, and the feline's tail and gait (2026-10-21)
 
 No cat ever sat, every cat's and ocelot's tail tip hung straight down through
