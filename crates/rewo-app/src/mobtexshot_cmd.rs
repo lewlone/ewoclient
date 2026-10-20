@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 56;
+const EXPECTED_WITNESSES: usize = 57;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -186,10 +186,10 @@ const MIN_DISCRIMINATING: usize = 89;
 /// the last two from three views), and the babies under a quarter block or
 /// thin enough to lose their attributed pixels to their neighbours: turtle,
 /// husk, villager, drowned, piglin, piglet, chick, dolphin calf, zombie
-/// villager and glow squid, and (M330) the kit. Each baby is graded up close
-/// by its own witness (m42..m55, n1/n2). A nineteenth means something stopped
-/// drawing.
-const MAX_SMALL: usize = 18;
+/// villager and glow squid, (M330) the kit and (M332) the ocelot kitten.
+/// Each baby is graded up close by its own witness (m42..m57, n1/n2). A
+/// twentieth means something stopped drawing.
+const MAX_SMALL: usize = 19;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -4066,6 +4066,62 @@ fn run_check(
         format!(
             "{pd_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             pd_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+
+    // m57 — M332: the ocelot kitten draws, every pixel producible by its
+    // own sheet; the mesh and walk rest on
+    // `the_kitten_is_its_own_model_on_vanilla_s_walk`.
+    let mut ocst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.8, 0.6, -0.8),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    ocst.wr.set_entities(&[], ocst.right, ocst.up, 0.0);
+    ocst.off
+        .render(gpu, Some((&mut ocst.wr, ocst.vp)), &ov, BG)?;
+    let oc_empty = ocst.off.read_rgba(gpu)?;
+    let oc_sheet: HashSet<u32> = baked
+        .mob_textures
+        .iter()
+        .find(|t| t.key == "ocelot_baby")
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    ocst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::OcelotBaby)],
+        ocst.right,
+        ocst.up,
+        0.0,
+    );
+    ocst.off
+        .render(gpu, Some((&mut ocst.wr, ocst.vp)), &ov, BG)?;
+    let oc_frame = ocst.off.read_rgba(gpu)?;
+    ocst.destroy(gpu);
+    let (mut oc_px, mut oc_bad) = (0usize, None);
+    for (p, e) in oc_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(oc_empty.as_chunks::<4>().0)
+    {
+        if p[..3] == e[..3] {
+            continue;
+        }
+        oc_px += 1;
+        let c = pack(p[0], p[1], p[2]);
+        if oc_bad.is_none() && !explains(&oc_sheet, c) {
+            oc_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m57.the_ocelot_kitten_draws_from_its_own_sheet",
+        !oc_sheet.is_empty() && oc_px >= 200 && oc_bad.is_none(),
+        format!(
+            "{oc_px} px (want >= 200), first colour its sheet cannot produce {:?}",
+            oc_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

@@ -271,6 +271,8 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M332 -- r186. An ocelot kitten.
+    "summon minecraft:ocelot ~39 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000};"
     # M331 -- r185. A panda cub (the normal gene, so it draws the base
     # sheet Rewo knows).
     "summon minecraft:panda ~36 ~ ~21 {NoAI:1b,Silent:1b,Age:-24000,"

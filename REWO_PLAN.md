@@ -2141,6 +2141,7 @@ this shape once.
 | M328 (2026-10-20) — a baby strider draws as BabyStriderModel | **r183** | — | — |
 | M330 (2026-10-20) — a kit draws as BabyFoxModel | **r184** | — | — |
 | M331 (2026-10-20) — a panda cub draws as BabyPandaModel | **r185** | — | — |
+| M332 (2026-10-20) — an ocelot kitten draws as BabyOcelotModel | **r186** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

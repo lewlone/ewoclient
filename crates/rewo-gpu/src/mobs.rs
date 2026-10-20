@@ -1582,11 +1582,13 @@ pub enum EntityModelKind {
     FoxBaby,
     /// M331 — `BabyPandaModel` (`PANDA_BABY`).
     PandaBaby,
+    /// M332 — `BabyOcelotModel` (`OCELOT_BABY`, `BabyFelineModel`'s layer).
+    OcelotBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 124;
+    pub const COUNT: usize = 125;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1711,6 +1713,7 @@ impl EntityModelKind {
         EntityModelKind::StriderBaby,
         EntityModelKind::FoxBaby,
         EntityModelKind::PandaBaby,
+        EntityModelKind::OcelotBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1836,6 +1839,7 @@ impl EntityModelKind {
             EntityModelKind::StriderBaby => "strider_baby",
             EntityModelKind::FoxBaby => "fox_baby",
             EntityModelKind::PandaBaby => "panda_baby",
+            EntityModelKind::OcelotBaby => "ocelot_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1901,6 +1905,7 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::StriderBaby
                 | EntityModelKind::FoxBaby
                 | EntityModelKind::PandaBaby
+                | EntityModelKind::OcelotBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2896,6 +2901,12 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::PandaBaby,
         textures: &["panda_baby"],
         build: panda_baby,
+    },
+    // M332 — the ocelot kitten's sheet.
+    MobDef {
+        kind: EntityModelKind::OcelotBaby,
+        textures: &["ocelot_baby"],
+        build: feline_baby,
     },
 ];
 
@@ -5617,6 +5628,61 @@ fn panda_baby() -> Model {
     ] {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 2.0, 3.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M332 — `BabyFelineModel.createBabyLayer()` (32 x 32), the ocelot
+/// kitten's (and, once Rewo draws cat variants for kittens, the cat's): a
+/// 5 x 4 x 4 head (looking) with its ears and nose, a 4 x 3 x 7 body, a tail
+/// tilted -0.5672 (its second segment has no box), and four 1 x 2 x 2 legs.
+///
+/// The legs follow `BabyFelineModel.setupAnim`'s walk exactly: amplitude 1.0
+/// (so `amp` undoes `Anim`'s 1.4), the left hind and right front leg in phase
+/// on `cos(f)`, the other two on `cos(f + π)`. `Anim` names its phases after
+/// the quadruped's legs, so the left hind leg takes `QuadHindRight`'s.
+/// Sitting, crouching, sprinting and lying down are not posed, as Rewo's
+/// adult feline's are not.
+fn feline_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    let head = b.part([0.0, 20.0, -3.125], Anim::Head, 1.0);
+    for (uv, min, dims) in [
+        ((0.0, 0.0), [-2.5, -3.0, -2.875], [5.0, 4.0, 4.0]),
+        ((18.0, 0.0), [-2.0, -4.0, -0.875], [1.0, 1.0, 2.0]),
+        ((24.0, 0.0), [1.0, -4.0, -0.875], [1.0, 1.0, 2.0]),
+        ((18.0, 3.0), [-1.5, -1.0, -3.875], [3.0, 2.0, 1.0]),
+    ] {
+        b.cube(head, 0, uv, min, dims, NONE);
+    }
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 8.0),
+        [-2.0, -1.5, -3.5],
+        [4.0, 3.0, 7.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 20.5, 0.5])],
+    );
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 18.0),
+        [-0.5, -0.107, 0.0849],
+        [1.0, 1.0, 5.0],
+        0.0,
+        false,
+        &[Fold::rot([-0.567232, 0.0, 0.0], [0.0, 19.107, 3.9151])],
+    );
+    let amp = 1.0 / 1.4;
+    for (pivot, anim, uv) in [
+        ([1.0, 22.0, -1.5], Anim::QuadFrontRight, (18.0, 18.0)),
+        ([-1.0, 22.0, -1.5], Anim::QuadFrontLeft, (12.0, 18.0)),
+        ([1.0, 22.0, 2.5], Anim::QuadHindRight, (18.0, 22.0)),
+        ([-1.0, 22.0, 2.5], Anim::QuadHindLeft, (12.0, 22.0)),
+    ] {
+        let leg = b.part(pivot, anim, amp);
+        b.cube(leg, 0, uv, [-0.5, 0.0, -1.0], [1.0, 2.0, 2.0], NONE);
     }
     b.finish(1.0)
 }
@@ -12242,6 +12308,7 @@ mod tests {
                     | EntityModelKind::StriderBaby
                     | EntityModelKind::FoxBaby
                     | EntityModelKind::PandaBaby
+                    | EntityModelKind::OcelotBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13784,6 +13851,44 @@ mod panda_cub_tests {
             Anim::QuadFrontLeft,
         ] {
             assert_eq!(m.parts.iter().filter(|p| p.anim == a).count(), 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod kitten_tests {
+    use super::*;
+
+    /// M332 — `BabyFelineModel`'s layer: ten boxes, the head box's front at
+    /// (4, 4)..(9, 8) of its sheet; and the walk vanilla's: the left hind
+    /// (+x, +z) and right front (-x, -z) legs share `cos(f)`'s phase, at
+    /// amplitude 1.0 (`Anim`'s 1.4 times `amp`).
+    #[test]
+    fn the_kitten_is_its_own_model_on_vanilla_s_walk() {
+        let m = feline_baby();
+        assert_eq!(m.quads.len(), 10 * 6);
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        assert!(m.quads.iter().any(|q| q.part == head
+            && q.facing == Facing::North
+            && (span(q, 0), span(q, 1)) == ((4.0, 9.0), (4.0, 8.0))));
+        let leg = |x: f32, z: f32| {
+            m.parts
+                .iter()
+                .find(|p| p.pivot[0] == x && p.pivot[2] == z)
+                .unwrap()
+        };
+        let (lh, rf) = (leg(1.0, 2.5), leg(-1.0, -1.5));
+        let (rh, lf) = (leg(-1.0, 2.5), leg(1.0, -1.5));
+        // `Anim`'s cos(f) phase is QuadHindRight / QuadFrontLeft.
+        assert!(matches!(lh.anim, Anim::QuadHindRight) && matches!(rf.anim, Anim::QuadFrontLeft));
+        assert!(matches!(rh.anim, Anim::QuadHindLeft) && matches!(lf.anim, Anim::QuadFrontRight));
+        for p in [lh, rf, rh, lf] {
+            assert!((p.amp * 1.4 - 1.0).abs() < 1e-6);
         }
     }
 }
