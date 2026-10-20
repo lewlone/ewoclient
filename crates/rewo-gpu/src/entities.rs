@@ -319,6 +319,10 @@ pub struct EntityDraw<'a> {
     /// customisation mask's complement): its outer layers hide by them
     /// ([`mobs::Show::AvatarPart`]). 0 shows every layer.
     pub avatar_hidden: u8,
+    /// M311 — `WolfArmorLayer.maybeRenderCracks`: the crack sheet's key
+    /// (`wolf_armor_crackiness_{low,medium,high}`) drawn `armorTranslucent`
+    /// over the body armour's shell; `None` when undamaged or not a wolf.
+    pub body_armor_crack: Option<&'a str>,
     /// M240 — draw [`Self::ground_item`] as `ThrownItemRenderer` does (a
     /// snowball, a pearl, a potion, a fireball, a rocket, the bobber):
     /// scaled and turned to face the camera instead of bobbing and spinning.
@@ -2095,6 +2099,7 @@ impl EntityPass {
                             || k.starts_with("wolf_body/")
                             || k.starts_with("nautilus_body/")
                             || k.starts_with("happy_ghast_body/")
+                            || k.starts_with("wolf_armor_crackiness_")
                             || k.split('/').next().is_some_and(|d| d.ends_with("_saddle"))
                     })
                     .map(|(k, v)| ((*k).to_string(), *v))
@@ -3965,6 +3970,30 @@ impl EntityPass {
                             ],
                             color: [c[0], c[1], c[2], 1.0],
                             light_hurt: [light_r, light_g, light_b, hurt],
+                        });
+                    }
+                }
+            }
+        }
+        // M311 — `maybeRenderCracks`: the crack sheet over the armour's own
+        // shell, `armorTranslucent` (the translucent range, sorted), with
+        // `OverlayTexture.NO_OVERLAY` and untinted.
+        if let (Some(key), Some(_)) = (d.body_armor_crack, d.body_armor) {
+            if let Some(&(ax, ay, _, _)) = self.armor_slots.get(key) {
+                for q in &model.body_shell {
+                    if translucent_out.len() + 6 > MAX_VERTS {
+                        return;
+                    }
+                    let p4 = place(q);
+                    for &i in &[0usize, 1, 2, 0, 2, 3] {
+                        translucent_out.push(Vertex {
+                            pos: p4[i],
+                            uv: [
+                                (ax as f32 + q.uv[i][0]) / ATLAS_W as f32,
+                                (ay as f32 + q.uv[i][1]) / ATLAS_H as f32,
+                            ],
+                            color: [q.shade, q.shade, q.shade, 1.0],
+                            light_hurt: [light_r, light_g, light_b, 0.0],
                         });
                     }
                 }

@@ -3350,6 +3350,42 @@ pub(crate) fn armor_keys<'a>(
 /// [`armor_keys`] resolves a humanoid piece's: the item's asset, its
 /// `horse_body` layer list, each layer's colour (`color_for_layer`, zero for
 /// no draw).
+/// M311 — `Crackiness.WOLF_ARMOR.byFraction((max - damage) / max)`: below
+/// 0.32 of its durability left HIGH, below 0.69 MEDIUM, below 0.95 LOW.
+pub(crate) fn wolf_crack_level(damage: i32, max: i32) -> Option<&'static str> {
+    if max <= 0 {
+        return None;
+    }
+    let left = (max - damage) as f32 / max as f32;
+    if left < 0.32 {
+        Some("wolf_armor_crackiness_high")
+    } else if left < 0.69 {
+        Some("wolf_armor_crackiness_medium")
+    } else if left < 0.95 {
+        Some("wolf_armor_crackiness_low")
+    } else {
+        None
+    }
+}
+
+/// M311 — an adult wolf's worn armour's crack sheet, if it is damaged enough
+/// (`Crackiness.byDamage` reads a damageable stack's damage and maximum; the
+/// maximum is the patch's or the item's prototype's).
+pub(crate) fn wolf_armor_crack(
+    session: &PlaySession,
+    id: i32,
+    kind: EntityModelKind,
+    items: &rewo_data::items::Items,
+) -> Option<&'static str> {
+    if kind != EntityModelKind::Wolf || session.world.entities.is_baby(id) {
+        return None;
+    }
+    let piece = session.world.entities.body_armor(id)?;
+    let (damage, max) = piece.wear?;
+    let max = max.or_else(|| rewo_data::item_props_table::max_damage(items.name(piece.item)?))?;
+    wolf_crack_level(damage, max)
+}
+
 pub(crate) fn body_armor_piece<'a>(
     session: &PlaySession,
     id: i32,
@@ -4319,6 +4355,8 @@ pub(super) fn collect_entities<'a>(
             } else {
                 0
             },
+            // M311 — the wolf armour's cracks.
+            body_armor_crack: wolf_armor_crack(session, id, kind, item_names),
             held_glint: [
                 held_foil(session, id, rewo_world::entities::InteractionHand::MainHand),
                 held_foil(session, id, rewo_world::entities::InteractionHand::OffHand),
@@ -4960,5 +4998,25 @@ mod default_skin_tests {
         ] {
             assert_eq!(default_skin_index(id), want, "{id:032x}");
         }
+    }
+}
+
+#[cfg(test)]
+mod wolf_crack_tests {
+    use super::wolf_crack_level;
+
+    /// M311 — `Crackiness.WOLF_ARMOR`'s thresholds on the 64-point wolf
+    /// armour: 61 left is none, 60 low, 44 medium, 20 high.
+    #[test]
+    fn wolf_armour_cracks_by_its_durability_left() {
+        assert_eq!(wolf_crack_level(0, 64), None);
+        assert_eq!(wolf_crack_level(3, 64), None);
+        assert_eq!(wolf_crack_level(4, 64), Some("wolf_armor_crackiness_low"));
+        assert_eq!(
+            wolf_crack_level(20, 64),
+            Some("wolf_armor_crackiness_medium")
+        );
+        assert_eq!(wolf_crack_level(44, 64), Some("wolf_armor_crackiness_high"));
+        assert_eq!(wolf_crack_level(0, 0), None);
     }
 }

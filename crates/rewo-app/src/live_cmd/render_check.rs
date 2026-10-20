@@ -410,6 +410,8 @@ pub(super) struct RenderCheck {
     /// M310 — r166: frames on which an avatar drew with exactly its hat and
     /// jacket hidden.
     pub(super) hidden_layer_frames: usize,
+    /// M311 — r167: frames on which a wolf drew its armour's high cracks.
+    pub(super) wolf_crack_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1175,7 +1177,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 166;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 167;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1376,6 +1378,15 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M311 — r167: `render_check.py` summons a wolf whose armour has 60 of
+        // its 64 durability spent; the stack's damage must reach the draw as
+        // the high crack sheet (`mobtexshot m39` checks the pixels). No crack
+        // drew until M311.
+        row(
+            "r167 a wolf drew its damaged armour's cracks",
+            self.wolf_crack_frames >= 1,
+            format!("{} frames drew them", self.wolf_crack_frames),
         );
         // M310 — r166: `render_check.py` summons a mannequin with
         // `hidden_layers:["hat","jacket"]`; its synched customisation mask

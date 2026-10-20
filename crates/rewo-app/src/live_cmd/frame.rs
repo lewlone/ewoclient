@@ -973,6 +973,20 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M311 — r167: the staged wolf in badly damaged armour, its high
+            // crack sheet resident.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Wolf
+                    && d.body_armor_crack.is_some_and(|k| {
+                        k == "wolf_armor_crackiness_high"
+                            && state
+                                .world_renderer
+                                .entity_pass()
+                                .is_some_and(|e| e.armor_sheet_resident(k))
+                    })
+            }) {
+                c.wolf_crack_frames += 1;
+            }
             // M310 — r166: the staged mannequin with its hat and jacket hidden
             // (`hidden_layers`): an avatar draw hiding exactly those layers'
             // bits among the six.

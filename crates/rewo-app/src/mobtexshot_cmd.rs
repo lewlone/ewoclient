@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 38;
+const EXPECTED_WITNESSES: usize = 39;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -433,6 +433,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         ridden: false,
         chested: false,
         avatar_hidden: 0,
+        body_armor_crack: None,
         on_fire: None,
         billboard: None,
         allay_dance: None,
@@ -1352,6 +1353,7 @@ fn run_check(
         ridden: false,
         chested: false,
         avatar_hidden: 0,
+        body_armor_crack: None,
         on_fire: Some(rewo_gpu::entities::FireDraw {
             light: [1.0; 3],
             frames: fire_frames,
@@ -2047,6 +2049,7 @@ fn run_check(
     let chested_donkey = dshot(EntityDraw {
         chested: true,
         avatar_hidden: 0,
+        body_armor_crack: None,
         ..neutral_draw(EntityModelKind::Donkey)
     })?;
     dst.destroy(gpu);
@@ -2124,6 +2127,7 @@ fn run_check(
     let l_chested = lshot(EntityDraw {
         chested: true,
         avatar_hidden: 0,
+        body_armor_crack: None,
         ..neutral_draw(EntityModelKind::Llama)
     })?;
     let l_carpet = lshot(EntityDraw {
@@ -2910,6 +2914,75 @@ fn run_check(
         format!(
             "hiding the jacket changes {jacket_px} px (want >= 50), all six layers {all_px} \
              (want more), the transparent hat {hat_px} (want 0)"
+        ),
+    ));
+
+    // m39 — M311: a damaged wolf armour shows its cracks
+    // (`WolfArmorLayer.maybeRenderCracks`, `armorTranslucent`): the high
+    // crack sheet adds translucent vertices and changes pixels, and every
+    // changed pixel lies on the armour (it changed when the armour went on).
+    // No crack drew until M311.
+    const CRACK: &str = "wolf_armor_crackiness_high";
+    let mut kst2 = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.4, 1.2, 0.9),
+        Vec3::new(0.0, 0.55, 0.0),
+    )?;
+    let crack_resident = kst2
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(CRACK));
+    let mut kshot2 = |d: EntityDraw<'_>| -> Result<(Vec<u8>, u32), String> {
+        kst2.wr.set_entities(&[d], kst2.right, kst2.up, 0.0);
+        let n = kst2
+            .wr
+            .entity_pass()
+            .map_or(0, |p| p.translucent_vertex_count());
+        kst2.off
+            .render(gpu, Some((&mut kst2.wr, kst2.vp)), &ov, BG)?;
+        Ok((kst2.off.read_rgba(gpu)?, n))
+    };
+    let mut clayers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    clayers[0] = Some(("wolf_body/armadillo_scute", [1.0, 1.0, 1.0]));
+    let armoured = EntityDraw {
+        body_armor: Some(rewo_gpu::entities::ArmorPiece {
+            layers: clayers,
+            ..Default::default()
+        }),
+        ..neutral_draw(EntityModelKind::Wolf)
+    };
+    let (c_bare, _) = kshot2(neutral_draw(EntityModelKind::Wolf))?;
+    let (c_whole, _) = kshot2(armoured)?;
+    let (c_cracked, c_verts) = kshot2(EntityDraw {
+        body_armor_crack: Some(CRACK),
+        ..armoured
+    })?;
+    kst2.destroy(gpu);
+    let (mut crack_px, mut off_armour) = (0usize, 0usize);
+    for ((a, b), c) in c_cracked
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(c_whole.as_chunks::<4>().0)
+        .zip(c_bare.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        crack_px += 1;
+        if b[..3] == c[..3] {
+            off_armour += 1;
+        }
+    }
+    w.push(wit(
+        "m39.a_damaged_wolf_armour_shows_its_cracks",
+        crack_resident && c_verts > 0 && crack_px >= 20 && off_armour == 0,
+        format!(
+            "{CRACK} resident: {crack_resident}; {c_verts} translucent vertices; {crack_px} px \
+             changed by the cracks (want >= 20), {off_armour} of them off the armour (want 0)"
         ),
     ));
 

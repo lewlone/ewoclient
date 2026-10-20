@@ -1857,7 +1857,23 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         .map(|(_, asset, _)| bake_map_texture(&mut jar, &format!("decorations/{asset}.png")))
         .collect();
     let forcefield = bake_misc_texture(&mut jar, "forcefield.png");
-    let equipment = crate::equipment::EquipmentAssets::load(client_jar);
+    let mut equipment = crate::equipment::EquipmentAssets::load(client_jar);
+    // M311 — `WolfArmorLayer.ARMOR_CRACK_LOCATIONS`: not equipment assets, but
+    // drawn over the wolf armour's shell exactly as its layers are, so they
+    // share the equipment sheets' atlas slots.
+    for level in ["low", "medium", "high"] {
+        if let Some(img) = bake_texture_at(
+            &mut jar,
+            &format!("entity/wolf/wolf_armor_crackiness_{level}.png"),
+        ) {
+            equipment.textures.push(crate::equipment::ArmorTexture {
+                key: format!("wolf_armor_crackiness_{level}"),
+                w: img.w,
+                h: img.h,
+                rgba: img.rgba,
+            });
+        }
+    }
     let trims = crate::equipment::TrimAssets::load(client_jar);
     if hud.is_none() {
         log::warn!("rewo-data: HUD sprites missing — no in-game HUD");

@@ -271,6 +271,10 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M311 -- r167. A wolf in badly damaged armour (60 of 64 spent).
+    "summon minecraft:wolf ~-18 ~ ~18 {NoAI:1b,Silent:1b,"
+    "equipment:{body:{id:\"minecraft:wolf_armor\",count:1,"
+    "components:{\"minecraft:damage\":60}}}};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

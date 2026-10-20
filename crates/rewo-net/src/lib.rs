@@ -3562,6 +3562,8 @@ pub(crate) fn apply_set_equipment(
                     // `ENCHANTMENT_GLINT_OVERRIDE` when present and
                     // `!enchantments.isEmpty()` otherwise.
                     foil: s.components.has_foil(),
+                    wear: (!s.components.unbreakable && !s.components.damage_component_removed)
+                        .then_some((s.components.damage.unwrap_or(0), s.components.max_damage)),
                 }),
             };
             entities.set_armor(eid, index, worn);
@@ -3586,6 +3588,8 @@ pub(crate) fn apply_set_equipment(
                         dye: s.components.dyed_color,
                         trim: s.components.trim,
                         foil: s.components.has_foil(),
+                        wear: (!s.components.unbreakable && !s.components.damage_component_removed)
+                            .then_some((s.components.damage.unwrap_or(0), s.components.max_damage)),
                     }),
                 },
             );
@@ -3605,6 +3609,8 @@ pub(crate) fn apply_set_equipment(
                         dye: s.components.dyed_color,
                         trim: s.components.trim,
                         foil: s.components.has_foil(),
+                        wear: (!s.components.unbreakable && !s.components.damage_component_removed)
+                            .then_some((s.components.damage.unwrap_or(0), s.components.max_damage)),
                     }),
                 },
             );

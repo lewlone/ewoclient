@@ -841,6 +841,11 @@ pub struct WornPiece {
     /// (M50). Third component-patch fact riding the same packet, for the same
     /// reason: the stack is gone by the time a frame is drawn.
     pub foil: bool,
+    /// M311 — `isDamageableItem()`'s inputs off the same patch: `None` for a
+    /// piece that cannot wear (`unbreakable`, or `damage` / `max_damage`
+    /// removed); otherwise `(damage, patched max_damage)`, the damage 0 when
+    /// unpatched and the maximum left to the item's prototype when `None`.
+    pub wear: Option<(i32, Option<i32>)>,
 }
 
 #[derive(Default)]
@@ -4989,6 +4994,7 @@ mod side_state_tests {
                 dye: Some(0x00ff_0000),
                 trim: None,
                 foil: true,
+                wear: None,
             }),
         );
         t.set_head_profile(id, Some("e30=".into()));
@@ -5017,6 +5023,7 @@ mod side_state_tests {
                 dye: None,
                 trim: None,
                 foil: false,
+                wear: None,
             },
         );
         t.saddles.insert(
@@ -5026,6 +5033,7 @@ mod side_state_tests {
                 dye: None,
                 trim: None,
                 foil: false,
+                wear: None,
             },
         );
         t.hurts.insert(id, HurtState::default());

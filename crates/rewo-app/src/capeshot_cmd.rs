@@ -533,6 +533,7 @@ fn worn(item: i32) -> rewo_world::entities::WornPiece {
         dye: None,
         trim: None,
         foil: false,
+        wear: None,
     }
 }
 
@@ -2180,6 +2181,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         ridden: false,
         chested: false,
         avatar_hidden: 0,
+        body_armor_crack: None,
         on_fire: None,
         billboard: None,
         allay_dance: None,

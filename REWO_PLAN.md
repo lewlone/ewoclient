@@ -2122,6 +2122,7 @@ this shape once.
 | M308 (2026-10-20) — a mannequin draws in its default skin | **r164** | — | — |
 | M309 (2026-10-20) — a named mannequin draws in its profile's default skin | **r165** | — | — |
 | M310 (2026-10-20) — a mannequin draws with its hidden layers hidden | **r166** | — | — |
+| M311 (2026-10-20) — a wolf draws its damaged armour's cracks | **r167** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
