@@ -3961,6 +3961,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M315 — the baby turtle (2026-10-20)
+
+The second of the deferred baby models (M314's list): `TurtleRenderer` is an
+`AgeableMobRenderer` and a baby takes `BabyTurtleModel` (`TURTLE_BABY`: a
+4-px shell, a 3-px head and four flat legs) on `turtle_baby.png`, 16 x 16, at
+its own size. `TurtleBaby` is that model, picked by `baby_model_kind`; its
+legs stay at rest as Rewo's adult turtle's do, its head looks. The app's baby
+scaling is now one table, `baby_scales(kind)`: a model of its own takes no
+render scale and its bounds shrink by `getAgeScale` (0.3 for the turtle), and
+every other baby stays the adult at half size. `mobshot` grades 282 views;
+the baby turtle, a quarter block, is m5's thirteenth too-small kind
+(`MAX_SMALL` 13; m42 grades it up close).
+
+**Unit tests**: the model's extent and looking head; `baby_model_kind` and
+`baby_scales` for every baby model and the default. **mobtexshot m42**: beside
+where an adult draws it covers 270 px against 4,813, every colour from its own
+sheet (at four times its size: 4,797, and m42 fails). **r170**: a staged baby
+turtle draws as its own model.
+
 ### M314 — the ghastling (2026-10-20)
 
 A baby happy ghast drew as the adult at Rewo's generic half size, on the
