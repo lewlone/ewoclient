@@ -4004,6 +4004,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M361 — the camera and every entity's rotation blend between ticks (2026-10-21)
+
+Enni's report: riding a horse or camel, and watching arrows, moved "super
+jittery". Two causes, both 20 Hz steps against a per-frame draw. **The
+camera** stood on the tick position (`camera_pose` read `player.x`), while
+the mount it rode was drawn at `render_pos(alpha)`: the mount moved every
+frame and the view twenty times a second, so the mount shook on screen.
+`PlaySession.player_prev` (rolled at the top of `tick()`, snapped by a
+teleport) is now blended into the tick's end, as `Camera.setup` lerps
+`xo → getX()`. **Entity rotations** were drawn raw: `EntityState` now keeps
+`yRotO` / `xRotO` / `yHeadRotO`, and the mob and projectile draws use
+`render_yaw` / `render_pitch` / `render_head_yaw` (`Mth.rotLerp`, the short
+way round). (M360, the villager-family scale, lands after the three bug
+fixes M361–M363.)
+
+**Unit tests**: the camera blend and clamp; `rot_lerp` across ±180°; an
+entity's blended rotations. **r213**: riding, the camera moved on every
+frame its mount moved (6721/6721 and 6972/6972; the unblended-camera mutant 341/5980).
+
 ### M359 — the horse family looks, walks and lifts its tail (2026-10-21)
 
 From the adult rest-pose audit: every horse, donkey, mule, skeleton horse and
