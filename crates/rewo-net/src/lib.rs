@@ -2760,6 +2760,11 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_frame_rotation(eid, r);
         }
     }
+    // Slot 17 RESOLVABLE_PROFILE → `Mannequin.DATA_PROFILE` (M309). No kind
+    // gate: the serializer is the mannequin's alone.
+    if let Some(p) = meta.avatar_profile.clone() {
+        entities.set_avatar_profile(eid, p);
+    }
     // Slot 8 ITEM_STACK → `ItemEntity.DATA_ITEM` (M24b). No kind gate: the
     // serializer is unique to it among the classes that claim slot 8.
     if let Some(stack) = meta.item_stack {

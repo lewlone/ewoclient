@@ -598,11 +598,17 @@ impl LiveApp {
         // (an empty profile, whose id is the nil UUID) and the local player
         // (the inventory preview's).
         let mannequin = self.etypes.id_of("minecraft:mannequin");
-        for (_, e) in session.world.entities.iter() {
+        for (id, e) in session.world.entities.iter() {
             if e.type_id == self.etypes.player_id {
                 self.skins.request_default(e.uuid, e.uuid);
             } else if Some(e.type_id) == mannequin {
-                self.skins.request_default(e.uuid, 0);
+                // M309 — by its synched profile.
+                match super::entities::avatar_skin(session.world.entities.avatar_profile(id)) {
+                    super::entities::AvatarSkin::Real(info) => self.skins.request(e.uuid, &info),
+                    super::entities::AvatarSkin::Default { index, slim } => {
+                        self.skins.request_default_skin(e.uuid, index, slim)
+                    }
+                }
             }
         }
         if let Some(own) = session.own_uuid {
@@ -966,6 +972,14 @@ impl LiveApp {
                 .any(|d| d.fixed_display && skinned(&d.model))
             {
                 c.framed_skin_head_frames += 1;
+            }
+            // M309 — r165: the staged named mannequin (RewoDummyA's offline
+            // UUID picks wide Kai): the wide model in an uploaded skin.
+            if draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Player && d.skin_uv.is_some())
+            {
+                c.named_mannequin_frames += 1;
             }
             // M308 — r164: the staged mannequin (the only avatar in the
             // render check besides the unseen bot): the slim model wearing an

@@ -844,6 +844,53 @@ fn profile_textures(p: &mut PacketReader) -> Option<String> {
     None
 }
 
+/// M309 — a whole `ResolvableProfile.STREAM_CODEC` value, as a mannequin's
+/// `DATA_PROFILE` carries it: [`profile_textures`]'s either and properties,
+/// then `PlayerSkin.Patch` (three optional texture ids, then the optional
+/// model, `true` slim). Consumes all of it, so a metadata parse can go on.
+pub fn read_resolvable_profile(
+    p: &mut PacketReader,
+) -> Option<rewo_world::entities::AvatarProfile> {
+    let mut out = rewo_world::entities::AvatarProfile::default();
+    if p.bool().ok()? {
+        out.id = Some(p.uuid().ok()?);
+        out.name = Some(p.string(16).ok()?);
+    } else {
+        if p.bool().ok()? {
+            out.name = Some(p.string(16).ok()?);
+        }
+        if p.bool().ok()? {
+            out.id = Some(p.uuid().ok()?);
+        }
+    }
+    let n = p.varint().ok()?;
+    if !(0..=16).contains(&n) {
+        return None;
+    }
+    for _ in 0..n {
+        let name = p.string(64).ok()?;
+        let value = p.string(32767).ok()?;
+        if p.bool().ok()? {
+            p.string(1024).ok()?;
+        }
+        if name == "textures" {
+            out.textures = Some(value);
+        }
+    }
+    for i in 0..3 {
+        if p.bool().ok()? {
+            let id = p.string(32767).ok()?;
+            if i == 0 {
+                out.body_texture = Some(id);
+            }
+        }
+    }
+    if p.bool().ok()? {
+        out.model_slim = Some(p.bool().ok()?);
+    }
+    Some(out)
+}
+
 /// Walk one value, reading it out when the client has a use for it.
 ///
 /// Returns `false` only when the shape itself could not be walked (a nested

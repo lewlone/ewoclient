@@ -198,6 +198,70 @@ fn vet(kind: &str, url: String) -> Option<String> {
 /// Returns `None` only when the blob is unreadable or names no texture at
 /// all. Hand-parsed off `serde_json::Value` — no typed schema, since the
 /// blob is small and its shape is fixed.
+/// M309 — `UUIDUtil.createOfflinePlayerUUID(name)`:
+/// `UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(UTF_8))`, a
+/// version-3 (MD5) UUID. What a profile known only by name is keyed by when
+/// nothing resolves it (Rewo resolves nothing: nothing phones home).
+pub fn offline_player_uuid(name: &str) -> u128 {
+    let mut b = md5(format!("OfflinePlayer:{name}").as_bytes());
+    b[6] = (b[6] & 0x0f) | 0x30;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    u128::from_be_bytes(b)
+}
+
+/// RFC 1321 MD5, for [`offline_player_uuid`]; nothing else in the client
+/// needs it.
+fn md5(data: &[u8]) -> [u8; 16] {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    // K[i] = floor(|sin(i + 1)| * 2^32), the RFC's own definition.
+    let k: [u32; 64] =
+        std::array::from_fn(|i| ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32);
+    let mut h = [0x6745_2301u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
+    let mut msg = data.to_vec();
+    let bits = (data.len() as u64).wrapping_mul(8);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bits.to_le_bytes());
+    for chunk in msg.as_chunks::<64>().0 {
+        let m: [u32; 16] = std::array::from_fn(|i| {
+            u32::from_le_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ])
+        });
+        let [mut a, mut b, mut c, mut d] = h;
+        for (i, (&s, &ki)) in S.iter().zip(&k).enumerate() {
+            let (f, g) = match i / 16 {
+                0 => ((b & c) | (!b & d), i),
+                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                2 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | !d), (7 * i) % 16),
+            };
+            let f = f.wrapping_add(a).wrapping_add(ki).wrapping_add(m[g]);
+            a = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(f.rotate_left(s));
+        }
+        for (x, y) in h.iter_mut().zip([a, b, c, d]) {
+            *x = x.wrapping_add(y);
+        }
+    }
+    let mut out = [0u8; 16];
+    for (i, x) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&x.to_le_bytes());
+    }
+    out
+}
+
 pub fn decode_textures_property(value_b64: &str) -> Option<SkinInfo> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(value_b64.trim())
@@ -485,5 +549,33 @@ mod tests {
         let blob = r#"{"textures":{"SKIN":{"url":"http://127.0.0.1/s"}}}"#;
         let b64 = base64::engine::general_purpose::STANDARD.encode(blob);
         assert!(decode_textures_property(&b64).is_none());
+    }
+}
+
+#[cfg(test)]
+mod offline_uuid_tests {
+    use super::{md5, offline_player_uuid};
+
+    fn hex(b: [u8; 16]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// M309 — MD5's own test vectors, and two offline UUIDs (Notch's is the
+    /// widely published `b50ad385-829d-3141-a216-7e7d7539ba7f`).
+    #[test]
+    fn offline_uuids_are_javas_name_based_md5_uuids() {
+        assert_eq!(hex(md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(
+            hex(md5(b"The quick brown fox jumps over the lazy dog")),
+            "9e107d9d372bb6826bd81d3542a419d6"
+        );
+        assert_eq!(
+            offline_player_uuid("Notch"),
+            0xb50ad385_829d_3141_a216_7e7d7539ba7f
+        );
+        assert_eq!(
+            offline_player_uuid("RewoDummyA"),
+            0x97315ae7_6a5b_30d1_9804_ecfe832ae566
+        );
     }
 }

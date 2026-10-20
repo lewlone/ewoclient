@@ -814,6 +814,20 @@ impl CloakAnchor {
 /// The dye rides here rather than being looked up later because it exists only
 /// in the stack's `DataComponentPatch` — the equipment packet is the one place
 /// it is ever seen, and by the time a frame is drawn the stack is gone.
+/// M309 — a mannequin's `DATA_PROFILE` (`ResolvableProfile`): the id and
+/// name of its game profile or partial profile, the `textures` property if
+/// it carries one, and its `PlayerSkin.Patch`'s body texture and model.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AvatarProfile {
+    pub id: Option<u128>,
+    pub name: Option<String>,
+    pub textures: Option<String>,
+    /// The patch's body texture id (`minecraft:entity/player/wide/steve`).
+    pub body_texture: Option<String>,
+    /// The patch's model: `Some(true)` slim, `Some(false)` wide.
+    pub model_slim: Option<bool>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WornPiece {
     pub item: i32,
@@ -966,6 +980,9 @@ pub struct EntityTable {
     /// (`ClientboundSetEquipmentPacket`, slots 0 and 1), by
     /// `InteractionHand`. Cleared on removal.
     hand_profiles: HashMap<i32, [Option<String>; 2]>,
+    /// M309 — a mannequin's synched profile (`Mannequin.DATA_PROFILE`).
+    /// Cleared on removal.
+    avatar_profiles: HashMap<i32, AvatarProfile>,
     /// M294 — the body slot (`EquipmentSlot.BODY`, wire 6): a horse's armour,
     /// a wolf's, a llama's carpet. Cleared on removal.
     body_armor: HashMap<i32, WornPiece>,
@@ -1679,6 +1696,7 @@ impl EntityTable {
             head_profiles,
             stack_profiles,
             hand_profiles,
+            avatar_profiles,
             body_armor,
             saddles,
             dances,
@@ -1717,6 +1735,7 @@ impl EntityTable {
         item_frames.remove(&id);
         stack_profiles.remove(&id);
         hand_profiles.remove(&id);
+        avatar_profiles.remove(&id);
         body_armor.remove(&id);
         saddles.remove(&id);
         attributes.remove(&id);
@@ -2569,6 +2588,17 @@ impl EntityTable {
                 self.head_profiles.remove(&id);
             }
         }
+    }
+
+    /// M309 — a mannequin's synched profile.
+    pub fn set_avatar_profile(&mut self, id: i32, profile: AvatarProfile) {
+        self.avatar_profiles.insert(id, profile);
+    }
+
+    /// M309 — the profile mannequin `id` was last sent, if any (none is the
+    /// empty default profile, which the server never sends).
+    pub fn avatar_profile(&self, id: i32) -> Option<&AvatarProfile> {
+        self.avatar_profiles.get(&id)
     }
 
     /// M289 — a dropped or framed stack's player-head skin (`None` clears).
@@ -4867,6 +4897,7 @@ mod side_state_tests {
             head_profiles,
             stack_profiles,
             hand_profiles,
+            avatar_profiles,
             body_armor,
             saddles,
             dances,
@@ -4909,6 +4940,7 @@ mod side_state_tests {
             head_profiles.contains_key(&id),
             stack_profiles.contains_key(&id),
             hand_profiles.contains_key(&id),
+            avatar_profiles.contains_key(&id),
             body_armor.contains_key(&id),
             saddles.contains_key(&id),
             dances.contains_key(&id),
@@ -4971,6 +5003,7 @@ mod side_state_tests {
         t.item_stacks.insert(id, (1, 1, false));
         t.stack_profiles.insert(id, "e30=".to_string());
         t.hand_profiles.insert(id, [Some("e30=".to_string()), None]);
+        t.avatar_profiles.insert(id, AvatarProfile::default());
         t.body_armor.insert(
             id,
             WornPiece {

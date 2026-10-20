@@ -291,6 +291,9 @@ pub struct EntityMeta {
     /// stack at slot 8 (a dropped item) or 9 (a framed one): `Some(None)` for
     /// a stack without one, `None` when neither slot came.
     pub stack_profile: Option<Option<String>>,
+    /// M309 — `Mannequin.DATA_PROFILE`, index 17, `RESOLVABLE_PROFILE`
+    /// (serializer 41, which no other class uses): Avatar defines 15 and 16.
+    pub avatar_profile: Option<rewo_world::entities::AvatarProfile>,
     /// M194 — INT at 10, `ItemFrame.DATA_ROTATION`.
     pub int10: Option<i32>,
     /// M251 — INT at 8: `ExperienceOrb.DATA_VALUE` (kind-gated by the
@@ -463,6 +466,10 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
                 }
                 _ => break,
             },
+            (17, 41) => match crate::item_stack::read_resolvable_profile(r) {
+                Some(p) => meta.avatar_profile = Some(p),
+                None => break,
+            },
             (10, 1) => meta.int10 = r.varint().ok(),
             (8, 1) => meta.int8 = r.varint().ok(),
             (9, 1) => meta.int9 = r.varint().ok(),
@@ -628,7 +635,9 @@ fn skip_value(r: &mut PacketReader, ty: i32) -> bool {
             Ok(false) => true,
             Err(_) => false,
         },
-        39 => r.take(12).is_ok(),     // VECTOR3 (3× f32)
+        39 => r.take(12).is_ok(), // VECTOR3 (3× f32)
+        // RESOLVABLE_PROFILE (M309): walked whole.
+        41 => crate::item_stack::read_resolvable_profile(r).is_some(),
         40 => r.take(16).is_ok(),     // QUATERNION (4× f32)
         2 => r.varlong().is_ok(),     // LONG
         3 => r.take(4).is_ok(),       // FLOAT
@@ -705,6 +714,29 @@ mod tests {
         let mut r = PacketReader::new(&[0xFF]);
         let m = parse(&mut r, MetaKinds::default());
         assert!(m.custom_name.is_none() && m.flags.is_none());
+    }
+
+    /// M309 — a mannequin's profile at 17 (`RESOLVABLE_PROFILE`, 41): a
+    /// partial profile named `RewoDummyA` with no properties and a patch
+    /// whose model is wide, walked whole, so an entry after it still reads.
+    #[test]
+    fn reads_a_mannequins_profile_and_goes_on_past_it() {
+        let mut b: Vec<u8> = vec![0x11, 41];
+        b.push(0); // either: the partial profile
+        b.push(1); // name present
+        b.push(10);
+        b.extend_from_slice(b"RewoDummyA");
+        b.push(0); // no id
+        b.push(0); // no properties
+        b.extend_from_slice(&[0, 0, 0]); // no body, cape, elytra
+        b.extend_from_slice(&[1, 0]); // model present: wide
+        b.extend_from_slice(&[0x12, 0x01, 0x05]); // idx18 INT 5
+        b.push(0xFF);
+        let m = parse(&mut PacketReader::new(&b), MetaKinds::default());
+        let p = m.avatar_profile.expect("profile read");
+        assert_eq!(p.name.as_deref(), Some("RewoDummyA"));
+        assert_eq!((p.id, p.textures, p.model_slim), (None, None, Some(false)));
+        assert_eq!(m.int18, Some(5), "the parse went on past the profile");
     }
 
     /// M305 — a 26.2 slime's update: the baby BOOLEAN at 16 and the size INT

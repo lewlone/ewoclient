@@ -265,6 +265,9 @@ PRECMD = (
     "summon minecraft:sulfur_cube ~-30 ~ ~15 {NoAI:1b,Silent:1b,Age:-24000};"
     # M308 -- r164. A mannequin with its default (empty) profile.
     "summon minecraft:mannequin ~-27 ~ ~18 {immovable:1b};"
+    # M309 -- r165. A mannequin with a profile known only by a name no
+    # account has.
+    "summon minecraft:mannequin ~-24 ~ ~18 {immovable:1b,profile:\"RewoDummyA\"};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

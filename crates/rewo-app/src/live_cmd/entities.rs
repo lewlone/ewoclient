@@ -202,6 +202,51 @@ pub(crate) struct SkinLoader {
 /// fetched.
 const DEFAULT_SKIN_SCHEME: &str = "rewo-default:";
 
+/// M309 — a skin patch's body texture that names one of the default skins
+/// (`minecraft:entity/player/wide/steve`) picks it.
+pub(crate) fn default_skin_by_texture(id: &str) -> Option<usize> {
+    let path = id.strip_prefix("minecraft:").unwrap_or(id);
+    rewo_data::assets::DEFAULT_SKIN_PATHS
+        .iter()
+        .position(|p| p.strip_suffix(".png") == Some(path))
+}
+
+/// M309 — what a mannequin's profile asks of the skin loader:
+/// `ClientMannequin.updateSkin`'s lookup, minus every network resolution.
+/// A `textures` property is a real skin (fetched only from the allowed host,
+/// as a player's is); otherwise the default skin of the profile's id, which
+/// for a profile known only by name is its offline UUID, and for the empty
+/// profile the nil UUID; a patch's body texture naming a default skin, and a
+/// patch's model, override.
+pub(crate) enum AvatarSkin {
+    Real(rewo_net::skins::SkinInfo),
+    Default { index: usize, slim: bool },
+}
+
+pub(crate) fn avatar_skin(p: Option<&rewo_world::entities::AvatarProfile>) -> AvatarSkin {
+    if let Some(mut info) = p
+        .and_then(|p| p.textures.as_deref())
+        .and_then(rewo_net::skins::decode_textures_property)
+        .filter(|i| i.url.is_some())
+    {
+        if let Some(s) = p.and_then(|p| p.model_slim) {
+            info.slim = s;
+        }
+        return AvatarSkin::Real(info);
+    }
+    let id = p
+        .and_then(|p| {
+            p.id.or_else(|| p.name.as_deref().map(rewo_net::skins::offline_player_uuid))
+        })
+        .unwrap_or(0);
+    let index = p
+        .and_then(|p| p.body_texture.as_deref())
+        .and_then(default_skin_by_texture)
+        .unwrap_or_else(|| default_skin_index(id));
+    let slim = p.and_then(|p| p.model_slim).unwrap_or(index < 9);
+    AvatarSkin::Default { index, slim }
+}
+
 /// M308 — `DefaultPlayerSkin.get(profileId)`'s index:
 /// `floorMod(UUID.hashCode(), 18)`, `hashCode` being the two halves XORed and
 /// folded to an `int`.
@@ -297,15 +342,28 @@ impl SkinLoader {
     /// skin is, so eviction, re-upload and the inventory preview work
     /// unchanged; a key with any request of its own is left alone.
     pub(super) fn request_default(&mut self, key: u128, profile_id: u128) {
-        if self.requested.contains(&(key, TexKind::Skin))
-            || self.requested.len() >= 2 * rewo_net::skins::MAX_TRACKED_SKINS
-        {
-            return;
-        }
         let i = default_skin_index(profile_id);
-        let url = format!("{DEFAULT_SKIN_SCHEME}{i}");
         // The first nine are the slim models.
-        let slim = i < 9;
+        self.request_default_skin(key, i, i < 9);
+    }
+
+    /// M309 — default skin `index` on the `slim` (or wide) model for `key`.
+    /// A real skin's request is left alone; a different default (a
+    /// mannequin's profile changed) replaces the one queued.
+    pub(super) fn request_default_skin(&mut self, key: u128, index: usize, slim: bool) {
+        let url = format!("{DEFAULT_SKIN_SCHEME}{index}");
+        match self.urls.get(&(key, TexKind::Skin)) {
+            Some((u, s)) if !u.starts_with(DEFAULT_SKIN_SCHEME) || (*u == url && *s == slim) => {
+                return;
+            }
+            Some(_) => {}
+            None if self.requested.contains(&(key, TexKind::Skin))
+                || self.requested.len() >= 2 * rewo_net::skins::MAX_TRACKED_SKINS =>
+            {
+                return;
+            }
+            None => {}
+        }
         self.requested.insert((key, TexKind::Skin));
         self.urls.insert((key, TexKind::Skin), (url.clone(), slim));
         let _ = self.req_tx.send((key, TexKind::Skin, url, slim));
@@ -4814,7 +4872,49 @@ mod skin_policy_tests {
 
 #[cfg(test)]
 mod default_skin_tests {
-    use super::{default_skin_index, SkinLoader, TexKind, DEFAULT_SKIN_SCHEME};
+    use super::{
+        avatar_skin, default_skin_index, AvatarSkin, SkinLoader, TexKind, DEFAULT_SKIN_SCHEME,
+    };
+    use rewo_world::entities::AvatarProfile;
+
+    /// M309 — a mannequin's profile: none is the nil UUID's slim Alex; a name
+    /// alone is its offline UUID's default (RewoDummyA: 12, wide Kai); an id
+    /// is its own; a patch's body texture and model override; a textures
+    /// property is a real skin.
+    #[test]
+    fn a_mannequins_profile_picks_its_skin() {
+        let d = |p: Option<&AvatarProfile>| match avatar_skin(p) {
+            AvatarSkin::Default { index, slim } => Some((index, slim)),
+            AvatarSkin::Real(_) => None,
+        };
+        assert_eq!(d(None), Some((0, true)));
+        let named = AvatarProfile {
+            name: Some("RewoDummyA".into()),
+            ..Default::default()
+        };
+        assert_eq!(d(Some(&named)), Some((12, false)));
+        let id = AvatarProfile {
+            id: Some(0x11112222_3333_4444_5555_666677778888),
+            name: Some("RewoDummyA".into()),
+            ..Default::default()
+        };
+        assert_eq!(d(Some(&id)), Some((14, false)), "the id wins over the name");
+        let patched = AvatarProfile {
+            body_texture: Some("minecraft:entity/player/wide/steve".into()),
+            model_slim: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(d(Some(&patched)), Some((15, true)));
+        // `{"textures":{"SKIN":{"url":"http://textures.minecraft.net/texture/ab"}}}`.
+        let real = AvatarProfile {
+            textures: Some(
+                "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvYWIifX19"
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        assert!(matches!(avatar_skin(Some(&real)), AvatarSkin::Real(_)));
+    }
 
     /// M308 — a default queued before the profile's textures arrived gives
     /// way to the real skin; a real request is never overwritten by a
