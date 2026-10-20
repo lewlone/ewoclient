@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 142 Rewo milestones, M194 to M335, in about 307 commits on
+- **What happened**: 143 Rewo milestones, M194 to M336, in about 309 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`74e100a2`): 4480 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 189 of
-  189 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`2159b9c5`): 4481 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 190 of
+  190 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -47,10 +47,18 @@ released.
   - the pumpkin view, spyglass scope, freezing frost and sleep fade;
   - steering boats, horses, camels and the nautilus;
   - everyday actions that were never sent (drop, swap hands, pick block,
-    sprint, leave bed).
+    sprint, leave bed);
+  - baby animals and monsters as their own models (M307, M314 to M336):
+    about thirty kinds, from calves, lambs and piglets to baby zombie
+    villagers, hoglets and camel calves. Before, most were a half-size adult,
+    and ten had their skins scrambled onto the adult's shape (since M175);
+    eight of those are fixed, the goat and armadillo are not (Follow-ups).
 - **Test harness**: the render check's old "damage from an unknown source"
   flake was slimes that the check's own `kill` command split; fixed in
-  `5f8c2e9a`.
+  `5f8c2e9a`. Two new render-check flakes showed up on 2026-10-20 (each once,
+  each green on a rerun with no client change): nine tail witnesses missing
+  their staged blocks and mobs (M329), and r91's horse seat (M333). Both are
+  under Follow-ups.
 - **Needs you**: nothing blocking. One incident on the shared PC was
   reported at the time (see "Needs Enni"). The checks only you can do are
   unchanged: the audio listening pass, the release zip on a fresh machine,
@@ -444,6 +452,7 @@ released.
 - **M333**: baby bees too.
 - **M334**: donkey and mule foals too.
 - **M335**: camel calves too, on their own walk animation.
+- **M336**: rabbit kits too, on their own hop.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -505,6 +514,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `2159b9c5` | **M336** — the rabbit kit on `BabyRabbitModel`, hopping on `BABY_RABBIT_HOP`; a unit test, mobshot 363 views, mobtexshot **m61** (which cannot tell the kit's sheet from the adult's) and render-check **r190**. |
 | `74e100a2` | **M335** — the camel calf on `BabyCamelModel`, walking on `CAMEL_BABY_WALK`; a unit test, mobshot 360 views, mobtexshot **m60** and render-check **r189**. |
 | `4aedc64a` | **M334** — the donkey and mule foals on `BabyDonkeyModel` (their 64 x 64 sheets had no swap row); a unit test, mobshot 357 views, mobtexshot **m59** and render-check **r188**. |
 | `b6cb8bd1` | **M333** — the baby bee on `BabyBeeModel`, airborne; a unit test, mobshot 351 views, mobtexshot **m58** and render-check **r187**. |
@@ -891,6 +901,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M336: **4,481 tests passed, 0 failed; gates 51/51** (mobtexshot 61, mobshot 363 views); render check **190/190** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M335: **4,480 tests passed, 0 failed; gates 51/51** (mobtexshot 60, mobshot 360 views); render check **189/189** on two runs; clippy (both) and `cargo fmt --check` clean. The chain paused about 31 min (16:38-17:09) for another project's G4 run, per the shared-PC rule.
 - After M334: **4,479 tests passed, 0 failed; gates 51/51** (mobtexshot 59, mobshot 357 views); render check **188/188** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M333: **4,478 tests passed, 0 failed; gates 51/51** (mobtexshot 58, mobshot 351 views); render check **187/187** on runs 1 and 3; **run 2 read 186/187**: r91's horse seat was 0.7 off in x from the server's marker (boat, camel and nautilus matched), the horse still moving between the two samples; M333 touches no riding code (recorded under Follow-ups). Clippy (both) and `cargo fmt --check` clean.
@@ -1106,3 +1117,24 @@ released.
   seat was 0.7 off in x (0.15 in y) from the server marker while the boat,
   camel and nautilus matched; runs 1 and 3 passed. It reads the seat and
   the marker on different ticks while the horse can still be moving.
+- **Baby models still to do** (the sweep M314-M336 covered the
+  rest): kittens (cat), puppies (wolf), baby llamas, horses and axolotls
+  need baby-keyed variant sheets first (their adults draw one of several
+  coats through `vanilla_variant`, and the baby sheets are separate files);
+  the baby goat needs a head animation Rewo lacks (`BabyGoatModel` pins the
+  head's pitch at π/8 under a yaw-only look); the baby armadillo needs its
+  own keyframe rigs (`BabyArmadilloAnimation`) and the shell swap. Until
+  then those draw as half-size adults, and the goat and armadillo still have
+  M175's scrambled skin. M175's swap rows for kinds that now have their own
+  model are dead (harmless) and could be dropped.
+- **Gaits and poses the babies copy from their adults**: Rewo's hoglin uses
+  the generic quadruped gait (vanilla's is frequency 1.0, amplitude 1.2);
+  the adult feline swings its legs at 1.4 (vanilla 1.0; the ocelot kitten
+  has vanilla's); the equine gait (0.5 and 0.8 amplitudes) and the equine
+  head look are not modelled; the adult rabbit's head does not look (the
+  kit's does, as vanilla's); no rig plays its scale channels; the fox's,
+  panda's, feline's and camel's sitting and sleeping poses are not drawn.
+- `mobtexshot`'s crowd (m5/m6) shrinks a little with every kind added
+  (about 8% of a cell's width per row of ten). M329 enlarged it; when babies
+  start moving other kinds between its buckets again, enlarge it again or
+  grade the babies only up close.
