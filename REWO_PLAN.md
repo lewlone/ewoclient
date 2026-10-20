@@ -3950,6 +3950,26 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M303 — the camel husk (2026-10-20)
+
+`minecraft:camel_husk` had no `EntityModelKind`, so `kind_for_entity_name`
+fell through to the capsule and the camel husk drew as one. A sweep of the
+26.2 entity-type registry against the kinds found three more such mobs (the
+giant, the sulfur cube and the mannequin); every other type without a kind
+has its own path (projectiles, displays, items, frames and the rest).
+
+`CamelHuskRenderer` is the camel's `AdultCamelModel` with
+`camel/camel_husk.png`, and its saddle is `createCamelSaddleLayer` again on
+the `CAMEL_HUSK_SADDLE` layer (`camel_husk_saddle`). `CamelHusk` is the last
+kind before the capsule, so every earlier kind keeps its index and its cell in
+`mobtexshot m5`'s crowd: inserted beside the camel it moved the raft and the
+chest raft under m5's pixel floor. `mobshot` grades 267 views (three more).
+
+**mobtexshot m34**: the husk draws 2,763 px, every colour from its own sheet
+and not a camel's frame, and its saddle adds 665 px from
+`camel_husk_saddle/saddle` (a mutant on the camel's sheet fails it).
+**r159**: a staged saddled camel husk draws as one, its saddle resident.
+
 ### M302 — the happy ghast's harness (2026-10-20)
 
 `HappyGhastRenderer`'s `HAPPY_GHAST_BODY` layer over `HappyGhastHarnessModel`
