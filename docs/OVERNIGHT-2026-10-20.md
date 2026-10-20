@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 103 Rewo milestones, M194 to M296, in about 228 commits on
+- **What happened**: 104 Rewo milestones, M194 to M297, in about 230 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`cdfaa4b8`): 4437 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 152 of
-  152 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`21406809`): 4439 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 153 of
+  153 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -379,6 +379,9 @@ released.
 - **M295**: saddles on horses, donkeys, mules and the undead horses are
   drawn, with reins while someone rides.
 - **M296**: a donkey or mule carrying a chest now shows its saddlebags.
+- **M297**: llamas show chests only when they carry them (every llama
+  showed them), and their carpets (and the trader llama's blanket) are
+  drawn.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -440,6 +443,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `21406809` | **M297** — llama chests and carpets: chests on a `Show::Chested` part, `LLAMA_BODY` over the 0.5 decor shell (trader llama blanket by default), the atlas grown 256 rows; a unit test, mobtexshot **m28** and render-check **r153**. |
 | `cdfaa4b8` | **M296** — donkey and mule chests: `ABSTRACT_CHESTED_HORSE` generated, `DATA_ID_CHEST` read, the two chest boxes on a `Show::Chested` part; a unit test, mobtexshot **m27** and render-check **r152**. |
 | `ee241881` | **M295** — the horse family's saddles: the saddle slot's piece kept, five saddle layers loaded late, `EquineSaddleModel` (body mesh plus saddle boxes, reins while ridden) per kind and scale; a unit test, mobtexshot **m26** and render-check **r151**. |
 | `b1e80151` | **M294** — horse body armour: the body slot kept, `horse_body` sheets loaded after the rest, the 0.1 shells (living and undead) drawn in the worn layer's sheet and dye; a unit test, mobtexshot **m25** and render-check **r150**. |
@@ -787,6 +791,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M297: **4,439 tests passed, 0 failed; gates 51/51** (mobtexshot 28; no "didn't pack" warning after the atlas growth; capeshot f2 extended); render check **153/153** on two runs (r153 on 22,408 and 27,897 frames); clippy (both, pre-checked) and `cargo fmt --check` clean; the demo hash unchanged.
 - After M296: **4,437 tests passed, 0 failed; gates 51/51** (mobtexshot 27); render check **152/152** on two runs (r152 on 27,200 and 30,412 frames); clippy (both, pre-checked) and `cargo fmt --check` clean.
 - After M295: **4,436 tests passed, 0 failed; gates 51/51** (mobtexshot 26); render check **151/151** on two runs (r151: saddled on 29,108 and 32,664 frames, ridden on 1,746 and 1,845); clippy (both, pre-checked) and `cargo fmt --check` clean; the demo hash unchanged.
 - After M294: **4,435 tests passed, 0 failed; gates 51/51** (mobtexshot 25; no atlas packing warning); render check **150/150** on two runs (r150 on 29,631 and 31,496 frames); clippy (both, pre-checked) and `cargo fmt --check` clean; the demo hash unchanged.
@@ -881,10 +886,9 @@ released.
   and a worn item shows no enchantment glint. The
   entity atlas's large band is a 64-slot ring, not an LRU: past 64 distinct
   big textures on screen at once it would recycle slots mid-frame.
-- Saddles on pigs, striders, camels and the nautilus, llama carpets, wolf
-  armour and the happy ghast's harness are not drawn: each is an equipment
-  layer like M294-M295's on its own mesh. Llamas' chests are not modelled
-  (donkeys' and mules' are since M296).
+- Saddles on pigs, striders, camels and the nautilus, wolf armour and the
+  happy ghast's harness are not drawn: each is an equipment layer like
+  M294-M297's on its own mesh.
 - Banner and shield items show no patterns (the stack's `banner_patterns`
   never reach the item path), and a pot item shows plain sides. A dropped
   or framed trident shows its 3D model (vanilla: the sprite). The dragon

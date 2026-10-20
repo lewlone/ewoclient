@@ -2108,6 +2108,7 @@ this shape once.
 | M294 (2026-10-20) — a horse draws in its iron horse armour | **r150** | — | — |
 | M295 (2026-10-20) — a saddled horse draws its saddle, and its reins while ridden | **r151** | — | — |
 | M296 (2026-10-20) — the chested donkey draws with its chests | **r152** | — | — |
+| M297 (2026-10-20) — a chested llama draws in its red carpet | **r153** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3942,6 +3943,35 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M297 — llama chests and carpets (2026-10-20)
+
+Two llama gaps:
+
+- `LlamaModel.setupAnim` shows the chests with `hasChest`; Rewo drew them on
+  every llama (its note assumed unchested skins were transparent there; they
+  are not). The chests now sit on a `Show::Chested` part (M296's flag, which
+  the generated `ABSTRACT_CHESTED_HORSE` set already covers for llamas).
+- `LlamaDecorLayer` draws the body slot's carpet (`LLAMA_BODY`, an adult
+  only) over `LLAMA_DECOR` (`createBodyLayer(new CubeDeformation(0.5F))`),
+  or the trader llama's own blanket (`EquipmentAssets.TRADER_LLAMA`) when it
+  wears none. `llama_with(g)` builds both; the decor shell's chests follow
+  `hasChest` too (shell quads now honour `Show::Chested`); `body_armor_piece`
+  picks the layer by kind; `ArmorLayer::LlamaBody` loads the eighteen
+  128 x 64 sheets late.
+
+The sheets overflowed the atlas's shelf region (two chest-boat variants and
+M288's wither sheet stopped packing), so `ATLAS_H` grew by 256 rows, M64's
+and M223's recipe, with capeshot f2's growth history extended. The pool
+origins' trailing comments had drifted before M297; a test now pins them.
+
+Recorded: a baby trader llama's own blanket (`TRADER_LLAMA_BABY`) is not
+drawn, since Rewo draws foals at the adult size.
+
+**Unit test**: the llama's chests on the shown-when-chested part, the decor
+the llama at 0.5. **mobtexshot m28**: chests add 661 px from the llama sheet
+only when chested; a red carpet adds 1,515 px from `llama_body/red`, resident.
+**r153**: `render_check.py` summons a chested llama in a red carpet.
 
 ### M296 — donkey and mule chests (2026-10-20)
 
