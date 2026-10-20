@@ -335,6 +335,13 @@ pub(super) struct RenderCheck {
     /// M283 — r141: frames on which the sleep fade drew, and its peak alpha.
     pub(super) sleep_fade_frames: usize,
     pub(super) sleep_fade_peak: i32,
+    /// M284 — r142: the last sleeping frame's camera `(yaw, pitch, eye above
+    /// the feet)` and the player's own yaw beside it.
+    pub(super) sleep_camera: Option<(f32, f32, f64, f32)>,
+    /// M284 — r142: frames asleep and how many of them drew a hand; frames
+    /// awake that drew one (the control).
+    pub(super) asleep_hand_frames: (usize, usize),
+    pub(super) awake_hand_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1100,7 +1107,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 141;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 142;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1300,6 +1307,32 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M284 — r142: r83's bed (`red_bed[facing=west]`, staged in
+        // render_check.py) lays the camera down: yaw `toYRot(west) - 180 =
+        // -90`, pitch 0, the eye `0.2 + 0.15` above the feet, and no hand while
+        // asleep. The player's own yaw must differ, or the yaw proves nothing.
+        // The camera stood at the player's eye with the hand drawn until M284.
+        let cam_ok = self.sleep_camera.is_some_and(|(yaw, pitch, dy, own)| {
+            let wrap = |a: f32| (a + 540.0).rem_euclid(360.0) - 180.0;
+            wrap(yaw + 90.0).abs() < 1e-3
+                && pitch == 0.0
+                && (dy - 0.35).abs() < 1e-6
+                && wrap(own - yaw).abs() > 1.0
+        });
+        row(
+            "r142 sleeping laid the camera in the bed and hid the hand",
+            cam_ok
+                && self.asleep_hand_frames.0 >= 1
+                && self.asleep_hand_frames.1 == 0
+                && self.awake_hand_frames >= 1,
+            format!(
+                "camera (yaw, pitch, eye dy, own yaw) {:?}; asleep frames {} with a hand {}; awake hand frames {}",
+                self.sleep_camera,
+                self.asleep_hand_frames.0,
+                self.asleep_hand_frames.1,
+                self.awake_hand_frames
             ),
         );
         // M282 — r140: the HUD vignette is drawn every frame (the option is

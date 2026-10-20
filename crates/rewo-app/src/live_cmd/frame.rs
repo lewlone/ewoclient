@@ -6,6 +6,9 @@ struct FrameView {
     /// Entity interpolation within the tick (`tick_accum / TICK_DT`).
     alpha: f32,
     eye: Vec3,
+    /// M284 — the camera's look, which is the player's except in a bed.
+    yaw: f32,
+    pitch: f32,
     extent: vk::Extent2D,
     aspect: f32,
 }
@@ -754,14 +757,28 @@ impl LiveApp {
                 c.nametag_raw_key_frames += 1;
             }
         }
-        let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
-        let eye = player_eye(session);
+        // M284 — the camera this frame renders from (`Camera.alignWithEntity`):
+        // the player's eye, or the bed's while asleep. Picking keeps the
+        // player's eye (`target_block` below).
+        let cam = camera_pose(session, &self.blocks);
+        let (cr, cu) = camera_basis(cam.yaw, cam.pitch);
+        let eye = cam.eye_vec();
+        #[cfg(feature = "gates")]
+        if let Some(c) = self.check.as_mut() {
+            if session.is_sleeping() {
+                c.sleep_camera = Some((
+                    cam.yaw,
+                    cam.pitch,
+                    cam.eye[1] - session.player.y,
+                    session.player.yaw,
+                ));
+            }
+        }
         // M138a — `SoundEngine.updateSource(camera)`, and it lives HERE rather
         // than beside `sounds.drive` because vanilla calls it from the render
         // path: per frame, with the camera this frame is about to use. The tick
         // loop drains sound *events*; this moves the ears.
-        self.sounds
-            .update_listener(eye_f64(session), session.player.yaw, session.player.pitch);
+        self.sounds.update_listener(cam.eye, cam.yaw, cam.pitch);
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             // Read BACK off the device rather than counting the call: deleting
@@ -1911,6 +1928,8 @@ impl LiveApp {
             dt,
             alpha,
             eye,
+            yaw: cam.yaw,
+            pitch: cam.pitch,
             extent,
             aspect,
         }
@@ -2182,7 +2201,9 @@ impl LiveApp {
             let items = self.items.clone();
             let h = self.hand.get_or_insert_with(|| HandState::new(baked));
             h.tick(session, &items);
-            if self.screen.inventory_open() {
+            // M284 — and while asleep (`renderItemInHand`'s
+            // `!isSleeping`): the camera lies in the bed.
+            if self.screen.inventory_open() || session.is_sleeping() {
                 let _ = state
                     .world_renderer
                     .set_hand(&mut state.gpu, &[], [[0.0; 4]; 4]);
@@ -2207,6 +2228,17 @@ impl LiveApp {
                 }
                 #[cfg(not(feature = "gates"))]
                 let _ = drawn;
+            }
+            // M284 — r142: read back off the pass whether a hand will draw.
+            #[cfg(feature = "gates")]
+            if let Some(c) = self.check.as_mut() {
+                let drawn = state.world_renderer.hand_drawn();
+                if session.is_sleeping() {
+                    c.asleep_hand_frames.0 += 1;
+                    c.asleep_hand_frames.1 += drawn as usize;
+                } else if drawn {
+                    c.awake_hand_frames += 1;
+                }
             }
         }
         // M33: the cloud deck and this frame's precipitation. The assets are
@@ -2234,9 +2266,7 @@ impl LiveApp {
                 self.particles = ParticleAssets::new(baked);
             }
             if let Some(p) = self.particles.as_mut() {
-                let eye = player_eye(session);
-                let view =
-                    eye_view(eye, session.player.yaw, session.player.pitch).to_cols_array_2d();
+                let view = eye_view(view.eye, view.yaw, view.pitch).to_cols_array_2d();
                 let events = std::mem::take(&mut session.particle_events);
                 apply_particles(
                     &mut state.world_renderer,
@@ -3132,8 +3162,8 @@ impl LiveApp {
         }
         let vp = eye_view_proj_hurt(
             eye,
-            session.player.yaw,
-            session.player.pitch,
+            view.yaw,
+            view.pitch,
             aspect,
             render_modules.fov_degrees,
             local_hurt_tilt(session, alpha, render_modules.damage_tilt_strength),

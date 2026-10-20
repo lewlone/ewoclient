@@ -256,6 +256,11 @@ impl WorldRenderer {
         Ok(())
     }
 
+    /// Whether this frame's hand has geometry to draw (M284).
+    pub fn hand_drawn(&self) -> bool {
+        self.gui.hand_vp.is_some()
+    }
+
     pub fn hand_ready(&self) -> bool {
         self.hand.is_some()
     }

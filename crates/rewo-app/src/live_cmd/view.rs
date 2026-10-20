@@ -303,6 +303,74 @@ pub(super) fn local_hurt_tilt(session: &PlaySession, alpha: f32, strength: f32) 
     }
 }
 
+/// M284 — the camera a frame renders from (`Camera.alignWithEntity`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct CameraPose {
+    pub(super) eye: [f64; 3],
+    pub(super) yaw: f32,
+    pub(super) pitch: f32,
+}
+
+impl CameraPose {
+    pub(super) fn eye_vec(&self) -> Vec3 {
+        Vec3::new(self.eye[0] as f32, self.eye[1] as f32, self.eye[2] as f32)
+    }
+}
+
+/// `Avatar.POSES`' SLEEPING eye height (`EntityDimensions.fixed(0.2F,
+/// 0.2F).withEyeHeight(0.2F)`).
+pub(super) const SLEEPING_EYE_HEIGHT: f64 = 0.2f32 as f64;
+/// `alignWithEntity`'s `move(0.0F, 0.15F, 0.0F)` for a sleeper: at pitch 0
+/// the camera's up is the world's.
+pub(super) const SLEEPING_CAMERA_LIFT: f64 = 0.15f32 as f64;
+
+/// M284 — `setRotation(bedOrientation != null ? bedOrientation.toYRot() -
+/// 180.0F : 0.0F, 0.0F)`'s yaw for a bed's `facing` (`Direction.toYRot`:
+/// south 0, west 90, north 180, east 270); no bed gives 0.
+pub(super) fn sleeping_camera_yaw(facing: Option<&str>) -> f32 {
+    let rot = match facing {
+        Some("south") => 0.0,
+        Some("west") => 90.0,
+        Some("north") => 180.0,
+        Some("east") => 270.0,
+        _ => return 0.0,
+    };
+    rot - 180.0
+}
+
+/// M284 — this frame's camera. Awake it is the player's eye and look; asleep
+/// (`isSleeping`, a sleeping position set) `alignWithEntity` turns it to face
+/// out of the bed's head with the pitch levelled, at the sleeping eye height
+/// lifted 0.15. `BedBlock.getBedOrientation` reads `FACING` only from a bed
+/// block (a sleeping position on anything else turns the camera to 0).
+///
+/// Only the render camera moves: the crosshair's pick uses the player's eye
+/// and view vector (`Entity.pick`), as vanilla's does. Vanilla's camera also
+/// eases its eye height half the gap a tick (`Camera.tick`); Rewo's camera
+/// does not ease, so the drop into the bed is immediate.
+pub(super) fn camera_pose(session: &PlaySession, blocks: &rewo_data::blocks::Blocks) -> CameraPose {
+    let p = &session.player;
+    if session.is_sleeping() {
+        let facing = session.sleeping_pos().and_then(|(x, y, z)| {
+            let st = session.world.block_state_at(x, y, z);
+            blocks
+                .block_name(st)
+                .filter(|n| n.ends_with("_bed"))
+                .and_then(|_| blocks.property(st, "facing"))
+        });
+        return CameraPose {
+            eye: [p.x, p.y + SLEEPING_EYE_HEIGHT + SLEEPING_CAMERA_LIFT, p.z],
+            yaw: sleeping_camera_yaw(facing),
+            pitch: 0.0,
+        };
+    }
+    CameraPose {
+        eye: [p.x, p.eye_y(), p.z],
+        yaw: p.yaw,
+        pitch: p.pitch,
+    }
+}
+
 pub(super) fn player_eye(session: &PlaySession) -> Vec3 {
     Vec3::new(
         session.player.x as f32,
@@ -754,5 +822,27 @@ mod tests {
             v.sort();
             assert_eq!(v, vec![(-1, 0), (0, 0), (3, -3), (5, 5)]);
         }
+    }
+
+    /// M284 — `alignWithEntity`'s sleeper: `toYRot() - 180` per bed facing
+    /// (south 0, west 90, north 180, east 270), 0 with no bed, and the eye
+    /// at the SLEEPING pose's 0.2 lifted 0.15.
+    #[test]
+    fn the_sleeping_camera_faces_out_of_the_bed() {
+        assert_eq!(sleeping_camera_yaw(Some("south")), -180.0);
+        assert_eq!(sleeping_camera_yaw(Some("west")), -90.0);
+        assert_eq!(sleeping_camera_yaw(Some("north")), 0.0);
+        assert_eq!(sleeping_camera_yaw(Some("east")), 90.0);
+        assert_eq!(sleeping_camera_yaw(None), 0.0);
+        assert_eq!(sleeping_camera_yaw(Some("up")), 0.0);
+        let dy = SLEEPING_EYE_HEIGHT + SLEEPING_CAMERA_LIFT;
+        assert!((dy - 0.35).abs() < 1e-6, "{dy}");
+        // The look a west-facing bed gives points east (+x): the sleeper's
+        // head is at the bed's head and the view runs down its length.
+        let dir = look_dir(sleeping_camera_yaw(Some("west")), 0.0);
+        assert!(
+            (dir[0] - 1.0).abs() < 1e-6 && dir[2].abs() < 1e-6,
+            "{dir:?}"
+        );
     }
 }
