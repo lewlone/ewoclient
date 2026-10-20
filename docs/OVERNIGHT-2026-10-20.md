@@ -1153,10 +1153,11 @@ released.
   start moving other kinds between its buckets again, enlarge it again or
   grade the babies only up close.
 - The default-variant fix (M340) covers the cat, wolf, frog, horse, llama
-  and axolotl. A tropical fish the server sends no variant for is
-  `TropicalFish.DEFAULT_VARIANT` packed (kob, white on white), which is not
-  packed 0; Rewo still reads a missing value as its base. Not checked
-  against a live fish.
+  and axolotl. The tropical fish needs none: its default
+  (`TropicalFish.DEFAULT_VARIANT`, kob, white on white) packs to 0, which is
+  what Rewo already reads a missing value as. (An earlier draft of this note
+  said otherwise; the packing, `SMALL`'s id 0, kob's index 0 and white's dye
+  id 0, says 0.)
 - **An audit of every baby layer's rest pose against its `setupAnim`**
   (2026-10-20, after M339): six of the babies' rest angles turned out to be
   `setupAnim`'s and not the layer's (the hoglet's ears, the strider's body
