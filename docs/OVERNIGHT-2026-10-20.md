@@ -23,12 +23,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 156 Rewo milestones, M194 to M349, in about 337 commits on
+- **What happened**: 157 Rewo milestones, M194 to M350, in about 339 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`b8a1c295`): 4504 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 203 of
-  203 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`5079b77a`): 4505 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 204 of
+  204 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M350**: warm zombie nautili wear their corals (and hide them under armour).
 - **M349**: cold pigs and chickens have their own shapes, and warm ones and every piglet and chick their coats (every pig and chicken was temperate).
 - **M348**: cold and warm cows have their own shapes and coats, and their calves their coats (every cow was the temperate one).
 - **M347**: brown mooshrooms and their calves are brown (every mooshroom was red).
@@ -542,6 +543,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `5079b77a` | **M350** — the coral zombie nautilus (registry and holder, the coral mesh with a new `Show::Unarmoured`, shell twins); unit tests, n7, mobtexshot **m75** and render-check **r204**; mobshot's ambiguous kinds 9, m5's small cap 26. |
 | `b8a1c295` | **M349** — cold and warm pigs and chickens (two registries and holders, two new meshes, the warm and young sheets); unit tests, variant check n7 with both, mobtexshot **m74** (and m5's small cap 25) and render-check **r203**. |
 | `a9913a89` | **M348** — cold and warm cows (the `cow_variant` registry and holder, two new meshes, the calves' sheets; atlas +256 rows); unit tests, variant check n7 with the cow, mobtexshot **m73** and render-check **r202**. |
 | `0d2ac02f` | **M347** — the brown mooshroom and calf (index 18 INT on the mooshroom); a unit test, variant check n7 with the mooshroom, mobtexshot **m72** and render-check **r201**. |
@@ -942,7 +944,8 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
-- After M349: **4504 tests passed, 0 failed; gates 51/51** (mobshot 390 views, mobtexshot 74, the variant check's n7 over thirteen mobs and n1 at 135); render check **203/203** on two runs; clippy (both) and `cargo fmt --check` clean.
+- After M350: **4,505 tests passed, 0 failed; gates 51/51** (mobshot 390 views with nine ambiguous kinds, mobtexshot 75, the variant check's n7 over fourteen mobs); render check **204/204** on two runs; clippy (both) and `cargo fmt --check` clean.
+- After M349: **4,504 tests passed, 0 failed; gates 51/51** (mobshot 390 views, mobtexshot 74, the variant check's n7 over thirteen mobs and n1 at 135); render check **203/203** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M348: **4,502 tests passed, 0 failed; gates 51/51** (mobshot 384 views, mobtexshot 73, the variant check's n7 over eleven mobs and n1 at 129, etf-check 8/8, capeshot 70 after its shelf ledger gained M348's growth); render check **202/202** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M347: **4,498 tests passed, 0 failed; gates 51/51** (mobtexshot 72, the variant check's n7 over ten mobs and n1 at 127); render check **201/201** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M346: **4,497 tests passed, 0 failed; gates 51/51** (mobtexshot 71, the variant check's n7 over nine mobs and n1 at 125); render check **200/200** on two runs; clippy (both) and `cargo fmt --check` clean.

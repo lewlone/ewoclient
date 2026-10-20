@@ -3995,6 +3995,33 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M350 — the coral zombie nautilus (2026-10-20)
+
+Every zombie nautilus drew the plain one. `ZombieNautilus.DATA_VARIANT_ID` is
+index 21 (`TamableAnimal` 18 and 19, `AbstractNautilus.DASH` 20) with
+`ZOMBIE_NAUTILUS_VARIANT` (32), now decoded and routed; the
+`zombie_nautilus_variant` registry parses as the cow's (no baby sheet).
+`ZombieNautilusRenderer` picks `ZombieNautilusCoralModel` for WARM: a new kind,
+`ZombieNautilusCoral`, on `zombie_nautilus_coral.png`, is the nautilus mesh
+plus a `corals` part under the shell holding eight zero-thickness planes
+(yellow, pink, blue, red). `setupAnim` hides the corals under body armour
+(`Show::Unarmoured`). The armour and saddle shells get coral-mesh twins with
+the matching part list, since a shell only draws over a mesh with its part
+count. Unsent variants are TEMPERATE by name.
+
+`mobshot --check` cannot grade the coral mesh (vanilla's red coral planes
+overlap one's north face with the other's south), so it joins the ambiguous
+kinds (8 → 9, views stay 390); its base mesh is the nautilus's, graded under
+two other kinds. `mobtexshot` m5's small cap goes 25 → 26 (it is mostly hidden
+in the crowd).
+
+**Unit tests**: the coral mesh is the nautilus plus one `Unarmoured` part of
+sixteen faces at the corals' UVs, and its shells match its part list; the mesh
+pick and default. **n7**: the zombie nautilus at 21 / 32. **mobtexshot m75**:
+over four views, 210 px only the corals cover and 3 of them stay covered in
+iron armour (with the corals always shown, all 210 do). **r204**: a staged warm
+zombie nautilus draws on the coral mesh.
+
 ### M349 — cold and warm pigs and chickens (2026-10-20)
 
 Every pig and chicken drew temperate. `Pig.DATA_VARIANT_ID` is index 19
