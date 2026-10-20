@@ -3953,6 +3953,41 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M306 — a translucent entity range; the slime's inner body (2026-10-20)
+
+Rewo had no `entityTranslucent` pass, so the slime drew its 8³ shell alone
+and opaque (`slime()`'s doc said as much) and the sulfur cube, whose outer
+sheet is almost all partial alpha, could not be drawn honestly. The tenth
+entity range is `RenderPipelines.ENTITY_TRANSLUCENT`: `BlendFunction.
+TRANSLUCENT`, `DepthStencilState.DEFAULT` (reversed-Z `GREATER_OR_EQUAL`
+with writes), no culling, `ALPHA_CUTOUT` 0.1, sorted on upload. It blends in
+gamma space through the UNORM view after the wind, as vanilla blends encoded
+values: `entity.frag` is compiled a second time with `GAMMA_OUT`, which moves
+the cutout to 0.1 and sRGB-encodes the output. Appended last, so no earlier
+range's first vertex moves; `build_pipeline_full` takes blend and depth write
+apart (`PipelineState`).
+
+A model marks its translucent tail with `ModelBuilder::begin_translucent`
+(`Model::translucent_from`); `emit_model` routes those quads to the range,
+and a glowing entity's outline copies them too (`AFFECTS_OUTLINE`). The
+face-label debug texture and pack models keep the tail opaque. The slime is
+now `SlimeModel.createInnerBodyLayer` (core, eyes, mouth) under the shell.
+
+`mobtexshot`'s oracle learned the blend: a translucent kind's pixel may be its
+texel over its own colour, over the pixel the frame without it has there
+(the stage draws a sky, so no constant), or over that pixel through the
+shell's back face (`first_unexplained_over`).
+
+**Unit test**: the slime's 24 inner quads, then the 6-quad shell.
+**mobtexshot m36**: with a ravager behind it, 516 of the slime's pixels show
+the ravager through the shell and 484 (the core) do not; with the pipeline's
+blend off they read 34 (cut-out texels) and 966, and m36 fails. m5 grades the
+slime through the new oracle. `mobshot --emissive-check`'s light-zero
+witness learned the same thing: through a translucent layer a dark pixel may
+darken the sky behind it and never brighten it (the slime read as an eighth
+glowing mob until it did). **r162**: a staged slime draws with its shell in
+the range.
+
 ### M305 — slimes and magma cubes get their size (2026-10-20)
 
 Found while reading the sulfur cube: 26.2's `AbstractCubeMob extends
