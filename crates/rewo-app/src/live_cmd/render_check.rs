@@ -443,6 +443,9 @@ pub(super) struct RenderCheck {
     /// M325 — r180: whether a baby zombie villager drew as
     /// `BabyZombieVillagerModel`.
     pub(super) baby_zombie_villager: bool,
+    /// M326 — r181: whether a baby squid and a baby glow squid drew as
+    /// `BabySquidModel`.
+    pub(super) baby_squids: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1208,7 +1211,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 180;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 181;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1408,6 +1411,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M326 — r181: `render_check.py` summons a baby squid and a baby glow
+        // squid; both must draw as `BabySquidModel` (`mobtexshot m52`).
+        row(
+            "r181 a baby squid and a baby glow squid drew as BabySquidModel",
+            self.baby_squids.0 && self.baby_squids.1,
+            format!(
+                "baby squid seen: {}, baby glow squid seen: {}",
+                self.baby_squids.0, self.baby_squids.1
             ),
         );
         // M325 — r180: `render_check.py` summons a helmeted baby zombie

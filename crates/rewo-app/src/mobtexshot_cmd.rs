@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 51;
+const EXPECTED_WITNESSES: usize = 52;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -189,9 +189,9 @@ const MIN_DISCRIMINATING: usize = 72;
 /// of the crowd and put it under the floor (measured against the M321 crowd
 /// without the calves, 19; m37 grades it up close), and (M322) the piglet
 /// and the chick (m48), (M323) the lamb (m49), (M324) the dolphin calf
-/// (m50), and (M325) the baby zombie villager (m51). A twenty-seventh means
-/// something stopped drawing.
-const MAX_SMALL: usize = 26;
+/// (m50), (M325) the baby zombie villager (m51), and (M326) both baby squids
+/// (m52). A twenty-ninth means something stopped drawing.
+const MAX_SMALL: usize = 28;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
 /// (both directions) and piglin/piglin_brute — plus, since M175 baked the
@@ -203,8 +203,10 @@ const MAX_SMALL: usize = 26;
 /// polar_bear/polar_bear_baby: the cub's sheet is the adult's white fur.
 /// M321 added cow_baby/cow (the calf's sheet repaints the adult's palette)
 /// and happy_ghast_baby/happy_ghast, which the smaller crowd cells left too
-/// few colours to tell apart (9 without the calves).
-const MAX_AMBIGUOUS: usize = 11;
+/// few colours to tell apart (9 without the calves). M326 added squid/
+/// squid_baby: the baby's sheet, baked from M326 on, holds the adult's
+/// colours.
+const MAX_AMBIGUOUS: usize = 12;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -3781,6 +3783,66 @@ fn run_check(
             "{zv_px} px (want >= 200), first colour its sheet cannot produce {:?}",
             zv_bad.map(|c| format!("#{c:06x}"))
         ),
+    ));
+
+    // m52 — M326: both baby squids draw, every pixel producible by their
+    // own sheet (the mesh rests on `the_baby_squid_is_its_own_model`).
+    let mut sqst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.3, 1.3, -1.3),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    sqst.wr.set_entities(&[], sqst.right, sqst.up, 0.0);
+    sqst.off
+        .render(gpu, Some((&mut sqst.wr, sqst.vp)), &ov, BG)?;
+    let sq_empty = sqst.off.read_rgba(gpu)?;
+    let mut sq_rows = Vec::new();
+    let mut sq_ok = true;
+    for (kind, key) in [
+        (EntityModelKind::SquidBaby, "squid_baby"),
+        (EntityModelKind::GlowSquidBaby, "glow_squid_baby"),
+    ] {
+        let sheet: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        sqst.wr
+            .set_entities(&[neutral_draw(kind)], sqst.right, sqst.up, 0.0);
+        sqst.off
+            .render(gpu, Some((&mut sqst.wr, sqst.vp)), &ov, BG)?;
+        let frame = sqst.off.read_rgba(gpu)?;
+        let (mut px, mut bad) = (0usize, None);
+        for (p, e) in frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(sq_empty.as_chunks::<4>().0)
+        {
+            if p[..3] == e[..3] {
+                continue;
+            }
+            px += 1;
+            let c = pack(p[0], p[1], p[2]);
+            if bad.is_none() && !explains(&sheet, c) {
+                bad = Some(c);
+            }
+        }
+        sq_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+        sq_rows.push(format!(
+            "{key}: {px} px, first colour it cannot produce {:?}",
+            bad.map(|c| format!("#{c:06x}"))
+        ));
+    }
+    sqst.destroy(gpu);
+    w.push(wit(
+        "m52.both_baby_squids_draw_from_their_own_sheets",
+        sq_ok,
+        format!("{} (want >= 200 px each, none foreign)", sq_rows.join("; ")),
     ));
 
     // ---- report ----------------------------------------------------------

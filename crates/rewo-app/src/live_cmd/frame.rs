@@ -973,6 +973,11 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M326 — r181: the staged baby squid and baby glow squid.
+            for d in draws.iter() {
+                c.baby_squids.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::SquidBaby;
+                c.baby_squids.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::GlowSquidBaby;
+            }
             // M325 — r180: the staged baby zombie villager.
             c.baby_zombie_villager |= draws
                 .iter()

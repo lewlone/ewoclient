@@ -1570,11 +1570,14 @@ pub enum EntityModelKind {
     DolphinBaby,
     /// M325 — `BabyZombieVillagerModel` (`ZOMBIE_VILLAGER_BABY`).
     ZombieVillagerBaby,
+    /// M326 — `BabySquidModel` (`SQUID_BABY`, `GLOW_SQUID_BABY`).
+    SquidBaby,
+    GlowSquidBaby,
     Capsule,
 }
 
 impl EntityModelKind {
-    pub const COUNT: usize = 117;
+    pub const COUNT: usize = 119;
     pub const ALL: [EntityModelKind; Self::COUNT] = [
         EntityModelKind::Player,
         EntityModelKind::Zombie,
@@ -1692,6 +1695,8 @@ impl EntityModelKind {
         EntityModelKind::SheepBaby,
         EntityModelKind::DolphinBaby,
         EntityModelKind::ZombieVillagerBaby,
+        EntityModelKind::SquidBaby,
+        EntityModelKind::GlowSquidBaby,
         EntityModelKind::Capsule,
     ];
 
@@ -1810,6 +1815,8 @@ impl EntityModelKind {
             EntityModelKind::SheepBaby => "sheep_baby",
             EntityModelKind::DolphinBaby => "dolphin_baby",
             EntityModelKind::ZombieVillagerBaby => "zombie_villager_baby",
+            EntityModelKind::SquidBaby => "squid_baby",
+            EntityModelKind::GlowSquidBaby => "glow_squid_baby",
             EntityModelKind::PlayerSlim => "player_slim",
             EntityModelKind::Boat => "boat",
             EntityModelKind::ChestBoat => "chest_boat",
@@ -1868,6 +1875,8 @@ pub fn kind_for_entity_name(name: &str) -> EntityModelKind {
                 | EntityModelKind::SheepBaby
                 | EntityModelKind::DolphinBaby
                 | EntityModelKind::ZombieVillagerBaby
+                | EntityModelKind::SquidBaby
+                | EntityModelKind::GlowSquidBaby
                 | EntityModelKind::Capsule
         );
         if !picked_elsewhere && k.name() == short {
@@ -2822,6 +2831,17 @@ pub static MOBS: &[MobDef] = &[
         kind: EntityModelKind::ZombieVillagerBaby,
         textures: &["zombie_villager_baby"],
         build: zombie_villager_baby,
+    },
+    // M326 — the baby squids' sheets.
+    MobDef {
+        kind: EntityModelKind::SquidBaby,
+        textures: &["squid_baby"],
+        build: squid_baby,
+    },
+    MobDef {
+        kind: EntityModelKind::GlowSquidBaby,
+        textures: &["glow_squid_baby"],
+        build: squid_baby,
     },
 ];
 
@@ -5298,6 +5318,38 @@ fn zombie_villager_baby() -> Model {
     ] {
         let leg = b.part(pivot, anim, 1.0);
         b.cube(leg, 0, uv, [-1.0, -0.5, -1.0], [2.0, 3.0, 2.0], NONE);
+    }
+    b.finish(1.0)
+}
+
+/// M326 — `BabySquidModel.createBodyLayer()` (32 x 32): an 8 x 10 x 8 body
+/// and eight 2 x 6 x 2 tentacles hanging from a radius-3 ring, each yawed to
+/// face outward and waving as the adult's do. The glow squid's baby is the
+/// same layer.
+fn squid_baby() -> Model {
+    let mut b = ModelBuilder::new();
+    b.cube_f(
+        STATIC_PART,
+        0,
+        (0.0, 0.0),
+        [-4.0, -5.0, -4.0],
+        [8.0, 10.0, 8.0],
+        0.0,
+        false,
+        &[Fold::at([0.0, 13.0, 0.0])],
+    );
+    for i in 0..8 {
+        let angle = i as f32 * PI * 2.0 / 8.0;
+        let pivot = [angle.cos() * 3.0, 18.5, angle.sin() * 3.0];
+        let y_rot = -(i as f32) * PI * 2.0 / 8.0 + PI / 2.0;
+        let p = b.part_ext(
+            pivot,
+            [0.0, y_rot, 0.0],
+            Anim::SquidTentacle,
+            1.0,
+            Option::None,
+        );
+        b.cube(p, 0, (0.0, 18.0), [-1.0, -0.5, -1.0], [2.0, 6.0, 2.0], NONE);
     }
     b.finish(1.0)
 }
@@ -11916,6 +11968,8 @@ mod tests {
                     | EntityModelKind::SheepBaby
                     | EntityModelKind::DolphinBaby
                     | EntityModelKind::ZombieVillagerBaby
+                    | EntityModelKind::SquidBaby
+                    | EntityModelKind::GlowSquidBaby
                     // M223 — a boat kind is a model shared by many wire
                     // types, none of them named after it; asserted below.
                     | EntityModelKind::Boat
@@ -13253,5 +13307,45 @@ mod zombie_villager_baby_tests {
             .find(|q| q.part == head && q.facing == Facing::North && span(q, 1) == (7.0, 15.0))
             .expect("the head box's front");
         assert_eq!(span(front, 0), (7.0, 15.0));
+    }
+}
+
+#[cfg(test)]
+mod squid_baby_tests {
+    use super::*;
+
+    /// M326 — `BabySquidModel`: the body and eight tentacles on the wave,
+    /// the body's front at (8, 8)..(16, 18) of its sheet and a tentacle's
+    /// at (2, 20)..(4, 26).
+    #[test]
+    fn the_baby_squid_is_its_own_model() {
+        let m = squid_baby();
+        assert_eq!(m.quads.len(), 9 * 6);
+        assert_eq!(
+            m.parts
+                .iter()
+                .filter(|p| p.anim == Anim::SquidTentacle)
+                .count(),
+            8
+        );
+        let span = |q: &RawQuad, i: usize| {
+            q.uv.iter()
+                .map(|u| u[i])
+                .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+        };
+        let north: Vec<_> = m
+            .quads
+            .iter()
+            .filter(|q| q.facing == Facing::North)
+            .map(|q| (span(q, 0), span(q, 1)))
+            .collect();
+        assert!(north.contains(&((8.0, 16.0), (8.0, 18.0))));
+        assert_eq!(
+            north
+                .iter()
+                .filter(|r| **r == ((2.0, 4.0), (20.0, 26.0)))
+                .count(),
+            8
+        );
     }
 }

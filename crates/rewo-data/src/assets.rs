@@ -1146,6 +1146,14 @@ const MOB_TEXTURE_SPECS: &[(&str, &str, u32, u32)] = &[
     ("wither", "entity/wither/wither.png", 64, 64),
     ("ender_dragon", "entity/enderdragon/dragon.png", 256, 256),
     ("happy_ghast", "entity/ghast/happy_ghast.png", 128, 128),
+    // M326 — the baby squids' sheets.
+    ("squid_baby", "entity/squid/squid_baby.png", 32, 32),
+    (
+        "glow_squid_baby",
+        "entity/squid/glow_squid_baby.png",
+        32,
+        32,
+    ),
     // M325 — the baby zombie villager's sheet.
     (
         "zombie_villager_baby",
