@@ -3251,13 +3251,16 @@ pub(crate) fn body_armor_piece<'a>(
             ArmorLayer::HorseBody
         }
         EntityModelKind::Llama | EntityModelKind::TraderLlama => ArmorLayer::LlamaBody,
+        // M299 — `WolfArmorLayer`'s `WOLF_BODY`, on an adult only.
+        EntityModelKind::Wolf => ArmorLayer::WolfBody,
         _ => return None,
     };
+    let adult_only = matches!(layer, ArmorLayer::LlamaBody | ArmorLayer::WolfBody);
     let worn = session
         .world
         .entities
         .body_armor(id)
-        .filter(|_| layer != ArmorLayer::LlamaBody || !session.world.entities.is_baby(id))
+        .filter(|_| !adult_only || !session.world.entities.is_baby(id))
         .and_then(|piece| {
             let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
             Some((piece, asset))

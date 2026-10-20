@@ -3677,38 +3677,58 @@ fn chicken() -> Model {
 /// `AdultWolfModel`: head (skull + ears + snout), two rotated body
 /// segments, 2×8×2 legs (right pair mirrored), angled tail.
 fn wolf() -> Model {
+    wolf_with(0.0)
+}
+
+/// M299 — `ModelLayers.WOLF_ARMOR`: `AdultWolfModel.createBodyLayer(new
+/// CubeDeformation(0.2F))` on a 64 x 32 sheet, `WolfArmorLayer`'s
+/// `WOLF_BODY` equipment layer shell. The same parts as [`wolf`].
+pub fn wolf_armor() -> Model {
+    wolf_with(0.2)
+}
+
+/// `AdultWolfModel.createBodyLayer(g)`: `g` on every box.
+fn wolf_with(g: f32) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([-1.0, 13.5, -7.0], Anim::Head, 1.0);
-    b.cube(
+    b.cube_f(
         head,
         0,
         (0.0, 0.0),
         [-2.0, -3.0, -2.0],
         [6.0, 6.0, 4.0],
+        g,
+        false,
         NONE,
     );
-    b.cube(
+    b.cube_f(
         head,
         0,
         (16.0, 14.0),
         [-2.0, -5.0, 0.0],
         [2.0, 2.0, 1.0],
+        g,
+        false,
         NONE,
     );
-    b.cube(
+    b.cube_f(
         head,
         0,
         (16.0, 14.0),
         [2.0, -5.0, 0.0],
         [2.0, 2.0, 1.0],
+        g,
+        false,
         NONE,
     );
-    b.cube(
+    b.cube_f(
         head,
         0,
         (0.0, 10.0),
         [-0.5, -0.001, -5.0],
         [3.0, 3.0, 4.0],
+        g,
+        false,
         NONE,
     );
     let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 14.0, 2.0]);
@@ -3718,7 +3738,7 @@ fn wolf() -> Model {
         (18.0, 14.0),
         [-3.0, -2.0, -3.0],
         [6.0, 9.0, 6.0],
-        0.0,
+        g,
         false,
         &[body],
     );
@@ -3729,7 +3749,7 @@ fn wolf() -> Model {
         (21.0, 0.0),
         [-3.0, -3.0, -3.0],
         [8.0, 6.0, 7.0],
-        0.0,
+        g,
         false,
         &[mane],
     );
@@ -3747,7 +3767,7 @@ fn wolf() -> Model {
             (0.0, 18.0),
             [0.0, 0.0, -1.0],
             [2.0, 8.0, 2.0],
-            0.0,
+            g,
             mirror,
             NONE,
         );
@@ -3760,12 +3780,14 @@ fn wolf() -> Model {
         1.0,
         Option::None,
     );
-    b.cube(
+    b.cube_f(
         tail,
         0,
         (9.0, 18.0),
         [0.0, 0.0, -1.0],
         [2.0, 8.0, 2.0],
+        g,
+        false,
         NONE,
     );
     b.finish(1.0)
@@ -11264,5 +11286,37 @@ mod pig_saddle_tests {
         };
         assert!((width(&shell) - width(&base) - 1.0).abs() < 1e-4);
         assert_eq!(strider_saddle().quads.len(), strider().quads.len());
+    }
+}
+
+#[cfg(test)]
+mod wolf_armor_tests {
+    use super::*;
+
+    /// M299 — the wolf's armour shell is the wolf at 0.2: same parts and
+    /// UVs, the legs 0.4 wider.
+    #[test]
+    fn the_wolf_armour_is_the_wolf_inflated_a_fifth() {
+        let (base, shell) = (wolf(), wolf_armor());
+        assert_eq!(base.parts.len(), shell.parts.len());
+        assert_eq!(base.quads.len(), shell.quads.len());
+        for (a, b) in base.quads.iter().zip(&shell.quads) {
+            assert_eq!((a.part, a.uv), (b.part, b.uv));
+        }
+        let leg = base
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::QuadFrontLeft)
+            .unwrap();
+        let width = |m: &Model| {
+            let xs = m
+                .quads
+                .iter()
+                .filter(|q| q.part == leg)
+                .flat_map(|q| q.pos.iter().map(|p| p[0]));
+            let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+            hi - lo
+        };
+        assert!((width(&shell) - width(&base) - 0.4).abs() < 1e-4);
     }
 }

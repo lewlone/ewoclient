@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 29;
+const EXPECTED_WITNESSES: usize = 30;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -2219,6 +2219,72 @@ fn run_check(
                 .iter()
                 .map(|(k, r, s, n, b)| (k, r, s, n, b.map(|c| format!("#{c:06x}"))))
                 .collect::<Vec<_>>()
+        ),
+    ));
+
+    // m30 — M299: a wolf in armadillo-scute armour (`WOLF_BODY` over the
+    // wolf at 0.2): every pixel the armour changes is a colour the jar's
+    // `wolf_body/armadillo_scute` sheet can produce (the undyed overlay layer
+    // is `onlyIfDyed`, so it draws nothing). No wolf armour drew until M299.
+    const SCUTE: &str = "wolf_body/armadillo_scute";
+    let scute_sheet: HashSet<u32> = baked
+        .equipment
+        .textures
+        .iter()
+        .find(|t| t.key == SCUTE)
+        .map(|t| producible(&t.rgba))
+        .unwrap_or_default();
+    let mut wst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.4, 1.2, 0.9),
+        Vec3::new(0.0, 0.55, 0.0),
+    )?;
+    let scute_resident = wst
+        .wr
+        .entity_pass()
+        .is_some_and(|p| p.armor_sheet_resident(SCUTE));
+    let mut wshot2 = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        wst.wr.set_entities(&[d], wst.right, wst.up, 0.0);
+        wst.off.render(gpu, Some((&mut wst.wr, wst.vp)), &ov, BG)?;
+        wst.off.read_rgba(gpu)
+    };
+    let mut wlayers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+    wlayers[0] = Some((SCUTE, [1.0, 1.0, 1.0]));
+    let bare_wolf = wshot2(neutral_draw(EntityModelKind::Wolf))?;
+    let armoured_wolf = wshot2(EntityDraw {
+        body_armor: Some(rewo_gpu::entities::ArmorPiece {
+            layers: wlayers,
+            ..Default::default()
+        }),
+        ..neutral_draw(EntityModelKind::Wolf)
+    })?;
+    wst.destroy(gpu);
+    let (mut scute_px, mut scute_bad) = (0usize, None);
+    for (a, b) in armoured_wolf
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bare_wolf.as_chunks::<4>().0)
+    {
+        if a[..3] == b[..3] {
+            continue;
+        }
+        scute_px += 1;
+        let c = pack(a[0], a[1], a[2]);
+        if scute_bad.is_none() && !explains(&scute_sheet, c) {
+            scute_bad = Some(c);
+        }
+    }
+    w.push(wit(
+        "m30.a_wolf_wears_its_armour_in_its_own_sheet",
+        scute_resident && !scute_sheet.is_empty() && scute_px >= 200 && scute_bad.is_none(),
+        format!(
+            "{SCUTE} resident: {scute_resident}; {scute_px} px changed by the armour (want \
+             >= 200); first colour the sheet cannot produce: {:?}",
+            scute_bad.map(|c| format!("#{c:06x}"))
         ),
     ));
 

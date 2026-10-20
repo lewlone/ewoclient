@@ -948,6 +948,21 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M299 — r155: the staged wolf in its armour.
+            if draws.iter().any(|d| {
+                d.kind == rewo_gpu::mobs::EntityModelKind::Wolf
+                    && d.body_armor.is_some_and(|p| {
+                        p.layers.iter().flatten().any(|(k, _)| {
+                            *k == "wolf_body/armadillo_scute"
+                                && state
+                                    .world_renderer
+                                    .entity_pass()
+                                    .is_some_and(|e| e.armor_sheet_resident(k))
+                        })
+                    })
+            }) {
+                c.wolf_armor_frames += 1;
+            }
             // M298 — r154: the staged saddled pig and strider.
             for (kind, key, slot) in [
                 (

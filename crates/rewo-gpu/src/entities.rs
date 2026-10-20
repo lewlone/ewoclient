@@ -583,7 +583,12 @@ const ATLAS_W: u32 = 1024;
 /// shelf region, and three mob variants (two chest boats, the wither's
 /// invulnerable sheet) stopped packing, so it grew by 256 rows and the pools
 /// below slid down with `ATLAS_H`.
-const ATLAS_H: u32 = 2624;
+///
+/// M299 grew it 256 rows more: every sheet now carries a one-texel extruded
+/// gutter (`blit_tex_extruded`), and the padding filled the shelf region
+/// until a resource pack's alternates (mobshot's ETF fixture) stopped
+/// packing.
+const ATLAS_H: u32 = 2880;
 
 /// Dynamic player-skin pool: 32 slots of 64×64 in the atlas's bottom two
 /// rows, filled at runtime as players' skins arrive. The mob packer is capped
@@ -731,7 +736,7 @@ const SKIN_SLOT: u32 = 64;
 const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
 const SKIN_POOL_ROWS: u32 = 2;
 const SKIN_SLOTS: u32 = SKIN_POOL_COLS * SKIN_POOL_ROWS; // 32
-const SKIN_POOL_Y: u32 = TRIM_POOL_Y - SKIN_POOL_ROWS * SKIN_SLOT; // 1920
+const SKIN_POOL_Y: u32 = TRIM_POOL_Y - SKIN_POOL_ROWS * SKIN_SLOT; // 2176
 
 // -- the trim pool (M48) ------------------------------------------------------
 //
@@ -748,7 +753,7 @@ const TRIM_SLOT_H: u32 = 32;
 const TRIM_POOL_COLS: u32 = ATLAS_W / TRIM_SLOT_W; // 16
 const TRIM_POOL_ROWS: u32 = 4;
 const TRIM_SLOTS: u32 = TRIM_POOL_COLS * TRIM_POOL_ROWS; // 64
-const TRIM_POOL_Y: u32 = CAPE_POOL_Y - TRIM_POOL_ROWS * TRIM_SLOT_H; // 2048
+const TRIM_POOL_Y: u32 = CAPE_POOL_Y - TRIM_POOL_ROWS * TRIM_SLOT_H; // 2304
 
 fn trim_slot_origin(slot: u32) -> (u32, u32) {
     (
@@ -777,7 +782,7 @@ const CAPE_SLOT_H: u32 = 32;
 const CAPE_POOL_COLS: u32 = ATLAS_W / CAPE_SLOT_W; // 16
 const CAPE_POOL_ROWS: u32 = 2;
 const CAPE_SLOTS: u32 = CAPE_POOL_COLS * CAPE_POOL_ROWS; // 32
-const CAPE_POOL_Y: u32 = MAP_POOL_Y - CAPE_POOL_ROWS * CAPE_SLOT_H; // 2176
+const CAPE_POOL_Y: u32 = MAP_POOL_Y - CAPE_POOL_ROWS * CAPE_SLOT_H; // 2432
 
 // -- the framed-map band (M194) -----------------------------------------------
 //
@@ -793,7 +798,7 @@ const MAP_SLOT: u32 = 128;
 const MAP_POOL_COLS: u32 = ATLAS_W / MAP_SLOT; // 8
 /// The last cell is the decoration sprites.
 const MAP_SLOTS: u32 = MAP_POOL_COLS - 1; // 7
-const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 2240
+const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 2496
 
 /// M246 — the large held-item pool: 64×64 slots for the textures the 16×16
 /// item pool cannot hold. Every block-entity model (a chest's 64×64 sheet, a
@@ -807,7 +812,7 @@ const BIG_SLOT: u32 = 64;
 const BIG_POOL_COLS: u32 = ATLAS_W / BIG_SLOT; // 16
 const BIG_POOL_ROWS: u32 = 4;
 const BIG_SLOTS: u32 = BIG_POOL_COLS * BIG_POOL_ROWS; // 64
-const BIG_POOL_Y: u32 = ATLAS_H - BIG_POOL_ROWS * BIG_SLOT; // 2368
+const BIG_POOL_Y: u32 = ATLAS_H - BIG_POOL_ROWS * BIG_SLOT; // 2624
 
 /// The large-item band's geometry, for the gate: `(atlas w, atlas h, slot,
 /// slots, band y)`.
@@ -881,7 +886,7 @@ const ITEM_SLOT: u32 = 16;
 const ITEM_POOL_COLS: u32 = ATLAS_W / ITEM_SLOT; // 64
 const ITEM_POOL_ROWS: u32 = 16;
 const ITEM_SLOTS: u32 = ITEM_POOL_COLS * ITEM_POOL_ROWS; // 1024
-const ITEM_POOL_Y: u32 = SKIN_POOL_Y - ITEM_POOL_ROWS * ITEM_SLOT; // 1664
+const ITEM_POOL_Y: u32 = SKIN_POOL_Y - ITEM_POOL_ROWS * ITEM_SLOT; // 1920
 
 /// Atlas origin of dynamic skin slot `i` (0..SKIN_SLOTS).
 fn skin_slot_origin(i: u32) -> (u32, u32) {
@@ -1486,18 +1491,28 @@ impl EntityPass {
             let e = &tex.entries[i];
             (std::cmp::Reverse(e.h), std::cmp::Reverse(e.w), e.key)
         });
+        // M299 — every sheet gets a one-texel gutter of its own edge texels
+        // (`blit_tex_extruded`): a clamped UV rect at a sheet's far edge
+        // (the bake clamps the vanilla rects that stray outside their
+        // texture) then samples the edge texel, as vanilla's clamp-to-edge
+        // sampler does, and not whatever the packer put next to it. Without
+        // it the vex sampled a neighbouring sheet once M299's two sheets moved
+        // it. The packer places padded cells; the sheet sits one texel in.
         let mut sizes: Vec<(u32, u32)> = order
             .iter()
-            .map(|&i| (tex.entries[i].w, tex.entries[i].h))
+            .map(|&i| (tex.entries[i].w + 2, tex.entries[i].h + 2))
             .collect();
-        sizes.extend(tex.variants.iter().map(|v| (v.w, v.h)));
-        let origins = pack_shelves(&sizes);
+        sizes.extend(tex.variants.iter().map(|v| (v.w + 2, v.h + 2)));
+        let origins: Vec<Option<(u32, u32)>> = pack_shelves(&sizes)
+            .into_iter()
+            .map(|o| o.map(|(x, y)| (x + 1, y + 1)))
+            .collect();
         let mut slots: std::collections::HashMap<&str, (u32, u32, u32, u32)> =
             std::collections::HashMap::new();
         for (slot, &i) in order.iter().enumerate() {
             let e = &tex.entries[i];
             match origins[slot] {
-                Some((x, y)) if blit_tex(&mut atlas, Some(e.rgba), x, y, e.w, e.h) => {
+                Some((x, y)) if blit_tex_extruded(&mut atlas, e.rgba, x, y, e.w, e.h) => {
                     slots.insert(e.key, (x, y, e.w, e.h));
                 }
                 _ => log::warn!(
@@ -1517,7 +1532,7 @@ impl EntityPass {
             std::collections::HashMap::new();
         for (n, v) in tex.variants.iter().enumerate() {
             match origins[order.len() + n] {
-                Some((x, y)) if blit_tex(&mut atlas, Some(v.rgba), x, y, v.w, v.h) => {
+                Some((x, y)) if blit_tex_extruded(&mut atlas, v.rgba, x, y, v.w, v.h) => {
                     if v.index == EMISSIVE_VARIANT {
                         pack_emissive.insert(v.base_key, (x, y));
                     } else {
@@ -1739,6 +1754,8 @@ impl EntityPass {
                 }
                 // M297 — the llamas' decor shell (`LLAMA_DECOR`).
                 EntityModelKind::Llama | EntityModelKind::TraderLlama => Some(mobs::llama_decor()),
+                // M299 — the wolf's armour shell (`WOLF_ARMOR`).
+                EntityModelKind::Wolf => Some(mobs::wolf_armor()),
                 _ => None,
             }
             .filter(|shell| !debug_tex && shell.parts.len() == m.parts.len())
@@ -1997,6 +2014,7 @@ impl EntityPass {
                         k.starts_with("humanoid")
                             || k.starts_with("horse_body/")
                             || k.starts_with("llama_body/")
+                            || k.starts_with("wolf_body/")
                             || k.split('/').next().is_some_and(|d| d.ends_with("_saddle"))
                     })
                     .map(|(k, v)| ((*k).to_string(), *v))
@@ -7388,6 +7406,32 @@ pub fn srgb_to_linear(c: f32) -> f32 {
 
 /// Blit a `w`×`h` RGBA entity skin into the atlas at (x, y). Returns whether
 /// it was present + correctly sized.
+/// M299 — [`blit_tex`] plus a one-texel border of the sheet's own edge
+/// texels around it (corners included), the atlas's stand-in for a
+/// clamp-to-edge sampler. `(x, y)` is the sheet's origin; the border lies at
+/// `x - 1 ..= x + w` and `y - 1 ..= y + h`.
+fn blit_tex_extruded(atlas: &mut [u8], px: &[u8], x: u32, y: u32, w: u32, h: u32) -> bool {
+    if x == 0 || y == 0 || !blit_tex(atlas, Some(px), x, y, w, h) {
+        return false;
+    }
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    let aw = ATLAS_W as usize;
+    let at = |cx: usize, cy: usize| (cy * aw + cx) * 4;
+    // Rows above and below, then whole columns left and right (which also
+    // fills the four corners from the rows just written).
+    for (dst_row, src_row) in [(y - 1, y), (y + h, y + h - 1)] {
+        let (d, s) = (at(x, dst_row), at(x, src_row));
+        atlas.copy_within(s..s + w * 4, d);
+    }
+    for row in y - 1..=y + h {
+        let (d, s) = (at(x - 1, row), at(x, row));
+        atlas.copy_within(s..s + 4, d);
+        let (d, s) = (at(x + w, row), at(x + w - 1, row));
+        atlas.copy_within(s..s + 4, d);
+    }
+    true
+}
+
 fn blit_tex(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32, w: u32, h: u32) -> bool {
     let (w, h) = (w as usize, h as usize);
     match tex {
@@ -8378,6 +8422,36 @@ mod tests {
     }
 
     #[test]
+    fn an_extruded_blit_repeats_the_edge_texels_around_the_sheet() {
+        let mut atlas = vec![0u8; (ATLAS_W * 8 * 4) as usize];
+        // A 2x2 sheet: red, green / blue, white.
+        let px = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        assert!(blit_tex_extruded(&mut atlas, &px, 3, 3, 2, 2));
+        let at = |x: u32, y: u32| {
+            let i = ((y * ATLAS_W + x) * 4) as usize;
+            [atlas[i], atlas[i + 1], atlas[i + 2]]
+        };
+        assert_eq!(at(3, 3), [255, 0, 0]);
+        assert_eq!(at(2, 2), [255, 0, 0], "corner from the red texel");
+        assert_eq!(at(5, 2), [0, 255, 0], "corner from the green texel");
+        assert_eq!(at(2, 5), [0, 0, 255], "corner from the blue texel");
+        assert_eq!(at(5, 5), [255, 255, 255]);
+        assert_eq!(at(4, 2), [0, 255, 0], "top edge repeats the top row");
+        assert_eq!(
+            at(5, 4),
+            [255, 255, 255],
+            "right edge repeats the right column"
+        );
+        assert_eq!(at(6, 4), [0, 0, 0], "nothing beyond the border");
+        assert!(
+            !blit_tex_extruded(&mut atlas, &px, 0, 3, 2, 2),
+            "no room for a border"
+        );
+    }
+
+    #[test]
     fn the_pool_origins_are_what_their_comments_say() {
         // M297 — the bands below the shelf region, anchored to `ATLAS_H`
         // (the trailing comments on them had drifted from these before M297).
@@ -8390,7 +8464,7 @@ mod tests {
                 MAP_POOL_Y,
                 BIG_POOL_Y
             ],
-            [1664, 1920, 2048, 2176, 2240, 2368]
+            [1920, 2176, 2304, 2432, 2496, 2624]
         );
     }
 
