@@ -28,7 +28,11 @@ released.
   - block displays drawing the wrong block (the M260 fix);
   - the render distance option ignored (M206);
   - inventory icons lit wrongly (M245);
-  - the rider's seat in the wrong place (M228).
+  - the rider's seat in the wrong place (M228);
+  - every tamed or owned mob losing the data after its owner, so a tame
+    cat's or wolf's coat (and the wolf's collar) never arrived (M342);
+  - black cats drawn tabby and white horses drawn brown, because the server
+    never sends a mob's default variant (M340).
 - **New, broadly**:
   - item frames;
   - blended animated textures and flowing water and lava;
