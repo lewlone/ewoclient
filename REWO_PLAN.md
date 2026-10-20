@@ -3952,6 +3952,33 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M305 — slimes and magma cubes get their size (2026-10-20)
+
+Found while reading the sulfur cube: 26.2's `AbstractCubeMob extends
+AgeableMob`, whose `DATA_BABY_ID` (16) and `AGE_LOCKED` (17) push `ID_SIZE`
+to **18**. Rewo read the size as an INT at 16, where a cube mob now sends a
+BOOLEAN, so no slime or magma cube received its size from the 26.2 port on and
+every one drew (and was picked) at the fallback size 2. The index-16 INT arm
+still matters: it is `Creeper.DATA_SWELL_DIR`, which M277 keeps in the same
+`sizes` map, and its doc now says so.
+
+`EntityClasses::is_cube_mob` (from the generated `ABSTRACT_CUBE_MOB`) gates
+the index-18 INT to `set_size`; the axolotl's variant shares that slot. The
+fallback is now vanilla's default, 1: the server sends only non-default
+values, so a size-1 slime sends no size at all.
+
+An audit counting `defineId` up each class's `extends` chain in the decompile
+found every other kind-gated slot the router reads where 26.2 puts it
+(creeper 16/17, wither 19, sheep 18, axolotl 18, horse 19, llama 21,
+tropical fish 17, guardian 17, bee 19, allay 16, pillager and creaking 17,
+sniffer and armadillo 18, copper golem 17, frog 18, chested horse 19, zombie
+baby 16).
+
+**Unit tests**: the parser reads a cube mob's baby at 16 and its size at 18;
+the router sizes a cube mob from 18 and leaves another kind alone.
+**r161**: staged magma cubes of size 1 and 4 draw at scale 0.5 and 2.0 against
+a real server (scale 0.5 and 2.0 seen on both runs).
+
 ### M304 — the giant (2026-10-20)
 
 The second of M303's capsules. `GiantMobRenderer` draws `GiantZombieModel`
