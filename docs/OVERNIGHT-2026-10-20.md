@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 136 Rewo milestones, M194 to M329, in about 294 commits on
+- **What happened**: 137 Rewo milestones, M194 to M330, in about 297 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`4b90d065`): 4474 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 183 of
-  183 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`78f91c75`): 4475 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 184 of
+  184 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -438,6 +438,7 @@ released.
 - **M327**: hoglets and baby zoglins too.
 - **M328**: baby striders too.
 - **M329**: the mob texture gate's crowd test is meaningful again (it had started flagging correct mobs as too small).
+- **M330**: fox kits are their own model, walking on vanilla's own kit animation.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -499,6 +500,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `78f91c75` | **M330** — the kit on `BabyFoxModel`, walking on `FOX_BABY_WALK` (now extracted by `gen_anim_defs.ps1`); a unit test, mobshot 342 views, mobtexshot **m55** and render-check **r184**. |
 | `4b90d065` | **M329** — mobtexshot's m5/m6 crowd at 2400 x 1350, pins re-measured (104 graded, 17 small, 89 discriminating, 15 ambiguous); a tiny-cow mutant fails it. |
 | `eaf6c574` | **M328** — the baby strider on `BabyStriderModel` (body at `customAnimations`' 17.25, not the layer's 16.75); a unit test, mobshot 339 views, mobtexshot **m54** and render-check **r183**. |
 | `26f196c4` | **M327** — the hoglet and the baby zoglin on `BabyHoglinModel` (ears at `setupAnim`'s ∓2π/9, not the `PartPose`'s); a unit test, mobshot 336 views, mobtexshot **m53** and render-check **r182**. |
@@ -879,6 +881,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M330: **4,475 tests passed, 0 failed; gates 51/51** (mobtexshot 55, mobshot 342 views); render check **184/184** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M329: **4,474 tests passed, 0 failed; gates 51/51** (mobtexshot 54 at the new crowd size, mobshot 339 views); render check **183/183** on runs 1 and 3; **run 2 read 174/183**: nine tail witnesses (r42, r61, r75–r78, r81, r88, r91) could not find what `REWO_PRECMD` staged near the bot. No live code changed in M329; the stage sequence matched run 1's, but the 105-command batch took 232 ms to send (2 ms in run 1). Recorded under Follow-ups. Clippy (both) and `cargo fmt --check` clean.
 - After M328: **4,474 tests passed, 0 failed; gates 51/51** (mobtexshot 54, mobshot 339 views); render check **183/183** on two runs; clippy (both) and `cargo fmt --check` clean.
 - After M327: **4,473 tests passed, 0 failed; gates 51/51** (mobtexshot 53, mobshot 336 views); render check **182/182** on two runs; clippy (both) and `cargo fmt --check` clean.

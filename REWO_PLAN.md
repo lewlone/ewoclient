@@ -3975,6 +3975,27 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M330 — the kit (2026-10-20)
+
+`FoxRenderer` swaps in `BabyFoxModel` (32 x 32: a 6 x 5 x 5 head with its
+snout and ears, looking; a 5 x 4 x 6 body with its tail; four 2 x 2 x 2 legs)
+on `fox_baby.png`, a sheet M175 never baked (the adult's is 48 x 32).
+`FoxBaby` is that model, picked by `baby_model_kind`. The kit has no
+procedural gait: `FoxModel.setWalkingPose` moves no leg, and `BabyFoxModel`
+plays `FoxBabyAnimation.FOX_BABY_WALK` through `applyWalk(pos, speed, 1.0,
+2.5)`. `tools/gen_anim_defs.ps1` now extracts it (the regenerated
+`anim_defs.rs` only gains the new definition), and the kit's parts are named
+for its channels. Its four leg `SCALE` channels (a 1.15 stretch) are dropped,
+as the generator drops every scale channel; sitting and sleeping are not
+posed, as Rewo's adult fox's are not. `mobshot` grades 342 views;
+`MAX_SMALL` 18 (the kit; at M329's crowd size nothing else moved).
+
+**Unit test**: ten boxes, the head box's front at (5, 5)..(11, 10), the tail
+under the body, and `FOX_BABY_WALK` on `Walk { 1.0, 2.5 }` with every channel
+bound to a part, the four legs among them. **mobtexshot m55**: the kit draws
+(3,990 px) with no colour foreign to its sheet; on the adult's sheet it fails
+on `#72311b`. **r184**: a staged kit draws as `BabyFoxModel`.
+
 ### M329 — the mobtexshot crowd, resized (2026-10-20)
 
 `mobtexshot`'s m5/m6 crowd draws every kind in one list and grades each by
