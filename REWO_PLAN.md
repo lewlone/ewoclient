@@ -3967,6 +3967,31 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M321 — the calves (2026-10-20)
+
+`CowRenderer` and `MushroomCowRenderer` swap in `BabyCowModel` (a 6 x 6 x 5
+head with two horns, the left mirrored, and a muzzle; an 8 x 6 x 12 body
+authored level, not rotated like the adult's; four 3 x 6 x 3 legs) on
+`cow_temperate_baby.png` and `mooshroom_red_baby.png`. Neither sheet was in
+Rewo's swap table, so a calf was the half-size adult on the adult's sheet.
+`CowBaby` and `MooshroomBaby` are that model, picked by `baby_model_kind`;
+the mooshroom calf wears no mushrooms (`MushroomCowMushroomLayer` skips a
+baby). `mobshot` grades 309 views.
+
+`mobtexshot`'s `run_check` overflowed the 1 MiB Windows main thread in the
+debug build once m47 was added (every witness's `Stage` holds a whole
+`WorldRenderer` by value), so the gate now runs on a 64 MiB thread. Both
+calves' cells shrank the m5 crowd's: measured against the same crowd without
+them, the small sulfur cube fell under the pixel floor (`MAX_SMALL` 21 with
+the mooshroom calf) and the baby happy ghast became ambiguous
+(`MAX_AMBIGUOUS` 11 with cow_baby/cow, the calf's sheet repainting the
+adult's palette).
+
+**Unit test**: the nine boxes and the head box's front at (5, 23)..(11, 29).
+**mobtexshot m47**: both calves draw (2,125 px each) with no colour foreign to
+their own sheet; pointed at the adult cow's sheet it fails on `#ffffff`.
+**r176**: a staged calf and mooshroom calf draw as `BabyCowModel`.
+
 ### M320 — the baby piglins (2026-10-20)
 
 `PiglinRenderer` and `ZombifiedPiglinRenderer` both swap in `BabyPiglinModel`
