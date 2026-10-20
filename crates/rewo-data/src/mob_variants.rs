@@ -153,6 +153,25 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M346 — Rabbit — `Rabbit.Variant` (sparse ids 0..5 and 99) and the
+    // "Toast" sheet, adult and kit; brown is the baked base of each.
+    ("rabbit", "entity/rabbit/rabbit_white.png"),
+    ("rabbit", "entity/rabbit/rabbit_black.png"),
+    ("rabbit", "entity/rabbit/rabbit_white_splotched.png"),
+    ("rabbit", "entity/rabbit/rabbit_gold.png"),
+    ("rabbit", "entity/rabbit/rabbit_salt.png"),
+    ("rabbit", "entity/rabbit/rabbit_caerbannog.png"),
+    ("rabbit", "entity/rabbit/rabbit_toast.png"),
+    ("rabbit_baby", "entity/rabbit/rabbit_white_baby.png"),
+    ("rabbit_baby", "entity/rabbit/rabbit_black_baby.png"),
+    (
+        "rabbit_baby",
+        "entity/rabbit/rabbit_white_splotched_baby.png",
+    ),
+    ("rabbit_baby", "entity/rabbit/rabbit_gold_baby.png"),
+    ("rabbit_baby", "entity/rabbit/rabbit_salt_baby.png"),
+    ("rabbit_baby", "entity/rabbit/rabbit_caerbannog_baby.png"),
+    ("rabbit_baby", "entity/rabbit/rabbit_toast_baby.png"),
     // M345 — Fox — `Fox.Variant` RED (0, the baked base) and SNOW (1), the
     // adult's and the kit's (`FoxRenderer`'s idle sheets; Rewo poses no
     // sleeping fox, so the sleep sheets are not used).
@@ -480,6 +499,28 @@ pub fn llama_texture(id: i32) -> &'static str {
     LLAMA_BY_ID[i]
 }
 
+/// M346 — `RabbitRenderer`'s sheet: "Toast" (a custom name exactly that,
+/// `checkMagicName`) before the coat; the coat by `Rabbit.Variant`'s sparse
+/// ids (0..5, and 99 the killer bunny, `caerbannog`), anything else BROWN
+/// (`ByIdMap.sparse(.., DEFAULT)`).
+pub fn rabbit_texture(id: i32, baby: bool, toast: bool) -> String {
+    let coat = if toast {
+        "toast"
+    } else {
+        match id {
+            1 => "white",
+            2 => "black",
+            3 => "white_splotched",
+            4 => "gold",
+            5 => "salt",
+            99 => "caerbannog",
+            _ => "brown",
+        }
+    };
+    let age = if baby { "_baby" } else { "" };
+    format!("entity/rabbit/rabbit_{coat}{age}.png")
+}
+
 /// M345 — the fox's idle sheet by `Fox.Variant` id, adult and kit.
 const FOX_BY_ID: &[[&str; 2]] = &[
     ["entity/fox/fox.png", "entity/fox/fox_baby.png"],
@@ -571,6 +612,8 @@ mod tests {
             "entity/parrot/parrot_red_blue.png",
             "entity/fox/fox.png",
             "entity/fox/fox_baby.png",
+            "entity/rabbit/rabbit_brown.png",
+            "entity/rabbit/rabbit_brown_baby.png",
             "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -783,6 +826,42 @@ mod tests {
             let v = variant_id(fox_texture(1, baby)).unwrap();
             let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
             assert_eq!(k, key);
+        }
+    }
+
+    /// M346 — the rabbit's coats by sparse id, unknown ids brown, the
+    /// killer bunny at 99, and "Toast" over any coat; adult and kit, each an
+    /// alternate of its own key but brown.
+    #[test]
+    fn a_rabbit_wears_its_coat_or_is_toast() {
+        assert_eq!(
+            rabbit_texture(0, false, false),
+            "entity/rabbit/rabbit_brown.png"
+        );
+        assert_eq!(
+            rabbit_texture(5, true, false),
+            "entity/rabbit/rabbit_salt_baby.png"
+        );
+        assert_eq!(
+            rabbit_texture(99, false, false),
+            "entity/rabbit/rabbit_caerbannog.png"
+        );
+        assert_eq!(
+            rabbit_texture(6, false, false),
+            "entity/rabbit/rabbit_brown.png"
+        );
+        assert_eq!(
+            rabbit_texture(2, true, true),
+            "entity/rabbit/rabbit_toast_baby.png"
+        );
+        assert_eq!(variant_id(&rabbit_texture(0, false, false)), Some(0));
+        assert_eq!(variant_id(&rabbit_texture(0, true, false)), Some(0));
+        for (baby, key) in [(false, "rabbit"), (true, "rabbit_baby")] {
+            for (id, toast) in [(1, false), (99, false), (0, true)] {
+                let v = variant_id(&rabbit_texture(id, baby, toast)).unwrap();
+                let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+                assert_eq!(k, key);
+            }
         }
     }
 }

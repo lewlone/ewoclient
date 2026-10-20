@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 70;
+const EXPECTED_WITNESSES: usize = 71;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5040,6 +5040,93 @@ fn run_check(
         format!(
             "{} (want >= 200 px each, none foreign, the coats different)",
             fx_rows.join("; ")
+        ),
+    ));
+
+    // m71 — M346: the rabbit and the kit draw their brown base, the white
+    // coat and the Toast sheet on their variant ids, each frame producible
+    // by its own sheet and every pair of them different.
+    let mut rbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.8, 0.7, -0.8),
+        Vec3::new(0.0, 0.25, 0.0),
+    )?;
+    rbst.wr.set_entities(&[], rbst.right, rbst.up, 0.0);
+    rbst.off
+        .render(gpu, Some((&mut rbst.wr, rbst.vp)), &ov, BG)?;
+    let rb_empty = rbst.off.read_rgba(gpu)?;
+    let mut rb_rows = Vec::new();
+    let mut rb_ok = true;
+    for (kind, key, kit) in [
+        (EntityModelKind::Rabbit, "rabbit", false),
+        (EntityModelKind::RabbitBaby, "rabbit_baby", true),
+    ] {
+        let mut frames = Vec::new();
+        for (name, id, toast) in [("brown", 0, false), ("white", 1, false), ("toast", 0, true)] {
+            let variant = rewo_data::mob_variants::variant_id(
+                &rewo_data::mob_variants::rabbit_texture(id, kit, toast),
+            )
+            .unwrap_or(0);
+            let sheet: HashSet<u32> = if variant == 0 {
+                baked
+                    .mob_textures
+                    .iter()
+                    .find(|t| t.key == key)
+                    .map(|t| producible(&t.rgba))
+            } else {
+                baked
+                    .mob_variant_textures
+                    .iter()
+                    .find(|t| t.key == key && t.index == variant)
+                    .map(|t| producible(&t.rgba))
+            }
+            .unwrap_or_default();
+            rb_ok &= (variant == 0) == (name == "brown");
+            let d = EntityDraw {
+                variant,
+                ..neutral_draw(kind)
+            };
+            rbst.wr.set_entities(&[d], rbst.right, rbst.up, 0.0);
+            rbst.off
+                .render(gpu, Some((&mut rbst.wr, rbst.vp)), &ov, BG)?;
+            let frame = rbst.off.read_rgba(gpu)?;
+            let (mut px, mut bad) = (0usize, None);
+            for (p, e) in frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(rb_empty.as_chunks::<4>().0)
+            {
+                if p[..3] == e[..3] {
+                    continue;
+                }
+                px += 1;
+                let c = pack(p[0], p[1], p[2]);
+                if bad.is_none() && !explains(&sheet, c) {
+                    bad = Some(c);
+                }
+            }
+            rb_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+            rb_rows.push(format!(
+                "{key} {name}: {px} px, first colour it cannot produce {:?}",
+                bad.map(|c| format!("#{c:06x}"))
+            ));
+            frames.push(frame);
+        }
+        rb_ok &= diff_bytes(&frames[0], &frames[1]) > 0
+            && diff_bytes(&frames[0], &frames[2]) > 0
+            && diff_bytes(&frames[1], &frames[2]) > 0;
+    }
+    rbst.destroy(gpu);
+    w.push(wit(
+        "m71.the_rabbit_and_kit_wear_their_coat_or_are_toast",
+        rb_ok,
+        format!(
+            "{} (want >= 200 px each, none foreign, all different)",
+            rb_rows.join("; ")
         ),
     ));
 

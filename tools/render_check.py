@@ -271,6 +271,10 @@ PRECMD = (
     # M310 -- r166. A mannequin with two outer layers hidden.
     "summon minecraft:mannequin ~-21 ~ ~18 {immovable:1b,"
     "hidden_layers:[\"hat\",\"jacket\"]};"
+    # M346 -- r200. A white rabbit, and a brown one named Toast.
+    "summon minecraft:rabbit ~84 ~ ~21 {NoAI:1b,Silent:1b,RabbitType:1};"
+    "summon minecraft:rabbit ~87 ~ ~21 {NoAI:1b,Silent:1b,RabbitType:0,"
+    "CustomName:\"Toast\"};"
     # M345 -- r199. A snow fox.
     "summon minecraft:fox ~81 ~ ~21 {NoAI:1b,Silent:1b,Type:\"snow\"};"
     # M344 -- r198. A blue parrot (Variant 1).

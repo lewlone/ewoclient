@@ -3798,7 +3798,9 @@ pub(crate) fn default_variant(
         | EntityModelKind::Axolotl
         | EntityModelKind::Parrot
         | EntityModelKind::Fox
-        | EntityModelKind::FoxBaby => Some(0),
+        | EntityModelKind::FoxBaby
+        | EntityModelKind::Rabbit
+        | EntityModelKind::RabbitBaby => Some(0),
         _ => None,
     }
 }
@@ -3864,6 +3866,15 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         EntityModelKind::Llama => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
                 .unwrap_or(0)
+        }
+        // M346 — `RabbitRenderer`: "Toast" first, then the coat.
+        EntityModelKind::Rabbit | EntityModelKind::RabbitBaby => {
+            let toast = session.world.entities.custom_name(id) == Some("Toast");
+            let kit = kind == EntityModelKind::RabbitBaby;
+            rewo_data::mob_variants::variant_id(&rewo_data::mob_variants::rabbit_texture(
+                v, kit, toast,
+            ))
+            .unwrap_or(0)
         }
         // M345 — `FoxRenderer`'s idle sheet for the coat, adult or kit.
         EntityModelKind::Fox | EntityModelKind::FoxBaby => {

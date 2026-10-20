@@ -973,6 +973,19 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M346 — r200: the staged white rabbit and Toast, each on its sheet.
+            let white = rewo_data::mob_variants::variant_id(
+                &rewo_data::mob_variants::rabbit_texture(1, false, false),
+            );
+            let toast = rewo_data::mob_variants::variant_id(
+                &rewo_data::mob_variants::rabbit_texture(0, false, true),
+            );
+            for d in draws.iter() {
+                if d.kind == rewo_gpu::mobs::EntityModelKind::Rabbit {
+                    c.rabbits.0 |= Some(d.variant) == white;
+                    c.rabbits.1 |= Some(d.variant) == toast;
+                }
+            }
             // M345 — r199: the staged snow fox, on a coat variant.
             c.snow_fox |= draws
                 .iter()

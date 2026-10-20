@@ -2543,6 +2543,8 @@ pub struct VariantKinds {
     /// M345 — `minecraft:fox`: `Fox.DATA_TYPE_ID`, index 18 INT (`Animal`
     /// adds none after `AgeableMob`'s 16 and 17).
     pub fox: Option<i32>,
+    /// M346 — `minecraft:rabbit`: `Rabbit.DATA_TYPE_ID`, index 18 INT.
+    pub rabbit: Option<i32>,
     /// `minecraft:tropical_fish` (M68). Its index-17 INT is not a texture id
     /// at all — it is `TropicalFish.packVariant`'s four packed fields — but it
     /// arrives through the same setter, and the renderer unpacks it with the
@@ -3065,6 +3067,8 @@ pub(crate) fn apply_set_entity_data<'a>(
         // M345 — index 18 INT, the fox's coat (the axolotl's and the cube
         // mobs' share it, each gated on its own kind).
         (meta.int18, vk.fox),
+        // M346 — index 18 INT again, the rabbit's coat.
+        (meta.int18, vk.rabbit),
         // M68. Index 17 INT — a third serializer at an index the spellcaster
         // BYTE and the pillager/creaking BOOLEAN already claim, so the gate is
         // doing real work here even though the serializer differs.

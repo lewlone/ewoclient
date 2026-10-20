@@ -488,6 +488,9 @@ pub(super) struct RenderCheck {
     pub(super) blue_parrot: bool,
     /// M345 — r199: whether a fox drew on a coat variant.
     pub(super) snow_fox: bool,
+    /// M346 — r200: whether a white rabbit and a rabbit named Toast drew on
+    /// their sheets.
+    pub(super) rabbits: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1253,7 +1256,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 199;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 200;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1453,6 +1456,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M346 — r200: `render_check.py` summons a white rabbit and a brown
+        // one named Toast; each must draw on its sheet (`mobtexshot m71`).
+        row(
+            "r200 a white rabbit and a rabbit named Toast drew on their sheets",
+            self.rabbits.0 && self.rabbits.1,
+            format!(
+                "white rabbit seen: {}, Toast seen: {}",
+                self.rabbits.0, self.rabbits.1
             ),
         );
         // M345 — r199: `render_check.py` summons a snow fox; it must draw on
