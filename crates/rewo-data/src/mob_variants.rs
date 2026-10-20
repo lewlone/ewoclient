@@ -153,6 +153,10 @@ const VARIANT_TEXTURES: &[(&str, &str)] = &[
     ("llama_baby", "entity/llama/llama_white_baby.png"),
     ("llama_baby", "entity/llama/llama_brown_baby.png"),
     ("llama_baby", "entity/llama/llama_gray_baby.png"),
+    // M347 — Mooshroom — `MushroomCow.Variant` RED (0, the baked base) and
+    // BROWN (1), adult and calf (`MushroomCowRenderer.TEXTURES`).
+    ("mooshroom", "entity/cow/mooshroom_brown.png"),
+    ("mooshroom_baby", "entity/cow/mooshroom_brown_baby.png"),
     // M346 — Rabbit — `Rabbit.Variant` (sparse ids 0..5 and 99) and the
     // "Toast" sheet, adult and kit; brown is the baked base of each.
     ("rabbit", "entity/rabbit/rabbit_white.png"),
@@ -499,6 +503,18 @@ pub fn llama_texture(id: i32) -> &'static str {
     LLAMA_BY_ID[i]
 }
 
+/// M347 — `MushroomCowRenderer`'s sheet by `MushroomCow.Variant` id, adult
+/// or calf. `BY_ID` is `OutOfBoundsStrategy.CLAMP`: below 0 is RED, above 1
+/// BROWN.
+pub fn mooshroom_texture(id: i32, baby: bool) -> &'static str {
+    match (id >= 1, baby) {
+        (false, false) => "entity/cow/mooshroom_red.png",
+        (false, true) => "entity/cow/mooshroom_red_baby.png",
+        (true, false) => "entity/cow/mooshroom_brown.png",
+        (true, true) => "entity/cow/mooshroom_brown_baby.png",
+    }
+}
+
 /// M346 — `RabbitRenderer`'s sheet: "Toast" (a custom name exactly that,
 /// `checkMagicName`) before the coat; the coat by `Rabbit.Variant`'s sparse
 /// ids (0..5, and 99 the killer bunny, `caerbannog`), anything else BROWN
@@ -614,6 +630,8 @@ mod tests {
             "entity/fox/fox_baby.png",
             "entity/rabbit/rabbit_brown.png",
             "entity/rabbit/rabbit_brown_baby.png",
+            "entity/cow/mooshroom_red.png",
+            "entity/cow/mooshroom_red_baby.png",
             "entity/horse/horse_brown_baby.png",
         ] {
             assert_eq!(variant_id(base), Some(0), "{base} is the baked base");
@@ -862,6 +880,32 @@ mod tests {
                 let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
                 assert_eq!(k, key);
             }
+        }
+    }
+
+    /// M347 — a mooshroom is red or brown, adult or calf, CLAMPed at both
+    /// ends; brown is an alternate of its own key.
+    #[test]
+    fn a_mooshroom_is_red_or_brown() {
+        assert_eq!(mooshroom_texture(0, false), "entity/cow/mooshroom_red.png");
+        assert_eq!(
+            mooshroom_texture(1, true),
+            "entity/cow/mooshroom_brown_baby.png"
+        );
+        assert_eq!(
+            mooshroom_texture(-3, true),
+            "entity/cow/mooshroom_red_baby.png"
+        );
+        assert_eq!(
+            mooshroom_texture(7, false),
+            "entity/cow/mooshroom_brown.png"
+        );
+        assert_eq!(variant_id(mooshroom_texture(0, false)), Some(0));
+        assert_eq!(variant_id(mooshroom_texture(0, true)), Some(0));
+        for (baby, key) in [(false, "mooshroom"), (true, "mooshroom_baby")] {
+            let v = variant_id(mooshroom_texture(1, baby)).unwrap();
+            let (k, _, _) = specs().find(|(_, i, _)| *i == v).unwrap();
+            assert_eq!(k, key);
         }
     }
 }

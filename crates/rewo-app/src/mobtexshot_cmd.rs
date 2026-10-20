@@ -104,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 71;
+const EXPECTED_WITNESSES: usize = 72;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -5127,6 +5127,89 @@ fn run_check(
         format!(
             "{} (want >= 200 px each, none foreign, all different)",
             rb_rows.join("; ")
+        ),
+    ));
+
+    // m72 — M347: the mooshroom and the calf draw their red base, and on the
+    // brown colour's variant id their brown sheet: each frame is producible
+    // by its own sheet, and red and brown differ.
+    let mut msst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.6, 1.3, -1.6),
+        Vec3::new(0.0, 0.7, 0.0),
+    )?;
+    msst.wr.set_entities(&[], msst.right, msst.up, 0.0);
+    msst.off
+        .render(gpu, Some((&mut msst.wr, msst.vp)), &ov, BG)?;
+    let ms_empty = msst.off.read_rgba(gpu)?;
+    let mut ms_rows = Vec::new();
+    let mut ms_ok = true;
+    for (kind, key, calf) in [
+        (EntityModelKind::Mooshroom, "mooshroom", false),
+        (EntityModelKind::MooshroomBaby, "mooshroom_baby", true),
+    ] {
+        let brown_id = rewo_data::mob_variants::variant_id(
+            rewo_data::mob_variants::mooshroom_texture(1, calf),
+        )
+        .unwrap_or(0);
+        let red: HashSet<u32> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == key)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let brown: HashSet<u32> = baked
+            .mob_variant_textures
+            .iter()
+            .find(|t| t.key == key && t.index == brown_id)
+            .map(|t| producible(&t.rgba))
+            .unwrap_or_default();
+        let mut frames = Vec::new();
+        ms_ok &= brown_id != 0;
+        for (variant, sheet) in [(0u16, red), (brown_id, brown)] {
+            let d = EntityDraw {
+                variant,
+                ..neutral_draw(kind)
+            };
+            msst.wr.set_entities(&[d], msst.right, msst.up, 0.0);
+            msst.off
+                .render(gpu, Some((&mut msst.wr, msst.vp)), &ov, BG)?;
+            let frame = msst.off.read_rgba(gpu)?;
+            let (mut px, mut bad) = (0usize, None);
+            for (p, e) in frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(ms_empty.as_chunks::<4>().0)
+            {
+                if p[..3] == e[..3] {
+                    continue;
+                }
+                px += 1;
+                let c = pack(p[0], p[1], p[2]);
+                if bad.is_none() && !explains(&sheet, c) {
+                    bad = Some(c);
+                }
+            }
+            ms_ok &= !sheet.is_empty() && px >= 200 && bad.is_none();
+            ms_rows.push(format!(
+                "{key} variant {variant}: {px} px, first colour it cannot produce {:?}",
+                bad.map(|c| format!("#{c:06x}"))
+            ));
+            frames.push(frame);
+        }
+        ms_ok &= diff_bytes(&frames[0], &frames[1]) > 0;
+    }
+    msst.destroy(gpu);
+    w.push(wit(
+        "m72.the_mooshroom_and_calf_are_red_or_brown",
+        ms_ok,
+        format!(
+            "{} (want >= 200 px each, none foreign, the colours different)",
+            ms_rows.join("; ")
         ),
     ));
 

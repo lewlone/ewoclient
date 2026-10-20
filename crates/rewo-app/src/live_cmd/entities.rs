@@ -3800,7 +3800,9 @@ pub(crate) fn default_variant(
         | EntityModelKind::Fox
         | EntityModelKind::FoxBaby
         | EntityModelKind::Rabbit
-        | EntityModelKind::RabbitBaby => Some(0),
+        | EntityModelKind::RabbitBaby
+        | EntityModelKind::Mooshroom
+        | EntityModelKind::MooshroomBaby => Some(0),
         _ => None,
     }
 }
@@ -3865,6 +3867,12 @@ pub(crate) fn vanilla_variant(kind: EntityModelKind, id: i32, session: &PlaySess
         }
         EntityModelKind::Llama => {
             rewo_data::mob_variants::variant_id(rewo_data::mob_variants::llama_texture(v))
+                .unwrap_or(0)
+        }
+        // M347 — `MushroomCowRenderer`: red or brown, adult or calf.
+        EntityModelKind::Mooshroom | EntityModelKind::MooshroomBaby => {
+            let calf = kind == EntityModelKind::MooshroomBaby;
+            rewo_data::mob_variants::variant_id(rewo_data::mob_variants::mooshroom_texture(v, calf))
                 .unwrap_or(0)
         }
         // M346 — `RabbitRenderer`: "Toast" first, then the coat.

@@ -973,6 +973,10 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M347 — r201: the staged brown mooshroom, on its colour variant.
+            c.brown_mooshroom |= draws
+                .iter()
+                .any(|d| d.kind == rewo_gpu::mobs::EntityModelKind::Mooshroom && d.variant != 0);
             // M346 — r200: the staged white rabbit and Toast, each on its sheet.
             let white = rewo_data::mob_variants::variant_id(
                 &rewo_data::mob_variants::rabbit_texture(1, false, false),

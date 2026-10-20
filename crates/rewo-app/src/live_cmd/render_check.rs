@@ -491,6 +491,8 @@ pub(super) struct RenderCheck {
     /// M346 — r200: whether a white rabbit and a rabbit named Toast drew on
     /// their sheets.
     pub(super) rabbits: (bool, bool),
+    /// M347 — r201: whether a mooshroom drew on its brown variant.
+    pub(super) brown_mooshroom: bool,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1256,7 +1258,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 200;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 201;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1456,6 +1458,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M347 — r201: `render_check.py` summons a brown mooshroom; it must
+        // draw on its colour variant (index 18 INT, `mobtexshot m72`).
+        row(
+            "r201 a brown mooshroom drew on its colour's sheet",
+            self.brown_mooshroom,
+            format!(
+                "mooshroom on a colour variant seen: {}",
+                self.brown_mooshroom
             ),
         );
         // M346 — r200: `render_check.py` summons a white rabbit and a brown

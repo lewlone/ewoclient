@@ -2545,6 +2545,9 @@ pub struct VariantKinds {
     pub fox: Option<i32>,
     /// M346 — `minecraft:rabbit`: `Rabbit.DATA_TYPE_ID`, index 18 INT.
     pub rabbit: Option<i32>,
+    /// M347 — `minecraft:mooshroom`: `MushroomCow.DATA_TYPE`, index 18 INT
+    /// (`AbstractCow` adds none).
+    pub mooshroom: Option<i32>,
     /// `minecraft:tropical_fish` (M68). Its index-17 INT is not a texture id
     /// at all — it is `TropicalFish.packVariant`'s four packed fields — but it
     /// arrives through the same setter, and the renderer unpacks it with the
@@ -3069,6 +3072,8 @@ pub(crate) fn apply_set_entity_data<'a>(
         (meta.int18, vk.fox),
         // M346 — index 18 INT again, the rabbit's coat.
         (meta.int18, vk.rabbit),
+        // M347 — index 18 INT, the mooshroom's colour.
+        (meta.int18, vk.mooshroom),
         // M68. Index 17 INT — a third serializer at an index the spellcaster
         // BYTE and the pillager/creaking BOOLEAN already claim, so the gate is
         // doing real work here even though the serializer differs.
