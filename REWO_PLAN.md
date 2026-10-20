@@ -2099,6 +2099,7 @@ this shape once.
 | M283 (2026-10-20) — sleeping fades the screen | **r141** | — | — |
 | M284 (2026-10-20) — sleeping lays the camera in the bed and hides the hand | **r142** | — | — |
 | M285 (2026-10-20) — a charged creeper draws its energy swirl | **r143** | — | — |
+| M286 (2026-10-20) — a breeze draws its wind as its own layer | **r144** | — | — |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3933,6 +3934,34 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M286 — the breeze's wind as its own layer (2026-10-20)
+
+The breeze's wind funnel (`breeze_wind.png`, alpha 103 to 175) was texture
+slot 1 of the body and drew in the solid range: opaque, still, face-shaded.
+Vanilla draws it as `BreezeWindLayer` (the breeze mesh kept to
+`wind_body`, posed by the same `setupAnim`) through `RenderTypes.breezeWind`:
+
+- its own sheet, REPEAT and NEAREST, UVs offset `t · 0.02 % 1` in u only
+  (`t = ageInTicks`, the pass's shared clock);
+- `BREEZE_WIND`: alpha cutout 0.1, the lightmap kept, no face shade
+  (`NO_CARDINAL_LIGHTING`), no overlay, white vertex colour;
+- `BlendFunction.TRANSLUCENT`, depth `GREATER_OR_EQUAL` with writes, no
+  culling, sorted far to near (`sortOnUpload`), through the UNORM view (the
+  texel, the light, re-encoded from the vertex's linear value, and the blend
+  are vanilla's gamma-space numbers), after the swirl (`order(1)`).
+
+The bake moves the slot-1 quads out of the body into `MobModel::wind` (the
+face-label mode keeps them, as `mobshot` expects); the pass's ninth range.
+
+**Unit test**: the wind slot is `breeze_wind` and the model has quads on and
+off it. **mobtexshot m22**: through the production upload with a uniform
+sheet `(220, 120, 40)` at alpha 128, every pixel the wind touches is the
+blend formula applied one to eight times to the frame without the wind (the
+funnel is concentric shells, front and back faces each), at least 300 at one
+or two layers and at most a tenth at one. Mutants: an opaque wind (no pixel
+explained) and an unsorted funnel (four in ten single layers) both fail.
+**r144**: `render_check.py` summons a NoAI breeze; its wind range fills.
 
 ### M285 — the charged creeper's energy swirl (2026-10-20)
 

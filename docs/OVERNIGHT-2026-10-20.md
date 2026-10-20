@@ -13,12 +13,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 92 Rewo milestones, M194 to M285, in about 205 commits on
+- **What happened**: 93 Rewo milestones, M194 to M286, in about 208 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`a9b60422`): 4427 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 143 of
-  143 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`c6cf0346`): 4428 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 144 of
+  144 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -360,6 +360,8 @@ released.
   and hides the hand, as vanilla does; Rewo kept the standing view.
 - **M285**: a charged creeper (struck by lightning) now shows its blue
   energy swirl; Rewo drew it as a plain creeper.
+- **M286**: a breeze's wind funnel is now see-through and swirls, as in
+  vanilla; Rewo drew it as a solid, still shell.
 - **M245**: inventory icons are now lit like vanilla's: bright top, medium
   left side, dark right side. Before, a block's top was its darkest face and
   colours looked flat. A block held in first person also had its top shaded
@@ -421,6 +423,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `c6cf0346` | **M286** — the breeze's wind as its own layer: the slot-1 funnel leaves the body for `BREEZE_WIND` (own REPEAT sheet scrolled by `ageInTicks · 0.02`, lit, unshaded, translucent in gamma space, sorted), the pass's ninth range; a unit test, mobtexshot **m22** and render-check **r144**. |
 | `a9b60422` | **M285** — the charged creeper's energy swirl: `DATA_IS_POWERED`, the creeper shell at deformation 2, `creeper_armor.png` (REPEAT, NEAREST) scrolled by `ageInTicks`, `0xFF808080`, additive in gamma space as the pass's eighth range; three unit tests, mobtexshot **m21** and render-check **r143**. |
 | `f7e81b6b` | **M284** — the sleeping camera: `camera_pose` turns the render camera to the bed's facing at the sleeping eye (0.2 + 0.15), levels the pitch and hides the hand; picking keeps the player's eye; the listener follows the camera; a unit test and render-check **r142**. |
 | `16a2903c` | **M283** — the camera overlays and the sleep fade: pumpkin blur, spyglass scope (with `scopeScale`), powder-snow frost, the sleep counter's fill, through the generalised overlay pass; a unit test, mobshot's alpha-blend check and render-check **r141**. |
@@ -757,6 +760,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M286: **4,428 tests passed, 0 failed; gates 51/51** (mobtexshot 22: m22 over 2,631 wind px, by layer count 26 / 1,299 / 275 / 555 / 466 / 10); render check **144/144** on two runs (r144: the wind range filled on every frame the breeze drew); `cargo fmt --check` clean. Clippy failed once (`needless_borrows_for_generic_args` on the new emitter call); after the one-character fix both clippy configurations are clean, rewo-gpu's 361 tests pass and mobtexshot reads 22/22. Mutants: an opaque wind and an unsorted funnel each fail m22 (its first criterion, "half need two or more layers", let the unsorted one through).
 - After M285: **4,427 tests passed, 0 failed; gates 51/51** (mobtexshot 21: m21 over 2,292 body px, 1,653 single layers, 1,631 sky px all with two or more); render check **143/143** on two runs (r143: the swirl range filled on every frame the charged creeper drew); `cargo fmt --check` clean. Clippy failed once on the new quad sort (`iter_cloned_collect`); after the one-line fix (`.to_vec()`) both clippy configurations are clean, rewo-gpu's 360 tests pass and mobtexshot reads 21/21 again. Before the chain, three mutants of the swirl (a white colour, no sort, a face shade) each failed m21; its first draft, graded against the jar's ramp texture, had let two of them through. One process slip: a single incremental `cargo check` for M285 started about three minutes after another session's `G4-RUNNING` marker appeared at 05:19 (the check was issued without re-reading the marker); every heavy step after that waited for it, and it cleared at 05:38.
 - After M284: **4,424 tests passed** (the full run: 4,419 passed and 5 `rewo-net` `srv` TCP tests failed at "a port free for both UDP and TCP" under machine load; rerun alone and as the whole `rewo-net` library, 1,392/1,392 passed); **gates 51/51**; render check **142/142** on two runs (r142: camera yaw −90 against the player's ~0, no hand on 129 and 187 asleep frames); clippy and `cargo fmt --check` clean.
 - After M283: **4,423 tests passed, 0 failed; gates 51/51** (mobshot's pumpkin-blur check: worst pixel 1); render check **141/141** on two runs; clippy and `cargo fmt --check` clean. The unit test's first draft expected the half-scale scope square one pixel off; vanilla's integer division puts it at (172, 67), which the code had.
