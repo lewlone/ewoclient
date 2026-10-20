@@ -3963,6 +3963,37 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M317 — the baby zombie and husk; M175's same-size swaps scramble (2026-10-20)
+
+**A finding about M175.** Its whole-sheet swaps were baked only for baby
+sheets the size of the adult's, on the reasoning that a same-size sheet tiles
+like the adult's, and the renderer moved the adult mesh's UVs onto it. In
+26.2 that reasoning fails for every one of the ten: armadillo, dolphin,
+drowned, goat, husk, sheep, villager, zombie, zombie villager and zombified
+piglin all have a dedicated baby model (`Baby*Model`, `*_BABY` layers) whose
+boxes and texture offsets differ from the adult's, and their baby sheets are
+laid out for those models. Painting one onto the adult mesh scrambles it (a
+baby zombie's head front is (9, 9)..(15, 15) of its sheet; the adult's is
+(8, 8)..(16, 16)). mobtexshot n1/n2 passed throughout: the colours came from
+the right sheet, which is exactly the "a proxy is not the property" lesson.
+
+**M317** fixes the zombie and the husk: `ZombieBaby` and `HuskBaby` are
+`BabyZombieModel` (a 4 x 5 x 2 body, a 6-px head with its outer layer, 2-px
+limbs at their own offsets, the arms on the zombie's animation; the husk at
+its renderer's 1.0625), picked by `baby_model_kind`, with no render scale.
+Their sheets now have spec rows of their own, and the swap bake skips a sheet a
+spec row already bakes (m8's split is unchanged: it now counts the sheets the
+same-size swaps cover). n1/n2 grade the baby's own model. The baby zombie's
+own armour layer (`ZOMBIE_BABY_ARMOR`) is not drawn: it wears no humanoid
+armour (recorded). The other eight scrambled swaps remain (Follow-ups).
+`mobshot` grades 291 views; both babies are under m5's crowd floor
+(`MAX_SMALL` 16).
+
+**Unit tests**: the seven boxes and the head front's texels; the kind swap
+and scales. **mobtexshot n1/n2** on the new model: 661 px, all producible by
+the baby sheet, 307 impossible for the adult's. **r172**: a staged baby
+zombie (helmeted against the sun) and baby husk draw as `BabyZombieModel`.
+
 ### M316 — the polar bear cub (2026-10-20)
 
 `PolarBearRenderer` swaps in `BabyPolarBearModel` (`POLAR_BEAR_BABY`: the
