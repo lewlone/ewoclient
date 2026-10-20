@@ -705,6 +705,7 @@ impl LiveApp {
             .entities
             .head_profiles()
             .chain(session.world.entities.stack_profiles())
+            .chain(session.world.entities.hand_profiles())
             .chain(session.inventory.profile_skins())
         {
             self.head_skins.request(v);
@@ -944,6 +945,13 @@ impl LiveApp {
                 .any(|d| d.fixed_display && skinned(&d.model))
             {
                 c.framed_skin_head_frames += 1;
+            }
+            // M290 — r148: the staged armour stand's held head, skinned.
+            if draws
+                .iter()
+                .any(|d| d.held.iter().flatten().any(|m| skinned(m)))
+            {
+                c.held_skin_head_frames += 1;
             }
             // r105 — the two staged armour stands, as their model (not the
             // capsule), each with its own flags off the wire: the plain one

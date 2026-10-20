@@ -2955,10 +2955,12 @@ pub(crate) fn thrown_item_of(name: &str) -> Option<(&'static str, f32, bool)> {
 /// `Unknown` hand yields `None` for the same reason its swing is suppressed:
 /// the client cannot know what it is holding, and drawing a guess is worse
 /// than drawing nothing.
-pub(crate) fn resolve_held_items<'a>(
+pub(super) fn resolve_held_items<'a>(
     entities: &rewo_world::entities::EntityTable,
     id: i32,
     items: &'a rewo_data::items::Items,
+    // M290 — a held player head takes its profile's skin.
+    head_skins: Option<&'a HeadSkins>,
 ) -> [Option<&'a str>; 2] {
     use rewo_world::entities::{HumanoidArm, InteractionHand};
     let mut out: [Option<&str>; 2] = [None, None];
@@ -2973,6 +2975,7 @@ pub(crate) fn resolve_held_items<'a>(
             };
             out[i] = items
                 .name(held.item_id)
+                .map(|n| head_skins.map_or(n, |h| h.item_model(n, entities.hand_profile(id, hand))))
                 .map(|n| use_model(n, use_state, hand, held.charged));
         }
     }
@@ -4094,7 +4097,7 @@ pub(super) fn collect_entities<'a>(
             // disjunction as of M24; M21 shipped only the first term.
             hurt: session.world.entities.has_red_overlay(id),
             // M22: what each arm is holding.
-            held: resolve_held_items(&session.world.entities, id, item_names),
+            held: resolve_held_items(&session.world.entities, id, item_names, head_skins),
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             mount: None,

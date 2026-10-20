@@ -3558,6 +3558,15 @@ pub(crate) fn apply_set_equipment(
             entities.set_saddled(eid, !matches!(slot, WireSlot::Empty));
         }
         if let Some(hand) = hand {
+            // M290 — a held player head's skin, from its `profile`.
+            entities.set_hand_profile(
+                eid,
+                hand,
+                match &slot {
+                    WireSlot::Stack(s) => s.components.profile_textures.clone(),
+                    WireSlot::Empty => None,
+                },
+            );
             let item = match slot {
                 WireSlot::Empty => HandItem::Empty,
                 WireSlot::Stack(ref s) => match item_stack::resolve_swing(s, &data.prototypes) {

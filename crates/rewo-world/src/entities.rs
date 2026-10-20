@@ -962,6 +962,10 @@ pub struct EntityTable {
     /// profile (`ItemEntity.DATA_ITEM` / `ItemFrame.DATA_ITEM`). Cleared on
     /// removal.
     stack_profiles: HashMap<i32, String>,
+    /// M290 — the `textures` property of a player head in either hand
+    /// (`ClientboundSetEquipmentPacket`, slots 0 and 1), by
+    /// `InteractionHand`. Cleared on removal.
+    hand_profiles: HashMap<i32, [Option<String>; 2]>,
     /// Allay dance state (index 16 BOOLEAN → `DATA_DANCING`, for Allays only).
     /// An entry is created lazily when `set_dancing` is first called (the
     /// server only sends `DATA_DANCING` once it flips off its `false` default);
@@ -1665,6 +1669,7 @@ impl EntityTable {
             armor,
             head_profiles,
             stack_profiles,
+            hand_profiles,
             dances,
             events,
             swings: _,
@@ -1700,6 +1705,7 @@ impl EntityTable {
         item_stacks.remove(&id);
         item_frames.remove(&id);
         stack_profiles.remove(&id);
+        hand_profiles.remove(&id);
         attributes.remove(&id);
         shared_flags.remove(&id);
         custom_name_visible.remove(&id);
@@ -2568,6 +2574,30 @@ impl EntityTable {
     /// carries.
     pub fn stack_profile(&self, id: i32) -> Option<&str> {
         self.stack_profiles.get(&id).map(String::as_str)
+    }
+
+    /// M290 — the skin of a player head held in `hand` (`None` clears).
+    pub fn set_hand_profile(&mut self, id: i32, hand: InteractionHand, textures: Option<String>) {
+        let slot = self.hand_profiles.entry(id).or_default();
+        slot[hand_slot(hand)] = textures;
+        if slot.iter().all(Option::is_none) {
+            self.hand_profiles.remove(&id);
+        }
+    }
+
+    /// M290 — the `textures` property of the player head `id` holds in
+    /// `hand`.
+    pub fn hand_profile(&self, id: i32, hand: InteractionHand) -> Option<&str> {
+        self.hand_profiles.get(&id)?[hand_slot(hand)].as_deref()
+    }
+
+    /// M290 — every held head's skin, to request.
+    pub fn hand_profiles(&self) -> impl Iterator<Item = &str> {
+        self.hand_profiles
+            .values()
+            .flatten()
+            .flatten()
+            .map(String::as_str)
     }
 
     /// M289 — every dropped or framed head's skin, to request.
@@ -4778,6 +4808,7 @@ mod side_state_tests {
             armor,
             head_profiles,
             stack_profiles,
+            hand_profiles,
             dances,
             events,
             swings,
@@ -4817,6 +4848,7 @@ mod side_state_tests {
             armor.contains_key(&id),
             head_profiles.contains_key(&id),
             stack_profiles.contains_key(&id),
+            hand_profiles.contains_key(&id),
             dances.contains_key(&id),
             events.contains_key(&id),
             swings.contains_key(&id),
@@ -4876,6 +4908,7 @@ mod side_state_tests {
         t.primed.insert(id, PrimedState::default());
         t.item_stacks.insert(id, (1, 1, false));
         t.stack_profiles.insert(id, "e30=".to_string());
+        t.hand_profiles.insert(id, [Some("e30=".to_string()), None]);
         t.hurts.insert(id, HurtState::default());
         t.hurt_dirs.insert(id, 45.0);
         t.model_customisation.insert(id, 0x7f);

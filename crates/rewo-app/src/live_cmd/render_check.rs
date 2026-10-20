@@ -361,6 +361,9 @@ pub(super) struct RenderCheck {
     /// drew in their skin.
     pub(super) dropped_skin_head_frames: usize,
     pub(super) framed_skin_head_frames: usize,
+    /// M290 — r148: frames on which the armour stand's held head drew in
+    /// its skin.
+    pub(super) held_skin_head_frames: usize,
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1126,7 +1129,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 147;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 148;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1327,6 +1330,14 @@ impl RenderCheck {
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
             ),
+        );
+        // M290 — r148: `render_check.py` summons an armour stand holding a
+        // player head with r130's skin in its main hand. Its held item must
+        // draw in the per-skin model; a held head drew Steve until M290.
+        row(
+            "r148 an armour stand's held player head drew in its own skin",
+            self.held_skin_head_frames >= 1,
+            format!("{} frames drew it", self.held_skin_head_frames),
         );
         // M289 — r147: `render_check.py` drops a player head item and frames
         // another, both with r130's skin in their profile. Each must draw in a

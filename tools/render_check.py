@@ -306,7 +306,10 @@ HEAD_STAGING = (
     "count:1,components:{\"minecraft:profile\":{properties:[{name:\"textures\",value:\"%s\"}]}}}}"
     ";summon minecraft:item_frame ~-11 ~ ~8 {Facing:1b,Fixed:1b,Item:{id:\"minecraft:player_head\","
     "count:1,components:{\"minecraft:profile\":{properties:[{name:\"textures\",value:\"%s\"}]}}}}"
-    % (HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES)
+    # M290 -- r148. An armour stand holding the same head in its main hand.
+    ";summon minecraft:armor_stand ~-13 ~ ~7 {ShowArms:1b,equipment:{mainhand:{id:\"minecraft:player_head\","
+    "count:1,components:{\"minecraft:profile\":{properties:[{name:\"textures\",value:\"%s\"}]}}}}}"
+    % (HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES, HEAD_TEXTURES)
 )
 
 
