@@ -948,6 +948,15 @@ impl LiveApp {
             {
                 c.framed_skin_head_frames += 1;
             }
+            // M305 — r161: the staged size-1 and size-4 magma cubes, by the
+            // scale their draws carry (size / 2).
+            for d in draws
+                .iter()
+                .filter(|d| d.kind == rewo_gpu::mobs::EntityModelKind::MagmaCube)
+            {
+                c.cube_sizes.0 |= (d.scale_mul - 0.5).abs() < 1e-3;
+                c.cube_sizes.1 |= (d.scale_mul - 2.0).abs() < 1e-3;
+            }
             // M304 — r160: the staged giant.
             if draws
                 .iter()

@@ -2986,6 +2986,14 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_creeper_powered(eid, b);
         }
     }
+    // Slot 18 INT → `AbstractCubeMob.ID_SIZE` (M305) on a slime, magma cube
+    // or sulfur cube. Class-gated: the axolotl's variant shares index and
+    // serializer (read below, gated on the axolotl).
+    if let Some(sz) = meta.int18 {
+        if kinds.classes.is_some_and(|c| c.is_cube_mob(type_id)) {
+            entities.set_size(eid, sz);
+        }
+    }
     // Slot 19 INT → `WitherBoss.DATA_ID_INV` (M288), the invulnerable
     // phase's ticks. Kind-gated: the horse's variant shares index and
     // serializer (read below, gated on the horse).
@@ -5532,6 +5540,33 @@ mod set_entity_data_tests {
         apply_set_entity_data(&index16_bool_true(2), &mut t, Some(ALLAY));
         assert!(t.is_baby(2), "a zombie's index-16 BOOLEAN is DATA_BABY_ID");
         assert_eq!(t.allay_dance_render(2, 1.0), None, "a zombie never dances");
+    }
+
+    /// M305 — index 18 INT is `AbstractCubeMob.ID_SIZE` on a cube mob, and
+    /// is left alone on any other kind (an axolotl's variant is there too).
+    #[test]
+    fn index18_int_is_a_cube_mobs_size_only_on_a_cube_mob() {
+        const SLIME: i32 = 812;
+        let classes = rewo_data::entity_types::EntityClasses::from_raw_ids(&[SLIME, ZOMBIE], &[])
+            .with_cube_mobs(&[SLIME]);
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(21, EntityState::new(0, SLIME, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(22, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(21, 18, 1, &[0x04]), &mut t, kinds);
+        apply_set_entity_data(&body(22, 18, 1, &[0x04]), &mut t, kinds);
+        assert_eq!(t.size(21), Some(4));
+        assert_eq!(t.size(22), None);
+        // And the slot it used to be read from no longer sizes a slime.
+        apply_set_entity_data(&body(21, 16, 1, &[0x02]), &mut t, kinds);
+        assert_eq!(
+            t.size(21),
+            Some(2),
+            "index 16 INT still lands in `sizes` (the creeper's)"
+        );
     }
 
     /// M288 — index 19 INT is `WitherBoss.DATA_ID_INV` on a wither, and is

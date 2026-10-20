@@ -253,6 +253,10 @@ PRECMD = (
     "equipment:{saddle:{id:\"minecraft:saddle\",count:1}}};"
     # M304 -- r160. A giant (12 blocks tall), well clear of every lane.
     "summon minecraft:giant ~-34 ~ ~-24 {NoAI:1b,Silent:1b};"
+    # M305 -- r161. Magma cubes of size 1 (NBT Size is the size minus one)
+    # and size 4, clear of the lanes.
+    "summon minecraft:magma_cube ~-30 ~ ~0 {NoAI:1b,Silent:1b,Size:0};"
+    "summon minecraft:magma_cube ~-30 ~ ~4 {NoAI:1b,Silent:1b,Size:3};"
     # M274 -- r132. An armour stand wearing a carved pumpkin (no equipment
     # asset, so `CustomHeadLayer`'s item branch draws it).
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"

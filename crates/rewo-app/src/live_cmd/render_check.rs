@@ -392,6 +392,9 @@ pub(super) struct RenderCheck {
     pub(super) camel_husk_frames: usize,
     /// M304 — r160: frames on which the staged giant drew as a giant.
     pub(super) giant_frames: usize,
+    /// M305 — r161: whether a magma cube drew at size 1 (scale 0.5) and one
+    /// at size 4 (scale 2.0).
+    pub(super) cube_sizes: (bool, bool),
     /// M194 — frames on which the collector read the SERVER's summoned frame
     /// (`render_check.py`: facing 2, rotation 3, a sword) — r71, the
     /// metadata slots calibrated against a real 26.2 server.
@@ -1157,7 +1160,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 160;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 161;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1357,6 +1360,19 @@ impl RenderCheck {
             format!(
                 "{} frames drew it, peak alpha {}",
                 self.sleep_fade_frames, self.sleep_fade_peak
+            ),
+        );
+        // M305 — r161: `render_check.py` summons magma cubes of size 1
+        // (`Size:0`, which the server never sends: the default) and size 4;
+        // both must draw at their own scale. Until M305 the size was read at
+        // index 16, where 26.2 puts the baby flag, so every cube mob drew at
+        // size 2.
+        row(
+            "r161 magma cubes drew at their own sizes (1 and 4)",
+            self.cube_sizes.0 && self.cube_sizes.1,
+            format!(
+                "size 1 (scale 0.5) seen: {}, size 4 (scale 2.0) seen: {}",
+                self.cube_sizes.0, self.cube_sizes.1
             ),
         );
         // M304 — r160: `render_check.py` summons a giant; it must draw as

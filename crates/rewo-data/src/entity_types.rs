@@ -231,6 +231,9 @@ pub struct EntityClasses {
     /// M221 — `instanceof AbstractBoat` (boats, rafts, chest boats): the
     /// vehicles the client steers with `AbstractBoat`'s physics.
     abstract_boat: std::collections::HashSet<i32>,
+    /// M305 — `instanceof AbstractCubeMob` (slime, magma cube, sulfur cube):
+    /// `ID_SIZE` is their index-18 INT.
+    cube_mob: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -283,6 +286,7 @@ impl EntityClasses {
         let nautilus = resolve_set(table::ABSTRACT_NAUTILUS, "nautilus")?;
         let abstract_horse = resolve_set(table::ABSTRACT_HORSE, "horse")?;
         let abstract_boat = resolve_set(table::ABSTRACT_BOAT, "boat")?;
+        let cube_mob = resolve_set(table::ABSTRACT_CUBE_MOB, "cube-mob")?;
         let mut custom_inventory = abstract_horse.clone();
         custom_inventory.extend(nautilus.iter().copied());
         custom_inventory.extend(resolve_set(table::ABSTRACT_CHEST_BOAT, "chest-boat")?);
@@ -408,6 +412,7 @@ impl EntityClasses {
             custom_inventory,
             abstract_horse,
             abstract_boat,
+            cube_mob,
         })
     }
 
@@ -439,6 +444,7 @@ impl EntityClasses {
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
+            cube_mob: Default::default(),
         }
     }
 
@@ -471,6 +477,7 @@ impl EntityClasses {
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
+            cube_mob: Default::default(),
         }
     }
 
@@ -557,6 +564,18 @@ impl EntityClasses {
     /// `entity instanceof AbstractBoat` (M221).
     pub fn is_boat(&self, type_id: i32) -> bool {
         self.abstract_boat.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractCubeMob` (M305): index 18 INT is its size.
+    pub fn is_cube_mob(&self, type_id: i32) -> bool {
+        self.cube_mob.contains(&type_id)
+    }
+
+    /// As built, plus these ids as cube mobs. **Unit tests only**, beside
+    /// [`Self::from_raw_ids`].
+    pub fn with_cube_mobs(mut self, ids: &[i32]) -> Self {
+        self.cube_mob.extend(ids.iter().copied());
+        self
     }
 
     /// `entity instanceof AbstractHorse` (M220).

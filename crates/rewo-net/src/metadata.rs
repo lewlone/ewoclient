@@ -148,10 +148,16 @@ pub struct EntityMeta {
     /// their SNIFFER_STATE/ARMADILLO_STATE/… enum ordinal). Which enum it
     /// is depends on the entity type; the caller knows the kind.
     pub gesture_state: Option<u8>,
-    /// Slime / magma-cube size (index 16, INT — `AbstractCubeMob.ID_SIZE`;
-    /// the model + bbox scale linearly by it). The index is exact: Entity
-    /// defines 0..7, LivingEntity 8..14, Mob 15, AbstractCubeMob 16 (and
-    /// DATA_POSE=6 cross-checks the count). Only meaningful on cube mobs.
+    /// The raw index-16 INT: in 26.2 that is `Creeper.DATA_SWELL_DIR`
+    /// (Entity 0..7, LivingEntity 8..14, Mob 15, Creeper 16), which M277
+    /// keeps in the table's `sizes`.
+    ///
+    /// **Not the cube mobs' size any more.** This used to be documented as
+    /// `AbstractCubeMob.ID_SIZE`, which is what it was while `Slime extended
+    /// Mob`; 26.2's `AbstractCubeMob extends AgeableMob`, whose `DATA_BABY_ID`
+    /// (16) and `AGE_LOCKED` (17) push `ID_SIZE` to 18, a BOOLEAN now sitting
+    /// at 16. So from the 26.2 port until M305 no slime or magma cube ever
+    /// received its size; it is [`Self::int18`], routed by class.
     pub size: Option<i32>,
     /// Raw index-16 BOOLEAN value — **polymorphic by entity kind**, which the
     /// byte parser cannot know. The client models two uses of this slot: the
@@ -701,17 +707,23 @@ mod tests {
         assert!(m.custom_name.is_none() && m.flags.is_none());
     }
 
+    /// M305 — a 26.2 slime's update: the baby BOOLEAN at 16 and the size INT
+    /// at 18 (`AbstractCubeMob extends AgeableMob`), not an INT at 16.
     #[test]
-    fn reads_cube_mob_size_at_index_16() {
-        // A slime size update: index 16, INT serializer (type 1), value 4.
+    fn reads_a_cube_mobs_baby_at_16_and_its_size_at_18() {
         let mut b: Vec<u8> = Vec::new();
         b.extend_from_slice(&[0x00, 0x00, 0x00]); // idx0 BYTE flags=0
-        b.extend_from_slice(&[0x10, 0x01, 0x04]); // idx16 INT size=4
+        b.extend_from_slice(&[0x10, 0x08, 0x00]); // idx16 BOOLEAN baby=false
+        b.extend_from_slice(&[0x12, 0x01, 0x04]); // idx18 INT size=4
         b.push(0xFF);
         let mut r = PacketReader::new(&b);
         let m = parse(&mut r, MetaKinds::default());
-        assert_eq!(m.size, Some(4));
-        assert_eq!(m.bool16, None, "INT at 16 is size, not a BOOLEAN");
+        assert_eq!(m.int18, Some(4));
+        assert_eq!(m.bool16, Some(false));
+        assert_eq!(
+            m.size, None,
+            "the index-16 INT is the creeper's, not a size"
+        );
     }
 
     /// M194 — an item frame's facing (DIRECTION = serializer 12 at slot 8)

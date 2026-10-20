@@ -3985,11 +3985,12 @@ pub(super) fn collect_entities<'a>(
         }
         let thrown_fullbright = thrown.is_some_and(|(_, _, fullbright)| fullbright);
 
-        // Slime / magma-cube size (metadata index 16, vanilla default 1;
-        // the model + bbox scale linearly by it). Our slime model is baked
-        // at the size-2 look, so scale_mul = size/2 (size 2 → 1.0).
+        // Slime / magma-cube size (metadata index 18 since M305, vanilla
+        // default 1, which the server never sends; the model + bbox scale
+        // linearly by it). Our slime model is baked at the size-2 look, so
+        // scale_mul = size/2 (size 2 → 1.0).
         let cube_size = matches!(kind, EntityModelKind::Slime | EntityModelKind::MagmaCube)
-            .then(|| session.world.entities.size(id).unwrap_or(2).clamp(1, 32));
+            .then(|| session.world.entities.size(id).unwrap_or(1).clamp(1, 32));
         let (mut w, mut h) = match cube_size {
             Some(sz) => (0.51 * sz as f32, 0.51 * sz as f32),
             None => etypes.dimensions(e.type_id),
