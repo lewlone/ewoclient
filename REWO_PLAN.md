@@ -3929,6 +3929,38 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M280 — empty-slot icons (2026-10-20)
+
+`AbstractContainerScreen.extractSlot` blits `slot.getNoItemIcon()` 16x16
+in an empty, active slot: the faint helmet, chestplate, leggings and boots
+in the player's armour slots and the shield in the off-hand, the potion
+and fuel outlines in a brewing stand, the lapis in an enchanting table,
+the saddle and armour (or a llama's carpet, or the nautilus's armour) in a
+mount's slots, and `LoomScreen`'s banner, dye and pattern. Rewo drew none.
+
+- `rewo_ui::menu_screen::empty_slot_icons(layout, mount, empty)`: which
+  slot shows which `container/slot/<stem>` sprite, positioned from the
+  layout (an inactive slot has none). `MountMenu::llama` carries
+  `HorseInventoryMenu`'s `isLlama`.
+- The fifteen sprites append to `MENU_OVERLAY_SPRITES` (134..=148,
+  `EMPTY_SLOT_ICONS`, `empty_slot_icon_index`).
+- `live_cmd::empty_slot_widgets` turns them into the container pass's
+  widget-layer blits, which draw after the background and before the slots
+  for every screen, the player's inventory included; `apply_screen`
+  appends them to the recipe-book button's.
+
+Recorded: the smithing table's cycling template icons
+(`CyclingSlotBackground`) are not drawn.
+
+**Unit test**: the rules per menu (the player's five at vanilla's
+positions, a filled slot dropping out; the brewing stand's potions and
+fuel; the loom's three; a llama's carpet). **inventoryshot ge1** (171 to
+172): through the production builder into the renderer, each of the five
+equipment icons reproduces its jar sprite's opaque texels exactly at
+vanilla's literal slot position (`InventoryMenu`: `(8, 8 + i·18)`,
+`(77, 62)`), and with the helmet slot filled none of the helmet's texels
+remain.
+
 ### M279 — an invisible glowing entity is its outline (2026-10-20)
 
 `LivingEntityRenderer.getRenderType`: a body the viewer cannot see draws
