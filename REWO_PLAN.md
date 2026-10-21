@@ -4012,6 +4012,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M399 — players and mannequins crouch (2026-10-21)
+
+From the follow-ups (the mannequin's pose, which is every avatar's). `MobCombat::crouching` is `Entity.isCrouching()` (the CROUCHING pose, ordinal 5) for the avatar kinds; `anim_delta` applies `HumanoidModel`'s crouch block (body `xRot` 0.5 and down 3.2, arms +0.4 and down 3.2, legs back 4, head down 4.2; the cape follows the body); the spyglass pose's −π/12 crouch term is live; `AvatarRenderer.getRenderOffset` lowers a crouching avatar 2/16. Swimming, fall-flying and sleeping avatar poses stay open. **Unit test**; **mobtexshot m113** (1452 px against standing; 0 by construction before); render check **r221** (a mannequin posed crouching draws crouching).
+
 ### M398 — the camera's eye height eases (2026-10-21)
 
 From the follow-ups (M284's note). Vanilla's camera keeps its own eye height, eased half the gap a tick toward the player's (`Camera.tick`) and lerped by the partial tick; Rewo's stood at the player's eye, so lying down, crouching and standing up snapped. `PlaySession::camera_eye`/`camera_eye_old` step beside the FOV (sleeping 0.2, else the pose's eye height) and `camera_pose` lerps them; the pick keeps the player's eye. Starts at the standing eye (vanilla rises from 0 at a session's start). r142 now asks for `0.35 ≤ dy < 0.5` (the bot sleeps a few ticks; the eased eye is still descending), after the first two chains failed it and a strict no-rise r220. **Unit test**; render check **r220** (the first asleep frame's eye above 1.0, falling frame to frame within the partial tick's jitter, the last below 0.5).
