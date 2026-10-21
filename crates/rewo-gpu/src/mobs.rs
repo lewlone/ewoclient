@@ -354,6 +354,10 @@ pub enum Anim {
     /// cos(age·k)·2.5° with k = 0.01·(entityId % 10); holding an item, the
     /// nose sits at (0, 1, −1.5) tipped −0.9.
     WitchNose,
+    /// M388 — an ender dragon part, slot `part` of [`dragon_pose`].
+    Dragon {
+        part: u8,
+    },
     /// M387 — an axolotl part, slot `part` of [`axolotl_pose`]: 0 body,
     /// 1 head, 2 top gills, 3 left gills, 4 right gills, 5 right hind leg,
     /// 6 left hind, 7 right front, 8 left front, 9 tail.
@@ -13237,10 +13241,28 @@ fn wither_with(g: f32) -> Model {
 /// procedural flight).
 fn ender_dragon() -> Model {
     let mut b = ModelBuilder::new();
-    // Head (+ jaw folded in).
-    // M386 — vanilla's dragon head never follows the look: `setupAnim`
-    // places it procedurally along the neck (not modelled yet).
-    let head = b.part([0.0, 20.0, -62.0], Anim::None, 1.0);
+    // M388 — vanilla's tree: the model root (which `setupAnim` lifts and
+    // moves forward every frame), the head and its jaw, five neck and twelve
+    // tail segments placed along their chains, and the body carrying the
+    // wings and legs; every part on `Anim::Dragon { part }`, a slot of
+    // [`dragon_pose`].
+    let dr = |part: u8| Anim::Dragon { part };
+    let root = b.part_named(
+        "root",
+        [0.0; 3],
+        [0.0; 3],
+        dr(DRAGON_ROOT),
+        1.0,
+        Option::None,
+    );
+    let head = b.part_named(
+        "head",
+        [0.0, 20.0, -62.0],
+        [0.0; 3],
+        dr(DRAGON_HEAD),
+        1.0,
+        Some(root),
+    );
     b.cube(
         head,
         0,
@@ -13289,233 +13311,334 @@ fn ender_dragon() -> Model {
         [2.0, 2.0, 4.0],
         NONE,
     );
-    b.cube_f(
-        head,
+    let jaw = b.part_named(
+        "jaw",
+        [0.0, 4.0, -8.0],
+        [0.0; 3],
+        dr(DRAGON_JAW),
+        1.0,
+        Some(head),
+    );
+    b.cube(
+        jaw,
         0,
         (176.0, 65.0),
         [-6.0, 0.0, -16.0],
         [12.0, 4.0, 16.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 4.0, -8.0])],
+        NONE,
     );
-    // Neck + tail spine segments (10³ box + top scale).
-    let mut spine = |off: [f32; 3]| {
-        b.cube_f(
-            STATIC_PART,
+    let spine = |b: &mut ModelBuilder, pivot: [f32; 3], part: u8| {
+        let seg = b.part_named("", pivot, [0.0; 3], dr(part), 1.0, Some(root));
+        b.cube(
+            seg,
             0,
             (192.0, 104.0),
             [-5.0, -5.0, -5.0],
             [10.0, 10.0, 10.0],
-            0.0,
-            false,
-            &[Fold::at(off)],
+            NONE,
         );
-        b.cube_f(
-            STATIC_PART,
+        b.cube(
+            seg,
             0,
             (48.0, 0.0),
             [-1.0, -9.0, -3.0],
             [2.0, 4.0, 6.0],
-            0.0,
-            false,
-            &[Fold::at(off)],
+            NONE,
         );
     };
-    for i in 0..5 {
-        spine([0.0, 20.0, -12.0 - i as f32 * 10.0]);
+    for i in 0..5u8 {
+        spine(
+            &mut b,
+            [0.0, 20.0, -12.0 - f32::from(i) * 10.0],
+            DRAGON_NECK + i,
+        );
     }
-    for i in 0..12 {
-        spine([0.0, 10.0, 60.0 + i as f32 * 10.0]);
+    for i in 0..12u8 {
+        spine(
+            &mut b,
+            [0.0, 10.0, 60.0 + f32::from(i) * 10.0],
+            DRAGON_TAIL + i,
+        );
     }
-    let body = Fold::at([0.0, 3.0, 8.0]);
-    b.cube_f(
-        STATIC_PART,
+    let body = b.part_named(
+        "body",
+        [0.0, 3.0, 8.0],
+        [0.0; 3],
+        dr(DRAGON_BODY),
+        1.0,
+        Some(root),
+    );
+    b.cube(
+        body,
         0,
         (0.0, 0.0),
         [-12.0, 1.0, -16.0],
         [24.0, 24.0, 64.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
     for z in [-10.0, 10.0, 30.0] {
-        b.cube_f(
-            STATIC_PART,
+        b.cube(
+            body,
             0,
             (220.0, 53.0),
             [-1.0, -5.0, z],
             [2.0, 6.0, 12.0],
-            0.0,
-            false,
-            &[body],
+            NONE,
         );
     }
-    // Wings: bone + membrane, tip child; the right side mirrors geometry.
-    let wl = Fold::at([12.0, 2.0, -6.0]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (112.0, 88.0),
-        [0.0, -4.0, -4.0],
-        [56.0, 8.0, 8.0],
-        0.0,
-        true,
-        &[wl, body],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (-56.0, 88.0),
-        [0.0, 0.0, 2.0],
-        [56.0, 0.0, 56.0],
-        0.0,
-        true,
-        &[wl, body],
-    );
-    let wlt = Fold::at([56.0, 0.0, 0.0]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (112.0, 136.0),
-        [0.0, -2.0, -2.0],
-        [56.0, 4.0, 4.0],
-        0.0,
-        true,
-        &[wlt, wl, body],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (-56.0, 144.0),
-        [0.0, 0.0, 2.0],
-        [56.0, 0.0, 56.0],
-        0.0,
-        true,
-        &[wlt, wl, body],
-    );
-    let wr = Fold::at([-12.0, 2.0, -6.0]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (112.0, 88.0),
-        [-56.0, -4.0, -4.0],
-        [56.0, 8.0, 8.0],
-        0.0,
-        false,
-        &[wr, body],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (-56.0, 88.0),
-        [-56.0, 0.0, 2.0],
-        [56.0, 0.0, 56.0],
-        0.0,
-        false,
-        &[wr, body],
-    );
-    let wrt = Fold::at([-56.0, 0.0, 0.0]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (112.0, 136.0),
-        [-56.0, -2.0, -2.0],
-        [56.0, 4.0, 4.0],
-        0.0,
-        false,
-        &[wrt, wr, body],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (-56.0, 144.0),
-        [-56.0, 0.0, 2.0],
-        [56.0, 0.0, 56.0],
-        0.0,
-        false,
-        &[wrt, wr, body],
-    );
-    // Legs: (upper, tip, foot) chains per side.
-    let mut leg = |sx: f32| {
-        let front = Fold::rot([1.3, 0.0, 0.0], [12.0 * sx, 17.0, -6.0]);
+    // Wings: bone + membrane, tip child; the left side mirrors its boxes.
+    for (sx, wing_part, tip_part) in [
+        (1.0f32, DRAGON_LWING, DRAGON_LWING + 1),
+        (-1.0, DRAGON_RWING, DRAGON_RWING + 1),
+    ] {
+        let left = sx > 0.0;
+        let x0 = if left { 0.0 } else { -56.0 };
+        let wing = b.part_named(
+            "",
+            [12.0 * sx, 2.0, -6.0],
+            [0.0; 3],
+            dr(wing_part),
+            1.0,
+            Some(body),
+        );
         b.cube_f(
-            STATIC_PART,
+            wing,
+            0,
+            (112.0, 88.0),
+            [x0, -4.0, -4.0],
+            [56.0, 8.0, 8.0],
+            0.0,
+            left,
+            NONE,
+        );
+        b.cube_f(
+            wing,
+            0,
+            (-56.0, 88.0),
+            [x0, 0.0, 2.0],
+            [56.0, 0.0, 56.0],
+            0.0,
+            left,
+            NONE,
+        );
+        let tip = b.part_named(
+            "",
+            [56.0 * sx, 0.0, 0.0],
+            [0.0; 3],
+            dr(tip_part),
+            1.0,
+            Some(wing),
+        );
+        b.cube_f(
+            tip,
+            0,
+            (112.0, 136.0),
+            [x0, -2.0, -2.0],
+            [56.0, 4.0, 4.0],
+            0.0,
+            left,
+            NONE,
+        );
+        b.cube_f(
+            tip,
+            0,
+            (-56.0, 144.0),
+            [x0, 0.0, 2.0],
+            [56.0, 0.0, 56.0],
+            0.0,
+            left,
+            NONE,
+        );
+    }
+    // Legs: (upper, tip, foot) chains per side, left then right.
+    for (sx, first) in [(1.0f32, DRAGON_LLEGS), (-1.0, DRAGON_RLEGS)] {
+        let front = b.part_named(
+            "",
+            [12.0 * sx, 17.0, -6.0],
+            [1.3, 0.0, 0.0],
+            dr(first),
+            1.0,
+            Some(body),
+        );
+        b.cube(
+            front,
             0,
             (112.0, 104.0),
             [-4.0, -4.0, -4.0],
             [8.0, 24.0, 8.0],
-            0.0,
-            false,
-            &[front, body],
+            NONE,
         );
-        let ftip = Fold::rot([-0.5, 0.0, 0.0], [0.0, 20.0, -1.0]);
-        b.cube_f(
-            STATIC_PART,
+        let ftip = b.part_named(
+            "",
+            [0.0, 20.0, -1.0],
+            [-0.5, 0.0, 0.0],
+            dr(first + 1),
+            1.0,
+            Some(front),
+        );
+        b.cube(
+            ftip,
             0,
             (226.0, 138.0),
             [-3.0, -1.0, -3.0],
             [6.0, 24.0, 6.0],
-            0.0,
-            false,
-            &[ftip, front, body],
+            NONE,
         );
-        b.cube_f(
-            STATIC_PART,
+        let ffoot = b.part_named(
+            "",
+            [0.0, 23.0, 0.0],
+            [0.75, 0.0, 0.0],
+            dr(first + 2),
+            1.0,
+            Some(ftip),
+        );
+        b.cube(
+            ffoot,
             0,
             (144.0, 104.0),
             [-4.0, 0.0, -12.0],
             [8.0, 4.0, 16.0],
-            0.0,
-            false,
-            &[
-                Fold::rot([0.75, 0.0, 0.0], [0.0, 23.0, 0.0]),
-                ftip,
-                front,
-                body,
-            ],
+            NONE,
         );
-        let rear = Fold::rot([1.0, 0.0, 0.0], [16.0 * sx, 13.0, 34.0]);
-        b.cube_f(
-            STATIC_PART,
+        let rear = b.part_named(
+            "",
+            [16.0 * sx, 13.0, 34.0],
+            [1.0, 0.0, 0.0],
+            dr(first + 3),
+            1.0,
+            Some(body),
+        );
+        b.cube(
+            rear,
             0,
             (0.0, 0.0),
             [-8.0, -4.0, -8.0],
             [16.0, 32.0, 16.0],
-            0.0,
-            false,
-            &[rear, body],
+            NONE,
         );
-        let rtip = Fold::rot([0.5, 0.0, 0.0], [0.0, 32.0, -4.0]);
-        b.cube_f(
-            STATIC_PART,
+        let rtip = b.part_named(
+            "",
+            [0.0, 32.0, -4.0],
+            [0.5, 0.0, 0.0],
+            dr(first + 4),
+            1.0,
+            Some(rear),
+        );
+        b.cube(
+            rtip,
             0,
             (196.0, 0.0),
             [-6.0, -2.0, 0.0],
             [12.0, 32.0, 12.0],
-            0.0,
-            false,
-            &[rtip, rear, body],
+            NONE,
         );
-        b.cube_f(
-            STATIC_PART,
+        let rfoot = b.part_named(
+            "",
+            [0.0, 31.0, 4.0],
+            [0.75, 0.0, 0.0],
+            dr(first + 5),
+            1.0,
+            Some(rtip),
+        );
+        b.cube(
+            rfoot,
             0,
             (112.0, 0.0),
             [-9.0, 0.0, -20.0],
             [18.0, 6.0, 24.0],
-            0.0,
-            false,
-            &[
-                Fold::rot([0.75, 0.0, 0.0], [0.0, 31.0, 4.0]),
-                rtip,
-                rear,
-                body,
-            ],
+            NONE,
         );
-    };
-    leg(1.0);
-    leg(-1.0);
+    }
     b.finish(1.0)
+}
+
+/// M388 — [`dragon_pose`]'s slots.
+pub const DRAGON_ROOT: u8 = 0;
+pub const DRAGON_HEAD: u8 = 1;
+pub const DRAGON_JAW: u8 = 2;
+/// The five neck segments, 3..=7.
+pub const DRAGON_NECK: u8 = 3;
+/// The twelve tail segments, 8..=19.
+pub const DRAGON_TAIL: u8 = 8;
+pub const DRAGON_BODY: u8 = 20;
+/// The left wing (21) and its tip (22); the right wing (23) and its tip
+/// (24).
+pub const DRAGON_LWING: u8 = 21;
+pub const DRAGON_RWING: u8 = 23;
+/// A side's six leg parts: front leg, its tip and foot, then the hind leg,
+/// its tip and foot — the left from 25, the right from 31.
+pub const DRAGON_LLEGS: u8 = 25;
+pub const DRAGON_RLEGS: u8 = 31;
+/// M388 — the slot count.
+pub const DRAGON_SLOTS: usize = 37;
+/// M388 — `EnderDragon.flapTime`'s advance per tick, taken constant: vanilla
+/// adds `0.2 / (horizontalSpeed·10 + 1)·2^dy` while flying (about 0.03 at
+/// cruise) and 0.1 perched, from per-entity state Rewo does not keep;
+/// switching rates without it would make the wingbeat jump.
+pub const DRAGON_FLAP_PER_TICK: f32 = 0.05;
+
+/// M388 — `EnderDragonModel.setupAnim` for level, straight flight (every
+/// sample of the dragon's 64-tick flight history alike, which Rewo does not
+/// keep): the jaw, the root's bounce (lifted `(bounce − 2)·16` px and moved
+/// 48 px forward — Rewo drew it 2 blocks low and 3 back until M388), the
+/// neck chain waving `cos(i·0.45 + flap)·0.15` with each segment placed at
+/// the end of the last (10 px along its pitch) and the head at the chain's
+/// end, the wings flapping, the legs bouncing, and the tail chain turned π
+/// with its accumulating `sin(i·0.45 + flap)·0.05` wave. Returns each slot's
+/// rotation delta (against its rest) and pivot offset.
+pub fn dragon_pose(age: f32) -> ([[f32; 3]; DRAGON_SLOTS], [[f32; 3]; DRAGON_SLOTS]) {
+    use std::f32::consts::PI;
+    let mut rot = [[0.0f32; 3]; DRAGON_SLOTS];
+    let mut off = [[0.0f32; 3]; DRAGON_SLOTS];
+    let flap = age * DRAGON_FLAP_PER_TICK * PI * 2.0;
+    rot[usize::from(DRAGON_JAW)][0] = (flap.sin() + 1.0) * 0.2;
+    let mut bounce = (flap - 1.0).sin() + 1.0;
+    bounce = (bounce * bounce + bounce * 2.0) * 0.05;
+    let r = usize::from(DRAGON_ROOT);
+    off[r] = [0.0, (bounce - 2.0) * 16.0, -48.0];
+    rot[r][0] = bounce * 2.0 * PI / 180.0;
+    // The neck: each segment at the chain's running end, then the end moves
+    // 10 px along the segment's pitch (straight flight: no yaw, no roll).
+    let (mut y, mut z) = (20.0f32, -12.0f32);
+    for i in 0..5usize {
+        let s = usize::from(DRAGON_NECK) + i;
+        let x_rot = (i as f32 * 0.45 + flap).cos() * 0.15;
+        rot[s][0] = x_rot;
+        off[s] = [0.0, y - 20.0, z - (-12.0 - i as f32 * 10.0)];
+        y += x_rot.sin() * 10.0;
+        z -= x_rot.cos() * 10.0;
+    }
+    let h = usize::from(DRAGON_HEAD);
+    off[h] = [0.0, y - 20.0, z - (-62.0)];
+    // The wings.
+    let lw = usize::from(DRAGON_LWING);
+    let rw = usize::from(DRAGON_RWING);
+    rot[lw] = [0.125 - flap.cos() * 0.2, -0.25, -(flap.sin() + 0.125) * 0.8];
+    rot[lw + 1][2] = ((flap + 2.0).sin() + 0.5) * 0.75;
+    rot[rw] = [rot[lw][0], 0.25, -rot[lw][2]];
+    rot[rw + 1][2] = -rot[lw + 1][2];
+    // The legs (`poseLimbs`): each angle `rest ± bounce·0.1`.
+    for first in [usize::from(DRAGON_LLEGS), usize::from(DRAGON_RLEGS)] {
+        let k = bounce * 0.1;
+        rot[first][0] = k;
+        rot[first + 1][0] = -k;
+        rot[first + 2][0] = k;
+        rot[first + 3][0] = k;
+        rot[first + 4][0] = k;
+        rot[first + 5][0] = k;
+    }
+    // The tail: turned π (`+180°`), its wave accumulating down the chain.
+    let (mut y, mut z) = (10.0f32, 60.0f32);
+    let mut wave = 0.0f32;
+    for i in 0..12usize {
+        let s = usize::from(DRAGON_TAIL) + i;
+        wave += (i as f32 * 0.45 + flap).sin() * 0.05;
+        rot[s] = [wave, PI, 0.0];
+        off[s] = [0.0, y - 10.0, z - (60.0 + i as f32 * 10.0)];
+        y += wave.sin() * 10.0;
+        z -= PI.cos() * wave.cos() * 10.0;
+    }
+    (rot, off)
 }
 
 /// `HappyGhastModel`: the tame ghast — body + big inner cube, nine short
@@ -17375,5 +17498,42 @@ mod axolotl_pose_tests {
         );
         let (dead, _) = axolotl_pose(0.0, 0.0, 0.4, false, false, true);
         assert!((dead[0][2] - 0.35).abs() < 1e-6 && (dead[0][1] - 0.4).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod dragon_pose_tests {
+    use super::*;
+
+    /// M388 — the dragon is vanilla's tree (every part under the root, the
+    /// jaw on the head, wing tips on wings, feet on leg tips), its boxes
+    /// all kept; its pose lifts the root 2 blocks less the bounce and moves
+    /// it 48 px forward, chains the neck so the head sits at its end, and
+    /// turns the tail π.
+    #[test]
+    fn the_dragon_flies_on_its_procedural_rig() {
+        let m = ender_dragon();
+        assert_eq!(m.parts[1].name, "root");
+        assert!(m.parts.iter().skip(2).all(|p| p.parent.is_some()));
+        let jaw = m.parts.iter().position(|p| p.name == "jaw").unwrap();
+        let head = m.parts.iter().position(|p| p.name == "head").unwrap();
+        assert_eq!(m.parts[jaw].parent, Some(head as u16));
+        // 7 head boxes, 17 spine segments of 2, 4 body, 4 wing bones,
+        // 12 leg boxes (six faces each) and 4 zero-thickness wing skins
+        // (two faces each).
+        assert_eq!(m.quads.len(), (7 + 34 + 4 + 4 + 12) * 6 + 4 * 2);
+        let (rot, off) = dragon_pose(0.0);
+        let r = usize::from(DRAGON_ROOT);
+        assert_eq!(off[r][2], -48.0);
+        assert!(off[r][1] < -30.0 && off[r][1] > -32.5);
+        // The head sits where the neck chain ends: the last segment's
+        // position plus 10 px along its pitch.
+        let n4 = usize::from(DRAGON_NECK) + 4;
+        let end_z = -52.0 + off[n4][2] - rot[n4][0].cos() * 10.0;
+        let h = usize::from(DRAGON_HEAD);
+        assert!((-62.0 + off[h][2] - end_z).abs() < 1e-4);
+        assert!((rot[usize::from(DRAGON_TAIL)][1] - std::f32::consts::PI).abs() < 1e-6);
+        let (lw, rw) = (usize::from(DRAGON_LWING), usize::from(DRAGON_RWING));
+        assert_eq!((rot[lw][2], rot[lw][1]), (-rot[rw][2], -rot[rw][1]));
     }
 }

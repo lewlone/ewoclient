@@ -6103,6 +6103,13 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
         }
+        // M388 — `EnderDragonModel.setupAnim` (straight, level flight).
+        Dragon { part } => {
+            let (r, o) = mobs::dragon_pose(c.age);
+            let i = usize::from(part).min(mobs::DRAGON_SLOTS - 1);
+            rot = r[i];
+            off = o[i];
+        }
         // M387 — `AdultAxolotlModel.setupAnim`'s blended poses.
         Axolotl { part } => {
             let (r, body_y) = mobs::axolotl_pose(

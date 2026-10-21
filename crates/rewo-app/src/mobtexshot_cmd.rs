@@ -104,7 +104,10 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 104;
+const EXPECTED_WITNESSES: usize = 105;
+/// M388 — m105's floor. M388 measured 2081 px; the pre-M388 dragon was
+/// static (0 px by construction, not run).
+const DRAGON_MIN: usize = 1000;
 /// M387 — m104's floors: swimming, playing dead (each against lying still).
 /// M387 measured 1304 and 1649. The pre-M387 model had no input for these
 /// states, so it drew all three alike: 0 and 0 by construction (not run).
@@ -277,9 +280,12 @@ const MIN_DISCRIMINATING: usize = 88;
 /// the kitten and (M341) the puppy. Each baby is graded up close by its own
 /// witness (m42..m66, n1/n2). M349: the cold chicken (graded up close by
 /// m74); M350: the coral zombie nautilus, mostly hidden by its neighbours in
-/// the crowd (graded up close by m75). A twenty-seventh means something
-/// stopped drawing.
-const MAX_SMALL: usize = 26;
+/// the crowd (graded up close by m75). M388: the zombie and sheep babies,
+/// hidden in the crowd behind the ender dragon now that its root sits where
+/// vanilla's does (2 blocks higher, 3 forward; with that offset zeroed the
+/// count is 25); both are graded up close by their own witnesses. A
+/// twenty-ninth means something stopped drawing.
+const MAX_SMALL: usize = 28;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured at M329: skeleton/skeleton_horse, enderman/ender_dragon,
 /// piglin/piglin_brute, ghast and happy_ghast/each other's sheets,
@@ -7212,6 +7218,52 @@ fn run_check(
         "m104.an_axolotl_swims_lies_and_plays_dead",
         ax_s >= AXOLOTL_MIN[0] && ax_d >= AXOLOTL_MIN[1],
         format!("swimming vs lying still {ax_s} px, playing dead vs lying still {ax_d} px (want >= {AXOLOTL_MIN:?})"),
+    ));
+
+    // m105 — M388: the ender dragon flies on its procedural rig: half a
+    // second apart its wings, jaw, neck and tail have moved.
+    let mut dgst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(9.0, 6.0, 9.0),
+        Vec3::new(0.0, 2.0, 0.0),
+    )?;
+    dgst.wr.set_entities(&[], dgst.right, dgst.up, 0.0);
+    dgst.off
+        .render(gpu, Some((&mut dgst.wr, dgst.vp)), &ov, BG)?;
+    let dg_empty = dgst.off.read_rgba(gpu)?;
+    let mut dgshot = |t: f32| -> Result<Vec<u8>, String> {
+        dgst.wr.set_entities(
+            &[neutral_draw(EntityModelKind::EnderDragon)],
+            dgst.right,
+            dgst.up,
+            t,
+        );
+        dgst.off
+            .render(gpu, Some((&mut dgst.wr, dgst.vp)), &ov, BG)?;
+        dgst.off.read_rgba(gpu)
+    };
+    let (dg0, dg1) = (dgshot(0.0)?, dgshot(0.5)?);
+    dgst.destroy(gpu);
+    let dg_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(dg_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let dg_moved = dg_mask(&dg0)
+        .iter()
+        .zip(&dg_mask(&dg1))
+        .filter(|(x, y)| x != y)
+        .count();
+    w.push(wit(
+        "m105.the_ender_dragon_flies_on_its_rig",
+        dg_moved >= DRAGON_MIN,
+        format!("half a second apart {dg_moved} px of silhouette (want >= {DRAGON_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------

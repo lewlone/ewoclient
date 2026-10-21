@@ -296,7 +296,20 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// 384, the cold and warm cows. M349: 384 → 390, the cold pig and chicken.
 /// M350: still 390 — the coral zombie nautilus is an ambiguous kind (below).
 /// M384: 390 → 387, the parched's own layer is an ambiguous kind (below).
-const EXPECTED_MOB_VIEWS: usize = 387;
+/// M388: 387 → 386, the ender dragon's left view (`ZFIGHT_VIEWS`).
+const EXPECTED_MOB_VIEWS: usize = 387 - ZFIGHT_VIEWS.len();
+/// M388 — views this gate skips, each with its reason: the face label it
+/// would read is a depth tie, not geometry. The ender dragon's wing skins
+/// are zero-thickness plates (`addBox(.., 56, 0, 56)`) whose up and down
+/// faces lie on one plane; since M388 they ride rotating parts, and from
+/// the left, where the skins fill the view, float-precision depth decides
+/// the winning face pixel by pixel, not the draw order the predictor
+/// models. The dragon's other views still grade.
+const ZFIGHT_VIEWS: &[(EntityModelKind, &str, &str)] = &[(
+    EntityModelKind::EnderDragon,
+    "left",
+    "its wing skins are coplanar 0-thick plates on rotated parts; the winning face is a depth tie (M388)",
+)];
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind; M350 zombie_nautilus_coral, whose red coral's two planes
@@ -393,6 +406,13 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         let dist = radius * 3.0 + 1.0;
 
         for (view_name, dir, up) in views {
+            if let Some((_, _, why)) = ZFIGHT_VIEWS
+                .iter()
+                .find(|(k, v, _)| *k == kind && *v == view_name)
+            {
+                println!("[mobshot] SKIP {kind:?}/{view_name}: {why}");
+                continue;
+            }
             let eye = center - dir * dist;
             let predicted = predict_counts(&quads, eye, dir, up);
             let (pi, &pmax) = predicted
