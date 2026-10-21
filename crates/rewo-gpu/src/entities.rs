@@ -6104,6 +6104,11 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         BeeBone | BeeFrontLegs | BeeBackLegs => {}
         // M391 — scaled, not moved: `body_squeeze_scale`.
         HappyGhastBody => {}
+        // M395 — `MagmaCubeModel.setupAnim`: the segments spread upward by
+        // the squish (a landing's negative squish leaves them).
+        MagmaSegment { i } => {
+            off[1] = -(4.0 - f32::from(i)) * c.mob.cube_squish.max(0.0) * 1.7;
+        }
         // M394 — the bubble column's tilt, in model space.
         BoatBubble => {
             if c.mob.boat_bubble != 0.0 {
@@ -11426,6 +11431,20 @@ mod boat_anim_tests {
             },
             tendril: 0.0,
         }
+    }
+
+    /// M395 — the magma cube's segments spread upward
+    /// by `(4 − i)·squish·1.7` (none for a landing's negative squish).
+    #[test]
+    fn the_magma_cube_spreads_its_segments_by_the_squish() {
+        let mut c = ctx([0.0; 2], 0.0);
+        c.mob.cube_squish = 0.5;
+        let lift = |i: u8, c: &AnimCtx| anim_delta(mobs::Anim::MagmaSegment { i }, 1.0, c).1[1];
+        assert!((lift(0, &c) + 4.0 * 0.5 * 1.7).abs() < 1e-6);
+        assert_eq!(lift(4, &c), 0.0);
+        assert!((lift(7, &c) - 3.0 * 0.5 * 1.7).abs() < 1e-6);
+        c.mob.cube_squish = -0.3;
+        assert_eq!(lift(0, &c), 0.0);
     }
 
     /// M394 — the bubble tilt's rotation and scale are JOML's matrix for

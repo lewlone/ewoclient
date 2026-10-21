@@ -573,6 +573,15 @@ pub struct EntityState {
     /// M394 — `Entity.tickCount`: 0 when the client creates the entity
     /// (it is not synced), +1 each tick before the entity's tick.
     pub tick_count: i32,
+    /// M395 — `Entity.onGround()`, which the client sets from every move,
+    /// position-sync and teleport packet (`handleMoveEntity` and kin).
+    pub on_ground: bool,
+    /// M395 — `AbstractCubeMob`'s client-side squish: `squish`, `oSquish`,
+    /// `targetSquish` and `wasOnGround` ([`Self::tick_squish`]).
+    pub squish: f32,
+    pub o_squish: f32,
+    pub target_squish: f32,
+    pub was_on_ground: bool,
     /// `ClientboundAddEntityPacket.data` (M194) — per-type meaning; an item
     /// frame's facing (`Direction.from3DDataValue`). 0 when absent.
     pub spawn_data: i32,
@@ -663,6 +672,11 @@ impl EntityState {
             last_pose_change_tick: 0,
             ticked: false,
             tick_count: 0,
+            on_ground: false,
+            squish: 0.0,
+            o_squish: 0.0,
+            target_squish: 0.0,
+            was_on_ground: false,
             spawn_data: 0,
         }
     }
@@ -697,6 +711,28 @@ impl EntityState {
     /// target, never onto the rendered position.
     pub fn nudge(&mut self, dx: f64, dy: f64, dz: f64) {
         self.set_target(self.x + dx, self.y + dy, self.z + dz);
+    }
+
+    /// M395 — `AbstractCubeMob.tick`'s squish, in its order: `oSquish =
+    /// squish; squish += (targetSquish − squish)·0.5`; landing (`onGround`
+    /// and not `wasOnGround`) aims at −0.5, leaving the ground at 1.0;
+    /// `wasOnGround = onGround`; `targetSquish *= 0.6`. Kept for every
+    /// entity (only cube mobs draw it).
+    pub fn tick_squish(&mut self) {
+        self.o_squish = self.squish;
+        self.squish += (self.target_squish - self.squish) * 0.5;
+        if self.on_ground && !self.was_on_ground {
+            self.target_squish = -0.5;
+        } else if !self.on_ground && self.was_on_ground {
+            self.target_squish = 1.0;
+        }
+        self.was_on_ground = self.on_ground;
+        self.target_squish *= 0.6;
+    }
+
+    /// M395 — `Mth.lerp(a, oSquish, squish)`.
+    pub fn squish_at(&self, alpha: f32) -> f32 {
+        self.o_squish + alpha * (self.squish - self.o_squish)
     }
 
     pub fn set_rot(&mut self, yaw: f32, pitch: f32) {
@@ -3630,6 +3666,9 @@ impl EntityTable {
             // M394 — `Level.tickNonPassenger`: `tickCount++` then `tick()`.
             e.tick_count += 1;
             e.tick(fall_flying, authoritative);
+            // M395 — the cube mobs' squish (their `tick` brackets
+            // `super.tick()`; a remote entity's move there changes nothing).
+            e.tick_squish();
             // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
             // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
             if e.dash_cooldown > 0 {
@@ -4183,6 +4222,27 @@ mod tests {
             t.tick_lerp();
         }
         assert_eq!(t.mob_state(5).boat_hurt, 0);
+    }
+
+    /// M395 — `AbstractCubeMob`'s squish: landing aims it at −0.5 and it
+    /// eases half the gap a tick while the aim decays by 0.6; leaving the
+    /// ground aims at 1.0; `squish_at` lerps the last tick.
+    #[test]
+    fn a_cube_mob_squishes_on_landing_and_stretches_on_leaving() {
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.on_ground = true;
+        e.tick_squish();
+        assert_eq!((e.squish, e.target_squish), (0.0, -0.3));
+        e.tick_squish();
+        assert_eq!(e.squish, -0.15);
+        assert!((e.squish_at(0.5) - (-0.075)).abs() < 1e-6);
+        e.on_ground = false;
+        e.tick_squish();
+        assert!((e.target_squish - 0.6).abs() < 1e-6, "{}", e.target_squish);
+        for _ in 0..40 {
+            e.tick_squish();
+        }
+        assert!(e.squish.abs() < 1e-3 && e.target_squish.abs() < 1e-6);
     }
 
     /// M394 — `tickBubbleColumn` on the client: over a bubble column the

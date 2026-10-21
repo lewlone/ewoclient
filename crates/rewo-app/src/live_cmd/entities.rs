@@ -1686,6 +1686,8 @@ pub(crate) fn resolve_mob_combat(
         boat_rowing: [0.0; 2],
         boat_wobble: 0.0,
         boat_bubble: 0.0,
+        // M395 — set by the caller for a cube mob.
+        cube_squish: 0.0,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -1706,6 +1708,17 @@ pub(crate) fn resolve_mob_combat(
         turtle_laying: false,
         turtle_on_land: false,
     }
+}
+
+/// M395 — `AbstractCubeMobRenderer.applySizeAndSquish`'s squish half:
+/// `ss = squish / (size·0.5 + 1)`, `w = 1 / (ss + 1)`, scaled `(w, 1/w, w)`
+/// (the size is the draw's own scale). The sulfur cube's exception, no
+/// squish while it holds a block, is not modelled (its body item is not
+/// decoded as a block).
+pub(crate) fn cube_stretch(squish: f32, size: i32) -> [f32; 2] {
+    let ss = squish / (size as f32 * 0.5 + 1.0);
+    let w = 1.0 / (ss + 1.0);
+    [w, 1.0 / w]
 }
 
 /// M393 — `AbstractBoatRenderer.submit`'s hurt wobble in degrees:
@@ -5055,6 +5068,14 @@ pub(super) fn collect_entities<'a>(
         );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
         let mut mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        // M395 — a cube mob's squish (`lerp(a, oSquish, squish)`), for its
+        // stretch and the magma cube's segments.
+        let cube_squish = if cube_size.is_some() {
+            e.squish_at(alpha)
+        } else {
+            0.0
+        };
+        mob.cube_squish = cube_squish;
         // M354 — the bee's mood and its stinger (the anger is a deadline on
         // the world clock, so it is read here, where the clock is).
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
@@ -5364,10 +5385,12 @@ pub(super) fn collect_entities<'a>(
             worn_head: worn_head(session, id, name, item_names, head_skins),
             // M277 — a swelling creeper's flash and swell.
             white_overlay: creeper_swelling.map_or(0.0, creeper_white_overlay),
-            stretch: match (creeper_swelling, wither_inv) {
-                (Some(s), _) => creeper_stretch(s),
+            stretch: match (creeper_swelling, wither_inv, cube_size) {
+                (Some(s), _, _) => creeper_stretch(s),
                 // M288 — and a wither shrunk by its invulnerable phase.
-                (_, Some(t)) => wither_stretch(t),
+                (_, Some(t), _) => wither_stretch(t),
+                // M395 — and a cube mob's squish.
+                (_, _, Some(sz)) => cube_stretch(cube_squish, sz),
                 _ => [1.0, 1.0],
             },
             // M278 — the Glowing effect's outline, in the team's colour.

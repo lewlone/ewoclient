@@ -437,6 +437,11 @@ pub(super) struct RenderCheck {
     /// M393 — r217: the largest rowing time a drawn boat carried, per
     /// paddle (left, right).
     pub(super) boat_rowing_peak: [f32; 2],
+    /// M395 — r218: whether any tracked entity was read as on the ground
+    /// (the move packets' `onGround`), and the session's malformed-packet
+    /// count at the last frame.
+    pub(super) on_ground_seen: bool,
+    pub(super) decode_failures: u64,
     /// M321 — r176: whether a calf and a mooshroom calf drew as `BabyCowModel`.
     pub(super) calves: (bool, bool),
     /// M322 — r177: whether a piglet and a chick drew as `BabyPigModel` and
@@ -1309,7 +1314,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 217;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 218;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1886,6 +1891,18 @@ impl RenderCheck {
             format!(
                 "baby piglin seen: {}, baby zombified piglin seen: {}, adult piglin seen: {}",
                 self.baby_piglins.0, self.baby_piglins.1, self.baby_piglins.2
+            ),
+        );
+        // M395 — r218: the move, position-sync and teleport packets now read
+        // their trailing `onGround` (the cube mobs' squish runs on it): a
+        // wandering mob is read on the ground, and no packet was dropped as
+        // malformed (a misread byte would drop every move).
+        row(
+            "r218 the entity move packets' onGround decoded: an entity on the ground, no malformed packet",
+            self.on_ground_seen && self.decode_failures == 0,
+            format!(
+                "on the ground seen: {}, malformed packets dropped: {}",
+                self.on_ground_seen, self.decode_failures
             ),
         );
         // M393 — r217: r87's boat, steered with W, rows both paddles

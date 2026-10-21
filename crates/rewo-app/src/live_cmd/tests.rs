@@ -4615,6 +4615,19 @@ fn a_piglins_arm_pose_follows_vanillas_order() {
     assert_eq!(piglin_arm_pose_with(&t, 1, true, items), P::Default);
 }
 
+/// M395 — `applySizeAndSquish`: `w = 1/(squish/(size·0.5 + 1) + 1)`,
+/// scaled `(w, 1/w, w)`: a landing (negative squish) widens and flattens, a
+/// jump narrows and stretches, a bigger cube less.
+#[test]
+fn a_cube_mob_stretches_by_its_squish() {
+    assert_eq!(cube_stretch(0.0, 4), [1.0, 1.0]);
+    let [w, h] = cube_stretch(0.6, 2);
+    assert!((w - 1.0 / 1.3).abs() < 1e-6 && (h - 1.3).abs() < 1e-6);
+    let [w, _] = cube_stretch(-0.5, 1);
+    assert!(w > 1.0, "a landing widens");
+    assert!(cube_stretch(0.6, 4)[1] < cube_stretch(0.6, 1)[1]);
+}
+
 /// M393 — `AbstractBoatRenderer.submit`'s wobble: `sin(hurt)·hurt·
 /// damageTime/10·hurtDir` degrees with `hurt = hurtTime − a` and
 /// `damageTime = max(damage − a, 0)`; nothing once the hurt has run out.

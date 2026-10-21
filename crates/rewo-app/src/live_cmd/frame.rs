@@ -2234,6 +2234,9 @@ impl LiveApp {
                 c.arrow_frames += 1;
             }
             c.arrow_quads = (c.arrow_quads.0.max(arrow_drew), arrow_want);
+            // M395 — r218: an entity read on the ground; the drop count.
+            c.on_ground_seen |= session.world.entities.iter().any(|(_, e)| e.on_ground);
+            c.decode_failures = session.decode_failures;
             // M363 — r215: a boat floating on water drew its water patch into
             // depth (the frames that drew a boat on the surface and emitted a
             // whole patch, six faces).

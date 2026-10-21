@@ -104,7 +104,12 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 109;
+const EXPECTED_WITNESSES: usize = 110;
+/// M395 — m110's floors: a squished slime and magma cube against still
+/// ones, and the magma cube's segment spread against its stretch alone.
+/// M395 measured 1214, 2804 and 2166; before M395 nothing squished (0 by
+/// construction, not run).
+const CUBE_SQUISH_MIN: [usize; 3] = [600, 1400, 1080];
 /// M394 — m109's floor: a boat tilted 10° by a bubble column against a
 /// level one. M394 measured 452; the pre-M394 boat never tilted (0 by
 /// construction, not run).
@@ -7467,6 +7472,73 @@ fn run_check(
         "m109.a_boat_over_a_bubble_column_tilts",
         tilt_px >= BUBBLE_TILT_MIN,
         format!("tilted 10 degrees {tilt_px} px of silhouette against level (want >= {BUBBLE_TILT_MIN})"),
+    ));
+
+    // m110 — M395: a cube mob leaving the ground (squish 0.6, size 2)
+    // stretches tall and narrow (`applySizeAndSquish`), and the magma
+    // cube's segments spread upward too (`MagmaCubeModel.setupAnim`).
+    let mut cbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.0, 3.0),
+        Vec3::new(0.0, 0.6, 0.0),
+    )?;
+    cbst.wr.set_entities(&[], cbst.right, cbst.up, 0.0);
+    cbst.off
+        .render(gpu, Some((&mut cbst.wr, cbst.vp)), &ov, BG)?;
+    let cb_empty = cbst.off.read_rgba(gpu)?;
+    let mut cbshot =
+        |kind: EntityModelKind, squish: f32, segments: bool| -> Result<Vec<u8>, String> {
+            let d = EntityDraw {
+                mob: rewo_gpu::mobs::MobCombat {
+                    cube_squish: if segments { squish } else { 0.0 },
+                    ..Default::default()
+                },
+                stretch: crate::live_cmd::cube_stretch(squish, 2),
+                ..neutral_draw(kind)
+            };
+            cbst.wr.set_entities(&[d], cbst.right, cbst.up, 0.0);
+            cbst.off
+                .render(gpu, Some((&mut cbst.wr, cbst.vp)), &ov, BG)?;
+            cbst.off.read_rgba(gpu)
+        };
+    let cb = [EntityModelKind::Slime, EntityModelKind::MagmaCube]
+        .map(|k| (cbshot(k, 0.0, true), cbshot(k, 0.6, true)));
+    // The magma cube stretched but its segments left: what the spread adds.
+    let mg_stretch_only = cbshot(EntityModelKind::MagmaCube, 0.6, false)?;
+    cbst.destroy(gpu);
+    let cb_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(cb_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let mut cb_px = [0usize; 3];
+    let differ = |a: &[u8], b: &[u8]| {
+        cb_mask(a)
+            .iter()
+            .zip(&cb_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let mut mg_squished = Vec::new();
+    for (i, (still, squished)) in cb.into_iter().enumerate() {
+        let (still, squished) = (still?, squished?);
+        cb_px[i] = differ(&still, &squished);
+        mg_squished = squished;
+    }
+    cb_px[2] = differ(&mg_stretch_only, &mg_squished);
+    w.push(wit(
+        "m110.a_cube_mob_squishes_and_the_magma_cube_spreads",
+        cb_px.iter().zip(CUBE_SQUISH_MIN).all(|(v, min)| *v >= min),
+        format!(
+            "slime {} px, magma cube {} px of silhouette against still, its segments' spread {} px (want >= {CUBE_SQUISH_MIN:?})",
+            cb_px[0], cb_px[1], cb_px[2]
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

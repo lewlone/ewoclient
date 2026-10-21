@@ -286,6 +286,11 @@ pub enum Anim {
     /// `rotX(sin(hurt)·hurt·damage/10·hurtDir)` degrees between the yaw and
     /// the flip (in model space, past the flip, the negated angle).
     BoatHurt,
+    /// M395 — a magma cube body segment: `MagmaCubeModel.setupAnim`'s
+    /// `bodyCubes[i].y = −(4 − i)·max(0, squish)·1.7`.
+    MagmaSegment {
+        i: u8,
+    },
     /// M394 — a boat's bubble-column tilt: `AbstractBoatRenderer`'s
     /// `Quaternionf().setAngleAxis(angle, 1, 0, 1)`, whose axis JOML does
     /// not normalise ([`bubble_tilt`]).
@@ -929,6 +934,9 @@ pub struct MobCombat {
     /// M393 — a boat's hurt wobble angle in degrees,
     /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
     pub boat_wobble: f32,
+    /// M395 — a cube mob's `SlimeRenderState.squish` (`lerp(a, oSquish,
+    /// squish)`), which the magma cube's segments read.
+    pub cube_squish: f32,
     /// M394 — a boat's `BoatRenderState.bubbleAngle` in degrees, already 0
     /// when the renderer skips it (under water, or `Mth.equal(angle, 0)`).
     pub boat_bubble: f32,
@@ -8053,8 +8061,11 @@ fn magma_cube() -> Model {
             u = 32.0;
             v = 9.0 * i as f32 - 36.0;
         }
+        // M395 — each segment a part (`MagmaCubeModel.setupAnim` lifts it
+        // by the squish).
+        let segment = b.part([0.0; 3], Anim::MagmaSegment { i: i as u8 }, 1.0);
         b.cube(
-            STATIC_PART,
+            segment,
             0,
             (u, v),
             [-4.0, 16.0 + i as f32, -4.0],
@@ -15701,6 +15712,27 @@ mod avatar_layer_tests {
             );
             assert_eq!(m.quads.len(), 72, "twelve boxes, as before");
         }
+    }
+}
+
+#[cfg(test)]
+mod magma_segment_tests {
+    use super::*;
+
+    /// M395 — the magma cube's eight body segments are each a part (one
+    /// 8 x 1 x 8 box apiece) on `MagmaSegment`; the inside cube stays.
+    #[test]
+    fn the_magma_cubes_segments_are_parts() {
+        let m = magma_cube();
+        for i in 0..8u8 {
+            let p = m
+                .parts
+                .iter()
+                .position(|p| p.anim == Anim::MagmaSegment { i })
+                .unwrap();
+            assert_eq!(m.quads.iter().filter(|q| q.part == p).count(), 6);
+        }
+        assert_eq!(m.quads.iter().filter(|q| q.part == STATIC_PART).count(), 6);
     }
 }
 

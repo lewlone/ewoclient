@@ -459,49 +459,59 @@ impl PlaySession {
             }
         } else if id == ids.cb_play_move_entity_pos {
             let mut r = PacketReader::new(body);
-            if let Ok((eid, dx, dy, dz)) = read_move_delta(&mut r) {
+            // M395 — and the trailing `onGround`, which `handleMoveEntity`
+            // sets on the entity.
+            let parse = (|| -> rewo_proto::Result<(i32, f64, f64, f64, bool)> {
+                let (eid, dx, dy, dz) = read_move_delta(&mut r)?;
+                Ok((eid, dx, dy, dz, r.u8()? != 0))
+            })();
+            if let Ok((eid, dx, dy, dz, on_ground)) = parse {
                 // M221 — `handleMoveEntity`'s authoritative arm: a vehicle
                 // the client steers only advances its base.
                 if self.steers(eid) {
                     self.steered_base(None, [dx, dy, dz]);
                 } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.nudge(dx, dy, dz);
+                    e.on_ground = on_ground;
                 }
             } else {
                 self.decode_failed("move_entity_pos", "malformed body");
             }
         } else if id == ids.cb_play_move_entity_pos_rot {
             let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, f64, f64, f64, f32, f32)> {
+            let parse = (|| -> rewo_proto::Result<(i32, f64, f64, f64, f32, f32, bool)> {
                 let (eid, dx, dy, dz) = read_move_delta(&mut r)?;
                 let yaw = packed_degrees(r.i8()?);
                 let pitch = packed_degrees(r.i8()?);
-                Ok((eid, dx, dy, dz, yaw, pitch))
+                Ok((eid, dx, dy, dz, yaw, pitch, r.u8()? != 0))
             })();
-            if let Ok((eid, dx, dy, dz, yaw, pitch)) = parse {
+            if let Ok((eid, dx, dy, dz, yaw, pitch, on_ground)) = parse {
                 if self.steers(eid) {
                     self.steered_base(None, [dx, dy, dz]);
                 } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.nudge(dx, dy, dz);
                     e.set_rot(yaw, pitch);
+                    e.on_ground = on_ground;
                 }
             } else {
                 self.decode_failed("move_entity_pos_rot", "malformed body");
             }
         } else if id == ids.cb_play_move_entity_rot {
             let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, f32, f32)> {
+            let parse = (|| -> rewo_proto::Result<(i32, f32, f32, bool)> {
                 Ok((
                     r.varint()?,
                     packed_degrees(r.i8()?),
                     packed_degrees(r.i8()?),
+                    r.u8()? != 0,
                 ))
             })();
-            if let Ok((eid, yaw, pitch)) = parse {
+            if let Ok((eid, yaw, pitch, on_ground)) = parse {
                 if self.steers(eid) {
                     // The steered boat turns by its own simulation.
                 } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.set_rot(yaw, pitch);
+                    e.on_ground = on_ground;
                 }
             } else {
                 self.decode_failed("move_entity_rot", "malformed body");
@@ -510,13 +520,13 @@ impl PlaySession {
             // varint id, PositionMoveRotation {pos 3×f64, vel 3×f64, yaw
             // f32, pitch f32}, bool on_ground.
             let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32)> {
+            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32, bool)> {
                 let eid = r.varint()?;
                 let pos = [r.f64()?, r.f64()?, r.f64()?];
                 let _vel = [r.f64()?, r.f64()?, r.f64()?];
-                Ok((eid, pos, r.f32()?, r.f32()?))
+                Ok((eid, pos, r.f32()?, r.f32()?, r.u8()? != 0))
             })();
-            if let Ok((eid, pos, yaw, pitch)) = parse {
+            if let Ok((eid, pos, yaw, pitch, on_ground)) = parse {
                 // `handleEntityPositionSync` skips an entity the client
                 // steers (M221), keeping only the base.
                 if self.steers(eid) {
@@ -524,6 +534,8 @@ impl PlaySession {
                 } else if let Some(e) = self.world.entities.get_mut(eid) {
                     e.set_target(pos[0], pos[1], pos[2]);
                     e.set_rot(yaw, pitch);
+                    // M395 — `entity.setOnGround(packet.onGround())`.
+                    e.on_ground = on_ground;
                 }
             } else {
                 self.decode_failed("entity_position_sync", "malformed body");
@@ -533,15 +545,20 @@ impl PlaySession {
             // on_ground — same Relative order as the player teleport
             // (X=0 Y=1 Z=2 Y_ROT=3 X_ROT=4; velocity deltas 5..7 ignored).
             let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32, i32)> {
+            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32, i32, bool)> {
                 let eid = r.varint()?;
                 let pos = [r.f64()?, r.f64()?, r.f64()?];
                 let _vel = [r.f64()?, r.f64()?, r.f64()?];
                 let yaw = r.f32()?;
                 let pitch = r.f32()?;
-                Ok((eid, pos, yaw, pitch, r.i32()?))
+                Ok((eid, pos, yaw, pitch, r.i32()?, r.u8()? != 0))
             })();
-            if let Ok((eid, pos, yaw, pitch, relatives)) = parse {
+            if let Ok((eid, pos, yaw, pitch, relatives, on_ground)) = parse {
+                // M395 — `handleTeleportEntity`'s `setOnGround`, for any
+                // entity it moves (the steered one below as well).
+                if let Some(e) = self.world.entities.get_mut(eid) {
+                    e.on_ground = on_ground;
+                }
                 if self.steers(eid) {
                     // M221 — a steered vehicle's teleport: vanilla's
                     // `handleTeleportEntity` snaps it (`setValuesFromPositionPacket`
