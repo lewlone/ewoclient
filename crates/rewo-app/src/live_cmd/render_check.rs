@@ -437,6 +437,11 @@ pub(super) struct RenderCheck {
     /// M393 — r217: the largest rowing time a drawn boat carried, per
     /// paddle (left, right).
     pub(super) boat_rowing_peak: [f32; 2],
+    /// M397 — r219: frames on which a sulfur cube drew holding a block and
+    /// the staged gold block drew every quad of its model.
+    pub(super) sulfur_block_frames: u32,
+    /// M397 — r219: this frame's draws held a sulfur cube holding a block.
+    pub(super) sulfur_holding: bool,
     /// M395 — r218: whether any tracked entity was read as on the ground
     /// (the move packets' `onGround`), and the session's malformed-packet
     /// count at the last frame.
@@ -1314,7 +1319,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 218;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 219;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1892,6 +1897,13 @@ impl RenderCheck {
                 "baby piglin seen: {}, baby zombified piglin seen: {}, adult piglin seen: {}",
                 self.baby_piglins.0, self.baby_piglins.1, self.baby_piglins.2
             ),
+        );
+        // M397 — r219: `render_check.py` summons a sulfur cube holding a gold
+        // block (its body slot); it draws the block in place of its core.
+        row(
+            "r219 a sulfur cube holding a gold block drew the block",
+            self.sulfur_block_frames >= 1,
+            format!("{} frames drew it", self.sulfur_block_frames),
         );
         // M395 — r218: the move, position-sync and teleport packets now read
         // their trailing `onGround` (the cube mobs' squish runs on it): a

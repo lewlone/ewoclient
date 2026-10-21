@@ -1207,9 +1207,9 @@ released.
 - A mannequin's pose and description label are not drawn (nor the
   first-person arm's sleeve by the mask),
   and a bare name is not resolved to the account's real skin (Rewo phones
-  nothing, so it shows the name's default skin); the sulfur
-  cube's swallowed block is not drawn (~~its squish~~ M395, ~~its fuse
-  swell and flash~~ M396).
+  nothing, so it shows the name's default skin); ~~the sulfur
+  cube's swallowed block~~ (M397; ~~its squish~~ M395, ~~its fuse swell
+  and flash~~ M396).
 - Banner and shield items show no patterns (the stack's `banner_patterns`
   never reach the item path), and a pot item shows plain sides. A dropped
   or framed trident shows its 3D model (vanilla: the sprite). The dragon

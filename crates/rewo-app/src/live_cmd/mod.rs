@@ -238,6 +238,8 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let items = std::sync::Arc::new(data.items.clone());
     let blocks = std::sync::Arc::new(data.blocks.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
+    // M397 — the block registry a sulfur cube's contained block reads.
+    let _ = entities::BLOCKS.set(blocks.clone());
     // M390 — what a piglin's arm pose tests its hands against.
     let _ = entities::TOOL_ITEMS.set(
         rewo_data::item_tools::ITEM_TOOLS

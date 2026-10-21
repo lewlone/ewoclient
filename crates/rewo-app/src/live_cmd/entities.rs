@@ -1690,6 +1690,8 @@ pub(crate) fn resolve_mob_combat(
         cube_squish: 0.0,
         // M396 — set by the caller for a sulfur cube.
         sulfur_core_flash: false,
+        // M397 — set by the caller for a sulfur cube.
+        sulfur_block: None,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -1710,6 +1712,79 @@ pub(crate) fn resolve_mob_combat(
         turtle_laying: false,
         turtle_on_land: false,
     }
+}
+
+/// M397 — the block registry, for a sulfur cube's contained block; set
+/// once at session setup (unset, no sulfur cube draws one).
+pub(crate) static BLOCKS: std::sync::OnceLock<std::sync::Arc<rewo_data::blocks::Blocks>> =
+    std::sync::OnceLock::new();
+
+/// M397 — `SulfurCubeRenderer.extractRenderState`'s contained block:
+/// `Block.byItem(bodyItem).defaultBlockState()`. Every item in 26.2's
+/// `sulfur_cube_swallowable` is the block item of the block of the same
+/// name, so the name is looked up; an item that names no block is air
+/// (`isEmpty`: the core draws). The stack's `BLOCK_STATE` properties are
+/// not decoded (the default state is drawn).
+pub(crate) fn sulfur_block_state(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    items: &rewo_data::items::Items,
+) -> Option<u32> {
+    let item = ents.body_armor(id)?.item;
+    let name = items.name(item)?;
+    if name == "minecraft:air" {
+        return None;
+    }
+    BLOCKS.get()?.default_state(name)
+}
+
+/// M397 — `SulfurCubeInnerLayer`'s block, block-local → entity-relative
+/// (block units), for a sulfur cube drawn at body `yaw`, toppled `roll`,
+/// at the draw's uniform `scale` (its size times the fuse swell): the
+/// renderer's root, `SulfurCubeRenderer.scale` (`downscaleSlightly`'s
+/// 0.999 and 0.001 lift, the scale, the adult's extra 0.5, the
+/// `vOffset − 1/16` lift), then the layer's `XP(180)`, the baby's 0.5 and
+/// `translate(−0.5, −0.518, −0.5)`.
+pub(crate) fn sulfur_block_transform(
+    yaw: f32,
+    roll: f32,
+    scale_mul: f32,
+    baby: bool,
+) -> rewo_data::be_transform::Affine {
+    use rewo_data::be_transform::{mul, rot_x, rot_y, rot_z, scale, translation};
+    let (v_offset, extra) = if baby { (1.24, 1.0) } else { (0.98, 0.5) };
+    let renderer = mul(
+        &scale(0.999, 0.999, 0.999),
+        &mul(
+            &translation(0.0, 0.001, 0.0),
+            &mul(
+                &scale(scale_mul, scale_mul, scale_mul),
+                &mul(
+                    &scale(extra, extra, extra),
+                    &translation(0.0, v_offset - 1.0 / 16.0, 0.0),
+                ),
+            ),
+        ),
+    );
+    let root = mul(
+        &rot_y(180.0 - yaw),
+        &mul(
+            &rot_z(roll),
+            &mul(
+                &scale(-1.0, -1.0, 1.0),
+                &mul(&renderer, &translation(0.0, -1.501, 0.0)),
+            ),
+        ),
+    );
+    let small = if baby { 0.5 } else { 1.0 };
+    let layer = mul(
+        &rot_x(std::f32::consts::PI),
+        &mul(
+            &scale(small, small, small),
+            &translation(-0.5, -0.518, -0.5),
+        ),
+    );
+    mul(&root, &layer)
 }
 
 /// M396 — `SulfurCubeRenderer.scale`'s swell (`1 + getSwellAmount(fuse)`
@@ -2315,6 +2390,27 @@ pub(super) fn collect_mob_blocks(
             ));
             continue;
         }
+        // M397 — a sulfur cube's contained block (`SulfurCubeInnerLayer`),
+        // flashing with a lit fuse as its core would.
+        if let (EntityModelKind::SulfurCube | EntityModelKind::SulfurCubeSmall, Some(state)) =
+            (d.kind, d.mob.sulfur_block)
+        {
+            let roll = rewo_gpu::entities::death_roll_for(d.kind, d.death_time);
+            let mut b = block(
+                d.pos,
+                state,
+                sulfur_block_transform(
+                    d.yaw,
+                    roll,
+                    d.scale_mul,
+                    d.kind == EntityModelKind::SulfurCubeSmall,
+                ),
+                d.light,
+            );
+            b.white = if d.mob.sulfur_core_flash { 1.0 } else { 0.0 };
+            out.push(b);
+            continue;
+        }
         // M352 — an enderman's carried block (`CarriedBlockLayer`).
         if let (EntityModelKind::Enderman, Some(state)) = (d.kind, d.mob.carried_block) {
             let roll = rewo_gpu::entities::death_roll_for(d.kind, d.death_time);
@@ -2354,6 +2450,7 @@ pub(super) fn block_display_states(
     session: &PlaySession,
     etypes: &EntityTypes,
     blocks: &rewo_data::blocks::Blocks,
+    items: &rewo_data::items::Items,
 ) -> Vec<u32> {
     let ents = &session.world.entities;
     let mut out: Vec<u32> = ents
@@ -2366,6 +2463,8 @@ pub(super) fn block_display_states(
             "minecraft:tnt" => ents.primed(id).block,
             // M352 — an enderman's carried block.
             "minecraft:enderman" => ents.carried_block(id),
+            // M397 — a sulfur cube's contained block.
+            "minecraft:sulfur_cube" => sulfur_block_state(ents, id, items),
             // M353 — a snow golem's carved pumpkin.
             "minecraft:snow_golem" if ents.has_pumpkin(id) => {
                 blocks.default_state("minecraft:carved_pumpkin")
@@ -5082,9 +5181,14 @@ pub(super) fn collect_entities<'a>(
         );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
         let mut mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        // M397 — a sulfur cube's contained block (its body item's block).
+        if sulfur {
+            mob.sulfur_block = sulfur_block_state(&session.world.entities, id, item_names);
+        }
         // M395 — a cube mob's squish (`lerp(a, oSquish, squish)`), for its
-        // stretch and the magma cube's segments.
-        let cube_squish = if cube_size.is_some() {
+        // stretch and the magma cube's segments. M397 — none while a sulfur
+        // cube holds a block (`applySizeAndSquish`'s `ss = 0`).
+        let cube_squish = if cube_size.is_some() && mob.sulfur_block.is_none() {
             e.squish_at(alpha)
         } else {
             0.0

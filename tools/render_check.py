@@ -263,6 +263,9 @@ PRECMD = (
     # negative Age), clear of the lanes.
     "summon minecraft:sulfur_cube ~-30 ~ ~12 {NoAI:1b,Silent:1b,Size:1};"
     "summon minecraft:sulfur_cube ~-30 ~ ~15 {NoAI:1b,Silent:1b,Age:-24000};"
+    # M397 -- r219. A sulfur cube holding a gold block (its body slot).
+    "summon minecraft:sulfur_cube ~-33 ~ ~12 {NoAI:1b,Silent:1b,Size:1,"
+    "equipment:{body:{id:\"minecraft:gold_block\",count:1}}};"
     # M308 -- r164. A mannequin with its default (empty) profile.
     "summon minecraft:mannequin ~-27 ~ ~18 {immovable:1b};"
     # M309 -- r165. A mannequin with a profile known only by a name no

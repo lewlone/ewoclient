@@ -1062,6 +1062,14 @@ impl LiveApp {
                         (w, b + 1)
                     }
                 });
+            // M397 — r219: a sulfur cube drawn holding a block.
+            c.sulfur_holding = draws.iter().any(|d| {
+                matches!(
+                    d.kind,
+                    rewo_gpu::mobs::EntityModelKind::SulfurCube
+                        | rewo_gpu::mobs::EntityModelKind::SulfurCubeSmall
+                ) && d.mob.sulfur_block.is_some()
+            });
             // M352 — r206: an enderman drawn carrying a block.
             c.enderman_carrying = draws.iter().any(|d| {
                 d.kind == rewo_gpu::mobs::EntityModelKind::Enderman && d.mob.carried_block.is_some()
@@ -1619,7 +1627,7 @@ impl LiveApp {
         if let Some(baked) = self.baked.as_mut() {
             let mut new_models = Vec::new();
             let mut new_textures = Vec::new();
-            for st in block_display_states(session, &self.etypes, &self.blocks) {
+            for st in block_display_states(session, &self.etypes, &self.blocks, &self.items) {
                 if let Some((name, first)) = baked.add_state_model(st, &mut self.runtime_states) {
                     if let Some(m) = baked.held_items.block_entities.get(&name) {
                         new_models.push((name, to_gpu_held_model(m)));
@@ -2353,6 +2361,27 @@ impl LiveApp {
                 });
             if held && c.enderman_carrying {
                 c.enderman_block_frames += 1;
+            }
+            // M397 — r219: a sulfur cube drew holding a block, and the
+            // staged gold block drew every quad of its model.
+            let gold = self
+                .blocks
+                .default_state("minecraft:gold_block")
+                .map(rewo_data::block_entity_models::carried_block_model);
+            let gold_drawn = be_draws
+                .iter()
+                .zip(state.world_renderer.block_entity_quads())
+                .filter(|(d, _)| Some(d.model) == gold.as_deref())
+                .any(|(d, &q)| {
+                    q > 0
+                        && self
+                            .baked
+                            .as_ref()
+                            .and_then(|b| b.held_items.any(d.model))
+                            .is_some_and(|m| m.quads.len() as u32 == q)
+                });
+            if gold_drawn && c.sulfur_holding {
+                c.sulfur_block_frames += 1;
             }
             // M353 — r207: the staged snow golem's carved pumpkin drew every
             // quad of its block model, and a sheared golem drew none.

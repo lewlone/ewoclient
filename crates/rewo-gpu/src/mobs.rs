@@ -934,6 +934,10 @@ pub struct MobCombat {
     /// M393 — a boat's hurt wobble angle in degrees,
     /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
     pub boat_wobble: f32,
+    /// M397 — the block state a sulfur cube holds (its body item's block,
+    /// `SulfurCubeRenderState.containedBlock`): drawn in place of its core,
+    /// and it stops the squish.
+    pub sulfur_block: Option<u32>,
     /// M396 — `SulfurCubeInnerLayer`: a lit fuse (`fuseRemainingTicks > 0
     /// && TntRenderer.isLit`) packs the inner layer's overlay white
     /// (`pack(u(1.0), 10)`, no hurt red); the shell keeps its own overlay.

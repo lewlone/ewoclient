@@ -4022,6 +4022,17 @@ impl EntityPass {
             } else {
                 verts
             };
+            // M397 — a sulfur cube holding a block draws the block instead
+            // of its core (`SulfurCubeInnerLayer`'s if / else).
+            if d.mob.sulfur_block.is_some()
+                && qi < model.translucent_from
+                && matches!(
+                    d.kind,
+                    EntityModelKind::SulfurCube | EntityModelKind::SulfurCubeSmall
+                )
+            {
+                continue;
+            }
             // M396 — a lit sulfur cube's core (the opaque quads under its
             // translucent shell) flashes white.
             let overlay = if ropes {

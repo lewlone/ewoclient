@@ -4668,3 +4668,28 @@ fn a_primed_sulfur_cube_swells_and_its_core_flashes() {
     assert!(sulfur_fuse_look(22.0).1, "22 / 5 = 4: lit");
     assert!(!sulfur_fuse_look(27.0).1, "27 / 5 = 5: dark");
 }
+
+/// M397 — `SulfurCubeInnerLayer`'s block, by hand through the chain. The
+/// centre (0.5, 0.5, 0.5): `translate(−0.5, −0.518, −0.5)` → (0, −0.018,
+/// 0); `XP(180)` → (0, 0.018, 0); the renderer's `translate(0, 0.98 −
+/// 1/16)`, the adult's 0.5, `translate(0, 0.001)` and 0.999 with the root's
+/// −1.501 lift: (0.018 − 1.501 + 0.9175)·0.5 = −0.28275, + 0.001, ·0.999 =
+/// −0.28147, flipped to 0.28147 above the feet. The baby: 0.5 first ((0,
+/// 0.009, 0)), no extra downscale, lift 1.24 − 1/16: (0.009 − 1.501 +
+/// 1.1775 + 0.001)·0.999 → 0.31319. The block is half size either way.
+#[test]
+fn a_sulfur_cubes_block_sits_in_its_middle() {
+    for (baby, want_y) in [(false, 0.28147f32), (true, 0.31319)] {
+        let a = super::entities::sulfur_block_transform(0.0, 0.0, 1.0, baby);
+        let at = |p: [f32; 3]| {
+            [0, 1, 2].map(|r| a[r][0] * p[0] + a[r][1] * p[1] + a[r][2] * p[2] + a[r][3])
+        };
+        let c = at([0.5, 0.5, 0.5]);
+        assert!(c[0].abs() < 1e-4 && c[2].abs() < 1e-4, "{c:?}");
+        assert!((c[1] - want_y).abs() < 1e-4, "{baby}: {c:?}");
+        let (lo, hi) = (at([0.0; 3]), at([1.0; 3]));
+        let edge = (hi[0] - lo[0]).abs();
+        // The adult halves in the renderer, the baby in the layer.
+        assert!((edge - 0.5 * 0.999).abs() < 1e-4, "{baby}: edge {edge}");
+    }
+}
