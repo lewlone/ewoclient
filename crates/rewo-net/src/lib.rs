@@ -2686,6 +2686,16 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_has_chest(eid, b);
         }
     }
+    // M365 — `Turtle.HAS_EGG` (18) and `LAYING_EGG` (19): the egg belly and
+    // the egg-laying paddle `TurtleModel` draws.
+    if kinds.classes.is_some_and(|c| c.is_turtle(type_id)) {
+        if let Some(b) = meta.bool18 {
+            entities.set_turtle_egg(eid, b);
+        }
+        if let Some(b) = meta.bool19 {
+            entities.set_turtle_laying(eid, b);
+        }
+    }
     if meta.bool19.is_some() && kinds.classes.is_some_and(|c| c.is_camel(type_id)) {
         entities.arm_dash_cooldown(eid, 55);
     }

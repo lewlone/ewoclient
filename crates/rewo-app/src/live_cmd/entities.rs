@@ -1672,6 +1672,10 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M365 — set by the caller for a turtle.
+        turtle_egg: false,
+        turtle_laying: false,
+        turtle_on_land: false,
     }
 }
 
@@ -4906,6 +4910,20 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M365 — `TurtleRenderer.extractRenderState`: the egg flags and
+        // `isOnLand = !isInWater() && onGround()`. Rewo keeps no `onGround`
+        // for other entities, so a turtle out of the water is on land (one
+        // in the air over land is rare and brief).
+        if matches!(kind, EntityModelKind::Turtle | EntityModelKind::TurtleBaby) {
+            let (egg, laying) = session.world.entities.turtle_flags(id);
+            mob.turtle_egg = egg && kind == EntityModelKind::Turtle;
+            mob.turtle_laying = laying;
+            let p = e.render_pos(alpha);
+            mob.turtle_on_land =
+                !session
+                    .world
+                    .is_water_at_point(p[0], p[1] + 0.2, p[2], &session.water_states);
         }
         // M363 — `Boat.isUnderWater()`: the eye (0.85 of the boat's 0.5625
         // height) in water; a sunk boat draws no water patch.

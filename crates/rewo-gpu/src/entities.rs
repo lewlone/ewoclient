@@ -3863,6 +3863,8 @@ impl EntityPass {
                 mobs::Show::Unarmoured => d.body_armor.is_none(),
                 // M354 — the bee's stinger.
                 mobs::Show::HasStinger => !d.mob.bee_stung,
+                // M365 — the turtle's egg belly.
+                mobs::Show::TurtleEgg => d.mob.turtle_egg,
             }
         };
         // The pack variant this entity drew, if the atlas has a slot for it.
@@ -5451,6 +5453,16 @@ fn norm3(v: [f32; 3]) -> [f32; 3] {
 
 // ---- per-part animation (vanilla setupAnim formulas) ---------------------
 
+/// M365 — `AdultTurtleModel.setupAnim`: `if (eggBelly.visible) root.y--`,
+/// the whole turtle 1 px up while it carries an egg.
+fn turtle_lift(mob: &mobs::MobCombat) -> f32 {
+    if mob.turtle_egg {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
 /// Per-frame animation inputs, in vanilla's units: look angles in radians,
 /// `f` = walkAnimationPos·0.6662, `pos` = raw walkAnimationPos, `amt` =
 /// walkAnimationSpeed, `age` = ageInTicks (wall-clock seconds × 20).
@@ -5730,6 +5742,41 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         EquineTail => {
             rot[0] = c.amt * 0.75;
             off = [0.0, c.amt, 2.0 * c.amt];
+        }
+        // M365 — `TurtleModel.setupAnim` over `QuadrupedModel.setupAnim`.
+        TurtleHead => {
+            rot[0] = c.pitch;
+            rot[1] = c.net;
+            off[1] = turtle_lift(&c.mob);
+        }
+        TurtleBody => off[1] = turtle_lift(&c.mob),
+        TurtleLeg { hind, left } => {
+            // The quadruped's swing: right hind and left front on cos(f),
+            // the other two half a cycle on.
+            let phase = if hind == left { PI } else { 0.0 };
+            rot[0] = (c.f + phase).cos() * 1.4 * c.amt;
+            let sign = if left { 1.0 } else { -1.0 };
+            if c.mob.turtle_on_land {
+                let (lay, lay_amp) = if c.mob.turtle_laying {
+                    (4.0, 2.0)
+                } else {
+                    (1.0, 1.0)
+                };
+                let swing_pos = c.pos * 5.0;
+                rot[1] = if hind {
+                    sign * swing_pos.cos() * 3.0 * c.amt
+                } else {
+                    sign * (lay * swing_pos).cos() * 8.0 * c.amt * lay_amp
+                };
+            } else {
+                let swing = (c.pos * 0.6662 * 0.6).cos() * 0.5 * c.amt;
+                if hind {
+                    rot[0] = -sign * swing;
+                } else {
+                    rot[2] = sign * swing;
+                }
+            }
+            off[1] = turtle_lift(&c.mob);
         }
         // M358 — `SheepModel.setupAnim`: grazing, the eat scales; else the
         // look.
@@ -10000,5 +10047,95 @@ mod equine_anim_tests {
         let (r, o) = anim_delta(A::EquineTail, 1.0, &ctx(0.0, 0.0, 0.0, 0.0, 0.4));
         assert!((r[0] - 0.3).abs() < 1e-6 && o == [0.0, 0.4, 0.8]);
         let _ = PI;
+    }
+}
+
+#[cfg(test)]
+mod turtle_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(pos: f32, amt: f32, mob: mobs::MobCombat) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: pos * 0.6662,
+            pos,
+            amt,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob,
+            tendril: 0.0,
+        }
+    }
+
+    fn leg(hind: bool, left: bool, c: &AnimCtx) -> [f32; 3] {
+        anim_delta(mobs::Anim::TurtleLeg { hind, left }, 1.0, c).0
+    }
+
+    /// M365 — `TurtleModel.setupAnim`, term by term: on land the flippers
+    /// sweep about y (front 8, hind 3, mirrored left to right; laying an egg
+    /// quadruples the front's rate and doubles its reach) over the
+    /// quadruped's x swing; in water the hind x swing and the front z swing
+    /// replace the sweep; an egg lifts every root part 1 px.
+    #[test]
+    fn the_turtle_paddles_on_land_and_swims_in_water() {
+        let land = mobs::MobCombat {
+            turtle_on_land: true,
+            ..Default::default()
+        };
+        let (pos, amt) = (0.3_f32, 0.8_f32);
+        let c = ctx(pos, amt, land);
+        let rf = leg(false, false, &c);
+        assert!((rf[1] + (pos * 5.0).cos() * 8.0 * amt).abs() < 1e-5);
+        assert!((leg(false, true, &c)[1] + rf[1]).abs() < 1e-6);
+        let rh = leg(true, false, &c);
+        assert!((rh[1] + (pos * 5.0).cos() * 3.0 * amt).abs() < 1e-5);
+        assert!((rh[0] - (pos * 0.6662).cos() * 1.4 * amt).abs() < 1e-5);
+        let lh = leg(true, true, &c);
+        assert!((lh[0] - (pos * 0.6662 + PI).cos() * 1.4 * amt).abs() < 1e-5);
+        let laying = ctx(
+            pos,
+            amt,
+            mobs::MobCombat {
+                turtle_on_land: true,
+                turtle_laying: true,
+                ..Default::default()
+            },
+        );
+        let lf = leg(false, true, &laying);
+        assert!((lf[1] - (4.0 * pos * 5.0).cos() * 8.0 * amt * 2.0).abs() < 1e-5);
+        let water = ctx(pos, amt, mobs::MobCombat::default());
+        let swing = (pos * 0.6662 * 0.6).cos() * 0.5 * amt;
+        assert!((leg(true, false, &water)[0] - swing).abs() < 1e-6);
+        assert!((leg(true, true, &water)[0] + swing).abs() < 1e-6);
+        let wrf = leg(false, false, &water);
+        assert!((wrf[2] + swing).abs() < 1e-6 && wrf[1] == 0.0);
+        let egg = ctx(
+            0.0,
+            0.0,
+            mobs::MobCombat {
+                turtle_egg: true,
+                ..Default::default()
+            },
+        );
+        for a in [
+            mobs::Anim::TurtleHead,
+            mobs::Anim::TurtleBody,
+            mobs::Anim::TurtleLeg {
+                hind: true,
+                left: false,
+            },
+        ] {
+            assert_eq!(anim_delta(a, 1.0, &egg).1[1], -1.0);
+            assert_eq!(anim_delta(a, 1.0, &water).1[1], 0.0);
+        }
     }
 }

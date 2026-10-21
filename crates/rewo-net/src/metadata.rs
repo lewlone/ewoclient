@@ -47,6 +47,10 @@ pub struct EntityMeta {
     /// caller: 19 is Bee's own slot, and another class's nineteenth accessor
     /// could be a LONG too.
     pub long19: Option<i64>,
+    /// M365 — index 18 **BOOLEAN**: `Turtle.HAS_EGG` (`AgeableMob` owns 16
+    /// and 17). A goat's screaming flag and a strider's suffocation sit here
+    /// too, so the caller gates it on the turtle.
+    pub bool18: Option<bool>,
     /// Index 19 **BOOLEAN** — `Camel.DASH` (M169). `Camel extends
     /// AbstractHorse`, whose only accessor is `DATA_ID_FLAGS` at 18, so the
     /// camel's first own slot is 19. Kind-gated by the caller.
@@ -624,6 +628,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             // M169 — the two DASH flags and the camel's pose clock; BOOLEAN is
             // serializer 8 and LONG is 2, so none collides with the INT / LONG /
             // CAT_VARIANT readings already at 19 and 20.
+            (18, 8) => meta.bool18 = r.u8().ok().map(|b| b != 0),
             (19, 8) => meta.bool19 = r.u8().ok().map(|b| b != 0),
             (20, 8) => meta.bool20 = r.u8().ok().map(|b| b != 0),
             (20, 2) => meta.long20 = r.varlong().ok(),

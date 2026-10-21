@@ -124,6 +124,20 @@ pub enum Anim {
     /// M359 — the tail: `xRot` its π/6 rest + speed · 0.75, `y` + speed,
     /// `z` + 2 · speed (× the age scale, 1 for the adults that use it).
     EquineTail,
+    /// M365 — `TurtleModel.setupAnim` on top of `QuadrupedModel`'s: each
+    /// flipper keeps the quadruped's `xRot` swing; on land the flippers
+    /// sweep (`yRot`: front ∓cos(pos·5·lay)·8·speed·layAmp, hind
+    /// ∓cos(pos·5)·3·speed, lay 4 and layAmp 2 while laying an egg); in
+    /// water the hind `xRot` becomes ±cos(pos·0.6662·0.6)·0.5·speed and the
+    /// front `zRot` ∓ the same. With an egg the root is 1 px up.
+    TurtleLeg {
+        hind: bool,
+        left: bool,
+    },
+    /// M365 — the turtle's head: the look, 1 px up with an egg.
+    TurtleHead,
+    /// M365 — the turtle's shell and plates: 1 px up with an egg.
+    TurtleBody,
     /// M358 — `SheepModel.setupAnim` (and `SheepFurModel`'s): while grazing
     /// the head's `y` grows by `headEatPositionScale` · 9 · the age scale
     /// and its `xRot` is `headEatAngleScale`; otherwise it looks, as `Head`.
@@ -709,6 +723,10 @@ pub struct MobCombat {
     /// M358 — a grazing sheep's `(headEatPositionScale,
     /// headEatAngleScale)`; `None` when it is not eating (the head looks).
     pub sheep_eat: Option<(f32, f32)>,
+    /// M365 — `TurtleRenderState`: `hasEgg`, `isLayingEgg` and `isOnLand`.
+    pub turtle_egg: bool,
+    pub turtle_laying: bool,
+    pub turtle_on_land: bool,
     /// M363 — `Boat.isUnderWater()` (the eye in water): no water patch.
     pub under_water: bool,
 }
@@ -907,6 +925,9 @@ pub enum Show {
     Chested,
     /// M354 — `BeeModel.setupAnim`: `stinger.visible = state.hasStinger`.
     HasStinger,
+    /// M365 — `AdultTurtleModel.setupAnim`: `eggBelly.visible =
+    /// state.hasEgg`.
+    TurtleEgg,
     /// M350 — `ZombieNautilusCoralModel.setupAnim`: `corals.visible =
     /// state.bodyArmorItem.isEmpty()`. Shown unless the draw has body armour.
     Unarmoured,
@@ -4913,11 +4934,16 @@ fn rabbit() -> Model {
         [4.0, 4.0, 4.0],
         NONE,
     );
+    // M364 — `RabbitModel.setupAnim` assigns the head's `yRot` / `xRot`
+    // from the look every frame (unless the idle head tilt plays, which Rewo
+    // does not), so the layer's 0.3927 is never drawn: at a level look the
+    // head leans with the body's −0.3927. Until M364 it held the layer's
+    // tilt, level, and never looked.
     let head = b.part_named(
         "head",
         [0.0, -5.2929, -8.1213],
-        [0.3927, 0.0, 0.0],
-        Anim::None,
+        [0.0; 3],
+        Anim::Head,
         1.0,
         Some(body),
     );
@@ -9352,8 +9378,8 @@ fn dolphin() -> Model {
 
 /// `AdultTurtleModel`: shell + belly plates, flipper legs, headed front.
 /// M315 — `BabyTurtleModel.createBodyLayer()` (16 x 16): the shell box, the
-/// head (which looks, as the adult's does), and four flat legs, which stay at
-/// rest as Rewo's adult turtle's do. Drawn at its own size: `AgeableMobRenderer`
+/// head (which looks, as the adult's does), and four flat legs, which paddle
+/// as the adult's flippers do since M365. Drawn at its own size: `AgeableMobRenderer`
 /// adds no scale (`getAgeScale`'s 0.3 is the bounds').
 fn turtle_baby() -> Model {
     let mut b = ModelBuilder::new();
@@ -9376,22 +9402,28 @@ fn turtle_baby() -> Model {
         [3.0, 3.0, 3.0],
         NONE,
     );
-    for (uv, min, off) in [
-        ((-1.0, 0.0), [-2.0, 0.0, -0.5], [-2.0, 23.9, 2.5]),
-        ((-1.0, 1.0), [0.0, 0.0, -0.5], [2.0, 23.9, 2.5]),
-        ((8.0, 6.0), [-2.0, 0.0, -0.5], [-2.0, 23.9, -0.5]),
-        ((8.0, 7.0), [0.0, 0.0, -0.5], [2.0, 23.9, -0.5]),
-    ] {
-        b.cube_f(
-            STATIC_PART,
-            0,
-            uv,
-            min,
-            [2.0, 0.0, 1.0],
-            0.0,
+    // M365 — the four flat legs paddle as the adult's flippers do (the
+    // baby has no egg belly, so its egg flag is never set).
+    for (uv, min, pivot, hind, left) in [
+        (
+            (-1.0, 0.0),
+            [-2.0, 0.0, -0.5],
+            [-2.0, 23.9, 2.5],
+            true,
             false,
-            &[Fold::at(off)],
-        );
+        ),
+        ((-1.0, 1.0), [0.0, 0.0, -0.5], [2.0, 23.9, 2.5], true, true),
+        (
+            (8.0, 6.0),
+            [-2.0, 0.0, -0.5],
+            [-2.0, 23.9, -0.5],
+            false,
+            false,
+        ),
+        ((8.0, 7.0), [0.0, 0.0, -0.5], [2.0, 23.9, -0.5], false, true),
+    ] {
+        let leg = b.part(pivot, Anim::TurtleLeg { hind, left }, 1.0);
+        b.cube(leg, 0, uv, min, [2.0, 0.0, 1.0], NONE);
     }
     b.finish(1.0)
 }
@@ -9435,7 +9467,7 @@ fn polar_bear_baby() -> Model {
 
 fn turtle() -> Model {
     let mut b = ModelBuilder::new();
-    let head = b.part([0.0, 19.0, -10.0], Anim::Head, 1.0);
+    let head = b.part([0.0, 19.0, -10.0], Anim::TurtleHead, 1.0);
     b.cube(
         head,
         0,
@@ -9444,77 +9476,85 @@ fn turtle() -> Model {
         [6.0, 5.0, 6.0],
         NONE,
     );
-    let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 11.0, -10.0]);
-    b.cube_f(
-        STATIC_PART,
+    // M365 — the body and the egg belly are parts (`body`, `egg_belly`), so
+    // the egg lifts them and the belly can hide.
+    let body = b.part_ext(
+        [0.0, 11.0, -10.0],
+        [FRAC_PI_2, 0.0, 0.0],
+        Anim::TurtleBody,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        body,
         0,
         (7.0, 37.0),
         [-9.5, 3.0, -10.0],
         [19.0, 20.0, 6.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    b.cube(
+        body,
         0,
         (31.0, 1.0),
         [-5.5, 3.0, -13.0],
         [11.0, 18.0, 3.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    let egg = b.part_ext(
+        [0.0, 11.0, -10.0],
+        [FRAC_PI_2, 0.0, 0.0],
+        Anim::TurtleBody,
+        1.0,
+        Option::None,
+    );
+    b.show(egg, Show::TurtleEgg);
+    b.cube(
+        egg,
         0,
         (70.0, 33.0),
         [-4.5, 3.0, -14.0],
         [9.0, 18.0, 1.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (1.0, 23.0),
-        [-2.0, 0.0, 0.0],
-        [4.0, 1.0, 10.0],
-        0.0,
-        false,
-        &[Fold::at([-3.5, 22.0, 11.0])],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (1.0, 12.0),
-        [-2.0, 0.0, 0.0],
-        [4.0, 1.0, 10.0],
-        0.0,
-        false,
-        &[Fold::at([3.5, 22.0, 11.0])],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (27.0, 30.0),
-        [-13.0, 0.0, -2.0],
-        [13.0, 1.0, 5.0],
-        0.0,
-        false,
-        &[Fold::at([-5.0, 21.0, -4.0])],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (27.0, 24.0),
-        [0.0, 0.0, -2.0],
-        [13.0, 1.0, 5.0],
-        0.0,
-        false,
-        &[Fold::at([5.0, 21.0, -4.0])],
-    );
+    // M365 — the four flippers as parts on `TurtleModel`'s paddle.
+    for (uv, min, dims, pivot, hind, left) in [
+        (
+            (1.0, 23.0),
+            [-2.0, 0.0, 0.0],
+            [4.0, 1.0, 10.0],
+            [-3.5, 22.0, 11.0],
+            true,
+            false,
+        ),
+        (
+            (1.0, 12.0),
+            [-2.0, 0.0, 0.0],
+            [4.0, 1.0, 10.0],
+            [3.5, 22.0, 11.0],
+            true,
+            true,
+        ),
+        (
+            (27.0, 30.0),
+            [-13.0, 0.0, -2.0],
+            [13.0, 1.0, 5.0],
+            [-5.0, 21.0, -4.0],
+            false,
+            false,
+        ),
+        (
+            (27.0, 24.0),
+            [0.0, 0.0, -2.0],
+            [13.0, 1.0, 5.0],
+            [5.0, 21.0, -4.0],
+            false,
+            true,
+        ),
+    ] {
+        let leg = b.part(pivot, Anim::TurtleLeg { hind, left }, 1.0);
+        b.cube(leg, 0, uv, min, dims, NONE);
+    }
     b.finish(1.0)
 }
 
@@ -14813,7 +14853,12 @@ mod baby_turtle_tests {
     fn the_baby_turtle_is_its_own_small_model() {
         let m = turtle_baby();
         assert_eq!(m.scale, 1.0);
-        let xs = m.quads.iter().flat_map(|q| q.pos.iter().map(|p| p[0]));
+        // Part-local corners plus the part's pivot (M365 made the legs
+        // parts; every part here is a root part unrotated at rest).
+        let xs = m.quads.iter().flat_map(|q| {
+            let px = m.parts[q.part].pivot[0];
+            q.pos.iter().map(move |p| p[0] + px)
+        });
         let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
         assert_eq!(
             (lo, hi),
@@ -15954,5 +15999,65 @@ mod villager_scale_tests {
         }) {
             assert_eq!((def.build)().scale, 1.0, "{:?}", def.kind);
         }
+    }
+}
+
+#[cfg(test)]
+mod rabbit_head_tests {
+    use super::*;
+
+    /// M364 — both rabbits' heads look (`RabbitModel.setupAnim`): no rest
+    /// tilt of their own, the look assigned, the ears riding on them.
+    #[test]
+    fn the_rabbit_heads_look() {
+        for m in [rabbit(), rabbit_baby()] {
+            let head = m
+                .parts
+                .iter()
+                .position(|p| p.name == "head")
+                .expect("a head part");
+            assert_eq!(m.parts[head].rot, [0.0; 3]);
+            assert_eq!(m.parts[head].anim, Anim::Head);
+            let ears = m
+                .parts
+                .iter()
+                .filter(|p| p.parent == Some(head as u16) && p.name.ends_with("ear"))
+                .count();
+            assert_eq!(ears, 2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod turtle_model_tests {
+    use super::*;
+
+    /// M365 — both turtles' four legs are paddling parts (two hind, two
+    /// left); the adult's egg belly is its own part, shown only with an egg.
+    #[test]
+    fn the_turtles_paddle_and_the_belly_waits_for_an_egg() {
+        for m in [turtle(), turtle_baby()] {
+            let legs: Vec<_> = m
+                .parts
+                .iter()
+                .filter_map(|p| match p.anim {
+                    Anim::TurtleLeg { hind, left } => Some((hind, left)),
+                    _ => Option::None,
+                })
+                .collect();
+            assert_eq!(legs.len(), 4);
+            assert_eq!(legs.iter().filter(|l| l.0).count(), 2);
+            assert_eq!(legs.iter().filter(|l| l.1).count(), 2);
+        }
+        let m = turtle();
+        let eggs: Vec<usize> = (0..m.parts.len())
+            .filter(|&i| m.parts[i].show == Show::TurtleEgg)
+            .collect();
+        assert_eq!(eggs.len(), 1);
+        assert_eq!(m.quads.iter().filter(|q| q.part == eggs[0]).count(), 6);
+        assert!(turtle_baby()
+            .parts
+            .iter()
+            .all(|p| p.show != Show::TurtleEgg));
     }
 }

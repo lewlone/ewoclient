@@ -20,9 +20,9 @@ The baby layers had their own audit on 2026-10-20 (see
 | horse, donkey, mule, skeleton/zombie horse | head and neck never look (pitch + π/6, yaw clamped ±20°, a walk nod) | `AbstractEquineModel` 121-127 | M359 (adults; the foals still hold still) |
 | horse family | legs swing 1.4×; vanilla front 0.8, hind 0.5 | `AbstractEquineModel` 124-125, 138-143 | M359 |
 | horse family | tail does not lift while walking (`π/6 + speed·0.75`, y/z offsets) | `AbstractEquineModel` 146-148 | M359 (the random `animateTail` swish not modelled) |
-| rabbit | head pitched 0.3927 (layer) and never looks; `setupAnim` assigns the look | `RabbitModel` 28-29 | open |
-| turtle | flippers never move (land paddle `cos(pos·5)·8·speed` yRot, water swim) | `TurtleModel` 20-36 | open |
-| turtle | egg belly drawn on every adult; vanilla `eggBelly.visible = hasEgg` (and the root 1 px up) | `AdultTurtleModel` 24-26 | open |
+| rabbit | head pitched 0.3927 (layer) and never looks; `setupAnim` assigns the look | `RabbitModel` 28-29 | M364 (the idle head tilt not played) |
+| turtle | flippers never move (land paddle `cos(pos·5)·8·speed` yRot, water swim) | `TurtleModel` 20-36 | M365 (on land = out of water; Rewo keeps no `onGround` for other entities) |
+| turtle | egg belly drawn on every adult; vanilla `eggBelly.visible = hasEgg` (and the root 1 px up) | `AdultTurtleModel` 24-26 | M365 |
 | strider | body 1 px too high (`body.y = 2`, layer 1); body never looks; bristles never sway; legs 1.4× unclamped (vanilla `min(speed, 0.25)`) | `AdultStriderModel` 54-57, `StriderModel` 25-57 | open |
 | hoglin, zoglin (and babies) | head pitches with the look; vanilla's xRot is fixed 0.8727 when not attacking | `HoglinModel` 91, 102 | open |
 | hoglin | legs at 0.6662/1.4; vanilla raw pos ·1.2; ears never flap | `HoglinModel` 89-98 | open |

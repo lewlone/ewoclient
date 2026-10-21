@@ -104,7 +104,14 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 81;
+const EXPECTED_WITNESSES: usize = 83;
+/// M364 — m82's floor (px of silhouette the look moves): adult, kit. M364
+/// measured 307 and 750; a still adult head (the pre-M364 mutant) 0.
+const RABBIT_LOOK_MIN: [usize; 2] = [150, 300];
+/// M365 — m83's floors: stride vs standing, swim vs land, egg vs none. M365
+/// measured 2012, 1682 and 5787; static flippers and an always-drawn belly
+/// (the pre-M365 mutant) 0, 0 and 0.
+const TURTLE_MIN: [usize; 3] = [1000, 800, 2500];
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -6020,6 +6027,126 @@ fn run_check(
         moved >= 200 && bridle_moved >= 200,
         format!(
             "{moved} px of silhouette moved by the look (want >= 200), {bridle_moved} px of the saddle layer moved with it (want >= 200; a bridle left behind measured 89)"
+        ),
+    ));
+
+    // m82 — M364: a rabbit (and its kit) that looks down and aside moves its
+    // head (`RabbitModel.setupAnim` assigns the look); the silhouette moves.
+    let mut rst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.55, -0.6),
+        Vec3::new(0.0, 0.25, 0.0),
+    )?;
+    rst.wr.set_entities(&[], rst.right, rst.up, 0.0);
+    rst.off.render(gpu, Some((&mut rst.wr, rst.vp)), &ov, BG)?;
+    let r_empty = rst.off.read_rgba(gpu)?;
+    let r_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(r_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let mut r_rows = Vec::new();
+    let mut r_moved = Vec::new();
+    for kind in [EntityModelKind::Rabbit, EntityModelKind::RabbitBaby] {
+        let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+            rst.wr.set_entities(&[d], rst.right, rst.up, 0.0);
+            rst.off.render(gpu, Some((&mut rst.wr, rst.vp)), &ov, BG)?;
+            rst.off.read_rgba(gpu)
+        };
+        let ahead = shot(neutral_draw(kind))?;
+        let looking = shot(EntityDraw {
+            pitch: 30.0,
+            head_yaw: 25.0,
+            ..neutral_draw(kind)
+        })?;
+        let moved = r_mask(&ahead)
+            .iter()
+            .zip(&r_mask(&looking))
+            .filter(|(x, y)| x != y)
+            .count();
+        r_rows.push(format!("{}: {moved} px", kind.name()));
+        r_moved.push(moved);
+    }
+    rst.destroy(gpu);
+    w.push(wit(
+        "m82.a_rabbit_and_its_kit_look",
+        r_moved[0] >= RABBIT_LOOK_MIN[0] && r_moved[1] >= RABBIT_LOOK_MIN[1],
+        format!(
+            "silhouette moved by the look: {} (want >= {:?})",
+            r_rows.join("; "),
+            RABBIT_LOOK_MIN
+        ),
+    ));
+
+    // m83 — M365: a turtle on land mid-stride sweeps its flippers (against
+    // the same turtle standing), swimming moves them differently (against
+    // the same stride on land), and an egg shows its belly plate and lifts
+    // it 1 px (against no egg).
+    let mut tst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.3, 1.5, -1.1),
+        Vec3::new(0.0, 0.15, 0.0),
+    )?;
+    tst.wr.set_entities(&[], tst.right, tst.up, 0.0);
+    tst.off.render(gpu, Some((&mut tst.wr, tst.vp)), &ov, BG)?;
+    let t_empty = tst.off.read_rgba(gpu)?;
+    let mut tshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        tst.wr.set_entities(&[d], tst.right, tst.up, 0.0);
+        tst.off.render(gpu, Some((&mut tst.wr, tst.vp)), &ov, BG)?;
+        tst.off.read_rgba(gpu)
+    };
+    let turtle = |on_land: bool, egg: bool, amount: f32| EntityDraw {
+        limb_swing: 0.3,
+        limb_amount: amount,
+        mob: rewo_gpu::mobs::MobCombat {
+            turtle_on_land: on_land,
+            turtle_egg: egg,
+            ..Default::default()
+        },
+        ..neutral_draw(EntityModelKind::Turtle)
+    };
+    let standing = tshot(turtle(true, false, 0.0))?;
+    let striding = tshot(turtle(true, false, 0.8))?;
+    let swimming = tshot(turtle(false, false, 0.8))?;
+    let with_egg = tshot(turtle(true, true, 0.0))?;
+    tst.destroy(gpu);
+    let t_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(t_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let differ = |a: &[u8], b: &[u8]| {
+        t_mask(a)
+            .iter()
+            .zip(&t_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let (stride, swim) = (differ(&standing, &striding), differ(&striding, &swimming));
+    let egg_px = standing
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(with_egg.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    w.push(wit(
+        "m83.a_turtle_paddles_on_land_swims_in_water_and_carries_its_egg",
+        stride >= TURTLE_MIN[0] && swim >= TURTLE_MIN[1] && egg_px >= TURTLE_MIN[2],
+        format!(
+            "stride vs standing {stride} px, swimming vs the stride on land {swim} px, egg vs none {egg_px} px (want >= {TURTLE_MIN:?})"
         ),
     ));
 

@@ -223,6 +223,8 @@ pub struct EntityClasses {
     evoker_fangs: std::collections::HashSet<i32>,
     /// M358 — `minecraft:sheep`: entity event 10 is its grazing.
     sheep: std::collections::HashSet<i32>,
+    /// M365 — `minecraft:turtle`: index 18 / 19 BOOLEAN are its egg flags.
+    turtle: std::collections::HashSet<i32>,
     /// M219 — `instanceof HasCustomInventoryScreen`: its three implementors'
     /// subtrees (`AbstractHorse`, `AbstractNautilus`, `AbstractChestBoat`).
     /// Riding one turns the inventory key into `OPEN_INVENTORY`.
@@ -412,6 +414,7 @@ impl EntityClasses {
                 .collect(),
             evoker_fangs: types.id_of("minecraft:evoker_fangs").into_iter().collect(),
             sheep: types.id_of("minecraft:sheep").into_iter().collect(),
+            turtle: types.id_of("minecraft:turtle").into_iter().collect(),
             custom_inventory,
             abstract_horse,
             abstract_boat,
@@ -445,6 +448,7 @@ impl EntityClasses {
             item_frame: Default::default(),
             evoker_fangs: Default::default(),
             sheep: Default::default(),
+            turtle: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -479,6 +483,7 @@ impl EntityClasses {
             item_frame: Default::default(),
             evoker_fangs: Default::default(),
             sheep: Default::default(),
+            turtle: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -537,6 +542,11 @@ impl EntityClasses {
     /// M259 — `minecraft:evoker_fangs`, whose entity event 4 is its bite.
     pub fn is_evoker_fangs(&self, type_id: i32) -> bool {
         self.evoker_fangs.contains(&type_id)
+    }
+
+    /// M365 — `minecraft:turtle` (`Turtle.HAS_EGG` 18, `LAYING_EGG` 19).
+    pub fn is_turtle(&self, type_id: i32) -> bool {
+        self.turtle.contains(&type_id)
     }
 
     /// M358 — `minecraft:sheep`, whose entity event 10 is its grazing.

@@ -1723,6 +1723,10 @@ pub struct MobState {
     pub creeper_powered: bool,
     /// M296 — `AbstractChestedHorse.DATA_ID_CHEST` (index 19, BOOLEAN).
     pub has_chest: bool,
+    /// M365 — `Turtle.HAS_EGG` (index 18, BOOLEAN; `AgeableMob` owns 16 and
+    /// 17) and `LAYING_EGG` (19).
+    pub turtle_egg: bool,
+    pub turtle_laying: bool,
     /// M288 — `WitherBoss.DATA_ID_INV` (index 19, INT): the invulnerable
     /// ticks of a freshly built wither (0 otherwise). `WitherBoss` declares
     /// the three head targets (16-18) first.
@@ -3268,6 +3272,23 @@ impl EntityTable {
     /// caller.
     pub fn set_has_chest(&mut self, id: i32, chest: bool) {
         self.mob_state.entry(id).or_default().has_chest = chest;
+    }
+
+    /// M365 — `Turtle.HAS_EGG`. Kind-gated by the caller.
+    pub fn set_turtle_egg(&mut self, id: i32, egg: bool) {
+        self.mob_state.entry(id).or_default().turtle_egg = egg;
+    }
+
+    /// M365 — `Turtle.LAYING_EGG`. Kind-gated by the caller.
+    pub fn set_turtle_laying(&mut self, id: i32, laying: bool) {
+        self.mob_state.entry(id).or_default().turtle_laying = laying;
+    }
+
+    /// M365 — `(hasEgg(), isLayingEgg())`; both default `false`.
+    pub fn turtle_flags(&self, id: i32) -> (bool, bool) {
+        self.mob_state
+            .get(&id)
+            .map_or((false, false), |s| (s.turtle_egg, s.turtle_laying))
     }
 
     /// M296 — `hasChest()`; the synched default is `false`.
@@ -5563,5 +5584,26 @@ mod flight_tests {
         t.set_in_ground(2, true);
         assert!(t.get(1).unwrap().in_ground);
         assert!(!t.get(2).unwrap().in_ground);
+    }
+}
+
+#[cfg(test)]
+mod turtle_flag_tests {
+    use super::*;
+
+    /// M365 — the turtle's two egg flags are kept apart and default off; a
+    /// re-add forgets them.
+    #[test]
+    fn a_turtles_egg_flags_are_kept() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 1, 0.0, 64.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.turtle_flags(1), (false, false));
+        t.set_turtle_egg(1, true);
+        assert_eq!(t.turtle_flags(1), (true, false));
+        t.set_turtle_laying(1, true);
+        t.set_turtle_egg(1, false);
+        assert_eq!(t.turtle_flags(1), (false, true));
+        t.add(1, EntityState::new(0, 1, 0.0, 64.0, 0.0, 0.0, 0.0));
+        assert_eq!(t.turtle_flags(1), (false, false));
     }
 }
