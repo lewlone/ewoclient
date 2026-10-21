@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M377 — the wither breathes; clamped, still and swaying heads and tails (with M376) (2026-10-21)
+
+From the adult rest-pose audit. **M376**: the wither's ribcage and tail breathe (`(0.065 + 0.05·cos(age·0.1))·π`, the tail riding the ribcage's arc), and its side heads rest at their untargeted pose instead of copying the centre head. **M377**: the breeze's and the flying bat's heads no longer look; the camel's look is clamped (with its dash head lift) and the armadillo's; the bee's antennae bob; the tadpole's tail sways. **Unit tests**; **mobtexshot m94** (wither breath 289 px; mutant 0) and **m95** (camel 80° vs 30°, breeze and bat aside vs ahead all 0 px, the mutant 409 / 441 / 107; tadpole tail 26 px).
+
 ### M375 — the warden walks and sways on its own gait; the ravager's stride and mouth (with M374) (2026-10-21)
 
 From the adult rest-pose audit. **M374**: `WardenModel.animateWalk` + `animateIdlePose` (ap = pos·0.8662, speed term capped at 0.5): the body and head roll and pitch with the stride and sway on `age·0.1`, the right arm swings on sin, the legs on the warden's own gait. **M375**: the ravager's legs at vanilla's `0.4·speed` (an amplitude multiplier on the quadruped legs) and its mouth resting a sliver open (`π·0.01`); attack, stun and roar not modelled. **Unit tests**; eventshot c3's neutral pose now includes the idle sway; **mobtexshot m92** (speed 0.2 vs 1.0 0 px, sway 361; mutant 1957 and 0) and **m93** (ravager stride 1413 px in 700..1800; the old 1.4 swing 2273).
