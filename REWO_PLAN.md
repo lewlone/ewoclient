@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M388 — the ender dragon flies on its procedural rig (2026-10-21)
+
+From the adult rest-pose audit. The dragon is now vanilla's tree (root; head with jaw; five neck and twelve tail segments; body with wings, tips and legs) on `EnderDragonModel.setupAnim` for straight, level flight (`dragon_pose(age)`): the jaw, the root's bounce lift and its 48 px forward offset (Rewo's dragon sat 2 blocks low and 3 back), the neck and tail wave chains, the wing flap and the leg bounce. flapTime runs a constant 0.05 a tick; the flight-history terms are not modelled. mobshot skips the dragon's left view (coplanar zero-thickness wing skins z-fight on rotated parts; 386 views); mobtexshot m5 MAX_SMALL 28 (two babies now hidden behind the dragon). **Unit test**; **mobtexshot m105** (half a second apart, 2081 px; 0 by construction before, not run).
+
 ### M387 — the axolotl swims, hovers, crawls, lies and plays dead (2026-10-21)
 
 From the adult rest-pose audit. The axolotl is now vanilla's tree (body → head → gills, legs, tail) on `AdultAxolotlModel.setupAnim`: the look turns the body, and the swimming, hovering, crawling, lying-still and playing-dead poses blend on `ageInTicks` before the legs mirror. The factors are taken whole (in water, moving, `DATA_PLAYING_DEAD` at index 19, routed for the axolotl only); vanilla eases them. **Unit test**; **mobtexshot m104** (swimming vs lying still 1304 px, playing dead 1649; 0 by construction before, not run).
