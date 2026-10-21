@@ -23,10 +23,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 193 Rewo milestones, M194 to M386, in about 398 commits on
+- **What happened**: 194 Rewo milestones, M194 to M387, in about 400 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`832c3298`): 4,574 tests pass (4,244 at the
+- **Checks at the end** (`ca272378`): 4,575 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 215 of
   215 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M387**: the axolotl swims, hovers, crawls, lies still and plays dead, its body turning with its look.
 - **M386**: the ender dragon faces the way it flies (it drew backward) and its head no longer follows the look.
 - **M385**: the piglins wear the player mesh: true left limbs, and the brute's jacket and pants.
 - **M384**: the parched is drawn on its own layer (sleeves, belt, overlays), not the skeleton's mesh on its sheet.
@@ -572,6 +573,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `ca272378` | **M387** — the axolotl's blended poses; unit test, mobtexshot **m104**. |
 | `832c3298` | **M386** — the ender dragon's renderer frame and still head; unit tests. |
 | `d850b1ea` | **M385** — the piglin family's player mesh; unit test, mobtexshot **m103**. |
 | `0e817e47` | **M384** — the parched's dual-body layer; mobshot pins and the r142 eye fix; unit test, mobtexshot **m102**. |
@@ -1003,6 +1005,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M387: **4,575 tests: 4,570 passed and 5 failed in the chain run**: rewo-net's srv TCP-fallback tests, the known flake where the harness finds no port free for both UDP and TCP (the M353 Follow-up); re-run clean (34/34). **Gates 51/51** (mobtexshot 104); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M386: **4,574 tests passed, 0 failed; gates 51/51** (mobtexshot 103); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean. No rendered witness for the dragon (none is summoned in the render check; mobtexshot bypasses the live frame): the unit test checks the transform.
 - After M385: **4,572 tests passed, 0 failed; gates 51/51** (mobtexshot 103); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M384: **4,571 tests passed, 0 failed; gates 51/51** (mobtexshot 102; mobshot 387 views, 10 ambiguous kinds — the first run failed it fail-closed on the parched's overlapping sleeves); render check **215/215** on both runs (the first chain's run 2 failed r142, the sleeping camera measured against the tick position; fixed to the render feet); clippy (both) and `cargo fmt --check` clean.
