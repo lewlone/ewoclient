@@ -1672,6 +1672,9 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M379 — set by the caller for a witch.
+        witch_nose_rate: 0.0,
+        witch_holding: false,
         // M377 — set by the caller for a camel.
         camel_jump_cooldown: 0.0,
         // M371 — set by the caller for a dolphin.
@@ -4927,6 +4930,23 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M379 — the witch's nose: its id sets the wobble rate, and a held
+        // item (her potion) lifts it.
+        if kind == EntityModelKind::Witch {
+            mob.witch_nose_rate = 0.01 * id.rem_euclid(10) as f32;
+            mob.witch_holding = !matches!(
+                session
+                    .world
+                    .entities
+                    .hand_item(id, rewo_world::entities::InteractionHand::MainHand),
+                rewo_world::entities::HandItem::Empty
+            );
+        }
+        // M378 — `ParrotModel.getPose`'s SITTING: the tamed parrot's sitting
+        // pose flag.
+        if kind == EntityModelKind::Parrot {
+            mob.sitting = session.world.entities.is_in_sitting_pose(id);
         }
         // M377 — `CamelRenderer.getJumpCooldown`: the cooldown less the
         // partial tick while it runs.

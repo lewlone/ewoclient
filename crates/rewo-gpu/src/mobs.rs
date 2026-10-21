@@ -337,6 +337,23 @@ pub enum Anim {
         k: f32,
         rest: f32,
     },
+    /// M379 — `WitchModel.setupAnim`'s nose: `xRot` sin(age·k)·4.5°, `zRot`
+    /// cos(age·k)·2.5° with k = 0.01·(entityId % 10); holding an item, the
+    /// nose sits at (0, 1, −1.5) tipped −0.9.
+    WitchNose,
+    /// M378 — `ParrotModel.setupAnim`, standing or sitting: the parrot's
+    /// body and wings drop 1.9 px when it sits.
+    ParrotSit,
+    /// M378 — the parrot's head: the look (and 1.9 px down sitting).
+    ParrotHead,
+    /// M378 — the parrot's tail: `xRot` + cos(f)·0.3·speed standing; π/6
+    /// and 1.9 px down sitting.
+    ParrotTail,
+    /// M378 — a parrot leg: `xRot` + cos(f (+π right))·1.4·speed standing;
+    /// π/2 and 1.9 px down sitting.
+    ParrotLeg {
+        left: bool,
+    },
     /// M377 — `CamelModel.applyHeadRotation`: the look clamped (yaw ±30°,
     /// pitch −25..45°); after a dash the head lifts `45° · cooldown / 55`,
     /// clamped to 70°.
@@ -836,6 +853,10 @@ pub struct MobCombat {
     /// state: 1 while the main hand holds an item (vanilla ramps it over 5
     /// ticks).
     pub allay_holding: f32,
+    /// M379 — the witch's nose wobble rate `0.01·(entityId % 10)` and
+    /// `WitchRenderState.isHoldingItem`.
+    pub witch_nose_rate: f32,
+    pub witch_holding: bool,
     /// M377 — `CamelRenderState.jumpCooldown`: the dash cooldown less the
     /// partial tick (0 when none).
     pub camel_jump_cooldown: f32,
@@ -5204,8 +5225,10 @@ fn rabbit() -> Model {
 
 /// `VillagerModel`: big head with nose + hat (+ rotated hat rim), robed
 /// body, crossed arms, half-swing legs. Returns the head part so the witch
-/// can stack her hat on it.
-fn villager_build(b: &mut ModelBuilder) -> usize {
+/// can stack her hat on it, and (M379) for the witch the nose part
+/// (`Anim::WitchNose`, its mole goes on it); the villager's nose stays a
+/// box on the head.
+fn villager_build(b: &mut ModelBuilder, witch: bool) -> (usize, Option<usize>) {
     let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
     b.cube(
         head,
@@ -5234,16 +5257,21 @@ fn villager_build(b: &mut ModelBuilder) -> usize {
         false,
         &[Fold::rot([-FRAC_PI_2, 0.0, 0.0], [0.0, 0.0, 0.0])],
     );
-    b.cube_f(
-        head,
-        0,
-        (24.0, 0.0),
-        [-1.0, -1.0, -6.0],
-        [2.0, 4.0, 2.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, -2.0, 0.0])],
-    );
+    let nose =
+        witch.then(|| b.part_ext([0.0, -2.0, 0.0], [0.0; 3], Anim::WitchNose, 1.0, Some(head)));
+    match nose {
+        Some(n) => b.cube(n, 0, (24.0, 0.0), [-1.0, -1.0, -6.0], [2.0, 4.0, 2.0], NONE),
+        Option::None => b.cube_f(
+            head,
+            0,
+            (24.0, 0.0),
+            [-1.0, -1.0, -6.0],
+            [2.0, 4.0, 2.0],
+            0.0,
+            false,
+            &[Fold::at([0.0, -2.0, 0.0])],
+        ),
+    }
     b.cube(
         STATIC_PART,
         0,
@@ -5310,7 +5338,7 @@ fn villager_build(b: &mut ModelBuilder) -> usize {
         [4.0, 12.0, 4.0],
         NONE,
     );
-    head
+    (head, nose)
 }
 
 /// M318 — `BabyVillagerModel.createBodyModel()` (64 x 64): the head (8 x 8 x
@@ -5429,7 +5457,7 @@ pub const VILLAGER_LIKE_SCALE: f32 = 0.9375;
 
 fn villager() -> Model {
     let mut b = ModelBuilder::new();
-    villager_build(&mut b);
+    villager_build(&mut b, false);
     b.finish(VILLAGER_LIKE_SCALE)
 }
 
@@ -7468,7 +7496,8 @@ fn illager_arms() -> Model {
 /// the nose mole. Texture 64×128.
 fn witch() -> Model {
     let mut b = ModelBuilder::new();
-    let head = villager_build(&mut b);
+    let (head, nose) = villager_build(&mut b, true);
+    let nose = nose.expect("the witch's nose part");
     let hat = Fold::at([-5.0, -10.03125, -5.0]);
     b.cube_f(
         head,
@@ -7513,16 +7542,16 @@ fn witch() -> Model {
         false,
         &[hat4, hat3, hat2, hat],
     );
-    // Mole under the nose (nose pose (0,−2,0), mole pose (0,−2,0)).
+    // Mole on the nose (mole pose (0,−2,0) under the nose part's own).
     b.cube_f(
-        head,
+        nose,
         0,
         (0.0, 0.0),
         [0.0, 3.0, -6.75],
         [1.0, 1.0, 1.0],
         -0.25,
         false,
-        &[Fold::at([0.0, -2.0, 0.0]), Fold::at([0.0, -2.0, 0.0])],
+        &[Fold::at([0.0, -2.0, 0.0])],
     );
     b.finish(VILLAGER_LIKE_SCALE)
 }
@@ -10660,51 +10689,63 @@ fn llama_with(g: f32) -> Model {
     b.finish(1.0)
 }
 
-/// `ParrotModel`: standing pose — leaned body, folded wings, crest
-/// feather, twin beak boxes.
+/// `ParrotModel`: leaned body, folded wings, crest feather, twin beak boxes.
+/// M378 — every piece is a part on `setupAnim`: standing, the wings rest
+/// splayed ∓0.0873 (`zRot`), the legs walk on the quadruped swing and the
+/// tail swings 0.3·speed; sitting (`prepare(SITTING)`) everything drops
+/// 1.9 px, the tail tips π/6 and the legs fold π/2. The flying (legs
+/// +2π/9, the flap) and party poses are not modelled.
 fn parrot() -> Model {
     let mut b = ModelBuilder::new();
-    b.cube_f(
-        STATIC_PART,
+    let body = b.part_ext(
+        [0.0, 16.5, -3.0],
+        [0.4937, 0.0, 0.0],
+        Anim::ParrotSit,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        body,
         0,
         (2.0, 8.0),
         [-1.5, 0.0, -1.5],
         [3.0, 6.0, 3.0],
-        0.0,
-        false,
-        &[Fold::rot([0.4937, 0.0, 0.0], [0.0, 16.5, -3.0])],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    let tail = b.part_ext(
+        [0.0, 21.07, 1.16],
+        [1.015, 0.0, 0.0],
+        Anim::ParrotTail,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        tail,
         0,
         (22.0, 1.0),
         [-1.5, -1.0, -1.0],
         [3.0, 4.0, 1.0],
-        0.0,
-        false,
-        &[Fold::rot([1.015, 0.0, 0.0], [0.0, 21.07, 1.16])],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (19.0, 8.0),
-        [-0.5, 0.0, -1.5],
-        [1.0, 5.0, 3.0],
-        0.0,
-        false,
-        &[Fold::rot([-0.6981, -PI, 0.0], [1.5, 16.94, -2.76])],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (19.0, 8.0),
-        [-0.5, 0.0, -1.5],
-        [1.0, 5.0, 3.0],
-        0.0,
-        false,
-        &[Fold::rot([-0.6981, -PI, 0.0], [-1.5, 16.94, -2.76])],
-    );
-    let head = b.part([0.0, 15.69, -2.76], Anim::Head, 1.0);
+    // The left wing (x 1.5) rests at zRot −0.0873, the right at +0.0873.
+    for (x, z) in [(1.5, -0.0873), (-1.5, 0.0873)] {
+        let wing = b.part_ext(
+            [x, 16.94, -2.76],
+            [-0.6981, -PI, z],
+            Anim::ParrotSit,
+            1.0,
+            Option::None,
+        );
+        b.cube(
+            wing,
+            0,
+            (19.0, 8.0),
+            [-0.5, 0.0, -1.5],
+            [1.0, 5.0, 3.0],
+            NONE,
+        );
+    }
+    let head = b.part([0.0, 15.69, -2.76], Anim::ParrotHead, 1.0);
     b.cube(
         head,
         0,
@@ -10753,26 +10794,23 @@ fn parrot() -> Model {
         false,
         &[Fold::rot([-0.2214, 0.0, 0.0], [0.0, -2.15, 0.15])],
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (14.0, 18.0),
-        [-0.5, 0.0, -0.5],
-        [1.0, 2.0, 1.0],
-        0.0,
-        false,
-        &[Fold::rot([-0.0299, 0.0, 0.0], [1.0, 22.0, -1.05])],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (14.0, 18.0),
-        [-0.5, 0.0, -0.5],
-        [1.0, 2.0, 1.0],
-        0.0,
-        false,
-        &[Fold::rot([-0.0299, 0.0, 0.0], [-1.0, 22.0, -1.05])],
-    );
+    for (x, left) in [(1.0, true), (-1.0, false)] {
+        let leg = b.part_ext(
+            [x, 22.0, -1.05],
+            [-0.0299, 0.0, 0.0],
+            Anim::ParrotLeg { left },
+            1.0,
+            Option::None,
+        );
+        b.cube(
+            leg,
+            0,
+            (14.0, 18.0),
+            [-0.5, 0.0, -0.5],
+            [1.0, 2.0, 1.0],
+            NONE,
+        );
+    }
     b.finish(1.0)
 }
 
@@ -16594,5 +16632,49 @@ mod small_pose_tests {
             amp: 0.25,
             speed: 0.3
         }));
+    }
+}
+
+#[cfg(test)]
+mod parrot_pose_tests {
+    use super::*;
+
+    /// M378 — the parrot's wings rest splayed ∓0.0873 on their own parts,
+    /// and its legs and tail are walking parts.
+    #[test]
+    fn the_parrot_splays_its_wings_and_walks() {
+        let m = parrot();
+        let wings: Vec<f32> = m
+            .parts
+            .iter()
+            .filter(|p| p.anim == Anim::ParrotSit && p.rot[1] == -PI)
+            .map(|p| p.rot[2])
+            .collect();
+        assert_eq!(wings, vec![-0.0873, 0.0873]);
+        let n = |f: &dyn Fn(Anim) -> bool| m.parts.iter().filter(|p| f(p.anim)).count();
+        assert_eq!(n(&|a| matches!(a, Anim::ParrotLeg { .. })), 2);
+        assert_eq!(n(&|a| a == Anim::ParrotTail), 1);
+        assert_eq!(n(&|a| a == Anim::ParrotHead), 1);
+        assert!(m.quads.iter().all(|q| q.part != STATIC_PART));
+    }
+}
+
+#[cfg(test)]
+mod witch_nose_tests {
+    use super::*;
+
+    /// M379 — the witch's nose is a part on her head carrying the mole; the
+    /// villager's is still a box on the head (no extra part).
+    #[test]
+    fn the_witchs_nose_wobbles_and_the_villagers_does_not() {
+        let w = witch();
+        let nose = w
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::WitchNose)
+            .unwrap();
+        assert_eq!(w.parts[nose].pivot, [0.0, -2.0, 0.0]);
+        assert_eq!(w.quads.iter().filter(|q| q.part == nose).count(), 12);
+        assert!(villager().parts.iter().all(|p| p.anim != Anim::WitchNose));
     }
 }

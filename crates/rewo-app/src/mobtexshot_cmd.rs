@@ -104,7 +104,13 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 95;
+const EXPECTED_WITNESSES: usize = 97;
+/// M378 — m96's floors: sitting, walking. M378 measured 1004 and 85; the
+/// pre-M378 parrot (no sitting, still legs and tail) 0 and 0.
+const PARROT_MIN: [usize; 2] = [500, 40];
+/// M379 — m97's floors: the drinking witch's nose (pixels changed), the
+/// enderman's arms. M379 measured 144 and 772; the pre-M379 mutant 0 and 0.
+const WITCH_ENDERMAN_MIN: [usize; 2] = [70, 380];
 /// M376 — m94's floor (a breath). M376 measured 289 px; a still ribcage
 /// and tail (the pre-M376 mutant) 0.
 const WITHER_MIN: usize = 140;
@@ -6766,6 +6772,119 @@ fn run_check(
         format!(
             "camel 80 vs 30 aside {ca} px, breeze aside vs ahead {br} px, bat {ba} px (want 0 each); tadpole 5 ticks apart {ta} px (want >= {TADPOLE_MIN})"
         ),
+    ));
+
+    // m96 — M378: a parrot sits (against standing) and walks its legs and
+    // tail (against standing). m97 — M379: a drinking witch lifts her nose
+    // (against not; the idle wobble, a few degrees, is sub-pixel here and
+    // left to the unit test), and an enderman's arms bob with the humanoid
+    // idle.
+    let mut pwst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.7, -0.9),
+        Vec3::new(0.0, 0.35, 0.0),
+    )?;
+    pwst.wr.set_entities(&[], pwst.right, pwst.up, 0.0);
+    pwst.off
+        .render(gpu, Some((&mut pwst.wr, pwst.vp)), &ov, BG)?;
+    let pw_empty = pwst.off.read_rgba(gpu)?;
+    let mut pwshot = |d: EntityDraw<'_>, t: f32| -> Result<Vec<u8>, String> {
+        pwst.wr.set_entities(&[d], pwst.right, pwst.up, t);
+        pwst.off
+            .render(gpu, Some((&mut pwst.wr, pwst.vp)), &ov, BG)?;
+        pwst.off.read_rgba(gpu)
+    };
+    let pa_stand = pwshot(neutral_draw(EntityModelKind::Parrot), 0.0)?;
+    let pa_sit = pwshot(
+        EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                sitting: true,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Parrot)
+        },
+        0.0,
+    )?;
+    let pa_walk = pwshot(
+        EntityDraw {
+            limb_swing: 1.1,
+            limb_amount: 0.8,
+            ..neutral_draw(EntityModelKind::Parrot)
+        },
+        0.0,
+    )?;
+    pwst.destroy(gpu);
+    let mut wnst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        // In front: a mob at yaw 0 faces +z, and the nose is on its face.
+        Vec3::new(1.4, 2.4, 1.6),
+        Vec3::new(0.0, 1.9, 0.0),
+    )?;
+    wnst.wr.set_entities(&[], wnst.right, wnst.up, 0.0);
+    wnst.off
+        .render(gpu, Some((&mut wnst.wr, wnst.vp)), &ov, BG)?;
+    let wn_empty = wnst.off.read_rgba(gpu)?;
+    let mut wnshot = |d: EntityDraw<'_>, t: f32| -> Result<Vec<u8>, String> {
+        wnst.wr.set_entities(&[d], wnst.right, wnst.up, t);
+        wnst.off
+            .render(gpu, Some((&mut wnst.wr, wnst.vp)), &ov, BG)?;
+        wnst.off.read_rgba(gpu)
+    };
+    let witch = |holding: bool| EntityDraw {
+        mob: rewo_gpu::mobs::MobCombat {
+            witch_nose_rate: 0.09,
+            witch_holding: holding,
+            ..Default::default()
+        },
+        ..neutral_draw(EntityModelKind::Witch)
+    };
+    let wn0 = wnshot(witch(false), 0.0)?;
+    let wn1 = wnshot(witch(true), 0.0)?;
+    let en0 = wnshot(neutral_draw(EntityModelKind::Enderman), 0.0)?;
+    let en1 = wnshot(neutral_draw(EntityModelKind::Enderman), 2.0)?;
+    wnst.destroy(gpu);
+    let moved = |empty: &[u8], a: &[u8], b: &[u8]| {
+        let mask = |f: &[u8]| -> Vec<bool> {
+            f.as_chunks::<4>()
+                .0
+                .iter()
+                .zip(empty.as_chunks::<4>().0)
+                .map(|(p, e)| p[..3] != e[..3])
+                .collect()
+        };
+        mask(a).iter().zip(&mask(b)).filter(|(x, y)| x != y).count()
+    };
+    let (pa_s, pa_w) = (
+        moved(&pw_empty, &pa_stand, &pa_sit),
+        moved(&pw_empty, &pa_stand, &pa_walk),
+    );
+    w.push(wit(
+        "m96.a_parrot_sits_and_walks",
+        pa_s >= PARROT_MIN[0] && pa_w >= PARROT_MIN[1],
+        format!(
+            "sitting vs standing {pa_s} px, walking vs standing {pa_w} px (want >= {PARROT_MIN:?})"
+        ),
+    ));
+    // The nose moves inside the head's outline from here: count changed
+    // pixels, not silhouette.
+    let wn = wn0
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(wn1.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    let en = moved(&wn_empty, &en0, &en1);
+    w.push(wit(
+        "m97.a_witchs_nose_wobbles_and_an_endermans_arms_bob",
+        wn >= WITCH_ENDERMAN_MIN[0] && en >= WITCH_ENDERMAN_MIN[1],
+        format!("witch drinking vs not {wn} px changed, enderman 40 ticks apart {en} px (want >= {WITCH_ENDERMAN_MIN:?})"),
     ));
 
     // ---- report ----------------------------------------------------------

@@ -5689,8 +5689,14 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 rot[0] = -0.5;
                 rot[2] = if left { -0.05 } else { 0.05 };
             } else {
+                // M379 — `HumanoidModel`'s `bobModelPart` (scale +1 right, −1
+                // left) lands before `EndermanModel` halves and clamps the
+                // `xRot`; its `zRot` stays whole.
                 let phase = if left { 0.0 } else { PI };
-                rot[0] = ((c.f + phase).cos() * 2.0 * c.amt * 0.5 * 0.5).clamp(-0.4, 0.4);
+                let k = if left { -1.0 } else { 1.0 };
+                let bob_x = k * (c.age * 0.067).sin() * 0.05;
+                rot[0] = (((c.f + phase).cos() * 2.0 * c.amt * 0.5 + bob_x) * 0.5).clamp(-0.4, 0.4);
+                rot[2] = k * ((c.age * 0.09).cos() * 0.05 + 0.05);
             }
         }
         EndermanLegRight => rot[0] = (c.f.cos() * 1.4 * c.amt * 0.5).clamp(-0.4, 0.4),
@@ -6090,6 +6096,45 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         PufferFin { left } => {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
+        }
+        // M379 — `WitchModel.setupAnim`'s nose.
+        WitchNose => {
+            let t = c.age * c.mob.witch_nose_rate;
+            rot[0] = t.sin() * 4.5 * DEG;
+            rot[2] = t.cos() * 2.5 * DEG;
+            if c.mob.witch_holding {
+                rot[0] = -0.9;
+                off = [0.0, 3.0, -1.5];
+            }
+        }
+        // M378 — `ParrotModel.setupAnim` / `prepare`, standing or sitting.
+        ParrotSit => {
+            if c.mob.sitting {
+                off[1] = 1.9;
+            }
+        }
+        ParrotHead => {
+            rot[0] = c.pitch;
+            rot[1] = c.net;
+            if c.mob.sitting {
+                off[1] = 1.9;
+            }
+        }
+        ParrotTail => {
+            if c.mob.sitting {
+                rot[0] = PI / 6.0;
+                off[1] = 1.9;
+            } else {
+                rot[0] = c.f.cos() * 0.3 * c.amt;
+            }
+        }
+        ParrotLeg { left } => {
+            if c.mob.sitting {
+                rot[0] = PI / 2.0;
+                off[1] = 1.9;
+            } else {
+                rot[0] = (c.f + if left { 0.0 } else { PI }).cos() * 1.4 * c.amt;
+            }
         }
         // M377 — the camel's and armadillo's clamped looks, the bee's
         // antennae.
@@ -10856,6 +10901,121 @@ mod small_pose_anim_tests {
         assert_eq!(
             anim_delta(BeeAntenna, 1.0, &ctx(0.0, 0.0, angry)).0,
             [0.0; 3]
+        );
+    }
+}
+
+#[cfg(test)]
+mod parrot_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(sitting: bool) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.1,
+            net: 0.2,
+            f: 0.7,
+            pos: 0.7 / 0.6662,
+            amt: 0.5,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                sitting,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M378 — standing, the legs swing 1.4 in opposition and the tail 0.3;
+    /// sitting, everything drops 1.9 px, the tail tips π/6 and the legs π/2.
+    #[test]
+    fn the_parrot_walks_and_sits() {
+        use mobs::Anim::*;
+        let walk = ctx(false);
+        let l = anim_delta(ParrotLeg { left: true }, 1.0, &walk).0[0];
+        let r = anim_delta(ParrotLeg { left: false }, 1.0, &walk).0[0];
+        assert!((l - 0.7_f32.cos() * 0.7).abs() < 1e-6 && (l + r).abs() < 1e-6);
+        assert!((anim_delta(ParrotTail, 1.0, &walk).0[0] - 0.7_f32.cos() * 0.15).abs() < 1e-6);
+        assert_eq!(anim_delta(ParrotSit, 1.0, &walk).1, [0.0; 3]);
+        let sit = ctx(true);
+        for a in [ParrotSit, ParrotHead, ParrotTail, ParrotLeg { left: true }] {
+            assert_eq!(anim_delta(a, 1.0, &sit).1[1], 1.9);
+        }
+        assert_eq!(anim_delta(ParrotTail, 1.0, &sit).0[0], PI / 6.0);
+        assert_eq!(
+            anim_delta(ParrotLeg { left: false }, 1.0, &sit).0[0],
+            PI / 2.0
+        );
+    }
+}
+
+#[cfg(test)]
+mod witch_enderman_anim_tests {
+    use super::*;
+
+    fn ctx(age: f32, mob: mobs::MobCombat) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob,
+            tendril: 0.0,
+        }
+    }
+
+    /// M379 — the witch's nose wobbles at its id's rate (still at rate 0)
+    /// and lifts while drinking; the enderman's arms bob with the humanoid
+    /// idle (z whole, x halved), not while carrying a block.
+    #[test]
+    fn the_witch_nose_and_enderman_arms_move() {
+        use mobs::Anim::*;
+        let age = 40.0_f32;
+        let rated = mobs::MobCombat {
+            witch_nose_rate: 0.07,
+            ..Default::default()
+        };
+        let (n, _) = anim_delta(WitchNose, 1.0, &ctx(age, rated));
+        assert!((n[0] - (age * 0.07).sin() * 4.5 * DEG).abs() < 1e-6);
+        assert!((n[2] - (age * 0.07).cos() * 2.5 * DEG).abs() < 1e-6);
+        let still = anim_delta(WitchNose, 1.0, &ctx(age, mobs::MobCombat::default())).0;
+        assert_eq!((still[0], still[2]), (0.0, 2.5 * DEG));
+        let drinking = mobs::MobCombat {
+            witch_holding: true,
+            ..rated
+        };
+        let (d, o) = anim_delta(WitchNose, 1.0, &ctx(age, drinking));
+        assert_eq!((d[0], o), (-0.9, [0.0, 3.0, -1.5]));
+        let (r, _) = anim_delta(EndermanArmRight, 1.0, &ctx(age, mobs::MobCombat::default()));
+        let (l, _) = anim_delta(EndermanArmLeft, 1.0, &ctx(age, mobs::MobCombat::default()));
+        let z = (age * 0.09).cos() * 0.05 + 0.05;
+        assert!((r[2] - z).abs() < 1e-6 && (l[2] + z).abs() < 1e-6);
+        assert!((r[0] - (age * 0.067).sin() * 0.025).abs() < 1e-6 && (l[0] + r[0]).abs() < 1e-6);
+        let carrying = mobs::MobCombat {
+            carried_block: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(
+            anim_delta(EndermanArmRight, 1.0, &ctx(age, carrying)).0,
+            [-0.5, 0.0, 0.05]
         );
     }
 }

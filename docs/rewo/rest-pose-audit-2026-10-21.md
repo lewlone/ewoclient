@@ -38,7 +38,7 @@ The baby layers had their own audit on 2026-10-20 (see
 | ender dragon | static layer pose, head looks (vanilla never), no flap/neck/tail chains; drawn facing backward (renderer `rotY(-yr)`) | `EnderDragonModel` 203-287, `EnderDragonRenderer` 48-55 | open |
 | breeze | head looks; vanilla's head is keyframes only | `BreezeModel` 139-147 | M377 |
 | bat (flying) | head looks on top of the flying rig; vanilla only when resting | `BatModel` 72-81 | M377 (Rewo's bats always fly) |
-| parrot | wings lie flush (vanilla ±0.0873 rest splay); legs and tail never walk | `ParrotModel` 88-100 | open |
+| parrot | wings lie flush (vanilla ±0.0873 rest splay); legs and tail never walk | `ParrotModel` 88-100 | M378 (standing and sitting; the flying and party poses not modelled) |
 | tadpole | tail never sways (`Anim::FishTail { 0.25, 0.3 }` is exactly it) | `TadpoleModel` 35-36 | M377 (the out-of-water 1.5 not told apart) |
 | bee | antennae do not bob with `bobUpAndDown` | `AdultBeeModel` 27-28 | M377 |
 | camel, armadillo | head look unclamped (camel ±30° / -25..45°, armadillo ±32.5° / -22.5..25°) | `CamelModel` 53-54, `ArmadilloModel` 59-60 | M377 (with the camel's dash head lift) |
@@ -50,8 +50,8 @@ The baby layers had their own audit on 2026-10-20 (see
 | drowned | left limbs at (32,48)/(16,48) not mirrored (base and outer layer); the trident throw's `xRot·0.5 − π` post-step missing | `DrownedModel` 22-42 | open |
 | stray, bogged | outer layers are `HumanoidModel.createMesh` (4×12×4 limbs, arms ±5, legs ±1.9; bogged at 0.2, hat 0.7); Rewo uses skeleton limbs at 0.25 | `LayerDefinitions` | open |
 | parched | `SkeletonModel.createSingleModelDualBodyLayer` (64×64: arms ±5.5, outer limbs, belt, overlays); Rewo uses the plain skeleton | `LayerDefinitions` 399 | open |
-| enderman | arms lack the humanoid idle bob (zRot ±(cos(age·0.09)·0.05+0.05), not halved) | `EndermanModel` 48-58 | open |
-| witch | nose (and mole) never wobble (`sin(age·0.01·(id%10))`); the drinking nose lift | `WitchModel` 73-78 | open |
+| enderman | arms lack the humanoid idle bob (zRot ±(cos(age·0.09)·0.05+0.05), not halved) | `EndermanModel` 48-58 | M379 |
+| witch | nose (and mole) never wobble (`sin(age·0.01·(id%10))`); the drinking nose lift | `WitchModel` 73-78 | M379 |
 | every humanoid | no riding pose (arms −π/5, legs −1.4137 with ±π/10 yaw); jockeys and riders stand | `HumanoidModel` 233-242, `IllagerModel` 85-97 | open |
 
 ## Uncertain or flag-driven (unmodelled states)
