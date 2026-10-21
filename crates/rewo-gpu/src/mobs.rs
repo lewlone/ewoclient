@@ -934,6 +934,10 @@ pub struct MobCombat {
     /// M393 — a boat's hurt wobble angle in degrees,
     /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
     pub boat_wobble: f32,
+    /// M396 — `SulfurCubeInnerLayer`: a lit fuse (`fuseRemainingTicks > 0
+    /// && TntRenderer.isLit`) packs the inner layer's overlay white
+    /// (`pack(u(1.0), 10)`, no hurt red); the shell keeps its own overlay.
+    pub sulfur_core_flash: bool,
     /// M395 — a cube mob's `SlimeRenderState.squish` (`lerp(a, oSquish,
     /// squish)`), which the magma cube's segments read.
     pub cube_squish: f32,

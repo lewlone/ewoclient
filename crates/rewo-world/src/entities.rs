@@ -1773,6 +1773,11 @@ pub struct MobState {
     /// tick while `getPaddleState(side)` (paddling with a controlling
     /// passenger), else 0.
     pub boat_paddle_pos: [f32; 2],
+    /// M396 — a sulfur cube's client-side `fuse` (`None` is vanilla's −1,
+    /// not primed): set from `MAX_FUSE` (19, INT) on every sync
+    /// (`onSyncedDataUpdated`), counted down a tick at a time
+    /// (`tickFuse`'s `if (fuse > 0) fuse--`).
+    pub sulfur_fuse: Option<i32>,
     /// M394 — `AbstractBoat.DATA_ID_BUBBLE_TIME` (13, INT), and the client's
     /// `bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
     /// (`tickBubbleColumn`).
@@ -3393,6 +3398,21 @@ impl EntityTable {
         }
     }
 
+    /// M396 — a sulfur cube's `MAX_FUSE`: `setFuse(maxFuse)`, −1 (any
+    /// negative) unprimed. Kind-gated by the caller.
+    pub fn set_sulfur_fuse(&mut self, id: i32, max_fuse: i32) {
+        self.mob_state.entry(id).or_default().sulfur_fuse = (max_fuse >= 0).then_some(max_fuse);
+    }
+
+    /// M396 — `SulfurCubeRenderer`'s `fuseRemainingTicks`: `isPrimed() ?
+    /// fuse − a + 1 : 0`.
+    pub fn sulfur_fuse_remaining(&self, id: i32, alpha: f32) -> f32 {
+        self.mob_state
+            .get(&id)
+            .and_then(|st| st.sulfur_fuse)
+            .map_or(0.0, |f| f as f32 - alpha + 1.0)
+    }
+
     /// M394 — a boat's `DATA_ID_BUBBLE_TIME`. Kind-gated by the caller.
     pub fn set_boat_bubble_time(&mut self, id: i32, time: i32) {
         self.mob_state.entry(id).or_default().boat_bubble_time = time;
@@ -3420,6 +3440,12 @@ impl EntityTable {
             }
             if st.boat_damage > 0.0 {
                 st.boat_damage -= 1.0;
+            }
+            // M396 — `SulfurCube.tickFuse`.
+            if let Some(f) = st.sulfur_fuse.as_mut() {
+                if *f > 0 {
+                    *f -= 1;
+                }
             }
             if let Some(e) = self.map.get(id) {
                 st.boat_bubble_mult = (st.boat_bubble_mult
@@ -4222,6 +4248,27 @@ mod tests {
             t.tick_lerp();
         }
         assert_eq!(t.mob_state(5).boat_hurt, 0);
+    }
+
+    /// M396 — a sulfur cube's fuse: unprimed (−1) reads 0 remaining; a
+    /// synced `MAX_FUSE` primes it and the client counts it down to 0,
+    /// where it holds; `fuse − a + 1` is what the renderer sees.
+    #[test]
+    fn a_sulfur_cubes_fuse_counts_down_on_the_client() {
+        let mut t = EntityTable::default();
+        t.add(8, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_sulfur_fuse(8, -1);
+        assert_eq!(t.sulfur_fuse_remaining(8, 0.5), 0.0);
+        t.set_sulfur_fuse(8, 30);
+        t.tick_lerp();
+        t.tick_lerp();
+        assert_eq!(t.mob_state(8).sulfur_fuse, Some(28));
+        assert_eq!(t.sulfur_fuse_remaining(8, 0.5), 28.5);
+        for _ in 0..40 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.mob_state(8).sulfur_fuse, Some(0));
+        assert_eq!(t.sulfur_fuse_remaining(8, 0.25), 0.75);
     }
 
     /// M395 — `AbstractCubeMob`'s squish: landing aims it at −0.5 and it

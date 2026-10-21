@@ -4654,3 +4654,17 @@ fn a_hurt_boat_wobbles_by_vanillas_formula() {
     };
     assert_eq!(boat_wobble(&no_damage, 0.5), 0.0, "damageTime clamps at 0");
 }
+
+/// M396 — `SulfurCubeRenderer`'s fuse: no swell or flash unprimed (0) or
+/// before the last ten ticks' swell; `1 + g⁴·0.3` swelling; the core lit on
+/// `isLit`'s five ticks in ten.
+#[test]
+fn a_primed_sulfur_cube_swells_and_its_core_flashes() {
+    assert_eq!(sulfur_fuse_look(0.0), (1.0, false));
+    let (s, _) = sulfur_fuse_look(25.0);
+    assert_eq!(s, 1.0);
+    let (s, _) = sulfur_fuse_look(5.0);
+    assert!((s - (1.0 + 0.5f32.powi(4) * 0.3)).abs() < 1e-6);
+    assert!(sulfur_fuse_look(22.0).1, "22 / 5 = 4: lit");
+    assert!(!sulfur_fuse_look(27.0).1, "27 / 5 = 5: dark");
+}

@@ -4022,13 +4022,22 @@ impl EntityPass {
             } else {
                 verts
             };
+            // M396 — a lit sulfur cube's core (the opaque quads under its
+            // translucent shell) flashes white.
+            let overlay = if ropes {
+                0.0
+            } else if d.mob.sulfur_core_flash && qi < model.translucent_from {
+                overlay_value(false, 1.0)
+            } else {
+                hurt
+            };
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 out.push(Vertex {
                     pos: p4[i],
                     uv: [q.uv[i][0] + du[0], q.uv[i][1] + du[1]],
                     color: [c[0], c[1], c[2], 1.0],
                     // M312 — the ropes are submitted with `NO_OVERLAY`.
-                    light_hurt: [light_r, light_g, light_b, if ropes { 0.0 } else { hurt }],
+                    light_hurt: [light_r, light_g, light_b, overlay],
                 });
             }
         }

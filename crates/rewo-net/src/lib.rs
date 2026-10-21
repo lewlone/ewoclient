@@ -3096,6 +3096,10 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(ticks) = meta.int19 {
         if kinds.wither == Some(type_id) {
             entities.set_wither_invulnerable(eid, ticks);
+        } else if kinds.classes.is_some_and(|c| c.is_sulfur_cube(type_id)) {
+            // M396 — `SulfurCube.MAX_FUSE` (AgeableMob owns 16 and 17, the
+            // size is 18).
+            entities.set_sulfur_fuse(eid, ticks);
         }
     }
     // Slot 18 BYTE → `Sheep.DATA_WOOL_ID` (M52): low nibble the dye, 0x10 the
@@ -5695,6 +5699,26 @@ mod set_entity_data_tests {
             Some(2),
             "index 16 INT still lands in `sizes` (the creeper's)"
         );
+    }
+
+    /// M396 — index 19 INT is a sulfur cube's `MAX_FUSE`, which primes its
+    /// client fuse; on a zombie it is nothing.
+    #[test]
+    fn a_sulfur_cubes_max_fuse_primes_it() {
+        const CUBE: i32 = 840;
+        let classes = rewo_data::entity_types::EntityClasses::from_raw_ids(&[ZOMBIE], &[])
+            .with_sulfur_cubes(&[CUBE]);
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(51, EntityState::new(0, CUBE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(52, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(51, 19, 1, &[40]), &mut t, kinds);
+        apply_set_entity_data(&body(52, 19, 1, &[40]), &mut t, kinds);
+        assert_eq!(t.mob_state(51).sulfur_fuse, Some(40));
+        assert_eq!(t.mob_state(52).sulfur_fuse, None);
     }
 
     /// M393 — a boat's 8 INT / 9 INT / 10 FLOAT are its hurt, hurt

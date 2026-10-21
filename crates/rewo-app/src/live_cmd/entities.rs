@@ -1688,6 +1688,8 @@ pub(crate) fn resolve_mob_combat(
         boat_bubble: 0.0,
         // M395 — set by the caller for a cube mob.
         cube_squish: 0.0,
+        // M396 — set by the caller for a sulfur cube.
+        sulfur_core_flash: false,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -1708,6 +1710,18 @@ pub(crate) fn resolve_mob_combat(
         turtle_laying: false,
         turtle_on_land: false,
     }
+}
+
+/// M396 — `SulfurCubeRenderer.scale`'s swell (`1 + getSwellAmount(fuse)`
+/// while `0 < fuse < 10`) and `SulfurCubeInnerLayer`'s flash (`fuse > 0 &&
+/// isLit(fuse)`), from `fuseRemainingTicks`.
+pub(crate) fn sulfur_fuse_look(fuse: f32) -> (f32, bool) {
+    let swell = if fuse > 0.0 && fuse < 10.0 {
+        1.0 + tnt_swell(fuse)
+    } else {
+        1.0
+    };
+    (swell, fuse > 0.0 && tnt_is_lit(fuse))
 }
 
 /// M395 — `AbstractCubeMobRenderer.applySizeAndSquish`'s squish half:
@@ -5076,6 +5090,13 @@ pub(super) fn collect_entities<'a>(
             0.0
         };
         mob.cube_squish = cube_squish;
+        // M396 — a primed sulfur cube's swell and its core's flash.
+        if sulfur {
+            let fuse = session.world.entities.sulfur_fuse_remaining(id, alpha);
+            let (swell, flash) = sulfur_fuse_look(fuse);
+            scale_mul *= swell;
+            mob.sulfur_core_flash = flash;
+        }
         // M354 — the bee's mood and its stinger (the anger is a deadline on
         // the world clock, so it is read here, where the clock is).
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {

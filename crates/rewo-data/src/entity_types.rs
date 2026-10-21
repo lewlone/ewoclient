@@ -227,6 +227,8 @@ pub struct EntityClasses {
     turtle: std::collections::HashSet<i32>,
     /// M387 — `minecraft:axolotl`: index 19 BOOLEAN is `DATA_PLAYING_DEAD`.
     axolotl: std::collections::HashSet<i32>,
+    /// M396 — `minecraft:sulfur_cube`: index 19 INT is `MAX_FUSE`.
+    sulfur_cube: std::collections::HashSet<i32>,
     /// M389 — `minecraft:piglin`: index 17 BOOLEAN is its `DATA_BABY_ID`,
     /// 18 `DATA_IS_CHARGING_CROSSBOW`, 19 `DATA_IS_DANCING`.
     piglin: std::collections::HashSet<i32>,
@@ -428,6 +430,7 @@ impl EntityClasses {
             turtle: types.id_of("minecraft:turtle").into_iter().collect(),
             axolotl: types.id_of("minecraft:axolotl").into_iter().collect(),
             piglin: types.id_of("minecraft:piglin").into_iter().collect(),
+            sulfur_cube: types.id_of("minecraft:sulfur_cube").into_iter().collect(),
             abstract_piglin: ["minecraft:piglin", "minecraft:piglin_brute"]
                 .iter()
                 .filter_map(|n| types.id_of(n))
@@ -472,6 +475,7 @@ impl EntityClasses {
             turtle: Default::default(),
             axolotl: Default::default(),
             piglin: Default::default(),
+            sulfur_cube: Default::default(),
             abstract_piglin: Default::default(),
             hoglin: Default::default(),
             custom_inventory: Default::default(),
@@ -511,6 +515,7 @@ impl EntityClasses {
             turtle: Default::default(),
             axolotl: Default::default(),
             piglin: Default::default(),
+            sulfur_cube: Default::default(),
             abstract_piglin: Default::default(),
             hoglin: Default::default(),
             custom_inventory: Default::default(),
@@ -581,6 +586,17 @@ impl EntityClasses {
     /// M387 — `minecraft:axolotl` (`DATA_PLAYING_DEAD`, index 19).
     pub fn is_axolotl(&self, type_id: i32) -> bool {
         self.axolotl.contains(&type_id)
+    }
+
+    /// M396 — `minecraft:sulfur_cube` (`MAX_FUSE`, index 19 INT).
+    pub fn is_sulfur_cube(&self, type_id: i32) -> bool {
+        self.sulfur_cube.contains(&type_id)
+    }
+
+    /// As built, plus these ids as sulfur cubes. **Unit tests only**.
+    pub fn with_sulfur_cubes(mut self, ids: &[i32]) -> Self {
+        self.sulfur_cube.extend(ids.iter().copied());
+        self
     }
 
     /// M389 — `minecraft:piglin` (baby 17, charging 18, dancing 19).

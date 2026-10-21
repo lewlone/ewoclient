@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 110;
+const EXPECTED_WITNESSES: usize = 111;
+/// M396 — m111's floors: the swell's silhouette and the core flash's
+/// recoloured pixels. M396 measured 234 and 674; before M396 a primed
+/// cube neither swelled nor flashed (0 by construction, not run).
+const SULFUR_FUSE_MIN: [usize; 2] = [115, 335];
 /// M395 — m110's floors: a squished slime and magma cube against still
 /// ones, and the magma cube's segment spread against its stretch alone.
 /// M395 measured 1214, 2804 and 2166; before M395 nothing squished (0 by
@@ -7538,6 +7542,68 @@ fn run_check(
         format!(
             "slime {} px, magma cube {} px of silhouette against still, its segments' spread {} px (want >= {CUBE_SQUISH_MIN:?})",
             cb_px[0], cb_px[1], cb_px[2]
+        ),
+    ));
+
+    // m111 — M396: a primed sulfur cube swells in its last ten ticks and
+    // its core flashes white on a lit tick, its shell not.
+    let mut sfst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.0, 2.6),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    sfst.wr.set_entities(&[], sfst.right, sfst.up, 0.0);
+    sfst.off
+        .render(gpu, Some((&mut sfst.wr, sfst.vp)), &ov, BG)?;
+    let sf_empty = sfst.off.read_rgba(gpu)?;
+    let mut sfshot = |fuse: f32| -> Result<Vec<u8>, String> {
+        let (swell, flash) = crate::live_cmd::sulfur_fuse_look(fuse);
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                sulfur_core_flash: flash,
+                ..Default::default()
+            },
+            scale_mul: swell,
+            ..neutral_draw(EntityModelKind::SulfurCube)
+        };
+        sfst.wr.set_entities(&[d], sfst.right, sfst.up, 0.0);
+        sfst.off
+            .render(gpu, Some((&mut sfst.wr, sfst.vp)), &ov, BG)?;
+        sfst.off.read_rgba(gpu)
+    };
+    // Unprimed; a lit tick before the swell (22: 22/5 = 4); late in the
+    // swell (2: g = 0.8, about 12% bigger; the mask ignores its flash).
+    let (sf_rest, sf_lit, sf_swell) = (sfshot(0.0)?, sfshot(22.0)?, sfshot(2.0)?);
+    sfst.destroy(gpu);
+    let sf_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(sf_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let swell_px = sf_mask(&sf_rest)
+        .iter()
+        .zip(&sf_mask(&sf_swell))
+        .filter(|(x, y)| x != y)
+        .count();
+    let lit_outline = sf_mask(&sf_rest) == sf_mask(&sf_lit);
+    let lit_px = sf_rest
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(sf_lit.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    w.push(wit(
+        "m111.a_primed_sulfur_cube_swells_and_its_core_flashes",
+        swell_px >= SULFUR_FUSE_MIN[0] && lit_px >= SULFUR_FUSE_MIN[1] && lit_outline,
+        format!(
+            "swelling {swell_px} px of silhouette, the lit core {lit_px} px recoloured (want >= {SULFUR_FUSE_MIN:?}), the flash keeps the outline: {lit_outline}"
         ),
     ));
 
