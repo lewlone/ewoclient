@@ -4009,6 +4009,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M396 — a primed sulfur cube swells and its core flashes (2026-10-21)
+
+From the follow-ups (the sulfur cube's fuse). `SulfurCube.MAX_FUSE` (19 INT) is routed for the sulfur cube and primes a client fuse that counts down as `tickFuse` does; `fuseRemainingTicks` drives the renderer's swell (`1 + getSwellAmount` in the last ten ticks, a uniform scale) and `SulfurCubeInnerLayer`'s flash (`isLit`), which only the core's quads take (full white, no hurt red). The swallowed block stays open. **Unit tests**; **mobtexshot m111** (swell 234 px, flash 674 px recoloured with the outline unchanged; 0 by construction before, not run).
+
 ### M395 — entity moves read onGround; cube mobs squish (2026-10-21)
 
 From the follow-ups (the sulfur cube's squish). The entity move, position-sync and teleport packets now read their trailing `onGround` into `EntityState::on_ground`, as vanilla's handlers do; `tick_squish` is `AbstractCubeMob.tick`'s squish (landing aims at −0.5, leaving the ground 1.0, the aim decays 0.6 a tick); `cube_stretch` is `applySizeAndSquish`'s `(w, 1/w, w)` for the slime, magma cube and sulfur cube; the magma cube's eight segments are parts spread by `−(4 − i)·max(0, squish)·1.7`. Not modelled: the sulfur cube's no-squish while holding a block, the landing particles and sound. **Unit tests**; **mobtexshot m110** (slime 1214, magma 2804, segments 2166 px; 0 by construction before, not run); render check **r218** (an entity read on the ground, no malformed packet).
