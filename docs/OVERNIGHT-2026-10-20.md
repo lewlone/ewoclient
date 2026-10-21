@@ -1218,8 +1218,9 @@ released.
   not looked at in a capture: a held block or tool in another player's hand
   should now sit as vanilla's does.
 - ~~Grass block GUI icon: top missing and untinted~~ (M242: the rotation
-  order, not the tint). Still open on boats: the rowing animation, the
-  hurt wobble, and the water mask (water can show inside a floating hull).
+  order, not the tint). On boats: ~~the rowing animation, the
+  hurt wobble~~ (M393), ~~and the water mask~~ (M363); still open: the
+  bubble column's tilt.
 - `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once
   under full-suite load (an empty TCP answer) and passed five times alone;
   the same loopback-timing class as the others listed here. After M225 five
