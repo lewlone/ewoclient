@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M366 — the strider walks, rolls and sways as vanilla's does (2026-10-21)
+
+From the adult rest-pose audit: Rewo's strider used the generic biped walk (unclamped) with a still body and still bristles, the body 1 px high. `StriderModel.setupAnim` and both `customAnimations` (speed clamped at 0.25): the body (`Anim::StriderBody`) looks unless ridden, rolls and bobs about the `y` they assign (2 / 17.25); the legs swing, splay and bob; every bristle flows and sways on `ageInTicks` (the adult's both sides the same sign, as vanilla adds it). **Unit tests** for every term and the clamp; **mobtexshot m84**: stride 578 px, idle sway 118 px, speed 1.0 vs 0.25 0 px (the pre-M366 strider: 788, 0 and 1305, so the stride is graded by its clamp).
+
 ### M365 — the rabbit looks; the turtle paddles and carries its egg (with M364) (2026-10-21)
 
 From the adult rest-pose audit. **M364**: `RabbitModel.setupAnim` assigns the head's look every frame, so the layer's 0.3927 tilt (which only cancels the body's lean in the layer file) is never drawn; the adult's head now rests at 0 on `Anim::Head`. **M365**: `TurtleModel` over `QuadrupedModel`: the flippers are parts (`Anim::TurtleLeg`: the quadruped swing, the land sweep with its egg-laying rate, the swim overrides; the baby's legs too); the egg belly shows only with `HAS_EGG` and lifts the turtle 1 px; `HAS_EGG` (18) and `LAYING_EGG` (19) are decoded and routed for the turtle only. On land = out of water (Rewo keeps no `onGround` for other entities). **Unit tests** for each term; **mobtexshot m82** (rabbit 307 / kit 750 px, the still-head mutant 0) and **m83** (stride 2012, swim 1682, egg 5787 px; the pre-M365 mutant 0 / 0 / 0).
