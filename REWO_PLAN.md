@@ -4008,6 +4008,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M394 — a boat over a bubble column tilts (2026-10-21)
+
+The last boat follow-up. A boat's `DATA_ID_BUBBLE_TIME` (13 INT) is parsed and routed; the client keeps `Entity.tickCount` (not synced: from 0 at creation) and `tickBubbleColumn`'s multiplier and angle (`10·sin(0.5·tickCount)·multiplier`). The boat root gains a third part (`BoatBubble`) between the wobble and the `rotY(90°)` root; JOML's `setAngleAxis(angle, 1, 0, 1)` does not normalise the axis, so vanilla's matrix is `1 + sin²(θ/2)` times a rotation by `2·atan2(√2·sin(θ/2), cos(θ/2))`, reproduced as a rotation about `(−1, 0, 1)/√2` (past the flip) and a per-part scale. **Unit tests** (the tilt equals JOML's matrix through the flip); **mobtexshot m109** (10°, 452 px; 0 by construction before, not run). No live witness.
+
 ### M393 — boats row their paddles and wobble when hit (2026-10-21)
 
 From the boat follow-ups (M363 closed the water mask). A boat's hurt (8 INT, 9 INT, 10 FLOAT) and paddle flags (11, 12 BOOLEAN) are parsed and routed for `is_boat` kinds; `EntityTable::tick_boats` is `AbstractBoat.tick`'s client half (the hurt and damage count down; a paddle advances π/8 a tick while flagged with a rider, else rests at 0); the steered boat writes its own paddle flags. The boat root fold is two parts, `BoatHurt` (the renderer's wobble between yaw and flip, negated past the flip) around the `rotY(90°)` root, which every boat kind and the water patch hang off; the paddles are parts on `BoatPaddle` (`animatePaddle` on the rowing time). The bubble column's tilt and the attacker's `hurtClient` prediction are not modelled. **Unit tests**; **mobtexshot m108** (rowing 297, hurt 200 px; 0 by construction before, not run); render check **r217** (the steered boat draws both paddles rowing).

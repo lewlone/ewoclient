@@ -23,10 +23,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 200 Rewo milestones, M194 to M393, in about 408 commits on
+- **What happened**: 201 Rewo milestones, M194 to M394, in about 411 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`27bb9c92`): 4,589 tests pass (4,244 at the
+- **Checks at the end** (`4fcc8ff3`): 4,591 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 217 of
   217 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M394**: a boat over a bubble column tilts as vanilla's does.
 - **M393**: boats row their paddles while someone paddles them and wobble when hit.
 - **M392**: a harnessed happy ghast's body squeezes inside its harness, its tentacles and ropes with it (M391); piglins hold spears and swing as humanoids do (M392).
 - **M390**: piglins dance, stare at the gold in their off hand, raise their weapons and aim and crank their crossbows (M390); and a fix: a baby piglin drew as an adult and an immune adult as a baby, its zombification immunity read as the baby flag (M389).
@@ -577,6 +578,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `4fcc8ff3` | **M394** — the bubble-column tilt; unit tests, mobtexshot **m109**. |
 | `27bb9c92` | **M393** — boat paddles and hurt wobble; unit tests, mobtexshot **m108**, render check **r217**. |
 | `714604d6` | **M392** — with M391: the happy ghast's harness squeeze; the piglin's humanoid hold and swing; unit tests, mobtexshot **m107** (m33, m40 reworked). |
 | `fadfdc2e` | **M390** — with M389: the piglin's baby flag at 17; the piglin's arm poses; unit tests, mobtexshot **m106**, render check **r216** (r175 tightened). |
@@ -1013,6 +1015,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M394: **4,591 tests passed, 0 failed; gates 51/51** (mobtexshot 109); render check **217/217** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M393: **4,589 tests passed, 0 failed; gates 51/51** (mobtexshot 108); render check **217/217** on both runs (r217 peak rowing 7.45 / 11.38); clippy (both) and `cargo fmt --check` clean.
 - After M392: **4,584 tests: 4,579 passed and 5 failed in the chain run**: rewo-net's srv TCP tests at the port-pairing helper (the known flake); re-run clean (34/34). **Gates 51/51** (mobtexshot 107); render check **216/216** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M390: **4,583 tests passed, 0 failed; gates 51/51** (mobtexshot 106); render check **216/216** on both runs; clippy (both) and `cargo fmt --check` clean.
@@ -1219,8 +1222,8 @@ released.
   should now sit as vanilla's does.
 - ~~Grass block GUI icon: top missing and untinted~~ (M242: the rotation
   order, not the tint). On boats: ~~the rowing animation, the
-  hurt wobble~~ (M393), ~~and the water mask~~ (M363); still open: the
-  bubble column's tilt.
+  hurt wobble~~ (M393), ~~and the water mask~~ (M363); and ~~the bubble column's
+  tilt~~ (M394).
 - `rewo-net`'s `srv` test `a_truncated_answer_is_retried_over_tcp` failed once
   under full-suite load (an empty TCP answer) and passed five times alone;
   the same loopback-timing class as the others listed here. After M225 five
