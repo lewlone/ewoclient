@@ -4013,6 +4013,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M400 — players and mannequins swim (2026-10-21)
+
+After M399's crouch. `EntityState::swim_amount` is `LivingEntity.updateSwimAmount` (±0.09 a tick while visually swimming: the SWIMMING pose, or FALL_FLYING while not gliding); avatars carry it with `isInWater` and `isVisuallySwimming`; `humanoid_swim` is `HumanoidModel`'s swim block (the head toward −π/4, the arm stroke on `walkPos % 26`, the leg kick; `rot_lerp_rad` is Mth's with its loops); `AvatarRenderer.setupRotations`' `XP(lerp(swim, 0, inWater ? −90 − xRot : −90))` and `translate(0, −1, 0.3)` go into the placement before the topple. Fall-flying and sleeping avatars stay open. **Unit tests**; **mobtexshot m114** (3004 px; the swimmer 92 × 39 against 21 × 89 standing); render check **r222** (a swimming mannequin reaches swim amount 1).
+
 ### M399 — players and mannequins crouch (2026-10-21)
 
 From the follow-ups (the mannequin's pose, which is every avatar's). `MobCombat::crouching` is `Entity.isCrouching()` (the CROUCHING pose, ordinal 5) for the avatar kinds; `anim_delta` applies `HumanoidModel`'s crouch block (body `xRot` 0.5 and down 3.2, arms +0.4 and down 3.2, legs back 4, head down 4.2; the cape follows the body); the spyglass pose's −π/12 crouch term is live; `AvatarRenderer.getRenderOffset` lowers a crouching avatar 2/16. Swimming, fall-flying and sleeping avatar poses stay open. **Unit test**; **mobtexshot m113** (1452 px against standing; 0 by construction before); render check **r221** (a mannequin posed crouching draws crouching).
