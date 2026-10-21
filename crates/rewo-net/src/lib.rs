@@ -2704,6 +2704,18 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_axolotl_playing_dead(eid, b);
         }
     }
+    // M393 — a boat's `VehicleEntity` hurt (8 INT, 9 INT, 10 FLOAT) and
+    // `AbstractBoat` paddles (11, 12 BOOLEAN). Index 8 INT is also the
+    // experience orb's value, 9 INT a display's, 10 INT an item frame's:
+    // only the kind separates them.
+    if kinds.classes.is_some_and(|c| c.is_boat(type_id)) {
+        if meta.int8.is_some() || meta.int9.is_some() || meta.float10.is_some() {
+            entities.set_boat_hurt(eid, meta.int8, meta.int9, meta.float10);
+        }
+        if meta.bool11.is_some() || meta.bool12.is_some() {
+            entities.set_boat_paddles(eid, [meta.bool11, meta.bool12]);
+        }
+    }
     // M389 — the piglin's own flags: `DATA_BABY_ID` (17),
     // `DATA_IS_CHARGING_CROSSBOW` (18), `DATA_IS_DANCING` (19), after
     // `AbstractPiglin.DATA_IMMUNE_TO_ZOMBIFICATION` (16).
@@ -5678,6 +5690,37 @@ mod set_entity_data_tests {
             t.size(21),
             Some(2),
             "index 16 INT still lands in `sizes` (the creeper's)"
+        );
+    }
+
+    /// M393 — a boat's 8 INT / 9 INT / 10 FLOAT are its hurt, hurt
+    /// direction and damage, 11 / 12 BOOLEAN its paddles; an experience
+    /// orb's 8 INT is not a boat's hurt.
+    #[test]
+    fn a_boats_hurt_and_paddles_route_only_for_a_boat() {
+        const BOAT: i32 = 830;
+        let classes = rewo_data::entity_types::EntityClasses::from_raw_ids(&[ZOMBIE], &[])
+            .with_boats(&[BOAT]);
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(41, EntityState::new(0, BOAT, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(42, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        for eid in [41, 42] {
+            apply_set_entity_data(&body(eid, 8, 1, &[10]), &mut t, kinds);
+            apply_set_entity_data(&body(eid, 9, 1, &[0x01]), &mut t, kinds);
+            apply_set_entity_data(&body(eid, 10, 3, &40.0f32.to_be_bytes()), &mut t, kinds);
+            apply_set_entity_data(&body(eid, 12, 8, &[0x01]), &mut t, kinds);
+        }
+        let b = t.mob_state(41);
+        assert_eq!((b.boat_hurt, b.boat_hurt_dir, b.boat_damage), (10, 1, 40.0));
+        assert_eq!(b.boat_paddles, [false, true]);
+        let z = t.mob_state(42);
+        assert_eq!(
+            (z.boat_hurt, z.boat_damage, z.boat_paddles),
+            (0, 0.0, [false; 2])
         );
     }
 

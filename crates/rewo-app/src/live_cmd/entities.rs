@@ -1682,6 +1682,9 @@ pub(crate) fn resolve_mob_combat(
             K::PiglinBrute => piglin_arm_pose(entities, id, true),
             _ => rewo_gpu::mobs::PiglinArmPose::Default,
         },
+        // M393 — set by the caller for a boat.
+        boat_rowing: [0.0; 2],
+        boat_wobble: 0.0,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -1702,6 +1705,18 @@ pub(crate) fn resolve_mob_combat(
         turtle_laying: false,
         turtle_on_land: false,
     }
+}
+
+/// M393 — `AbstractBoatRenderer.submit`'s hurt wobble in degrees:
+/// `hurt = hurtTime − a`; when positive, `sin(hurt)·hurt·damageTime/10·
+/// hurtDir` with `damageTime = max(damage − a, 0)`.
+pub(crate) fn boat_wobble(st: &rewo_world::entities::MobState, alpha: f32) -> f32 {
+    let hurt = st.boat_hurt as f32 - alpha;
+    if hurt <= 0.0 {
+        return 0.0;
+    }
+    let damage = (st.boat_damage - alpha).max(0.0);
+    rewo_gpu::entities::mth_sin(hurt as f64) * hurt * damage / 10.0 * st.boat_hurt_dir as f32
 }
 
 /// M390 — `Piglin.getArmPose()` in vanilla's order (dancing; a loved item
@@ -5055,6 +5070,21 @@ pub(super) fn collect_entities<'a>(
                     .world
                     .is_water_at_point(b[0], b[1] + 0.2, b[2], &session.water_states);
             mob.axolotl_playing_dead = session.world.entities.axolotl_playing_dead(id);
+        }
+        // M393 — a boat's (or raft's) rowing times and hurt wobble.
+        if matches!(
+            kind,
+            EntityModelKind::Boat
+                | EntityModelKind::ChestBoat
+                | EntityModelKind::Raft
+                | EntityModelKind::ChestRaft
+        ) {
+            let ents = &session.world.entities;
+            mob.boat_rowing = [
+                ents.boat_rowing_time(id, 0, alpha),
+                ents.boat_rowing_time(id, 1, alpha),
+            ];
+            mob.boat_wobble = boat_wobble(&ents.mob_state(id), alpha);
         }
         // M381 — a seated rider (`isPassenger` / `isRiding`), for the kinds
         // whose model has the pose.

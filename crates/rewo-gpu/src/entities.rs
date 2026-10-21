@@ -6104,6 +6104,18 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         BeeBone | BeeFrontLegs | BeeBackLegs => {}
         // M391 — scaled, not moved: `body_squeeze_scale`.
         HappyGhastBody => {}
+        // M393 — `rotX(θ)` between the renderer's yaw and its
+        // `scale(−1, −1, 1)` is `rotX(−θ)` past the flip, in model space.
+        BoatHurt => rot[0] = -c.mob.boat_wobble * DEG,
+        // M393 — `AbstractBoatModel.animatePaddle(time, side, paddle)`, the
+        // assigned angles less the paddle's rest.
+        BoatPaddle { right } => {
+            let t = c.mob.boat_rowing[usize::from(right)];
+            let a = paddle_angles(t, right);
+            let rest = mobs::paddle_rest(right);
+            rot[0] = a[0] - rest[0];
+            rot[1] = a[1] - rest[1];
+        }
         FishTail { amp: a, speed } => rot[1] = -a * (speed * c.age).sin(),
         PufferFin { left } => {
             let s = (c.age * 0.2).sin();
@@ -8020,6 +8032,21 @@ fn anim_deltas(
         }
     }
     (drots, doffs)
+}
+
+/// M393 — `AbstractBoatModel.animatePaddle`'s `(xRot, yRot)`:
+/// `clampedLerp((sin(−t) + 1)/2, −π/3, −π/12)`, `clampedLerp((sin(−t + 1)
+/// + 1)/2, −π/4, π/4)`, the right paddle's yaw `π − yRot`.
+fn paddle_angles(t: f32, right: bool) -> [f32; 2] {
+    use std::f32::consts::PI;
+    let clamped = |d: f32, a: f32, b: f32| a + d.clamp(0.0, 1.0) * (b - a);
+    let x = clamped((mth_sin(-t as f64) + 1.0) / 2.0, -PI / 3.0, -PI / 12.0);
+    let y = clamped(
+        (mth_sin((-t + 1.0) as f64) + 1.0) / 2.0,
+        -PI / 4.0,
+        PI / 4.0,
+    );
+    [x, if right { PI - y } else { y }]
 }
 
 /// M391 — the per-part scales with `HappyGhastModel`'s body squeeze folded
@@ -11294,6 +11321,73 @@ mod piglin_ear_anim_tests {
         let l = anim_delta(mobs::Anim::PiglinEar { left: true }, 1.0, &ctx).0[2];
         let r = anim_delta(mobs::Anim::PiglinEar { left: false }, 1.0, &ctx).0[2];
         assert!((l + (f * 1.2).cos() * a).abs() < 1e-6 && (r - f.cos() * a).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod boat_anim_tests {
+    use super::*;
+
+    fn ctx(rowing: [f32; 2], wobble: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                boat_rowing: rowing,
+                boat_wobble: wobble,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M393 — at rowing time 0 a paddle rests where M223 baked it (no
+    /// delta beyond a sine-table step); rowing, `animatePaddle`'s angles (the right's yaw mirrored);
+    /// the hurt wobble's angle, negated past the flip, is the renderer's
+    /// `rotX(θ)` before it: `S·Rx(−θ) = Rx(θ)·S` for `S = diag(−1, −1, 1)`.
+    #[test]
+    fn a_boat_rows_and_wobbles() {
+        use mobs::Anim as A;
+        use std::f32::consts::PI;
+        // (`Mth`'s table sine against the bake's `f32::sin`: a table step.)
+        for right in [false, true] {
+            let d = anim_delta(A::BoatPaddle { right }, 1.0, &ctx([0.0; 2], 0.0)).0;
+            assert!(d.iter().all(|v| v.abs() < 1e-4), "{d:?}");
+        }
+        let t = 1.3_f32;
+        let c = ctx([t, t], 0.0);
+        let rest_l = mobs::paddle_rest(false);
+        let l = anim_delta(A::BoatPaddle { right: false }, 1.0, &c).0;
+        let want_x = -PI / 3.0 + ((-t).sin() + 1.0) / 2.0 * (PI / 4.0);
+        let want_y = -PI / 4.0 + ((1.0 - t).sin() + 1.0) / 2.0 * (PI / 2.0);
+        assert!((l[0] + rest_l[0] - want_x).abs() < 1e-3, "{l:?}");
+        assert!((l[1] + rest_l[1] - want_y).abs() < 1e-3);
+        let rest_r = mobs::paddle_rest(true);
+        let r = anim_delta(A::BoatPaddle { right: true }, 1.0, &c).0;
+        assert!((r[1] + rest_r[1] - (PI - want_y)).abs() < 1e-3);
+        // The wobble.
+        let theta = 7.0_f32;
+        let w = anim_delta(A::BoatHurt, 1.0, &ctx([0.0; 2], theta)).0;
+        assert!((w[0] + theta * DEG).abs() < 1e-6);
+        let s = [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
+        let p = [0.3, -1.7, 2.9];
+        let a = mat_apply(&mat_mul(s, rot_x(w[0])), p);
+        let b = mat_apply(&mat_mul(rot_x(theta * DEG), s), p);
+        for i in 0..3 {
+            assert!((a[i] - b[i]).abs() < 1e-5, "{a:?} {b:?}");
+        }
     }
 }
 

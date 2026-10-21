@@ -1719,6 +1719,20 @@ pub struct MobState {
     /// M389 — `Piglin.DATA_IS_DANCING` (index 19, BOOLEAN; `AbstractPiglin`
     /// owns 16, the piglin's baby flag is 17, charging 18).
     pub piglin_dancing: bool,
+    /// M393 — a boat's `VehicleEntity.DATA_ID_HURT` (8, INT),
+    /// `DATA_ID_HURTDIR` (9, INT) and `DATA_ID_DAMAGE` (10, FLOAT). The
+    /// client counts the hurt and damage down each tick as the server does
+    /// (`AbstractBoat.tick` runs on both sides).
+    pub boat_hurt: i32,
+    pub boat_hurt_dir: i32,
+    pub boat_damage: f32,
+    /// M393 — `AbstractBoat.DATA_ID_PADDLE_LEFT` / `_RIGHT` (11, 12), or the
+    /// steered boat's own (`controlBoat`'s `setPaddleState`).
+    pub boat_paddles: [bool; 2],
+    /// M393 — `AbstractBoat.paddlePositions`, kept by the client: +π/8 a
+    /// tick while `getPaddleState(side)` (paddling with a controlling
+    /// passenger), else 0.
+    pub boat_paddle_pos: [f32; 2],
     /// `Sheep.DATA_WOOL_ID` (metadata index **18**, BYTE): the low nibble is
     /// the `DyeColor` id and bit 0x10 is the sheared flag. Vanilla's
     /// `define(DATA_WOOL_ID, (byte)0)` default is white-and-woolly, which is
@@ -3300,6 +3314,77 @@ impl EntityTable {
         self.mob_state.entry(id).or_default().turtle_laying = laying;
     }
 
+    /// M393 — a boat's hurt metadata (`DATA_ID_HURT`, `_HURTDIR`,
+    /// `_DAMAGE`); each `None` leaves its field. Kind-gated by the caller.
+    pub fn set_boat_hurt(
+        &mut self,
+        id: i32,
+        hurt: Option<i32>,
+        dir: Option<i32>,
+        damage: Option<f32>,
+    ) {
+        let st = self.mob_state.entry(id).or_default();
+        if let Some(v) = hurt {
+            st.boat_hurt = v;
+        }
+        if let Some(v) = dir {
+            st.boat_hurt_dir = v;
+        }
+        if let Some(v) = damage {
+            st.boat_damage = v;
+        }
+    }
+
+    /// M393 — a boat's paddle flags (`DATA_ID_PADDLE_LEFT` / `_RIGHT`, or
+    /// the steered boat's own); each `None` leaves its side.
+    pub fn set_boat_paddles(&mut self, id: i32, paddles: [Option<bool>; 2]) {
+        let st = self.mob_state.entry(id).or_default();
+        for (dst, v) in st.boat_paddles.iter_mut().zip(paddles) {
+            if let Some(v) = v {
+                *dst = v;
+            }
+        }
+    }
+
+    /// M393 — `AbstractBoat.tick`'s client half: `if (hurtTime > 0)
+    /// hurtTime--`, `if (damage > 0) damage -= 1`, and the paddle positions
+    /// (+π/8 while `getPaddleState`: the flag and a controlling passenger).
+    fn tick_boats(&mut self) {
+        use std::f32::consts::PI;
+        for (id, st) in self.mob_state.iter_mut() {
+            if st.boat_hurt > 0 {
+                st.boat_hurt -= 1;
+            }
+            if st.boat_damage > 0.0 {
+                st.boat_damage -= 1.0;
+            }
+            let controlled = self.passengers.get(id).is_some_and(|p| !p.is_empty());
+            for i in 0..2 {
+                if st.boat_paddles[i] && controlled {
+                    st.boat_paddle_pos[i] += PI / 8.0;
+                } else {
+                    st.boat_paddle_pos[i] = 0.0;
+                }
+            }
+        }
+    }
+
+    /// M393 — `AbstractBoat.getRowingTime(side, a)`: `getPaddleState(side) ?
+    /// clampedLerp(a, pos − π/8, pos) : 0`.
+    pub fn boat_rowing_time(&self, id: i32, side: usize, alpha: f32) -> f32 {
+        use std::f32::consts::PI;
+        let Some(st) = self.mob_state.get(&id) else {
+            return 0.0;
+        };
+        let controlled = self.passengers.get(&id).is_some_and(|p| !p.is_empty());
+        if !(st.boat_paddles[side] && controlled) {
+            return 0.0;
+        }
+        let pos = st.boat_paddle_pos[side];
+        let a = alpha.clamp(0.0, 1.0);
+        pos - PI / 8.0 + a * (PI / 8.0)
+    }
+
     /// M389 — `Piglin.DATA_IS_DANCING`. Kind-gated by the caller.
     pub fn set_piglin_dancing(&mut self, id: i32, dancing: bool) {
         self.mob_state.entry(id).or_default().piglin_dancing = dancing;
@@ -3521,6 +3606,7 @@ impl EntityTable {
         self.tick_guardian_attacks();
         self.tick_wavy_capes();
         self.tick_uses();
+        self.tick_boats();
         self.tick_deaths();
         self.tick_swings();
         // `LivingEntity.baseTick`: `if (this.hurtTime > 0) this.hurtTime--;`
@@ -4030,6 +4116,37 @@ impl EntityTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M393 — `AbstractBoat.tick` on the client: the hurt and damage count
+    /// down a tick at a time; a paddle rows (+π/8 a tick) only while its
+    /// flag is set AND the boat has a controlling passenger, else it rests
+    /// at 0; `getRowingTime` lerps the last π/8.
+    #[test]
+    fn a_boats_hurt_counts_down_and_its_paddles_row_with_a_rider() {
+        use std::f32::consts::PI;
+        let mut t = EntityTable::default();
+        t.add(5, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_boat_hurt(5, Some(10), Some(-1), Some(40.0));
+        t.set_boat_paddles(5, [Some(true), None]);
+        t.tick_lerp();
+        let st = t.mob_state(5);
+        assert_eq!((st.boat_hurt, st.boat_damage), (9, 39.0));
+        assert_eq!(st.boat_paddle_pos, [0.0; 2], "no rider: no rowing");
+        assert_eq!(t.boat_rowing_time(5, 0, 0.5), 0.0);
+        t.set_passengers(5, vec![6]);
+        t.tick_lerp();
+        t.tick_lerp();
+        assert_eq!(t.mob_state(5).boat_paddle_pos, [2.0 * PI / 8.0, 0.0]);
+        assert!((t.boat_rowing_time(5, 0, 0.5) - 1.5 * PI / 8.0).abs() < 1e-6);
+        assert_eq!(t.boat_rowing_time(5, 1, 0.5), 0.0);
+        t.set_boat_paddles(5, [Some(false), None]);
+        t.tick_lerp();
+        assert_eq!(t.mob_state(5).boat_paddle_pos[0], 0.0);
+        for _ in 0..20 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.mob_state(5).boat_hurt, 0);
+    }
 
     #[test]
     fn three_step_lerp_converges_exactly() {

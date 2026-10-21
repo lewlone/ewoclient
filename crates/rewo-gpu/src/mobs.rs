@@ -282,6 +282,15 @@ pub enum Anim {
     GhastTentacle {
         i: u8,
     },
+    /// M393 — a boat's outer root: the renderer's hurt wobble,
+    /// `rotX(sin(hurt)·hurt·damage/10·hurtDir)` degrees between the yaw and
+    /// the flip (in model space, past the flip, the negated angle).
+    BoatHurt,
+    /// M393 — a boat paddle, `AbstractBoatModel.animatePaddle` on the side's
+    /// rowing time (left 0, right 1), about [`paddle_rest`].
+    BoatPaddle {
+        right: bool,
+    },
     /// M391 — the happy ghast's body (no motion of its own): the part
     /// `HappyGhastModel.setupAnim` scales by 0.9375 while the ghast wears
     /// a harness (`body_squeeze`), its tentacles with it.
@@ -911,6 +920,11 @@ pub struct MobCombat {
     pub axolotl_playing_dead: bool,
     /// M390 — a piglin's or brute's `getArmPose()`.
     pub piglin_pose: PiglinArmPose,
+    /// M393 — a boat's `BoatRenderState.rowingTimeLeft` / `Right`.
+    pub boat_rowing: [f32; 2],
+    /// M393 — a boat's hurt wobble angle in degrees,
+    /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
+    pub boat_wobble: f32,
     /// M381 — `HumanoidRenderState.isPassenger` / `IllagerRenderState
     /// .isRiding`: the seated riding pose (set only for a kind that
     /// [`sits_when_riding`]).
@@ -11633,13 +11647,26 @@ fn equine_plain() -> Model {
 /// every boat cube carries this root fold: the `rotY(90°)` that comes after
 /// the flip, and the offset that turns 24.016 px into the boat's 6 (0.375
 /// block): `y_entity = 24.016 − (v.y + 18.016) = 6 − v.y`.
-const BOAT_ROOT: Fold = Fold::rot([0.0, FRAC_PI_2, 0.0], [0.0, MODEL_EYE_Y - 6.0, 0.0]);
+///
+/// M393 — the fold is now two parts: the renderer's hurt wobble turns the
+/// boat between the yaw and the flip, outside this `rotY(90°)`, so it needs
+/// a part of its own around the root's. Returns the inner (root) part.
+fn boat_root(b: &mut ModelBuilder) -> usize {
+    let wobble = b.part([0.0, MODEL_EYE_Y - 6.0, 0.0], Anim::BoatHurt, 1.0);
+    b.part_ext(
+        [0.0; 3],
+        [0.0, FRAC_PI_2, 0.0],
+        Anim::None,
+        1.0,
+        Some(wobble),
+    )
+}
 
 /// `AbstractBoatModel.animatePaddle` at a rowing time of 0, which is where a
 /// boat nobody paddles keeps its paddles: `xRot = lerp(0.5, −π/3, −π/12)`,
 /// `yRot = lerp((sin(1) + 1) / 2, −π/4, π/4)`, the right paddle's yaw
 /// mirrored to `π − yRot`; the `PartPose`'s `zRot` of π/16 stays.
-fn paddle_rest(right: bool) -> [f32; 3] {
+pub(crate) fn paddle_rest(right: bool) -> [f32; 3] {
     use std::f32::consts::PI;
     let lerp = |t: f32, a: f32, b: f32| a + t.clamp(0.0, 1.0) * (b - a);
     let x = lerp((0.0f32.sin() + 1.0) / 2.0, -PI / 3.0, -PI / 12.0);
@@ -11648,35 +11675,49 @@ fn paddle_rest(right: bool) -> [f32; 3] {
 }
 
 /// The two paddles (`BoatModel` / `RaftModel` share the boxes and differ in
-/// the texture offsets and the pivot height).
-fn boat_paddles(b: &mut ModelBuilder, uv_left: (f32, f32), uv_right: (f32, f32), pivot_y: f32) {
+/// the texture offsets and the pivot height). M393 — parts under the boat's
+/// root (`Anim::BoatPaddle`: `AbstractBoatModel.animatePaddle` on the
+/// rowing time), resting where a paddle nobody rows rests.
+fn boat_paddles(
+    b: &mut ModelBuilder,
+    root: usize,
+    uv_left: (f32, f32),
+    uv_right: (f32, f32),
+    pivot_y: f32,
+) {
     for (right, uv, z, blade_x) in [(false, uv_left, 9.0, -1.001), (true, uv_right, -9.0, 0.001)] {
-        let pose = Fold::rot(paddle_rest(right), [3.0, pivot_y, z]);
+        let paddle = b.part_ext(
+            [3.0, pivot_y, z],
+            paddle_rest(right),
+            Anim::BoatPaddle { right },
+            1.0,
+            Some(root),
+        );
         b.cube_f(
-            STATIC_PART,
+            paddle,
             0,
             uv,
             [-1.0, 0.0, -5.0],
             [2.0, 2.0, 18.0],
             0.0,
             false,
-            &[pose, BOAT_ROOT],
+            NONE,
         );
         b.cube_f(
-            STATIC_PART,
+            paddle,
             0,
             uv,
             [blade_x, -3.0, 8.0],
             [1.0, 6.0, 7.0],
             0.0,
             false,
-            &[pose, BOAT_ROOT],
+            NONE,
         );
     }
 }
 
 /// `BoatModel.addCommonParts`: the bottom, the four sides, the paddles.
-fn boat_hull(b: &mut ModelBuilder) {
+fn boat_hull(b: &mut ModelBuilder, root: usize) {
     use std::f32::consts::PI;
     let part = |b: &mut ModelBuilder,
                 uv: (f32, f32),
@@ -11684,16 +11725,7 @@ fn boat_hull(b: &mut ModelBuilder) {
                 dims: [f32; 3],
                 rot: [f32; 3],
                 off: [f32; 3]| {
-        b.cube_f(
-            STATIC_PART,
-            0,
-            uv,
-            min,
-            dims,
-            0.0,
-            false,
-            &[Fold::rot(rot, off), BOAT_ROOT],
-        );
+        b.cube_f(root, 0, uv, min, dims, 0.0, false, &[Fold::rot(rot, off)]);
     };
     part(
         b,
@@ -11735,38 +11767,38 @@ fn boat_hull(b: &mut ModelBuilder) {
         [0.0, 0.0, 0.0],
         [0.0, 4.0, 9.0],
     );
-    boat_paddles(b, (62.0, 0.0), (62.0, 20.0), -5.0);
+    boat_paddles(b, root, (62.0, 0.0), (62.0, 20.0), -5.0);
 }
 
 /// `RaftModel.addCommonParts`: two stacked bottom boxes, the paddles.
-fn raft_hull(b: &mut ModelBuilder) {
+fn raft_hull(b: &mut ModelBuilder, root: usize) {
     let pose = Fold::rot([1.5708, 0.0, 0.0], [0.0, -2.1, 1.0]);
     b.cube_f(
-        STATIC_PART,
+        root,
         0,
         (0.0, 0.0),
         [-14.0, -11.0, -4.0],
         [28.0, 20.0, 4.0],
         0.0,
         false,
-        &[pose, BOAT_ROOT],
+        &[pose],
     );
     b.cube_f(
-        STATIC_PART,
+        root,
         0,
         (0.0, 0.0),
         [-14.0, -9.0, -8.0],
         [28.0, 16.0, 4.0],
         0.0,
         false,
-        &[pose, BOAT_ROOT],
+        &[pose],
     );
-    boat_paddles(b, (0.0, 24.0), (40.0, 24.0), -4.0);
+    boat_paddles(b, root, (0.0, 24.0), (40.0, 24.0), -4.0);
 }
 
 /// `createChestBoatModel` / `createChestRaftModel`'s chest: bottom, lid and
 /// lock at the given heights (the raft's sit 5.1 px higher).
-fn boat_chest(b: &mut ModelBuilder, bottom_y: f32, lid_y: f32, lock_y: f32) {
+fn boat_chest(b: &mut ModelBuilder, root: usize, bottom_y: f32, lid_y: f32, lock_y: f32) {
     let rot = [0.0, -FRAC_PI_2, 0.0];
     for (uv, min, dims, off) in [
         (
@@ -11788,22 +11820,14 @@ fn boat_chest(b: &mut ModelBuilder, bottom_y: f32, lid_y: f32, lock_y: f32) {
             [-1.0, lock_y, -1.0],
         ),
     ] {
-        b.cube_f(
-            STATIC_PART,
-            0,
-            uv,
-            min,
-            dims,
-            0.0,
-            false,
-            &[Fold::rot(rot, off), BOAT_ROOT],
-        );
+        b.cube_f(root, 0, uv, min, dims, 0.0, false, &[Fold::rot(rot, off)]);
     }
 }
 
 fn boat() -> Model {
     let mut b = ModelBuilder::new();
-    boat_hull(&mut b);
+    let root = boat_root(&mut b);
+    boat_hull(&mut b, root);
     b.finish(1.0)
 }
 
@@ -11815,18 +11839,18 @@ fn boat() -> Model {
 /// A raft has none (`RaftRenderer`).
 pub fn boat_water_patch() -> Model {
     let mut b = ModelBuilder::new();
+    // M393 — on the boat's root parts (the same indices: the patch's quads
+    // are drawn through the boat's part list), so it wobbles with the hull.
+    let root = boat_root(&mut b);
     b.cube_f(
-        STATIC_PART,
+        root,
         0,
         (0.0, 0.0),
         [-14.0, -9.0, -3.0],
         [28.0, 16.0, 3.0],
         0.0,
         false,
-        &[
-            Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, -3.0, 1.0]),
-            BOAT_ROOT,
-        ],
+        &[Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, -3.0, 1.0])],
     );
     b.finish(1.0)
 }
@@ -11910,21 +11934,24 @@ fn minecart() -> Model {
 
 fn chest_boat() -> Model {
     let mut b = ModelBuilder::new();
-    boat_hull(&mut b);
-    boat_chest(&mut b, -5.0, -9.0, -6.0);
+    let root = boat_root(&mut b);
+    boat_hull(&mut b, root);
+    boat_chest(&mut b, root, -5.0, -9.0, -6.0);
     b.finish(1.0)
 }
 
 fn raft() -> Model {
     let mut b = ModelBuilder::new();
-    raft_hull(&mut b);
+    let root = boat_root(&mut b);
+    raft_hull(&mut b, root);
     b.finish(1.0)
 }
 
 fn chest_raft() -> Model {
     let mut b = ModelBuilder::new();
-    raft_hull(&mut b);
-    boat_chest(&mut b, -10.1, -14.1, -11.1);
+    let root = boat_root(&mut b);
+    raft_hull(&mut b, root);
+    boat_chest(&mut b, root, -10.1, -14.1, -11.1);
     b.finish(1.0)
 }
 
@@ -15662,6 +15689,41 @@ mod avatar_layer_tests {
                 ]
             );
             assert_eq!(m.quads.len(), 72, "twelve boxes, as before");
+        }
+    }
+}
+
+#[cfg(test)]
+mod boat_root_tests {
+    use super::*;
+
+    /// M393 — every boat kind (and the water patch) hangs off the same root
+    /// chain (the wobble part, then the `rotY(90°)` root), and the paddles
+    /// are two parts under the root on `BoatPaddle`, their boxes on them;
+    /// nothing is left on the static part.
+    #[test]
+    fn the_boats_ride_a_wobble_root_and_their_paddles_are_parts() {
+        for m in [
+            boat(),
+            chest_boat(),
+            raft(),
+            chest_raft(),
+            boat_water_patch(),
+        ] {
+            assert_eq!(m.parts[1].anim, Anim::BoatHurt);
+            assert_eq!(m.parts[2].parent, Some(1));
+            assert_eq!(m.parts[2].rot, [0.0, FRAC_PI_2, 0.0]);
+            assert!(m.quads.iter().all(|q| q.part != STATIC_PART));
+        }
+        for m in [boat(), chest_boat(), raft(), chest_raft()] {
+            let paddles: Vec<usize> = (0..m.parts.len())
+                .filter(|&i| matches!(m.parts[i].anim, Anim::BoatPaddle { .. }))
+                .collect();
+            assert_eq!(paddles.len(), 2);
+            for &p in &paddles {
+                assert_eq!(m.parts[p].parent, Some(2));
+                assert_eq!(m.quads.iter().filter(|q| q.part == p).count(), 12);
+            }
         }
     }
 }

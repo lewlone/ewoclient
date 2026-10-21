@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 107;
+const EXPECTED_WITNESSES: usize = 108;
+/// M393 — m108's floors: rowing, the hurt wobble (each against a still,
+/// unhurt boat). M393 measured 297 and 200; the pre-M393 boat had its
+/// paddles baked at rest and no wobble (0 by construction, not run).
+const BOAT_MOTION_MIN: [usize; 2] = [150, 100];
 /// M391 — m107's floor: the silhouette pixels the harness squeeze moves.
 /// M391 measured 579; without the squeeze the two draws are one silhouette
 /// (0 by construction: nothing else differs).
@@ -7381,6 +7385,73 @@ fn run_check(
         format!(
             "dancing {} px, admiring {} px, weapon high {} px of silhouette against standing (want >= {PIGLIN_POSE_MIN:?})",
             pg[0], pg[1], pg[2]
+        ),
+    ));
+
+    // m108 — M393: a boat rows its paddles (`animatePaddle` on a rowing
+    // time) and wobbles when hurt (`rotX(sin(hurt)·hurt·damage/10·dir)`),
+    // each against the still, unhurt boat.
+    let mut btst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.6, 2.4, 2.6),
+        Vec3::new(0.0, 0.3, 0.0),
+    )?;
+    btst.wr.set_entities(&[], btst.right, btst.up, 0.0);
+    btst.off
+        .render(gpu, Some((&mut btst.wr, btst.vp)), &ov, BG)?;
+    let bt_empty = btst.off.read_rgba(gpu)?;
+    let mut btshot = |rowing: [f32; 2], wobble: f32| -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                boat_rowing: rowing,
+                boat_wobble: wobble,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Boat)
+        };
+        btst.wr.set_entities(&[d], btst.right, btst.up, 0.0);
+        btst.off
+            .render(gpu, Some((&mut btst.wr, btst.vp)), &ov, BG)?;
+        btst.off.read_rgba(gpu)
+    };
+    let bt_still = btshot([0.0; 2], 0.0)?;
+    // A quarter turn of the stroke, and a bare-hand hit (`hurt`: hurtTime
+    // 10, damage += 1·10) a tick and a half on: hurtTime 8.5, damageTime
+    // 8.5, hurtDir 1 (about 5.8°).
+    let bt_row = btshot([std::f32::consts::FRAC_PI_2; 2], 0.0)?;
+    let bt_hurt = btshot(
+        [0.0; 2],
+        rewo_gpu::entities::mth_sin(8.5) * 8.5 * 8.5 / 10.0,
+    )?;
+    btst.destroy(gpu);
+    let bt_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(bt_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let bt_differ = |a: &[u8], b: &[u8]| {
+        bt_mask(a)
+            .iter()
+            .zip(&bt_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let bt = [
+        bt_differ(&bt_still, &bt_row),
+        bt_differ(&bt_still, &bt_hurt),
+    ];
+    w.push(wit(
+        "m108.a_boat_rows_its_paddles_and_wobbles_when_hurt",
+        bt.iter().zip(BOAT_MOTION_MIN).all(|(v, min)| *v >= min),
+        format!(
+            "rowing {} px, hurt {} px of silhouette against the still boat (want >= {BOAT_MOTION_MIN:?})",
+            bt[0], bt[1]
         ),
     ));
 

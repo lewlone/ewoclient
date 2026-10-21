@@ -434,6 +434,9 @@ pub(super) struct RenderCheck {
     pub(super) baby_piglins: (bool, bool, bool),
     /// M390 — r216: whether a piglin drew admiring the gold in its off hand.
     pub(super) admiring_piglin: bool,
+    /// M393 — r217: the largest rowing time a drawn boat carried, per
+    /// paddle (left, right).
+    pub(super) boat_rowing_peak: [f32; 2],
     /// M321 — r176: whether a calf and a mooshroom calf drew as `BabyCowModel`.
     pub(super) calves: (bool, bool),
     /// M322 — r177: whether a piglet and a chick drew as `BabyPigModel` and
@@ -1306,7 +1309,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 216;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 217;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1883,6 +1886,17 @@ impl RenderCheck {
             format!(
                 "baby piglin seen: {}, baby zombified piglin seen: {}, adult piglin seen: {}",
                 self.baby_piglins.0, self.baby_piglins.1, self.baby_piglins.2
+            ),
+        );
+        // M393 — r217: r87's boat, steered with W, rows both paddles
+        // (`getRowingTime`: +π/8 a tick while paddling with a rider), and
+        // the drawn boat carries those rowing times into its model.
+        row(
+            "r217 the steered boat drew both paddles rowing",
+            self.boat_rowing_peak.iter().all(|&t| t >= 1.0),
+            format!(
+                "peak rowing time left {:.2}, right {:.2} (want >= 1.0 each)",
+                self.boat_rowing_peak[0], self.boat_rowing_peak[1]
             ),
         );
         // M390 — r216: that adult holds a gold ingot in its off hand, so

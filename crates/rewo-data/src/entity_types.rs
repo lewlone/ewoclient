@@ -648,6 +648,13 @@ impl EntityClasses {
         self
     }
 
+    /// As built, plus these ids as boats (`AbstractBoat`). **Unit tests
+    /// only**, beside [`Self::from_raw_ids`].
+    pub fn with_boats(mut self, ids: &[i32]) -> Self {
+        self.abstract_boat.extend(ids.iter().copied());
+        self
+    }
+
     /// As built, plus `piglin` as the piglin and `brute` as the brute (both
     /// `AbstractPiglin`). **Unit tests only**, beside [`Self::from_raw_ids`].
     pub fn with_piglins(mut self, piglin: &[i32], brute: &[i32]) -> Self {

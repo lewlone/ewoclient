@@ -4614,3 +4614,30 @@ fn a_piglins_arm_pose_follows_vanillas_order() {
     t.set_mob_flags(1, 0);
     assert_eq!(piglin_arm_pose_with(&t, 1, true, items), P::Default);
 }
+
+/// M393 — `AbstractBoatRenderer.submit`'s wobble: `sin(hurt)·hurt·
+/// damageTime/10·hurtDir` degrees with `hurt = hurtTime − a` and
+/// `damageTime = max(damage − a, 0)`; nothing once the hurt has run out.
+#[test]
+fn a_hurt_boat_wobbles_by_vanillas_formula() {
+    let st = rewo_world::entities::MobState {
+        boat_hurt: 9,
+        boat_hurt_dir: -1,
+        boat_damage: 9.0,
+        ..Default::default()
+    };
+    let w = boat_wobble(&st, 0.5);
+    let want = -(8.5_f32.sin() * 8.5 * 8.5 / 10.0);
+    assert!((w - want).abs() < 1e-3, "{w} vs {want}");
+    let spent = rewo_world::entities::MobState {
+        boat_hurt: 0,
+        boat_damage: 5.0,
+        ..st
+    };
+    assert_eq!(boat_wobble(&spent, 0.5), 0.0);
+    let no_damage = rewo_world::entities::MobState {
+        boat_damage: 0.2,
+        ..st
+    };
+    assert_eq!(boat_wobble(&no_damage, 0.5), 0.0, "damageTime clamps at 0");
+}

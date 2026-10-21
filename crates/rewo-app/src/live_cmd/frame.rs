@@ -1232,6 +1232,20 @@ impl LiveApp {
                 c.admiring_piglin |= d.kind == rewo_gpu::mobs::EntityModelKind::Piglin
                     && d.mob.piglin_pose == rewo_gpu::mobs::PiglinArmPose::AdmiringItem;
             }
+            // M393 — r217: the drawn boats' rowing times.
+            for d in draws.iter().filter(|d| {
+                matches!(
+                    d.kind,
+                    rewo_gpu::mobs::EntityModelKind::Boat
+                        | rewo_gpu::mobs::EntityModelKind::ChestBoat
+                        | rewo_gpu::mobs::EntityModelKind::Raft
+                        | rewo_gpu::mobs::EntityModelKind::ChestRaft
+                )
+            }) {
+                for i in 0..2 {
+                    c.boat_rowing_peak[i] = c.boat_rowing_peak[i].max(d.mob.boat_rowing[i]);
+                }
+            }
             // M319 — r174: the staged baby drowned, as its own model.
             if draws
                 .iter()

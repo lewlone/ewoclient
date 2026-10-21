@@ -6332,6 +6332,11 @@ impl PlaySession {
         if let Some(e) = self.world.entities.get_mut(id) {
             e.set_simulated([s.x, s.y, s.z], s.yaw);
         }
+        // M393 — `controlBoat`'s `setPaddleState` writes the client's own
+        // paddle flags, which the model rows by.
+        self.world
+            .entities
+            .set_boat_paddles(id, [Some(s.paddles[0]), Some(s.paddles[1])]);
         self.seat_local_player(id);
         self.player.yaw = boat_rider_yaw(self.player.yaw, s.yaw, s.delta_rotation);
         self.steered_boat = Some(steered);

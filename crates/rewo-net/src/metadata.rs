@@ -324,6 +324,13 @@ pub struct EntityMeta {
     pub avatar_profile: Option<rewo_world::entities::AvatarProfile>,
     /// M194 — INT at 10, `ItemFrame.DATA_ROTATION`.
     pub int10: Option<i32>,
+    /// M393 — FLOAT at 10: a boat's `VehicleEntity.DATA_ID_DAMAGE`
+    /// (kind-gated by the caller).
+    pub float10: Option<f32>,
+    /// M393 — BOOLEAN at 11 and 12: a boat's `AbstractBoat.DATA_ID_PADDLE_LEFT`
+    /// / `_RIGHT` (kind-gated by the caller).
+    pub bool11: Option<bool>,
+    pub bool12: Option<bool>,
     /// M251 — INT at 8: `ExperienceOrb.DATA_VALUE` (kind-gated by the
     /// caller; a boat's `DATA_ID_HURT` shares the index and serializer).
     pub int8: Option<i32>,
@@ -506,6 +513,9 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
                 None => break,
             },
             (10, 1) => meta.int10 = r.varint().ok(),
+            (10, 3) => meta.float10 = r.f32().ok(),
+            (11, 8) => meta.bool11 = r.u8().ok().map(|b| b != 0),
+            (12, 8) => meta.bool12 = r.u8().ok().map(|b| b != 0),
             (8, 1) => meta.int8 = r.varint().ok(),
             (9, 1) => meta.int9 = r.varint().ok(),
             (9, 34) => meta.painting9 = r.varint().ok(),
