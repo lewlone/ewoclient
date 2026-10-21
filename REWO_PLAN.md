@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M379 — the parrot walks and sits; the enderman's arms bob, the witch's nose wobbles (with M378) (2026-10-21)
+
+From the adult rest-pose audit. **M378**: every piece of the parrot is a part — standing, the wings rest splayed ∓0.0873, the legs and tail walk; sitting, everything drops 1.9 px, the tail tips π/6 and the legs fold. **M379**: the enderman's arms get `HumanoidModel.bobModelPart` before its halving and clamp; the witch's nose (a part for the witch only) wobbles at its id's rate and lifts while she drinks. **Unit tests**; **mobtexshot m96** (parrot sitting 1004 px, walking 85; mutant 0 / 0) and **m97** (drinking witch's nose 144 px changed, from a camera in front of her face; enderman bob 772; mutant 0 / 0).
+
 ### M377 — the wither breathes; clamped, still and swaying heads and tails (with M376) (2026-10-21)
 
 From the adult rest-pose audit. **M376**: the wither's ribcage and tail breathe (`(0.065 + 0.05·cos(age·0.1))·π`, the tail riding the ribcage's arc), and its side heads rest at their untargeted pose instead of copying the centre head. **M377**: the breeze's and the flying bat's heads no longer look; the camel's look is clamped (with its dash head lift) and the armadillo's; the bee's antennae bob; the tadpole's tail sways. **Unit tests**; **mobtexshot m94** (wither breath 289 px; mutant 0) and **m95** (camel 80° vs 30°, breeze and bat aside vs ahead all 0 px, the mutant 409 / 441 / 107; tadpole tail 26 px).

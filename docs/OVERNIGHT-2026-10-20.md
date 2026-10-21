@@ -23,10 +23,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 184 Rewo milestones, M194 to M377, in about 382 commits on
+- **What happened**: 186 Rewo milestones, M194 to M379, in about 384 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`e7be12fe`): 4,558 tests pass (4,244 at the
+- **Checks at the end** (`430d9590`): 4,562 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 215 of
   215 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M379**: the parrot's wings splay, its legs and tail walk and it sits (M378); the enderman's arms bob and the witch's nose wobbles and lifts when she drinks (M379).
 - **M377**: the wither breathes and its side heads rest (M376); the breeze's and bat's heads stay still, the camel and armadillo look within their clamps, the bee's antennae bob and the tadpole's tail sways (M377).
 - **M375**: the warden walks on its own capped gait and sways standing (M374); the ravager's legs swing at vanilla's reach and its mouth rests a sliver open (M375).
 - **M373**: the nautilus's soft body follows its look within ±10° (M372); the happy ghast's tentacles lean and swing (M373).
@@ -564,6 +565,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `430d9590` | **M379** — with M378: the parrot's parts, walk and sitting pose; the enderman's arm bob and the witch's nose; unit tests, mobtexshot **m96** and **m97**. |
 | `e7be12fe` | **M377** — with M376: the wither's breathing and side heads; the small rows (breeze, bat, camel, armadillo, bee, tadpole); unit tests, mobtexshot **m94** and **m95**. |
 | `cef6ce34` | **M375** — with M374: the warden's gait and idle sway; the ravager's legs and mouth; unit tests, eventshot c3 updated, mobtexshot **m92** and **m93**. |
 | `c43261ab` | **M373** — with M372: the nautilus body look; the happy ghast's tentacles; unit tests, mobtexshot **m90** and **m91**. |
@@ -987,6 +989,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M379: **4,562 tests passed, 0 failed; gates 51/51** (mobtexshot 97); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M377: **4,558 tests passed, 0 failed; gates 51/51** (mobtexshot 95); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M375: **4,554 tests passed, 0 failed**; **gates 51/51** (mobtexshot 93; re-run after fixing eventshot c3, which the first run failed 50/51: its warden-at-rest property expected no idle sway); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M373: **4,551 tests passed, 0 failed; gates 51/51** (mobtexshot 91); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
