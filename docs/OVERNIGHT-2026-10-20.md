@@ -23,12 +23,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 207 Rewo milestones, M194 to M400, in about 423 commits on
+- **What happened**: 208 Rewo milestones, M194 to M401, in about 425 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`0cde66c0`): 4,603 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 222 of
-  222 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`18e3de0e`): 4,604 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 223 of
+  223 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M401**: sleeping players, mannequins and villagers lie down in their beds.
 - **M400**: swimming and crawling players (and mannequins) lie flat and stroke.
 - **M399**: sneaking players (and mannequins posed crouching) draw crouching.
 - **M398**: the camera glides when you lie down, crouch or stand (it snapped).
@@ -584,6 +585,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `18e3de0e` | **M401** — sleepers lie down; unit test, mobtexshot **m115**, render check **r223**. |
 | `0cde66c0` | **M400** — the avatar swim pose; unit tests, mobtexshot **m114**, render check **r222**. |
 | `aa41ac01` | **M399** — the avatar crouch pose; unit test, mobtexshot **m113**, render check **r221**. |
 | `9850c514` | **M398** — the camera's eased eye height; unit test, render check **r220** (r142 loosened to the eased eye). |
@@ -1027,6 +1029,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M401: **4,604 tests passed, 0 failed; gates 51/51** (mobtexshot 115); render check **223/223** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M400: **4,603 tests passed, 0 failed; gates 51/51** (mobtexshot 114); render check **222/222** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M399: **4,601 tests passed, 0 failed; gates 51/51** (mobtexshot 113); render check **221/221** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M398: **4,600 tests passed, 0 failed; gates 51/51**; render check **220/220** on both runs (r220: first 1.763, last 0.419 / 0.411, largest rise 3.1e-4); clippy (both) and `cargo fmt --check` clean. The first chain failed clippy (an unused constant) and r142 / r220 (exact 0.35); the second failed r220's strict no-rise on 3.4 / 3.9e-4 of frame jitter.
@@ -1165,6 +1168,24 @@ released.
 - Nothing blocking. Still open from before (listening pass, the release
   zip on a fresh machine, the HUD's Java side in a running Minecraft): see
   `docs/OVERNIGHT-2026-10-15.md` "Needs the owner".
+
+### Paused here (usage cap, 2026-10-21)
+
+The run paused at Control Room's request (the account at 94% of its weekly
+budget, resetting Sunday 2026-10-25 15:00), after M401 with its checks green.
+Nothing was cut short. Next, in this order:
+
+1. **Fall-flying (elytra) avatars**: `AvatarRenderer.setupRotations`'
+   `XP(fallFlyingScale · (−90 − xRot))` and the flying `yRot` (the
+   entity's movement against its view), the head at −π/4, `ElytraModel`'s
+   crouch offset. M399 (crouch) and M400 (swim) are the pattern.
+2. **The riptide spin** (`isAutoSpinAttack`: `XP(−90 − xRot)`,
+   `YP(age · −75)`).
+3. The rest of "Follow-ups found, not done" below: banner and shield item
+   patterns, pot sherds, the mannequin's description label, skinned heads
+   in the first-person hand, the swirls' outline and fog.
+4. The dragon's flight-history terms, the only open row of
+   `docs/rewo/rest-pose-audit-2026-10-21.md`.
 
 ## Follow-ups found, not done
 

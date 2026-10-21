@@ -4014,6 +4014,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M401 — sleepers lie down in their beds (2026-10-21)
+
+After M399's crouch and M400's swim. `SLEEPING_POS_ID` (14) is routed for every living entity; `sleeper_bed_facing` is `getBedOrientation`; `MobCombat::sleep_angle` is `sleepDirectionToRotation` (or the body yaw without a bed); the placement replaces the body yaw with `YP(angle)·ZP(90)·YP(270)` (the death topple wins while dying); with a bed the sleeper moves toward the bed's foot by the standing eye height − 0.1 (1.62 for players, mannequins and villagers; else 0.85 of the height). **Unit test** (face up, head the bed's way); **mobtexshot m115** (1414 px; its first run crashed on a render after the stage's teardown, moved before it); render check **r223** (a sleeping mannequin draws lying down).
+
 ### M400 — players and mannequins swim (2026-10-21)
 
 After M399's crouch. `EntityState::swim_amount` is `LivingEntity.updateSwimAmount` (±0.09 a tick while visually swimming: the SWIMMING pose, or FALL_FLYING while not gliding); avatars carry it with `isInWater` and `isVisuallySwimming`; `humanoid_swim` is `HumanoidModel`'s swim block (the head toward −π/4, the arm stroke on `walkPos % 26`, the leg kick; `rot_lerp_rad` is Mth's with its loops); `AvatarRenderer.setupRotations`' `XP(lerp(swim, 0, inWater ? −90 − xRot : −90))` and `translate(0, −1, 0.3)` go into the placement before the topple. Fall-flying and sleeping avatars stay open. **Unit tests**; **mobtexshot m114** (3004 px; the swimmer 92 × 39 against 21 × 89 standing); render check **r222** (a swimming mannequin reaches swim amount 1).
