@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M369 — the snow golem turns with its look; the allay hovers, flies and holds (with M368) (2026-10-21)
+
+From the adult rest-pose audit. **M368**: `SnowGolemModel.setupAnim` turns the upper body a quarter of the head yaw and carries the arms round a 5 px circle with it (at rest z 0, not the layer's ±1). **M369**: `AllayModel.setupAnim`'s idle root bob, the body pitching into flight (`min(speed/0.3, 1)·π/4`), and the arms' splay with its idle bob, reaching forward while holding (holding as its steady state). **Unit tests** for each term; **mobtexshot m86** (snow golem 245 px; the head alone 23) and **m87** (allay flying 2008 px, holding 414; the wings alone 1454 and 0).
+
 ### M367 — the hoglin family holds its head, headbutts, flaps its ears and walks (2026-10-21)
 
 From the adult rest-pose audit. `HoglinModel.setupAnim` for the hoglin, zoglin and both babies: the head turns with the look but holds its pitch (`lerp(headbutt, 0.87266463, −π/9)`; the baby's also drops 2.5 px); the headbutt comes from entity event 4 (`EntityEvent::HoglinAttack`, `headbutt_factor` over the ten attack ticks); the ears flap (`∓2π/9 ∓ speed·sin(pos)`); the legs swing at 1.2 on the raw walk position in diagonal pairs. **Unit tests** for each term; **mobtexshot m85**: looking down draws exactly as ahead (0 px), the headbutt 1090 px, the walk 778 (the pre-M367 mutant: 485 px for the pitch, no headbutt).
