@@ -104,7 +104,14 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 87;
+const EXPECTED_WITNESSES: usize = 89;
+/// M370 — m88's floors: the look, the tail a second on. M370 measured 2521
+/// and 384; a still body and tail (the pre-M370 mutant) 0 and 17 (the
+/// spikes' wobble alone).
+const GUARDIAN_MIN: [usize; 2] = [1200, 150];
+/// M371 — m89's floors: the look, swimming vs still. M371 measured 1423 and
+/// 737; a still body (the pre-M371 mutant, its tail stroking) 0 and 83.
+const DOLPHIN_MIN: [usize; 2] = [700, 350];
 /// M368 — m86's floor. M368 measured 245 px; the head turning alone (the
 /// pre-M368 mutant, a still upper body and arms) 23.
 const SNOW_GOLEM_MIN: usize = 120;
@@ -6403,6 +6410,93 @@ fn run_check(
         "m87.an_allay_pitches_into_flight_and_reaches_for_what_it_holds",
         al_f >= ALLAY_MIN[0] && al_h >= ALLAY_MIN[1],
         format!("flying vs hovering {al_f} px, holding vs empty-handed {al_h} px (want >= {ALLAY_MIN:?})"),
+    ));
+
+    // m88 — M370: a guardian's body (vanilla's `head`) follows its look, and
+    // its tail sways over a second. m89 — M371: a dolphin's body follows its
+    // look, and swimming bobs it and strokes its tail (against still).
+    let mut gdst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.0, 1.4, -1.8),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    gdst.wr.set_entities(&[], gdst.right, gdst.up, 0.0);
+    gdst.off
+        .render(gpu, Some((&mut gdst.wr, gdst.vp)), &ov, BG)?;
+    let gd_empty = gdst.off.read_rgba(gpu)?;
+    let mut gdshot = |d: EntityDraw<'_>, t: f32| -> Result<Vec<u8>, String> {
+        gdst.wr.set_entities(&[d], gdst.right, gdst.up, t);
+        gdst.off
+            .render(gpu, Some((&mut gdst.wr, gdst.vp)), &ov, BG)?;
+        gdst.off.read_rgba(gpu)
+    };
+    let gd_ahead = gdshot(neutral_draw(EntityModelKind::Guardian), 0.0)?;
+    let gd_look = gdshot(
+        EntityDraw {
+            pitch: 25.0,
+            head_yaw: 30.0,
+            ..neutral_draw(EntityModelKind::Guardian)
+        },
+        0.0,
+    )?;
+    let gd_later = gdshot(neutral_draw(EntityModelKind::Guardian), 1.0)?;
+    let dl_ahead = gdshot(neutral_draw(EntityModelKind::Dolphin), 0.0)?;
+    let dl_look = gdshot(
+        EntityDraw {
+            pitch: 20.0,
+            head_yaw: 30.0,
+            ..neutral_draw(EntityModelKind::Dolphin)
+        },
+        0.0,
+    )?;
+    let dl_swim = gdshot(
+        EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                dolphin_moving: true,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Dolphin)
+        },
+        0.0,
+    )?;
+    gdst.destroy(gpu);
+    let gd_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(gd_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let gd_differ = |a: &[u8], b: &[u8]| {
+        gd_mask(a)
+            .iter()
+            .zip(&gd_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let (gd_l, gd_t) = (
+        gd_differ(&gd_ahead, &gd_look),
+        gd_differ(&gd_ahead, &gd_later),
+    );
+    w.push(wit(
+        "m88.a_guardian_looks_and_its_tail_sways",
+        gd_l >= GUARDIAN_MIN[0] && gd_t >= GUARDIAN_MIN[1],
+        format!("looking vs ahead {gd_l} px, a second later {gd_t} px (want >= {GUARDIAN_MIN:?})"),
+    ));
+    let (dl_l, dl_s) = (
+        gd_differ(&dl_ahead, &dl_look),
+        gd_differ(&dl_ahead, &dl_swim),
+    );
+    w.push(wit(
+        "m89.a_dolphin_looks_and_strokes_as_it_swims",
+        dl_l >= DOLPHIN_MIN[0] && dl_s >= DOLPHIN_MIN[1],
+        format!(
+            "looking vs ahead {dl_l} px, swimming vs still {dl_s} px (want >= {DOLPHIN_MIN:?})"
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

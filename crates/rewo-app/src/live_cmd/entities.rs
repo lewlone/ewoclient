@@ -1672,6 +1672,8 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M371 — set by the caller for a dolphin.
+        dolphin_moving: false,
         // M369 — set by the caller for an allay.
         allay_holding: 0.0,
         // M367 — set by the caller for a hoglin.
@@ -4923,6 +4925,15 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M371 — `DolphinRenderState.isMoving`: the horizontal movement over
+        // the tick (`getDeltaMovement().horizontalDistanceSqr() > 1e-7`).
+        if matches!(
+            kind,
+            EntityModelKind::Dolphin | EntityModelKind::DolphinBaby
+        ) {
+            let (a, b) = (e.render_pos(0.0), e.render_pos(1.0));
+            mob.dolphin_moving = (b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2) > 1.0e-7;
         }
         // M369 — `AllayRenderState.holdingAnimationProgress`, steady state:
         // 1 while the main hand holds anything.

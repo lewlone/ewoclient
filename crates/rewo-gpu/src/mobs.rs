@@ -159,6 +159,19 @@ pub enum Anim {
         order: u8,
         baby: bool,
     },
+    /// M370 — a guardian spike: `setupSpikes` moves its pivot to
+    /// `SPIKE_* · (1 + cos(age·1.5 + i)·0.01 − withdrawal)` (y + 16), the
+    /// withdrawal taken as 0 (spikes out).
+    GuardianSpike {
+        i: u8,
+    },
+    /// M370 — a guardian tail segment: `yRot` sin(tailAnimation)·π·(0.05,
+    /// 0.1, 0.15). The tail phase advances at the idle-in-water steady rate,
+    /// 0.125 a tick (vanilla eases it toward 0.5 while moving, 2 out of
+    /// water, from per-entity client state Rewo does not keep).
+    GuardianTail {
+        seg: u8,
+    },
     /// M369 — `AllayModel.setupAnim`'s body: `xRot` = flyingFactor · π/4
     /// (flyingFactor = min(speed / 0.3, 1)).
     AllayBody,
@@ -318,10 +331,15 @@ pub enum Anim {
     PufferFin {
         left: bool,
     },
-    /// Dolphin tail segments while swimming: `xRot = −k·cos(age·0.3)`.
+    /// Dolphin tail segments while swimming: `xRot = −k·cos(age·0.3)`, an
+    /// assignment over the segment's `rest` (M371; still, the rest holds).
     DolphinTail {
         k: f32,
+        rest: f32,
     },
+    /// M371 — `DolphinModel.setupAnim`'s body: the look (`xRot`, `yRot`),
+    /// and while swimming `xRot + (−0.05 − 0.05·cos(age·0.3))`.
+    DolphinBody,
     /// Silverfish/endermite segment wiggle: `yRot = cos(age·0.9 +
     /// i·0.15π)·π·ry·(1+|i−2|)`, `x += sin(same)·π·tx·|i−2|`.
     /// `with_x` mirrors vanilla's wing layers that copy yRot only.
@@ -782,6 +800,9 @@ pub struct MobCombat {
     /// state: 1 while the main hand holds an item (vanilla ramps it over 5
     /// ticks).
     pub allay_holding: f32,
+    /// M371 — `DolphinRenderState.isMoving`: the swim bob and the tail's
+    /// stroke run only then.
+    pub dolphin_moving: bool,
     /// M367 — `HoglinModel`'s headbutt lerp factor, `1 − |10 − 2r| / 10` of
     /// the remaining attack ticks `r` (0 at rest and at both ends).
     pub headbutt: f32,
@@ -5815,75 +5836,84 @@ fn sheep_baby() -> Model {
 }
 
 /// M324 — `BabyDolphinModel.createBodyLayer()` (64 x 64): the adult's part
-/// tree at the calf's size. A 6 x 5 x 8 body; under it the head with its nose,
-/// the two fins and the back fin (static, as Rewo's adult's are), and the
-/// two-segment tail on the swim stroke. Unlike the adult's, the tail has no
+/// tree at the calf's size. A 6 x 5 x 8 body (looking and bobbing since
+/// M371, as the adult's); under it the head with its nose, the two fins and
+/// the back fin, and the two-segment tail on the swim stroke. Unlike the adult's, the tail has no
 /// base tilt.
 fn dolphin_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::at([0.0, 21.5, 0.0]);
+    // M371 — the body is a part: `DolphinModel.setupAnim` turns it with the
+    // look (and bobs it while swimming), and everything rides on it.
+    let bp = b.part_named(
+        "body",
+        [0.0, 21.5, 0.0],
+        [0.0; 3],
+        Anim::DolphinBody,
+        1.0,
+        Option::None,
+    );
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (20.0, 0.0),
         [-3.0, -2.5, -4.0],
         [6.0, 5.0, 8.0],
         0.0,
         false,
-        &[body],
+        NONE,
     );
     let head = Fold::at([0.0, 1.0, -4.0]);
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (0.0, 0.0),
         [-3.0, -3.5, -4.0],
         [6.0, 5.0, 4.0],
         0.0,
         false,
-        &[head, body],
+        &[head],
     );
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (0.0, 9.0),
         [-1.0, -1.0, -2.0],
         [2.0, 2.0, 2.0],
         0.0,
         false,
-        &[Fold::at([0.0, 0.5, -4.0]), head, body],
+        &[Fold::at([0.0, 0.5, -4.0]), head],
     );
     for (x, z_rot, uv, mirror) in [
         (1.8, 1.7017, (34.0, 18.0), false),
         (-1.8, -1.7017, (48.0, 18.0), true),
     ] {
         b.cube_f(
-            STATIC_PART,
+            bp,
             0,
             uv,
             [-0.5, -1.5, -0.5],
             [1.0, 3.0, 6.0],
             0.0,
             mirror,
-            &[Fold::rot([0.8727, 0.0, z_rot], [x, 0.85, -2.6]), body],
+            &[Fold::rot([0.8727, 0.0, z_rot], [x, 0.85, -2.6])],
         );
     }
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (42.0, 0.0),
         [-0.5, -1.0, 1.0],
         [1.0, 3.0, 4.0],
         0.0,
         false,
-        &[Fold::rot([0.8727, 0.0, 0.0], [0.0, -1.0, -2.7]), body],
+        &[Fold::rot([0.8727, 0.0, 0.0], [0.0, -1.0, -2.7])],
     );
     let tail = b.part_ext(
-        [0.0, 22.5, 4.0],
+        [0.0, 1.0, 4.0],
         [0.0; 3],
-        Anim::DolphinTail { k: 0.1 },
+        Anim::DolphinTail { k: 0.1, rest: 0.0 },
         1.0,
-        Option::None,
+        Some(bp),
     );
     b.cube(
         tail,
@@ -5896,7 +5926,7 @@ fn dolphin_baby() -> Model {
     let tail_fin = b.part_ext(
         [0.0, 0.0, 6.0],
         [0.0; 3],
-        Anim::DolphinTail { k: 0.2 },
+        Anim::DolphinTail { k: 0.2, rest: 0.0 },
         1.0,
         Some(tail),
     );
@@ -7707,30 +7737,37 @@ fn phantom() -> Model {
     b.finish(1.0)
 }
 
+/// `GuardianModel`'s spike table (`SPIKE_X_ROT` .. `SPIKE_Z`): each spike's
+/// rotation in half turns and its direction from the body's centre.
+pub const GUARDIAN_SPIKE_X_ROT: [f32; 12] = [
+    1.75, 0.25, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.25, 0.75, 0.0, 0.0,
+];
+pub const GUARDIAN_SPIKE_Y_ROT: [f32; 12] = [
+    0.0, 0.0, 0.0, 0.0, 0.25, 1.75, 1.25, 0.75, 0.0, 0.0, 0.0, 0.0,
+];
+pub const GUARDIAN_SPIKE_Z_ROT: [f32; 12] = [
+    0.0, 0.0, 0.25, 1.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.75, 1.25,
+];
+pub const GUARDIAN_SPIKE_X: [f32; 12] = [
+    0.0, 0.0, 8.0, -8.0, -8.0, 8.0, 8.0, -8.0, 0.0, 0.0, 8.0, -8.0,
+];
+pub const GUARDIAN_SPIKE_Y: [f32; 12] = [
+    -8.0, -8.0, -8.0, -8.0, 0.0, 0.0, 0.0, 0.0, 8.0, 8.0, 8.0, 8.0,
+];
+pub const GUARDIAN_SPIKE_Z: [f32; 12] = [
+    8.0, -8.0, 0.0, 0.0, -8.0, -8.0, 8.0, 8.0, 8.0, -8.0, 0.0, 0.0,
+];
+
 /// `GuardianModel`: the boxy body with side/top/bottom fins, 12 radial
-/// spikes at their rest extension, the eye, and the 3-segment tail.
+/// spikes, the eye, and the 3-segment tail. M370 — the body (vanilla's
+/// `head`) looks, the spikes wobble and the tail sways.
 fn guardian_like(scale: f32) -> Model {
-    const SPIKE_X_ROT: [f32; 12] = [
-        1.75, 0.25, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.25, 0.75, 0.0, 0.0,
-    ];
-    const SPIKE_Y_ROT: [f32; 12] = [
-        0.0, 0.0, 0.0, 0.0, 0.25, 1.75, 1.25, 0.75, 0.0, 0.0, 0.0, 0.0,
-    ];
-    const SPIKE_Z_ROT: [f32; 12] = [
-        0.0, 0.0, 0.25, 1.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.75, 1.25,
-    ];
-    const SPIKE_X: [f32; 12] = [
-        0.0, 0.0, 8.0, -8.0, -8.0, 8.0, 8.0, -8.0, 0.0, 0.0, 8.0, -8.0,
-    ];
-    const SPIKE_Y: [f32; 12] = [
-        -8.0, -8.0, -8.0, -8.0, 0.0, 0.0, 0.0, 0.0, 8.0, 8.0, 8.0, 8.0,
-    ];
-    const SPIKE_Z: [f32; 12] = [
-        8.0, -8.0, 0.0, 0.0, -8.0, -8.0, 8.0, 8.0, 8.0, -8.0, 0.0, 0.0,
-    ];
     let mut b = ModelBuilder::new();
+    // M370 — vanilla's whole body is the `head` part (`PartPose.ZERO`), which
+    // looks; the spikes, eye and tail are its children.
+    let head = b.part_named("head", [0.0; 3], [0.0; 3], Anim::Head, 1.0, Option::None);
     b.cube(
-        STATIC_PART,
+        head,
         0,
         (0.0, 0.0),
         [-6.0, 10.0, -8.0],
@@ -7738,7 +7775,7 @@ fn guardian_like(scale: f32) -> Model {
         NONE,
     );
     b.cube(
-        STATIC_PART,
+        head,
         0,
         (0.0, 28.0),
         [-8.0, 10.0, -6.0],
@@ -7746,7 +7783,7 @@ fn guardian_like(scale: f32) -> Model {
         NONE,
     );
     b.cube_m(
-        STATIC_PART,
+        head,
         0,
         (0.0, 28.0),
         [6.0, 10.0, -6.0],
@@ -7754,7 +7791,7 @@ fn guardian_like(scale: f32) -> Model {
         NONE,
     );
     b.cube(
-        STATIC_PART,
+        head,
         0,
         (16.0, 40.0),
         [-6.0, 8.0, -6.0],
@@ -7762,7 +7799,7 @@ fn guardian_like(scale: f32) -> Model {
         NONE,
     );
     b.cube(
-        STATIC_PART,
+        head,
         0,
         (16.0, 40.0),
         [-6.0, 22.0, -6.0],
@@ -7770,27 +7807,37 @@ fn guardian_like(scale: f32) -> Model {
         NONE,
     );
     for i in 0..12 {
-        // Rest pose: getSpike*(i, 0, 0) with offset 1 + 0.01·cos(i).
+        // Rest pose: getSpike*(i, 0, 0) with offset 1 + 0.01·cos(i); the
+        // wobble about it is `Anim::GuardianSpike`.
         let k = 1.0 + 0.01 * (i as f32).cos();
-        let off = [SPIKE_X[i] * k, 16.0 + SPIKE_Y[i] * k, SPIKE_Z[i] * k];
-        let rot = [
-            PI * SPIKE_X_ROT[i],
-            PI * SPIKE_Y_ROT[i],
-            PI * SPIKE_Z_ROT[i],
+        let pivot = [
+            GUARDIAN_SPIKE_X[i] * k,
+            16.0 + GUARDIAN_SPIKE_Y[i] * k,
+            GUARDIAN_SPIKE_Z[i] * k,
         ];
-        b.cube_f(
-            STATIC_PART,
+        let rot = [
+            PI * GUARDIAN_SPIKE_X_ROT[i],
+            PI * GUARDIAN_SPIKE_Y_ROT[i],
+            PI * GUARDIAN_SPIKE_Z_ROT[i],
+        ];
+        let spike = b.part_ext(
+            pivot,
+            rot,
+            Anim::GuardianSpike { i: i as u8 },
+            1.0,
+            Some(head),
+        );
+        b.cube(
+            spike,
             0,
             (0.0, 0.0),
             [-1.0, -4.5, -1.0],
             [2.0, 9.0, 2.0],
-            0.0,
-            false,
-            &[Fold::rot(rot, off)],
+            NONE,
         );
     }
     b.cube_f(
-        STATIC_PART,
+        head,
         0,
         (8.0, 0.0),
         [-1.0, 15.0, 0.0],
@@ -7799,46 +7846,31 @@ fn guardian_like(scale: f32) -> Model {
         false,
         &[Fold::at([0.0, 0.0, -8.25])],
     );
-    b.cube(
-        STATIC_PART,
-        0,
-        (40.0, 0.0),
-        [-2.0, 14.0, 7.0],
-        [4.0, 4.0, 8.0],
-        NONE,
+    let t0 = b.part_ext(
+        [0.0; 3],
+        [0.0; 3],
+        Anim::GuardianTail { seg: 0 },
+        1.0,
+        Some(head),
     );
-    let t1 = Fold::at([-1.5, 0.5, 14.0]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (0.0, 54.0),
-        [0.0, 14.0, 0.0],
-        [3.0, 3.0, 7.0],
-        0.0,
-        false,
-        &[t1],
+    b.cube(t0, 0, (40.0, 0.0), [-2.0, 14.0, 7.0], [4.0, 4.0, 8.0], NONE);
+    let t1 = b.part_ext(
+        [-1.5, 0.5, 14.0],
+        [0.0; 3],
+        Anim::GuardianTail { seg: 1 },
+        1.0,
+        Some(t0),
     );
-    let t2 = Fold::at([0.5, 0.5, 6.0]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (41.0, 32.0),
-        [0.0, 14.0, 0.0],
-        [2.0, 2.0, 6.0],
-        0.0,
-        false,
-        &[t2, t1],
+    b.cube(t1, 0, (0.0, 54.0), [0.0, 14.0, 0.0], [3.0, 3.0, 7.0], NONE);
+    let t2 = b.part_ext(
+        [0.5, 0.5, 6.0],
+        [0.0; 3],
+        Anim::GuardianTail { seg: 2 },
+        1.0,
+        Some(t1),
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (25.0, 19.0),
-        [1.0, 10.5, 3.0],
-        [1.0, 9.0, 9.0],
-        0.0,
-        false,
-        &[t2, t1],
-    );
+    b.cube(t2, 0, (41.0, 32.0), [0.0, 14.0, 0.0], [2.0, 2.0, 6.0], NONE);
+    b.cube(t2, 0, (25.0, 19.0), [1.0, 10.5, 3.0], [1.0, 9.0, 9.0], NONE);
     b.finish(scale)
 }
 
@@ -9359,60 +9391,69 @@ fn axolotl() -> Model {
 /// head.
 fn dolphin() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::at([0.0, 22.0, -5.0]);
+    // M371 — the body is a part: `DolphinModel.setupAnim` turns it with the
+    // look (and bobs it while swimming), and everything rides on it.
+    let bp = b.part_named(
+        "body",
+        [0.0, 22.0, -5.0],
+        [0.0; 3],
+        Anim::DolphinBody,
+        1.0,
+        Option::None,
+    );
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (22.0, 0.0),
         [-4.0, -7.0, 0.0],
         [8.0, 7.0, 13.0],
         0.0,
         false,
-        &[body],
+        NONE,
     );
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (51.0, 0.0),
         [-0.5, 0.0, 8.0],
         [1.0, 4.0, 5.0],
         0.0,
         false,
-        &[Fold::rot([PI / 3.0, 0.0, 0.0], [0.0, 0.0, 0.0]), body],
+        &[Fold::rot([PI / 3.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
     );
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (48.0, 20.0),
         [-0.5, -4.0, 0.0],
         [1.0, 4.0, 7.0],
         0.0,
         true,
-        &[
-            Fold::rot([PI / 3.0, 0.0, PI * 2.0 / 3.0], [2.0, -2.0, 4.0]),
-            body,
-        ],
+        &[Fold::rot([PI / 3.0, 0.0, PI * 2.0 / 3.0], [2.0, -2.0, 4.0])],
     );
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (48.0, 20.0),
         [-0.5, -4.0, 0.0],
         [1.0, 4.0, 7.0],
         0.0,
         false,
-        &[
-            Fold::rot([PI / 3.0, 0.0, -PI * 2.0 / 3.0], [-2.0, -2.0, 4.0]),
-            body,
-        ],
+        &[Fold::rot(
+            [PI / 3.0, 0.0, -PI * 2.0 / 3.0],
+            [-2.0, -2.0, 4.0],
+        )],
     );
     // Two-segment tail: both sway with the swim stroke, fin harder.
     let tail = b.part_ext(
-        [0.0, 19.5, 6.0],
+        [0.0, -2.5, 11.0],
         [-0.10471976, 0.0, 0.0],
-        Anim::DolphinTail { k: 0.1 },
+        Anim::DolphinTail {
+            k: 0.1,
+            rest: -0.10471976,
+        },
         1.0,
-        Option::None,
+        Some(bp),
     );
     b.cube(
         tail,
@@ -9425,7 +9466,7 @@ fn dolphin() -> Model {
     let tail_fin = b.part_ext(
         [0.0, 0.0, 9.0],
         [0.0; 3],
-        Anim::DolphinTail { k: 0.2 },
+        Anim::DolphinTail { k: 0.2, rest: 0.0 },
         1.0,
         Some(tail),
     );
@@ -9439,24 +9480,24 @@ fn dolphin() -> Model {
     );
     let head = Fold::at([0.0, -4.0, -3.0]);
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (0.0, 0.0),
         [-4.0, -3.0, -3.0],
         [8.0, 7.0, 6.0],
         0.0,
         false,
-        &[head, body],
+        &[head],
     );
     b.cube_f(
-        STATIC_PART,
+        bp,
         0,
         (0.0, 13.0),
         [-1.0, 2.0, -7.0],
         [2.0, 2.0, 4.0],
         0.0,
         false,
-        &[head, body],
+        &[head],
     );
     b.finish(1.0)
 }
@@ -15222,12 +15263,12 @@ mod dolphin_calf_tests {
         let tail = m
             .parts
             .iter()
-            .position(|p| p.anim == Anim::DolphinTail { k: 0.1 })
+            .position(|p| p.anim == Anim::DolphinTail { k: 0.1, rest: 0.0 })
             .unwrap();
         let fin = m
             .parts
             .iter()
-            .position(|p| p.anim == Anim::DolphinTail { k: 0.2 })
+            .position(|p| p.anim == Anim::DolphinTail { k: 0.2, rest: 0.0 })
             .unwrap();
         assert_eq!(m.parts[fin].parent, Some(tail as u16));
         let span = |q: &RawQuad, i: usize| {
@@ -16273,5 +16314,59 @@ mod allay_pose_tests {
         assert_eq!(anim("body"), Some(Anim::AllayBody));
         assert_eq!(anim("right_arm"), Some(Anim::AllayArm { left: false }));
         assert_eq!(anim("left_arm"), Some(Anim::AllayArm { left: true }));
+    }
+}
+
+#[cfg(test)]
+mod guardian_pose_tests {
+    use super::*;
+
+    /// M370 — the guardian (and the elder) is one looking `head` part at
+    /// the origin carrying twelve spikes and a three-segment tail chain.
+    #[test]
+    fn the_guardian_looks_wobbles_and_sways() {
+        for m in [guardian(), elder_guardian()] {
+            let head = m.parts.iter().position(|p| p.name == "head").unwrap();
+            assert_eq!(m.parts[head].anim, Anim::Head);
+            assert_eq!(m.parts[head].pivot, [0.0; 3]);
+            let spikes = m
+                .parts
+                .iter()
+                .filter(|p| {
+                    matches!(p.anim, Anim::GuardianSpike { .. }) && p.parent == Some(head as u16)
+                })
+                .count();
+            assert_eq!(spikes, 12);
+            let tail: Vec<usize> = (0..m.parts.len())
+                .filter(|&i| matches!(m.parts[i].anim, Anim::GuardianTail { .. }))
+                .collect();
+            assert_eq!(tail.len(), 3);
+            assert_eq!(m.parts[tail[0]].parent, Some(head as u16));
+            assert_eq!(m.parts[tail[1]].parent, Some(tail[0] as u16));
+            assert_eq!(m.parts[tail[2]].parent, Some(tail[1] as u16));
+        }
+    }
+}
+
+#[cfg(test)]
+mod dolphin_pose_tests {
+    use super::*;
+
+    /// M371 — both dolphins: one looking `body` part carries the head, the
+    /// fins and the tail chain; the adult's tail rests at −0.1047.
+    #[test]
+    fn the_dolphins_body_looks_and_carries_the_rest() {
+        for (m, rest) in [(dolphin(), -0.10471976_f32), (dolphin_baby(), 0.0)] {
+            let body = m.parts.iter().position(|p| p.name == "body").unwrap();
+            assert_eq!(m.parts[body].anim, Anim::DolphinBody);
+            let tail = m
+                .parts
+                .iter()
+                .position(|p| p.anim == Anim::DolphinTail { k: 0.1, rest })
+                .unwrap();
+            assert_eq!(m.parts[tail].parent, Some(body as u16));
+            assert_eq!(m.parts[tail].rot[0], rest);
+            assert!(m.quads.iter().all(|q| q.part != STATIC_PART));
+        }
     }
 }

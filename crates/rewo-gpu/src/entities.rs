@@ -6011,6 +6011,21 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 rot[2] = dance_speed.cos() * 16.0 * DEG * (1.0 - spin);
             }
         }
+        // M370 — `GuardianModel.setupAnim`: the spikes' wobble about their
+        // rest (which bakes in `cos(i)·0.01`) and the tail's sway.
+        GuardianSpike { i } => {
+            let i = usize::from(i);
+            let d = ((c.age * 1.5 + i as f32).cos() - (i as f32).cos()) * 0.01;
+            off = [
+                mobs::GUARDIAN_SPIKE_X[i] * d,
+                mobs::GUARDIAN_SPIKE_Y[i] * d,
+                mobs::GUARDIAN_SPIKE_Z[i] * d,
+            ];
+        }
+        GuardianTail { seg } => {
+            let k = [0.05, 0.1, 0.15][usize::from(seg.min(2))];
+            rot[1] = (c.age * 0.125).sin() * PI * k;
+        }
         // M369 — `AllayModel.setupAnim`'s body pitch and arms.
         AllayBody => rot[0] = (c.amt / 0.3).min(1.0) * PI / 4.0,
         AllayArm { left } => {
@@ -6076,9 +6091,19 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
         }
-        DolphinTail { k } => {
-            let gate = (c.amt * 6.0).min(1.0);
-            rot[0] = -k * (c.age * 0.3).cos() * gate;
+        // M371 — `DolphinModel.setupAnim`: while moving the tail's `xRot` is
+        // assigned (the rest replaced, not added to); still, the rest holds.
+        DolphinTail { k, rest } => {
+            if c.mob.dolphin_moving {
+                rot[0] = -k * (c.age * 0.3).cos() - rest;
+            }
+        }
+        DolphinBody => {
+            rot[0] = c.pitch;
+            rot[1] = c.net;
+            if c.mob.dolphin_moving {
+                rot[0] += -0.05 - 0.05 * (c.age * 0.3).cos();
+            }
         }
         Crawl { i, ry, tx, with_x } => {
             let ph = c.age * 0.9 + i as f32 * 0.15 * PI;
@@ -10479,5 +10504,102 @@ mod allay_pose_anim_tests {
         assert!((h[2] + 0.43633232).abs() < 1e-6);
         let (hf, _) = anim_delta(AllayArm { left: false }, 1.0, &ctx(0.6, age, 1.0));
         assert!((hf[0] + 1.134464).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod guardian_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(age: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        }
+    }
+
+    /// M370 — `GuardianModel.setupAnim`: each spike rides out along its
+    /// direction by `cos(age·1.5 + i)·0.01` (none at age 0, where the rest
+    /// pose sits); the tail segments sway 0.05π / 0.1π / 0.15π on
+    /// sin(tail phase), the phase 0.125 a tick.
+    #[test]
+    fn the_guardian_spikes_wobble_and_its_tail_sways() {
+        use mobs::Anim::*;
+        assert_eq!(
+            anim_delta(GuardianSpike { i: 3 }, 1.0, &ctx(0.0)).1,
+            [0.0; 3]
+        );
+        let age = 9.0_f32;
+        let (_, o) = anim_delta(GuardianSpike { i: 5 }, 1.0, &ctx(age));
+        let d = ((age * 1.5 + 5.0).cos() - 5.0_f32.cos()) * 0.01;
+        assert!((o[0] - 8.0 * d).abs() < 1e-6 && o[1] == 0.0 && (o[2] + 8.0 * d).abs() < 1e-6);
+        for (seg, k) in [(0u8, 0.05_f32), (1, 0.1), (2, 0.15)] {
+            let (r, _) = anim_delta(GuardianTail { seg }, 1.0, &ctx(age));
+            assert!((r[1] - (age * 0.125).sin() * PI * k).abs() < 1e-6);
+        }
+    }
+}
+
+#[cfg(test)]
+mod dolphin_anim_tests {
+    use super::*;
+
+    fn ctx(moving: bool, age: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.2,
+            net: 0.3,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                dolphin_moving: moving,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M371 — `DolphinModel.setupAnim`: the body looks, and swimming bobs;
+    /// the tail's stroke replaces its rest while moving (so the adult tail
+    /// at the stroke's zero is level, not 6° low) and leaves it alone still.
+    #[test]
+    fn the_dolphin_looks_bobs_and_strokes() {
+        use mobs::Anim::*;
+        let age = 4.0_f32;
+        assert_eq!(
+            anim_delta(DolphinBody, 1.0, &ctx(false, age)).0,
+            [0.2, 0.3, 0.0]
+        );
+        let (b, _) = anim_delta(DolphinBody, 1.0, &ctx(true, age));
+        assert!((b[0] - (0.2 - 0.05 - 0.05 * (age * 0.3).cos())).abs() < 1e-6);
+        let rest = -0.10471976_f32;
+        let tail = DolphinTail { k: 0.1, rest };
+        assert_eq!(anim_delta(tail, 1.0, &ctx(false, age)).0, [0.0; 3]);
+        let (t, _) = anim_delta(tail, 1.0, &ctx(true, age));
+        assert!((rest + t[0] - (-0.1 * (age * 0.3).cos())).abs() < 1e-6);
     }
 }

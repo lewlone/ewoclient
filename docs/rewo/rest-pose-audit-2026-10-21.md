@@ -28,8 +28,8 @@ The baby layers had their own audit on 2026-10-20 (see
 | hoglin | legs at 0.6662/1.4; vanilla raw pos ·1.2; ears never flap | `HoglinModel` 89-98 | M367 |
 | snow golem | upper body and arms never follow a quarter of the head yaw; arm pivots' z off by 1 px | `SnowGolemModel` 57-65 | M368 |
 | allay | arms hang straight (vanilla splays them ~25° with an idle bob); body never pitches when flying; idle root bob | `AllayModel` 104-112 | M369 (holding as its steady state, no 5-tick ramp) |
-| guardian, elder guardian | the whole body (vanilla's "head") never looks; the tail never sways | `GuardianModel` 102-127 | open |
-| dolphin | the body never looks; the swim bob; the tail swims 6° too low (assignment, not addition) | `DolphinModel` 65-69 | open |
+| guardian, elder guardian | the whole body (vanilla's "head") never looks; the tail never sways | `GuardianModel` 102-127 | M370 (tail phase at the idle 0.125/tick; the eye's tracking and the spikes' withdrawal not modelled) |
+| dolphin | the body never looks; the swim bob; the tail swims 6° too low (assignment, not addition) | `DolphinModel` 65-69 | M371 (adult and calf; moving = the tick's horizontal displacement) |
 | nautilus (all three) | the soft body never follows the look (±10° clamp) | `NautilusModel` 126-131 | open |
 | happy ghast | tentacles hang straight and still (vanilla 0.4 + 0.2·sin rest/sway); harnessed body not scaled 0.9375 | `HappyGhastModel` 95-101 | open |
 | warden | no idle sway; walk at 0.6662/1.4 (vanilla 0.8662, capped 0.5; right arm on sin) | `WardenModel` 145-170 | open |
