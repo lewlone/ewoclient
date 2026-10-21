@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 112;
+const EXPECTED_WITNESSES: usize = 113;
+/// M399 — m113's floor: a crouching player's silhouette against a
+/// standing one's. M399 measured 1452; before M399 no avatar crouched (0
+/// by construction, not run).
+const CROUCH_MIN: usize = 725;
 /// M397 — m112's floor: the pixels a sulfur cube's core leaves when it
 /// holds a block (the block itself is a block-entity draw, not here).
 /// M397 measured 682 (m111's lit flash recolours 674: about the core
@@ -7638,6 +7642,56 @@ fn run_check(
         format!(
             "swelling {swell_px} px of silhouette, the lit core {lit_px} px recoloured (want >= {SULFUR_FUSE_MIN:?}), the flash keeps the outline: {lit_outline}"
         ),
+    ));
+
+    // m113 — M399: a crouching player bends and sits 2/16 lower
+    // (`HumanoidModel`'s crouch block, `AvatarRenderer.getRenderOffset`),
+    // seen from the side.
+    let mut crst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.8, 1.0, 0.0),
+        Vec3::new(0.0, 0.9, 0.0),
+    )?;
+    crst.wr.set_entities(&[], crst.right, crst.up, 0.0);
+    crst.off
+        .render(gpu, Some((&mut crst.wr, crst.vp)), &ov, BG)?;
+    let cr_empty = crst.off.read_rgba(gpu)?;
+    let mut crshot = |crouching: bool| -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            pos: [0.0, if crouching { -2.0 / 16.0 } else { 0.0 }, 0.0],
+            mob: rewo_gpu::mobs::MobCombat {
+                crouching,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Player)
+        };
+        crst.wr.set_entities(&[d], crst.right, crst.up, 0.0);
+        crst.off
+            .render(gpu, Some((&mut crst.wr, crst.vp)), &ov, BG)?;
+        crst.off.read_rgba(gpu)
+    };
+    let (cr_stand, cr_crouch) = (crshot(false)?, crshot(true)?);
+    crst.destroy(gpu);
+    let cr_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(cr_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let crouch_px = cr_mask(&cr_stand)
+        .iter()
+        .zip(&cr_mask(&cr_crouch))
+        .filter(|(x, y)| x != y)
+        .count();
+    w.push(wit(
+        "m113.a_crouching_player_bends",
+        crouch_px >= CROUCH_MIN,
+        format!("{crouch_px} px of silhouette against standing (want >= {CROUCH_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------

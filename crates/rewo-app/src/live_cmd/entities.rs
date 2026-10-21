@@ -1692,6 +1692,9 @@ pub(crate) fn resolve_mob_combat(
         sulfur_core_flash: false,
         // M397 — set by the caller for a sulfur cube.
         sulfur_block: None,
+        // M399 — `Entity.isCrouching()` (the CROUCHING pose, ordinal 5),
+        // which `HumanoidMobRenderer` reads; only an avatar's model bends.
+        crouching: matches!(kind, K::Player | K::PlayerSlim) && entities.pose(id) == POSE_CROUCHING,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -1713,6 +1716,9 @@ pub(crate) fn resolve_mob_combat(
         turtle_on_land: false,
     }
 }
+
+/// M399 — `Pose.CROUCHING`'s ordinal (metadata index 6's POSE).
+pub(crate) const POSE_CROUCHING: u8 = 5;
 
 /// M397 — the block registry, for a sulfur cube's contained block; set
 /// once at session setup (unset, no sulfur cube draws one).
@@ -5433,7 +5439,15 @@ pub(super) fn collect_entities<'a>(
         out.push(EntityDraw {
             pos: [
                 p[0] as f32 + forward[0],
-                p[1] as f32 + if is_orb { 0.1 } else { 0.0 },
+                // M399 — `AvatarRenderer.getRenderOffset`: a crouching
+                // avatar sits `scale·2/16` lower.
+                p[1] as f32
+                    + if is_orb { 0.1 } else { 0.0 }
+                    + if mob.crouching {
+                        -2.0 / 16.0 * scale_mul
+                    } else {
+                        0.0
+                    },
                 p[2] as f32 + forward[1],
             ],
             width: w,

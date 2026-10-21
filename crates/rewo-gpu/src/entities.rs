@@ -5686,6 +5686,32 @@ pub(crate) fn ease_in_out_expo(x: f32) -> f32 {
 /// (composed as a single `rotateZYX`, exactly vanilla) + a pivot offset for
 /// the anims that move parts (blaze rods, crawler segments).
 fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
+    let (mut rot, mut off) = anim_delta_base(anim, amp, c);
+    // M399 — `HumanoidModel.setupAnim`'s crouch block (after the attack,
+    // before the bob, whose additions commute with these): the body bends
+    // 0.5 forward and drops 3.2 with the arms, which also swing 0.4
+    // forward; the legs step back 4 and the head drops 4.2. Only an avatar
+    // sets `crouching`, so the shared head and leg anims see it only there.
+    if c.mob.crouching {
+        use mobs::Anim::*;
+        match anim {
+            HumanoidBody => {
+                rot[0] = 0.5;
+                off[1] += 3.2;
+            }
+            HumanoidArmRight | HumanoidArmLeft => {
+                rot[0] += 0.4;
+                off[1] += 3.2;
+            }
+            LegRight | LegLeft => off[2] += 4.0,
+            Head => off[1] += 4.2,
+            _ => {}
+        }
+    }
+    (rot, off)
+}
+
+fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
     use mobs::Anim::*;
     use std::f32::consts::PI;
     let mut rot = [0.0f32; 3];
@@ -6892,12 +6918,10 @@ fn apply_pose_effect(
         // arm.yRot = head.yRot -/+ PI/12;      // right subtracts, left adds
         // ```
         //
-        // The crouch term is inert: Rewo does not model `isCrouching` (it is
-        // declared unmodelled alongside swim and fall-flying), so the flag is
-        // false and the subtraction is a no-op — the same "exactly vanilla for
-        // the states we reach" argument the spear pose already makes.
+        // M399 — the crouch term is live: an avatar's `crouching`.
         mobs::ArmPose::Spyglass => {
-            rot[0] = (c.pitch - 1.919_862_2).clamp(-2.4, 3.3);
+            let crouch = if c.mob.crouching { PI / 12.0 } else { 0.0 };
+            rot[0] = (c.pitch - 1.919_862_2 - crouch).clamp(-2.4, 3.3);
             rot[1] = c.net
                 + if right_handed_pose {
                     -PI / 12.0
@@ -11508,6 +11532,45 @@ mod boat_anim_tests {
             anim_delta(mobs::Anim::BoatBubble, 1.0, &ctx([0.0; 2], 0.0)).0,
             [0.0; 3]
         );
+    }
+
+    /// M399 — a crouching avatar: the body bends 0.5 and drops 3.2 with the
+    /// arms (which swing 0.4 further), the legs step back 4, the head drops
+    /// 4.2; the spyglass arm lowers π/12 more; nothing without the flag.
+    #[test]
+    fn a_crouching_avatar_bends_as_humanoid_model_bends_it() {
+        use mobs::Anim as A;
+        use std::f32::consts::PI;
+        let stand = ctx([0.0; 2], 0.0);
+        let mut crouch = ctx([0.0; 2], 0.0);
+        crouch.mob.crouching = true;
+        let d = |a: A, c: &AnimCtx| anim_delta(a, 1.0, c);
+        assert_eq!(d(A::HumanoidBody, &crouch).0[0], 0.5);
+        assert_eq!(d(A::HumanoidBody, &crouch).1[1], 3.2);
+        for arm in [A::HumanoidArmRight, A::HumanoidArmLeft] {
+            let (s, c) = (d(arm, &stand), d(arm, &crouch));
+            assert!((c.0[0] - s.0[0] - 0.4).abs() < 1e-6);
+            assert!((c.1[1] - s.1[1] - 3.2).abs() < 1e-6);
+        }
+        assert_eq!(d(A::LegRight, &crouch).1[2], 4.0);
+        assert_eq!(d(A::Head, &crouch).1[1], 4.2);
+        for a in [A::HumanoidBody, A::LegLeft, A::Head] {
+            assert_eq!(d(a, &stand).1, [0.0; 3]);
+        }
+        let spyglass = |crouching: bool| {
+            let mut c = ctx([0.0; 2], 0.0);
+            c.arm_poses.right = mobs::ArmPose::Spyglass;
+            c.arm_poses.known = true;
+            c.mob.crouching = crouching;
+            c
+        };
+        let (spy, spy_crouch) = (spyglass(false), spyglass(true));
+        let (s, c) = (
+            d(A::HumanoidArmRight, &spy).0[0],
+            d(A::HumanoidArmRight, &spy_crouch).0[0],
+        );
+        // The pose's −π/12, then the crouch block's +0.4.
+        assert!((c - (s - PI / 12.0 + 0.4)).abs() < 1e-5, "{s} {c}");
     }
 
     /// M393 — at rowing time 0 a paddle rests where M223 baked it (no

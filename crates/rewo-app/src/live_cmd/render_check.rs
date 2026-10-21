@@ -442,6 +442,8 @@ pub(super) struct RenderCheck {
     /// M393 — r217: the largest rowing time a drawn boat carried, per
     /// paddle (left, right).
     pub(super) boat_rowing_peak: [f32; 2],
+    /// M399 — r221: whether an avatar drew crouching.
+    pub(super) avatar_crouching: bool,
     /// M397 — r219: frames on which a sulfur cube drew holding a block and
     /// the staged gold block drew every quad of its model.
     pub(super) sulfur_block_frames: u32,
@@ -1324,7 +1326,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 220;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 221;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1902,6 +1904,13 @@ impl RenderCheck {
                 "baby piglin seen: {}, baby zombified piglin seen: {}, adult piglin seen: {}",
                 self.baby_piglins.0, self.baby_piglins.1, self.baby_piglins.2
             ),
+        );
+        // M399 — r221: `render_check.py` summons a mannequin in the
+        // CROUCHING pose (metadata index 6); it draws crouching.
+        row(
+            "r221 a crouching mannequin drew crouching",
+            self.avatar_crouching,
+            format!("an avatar drew crouching: {}", self.avatar_crouching),
         );
         // M398 — r220: lying down, the camera's eye glides (`Camera.tick`
         // eases it half the gap a tick): the first frame drawn asleep is

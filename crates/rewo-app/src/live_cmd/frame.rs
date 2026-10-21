@@ -1068,6 +1068,14 @@ impl LiveApp {
                         (w, b + 1)
                     }
                 });
+            // M399 — r221: an avatar drawn crouching.
+            c.avatar_crouching |= draws.iter().any(|d| {
+                matches!(
+                    d.kind,
+                    rewo_gpu::mobs::EntityModelKind::Player
+                        | rewo_gpu::mobs::EntityModelKind::PlayerSlim
+                ) && d.mob.crouching
+            });
             // M397 — r219: a sulfur cube drawn holding a block.
             c.sulfur_holding = draws.iter().any(|d| {
                 matches!(

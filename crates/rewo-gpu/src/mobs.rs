@@ -934,6 +934,9 @@ pub struct MobCombat {
     /// M393 — a boat's hurt wobble angle in degrees,
     /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
     pub boat_wobble: f32,
+    /// M399 — `HumanoidRenderState.isCrouching` (`Entity.isCrouching()`:
+    /// the CROUCHING pose), set for an avatar (a player or a mannequin).
+    pub crouching: bool,
     /// M397 — the block state a sulfur cube holds (its body item's block,
     /// `SulfurCubeRenderState.containedBlock`): drawn in place of its core,
     /// and it stops the squish.
