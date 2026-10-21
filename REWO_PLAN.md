@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M367 — the hoglin family holds its head, headbutts, flaps its ears and walks (2026-10-21)
+
+From the adult rest-pose audit. `HoglinModel.setupAnim` for the hoglin, zoglin and both babies: the head turns with the look but holds its pitch (`lerp(headbutt, 0.87266463, −π/9)`; the baby's also drops 2.5 px); the headbutt comes from entity event 4 (`EntityEvent::HoglinAttack`, `headbutt_factor` over the ten attack ticks); the ears flap (`∓2π/9 ∓ speed·sin(pos)`); the legs swing at 1.2 on the raw walk position in diagonal pairs. **Unit tests** for each term; **mobtexshot m85**: looking down draws exactly as ahead (0 px), the headbutt 1090 px, the walk 778 (the pre-M367 mutant: 485 px for the pitch, no headbutt).
+
 ### M366 — the strider walks, rolls and sways as vanilla's does (2026-10-21)
 
 From the adult rest-pose audit: Rewo's strider used the generic biped walk (unclamped) with a still body and still bristles, the body 1 px high. `StriderModel.setupAnim` and both `customAnimations` (speed clamped at 0.25): the body (`Anim::StriderBody`) looks unless ridden, rolls and bobs about the `y` they assign (2 / 17.25); the legs swing, splay and bob; every bristle flows and sways on `ageInTicks` (the adult's both sides the same sign, as vanilla adds it). **Unit tests** for every term and the clamp; **mobtexshot m84**: stride 578 px, idle sway 118 px, speed 1.0 vs 0.25 0 px (the pre-M366 strider: 788, 0 and 1305, so the stride is graded by its clamp).
