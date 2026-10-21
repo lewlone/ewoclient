@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M386 — the ender dragon faces forward (2026-10-21)
+
+From the adult rest-pose audit. `EnderDragonRenderer.submit` turns the dragon `rotY(−yr)` and moves it a block forward in that frame; Rewo used the living `rotY(180 − yaw)`, so it flew backward. `dragon_frame` adds 180° to the draw yaw and the `(−sin yr, 0, cos yr)` offset; its head no longer looks. The history pitch and the procedural flap, neck and tail chains stay open. **Unit tests** for the frame and the head; no rendered witness (no dragon in the render check).
+
 ### M385 — the piglin family on the player mesh (2026-10-21)
 
 From the adult rest-pose audit. `AdultPiglinModel.createBodyLayer` (piglin, brute, zombified piglin) is `PlayerModel.createMesh(NONE, false)`: the left arm and leg at their own (32, 48) / (16, 48) rects, and 0.25 sleeves, pants and jacket (the replaced body keeps its jacket child: `addOrReplaceChild` copies children). Rewo mirrored the right limbs and drew no overlay, so the brute's jacket and pants were missing. **Unit test** (each box's faces in its rect); **mobtexshot m103** (the brute's silhouette 3929 px, without the overlays 3864 — a thin, deterministic margin).
