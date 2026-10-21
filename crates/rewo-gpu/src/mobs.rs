@@ -138,6 +138,27 @@ pub enum Anim {
     TurtleHead,
     /// M365 — the turtle's shell and plates: 1 px up with an egg.
     TurtleBody,
+    /// M366 — `StriderModel.setupAnim`'s body (the walk speed clamped to
+    /// 0.25): the look unless ridden, `zRot` 0.1·sin(pos·1.5)·4·speed, and
+    /// `customAnimations`' bob, `y` − k·cos(pos·1.5)·2·speed (k 2 for the
+    /// adult, 1 for the baby) about the `y` it assigns (2 / 17.25).
+    StriderBody {
+        adult: bool,
+    },
+    /// M366 — a strider leg: `xRot` sin(pos·0.75 (+π right))·2·speed, `zRot`
+    /// π/18·cos(the same)·speed, `y` + 2·sin(pos·0.75 (+π left))·2·speed.
+    StriderLeg {
+        left: bool,
+    },
+    /// M366 — `animateBristle`: flow cos(pos·1.5 + π)·speed times 0.6 / 1.2
+    /// / 1.3, plus a sway on `ageInTicks` (0.1·sin(age·0.4), 0.1·sin(age·0.2),
+    /// 0.05·sin(−age·0.4)) for the first / second / third bristle, added to
+    /// `zRot` on the adult (the same sign on both sides) and `xRot` on the
+    /// baby.
+    StriderBristle {
+        order: u8,
+        baby: bool,
+    },
     /// M358 — `SheepModel.setupAnim` (and `SheepFurModel`'s): while grazing
     /// the head's `y` grows by `headEatPositionScale` · 9 · the age scale
     /// and its `xRot` is `headEatAngleScale`; otherwise it looks, as `Head`.
@@ -723,6 +744,8 @@ pub struct MobCombat {
     /// M358 — a grazing sheep's `(headEatPositionScale,
     /// headEatAngleScale)`; `None` when it is not eating (the head looks).
     pub sheep_eat: Option<(f32, f32)>,
+    /// M366 — `StriderRenderState.isRidden`: the body stops looking.
+    pub ridden: bool,
     /// M365 — `TurtleRenderState`: `hasEgg`, `isLayingEgg` and `isOnLand`.
     pub turtle_egg: bool,
     pub turtle_laying: bool,
@@ -6040,41 +6063,39 @@ fn hoglin_baby() -> Model {
 }
 
 /// M328 — `BabyStriderModel.createBodyLayer()` (32 x 32): a 7 x 7 x 8 body
-/// with three 7 x 3 x 0 bristles across its top (still, as Rewo's adult's
-/// are), and two 2 x 4 x 2 legs on the walk. The body is placed where
+/// with three 7 x 3 x 0 bristles across its top, and two 2 x 4 x 2 legs;
+/// since M366 all of them move as `StriderModel` moves them. The body is placed where
 /// `customAnimations` puts it, not where the layer does: it sets `body.y` to
 /// 17.25 every frame (the layer says 16.75), so at rest the body sits 0.5 px
 /// into the legs.
 fn strider_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::at([0.0, 17.25, 0.0]);
-    b.cube_f(
-        STATIC_PART,
+    let body = b.part([0.0, 17.25, 0.0], Anim::StriderBody { adult: false }, 1.0);
+    b.cube(
+        body,
         0,
         (0.0, 0.0),
         [-3.5, -3.75, -4.0],
         [7.0, 7.0, 8.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
-    for (z, uv) in [(2.0, (0.0, 21.0)), (0.0, (0.0, 18.0)), (-2.0, (0.0, 15.0))] {
-        b.cube_f(
-            STATIC_PART,
-            0,
-            uv,
-            [-3.5, -2.5, 0.0],
-            [7.0, 3.0, 0.0],
-            0.0,
-            false,
-            &[Fold::at([0.0, -4.25, z]), body],
-        );
-    }
-    for (x, anim, uv) in [
-        (-1.5, Anim::LegRight, (0.0, 24.0)),
-        (1.5, Anim::LegLeft, (8.0, 24.0)),
+    // `bristle2` (front) is `animateBristle`'s first, `bristle0` its third.
+    for (z, uv, order) in [
+        (2.0, (0.0, 21.0), 2u8),
+        (0.0, (0.0, 18.0), 1),
+        (-2.0, (0.0, 15.0), 0),
     ] {
-        let leg = b.part([x, 20.0, 0.0], anim, 1.0);
+        let p = b.part_ext(
+            [0.0, -4.25, z],
+            [0.0; 3],
+            Anim::StriderBristle { order, baby: true },
+            1.0,
+            Some(body),
+        );
+        b.cube(p, 0, uv, [-3.5, -2.5, 0.0], [7.0, 3.0, 0.0], NONE);
+    }
+    for (x, left, uv) in [(-1.5, false, (0.0, 24.0)), (1.5, true, (8.0, 24.0))] {
+        let leg = b.part([x, 20.0, 0.0], Anim::StriderLeg { left }, 1.0);
         b.cube(leg, 0, uv, [-1.0, 0.0, -1.0], [2.0, 4.0, 2.0], NONE);
     }
     b.finish(1.0)
@@ -8129,10 +8150,11 @@ fn hoglin() -> Model {
 }
 
 /// `AdultStriderModel`: tall legs, boxy body, six 0-thick hair bristles
-/// fanning out the sides.
+/// fanning out the sides; M366 — every part moves as `StriderModel` and
+/// `AdultStriderModel.customAnimations` move it.
 fn strider() -> Model {
     let mut b = ModelBuilder::new();
-    let leg_r = b.part([-4.0, 8.0, 0.0], Anim::LegRight, 1.0);
+    let leg_r = b.part([-4.0, 8.0, 0.0], Anim::StriderLeg { left: false }, 1.0);
     b.cube(
         leg_r,
         0,
@@ -8141,7 +8163,7 @@ fn strider() -> Model {
         [4.0, 16.0, 4.0],
         NONE,
     );
-    let leg_l = b.part([4.0, 8.0, 0.0], Anim::LegLeft, 1.0);
+    let leg_l = b.part([4.0, 8.0, 0.0], Anim::StriderLeg { left: true }, 1.0);
     b.cube(
         leg_l,
         0,
@@ -8150,24 +8172,26 @@ fn strider() -> Model {
         [4.0, 16.0, 4.0],
         NONE,
     );
-    let body = Fold::at([0.0, 1.0, 0.0]);
-    b.cube_f(
-        STATIC_PART,
+    // M366 — `customAnimations` assigns `body.y = 2` every frame, so the
+    // layer's 1 is never drawn (Rewo drew it there until M366, 1 px high).
+    let body = b.part([0.0, 2.0, 0.0], Anim::StriderBody { adult: true }, 1.0);
+    b.cube(
+        body,
         0,
         (0.0, 0.0),
         [-8.0, -6.0, -8.0],
         [16.0, 14.0, 16.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
-    let bristles: [((f32, f32), [f32; 3], f32, [f32; 3], bool); 6] = [
+    // (uv, box min, rest zRot, pivot, mirror, animateBristle order).
+    let bristles: [((f32, f32), [f32; 3], f32, [f32; 3], bool, u8); 6] = [
         (
             (16.0, 65.0),
             [-12.0, 0.0, 0.0],
             -1.2217305,
             [-8.0, 4.0, -8.0],
             true,
+            2,
         ),
         (
             (16.0, 49.0),
@@ -8175,6 +8199,7 @@ fn strider() -> Model {
             -1.134464,
             [-8.0, -1.0, -8.0],
             true,
+            1,
         ),
         (
             (16.0, 33.0),
@@ -8182,6 +8207,7 @@ fn strider() -> Model {
             -0.87266463,
             [-8.0, -5.0, -8.0],
             true,
+            0,
         ),
         (
             (16.0, 33.0),
@@ -8189,6 +8215,7 @@ fn strider() -> Model {
             0.87266463,
             [8.0, -6.0, -8.0],
             false,
+            0,
         ),
         (
             (16.0, 49.0),
@@ -8196,6 +8223,7 @@ fn strider() -> Model {
             1.134464,
             [8.0, -2.0, -8.0],
             false,
+            1,
         ),
         (
             (16.0, 65.0),
@@ -8203,19 +8231,18 @@ fn strider() -> Model {
             1.2217305,
             [8.0, 3.0, -8.0],
             false,
+            2,
         ),
     ];
-    for (uv, min, zrot, off, mirror) in bristles {
-        b.cube_f(
-            STATIC_PART,
-            0,
-            uv,
-            min,
-            [12.0, 0.0, 16.0],
-            0.0,
-            mirror,
-            &[Fold::rot([0.0, 0.0, zrot], off), body],
+    for (uv, min, zrot, pivot, mirror, order) in bristles {
+        let p = b.part_ext(
+            pivot,
+            [0.0, 0.0, zrot],
+            Anim::StriderBristle { order, baby: false },
+            1.0,
+            Some(body),
         );
+        b.cube_f(p, 0, uv, min, [12.0, 0.0, 16.0], 0.0, mirror, NONE);
     }
     b.finish(1.0)
 }
@@ -15311,9 +15338,15 @@ mod baby_strider_tests {
         let leg = m
             .parts
             .iter()
-            .position(|p| p.anim == Anim::LegRight)
+            .position(|p| p.anim == Anim::StriderLeg { left: false })
             .unwrap();
-        let (b0, b1) = y_extent(STATIC_PART);
+        // M366 — the body is its own part (it bobs and rolls).
+        let body = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::StriderBody { adult: false })
+            .unwrap();
+        let (b0, b1) = y_extent(body);
         let (l0, l1) = y_extent(leg);
         let overlap = b1.min(l1) - b0.max(l0);
         let ratio = overlap / (l1 - l0);
@@ -16059,5 +16092,48 @@ mod turtle_model_tests {
             .parts
             .iter()
             .all(|p| p.show != Show::TurtleEgg));
+    }
+}
+
+#[cfg(test)]
+mod strider_model_tests {
+    use super::*;
+
+    /// M366 — both striders' bodies, legs and bristles are parts: the
+    /// adult's body at `customAnimations`' y 2 with six bristles on it (two
+    /// of each `animateBristle` order), the baby's at 17.25 with three.
+    #[test]
+    fn the_striders_parts_move() {
+        for (m, adult, body_y, bristles) in [
+            (strider(), true, 2.0, 6usize),
+            (strider_baby(), false, 17.25, 3),
+        ] {
+            let body = m
+                .parts
+                .iter()
+                .position(|p| p.anim == Anim::StriderBody { adult })
+                .expect("a body part");
+            assert_eq!(m.parts[body].pivot[1], body_y);
+            let orders: Vec<u8> = m
+                .parts
+                .iter()
+                .filter(|p| p.parent == Some(body as u16))
+                .filter_map(|p| match p.anim {
+                    Anim::StriderBristle { order, baby } if baby != adult => Some(order),
+                    _ => Option::None,
+                })
+                .collect();
+            assert_eq!(orders.len(), bristles);
+            for o in 0..3u8 {
+                assert_eq!(orders.iter().filter(|&&x| x == o).count(), bristles / 3);
+            }
+            let legs = m
+                .parts
+                .iter()
+                .filter(|p| matches!(p.anim, Anim::StriderLeg { .. }))
+                .count();
+            assert_eq!(legs, 2);
+        }
+        assert_eq!(strider_saddle().parts.len(), strider().parts.len());
     }
 }

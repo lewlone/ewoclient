@@ -5750,6 +5750,40 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             off[1] = turtle_lift(&c.mob);
         }
         TurtleBody => off[1] = turtle_lift(&c.mob),
+        // M366 — `StriderModel.setupAnim` and `customAnimations`.
+        StriderBody { adult } => {
+            let s = c.amt.min(0.25);
+            if !c.mob.ridden {
+                rot[0] = c.pitch;
+                rot[1] = c.net;
+            }
+            rot[2] = 0.1 * (c.pos * 1.5).sin() * 4.0 * s;
+            let k = if adult { 2.0 } else { 1.0 };
+            off[1] = -k * (c.pos * 1.5).cos() * 2.0 * s;
+        }
+        StriderLeg { left } => {
+            let s = c.amt.min(0.25);
+            let h = c.pos * 1.5 * 0.5;
+            let (swing, bob) = if left { (h, h + PI) } else { (h + PI, h) };
+            rot[0] = swing.sin() * 2.0 * s;
+            rot[2] = PI / 18.0 * swing.cos() * s;
+            off[1] = 2.0 * bob.sin() * 2.0 * s;
+        }
+        StriderBristle { order, baby } => {
+            let s = c.amt.min(0.25);
+            let flow = (c.pos * 1.5 + PI).cos() * s;
+            let (mult, sway) = match order {
+                0 => (0.6, 0.1 * (c.age * 0.4).sin()),
+                1 => (1.2, 0.1 * (c.age * 0.2).sin()),
+                _ => (1.3, 0.05 * (c.age * -0.4).sin()),
+            };
+            let add = flow * mult + sway;
+            if baby {
+                rot[0] = add;
+            } else {
+                rot[2] = add;
+            }
+        }
         TurtleLeg { hind, left } => {
             // The quadruped's swing: right hind and left front on cos(f),
             // the other two half a cycle on.
@@ -10137,5 +10171,105 @@ mod turtle_anim_tests {
             assert_eq!(anim_delta(a, 1.0, &egg).1[1], -1.0);
             assert_eq!(anim_delta(a, 1.0, &water).1[1], 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod strider_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(pitch: f32, pos: f32, amt: f32, age: f32, ridden: bool) -> AnimCtx {
+        AnimCtx {
+            pitch,
+            net: 0.4,
+            f: pos * 0.6662,
+            pos,
+            amt,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                ridden,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M366 — `StriderModel`, term by term: the speed clamps at 0.25; the
+    /// body looks unless ridden, rolls and bobs (twice as far on the adult);
+    /// the legs swing, splay and bob in opposition; the bristles flow with
+    /// the stride and sway on the age, on z (adult) or x (baby).
+    #[test]
+    fn the_strider_walks_as_vanilla_animates_it() {
+        use mobs::Anim::*;
+        let (pos, age) = (0.7_f32, 13.0_f32);
+        let fast = ctx(0.2, pos, 1.0, age, false);
+        let clamp = ctx(0.2, pos, 0.25, age, false);
+        for a in [
+            StriderBody { adult: true },
+            StriderLeg { left: true },
+            StriderBristle {
+                order: 1,
+                baby: false,
+            },
+        ] {
+            assert_eq!(anim_delta(a, 1.0, &fast), anim_delta(a, 1.0, &clamp));
+        }
+        let (r, o) = anim_delta(StriderBody { adult: true }, 1.0, &clamp);
+        assert_eq!((r[0], r[1]), (0.2, 0.4));
+        assert!((r[2] - 0.1 * (pos * 1.5).sin() * 4.0 * 0.25).abs() < 1e-6);
+        assert!((o[1] + 2.0 * (pos * 1.5).cos() * 2.0 * 0.25).abs() < 1e-6);
+        let (_, ob) = anim_delta(StriderBody { adult: false }, 1.0, &clamp);
+        assert!((ob[1] * 2.0 - o[1]).abs() < 1e-6);
+        let (rr, _) = anim_delta(
+            StriderBody { adult: true },
+            1.0,
+            &ctx(0.2, pos, 0.25, age, true),
+        );
+        assert_eq!((rr[0], rr[1]), (0.0, 0.0));
+        let h = pos * 0.75;
+        let (lr, lo) = anim_delta(StriderLeg { left: true }, 1.0, &clamp);
+        assert!((lr[0] - h.sin() * 0.5).abs() < 1e-6);
+        assert!((lr[2] - PI / 18.0 * h.cos() * 0.25).abs() < 1e-6);
+        assert!((lo[1] - 4.0 * (h + PI).sin() * 0.25).abs() < 1e-5);
+        let (rr, ro) = anim_delta(StriderLeg { left: false }, 1.0, &clamp);
+        assert!((rr[0] + lr[0]).abs() < 1e-5 && (ro[1] + lo[1]).abs() < 1e-5);
+        let still = ctx(0.0, pos, 0.0, age, false);
+        let (b0, _) = anim_delta(
+            StriderBristle {
+                order: 0,
+                baby: false,
+            },
+            1.0,
+            &still,
+        );
+        assert!((b0[2] - 0.1 * (age * 0.4).sin()).abs() < 1e-6 && b0[0] == 0.0);
+        let (b2, _) = anim_delta(
+            StriderBristle {
+                order: 2,
+                baby: true,
+            },
+            1.0,
+            &still,
+        );
+        assert!((b2[0] - 0.05 * (age * -0.4).sin()).abs() < 1e-6 && b2[2] == 0.0);
+        let flow = (pos * 1.5 + PI).cos() * 0.25;
+        let (b1, _) = anim_delta(
+            StriderBristle {
+                order: 1,
+                baby: false,
+            },
+            1.0,
+            &clamp,
+        );
+        assert!((b1[2] - (flow * 1.2 + 0.1 * (age * 0.2).sin())).abs() < 1e-6);
     }
 }

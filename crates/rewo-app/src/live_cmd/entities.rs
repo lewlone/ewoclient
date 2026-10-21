@@ -1672,6 +1672,8 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M366 — set by the caller for a strider.
+        ridden: false,
         // M365 — set by the caller for a turtle.
         turtle_egg: false,
         turtle_laying: false,
@@ -4910,6 +4912,14 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M366 — `StriderRenderState.isRidden`: a ridden strider's body stops
+        // following its look.
+        if matches!(
+            kind,
+            EntityModelKind::Strider | EntityModelKind::StriderBaby
+        ) {
+            mob.ridden = !session.mounts.passengers(id).is_empty();
         }
         // M365 — `TurtleRenderer.extractRenderState`: the egg flags and
         // `isOnLand = !isInWater() && onGround()`. Rewo keeps no `onGround`

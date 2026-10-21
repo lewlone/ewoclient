@@ -104,7 +104,12 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 83;
+const EXPECTED_WITNESSES: usize = 84;
+/// M366 — m84's floors: stride vs standing, the idle bristle sway. M366
+/// measured 578 and 118; the pre-M366 strider (legs on the generic 1.4
+/// walk, unclamped; body and bristles still) 788 and 0, which is why the
+/// stride is graded by its clamp (1.0 vs 0.25: 0 px) rather than its size.
+const STRIDER_MIN: [usize; 2] = [300, 60];
 /// M364 — m82's floor (px of silhouette the look moves): adult, kit. M364
 /// measured 307 and 750; a still adult head (the pre-M364 mutant) 0.
 const RABBIT_LOOK_MIN: [usize; 2] = [150, 300];
@@ -6147,6 +6152,69 @@ fn run_check(
         stride >= TURTLE_MIN[0] && swim >= TURTLE_MIN[1] && egg_px >= TURTLE_MIN[2],
         format!(
             "stride vs standing {stride} px, swimming vs the stride on land {swim} px, egg vs none {egg_px} px (want >= {TURTLE_MIN:?})"
+        ),
+    ));
+
+    // m84 — M366: a strider mid-stride moves (body roll and bob, legs, the
+    // bristles' flow) against the same strider standing; `StriderModel`
+    // clamps the walk speed at 0.25, so a strider at 1.0 draws exactly as at
+    // 0.25 (the pre-M366 legs, unclamped, did not); and standing still its
+    // bristles sway with the age alone.
+    let mut sst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.2, 1.6, -1.6),
+        Vec3::new(0.0, 0.9, 0.0),
+    )?;
+    sst.wr.set_entities(&[], sst.right, sst.up, 0.0);
+    sst.off.render(gpu, Some((&mut sst.wr, sst.vp)), &ov, BG)?;
+    let s_empty = sst.off.read_rgba(gpu)?;
+    // The age is the frame's time argument (seconds; ageInTicks = 20·t).
+    let mut sshot = |d: EntityDraw<'_>, t: f32| -> Result<Vec<u8>, String> {
+        sst.wr.set_entities(&[d], sst.right, sst.up, t);
+        sst.off.render(gpu, Some((&mut sst.wr, sst.vp)), &ov, BG)?;
+        sst.off.read_rgba(gpu)
+    };
+    let strider = |amount: f32| EntityDraw {
+        limb_swing: 0.7,
+        limb_amount: amount,
+        ..neutral_draw(EntityModelKind::Strider)
+    };
+    let s_still = sshot(strider(0.0), 0.0)?;
+    let s_walk = sshot(strider(0.25), 0.0)?;
+    let s_fast = sshot(strider(1.0), 0.0)?;
+    let s_later = sshot(strider(0.0), 0.2)?;
+    sst.destroy(gpu);
+    let s_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(s_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let s_differ = |a: &[u8], b: &[u8]| {
+        s_mask(a)
+            .iter()
+            .zip(&s_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let (s_stride, s_sway) = (s_differ(&s_still, &s_walk), s_differ(&s_still, &s_later));
+    let s_clamp = s_walk
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(s_fast.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    w.push(wit(
+        "m84.a_strider_strides_and_its_bristles_sway",
+        s_stride >= STRIDER_MIN[0] && s_sway >= STRIDER_MIN[1] && s_clamp == 0,
+        format!(
+            "stride vs standing {s_stride} px, standing 4 ticks later {s_sway} px (want >= {STRIDER_MIN:?}); speed 1.0 vs 0.25 {s_clamp} px (want 0)"
         ),
     ));
 
