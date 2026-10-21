@@ -934,6 +934,10 @@ pub struct MobCombat {
     /// M393 — a boat's hurt wobble angle in degrees,
     /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
     pub boat_wobble: f32,
+    /// M401 — `LivingEntityRenderer.setupRotations`' sleeping branch: the
+    /// yaw it lies at (`sleepDirectionToRotation(bedOrientation)`, else the
+    /// body yaw), `None` awake. Replaces the body's `rotY(180 − bodyRot)`.
+    pub sleep_angle: Option<f32>,
     /// M400 — an avatar's `swimAmount` (lerped), `isInWater` and
     /// `isVisuallySwimming`: `HumanoidModel`'s swim stroke and
     /// `AvatarRenderer.setupRotations`' body tilt.

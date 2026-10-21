@@ -1695,6 +1695,8 @@ pub(crate) fn resolve_mob_combat(
         // M399 — `Entity.isCrouching()` (the CROUCHING pose, ordinal 5),
         // which `HumanoidMobRenderer` reads; only an avatar's model bends.
         crouching: matches!(kind, K::Player | K::PlayerSlim) && entities.pose(id) == POSE_CROUCHING,
+        // M401 — set by the caller for a sleeper.
+        sleep_angle: None,
         // M400 — set by the caller for an avatar.
         swim_amount: 0.0,
         swim_in_water: false,
@@ -1719,6 +1721,19 @@ pub(crate) fn resolve_mob_combat(
         turtle_laying: false,
         turtle_on_land: false,
     }
+}
+
+/// M401 — `Pose.SLEEPING`'s ordinal.
+pub(crate) const POSE_SLEEPING: u8 = 2;
+
+/// M401 — `LivingEntity.getBedOrientation()`: the block at the sleeping
+/// position, if it is a bed, its `facing`.
+pub(crate) fn sleeper_bed_facing(session: &PlaySession, id: i32) -> Option<String> {
+    let (x, y, z) = session.world.entities.mob_state(id).sleeping_pos?;
+    let blocks = BLOCKS.get()?;
+    let st = session.world.block_state_at(x, y, z);
+    blocks.block_name(st).filter(|n| n.ends_with("_bed"))?;
+    blocks.property(st, "facing").map(str::to_string)
 }
 
 /// M399 — `Pose.CROUCHING`'s ordinal (metadata index 6's POSE).
@@ -5191,6 +5206,43 @@ pub(super) fn collect_entities<'a>(
         );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
         let mut mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        // M401 — a sleeper (the SLEEPING pose): the bed's orientation from
+        // the block at its sleeping position, the angle it lies at, and the
+        // head offset toward the bed's foot (below, on the position).
+        let mut sleep_shift = [0.0f32; 2];
+        if session.world.entities.pose(id) == POSE_SLEEPING {
+            let facing = sleeper_bed_facing(session, id);
+            mob.sleep_angle = Some(
+                facing
+                    .as_deref()
+                    .map_or(e.yaw, rewo_gpu::entities::sleep_direction_rotation),
+            );
+            if let Some(f) = facing.as_deref() {
+                let (sx, sz) = match f {
+                    "east" => (1.0, 0.0),
+                    "west" => (-1.0, 0.0),
+                    "south" => (0.0, 1.0),
+                    "north" => (0.0, -1.0),
+                    _ => (0.0, 0.0),
+                };
+                // `getEyeHeight(Pose.STANDING) − 0.1`: 1.62 for the bed
+                // sleepers (players, mannequins, villagers), else vanilla's
+                // default 0.85 of the height.
+                let eye = if matches!(
+                    kind,
+                    EntityModelKind::Player
+                        | EntityModelKind::PlayerSlim
+                        | EntityModelKind::Villager
+                        | EntityModelKind::VillagerBaby
+                ) {
+                    1.62
+                } else {
+                    0.85 * h
+                };
+                let head = eye - 0.1;
+                sleep_shift = [-sx * head, -sz * head];
+            }
+        }
         // M400 — an avatar's swim (`getSwimAmount(a)`, `isInWater`,
         // `isVisuallySwimming`).
         if matches!(kind, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
@@ -5457,7 +5509,7 @@ pub(super) fn collect_entities<'a>(
         let (draw_yaw, forward) = dragon_frame(kind, e.render_yaw(alpha));
         out.push(EntityDraw {
             pos: [
-                p[0] as f32 + forward[0],
+                p[0] as f32 + forward[0] + sleep_shift[0],
                 // M399 — `AvatarRenderer.getRenderOffset`: a crouching
                 // avatar sits `scale·2/16` lower.
                 p[1] as f32
@@ -5467,7 +5519,7 @@ pub(super) fn collect_entities<'a>(
                     } else {
                         0.0
                     },
-                p[2] as f32 + forward[1],
+                p[2] as f32 + forward[1] + sleep_shift[1],
             ],
             width: w,
             height: h,

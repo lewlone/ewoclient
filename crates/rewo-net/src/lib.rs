@@ -2704,6 +2704,13 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_axolotl_playing_dead(eid, b);
         }
     }
+    // M401 — `LivingEntity.SLEEPING_POS_ID` (14 OPTIONAL_BLOCK_POS) for any
+    // living entity: the bed its sleeping pose lies in.
+    if let Some(pos) = meta.sleeping_pos {
+        if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
+            entities.set_sleeping_pos(eid, pos);
+        }
+    }
     // M393 — a boat's `VehicleEntity` hurt (8 INT, 9 INT, 10 FLOAT) and
     // `AbstractBoat` paddles (11, 12 BOOLEAN). Index 8 INT is also the
     // experience orb's value, 9 INT a display's, 10 INT an item frame's:

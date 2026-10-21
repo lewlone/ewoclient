@@ -1068,6 +1068,14 @@ impl LiveApp {
                         (w, b + 1)
                     }
                 });
+            // M401 — r223: an avatar drawn asleep.
+            c.avatar_asleep |= draws.iter().any(|d| {
+                matches!(
+                    d.kind,
+                    rewo_gpu::mobs::EntityModelKind::Player
+                        | rewo_gpu::mobs::EntityModelKind::PlayerSlim
+                ) && d.mob.sleep_angle.is_some()
+            });
             // M400 — r222: the swim amount avatars drew with.
             for d in draws.iter() {
                 if matches!(

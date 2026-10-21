@@ -1794,6 +1794,9 @@ pub struct MobState {
     /// tick while `getPaddleState(side)` (paddling with a controlling
     /// passenger), else 0.
     pub boat_paddle_pos: [f32; 2],
+    /// M401 — `LivingEntity.SLEEPING_POS_ID` (14, OPTIONAL_BLOCK_POS) for a
+    /// remote entity: the bed block its sleeping pose lies in.
+    pub sleeping_pos: Option<(i32, i32, i32)>,
     /// M396 — a sulfur cube's client-side `fuse` (`None` is vanilla's −1,
     /// not primed): set from `MAX_FUSE` (19, INT) on every sync
     /// (`onSyncedDataUpdated`), counted down a tick at a time
@@ -3417,6 +3420,11 @@ impl EntityTable {
                 *dst = v;
             }
         }
+    }
+
+    /// M401 — a living entity's sleeping position (`None` clears).
+    pub fn set_sleeping_pos(&mut self, id: i32, pos: Option<(i32, i32, i32)>) {
+        self.mob_state.entry(id).or_default().sleeping_pos = pos;
     }
 
     /// M396 — a sulfur cube's `MAX_FUSE`: `setFuse(maxFuse)`, −1 (any

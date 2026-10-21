@@ -3830,12 +3830,23 @@ impl EntityPass {
                 } else {
                     e
                 };
-                // rotZ(fall · flipDegrees) — the death topple, identity while
-                // alive because `death_roll` is then exactly 0.
-                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
-                // rotY(180° − yaw).
-                let x = e[0] * ct + e[2] * st;
-                let z = -e[0] * st + e[2] * ct;
+                // M401 — asleep: `YP(angle) · ZP(90) · YP(270)` in place of
+                // the body yaw (the death topple wins while dying, as
+                // vanilla's else-if chain has it).
+                let (x, e, z) = match d.mob.sleep_angle {
+                    Some(angle) if sr == 0.0 => {
+                        let p = sleeping_point(e, angle);
+                        (p[0], p, p[2])
+                    }
+                    _ => {
+                        // rotZ(fall · flipDegrees) — the death topple,
+                        // identity while alive because `death_roll` is then
+                        // exactly 0.
+                        let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
+                        // rotY(180° − yaw).
+                        (e[0] * ct + e[2] * st, e, -e[0] * st + e[2] * ct)
+                    }
+                };
                 // Feet-relative, in block units. A *mounted* entity — a
                 // spawner's caged mob — runs that through one more affine
                 // before the block position places it (M31).
@@ -5812,6 +5823,29 @@ fn humanoid_swim(anim: mobs::Anim, rot: &mut [f32; 3], c: &AnimCtx) {
             rot[2] = l(rot[2], z);
         }
         _ => {}
+    }
+}
+
+/// M401 — `setupRotations`' sleeping chain on an entity-local point:
+/// `YP(angle) · ZP(90) · YP(270)` (the point turns by `YP(270)` first).
+pub fn sleeping_point(e: [f32; 3], angle_deg: f32) -> [f32; 3] {
+    let yp = |p: [f32; 3], deg: f32| {
+        let (s, c) = (deg * DEG).sin_cos();
+        [p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c]
+    };
+    let p = yp(e, 270.0);
+    let p = [-p[1], p[0], p[2]];
+    yp(p, angle_deg)
+}
+
+/// M401 — `LivingEntityRenderer.sleepDirectionToRotation`: south 90, west
+/// 0, north 270, east 180 (anything else 0).
+pub fn sleep_direction_rotation(facing: &str) -> f32 {
+    match facing {
+        "south" => 90.0,
+        "north" => 270.0,
+        "east" => 180.0,
+        _ => 0.0,
     }
 }
 
@@ -11644,6 +11678,25 @@ mod boat_anim_tests {
             anim_delta(mobs::Anim::BoatBubble, 1.0, &ctx([0.0; 2], 0.0)).0,
             [0.0; 3]
         );
+    }
+
+    /// M401 — the sleeping chain lays the model down face up along the
+    /// bed: a standing head top (0, 32 px) points the way the bed faces
+    /// (east, rotation 180: +x), and the face (−z before the body turn)
+    /// points up.
+    #[test]
+    fn a_sleeper_lies_face_up_along_its_bed() {
+        let east = sleep_direction_rotation("east");
+        assert_eq!(east, 180.0);
+        let head = sleeping_point([0.0, 32.0, 0.0], east);
+        assert!(
+            (head[0] - 32.0).abs() < 1e-3 && head[1].abs() < 1e-3 && head[2].abs() < 1e-3,
+            "{head:?}"
+        );
+        let face = sleeping_point([0.0, 0.0, -1.0], east);
+        assert!((face[1] - 1.0).abs() < 1e-5, "{face:?}");
+        let south = sleeping_point([0.0, 32.0, 0.0], sleep_direction_rotation("south"));
+        assert!((south[2] - 32.0).abs() < 1e-3, "south: {south:?}");
     }
 
     /// M400 — `HumanoidModel`'s swim at full swim amount: the head pitches

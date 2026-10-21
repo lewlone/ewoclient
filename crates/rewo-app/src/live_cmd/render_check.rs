@@ -442,6 +442,8 @@ pub(super) struct RenderCheck {
     /// M393 — r217: the largest rowing time a drawn boat carried, per
     /// paddle (left, right).
     pub(super) boat_rowing_peak: [f32; 2],
+    /// M401 — r223: whether an avatar drew asleep (lying down).
+    pub(super) avatar_asleep: bool,
     /// M400 — r222: the largest swim amount an avatar drew with.
     pub(super) avatar_swim_peak: f32,
     /// M399 — r221: whether an avatar drew crouching.
@@ -1328,7 +1330,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 222;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 223;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1906,6 +1908,13 @@ impl RenderCheck {
                 "baby piglin seen: {}, baby zombified piglin seen: {}, adult piglin seen: {}",
                 self.baby_piglins.0, self.baby_piglins.1, self.baby_piglins.2
             ),
+        );
+        // M401 — r223: `render_check.py` summons a mannequin in the
+        // SLEEPING pose (no bed); it draws lying down.
+        row(
+            "r223 a sleeping mannequin drew lying down",
+            self.avatar_asleep,
+            format!("an avatar drew asleep: {}", self.avatar_asleep),
         );
         // M400 — r222: `render_check.py` summons a mannequin in the
         // SWIMMING pose; its swim amount climbs to 1 (0.09 a tick) and it

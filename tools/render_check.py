@@ -263,6 +263,8 @@ PRECMD = (
     # negative Age), clear of the lanes.
     "summon minecraft:sulfur_cube ~-30 ~ ~12 {NoAI:1b,Silent:1b,Size:1};"
     "summon minecraft:sulfur_cube ~-30 ~ ~15 {NoAI:1b,Silent:1b,Age:-24000};"
+    # M401 -- r223. A sleeping mannequin (no bed: it lies at its yaw).
+    "summon minecraft:mannequin ~-39 ~ ~18 {immovable:1b,pose:\"sleeping\"};"
     # M400 -- r222. A swimming mannequin.
     "summon minecraft:mannequin ~-36 ~ ~18 {immovable:1b,pose:\"swimming\"};"
     # M399 -- r221. A crouching mannequin.

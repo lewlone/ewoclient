@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 114;
+const EXPECTED_WITNESSES: usize = 115;
+/// M401 — m115's floor: a sleeping player's silhouette against a standing
+/// one's. M401 measured 1414 (asleep 35 x 27 px from the side, nearly
+/// end-on); before M401 no avatar lay down (0 by construction).
+const SLEEP_MIN: usize = 700;
 /// M400 — m114's floor: a swimming player's silhouette against a standing
 /// one's. M400 measured 3004 (the swimmer 92 x 39 px from the side, the
 /// stander 21 x 89); before M400 no avatar swam (0 by construction).
@@ -7694,6 +7698,21 @@ fn run_check(
             .render(gpu, Some((&mut crst.wr, crst.vp)), &ov, BG)?;
         crst.off.read_rgba(gpu)?
     };
+    // m115 — M401: asleep (no bed, lying at its yaw 0, `YP(0)·ZP(90)·
+    // YP(270)`), the player lies along the view's side.
+    let cr_sleep = {
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                sleep_angle: Some(0.0),
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Player)
+        };
+        crst.wr.set_entities(&[d], crst.right, crst.up, 0.0);
+        crst.off
+            .render(gpu, Some((&mut crst.wr, crst.vp)), &ov, BG)?;
+        crst.off.read_rgba(gpu)?
+    };
     crst.destroy(gpu);
     let cr_mask = |f: &[u8]| -> Vec<bool> {
         f.as_chunks::<4>()
@@ -7731,6 +7750,19 @@ fn run_check(
         swim_px >= SWIM_MIN && sw_w > sw_h && st_h > st_w,
         format!(
             "{swim_px} px of silhouette against standing (want >= {SWIM_MIN}); swimming {sw_w}x{sw_h} (want wider), standing {st_w}x{st_h}"
+        ),
+    ));
+    let sleep_px = cr_mask(&cr_stand)
+        .iter()
+        .zip(&cr_mask(&cr_sleep))
+        .filter(|(x, y)| x != y)
+        .count();
+    let (sl_w, sl_h) = bbox(&cr_sleep);
+    w.push(wit(
+        "m115.a_sleeping_player_lies_down",
+        sleep_px >= SLEEP_MIN && sl_w > sl_h,
+        format!(
+            "{sleep_px} px of silhouette against standing (want >= {SLEEP_MIN}); asleep {sl_w}x{sl_h} (want wider)"
         ),
     ));
     w.push(wit(
