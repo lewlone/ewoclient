@@ -23,12 +23,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 195 Rewo milestones, M194 to M388, in about 402 commits on
+- **What happened**: 197 Rewo milestones, M194 to M390, in about 404 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`326f5c7c`): 4,576 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 215 of
-  215 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`fadfdc2e`): 4,583 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 216 of
+  216 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M390**: piglins dance, stare at the gold in their off hand, raise their weapons and aim and crank their crossbows (M390); and a fix: a baby piglin drew as an adult and an immune adult as a baby, its zombification immunity read as the baby flag (M389).
 - **M388**: the ender dragon flaps its wings, waves its neck and tail and opens its jaw, and flies where vanilla places it (it sat two blocks low and three back).
 - **M387**: the axolotl swims, hovers, crawls, lies still and plays dead, its body turning with its look.
 - **M386**: the ender dragon faces the way it flies (it drew backward) and its head no longer follows the look.
@@ -574,6 +575,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `fadfdc2e` | **M390** — with M389: the piglin's baby flag at 17; the piglin's arm poses; unit tests, mobtexshot **m106**, render check **r216** (r175 tightened). |
 | `326f5c7c` | **M388** — the ender dragon's procedural rig; mobshot left-view skip; unit test, mobtexshot **m105**. |
 | `ca272378` | **M387** — the axolotl's blended poses; unit test, mobtexshot **m104**. |
 | `832c3298` | **M386** — the ender dragon's renderer frame and still head; unit tests. |
@@ -1007,6 +1009,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M390: **4,583 tests passed, 0 failed; gates 51/51** (mobtexshot 106); render check **216/216** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M388: **4,576 tests passed, 0 failed; gates 51/51** (mobtexshot 105, mobshot 386 views); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M387: **4,575 tests: 4,570 passed and 5 failed in the chain run**: rewo-net's srv TCP-fallback tests, the known flake where the harness finds no port free for both UDP and TCP (the M353 Follow-up); re-run clean (34/34). **Gates 51/51** (mobtexshot 104); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M386: **4,574 tests passed, 0 failed; gates 51/51** (mobtexshot 103); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean. No rendered witness for the dragon (none is summoned in the render check; mobtexshot bypasses the live frame): the unit test checks the transform.
