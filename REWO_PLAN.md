@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M380 — the piglin's ears flap and its arms bob; the creeper's legs on vanilla's phases (2026-10-21)
+
+From the adult rest-pose audit. The piglin family's ears are parts flapping about their rest (`AbstractPiglinModel.setupAnim`: `∓cos(f·{1.2,1})·(0.08 + 0.4·speed)`, f = age·0.1 + pos·0.5); the piglin's arms (`Anim::PiglinArm`) add `bobModelPart`'s idle bob to the walk (not the humanoid attack anims, whose ±5 pivot the baby's ±4 arms do not share — a guard test caught the first version); `armor_part` matches them exactly. The creeper's legs swing on vanilla's swapped bindings. **Unit tests**; **mobtexshot m98** (a standing piglin 89 px a second apart; mutant 0).
+
 ### M379 — the parrot walks and sits; the enderman's arms bob, the witch's nose wobbles (with M378) (2026-10-21)
 
 From the adult rest-pose audit. **M378**: every piece of the parrot is a part — standing, the wings rest splayed ∓0.0873, the legs and tail walk; sitting, everything drops 1.9 px, the tail tips π/6 and the legs fold. **M379**: the enderman's arms get `HumanoidModel.bobModelPart` before its halving and clamp; the witch's nose (a part for the witch only) wobbles at its id's rate and lifts while she drinks. **Unit tests**; **mobtexshot m96** (parrot sitting 1004 px, walking 85; mutant 0 / 0) and **m97** (drinking witch's nose 144 px changed, from a camera in front of her face; enderman bob 772; mutant 0 / 0).
