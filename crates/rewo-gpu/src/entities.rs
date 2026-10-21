@@ -6097,6 +6097,22 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
         }
+        // M380 — a piglin arm: the humanoid walk swing and idle bob.
+        PiglinArm { left } => {
+            let phase = if left { c.f } else { c.f + PI };
+            rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
+            bob_model_part(&mut rot, left, c.age);
+        }
+        // M380 — `AbstractPiglinModel.setupAnim`'s ears.
+        PiglinEar { left } => {
+            let f = c.age * 0.1 + c.pos * 0.5;
+            let a = 0.08 + c.amt * 0.4;
+            rot[2] = if left {
+                -(f * 1.2).cos() * a
+            } else {
+                f.cos() * a
+            };
+        }
         // M379 — `WitchModel.setupAnim`'s nose.
         WitchNose => {
             let t = c.age * c.mob.witch_nose_rate;
@@ -11016,6 +11032,77 @@ mod witch_enderman_anim_tests {
         assert_eq!(
             anim_delta(EndermanArmRight, 1.0, &ctx(age, carrying)).0,
             [-0.5, 0.0, 0.05]
+        );
+    }
+}
+
+#[cfg(test)]
+mod piglin_ear_anim_tests {
+    use super::*;
+
+    /// M380 — the ears flap about their rest: the left on cos(f·1.2), the
+    /// right on cos(f), wider with the walk speed.
+    #[test]
+    fn the_piglin_ears_flap() {
+        let ctx = AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 2.0,
+            amt: 0.5,
+            age: 13.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        };
+        let f = 13.0_f32 * 0.1 + 2.0 * 0.5;
+        let a = 0.08 + 0.5 * 0.4;
+        let l = anim_delta(mobs::Anim::PiglinEar { left: true }, 1.0, &ctx).0[2];
+        let r = anim_delta(mobs::Anim::PiglinEar { left: false }, 1.0, &ctx).0[2];
+        assert!((l + (f * 1.2).cos() * a).abs() < 1e-6 && (r - f.cos() * a).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod piglin_arm_anim_tests {
+    use super::*;
+
+    /// M380 — standing still, a piglin's arms bob: z ±(cos(age·0.09)·0.05 +
+    /// 0.05), x ±sin(age·0.067)·0.05.
+    #[test]
+    fn the_piglin_arms_bob() {
+        let ctx = AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 21.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        };
+        let r = anim_delta(mobs::Anim::PiglinArm { left: false }, 1.0, &ctx).0;
+        let l = anim_delta(mobs::Anim::PiglinArm { left: true }, 1.0, &ctx).0;
+        let z = (21.0_f32 * 0.09).cos() * 0.05 + 0.05;
+        // `Mth`'s table trig, so a table step's tolerance.
+        assert!((r[2] - z).abs() < 1e-4 && (l[2] + z).abs() < 1e-4);
+        assert!(
+            (r[0] - (21.0_f32 * 0.067).sin() * 0.05).abs() < 1e-4 && (l[0] + r[0]).abs() < 1e-4
         );
     }
 }

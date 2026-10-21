@@ -337,6 +337,19 @@ pub enum Anim {
         k: f32,
         rest: f32,
     },
+    /// M380 — a piglin arm: `HumanoidModel`'s walk swing plus
+    /// `bobModelPart`'s idle bob (the held-item pose and the attack swing,
+    /// whose `±5` arm pivot the baby's `±4` arms do not share, are not
+    /// modelled).
+    PiglinArm {
+        left: bool,
+    },
+    /// M380 — `AbstractPiglinModel.setupAnim`'s ear flap about its rest:
+    /// `zRot` −cos(f·1.2)·a (left) / +cos(f)·a (right), f = age·0.1 +
+    /// pos·0.5, a = 0.08 + 0.4·speed.
+    PiglinEar {
+        left: bool,
+    },
     /// M379 — `WitchModel.setupAnim`'s nose: `xRot` sin(age·k)·4.5°, `zRot`
     /// cos(age·k)·2.5° with k = 0.01·(entityId % 10); holding an item, the
     /// nose sits at (0, 1, −1.5) tipped −0.9.
@@ -4164,11 +4177,14 @@ fn creeper_with(g: f32) -> Model {
         false,
         &[Fold::at([0.0, 6.0, 0.0])],
     );
+    // M380 — `CreeperModel` binds its `leftHindLeg` field to the
+    // `right_hind_leg` part (and so on for all four), so each part swings on
+    // the other side's phase: half a cycle from the quadruped's.
     let legs = [
-        ([-2.0, 18.0, 4.0], Anim::QuadHindRight),
-        ([2.0, 18.0, 4.0], Anim::QuadHindLeft),
-        ([-2.0, 18.0, -4.0], Anim::QuadFrontRight),
-        ([2.0, 18.0, -4.0], Anim::QuadFrontLeft),
+        ([-2.0, 18.0, 4.0], Anim::QuadHindLeft),
+        ([2.0, 18.0, 4.0], Anim::QuadHindRight),
+        ([-2.0, 18.0, -4.0], Anim::QuadFrontLeft),
+        ([2.0, 18.0, -4.0], Anim::QuadFrontRight),
     ];
     for (pivot, anim) in legs {
         let p = b.part(pivot, anim, 1.0);
@@ -5503,26 +5519,21 @@ fn piglin_like(arms_forward: bool) -> Model {
         [1.0, 2.0, 1.0],
         NONE,
     );
-    b.cube_f(
-        head,
-        0,
-        (39.0, 6.0),
-        [-1.0, 0.0, -2.0],
-        [1.0, 5.0, 4.0],
-        0.0,
-        false,
-        &[Fold::rot([0.0, 0.0, PI / 6.0], [-4.5, -6.0, 0.0])],
-    );
-    b.cube_f(
-        head,
-        0,
-        (51.0, 6.0),
-        [0.0, 0.0, -2.0],
-        [1.0, 5.0, 4.0],
-        0.0,
-        false,
-        &[Fold::rot([0.0, 0.0, -PI / 6.0], [4.5, -6.0, 0.0])],
-    );
+    // M380 — the ears are parts on `AbstractPiglinModel.setupAnim`'s flap
+    // about their ±30° (`getDefaultEarAngleInDegrees`).
+    for (uv, min, x, z, left) in [
+        ((39.0, 6.0), [-1.0, 0.0, -2.0], -4.5, PI / 6.0, false),
+        ((51.0, 6.0), [0.0, 0.0, -2.0], 4.5, -PI / 6.0, true),
+    ] {
+        let ear = b.part_ext(
+            [x, -6.0, 0.0],
+            [0.0, 0.0, z],
+            Anim::PiglinEar { left },
+            1.0,
+            Some(head),
+        );
+        b.cube(ear, 0, uv, min, [1.0, 5.0, 4.0], NONE);
+    }
     b.cube(
         STATIC_PART,
         0,
@@ -5568,7 +5579,9 @@ fn piglin_like(arms_forward: bool) -> Model {
             NONE,
         );
     } else {
-        let arm_r = b.part([-5.0, 2.0, 0.0], Anim::ArmRight, 1.0);
+        // M380 — `HumanoidModel`'s walk swing and idle bob
+        // (`Anim::PiglinArm`).
+        let arm_r = b.part([-5.0, 2.0, 0.0], Anim::PiglinArm { left: false }, 1.0);
         b.cube(
             arm_r,
             0,
@@ -5577,7 +5590,7 @@ fn piglin_like(arms_forward: bool) -> Model {
             [4.0, 12.0, 4.0],
             NONE,
         );
-        let arm_l = b.part([5.0, 2.0, 0.0], Anim::ArmLeft, 1.0);
+        let arm_l = b.part([5.0, 2.0, 0.0], Anim::PiglinArm { left: true }, 1.0);
         b.cube_m(
             arm_l,
             0,
@@ -5659,24 +5672,34 @@ fn piglin_baby_like(zombified: bool) -> Model {
             [-1.0, 1.75, 0.0],
         ),
     ] {
+        // M380 — the ear part flaps about its 5° (the tilted box rides it).
+        let ear = b.part_ext(
+            ear_at,
+            [0.0, 0.0, ear_rot],
+            Anim::PiglinEar {
+                left: ear_at[0] > 0.0,
+            },
+            1.0,
+            Some(head),
+        );
         b.cube_f(
-            head,
+            ear,
             0,
             uv,
             [-0.5, -3.0, -2.0],
             [1.0, 6.0, 4.0],
             0.0,
             false,
-            &[
-                Fold::rot([0.0, 0.0, tilt], child_at),
-                Fold::rot([0.0, 0.0, ear_rot], ear_at),
-            ],
+            &[Fold::rot([0.0, 0.0, tilt], child_at)],
         );
     }
     let (arm_r_anim, arm_l_anim) = if zombified {
         (Anim::UndeadArmRight, Anim::UndeadArmLeft)
     } else {
-        (Anim::ArmRight, Anim::ArmLeft)
+        (
+            Anim::PiglinArm { left: false },
+            Anim::PiglinArm { left: true },
+        )
     };
     for (name, pivot, anim, uv) in [
         ("left_arm", [4.0, 15.0, 0.0], arm_l_anim, (28.0, 13.0)),
@@ -14252,14 +14275,28 @@ pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
     if let Some(i) = parts.iter().position(|p| p.name == want) {
         return Some(i);
     }
+    // M380 — the piglin's arms are `PiglinArm { left }`: matched exactly (a
+    // discriminant would take the right arm for both).
+    let piglin_side = match want {
+        "right_arm" => Some(false),
+        "left_arm" => Some(true),
+        _ => Option::None,
+    };
+    if let Some(left) = piglin_side {
+        if let Some(i) = parts
+            .iter()
+            .position(|p| p.anim == Anim::PiglinArm { left })
+        {
+            return Some(i);
+        }
+    }
     let kinds: &[Anim] = match want {
         "head" => &[Anim::Head, Anim::FelineHead, Anim::SheepHead],
         "body" => &[Anim::HumanoidBody],
-        // The plain piglin swings the *generic* arm animation, so
-        // `ArmRight`/`ArmLeft` are here too. Widening the list is safe because
-        // the caller has already filtered to the fourteen kinds vanilla gives
-        // an armour layer — the enderman and villager also carry `ArmRight`
-        // and are never asked.
+        // `ArmRight`/`ArmLeft` (the plain piglin's until M380, matched above
+        // since) stay for any generic-armed wearer. Widening the list is safe
+        // because the caller has already filtered to the fourteen kinds
+        // vanilla gives an armour layer.
         "right_arm" => &[
             Anim::HumanoidArmRight,
             Anim::UndeadArmRight,
@@ -16676,5 +16713,42 @@ mod witch_nose_tests {
         assert_eq!(w.parts[nose].pivot, [0.0, -2.0, 0.0]);
         assert_eq!(w.quads.iter().filter(|q| q.part == nose).count(), 12);
         assert!(villager().parts.iter().all(|p| p.anim != Anim::WitchNose));
+    }
+}
+
+#[cfg(test)]
+mod piglin_creeper_tests {
+    use super::*;
+
+    /// M380 — every piglin (and its baby) has two flapping ear parts on its
+    /// head; the non-zombified adult's and baby's arms bob; the
+    /// creeper's right hind leg swings on the left's phase.
+    #[test]
+    fn piglin_ears_flap_arms_bob_and_creeper_legs_swap() {
+        for m in [piglin_normal(), piglin_zombified(), piglin_baby()] {
+            let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+            let ears = m
+                .parts
+                .iter()
+                .filter(|p| {
+                    matches!(p.anim, Anim::PiglinEar { .. }) && p.parent == Some(head as u16)
+                })
+                .count();
+            assert_eq!(ears, 2);
+        }
+        for m in [piglin_normal(), piglin_baby()] {
+            assert!(m
+                .parts
+                .iter()
+                .any(|p| p.anim == Anim::PiglinArm { left: false }));
+            assert!(m.parts.iter().all(|p| p.anim != Anim::ArmRight));
+        }
+        let c = creeper();
+        let right_hind = c
+            .parts
+            .iter()
+            .find(|p| p.pivot == [-2.0, 18.0, 4.0])
+            .unwrap();
+        assert_eq!(right_hind.anim, Anim::QuadHindLeft);
     }
 }

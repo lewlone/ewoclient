@@ -104,7 +104,10 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 97;
+const EXPECTED_WITNESSES: usize = 98;
+/// M380 — m98's floor. M380 measured 89 px; still ears and the bare
+/// `ArmRight`/`ArmLeft` swing (the pre-M380 mutant) 0.
+const PIGLIN_MIN: usize = 40;
 /// M378 — m96's floors: sitting, walking. M378 measured 1004 and 85; the
 /// pre-M378 parrot (no sitting, still legs and tail) 0 and 0.
 const PARROT_MIN: [usize; 2] = [500, 40];
@@ -6885,6 +6888,53 @@ fn run_check(
         "m97.a_witchs_nose_wobbles_and_an_endermans_arms_bob",
         wn >= WITCH_ENDERMAN_MIN[0] && en >= WITCH_ENDERMAN_MIN[1],
         format!("witch drinking vs not {wn} px changed, enderman 40 ticks apart {en} px (want >= {WITCH_ENDERMAN_MIN:?})"),
+    ));
+
+    // m98 — M380: a piglin standing still flaps its ears and bobs its arms
+    // over a second (the creeper's swapped leg phases are invisible by
+    // design and left to the unit test).
+    let mut pgst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.6, 2.2, 2.0),
+        Vec3::new(0.0, 1.3, 0.0),
+    )?;
+    pgst.wr.set_entities(&[], pgst.right, pgst.up, 0.0);
+    pgst.off
+        .render(gpu, Some((&mut pgst.wr, pgst.vp)), &ov, BG)?;
+    let pg_empty = pgst.off.read_rgba(gpu)?;
+    let mut pgshot = |t: f32| -> Result<Vec<u8>, String> {
+        pgst.wr.set_entities(
+            &[neutral_draw(EntityModelKind::Piglin)],
+            pgst.right,
+            pgst.up,
+            t,
+        );
+        pgst.off
+            .render(gpu, Some((&mut pgst.wr, pgst.vp)), &ov, BG)?;
+        pgst.off.read_rgba(gpu)
+    };
+    let (pg0, pg1) = (pgshot(0.0)?, pgshot(1.0)?);
+    pgst.destroy(gpu);
+    let pg_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pg_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let pg_moved = pg_mask(&pg0)
+        .iter()
+        .zip(&pg_mask(&pg1))
+        .filter(|(x, y)| x != y)
+        .count();
+    w.push(wit(
+        "m98.a_standing_piglin_flaps_its_ears_and_bobs_its_arms",
+        pg_moved >= PIGLIN_MIN,
+        format!("a second apart {pg_moved} px of silhouette (want >= {PIGLIN_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------
