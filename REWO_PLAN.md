@@ -4011,6 +4011,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M398 — the camera's eye height eases (2026-10-21)
+
+From the follow-ups (M284's note). Vanilla's camera keeps its own eye height, eased half the gap a tick toward the player's (`Camera.tick`) and lerped by the partial tick; Rewo's stood at the player's eye, so lying down, crouching and standing up snapped. `PlaySession::camera_eye`/`camera_eye_old` step beside the FOV (sleeping 0.2, else the pose's eye height) and `camera_pose` lerps them; the pick keeps the player's eye. Starts at the standing eye (vanilla rises from 0 at a session's start). r142 now asks for `0.35 ≤ dy < 0.5` (the bot sleeps a few ticks; the eased eye is still descending), after the first two chains failed it and a strict no-rise r220. **Unit test**; render check **r220** (the first asleep frame's eye above 1.0, falling frame to frame within the partial tick's jitter, the last below 0.5).
+
 ### M397 — a sulfur cube draws the block it holds (2026-10-21)
 
 The sulfur cube's last follow-up. A sulfur cube holding a block (its body slot) draws the block in place of its core and does not squish: `sulfur_block_state` is `Block.byItem(bodyItem).defaultBlockState()` (all 334 swallowable items are the same-named blocks' items; `BLOCK_STATE` properties not decoded), the core's quads are skipped, and `collect_mob_blocks` draws the block at `sulfur_block_transform` (the renderer's scale chain, the layer's `XP(180)` and offset), flashing with a lit fuse. **Unit test** (the block's centre and size by hand through the chain); **mobtexshot m112** (682 px with the core gone; m111's flash recolours 674, about the core alone); render check **r219** (a staged sulfur cube draws its gold block).

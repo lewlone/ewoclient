@@ -23,12 +23,12 @@ released.
 
 ### In one minute
 
-- **What happened**: 204 Rewo milestones, M194 to M397, in about 417 commits on
+- **What happened**: 205 Rewo milestones, M194 to M398, in about 419 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`34f73535`): 4,599 tests pass (4,244 at the
-  start); all 51 offscreen gates pass; the live render check passes 219 of
-  219 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
+- **Checks at the end** (`9850c514`): 4,600 tests pass (4,244 at the
+  start); all 51 offscreen gates pass; the live render check passes 220 of
+  220 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
 - **Real bugs you would have seen, now fixed**:
   - holes in the terrain on normal worlds at render distance 16 (M205);
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M398**: the camera glides when you lie down, crouch or stand (it snapped).
 - **M397**: a sulfur cube draws the block it has swallowed in place of its core, and stops squishing.
 - **M396**: a primed sulfur cube swells in its last ticks and its core flashes white.
 - **M395**: slimes, magma cubes and sulfur cubes squish as they hop (the magma cube's slices spread), on the ground state the move packets carry and Rewo now reads.
@@ -581,6 +582,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `9850c514` | **M398** — the camera's eased eye height; unit test, render check **r220** (r142 loosened to the eased eye). |
 | `34f73535` | **M397** — the sulfur cube's contained block; unit test, mobtexshot **m112**, render check **r219**. |
 | `ba806712` | **M396** — the sulfur cube's fuse; unit tests, mobtexshot **m111**. |
 | `8fcdf441` | **M395** — onGround decoded; cube mob squish; unit tests, mobtexshot **m110**, render check **r218**. |
@@ -1021,6 +1023,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M398: **4,600 tests passed, 0 failed; gates 51/51**; render check **220/220** on both runs (r220: first 1.763, last 0.419 / 0.411, largest rise 3.1e-4); clippy (both) and `cargo fmt --check` clean. The first chain failed clippy (an unused constant) and r142 / r220 (exact 0.35); the second failed r220's strict no-rise on 3.4 / 3.9e-4 of frame jitter.
 - After M397: **4,599 tests passed, 0 failed; gates 51/51** (mobtexshot 112); render check **219/219** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M396: **4,598 tests passed, 0 failed; gates 51/51** (mobtexshot 111); render check **218/218** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M395: **4,595 tests passed, 0 failed; gates 51/51** (mobtexshot 110); render check **218/218** on both runs (r218: on the ground seen, 0 malformed); clippy (both) and `cargo fmt --check` clean.
