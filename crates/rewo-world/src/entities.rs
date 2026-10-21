@@ -897,6 +897,11 @@ impl EntityState {
         [self.x, self.y, self.z] = self.cur;
     }
 
+    /// M377 — the camel's / nautilus's dash cooldown in ticks (0 when none).
+    pub fn dash_cooldown(&self) -> i32 {
+        self.dash_cooldown
+    }
+
     /// M361 — the frame's body yaw: last tick's blended toward this tick's
     /// along the short way round (`Mth.rotLerp`).
     pub fn render_yaw(&self, alpha: f32) -> f32 {

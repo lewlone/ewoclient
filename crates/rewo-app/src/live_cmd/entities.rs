@@ -1672,6 +1672,8 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M377 — set by the caller for a camel.
+        camel_jump_cooldown: 0.0,
         // M371 — set by the caller for a dolphin.
         dolphin_moving: false,
         // M369 — set by the caller for an allay.
@@ -4925,6 +4927,15 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M377 — `CamelRenderer.getJumpCooldown`: the cooldown less the
+        // partial tick while it runs.
+        if matches!(
+            kind,
+            EntityModelKind::Camel | EntityModelKind::CamelHusk | EntityModelKind::CamelBaby
+        ) {
+            let cd = e.dash_cooldown();
+            mob.camel_jump_cooldown = if cd > 0 { cd as f32 - alpha } else { 0.0 };
         }
         // M371 — `DolphinRenderState.isMoving`: the horizontal movement over
         // the tick (`getDeltaMovement().horizontalDistanceSqr() > 1e-7`).

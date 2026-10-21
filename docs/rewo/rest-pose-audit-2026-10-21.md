@@ -34,14 +34,14 @@ The baby layers had their own audit on 2026-10-20 (see
 | happy ghast | tentacles hang straight and still (vanilla 0.4 + 0.2·sin rest/sway); harnessed body not scaled 0.9375 | `HappyGhastModel` 95-101 | M373 for the tentacles; the harnessed body's 0.9375 squeeze is open (a per-part scale the animation path cannot yet express) |
 | warden | no idle sway; walk at 0.6662/1.4 (vanilla 0.8662, capped 0.5; right arm on sin) | `WardenModel` 145-170 | M374 |
 | ravager | legs 3.5× (vanilla 0.4·speed); mouth rests shut (vanilla π·0.01) | `RavagerModel` 107, 120-124 | M375 (the attack, stun and roar poses not modelled) |
-| wither | ribcage and tail breathing frozen at their means; side heads copy the centre head | `WitherBossModel` 68-80 | open |
+| wither | ribcage and tail breathing frozen at their means; side heads copy the centre head | `WitherBossModel` 68-80 | M376 (side heads at their untargeted rest; target aiming not modelled) |
 | ender dragon | static layer pose, head looks (vanilla never), no flap/neck/tail chains; drawn facing backward (renderer `rotY(-yr)`) | `EnderDragonModel` 203-287, `EnderDragonRenderer` 48-55 | open |
-| breeze | head looks; vanilla's head is keyframes only | `BreezeModel` 139-147 | open |
-| bat (flying) | head looks on top of the flying rig; vanilla only when resting | `BatModel` 72-81 | open |
+| breeze | head looks; vanilla's head is keyframes only | `BreezeModel` 139-147 | M377 |
+| bat (flying) | head looks on top of the flying rig; vanilla only when resting | `BatModel` 72-81 | M377 (Rewo's bats always fly) |
 | parrot | wings lie flush (vanilla ±0.0873 rest splay); legs and tail never walk | `ParrotModel` 88-100 | open |
-| tadpole | tail never sways (`Anim::FishTail { 0.25, 0.3 }` is exactly it) | `TadpoleModel` 35-36 | open |
-| bee | antennae do not bob with `bobUpAndDown` | `AdultBeeModel` 27-28 | open |
-| camel, armadillo | head look unclamped (camel ±30° / -25..45°, armadillo ±32.5° / -22.5..25°) | `CamelModel` 53-54, `ArmadilloModel` 59-60 | open |
+| tadpole | tail never sways (`Anim::FishTail { 0.25, 0.3 }` is exactly it) | `TadpoleModel` 35-36 | M377 (the out-of-water 1.5 not told apart) |
+| bee | antennae do not bob with `bobUpAndDown` | `AdultBeeModel` 27-28 | M377 |
+| camel, armadillo | head look unclamped (camel ±30° / -25..45°, armadillo ±32.5° / -22.5..25°) | `CamelModel` 53-54, `ArmadilloModel` 59-60 | M377 (with the camel's dash head lift) |
 | axolotl | layer pose; vanilla always blends swim/hover/crawl/lay poses on `ageInTicks`, the look goes to the body | `AdultAxolotlModel` 77-203 | open |
 | creeper | legs half a cycle out of phase (vanilla swaps the field names); invisible in practice | `CreeperModel` 26-49 | open |
 | villager, wandering trader, witch, pillager, vindicator, evoker, illusioner | drawn at 1.0; vanilla's layers are `MeshTransformer.scaling(0.9375)` (about 6% too big) | `LayerDefinitions` 192-193, 215, 494, 496 | M360 |

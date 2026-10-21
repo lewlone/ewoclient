@@ -104,7 +104,14 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 93;
+const EXPECTED_WITNESSES: usize = 95;
+/// M376 — m94's floor (a breath). M376 measured 289 px; a still ribcage
+/// and tail (the pre-M376 mutant) 0.
+const WITHER_MIN: usize = 140;
+/// M377 — m95's floor for the tadpole's tail. M377 measured 26 px; the
+/// pre-M377 mutant 0 (and the camel, breeze and bat 409, 441 and 107 px
+/// where m95 wants 0).
+const TADPOLE_MIN: usize = 12;
 /// M374 — m92's floor (the standing sway). M374 measured 361 px (and 0
 /// between speeds 0.2 and 1.0); the pre-M374 warden (the biped walk,
 /// unclamped, no sway) 0 (and 1957).
@@ -6679,6 +6686,86 @@ fn run_check(
         "m93.a_ravager_strides_at_vanillas_reach",
         (RAVAGER_STRIDE[0]..=RAVAGER_STRIDE[1]).contains(&rv_stride),
         format!("stride vs standing {rv_stride} px (want {RAVAGER_STRIDE:?})"),
+    ));
+
+    // m94 — M376: the wither breathes (ribcage and tail) across a breath.
+    // m95 — M377: a camel looking 80° aside draws as at 30° (its clamp); a
+    // breeze and a flying bat looking aside draw as looking ahead (their
+    // heads do not look); a tadpole's tail sways.
+    let mut smst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.4, 1.8, -2.4),
+        Vec3::new(0.0, 1.0, 0.0),
+    )?;
+    smst.wr.set_entities(&[], smst.right, smst.up, 0.0);
+    smst.off
+        .render(gpu, Some((&mut smst.wr, smst.vp)), &ov, BG)?;
+    let sm_empty = smst.off.read_rgba(gpu)?;
+    let mut smshot = |d: EntityDraw<'_>, t: f32| -> Result<Vec<u8>, String> {
+        smst.wr.set_entities(&[d], smst.right, smst.up, t);
+        smst.off
+            .render(gpu, Some((&mut smst.wr, smst.vp)), &ov, BG)?;
+        smst.off.read_rgba(gpu)
+    };
+    let aside = |kind: EntityModelKind, yaw: f32| EntityDraw {
+        head_yaw: yaw,
+        ..neutral_draw(kind)
+    };
+    let wi0 = smshot(neutral_draw(EntityModelKind::Wither), 0.0)?;
+    let wi1 = smshot(neutral_draw(EntityModelKind::Wither), 1.6)?;
+    let ca30 = smshot(aside(EntityModelKind::Camel, 30.0), 0.0)?;
+    let ca80 = smshot(aside(EntityModelKind::Camel, 80.0), 0.0)?;
+    let br0 = smshot(aside(EntityModelKind::Breeze, 0.0), 0.0)?;
+    let br40 = smshot(aside(EntityModelKind::Breeze, 40.0), 0.0)?;
+    let ba0 = smshot(aside(EntityModelKind::Bat, 0.0), 0.0)?;
+    let ba40 = smshot(aside(EntityModelKind::Bat, 40.0), 0.0)?;
+    let ta0 = smshot(neutral_draw(EntityModelKind::Tadpole), 0.0)?;
+    let ta1 = smshot(neutral_draw(EntityModelKind::Tadpole), 0.25)?;
+    smst.destroy(gpu);
+    let sm_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(sm_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let sm_moved = |a: &[u8], b: &[u8]| {
+        sm_mask(a)
+            .iter()
+            .zip(&sm_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let sm_same = |a: &[u8], b: &[u8]| {
+        a.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.as_chunks::<4>().0)
+            .filter(|(p, q)| p[..3] != q[..3])
+            .count()
+    };
+    let wi_breath = sm_moved(&wi0, &wi1);
+    w.push(wit(
+        "m94.the_wither_breathes",
+        wi_breath >= WITHER_MIN,
+        format!("across a breath {wi_breath} px of silhouette (want >= {WITHER_MIN})"),
+    ));
+    let (ca, br, ba, ta) = (
+        sm_same(&ca30, &ca80),
+        sm_same(&br0, &br40),
+        sm_same(&ba0, &ba40),
+        sm_moved(&ta0, &ta1),
+    );
+    w.push(wit(
+        "m95.clamped_and_still_heads_and_a_swaying_tadpole",
+        ca == 0 && br == 0 && ba == 0 && ta >= TADPOLE_MIN,
+        format!(
+            "camel 80 vs 30 aside {ca} px, breeze aside vs ahead {br} px, bat {ba} px (want 0 each); tadpole 5 ticks apart {ta} px (want >= {TADPOLE_MIN})"
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

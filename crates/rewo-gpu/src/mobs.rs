@@ -337,6 +337,22 @@ pub enum Anim {
         k: f32,
         rest: f32,
     },
+    /// M377 — `CamelModel.applyHeadRotation`: the look clamped (yaw ±30°,
+    /// pitch −25..45°); after a dash the head lifts `45° · cooldown / 55`,
+    /// clamped to 70°.
+    CamelHead,
+    /// M377 — `ArmadilloModel.setupAnim`: the look clamped (yaw ±32.5°,
+    /// pitch −22.5..25°).
+    ArmadilloHead,
+    /// M377 — `AdultBeeModel.bobUpAndDown`: an antenna's `xRot` =
+    /// cos(age·0.18)·π·0.03 while the bee hovers calmly.
+    BeeAntenna,
+    /// M376 — `WitherBossModel.setupAnim`'s ribcage: `xRot` + 0.05·cos(age·
+    /// 0.1)·π about its 0.065π rest.
+    WitherRibcage,
+    /// M376 — the wither's tail: `xRot` + 0.1·cos(age·0.1)·π about 0.265π,
+    /// its pivot on the ribcage's 10 px arc.
+    WitherTail,
     /// M374 — `WardenModel.animateWalk` + `animateIdlePose`'s body, with
     /// `ap = pos·0.8662`, `sm = min(0.5, 3·speed)`, `smm = min(0.35, sm)`:
     /// `zRot` 0.1·sin(ap)·sm + 0.025·sin(age·0.1), `xRot` cos(ap)·smm +
@@ -820,6 +836,9 @@ pub struct MobCombat {
     /// state: 1 while the main hand holds an item (vanilla ramps it over 5
     /// ticks).
     pub allay_holding: f32,
+    /// M377 — `CamelRenderState.jumpCooldown`: the dash cooldown less the
+    /// partial tick (0 when none).
+    pub camel_jump_cooldown: f32,
     /// M371 — `DolphinRenderState.isMoving`: the swim bob and the tail's
     /// stroke run only then.
     pub dolphin_moving: bool,
@@ -6619,7 +6638,7 @@ fn camel_baby() -> Model {
         "head",
         [0.0, 1.0, -7.5],
         [0.0; 3],
-        Anim::Head,
+        Anim::CamelHead,
         1.0,
         Some(body),
     );
@@ -8385,7 +8404,7 @@ fn bat() -> Model {
         "head",
         [0.0, 17.0, 0.0],
         [0.0; 3],
-        Anim::Head,
+        Anim::None,
         1.0,
         Option::None,
     );
@@ -8843,20 +8862,20 @@ fn bee() -> Model {
         [0.0, 1.0, 2.0],
         NONE,
     );
+    // M377 — the antennae are parts: `AdultBeeModel.bobUpAndDown` tips
+    // them `speed·π·0.03` with the hovering bob.
     for (uv, min) in [
         ((2.0, 0.0), [1.5, -2.0, -3.0]),
         ((2.0, 3.0), [-2.5, -2.0, -3.0]),
     ] {
-        b.cube_f(
-            bone,
-            0,
-            uv,
-            min,
-            [1.0, 2.0, 3.0],
-            0.0,
-            false,
-            &[Fold::at([0.0, -2.0, -5.0])],
+        let antenna = b.part_ext(
+            [0.0, -2.0, -5.0],
+            [0.0; 3],
+            Anim::BeeAntenna,
+            1.0,
+            Some(bone),
         );
+        b.cube(antenna, 0, uv, min, [1.0, 2.0, 3.0], NONE);
     }
     // Airborne pose (our bees always hover): wings flutter about Z with
     // yRot reset to 0 (vanilla overrides the ±0.2618 rest splay in
@@ -9156,16 +9175,17 @@ fn tadpole() -> Model {
         false,
         &[Fold::at([0.0, 22.0, -3.0])],
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (0.0, 0.0),
-        [0.0, -1.0, 0.0],
-        [0.0, 2.0, 7.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 22.0, 0.0])],
+    // M377 — `TadpoleModel.setupAnim`: `tail.yRot = −0.25·sin(0.3·age)` in
+    // water (1.5 times that out of it, which Rewo does not tell apart).
+    let tail = b.part(
+        [0.0, 22.0, 0.0],
+        Anim::FishTail {
+            amp: 0.25,
+            speed: 0.3,
+        },
+        1.0,
     );
+    b.cube(tail, 0, (0.0, 0.0), [0.0, -1.0, 0.0], [0.0, 2.0, 7.0], NONE);
     b.finish(1.0)
 }
 
@@ -9220,7 +9240,7 @@ fn armadillo() -> Model {
         "head",
         [0.0, -2.0, -11.0],
         [0.0; 3],
-        Anim::Head,
+        Anim::ArmadilloHead,
         1.0,
         Some(body),
     );
@@ -10394,7 +10414,7 @@ fn camel_with(saddle: CamelSaddle) -> Model {
         "head",
         [0.0, 1.0, -10.0],
         [0.0; 3],
-        Anim::Head,
+        Anim::CamelHead,
         1.0,
         Some(root),
     );
@@ -12223,7 +12243,7 @@ fn breeze() -> Model {
         "head",
         [0.0, 4.0, 0.0],
         [0.0; 3],
-        Anim::Head,
+        Anim::None,
         1.0,
         Some(body),
     );
@@ -12657,6 +12677,10 @@ fn ravager() -> Model {
     b.finish(1.0)
 }
 
+/// M376 — `WitherBossModel`'s ribcage rest, `0.065·π` (the breathing's
+/// mean).
+pub const WITHER_RIBCAGE_MEAN: f32 = 0.20420352;
+
 /// `WitherBossModel`: three skulls over a floating spine + ribs + tail.
 fn wither() -> Model {
     wither_with(0.0)
@@ -12686,62 +12710,42 @@ fn wither_with(g: f32) -> Model {
         false,
         NONE,
     );
-    let spine = Fold::rot([0.20420352, 0.0, 0.0], [-2.0, 6.9, -0.5]);
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (0.0, 22.0),
-        [0.0, 0.0, 0.0],
-        [3.0, 10.0, 3.0],
-        g,
-        false,
-        &[spine],
+    // M376 — the ribcage (spine and ribs) and the tail are parts that
+    // breathe: `setupAnim` sets `ribcage.xRot = (0.065 + 0.05·cos(age·0.1))·π`,
+    // slides the tail along the ribcage's 10 px arc and sets its `xRot` to
+    // `(0.265 + 0.1·cos)·π`. They rest at the means (0.065π, 0.265π).
+    let ribcage = b.part_ext(
+        [-2.0, 6.9, -0.5],
+        [WITHER_RIBCAGE_MEAN, 0.0, 0.0],
+        Anim::WitherRibcage,
+        1.0,
+        Option::None,
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (24.0, 22.0),
-        [-4.0, 1.5, 0.5],
-        [11.0, 2.0, 2.0],
-        g,
-        false,
-        &[spine],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (24.0, 22.0),
-        [-4.0, 4.0, 0.5],
-        [11.0, 2.0, 2.0],
-        g,
-        false,
-        &[spine],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (24.0, 22.0),
-        [-4.0, 6.5, 0.5],
-        [11.0, 2.0, 2.0],
-        g,
-        false,
-        &[spine],
-    );
-    // Tail pose: vanilla computes it from the spine angle.
-    let a = 0.20420352f32;
-    let tail = Fold::rot(
-        [0.83252203, 0.0, 0.0],
+    for (uv, min, dims) in [
+        ((0.0, 22.0), [0.0, 0.0, 0.0], [3.0, 10.0, 3.0]),
+        ((24.0, 22.0), [-4.0, 1.5, 0.5], [11.0, 2.0, 2.0]),
+        ((24.0, 22.0), [-4.0, 4.0, 0.5], [11.0, 2.0, 2.0]),
+        ((24.0, 22.0), [-4.0, 6.5, 0.5], [11.0, 2.0, 2.0]),
+    ] {
+        b.cube_f(ribcage, 0, uv, min, dims, g, false, NONE);
+    }
+    let a = WITHER_RIBCAGE_MEAN;
+    let tail = b.part_ext(
         [-2.0, 6.9 + a.cos() * 10.0, -0.5 + a.sin() * 10.0],
+        [0.83252203, 0.0, 0.0],
+        Anim::WitherTail,
+        1.0,
+        Option::None,
     );
     b.cube_f(
-        STATIC_PART,
+        tail,
         0,
         (12.0, 22.0),
         [0.0, 0.0, 0.0],
         [3.0, 6.0, 3.0],
         g,
         false,
-        &[tail],
+        NONE,
     );
     let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
     b.cube_f(
@@ -12754,9 +12758,11 @@ fn wither_with(g: f32) -> Model {
         false,
         NONE,
     );
-    // Side heads track the look too (vanilla gives them independent
-    // targets; sharing the net yaw reads right).
-    let head_r = b.part([-8.0, 4.0, 0.0], Anim::Head, 1.0);
+    // M376 — the side heads aim at their own targets in vanilla (client
+    // rotations eased in `WitherBoss.aiStep`), and without one ease back to
+    // the body's facing at pitch 0, which is where they rest here: Rewo keeps
+    // no per-head target state. Until M376 they copied the centre head.
+    let head_r = b.part([-8.0, 4.0, 0.0], Anim::None, 1.0);
     b.cube_f(
         head_r,
         0,
@@ -12767,7 +12773,7 @@ fn wither_with(g: f32) -> Model {
         false,
         NONE,
     );
-    let head_l = b.part([10.0, 4.0, 0.0], Anim::Head, 1.0);
+    let head_l = b.part([10.0, 4.0, 0.0], Anim::None, 1.0);
     b.cube_f(
         head_l,
         0,
@@ -16539,5 +16545,54 @@ mod ravager_pose_tests {
             .collect();
         assert_eq!(legs.len(), 4);
         assert!(legs.iter().all(|&a| (1.4 * a - 0.4).abs() < 1e-6));
+    }
+}
+
+#[cfg(test)]
+mod wither_breath_tests {
+    use super::*;
+
+    /// M376 — the wither (and its armour shell) breathes on its ribcage and
+    /// tail parts; only the centre head looks.
+    #[test]
+    fn the_wither_breathes_and_its_side_heads_rest() {
+        for m in [wither(), wither_with(0.5)] {
+            let n = |a: Anim| m.parts.iter().filter(|p| p.anim == a).count();
+            assert_eq!(n(Anim::WitherRibcage), 1);
+            assert_eq!(n(Anim::WitherTail), 1);
+            assert_eq!(n(Anim::Head), 1);
+        }
+        assert_eq!(wither().parts.len(), wither_with(0.5).parts.len());
+    }
+}
+
+#[cfg(test)]
+mod small_pose_tests {
+    use super::*;
+
+    /// M377 — the breeze's and the airborne bat's heads do not look; the
+    /// camel's (both) and the armadillo's look within their clamps; the
+    /// bee's two antennae and the tadpole's tail are moving parts.
+    #[test]
+    fn the_small_rest_pose_fixes_hold() {
+        let anims = |m: &Model| m.parts.iter().map(|p| p.anim).collect::<Vec<_>>();
+        for m in [breeze(), bat()] {
+            assert!(!anims(&m).contains(&Anim::Head));
+        }
+        for m in [camel(), camel_baby()] {
+            assert!(anims(&m).contains(&Anim::CamelHead));
+        }
+        assert!(anims(&armadillo()).contains(&Anim::ArmadilloHead));
+        assert_eq!(
+            anims(&bee())
+                .iter()
+                .filter(|a| **a == Anim::BeeAntenna)
+                .count(),
+            2
+        );
+        assert!(anims(&tadpole()).contains(&Anim::FishTail {
+            amp: 0.25,
+            speed: 0.3
+        }));
     }
 }

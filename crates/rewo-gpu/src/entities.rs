@@ -6091,6 +6091,35 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
         }
+        // M377 — the camel's and armadillo's clamped looks, the bee's
+        // antennae.
+        CamelHead => {
+            let mut pitch = c.pitch.clamp(-25.0 * DEG, 45.0 * DEG);
+            if c.mob.camel_jump_cooldown > 0.0 {
+                let lift = 45.0 * DEG * c.mob.camel_jump_cooldown / 55.0;
+                pitch = (pitch + lift).clamp(-25.0 * DEG, 70.0 * DEG);
+            }
+            rot[0] = pitch;
+            rot[1] = c.net.clamp(-30.0 * DEG, 30.0 * DEG);
+        }
+        ArmadilloHead => {
+            rot[0] = c.pitch.clamp(-22.5 * DEG, 25.0 * DEG);
+            rot[1] = c.net.clamp(-32.5 * DEG, 32.5 * DEG);
+        }
+        BeeAntenna if !c.mob.bee_angry => rot[0] = (c.age * 0.18).cos() * PI * 0.03,
+        BeeAntenna => {}
+        // M376 — `WitherBossModel.setupAnim`'s breathing.
+        WitherRibcage => rot[0] = 0.05 * (c.age * 0.1).cos() * PI,
+        WitherTail => {
+            let breath = (c.age * 0.1).cos();
+            rot[0] = 0.1 * breath * PI;
+            let (rib, mean) = ((0.065 + 0.05 * breath) * PI, mobs::WITHER_RIBCAGE_MEAN);
+            off = [
+                0.0,
+                (rib.cos() - mean.cos()) * 10.0,
+                (rib.sin() - mean.sin()) * 10.0,
+            ];
+        }
         // M374 — `WardenModel.animateWalk` and `animateIdlePose`.
         WardenBody | WardenHead | WardenArm { .. } | WardenLeg { .. } => {
             let sm = (3.0 * c.amt).min(0.5);
@@ -10729,5 +10758,104 @@ mod warden_anim_tests {
         assert!((r + 0.8 * ap.sin() * 0.5).abs() < 1e-6 && (l + 0.8 * ap.cos() * 0.5).abs() < 1e-6);
         let rl = anim_delta(WardenLeg { left: false }, 1.0, &walk).0[0];
         assert!((rl - (ap + PI).cos() * 0.5).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod wither_breath_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    /// M376 — the ribcage swings ±0.05π about its rest, the tail ±0.1π, and
+    /// the tail's pivot rides the ribcage's 10 px arc (none at the mean).
+    #[test]
+    fn the_wither_ribcage_and_tail_breathe() {
+        let ctx = |age: f32| AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        };
+        let full = ctx(0.0);
+        assert!((anim_delta(mobs::Anim::WitherRibcage, 1.0, &full).0[0] - 0.05 * PI).abs() < 1e-6);
+        let (t, o) = anim_delta(mobs::Anim::WitherTail, 1.0, &full);
+        assert!((t[0] - 0.1 * PI).abs() < 1e-6);
+        let rib = 0.115 * PI;
+        let mean = mobs::WITHER_RIBCAGE_MEAN;
+        assert!((o[1] - (rib.cos() - mean.cos()) * 10.0).abs() < 1e-4);
+        assert!((o[2] - (rib.sin() - mean.sin()) * 10.0).abs() < 1e-4);
+        // A quarter cycle on (age·0.1 = π/2) the breath crosses its mean.
+        let (t2, o2) = anim_delta(mobs::Anim::WitherTail, 1.0, &ctx(5.0 * PI));
+        assert!(t2[0].abs() < 1e-5 && o2[1].abs() < 1e-4 && o2[2].abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod small_pose_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(pitch: f32, net: f32, mob: mobs::MobCombat) -> AnimCtx {
+        AnimCtx {
+            pitch,
+            net,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 9.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob,
+            tendril: 0.0,
+        }
+    }
+
+    /// M377 — the camel's look clamps at ±30° / −25..45° and lifts after a
+    /// dash (to 70° at most); the armadillo's at ±32.5° / −22.5..25°; a calm
+    /// bee's antennae bob, an angry one's do not.
+    #[test]
+    fn the_clamped_heads_and_antennae_follow_vanilla() {
+        use mobs::Anim::*;
+        let d = mobs::MobCombat::default();
+        let (r, _) = anim_delta(CamelHead, 1.0, &ctx(1.5, -1.5, d));
+        assert!((r[0] - 45.0 * DEG).abs() < 1e-6 && (r[1] + 30.0 * DEG).abs() < 1e-6);
+        let dash = mobs::MobCombat {
+            camel_jump_cooldown: 55.0,
+            ..Default::default()
+        };
+        let (r, _) = anim_delta(CamelHead, 1.0, &ctx(1.5, 0.0, dash));
+        assert!((r[0] - 70.0 * DEG).abs() < 1e-6);
+        let (r, _) = anim_delta(CamelHead, 1.0, &ctx(0.0, 0.0, dash));
+        assert!((r[0] - 45.0 * DEG).abs() < 1e-6);
+        let (r, _) = anim_delta(ArmadilloHead, 1.0, &ctx(-1.0, 1.0, d));
+        assert!((r[0] + 22.5 * DEG).abs() < 1e-6 && (r[1] - 32.5 * DEG).abs() < 1e-6);
+        let (a, _) = anim_delta(BeeAntenna, 1.0, &ctx(0.0, 0.0, d));
+        assert!((a[0] - (9.0_f32 * 0.18).cos() * PI * 0.03).abs() < 1e-6);
+        let angry = mobs::MobCombat {
+            bee_angry: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            anim_delta(BeeAntenna, 1.0, &ctx(0.0, 0.0, angry)).0,
+            [0.0; 3]
+        );
     }
 }
