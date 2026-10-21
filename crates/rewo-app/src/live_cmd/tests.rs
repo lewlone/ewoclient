@@ -4533,3 +4533,18 @@ fn the_headbutt_rises_and_falls_over_ten_ticks() {
     assert_eq!(f(0), 0.0);
     assert_eq!(f(-3), 0.0);
 }
+
+/// M386 — the ender dragon draws in its renderer's frame: the generic
+/// `180 − yaw` plus 180° is vanilla's `−yr`, and it sits a block forward
+/// along its facing; every other kind is untouched.
+#[test]
+fn the_ender_dragon_draws_facing_forward() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let f = super::entities::dragon_frame;
+    assert_eq!(f(K::Zombie, 30.0), (30.0, [0.0, 0.0]));
+    let (yaw, off) = f(K::EnderDragon, 0.0);
+    assert_eq!(yaw, 180.0);
+    assert!(off[0].abs() < 1e-6 && (off[1] - 1.0).abs() < 1e-6);
+    let (_, off) = f(K::EnderDragon, 90.0);
+    assert!((off[0] + 1.0).abs() < 1e-6 && off[1].abs() < 1e-6);
+}

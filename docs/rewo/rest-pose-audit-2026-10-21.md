@@ -35,7 +35,7 @@ The baby layers had their own audit on 2026-10-20 (see
 | warden | no idle sway; walk at 0.6662/1.4 (vanilla 0.8662, capped 0.5; right arm on sin) | `WardenModel` 145-170 | M374 |
 | ravager | legs 3.5× (vanilla 0.4·speed); mouth rests shut (vanilla π·0.01) | `RavagerModel` 107, 120-124 | M375 (the attack, stun and roar poses not modelled) |
 | wither | ribcage and tail breathing frozen at their means; side heads copy the centre head | `WitherBossModel` 68-80 | M376 (side heads at their untargeted rest; target aiming not modelled) |
-| ender dragon | static layer pose, head looks (vanilla never), no flap/neck/tail chains; drawn facing backward (renderer `rotY(-yr)`) | `EnderDragonModel` 203-287, `EnderDragonRenderer` 48-55 | open |
+| ender dragon | static layer pose, head looks (vanilla never), no flap/neck/tail chains; drawn facing backward (renderer `rotY(-yr)`) | `EnderDragonModel` 203-287, `EnderDragonRenderer` 48-55 | M386 for the facing (`rotY(−yr)`, a block forward) and the still head; the flap, neck and tail chains and the renderer's history pitch open |
 | breeze | head looks; vanilla's head is keyframes only | `BreezeModel` 139-147 | M377 |
 | bat (flying) | head looks on top of the flying rig; vanilla only when resting | `BatModel` 72-81 | M377 (Rewo's bats always fly) |
 | parrot | wings lie flush (vanilla ±0.0873 rest splay); legs and tail never walk | `ParrotModel` 88-100 | M378 (standing and sitting; the flying and party poses not modelled) |

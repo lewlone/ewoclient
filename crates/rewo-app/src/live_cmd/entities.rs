@@ -4149,6 +4149,19 @@ pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> Ent
     }
 }
 
+/// M386 — the draw yaw and the horizontal offset (x, z, in blocks) for a
+/// kind: the ender dragon's renderer turns it `rotY(−yr)` and moves it a
+/// block forward in that frame, `R_y(−yr)·(0, 0, 1) = (−sin yr, cos yr)`;
+/// the generic draw turns `180 − yaw`, so the dragon's yaw gains 180°.
+/// Every other kind: its yaw, no offset.
+pub(crate) fn dragon_frame(kind: EntityModelKind, yaw: f32) -> (f32, [f32; 2]) {
+    if kind != EntityModelKind::EnderDragon {
+        return (yaw, [0.0; 2]);
+    }
+    let r = yaw.to_radians();
+    (yaw + 180.0, [-r.sin(), r.cos()])
+}
+
 /// M367 — `HoglinModel.setupAnim`'s `headbuttLerpFactor = 1 − |10 − 2r| /
 /// 10` for `r` remaining attack ticks (0 when none remain).
 pub(crate) fn headbutt_factor(remaining: i64) -> f32 {
@@ -5111,11 +5124,16 @@ pub(super) fn collect_entities<'a>(
                 session.world.entities.custom_name(id)
             },
         );
+        // M386 — `EnderDragonRenderer.submit` is not the living transform:
+        // `rotY(−yr)` (the generic draw's `180 − yaw`, so the dragon drew
+        // facing backward until M386) then a block forward,
+        // `translate(0, 0, 1)` in the turned frame.
+        let (draw_yaw, forward) = dragon_frame(kind, e.render_yaw(alpha));
         out.push(EntityDraw {
             pos: [
-                p[0] as f32,
+                p[0] as f32 + forward[0],
                 p[1] as f32 + if is_orb { 0.1 } else { 0.0 },
-                p[2] as f32,
+                p[2] as f32 + forward[1],
             ],
             width: w,
             height: h,
@@ -5127,8 +5145,9 @@ pub(super) fn collect_entities<'a>(
             name: label_name,
             health: label_health,
             kind,
-            // M361 — the frame's rotations, blended between ticks.
-            yaw: e.render_yaw(alpha),
+            // M361 — the frame's rotations, blended between ticks (M386: the
+            // dragon's own frame).
+            yaw: draw_yaw,
             // M24: `state.deathTime = entity.deathTime > 0 ? deathTime + partial : 0`.
             death_time: session
                 .world

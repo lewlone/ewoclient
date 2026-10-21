@@ -13080,7 +13080,9 @@ fn wither_with(g: f32) -> Model {
 fn ender_dragon() -> Model {
     let mut b = ModelBuilder::new();
     // Head (+ jaw folded in).
-    let head = b.part([0.0, 20.0, -62.0], Anim::Head, 1.0);
+    // M386 — vanilla's dragon head never follows the look: `setupAnim`
+    // places it procedurally along the neck (not modelled yet).
+    let head = b.part([0.0, 20.0, -62.0], Anim::None, 1.0);
     b.cube(
         head,
         0,
@@ -17173,5 +17175,16 @@ mod piglin_mesh_tests {
             }
             assert_eq!(in_rect([16.0, 32.0], 8.0, 12.0, 4.0), 6, "the jacket");
         }
+    }
+}
+
+#[cfg(test)]
+mod dragon_head_tests {
+    use super::*;
+
+    /// M386 — the ender dragon's head does not look.
+    #[test]
+    fn the_dragon_head_does_not_look() {
+        assert!(ender_dragon().parts.iter().all(|p| p.anim != Anim::Head));
     }
 }
