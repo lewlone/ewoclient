@@ -429,8 +429,11 @@ pub(super) struct RenderCheck {
     /// M319 — r174: frames on which a baby drowned drew as its own model.
     pub(super) baby_drowned_frames: usize,
     /// M320 — r175: whether a baby piglin and a baby zombified piglin drew
-    /// as `BabyPiglinModel`.
-    pub(super) baby_piglins: (bool, bool),
+    /// as `BabyPiglinModel`, and (M389) whether an adult piglin drew as the
+    /// adult.
+    pub(super) baby_piglins: (bool, bool, bool),
+    /// M390 — r216: whether a piglin drew admiring the gold in its off hand.
+    pub(super) admiring_piglin: bool,
     /// M321 — r176: whether a calf and a mooshroom calf drew as `BabyCowModel`.
     pub(super) calves: (bool, bool),
     /// M322 — r177: whether a piglet and a chick drew as `BabyPigModel` and
@@ -1303,7 +1306,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 215;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 216;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1871,14 +1874,24 @@ impl RenderCheck {
         );
         // M320 — r175: `render_check.py` summons a baby piglin and a baby
         // zombified piglin; both must draw as `BabyPiglinModel` (`mobtexshot
-        // m46`).
+        // m46`). M389 — and an adult piglin immune to zombification as the
+        // adult: the immunity (index 16) was read as the baby flag, which
+        // the staged baby (immune too) could not tell apart.
         row(
-            "r175 a baby piglin and a baby zombified piglin drew as BabyPiglinModel",
-            self.baby_piglins.0 && self.baby_piglins.1,
+            "r175 a baby piglin and a baby zombified piglin drew as BabyPiglinModel, an immune adult piglin as the adult",
+            self.baby_piglins.0 && self.baby_piglins.1 && self.baby_piglins.2,
             format!(
-                "baby piglin seen: {}, baby zombified piglin seen: {}",
-                self.baby_piglins.0, self.baby_piglins.1
+                "baby piglin seen: {}, baby zombified piglin seen: {}, adult piglin seen: {}",
+                self.baby_piglins.0, self.baby_piglins.1, self.baby_piglins.2
             ),
+        );
+        // M390 — r216: that adult holds a gold ingot in its off hand, so
+        // `Piglin.getArmPose()` answers ADMIRING_ITEM (the jar's
+        // `piglin_loved` tag, resolved through `#gold_ores`).
+        row(
+            "r216 a piglin with gold in its off hand drew admiring it",
+            self.admiring_piglin,
+            format!("admiring piglin seen: {}", self.admiring_piglin),
         );
         // M319 — r174: `render_check.py` summons a baby drowned (helmeted
         // against the sun); it must draw as `BabyDrownedModel` (`mobtexshot

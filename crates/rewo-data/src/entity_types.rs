@@ -227,6 +227,12 @@ pub struct EntityClasses {
     turtle: std::collections::HashSet<i32>,
     /// M387 — `minecraft:axolotl`: index 19 BOOLEAN is `DATA_PLAYING_DEAD`.
     axolotl: std::collections::HashSet<i32>,
+    /// M389 — `minecraft:piglin`: index 17 BOOLEAN is its `DATA_BABY_ID`,
+    /// 18 `DATA_IS_CHARGING_CROSSBOW`, 19 `DATA_IS_DANCING`.
+    piglin: std::collections::HashSet<i32>,
+    /// M389 — `AbstractPiglin` (the piglin and the brute): index 16 BOOLEAN
+    /// is `DATA_IMMUNE_TO_ZOMBIFICATION`, not a baby flag.
+    abstract_piglin: std::collections::HashSet<i32>,
     /// M367 — `minecraft:hoglin` and `minecraft:zoglin`: entity event 4 is
     /// their headbutt (`attackAnimationRemainingTicks = 10`).
     hoglin: std::collections::HashSet<i32>,
@@ -421,6 +427,11 @@ impl EntityClasses {
             sheep: types.id_of("minecraft:sheep").into_iter().collect(),
             turtle: types.id_of("minecraft:turtle").into_iter().collect(),
             axolotl: types.id_of("minecraft:axolotl").into_iter().collect(),
+            piglin: types.id_of("minecraft:piglin").into_iter().collect(),
+            abstract_piglin: ["minecraft:piglin", "minecraft:piglin_brute"]
+                .iter()
+                .filter_map(|n| types.id_of(n))
+                .collect(),
             hoglin: ["minecraft:hoglin", "minecraft:zoglin"]
                 .iter()
                 .filter_map(|n| types.id_of(n))
@@ -460,6 +471,8 @@ impl EntityClasses {
             sheep: Default::default(),
             turtle: Default::default(),
             axolotl: Default::default(),
+            piglin: Default::default(),
+            abstract_piglin: Default::default(),
             hoglin: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
@@ -497,6 +510,8 @@ impl EntityClasses {
             sheep: Default::default(),
             turtle: Default::default(),
             axolotl: Default::default(),
+            piglin: Default::default(),
+            abstract_piglin: Default::default(),
             hoglin: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
@@ -568,6 +583,17 @@ impl EntityClasses {
         self.axolotl.contains(&type_id)
     }
 
+    /// M389 — `minecraft:piglin` (baby 17, charging 18, dancing 19).
+    pub fn is_piglin(&self, type_id: i32) -> bool {
+        self.piglin.contains(&type_id)
+    }
+
+    /// M389 — `instanceof AbstractPiglin`: its index 16 BOOLEAN is
+    /// `DATA_IMMUNE_TO_ZOMBIFICATION`.
+    pub fn is_abstract_piglin(&self, type_id: i32) -> bool {
+        self.abstract_piglin.contains(&type_id)
+    }
+
     /// M365 — `minecraft:turtle` (`Turtle.HAS_EGG` 18, `LAYING_EGG` 19).
     pub fn is_turtle(&self, type_id: i32) -> bool {
         self.turtle.contains(&type_id)
@@ -619,6 +645,15 @@ impl EntityClasses {
     /// [`Self::from_raw_ids`].
     pub fn with_cube_mobs(mut self, ids: &[i32]) -> Self {
         self.cube_mob.extend(ids.iter().copied());
+        self
+    }
+
+    /// As built, plus `piglin` as the piglin and `brute` as the brute (both
+    /// `AbstractPiglin`). **Unit tests only**, beside [`Self::from_raw_ids`].
+    pub fn with_piglins(mut self, piglin: &[i32], brute: &[i32]) -> Self {
+        self.piglin.extend(piglin.iter().copied());
+        self.abstract_piglin
+            .extend(piglin.iter().chain(brute).copied());
         self
     }
 

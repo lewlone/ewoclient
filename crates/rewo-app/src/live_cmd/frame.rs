@@ -1223,10 +1223,14 @@ impl LiveApp {
                 c.calves.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::CowBaby;
                 c.calves.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::MooshroomBaby;
             }
-            // M320 — r175: the staged baby piglin and baby zombified piglin.
+            // M320 — r175: the staged baby piglin and baby zombified piglin
+            // (M389: and the immune adult). M390 — r216: that adult admiring.
             for d in draws.iter() {
                 c.baby_piglins.0 |= d.kind == rewo_gpu::mobs::EntityModelKind::PiglinBaby;
                 c.baby_piglins.1 |= d.kind == rewo_gpu::mobs::EntityModelKind::ZombifiedPiglinBaby;
+                c.baby_piglins.2 |= d.kind == rewo_gpu::mobs::EntityModelKind::Piglin;
+                c.admiring_piglin |= d.kind == rewo_gpu::mobs::EntityModelKind::Piglin
+                    && d.mob.piglin_pose == rewo_gpu::mobs::PiglinArmPose::AdmiringItem;
             }
             // M319 — r174: the staged baby drowned, as its own model.
             if draws

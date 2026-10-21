@@ -350,6 +350,11 @@ pub enum Anim {
     PiglinEar {
         left: bool,
     },
+    /// M390 — a piglin's head: the look, then `PiglinModel.setupAnim`'s
+    /// dance bob (DANCING) or its downward stare (ADMIRING_ITEM).
+    PiglinHead,
+    /// M390 — a piglin's body: the dance bob.
+    PiglinBody,
     /// M379 — `WitchModel.setupAnim`'s nose: `xRot` sin(age·k)·4.5°, `zRot`
     /// cos(age·k)·2.5° with k = 0.01·(entityId % 10); holding an item, the
     /// nose sits at (0, 1, −1.5) tipped −0.9.
@@ -832,6 +837,20 @@ pub enum IllagerArmPose {
     Neutral,
 }
 
+/// M390 — `PiglinArmPose` as `Piglin.getArmPose()` answers it (the brute's
+/// answers only ATTACKING_WITH_MELEE_WEAPON or DEFAULT), the input to
+/// `PiglinModel.setupAnim`'s pose switch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PiglinArmPose {
+    #[default]
+    Default,
+    Dancing,
+    AdmiringItem,
+    AttackingWithMeleeWeapon,
+    CrossbowCharge,
+    CrossbowHold,
+}
+
 /// The synced mob state the M20 arm rigs read, mirrored into `rewo-gpu` so the
 /// renderer keeps no `rewo-world` dependency (the same pattern [`AllayDance`]
 /// and [`SwingKind`] use).
@@ -886,6 +905,8 @@ pub struct MobCombat {
     pub axolotl_in_water: bool,
     pub axolotl_moving: bool,
     pub axolotl_playing_dead: bool,
+    /// M390 — a piglin's or brute's `getArmPose()`.
+    pub piglin_pose: PiglinArmPose,
     /// M381 — `HumanoidRenderState.isPassenger` / `IllagerRenderState
     /// .isRiding`: the seated riding pose (set only for a kind that
     /// [`sits_when_riding`]).
@@ -5837,7 +5858,19 @@ fn piglin_sleeves(b: &mut ModelBuilder, arm_r: usize, arm_l: usize) {
 /// overlay (the brute's jacket and pants were missing).
 fn piglin_like(arms_forward: bool) -> Model {
     let mut b = ModelBuilder::new();
-    let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
+    // M390 — a `PiglinModel`'s head and body pose (the zombified piglin is
+    // an `AbstractPiglinModel` only: it looks, and its body is still).
+    let head_anim = if arms_forward {
+        Anim::Head
+    } else {
+        Anim::PiglinHead
+    };
+    let head = b.part([0.0, 0.0, 0.0], head_anim, 1.0);
+    let body = if arms_forward {
+        STATIC_PART
+    } else {
+        b.part([0.0, 0.0, 0.0], Anim::PiglinBody, 1.0)
+    };
     b.cube(
         head,
         0,
@@ -5886,7 +5919,7 @@ fn piglin_like(arms_forward: bool) -> Model {
         b.cube(ear, 0, uv, min, [1.0, 5.0, 4.0], NONE);
     }
     b.cube(
-        STATIC_PART,
+        body,
         0,
         (16.0, 16.0),
         [-4.0, 0.0, -2.0],
@@ -5992,7 +6025,7 @@ fn piglin_like(arms_forward: bool) -> Model {
         NONE,
     );
     b.cube_g(
-        STATIC_PART,
+        body,
         0,
         (16.0, 32.0),
         [-4.0, 0.0, -2.0],
@@ -6010,17 +6043,36 @@ fn piglin_like(arms_forward: bool) -> Model {
 /// The zombified piglin's baby is the same layer with the zombie arms.
 fn piglin_baby_like(zombified: bool) -> Model {
     let mut b = ModelBuilder::new();
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (0.0, 13.0),
-        [-3.0, -3.0, -1.0],
-        [6.0, 5.0, 3.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 18.0, -0.5])],
-    );
-    let head = b.part([0.0, 15.0, 0.0], Anim::Head, 1.0);
+    // M390 — `BabyPiglinModel` is a `PiglinModel`: its head and body pose
+    // as the adult's do (the zombified baby's do not).
+    if zombified {
+        b.cube_f(
+            STATIC_PART,
+            0,
+            (0.0, 13.0),
+            [-3.0, -3.0, -1.0],
+            [6.0, 5.0, 3.0],
+            0.0,
+            false,
+            &[Fold::at([0.0, 18.0, -0.5])],
+        );
+    } else {
+        let body = b.part([0.0, 18.0, -0.5], Anim::PiglinBody, 1.0);
+        b.cube(
+            body,
+            0,
+            (0.0, 13.0),
+            [-3.0, -3.0, -1.0],
+            [6.0, 5.0, 3.0],
+            NONE,
+        );
+    }
+    let head_anim = if zombified {
+        Anim::Head
+    } else {
+        Anim::PiglinHead
+    };
+    let head = b.part([0.0, 15.0, 0.0], head_anim, 1.0);
     b.cube(
         head,
         0,
@@ -14799,8 +14851,13 @@ pub fn armor_part(parts: &[Part], want: &str) -> Option<usize> {
         }
     }
     let kinds: &[Anim] = match want {
-        "head" => &[Anim::Head, Anim::FelineHead, Anim::SheepHead],
-        "body" => &[Anim::HumanoidBody],
+        "head" => &[
+            Anim::Head,
+            Anim::FelineHead,
+            Anim::SheepHead,
+            Anim::PiglinHead,
+        ],
+        "body" => &[Anim::HumanoidBody, Anim::PiglinBody],
         // `ArmRight`/`ArmLeft` (the plain piglin's until M380, matched above
         // since) stay for any generic-armed wearer. Widening the list is safe
         // because the caller has already filtered to the fourteen kinds
@@ -15764,7 +15821,12 @@ mod baby_piglin_tests {
     fn the_baby_piglin_is_its_own_model() {
         let m = piglin_baby();
         assert_eq!(m.quads.len(), 9 * 6);
-        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        // M390 — the posing head (`PiglinHead`).
+        let head = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::PiglinHead)
+            .unwrap();
         let fronts: Vec<_> = m
             .quads
             .iter()
@@ -17234,7 +17296,13 @@ mod piglin_creeper_tests {
     #[test]
     fn piglin_ears_flap_arms_bob_and_creeper_legs_swap() {
         for m in [piglin_normal(), piglin_zombified(), piglin_baby()] {
-            let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+            // M390 — a `PiglinModel`'s head poses (`PiglinHead`); the
+            // zombified piglin's only looks.
+            let head = m
+                .parts
+                .iter()
+                .position(|p| matches!(p.anim, Anim::Head | Anim::PiglinHead))
+                .unwrap();
             let ears = m
                 .parts
                 .iter()

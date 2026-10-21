@@ -2704,6 +2704,20 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_axolotl_playing_dead(eid, b);
         }
     }
+    // M389 — the piglin's own flags: `DATA_BABY_ID` (17),
+    // `DATA_IS_CHARGING_CROSSBOW` (18), `DATA_IS_DANCING` (19), after
+    // `AbstractPiglin.DATA_IMMUNE_TO_ZOMBIFICATION` (16).
+    if kinds.classes.is_some_and(|c| c.is_piglin(type_id)) {
+        if let Some(b) = meta.bool17 {
+            entities.set_baby(eid, b);
+        }
+        if let Some(b) = meta.bool18 {
+            entities.set_charging_crossbow(eid, b);
+        }
+        if let Some(b) = meta.bool19 {
+            entities.set_piglin_dancing(eid, b);
+        }
+    }
     if meta.bool19.is_some() && kinds.classes.is_some_and(|c| c.is_camel(type_id)) {
         entities.arm_dash_cooldown(eid, 55);
     }
@@ -2723,6 +2737,10 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_dancing(eid, b);
         } else if kinds.classes.is_some_and(|c| c.is_raider(type_id)) {
             entities.set_celebrating(eid, b);
+        } else if kinds.classes.is_some_and(|c| c.is_abstract_piglin(type_id)) {
+            // M389 — `AbstractPiglin.DATA_IMMUNE_TO_ZOMBIFICATION`: nothing
+            // Rewo draws reads it. It was read as the baby flag, so an immune
+            // piglin drew as a baby and a baby piglin as an adult.
         } else {
             entities.set_baby(eid, b);
         }
@@ -5661,6 +5679,47 @@ mod set_entity_data_tests {
             Some(2),
             "index 16 INT still lands in `sizes` (the creeper's)"
         );
+    }
+
+    /// M389 — a piglin's index 16 BOOLEAN is its zombification immunity
+    /// (`AbstractPiglin`), its baby flag is 17, charging 18 and dancing 19;
+    /// the brute shares only the immunity, and a zombified piglin (a
+    /// `Zombie`) keeps its baby flag at 16.
+    #[test]
+    fn a_piglins_baby_flag_is_index_17_and_16_is_its_immunity() {
+        const PIGLIN: i32 = 820;
+        const BRUTE: i32 = 821;
+        let classes =
+            rewo_data::entity_types::EntityClasses::from_raw_ids(&[PIGLIN, BRUTE, ZOMBIE], &[])
+                .with_piglins(&[PIGLIN], &[BRUTE]);
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(31, EntityState::new(0, PIGLIN, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(32, EntityState::new(0, PIGLIN, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(33, EntityState::new(0, BRUTE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(34, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&index16_bool_true(31), &mut t, kinds);
+        apply_set_entity_data(&body(32, 17, 8, &[0x01]), &mut t, kinds);
+        apply_set_entity_data(&index16_bool_true(33), &mut t, kinds);
+        apply_set_entity_data(&index16_bool_true(34), &mut t, kinds);
+        assert!(!t.is_baby(31), "an immune piglin is not a baby");
+        assert!(t.is_baby(32), "a piglin's DATA_BABY_ID is index 17");
+        assert!(!t.is_baby(33), "an immune brute is not a baby");
+        assert!(t.is_baby(34), "a zombie's DATA_BABY_ID stays at 16");
+        apply_set_entity_data(&body(31, 18, 8, &[0x01]), &mut t, kinds);
+        apply_set_entity_data(&body(32, 19, 8, &[0x01]), &mut t, kinds);
+        assert!(t.mob_state(31).charging_crossbow);
+        assert!(!t.mob_state(31).piglin_dancing);
+        assert!(t.mob_state(32).piglin_dancing);
+        assert!(!t.mob_state(32).charging_crossbow);
+        // The brute's 17-19 are not the piglin's.
+        apply_set_entity_data(&body(33, 17, 8, &[0x01]), &mut t, kinds);
+        apply_set_entity_data(&body(33, 19, 8, &[0x01]), &mut t, kinds);
+        assert!(!t.is_baby(33));
+        assert!(!t.mob_state(33).piglin_dancing);
     }
 
     /// M288 — index 19 INT is `WitherBoss.DATA_ID_INV` on a wither, and is

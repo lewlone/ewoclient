@@ -1676,6 +1676,12 @@ pub(crate) fn resolve_mob_combat(
         axolotl_in_water: false,
         axolotl_moving: false,
         axolotl_playing_dead: false,
+        // M390 — `Piglin.getArmPose()` / `PiglinBrute.getArmPose()`.
+        piglin_pose: match kind {
+            K::Piglin | K::PiglinBaby => piglin_arm_pose(entities, id, false),
+            K::PiglinBrute => piglin_arm_pose(entities, id, true),
+            _ => rewo_gpu::mobs::PiglinArmPose::Default,
+        },
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -1697,6 +1703,95 @@ pub(crate) fn resolve_mob_combat(
         turtle_on_land: false,
     }
 }
+
+/// M390 — `Piglin.getArmPose()` in vanilla's order (dancing; a loved item
+/// in the off hand; aggressive with a melee weapon; charging a crossbow;
+/// holding a charged one), or with `brute` `PiglinBrute.getArmPose()`
+/// (only the melee-weapon pose).
+///
+/// `isHoldingMeleeWeapon()` is "the main hand's stack has
+/// `minecraft:tool`": read from the item's default components
+/// ([`TOOL_ITEMS`]), not a stack's patch. `isLovedItem` is the jar's
+/// `piglin_loved` tag ([`PIGLIN_LOVED`]), not a datapack's retag.
+pub(crate) fn piglin_arm_pose(
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    brute: bool,
+) -> rewo_gpu::mobs::PiglinArmPose {
+    piglin_arm_pose_with(
+        entities,
+        id,
+        brute,
+        PiglinItems {
+            tools: TOOL_ITEMS.get(),
+            loved: PIGLIN_LOVED.get(),
+            crossbow: crossbow_item_id(),
+        },
+    )
+}
+
+/// The item facts [`piglin_arm_pose`] reads, passed in so a test need not
+/// set the session's statics.
+#[derive(Clone, Copy)]
+pub(crate) struct PiglinItems<'a> {
+    pub(crate) tools: Option<&'a std::collections::HashSet<i32>>,
+    pub(crate) loved: Option<&'a rewo_data::item_tags::ItemTag>,
+    pub(crate) crossbow: Option<i32>,
+}
+
+pub(crate) fn piglin_arm_pose_with(
+    entities: &rewo_world::entities::EntityTable,
+    id: i32,
+    brute: bool,
+    items: PiglinItems,
+) -> rewo_gpu::mobs::PiglinArmPose {
+    use rewo_gpu::mobs::PiglinArmPose as P;
+    use rewo_world::entities::InteractionHand;
+    let st = entities.mob_state(id);
+    let main = entities.hand_item(id, InteractionHand::MainHand);
+    let off = entities.hand_item(id, InteractionHand::OffHand);
+    let melee = main
+        .held()
+        .is_some_and(|h| items.tools.is_some_and(|t| t.contains(&h.item_id)));
+    if brute {
+        return if st.is_aggressive() && melee {
+            P::AttackingWithMeleeWeapon
+        } else {
+            P::Default
+        };
+    }
+    let is_crossbow = |h: &rewo_world::entities::HandItem| {
+        h.held().is_some_and(|i| Some(i.item_id) == items.crossbow)
+    };
+    if st.piglin_dancing {
+        P::Dancing
+    } else if off
+        .held()
+        .is_some_and(|h| items.loved.is_some_and(|t| t.contains(h.item_id)))
+    {
+        P::AdmiringItem
+    } else if st.is_aggressive() && melee {
+        P::AttackingWithMeleeWeapon
+    } else if st.charging_crossbow {
+        P::CrossbowCharge
+    } else if (is_crossbow(&main) || is_crossbow(&off))
+        && main.held().is_some_and(|h| h.charged.is_some())
+    {
+        P::CrossbowHold
+    } else {
+        P::Default
+    }
+}
+
+/// M390 — the items whose default components carry `minecraft:tool`
+/// (`rewo_data::item_tools`), set once at session setup.
+pub(crate) static TOOL_ITEMS: std::sync::OnceLock<std::collections::HashSet<i32>> =
+    std::sync::OnceLock::new();
+
+/// M390 — `ItemTags.PIGLIN_LOVED` from the client jar, set once at session
+/// setup; unset, no piglin admires.
+pub(crate) static PIGLIN_LOVED: std::sync::OnceLock<rewo_data::item_tags::ItemTag> =
+    std::sync::OnceLock::new();
 
 /// `Items.CROSSBOW`'s protocol id, resolved once. The pillager pose test is
 /// `isHolding(Items.CROSSBOW)`, an item identity check like the skeleton's bow.

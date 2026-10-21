@@ -385,6 +385,12 @@ PRECMD = (
     "summon minecraft:piglin ~-9 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b,"
     "IsImmuneToZombification:1b};"
     "summon minecraft:zombified_piglin ~-6 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b};"
+    # M389 -- r175 too: an immune ADULT piglin, which must draw as the adult
+    # (index 16 is its immunity, not a baby flag). M390 -- r216: it holds
+    # gold in its off hand, so it admires it.
+    "summon minecraft:piglin ~-6 ~ ~24 {NoAI:1b,Silent:1b,"
+    "IsImmuneToZombification:1b,"
+    "equipment:{offhand:{id:\"minecraft:gold_ingot\",count:1}}};"
     # M319 -- r174. A baby drowned (helmeted against the sun).
     "summon minecraft:drowned ~-12 ~ ~21 {NoAI:1b,Silent:1b,IsBaby:1b,"
     "equipment:{head:{id:\"minecraft:leather_helmet\",count:1}}};"

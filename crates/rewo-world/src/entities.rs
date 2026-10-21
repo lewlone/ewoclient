@@ -1713,8 +1713,12 @@ pub struct MobState {
     pub celebrating: bool,
     /// `SpellcasterIllager.DATA_SPELL_CASTING_ID`; `isCastingSpell()` is `> 0`.
     pub spell_casting: u8,
-    /// `Pillager.isChargingCrossbow()`.
+    /// `Pillager.isChargingCrossbow()` (index 17), or M389 the piglin's
+    /// (`Piglin.DATA_IS_CHARGING_CROSSBOW`, index 18).
     pub charging_crossbow: bool,
+    /// M389 — `Piglin.DATA_IS_DANCING` (index 19, BOOLEAN; `AbstractPiglin`
+    /// owns 16, the piglin's baby flag is 17, charging 18).
+    pub piglin_dancing: bool,
     /// `Sheep.DATA_WOOL_ID` (metadata index **18**, BYTE): the low nibble is
     /// the `DyeColor` id and bit 0x10 is the sheared flag. Vanilla's
     /// `define(DATA_WOOL_ID, (byte)0)` default is white-and-woolly, which is
@@ -3294,6 +3298,11 @@ impl EntityTable {
     /// M365 — `Turtle.LAYING_EGG`. Kind-gated by the caller.
     pub fn set_turtle_laying(&mut self, id: i32, laying: bool) {
         self.mob_state.entry(id).or_default().turtle_laying = laying;
+    }
+
+    /// M389 — `Piglin.DATA_IS_DANCING`. Kind-gated by the caller.
+    pub fn set_piglin_dancing(&mut self, id: i32, dancing: bool) {
+        self.mob_state.entry(id).or_default().piglin_dancing = dancing;
     }
 
     /// M387 — `Axolotl.DATA_PLAYING_DEAD`. Kind-gated by the caller.

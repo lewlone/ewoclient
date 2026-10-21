@@ -238,6 +238,17 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let items = std::sync::Arc::new(data.items.clone());
     let blocks = std::sync::Arc::new(data.blocks.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
+    // M390 — what a piglin's arm pose tests its hands against.
+    let _ = entities::TOOL_ITEMS.set(
+        rewo_data::item_tools::ITEM_TOOLS
+            .iter()
+            .filter_map(|(name, _, _)| data.items.id(name))
+            .collect(),
+    );
+    let _ = entities::PIGLIN_LOVED.set(rewo_data::item_tags::ItemTag::load_piglin_loved(
+        &jar,
+        &data.items,
+    )?);
     // M234 — the use-model variants and the rocket `Charge` asks about.
     let _ = USE_VARIANTS.set(baked.held_items.use_variants());
     let _ = FIREWORK_ROCKET_ITEM.set(data.items.id("minecraft:firework_rocket"));

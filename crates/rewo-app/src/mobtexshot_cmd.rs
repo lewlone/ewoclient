@@ -104,7 +104,12 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 105;
+const EXPECTED_WITNESSES: usize = 106;
+/// M390 — m106's floors: dancing, admiring, the weapon held high (each
+/// against standing, at the same age). M390 measured 1533, 350 and 482;
+/// the pre-M390 piglin had no pose input, so all four drew alike (0 by
+/// construction, not run).
+const PIGLIN_POSE_MIN: [usize; 3] = [750, 175, 240];
 /// M388 — m105's floor. M388 measured 2081 px; the pre-M388 dragon was
 /// static (0 px by construction, not run).
 const DRAGON_MIN: usize = 1000;
@@ -7264,6 +7269,69 @@ fn run_check(
         "m105.the_ender_dragon_flies_on_its_rig",
         dg_moved >= DRAGON_MIN,
         format!("half a second apart {dg_moved} px of silhouette (want >= {DRAGON_MIN})"),
+    ));
+
+    // m106 — M390: a piglin's arm pose follows `getArmPose()`: dancing,
+    // admiring an item and holding its weapon high each against standing,
+    // at the same age (3 s: dancePos 1).
+    let mut pgst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.1, 2.6),
+        Vec3::new(0.0, 1.0, 0.0),
+    )?;
+    pgst.wr.set_entities(&[], pgst.right, pgst.up, 0.0);
+    pgst.off
+        .render(gpu, Some((&mut pgst.wr, pgst.vp)), &ov, BG)?;
+    let pg_empty = pgst.off.read_rgba(gpu)?;
+    let mut pgshot = |pose: rewo_gpu::mobs::PiglinArmPose| -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                piglin_pose: pose,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Piglin)
+        };
+        pgst.wr.set_entities(&[d], pgst.right, pgst.up, 3.0);
+        pgst.off
+            .render(gpu, Some((&mut pgst.wr, pgst.vp)), &ov, BG)?;
+        pgst.off.read_rgba(gpu)
+    };
+    use rewo_gpu::mobs::PiglinArmPose as Pp;
+    let pg_still = pgshot(Pp::Default)?;
+    let pg_dance = pgshot(Pp::Dancing)?;
+    let pg_admire = pgshot(Pp::AdmiringItem)?;
+    let pg_weapon = pgshot(Pp::AttackingWithMeleeWeapon)?;
+    pgst.destroy(gpu);
+    let pg_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pg_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let pg_differ = |a: &[u8], b: &[u8]| {
+        pg_mask(a)
+            .iter()
+            .zip(&pg_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let pg = [
+        pg_differ(&pg_still, &pg_dance),
+        pg_differ(&pg_still, &pg_admire),
+        pg_differ(&pg_still, &pg_weapon),
+    ];
+    w.push(wit(
+        "m106.a_piglin_dances_admires_and_raises_its_weapon",
+        pg.iter().zip(PIGLIN_POSE_MIN).all(|(v, min)| *v >= min),
+        format!(
+            "dancing {} px, admiring {} px, weapon high {} px of silhouette against standing (want >= {PIGLIN_POSE_MIN:?})",
+            pg[0], pg[1], pg[2]
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

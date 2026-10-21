@@ -84,37 +84,48 @@ impl ItemTag {
     /// The parse + resolve half of [`ItemTag::load_spears`], split out so the
     /// fail-closed branches are reachable from a test without a client jar.
     pub(crate) fn from_json(text: &str, items: &Items, source: &str) -> Result<Self, String> {
-        let json: serde_json::Value =
-            serde_json::from_str(text).map_err(|e| format!("parse {source}: {e}"))?;
-        let values = json
-            .get("values")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| format!("{source}: no `values` array"))?;
-        if values.is_empty() {
-            return Err(format!(
-                "{source}: `values` is empty — an empty spears tag would silently \
-                 pose every spear as ArmPose::Item"
-            ));
-        }
-        let mut ids = HashSet::with_capacity(values.len());
-        for v in values {
-            let name = v.as_str().ok_or_else(|| {
-                format!(
-                    "{source}: entry {v} is not a plain string — the object form \
-                     {{id, required}} is not modelled"
-                )
-            })?;
-            if let Some(rest) = name.strip_prefix('#') {
-                return Err(format!(
-                    "{source}: entry references tag `{rest}` — nested tag references \
-                     are not modelled"
-                ));
-            }
-            let id = items
-                .id(name)
-                .ok_or_else(|| format!("{source}: `{name}` is not a registered item"))?;
-            ids.insert(id);
-        }
+        let mut ids = HashSet::new();
+        collect_values(text, items, source, None, 0, &mut ids)?;
+        log::info!(
+            "rewo-data: item tag {source} — {} item(s) resolved",
+            ids.len()
+        );
+        Ok(Self { ids })
+    }
+
+    /// M390 — load `minecraft:piglin_loved` (`PiglinAi.isLovedItem`: a
+    /// piglin holding one in its off hand admires it) from the client jar.
+    /// Unlike `spears.json` it names another tag (`#minecraft:gold_ores`), so
+    /// a `#` entry is read from the same jar's item-tag directory; every
+    /// other unrecognised form still fails loud.
+    pub fn load_piglin_loved(client_jar: &Path, items: &Items) -> Result<Self, String> {
+        let file = std::fs::File::open(client_jar)
+            .map_err(|e| format!("open {}: {e}", client_jar.display()))?;
+        let mut jar = zip::ZipArchive::new(std::io::BufReader::new(file))
+            .map_err(|e| format!("zip {}: {e}", client_jar.display()))?;
+        let mut read = |tag: &str| -> Result<String, String> {
+            let path = tag_path(tag)?;
+            let mut text = String::new();
+            jar.by_name(&path)
+                .map_err(|e| format!("{path} missing from the client jar ({e})"))?
+                .read_to_string(&mut text)
+                .map_err(|e| format!("read {path}: {e}"))?;
+            Ok(text)
+        };
+        let text = read("minecraft:piglin_loved")?;
+        Self::from_json_nested(&text, items, "minecraft:piglin_loved", &mut read)
+    }
+
+    /// The parse + resolve half of [`ItemTag::load_piglin_loved`]: `read`
+    /// returns a referenced tag's JSON by its id (`minecraft:gold_ores`).
+    pub(crate) fn from_json_nested(
+        text: &str,
+        items: &Items,
+        source: &str,
+        read: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Result<Self, String> {
+        let mut ids = HashSet::new();
+        collect_values(text, items, source, Some(read), 0, &mut ids)?;
         log::info!(
             "rewo-data: item tag {source} — {} item(s) resolved",
             ids.len()
@@ -131,9 +142,139 @@ impl ItemTag {
     }
 }
 
+/// How deep `#tag` references may nest before a load gives up (26.2's
+/// `piglin_loved` nests one level).
+const MAX_TAG_DEPTH: usize = 8;
+
+/// `namespace:path` → `data/namespace/tags/item/path.json`.
+fn tag_path(tag: &str) -> Result<String, String> {
+    let (ns, path) = tag
+        .split_once(':')
+        .ok_or_else(|| format!("tag `{tag}` has no namespace"))?;
+    Ok(format!("data/{ns}/tags/item/{path}.json"))
+}
+
+/// Resolve one tag file's `values` into `ids`, following `#tag` entries
+/// through `read` when one is given (without one they fail closed).
+fn collect_values(
+    text: &str,
+    items: &Items,
+    source: &str,
+    mut read: Option<&mut dyn FnMut(&str) -> Result<String, String>>,
+    depth: usize,
+    ids: &mut HashSet<i32>,
+) -> Result<(), String> {
+    let json: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("parse {source}: {e}"))?;
+    let values = json
+        .get("values")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("{source}: no `values` array"))?;
+    if values.is_empty() {
+        return Err(format!(
+            "{source}: `values` is empty — an empty tag would silently \
+             answer no for every item (a spear posed as ArmPose::Item)"
+        ));
+    }
+    for v in values {
+        let name = v.as_str().ok_or_else(|| {
+            format!(
+                "{source}: entry {v} is not a plain string — the object form \
+                 {{id, required}} is not modelled"
+            )
+        })?;
+        if let Some(rest) = name.strip_prefix('#') {
+            let Some(read) = read.as_deref_mut() else {
+                return Err(format!(
+                    "{source}: entry references tag `{rest}` — nested tag references \
+                     are not modelled"
+                ));
+            };
+            if depth >= MAX_TAG_DEPTH {
+                return Err(format!("{source}: tag `{rest}` nests too deep"));
+            }
+            let text = read(rest)?;
+            collect_values(&text, items, rest, Some(read), depth + 1, ids)?;
+            continue;
+        }
+        let id = items
+            .id(name)
+            .ok_or_else(|| format!("{source}: `{name}` is not a registered item"))?;
+        ids.insert(id);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M390 — a `#tag` entry is followed through `read` (and its own nested
+    /// reference too); a reference that loops gives up instead of recursing
+    /// forever; the spears loader still refuses any reference.
+    #[test]
+    fn a_nested_tag_reference_is_followed_when_a_reader_is_given() {
+        let i = items();
+        let mut read = |tag: &str| -> Result<String, String> {
+            match tag {
+                "minecraft:inner" => Ok(r##"{"values":["#minecraft:innermost"]}"##.into()),
+                "minecraft:innermost" => Ok(r#"{"values":["minecraft:stone_sword"]}"#.into()),
+                "minecraft:loop" => Ok(r##"{"values":["#minecraft:loop"]}"##.into()),
+                _ => Err(format!("no tag {tag}")),
+            }
+        };
+        let body = r##"{"values":["minecraft:iron_spear","#minecraft:inner"]}"##;
+        let t = ItemTag::from_json_nested(body, &i, "t", &mut read).unwrap();
+        assert!(t.contains(7) && t.contains(9));
+        assert_eq!(t.len(), 2);
+        assert!(ItemTag::from_json_nested(
+            r##"{"values":["#minecraft:loop"]}"##,
+            &i,
+            "t",
+            &mut read
+        )
+        .is_err());
+        assert!(ItemTag::from_json_nested(
+            r##"{"values":["#minecraft:absent"]}"##,
+            &i,
+            "t",
+            &mut read
+        )
+        .is_err());
+        assert!(ItemTag::from_json(body, &i, "t").is_err());
+    }
+
+    /// M390 — the jar's `piglin_loved`: its 25 named items and the three
+    /// `#gold_ores` (the referenced tag's entries are not in the file).
+    #[test]
+    fn the_jars_piglin_loved_tag_holds_the_gold_ores() {
+        let local = crate::DataPaths::for_version("26.2").and_then(|paths| {
+            // `<config>/EwoClient/rewo/26.2` → `<config>/EwoClient/shared/…`.
+            let jar = paths
+                .root
+                .parent()?
+                .parent()?
+                .join("shared/versions/26.2/26.2.jar");
+            let items = Items::load(&paths.registries_json()).ok()?;
+            jar.is_file().then_some((jar, items))
+        });
+        let Some((jar, items)) = local else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let t = ItemTag::load_piglin_loved(&jar, &items).unwrap();
+        for name in [
+            "minecraft:gold_ingot",
+            "minecraft:golden_sword",
+            "minecraft:gold_ore",
+            "minecraft:deepslate_gold_ore",
+            "minecraft:nether_gold_ore",
+        ] {
+            assert!(t.contains(items.id(name).unwrap()), "{name}");
+        }
+        assert!(!t.contains(items.id("minecraft:iron_ingot").unwrap()));
+        assert_eq!(t.len(), 28);
+    }
 
     /// A directory no other fixture can be using.
     ///

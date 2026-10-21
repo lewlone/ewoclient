@@ -6133,7 +6133,22 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             if c.mob.riding {
                 rot[0] += -PI / 5.0;
             }
+            // M390 — `PiglinModel.setupAttackAnimation`: swinging a melee
+            // weapon, the arms swing it down (before the bob, as
+            // `HumanoidModel.setupAnim` orders them).
+            if c.mob.piglin_pose == mobs::PiglinArmPose::AttackingWithMeleeWeapon
+                && c.attack.attack_time > 0.0
+            {
+                swing_weapon_down(
+                    &mut rot,
+                    left,
+                    c.mob.main_arm_left,
+                    c.attack.attack_time,
+                    c.age,
+                );
+            }
             bob_model_part(&mut rot, left, c.age);
+            piglin_arm_pose(&mut rot, &mut off, left, c);
         }
         // M380 — `AbstractPiglinModel.setupAnim`'s ears.
         PiglinEar { left } => {
@@ -6144,6 +6159,41 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             } else {
                 f.cos() * a
             };
+            // M390 — dancing, `PiglinModel.setupAnim` assigns the ears
+            // about π/6 (the baby's too, whose rest is 5°).
+            if c.mob.piglin_pose == mobs::PiglinArmPose::Dancing {
+                let dp = c.age / 60.0;
+                let rest = if c.mob.is_baby { 5.0 * DEG } else { PI / 6.0 };
+                rot[2] = if left {
+                    -PI / 6.0 - DEG * mth_cos((dp * 30.0) as f64) * 10.0 + rest
+                } else {
+                    PI / 6.0 + DEG * mth_sin((dp * 30.0) as f64) * 10.0 - rest
+                };
+            }
+        }
+        // M390 — `PiglinModel.setupAnim`'s head: the look, then the dance's
+        // bob or the admiring stare.
+        PiglinHead => {
+            rot[0] = c.pitch;
+            rot[1] = c.net;
+            match c.mob.piglin_pose {
+                mobs::PiglinArmPose::Dancing => {
+                    let dp = c.age / 60.0;
+                    off[0] += mth_sin((dp * 10.0) as f64);
+                    off[1] += mth_sin((dp * 40.0) as f64) + 0.4;
+                }
+                mobs::PiglinArmPose::AdmiringItem => {
+                    rot[0] = 0.5;
+                    rot[1] = 0.0;
+                }
+                _ => {}
+            }
+        }
+        // M390 — the dance's body bob.
+        PiglinBody => {
+            if c.mob.piglin_pose == mobs::PiglinArmPose::Dancing {
+                off[1] += mth_sin((c.age / 60.0 * 40.0) as f64) * 0.35;
+            }
         }
         // M379 — `WitchModel.setupAnim`'s nose.
         WitchNose => {
@@ -6484,6 +6534,69 @@ fn swing_weapon_down(rot: &mut [f32; 3], left: bool, main_arm_left: bool, t: f32
     } else {
         rot[0] = -0.0 + mth_cos((age * 0.19) as f64) * 0.5;
         rot[0] += attack2 * 1.2 - attack * 0.4;
+    }
+}
+
+/// M390 — `PiglinModel.setupAnim`'s arm half, after the humanoid stage
+/// (the walk, the riding drop, the weapon swing and the bob): each pose
+/// assigns what it names over them.
+fn piglin_arm_pose(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx) {
+    use mobs::PiglinArmPose as P;
+    use std::f32::consts::PI;
+    let right_handed = !c.mob.main_arm_left;
+    match c.mob.piglin_pose {
+        P::Dancing => {
+            let dp = c.age / 60.0;
+            let z = DEG * (70.0 + mth_cos((dp * 40.0) as f64) * 10.0);
+            let s = mth_sin((dp * 40.0) as f64);
+            if left {
+                rot[2] = -z;
+                off[1] += s * 0.5 + 0.5;
+            } else {
+                rot[2] = z;
+                off[1] += s * 0.5 - 0.5;
+            }
+        }
+        // `holdWeaponHigh`, only while not swinging.
+        P::AttackingWithMeleeWeapon => {
+            if c.attack.attack_time == 0.0 && left == c.mob.main_arm_left {
+                rot[0] = -1.8;
+            }
+        }
+        // `AnimationUtils.animateCrossbowHold(rightArm, leftArm, head,
+        // mainArm == RIGHT)`: the holding arm is the main one.
+        P::CrossbowHold => {
+            if left != right_handed {
+                rot[1] = (if right_handed { -0.3 } else { 0.3 }) + c.net;
+                rot[0] = -PI / 2.0 + c.pitch + 0.1;
+            } else {
+                rot[1] = (if right_handed { 0.6 } else { -0.6 }) + c.net;
+                rot[0] = -1.5 + c.pitch;
+            }
+        }
+        // `AnimationUtils.animateCrossbowCharge(rightArm, leftArm,
+        // maxCrossbowChargeDuration, ticksUsingItem, mainArm == RIGHT)`;
+        // the duration is the unenchanted 25 ticks.
+        P::CrossbowCharge => {
+            let max = mobs::ArmPoses::CROSSBOW_CHARGE_DURATION;
+            if left != right_handed {
+                rot[1] = if right_handed { -0.8 } else { 0.8 };
+                rot[0] = -0.970_796_35;
+            } else {
+                let alpha = c.arm_poses.ticks_using_item.clamp(0.0, max) / max;
+                let sign = if right_handed { 1.0 } else { -1.0 };
+                rot[1] = lerp(alpha, 0.4, 0.85) * sign;
+                rot[0] = lerp(alpha, -0.970_796_35, -PI / 2.0);
+            }
+        }
+        // The off arm raises the item to the eyes.
+        P::AdmiringItem => {
+            if left == right_handed {
+                rot[1] = if left { 0.5 } else { -0.5 };
+                rot[0] = -0.9;
+            }
+        }
+        P::Default => {}
     }
 }
 
@@ -11158,6 +11271,122 @@ mod piglin_arm_anim_tests {
         assert!((r[2] - z).abs() < 1e-4 && (l[2] + z).abs() < 1e-4);
         assert!(
             (r[0] - (21.0_f32 * 0.067).sin() * 0.05).abs() < 1e-4 && (l[0] + r[0]).abs() < 1e-4
+        );
+    }
+
+    fn posed(pose: mobs::PiglinArmPose, age: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.2,
+            net: 0.3,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                piglin_pose: pose,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M390 — `PiglinModel.setupAnim`'s DANCING at age 60 (dancePos 1): the
+    /// arms out at ±(70 + cos 40·10)°, raised and lowered by sin 40·0.5 ∓
+    /// 0.5; the head bobbed (sin 10, sin 40 + 0.4); the body by sin 40·0.35;
+    /// the ears assigned about π/6.
+    #[test]
+    fn a_dancing_piglin_throws_its_arms_out_and_bobs() {
+        use mobs::Anim as A;
+        use std::f32::consts::PI;
+        let c = posed(mobs::PiglinArmPose::Dancing, 60.0);
+        let (r, ro) = anim_delta(A::PiglinArm { left: false }, 1.0, &c);
+        let (l, lo) = anim_delta(A::PiglinArm { left: true }, 1.0, &c);
+        let z = (70.0 + 40.0_f32.cos() * 10.0) * DEG;
+        assert!(
+            (r[2] - z).abs() < 1e-3 && (l[2] + z).abs() < 1e-3,
+            "{r:?} {l:?}"
+        );
+        let s = 40.0_f32.sin();
+        assert!((ro[1] - (s * 0.5 - 0.5)).abs() < 1e-3);
+        assert!((lo[1] - (s * 0.5 + 0.5)).abs() < 1e-3);
+        let (h, ho) = anim_delta(A::PiglinHead, 1.0, &c);
+        assert_eq!([h[0], h[1]], [0.2, 0.3], "the look stays");
+        assert!((ho[0] - 10.0_f32.sin()).abs() < 1e-3 && (ho[1] - (s + 0.4)).abs() < 1e-3);
+        let (_, bo) = anim_delta(A::PiglinBody, 1.0, &c);
+        assert!((bo[1] - s * 0.35).abs() < 1e-3);
+        let er = anim_delta(A::PiglinEar { left: false }, 1.0, &c).0[2];
+        let el = anim_delta(A::PiglinEar { left: true }, 1.0, &c).0[2];
+        // Deltas on the adult's ±30° rest.
+        assert!((er + PI / 6.0 - (PI / 6.0 + DEG * 30.0_f32.sin() * 10.0)).abs() < 1e-3);
+        assert!((el - PI / 6.0 - (-PI / 6.0 - DEG * 30.0_f32.cos() * 10.0)).abs() < 1e-3);
+        // Not dancing, none of it.
+        let still = posed(mobs::PiglinArmPose::Default, 60.0);
+        assert_eq!(anim_delta(A::PiglinBody, 1.0, &still).1, [0.0; 3]);
+        assert_eq!(anim_delta(A::PiglinHead, 1.0, &still).1, [0.0; 3]);
+    }
+
+    /// M390 — ADMIRING_ITEM: the head looks down at 0.5 and ahead, and the
+    /// off arm (the left, right-handed) lifts to (−0.9, 0.5); the main arm
+    /// keeps the bob.
+    #[test]
+    fn an_admiring_piglin_stares_at_its_off_hand() {
+        use mobs::Anim as A;
+        let c = posed(mobs::PiglinArmPose::AdmiringItem, 21.0);
+        assert_eq!(&anim_delta(A::PiglinHead, 1.0, &c).0[..2], &[0.5, 0.0]);
+        let l = anim_delta(A::PiglinArm { left: true }, 1.0, &c).0;
+        assert_eq!([l[0], l[1]], [-0.9, 0.5]);
+        let r = anim_delta(A::PiglinArm { left: false }, 1.0, &c).0;
+        let bob = anim_delta(
+            A::PiglinArm { left: false },
+            1.0,
+            &posed(mobs::PiglinArmPose::Default, 21.0),
+        )
+        .0;
+        assert_eq!(r, bob);
+        // Left-handed, the right arm admires.
+        let mut lh = c;
+        lh.mob.main_arm_left = true;
+        let r = anim_delta(A::PiglinArm { left: false }, 1.0, &lh).0;
+        assert_eq!([r[0], r[1]], [-0.9, -0.5]);
+    }
+
+    /// M390 — ATTACKING_WITH_MELEE_WEAPON holds the weapon high (main arm
+    /// −1.8) until the swing, which `swingWeaponDown` takes over; the
+    /// crossbow poses aim along the look and crank by the use clock.
+    #[test]
+    fn a_piglin_raises_its_weapon_and_aims_its_crossbow() {
+        use mobs::Anim as A;
+        use std::f32::consts::PI;
+        let c = posed(mobs::PiglinArmPose::AttackingWithMeleeWeapon, 21.0);
+        assert_eq!(anim_delta(A::PiglinArm { left: false }, 1.0, &c).0[0], -1.8);
+        assert_ne!(anim_delta(A::PiglinArm { left: true }, 1.0, &c).0[0], -1.8);
+        let mut swing = c;
+        swing.attack.attack_time = 0.5;
+        let r = anim_delta(A::PiglinArm { left: false }, 1.0, &swing).0;
+        assert!(r[0] != -1.8 && (r[1] - PI / 20.0).abs() < 1e-6, "{r:?}");
+        let h = posed(mobs::PiglinArmPose::CrossbowHold, 21.0);
+        let r = anim_delta(A::PiglinArm { left: false }, 1.0, &h).0;
+        let l = anim_delta(A::PiglinArm { left: true }, 1.0, &h).0;
+        assert!(
+            (r[0] - (-PI / 2.0 + 0.2 + 0.1)).abs() < 1e-6 && (r[1] - (-0.3 + 0.3)).abs() < 1e-6
+        );
+        assert!((l[0] - (-1.5 + 0.2)).abs() < 1e-6 && (l[1] - (0.6 + 0.3)).abs() < 1e-6);
+        let mut ch = posed(mobs::PiglinArmPose::CrossbowCharge, 21.0);
+        ch.arm_poses.ticks_using_item = 25.0;
+        let r = anim_delta(A::PiglinArm { left: false }, 1.0, &ch).0;
+        let l = anim_delta(A::PiglinArm { left: true }, 1.0, &ch).0;
+        assert_eq!([r[0], r[1]], [-0.970_796_35, -0.8]);
+        assert!(
+            (l[0] + PI / 2.0).abs() < 1e-6 && (l[1] - 0.85).abs() < 1e-6,
+            "{l:?}"
         );
     }
 }

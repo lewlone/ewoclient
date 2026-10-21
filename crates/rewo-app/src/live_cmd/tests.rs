@@ -4548,3 +4548,69 @@ fn the_ender_dragon_draws_facing_forward() {
     let (_, off) = f(K::EnderDragon, 90.0);
     assert!((off[0] + 1.0).abs() < 1e-6 && off[1].abs() < 1e-6);
 }
+
+/// M390 — `Piglin.getArmPose()`'s ladder in vanilla's order (dancing over
+/// a loved item over an aggressive melee weapon over charging over a
+/// charged crossbow), and the brute's (the melee weapon only).
+#[test]
+fn a_piglins_arm_pose_follows_vanillas_order() {
+    use rewo_data::swing_anim::{SwingAnimation, SwingAnimationType};
+    use rewo_gpu::mobs::PiglinArmPose as P;
+    use rewo_world::entities::{EntityState, EntityTable, HandItem, HeldItem, InteractionHand};
+    const GOLD: i32 = 5;
+    const SWORD: i32 = 6;
+    const CROSSBOW: i32 = 7;
+    let tools: std::collections::HashSet<i32> = [SWORD].into();
+    let loved = rewo_data::item_tags::ItemTag::from_ids([GOLD, SWORD]);
+    let items = PiglinItems {
+        tools: Some(&tools),
+        loved: Some(&loved),
+        crossbow: Some(CROSSBOW),
+    };
+    let held = |item_id: i32, charged: Option<i32>| {
+        HandItem::Held(HeldItem {
+            item_id,
+            swing: SwingAnimation::new(SwingAnimationType::Whack, 6),
+            use_profile: rewo_data::use_item::UseProfile::UNUSABLE,
+            charged,
+            glint: false,
+        })
+    };
+    let mut t = EntityTable::default();
+    t.add(1, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+    let pose = |t: &EntityTable| piglin_arm_pose_with(t, 1, false, items);
+    assert_eq!(pose(&t), P::Default);
+    t.set_hand_item(1, InteractionHand::MainHand, held(CROSSBOW, None));
+    assert_eq!(
+        pose(&t),
+        P::Default,
+        "an uncharged crossbow is not held ready"
+    );
+    t.set_hand_item(1, InteractionHand::MainHand, held(CROSSBOW, Some(9)));
+    assert_eq!(pose(&t), P::CrossbowHold);
+    t.set_charging_crossbow(1, true);
+    assert_eq!(pose(&t), P::CrossbowCharge);
+    t.set_hand_item(1, InteractionHand::MainHand, held(SWORD, None));
+    assert_eq!(
+        pose(&t),
+        P::CrossbowCharge,
+        "a sword is raised only aggressive"
+    );
+    t.set_mob_flags(1, 0x04);
+    assert_eq!(pose(&t), P::AttackingWithMeleeWeapon);
+    assert_eq!(
+        piglin_arm_pose_with(&t, 1, true, items),
+        P::AttackingWithMeleeWeapon
+    );
+    t.set_hand_item(1, InteractionHand::OffHand, held(GOLD, None));
+    assert_eq!(pose(&t), P::AdmiringItem, "a loved item in the off hand");
+    t.set_piglin_dancing(1, true);
+    assert_eq!(pose(&t), P::Dancing);
+    // The brute neither dances nor admires.
+    assert_eq!(
+        piglin_arm_pose_with(&t, 1, true, items),
+        P::AttackingWithMeleeWeapon
+    );
+    t.set_mob_flags(1, 0);
+    assert_eq!(piglin_arm_pose_with(&t, 1, true, items), P::Default);
+}
