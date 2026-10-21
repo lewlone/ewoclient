@@ -1672,6 +1672,8 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M369 — set by the caller for an allay.
+        allay_holding: 0.0,
         // M367 — set by the caller for a hoglin.
         headbutt: 0.0,
         // M366 — set by the caller for a strider.
@@ -4921,6 +4923,18 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M369 — `AllayRenderState.holdingAnimationProgress`, steady state:
+        // 1 while the main hand holds anything.
+        if kind == EntityModelKind::Allay {
+            mob.allay_holding = match session
+                .world
+                .entities
+                .hand_item(id, rewo_world::entities::InteractionHand::MainHand)
+            {
+                rewo_world::entities::HandItem::Empty => 0.0,
+                _ => 1.0,
+            };
         }
         // M367 — `HoglinRenderState.attackAnimationRemainingTicks`: 10 at
         // entity event 4, one less each client tick (an int, no partial).

@@ -159,6 +159,24 @@ pub enum Anim {
         order: u8,
         baby: bool,
     },
+    /// M369 — `AllayModel.setupAnim`'s body: `xRot` = flyingFactor · π/4
+    /// (flyingFactor = min(speed / 0.3, 1)).
+    AllayBody,
+    /// M369 — an allay arm: `xRot` holding · lerp(fly, −π/3, −1.134464),
+    /// `zRot` ∓(0.43633232 − cos(age·9° + 3π/2)·π·0.075·(1 − fly)·(1 −
+    /// holding)), `yRot` ∓0.27925268 · holding (left first).
+    AllayArm {
+        left: bool,
+    },
+    /// M368 — `SnowGolemModel.setupAnim`: the upper body turns a quarter of
+    /// the head yaw.
+    SnowGolemBody,
+    /// M368 — a snow golem arm: `yRot` the upper body's (+π right), its
+    /// pivot on a 5 px circle at that angle (left `x = cos·5, z = −sin·5`,
+    /// right the opposite), so at rest both sit at z 0, not the layer's ±1.
+    SnowGolemArm {
+        left: bool,
+    },
     /// M367 — `HoglinModel.setupAnim`'s head: `yRot` the look, `xRot`
     /// `lerp(headbutt, 0.87266463, −π/9)` (the look's pitch never reaches
     /// it); `BabyHoglinModel` also lowers it 2.5 · headbutt.
@@ -760,6 +778,10 @@ pub struct MobCombat {
     /// M358 — a grazing sheep's `(headEatPositionScale,
     /// headEatAngleScale)`; `None` when it is not eating (the head looks).
     pub sheep_eat: Option<(f32, f32)>,
+    /// M369 — `AllayRenderState.holdingAnimationProgress`, as its steady
+    /// state: 1 while the main hand holds an item (vanilla ramps it over 5
+    /// ticks).
+    pub allay_holding: f32,
     /// M367 — `HoglinModel`'s headbutt lerp factor, `1 − |10 − 2r| / 10` of
     /// the remaining attack ticks `r` (0 at rest and at both ends).
     pub headbutt: f32,
@@ -11483,7 +11505,8 @@ fn armor_stand() -> Model {
 // Golems + allay
 // ---------------------------------------------------------------------------
 
-/// `SnowGolemModel`: three deflated snowballs + pumpkin head + stick arms.
+/// `SnowGolemModel`: three deflated snowballs + pumpkin head + stick arms;
+/// M368 — the upper body and arms follow a quarter of the look.
 fn snow_golem() -> Model {
     let mut b = ModelBuilder::new();
     let g = -0.5;
@@ -11497,35 +11520,33 @@ fn snow_golem() -> Model {
         g,
         NONE,
     );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (32.0, 0.0),
-        [-1.0, 0.0, -1.0],
-        [12.0, 2.0, 2.0],
-        g,
-        false,
-        &[Fold::rot([0.0, 0.0, 1.0], [5.0, 6.0, 1.0])],
-    );
-    b.cube_f(
-        STATIC_PART,
-        0,
-        (32.0, 0.0),
-        [-1.0, 0.0, -1.0],
-        [12.0, 2.0, 2.0],
-        g,
-        false,
-        &[Fold::rot([0.0, PI, -1.0], [-5.0, 6.0, -1.0])],
-    );
-    b.cube_f(
-        STATIC_PART,
+    // M368 — the arms are parts whose pivots `setupAnim` moves (the layer's
+    // z ±1 is never drawn: at rest `z = ∓sin(0)·5 = 0`), the upper body a
+    // part that turns.
+    for (pivot, rot, left) in [
+        ([5.0, 6.0, 0.0], [0.0, 0.0, 1.0], true),
+        ([-5.0, 6.0, 0.0], [0.0, PI, -1.0], false),
+    ] {
+        let arm = b.part_ext(pivot, rot, Anim::SnowGolemArm { left }, 1.0, Option::None);
+        b.cube_g(
+            arm,
+            0,
+            (32.0, 0.0),
+            [-1.0, 0.0, -1.0],
+            [12.0, 2.0, 2.0],
+            g,
+            NONE,
+        );
+    }
+    let upper = b.part([0.0, 13.0, 0.0], Anim::SnowGolemBody, 1.0);
+    b.cube_g(
+        upper,
         0,
         (0.0, 16.0),
         [-5.0, -10.0, -5.0],
         [10.0, 10.0, 10.0],
         g,
-        false,
-        &[Fold::at([0.0, 13.0, 0.0])],
+        NONE,
     );
     b.cube_f(
         STATIC_PART,
@@ -11622,6 +11643,8 @@ fn iron_golem() -> Model {
 }
 
 /// `AllayModel`: the vex's friendly cousin — same body plan, upright wings.
+/// M369 — its root bobs while it hovers, its body pitches into flight and
+/// its arms splay with an idle bob (`Anim::AllayBody` / `AllayArm`).
 ///
 /// A real `root → {head, body → {arms, wings}}` hierarchy (vanilla's exact
 /// `PartDefinition` tree) so the dance's whole-body root rotation
@@ -11662,7 +11685,7 @@ fn allay() -> Model {
         "body",
         [0.0, -4.0, 0.0],
         [0.0; 3],
-        Anim::None,
+        Anim::AllayBody,
         1.0,
         Some(root),
     );
@@ -11687,7 +11710,7 @@ fn allay() -> Model {
         "right_arm",
         [-1.75, 0.5, 0.0],
         [0.0; 3],
-        Anim::None,
+        Anim::AllayArm { left: false },
         1.0,
         Some(body),
     );
@@ -11704,7 +11727,7 @@ fn allay() -> Model {
         "left_arm",
         [1.75, 0.5, 0.0],
         [0.0; 3],
-        Anim::None,
+        Anim::AllayArm { left: true },
         1.0,
         Some(body),
     );
@@ -16209,5 +16232,46 @@ mod hoglin_model_tests {
                 .count();
             assert_eq!(legs, 4);
         }
+    }
+}
+
+#[cfg(test)]
+mod snow_golem_tests {
+    use super::*;
+
+    /// M368 — the snow golem's arms rest at z 0 on their own animation, the
+    /// upper body is a turning part.
+    #[test]
+    fn the_snow_golems_arms_and_upper_body_turn() {
+        let m = snow_golem();
+        let arms: Vec<[f32; 3]> = m
+            .parts
+            .iter()
+            .filter(|p| matches!(p.anim, Anim::SnowGolemArm { .. }))
+            .map(|p| p.pivot)
+            .collect();
+        assert_eq!(arms, vec![[5.0, 6.0, 0.0], [-5.0, 6.0, 0.0]]);
+        assert_eq!(
+            m.parts
+                .iter()
+                .filter(|p| p.anim == Anim::SnowGolemBody)
+                .count(),
+            1
+        );
+    }
+}
+
+#[cfg(test)]
+mod allay_pose_tests {
+    use super::*;
+
+    /// M369 — the allay's body and both arms carry `setupAnim`'s motion.
+    #[test]
+    fn the_allays_body_and_arms_move() {
+        let m = allay();
+        let anim = |name: &str| m.parts.iter().find(|p| p.name == name).map(|p| p.anim);
+        assert_eq!(anim("body"), Some(Anim::AllayBody));
+        assert_eq!(anim("right_arm"), Some(Anim::AllayArm { left: false }));
+        assert_eq!(anim("left_arm"), Some(Anim::AllayArm { left: true }));
     }
 }

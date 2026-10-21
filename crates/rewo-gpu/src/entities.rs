@@ -5750,6 +5750,18 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             off[1] = turtle_lift(&c.mob);
         }
         TurtleBody => off[1] = turtle_lift(&c.mob),
+        // M368 — `SnowGolemModel.setupAnim`.
+        SnowGolemBody => rot[1] = c.net * 0.25,
+        SnowGolemArm { left } => {
+            let u = c.net * 0.25;
+            rot[1] = u;
+            let (sin, cos) = u.sin_cos();
+            off = if left {
+                [cos * 5.0 - 5.0, 0.0, -sin * 5.0]
+            } else {
+                [5.0 - cos * 5.0, 0.0, sin * 5.0]
+            };
+        }
         // M367 — `HoglinModel.setupAnim` (and `BabyHoglinModel`'s headbutt).
         HoglinHead { baby } => {
             rot[1] = c.net;
@@ -5979,6 +5991,10 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             };
         }
         AllayRoot => {
+            // M369 — `root.y += cos(age·9°)·0.25·idleBobFactor`, outside the
+            // dance branch: the hovering allay bobs a quarter pixel.
+            let fly = (c.amt / 0.3).min(1.0);
+            off[1] = (c.age * 9.0 * DEG).cos() * 0.25 * (1.0 - fly);
             // AllayModel `state.isDancing` branch, `this.root`. Idle → 0 (the
             // model stays upright; the else-branch never touches root).
             if let Some(dance) = c.allay_dance {
@@ -5994,6 +6010,17 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 // root.zRot = danceFrequency·(1 − spin), danceFreq = cos(dS)·16°.
                 rot[2] = dance_speed.cos() * 16.0 * DEG * (1.0 - spin);
             }
+        }
+        // M369 — `AllayModel.setupAnim`'s body pitch and arms.
+        AllayBody => rot[0] = (c.amt / 0.3).min(1.0) * PI / 4.0,
+        AllayArm { left } => {
+            let fly = (c.amt / 0.3).min(1.0);
+            let hold = c.mob.allay_holding;
+            rot[0] = hold * (-PI / 3.0 + (-1.134464 + PI / 3.0) * fly);
+            let bob = (1.0 - fly) * (1.0 - hold);
+            let z = 0.43633232 - (c.age * 9.0 * DEG + PI * 1.5).cos() * PI * 0.075 * bob;
+            rot[2] = if left { -z } else { z };
+            rot[1] = if left { -0.27925268 } else { 0.27925268 } * hold;
         }
         AllayHead => match c.allay_dance {
             // Dancing: head tilts with the beat (xRot stays 0), scaled down as
@@ -10348,5 +10375,109 @@ mod hoglin_anim_tests {
         assert!((leg(true, true) - (pos + PI).cos() * 1.2 * amt).abs() < 1e-6);
         assert_eq!(leg(false, false), leg(true, true));
         assert_eq!(leg(false, true), leg(true, false));
+    }
+}
+
+#[cfg(test)]
+mod snow_golem_anim_tests {
+    use super::*;
+
+    fn ctx(net: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        }
+    }
+
+    /// M368 — `SnowGolemModel.setupAnim`: the upper body turns a quarter of
+    /// the look; each arm turns with it and its pivot rides the 5 px circle
+    /// (left at `(cos·5, −sin·5)`, right opposite), resting where it sits.
+    #[test]
+    fn the_snow_golems_arms_ride_its_turning_body() {
+        use mobs::Anim::*;
+        let c = ctx(0.8);
+        let u = 0.2_f32;
+        assert!((anim_delta(SnowGolemBody, 1.0, &c).0[1] - u).abs() < 1e-6);
+        let (lr, lo) = anim_delta(SnowGolemArm { left: true }, 1.0, &c);
+        assert!((lr[1] - u).abs() < 1e-6);
+        assert!((5.0 + lo[0] - u.cos() * 5.0).abs() < 1e-5 && (lo[2] + u.sin() * 5.0).abs() < 1e-5);
+        let (_, ro) = anim_delta(SnowGolemArm { left: false }, 1.0, &c);
+        assert!(
+            (-5.0 + ro[0] + u.cos() * 5.0).abs() < 1e-5 && (ro[2] - u.sin() * 5.0).abs() < 1e-5
+        );
+        let (r0, o0) = anim_delta(SnowGolemArm { left: true }, 1.0, &ctx(0.0));
+        assert_eq!((r0[1], o0), (0.0, [0.0; 3]));
+    }
+}
+
+#[cfg(test)]
+mod allay_pose_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(amt: f32, age: f32, hold: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                allay_holding: hold,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M369 — `AllayModel.setupAnim`, term by term: hovering, the root bobs
+    /// and the arms splay ±0.436 with the idle bob; flying (speed ≥ 0.3) the
+    /// body pitches π/4, the bob stops; holding an item the arms reach
+    /// forward (−π/3 hovering, −1.134 flying) and turn in, without the bob.
+    #[test]
+    fn the_allay_hovers_flies_and_holds() {
+        use mobs::Anim::*;
+        const DEG: f32 = PI / 180.0;
+        let age = 7.0_f32;
+        let hover = ctx(0.0, age, 0.0);
+        assert!(
+            (anim_delta(AllayRoot, 1.0, &hover).1[1] - (age * 9.0 * DEG).cos() * 0.25).abs() < 1e-6
+        );
+        let z = 0.43633232 - (age * 9.0 * DEG + PI * 1.5).cos() * PI * 0.075;
+        let (l, _) = anim_delta(AllayArm { left: true }, 1.0, &hover);
+        let (r, _) = anim_delta(AllayArm { left: false }, 1.0, &hover);
+        assert!((l[2] + z).abs() < 1e-6 && (r[2] - z).abs() < 1e-6 && l[0] == 0.0);
+        let fly = ctx(0.6, age, 0.0);
+        assert!((anim_delta(AllayBody, 1.0, &fly).0[0] - PI / 4.0).abs() < 1e-6);
+        assert_eq!(anim_delta(AllayRoot, 1.0, &fly).1[1], 0.0);
+        assert!((anim_delta(AllayArm { left: false }, 1.0, &fly).0[2] - 0.43633232).abs() < 1e-6);
+        let (h, _) = anim_delta(AllayArm { left: true }, 1.0, &ctx(0.0, age, 1.0));
+        assert!((h[0] + PI / 3.0).abs() < 1e-6 && (h[1] + 0.27925268).abs() < 1e-6);
+        assert!((h[2] + 0.43633232).abs() < 1e-6);
+        let (hf, _) = anim_delta(AllayArm { left: false }, 1.0, &ctx(0.6, age, 1.0));
+        assert!((hf[0] + 1.134464).abs() < 1e-5);
     }
 }

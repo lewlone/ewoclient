@@ -104,7 +104,14 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 85;
+const EXPECTED_WITNESSES: usize = 87;
+/// M368 — m86's floor. M368 measured 245 px; the head turning alone (the
+/// pre-M368 mutant, a still upper body and arms) 23.
+const SNOW_GOLEM_MIN: usize = 120;
+/// M369 — m87's floors: flying vs hovering, holding vs empty-handed. M369
+/// measured 2008 and 414; the wings alone (the pre-M369 mutant, a still body
+/// and arms) 1454 and 0.
+const ALLAY_MIN: [usize; 2] = [1700, 200];
 /// M367 — m85's floors: the headbutt, the walk. M367 measured 1090 and
 /// 778 (and 0 px for the pitch); a head that pitches with the look and no
 /// headbutt (the pre-M367 mutant) read 485 px for the pitch and 0.
@@ -6294,6 +6301,108 @@ fn run_check(
         format!(
             "looking down 35 vs ahead {hg_pitch} px (want 0); headbutt {hg_b} px, walk {hg_w} px (want >= {HOGLIN_MIN:?})"
         ),
+    ));
+
+    // m86 — M368: a snow golem looking aside turns its upper body and arms a
+    // quarter of the way with its head. m87 — M369: an allay flying pitches
+    // its body (against hovering), and one holding an item reaches its arms
+    // forward (against empty-handed).
+    let mut gost = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.6, 1.6, -2.4),
+        Vec3::new(0.0, 0.9, 0.0),
+    )?;
+    gost.wr.set_entities(&[], gost.right, gost.up, 0.0);
+    gost.off
+        .render(gpu, Some((&mut gost.wr, gost.vp)), &ov, BG)?;
+    let go_empty = gost.off.read_rgba(gpu)?;
+    let mut goshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        gost.wr.set_entities(&[d], gost.right, gost.up, 0.0);
+        gost.off
+            .render(gpu, Some((&mut gost.wr, gost.vp)), &ov, BG)?;
+        gost.off.read_rgba(gpu)
+    };
+    let go_ahead = goshot(neutral_draw(EntityModelKind::SnowGolem))?;
+    let go_aside = goshot(EntityDraw {
+        head_yaw: 70.0,
+        ..neutral_draw(EntityModelKind::SnowGolem)
+    })?;
+    gost.destroy(gpu);
+    let go_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(go_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let go_moved = go_mask(&go_ahead)
+        .iter()
+        .zip(&go_mask(&go_aside))
+        .filter(|(x, y)| x != y)
+        .count();
+    w.push(wit(
+        "m86.a_snow_golem_turns_its_body_and_arms_with_its_look",
+        go_moved >= SNOW_GOLEM_MIN,
+        format!("looking 70 aside vs ahead {go_moved} px of silhouette (want >= {SNOW_GOLEM_MIN})"),
+    ));
+
+    let mut alst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.6, -0.7),
+        Vec3::new(0.0, 0.3, 0.0),
+    )?;
+    alst.wr.set_entities(&[], alst.right, alst.up, 0.0);
+    alst.off
+        .render(gpu, Some((&mut alst.wr, alst.vp)), &ov, BG)?;
+    let al_empty = alst.off.read_rgba(gpu)?;
+    let mut alshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        alst.wr.set_entities(&[d], alst.right, alst.up, 0.0);
+        alst.off
+            .render(gpu, Some((&mut alst.wr, alst.vp)), &ov, BG)?;
+        alst.off.read_rgba(gpu)
+    };
+    let allay = |amount: f32, holding: f32| EntityDraw {
+        limb_amount: amount,
+        mob: rewo_gpu::mobs::MobCombat {
+            allay_holding: holding,
+            ..Default::default()
+        },
+        ..neutral_draw(EntityModelKind::Allay)
+    };
+    let al_hover = alshot(allay(0.0, 0.0))?;
+    let al_fly = alshot(allay(0.6, 0.0))?;
+    let al_hold = alshot(allay(0.0, 1.0))?;
+    alst.destroy(gpu);
+    let al_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(al_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let al_differ = |a: &[u8], b: &[u8]| {
+        al_mask(a)
+            .iter()
+            .zip(&al_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let (al_f, al_h) = (
+        al_differ(&al_hover, &al_fly),
+        al_differ(&al_hover, &al_hold),
+    );
+    w.push(wit(
+        "m87.an_allay_pitches_into_flight_and_reaches_for_what_it_holds",
+        al_f >= ALLAY_MIN[0] && al_h >= ALLAY_MIN[1],
+        format!("flying vs hovering {al_f} px, holding vs empty-handed {al_h} px (want >= {ALLAY_MIN:?})"),
     ));
 
     // ---- report ----------------------------------------------------------
