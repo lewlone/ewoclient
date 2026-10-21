@@ -3940,9 +3940,10 @@ fn drowned() -> Model {
 }
 
 /// `SkeletonModel`: humanoid head/body + 2×12×2 limbs, walking arm swing.
-/// `overlay` adds the stray clothing layer (same mesh, +0.25, texture 1).
+/// `overlay` adds the clothing layer at that deformation on texture 1 (M383:
+/// the humanoid mesh, as vanilla's outer layers are).
 /// Returns the head part so variants (bogged) can grow things on the skull.
-fn skeleton_build(b: &mut ModelBuilder, overlay: bool) -> usize {
+fn skeleton_build(b: &mut ModelBuilder, overlay: Option<f32>) -> usize {
     let b = &mut *b;
     let head = humanoid_head_body(b, 0);
     // M20: `SkeletonModel.setupAnim` overrides the arms when aggressive and
@@ -3997,14 +3998,21 @@ fn skeleton_build(b: &mut ModelBuilder, overlay: bool) -> usize {
         [2.0, 12.0, 2.0],
         NONE,
     );
-    if overlay {
+    // M383 — the outer layer (`STRAY_OUTER_LAYER` at 0.25,
+    // `BOGGED_OUTER_LAYER` at 0.2) is `HumanoidModel.createMesh(g)`, not the
+    // skeleton's mesh inflated: the head at g and its hat at g + 0.5, the
+    // body, 4 x 12 x 4 arms on the skeleton's ±5 arm pivots and 4 x 12 x 4
+    // legs on their own ±1.9 pivots (the skeleton's are ±2), walking with
+    // the skeleton's. Until M383 Rewo drew the skeleton's 2-wide limbs at
+    // 0.25 for both.
+    if let Some(g) = overlay {
         b.cube_g(
             head,
             1,
             (0.0, 0.0),
             [-4.0, -8.0, -4.0],
             [8.0, 8.0, 8.0],
-            0.25,
+            g,
             NONE,
         );
         b.cube_g(
@@ -4013,7 +4021,7 @@ fn skeleton_build(b: &mut ModelBuilder, overlay: bool) -> usize {
             (32.0, 0.0),
             [-4.0, -8.0, -4.0],
             [8.0, 8.0, 8.0],
-            0.75,
+            g + 0.5,
             NONE,
         );
         b.cube_g(
@@ -4022,44 +4030,46 @@ fn skeleton_build(b: &mut ModelBuilder, overlay: bool) -> usize {
             (16.0, 16.0),
             [-4.0, 0.0, -2.0],
             [8.0, 12.0, 4.0],
-            0.25,
+            g,
             NONE,
         );
         b.cube_g(
             arm_r,
             1,
             (40.0, 16.0),
-            [-1.0, -2.0, -1.0],
-            [2.0, 12.0, 2.0],
-            0.25,
+            [-3.0, -2.0, -2.0],
+            [4.0, 12.0, 4.0],
+            g,
             NONE,
         );
         b.cube_f(
             arm_l,
             1,
             (40.0, 16.0),
-            [-1.0, -2.0, -1.0],
-            [2.0, 12.0, 2.0],
-            0.25,
+            [-1.0, -2.0, -2.0],
+            [4.0, 12.0, 4.0],
+            g,
             true,
             NONE,
         );
+        let cloth_leg_r = b.part([-1.9, 12.0, 0.0], Anim::LegRight, 1.0);
         b.cube_g(
-            leg_r,
+            cloth_leg_r,
             1,
             (0.0, 16.0),
-            [-1.0, 0.0, -1.0],
-            [2.0, 12.0, 2.0],
-            0.25,
+            [-2.0, 0.0, -2.0],
+            [4.0, 12.0, 4.0],
+            g,
             NONE,
         );
+        let cloth_leg_l = b.part([1.9, 12.0, 0.0], Anim::LegLeft, 1.0);
         b.cube_f(
-            leg_l,
+            cloth_leg_l,
             1,
             (0.0, 16.0),
-            [-1.0, 0.0, -1.0],
-            [2.0, 12.0, 2.0],
-            0.25,
+            [-2.0, 0.0, -2.0],
+            [4.0, 12.0, 4.0],
+            g,
             true,
             NONE,
         );
@@ -4067,23 +4077,23 @@ fn skeleton_build(b: &mut ModelBuilder, overlay: bool) -> usize {
     head
 }
 
-fn skeleton_like(scale: f32, overlay: bool) -> Model {
+fn skeleton_like(scale: f32, overlay: Option<f32>) -> Model {
     let mut b = ModelBuilder::new();
     skeleton_build(&mut b, overlay);
     b.finish(scale)
 }
 
 fn skeleton() -> Model {
-    skeleton_like(1.0, false)
+    skeleton_like(1.0, Option::None)
 }
 
 fn stray() -> Model {
-    skeleton_like(1.0, true)
+    skeleton_like(1.0, Some(0.25))
 }
 
 fn wither_skeleton() -> Model {
     // Vanilla WitherSkeletonRenderer scale.
-    skeleton_like(1.2, false)
+    skeleton_like(1.2, Option::None)
 }
 
 /// `EndermanModel`: stretched humanoid, half-amplitude limb swing clamped to
@@ -7366,7 +7376,7 @@ fn zombie_villager() -> Model {
 /// mushroom plates sprouting from the head.
 fn bogged() -> Model {
     let mut b = ModelBuilder::new();
-    let head = skeleton_build(&mut b, true);
+    let head = skeleton_build(&mut b, Some(0.2));
     let shrooms: [((f32, f32), [f32; 3], [f32; 3], f32); 6] = [
         ((50.0, 16.0), [-3.0, -3.0, 0.0], [3.0, -8.0, 3.0], PI / 4.0),
         (
@@ -16872,5 +16882,50 @@ mod drowned_mesh_tests {
         let zl = z.parts.iter().position(|p| p.name == "left_arm").unwrap();
         assert_eq!(uv_min(&z, zl, 0), [40.0, 16.0]);
         assert_eq!(z.parts[zl].anim, Anim::UndeadArmLeft);
+    }
+}
+
+#[cfg(test)]
+mod skeleton_clothing_tests {
+    use super::*;
+
+    /// M383 — the stray's and the bogged's clothing is the humanoid mesh at
+    /// 0.25 / 0.2: 4-wide arms and legs (the legs on their own ±1.9 parts),
+    /// the hat at g + 0.5. The plain skeleton has none.
+    #[test]
+    fn the_stray_and_bogged_wear_humanoid_clothing() {
+        for (m, g) in [(stray(), 0.25_f32), (bogged(), 0.2)] {
+            let cloth: Vec<&RawQuad> = m.quads.iter().filter(|q| q.tex == 1).collect();
+            let legs: Vec<usize> = (0..m.parts.len())
+                .filter(|&i| {
+                    m.parts[i].pivot == [-1.9, 12.0, 0.0] || m.parts[i].pivot == [1.9, 12.0, 0.0]
+                })
+                .collect();
+            assert_eq!(legs.len(), 2);
+            for &l in &legs {
+                let xs = cloth
+                    .iter()
+                    .filter(|q| q.part == l)
+                    .flat_map(|q| q.pos.iter().map(|p| p[0]));
+                let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+                assert!(
+                    (hi - lo - (4.0 + 2.0 * g)).abs() < 1e-4,
+                    "leg width {}",
+                    hi - lo
+                );
+            }
+            let arm_r = m.parts.iter().position(|p| p.name == "right_arm").unwrap();
+            let xs = cloth
+                .iter()
+                .filter(|q| q.part == arm_r)
+                .flat_map(|q| q.pos.iter().map(|p| p[0]));
+            let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+            assert!(
+                (hi - lo - (4.0 + 2.0 * g)).abs() < 1e-4,
+                "arm width {}",
+                hi - lo
+            );
+        }
+        assert!(skeleton().quads.iter().all(|q| q.tex == 0));
     }
 }

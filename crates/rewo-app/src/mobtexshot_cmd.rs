@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 100;
+const EXPECTED_WITNESSES: usize = 101;
+/// M383 — m101's floor (px of stray silhouette beyond the skeleton's).
+/// M383 measured 913; the clothing on 2-wide limbs (the pre-M383 mutant)
+/// 536.
+const STRAY_CLOTHING_MIN: usize = 725;
 /// M382 — m100's floor. M382 measured 237 px; the zombie arm without the
 /// post-step (the pre-M382 mutant, whose arm the zombie override holds
 /// forward whatever the pose) 0.
@@ -7049,6 +7053,47 @@ fn run_check(
         "m100.a_drowned_raises_its_trident",
         dr_moved >= DROWNED_MIN,
         format!("throwing vs unposed {dr_moved} px of silhouette (want >= {DROWNED_MIN})"),
+    ));
+
+    // m101 — M383: the stray's clothing is the humanoid mesh (4-wide limbs at
+    // 0.25), so its silhouette covers far more than the plain skeleton's.
+    let mut skst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.1, 2.6),
+        Vec3::new(0.0, 1.0, 0.0),
+    )?;
+    skst.wr.set_entities(&[], skst.right, skst.up, 0.0);
+    skst.off
+        .render(gpu, Some((&mut skst.wr, skst.vp)), &ov, BG)?;
+    let sk_empty = skst.off.read_rgba(gpu)?;
+    let mut skshot = |kind: EntityModelKind| -> Result<Vec<u8>, String> {
+        skst.wr
+            .set_entities(&[neutral_draw(kind)], skst.right, skst.up, 0.0);
+        skst.off
+            .render(gpu, Some((&mut skst.wr, skst.vp)), &ov, BG)?;
+        skst.off.read_rgba(gpu)
+    };
+    let sk_area = |f: &[u8]| {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(sk_empty.as_chunks::<4>().0)
+            .filter(|(p, e)| p[..3] != e[..3])
+            .count()
+    };
+    let (sk, st) = (
+        sk_area(&skshot(EntityModelKind::Skeleton)?),
+        sk_area(&skshot(EntityModelKind::Stray)?),
+    );
+    skst.destroy(gpu);
+    let sk_gain = st.saturating_sub(sk);
+    w.push(wit(
+        "m101.a_strays_clothing_is_the_humanoid_mesh",
+        sk_gain >= STRAY_CLOTHING_MIN,
+        format!("stray {st} px against skeleton {sk} px: {sk_gain} px of clothing (want >= {STRAY_CLOTHING_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------
