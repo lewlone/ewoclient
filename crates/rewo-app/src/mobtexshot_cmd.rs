@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 84;
+const EXPECTED_WITNESSES: usize = 85;
+/// M367 — m85's floors: the headbutt, the walk. M367 measured 1090 and
+/// 778 (and 0 px for the pitch); a head that pitches with the look and no
+/// headbutt (the pre-M367 mutant) read 485 px for the pitch and 0.
+const HOGLIN_MIN: [usize; 2] = [500, 350];
 /// M366 — m84's floors: stride vs standing, the idle bristle sway. M366
 /// measured 578 and 118; the pre-M366 strider (legs on the generic 1.4
 /// walk, unclamped; body and bristles still) 788 and 0, which is why the
@@ -6215,6 +6219,80 @@ fn run_check(
         s_stride >= STRIDER_MIN[0] && s_sway >= STRIDER_MIN[1] && s_clamp == 0,
         format!(
             "stride vs standing {s_stride} px, standing 4 ticks later {s_sway} px (want >= {STRIDER_MIN:?}); speed 1.0 vs 0.25 {s_clamp} px (want 0)"
+        ),
+    ));
+
+    // m85 — M367: a hoglin's head holds its pitch whatever the look's
+    // (`HoglinModel` assigns `xRot`), so looking down draws exactly as
+    // looking ahead; the headbutt swings it; the walk flaps the ears and
+    // swings the legs.
+    let mut hgst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.4, 1.6, -1.8),
+        Vec3::new(0.0, 0.8, 0.0),
+    )?;
+    hgst.wr.set_entities(&[], hgst.right, hgst.up, 0.0);
+    hgst.off
+        .render(gpu, Some((&mut hgst.wr, hgst.vp)), &ov, BG)?;
+    let hg_empty = hgst.off.read_rgba(gpu)?;
+    let mut hgshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        hgst.wr.set_entities(&[d], hgst.right, hgst.up, 0.0);
+        hgst.off
+            .render(gpu, Some((&mut hgst.wr, hgst.vp)), &ov, BG)?;
+        hgst.off.read_rgba(gpu)
+    };
+    let hg_ahead = hgshot(neutral_draw(EntityModelKind::Hoglin))?;
+    let hg_down = hgshot(EntityDraw {
+        pitch: 35.0,
+        ..neutral_draw(EntityModelKind::Hoglin)
+    })?;
+    let hg_butt = hgshot(EntityDraw {
+        mob: rewo_gpu::mobs::MobCombat {
+            headbutt: 1.0,
+            ..Default::default()
+        },
+        ..neutral_draw(EntityModelKind::Hoglin)
+    })?;
+    let hg_walk = hgshot(EntityDraw {
+        limb_swing: 1.1,
+        limb_amount: 0.8,
+        ..neutral_draw(EntityModelKind::Hoglin)
+    })?;
+    hgst.destroy(gpu);
+    let hg_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(hg_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let hg_differ = |a: &[u8], b: &[u8]| {
+        hg_mask(a)
+            .iter()
+            .zip(&hg_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let hg_pitch = hg_ahead
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(hg_down.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    let (hg_b, hg_w) = (
+        hg_differ(&hg_ahead, &hg_butt),
+        hg_differ(&hg_ahead, &hg_walk),
+    );
+    w.push(wit(
+        "m85.a_hoglin_holds_its_head_headbutts_and_walks",
+        hg_pitch == 0 && hg_b >= HOGLIN_MIN[0] && hg_w >= HOGLIN_MIN[1],
+        format!(
+            "looking down 35 vs ahead {hg_pitch} px (want 0); headbutt {hg_b} px, walk {hg_w} px (want >= {HOGLIN_MIN:?})"
         ),
     ));
 

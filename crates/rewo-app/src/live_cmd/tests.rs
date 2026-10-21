@@ -4520,3 +4520,16 @@ fn the_camera_moves_every_frame_between_ticks() {
     // The partial tick is clamped.
     assert_eq!(f(a, b, 1.5), b);
 }
+
+/// M367 — the headbutt's lerp factor over the ten attack ticks: 0 at the
+/// event (10 left), 1 halfway (5 left), 0 again at the end and after.
+#[test]
+fn the_headbutt_rises_and_falls_over_ten_ticks() {
+    let f = super::entities::headbutt_factor;
+    assert_eq!(f(10), 0.0);
+    assert_eq!(f(5), 1.0);
+    // 8 left: 1 − |10 − 16| / 10.
+    assert!((f(8) - 0.4).abs() < 1e-6);
+    assert_eq!(f(0), 0.0);
+    assert_eq!(f(-3), 0.0);
+}

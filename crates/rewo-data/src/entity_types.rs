@@ -225,6 +225,9 @@ pub struct EntityClasses {
     sheep: std::collections::HashSet<i32>,
     /// M365 — `minecraft:turtle`: index 18 / 19 BOOLEAN are its egg flags.
     turtle: std::collections::HashSet<i32>,
+    /// M367 — `minecraft:hoglin` and `minecraft:zoglin`: entity event 4 is
+    /// their headbutt (`attackAnimationRemainingTicks = 10`).
+    hoglin: std::collections::HashSet<i32>,
     /// M219 — `instanceof HasCustomInventoryScreen`: its three implementors'
     /// subtrees (`AbstractHorse`, `AbstractNautilus`, `AbstractChestBoat`).
     /// Riding one turns the inventory key into `OPEN_INVENTORY`.
@@ -415,6 +418,10 @@ impl EntityClasses {
             evoker_fangs: types.id_of("minecraft:evoker_fangs").into_iter().collect(),
             sheep: types.id_of("minecraft:sheep").into_iter().collect(),
             turtle: types.id_of("minecraft:turtle").into_iter().collect(),
+            hoglin: ["minecraft:hoglin", "minecraft:zoglin"]
+                .iter()
+                .filter_map(|n| types.id_of(n))
+                .collect(),
             custom_inventory,
             abstract_horse,
             abstract_boat,
@@ -449,6 +456,7 @@ impl EntityClasses {
             evoker_fangs: Default::default(),
             sheep: Default::default(),
             turtle: Default::default(),
+            hoglin: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -484,6 +492,7 @@ impl EntityClasses {
             evoker_fangs: Default::default(),
             sheep: Default::default(),
             turtle: Default::default(),
+            hoglin: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
             abstract_boat: Default::default(),
@@ -542,6 +551,11 @@ impl EntityClasses {
     /// M259 — `minecraft:evoker_fangs`, whose entity event 4 is its bite.
     pub fn is_evoker_fangs(&self, type_id: i32) -> bool {
         self.evoker_fangs.contains(&type_id)
+    }
+
+    /// M367 — a hoglin or zoglin (`handleEntityEvent(4)`: the headbutt).
+    pub fn is_hoglin(&self, type_id: i32) -> bool {
+        self.hoglin.contains(&type_id)
     }
 
     /// M365 — `minecraft:turtle` (`Turtle.HAS_EGG` 18, `LAYING_EGG` 19).

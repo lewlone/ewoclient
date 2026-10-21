@@ -1672,6 +1672,8 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M367 — set by the caller for a hoglin.
+        headbutt: 0.0,
         // M366 — set by the caller for a strider.
         ridden: false,
         // M365 — set by the caller for a turtle.
@@ -4136,6 +4138,13 @@ pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> Ent
     }
 }
 
+/// M367 — `HoglinModel.setupAnim`'s `headbuttLerpFactor = 1 − |10 − 2r| /
+/// 10` for `r` remaining attack ticks (0 when none remain).
+pub(crate) fn headbutt_factor(remaining: i64) -> f32 {
+    let r = remaining.clamp(0, 10) as f32;
+    1.0 - (10.0 - 2.0 * r).abs() / 10.0
+}
+
 /// M358 — `Sheep.getHeadEatPositionScale(a)` and `getHeadEatAngleScale(a)`
 /// from the eat clock `k` (`eatAnimationTick`: 40 at entity event 10, one
 /// less each client tick) and the partial tick `a`; `None` once it has run
@@ -4912,6 +4921,23 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M367 — `HoglinRenderState.attackAnimationRemainingTicks`: 10 at
+        // entity event 4, one less each client tick (an int, no partial).
+        if matches!(
+            kind,
+            EntityModelKind::Hoglin
+                | EntityModelKind::Zoglin
+                | EntityModelKind::HoglinBaby
+                | EntityModelKind::ZoglinBaby
+        ) {
+            mob.headbutt = session
+                .world
+                .entities
+                .event_start(id, rewo_world::entities::EntityEvent::HoglinAttack)
+                .map_or(0.0, |start| {
+                    headbutt_factor(10 - (session.ticks as i64 - start))
+                });
         }
         // M366 — `StriderRenderState.isRidden`: a ridden strider's body stops
         // following its look.

@@ -24,8 +24,8 @@ The baby layers had their own audit on 2026-10-20 (see
 | turtle | flippers never move (land paddle `cos(pos·5)·8·speed` yRot, water swim) | `TurtleModel` 20-36 | M365 (on land = out of water; Rewo keeps no `onGround` for other entities) |
 | turtle | egg belly drawn on every adult; vanilla `eggBelly.visible = hasEgg` (and the root 1 px up) | `AdultTurtleModel` 24-26 | M365 |
 | strider | body 1 px too high (`body.y = 2`, layer 1); body never looks; bristles never sway; legs 1.4× unclamped (vanilla `min(speed, 0.25)`) | `AdultStriderModel` 54-57, `StriderModel` 25-57 | M366 (adult and baby) |
-| hoglin, zoglin (and babies) | head pitches with the look; vanilla's xRot is fixed 0.8727 when not attacking | `HoglinModel` 91, 102 | open |
-| hoglin | legs at 0.6662/1.4; vanilla raw pos ·1.2; ears never flap | `HoglinModel` 89-98 | open |
+| hoglin, zoglin (and babies) | head pitches with the look; vanilla's xRot is fixed 0.8727 when not attacking | `HoglinModel` 91, 102 | M367 (with the headbutt) |
+| hoglin | legs at 0.6662/1.4; vanilla raw pos ·1.2; ears never flap | `HoglinModel` 89-98 | M367 |
 | snow golem | upper body and arms never follow a quarter of the head yaw; arm pivots' z off by 1 px | `SnowGolemModel` 57-65 | open |
 | allay | arms hang straight (vanilla splays them ~25° with an idle bob); body never pitches when flying; idle root bob | `AllayModel` 104-112 | open |
 | guardian, elder guardian | the whole body (vanilla's "head") never looks; the tail never sways | `GuardianModel` 102-127 | open |

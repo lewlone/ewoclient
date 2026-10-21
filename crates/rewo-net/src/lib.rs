@@ -874,6 +874,8 @@ pub(crate) fn apply_entity_event(
     }
     let mapped = match event {
         4 if is(warden_type_id) => Some(EntityEvent::WardenAttack),
+        // M367 — `Hoglin` / `Zoglin.handleEntityEvent(4)`: the headbutt.
+        4 if classes.is_some_and(|c| c.is_hoglin(type_id)) => Some(EntityEvent::HoglinAttack),
         // M259 — `EvokerFangs.handleEntityEvent(4)`: the bite starts.
         4 if classes.is_some_and(|c| c.is_evoker_fangs(type_id)) => {
             Some(EntityEvent::EvokerFangsBite)

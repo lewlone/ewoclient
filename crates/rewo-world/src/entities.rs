@@ -299,11 +299,15 @@ pub enum EntityEvent {
     /// tick: the head lowers and nibbles (`getHeadEatPositionScale` /
     /// `getHeadEatAngleScale`).
     SheepEat,
+    /// M367 — hoglin / zoglin id 4 — `attackAnimationRemainingTicks = 10`,
+    /// one less each client tick: the headbutt (`HoglinModel
+    /// .animateHeadbutt`).
+    HoglinAttack,
 }
 
 impl EntityEvent {
     /// Dense count for the fixed-size per-entity store.
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
 
     /// Slot index into [`EntityEventStarts`].
     pub const fn index(self) -> usize {

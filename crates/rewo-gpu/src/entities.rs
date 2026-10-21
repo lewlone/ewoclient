@@ -5750,6 +5750,23 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             off[1] = turtle_lift(&c.mob);
         }
         TurtleBody => off[1] = turtle_lift(&c.mob),
+        // M367 — `HoglinModel.setupAnim` (and `BabyHoglinModel`'s headbutt).
+        HoglinHead { baby } => {
+            rot[1] = c.net;
+            let hb = c.mob.headbutt;
+            rot[0] = hb * (-PI / 9.0 - 0.872_664_6);
+            if baby {
+                off[1] = hb * 2.5;
+            }
+        }
+        HoglinEar { left } => {
+            let flap = c.amt * c.pos.sin();
+            rot[2] = if left { flap } else { -flap };
+        }
+        HoglinLeg { front, left } => {
+            let phase = if front == left { PI } else { 0.0 };
+            rot[0] = (c.pos + phase).cos() * 1.2 * c.amt;
+        }
         // M366 — `StriderModel.setupAnim` and `customAnimations`.
         StriderBody { adult } => {
             let s = c.amt.min(0.25);
@@ -10271,5 +10288,65 @@ mod strider_anim_tests {
             &clamp,
         );
         assert!((b1[2] - (flow * 1.2 + 0.1 * (age * 0.2).sin())).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod hoglin_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(pitch: f32, pos: f32, amt: f32, headbutt: f32) -> AnimCtx {
+        AnimCtx {
+            pitch,
+            net: 0.3,
+            f: pos * 0.6662,
+            pos,
+            amt,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                headbutt,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M367 — `HoglinModel.setupAnim`, term by term: the head turns but
+    /// never pitches with the look, and the headbutt swings it to −π/9 (and
+    /// drops the baby's 2.5 px); the ears flap with the walk; the legs swing
+    /// at 1.2 on the raw walk position, in diagonal pairs.
+    #[test]
+    fn the_hoglin_moves_as_vanilla_moves_it() {
+        use mobs::Anim::*;
+        let rest = ctx(0.6, 0.4, 0.0, 0.0);
+        let (r, o) = anim_delta(HoglinHead { baby: true }, 1.0, &rest);
+        assert_eq!((r[0], r[1], o[1]), (0.0, 0.3, 0.0));
+        let butt = ctx(0.6, 0.4, 0.0, 1.0);
+        let (r, o) = anim_delta(HoglinHead { baby: true }, 1.0, &butt);
+        assert!((0.872_664_6 + r[0] + PI / 9.0).abs() < 1e-6);
+        assert_eq!(o[1], 2.5);
+        assert_eq!(anim_delta(HoglinHead { baby: false }, 1.0, &butt).1[1], 0.0);
+        let (pos, amt) = (0.4_f32, 0.7_f32);
+        let walk = ctx(0.0, pos, amt, 0.0);
+        let left = anim_delta(HoglinEar { left: true }, 1.0, &walk).0[2];
+        assert!((left - amt * pos.sin()).abs() < 1e-6);
+        assert_eq!(
+            anim_delta(HoglinEar { left: false }, 1.0, &walk).0[2],
+            -left
+        );
+        let leg = |front, left| anim_delta(HoglinLeg { front, left }, 1.0, &walk).0[0];
+        assert!((leg(true, false) - pos.cos() * 1.2 * amt).abs() < 1e-6);
+        assert!((leg(true, true) - (pos + PI).cos() * 1.2 * amt).abs() < 1e-6);
+        assert_eq!(leg(false, false), leg(true, true));
+        assert_eq!(leg(false, true), leg(true, false));
     }
 }

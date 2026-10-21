@@ -159,6 +159,22 @@ pub enum Anim {
         order: u8,
         baby: bool,
     },
+    /// M367 — `HoglinModel.setupAnim`'s head: `yRot` the look, `xRot`
+    /// `lerp(headbutt, 0.87266463, −π/9)` (the look's pitch never reaches
+    /// it); `BabyHoglinModel` also lowers it 2.5 · headbutt.
+    HoglinHead {
+        baby: bool,
+    },
+    /// M367 — a hoglin ear: `zRot` ∓2π/9 ∓ speed · sin(pos).
+    HoglinEar {
+        left: bool,
+    },
+    /// M367 — a hoglin leg: right front and left hind cos(pos)·1.2·speed,
+    /// the other two half a cycle on (the raw walk position, not ×0.6662).
+    HoglinLeg {
+        front: bool,
+        left: bool,
+    },
     /// M358 — `SheepModel.setupAnim` (and `SheepFurModel`'s): while grazing
     /// the head's `y` grows by `headEatPositionScale` · 9 · the age scale
     /// and its `xRot` is `headEatAngleScale`; otherwise it looks, as `Head`.
@@ -744,6 +760,9 @@ pub struct MobCombat {
     /// M358 — a grazing sheep's `(headEatPositionScale,
     /// headEatAngleScale)`; `None` when it is not eating (the head looks).
     pub sheep_eat: Option<(f32, f32)>,
+    /// M367 — `HoglinModel`'s headbutt lerp factor, `1 − |10 − 2r| / 10` of
+    /// the remaining attack ticks `r` (0 at rest and at both ends).
+    pub headbutt: f32,
     /// M366 — `StriderRenderState.isRidden`: the body stops looking.
     pub ridden: bool,
     /// M365 — `TurtleRenderState`: `hasEgg`, `isLayingEgg` and `isOnLand`.
@@ -5999,8 +6018,8 @@ fn squid_baby() -> Model {
 
 /// M327 — `BabyHoglinModel.createBodyLayer()` (64 x 64): a body grown 0.02
 /// with its 0-wide mane, a head tilted 0.8727 (10 x 4 x 12 with two tusks and
-/// two ears; looking, as Rewo's adult's does), and four 3 x 6 x 3 legs on the
-/// adult's walk. The ears' `PartPose` angle is not what draws:
+/// two ears; since M367 turning with the look, its pitch held, as the
+/// adult's), and four 3 x 6 x 3 legs on the adult's walk. The ears' `PartPose` angle is not what draws:
 /// `HoglinModel.setupAnim` sets their `zRot` to ∓2π/9 every frame, so they
 /// rest there as the adult's do. The zoglin's baby is the same layer.
 fn hoglin_baby() -> Model {
@@ -6026,37 +6045,51 @@ fn hoglin_baby() -> Model {
         false,
         &body,
     );
-    let head = b.part([0.0, 13.0, -7.0], Anim::Head, 1.0);
-    let tilt = Fold::rot([0.8727, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    // M367 — `HoglinModel.setupAnim` assigns the head's `xRot` (0.87266463
+    // at rest, the layer's 0.8727 never drawn) and the ears' `zRot`.
+    let head = b.part_ext(
+        [0.0, 13.0, -7.0],
+        [0.87266463, 0.0, 0.0],
+        Anim::HoglinHead { baby: true },
+        1.0,
+        Option::None,
+    );
     for (uv, min, dims) in [
         ((0.0, 0.0), [-5.0, -2.2605, -10.547], [10.0, 4.0, 12.0]),
         ((44.0, 29.0), [-7.0, -4.0981, -8.4879], [2.0, 5.0, 2.0]),
         ((52.0, 29.0), [5.0, -4.0981, -8.4879], [2.0, 5.0, 2.0]),
     ] {
-        b.cube_f(head, 0, uv, min, dims, 0.0, false, &[tilt]);
+        b.cube(head, 0, uv, min, dims, NONE);
     }
-    for (x, z_rot, uv, min_x, mirror) in [
-        (-5.0, -PI * 2.0 / 9.0, (32.0, 5.0), -5.1, false),
-        (5.0, PI * 2.0 / 9.0, (32.0, 0.0), -0.9, true),
+    for (x, z_rot, uv, min_x, mirror, left) in [
+        (-5.0, -PI * 2.0 / 9.0, (32.0, 5.0), -5.1, false, false),
+        (5.0, PI * 2.0 / 9.0, (32.0, 0.0), -0.9, true, true),
     ] {
+        let ear = b.part_ext(
+            [x, -1.0, -1.5],
+            [0.0, 0.0, z_rot],
+            Anim::HoglinEar { left },
+            1.0,
+            Some(head),
+        );
         b.cube_f(
-            head,
+            ear,
             0,
             uv,
             [min_x, -0.5, -2.0],
             [6.0, 1.0, 4.0],
             0.0,
             mirror,
-            &[Fold::rot([0.0, 0.0, z_rot], [x, -1.0, -1.5]), tilt],
+            NONE,
         );
     }
-    for (pivot, anim, uv) in [
-        ([-2.5, 18.0, 4.5], Anim::QuadHindRight, (0.0, 47.0)),
-        ([2.5, 18.0, 4.5], Anim::QuadHindLeft, (12.0, 47.0)),
-        ([-2.5, 18.0, -4.5], Anim::QuadFrontRight, (0.0, 38.0)),
-        ([2.5, 18.0, -4.5], Anim::QuadFrontLeft, (12.0, 38.0)),
+    for (pivot, front, left, uv) in [
+        ([-2.5, 18.0, 4.5], false, false, (0.0, 47.0)),
+        ([2.5, 18.0, 4.5], false, true, (12.0, 47.0)),
+        ([-2.5, 18.0, -4.5], true, false, (0.0, 38.0)),
+        ([2.5, 18.0, -4.5], true, true, (12.0, 38.0)),
     ] {
-        let leg = b.part(pivot, anim, 1.0);
+        let leg = b.part(pivot, Anim::HoglinLeg { front, left }, 1.0);
         b.cube(leg, 0, uv, [-1.5, 0.0, -1.5], [3.0, 6.0, 3.0], NONE);
     }
     b.finish(1.0)
@@ -8030,7 +8063,11 @@ fn ghast() -> Model {
 }
 
 /// `HoglinModel`: huge body + mane bristle, tilted head with flapped ears
-/// + tusks, chunky asymmetric legs. Zoglin shares it.
+/// and tusks, chunky asymmetric legs. Zoglin shares it.
+///
+/// M367 — the head turns (its pitch held at 0.87266463 but for the
+/// headbutt), the ears flap and the legs walk as `HoglinModel.setupAnim`
+/// moves them.
 fn hoglin() -> Model {
     let mut b = ModelBuilder::new();
     let body = Fold::at([0.0, 7.0, 0.0]);
@@ -8054,96 +8091,95 @@ fn hoglin() -> Model {
         false,
         &[Fold::at([0.0, -14.0, -7.0]), body],
     );
-    let head = b.part([0.0, 2.0, -12.0], Anim::Head, 1.0);
-    let tilt = Fold::rot([0.87266463, 0.0, 0.0], [0.0, 0.0, 0.0]);
-    b.cube_f(
+    // M367 — the head's 0.87266463 is the part's own rest (`setupAnim`
+    // assigns it, the headbutt lerps it), the ears are parts that flap.
+    let head = b.part_ext(
+        [0.0, 2.0, -12.0],
+        [0.87266463, 0.0, 0.0],
+        Anim::HoglinHead { baby: false },
+        1.0,
+        Option::None,
+    );
+    b.cube(
         head,
         0,
         (61.0, 1.0),
         [-7.0, -3.0, -19.0],
         [14.0, 6.0, 19.0],
-        0.0,
-        false,
-        &[tilt],
+        NONE,
     );
-    b.cube_f(
-        head,
-        0,
-        (1.0, 1.0),
-        [-6.0, -1.0, -2.0],
-        [6.0, 1.0, 4.0],
-        0.0,
-        false,
-        &[
-            Fold::rot([0.0, 0.0, -PI * 2.0 / 9.0], [-6.0, -2.0, -3.0]),
-            tilt,
-        ],
-    );
-    b.cube_f(
-        head,
-        0,
-        (1.0, 6.0),
-        [0.0, -1.0, -2.0],
-        [6.0, 1.0, 4.0],
-        0.0,
-        false,
-        &[
-            Fold::rot([0.0, 0.0, PI * 2.0 / 9.0], [6.0, -2.0, -3.0]),
-            tilt,
-        ],
-    );
-    b.cube_f(
-        head,
-        0,
-        (10.0, 13.0),
-        [-1.0, -11.0, -1.0],
-        [2.0, 11.0, 2.0],
-        0.0,
-        false,
-        &[Fold::at([-7.0, 2.0, -12.0]), tilt],
-    );
-    b.cube_f(
-        head,
-        0,
-        (1.0, 13.0),
-        [-1.0, -11.0, -1.0],
-        [2.0, 11.0, 2.0],
-        0.0,
-        false,
-        &[Fold::at([7.0, 2.0, -12.0]), tilt],
-    );
-    let legs = [
+    for (uv, min, pivot, z_rot, left) in [
+        (
+            (1.0, 1.0),
+            [-6.0, -1.0, -2.0],
+            [-6.0, -2.0, -3.0],
+            -PI * 2.0 / 9.0,
+            false,
+        ),
+        (
+            (1.0, 6.0),
+            [0.0, -1.0, -2.0],
+            [6.0, -2.0, -3.0],
+            PI * 2.0 / 9.0,
+            true,
+        ),
+    ] {
+        let ear = b.part_ext(
+            pivot,
+            [0.0, 0.0, z_rot],
+            Anim::HoglinEar { left },
+            1.0,
+            Some(head),
+        );
+        b.cube(ear, 0, uv, min, [6.0, 1.0, 4.0], NONE);
+    }
+    for (uv, x) in [((10.0, 13.0), -7.0), ((1.0, 13.0), 7.0)] {
+        b.cube_f(
+            head,
+            0,
+            uv,
+            [-1.0, -11.0, -1.0],
+            [2.0, 11.0, 2.0],
+            0.0,
+            false,
+            &[Fold::at([x, 2.0, -12.0])],
+        );
+    }
+    for (uv, min, dims, pivot, front, left) in [
         (
             (66.0, 42.0),
             [-3.0, 0.0, -3.0],
             [6.0, 14.0, 6.0],
             [-4.0, 10.0, -8.5],
-            Anim::QuadFrontRight,
+            true,
+            false,
         ),
         (
             (41.0, 42.0),
             [-3.0, 0.0, -3.0],
             [6.0, 14.0, 6.0],
             [4.0, 10.0, -8.5],
-            Anim::QuadFrontLeft,
+            true,
+            true,
         ),
         (
             (21.0, 45.0),
             [-2.5, 0.0, -2.5],
             [5.0, 11.0, 5.0],
             [-5.0, 13.0, 10.0],
-            Anim::QuadHindRight,
+            false,
+            false,
         ),
         (
             (0.0, 45.0),
             [-2.5, 0.0, -2.5],
             [5.0, 11.0, 5.0],
             [5.0, 13.0, 10.0],
-            Anim::QuadHindLeft,
+            false,
+            true,
         ),
-    ];
-    for (uv, min, dims, pivot, anim) in legs {
-        let p = b.part(pivot, anim, 1.0);
+    ] {
+        let p = b.part(pivot, Anim::HoglinLeg { front, left }, 1.0);
         b.cube(p, 0, uv, min, dims, NONE);
     }
     b.finish(1.0)
@@ -15276,7 +15312,11 @@ mod hoglet_tests {
     fn the_hoglet_is_its_own_model() {
         let m = hoglin_baby();
         assert_eq!(m.quads.len(), 10 * 6 + 2);
-        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let head = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::HoglinHead { baby: true })
+            .unwrap();
         let span = |q: &RawQuad, i: usize| {
             q.uv.iter()
                 .map(|u| u[i])
@@ -15285,6 +15325,9 @@ mod hoglet_tests {
         assert!(m.quads.iter().any(|q| q.part == head
             && q.facing == Facing::North
             && (span(q, 0), span(q, 1)) == ((12.0, 22.0), (12.0, 16.0))));
+        // M367 — the ears are parts: the right ear's −2π/9 is its part's
+        // rest `zRot` (not the `PartPose` −0.8727), and its down face is
+        // still the (36, 5)..(42, 9) rect.
         // The right ear's (32+4, 5)..(32+4+6, 5+4) face (vanilla's box-UV
         // `Down` rect): its normal is the head's vertical turned -2π/9 about
         // z (then tilted about x), so its x component is sin(2π/9), where
@@ -15296,11 +15339,8 @@ mod hoglet_tests {
                 q.facing == Facing::Down && (span(q, 0), span(q, 1)) == ((36.0, 42.0), (5.0, 9.0))
             })
             .expect("the right ear's down face");
-        let nx = ear_top.normal[0].abs();
-        assert!(
-            (nx - (2.0 * PI / 9.0).sin()).abs() < 1e-3,
-            "ear normal x {nx}"
-        );
+        assert_eq!(m.parts[ear_top.part].anim, Anim::HoglinEar { left: false });
+        assert!((m.parts[ear_top.part].rot[2] + 2.0 * PI / 9.0).abs() < 1e-6);
     }
 }
 
@@ -16135,5 +16175,39 @@ mod strider_model_tests {
             assert_eq!(legs, 2);
         }
         assert_eq!(strider_saddle().parts.len(), strider().parts.len());
+    }
+}
+
+#[cfg(test)]
+mod hoglin_model_tests {
+    use super::*;
+
+    /// M367 — both hoglins: the head rests at `setupAnim`'s 0.87266463 on
+    /// its own animation, two flapping ears ride it (resting at ∓2π/9), and
+    /// four legs walk in diagonal pairs.
+    #[test]
+    fn the_hoglins_parts_move_as_vanilla_moves_them() {
+        for (m, baby) in [(hoglin(), false), (hoglin_baby(), true)] {
+            let head = m
+                .parts
+                .iter()
+                .position(|p| p.anim == Anim::HoglinHead { baby })
+                .expect("a head");
+            assert_eq!(m.parts[head].rot, [0.87266463, 0.0, 0.0]);
+            let ears: Vec<f32> = m
+                .parts
+                .iter()
+                .filter(|p| p.parent == Some(head as u16))
+                .filter(|p| matches!(p.anim, Anim::HoglinEar { .. }))
+                .map(|p| p.rot[2])
+                .collect();
+            assert_eq!(ears, vec![-PI * 2.0 / 9.0, PI * 2.0 / 9.0]);
+            let legs = m
+                .parts
+                .iter()
+                .filter(|p| matches!(p.anim, Anim::HoglinLeg { .. }))
+                .count();
+            assert_eq!(legs, 4);
+        }
     }
 }
