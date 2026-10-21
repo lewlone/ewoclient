@@ -767,6 +767,13 @@ pub struct PlaySession {
     /// `Mth.lerp(partialTick, entity.xo, entity.getX())`). A teleport snaps
     /// it, so a jump across the world is not smeared over a frame.
     pub player_prev: [f64; 3],
+    /// M398 — `Camera.eyeHeight` / `eyeHeightOld`: the camera's eye height
+    /// above the feet, eased half the gap a tick toward the player's
+    /// (`Camera.tick`), which the frame lerps by the partial tick. Starts at
+    /// the standing eye (vanilla's camera starts at 0 and rises over the
+    /// first ticks of a session).
+    pub camera_eye: f32,
+    pub camera_eye_old: f32,
     /// state id → collision boxes in block-local `0..1` (`BakedAssets::
     /// collide`): empty = no collision, one unit box = a full cube, several =
     /// a stair. An id past the end falls back to "non-air is a full cube",
@@ -2048,6 +2055,8 @@ impl<'a> Connection<'a> {
             tags,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
+            camera_eye: rewo_world::physics::EYE_HEIGHT as f32,
+            camera_eye_old: rewo_world::physics::EYE_HEIGHT as f32,
             player_prev: [0.5, 80.0, 0.5],
             collide,
             outline: Vec::new(),
@@ -2707,6 +2716,15 @@ impl PlaySession {
         // M233 — `GameRenderer.tick` (the camera) runs before
         // `level.tickEntities`, so the FOV target is last tick's state.
         self.tick_fov();
+        // M398 — `Camera.tick`: the eye height eases half the gap toward the
+        // player's (`getEyeHeight()`, by pose: sleeping 0.2, crouching,
+        // swimming), last tick's state as the FOV's.
+        let target = if self.is_sleeping() {
+            0.2
+        } else {
+            (self.player.eye_y() - self.player.y) as f32
+        };
+        (self.camera_eye_old, self.camera_eye) = camera_eye_step(self.camera_eye, target);
         // `ClientLevel.tickTime`: once the level exists, every running client
         // tick bumps the game time by one and ticks the world clock against it.
         // This is what advances the day/night cycle smoothly between the
@@ -7016,6 +7034,12 @@ fn default_clock_time(
 /// the clock by zero, leaving exactly this one local `+1`. If no explicit
 /// overworld clock exists yet, the day-tick falls back to the raw game time
 /// (best-effort), still advancing one per tick rather than only on packets.
+/// M398 — one `Camera.tick` of the eye height: `eyeHeightOld = eyeHeight;
+/// eyeHeight += (target − eyeHeight)·0.5`. Returns `(old, new)`.
+pub fn camera_eye_step(eye: f32, target: f32) -> (f32, f32) {
+    (eye, eye + (target - eye) * 0.5)
+}
+
 fn local_tick_time(
     game_time: Option<i64>,
     clocks: &mut ClockManager,

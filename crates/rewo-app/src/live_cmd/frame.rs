@@ -835,7 +835,13 @@ impl LiveApp {
                 // 0.37 on a frame where the sleeper was still settling.
                 let p = &session.player;
                 let feet = super::view::render_feet(session.player_prev, [p.x, p.y, p.z], alpha);
-                c.sleep_camera = Some((cam.yaw, cam.pitch, cam.eye[1] - feet[1], p.yaw));
+                let dy = cam.eye[1] - feet[1];
+                // M398 — r220: the first frame asleep, and any rise.
+                if let Some((_, _, prev, _)) = c.sleep_camera {
+                    c.sleep_camera_rise = c.sleep_camera_rise.max(dy - prev);
+                }
+                c.sleep_camera_first_dy.get_or_insert(dy);
+                c.sleep_camera = Some((cam.yaw, cam.pitch, dy, p.yaw));
             }
         }
         // M138a — `SoundEngine.updateSource(camera)`, and it lives HERE rather

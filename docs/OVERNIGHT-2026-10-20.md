@@ -1254,8 +1254,9 @@ released.
 - The swirls (M285, M287) and the breeze's wind (M286): a glowing
   entity's layer is not copied into its outline, and fog is not applied to
   them.
-- ~~The sleeping camera~~: done in M284. Left: vanilla eases the camera's
-  eye height half the gap a tick (crouching too); Rewo's camera snaps.
+- ~~The sleeping camera~~: done in M284. ~~Left: vanilla eases the camera's
+  eye height half the gap a tick (crouching too); Rewo's camera snaps.~~
+  (M398)
 - Several gate failure messages carry runs of spaces where a `\` line
   continuation was collapsed (e.g. `build_sounds`' panic, bookshot,
   containershot); cosmetic, since the September module split.

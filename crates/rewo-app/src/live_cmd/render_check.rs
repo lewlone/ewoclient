@@ -338,6 +338,11 @@ pub(super) struct RenderCheck {
     /// M284 — r142: the last sleeping frame's camera `(yaw, pitch, eye above
     /// the feet)` and the player's own yaw beside it.
     pub(super) sleep_camera: Option<(f32, f32, f64, f32)>,
+    /// M398 — r220: the camera eye's height above the feet on the first
+    /// frame drawn asleep, and the most it ever rose from one asleep frame
+    /// to the next.
+    pub(super) sleep_camera_first_dy: Option<f64>,
+    pub(super) sleep_camera_rise: f64,
     /// M284 — r142: frames asleep and how many of them drew a hand; frames
     /// awake that drew one (the control).
     pub(super) asleep_hand_frames: (usize, usize),
@@ -1319,7 +1324,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 219;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 220;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1898,6 +1903,26 @@ impl RenderCheck {
                 self.baby_piglins.0, self.baby_piglins.1, self.baby_piglins.2
             ),
         );
+        // M398 — r220: lying down, the camera's eye glides (`Camera.tick`
+        // eases it half the gap a tick): the first frame drawn asleep is
+        // still near the standing eye, it falls frame to frame, and the
+        // last is near the sleeping 0.35 (r142). The rise allowed is the
+        // partial tick's own frame jitter (the two first runs measured 3.4
+        // and 3.9e-4 against a fall of 0.7 in the first tick): the measured
+        // height is exactly the eased one plus the lift, the eye and the
+        // feet both coming from the one render position.
+        row(
+            "r220 lying down, the camera eased into the bed",
+            self.sleep_camera_first_dy.is_some_and(|dy| dy > 1.0)
+                && self.sleep_camera_rise <= 1e-2
+                && self.sleep_camera.is_some_and(|(_, _, dy, _)| dy < 0.5),
+            format!(
+                "first asleep frame eye dy {:?}, last {:?}, largest frame-to-frame rise {:e}",
+                self.sleep_camera_first_dy,
+                self.sleep_camera.map(|c| c.2),
+                self.sleep_camera_rise
+            ),
+        );
         // M397 — r219: `render_check.py` summons a sulfur cube holding a gold
         // block (its body slot); it draws the block in place of its core.
         row(
@@ -2258,11 +2283,14 @@ impl RenderCheck {
         // -90`, pitch 0, the eye `0.2 + 0.15` above the feet, and no hand while
         // asleep. The player's own yaw must differ, or the yaw proves nothing.
         // The camera stood at the player's eye with the hand drawn until M284.
+        // M398 — the eye eases toward 0.35 (half the gap a tick) and the bot
+        // sleeps only a few ticks, so its last asleep frame is on the way
+        // down: below 0.5, never under 0.35.
         let cam_ok = self.sleep_camera.is_some_and(|(yaw, pitch, dy, own)| {
             let wrap = |a: f32| (a + 540.0).rem_euclid(360.0) - 180.0;
             wrap(yaw + 90.0).abs() < 1e-3
                 && pitch == 0.0
-                && (dy - 0.35).abs() < 1e-6
+                && (0.35 - 1e-6..0.5).contains(&dy)
                 && wrap(own - yaw).abs() > 1.0
         });
         row(

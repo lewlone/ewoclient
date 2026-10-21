@@ -317,9 +317,6 @@ impl CameraPose {
     }
 }
 
-/// `Avatar.POSES`' SLEEPING eye height (`EntityDimensions.fixed(0.2F,
-/// 0.2F).withEyeHeight(0.2F)`).
-pub(super) const SLEEPING_EYE_HEIGHT: f64 = 0.2f32 as f64;
 /// `alignWithEntity`'s `move(0.0F, 0.15F, 0.0F)` for a sleeper: at pitch 0
 /// the camera's up is the world's.
 pub(super) const SLEEPING_CAMERA_LIFT: f64 = 0.15f32 as f64;
@@ -345,9 +342,10 @@ pub(super) fn sleeping_camera_yaw(facing: Option<&str>) -> f32 {
 /// block (a sleeping position on anything else turns the camera to 0).
 ///
 /// Only the render camera moves: the crosshair's pick uses the player's eye
-/// and view vector (`Entity.pick`), as vanilla's does. Vanilla's camera also
-/// eases its eye height half the gap a tick (`Camera.tick`); Rewo's camera
-/// does not ease, so the drop into the bed is immediate.
+/// and view vector (`Entity.pick`), as vanilla's does. M398 — the eye height
+/// is the camera's own, eased half the gap a tick (`Camera.tick`,
+/// `PlaySession::camera_eye`) and lerped by the partial tick, so lying down,
+/// crouching and standing glide as vanilla's do (until M398 they snapped).
 ///
 /// M361 — and the position is the render position: last tick's start
 /// blended into this tick's end by the partial tick `alpha`
@@ -362,6 +360,8 @@ pub(super) fn camera_pose(
 ) -> CameraPose {
     let p = &session.player;
     let [x, y, z] = render_feet(session.player_prev, [p.x, p.y, p.z], alpha);
+    // `Mth.lerp(partialTicks, eyeHeightOld, eyeHeight)`.
+    let eye = f64::from(eased_eye(session.camera_eye_old, session.camera_eye, alpha));
     if session.is_sleeping() {
         let facing = session.sleeping_pos().and_then(|(x, y, z)| {
             let st = session.world.block_state_at(x, y, z);
@@ -371,16 +371,21 @@ pub(super) fn camera_pose(
                 .and_then(|_| blocks.property(st, "facing"))
         });
         return CameraPose {
-            eye: [x, y + SLEEPING_EYE_HEIGHT + SLEEPING_CAMERA_LIFT, z],
+            eye: [x, y + eye + SLEEPING_CAMERA_LIFT, z],
             yaw: sleeping_camera_yaw(facing),
             pitch: 0.0,
         };
     }
     CameraPose {
-        eye: [x, y + (p.eye_y() - p.y), z],
+        eye: [x, y + eye, z],
         yaw: p.yaw,
         pitch: p.pitch,
     }
+}
+
+/// M398 — `Mth.lerp(partialTicks, eyeHeightOld, eyeHeight)`.
+pub(super) fn eased_eye(old: f32, cur: f32, alpha: f32) -> f32 {
+    old + alpha.clamp(0.0, 1.0) * (cur - old)
 }
 
 /// M361 — the local player's render position: `prev` (the tick's start)
@@ -847,6 +852,22 @@ mod tests {
     /// M284 — `alignWithEntity`'s sleeper: `toYRot() - 180` per bed facing
     /// (south 0, west 90, north 180, east 270), 0 with no bed, and the eye
     /// at the SLEEPING pose's 0.2 lifted 0.15.
+    /// M398 — lying down from standing, the camera's eye falls half the gap
+    /// a tick toward the sleeping 0.2 (1.62 → 0.91 → 0.555 → …), lerped
+    /// within a tick, and has all but arrived (within 1e-6) after 21 ticks.
+    #[test]
+    fn the_camera_eye_eases_half_the_gap_a_tick() {
+        let step = rewo_net::play::camera_eye_step;
+        let (old, cur) = step(1.62, 0.2);
+        assert_eq!((old, cur), (1.62, 0.91));
+        assert!((eased_eye(old, cur, 0.5) - 1.265).abs() < 1e-6);
+        let mut eye = 1.62f32;
+        for _ in 0..21 {
+            eye = step(eye, 0.2).1;
+        }
+        assert!((eye - 0.2).abs() < 1e-6, "{eye}");
+    }
+
     #[test]
     fn the_sleeping_camera_faces_out_of_the_bed() {
         assert_eq!(sleeping_camera_yaw(Some("south")), -180.0);
@@ -855,7 +876,9 @@ mod tests {
         assert_eq!(sleeping_camera_yaw(Some("east")), 90.0);
         assert_eq!(sleeping_camera_yaw(None), 0.0);
         assert_eq!(sleeping_camera_yaw(Some("up")), 0.0);
-        let dy = SLEEPING_EYE_HEIGHT + SLEEPING_CAMERA_LIFT;
+        // `Avatar.POSES`' SLEEPING eye height (0.2, the camera's eased
+        // target since M398) under the 0.15 lift.
+        let dy = 0.2f32 as f64 + SLEEPING_CAMERA_LIFT;
         assert!((dy - 0.35).abs() < 1e-6, "{dy}");
         // The look a west-facing bed gives points east (+x): the sleeper's
         // head is at the bed's head and the view runs down its length.
