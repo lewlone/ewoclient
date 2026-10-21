@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 103;
+const EXPECTED_WITNESSES: usize = 104;
+/// M387 — m104's floors: swimming, playing dead (each against lying still).
+/// M387 measured 1304 and 1649. The pre-M387 model had no input for these
+/// states, so it drew all three alike: 0 and 0 by construction (not run).
+const AXOLOTL_MIN: [usize; 2] = [650, 800];
 /// M385 — m103's floor (the brute's silhouette, px). M385 measured 3929;
 /// without the 0.25 overlays (the pre-M385 mutant) 3864. A thin margin: the
 /// overlays widen the outline by about a pixel only where the brute's sheet
@@ -7153,6 +7157,61 @@ fn run_check(
         "m103.the_piglin_brute_wears_its_jacket_and_pants",
         pb_area >= BRUTE_AREA_MIN,
         format!("the brute's silhouette {pb_area} px (want >= {BRUTE_AREA_MIN})"),
+    ));
+
+    // m104 — M387: an axolotl's pose follows its state: swimming against
+    // lying still, and playing dead against lying still.
+    let mut axst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.9, 0.9, 0.9),
+        Vec3::new(0.0, 0.2, 0.0),
+    )?;
+    axst.wr.set_entities(&[], axst.right, axst.up, 0.0);
+    axst.off
+        .render(gpu, Some((&mut axst.wr, axst.vp)), &ov, BG)?;
+    let ax_empty = axst.off.read_rgba(gpu)?;
+    let mut axshot = |in_water: bool, moving: bool, dead: bool| -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                axolotl_in_water: in_water,
+                axolotl_moving: moving,
+                axolotl_playing_dead: dead,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Axolotl)
+        };
+        axst.wr.set_entities(&[d], axst.right, axst.up, 0.0);
+        axst.off
+            .render(gpu, Some((&mut axst.wr, axst.vp)), &ov, BG)?;
+        axst.off.read_rgba(gpu)
+    };
+    let ax_lay = axshot(false, false, false)?;
+    let ax_swim = axshot(true, true, false)?;
+    let ax_dead = axshot(false, false, true)?;
+    axst.destroy(gpu);
+    let ax_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(ax_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let ax_differ = |a: &[u8], b: &[u8]| {
+        ax_mask(a)
+            .iter()
+            .zip(&ax_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let (ax_s, ax_d) = (ax_differ(&ax_lay, &ax_swim), ax_differ(&ax_lay, &ax_dead));
+    w.push(wit(
+        "m104.an_axolotl_swims_lies_and_plays_dead",
+        ax_s >= AXOLOTL_MIN[0] && ax_d >= AXOLOTL_MIN[1],
+        format!("swimming vs lying still {ax_s} px, playing dead vs lying still {ax_d} px (want >= {AXOLOTL_MIN:?})"),
     ));
 
     // ---- report ----------------------------------------------------------

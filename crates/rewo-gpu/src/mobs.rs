@@ -354,6 +354,12 @@ pub enum Anim {
     /// cos(age·k)·2.5° with k = 0.01·(entityId % 10); holding an item, the
     /// nose sits at (0, 1, −1.5) tipped −0.9.
     WitchNose,
+    /// M387 — an axolotl part, slot `part` of [`axolotl_pose`]: 0 body,
+    /// 1 head, 2 top gills, 3 left gills, 4 right gills, 5 right hind leg,
+    /// 6 left hind, 7 right front, 8 left front, 9 tail.
+    Axolotl {
+        part: u8,
+    },
     /// M378 — `ParrotModel.setupAnim`, standing or sitting: the parrot's
     /// body and wings drop 1.9 px when it sits.
     ParrotSit,
@@ -871,6 +877,11 @@ pub struct MobCombat {
     /// state: 1 while the main hand holds an item (vanilla ramps it over 5
     /// ticks).
     pub allay_holding: f32,
+    /// M387 — `AxolotlRenderState`'s factors, taken whole (vanilla eases
+    /// them on the client): in water, moving, playing dead.
+    pub axolotl_in_water: bool,
+    pub axolotl_moving: bool,
+    pub axolotl_playing_dead: bool,
     /// M381 — `HumanoidRenderState.isPassenger` / `IllagerRenderState
     /// .isRiding`: the seated riding pose (set only for a kind that
     /// [`sits_when_riding`]).
@@ -5603,6 +5614,148 @@ fn villager_baby() -> Model {
     b.finish(1.0)
 }
 
+/// M387 — `AdultAxolotlModel.setupAnim`: the body turns with the look,
+/// then the swimming, water-hovering, ground-crawling, lying-still and
+/// playing-dead poses add in, each weighted by its factor (binary here:
+/// `in_water`, `moving`, `dead` — vanilla eases them), then the right legs
+/// mirror the left by `1 − min(onGround, moving)`. Returns each slot's
+/// rotation delta (see [`Anim::Axolotl`]) and the body's `y` offset.
+pub fn axolotl_pose(
+    age: f32,
+    pitch: f32,
+    net: f32,
+    in_water: bool,
+    moving: bool,
+    dead: bool,
+) -> ([[f32; 3]; 10], f32) {
+    use std::f32::consts::PI;
+    let f = |b: bool| if b { 1.0f32 } else { 0.0 };
+    let (iw, og, mv, pd) = (f(in_water), f(!in_water), f(moving), f(dead));
+    let nm = 1.0 - mv;
+    let mut r = [[0.0f32; 3]; 10];
+    let mut body_y = 0.0f32;
+    const BODY: usize = 0;
+    const HEAD: usize = 1;
+    const TOP: usize = 2;
+    const LGILL: usize = 3;
+    const RGILL: usize = 4;
+    const RHIND: usize = 5;
+    const LHIND: usize = 6;
+    const RFRONT: usize = 7;
+    const LFRONT: usize = 8;
+    const TAIL: usize = 9;
+    r[BODY][1] += net;
+    // setupSwimmingAnimation(age, xRot, min(moving, inWater))
+    let k = mv.min(iw);
+    if k > 1.0e-5 {
+        let m = age * 0.33;
+        let (sn, cs) = (m.sin(), m.cos());
+        let sway = 0.13 * sn;
+        r[BODY][0] += (pitch + sway) * k;
+        r[HEAD][0] -= sway * 1.8 * k;
+        body_y -= 0.45 * cs * k;
+        r[TOP][0] += (-0.5 * sn - 0.8) * k;
+        let g = (0.3 * sn + 0.9) * k;
+        r[LGILL][1] += g;
+        r[RGILL][1] -= g;
+        r[TAIL][1] += 0.3 * (m * 0.9).cos() * k;
+        r[LHIND][0] += 1.884_955_8 * k;
+        r[LHIND][1] += -0.4 * sn * k;
+        r[LHIND][2] += PI / 2.0 * k;
+        r[LFRONT][0] += 1.884_955_8 * k;
+        r[LFRONT][1] += (-0.2 * cs - 0.1) * k;
+        r[LFRONT][2] += PI / 2.0 * k;
+    }
+    // setupWaterHoveringAnimation(age, min(notMoving, inWater))
+    let k = nm.min(iw);
+    if k > 1.0e-5 {
+        let m = age * 0.075;
+        let cs = m.cos();
+        let sn = m.sin() * 0.15;
+        let bx = (-0.15 + 0.075 * cs) * k;
+        r[BODY][0] += bx;
+        body_y -= sn * k;
+        r[HEAD][0] -= bx;
+        r[TOP][0] += 0.2 * cs * k;
+        let g = (-0.3 * cs - 0.19) * k;
+        r[LGILL][1] += g;
+        r[RGILL][1] -= g;
+        r[LHIND][0] += (PI * 3.0 / 4.0 - cs * 0.11) * k;
+        r[LHIND][1] += 0.471_238_94 * k;
+        r[LHIND][2] += 1.727_876_1 * k;
+        r[LFRONT][0] += (PI / 4.0 - cs * 0.2) * k;
+        r[LFRONT][1] += 2.042_035 * k;
+        r[TAIL][1] += 0.5 * cs * k;
+    }
+    // setupGroundCrawlingAnimation(age, min(moving, onGround))
+    let k = mv.min(og);
+    if k > 1.0e-5 {
+        let m = age * 0.11;
+        let cs = m.cos();
+        let hind = (cs * cs - 2.0 * cs) / 5.0;
+        let front = 0.7 * cs;
+        let ht = 0.09 * cs * k;
+        r[HEAD][1] += ht;
+        r[TAIL][1] += ht;
+        let g = (0.6 - 0.08 * (cs * cs + 2.0 * m.sin())) * k;
+        r[TOP][0] += g;
+        r[LGILL][1] -= g;
+        r[RGILL][1] += g;
+        let (hx, fx) = (0.942_477_9 * k, 1.099_557_4 * k);
+        r[LHIND][0] += hx;
+        r[LHIND][1] += (1.5 - hind) * k;
+        r[LHIND][2] += -0.1 * k;
+        r[LFRONT][0] += fx;
+        r[LFRONT][1] += (PI / 2.0 - front) * k;
+        r[RHIND][0] += hx;
+        r[RHIND][1] += (-1.0 - hind) * k;
+        r[RFRONT][0] += fx;
+        r[RFRONT][1] += (-PI / 2.0 - front) * k;
+    }
+    // setupLayStillOnGroundAnimation(age, min(notMoving, onGround))
+    let k = nm.min(og);
+    if k > 1.0e-5 {
+        let m = age * 0.09;
+        let (sn, cs) = (m.sin(), m.cos());
+        let mv1 = sn * sn - 2.0 * sn;
+        let mv2 = cs * cs - 3.0 * sn;
+        r[HEAD][0] += -0.09 * mv1 * k;
+        r[HEAD][2] += -0.2 * k;
+        r[TAIL][1] += (-0.1 + 0.1 * mv1) * k;
+        let g = (0.6 + 0.05 * mv2) * k;
+        r[TOP][0] += g;
+        r[LGILL][1] -= g;
+        r[RGILL][1] += g;
+        r[LHIND][0] += 1.1 * k;
+        r[LHIND][1] += 1.0 * k;
+        r[LFRONT][0] += 0.8 * k;
+        r[LFRONT][1] += 2.3 * k;
+        r[LFRONT][2] -= 0.5 * k;
+    }
+    // setupPlayDeadAnimation(playingDead)
+    if pd > 1.0e-5 {
+        r[LHIND][0] += 1.413_716_7 * pd;
+        r[LHIND][1] += 1.099_557_4 * pd;
+        r[LHIND][2] += PI / 4.0 * pd;
+        r[LFRONT][0] += PI / 4.0 * pd;
+        r[LFRONT][1] += 2.042_035 * pd;
+        r[BODY][0] += -0.15 * pd;
+        r[BODY][2] += 0.35 * pd;
+    }
+    // applyMirrorLegRotations(1 − min(onGround, moving))
+    let mirror = 1.0 - og.min(mv);
+    if mirror > 1.0e-5 {
+        let (lh, lf) = (r[LHIND], r[LFRONT]);
+        r[RHIND][0] += lh[0] * mirror;
+        r[RHIND][1] += -lh[1] * mirror;
+        r[RHIND][2] += -lh[2] * mirror;
+        r[RFRONT][0] += lf[0] * mirror;
+        r[RFRONT][1] += -lf[1] * mirror;
+        r[RFRONT][2] += -lf[2] * mirror;
+    }
+    (r, body_y)
+}
+
 /// M381 — whether a kind's model takes the seated riding pose: a
 /// `HumanoidModel` (its arms `HumanoidArm*` / `UndeadArm*` /
 /// `SkeletonArm*` / `PiglinArm`) or an `IllagerModel` (`IllagerArm*`). The villager, the
@@ -9620,28 +9773,28 @@ fn armadillo() -> Model {
 /// plates, long tail fin.
 fn axolotl() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::at([0.0, 19.5, 5.0]);
-    b.cube_f(
-        STATIC_PART,
+    // M387 — vanilla's tree (`body` → `head` → gills, `body` → legs and
+    // tail), every part on `AdultAxolotlModel.setupAnim`'s blended poses
+    // (`Anim::Axolotl { part }`, `axolotl_pose`'s slots).
+    let ax = |part: u8| Anim::Axolotl { part };
+    let body = b.part_named("body", [0.0, 19.5, 5.0], [0.0; 3], ax(0), 1.0, Option::None);
+    b.cube(
+        body,
         0,
         (0.0, 11.0),
         [-4.0, -2.0, -9.0],
         [8.0, 4.0, 10.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    b.cube(
+        body,
         0,
         (2.0, 17.0),
         [0.0, -3.0, -8.0],
         [0.0, 5.0, 9.0],
-        0.0,
-        false,
-        &[body],
+        NONE,
     );
-    let head = b.part([0.0, 19.5, -4.0], Anim::Head, 1.0);
+    let head = b.part_named("head", [0.0, 0.0, -9.0], [0.0; 3], ax(1), 1.0, Some(body));
     b.cube_g(
         head,
         0,
@@ -9651,55 +9804,60 @@ fn axolotl() -> Model {
         0.001,
         NONE,
     );
-    b.cube_f(
-        head,
-        0,
-        (3.0, 37.0),
-        [-4.0, -3.0, 0.0],
-        [8.0, 3.0, 0.0],
-        0.001,
-        false,
-        &[Fold::at([0.0, -3.0, -1.0])],
-    );
-    b.cube_f(
-        head,
-        0,
-        (0.0, 40.0),
-        [-3.0, -5.0, 0.0],
-        [3.0, 7.0, 0.0],
-        0.001,
-        false,
-        &[Fold::at([-4.0, 0.0, -1.0])],
-    );
-    b.cube_f(
-        head,
-        0,
-        (11.0, 40.0),
-        [0.0, -5.0, 0.0],
-        [3.0, 7.0, 0.0],
-        0.001,
-        false,
-        &[Fold::at([4.0, 0.0, -1.0])],
-    );
-    let legs = [
-        ([-2.0, 0.0, 0.0], [-3.5, 20.5, 4.0], Anim::QuadHindRight),
-        ([-1.0, 0.0, 0.0], [3.5, 20.5, 4.0], Anim::QuadHindLeft),
-        ([-2.0, 0.0, 0.0], [-3.5, 20.5, -3.0], Anim::QuadFrontRight),
-        ([-1.0, 0.0, 0.0], [3.5, 20.5, -3.0], Anim::QuadFrontLeft),
-    ];
-    for (min, pivot, anim) in legs {
-        let p = b.part(pivot, anim, 1.0);
-        b.cube_g(p, 0, (2.0, 13.0), min, [3.0, 5.0, 0.0], 0.001, NONE);
+    for (name, pivot, part, uv, min, dims) in [
+        (
+            "top_gills",
+            [0.0, -3.0, -1.0],
+            2u8,
+            (3.0, 37.0),
+            [-4.0, -3.0, 0.0],
+            [8.0, 3.0, 0.0],
+        ),
+        (
+            "left_gills",
+            [-4.0, 0.0, -1.0],
+            3,
+            (0.0, 40.0),
+            [-3.0, -5.0, 0.0],
+            [3.0, 7.0, 0.0],
+        ),
+        (
+            "right_gills",
+            [4.0, 0.0, -1.0],
+            4,
+            (11.0, 40.0),
+            [0.0, -5.0, 0.0],
+            [3.0, 7.0, 0.0],
+        ),
+    ] {
+        let g = b.part_named(name, pivot, [0.0; 3], ax(part), 1.0, Some(head));
+        b.cube_g(g, 0, uv, min, dims, 0.001, NONE);
     }
-    b.cube_f(
-        STATIC_PART,
+    for (name, pivot, part, min_x) in [
+        ("right_hind_leg", [-3.5, 1.0, -1.0], 5u8, -2.0),
+        ("left_hind_leg", [3.5, 1.0, -1.0], 6, -1.0),
+        ("right_front_leg", [-3.5, 1.0, -8.0], 7, -2.0),
+        ("left_front_leg", [3.5, 1.0, -8.0], 8, -1.0),
+    ] {
+        let leg = b.part_named(name, pivot, [0.0; 3], ax(part), 1.0, Some(body));
+        b.cube_g(
+            leg,
+            0,
+            (2.0, 13.0),
+            [min_x, 0.0, 0.0],
+            [3.0, 5.0, 0.0],
+            0.001,
+            NONE,
+        );
+    }
+    let tail = b.part_named("tail", [0.0, 0.0, 1.0], [0.0; 3], ax(9), 1.0, Some(body));
+    b.cube(
+        tail,
         0,
         (2.0, 19.0),
         [0.0, -3.0, 0.0],
         [0.0, 5.0, 12.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, 0.0, 1.0]), body],
+        NONE,
     );
     b.finish(1.0)
 }
@@ -17186,5 +17344,36 @@ mod dragon_head_tests {
     #[test]
     fn the_dragon_head_does_not_look() {
         assert!(ender_dragon().parts.iter().all(|p| p.anim != Anim::Head));
+    }
+}
+
+#[cfg(test)]
+mod axolotl_pose_tests {
+    use super::*;
+
+    /// M387 — the axolotl is vanilla's tree (the gills on the head, the
+    /// legs and tail on the body), and its poses: swimming tucks the legs
+    /// back (π/2 roll), lying still on the ground splays the left legs and
+    /// mirrors them right, crawling does not mirror, playing dead rolls the
+    /// body 0.35, and the look turns the body.
+    #[test]
+    fn the_axolotl_blends_its_poses() {
+        let m = axolotl();
+        let idx = |n: &str| m.parts.iter().position(|p| p.name == n).unwrap();
+        assert_eq!(m.parts[idx("top_gills")].parent, Some(idx("head") as u16));
+        assert_eq!(m.parts[idx("tail")].parent, Some(idx("body") as u16));
+        let (swim, _) = axolotl_pose(10.0, 0.0, 0.0, true, true, false);
+        assert!((swim[8][2] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((swim[7][2] + swim[8][2]).abs() < 1e-6, "mirrored in water");
+        let (lay, _) = axolotl_pose(10.0, 0.0, 0.0, false, false, false);
+        assert!((lay[6][0] - 1.1).abs() < 1e-6 && (lay[5][1] + lay[6][1]).abs() < 1e-6);
+        let (crawl, _) = axolotl_pose(10.0, 0.0, 0.0, false, true, false);
+        let cs = (10.0f32 * 0.11).cos();
+        assert!(
+            (crawl[5][1] - (-1.0 - (cs * cs - 2.0 * cs) / 5.0)).abs() < 1e-5,
+            "no mirror"
+        );
+        let (dead, _) = axolotl_pose(0.0, 0.0, 0.4, false, false, true);
+        assert!((dead[0][2] - 0.35).abs() < 1e-6 && (dead[0][1] - 0.4).abs() < 1e-6);
     }
 }

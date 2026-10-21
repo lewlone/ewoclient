@@ -2698,6 +2698,12 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_turtle_laying(eid, b);
         }
     }
+    // M387 — `Axolotl.DATA_PLAYING_DEAD` (19).
+    if let Some(b) = meta.bool19 {
+        if kinds.classes.is_some_and(|c| c.is_axolotl(type_id)) {
+            entities.set_axolotl_playing_dead(eid, b);
+        }
+    }
     if meta.bool19.is_some() && kinds.classes.is_some_and(|c| c.is_camel(type_id)) {
         entities.arm_dash_cooldown(eid, 55);
     }

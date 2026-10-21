@@ -42,7 +42,7 @@ The baby layers had their own audit on 2026-10-20 (see
 | tadpole | tail never sways (`Anim::FishTail { 0.25, 0.3 }` is exactly it) | `TadpoleModel` 35-36 | M377 (the out-of-water 1.5 not told apart) |
 | bee | antennae do not bob with `bobUpAndDown` | `AdultBeeModel` 27-28 | M377 |
 | camel, armadillo | head look unclamped (camel ±30° / -25..45°, armadillo ±32.5° / -22.5..25°) | `CamelModel` 53-54, `ArmadilloModel` 59-60 | M377 (with the camel's dash head lift) |
-| axolotl | layer pose; vanilla always blends swim/hover/crawl/lay poses on `ageInTicks`, the look goes to the body | `AdultAxolotlModel` 77-203 | open |
+| axolotl | layer pose; vanilla always blends swim/hover/crawl/lay poses on `ageInTicks`, the look goes to the body | `AdultAxolotlModel` 77-203 | M387 (the factors taken whole; vanilla eases them) |
 | creeper | legs half a cycle out of phase (vanilla swaps the field names); invisible in practice | `CreeperModel` 26-49 | M380 |
 | villager, wandering trader, witch, pillager, vindicator, evoker, illusioner | drawn at 1.0; vanilla's layers are `MeshTransformer.scaling(0.9375)` (about 6% too big) | `LayerDefinitions` 192-193, 215, 494, 496 | M360 |
 | piglin, piglin brute, zombified piglin | ears frozen at ±30° (vanilla flaps them on `age·0.1 + pos·0.5`); arms without the humanoid idle bob or the attack swing; aggressive poses (`holdWeaponHigh`, crossbow, admiring) | `AbstractPiglinModel` 78-81, `PiglinModel` 31-59 | M380 for the ears and the arms' idle bob; the held-item pose, the attack swing and the piglin-only poses (dancing, admiring, crossbow, weapon held high) open |

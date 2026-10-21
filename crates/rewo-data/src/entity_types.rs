@@ -225,6 +225,8 @@ pub struct EntityClasses {
     sheep: std::collections::HashSet<i32>,
     /// M365 — `minecraft:turtle`: index 18 / 19 BOOLEAN are its egg flags.
     turtle: std::collections::HashSet<i32>,
+    /// M387 — `minecraft:axolotl`: index 19 BOOLEAN is `DATA_PLAYING_DEAD`.
+    axolotl: std::collections::HashSet<i32>,
     /// M367 — `minecraft:hoglin` and `minecraft:zoglin`: entity event 4 is
     /// their headbutt (`attackAnimationRemainingTicks = 10`).
     hoglin: std::collections::HashSet<i32>,
@@ -418,6 +420,7 @@ impl EntityClasses {
             evoker_fangs: types.id_of("minecraft:evoker_fangs").into_iter().collect(),
             sheep: types.id_of("minecraft:sheep").into_iter().collect(),
             turtle: types.id_of("minecraft:turtle").into_iter().collect(),
+            axolotl: types.id_of("minecraft:axolotl").into_iter().collect(),
             hoglin: ["minecraft:hoglin", "minecraft:zoglin"]
                 .iter()
                 .filter_map(|n| types.id_of(n))
@@ -456,6 +459,7 @@ impl EntityClasses {
             evoker_fangs: Default::default(),
             sheep: Default::default(),
             turtle: Default::default(),
+            axolotl: Default::default(),
             hoglin: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
@@ -492,6 +496,7 @@ impl EntityClasses {
             evoker_fangs: Default::default(),
             sheep: Default::default(),
             turtle: Default::default(),
+            axolotl: Default::default(),
             hoglin: Default::default(),
             custom_inventory: Default::default(),
             abstract_horse: Default::default(),
@@ -556,6 +561,11 @@ impl EntityClasses {
     /// M367 — a hoglin or zoglin (`handleEntityEvent(4)`: the headbutt).
     pub fn is_hoglin(&self, type_id: i32) -> bool {
         self.hoglin.contains(&type_id)
+    }
+
+    /// M387 — `minecraft:axolotl` (`DATA_PLAYING_DEAD`, index 19).
+    pub fn is_axolotl(&self, type_id: i32) -> bool {
+        self.axolotl.contains(&type_id)
     }
 
     /// M365 — `minecraft:turtle` (`Turtle.HAS_EGG` 18, `LAYING_EGG` 19).

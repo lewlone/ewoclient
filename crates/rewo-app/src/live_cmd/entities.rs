@@ -1672,6 +1672,10 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M387 — set by the caller for an axolotl.
+        axolotl_in_water: false,
+        axolotl_moving: false,
+        axolotl_playing_dead: false,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -4945,6 +4949,17 @@ pub(super) fn collect_entities<'a>(
         if matches!(kind, EntityModelKind::Bee | EntityModelKind::BeeBaby) {
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
+        }
+        // M387 — the axolotl's factors: in water, moving (the tick's
+        // horizontal displacement), playing dead (`DATA_PLAYING_DEAD`).
+        if kind == EntityModelKind::Axolotl {
+            let (a, b) = (e.render_pos(0.0), e.render_pos(1.0));
+            mob.axolotl_moving = (b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2) > 1.0e-7;
+            mob.axolotl_in_water =
+                session
+                    .world
+                    .is_water_at_point(b[0], b[1] + 0.2, b[2], &session.water_states);
+            mob.axolotl_playing_dead = session.world.entities.axolotl_playing_dead(id);
         }
         // M381 — a seated rider (`isPassenger` / `isRiding`), for the kinds
         // whose model has the pose.

@@ -1736,6 +1736,9 @@ pub struct MobState {
     /// 17) and `LAYING_EGG` (19).
     pub turtle_egg: bool,
     pub turtle_laying: bool,
+    /// M387 — `Axolotl.DATA_PLAYING_DEAD` (index 19, BOOLEAN; `AgeableMob`
+    /// owns 16 and 17, the variant is 18).
+    pub axolotl_playing_dead: bool,
     /// M288 — `WitherBoss.DATA_ID_INV` (index 19, INT): the invulnerable
     /// ticks of a freshly built wither (0 otherwise). `WitherBoss` declares
     /// the three head targets (16-18) first.
@@ -3291,6 +3294,18 @@ impl EntityTable {
     /// M365 — `Turtle.LAYING_EGG`. Kind-gated by the caller.
     pub fn set_turtle_laying(&mut self, id: i32, laying: bool) {
         self.mob_state.entry(id).or_default().turtle_laying = laying;
+    }
+
+    /// M387 — `Axolotl.DATA_PLAYING_DEAD`. Kind-gated by the caller.
+    pub fn set_axolotl_playing_dead(&mut self, id: i32, dead: bool) {
+        self.mob_state.entry(id).or_default().axolotl_playing_dead = dead;
+    }
+
+    /// M387 — `isPlayingDead()`; the synched default is `false`.
+    pub fn axolotl_playing_dead(&self, id: i32) -> bool {
+        self.mob_state
+            .get(&id)
+            .is_some_and(|s| s.axolotl_playing_dead)
     }
 
     /// M365 — `(hasEgg(), isLayingEgg())`; both default `false`.

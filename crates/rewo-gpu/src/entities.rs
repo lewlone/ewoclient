@@ -6103,6 +6103,21 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
         }
+        // M387 — `AdultAxolotlModel.setupAnim`'s blended poses.
+        Axolotl { part } => {
+            let (r, body_y) = mobs::axolotl_pose(
+                c.age,
+                c.pitch,
+                c.net,
+                c.mob.axolotl_in_water,
+                c.mob.axolotl_moving,
+                c.mob.axolotl_playing_dead,
+            );
+            rot = r[usize::from(part.min(9))];
+            if part == 0 {
+                off[1] = body_y;
+            }
+        }
         // M380 — a piglin arm: the humanoid walk swing and idle bob.
         PiglinArm { left } => {
             let phase = if left { c.f } else { c.f + PI };
