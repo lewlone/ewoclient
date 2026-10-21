@@ -665,21 +665,23 @@ fn check_warden_attack(c: &mut Checker, ids: &Ids, ev: i32) {
         }
         None => c.record("c3.body_pos@0.2083", false, "body part missing"),
     }
-    // Mutation: with NO event fired the same parts are neutral (0). The warden's
-    // body is Anim::None and head/arm are Anim::Head/Anim::ArmRight, which are 0
-    // at neutral look/limb — so the deflections above cannot be the base pose.
+    // Mutation: with NO event fired the same parts are at the base pose. The
+    // arm and the body's position are 0 at a neutral look and limb; since
+    // M374 the head carries `WardenModel.animateIdlePose` at age 0
+    // (`zRot += 0.06·cos(0)`, `xRot += 0.06·sin(0)`), so the deflections above
+    // cannot be the base pose either way.
     let d = oracle_part_deltas(EntityModelKind::Warden, &OracleInputs::default())
         .expect("warden model");
     let ra = find(&d, "right_arm").map(|(r, _)| r);
     let hd = find(&d, "head").map(|(r, _)| r);
     let bp = find(&d, "body").map(|(_, o)| o);
     let ok = matches!((ra, hd, bp), (Some(r), Some(h), Some(b))
-        if near3(r, [0.0; 3], 1e-4) && near3(h, [0.0; 3], 1e-4) && near3(b, [0.0; 3], 1e-4));
+        if near3(r, [0.0; 3], 1e-4) && near3(h, [0.0, 0.0, 0.06], 1e-4) && near3(b, [0.0; 3], 1e-4));
     c.record(
         "c3.neutral_isolation",
         ok,
         format!(
-            "neutral right_arm={} head={} body_pos={} (want all ~0)",
+            "neutral right_arm={} head={} body_pos={} (want 0, [0, 0, 0.06] — the idle sway at age 0 — and 0)",
             ra.map(fmt3).unwrap_or_else(|| "missing".into()),
             hd.map(fmt3).unwrap_or_else(|| "missing".into()),
             bp.map(fmt3).unwrap_or_else(|| "missing".into()),

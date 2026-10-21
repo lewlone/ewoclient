@@ -104,7 +104,14 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 91;
+const EXPECTED_WITNESSES: usize = 93;
+/// M374 — m92's floor (the standing sway). M374 measured 361 px (and 0
+/// between speeds 0.2 and 1.0); the pre-M374 warden (the biped walk,
+/// unclamped, no sway) 0 (and 1957).
+const WARDEN_MIN: usize = 180;
+/// M375 — m93's band for the ravager's stride (px). M375 measured 1413; the
+/// quadruped's full 1.4 swing (the pre-M375 mutant) 2273.
+const RAVAGER_STRIDE: [usize; 2] = [700, 1800];
 /// M372 — m90's floor (the 10° look). M372 measured 304 px (and 0 between
 /// 30° and 10°); a still body (the pre-M372 mutant) 0.
 const NAUTILUS_MIN: usize = 150;
@@ -6603,6 +6610,75 @@ fn run_check(
         "m91.a_happy_ghasts_tentacles_swing",
         hh_moved >= HAPPY_GHAST_MIN,
         format!("a second apart {hh_moved} px of silhouette (want >= {HAPPY_GHAST_MIN})"),
+    ));
+
+    // m92 — M374: the warden's gait caps its speed term (any speed above 1/6
+    // draws alike: 0.2 vs 1.0 is 0 px), and standing it sways with the age.
+    // m93 — M375: a ravager's stride swings its legs at vanilla's 0.4·speed,
+    // not the quadruped's 1.4 (graded from above: the old swing was 3.5×).
+    let mut wdst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(3.4, 2.0, -3.0),
+        Vec3::new(0.0, 1.4, 0.0),
+    )?;
+    wdst.wr.set_entities(&[], wdst.right, wdst.up, 0.0);
+    wdst.off
+        .render(gpu, Some((&mut wdst.wr, wdst.vp)), &ov, BG)?;
+    let wd_empty = wdst.off.read_rgba(gpu)?;
+    let mut wdshot = |d: EntityDraw<'_>, t: f32| -> Result<Vec<u8>, String> {
+        wdst.wr.set_entities(&[d], wdst.right, wdst.up, t);
+        wdst.off
+            .render(gpu, Some((&mut wdst.wr, wdst.vp)), &ov, BG)?;
+        wdst.off.read_rgba(gpu)
+    };
+    let walker = |kind: EntityModelKind, amount: f32| EntityDraw {
+        limb_swing: 1.3,
+        limb_amount: amount,
+        ..neutral_draw(kind)
+    };
+    let wd_slow = wdshot(walker(EntityModelKind::Warden, 0.2), 0.0)?;
+    let wd_fast = wdshot(walker(EntityModelKind::Warden, 1.0), 0.0)?;
+    let wd_still = wdshot(walker(EntityModelKind::Warden, 0.0), 0.0)?;
+    let wd_later = wdshot(walker(EntityModelKind::Warden, 0.0), 1.5)?;
+    let rv_still = wdshot(walker(EntityModelKind::Ravager, 0.0), 0.0)?;
+    let rv_walk = wdshot(walker(EntityModelKind::Ravager, 0.7), 0.0)?;
+    wdst.destroy(gpu);
+    let wd_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(wd_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let wd_differ = |a: &[u8], b: &[u8]| {
+        wd_mask(a)
+            .iter()
+            .zip(&wd_mask(b))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let wd_cap = wd_slow
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(wd_fast.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    let wd_sway = wd_differ(&wd_still, &wd_later);
+    w.push(wit(
+        "m92.a_warden_caps_its_stride_and_sways_standing",
+        wd_cap == 0 && wd_sway >= WARDEN_MIN,
+        format!("speed 0.2 vs 1.0 {wd_cap} px (want 0), standing 30 ticks later {wd_sway} px (want >= {WARDEN_MIN})"),
+    ));
+    let rv_stride = wd_differ(&rv_still, &rv_walk);
+    w.push(wit(
+        "m93.a_ravager_strides_at_vanillas_reach",
+        (RAVAGER_STRIDE[0]..=RAVAGER_STRIDE[1]).contains(&rv_stride),
+        format!("stride vs standing {rv_stride} px (want {RAVAGER_STRIDE:?})"),
     ));
 
     // ---- report ----------------------------------------------------------

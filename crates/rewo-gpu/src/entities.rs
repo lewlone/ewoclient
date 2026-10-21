@@ -6091,6 +6091,32 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
         }
+        // M374 — `WardenModel.animateWalk` and `animateIdlePose`.
+        WardenBody | WardenHead | WardenArm { .. } | WardenLeg { .. } => {
+            let sm = (3.0 * c.amt).min(0.5);
+            let smm = sm.min(0.35);
+            let ap = c.pos * 0.8662;
+            let (s, co) = ap.sin_cos();
+            let (ws, wc) = (c.age * 0.1).sin_cos();
+            match anim {
+                WardenBody => {
+                    rot[2] = 0.1 * s * sm + 0.025 * ws;
+                    rot[0] = co * smm + 0.025 * wc;
+                }
+                WardenHead => {
+                    rot[0] = c.pitch + 1.2 * (ap + PI / 2.0).cos() * smm + 0.06 * ws;
+                    rot[1] = c.net;
+                    rot[2] = 0.3 * s * sm + 0.06 * wc;
+                }
+                WardenArm { left } => {
+                    rot[0] = -0.8 * if left { co } else { s } * sm;
+                }
+                WardenLeg { left } => {
+                    rot[0] = if left { co } else { (ap + PI).cos() } * sm;
+                }
+                _ => {}
+            }
+        }
         // M372 — `NautilusModel.applyBodyRotation`.
         NautilusBody => {
             let lim = 10.0 * DEG;
@@ -10639,5 +10665,69 @@ mod nautilus_body_anim_tests {
         assert_eq!((small[0], small[1]), (0.05, -0.1));
         let big = anim_delta(mobs::Anim::NautilusBody, 1.0, &ctx(1.0, -2.0)).0;
         assert!((big[0] - 10.0 * DEG).abs() < 1e-6 && (big[1] + 10.0 * DEG).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod warden_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(pos: f32, amt: f32, age: f32) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.1,
+            net: 0.2,
+            f: pos * 0.6662,
+            pos,
+            amt,
+            age,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        }
+    }
+
+    /// M374 — `WardenModel`, term by term: the speed term caps at 0.5
+    /// (any speed above 1/6 draws alike); standing, the head and body sway
+    /// on `age·0.1`; walking, the right arm swings on sin, the left on cos.
+    #[test]
+    fn the_warden_sways_and_walks_as_vanilla_animates_it() {
+        use mobs::Anim::*;
+        let (pos, age) = (1.3_f32, 17.0_f32);
+        for a in [
+            WardenBody,
+            WardenHead,
+            WardenArm { left: false },
+            WardenLeg { left: true },
+        ] {
+            assert_eq!(
+                anim_delta(a, 1.0, &ctx(pos, 0.2, age)),
+                anim_delta(a, 1.0, &ctx(pos, 1.0, age))
+            );
+        }
+        let still = ctx(pos, 0.0, age);
+        let (ws, wc) = (age * 0.1).sin_cos();
+        let (h, _) = anim_delta(WardenHead, 1.0, &still);
+        assert!(
+            (h[0] - (0.1 + 0.06 * ws)).abs() < 1e-6
+                && h[1] == 0.2
+                && (h[2] - 0.06 * wc).abs() < 1e-6
+        );
+        let (b, _) = anim_delta(WardenBody, 1.0, &still);
+        assert!((b[2] - 0.025 * ws).abs() < 1e-6 && (b[0] - 0.025 * wc).abs() < 1e-6);
+        let walk = ctx(pos, 1.0, 0.0);
+        let ap = pos * 0.8662;
+        let r = anim_delta(WardenArm { left: false }, 1.0, &walk).0[0];
+        let l = anim_delta(WardenArm { left: true }, 1.0, &walk).0[0];
+        assert!((r + 0.8 * ap.sin() * 0.5).abs() < 1e-6 && (l + 0.8 * ap.cos() * 0.5).abs() < 1e-6);
+        let rl = anim_delta(WardenLeg { left: false }, 1.0, &walk).0[0];
+        assert!((rl - (ap + PI).cos() * 0.5).abs() < 1e-6);
     }
 }

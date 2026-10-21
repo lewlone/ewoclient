@@ -32,8 +32,8 @@ The baby layers had their own audit on 2026-10-20 (see
 | dolphin | the body never looks; the swim bob; the tail swims 6° too low (assignment, not addition) | `DolphinModel` 65-69 | M371 (adult and calf; moving = the tick's horizontal displacement) |
 | nautilus (all three) | the soft body never follows the look (±10° clamp) | `NautilusModel` 126-131 | M372 |
 | happy ghast | tentacles hang straight and still (vanilla 0.4 + 0.2·sin rest/sway); harnessed body not scaled 0.9375 | `HappyGhastModel` 95-101 | M373 for the tentacles; the harnessed body's 0.9375 squeeze is open (a per-part scale the animation path cannot yet express) |
-| warden | no idle sway; walk at 0.6662/1.4 (vanilla 0.8662, capped 0.5; right arm on sin) | `WardenModel` 145-170 | open |
-| ravager | legs 3.5× (vanilla 0.4·speed); mouth rests shut (vanilla π·0.01) | `RavagerModel` 107, 120-124 | open |
+| warden | no idle sway; walk at 0.6662/1.4 (vanilla 0.8662, capped 0.5; right arm on sin) | `WardenModel` 145-170 | M374 |
+| ravager | legs 3.5× (vanilla 0.4·speed); mouth rests shut (vanilla π·0.01) | `RavagerModel` 107, 120-124 | M375 (the attack, stun and roar poses not modelled) |
 | wither | ribcage and tail breathing frozen at their means; side heads copy the centre head | `WitherBossModel` 68-80 | open |
 | ender dragon | static layer pose, head looks (vanilla never), no flap/neck/tail chains; drawn facing backward (renderer `rotY(-yr)`) | `EnderDragonModel` 203-287, `EnderDragonRenderer` 48-55 | open |
 | breeze | head looks; vanilla's head is keyframes only | `BreezeModel` 139-147 | open |

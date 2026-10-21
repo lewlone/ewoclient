@@ -337,6 +337,23 @@ pub enum Anim {
         k: f32,
         rest: f32,
     },
+    /// M374 — `WardenModel.animateWalk` + `animateIdlePose`'s body, with
+    /// `ap = pos·0.8662`, `sm = min(0.5, 3·speed)`, `smm = min(0.35, sm)`:
+    /// `zRot` 0.1·sin(ap)·sm + 0.025·sin(age·0.1), `xRot` cos(ap)·smm +
+    /// 0.025·cos(age·0.1).
+    WardenBody,
+    /// M374 — the warden's head: the look, plus `zRot` 0.3·sin(ap)·sm +
+    /// 0.06·cos(age·0.1) and `xRot` + 1.2·cos(ap + π/2)·smm + 0.06·sin(age·0.1).
+    WardenHead,
+    /// M374 — a warden arm: `xRot` −0.8·cos(ap)·sm (left), −0.8·sin(ap)·sm
+    /// (right).
+    WardenArm {
+        left: bool,
+    },
+    /// M374 — a warden leg: `xRot` cos(ap)·sm (left), cos(ap + π)·sm (right).
+    WardenLeg {
+        left: bool,
+    },
     /// M372 — `NautilusModel.applyBodyRotation`: the soft body follows the
     /// look, each angle clamped to ±10°.
     NautilusBody,
@@ -11825,7 +11842,8 @@ fn allay() -> Model {
 // ---------------------------------------------------------------------------
 
 /// `WardenModel` (128²): huge ribbed body, tendril plates on the skull,
-/// 28-px arms, stubby legs.
+/// 28-px arms, stubby legs. M374 — on `animateWalk` and `animateIdlePose`
+/// (`Anim::WardenBody` / `WardenHead` / `WardenArm` / `WardenLeg`).
 fn warden() -> Model {
     let mut b = ModelBuilder::new();
     // bone(0,24,0) → body(0,−21,0), targeted by the gesture rigs.
@@ -11833,7 +11851,7 @@ fn warden() -> Model {
         "body",
         [0.0, 3.0, 0.0],
         [0.0; 3],
-        Anim::None,
+        Anim::WardenBody,
         1.0,
         Option::None,
     );
@@ -11888,7 +11906,7 @@ fn warden() -> Model {
         "head",
         [0.0, -13.0, 0.0],
         [0.0; 3],
-        Anim::Head,
+        Anim::WardenHead,
         1.0,
         Some(body),
     );
@@ -11942,7 +11960,7 @@ fn warden() -> Model {
         "right_arm",
         [-13.0, -13.0, 1.0],
         [0.0; 3],
-        Anim::ArmRight,
+        Anim::WardenArm { left: false },
         1.0,
         Some(body),
     );
@@ -11958,7 +11976,7 @@ fn warden() -> Model {
         "left_arm",
         [13.0, -13.0, 1.0],
         [0.0; 3],
-        Anim::ArmLeft,
+        Anim::WardenArm { left: true },
         1.0,
         Some(body),
     );
@@ -11974,7 +11992,7 @@ fn warden() -> Model {
         "right_leg",
         [-5.9, 11.0, 0.0],
         [0.0; 3],
-        Anim::LegRight,
+        Anim::WardenLeg { left: false },
         1.0,
         Option::None,
     );
@@ -11990,7 +12008,7 @@ fn warden() -> Model {
         "left_leg",
         [5.9, 11.0, 0.0],
         [0.0; 3],
-        Anim::LegLeft,
+        Anim::WardenLeg { left: true },
         1.0,
         Option::None,
     );
@@ -12512,8 +12530,13 @@ fn creaking() -> Model {
     b.finish(1.0)
 }
 
+/// M375 — `RavagerModel.setupAnim`'s `legRot = 0.4·speed`, as the
+/// quadruped legs' amplitude multiplier (they swing at 1.4·speed·amp).
+pub const RAVAGER_LEG_AMP: f32 = 0.4 / 1.4;
+
 /// `RavagerModel` (128²): armored bull — horned head on a thick neck,
-/// rotated slab body, 37-px legs.
+/// rotated slab body, 37-px legs; M375 — the mouth rests a sliver open and
+/// the legs swing at vanilla's 0.4.
 fn ravager() -> Model {
     let mut b = ModelBuilder::new();
     let neck = Fold::at([0.0, -7.0, 5.5]);
@@ -12565,15 +12588,24 @@ fn ravager() -> Model {
         true,
         &[Fold::rot([1.0995574, 0.0, 0.0], [8.0, -14.0, -8.0])],
     );
-    b.cube_f(
-        head,
+    // M375 — the mouth is a part resting where `setupAnim` puts it when the
+    // ravager is neither attacking nor stunned: `xRot = π·0.01`, a sliver
+    // open (Rewo drew it shut).
+    let mouth = b.part_named(
+        "mouth",
+        [0.0, -2.0, 2.0],
+        [PI * 0.01, 0.0, 0.0],
+        Anim::None,
+        1.0,
+        Some(head),
+    );
+    b.cube(
+        mouth,
         0,
         (0.0, 36.0),
         [-8.0, 0.0, -16.0],
         [16.0, 3.0, 16.0],
-        0.0,
-        false,
-        &[Fold::at([0.0, -2.0, 2.0])],
+        NONE,
     );
     let body = Fold::rot([FRAC_PI_2, 0.0, 0.0], [0.0, 1.0, 2.0]);
     b.cube_f(
@@ -12608,7 +12640,9 @@ fn ravager() -> Model {
         ((64.0, 0.0), [8.0, -13.0, -5.0], true, Anim::QuadFrontLeft),
     ];
     for (uv, pivot, mirror, anim) in legs {
-        let p = b.part(pivot, anim, 1.0);
+        // M375 — `legRot = 0.4·speed`: the quadruped swing's 1.4 scaled to
+        // 0.4 (Rewo swung them 3.5 times as far).
+        let p = b.part(pivot, anim, RAVAGER_LEG_AMP);
         b.cube_f(
             p,
             0,
@@ -16457,5 +16491,53 @@ mod happy_ghast_tentacle_tests {
         );
         assert_eq!(happy_ghast_harness(false).parts.len(), m.parts.len());
         assert_eq!(happy_ghast_harness(true).parts.len(), m.parts.len());
+    }
+}
+
+#[cfg(test)]
+mod warden_pose_tests {
+    use super::*;
+
+    /// M374 — the warden's body, head, arms and legs carry its own gait.
+    #[test]
+    fn the_warden_walks_on_its_own_gait() {
+        let m = warden();
+        let anim = |name: &str| m.parts.iter().find(|p| p.name == name).map(|p| p.anim);
+        assert_eq!(anim("body"), Some(Anim::WardenBody));
+        assert_eq!(anim("head"), Some(Anim::WardenHead));
+        assert_eq!(anim("left_arm"), Some(Anim::WardenArm { left: true }));
+        assert_eq!(anim("right_leg"), Some(Anim::WardenLeg { left: false }));
+    }
+}
+
+#[cfg(test)]
+mod ravager_pose_tests {
+    use super::*;
+
+    /// M375 — the ravager's mouth rests at π·0.01 on the head, and its four
+    /// legs swing at 0.4·speed (the quadruped's 1.4 times 0.4 / 1.4).
+    #[test]
+    fn the_ravager_rests_its_mouth_open_and_walks_at_0_4() {
+        let m = ravager();
+        let head = m.parts.iter().position(|p| p.anim == Anim::Head).unwrap();
+        let mouth = m.parts.iter().find(|p| p.name == "mouth").unwrap();
+        assert_eq!(mouth.parent, Some(head as u16));
+        assert_eq!(mouth.rot, [PI * 0.01, 0.0, 0.0]);
+        let legs: Vec<f32> = m
+            .parts
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.anim,
+                    Anim::QuadHindRight
+                        | Anim::QuadHindLeft
+                        | Anim::QuadFrontRight
+                        | Anim::QuadFrontLeft
+                )
+            })
+            .map(|p| p.amp)
+            .collect();
+        assert_eq!(legs.len(), 4);
+        assert!(legs.iter().all(|&a| (1.4 * a - 0.4).abs() < 1e-6));
     }
 }
