@@ -3799,6 +3799,9 @@ impl EntityPass {
         // Model-space quad corners -> world space, through this entity's pose.
         // Shared by the base pass and the emissive layers so a layer can never
         // drift off the model it is glowing on (M57).
+        // M400 — an avatar's swim tilt (`AvatarRenderer.setupRotations`).
+        let swim_on = d.mob.swim_amount > 0.0;
+        let (sw, cw) = (swim_tilt(d.mob.swim_amount, d.mob.swim_in_water, d.pitch) * DEG).sin_cos();
         let place = |q: &GpuQuad| {
             let (m, o) = &xf[q.part as usize];
             let mut p4 = [[0f32; 3]; 4];
@@ -3813,6 +3816,20 @@ impl EntityPass {
                     e[1] * d.stretch[1],
                     e[2] * d.stretch[0],
                 ];
+                // M400 — `AvatarRenderer.setupRotations`' swim: `XP(tilt)`
+                // then `translate(0, −1, 0.3)` (blocks: `/ s` in these px),
+                // inside the topple.
+                let e = if swim_on {
+                    let t = if d.mob.swim_visual {
+                        [0.0, -1.0 / s, 0.3 / s]
+                    } else {
+                        [0.0; 3]
+                    };
+                    let (y, z) = (e[1] + t[1], e[2] + t[2]);
+                    [e[0] + t[0], y * cw - z * sw, y * sw + z * cw]
+                } else {
+                    e
+                };
                 // rotZ(fall · flipDegrees) — the death topple, identity while
                 // alive because `death_roll` is then exactly 0.
                 let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
@@ -5708,7 +5725,102 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             _ => {}
         }
     }
+    // M400 — `HumanoidModel.setupAnim`'s swim (after the bob): the head
+    // pitches toward −π/4, the arms lerp into the stroke, the legs kick.
+    if c.mob.swim_amount > 0.0 {
+        humanoid_swim(anim, &mut rot, c);
+    }
     (rot, off)
+}
+
+/// `Mth.rotLerpRad(a, from, to)`: `from + a·diff` with `diff = to − from`
+/// wrapped into `[−π, π)` by its two loops (so a difference of exactly π
+/// turns to −π, as vanilla's does).
+fn rot_lerp_rad(a: f32, from: f32, to: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let mut d = to - from;
+    while d < -PI {
+        d += TAU;
+    }
+    while d >= PI {
+        d -= TAU;
+    }
+    from + a * d
+}
+
+/// M400 — `HumanoidModel.setupAnim`'s swim block on one part.
+fn humanoid_swim(anim: mobs::Anim, rot: &mut [f32; 3], c: &AnimCtx) {
+    use mobs::Anim::*;
+    use std::f32::consts::PI;
+    let swim = c.mob.swim_amount;
+    let lerp = |a: f32, from: f32, to: f32| from + a * (to - from);
+    match anim {
+        Head => rot[0] = rot_lerp_rad(swim, rot[0], -PI / 4.0),
+        LegLeft => {
+            rot[0] = lerp(
+                swim,
+                rot[0],
+                0.3 * mth_cos((c.pos * 0.333_333_34 + PI) as f64),
+            )
+        }
+        LegRight => rot[0] = lerp(swim, rot[0], 0.3 * mth_cos((c.pos * 0.333_333_34) as f64)),
+        HumanoidArmRight | HumanoidArmLeft => {
+            let left = anim == HumanoidArmLeft;
+            if c.arm_poses.using_item {
+                return;
+            }
+            let pose = if left {
+                c.arm_poses.left
+            } else {
+                c.arm_poses.right
+            };
+            let attacking = c.attack.attack_time > 0.0 && c.attack.left_arm == left;
+            let a = if pose != mobs::ArmPose::Spear && !attacking {
+                swim
+            } else {
+                0.0
+            };
+            // The left arm lerps by `rotLerpRad`, the right by `lerp`.
+            let l = |from: f32, to: f32| {
+                if left {
+                    rot_lerp_rad(a, from, to)
+                } else {
+                    lerp(a, from, to)
+                }
+            };
+            let quad = |x: f32| -65.0 * x + x * x;
+            let swim_pos = c.pos % 26.0;
+            let (x, z) = if swim_pos < 14.0 {
+                let k = 1.870_796_4 * quad(swim_pos) / quad(14.0);
+                (0.0, if left { PI + k } else { PI - k })
+            } else if swim_pos < 22.0 {
+                let t = (swim_pos - 14.0) / 8.0;
+                (
+                    PI / 2.0 * t,
+                    if left {
+                        5.012_389 - 1.870_796_4 * t
+                    } else {
+                        1.270_796_3 + 1.870_796_4 * t
+                    },
+                )
+            } else {
+                let t = (swim_pos - 22.0) / 4.0;
+                (PI / 2.0 - PI / 2.0 * t, PI)
+            };
+            rot[0] = l(rot[0], x);
+            rot[1] = l(rot[1], PI);
+            rot[2] = l(rot[2], z);
+        }
+        _ => {}
+    }
+}
+
+/// M400 — `AvatarRenderer.setupRotations`' swim tilt in degrees,
+/// `lerp(swimAmount, 0, isInWater ? −90 − xRot : −90)`, and whether the
+/// `translate(0, −1, 0.3)` applies (`isVisuallySwimming`).
+pub fn swim_tilt(swim: f32, in_water: bool, pitch_deg: f32) -> f32 {
+    let target = if in_water { -90.0 - pitch_deg } else { -90.0 };
+    swim * target
 }
 
 fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
@@ -11532,6 +11644,49 @@ mod boat_anim_tests {
             anim_delta(mobs::Anim::BoatBubble, 1.0, &ctx([0.0; 2], 0.0)).0,
             [0.0; 3]
         );
+    }
+
+    /// M400 — `HumanoidModel`'s swim at full swim amount: the head pitches
+    /// to −π/4; at stroke position 0 both arms reach overhead (`xRot` 0,
+    /// `yRot` π, `zRot` π); at 18 (halfway through the pull) `xRot` π/4,
+    /// the right arm's `zRot` 1.2708 + 1.8708/2; the legs kick
+    /// `0.3·cos(pos/3)`; at half the amount, half way from the walk pose.
+    /// The tilt: −90° out of water, `−90 − xRot` in it.
+    #[test]
+    fn an_avatar_swims_as_humanoid_model_swims() {
+        use mobs::Anim as A;
+        use std::f32::consts::PI;
+        let at = |pos: f32, amount: f32| {
+            let mut c = ctx([0.0; 2], 0.0);
+            c.pos = pos;
+            c.mob.swim_amount = amount;
+            c
+        };
+        let c0 = at(0.0, 1.0);
+        assert!((anim_delta(A::Head, 1.0, &c0).0[0] + PI / 4.0).abs() < 1e-5);
+        for arm in [A::HumanoidArmRight, A::HumanoidArmLeft] {
+            // The left arm's `rotLerpRad` turns a difference of exactly π
+            // to −π: the same angle.
+            let r = anim_delta(arm, 1.0, &c0).0;
+            let same = |a: f32, b: f32| {
+                ((a - b).rem_euclid(2.0 * PI)).min((b - a).rem_euclid(2.0 * PI)) < 1e-3
+            };
+            assert!(
+                r[0].abs() < 1e-4 && same(r[1], PI) && same(r[2], PI),
+                "{r:?}"
+            );
+        }
+        let c18 = at(18.0, 1.0);
+        let r = anim_delta(A::HumanoidArmRight, 1.0, &c18).0;
+        assert!((r[0] - PI / 4.0).abs() < 1e-4);
+        assert!((r[2] - (1.270_796_3 + 1.870_796_4 * 0.5)).abs() < 1e-4);
+        let l = anim_delta(A::LegRight, 1.0, &c18).0[0];
+        assert!((l - 0.3 * (18.0f32 / 3.0).cos()).abs() < 1e-3);
+        // Half the amount: half way from the (still) walk pose.
+        let h = anim_delta(A::LegRight, 1.0, &at(18.0, 0.5)).0[0];
+        assert!((h - l * 0.5).abs() < 1e-3, "{h} {l}");
+        assert_eq!(swim_tilt(1.0, false, 30.0), -90.0);
+        assert_eq!(swim_tilt(0.5, true, 30.0), -60.0);
     }
 
     /// M399 — a crouching avatar: the body bends 0.5 and drops 3.2 with the

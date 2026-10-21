@@ -1068,6 +1068,16 @@ impl LiveApp {
                         (w, b + 1)
                     }
                 });
+            // M400 — r222: the swim amount avatars drew with.
+            for d in draws.iter() {
+                if matches!(
+                    d.kind,
+                    rewo_gpu::mobs::EntityModelKind::Player
+                        | rewo_gpu::mobs::EntityModelKind::PlayerSlim
+                ) {
+                    c.avatar_swim_peak = c.avatar_swim_peak.max(d.mob.swim_amount);
+                }
+            }
             // M399 — r221: an avatar drawn crouching.
             c.avatar_crouching |= draws.iter().any(|d| {
                 matches!(

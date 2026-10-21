@@ -582,6 +582,10 @@ pub struct EntityState {
     pub o_squish: f32,
     pub target_squish: f32,
     pub was_on_ground: bool,
+    /// M400 — `LivingEntity.swimAmount` / `swimAmountO` (`updateSwimAmount`:
+    /// ±0.09 a tick toward 1 while visually swimming, else 0).
+    pub swim_amount: f32,
+    pub swim_amount_o: f32,
     /// `ClientboundAddEntityPacket.data` (M194) — per-type meaning; an item
     /// frame's facing (`Direction.from3DDataValue`). 0 when absent.
     pub spawn_data: i32,
@@ -677,6 +681,8 @@ impl EntityState {
             o_squish: 0.0,
             target_squish: 0.0,
             was_on_ground: false,
+            swim_amount: 0.0,
+            swim_amount_o: 0.0,
             spawn_data: 0,
         }
     }
@@ -728,6 +734,21 @@ impl EntityState {
         }
         self.was_on_ground = self.on_ground;
         self.target_squish *= 0.6;
+    }
+
+    /// M400 — `LivingEntity.updateSwimAmount`.
+    pub fn tick_swim(&mut self, visually_swimming: bool) {
+        self.swim_amount_o = self.swim_amount;
+        self.swim_amount = if visually_swimming {
+            (self.swim_amount + 0.09).min(1.0)
+        } else {
+            (self.swim_amount - 0.09).max(0.0)
+        };
+    }
+
+    /// M400 — `getSwimAmount(a)`: `Mth.lerp(a, swimAmountO, swimAmount)`.
+    pub fn swim_at(&self, alpha: f32) -> f32 {
+        self.swim_amount_o + alpha * (self.swim_amount - self.swim_amount_o)
     }
 
     /// M395 — `Mth.lerp(a, oSquish, squish)`.
@@ -3695,6 +3716,10 @@ impl EntityTable {
             // M395 — the cube mobs' squish (their `tick` brackets
             // `super.tick()`; a remote entity's move there changes nothing).
             e.tick_squish();
+            // M400 — `isVisuallySwimming()`: the SWIMMING pose (3), or
+            // FALL_FLYING (1) while not fall flying.
+            let pose = self.poses.get(id).copied().unwrap_or(0);
+            e.tick_swim(pose == 3 || (pose == 1 && !fall_flying));
             // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
             // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
             if e.dash_cooldown > 0 {
@@ -4269,6 +4294,35 @@ mod tests {
         }
         assert_eq!(t.mob_state(8).sulfur_fuse, Some(0));
         assert_eq!(t.sulfur_fuse_remaining(8, 0.25), 0.75);
+    }
+
+    /// M400 — the swim amount climbs 0.09 a tick to 1 in the SWIMMING pose
+    /// and falls back out of it; FALL_FLYING counts only while not gliding.
+    #[test]
+    fn a_swimming_entitys_swim_amount_eases() {
+        let mut t = EntityTable::default();
+        t.add(9, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_pose(9, 3);
+        t.tick_lerp();
+        t.tick_lerp();
+        let e = t.get(9).unwrap();
+        assert!((e.swim_amount - 0.18).abs() < 1e-6);
+        assert!((e.swim_at(0.5) - 0.135).abs() < 1e-6);
+        for _ in 0..20 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.get(9).unwrap().swim_amount, 1.0);
+        t.set_pose(9, 0);
+        for _ in 0..12 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.get(9).unwrap().swim_amount, 0.0);
+        t.set_pose(9, 1);
+        t.tick_lerp();
+        assert!(
+            t.get(9).unwrap().swim_amount > 0.0,
+            "a crawl in FALL_FLYING"
+        );
     }
 
     /// M395 — `AbstractCubeMob`'s squish: landing aims it at −0.5 and it

@@ -1695,6 +1695,10 @@ pub(crate) fn resolve_mob_combat(
         // M399 — `Entity.isCrouching()` (the CROUCHING pose, ordinal 5),
         // which `HumanoidMobRenderer` reads; only an avatar's model bends.
         crouching: matches!(kind, K::Player | K::PlayerSlim) && entities.pose(id) == POSE_CROUCHING,
+        // M400 — set by the caller for an avatar.
+        swim_amount: 0.0,
+        swim_in_water: false,
+        swim_visual: false,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -5187,6 +5191,21 @@ pub(super) fn collect_entities<'a>(
         );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
         let mut mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        // M400 — an avatar's swim (`getSwimAmount(a)`, `isInWater`,
+        // `isVisuallySwimming`).
+        if matches!(kind, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
+            mob.swim_amount = e.swim_at(alpha);
+            if mob.swim_amount > 0.0 {
+                let p = e.render_pos(alpha);
+                mob.swim_in_water =
+                    session
+                        .world
+                        .is_water_at_point(p[0], p[1] + 0.1, p[2], &session.water_states);
+                let pose = session.world.entities.pose(id);
+                let gliding = session.world.entities.shared_flag(id, 7);
+                mob.swim_visual = pose == 3 || (pose == 1 && !gliding);
+            }
+        }
         // M397 — a sulfur cube's contained block (its body item's block).
         if sulfur {
             mob.sulfur_block = sulfur_block_state(&session.world.entities, id, item_names);

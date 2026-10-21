@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 113;
+const EXPECTED_WITNESSES: usize = 114;
+/// M400 — m114's floor: a swimming player's silhouette against a standing
+/// one's. M400 measured 3004 (the swimmer 92 x 39 px from the side, the
+/// stander 21 x 89); before M400 no avatar swam (0 by construction).
+const SWIM_MIN: usize = 1500;
 /// M399 — m113's floor: a crouching player's silhouette against a
 /// standing one's. M399 measured 1452; before M399 no avatar crouched (0
 /// by construction, not run).
@@ -7674,6 +7678,22 @@ fn run_check(
         crst.off.read_rgba(gpu)
     };
     let (cr_stand, cr_crouch) = (crshot(false)?, crshot(true)?);
+    // m114 — M400: swimming out of water (the visual SWIMMING pose at full
+    // amount), the player lies flat: `XP(−90)` and `translate(0, −1, 0.3)`.
+    let cr_swim = {
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                swim_amount: 1.0,
+                swim_visual: true,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Player)
+        };
+        crst.wr.set_entities(&[d], crst.right, crst.up, 0.0);
+        crst.off
+            .render(gpu, Some((&mut crst.wr, crst.vp)), &ov, BG)?;
+        crst.off.read_rgba(gpu)?
+    };
     crst.destroy(gpu);
     let cr_mask = |f: &[u8]| -> Vec<bool> {
         f.as_chunks::<4>()
@@ -7688,6 +7708,31 @@ fn run_check(
         .zip(&cr_mask(&cr_crouch))
         .filter(|(x, y)| x != y)
         .count();
+    // The silhouette's bounding box: a lying swimmer is wider than tall.
+    let bbox = |f: &[u8]| {
+        let m = cr_mask(f);
+        let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
+        for (i, &on) in m.iter().enumerate() {
+            if on {
+                let (x, y) = (i % cw as usize, i / cw as usize);
+                (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+            }
+        }
+        (x1.saturating_sub(x0), y1.saturating_sub(y0))
+    };
+    let swim_px = cr_mask(&cr_stand)
+        .iter()
+        .zip(&cr_mask(&cr_swim))
+        .filter(|(x, y)| x != y)
+        .count();
+    let ((sw_w, sw_h), (st_w, st_h)) = (bbox(&cr_swim), bbox(&cr_stand));
+    w.push(wit(
+        "m114.a_swimming_player_lies_flat",
+        swim_px >= SWIM_MIN && sw_w > sw_h && st_h > st_w,
+        format!(
+            "{swim_px} px of silhouette against standing (want >= {SWIM_MIN}); swimming {sw_w}x{sw_h} (want wider), standing {st_w}x{st_h}"
+        ),
+    ));
     w.push(wit(
         "m113.a_crouching_player_bends",
         crouch_px >= CROUCH_MIN,

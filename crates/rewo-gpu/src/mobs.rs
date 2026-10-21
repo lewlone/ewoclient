@@ -934,6 +934,12 @@ pub struct MobCombat {
     /// M393 — a boat's hurt wobble angle in degrees,
     /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
     pub boat_wobble: f32,
+    /// M400 — an avatar's `swimAmount` (lerped), `isInWater` and
+    /// `isVisuallySwimming`: `HumanoidModel`'s swim stroke and
+    /// `AvatarRenderer.setupRotations`' body tilt.
+    pub swim_amount: f32,
+    pub swim_in_water: bool,
+    pub swim_visual: bool,
     /// M399 — `HumanoidRenderState.isCrouching` (`Entity.isCrouching()`:
     /// the CROUCHING pose), set for an avatar (a player or a mannequin).
     pub crouching: bool,
