@@ -5649,9 +5649,35 @@ fn villager() -> Model {
 // Humanoid variants II — piglins, illagers, witch, zombie villager
 // ---------------------------------------------------------------------------
 
+/// M385 — `PlayerModel.createMesh`'s sleeves (0.25 overlays on the arms):
+/// the right at (40, 32), the left at (48, 48).
+fn piglin_sleeves(b: &mut ModelBuilder, arm_r: usize, arm_l: usize) {
+    b.cube_g(
+        arm_r,
+        0,
+        (40.0, 32.0),
+        [-3.0, -2.0, -2.0],
+        [4.0, 12.0, 4.0],
+        0.25,
+        NONE,
+    );
+    b.cube_g(
+        arm_l,
+        0,
+        (48.0, 48.0),
+        [-1.0, -2.0, -2.0],
+        [4.0, 12.0, 4.0],
+        0.25,
+        NONE,
+    );
+}
+
 /// Humanoid body + arms + legs shared by the piglin family
-/// (`AbstractPiglinModel` = `HumanoidModel.createMesh` with a replaced
-/// 10-wide head + snout + ears; the humanoid hat is hidden in vanilla).
+/// (`AdultPiglinModel.createBodyLayer` = `PlayerModel.createMesh(NONE,
+/// false)` with a replaced 10-wide head + snout + ears, the hat cleared).
+/// M385 — the player mesh's true left limbs at (32, 48) / (16, 48) and its
+/// 0.25 sleeves, pants and jacket; Rewo mirrored the right limbs and drew no
+/// overlay (the brute's jacket and pants were missing).
 fn piglin_like(arms_forward: bool) -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 0.0, 0.0], Anim::Head, 1.0);
@@ -5738,14 +5764,15 @@ fn piglin_like(arms_forward: bool) -> Model {
             1.0,
             None,
         );
-        b.cube_m(
+        b.cube(
             arm_l,
             0,
-            (40.0, 16.0),
+            (32.0, 48.0),
             [-1.0, -2.0, -2.0],
             [4.0, 12.0, 4.0],
             NONE,
         );
+        piglin_sleeves(&mut b, arm_r, arm_l);
     } else {
         // M380 — `HumanoidModel`'s walk swing and idle bob
         // (`Anim::PiglinArm`).
@@ -5759,14 +5786,15 @@ fn piglin_like(arms_forward: bool) -> Model {
             NONE,
         );
         let arm_l = b.part([5.0, 2.0, 0.0], Anim::PiglinArm { left: true }, 1.0);
-        b.cube_m(
+        b.cube(
             arm_l,
             0,
-            (40.0, 16.0),
+            (32.0, 48.0),
             [-1.0, -2.0, -2.0],
             [4.0, 12.0, 4.0],
             NONE,
         );
+        piglin_sleeves(&mut b, arm_r, arm_l);
     }
     let leg_r = b.part([-1.9, 12.0, 0.0], Anim::LegRight, 1.0);
     b.cube(
@@ -5778,12 +5806,41 @@ fn piglin_like(arms_forward: bool) -> Model {
         NONE,
     );
     let leg_l = b.part([1.9, 12.0, 0.0], Anim::LegLeft, 1.0);
-    b.cube_m(
+    b.cube(
         leg_l,
         0,
-        (0.0, 16.0),
+        (16.0, 48.0),
         [-2.0, 0.0, -2.0],
         [4.0, 12.0, 4.0],
+        NONE,
+    );
+    // M385 — the pants and the jacket (`PlayerModel.createMesh`'s 0.25
+    // overlays; the piglin's own body replaces `body` but keeps its child).
+    b.cube_g(
+        leg_r,
+        0,
+        (0.0, 32.0),
+        [-2.0, 0.0, -2.0],
+        [4.0, 12.0, 4.0],
+        0.25,
+        NONE,
+    );
+    b.cube_g(
+        leg_l,
+        0,
+        (0.0, 48.0),
+        [-2.0, 0.0, -2.0],
+        [4.0, 12.0, 4.0],
+        0.25,
+        NONE,
+    );
+    b.cube_g(
+        STATIC_PART,
+        0,
+        (16.0, 32.0),
+        [-4.0, 0.0, -2.0],
+        [8.0, 12.0, 4.0],
+        0.25,
         NONE,
     );
     b.finish(1.0)
@@ -17073,6 +17130,48 @@ mod parched_mesh_tests {
                 6,
                 "the box at {at:?}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod piglin_mesh_tests {
+    use super::*;
+
+    /// M385 — the piglin, the brute's layer and the zombified piglin are the
+    /// player mesh: the left arm and leg at their own (32, 48) / (16, 48)
+    /// rects, and 0.25 sleeves, pants and jacket (seven boxes the humanoid
+    /// mesh did not have, or had mirrored).
+    #[test]
+    fn the_piglin_family_wears_the_player_mesh() {
+        let uv_min = |q: &RawQuad| {
+            q.uv.iter()
+                .fold([f32::MAX; 2], |a, u| [a[0].min(u[0]), a[1].min(u[1])])
+        };
+        for m in [piglin_normal(), piglin_zombified()] {
+            let in_rect = |at: [f32; 2], w: f32, h: f32, d: f32| {
+                m.quads
+                    .iter()
+                    .filter(|q| {
+                        let u = uv_min(q);
+                        u[0] >= at[0]
+                            && u[1] >= at[1]
+                            && u[0] < at[0] + 2.0 * (w + d)
+                            && u[1] < at[1] + d + h
+                    })
+                    .count()
+            };
+            for at in [
+                [32.0, 48.0],
+                [16.0, 48.0],
+                [48.0, 48.0],
+                [0.0, 48.0],
+                [40.0, 32.0],
+                [0.0, 32.0],
+            ] {
+                assert_eq!(in_rect(at, 4.0, 12.0, 4.0), 6, "the box at {at:?}");
+            }
+            assert_eq!(in_rect([16.0, 32.0], 8.0, 12.0, 4.0), 6, "the jacket");
         }
     }
 }

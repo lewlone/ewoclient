@@ -104,7 +104,14 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 102;
+const EXPECTED_WITNESSES: usize = 103;
+/// M385 — m103's floor (the brute's silhouette, px). M385 measured 3929;
+/// without the 0.25 overlays (the pre-M385 mutant) 3864. A thin margin: the
+/// overlays widen the outline by about a pixel only where the brute's sheet
+/// paints them, and mostly change colours inside it, which a silhouette does
+/// not see. The render is deterministic, so the midpoint separates the two;
+/// `piglin_mesh_tests` (each overlay box's six faces) is the primary check.
+const BRUTE_AREA_MIN: usize = 3897;
 /// M384 — m102's floor (px of parched silhouette beyond the skeleton's).
 /// M384 measured 547; the skeleton's mesh on the parched sheet (the
 /// pre-M384 mutant) 112.
@@ -7109,6 +7116,43 @@ fn run_check(
         format!(
             "parched {pa} px against skeleton {sk} px: {pa_gain} px more (want >= {PARCHED_MIN})"
         ),
+    ));
+
+    // m103 — M385: the piglin family wears the player mesh, so the brute's
+    // painted jacket and pants (0.25 overlays) widen its silhouette.
+    let mut pbst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.1, 2.6),
+        Vec3::new(0.0, 1.0, 0.0),
+    )?;
+    pbst.wr.set_entities(&[], pbst.right, pbst.up, 0.0);
+    pbst.off
+        .render(gpu, Some((&mut pbst.wr, pbst.vp)), &ov, BG)?;
+    let pb_empty = pbst.off.read_rgba(gpu)?;
+    pbst.wr.set_entities(
+        &[neutral_draw(EntityModelKind::PiglinBrute)],
+        pbst.right,
+        pbst.up,
+        0.0,
+    );
+    pbst.off
+        .render(gpu, Some((&mut pbst.wr, pbst.vp)), &ov, BG)?;
+    let pb = pbst.off.read_rgba(gpu)?;
+    pbst.destroy(gpu);
+    let pb_area = pb
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(pb_empty.as_chunks::<4>().0)
+        .filter(|(p, e)| p[..3] != e[..3])
+        .count();
+    w.push(wit(
+        "m103.the_piglin_brute_wears_its_jacket_and_pants",
+        pb_area >= BRUTE_AREA_MIN,
+        format!("the brute's silhouette {pb_area} px (want >= {BRUTE_AREA_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------
