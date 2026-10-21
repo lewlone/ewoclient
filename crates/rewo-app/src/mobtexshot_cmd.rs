@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 108;
+const EXPECTED_WITNESSES: usize = 109;
+/// M394 — m109's floor: a boat tilted 10° by a bubble column against a
+/// level one. M394 measured 452; the pre-M394 boat never tilted (0 by
+/// construction, not run).
+const BUBBLE_TILT_MIN: usize = 225;
 /// M393 — m108's floors: rowing, the hurt wobble (each against a still,
 /// unhurt boat). M393 measured 297 and 200; the pre-M393 boat had its
 /// paddles baked at rest and no wobble (0 by construction, not run).
@@ -7403,11 +7407,12 @@ fn run_check(
     btst.off
         .render(gpu, Some((&mut btst.wr, btst.vp)), &ov, BG)?;
     let bt_empty = btst.off.read_rgba(gpu)?;
-    let mut btshot = |rowing: [f32; 2], wobble: f32| -> Result<Vec<u8>, String> {
+    let mut btshot = |rowing: [f32; 2], wobble: f32, bubble: f32| -> Result<Vec<u8>, String> {
         let d = EntityDraw {
             mob: rewo_gpu::mobs::MobCombat {
                 boat_rowing: rowing,
                 boat_wobble: wobble,
+                boat_bubble: bubble,
                 ..Default::default()
             },
             ..neutral_draw(EntityModelKind::Boat)
@@ -7417,15 +7422,18 @@ fn run_check(
             .render(gpu, Some((&mut btst.wr, btst.vp)), &ov, BG)?;
         btst.off.read_rgba(gpu)
     };
-    let bt_still = btshot([0.0; 2], 0.0)?;
+    let bt_still = btshot([0.0; 2], 0.0, 0.0)?;
     // A quarter turn of the stroke, and a bare-hand hit (`hurt`: hurtTime
     // 10, damage += 1·10) a tick and a half on: hurtTime 8.5, damageTime
     // 8.5, hurtDir 1 (about 5.8°).
-    let bt_row = btshot([std::f32::consts::FRAC_PI_2; 2], 0.0)?;
+    let bt_row = btshot([std::f32::consts::FRAC_PI_2; 2], 0.0, 0.0)?;
     let bt_hurt = btshot(
         [0.0; 2],
         rewo_gpu::entities::mth_sin(8.5) * 8.5 * 8.5 / 10.0,
+        0.0,
     )?;
+    // m109 — M394: over a bubble column, at the full multiplier's 10°.
+    let bt_tilt = btshot([0.0; 2], 0.0, 10.0)?;
     btst.destroy(gpu);
     let bt_mask = |f: &[u8]| -> Vec<bool> {
         f.as_chunks::<4>()
@@ -7453,6 +7461,12 @@ fn run_check(
             "rowing {} px, hurt {} px of silhouette against the still boat (want >= {BOAT_MOTION_MIN:?})",
             bt[0], bt[1]
         ),
+    ));
+    let tilt_px = bt_differ(&bt_still, &bt_tilt);
+    w.push(wit(
+        "m109.a_boat_over_a_bubble_column_tilts",
+        tilt_px >= BUBBLE_TILT_MIN,
+        format!("tilted 10 degrees {tilt_px} px of silhouette against level (want >= {BUBBLE_TILT_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------

@@ -6104,6 +6104,12 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         BeeBone | BeeFrontLegs | BeeBackLegs => {}
         // M391 — scaled, not moved: `body_squeeze_scale`.
         HappyGhastBody => {}
+        // M394 — the bubble column's tilt, in model space.
+        BoatBubble => {
+            if c.mob.boat_bubble != 0.0 {
+                rot = bubble_tilt(c.mob.boat_bubble).0;
+            }
+        }
         // M393 — `rotX(θ)` between the renderer's yaw and its
         // `scale(−1, −1, 1)` is `rotX(−θ)` past the flip, in model space.
         BoatHurt => rot[0] = -c.mob.boat_wobble * DEG,
@@ -8034,6 +8040,52 @@ fn anim_deltas(
     (drots, doffs)
 }
 
+/// M394 — `AbstractBoatRenderer`'s bubble tilt, `mulPose(new Quaternionf()
+/// .setAngleAxis(angle·π/180, 1, 0, 1))`, as a part rotation (`rotateZYX`
+/// Euler angles, in model space) and a uniform scale.
+///
+/// JOML's `setAngleAxis` does not normalise the axis: `q = (s, 0, s, c)`
+/// with `s, c = sin, cos(θ/2)`, `|q|² = 1 + s²`, and `rotate(q)`'s matrix is
+/// homogeneous in `q`, so it is `|q|²` times the rotation by
+/// `α = 2·atan2(√2·s, c)` about `(1, 0, 1)/√2`. Past the renderer's
+/// `scale(−1, −1, 1)` (`rotZ(π)`) the axis is `(−1, 0, 1)/√2`.
+fn bubble_tilt(angle_deg: f32) -> ([f32; 3], f32) {
+    let half = angle_deg * DEG * 0.5;
+    let (s, c) = half.sin_cos();
+    let alpha = 2.0 * (std::f32::consts::SQRT_2 * s).atan2(c);
+    let u = [
+        -std::f32::consts::FRAC_1_SQRT_2,
+        0.0,
+        std::f32::consts::FRAC_1_SQRT_2,
+    ];
+    // Rodrigues: R = I + sin α·K + (1 − cos α)·K².
+    let (sa, ca) = alpha.sin_cos();
+    let t = 1.0 - ca;
+    let r = [
+        [
+            ca + u[0] * u[0] * t,
+            u[0] * u[1] * t - u[2] * sa,
+            u[0] * u[2] * t + u[1] * sa,
+        ],
+        [
+            u[1] * u[0] * t + u[2] * sa,
+            ca + u[1] * u[1] * t,
+            u[1] * u[2] * t - u[0] * sa,
+        ],
+        [
+            u[2] * u[0] * t - u[1] * sa,
+            u[2] * u[1] * t + u[0] * sa,
+            ca + u[2] * u[2] * t,
+        ],
+    ];
+    // `Rz·Ry·Rx`: m20 = −sin y, m21 = cos y·sin x, m22 = cos y·cos x,
+    // m10 = sin z·cos y, m00 = cos z·cos y.
+    let y = (-r[2][0]).clamp(-1.0, 1.0).asin();
+    let x = r[2][1].atan2(r[2][2]);
+    let z = r[1][0].atan2(r[0][0]);
+    ([x, y, z], 1.0 + s * s)
+}
+
 /// M393 — `AbstractBoatModel.animatePaddle`'s `(xRot, yRot)`:
 /// `clampedLerp((sin(−t) + 1)/2, −π/3, −π/12)`, `clampedLerp((sin(−t + 1)
 /// + 1)/2, −π/4, π/4)`, the right paddle's yaw `π − yRot`.
@@ -8054,11 +8106,34 @@ fn paddle_angles(t: f32, right: bool) -> [f32; 2] {
 /// (`!state.bodyItem.isEmpty()`, i.e. `d.body_armor`), the `HappyGhastBody`
 /// part's scale times [`mobs::HAPPY_GHAST_BODY_SQUEEZE`] and every other
 /// part's CEM scale (or 1) unchanged.
+///
+/// M394 — and a tilted boat's bubble part, at the tilt's `|q|²`
+/// ([`bubble_tilt`]).
 fn body_squeeze_scale(
     model: &MobModel,
     d: &EntityDraw,
     cem_scale: Option<&[[f32; 3]]>,
 ) -> Option<Vec<[f32; 3]>> {
+    if d.mob.boat_bubble != 0.0 {
+        let k = bubble_tilt(d.mob.boat_bubble).1;
+        return Some(
+            model
+                .parts
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let base = cem_scale
+                        .and_then(|s| s.get(i).copied())
+                        .unwrap_or([1.0; 3]);
+                    if p.anim == mobs::Anim::BoatBubble {
+                        base.map(|v| v * k)
+                    } else {
+                        base
+                    }
+                })
+                .collect(),
+        );
+    }
     if d.kind != mobs::EntityModelKind::HappyGhast || d.body_armor.is_none() {
         return None;
     }
@@ -11351,6 +11426,49 @@ mod boat_anim_tests {
             },
             tendril: 0.0,
         }
+    }
+
+    /// M394 — the bubble tilt's rotation and scale are JOML's matrix for
+    /// the un-normalised quaternion `(s, 0, s, c)`, conjugated by the flip:
+    /// `S·(k·R) = M_joml·S`.
+    #[test]
+    fn a_boat_tilts_as_jomls_unnormalised_quaternion_turns_it() {
+        let deg = 9.0_f32;
+        let (e, k) = bubble_tilt(deg);
+        let model = mat_mul(mat_zyx(e), scale_mat([k; 3]));
+        // JOML `Matrix3f.rotation(q)` for q = (x, y, z, w), not normalised.
+        let half = deg * DEG * 0.5;
+        let (x, y, z, w) = (half.sin(), 0.0, half.sin(), half.cos());
+        let joml = [
+            [
+                w * w + x * x - y * y - z * z,
+                2.0 * (x * y - z * w),
+                2.0 * (x * z + y * w),
+            ],
+            [
+                2.0 * (x * y + z * w),
+                w * w - x * x + y * y - z * z,
+                2.0 * (y * z - x * w),
+            ],
+            [
+                2.0 * (x * z - y * w),
+                2.0 * (y * z + x * w),
+                w * w - x * x - y * y + z * z,
+            ],
+        ];
+        let s = [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
+        let a = mat_mul(s, model);
+        let b = mat_mul(joml, s);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!((a[i][j] - b[i][j]).abs() < 1e-5, "{a:?} vs {b:?}");
+            }
+        }
+        assert!(k > 1.0, "the un-normalised axis also scales");
+        assert_eq!(
+            anim_delta(mobs::Anim::BoatBubble, 1.0, &ctx([0.0; 2], 0.0)).0,
+            [0.0; 3]
+        );
     }
 
     /// M393 — at rowing time 0 a paddle rests where M223 baked it (no

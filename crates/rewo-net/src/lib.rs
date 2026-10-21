@@ -2715,6 +2715,10 @@ pub(crate) fn apply_set_entity_data<'a>(
         if meta.bool11.is_some() || meta.bool12.is_some() {
             entities.set_boat_paddles(eid, [meta.bool11, meta.bool12]);
         }
+        // M394 — `DATA_ID_BUBBLE_TIME` (13 INT).
+        if let Some(t) = meta.int13 {
+            entities.set_boat_bubble_time(eid, t);
+        }
     }
     // M389 — the piglin's own flags: `DATA_BABY_ID` (17),
     // `DATA_IS_CHARGING_CROSSBOW` (18), `DATA_IS_DANCING` (19), after
@@ -5717,6 +5721,10 @@ mod set_entity_data_tests {
         let b = t.mob_state(41);
         assert_eq!((b.boat_hurt, b.boat_hurt_dir, b.boat_damage), (10, 1, 40.0));
         assert_eq!(b.boat_paddles, [false, true]);
+        apply_set_entity_data(&body(41, 13, 1, &[60]), &mut t, kinds);
+        apply_set_entity_data(&body(42, 13, 1, &[60]), &mut t, kinds);
+        assert_eq!(t.mob_state(41).boat_bubble_time, 60);
+        assert_eq!(t.mob_state(42).boat_bubble_time, 0);
         let z = t.mob_state(42);
         assert_eq!(
             (z.boat_hurt, z.boat_damage, z.boat_paddles),

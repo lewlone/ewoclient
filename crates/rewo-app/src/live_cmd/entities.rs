@@ -1685,6 +1685,7 @@ pub(crate) fn resolve_mob_combat(
         // M393 — set by the caller for a boat.
         boat_rowing: [0.0; 2],
         boat_wobble: 0.0,
+        boat_bubble: 0.0,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -5085,6 +5086,20 @@ pub(super) fn collect_entities<'a>(
                 ents.boat_rowing_time(id, 1, alpha),
             ];
             mob.boat_wobble = boat_wobble(&ents.mob_state(id), alpha);
+            // M394 — `if (!isUnderWater && !Mth.equal(bubbleAngle, 0))`.
+            let p = e.render_pos(alpha);
+            let under = session.world.is_eye_under_water(
+                p[0],
+                p[1] + 0.5625 * 0.85,
+                p[2],
+                &session.water_states,
+            );
+            let angle = ents.boat_bubble_angle(id, alpha);
+            mob.boat_bubble = if under || angle.abs() < 1.0e-5 {
+                0.0
+            } else {
+                angle
+            };
         }
         // M381 — a seated rider (`isPassenger` / `isRiding`), for the kinds
         // whose model has the pose.

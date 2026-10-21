@@ -286,6 +286,10 @@ pub enum Anim {
     /// `rotX(sin(hurt)·hurt·damage/10·hurtDir)` degrees between the yaw and
     /// the flip (in model space, past the flip, the negated angle).
     BoatHurt,
+    /// M394 — a boat's bubble-column tilt: `AbstractBoatRenderer`'s
+    /// `Quaternionf().setAngleAxis(angle, 1, 0, 1)`, whose axis JOML does
+    /// not normalise ([`bubble_tilt`]).
+    BoatBubble,
     /// M393 — a boat paddle, `AbstractBoatModel.animatePaddle` on the side's
     /// rowing time (left 0, right 1), about [`paddle_rest`].
     BoatPaddle {
@@ -925,6 +929,9 @@ pub struct MobCombat {
     /// M393 — a boat's hurt wobble angle in degrees,
     /// `sin(hurtTime)·hurtTime·damageTime/10·hurtDir` (0 unhurt).
     pub boat_wobble: f32,
+    /// M394 — a boat's `BoatRenderState.bubbleAngle` in degrees, already 0
+    /// when the renderer skips it (under water, or `Mth.equal(angle, 0)`).
+    pub boat_bubble: f32,
     /// M381 — `HumanoidRenderState.isPassenger` / `IllagerRenderState
     /// .isRiding`: the seated riding pose (set only for a kind that
     /// [`sits_when_riding`]).
@@ -11651,14 +11658,18 @@ fn equine_plain() -> Model {
 /// M393 — the fold is now two parts: the renderer's hurt wobble turns the
 /// boat between the yaw and the flip, outside this `rotY(90°)`, so it needs
 /// a part of its own around the root's. Returns the inner (root) part.
+///
+/// M394 — and a third between them, the bubble column's tilt (which the
+/// renderer applies after the wobble, before the flip).
 fn boat_root(b: &mut ModelBuilder) -> usize {
     let wobble = b.part([0.0, MODEL_EYE_Y - 6.0, 0.0], Anim::BoatHurt, 1.0);
+    let bubble = b.part_ext([0.0; 3], [0.0; 3], Anim::BoatBubble, 1.0, Some(wobble));
     b.part_ext(
         [0.0; 3],
         [0.0, FRAC_PI_2, 0.0],
         Anim::None,
         1.0,
-        Some(wobble),
+        Some(bubble),
     )
 }
 
@@ -15711,8 +15722,11 @@ mod boat_root_tests {
             boat_water_patch(),
         ] {
             assert_eq!(m.parts[1].anim, Anim::BoatHurt);
+            // M394 — the bubble tilt between the wobble and the root.
+            assert_eq!(m.parts[2].anim, Anim::BoatBubble);
             assert_eq!(m.parts[2].parent, Some(1));
-            assert_eq!(m.parts[2].rot, [0.0, FRAC_PI_2, 0.0]);
+            assert_eq!(m.parts[3].parent, Some(2));
+            assert_eq!(m.parts[3].rot, [0.0, FRAC_PI_2, 0.0]);
             assert!(m.quads.iter().all(|q| q.part != STATIC_PART));
         }
         for m in [boat(), chest_boat(), raft(), chest_raft()] {
@@ -15721,7 +15735,7 @@ mod boat_root_tests {
                 .collect();
             assert_eq!(paddles.len(), 2);
             for &p in &paddles {
-                assert_eq!(m.parts[p].parent, Some(2));
+                assert_eq!(m.parts[p].parent, Some(3));
                 assert_eq!(m.quads.iter().filter(|q| q.part == p).count(), 12);
             }
         }

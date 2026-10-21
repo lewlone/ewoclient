@@ -570,6 +570,9 @@ pub struct EntityState {
     /// `onSyncedDataUpdated`'s dash arming is gated on `!this.firstTick`,
     /// so the spawn-time metadata never arms a cooldown.
     ticked: bool,
+    /// M394 — `Entity.tickCount`: 0 when the client creates the entity
+    /// (it is not synced), +1 each tick before the entity's tick.
+    pub tick_count: i32,
     /// `ClientboundAddEntityPacket.data` (M194) — per-type meaning; an item
     /// frame's facing (`Direction.from3DDataValue`). 0 when absent.
     pub spawn_data: i32,
@@ -659,6 +662,7 @@ impl EntityState {
             dash_cooldown: 0,
             last_pose_change_tick: 0,
             ticked: false,
+            tick_count: 0,
             spawn_data: 0,
         }
     }
@@ -1733,6 +1737,13 @@ pub struct MobState {
     /// tick while `getPaddleState(side)` (paddling with a controlling
     /// passenger), else 0.
     pub boat_paddle_pos: [f32; 2],
+    /// M394 — `AbstractBoat.DATA_ID_BUBBLE_TIME` (13, INT), and the client's
+    /// `bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
+    /// (`tickBubbleColumn`).
+    pub boat_bubble_time: i32,
+    pub boat_bubble_mult: f32,
+    pub boat_bubble_angle: f32,
+    pub boat_bubble_angle_o: f32,
     /// `Sheep.DATA_WOOL_ID` (metadata index **18**, BYTE): the low nibble is
     /// the `DyeColor` id and bit 0x10 is the sheared flag. Vanilla's
     /// `define(DATA_WOOL_ID, (byte)0)` default is white-and-woolly, which is
@@ -3346,9 +3357,25 @@ impl EntityTable {
         }
     }
 
+    /// M394 — a boat's `DATA_ID_BUBBLE_TIME`. Kind-gated by the caller.
+    pub fn set_boat_bubble_time(&mut self, id: i32, time: i32) {
+        self.mob_state.entry(id).or_default().boat_bubble_time = time;
+    }
+
+    /// M394 — `AbstractBoat.getBubbleAngle(a)`: `lerp(a, bubbleAngleO,
+    /// bubbleAngle)`, degrees.
+    pub fn boat_bubble_angle(&self, id: i32, alpha: f32) -> f32 {
+        self.mob_state.get(&id).map_or(0.0, |st| {
+            st.boat_bubble_angle_o + alpha * (st.boat_bubble_angle - st.boat_bubble_angle_o)
+        })
+    }
+
     /// M393 — `AbstractBoat.tick`'s client half: `if (hurtTime > 0)
     /// hurtTime--`, `if (damage > 0) damage -= 1`, and the paddle positions
     /// (+π/8 while `getPaddleState`: the flag and a controlling passenger).
+    /// M394 — and `tickBubbleColumn`'s client arm: the multiplier +0.05 a
+    /// tick while `bubbleTime > 0`, else −0.1, clamped to 0..1, and
+    /// `bubbleAngle = 10·sin(0.5·tickCount)·multiplier`.
     fn tick_boats(&mut self) {
         use std::f32::consts::PI;
         for (id, st) in self.mob_state.iter_mut() {
@@ -3357,6 +3384,14 @@ impl EntityTable {
             }
             if st.boat_damage > 0.0 {
                 st.boat_damage -= 1.0;
+            }
+            if let Some(e) = self.map.get(id) {
+                st.boat_bubble_mult = (st.boat_bubble_mult
+                    + if st.boat_bubble_time > 0 { 0.05 } else { -0.1 })
+                .clamp(0.0, 1.0);
+                st.boat_bubble_angle_o = st.boat_bubble_angle;
+                st.boat_bubble_angle =
+                    10.0 * (0.5 * e.tick_count as f64).sin() as f32 * st.boat_bubble_mult;
             }
             let controlled = self.passengers.get(id).is_some_and(|p| !p.is_empty());
             for i in 0..2 {
@@ -3592,6 +3627,8 @@ impl EntityTable {
                     .copied()
                     == Some(p)
             });
+            // M394 — `Level.tickNonPassenger`: `tickCount++` then `tick()`.
+            e.tick_count += 1;
             e.tick(fall_flying, authoritative);
             // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
             // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
@@ -4146,6 +4183,37 @@ mod tests {
             t.tick_lerp();
         }
         assert_eq!(t.mob_state(5).boat_hurt, 0);
+    }
+
+    /// M394 — `tickBubbleColumn` on the client: over a bubble column the
+    /// multiplier climbs 0.05 a tick to 1, the angle is
+    /// `10·sin(0.5·tickCount)·multiplier` on the entity's own tick count,
+    /// and off it the multiplier falls 0.1 a tick to 0.
+    #[test]
+    fn a_boat_over_a_bubble_column_tilts_on_its_tick_count() {
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_boat_bubble_time(7, 60);
+        for _ in 0..4 {
+            t.tick_lerp();
+        }
+        let st = t.mob_state(7);
+        assert!((st.boat_bubble_mult - 0.2).abs() < 1e-6);
+        assert_eq!(t.get(7).unwrap().tick_count, 4);
+        let want = 10.0 * (0.5f64 * 4.0).sin() as f32 * 0.2;
+        assert!((st.boat_bubble_angle - want).abs() < 1e-6);
+        let prev = 10.0 * (0.5f64 * 3.0).sin() as f32 * 0.15;
+        assert!((t.boat_bubble_angle(7, 0.5) - (prev + want) / 2.0).abs() < 1e-6);
+        for _ in 0..30 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.mob_state(7).boat_bubble_mult, 1.0);
+        t.set_boat_bubble_time(7, 0);
+        for _ in 0..11 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.mob_state(7).boat_bubble_mult, 0.0);
+        assert_eq!(t.mob_state(7).boat_bubble_angle, 0.0);
     }
 
     #[test]
