@@ -337,6 +337,9 @@ pub enum Anim {
         k: f32,
         rest: f32,
     },
+    /// M372 — `NautilusModel.applyBodyRotation`: the soft body follows the
+    /// look, each angle clamped to ±10°.
+    NautilusBody,
     /// M371 — `DolphinModel.setupAnim`'s body: the look (`xRot`, `yRot`),
     /// and while swimming `xRot + (−0.05 − 0.05·cos(age·0.3))`.
     DolphinBody,
@@ -13044,10 +13047,27 @@ const HAPPY_GHAST_LEGS: [([f32; 3], f32); 9] = [
     ([6.25, 7.0, 5.0], 5.0),
 ];
 
+/// M373 — the nine tentacle parts, `GhastModel.animateTentacles`'
+/// `xRot = 0.2·sin(age·0.3 + i) + 0.4` (`Anim::GhastTentacle`), each at the
+/// body's offset plus its own. Made once per model, so the ropes layer's
+/// tentacles (the same mesh at 0.2) swing with the base's, and the harness
+/// carries the same nine (without boxes) to keep its part list the ghast's.
+fn happy_ghast_tentacle_parts(b: &mut ModelBuilder) -> [usize; 9] {
+    std::array::from_fn(|i| {
+        let (off, _) = HAPPY_GHAST_LEGS[i];
+        b.part(
+            [off[0], 16.0 + off[1], off[2]],
+            Anim::GhastTentacle { i: i as u8 },
+            1.0,
+        )
+    })
+}
+
 /// `HappyGhastModel.createBodyLayer(isBaby, g)` before its scaling: the body,
-/// the inner body (the baby's only, M314), and the nine tentacles, all on the
-/// static part, at deformation `g` (the inner body `g - 0.5`).
-fn happy_ghast_mesh(b: &mut ModelBuilder, tex: usize, g: f32, baby: bool) {
+/// the inner body (the baby's only, M314) on the static part, and the nine
+/// tentacles on `legs` (M373; static until then), at deformation `g` (the
+/// inner body `g - 0.5`).
+fn happy_ghast_mesh(b: &mut ModelBuilder, tex: usize, g: f32, baby: bool, legs: &[usize; 9]) {
     let body = Fold::at([0.0, 16.0, 0.0]);
     b.cube_f(
         STATIC_PART,
@@ -13071,16 +13091,16 @@ fn happy_ghast_mesh(b: &mut ModelBuilder, tex: usize, g: f32, baby: bool) {
             &[Fold::at([0.0, 8.0, 0.0]), body],
         );
     }
-    for (off, len) in HAPPY_GHAST_LEGS {
+    for (i, (_, len)) in HAPPY_GHAST_LEGS.into_iter().enumerate() {
         b.cube_f(
-            STATIC_PART,
+            legs[i],
             tex,
             (0.0, 0.0),
             [-1.0, 0.0, -1.0],
             [2.0, len, 2.0],
             g,
             false,
-            &[Fold::at(off), body],
+            NONE,
         );
     }
 }
@@ -13090,12 +13110,13 @@ fn happy_ghast_mesh(b: &mut ModelBuilder, tex: usize, g: f32, baby: bool) {
 /// body box and never showed.)
 fn happy_ghast() -> Model {
     let mut b = ModelBuilder::new();
-    happy_ghast_mesh(&mut b, 0, 0.0, false);
+    let legs = happy_ghast_tentacle_parts(&mut b);
+    happy_ghast_mesh(&mut b, 0, 0.0, false, &legs);
     // M312 — `RopesLayer`: `HAPPY_GHAST_ROPES` is the adult body layer at
     // `CubeDeformation(0.2F)` (body and tentacles, no inner body) on its own
     // sheet, texture slot 1, which the renderer shows only while the ghast
     // holds a leash and wears a harness (`MobModel::ropes_slot`).
-    happy_ghast_mesh(&mut b, 1, 0.2, false);
+    happy_ghast_mesh(&mut b, 1, 0.2, false, &legs);
     b.finish(4.0)
 }
 
@@ -13105,7 +13126,8 @@ fn happy_ghast() -> Model {
 /// further (`getAgeScale`'s 0.2375 shrinks only the bounds).
 fn happy_ghast_baby() -> Model {
     let mut b = ModelBuilder::new();
-    happy_ghast_mesh(&mut b, 0, 0.0, true);
+    let legs = happy_ghast_tentacle_parts(&mut b);
+    happy_ghast_mesh(&mut b, 0, 0.0, true, &legs);
     b.finish(4.0 * 0.2375)
 }
 
@@ -13144,6 +13166,9 @@ pub fn happy_ghast_harness(ridden: bool) -> Model {
         false,
         &[goggles],
     );
+    // M373 — the ghast's nine tentacle parts, no boxes: a shell keeps its
+    // mob's part list.
+    happy_ghast_tentacle_parts(&mut b);
     let mut m = b.finish(1.0);
     m.scale = happy_ghast().scale;
     m
@@ -13385,36 +13410,41 @@ fn nautilus_of(layer: NautilusLayer, coral: bool) -> Model {
         false,
         &[shell, root],
     );
-    let body = Fold::at([0.0, -8.5, 12.3]);
-    b.cube_f(
-        STATIC_PART,
+    // M372 — the soft body is a part (root + body, (0, 20.5, 6.3)) that
+    // follows the look within ±10°; the beak rides on it.
+    let body = b.part_named(
+        "body",
+        [0.0, 20.5, 6.3],
+        [0.0; 3],
+        Anim::NautilusBody,
+        1.0,
+        Option::None,
+    );
+    b.cube(
+        body,
         0,
         (0.0, 54.0),
         [-5.0, -4.51, -3.0],
         [10.0, 8.0, 14.0],
-        0.0,
-        false,
-        &[body, root],
+        NONE,
     );
-    b.cube_f(
-        STATIC_PART,
+    b.cube(
+        body,
         0,
         (0.0, 76.0),
         [-5.0, -4.51, 7.0],
         [10.0, 8.0, 0.0],
-        0.0,
-        false,
-        &[body, root],
+        NONE,
     );
-    // The beak: upper/lower mouth slabs open and close on the swim rig.
-    // Absolute pivots: root + body + local pose.
+    // The beak: upper/lower mouth slabs open and close on the swim rig,
+    // children of the body (their pivots body-local).
     let upper = b.part_named(
         "upper_mouth",
-        [0.0, 18.0, 13.3],
+        [0.0, -2.51, 7.0],
         [0.0; 3],
         Anim::None,
         1.0,
-        Option::None,
+        Some(body),
     );
     b.cube_g(
         upper,
@@ -13426,22 +13456,22 @@ fn nautilus_of(layer: NautilusLayer, coral: bool) -> Model {
         NONE,
     );
     b.cube_f(
-        STATIC_PART,
+        body,
         0,
         (54.0, 70.0),
         [-3.0, -2.0, -0.5],
         [6.0, 4.0, 4.0],
         0.0,
         false,
-        &[Fold::at([0.0, -0.51, 7.5]), body, root],
+        &[Fold::at([0.0, -0.51, 7.5])],
     );
     let lower = b.part_named(
         "lower_mouth",
-        [0.0, 21.99, 13.3],
+        [0.0, 1.49, 7.0],
         [0.0; 3],
         Anim::None,
         1.0,
-        Option::None,
+        Some(body),
     );
     b.cube_g(
         lower,
@@ -14935,13 +14965,14 @@ mod ghast_ropes_tests {
     use super::*;
 
     /// M312 — the ropes are the body and nine tentacles again, 0.2 larger,
-    /// on texture slot 1, after the body's own boxes; the parts stay one.
+    /// on texture slot 1, after the body's own boxes; since M373 they share
+    /// the base mesh's nine tentacle parts (ten parts in all).
     #[test]
     fn the_happy_ghasts_ropes_are_its_body_inflated_on_their_own_sheet() {
         let m = happy_ghast();
         let ropes: Vec<_> = m.quads.iter().filter(|q| q.tex == 1).collect();
         assert_eq!(ropes.len(), 60, "ten boxes");
-        assert_eq!(m.parts.len(), 1);
+        assert_eq!(m.parts.len(), 10);
         let span = |qs: &[&RawQuad]| {
             qs.iter()
                 .flat_map(|q| q.pos.iter().map(|p| p[0]))
@@ -16368,5 +16399,63 @@ mod dolphin_pose_tests {
             assert_eq!(m.parts[tail].rot[0], rest);
             assert!(m.quads.iter().all(|q| q.part != STATIC_PART));
         }
+    }
+}
+
+#[cfg(test)]
+mod nautilus_body_tests {
+    use super::*;
+
+    /// M372 — every nautilus (and its shells) has the looking soft body at
+    /// (0, 20.5, 6.3) with both mouths on it, at the pivots the old absolute
+    /// ones were (body + (0, −2.51, 7) and (0, 1.49, 7)).
+    #[test]
+    fn the_nautilus_body_carries_its_beak() {
+        for m in [
+            nautilus(),
+            nautilus_coral(),
+            nautilus_armor(),
+            nautilus_saddle(),
+        ] {
+            let body = m.parts.iter().position(|p| p.name == "body").unwrap();
+            assert_eq!(m.parts[body].anim, Anim::NautilusBody);
+            assert_eq!(m.parts[body].pivot, [0.0, 20.5, 6.3]);
+            for (name, y) in [("upper_mouth", -2.51), ("lower_mouth", 1.49)] {
+                let p = m.parts.iter().find(|p| p.name == name).unwrap();
+                assert_eq!(p.parent, Some(body as u16));
+                assert_eq!(p.pivot, [0.0, y, 7.0]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod happy_ghast_tentacle_tests {
+    use super::*;
+
+    /// M373 — the happy ghast's nine tentacles swing on their own parts,
+    /// shared by its base and ropes meshes (two boxes each); the baby has
+    /// the nine too; the harness keeps the adult's part list.
+    #[test]
+    fn the_happy_ghasts_tentacles_swing() {
+        let m = happy_ghast();
+        let legs: Vec<usize> = (0..m.parts.len())
+            .filter(|&i| matches!(m.parts[i].anim, Anim::GhastTentacle { .. }))
+            .collect();
+        assert_eq!(legs.len(), 9);
+        for &l in &legs {
+            assert_eq!(m.quads.iter().filter(|q| q.part == l).count(), 12);
+        }
+        assert_eq!(m.parts[legs[0]].pivot, [-3.75, 23.0, -5.0]);
+        let baby = happy_ghast_baby();
+        assert_eq!(
+            baby.parts
+                .iter()
+                .filter(|p| matches!(p.anim, Anim::GhastTentacle { .. }))
+                .count(),
+            9
+        );
+        assert_eq!(happy_ghast_harness(false).parts.len(), m.parts.len());
+        assert_eq!(happy_ghast_harness(true).parts.len(), m.parts.len());
     }
 }

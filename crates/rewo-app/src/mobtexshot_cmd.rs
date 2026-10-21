@@ -104,7 +104,13 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 89;
+const EXPECTED_WITNESSES: usize = 91;
+/// M372 — m90's floor (the 10° look). M372 measured 304 px (and 0 between
+/// 30° and 10°); a still body (the pre-M372 mutant) 0.
+const NAUTILUS_MIN: usize = 150;
+/// M373 — m91's floor (a second of tentacle swing, seen from below). M373
+/// measured 41 px; still tentacles (the pre-M373 mutant) 0.
+const HAPPY_GHAST_MIN: usize = 20;
 /// M370 — m88's floors: the look, the tail a second on. M370 measured 2521
 /// and 384; a still body and tail (the pre-M370 mutant) 0 and 17 (the
 /// spikes' wobble alone).
@@ -6497,6 +6503,106 @@ fn run_check(
         format!(
             "looking vs ahead {dl_l} px, swimming vs still {dl_s} px (want >= {DOLPHIN_MIN:?})"
         ),
+    ));
+
+    // m90 — M372: a nautilus's soft body follows a small look, and stops at
+    // 10°: looking 30° aside draws exactly as looking 10° aside. m91 — M373:
+    // a happy ghast's tentacles swing over a second.
+    let mut nast = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(1.8, 1.2, -1.8),
+        Vec3::new(0.0, 0.6, 0.0),
+    )?;
+    nast.wr.set_entities(&[], nast.right, nast.up, 0.0);
+    nast.off
+        .render(gpu, Some((&mut nast.wr, nast.vp)), &ov, BG)?;
+    let na_empty = nast.off.read_rgba(gpu)?;
+    let mut nashot = |d: EntityDraw<'_>, t: f32| -> Result<Vec<u8>, String> {
+        nast.wr.set_entities(&[d], nast.right, nast.up, t);
+        nast.off
+            .render(gpu, Some((&mut nast.wr, nast.vp)), &ov, BG)?;
+        nast.off.read_rgba(gpu)
+    };
+    let look = |yaw: f32| EntityDraw {
+        head_yaw: yaw,
+        ..neutral_draw(EntityModelKind::Nautilus)
+    };
+    let na_ahead = nashot(look(0.0), 0.0)?;
+    let na_ten = nashot(look(10.0), 0.0)?;
+    let na_thirty = nashot(look(30.0), 0.0)?;
+    nast.destroy(gpu);
+    let na_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(na_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let na_look = na_mask(&na_ahead)
+        .iter()
+        .zip(&na_mask(&na_ten))
+        .filter(|(x, y)| x != y)
+        .count();
+    let na_clamp = na_ten
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(na_thirty.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    w.push(wit(
+        "m90.a_nautilus_body_follows_its_look_within_ten_degrees",
+        na_look >= NAUTILUS_MIN && na_clamp == 0,
+        format!(
+            "looking 10 aside vs ahead {na_look} px (want >= {NAUTILUS_MIN}), 30 vs 10 {na_clamp} px (want 0)"
+        ),
+    ));
+
+    let mut hgh = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        // Below the body: the tentacles hang under the entity's feet line.
+        Vec3::new(7.0, -2.5, -7.0),
+        Vec3::new(0.0, 0.0, 0.0),
+    )?;
+    hgh.wr.set_entities(&[], hgh.right, hgh.up, 0.0);
+    hgh.off.render(gpu, Some((&mut hgh.wr, hgh.vp)), &ov, BG)?;
+    let hh_empty = hgh.off.read_rgba(gpu)?;
+    let mut hhshot = |t: f32| -> Result<Vec<u8>, String> {
+        hgh.wr.set_entities(
+            &[neutral_draw(EntityModelKind::HappyGhast)],
+            hgh.right,
+            hgh.up,
+            t,
+        );
+        hgh.off.render(gpu, Some((&mut hgh.wr, hgh.vp)), &ov, BG)?;
+        hgh.off.read_rgba(gpu)
+    };
+    let (hh0, hh1) = (hhshot(0.0)?, hhshot(1.0)?);
+    hgh.destroy(gpu);
+    let hh_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(hh_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let hh_moved = hh_mask(&hh0)
+        .iter()
+        .zip(&hh_mask(&hh1))
+        .filter(|(x, y)| x != y)
+        .count();
+    w.push(wit(
+        "m91.a_happy_ghasts_tentacles_swing",
+        hh_moved >= HAPPY_GHAST_MIN,
+        format!("a second apart {hh_moved} px of silhouette (want >= {HAPPY_GHAST_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------

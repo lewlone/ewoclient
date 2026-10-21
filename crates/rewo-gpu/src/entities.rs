@@ -6091,6 +6091,12 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             let s = (c.age * 0.2).sin();
             rot[2] = if left { 0.2 - 0.4 * s } else { -0.2 + 0.4 * s };
         }
+        // M372 — `NautilusModel.applyBodyRotation`.
+        NautilusBody => {
+            let lim = 10.0 * DEG;
+            rot[0] = c.pitch.clamp(-lim, lim);
+            rot[1] = c.net.clamp(-lim, lim);
+        }
         // M371 — `DolphinModel.setupAnim`: while moving the tail's `xRot` is
         // assigned (the rest replaced, not added to); still, the rest holds.
         DolphinTail { k, rest } => {
@@ -10601,5 +10607,37 @@ mod dolphin_anim_tests {
         assert_eq!(anim_delta(tail, 1.0, &ctx(false, age)).0, [0.0; 3]);
         let (t, _) = anim_delta(tail, 1.0, &ctx(true, age));
         assert!((rest + t[0] - (-0.1 * (age * 0.3).cos())).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod nautilus_body_anim_tests {
+    use super::*;
+
+    /// M372 — the soft body follows a small look exactly and stops at ±10°.
+    #[test]
+    fn the_nautilus_body_follows_the_look_within_ten_degrees() {
+        let ctx = |pitch: f32, net: f32| AnimCtx {
+            pitch,
+            net,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        };
+        let small = anim_delta(mobs::Anim::NautilusBody, 1.0, &ctx(0.05, -0.1)).0;
+        assert_eq!((small[0], small[1]), (0.05, -0.1));
+        let big = anim_delta(mobs::Anim::NautilusBody, 1.0, &ctx(1.0, -2.0)).0;
+        assert!((big[0] - 10.0 * DEG).abs() < 1e-6 && (big[1] + 10.0 * DEG).abs() < 1e-6);
     }
 }
