@@ -454,6 +454,11 @@ pub enum Anim {
     /// everything `super.setupAnim` put on the arms), then the
     /// `IllagerArmPose` switch (M20).
     IllagerArmRight,
+    /// M382 — the drowned's arms: the zombie's, then `DrownedModel`'s
+    /// trident post-step (`xRot·0.5 − π`, `yRot = 0`) on an arm posed
+    /// `THROW_TRIDENT`.
+    DrownedArmRight,
+    DrownedArmLeft,
     IllagerArmLeft,
 }
 
@@ -3633,6 +3638,25 @@ fn player_model(slim: bool) -> Model {
 fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
     let mut b = ModelBuilder::new();
     let head = humanoid_head_body(&mut b, 0);
+    // M382 — the drowned (the only zombie with an overlay) is
+    // `DrownedModel.createBodyLayer`: its left arm and leg are real boxes at
+    // (32, 48) and (16, 48), not the right limbs mirrored, in the base and
+    // in the 0.25 outer layer; its arms add the trident throw's post-step
+    // (`Anim::DrownedArm*`).
+    let drowned = overlay.is_some();
+    let (arm_anims, left_arm_uv, left_leg_uv) = if drowned {
+        (
+            (Anim::DrownedArmRight, Anim::DrownedArmLeft),
+            (32.0, 48.0),
+            (16.0, 48.0),
+        )
+    } else {
+        (
+            (Anim::UndeadArmRight, Anim::UndeadArmLeft),
+            (40.0, 16.0),
+            (0.0, 16.0),
+        )
+    };
     // M20: the arms were baked forward by a static `Fold::rot(-π/2)`, which
     // froze them at −90° — vanilla rests at −π/2.25 (−80°) and deepens to
     // −π/1.5 (−120°) when aggressive, and swings from there. They are real
@@ -3641,7 +3665,7 @@ fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
         "right_arm",
         [-5.0, 2.0, 0.0],
         [0.0; 3],
-        Anim::UndeadArmRight,
+        arm_anims.0,
         1.0,
         None,
     );
@@ -3657,16 +3681,18 @@ fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
         "left_arm",
         [5.0, 2.0, 0.0],
         [0.0; 3],
-        Anim::UndeadArmLeft,
+        arm_anims.1,
         1.0,
         None,
     );
-    b.cube_m(
+    b.cube_f(
         arm_l,
         0,
-        (40.0, 16.0),
+        left_arm_uv,
         [-1.0, -2.0, -2.0],
         [4.0, 12.0, 4.0],
+        0.0,
+        !drowned,
         NONE,
     );
     let leg_r = b.part([-1.9, 12.0, 0.0], Anim::LegRight, 1.0);
@@ -3679,12 +3705,14 @@ fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
         NONE,
     );
     let leg_l = b.part([1.9, 12.0, 0.0], Anim::LegLeft, 1.0);
-    b.cube_m(
+    b.cube_f(
         leg_l,
         0,
-        (0.0, 16.0),
+        left_leg_uv,
         [-2.0, 0.0, -2.0],
         [4.0, 12.0, 4.0],
+        0.0,
+        !drowned,
         NONE,
     );
     if let Some(tex) = overlay {
@@ -3731,11 +3759,11 @@ fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
         b.cube_f(
             arm_l,
             tex,
-            (40.0, 16.0),
+            left_arm_uv,
             [-1.0, -2.0, -2.0],
             [4.0, 12.0, 4.0],
             0.25,
-            true,
+            false,
             NONE,
         );
         b.cube_g(
@@ -3750,11 +3778,11 @@ fn zombie_like(scale: f32, overlay: Option<usize>) -> Model {
         b.cube_f(
             leg_l,
             tex,
-            (0.0, 16.0),
+            left_leg_uv,
             [-2.0, 0.0, -2.0],
             [4.0, 12.0, 4.0],
             0.25,
-            true,
+            false,
             NONE,
         );
     }
@@ -5484,6 +5512,7 @@ pub fn sits_when_riding(kind: EntityModelKind) -> bool {
                         | Anim::SkeletonArmRight
                         | Anim::IllagerArmRight
                         | Anim::PiglinArm { left: false }
+                        | Anim::DrownedArmRight
                 )
             });
         }
@@ -16808,5 +16837,40 @@ mod riding_pose_kind_tests {
         ] {
             assert!(!sits_when_riding(k), "{k:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod drowned_mesh_tests {
+    use super::*;
+
+    /// M382 — the drowned's left arm and leg sample their own (32, 48) and
+    /// (16, 48) rects, in the base and the outer layer; the zombie's still
+    /// mirror the right limbs; the drowned's arms are drowned arms.
+    #[test]
+    fn the_drowned_has_true_left_limbs() {
+        let uv_min = |m: &Model, part: usize, tex: usize| {
+            m.quads
+                .iter()
+                .filter(|q| q.part == part && q.tex == tex)
+                .flat_map(|q| q.uv.iter().copied())
+                .fold([f32::MAX; 2], |a, u| [a[0].min(u[0]), a[1].min(u[1])])
+        };
+        let d = drowned();
+        let arm_l = d.parts.iter().position(|p| p.name == "left_arm").unwrap();
+        let leg_l = d
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::LegLeft)
+            .unwrap();
+        for tex in [0, 1] {
+            assert_eq!(uv_min(&d, arm_l, tex), [32.0, 48.0], "arm tex {tex}");
+            assert_eq!(uv_min(&d, leg_l, tex), [16.0, 48.0], "leg tex {tex}");
+        }
+        assert_eq!(d.parts[arm_l].anim, Anim::DrownedArmLeft);
+        let z = zombie();
+        let zl = z.parts.iter().position(|p| p.name == "left_arm").unwrap();
+        assert_eq!(uv_min(&z, zl, 0), [40.0, 16.0]);
+        assert_eq!(z.parts[zl].anim, Anim::UndeadArmLeft);
     }
 }

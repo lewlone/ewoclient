@@ -6262,6 +6262,22 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             humanoid_arm(&mut rot, &mut off, left, c, amp);
             animate_zombie_arms(&mut rot, left, c, c.mob.aggressive);
         }
+        // M382 — `DrownedModel.setupAnim`: the zombie's arm, then the
+        // trident throw's post-step on the arm posed `THROW_TRIDENT`.
+        DrownedArmRight | DrownedArmLeft => {
+            let left = anim == DrownedArmLeft;
+            humanoid_arm(&mut rot, &mut off, left, c, amp);
+            animate_zombie_arms(&mut rot, left, c, c.mob.aggressive);
+            let pose = if left {
+                c.arm_poses.left
+            } else {
+                c.arm_poses.right
+            };
+            if pose == mobs::ArmPose::ThrowTrident {
+                rot[0] = rot[0] * 0.5 - PI;
+                rot[1] = 0.0;
+            }
+        }
         // `SkeletonModel.setupAnim` = `super.setupAnim(state)` then its own
         // attack override, gated on aggressive && !holdingBow.
         SkeletonArmRight | SkeletonArmLeft => {
@@ -11173,5 +11189,49 @@ mod riding_pose_anim_tests {
         let stand = anim_delta(HumanoidArmRight, 1.0, &s).0[0];
         assert!((ride - stand + PI / 5.0).abs() < 1e-6);
         assert_eq!(anim_delta(IllagerArmLeft, 1.0, &r).0, [-PI / 5.0, 0.0, 0.0]);
+    }
+}
+
+#[cfg(test)]
+mod drowned_arm_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    /// M382 — an arm posed `THROW_TRIDENT` takes `DrownedModel`'s post-step
+    /// over the zombie arm (half the angle, less π; no yaw); an unposed
+    /// drowned arm is the zombie's.
+    #[test]
+    fn the_drowned_raises_its_trident() {
+        let ctx = |right: mobs::ArmPose| AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses {
+                right,
+                ..mobs::ArmPoses::EMPTY
+            },
+            mob: mobs::MobCombat::default(),
+            tendril: 0.0,
+        };
+        let plain = ctx(mobs::ArmPose::Empty);
+        assert_eq!(
+            anim_delta(mobs::Anim::DrownedArmRight, 1.0, &plain),
+            anim_delta(mobs::Anim::UndeadArmRight, 1.0, &plain)
+        );
+        let throw = ctx(mobs::ArmPose::ThrowTrident);
+        let zombie = anim_delta(mobs::Anim::UndeadArmRight, 1.0, &throw).0;
+        let drowned = anim_delta(mobs::Anim::DrownedArmRight, 1.0, &throw).0;
+        assert!((drowned[0] - (zombie[0] * 0.5 - PI)).abs() < 1e-6);
+        assert_eq!(drowned[1], 0.0);
     }
 }

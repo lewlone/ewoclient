@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 99;
+const EXPECTED_WITNESSES: usize = 100;
+/// M382 — m100's floor. M382 measured 237 px; the zombie arm without the
+/// post-step (the pre-M382 mutant, whose arm the zombie override holds
+/// forward whatever the pose) 0.
+const DROWNED_MIN: usize = 120;
 /// M381 — m99's floor (each rider). M381 measured 661 (zombie) and 679
 /// (pillager); no riding pose (the pre-M381 mutant) 0 and 0.
 const RIDER_MIN: usize = 330;
@@ -6996,6 +7000,55 @@ fn run_check(
             "riding vs standing {} (want >= {RIDER_MIN} each)",
             rd_rows.join("; ")
         ),
+    ));
+
+    // m100 — M382: a drowned with its right arm posed `THROW_TRIDENT` raises
+    // it (`DrownedModel`'s post-step over the zombie arm), against unposed.
+    let mut drst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.2, 1.8, 2.2),
+        Vec3::new(0.0, 1.1, 0.0),
+    )?;
+    drst.wr.set_entities(&[], drst.right, drst.up, 0.0);
+    drst.off
+        .render(gpu, Some((&mut drst.wr, drst.vp)), &ov, BG)?;
+    let dr_empty = drst.off.read_rgba(gpu)?;
+    let mut drshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        drst.wr.set_entities(&[d], drst.right, drst.up, 0.0);
+        drst.off
+            .render(gpu, Some((&mut drst.wr, drst.vp)), &ov, BG)?;
+        drst.off.read_rgba(gpu)
+    };
+    let dr_plain = drshot(neutral_draw(EntityModelKind::Drowned))?;
+    let dr_throw = drshot(EntityDraw {
+        arm_poses: rewo_gpu::mobs::ArmPoses {
+            right: rewo_gpu::mobs::ArmPose::ThrowTrident,
+            known: true,
+            ..rewo_gpu::mobs::ArmPoses::EMPTY
+        },
+        ..neutral_draw(EntityModelKind::Drowned)
+    })?;
+    drst.destroy(gpu);
+    let dr_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(dr_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let dr_moved = dr_mask(&dr_plain)
+        .iter()
+        .zip(&dr_mask(&dr_throw))
+        .filter(|(x, y)| x != y)
+        .count();
+    w.push(wit(
+        "m100.a_drowned_raises_its_trident",
+        dr_moved >= DROWNED_MIN,
+        format!("throwing vs unposed {dr_moved} px of silhouette (want >= {DROWNED_MIN})"),
     ));
 
     // ---- report ----------------------------------------------------------
