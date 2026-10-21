@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M365 — the rabbit looks; the turtle paddles and carries its egg (with M364) (2026-10-21)
+
+From the adult rest-pose audit. **M364**: `RabbitModel.setupAnim` assigns the head's look every frame, so the layer's 0.3927 tilt (which only cancels the body's lean in the layer file) is never drawn; the adult's head now rests at 0 on `Anim::Head`. **M365**: `TurtleModel` over `QuadrupedModel`: the flippers are parts (`Anim::TurtleLeg`: the quadruped swing, the land sweep with its egg-laying rate, the swim overrides; the baby's legs too); the egg belly shows only with `HAS_EGG` and lifts the turtle 1 px; `HAS_EGG` (18) and `LAYING_EGG` (19) are decoded and routed for the turtle only. On land = out of water (Rewo keeps no `onGround` for other entities). **Unit tests** for each term; **mobtexshot m82** (rabbit 307 / kit 750 px, the still-head mutant 0) and **m83** (stride 2012, swim 1682, egg 5787 px; the pre-M365 mutant 0 / 0 / 0).
+
 ### M360 — the villager family at fifteen sixteenths (2026-10-21)
 
 From the adult rest-pose audit: the villager, wandering trader, witch and the four illagers were drawn about 6% too big. `LayerDefinitions` builds their layers with `villagerLikeScale` (`MeshTransformer.scaling(0.9375F)`, about the feet), so `illager()`, `witch()` and `villager()` now finish at `VILLAGER_LIKE_SCALE`; the babies and the zombie villager keep 1.0. **Unit test**: the seven kinds at 0.9375.

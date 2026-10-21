@@ -23,10 +23,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 170 Rewo milestones, M194 to M363, in about 366 commits on
+- **What happened**: 172 Rewo milestones, M194 to M365, in about 368 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`54f40926`): 4,531 tests pass (4,244 at the
+- **Checks at the end** (`dc1dff1e`): 4,535 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 215 of
   215 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M365**: the rabbit's head looks (M364); the turtle's flippers paddle on land and swim in water, and its egg belly shows only with an egg (M365).
 - **M360**: the villager, wandering trader, witch and illagers are drawn at vanilla's 15/16 (they were about 6% too big).
 - **M363**: Enni's boat report: a floating boat now masks the water inside its hull (vanilla's depth-only water patch). r213 also grades the riding lag Enni described directly.
 - **M362**: Enni's arrow report: arrows were born with no velocity and moved only on the server's once-a-second updates. They now fly on the client (velocity, gravity, drag, block hits).
@@ -556,6 +557,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `dc1dff1e` | **M365** — with M364: the rabbit's head look; the turtle's flippers, egg belly and egg flags; unit tests, mobtexshot **m82** and **m83**. |
 | `54f40926` | **M360** — the villager family at `villagerLikeScale` 0.9375; unit test. |
 | `35146111` | **M363** — the boat's water patch drawn depth only (`waterMask`), the surface-aware eye test; unit tests, render check **r215** and a capture pair. |
 | `8dbd3eea` | r213 grades the rider's offset from its mount frame to frame (0.0000 blocks; the pre-M361 mutant 1.9979). |
@@ -971,6 +973,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M365: **4,535 tests passed, 0 failed; gates 51/51** (mobtexshot 83); render check **215/215** on both runs; clippy (both, re-run after removing two redundant casts in the new tests) and `cargo fmt --check` clean.
 - After M360: **4,531 tests passed, 0 failed; gates 51/51**; render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M363: **4,530 tests passed, 0 failed; gates 51/51**; render check **215/215** on both runs (r215: 8184 and 9291 frames with a floating boat's patch drawn, the emission-off mutant 0; r213's rider-to-mount offset 0.0000 blocks a frame, the pre-M361 mutant 1.9979; r214 13.51 and 13.80 blocks); clippy (both) and `cargo fmt --check` clean. A `REWO_RC_CAPTURE_BOAT` capture pair shows the hull's floor with the mask and the water surface across it without (28% of a sampled hull patch blue-dominant against 0%).
 - After M362: **4,528 tests passed, 0 failed; gates 51/51**; render check **214/214** on both runs (r214: the shot arrow 14.28 blocks out in its first 0.25 s, moving on 57/58 and 97/98 frames; with the client flight removed, the mutant, 0.00 blocks and 0/102); clippy (both) and `cargo fmt --check` clean.
