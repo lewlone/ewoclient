@@ -282,6 +282,10 @@ pub enum Anim {
     GhastTentacle {
         i: u8,
     },
+    /// M391 — the happy ghast's body (no motion of its own): the part
+    /// `HappyGhastModel.setupAnim` scales by 0.9375 while the ghast wears
+    /// a harness (`body_squeeze`), its tentacles with it.
+    HappyGhastBody,
     /// Squid tentacle curl (approximation of the entity-driven
     /// `tentacleAngle` swim pulse — the wire doesn't carry it).
     SquidTentacle,
@@ -338,9 +342,9 @@ pub enum Anim {
         rest: f32,
     },
     /// M380 — a piglin arm: `HumanoidModel`'s walk swing plus
-    /// `bobModelPart`'s idle bob (the held-item pose and the attack swing,
-    /// whose `±5` arm pivot the baby's `±4` arms do not share, are not
-    /// modelled).
+    /// `bobModelPart`'s idle bob; M392 the hold pose and the attack swing
+    /// too (vanilla assigns the swing's `±5·ageScale` arm pivot to the
+    /// baby's `±4` arms as well); M390 `PiglinModel`'s poses on top.
     PiglinArm {
         left: bool,
     },
@@ -13713,43 +13717,56 @@ const HAPPY_GHAST_LEGS: [([f32; 3], f32); 9] = [
 /// body's offset plus its own. Made once per model, so the ropes layer's
 /// tentacles (the same mesh at 0.2) swing with the base's, and the harness
 /// carries the same nine (without boxes) to keep its part list the ghast's.
-fn happy_ghast_tentacle_parts(b: &mut ModelBuilder) -> [usize; 9] {
-    std::array::from_fn(|i| {
+///
+/// M391 — under the body part (`Anim::HappyGhastBody` at (0, 16, 0)), as
+/// vanilla's tentacles are the body's children: the harness squeeze scales
+/// them too. Returns `(body, tentacles)`.
+fn happy_ghast_tentacle_parts(b: &mut ModelBuilder) -> (usize, [usize; 9]) {
+    let body = b.part([0.0, 16.0, 0.0], Anim::HappyGhastBody, 1.0);
+    let legs = std::array::from_fn(|i| {
         let (off, _) = HAPPY_GHAST_LEGS[i];
-        b.part(
-            [off[0], 16.0 + off[1], off[2]],
+        b.part_ext(
+            off,
+            [0.0; 3],
             Anim::GhastTentacle { i: i as u8 },
             1.0,
+            Some(body),
         )
-    })
+    });
+    (body, legs)
 }
 
 /// `HappyGhastModel.createBodyLayer(isBaby, g)` before its scaling: the body,
 /// the inner body (the baby's only, M314) on the static part, and the nine
 /// tentacles on `legs` (M373; static until then), at deformation `g` (the
 /// inner body `g - 0.5`).
-fn happy_ghast_mesh(b: &mut ModelBuilder, tex: usize, g: f32, baby: bool, legs: &[usize; 9]) {
-    let body = Fold::at([0.0, 16.0, 0.0]);
+fn happy_ghast_mesh(
+    b: &mut ModelBuilder,
+    tex: usize,
+    g: f32,
+    baby: bool,
+    (body, legs): (usize, &[usize; 9]),
+) {
     b.cube_f(
-        STATIC_PART,
+        body,
         tex,
         (0.0, 0.0),
         [-8.0, -8.0, -8.0],
         [16.0, 16.0, 16.0],
         g,
         false,
-        &[body],
+        NONE,
     );
     if baby {
         b.cube_f(
-            STATIC_PART,
+            body,
             tex,
             (0.0, 32.0),
             [-8.0, -16.0, -8.0],
             [16.0, 16.0, 16.0],
             g - 0.5,
             false,
-            &[Fold::at([0.0, 8.0, 0.0]), body],
+            &[Fold::at([0.0, 8.0, 0.0])],
         );
     }
     for (i, (_, len)) in HAPPY_GHAST_LEGS.into_iter().enumerate() {
@@ -13771,13 +13788,13 @@ fn happy_ghast_mesh(b: &mut ModelBuilder, tex: usize, g: f32, baby: bool, legs: 
 /// body box and never showed.)
 fn happy_ghast() -> Model {
     let mut b = ModelBuilder::new();
-    let legs = happy_ghast_tentacle_parts(&mut b);
-    happy_ghast_mesh(&mut b, 0, 0.0, false, &legs);
+    let (body, legs) = happy_ghast_tentacle_parts(&mut b);
+    happy_ghast_mesh(&mut b, 0, 0.0, false, (body, &legs));
     // M312 — `RopesLayer`: `HAPPY_GHAST_ROPES` is the adult body layer at
     // `CubeDeformation(0.2F)` (body and tentacles, no inner body) on its own
     // sheet, texture slot 1, which the renderer shows only while the ghast
     // holds a leash and wears a harness (`MobModel::ropes_slot`).
-    happy_ghast_mesh(&mut b, 1, 0.2, false, &legs);
+    happy_ghast_mesh(&mut b, 1, 0.2, false, (body, &legs));
     b.finish(4.0)
 }
 
@@ -13787,19 +13804,26 @@ fn happy_ghast() -> Model {
 /// further (`getAgeScale`'s 0.2375 shrinks only the bounds).
 fn happy_ghast_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let legs = happy_ghast_tentacle_parts(&mut b);
-    happy_ghast_mesh(&mut b, 0, 0.0, true, &legs);
+    let (body, legs) = happy_ghast_tentacle_parts(&mut b);
+    happy_ghast_mesh(&mut b, 0, 0.0, true, (body, &legs));
     b.finish(4.0 * 0.2375)
 }
+
+/// M391 — `HappyGhastModel.BODY_SQUEEZE`: the body's x/y/z scale while
+/// `state.bodyItem` is not empty (the ghast wears a harness), applied about
+/// the body's pivot so its tentacles shrink with it and the harness (its
+/// own model, unscaled) does not z-fight the body.
+pub const HAPPY_GHAST_BODY_SQUEEZE: f32 = 0.9375;
 
 /// M302 — `HappyGhastHarnessModel.createHarnessLayer(false)` (64 x 64,
 /// `MeshTransformer.scaling(4.0F)`, which the happy ghast's own model scale
 /// carries): the harness cube on the body's box, and the goggles (inflated
 /// 0.15), which `setupAnim` lowers to `y = 14` level while ridden and raises
 /// to `y = 9` tilted `-0.7854` otherwise. The harness cube coincides with the
-/// ghast's body box; vanilla draws it over by `LESS_THAN_OR_EQUAL`, so under
-/// Rewo's strict `GREATER` it is lifted 0.002 px (M301's panel's reading).
-/// On the static part, the only part the happy ghast's mesh has.
+/// ghast's body box, but the harnessed body is squeezed inside it (M391,
+/// [`HAPPY_GHAST_BODY_SQUEEZE`]), so it needs no lift (M302-M390 lifted it
+/// 0.002 px over the unsqueezed body). On the static part: the squeeze
+/// scales the body part only.
 pub fn happy_ghast_harness(ridden: bool) -> Model {
     let mut b = ModelBuilder::new();
     b.cube_f(
@@ -13808,7 +13832,7 @@ pub fn happy_ghast_harness(ridden: bool) -> Model {
         (0.0, 0.0),
         [-8.0, -16.0, -8.0],
         [16.0, 16.0, 16.0],
-        0.002,
+        0.0,
         false,
         &[Fold::at([0.0, 24.0, 0.0])],
     );
@@ -13828,7 +13852,9 @@ pub fn happy_ghast_harness(ridden: bool) -> Model {
         &[goggles],
     );
     // M373 — the ghast's nine tentacle parts, no boxes: a shell keeps its
-    // mob's part list.
+    // mob's part list. M391 — and its body part: the harness itself is on
+    // the static part, so the squeeze leaves it (`HappyGhastHarnessModel`
+    // has no scale).
     happy_ghast_tentacle_parts(&mut b);
     let mut m = b.finish(1.0);
     m.scale = happy_ghast().scale;
@@ -15646,13 +15672,14 @@ mod ghast_ropes_tests {
 
     /// M312 — the ropes are the body and nine tentacles again, 0.2 larger,
     /// on texture slot 1, after the body's own boxes; since M373 they share
-    /// the base mesh's nine tentacle parts (ten parts in all).
+    /// the base mesh's nine tentacle parts, and since M391 its body part
+    /// (eleven parts in all).
     #[test]
     fn the_happy_ghasts_ropes_are_its_body_inflated_on_their_own_sheet() {
         let m = happy_ghast();
         let ropes: Vec<_> = m.quads.iter().filter(|q| q.tex == 1).collect();
         assert_eq!(ropes.len(), 60, "ten boxes");
-        assert_eq!(m.parts.len(), 10);
+        assert_eq!(m.parts.len(), 11);
         let span = |qs: &[&RawQuad]| {
             qs.iter()
                 .flat_map(|q| q.pos.iter().map(|p| p[0]))
@@ -17131,7 +17158,23 @@ mod happy_ghast_tentacle_tests {
         for &l in &legs {
             assert_eq!(m.quads.iter().filter(|q| q.part == l).count(), 12);
         }
-        assert_eq!(m.parts[legs[0]].pivot, [-3.75, 23.0, -5.0]);
+        // M391 — under the body part at (0, 16, 0), as vanilla's are.
+        assert_eq!(m.parts[legs[0]].pivot, [-3.75, 7.0, -5.0]);
+        let body = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::HappyGhastBody)
+            .unwrap();
+        assert_eq!(m.parts[body].pivot, [0.0, 16.0, 0.0]);
+        assert!(legs.iter().all(|&l| m.parts[l].parent == Some(body as u16)));
+        // The body boxes (base and ropes) ride the body part; the harness's
+        // cube and goggles stay on the static part, which the squeeze
+        // leaves alone.
+        assert_eq!(m.quads.iter().filter(|q| q.part == body).count(), 12);
+        assert!(happy_ghast_harness(false)
+            .quads
+            .iter()
+            .all(|q| q.part == STATIC_PART));
         let baby = happy_ghast_baby();
         assert_eq!(
             baby.parts

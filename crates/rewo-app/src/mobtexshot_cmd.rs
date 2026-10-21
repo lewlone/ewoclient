@@ -104,7 +104,15 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 106;
+const EXPECTED_WITNESSES: usize = 107;
+/// M391 — m107's floor: the silhouette pixels the harness squeeze moves.
+/// M391 measured 579; without the squeeze the two draws are one silhouette
+/// (0 by construction: nothing else differs).
+const SQUEEZE_MIN: usize = 290;
+/// M391 — m40's floor, the rope pixels seen through the harness's open
+/// strip from a low side view (M391 measured 53; M312's top-down view
+/// counted 200+ before the squeeze put the top ropes under the harness).
+const ROPES_MIN: usize = 25;
 /// M390 — m106's floors: dancing, admiring, the weapon held high (each
 /// against standing, at the same age). M390 measured 1533, 350 and 482;
 /// the pre-M390 piglin had no pose input, so all four drew alike (0 by
@@ -2664,10 +2672,38 @@ fn run_check(
         ridden,
         ..neutral_draw(EntityModelKind::HappyGhast)
     };
-    let g_bare = hshot(neutral_draw(EntityModelKind::HappyGhast))?;
+    // M391 — the reference is the harnessed ghast with no layer drawn: the
+    // body slot is filled (the body squeezes) but nothing is painted, so
+    // every pixel the harness changes is the harness's.
+    let squeezed_bare = EntityDraw {
+        body_armor: Some(rewo_gpu::entities::ArmorPiece::default()),
+        ..neutral_draw(EntityModelKind::HappyGhast)
+    };
+    let g_bare = hshot(squeezed_bare)?;
     let g_up = hshot(harnessed(false))?;
     let g_down = hshot(harnessed(true))?;
+    // m107 — M391: harnessed, the body and its tentacles squeeze to 0.9375
+    // (the silhouette against the unharnessed ghast).
+    let g_free = hshot(neutral_draw(EntityModelKind::HappyGhast))?;
+    hst.wr.set_entities(&[], hst.right, hst.up, 0.0);
+    hst.off.render(gpu, Some((&mut hst.wr, hst.vp)), &ov, BG)?;
+    let g_empty = hst.off.read_rgba(gpu)?;
     hst.destroy(gpu);
+    let g_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(g_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let squeeze_px = g_mask(&g_free)
+        .iter()
+        .zip(&g_mask(&g_bare))
+        .filter(|(x, y)| x != y)
+        .count();
+    let free_area = g_mask(&g_free).iter().filter(|x| **x).count();
+    let squeezed_area = g_mask(&g_bare).iter().filter(|x| **x).count();
     let (mut harness_px, mut harness_bad) = (0usize, None);
     for (a, b) in g_up
         .as_chunks::<4>()
@@ -2697,6 +2733,13 @@ fn run_check(
              (want >= 300); first colour the sheet cannot produce: {:?}; the goggles moved \
              when ridden: {goggles_moved}",
             harness_bad.map(|c| format!("#{c:06x}"))
+        ),
+    ));
+    w.push(wit(
+        "m107.a_harnessed_happy_ghast_squeezes_its_body",
+        squeeze_px >= SQUEEZE_MIN && squeezed_area < free_area,
+        format!(
+            "{squeeze_px} px of silhouette moved by the squeeze (want >= {SQUEEZE_MIN}); area {free_area} free, {squeezed_area} harnessed (want smaller)"
         ),
     ));
 
@@ -3144,6 +3187,13 @@ fn run_check(
     // (`RopesLayer`), every rope pixel a colour the jar's ropes sheet can
     // produce; holding a leash without a harness, or a harness without a
     // leash, shows none. No ropes drew until M312.
+    //
+    // M391 — the ropes model is a `HappyGhastModel` too, so it squeezes with
+    // the body: 0.2 inflated and then 0.9375 is inside the harness's box, and
+    // the ropes show only where the harness is open (the bottom strip of
+    // each side, which is where the sheet's side rope texels lie). The view
+    // is low and side-on for that (the top-down view saw only the top
+    // ropes, which the harness's opaque top now covers, as vanilla's does).
     let ropes_sheet: HashSet<u32> = baked
         .mob_textures
         .iter()
@@ -3155,7 +3205,7 @@ fn run_check(
         baked,
         cw,
         ch,
-        Vec3::new(6.5, 5.5, -6.5),
+        Vec3::new(-6.0, 0.5, 0.0),
         Vec3::new(0.0, 2.6, 0.0),
     )?;
     let mut rshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
@@ -3202,9 +3252,9 @@ fn run_check(
     let leash_alone_same = r_leash_only == r_bare;
     w.push(wit(
         "m40.a_harnessed_happy_ghast_holding_a_leash_shows_its_ropes",
-        !ropes_sheet.is_empty() && rope_px >= 200 && rope_bad.is_none() && leash_alone_same,
+        !ropes_sheet.is_empty() && rope_px >= ROPES_MIN && rope_bad.is_none() && leash_alone_same,
         format!(
-            "{rope_px} px added by the ropes (want >= 200), first colour the ropes sheet \
+            "{rope_px} px added by the ropes (want >= {ROPES_MIN}), first colour the ropes sheet \
              cannot produce: {:?}; a leash without a harness changes nothing: \
              {leash_alone_same}",
             rope_bad.map(|c| format!("#{c:06x}"))

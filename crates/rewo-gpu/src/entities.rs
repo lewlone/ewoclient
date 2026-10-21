@@ -3788,6 +3788,10 @@ impl EntityPass {
             Some(f) => (Some(f.deltas.as_slice()), Some(f.scale.as_slice())),
             Option::None => (None, None),
         };
+        // M391 — `HappyGhastModel.setupAnim`: a harnessed happy ghast's
+        // body (and its tentacles) at 0.9375, on top of any CEM scale.
+        let squeezed = body_squeeze_scale(model, d, cem_scale);
+        let cem_scale = squeezed.as_deref().or(cem_scale);
         let xf = part_transforms(model, &ctx, cem_deltas, cem_scale);
         // Per-entity render scale (slime/magma size) on top of the baked px→
         // block scale — vanilla scales the whole model uniformly by `size`.
@@ -6098,6 +6102,8 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
             }
         }
         BeeBone | BeeFrontLegs | BeeBackLegs => {}
+        // M391 — scaled, not moved: `body_squeeze_scale`.
+        HappyGhastBody => {}
         FishTail { amp: a, speed } => rot[1] = -a * (speed * c.age).sin(),
         PufferFin { left } => {
             let s = (c.age * 0.2).sin();
@@ -6125,20 +6131,20 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 off[1] = body_y;
             }
         }
-        // M380 — a piglin arm: the humanoid walk swing and idle bob.
+        // M380 — a piglin arm: `HumanoidModel.setupAnim`'s arm stages (M392:
+        // all of them), then `PiglinModel.setupAnim`'s poses.
         PiglinArm { left } => {
-            let phase = if left { c.f } else { c.f + PI };
-            rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
-            // M381 — `isPassenger`: −π/5 on the walk swing.
-            if c.mob.riding {
-                rot[0] += -PI / 5.0;
-            }
-            // M390 — `PiglinModel.setupAttackAnimation`: swinging a melee
-            // weapon, the arms swing it down (before the bob, as
-            // `HumanoidModel.setupAnim` orders them).
-            if c.mob.piglin_pose == mobs::PiglinArmPose::AttackingWithMeleeWeapon
-                && c.attack.attack_time > 0.0
-            {
+            if piglin_swings_weapon_down(c) {
+                // M390 — `PiglinModel.setupAttackAnimation`: swinging a
+                // melee weapon, `swingWeaponDown` in place of the humanoid
+                // swing (between the hold pose and the bob, as
+                // `HumanoidModel.setupAnim` orders them).
+                let phase = if left { c.f } else { c.f + PI };
+                rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
+                if c.mob.riding {
+                    rot[0] += -PI / 5.0;
+                }
+                apply_pose_stage(&mut rot, left, c);
                 swing_weapon_down(
                     &mut rot,
                     left,
@@ -6146,8 +6152,19 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                     c.attack.attack_time,
                     c.age,
                 );
+                bob_model_part(&mut rot, left, c.age);
+            } else {
+                // M392 — the walk, the riding drop (M381), the hold pose
+                // (`HumanoidMobRenderer.getArmPose`: a spear's) and
+                // `HumanoidModel.setupAttackAnimation`'s swing, which places
+                // the arm pivots at ∓cos/±sin(body yaw)·5·ageScale. The
+                // baby's arms rest at ±4, not the ±5 `humanoid_arm` measures
+                // from, so they take the extra px vanilla's assignment moves.
+                humanoid_arm(&mut rot, &mut off, left, c, amp);
+                if c.attack.attack_time > 0.0 && c.mob.is_baby {
+                    off[0] += if left { 1.0 } else { -1.0 };
+                }
             }
-            bob_model_part(&mut rot, left, c.age);
             piglin_arm_pose(&mut rot, &mut off, left, c);
         }
         // M380 — `AbstractPiglinModel.setupAnim`'s ears.
@@ -6189,8 +6206,12 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
                 _ => {}
             }
         }
-        // M390 — the dance's body bob.
+        // M390 — the dance's body bob. M392 — and the humanoid swing's body
+        // yaw (`swingWeaponDown` does not turn it).
         PiglinBody => {
+            if c.attack.attack_time > 0.0 && !piglin_swings_weapon_down(c) {
+                rot[1] = attack_body_yrot(&c.attack);
+            }
             if c.mob.piglin_pose == mobs::PiglinArmPose::Dancing {
                 off[1] += mth_sin((c.age / 60.0 * 40.0) as f64) * 0.35;
             }
@@ -6535,6 +6556,12 @@ fn swing_weapon_down(rot: &mut [f32; 3], left: bool, main_arm_left: bool, t: f32
         rot[0] = -0.0 + mth_cos((age * 0.19) as f64) * 0.5;
         rot[0] += attack2 * 1.2 - attack * 0.4;
     }
+}
+
+/// M390 — `PiglinModel.setupAttackAnimation`'s branch: a piglin attacking
+/// with a melee weapon swings it down instead of the humanoid swing.
+fn piglin_swings_weapon_down(c: &AnimCtx) -> bool {
+    c.mob.piglin_pose == mobs::PiglinArmPose::AttackingWithMeleeWeapon && c.attack.attack_time > 0.0
 }
 
 /// M390 — `PiglinModel.setupAnim`'s arm half, after the humanoid stage
@@ -7993,6 +8020,38 @@ fn anim_deltas(
         }
     }
     (drots, doffs)
+}
+
+/// M391 — the per-part scales with `HappyGhastModel`'s body squeeze folded
+/// in: `Some` only for a happy ghast whose body slot holds something
+/// (`!state.bodyItem.isEmpty()`, i.e. `d.body_armor`), the `HappyGhastBody`
+/// part's scale times [`mobs::HAPPY_GHAST_BODY_SQUEEZE`] and every other
+/// part's CEM scale (or 1) unchanged.
+fn body_squeeze_scale(
+    model: &MobModel,
+    d: &EntityDraw,
+    cem_scale: Option<&[[f32; 3]]>,
+) -> Option<Vec<[f32; 3]>> {
+    if d.kind != mobs::EntityModelKind::HappyGhast || d.body_armor.is_none() {
+        return None;
+    }
+    Some(
+        model
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let base = cem_scale
+                    .and_then(|s| s.get(i).copied())
+                    .unwrap_or([1.0; 3]);
+                if p.anim == mobs::Anim::HappyGhastBody {
+                    base.map(|v| v * mobs::HAPPY_GHAST_BODY_SQUEEZE)
+                } else {
+                    base
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Compose every part's global transform `(M, o)` — child-in-parent
@@ -11356,6 +11415,60 @@ mod piglin_arm_anim_tests {
         lh.mob.main_arm_left = true;
         let r = anim_delta(A::PiglinArm { left: false }, 1.0, &lh).0;
         assert_eq!([r[0], r[1]], [-0.9, -0.5]);
+    }
+
+    /// M392 — not attacking with a melee weapon, a piglin swings as
+    /// `HumanoidModel` does (the arm, its moved pivot and the body's yaw:
+    /// the player arm's very numbers); the baby's arm pivot is assigned the
+    /// same ±5·ageScale from its ±4 rest. A held spear poses the arm.
+    #[test]
+    fn a_piglin_swings_and_holds_as_a_humanoid() {
+        use mobs::Anim as A;
+        let mut c = posed(mobs::PiglinArmPose::Default, 21.0);
+        c.attack.attack_time = 0.3;
+        c.attack.age_scale = 1.0;
+        let pig = anim_delta(A::PiglinArm { left: false }, 1.0, &c);
+        let hum = anim_delta(A::HumanoidArmRight, 1.0, &c);
+        assert_eq!(pig, hum);
+        assert_ne!(pig.1, [0.0; 3], "the swing moves the pivot");
+        assert_eq!(
+            anim_delta(A::PiglinBody, 1.0, &c).0,
+            anim_delta(A::HumanoidBody, 1.0, &c).0
+        );
+        assert_ne!(anim_delta(A::PiglinBody, 1.0, &c).0[1], 0.0);
+        // The baby: x = −cos(by)·5·0.5 assigned over its −4 rest.
+        c.mob.is_baby = true;
+        c.attack.age_scale = 0.5;
+        let by = attack_body_yrot(&c.attack);
+        let baby = anim_delta(A::PiglinArm { left: false }, 1.0, &c).1;
+        assert!(
+            (baby[0] - (-mth_cos(by as f64) * 2.5 + 4.0)).abs() < 1e-5,
+            "{baby:?}"
+        );
+        // Swinging a melee weapon down: no body yaw (`swingWeaponDown`).
+        let mut m = posed(mobs::PiglinArmPose::AttackingWithMeleeWeapon, 21.0);
+        m.attack.attack_time = 0.3;
+        assert_eq!(anim_delta(A::PiglinBody, 1.0, &m).0, [0.0; 3]);
+        assert_eq!(
+            anim_delta(A::PiglinArm { left: false }, 1.0, &m).1,
+            [0.0; 3]
+        );
+        // A spear in the right hand: the hold pose the humanoid arm takes.
+        let mut sp = posed(mobs::PiglinArmPose::Default, 21.0);
+        sp.arm_poses.right = mobs::ArmPose::Spear;
+        assert_eq!(
+            anim_delta(A::PiglinArm { left: false }, 1.0, &sp),
+            anim_delta(A::HumanoidArmRight, 1.0, &sp)
+        );
+        assert_ne!(
+            anim_delta(A::PiglinArm { left: false }, 1.0, &sp).0,
+            anim_delta(
+                A::PiglinArm { left: false },
+                1.0,
+                &posed(mobs::PiglinArmPose::Default, 21.0)
+            )
+            .0
+        );
     }
 
     /// M390 — ATTACKING_WITH_MELEE_WEAPON holds the weapon high (main arm
