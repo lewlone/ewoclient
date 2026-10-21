@@ -23,10 +23,10 @@ released.
 
 ### In one minute
 
-- **What happened**: 176 Rewo milestones, M194 to M369, in about 374 commits on
+- **What happened**: 178 Rewo milestones, M194 to M371, in about 376 commits on
   `claude/autonomous-run-1020-82937b`. Nothing was pushed or released, and
   the local `main` is still at `e09f02f`.
-- **Checks at the end** (`bab60a68`): 4,544 tests pass (4,244 at the
+- **Checks at the end** (`32644383`): 4,548 tests pass (4,244 at the
   start); all 51 offscreen gates pass; the live render check passes 215 of
   215 witnesses (about 67 at the start); clippy and `cargo fmt --check` are
   clean.
@@ -477,6 +477,7 @@ released.
 - **M343**: tame cats and kittens wear their collar too; and a fix: adult cats had been drawn a quarter too big (vanilla's cat is four fifths of an ocelot).
 - **M344**: parrots come in all five colours (every parrot was red and blue).
 - **M345**: snow foxes and their kits are white (every fox was red).
+- **M371**: the guardian's body follows its look, its spikes wobble and its tail sways (M370); the dolphin's body looks and bobs as it swims, and its tail strokes from level (M371).
 - **M369**: the snow golem's body and arms follow its look (M368); the allay bobs while hovering, pitches into flight and reaches for what it holds (M369).
 - **M367**: the hoglin, zoglin and their babies hold their heads' pitch, headbutt (entity event 4), flap their ears and walk with vanilla's gait.
 - **M366**: the strider and its baby walk, roll, bob and sway their bristles as vanilla's do; the adult's body sits 1 px lower, where vanilla puts it.
@@ -560,6 +561,7 @@ released.
 | `50529ba` | **M220** — the horse inventory: `mount_screen_open` decoded (class C closed), mount menu layouts per column count with inactive slots, the mount slots' `mayPlace` from `allowedEntities` (new `EQUIP_ALLOWED` table), vanilla's quick-move, the horse/nautilus screen, E sends `OPEN_INVENTORY` while riding; the player preview no longer drawn over containers; render-check tail with r83 moved in, **r84-r86**. |
 | `e169f2d` | **M221** — boat steering: `rewo_world::boat` (`AbstractBoat.tick` transcribed, closed-form tests), the steered boat simulated in the session with `move_vehicle` / `paddle_boat` and vanilla's passenger packet order, server position packets ignored for it (base kept), rejections snapped and answered; the ridden vehicle's placeholder capsule no longer drawn around the camera; render-check **r87**. |
 | `c40a3694` | Test fix: `srv`'s TCP-retry test recorded the query after answering it, a race that failed one full run. |
+| `32644383` | **M371** — with M370: the guardian's looking body, spikes and tail; the dolphin's body and assigned tail stroke; unit tests, mobtexshot **m88** and **m89**. |
 | `bab60a68` | **M369** — with M368: the snow golem's turning body and arms; the allay's bob, flight pitch and arms; unit tests, mobtexshot **m86** and **m87**. |
 | `39ca7eea` | **M367** — the hoglin family's head, headbutt, ears and gait; unit tests and mobtexshot **m85**. |
 | `4d886335` | **M366** — the strider's body, legs and bristles on `StriderModel`; unit tests and mobtexshot **m84**. |
@@ -979,6 +981,7 @@ released.
 - After M269: **4,409 tests passed, 0 failed; gates 51/51**; render check **127/127** on two runs (r127: 155 and 181 frames swelling); clippy (gates and default features) and `cargo fmt --check` clean.
 - After M270: **4,411 tests passed, 0 failed; gates 51/51** (mobshot unchanged: the default pose bakes as before); render check **128/128** on two runs; clippy (gates and default features) and `cargo fmt --check` clean.
 - After M271: **4,411 tests passed, 0 failed; gates 51/51** (labelshot 53, mobshot's hidden-body check); render check **129/129** on two runs (a third attempt lost its server's port-bind race and never started; an earlier full run hit the SRV tests' environmental 'no port free for both UDP and TCP' flake, clean on rerun); clippy (gates and default features) and `cargo fmt --check` clean.
+- After M371: **4,548 tests passed, 0 failed; gates 51/51** (mobtexshot 89); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M369: **4,544 tests passed, 0 failed; gates 51/51** (mobtexshot 87); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.
 - After M367: **4,540 tests passed, 0 failed** (re-run after fixing a wrong expectation in the new headbutt test and the M327 hoglet test, which read the ear angle off its quads); **gates 51/51** (mobtexshot 85) and render check **215/215** on both runs (on the tree before those test-only fixes); clippy (both) and `cargo fmt --check` clean.
 - After M366: **4,537 tests passed, 0 failed; gates 51/51** (mobtexshot 84); render check **215/215** on both runs; clippy (both) and `cargo fmt --check` clean.

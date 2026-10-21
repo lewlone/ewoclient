@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M371 — the guardian looks and sways its tail; the dolphin looks, bobs and strokes (with M370) (2026-10-21)
+
+From the adult rest-pose audit. **M370**: the guardian's whole body is vanilla's looking `head` part (`PartPose.ZERO`), carrying twelve spikes that wobble on `ageInTicks` and a three-segment tail swaying on a phase at the idle-in-water rate 0.125/tick (Rewo keeps none of the per-entity tail-speed state; eye tracking and spike withdrawal not modelled). **M371**: the dolphin's body looks and, moving, bobs; its tail stroke replaces the tail's rest while moving rather than adding to it (adult and calf; moving = the tick's horizontal displacement). **Unit tests** for each term; **mobtexshot m88** (guardian look 2521 px, tail 384; mutant 0 and 17) and **m89** (dolphin look 1423, swim 737; mutant 0 and 83).
+
 ### M369 — the snow golem turns with its look; the allay hovers, flies and holds (with M368) (2026-10-21)
 
 From the adult rest-pose audit. **M368**: `SnowGolemModel.setupAnim` turns the upper body a quarter of the head yaw and carries the arms round a 5 px circle with it (at rest z 0, not the layer's ±1). **M369**: `AllayModel.setupAnim`'s idle root bob, the body pitching into flight (`min(speed/0.3, 1)·π/4`), and the arms' splay with its idle bob, reaching forward while holding (holding as its steady state). **Unit tests** for each term; **mobtexshot m86** (snow golem 245 px; the head alone 23) and **m87** (allay flying 2008 px, holding 414; the wings alone 1454 and 0).
