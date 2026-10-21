@@ -68,7 +68,7 @@ windows = { version = "0.62", features = [
 # `#[implement]` expands to absolute `::windows_core::` paths, so the core
 # crate has to be a direct dependency rather than reached through `windows`.
 # Same 0.62 release, so cargo unifies it with the one `windows` already pulls.
-windows-core = "0.62"
+windows-core = "0.100"
 
 [lints]
 workspace = true
