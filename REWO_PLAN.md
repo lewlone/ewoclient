@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M382 — the drowned's true left limbs and its trident throw (2026-10-21)
+
+From the adult rest-pose audit. `DrownedModel.createBodyLayer`'s left arm and leg are real boxes at (32, 48) and (16, 48), not the right limbs mirrored, in the base and the 0.25 outer layer; its arms (`Anim::DrownedArm*`) take the trident throw's post-step (`xRot·0.5 − π`) over the zombie arm, and it sits when riding. The swim pose is not modelled. **Unit tests**; **mobtexshot m100** (a drowned posed to throw against unposed 237 px; without the post-step 0).
+
 ### M381 — riders sit (2026-10-21)
 
 From the adult rest-pose audit: every humanoid rider stood on its mount. `HumanoidModel`'s `isPassenger` (arms −π/5 on the walk swing, legs assigned `(−1.4137, ±π/10, ±0.0785)`) and `IllagerModel`'s `isRiding` (arms −π/5 outright, the same legs), for the kinds `sits_when_riding` reads off the built models (humanoid, undead, skeleton, illager and piglin arms; not the villager or witch), when the entity table has a vehicle for the entity. **Unit tests**; **mobtexshot m99** (a riding zombie 661 px and pillager 679 px against standing; mutant 0 and 0).
