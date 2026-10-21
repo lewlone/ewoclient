@@ -4006,6 +4006,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M375 — the warden walks and sways on its own gait; the ravager's stride and mouth (with M374) (2026-10-21)
+
+From the adult rest-pose audit. **M374**: `WardenModel.animateWalk` + `animateIdlePose` (ap = pos·0.8662, speed term capped at 0.5): the body and head roll and pitch with the stride and sway on `age·0.1`, the right arm swings on sin, the legs on the warden's own gait. **M375**: the ravager's legs at vanilla's `0.4·speed` (an amplitude multiplier on the quadruped legs) and its mouth resting a sliver open (`π·0.01`); attack, stun and roar not modelled. **Unit tests**; eventshot c3's neutral pose now includes the idle sway; **mobtexshot m92** (speed 0.2 vs 1.0 0 px, sway 361; mutant 1957 and 0) and **m93** (ravager stride 1413 px in 700..1800; the old 1.4 swing 2273).
+
 ### M373 — the nautilus body follows its look; the happy ghast's tentacles swing (with M372) (2026-10-21)
 
 From the adult rest-pose audit. **M372**: `NautilusModel.applyBodyRotation`: the soft body (now a part with the beak on it) follows the look, clamped to ±10°, on all three nautiluses and their shells. **M373**: the happy ghast's nine tentacles swing on `GhastModel.animateTentacles` (`0.2·sin(age·0.3 + i) + 0.4`), shared by its base and ropes meshes, the harness keeping the part list; the harnessed body's 0.9375 squeeze stays open (a per-part scale). **Unit tests**; **mobtexshot m90** (nautilus 10° look 304 px, 30° vs 10° 0 px; mutant 0) and **m91** (tentacles 41 px from below; mutant 0).
