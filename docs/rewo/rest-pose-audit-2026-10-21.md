@@ -49,7 +49,7 @@ The baby layers had their own audit on 2026-10-20 (see
 | piglin family | mesh: `PlayerModel.createMesh` (true left-limb UVs (32,48)/(16,48), jacket, sleeves and pants at 0.25); Rewo mirrors the right limbs and draws no outer layers (the brute's jacket and pants are missing) | `AdultPiglinModel.createBodyLayer` | open |
 | drowned | left limbs at (32,48)/(16,48) not mirrored (base and outer layer); the trident throw's `xRot·0.5 − π` post-step missing | `DrownedModel` 22-42 | M382 (the swim pose not modelled) |
 | stray, bogged | outer layers are `HumanoidModel.createMesh` (4×12×4 limbs, arms ±5, legs ±1.9; bogged at 0.2, hat 0.7); Rewo uses skeleton limbs at 0.25 | `LayerDefinitions` | M383 |
-| parched | `SkeletonModel.createSingleModelDualBodyLayer` (64×64: arms ±5.5, outer limbs, belt, overlays); Rewo uses the plain skeleton | `LayerDefinitions` 399 | open |
+| parched | `SkeletonModel.createSingleModelDualBodyLayer` (64×64: arms ±5.5, outer limbs, belt, overlays); Rewo uses the plain skeleton | `LayerDefinitions` 399 | M384 (`ParchedRenderer` adds no clothing layer, so the outer layer is unused in vanilla too) |
 | enderman | arms lack the humanoid idle bob (zRot ±(cos(age·0.09)·0.05+0.05), not halved) | `EndermanModel` 48-58 | M379 |
 | witch | nose (and mole) never wobble (`sin(age·0.01·(id%10))`); the drinking nose lift | `WitchModel` 73-78 | M379 |
 | every humanoid | no riding pose (arms −π/5, legs −1.4137 with ±π/10 yaw); jockeys and riders stand | `HumanoidModel` 233-242, `IllagerModel` 85-97 | M381 |

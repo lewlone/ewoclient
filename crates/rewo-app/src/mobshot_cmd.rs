@@ -295,14 +295,18 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 /// M340: 372 → 375, the kitten. M341: 375 → 378, the puppy. M348: 378 →
 /// 384, the cold and warm cows. M349: 384 → 390, the cold pig and chicken.
 /// M350: still 390 — the coral zombie nautilus is an ambiguous kind (below).
-const EXPECTED_MOB_VIEWS: usize = 390;
+/// M384: 390 → 387, the parched's own layer is an ambiguous kind (below).
+const EXPECTED_MOB_VIEWS: usize = 387;
 /// How many kinds the texture-reuse filter excludes from the facelabel check
 /// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
 /// breeze_wind; M350 zombie_nautilus_coral, whose red coral's two planes
-/// overlap one's north face with the other's south): each one is a mob this
-/// gate does NOT grade. The coral mesh's base is the nautilus's, graded under
-/// `nautilus` and `zombie_nautilus`; its corals are `mobtexshot m75`'s.
-const EXPECTED_AMBIGUOUS_KINDS: usize = 9;
+/// overlap one's north face with the other's south; M384 parched, whose
+/// own layer overlaps its leg sleeves at (0, 49) and (4, 49) in vanilla's
+/// sheet): each one is a mob this gate does NOT grade. The coral mesh's base
+/// is the nautilus's, graded under `nautilus` and `zombie_nautilus`; its
+/// corals are `mobtexshot m75`'s. The parched's boxes are `parched_mesh_tests`'
+/// and `mobtexshot m102`'s.
+const EXPECTED_AMBIGUOUS_KINDS: usize = 10;
 
 fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> Result<(), String> {
     let (w, h) = (512u32, 512u32);

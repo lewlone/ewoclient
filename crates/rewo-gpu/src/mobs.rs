@@ -2692,7 +2692,7 @@ pub static MOBS: &[MobDef] = &[
     MobDef {
         kind: EntityModelKind::Parched,
         textures: &["parched"],
-        build: skeleton,
+        build: parched,
     },
     MobDef {
         kind: EntityModelKind::WitherSkeleton,
@@ -4089,6 +4089,105 @@ fn skeleton() -> Model {
 
 fn stray() -> Model {
     skeleton_like(1.0, Some(0.25))
+}
+
+/// M384 — `SkeletonModel.createSingleModelDualBodyLayer()` (64 x 64), the
+/// parched's own layer (`ParchedRenderer` adds no clothing layer): the
+/// skeleton's head and body with a 0.2 head overlay at (0, 32), a belt at
+/// (28, 0) and a 0.025 body overlay at (16, 48); arms on ±5.5 pivots (not
+/// ±5), each a 2-wide bone plus a 3 x 12 x 3 sleeve; legs the same. Until
+/// M384 Rewo drew the plain skeleton mesh on this 64 x 64 sheet, which
+/// scrambled its layout.
+fn parched() -> Model {
+    let mut b = ModelBuilder::new();
+    let head = b.part_named("head", [0.0; 3], [0.0; 3], Anim::Head, 1.0, Option::None);
+    b.cube(
+        head,
+        0,
+        (0.0, 0.0),
+        [-4.0, -8.0, -4.0],
+        [8.0, 8.0, 8.0],
+        NONE,
+    );
+    b.cube_g(
+        head,
+        0,
+        (0.0, 32.0),
+        [-4.0, -8.0, -4.0],
+        [8.0, 8.0, 8.0],
+        0.2,
+        NONE,
+    );
+    b.cube(
+        STATIC_PART,
+        0,
+        (16.0, 16.0),
+        [-4.0, 0.0, -2.0],
+        [8.0, 12.0, 4.0],
+        NONE,
+    );
+    b.cube(
+        STATIC_PART,
+        0,
+        (28.0, 0.0),
+        [-4.0, 10.0, -2.0],
+        [8.0, 1.0, 4.0],
+        NONE,
+    );
+    b.cube_g(
+        STATIC_PART,
+        0,
+        (16.0, 48.0),
+        [-4.0, 0.0, -2.0],
+        [8.0, 12.0, 4.0],
+        0.025,
+        NONE,
+    );
+    for (name, x, anim, bone_uv, sleeve_uv, sleeve_x) in [
+        (
+            "right_arm",
+            -5.5,
+            Anim::SkeletonArmRight,
+            (40.0, 16.0),
+            (42.0, 33.0),
+            -1.55,
+        ),
+        (
+            "left_arm",
+            5.5,
+            Anim::SkeletonArmLeft,
+            (56.0, 16.0),
+            (40.0, 48.0),
+            -1.45,
+        ),
+    ] {
+        let arm = b.part_named(name, [x, 2.0, 0.0], [0.0; 3], anim, 1.0, Option::None);
+        b.cube(arm, 0, bone_uv, [-1.0, -2.0, -1.0], [2.0, 12.0, 2.0], NONE);
+        b.cube(
+            arm,
+            0,
+            sleeve_uv,
+            [sleeve_x, -2.025, -1.5],
+            [3.0, 12.0, 3.0],
+            NONE,
+        );
+    }
+    for (x, anim, sleeve_uv) in [
+        (-2.0, Anim::LegRight, (0.0, 49.0)),
+        (2.0, Anim::LegLeft, (4.0, 49.0)),
+    ] {
+        let leg = b.part([x, 12.0, 0.0], anim, 1.0);
+        b.cube(
+            leg,
+            0,
+            (0.0, 16.0),
+            [-1.0, 0.0, -1.0],
+            [2.0, 12.0, 2.0],
+            NONE,
+        );
+        b.cube(leg, 0, sleeve_uv, [-1.5, 0.0, -1.5], [3.0, 12.0, 3.0], NONE);
+    }
+    b.finish(1.0)
 }
 
 fn wither_skeleton() -> Model {
@@ -16927,5 +17026,53 @@ mod skeleton_clothing_tests {
             );
         }
         assert!(skeleton().quads.iter().all(|q| q.tex == 0));
+    }
+}
+
+#[cfg(test)]
+mod parched_mesh_tests {
+    use super::*;
+
+    /// M384 — the parched is its own dual-body layer: thirteen boxes, arms
+    /// on ±5.5 pivots with 3-wide sleeves at (42, 33) / (40, 48), a belt at
+    /// (28, 0), a head overlay at (0, 32).
+    #[test]
+    fn the_parched_is_its_own_dual_body_layer() {
+        let m = parched();
+        assert_eq!(m.quads.len(), 13 * 6);
+        let arm_r = m.parts.iter().find(|p| p.name == "right_arm").unwrap();
+        let arm_l = m.parts.iter().find(|p| p.name == "left_arm").unwrap();
+        assert_eq!((arm_r.pivot[0], arm_l.pivot[0]), (-5.5, 5.5));
+        let def = MOBS
+            .iter()
+            .find(|d| d.kind == EntityModelKind::Parched)
+            .unwrap();
+        assert_eq!((def.build)().quads.len(), m.quads.len());
+        let uv_min = |q: &RawQuad| {
+            q.uv.iter()
+                .fold([f32::MAX; 2], |a, u| [a[0].min(u[0]), a[1].min(u[1])])
+        };
+        // Each box's faces lie inside its box-UV rect: 2·(w + d) wide and
+        // d + h tall from its texture offset (no face starts at the offset
+        // itself).
+        for (at, w, h, d) in [
+            ([42.0, 33.0], 3.0, 12.0, 3.0),
+            ([40.0, 48.0], 3.0, 12.0, 3.0),
+            ([28.0, 0.0], 8.0, 1.0, 4.0),
+            ([0.0, 32.0], 8.0, 8.0, 8.0),
+        ] {
+            let inside = |q: &RawQuad| {
+                let u = uv_min(q);
+                u[0] >= at[0]
+                    && u[1] >= at[1]
+                    && u[0] < at[0] + 2.0 * (w + d)
+                    && u[1] < at[1] + d + h
+            };
+            assert_eq!(
+                m.quads.iter().filter(|q| inside(q)).count(),
+                6,
+                "the box at {at:?}"
+            );
+        }
     }
 }

@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 101;
+const EXPECTED_WITNESSES: usize = 102;
+/// M384 — m102's floor (px of parched silhouette beyond the skeleton's).
+/// M384 measured 547; the skeleton's mesh on the parched sheet (the
+/// pre-M384 mutant) 112.
+const PARCHED_MIN: usize = 330;
 /// M383 — m101's floor (px of stray silhouette beyond the skeleton's).
 /// M383 measured 913; the clothing on 2-wide limbs (the pre-M383 mutant)
 /// 536.
@@ -7084,9 +7088,10 @@ fn run_check(
             .filter(|(p, e)| p[..3] != e[..3])
             .count()
     };
-    let (sk, st) = (
+    let (sk, st, pa) = (
         sk_area(&skshot(EntityModelKind::Skeleton)?),
         sk_area(&skshot(EntityModelKind::Stray)?),
+        sk_area(&skshot(EntityModelKind::Parched)?),
     );
     skst.destroy(gpu);
     let sk_gain = st.saturating_sub(sk);
@@ -7094,6 +7099,16 @@ fn run_check(
         "m101.a_strays_clothing_is_the_humanoid_mesh",
         sk_gain >= STRAY_CLOTHING_MIN,
         format!("stray {st} px against skeleton {sk} px: {sk_gain} px of clothing (want >= {STRAY_CLOTHING_MIN})"),
+    ));
+    // m102 — M384: the parched's own dual-body layer (3-wide sleeves on ±5.5
+    // arms, legs likewise) covers more than the skeleton's bones.
+    let pa_gain = pa.saturating_sub(sk);
+    w.push(wit(
+        "m102.the_parched_wears_its_own_sleeves",
+        pa_gain >= PARCHED_MIN,
+        format!(
+            "parched {pa} px against skeleton {sk} px: {pa_gain} px more (want >= {PARCHED_MIN})"
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

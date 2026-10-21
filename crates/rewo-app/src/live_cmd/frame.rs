@@ -829,12 +829,13 @@ impl LiveApp {
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             if session.is_sleeping() {
-                c.sleep_camera = Some((
-                    cam.yaw,
-                    cam.pitch,
-                    cam.eye[1] - session.player.y,
-                    session.player.yaw,
-                ));
+                // M384 — measured from the feet the camera stands on: since
+                // M361 that is the render position (the tick's start blended
+                // into its end), so against the tick position the eye read
+                // 0.37 on a frame where the sleeper was still settling.
+                let p = &session.player;
+                let feet = super::view::render_feet(session.player_prev, [p.x, p.y, p.z], alpha);
+                c.sleep_camera = Some((cam.yaw, cam.pitch, cam.eye[1] - feet[1], p.yaw));
             }
         }
         // M138a — `SoundEngine.updateSource(camera)`, and it lives HERE rather
