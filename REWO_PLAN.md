@@ -4009,6 +4009,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M395 — entity moves read onGround; cube mobs squish (2026-10-21)
+
+From the follow-ups (the sulfur cube's squish). The entity move, position-sync and teleport packets now read their trailing `onGround` into `EntityState::on_ground`, as vanilla's handlers do; `tick_squish` is `AbstractCubeMob.tick`'s squish (landing aims at −0.5, leaving the ground 1.0, the aim decays 0.6 a tick); `cube_stretch` is `applySizeAndSquish`'s `(w, 1/w, w)` for the slime, magma cube and sulfur cube; the magma cube's eight segments are parts spread by `−(4 − i)·max(0, squish)·1.7`. Not modelled: the sulfur cube's no-squish while holding a block, the landing particles and sound. **Unit tests**; **mobtexshot m110** (slime 1214, magma 2804, segments 2166 px; 0 by construction before, not run); render check **r218** (an entity read on the ground, no malformed packet).
+
 ### M394 — a boat over a bubble column tilts (2026-10-21)
 
 The last boat follow-up. A boat's `DATA_ID_BUBBLE_TIME` (13 INT) is parsed and routed; the client keeps `Entity.tickCount` (not synced: from 0 at creation) and `tickBubbleColumn`'s multiplier and angle (`10·sin(0.5·tickCount)·multiplier`). The boat root gains a third part (`BoatBubble`) between the wobble and the `rotY(90°)` root; JOML's `setAngleAxis(angle, 1, 0, 1)` does not normalise the axis, so vanilla's matrix is `1 + sin²(θ/2)` times a rotation by `2·atan2(√2·sin(θ/2), cos(θ/2))`, reproduced as a rotation about `(−1, 0, 1)/√2` (past the flip) and a per-part scale. **Unit tests** (the tilt equals JOML's matrix through the flip); **mobtexshot m109** (10°, 452 px; 0 by construction before, not run). No live witness.
