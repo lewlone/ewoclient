@@ -52,7 +52,7 @@ The baby layers had their own audit on 2026-10-20 (see
 | parched | `SkeletonModel.createSingleModelDualBodyLayer` (64×64: arms ±5.5, outer limbs, belt, overlays); Rewo uses the plain skeleton | `LayerDefinitions` 399 | open |
 | enderman | arms lack the humanoid idle bob (zRot ±(cos(age·0.09)·0.05+0.05), not halved) | `EndermanModel` 48-58 | M379 |
 | witch | nose (and mole) never wobble (`sin(age·0.01·(id%10))`); the drinking nose lift | `WitchModel` 73-78 | M379 |
-| every humanoid | no riding pose (arms −π/5, legs −1.4137 with ±π/10 yaw); jockeys and riders stand | `HumanoidModel` 233-242, `IllagerModel` 85-97 | open |
+| every humanoid | no riding pose (arms −π/5, legs −1.4137 with ±π/10 yaw); jockeys and riders stand | `HumanoidModel` 233-242, `IllagerModel` 85-97 | M381 |
 
 ## Uncertain or flag-driven (unmodelled states)
 

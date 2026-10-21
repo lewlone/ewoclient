@@ -866,6 +866,10 @@ pub struct MobCombat {
     /// state: 1 while the main hand holds an item (vanilla ramps it over 5
     /// ticks).
     pub allay_holding: f32,
+    /// M381 — `HumanoidRenderState.isPassenger` / `IllagerRenderState
+    /// .isRiding`: the seated riding pose (set only for a kind that
+    /// [`sits_when_riding`]).
+    pub riding: bool,
     /// M379 — the witch's nose wobble rate `0.01·(entityId % 10)` and
     /// `WitchRenderState.isHoldingItem`.
     pub witch_nose_rate: f32,
@@ -5460,6 +5464,32 @@ fn villager_baby() -> Model {
         b.cube(leg, 0, uv, [-1.0, -0.5, -1.0], [2.0, 3.0, 2.0], NONE);
     }
     b.finish(1.0)
+}
+
+/// M381 — whether a kind's model takes the seated riding pose: a
+/// `HumanoidModel` (its arms `HumanoidArm*` / `UndeadArm*` /
+/// `SkeletonArm*` / `PiglinArm`) or an `IllagerModel` (`IllagerArm*`). The villager, the
+/// witch and the other leg-walkers have no riding pose. Read off the built
+/// models once.
+pub fn sits_when_riding(kind: EntityModelKind) -> bool {
+    static SITS: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
+    let sits = SITS.get_or_init(|| {
+        let mut v = vec![false; EntityModelKind::COUNT];
+        for def in MOBS {
+            v[def.kind.index()] = (def.build)().parts.iter().any(|p| {
+                matches!(
+                    p.anim,
+                    Anim::HumanoidArmRight
+                        | Anim::UndeadArmRight
+                        | Anim::SkeletonArmRight
+                        | Anim::IllagerArmRight
+                        | Anim::PiglinArm { left: false }
+                )
+            });
+        }
+        v
+    });
+    sits.get(kind.index()).copied().unwrap_or(false)
 }
 
 /// M360 — `LayerDefinitions`' `villagerLikeScale`,
@@ -16750,5 +16780,33 @@ mod piglin_creeper_tests {
             .find(|p| p.pivot == [-2.0, 18.0, 4.0])
             .unwrap();
         assert_eq!(right_hind.anim, Anim::QuadHindLeft);
+    }
+}
+
+#[cfg(test)]
+mod riding_pose_kind_tests {
+    use super::*;
+
+    /// M381 — the humanoids and illagers sit when riding; the villager, the
+    /// witch, a horse and a pig do not.
+    #[test]
+    fn humanoids_and_illagers_sit_when_riding() {
+        for k in [
+            EntityModelKind::Player,
+            EntityModelKind::Zombie,
+            EntityModelKind::Skeleton,
+            EntityModelKind::Piglin,
+            EntityModelKind::Pillager,
+        ] {
+            assert!(sits_when_riding(k), "{k:?}");
+        }
+        for k in [
+            EntityModelKind::Villager,
+            EntityModelKind::Witch,
+            EntityModelKind::Horse,
+            EntityModelKind::Pig,
+        ] {
+            assert!(!sits_when_riding(k), "{k:?}");
+        }
     }
 }

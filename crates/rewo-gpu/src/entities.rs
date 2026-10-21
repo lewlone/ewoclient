@@ -5701,6 +5701,12 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         }
         EndermanLegRight => rot[0] = (c.f.cos() * 1.4 * c.amt * 0.5).clamp(-0.4, 0.4),
         EndermanLegLeft => rot[0] = ((c.f + PI).cos() * 1.4 * c.amt * 0.5).clamp(-0.4, 0.4),
+        // M381 — `HumanoidModel` / `IllagerModel` riding: the legs splay
+        // forward (assigned over the walk).
+        LegRight | LegLeft if c.mob.riding => {
+            let s = if anim == LegRight { 1.0 } else { -1.0 };
+            rot = [-1.4137167, s * PI / 10.0, s * 0.07853982];
+        }
         LegRight | QuadHindRight | QuadFrontLeft => rot[0] = c.f.cos() * 1.4 * c.amt * amp,
         LegLeft | QuadHindLeft | QuadFrontRight => rot[0] = (c.f + PI).cos() * 1.4 * c.amt * amp,
         SpiderLeg { left, phase } => {
@@ -6101,6 +6107,10 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         PiglinArm { left } => {
             let phase = if left { c.f } else { c.f + PI };
             rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
+            // M381 — `isPassenger`: −π/5 on the walk swing.
+            if c.mob.riding {
+                rot[0] += -PI / 5.0;
+            }
             bob_model_part(&mut rot, left, c.age);
         }
         // M380 — `AbstractPiglinModel.setupAnim`'s ears.
@@ -6261,6 +6271,8 @@ fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
         }
         // `IllagerModel.setupAnim` assigns its own walk over everything
         // `super.setupAnim` left, then runs the arm-pose switch.
+        // M381 — `IllagerModel.setupAnim` riding: both arms −π/5, outright.
+        IllagerArmRight | IllagerArmLeft if c.mob.riding => rot = [-PI / 5.0, 0.0, 0.0],
         IllagerArmRight | IllagerArmLeft => {
             illager_arm(&mut rot, &mut off, anim == IllagerArmLeft, c);
         }
@@ -6285,6 +6297,11 @@ fn humanoid_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx,
         // `setupAttackAnimation` adds on top.
         let phase = if left { c.f } else { c.f + PI };
         rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
+        // M381 — `if (state.isPassenger) arm.xRot += −π/5`, right after the
+        // walk swing.
+        if c.mob.riding {
+            rot[0] += -PI / 5.0;
+        }
         // Then the *hold* pose, from the item in this arm. `setupAnim`
         // runs its `pose{Right,Left}Arm` dispatch here — after the walk
         // assignment, before `setupAttackAnimation` — so the strike is
@@ -11104,5 +11121,57 @@ mod piglin_arm_anim_tests {
         assert!(
             (r[0] - (21.0_f32 * 0.067).sin() * 0.05).abs() < 1e-4 && (l[0] + r[0]).abs() < 1e-4
         );
+    }
+}
+
+#[cfg(test)]
+mod riding_pose_anim_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn ctx(riding: bool) -> AnimCtx {
+        AnimCtx {
+            pitch: 0.0,
+            net: 0.0,
+            f: 0.0,
+            pos: 0.0,
+            amt: 0.0,
+            age: 0.0,
+            gesture: Option::None,
+            events: [Option::None; mobs::ModelEvent::COUNT],
+            shell: false,
+            body_yaw: 0.0,
+            stand_pose: mobs::STAND_DEFAULT_POSE,
+            allay_dance: Option::None,
+            attack: mobs::SwingPose::NONE,
+            arm_poses: mobs::ArmPoses::EMPTY,
+            mob: mobs::MobCombat {
+                riding,
+                ..Default::default()
+            },
+            tendril: 0.0,
+        }
+    }
+
+    /// M381 — riding, the legs splay forward (±π/10, ±0.0785), a humanoid
+    /// arm adds −π/5 (on top of its idle bob), an illager arm is −π/5
+    /// outright; standing, none of it.
+    #[test]
+    fn a_rider_sits() {
+        use mobs::Anim::*;
+        let (r, s) = (ctx(true), ctx(false));
+        assert_eq!(
+            anim_delta(LegRight, 1.0, &r).0,
+            [-1.4137167, PI / 10.0, 0.07853982]
+        );
+        assert_eq!(
+            anim_delta(LegLeft, 1.0, &r).0,
+            [-1.4137167, -PI / 10.0, -0.07853982]
+        );
+        assert_eq!(anim_delta(LegRight, 1.0, &s).0[1], 0.0);
+        let ride = anim_delta(HumanoidArmRight, 1.0, &r).0[0];
+        let stand = anim_delta(HumanoidArmRight, 1.0, &s).0[0];
+        assert!((ride - stand + PI / 5.0).abs() < 1e-6);
+        assert_eq!(anim_delta(IllagerArmLeft, 1.0, &r).0, [-PI / 5.0, 0.0, 0.0]);
     }
 }

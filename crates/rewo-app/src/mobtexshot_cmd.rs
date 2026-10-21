@@ -104,7 +104,10 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 98;
+const EXPECTED_WITNESSES: usize = 99;
+/// M381 — m99's floor (each rider). M381 measured 661 (zombie) and 679
+/// (pillager); no riding pose (the pre-M381 mutant) 0 and 0.
+const RIDER_MIN: usize = 330;
 /// M380 — m98's floor. M380 measured 89 px; still ears and the bare
 /// `ArmRight`/`ArmLeft` swing (the pre-M380 mutant) 0.
 const PIGLIN_MIN: usize = 40;
@@ -6935,6 +6938,64 @@ fn run_check(
         "m98.a_standing_piglin_flaps_its_ears_and_bobs_its_arms",
         pg_moved >= PIGLIN_MIN,
         format!("a second apart {pg_moved} px of silhouette (want >= {PIGLIN_MIN})"),
+    ));
+
+    // m99 — M381: a seated rider: a zombie (a `HumanoidModel`) and a
+    // pillager (an `IllagerModel`) riding against standing.
+    let mut rdst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(2.2, 1.6, 2.2),
+        Vec3::new(0.0, 0.9, 0.0),
+    )?;
+    rdst.wr.set_entities(&[], rdst.right, rdst.up, 0.0);
+    rdst.off
+        .render(gpu, Some((&mut rdst.wr, rdst.vp)), &ov, BG)?;
+    let rd_empty = rdst.off.read_rgba(gpu)?;
+    let mut rdshot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
+        rdst.wr.set_entities(&[d], rdst.right, rdst.up, 0.0);
+        rdst.off
+            .render(gpu, Some((&mut rdst.wr, rdst.vp)), &ov, BG)?;
+        rdst.off.read_rgba(gpu)
+    };
+    let seated = |kind: EntityModelKind, riding: bool| EntityDraw {
+        mob: rewo_gpu::mobs::MobCombat {
+            riding,
+            ..Default::default()
+        },
+        ..neutral_draw(kind)
+    };
+    let mut rd_rows = Vec::new();
+    let mut rd_ok = true;
+    for kind in [EntityModelKind::Zombie, EntityModelKind::Pillager] {
+        let stand = rdshot(seated(kind, false))?;
+        let ride = rdshot(seated(kind, true))?;
+        let mask = |f: &[u8]| -> Vec<bool> {
+            f.as_chunks::<4>()
+                .0
+                .iter()
+                .zip(rd_empty.as_chunks::<4>().0)
+                .map(|(p, e)| p[..3] != e[..3])
+                .collect()
+        };
+        let n = mask(&stand)
+            .iter()
+            .zip(&mask(&ride))
+            .filter(|(x, y)| x != y)
+            .count();
+        rd_ok &= n >= RIDER_MIN;
+        rd_rows.push(format!("{}: {n} px", kind.name()));
+    }
+    rdst.destroy(gpu);
+    w.push(wit(
+        "m99.a_rider_sits",
+        rd_ok,
+        format!(
+            "riding vs standing {} (want >= {RIDER_MIN} each)",
+            rd_rows.join("; ")
+        ),
     ));
 
     // ---- report ----------------------------------------------------------

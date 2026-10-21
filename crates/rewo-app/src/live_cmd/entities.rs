@@ -1672,6 +1672,8 @@ pub(crate) fn resolve_mob_combat(
         sheep_eat: None,
         // M363 — set by the caller for a boat.
         under_water: false,
+        // M381 — set by the caller for a rider.
+        riding: false,
         // M379 — set by the caller for a witch.
         witch_nose_rate: 0.0,
         witch_holding: false,
@@ -4931,6 +4933,10 @@ pub(super) fn collect_entities<'a>(
             mob.bee_angry = mob_is_angry(session, id);
             mob.bee_stung = session.world.entities.bee_flags(id) & 0x04 != 0;
         }
+        // M381 — a seated rider (`isPassenger` / `isRiding`), for the kinds
+        // whose model has the pose.
+        mob.riding = rewo_gpu::mobs::sits_when_riding(kind)
+            && session.world.entities.vehicle_of(id).is_some();
         // M379 — the witch's nose: its id sets the wobble rate, and a held
         // item (her potion) lifts it.
         if kind == EntityModelKind::Witch {
