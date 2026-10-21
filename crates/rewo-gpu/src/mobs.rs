@@ -5268,10 +5268,19 @@ fn villager_baby() -> Model {
     b.finish(1.0)
 }
 
+/// M360 — `LayerDefinitions`' `villagerLikeScale`,
+/// `MeshTransformer.scaling(0.9375F)`, on the villager's and the wandering
+/// trader's layer (and the no-hat one), the witch's and the illagers'
+/// (`ModelLayers.EVOKER` / `ILLUSIONER` / `PILLAGER` / `VINDICATOR`); no
+/// renderer scales them again. A model scale is the same transform (about
+/// the renderer's 24.016 px origin). Until M360 Rewo drew all seven about 6%
+/// too big (found by the 2026-10-21 rest-pose audit).
+pub const VILLAGER_LIKE_SCALE: f32 = 0.9375;
+
 fn villager() -> Model {
     let mut b = ModelBuilder::new();
     villager_build(&mut b);
-    b.finish(1.0)
+    b.finish(VILLAGER_LIKE_SCALE)
 }
 
 // ---------------------------------------------------------------------------
@@ -7272,7 +7281,7 @@ fn illager(crossed: bool) -> Model {
         [4.0, 12.0, 4.0],
         NONE,
     );
-    b.finish(1.0)
+    b.finish(VILLAGER_LIKE_SCALE)
 }
 
 fn illager_crossed() -> Model {
@@ -7344,7 +7353,7 @@ fn witch() -> Model {
         false,
         &[Fold::at([0.0, -2.0, 0.0]), Fold::at([0.0, -2.0, 0.0])],
     );
-    b.finish(1.0)
+    b.finish(VILLAGER_LIKE_SCALE)
 }
 
 // ---------------------------------------------------------------------------
@@ -15910,5 +15919,40 @@ mod boat_patch_tests {
         horizontal.sort_by(f32::total_cmp);
         assert!((horizontal[0] - 16.0).abs() < 1e-3 && (horizontal[1] - 28.0).abs() < 1e-3);
         assert!((span[1] - 3.0).abs() < 1e-3, "{span:?}");
+    }
+}
+
+#[cfg(test)]
+mod villager_scale_tests {
+    use super::*;
+
+    /// M360 — the villager-like layers at `villagerLikeScale`; their babies
+    /// (`BabyVillagerModel`'s own layer) and the zombie villager are not.
+    #[test]
+    fn the_villager_like_mobs_are_drawn_at_fifteen_sixteenths() {
+        for m in [villager(), witch(), illager_crossed(), illager_arms()] {
+            assert_eq!(m.scale, 0.9375);
+        }
+        let kinds = [
+            EntityModelKind::Villager,
+            EntityModelKind::WanderingTrader,
+            EntityModelKind::Witch,
+            EntityModelKind::Pillager,
+            EntityModelKind::Vindicator,
+            EntityModelKind::Evoker,
+            EntityModelKind::Illusioner,
+        ];
+        for def in MOBS.iter().filter(|d| kinds.contains(&d.kind)) {
+            assert_eq!((def.build)().scale, 0.9375, "{:?}", def.kind);
+        }
+        assert_eq!(MOBS.iter().filter(|d| kinds.contains(&d.kind)).count(), 7);
+        for def in MOBS.iter().filter(|d| {
+            matches!(
+                d.kind,
+                EntityModelKind::VillagerBaby | EntityModelKind::ZombieVillager
+            )
+        }) {
+            assert_eq!((def.build)().scale, 1.0, "{:?}", def.kind);
+        }
     }
 }

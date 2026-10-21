@@ -44,7 +44,7 @@ The baby layers had their own audit on 2026-10-20 (see
 | camel, armadillo | head look unclamped (camel ±30° / -25..45°, armadillo ±32.5° / -22.5..25°) | `CamelModel` 53-54, `ArmadilloModel` 59-60 | open |
 | axolotl | layer pose; vanilla always blends swim/hover/crawl/lay poses on `ageInTicks`, the look goes to the body | `AdultAxolotlModel` 77-203 | open |
 | creeper | legs half a cycle out of phase (vanilla swaps the field names); invisible in practice | `CreeperModel` 26-49 | open |
-| villager, wandering trader, witch, pillager, vindicator, evoker, illusioner | drawn at 1.0; vanilla's layers are `MeshTransformer.scaling(0.9375)` (about 6% too big) | `LayerDefinitions` 192-193, 215, 494, 496 | open |
+| villager, wandering trader, witch, pillager, vindicator, evoker, illusioner | drawn at 1.0; vanilla's layers are `MeshTransformer.scaling(0.9375)` (about 6% too big) | `LayerDefinitions` 192-193, 215, 494, 496 | M360 |
 | piglin, piglin brute, zombified piglin | ears frozen at ±30° (vanilla flaps them on `age·0.1 + pos·0.5`); arms without the humanoid idle bob or the attack swing; aggressive poses (`holdWeaponHigh`, crossbow, admiring) | `AbstractPiglinModel` 78-81, `PiglinModel` 31-59 | open |
 | piglin family | mesh: `PlayerModel.createMesh` (true left-limb UVs (32,48)/(16,48), jacket, sleeves and pants at 0.25); Rewo mirrors the right limbs and draws no outer layers (the brute's jacket and pants are missing) | `AdultPiglinModel.createBodyLayer` | open |
 | drowned | left limbs at (32,48)/(16,48) not mirrored (base and outer layer); the trident throw's `xRot·0.5 − π` post-step missing | `DrownedModel` 22-42 | open |
