@@ -348,6 +348,25 @@ impl Column {
 }
 
 impl Section {
+    /// A section from already-decoded parts, for decoders other than the wire
+    /// (Anvil region files). Light arrays are 2048-byte nibble layers.
+    pub fn from_parts(
+        non_empty: i16,
+        states: Container,
+        biomes: Container,
+        block_light: Option<Vec<u8>>,
+        sky_light: Option<Vec<u8>>,
+    ) -> Self {
+        Section {
+            non_empty,
+            states,
+            biomes,
+            block_light,
+            sky_light,
+            edited: false,
+        }
+    }
+
     /// An all-air section at full sky light — the building block for
     /// synthetic worlds (the `demo` showcase). `set_block` overrides then
     /// populate it; the full skylight makes the scene render lit.
@@ -366,6 +385,27 @@ impl Section {
 }
 
 impl Column {
+    /// A column from decoded sections (one per section of the dimension,
+    /// bottom up), for decoders other than the wire. `sky_full_above` has
+    /// the meaning documented on the field: sections at or above it with no
+    /// sky array read as sky 15.
+    pub fn from_sections(
+        cx: i32,
+        cz: i32,
+        sections: Vec<Section>,
+        sky_full_above: usize,
+        motion_blocking: Option<Box<[i32; 256]>>,
+    ) -> Self {
+        Column {
+            cx,
+            cz,
+            sections,
+            sky_full_above,
+            motion_blocking,
+            block_entities: Vec::new(),
+        }
+    }
+
     /// An all-air, fully-lit column for synthetic scenes. Blocks are added
     /// via `Column::set_block` (through `World::set_block`).
     pub fn empty_lit(shape: &DimensionShape, cx: i32, cz: i32) -> Self {
