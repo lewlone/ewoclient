@@ -54,7 +54,7 @@ elsewhere in this file is the measurement at the time it was written.
 
 - **Gates:** 44 serverless gate commands pinned in `tools/gates.py` `EXPECTED_GATES`, plus 4 `mobshot` sub-gates and the demo-hash row. Last sweep: **49/49** rows passed.
 - **`live --render-check`:** 68 witnesses (`EXPECTED_RENDER_CHECK_WITNESSES`, `crates/rewo-app/src/live_cmd/render_check.rs`).
-- **Demo PNG hash:** `d7dc9e8985f0504f` (`tools/demo_hash.txt`).
+- **Demo PNG hash:** `093dcb3327cdf18e` (`tools/demo_hash.txt`).
 - **Packet coverage:** the table in `REWO_PACKET_COVERAGE.md` (machine-checked by `ids.rs`).
 
 | Gate | witnesses | source | last sweep |

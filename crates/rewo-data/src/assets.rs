@@ -4486,19 +4486,22 @@ fn apply_element_rotation(verts: &mut [[f32; 3]; 4], rot: &serde_json::Value) {
 }
 
 /// Rotate a point (0..16) by whole-model x then y (0/90/180/270) around
-/// block center (8,8,8).
+/// block center (8,8,8). Vanilla's `BlockModelRotation` is
+/// `rotateYXZ(-y, -x, 0)`: each step turns -90° about the axis, so `y: 90`
+/// takes east to south (stairs `facing=south`) and `x: 90` takes up to north
+/// (a wall lever `facing=north` hangs on the block south of it).
 fn rotate_xy(v: &mut [f32; 3], x: i32, y: i32) {
     let c = [8.0f32, 8.0, 8.0];
     let mut p = [v[0] - c[0], v[1] - c[1], v[2] - c[2]];
     for _ in 0..((x / 90).rem_euclid(4)) {
-        // x rotation: y→z, z→-y  (90° about +X)
-        let (ny, nz) = (-p[2], p[1]);
+        // x rotation: y→-z, z→y  (-90° about +X)
+        let (ny, nz) = (p[2], -p[1]);
         p[1] = ny;
         p[2] = nz;
     }
     for _ in 0..((y / 90).rem_euclid(4)) {
-        // y rotation: x→-z, z→x  (90° about +Y)
-        let (nx, nz) = (p[2], -p[0]);
+        // y rotation: x→z, z→-x  (-90° about +Y)
+        let (nx, nz) = (-p[2], p[0]);
         p[0] = nx;
         p[2] = nz;
     }
@@ -4522,14 +4525,15 @@ fn rotate_normal_element(n: &mut [f32; 3], rot: &serde_json::Value) {
     n[b] = na * s + nb * c;
 }
 
+/// [`rotate_xy`] for a direction.
 fn rotate_normal_xy(n: &mut [f32; 3], x: i32, y: i32) {
     for _ in 0..((x / 90).rem_euclid(4)) {
-        let (ny, nz) = (-n[2], n[1]);
+        let (ny, nz) = (n[2], -n[1]);
         n[1] = ny;
         n[2] = nz;
     }
     for _ in 0..((y / 90).rem_euclid(4)) {
-        let (nx, nz) = (n[2], -n[0]);
+        let (nx, nz) = (-n[2], n[0]);
         n[0] = nx;
         n[2] = nz;
     }
@@ -4801,12 +4805,14 @@ fn rotate_box(b: [f32; 6], x_deg: i32, y_deg: i32) -> [f32; 6] {
     let mut hi = [b[3], b[4], b[5]];
     let steps = |d: i32| d.rem_euclid(360) / 90;
     for _ in 0..steps(x_deg) {
-        // x rotation: y -> z, z -> -y (about the block centre)
+        // x rotation: y -> -z, z -> y (about the block centre), as
+        // `rotate_xy`: an extended piston `facing=up` (x 270) has its open
+        // front on top.
         let (l, h) = (lo, hi);
-        lo[1] = 1.0 - h[2];
-        hi[1] = 1.0 - l[2];
-        lo[2] = l[1];
-        hi[2] = h[1];
+        lo[1] = l[2];
+        hi[1] = h[2];
+        lo[2] = 1.0 - h[1];
+        hi[2] = 1.0 - l[1];
     }
     for _ in 0..steps(y_deg) {
         // y rotation: x -> z, z -> -x
@@ -5354,10 +5360,31 @@ mod tests {
 
     #[test]
     fn y_rotation_cycles_north_to_east() {
-        // north normal (0,0,-1) rotated y=90 → east/west axis.
+        // Vanilla turns clockwise seen from above: north → east → south → west.
+        for (y, want) in [(0, 2), (90, 5), (180, 3), (270, 4)] {
+            let mut n = [0.0, 0.0, -1.0];
+            rotate_normal_xy(&mut n, 0, y);
+            assert_eq!(snap_face(n), want, "north turned y={y}");
+        }
+        // Points agree with normals: the east half of a block, turned y=90,
+        // is its south half.
+        let mut p = [16.0, 8.0, 8.0];
+        rotate_xy(&mut p, 0, 90);
+        assert_eq!(p, [8.0, 8.0, 16.0]);
+    }
+
+    #[test]
+    fn x_rotation_takes_up_to_north() {
+        // `rotateX(-90°)`: up → north, north → down.
+        let mut n = [0.0, 1.0, 0.0];
+        rotate_normal_xy(&mut n, 90, 0);
+        assert_eq!(snap_face(n), 2);
         let mut n = [0.0, 0.0, -1.0];
-        rotate_normal_xy(&mut n, 0, 90);
-        assert_eq!(snap_face(n), 4); // -X (west) — a 90° turn off north
+        rotate_normal_xy(&mut n, 90, 0);
+        assert_eq!(snap_face(n), 1);
+        let mut p = [8.0, 16.0, 8.0];
+        rotate_xy(&mut p, 90, 0);
+        assert_eq!(p, [8.0, 8.0, 0.0]);
     }
 
     #[test]
@@ -5490,6 +5517,91 @@ mod tests {
         // The registry name is not the sprite name.
         let mansion = t.iter().position(|e| e.0 == "mansion").expect("mansion");
         assert_eq!(t[mansion].1, "woodland_mansion");
+    }
+
+    /// Geometry agrees with vanilla's shapes: wherever `occludes` (from the
+    /// datagen occlusion shapes) says a face is a full square, the model's
+    /// quads lying in that face cover all of it. A variant rotated the wrong
+    /// way breaks this (a `facing=north` stair whose tall half sits on the
+    /// south leaves its occluding north face half bare), and it is how the
+    /// reversed `rotate_xy` was caught.
+    #[test]
+    fn every_occluding_face_is_covered_by_the_model() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let name_of = |id: usize| {
+            raw.as_object()
+                .unwrap()
+                .iter()
+                .find(|(_, b)| {
+                    b["states"]
+                        .as_array()
+                        .is_some_and(|s| s.iter().any(|st| st["id"].as_u64() == Some(id as u64)))
+                })
+                .map(|(n, _)| n.clone())
+                .unwrap_or_default()
+        };
+        let cactus = states_where(raw, "minecraft:cactus", &[]);
+        let known = cactus.as_slice();
+        let (mut checked, mut bad) = (0usize, Vec::new());
+        for (id, kind) in baked.render.iter().enumerate() {
+            let RenderKind::Model(m) = kind else { continue };
+            let Some(c) = baked.cull.get(id) else {
+                continue;
+            };
+            // Known, pre-existing: cactus resolves `solid` from its full-cube
+            // top/bottom element while its sides sit 1px in, so `occludes`
+            // claims sides vanilla's box(1,0,1,15,16,15) does not have.
+            if known.contains(&id) {
+                continue;
+            }
+            for face in 0..6usize {
+                if c.occludes & (1 << face) == 0 {
+                    continue;
+                }
+                checked += 1;
+                // The face's plane and its two in-plane axes.
+                let (axis, at) = [(1, 1.0), (1, 0.0), (2, 0.0), (2, 1.0), (0, 0.0), (0, 1.0)][face];
+                let (u, v) = match axis {
+                    0 => (2, 1),
+                    1 => (0, 2),
+                    _ => (0, 1),
+                };
+                let mut grid = [[false; 16]; 16];
+                for q in &baked.models[*m as usize] {
+                    if q.dir as usize != face || q.verts.iter().any(|p| (p[axis] - at).abs() > 1e-4)
+                    {
+                        continue;
+                    }
+                    let lo = |k: usize| q.verts.iter().map(|p| p[k]).fold(f32::MAX, f32::min);
+                    let hi = |k: usize| q.verts.iter().map(|p| p[k]).fold(f32::MIN, f32::max);
+                    let cells = |k: usize| {
+                        ((lo(k) * 16.0).round() as usize).min(16)
+                            ..((hi(k) * 16.0).round() as usize).min(16)
+                    };
+                    for a in cells(u) {
+                        for b in cells(v) {
+                            grid[a][b] = true;
+                        }
+                    }
+                }
+                if grid.iter().flatten().any(|&g| !g) {
+                    bad.push(format!("{} (state {id}) face {face}", name_of(id)));
+                }
+            }
+        }
+        assert!(
+            checked > 1000,
+            "only {checked} occluding model faces: the check saw nothing"
+        );
+        assert!(
+            bad.is_empty(),
+            "{} occluding faces not covered, e.g. {:?}",
+            bad.len(),
+            &bad[..bad.len().min(12)]
+        );
     }
 
     #[test]
