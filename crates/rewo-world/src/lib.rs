@@ -67,6 +67,28 @@ use dimension::{CardinalLightType, CardinalLighting, DimensionShape, DimensionTy
 /// is: `shape`, [`World::has_sky_light`] and [`World::cardinal_light`] all come
 /// from the same `DimensionType`. A dimension change replaces the whole struct
 /// rather than mutating these in place — see `rewo_net::play`.
+/// A cheap copy of a [`World`]'s columns, from [`World::snapshot_columns`].
+#[derive(Clone, Default)]
+pub struct ColumnSnapshot(FxHashMap<(i32, i32), Arc<chunk::Column>>);
+
+impl ColumnSnapshot {
+    pub fn get(&self, cx: i32, cz: i32) -> Option<&Arc<chunk::Column>> {
+        self.0.get(&(cx, cz))
+    }
+
+    pub fn coords(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.0.keys().copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 pub struct World {
     pub shape: DimensionShape,
     /// Fx-hashed: every block query (mesher, light, physics) hashes a column
@@ -229,6 +251,22 @@ impl World {
 
     pub fn loaded_columns(&self) -> usize {
         self.columns.len()
+    }
+
+    /// A checkpoint of every column: the column map with its `Arc`s cloned,
+    /// so it costs one pointer copy per column. Because writers go through
+    /// `Arc::make_mut`, a column edited after the snapshot is copied first
+    /// and the snapshot keeps the old one. Comparing two snapshots'
+    /// `Arc::ptr_eq` per column finds every column that changed. The rewo-side
+    /// block-entity map is not part of it.
+    pub fn snapshot_columns(&self) -> ColumnSnapshot {
+        ColumnSnapshot(self.columns.clone())
+    }
+
+    /// Put back a [`World::snapshot_columns`] checkpoint (columns, and with
+    /// them their light), replacing whatever is loaded now.
+    pub fn restore_columns(&mut self, snapshot: ColumnSnapshot) {
+        self.columns = snapshot.0;
     }
 
     /// Global block state id at world coords, or 0 (air) if unloaded /
@@ -1029,5 +1067,39 @@ mod ambient_sounds_at_tests {
             additions: Vec::new(),
         };
         assert_eq!(w.ambient_sounds_at([1.0, 2.0, 3.0], &base), base);
+    }
+}
+
+#[cfg(test)]
+mod column_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_survives_later_edits_and_restores_them_away() {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        w.ensure_column(1, 0);
+        w.set_block(3, 64, 3, 7);
+        let snap = w.snapshot_columns();
+        w.set_block(3, 64, 3, 9);
+        w.set_block(4, 70, 4, 9);
+        assert_eq!(
+            snap.get(0, 0).unwrap().block_state_at(&w.shape, 3, 64, 3),
+            7
+        );
+        // The untouched column is still shared; the edited one was copied.
+        assert!(Arc::ptr_eq(
+            snap.get(1, 0).unwrap(),
+            w.columns.get(&(1, 0)).unwrap()
+        ));
+        assert!(!Arc::ptr_eq(
+            snap.get(0, 0).unwrap(),
+            w.columns.get(&(0, 0)).unwrap()
+        ));
+        let edited = w.digest();
+        w.restore_columns(snap);
+        assert_eq!(w.block_state_at(3, 64, 3), 7);
+        assert_eq!(w.block_state_at(4, 70, 4), 0);
+        assert_ne!(w.digest(), edited);
     }
 }
