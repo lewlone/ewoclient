@@ -42,6 +42,16 @@ reports under `%APPDATA%/EwoClient/rewo/26.2/` (git-ignored, derived from the
 user's own download). Brigadier and DFU are libraries absent from the
 decompile, so grade those against the real jars.
 
+**Exception: the block tables are on 26.3** (`block_light`, `block_props`,
+`collision_table`, from `REWO_VERSION=26.3 python tools/gen_*.py` over
+`rewo/26.3/`). The McBuilder repo needs 26.3's 90 extra blocks. The tables
+are name-keyed, the extra names are inert on 26.2, and no 26.2 block's entry
+changed (diffed 2026-10-23). **`ao_facts_table` stays on 26.2:** 26.3 reworked
+`isViewBlocking` (near-plane AABB), and `gen_ao_facts.py` refuses a 26.3 run.
+Every block generator iterates registrations through
+`gen_block_light.iter_calls`, which fails the run if any `blocks.json` name is
+reached by no registration form it understands.
+
 ## Verification (user mandate: headless-first)
 
 The user does not manually test what a machine can check. Every milestone ships

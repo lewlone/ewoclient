@@ -181,8 +181,6 @@ def main():
     sups = gbp.superclasses()
     sources = class_sources()
     consts = scan_constants(sources)
-    id_tables = gbl.scan_id_tables()
-    single_ids = gbl.scan_single_ids()
     known = set(json.load(open(gbl.REGISTRY, encoding="utf8")).keys())
     helpers = {}
     for m in re.finditer(r"(?:private|public)\s+static\s+BlockBehaviour\.Properties\s+(\w+)\s*\(", src):
@@ -251,23 +249,8 @@ def main():
         else:
             state_dep.append(name)
 
-    for m in re.finditer(r"public\s+static\s+final\s+Block\s+([A-Z0-9_]+)\s*=\s*(\w+)\s*\(", src, re.M):
-        body = gbl.balanced(src, m.end() - 1)
-        ref = re.search(r"Block(?:Item)?Ids\.(\w+)", body)
-        name = single_ids.get(ref.group(1)) if ref else None
-        record(name or m.group(1).lower(), body, gbl.impl_class(body), m.group(2))
-    for m in re.finditer(
-        r"public\s+static\s+final\s+(?:Color|WeatheringCopper)Collection<Block>\s+"
-        r"[A-Z0-9_]+\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
-    ):
-        body = gbl.balanced(src, m.end() - 1)
-        ref = re.search(r"BlockItemIds\.(\w+)", body)
-        names = id_tables.get(ref.group(1)) if ref else None
-        if not names:
-            continue
-        cls = gbl.impl_class(body)
-        for name, _ in names:
-            record(name, body, cls)
+    for _field, name, func, call, _state in gbl.iter_calls(src):
+        record(name, call, gbl.impl_class(call), func)
 
     dest = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
