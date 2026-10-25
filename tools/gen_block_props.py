@@ -114,8 +114,6 @@ def java_float(lit):
 def main():
     src = open(gbl.BLOCKS, encoding="utf8", errors="replace").read()
     sups = superclasses()
-    id_tables = gbl.scan_id_tables()
-    single_ids = gbl.scan_single_ids()
     known = set(json.load(open(gbl.REGISTRY, encoding="utf8")).keys())
     stuck_lit = stuck_multipliers()
 
@@ -167,24 +165,8 @@ def main():
             if v is not None:
                 table[name] = v
 
-    for m in re.finditer(r"public\s+static\s+final\s+Block\s+([A-Z0-9_]+)\s*=\s*\w+\s*\(", src, re.M):
-        body = gbl.balanced(src, m.end() - 1)
-        ref = re.search(r"Block(?:Item)?Ids\.(\w+)", body)
-        name = single_ids.get(ref.group(1)) if ref else None
-        record(name or m.group(1).lower(), body, gbl.impl_class(body))
-
-    for m in re.finditer(
-        r"public\s+static\s+final\s+(?:Color|WeatheringCopper)Collection<Block>\s+"
-        r"[A-Z0-9_]+\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
-    ):
-        body = gbl.balanced(src, m.end() - 1)
-        ref = re.search(r"BlockItemIds\.(\w+)", body)
-        names = id_tables.get(ref.group(1)) if ref else None
-        if not names:
-            continue
-        cls = gbl.impl_class(body)
-        for name, _state in names:
-            record(name, body, cls)
+    for _field, name, _func, call, _state in gbl.iter_calls(src):
+        record(name, call, gbl.impl_class(call))
 
     if missing:
         print(f"  {len(missing)} names not in the registry: {missing[:5]}", file=sys.stderr)

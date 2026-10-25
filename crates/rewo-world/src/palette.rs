@@ -93,6 +93,36 @@ impl Container {
         }
     }
 
+    /// An indirect container from a palette of global ids and one palette
+    /// index per cell (4096 for block states, 64 for biomes), for decoders
+    /// that are not the wire, such as Anvil region files. A one-entry palette
+    /// becomes a single-value container. An index outside the palette is an
+    /// error, never a silent fallback to entry 0.
+    pub fn from_palette(palette: Vec<u32>, cells: Vec<u16>) -> std::result::Result<Self, String> {
+        if palette.is_empty() {
+            return Err("empty palette".into());
+        }
+        if palette.len() == 1 {
+            return Ok(Self::single(palette[0]));
+        }
+        if let Some((i, &bad)) = cells
+            .iter()
+            .enumerate()
+            .find(|&(_, &c)| c as usize >= palette.len())
+        {
+            return Err(format!(
+                "cell {i} indexes palette entry {bad}, palette has {}",
+                palette.len()
+            ));
+        }
+        Ok(Self {
+            single: None,
+            palette,
+            cells,
+            direct: false,
+        })
+    }
+
     pub fn read(r: &mut PacketReader, kind: ContainerKind) -> Result<Self> {
         let bits = r.u8()? as u32;
         let entry_count = kind.entry_count();
@@ -389,5 +419,20 @@ mod tests {
         let mut r = PacketReader::new(&w.buf);
         let c = Container::read(&mut r, ContainerKind::BlockStates { global_bits: 15 }).unwrap();
         assert_eq!(std::mem::size_of_val(&c.cells[0]), 2);
+    }
+
+    #[test]
+    fn from_palette_maps_cells_through_the_palette_and_rejects_strays() {
+        let mut cells = vec![0u16; 4096];
+        cells[17] = 2;
+        let c = Container::from_palette(vec![1, 9, 33], cells.clone()).unwrap();
+        assert_eq!((c.get(0), c.get(17)), (1, 33));
+        // One entry collapses to a single-value container.
+        assert!(Container::from_palette(vec![0], Vec::new())
+            .unwrap()
+            .is_uniform_zero());
+        cells[5] = 3;
+        assert!(Container::from_palette(vec![1, 9, 33], cells).is_err());
+        assert!(Container::from_palette(Vec::new(), Vec::new()).is_err());
     }
 }

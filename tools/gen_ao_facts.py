@@ -332,6 +332,17 @@ def with_copy_sources(parts, by_field, depth=0):
 
 def main():
     src = open(BLOCKS, encoding="utf8", errors="replace").read()
+    # 26.3 reworked the predicate: `isViewBlocking` takes the camera's
+    # near-plane AABB, slabs and stairs test `NEAR_PLANE_INTERSECTS_OUTLINE`,
+    # and glass and leaves lost their constant overrides. This table and
+    # rewo's AO port model the 26.2 predicate, so a 26.3 run would produce an
+    # empty table that reads as "nothing overrides it". Port the new model
+    # with the client's own 26.3 bump. Until then this table stays on 26.2
+    # while the other block tables move to 26.3 (a superset, extra names inert).
+    if "NEAR_PLANE_INTERSECTS_OUTLINE" in src:
+        print(f"[gen_ao_facts] FAIL — {VERSION} uses the near-plane isViewBlocking "
+              "model this table does not port; run with REWO_VERSION=26.2", file=sys.stderr)
+        sys.exit(1)
     helpers = property_helpers(src)
     constants = scan_predicate_constants(src)
     shade_classes = scan_shade_classes()

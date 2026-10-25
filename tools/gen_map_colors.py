@@ -22,7 +22,8 @@ import os
 import re
 import sys
 
-BASE = os.path.expandvars(r"%APPDATA%/EwoClient/rewo/26.2")
+VERSION = os.environ.get("REWO_VERSION", "26.2")
+BASE = os.path.join(os.environ["APPDATA"], "EwoClient", "rewo", VERSION)
 SRC = os.path.join(BASE, "decompiled/net/minecraft/world/level/material/MapColor.java")
 OUT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

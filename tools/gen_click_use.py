@@ -100,8 +100,6 @@ def blocks(method):
     over = overriding(gbp.BLOCK_DIR, use_pat) - {"BlockBehaviour"}
     sups = gbp.superclasses()
     src = read(gbl.BLOCKS)
-    id_tables = gbl.scan_id_tables()
-    single_ids = gbl.scan_single_ids()
     known = set(json.load(open(gbl.REGISTRY, encoding="utf8")).keys())
     table = {}
 
@@ -112,20 +110,8 @@ def blocks(method):
         if c:
             table[f"minecraft:{name}"] = c
 
-    for m in re.finditer(r"public\s+static\s+final\s+Block\s+([A-Z0-9_]+)\s*=\s*\w+\s*\(", src, re.M):
-        body = gbl.balanced(src, m.end() - 1)
-        ref = re.search(r"Block(?:Item)?Ids\.(\w+)", body)
-        name = single_ids.get(ref.group(1)) if ref else None
-        record(name or m.group(1).lower(), gbl.impl_class(body))
-    for m in re.finditer(
-        r"public\s+static\s+final\s+(?:Color|WeatheringCopper)Collection<Block>\s+"
-        r"[A-Z0-9_]+\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
-    ):
-        body = gbl.balanced(src, m.end() - 1)
-        ref = re.search(r"BlockItemIds\.(\w+)", body)
-        cls = gbl.impl_class(body)
-        for name, _state in id_tables.get(ref.group(1), []) if ref else []:
-            record(name, cls)
+    for _field, name, _func, call, _state in gbl.iter_calls(src):
+        record(name, gbl.impl_class(call))
     used = set(table.values())
     if not used <= over:
         die(f"classes outside the override set: {sorted(used - over)}")

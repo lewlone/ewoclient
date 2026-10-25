@@ -59,6 +59,7 @@ import json
 import os
 import re
 import sys
+from typing import NoReturn
 
 VERSION = os.environ.get("REWO_VERSION", "26.2")
 ROOT = os.path.join(os.environ["APPDATA"], "EwoClient", "rewo", VERSION, "decompiled")
@@ -218,10 +219,12 @@ def scan_single_ids():
 
 
 def scan_id_tables():
-    """`BlockItemIds` field -> [(registry name, weather-state index or None)].
+    """`"BlockItemIds.FIELD"` / `"BlockIds.FIELD"` -> [(registry name,
+    weather-state index or None)].
 
     Only the family tables matter here; a single block takes its name from the
-    `Blocks.java` field directly.
+    `Blocks.java` field directly. `BlockIds` holds the block-only families
+    (`WALL_BANNER`, `DYED_CANDLE_CAKE`), which have no item.
     """
     src = open(IDS, encoding="utf8", errors="replace").read()
     out = {}
@@ -230,24 +233,21 @@ def scan_id_tables():
         r"ColorCollection<BlockItemId>\s+(\w+)\s*=\s*createSimpleColored\(\"(\w+)\"\)", src
     ):
         field, base = m.group(1), m.group(2)
-        out[field] = [(f"{c}_{base}", None) for c in DYE_COLORS]
+        out[f"BlockItemIds.{field}"] = [(f"{c}_{base}", None) for c in DYE_COLORS]
+
+    block_only = open(BLOCK_IDS, encoding="utf8", errors="replace").read()
+    for m in re.finditer(
+        r"ColorCollection<ResourceKey<Block>>\s+(\w+)\s*=\s*createSimpleColored\(\"(\w+)\"\)",
+        block_only,
+    ):
+        field, base = m.group(1), m.group(2)
+        out[f"BlockIds.{field}"] = [(f"{c}_{base}", None) for c in DYE_COLORS]
 
     for m in re.finditer(
         r"WeatheringCopperCollection<BlockItemId>\s+(\w+)\s*=\s*createSimpleCopper\(\"(\w+)\"\)", src
     ):
         field, base = m.group(1), m.group(2)
-        out[field] = [(prefix + base, st) for prefix, st in COPPER_PREFIXES]
-
-    # Block-only colour families live in `BlockIds` (no item): the wall
-    # banners and the dyed candle cakes. Missing them dropped 32 blocks,
-    # among them every lit candle cake's emission.
-    block_src = open(BLOCK_IDS, encoding="utf8", errors="replace").read()
-    for m in re.finditer(
-        r"ColorCollection<ResourceKey<Block>>\s+(\w+)\s*=\s*createSimpleColored\(\"(\w+)\"\)",
-        block_src,
-    ):
-        field, base = m.group(1), m.group(2)
-        out.setdefault(field, [(f"{c}_{base}", None) for c in DYE_COLORS])
+        out[f"BlockItemIds.{field}"] = [(prefix + base, st) for prefix, st in COPPER_PREFIXES]
 
     # The one hand-written copper table: `prefixWithState(same(ByState(a,b,c,d)))`
     # where the four ids differ — `copper_block` but `exposed_copper`.
@@ -261,7 +261,9 @@ def scan_id_tables():
             r"WeatheringCopperCollection\.prefixWithState\(\s*"
             r"WeatheringCopperCollection\.same\(" + holder + r"\)", src
         ):
-            out[u.group(1)] = [(prefix + by_state[st], st) for prefix, st in COPPER_PREFIXES]
+            out[f"BlockItemIds.{u.group(1)}"] = [
+                (prefix + by_state[st], st) for prefix, st in COPPER_PREFIXES
+            ]
     return out
 
 
@@ -323,6 +325,157 @@ def property_helpers(src):
     return helpers
 
 
+def split_args(call):
+    """The top-level arguments of a balanced `(...)` call text."""
+    inner = call[1:-1] if call.endswith(")") else call[1:]
+    args, depth, start = [], 0, 0
+    for i, ch in enumerate(inner):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(inner[start:i].strip())
+            start = i + 1
+    if inner[start:].strip():
+        args.append(inner[start:].strip())
+    return args
+
+
+def block_helpers(src):
+    """`Blocks.java` helpers that register one block and return it.
+
+    e.g. `private static Block registerWall(final BlockItemId id, final Block
+    base) { return register(id, WallBlock::new, …ofLegacyCopy(base)…); }` ->
+    `{"registerWall": [(["id", "base"], "register", "(id, WallBlock::new, …)")]}`,
+    one entry per overload. `register` itself is the primitive every helper
+    bottoms out in, so it is not one. 26.3 moved most walls, slabs and stairs
+    onto these, and a registration read without its helper loses the class
+    and every builder call the helper makes.
+    """
+    out = {}
+    for m in re.finditer(r"private\s+static\s+Block\s+(\w+)\s*\(", src):
+        if m.group(1) == "register":
+            continue
+        sig = balanced(src, m.end() - 1)
+        params = [a.split()[-1] for a in split_args(sig)]
+        brace = src.find("{", m.end() - 1 + len(sig))
+        ret = re.compile(r"\s*return\s+(\w+)\s*\(").match(src, brace + 1)
+        if not ret:
+            die(f"block helper {m.group(1)} is not a single `return f(...)`")
+        out.setdefault(m.group(1), []).append(
+            (params, ret.group(1), balanced(src, ret.end() - 1)))
+    return out
+
+
+def expand_call(helpers, func, call):
+    """Inline block helpers until `func` is no longer one.
+
+    The helper's parameters are replaced by the call's arguments, so
+    `ofFullCopy(base)` becomes `ofFullCopy(COBBLESTONE)` and the property-copy
+    resolution in `gen_ao_facts` follows it like a direct registration.
+    """
+    for _ in range(8):
+        overloads = helpers.get(func)
+        if not overloads:
+            return func, call
+        args = split_args(call)
+        match = [o for o in overloads if len(o[0]) == len(args)]
+        if len(match) != 1:
+            die(f"{func}{call[:60]}…: {len(match)} overloads take {len(args)} arguments")
+        params, func, body = match[0]
+        sub = dict(zip(params, args))
+        call = re.sub(r"\b(" + "|".join(map(re.escape, params)) + r")\b",
+                      lambda p: sub[p.group(1)], body)
+    die(f"block helpers nest deeper than 8 at {func}")
+
+
+def die(msg) -> NoReturn:
+    print(f"[gen_block_light] FAIL — {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def iter_calls(src):
+    """Yield `(field, registry name, func, call, weather state)` for every block.
+
+    `call` is the balanced `(...)` argument text of the effective registration
+    and `func` the function it calls, after block helpers are inlined
+    (`register`, or `registerBlocks` for a `ColorCollection` /
+    `WeatheringCopperCollection` family). The one iterator every `gen_*`
+    reading `Blocks.java` shares, so a new registration form is taught once.
+
+    Once exhausted, every name in `blocks.json` must have been yielded. A
+    form this function does not understand fails the run instead of dropping
+    its blocks from every table (26.3's `registerWall` and `zipMap` did that
+    silently before this check existed).
+    """
+    single_ids = scan_single_ids()
+    id_tables = scan_id_tables()
+    helpers = block_helpers(src)
+    seen = set()
+
+    # -- single-field registrations -----------------------------------------
+    for m in re.finditer(
+        r"public\s+static\s+final\s+Block\s+([A-Z0-9_]+)\s*=\s*(\w+)\s*\(", src, re.M
+    ):
+        call = balanced(src, m.end() - 1)
+        # Prefer the id reference over the field name — they differ for a
+        # handful of blocks (POTTED_AZALEA -> potted_azalea_bush).
+        ref = re.search(r"Block(?:Item)?Ids\.(\w+)", call)
+        name = (single_ids.get(ref.group(1)) if ref else None) or m.group(1).lower()
+        func, call = expand_call(helpers, m.group(2), call)
+        seen.add(name)
+        yield m.group(1), name, func, call, None
+
+    # -- family registrations ------------------------------------------------
+    # `ColorCollection<Block> STAINED_GLASS = ColorCollection.registerBlocks(
+    #      BlockItemIds.STAINED_GLASS, …)` registers 16 (copper: 8) blocks whose
+    # names come from the id table.
+    for m in re.finditer(
+        r"public\s+static\s+final\s+(?:Color|WeatheringCopper)Collection<Block>\s+"
+        r"([A-Z0-9_]+)\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
+    ):
+        body = balanced(src, m.end() - 1)
+        ref = re.search(r"Block(?:Item)?Ids\.\w+", body)
+        names = id_tables.get(ref.group(0)) if ref else None
+        if not names:
+            die(f"no id table for family {m.group(1)} ({ref and ref.group(0)})")
+        for name, state_idx in names:
+            seen.add(name)
+            yield m.group(1), name, "registerBlocks", body, state_idx
+
+    # `ColorCollection<Block> WOOL_STAIRS = ColorCollection.zipMap(
+    #      ColorCollection.VALUES, BlockItemIds.WOOL_STAIRS,
+    #      (color, id) -> registerStair(id, WOOL.pick(color)))` (26.3+).
+    for m in re.finditer(
+        r"public\s+static\s+final\s+ColorCollection<Block>\s+([A-Z0-9_]+)\s*=\s*"
+        r"ColorCollection\s*\.\s*zipMap\s*\(", src, re.M
+    ):
+        args = split_args(balanced(src, m.end() - 1))
+        lam = names = None
+        if len(args) == 3 and args[0] == "ColorCollection.VALUES":
+            lam = re.match(r"\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*->\s*(\w+)\s*\(", args[2])
+            names = id_tables.get(args[1])
+        if not (lam and names):
+            die(f"zipMap form not understood: {m.group(1)}")
+        color, id_param, func = lam.groups()
+        call = balanced(args[2], lam.end() - 1)
+        # `WOOL.pick(color)` is this colour's member of the WOOL family, and
+        # every member shares the family's registration, so the family field
+        # stands in for it: `ofFullCopy(WOOL)` resolves like any copy source.
+        call = re.sub(r"\b([A-Z0-9_]+)\.pick\(\s*" + color + r"\s*\)", r"\1", call)
+        call = re.sub(r"\b" + id_param + r"\b", args[1], call)
+        func, call = expand_call(helpers, func, call)
+        for name, state_idx in names:
+            seen.add(name)
+            yield m.group(1), name, func, call, state_idx
+
+    known = set(json.load(open(REGISTRY, encoding="utf8")).keys())
+    unreached = sorted(n for n in known if n.removeprefix("minecraft:") not in seen)
+    if unreached:
+        die(f"{len(unreached)} registry blocks reached by no registration: {unreached[:8]}")
+
+
 def iter_registrations(src, helpers):
     """Yield `(field, registry name, parts, impl class, weather state)`.
 
@@ -337,47 +490,12 @@ def iter_registrations(src, helpers):
     `ofLegacyCopy(FIELD)` / `ofFullCopy(FIELD)` refer to, so callers resolving
     property inheritance can key on it.
     """
-    single_ids = scan_single_ids()
-    id_tables = scan_id_tables()
-
-    # -- single-field registrations -----------------------------------------
-    for m in re.finditer(
-        r"public\s+static\s+final\s+Block\s+([A-Z0-9_]+)\s*=\s*\w+\s*\(", src, re.M
-    ):
-        body = balanced(src, m.end() - 1)
-        parts = [body]
+    for field, name, _func, call, state_idx in iter_calls(src):
+        parts = [call]
         for hname, hbody in helpers.items():
-            if hname + "(" in body or any(hname + "(" in p for p in parts):
+            if hname + "(" in call or any(hname + "(" in p for p in parts):
                 parts.append(hbody)
-        # Prefer the id reference over the field name — they differ for a
-        # handful of blocks (POTTED_AZALEA -> potted_azalea_bush).
-        ref = re.search(r"Block(?:Item)?Ids\.(\w+)", body)
-        name = single_ids.get(ref.group(1)) if ref else None
-        yield m.group(1), name or m.group(1).lower(), parts, impl_class(body), None
-
-    # -- family registrations ------------------------------------------------
-    # `ColorCollection<Block> STAINED_GLASS = ColorCollection.registerBlocks(
-    #      BlockItemIds.STAINED_GLASS, …)` registers 16 (copper: 8) blocks whose
-    # names come from the id table.
-    for m in re.finditer(
-        r"public\s+static\s+final\s+(?:Color|WeatheringCopper)Collection<Block>\s+"
-        r"([A-Z0-9_]+)\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
-    ):
-        body = balanced(src, m.end() - 1)
-        ref = re.search(r"(?:BlockItemIds|BlockIds)\.(\w+)", body)
-        if not ref:
-            continue
-        names = id_tables.get(ref.group(1))
-        if not names:
-            print(f"  no id table for BlockItemIds.{ref.group(1)}", file=sys.stderr)
-            continue
-        cls = impl_class(body)
-        parts = [body]
-        for hname, hbody in helpers.items():
-            if hname + "(" in body or any(hname + "(" in p for p in parts):
-                parts.append(hbody)
-        for name, state_idx in names:
-            yield m.group(1), name, parts, cls, state_idx
+        yield field, name, parts, impl_class(call), state_idx
 
 
 def main():
