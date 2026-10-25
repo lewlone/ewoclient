@@ -1696,26 +1696,45 @@ mod tests {
 
     type TcpHandler = Box<dyn Fn(std::net::TcpStream) + Send + 'static>;
 
+    /// A loopback port number bound for both UDP and TCP (the lookup asks
+    /// the TCP retry at the address it asked over UDP).
+    ///
+    /// The candidates are drawn at random from 20000..49152, below the
+    /// dynamic (ephemeral) range. The helper used to ask the OS for an
+    /// ephemeral port of one protocol and pair the other with it; all five
+    /// TCP tests then failed together a few times under the full suite's
+    /// load, each after 100 tries. Pairing alone rarely fails (on this
+    /// desktop, 2 of 3000 TCP ports had their UDP twin refused, never two in
+    /// a row: Windows excludes per-protocol blocks, here 64464..=65463 for
+    /// UDP only), so the likelier cause is the ephemeral range being briefly
+    /// exhausted by the suite's own loopback connections, which a tight loop
+    /// cannot wait out. Explicit ports below that range draw nothing from it.
+    fn port_pair() -> (UdpSocket, std::net::TcpListener) {
+        use std::hash::{BuildHasher, Hasher};
+        let seed = std::collections::hash_map::RandomState::new();
+        (0u32..1000)
+            .find_map(|i| {
+                let mut h = seed.build_hasher();
+                h.write_u32(i);
+                let port = 20000 + (h.finish() % (49152 - 20000)) as u16;
+                let l = std::net::TcpListener::bind(("127.0.0.1", port)).ok()?;
+                let udp = UdpSocket::bind(("127.0.0.1", port)).ok()?;
+                Some((udp, l))
+            })
+            .expect("a port free for both UDP and TCP")
+    }
+
     /// A nameserver on loopback whose UDP side answers `truncated_for` after
     /// `udp_delay` and whose TCP side (same port number; TCP and UDP ports are
     /// separate) runs `tcp` on the first connection. `None` leaves TCP closed.
     fn tc_server(udp_delay: Duration, tcp: Option<TcpHandler>) -> SocketAddr {
-        // TCP first: Windows reserves large TCP port ranges (Hyper-V/WinNAT
-        // "excluded port ranges", e.g. on GitHub's runners) that the UDP
-        // ephemeral allocator does not avoid, so binding UDP first and then
-        // TCP on the same number failed 100 times in a row there. Letting
-        // the OS pick an allowed TCP port and pairing UDP with it does not.
-        let (udp, listener) = (0..100)
-            .find_map(|_| match tcp {
-                None => Some((UdpSocket::bind("127.0.0.1:0").ok()?, None)),
-                Some(_) => {
-                    let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-                    let port = l.local_addr().ok()?.port();
-                    let udp = UdpSocket::bind(("127.0.0.1", port)).ok()?;
-                    Some((udp, Some(l)))
-                }
-            })
-            .expect("a port free for both UDP and TCP");
+        let (udp, listener) = match tcp {
+            None => (UdpSocket::bind("127.0.0.1:0").unwrap(), None),
+            Some(_) => {
+                let (udp, l) = port_pair();
+                (udp, Some(l))
+            }
+        };
         let addr = udp.local_addr().unwrap();
         std::thread::spawn(move || {
             let mut buf = [0u8; 512];
