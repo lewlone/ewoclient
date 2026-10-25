@@ -9,6 +9,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # The windows-rs crates (windows, windows-core, windows-implement, ...)
+      # must move together: ewo-jni names `windows-core` beside `windows`,
+      # and PR #6 bumped the core alone to 0.100, linking two cores (the
+      # `#[implement]` COM handlers stop satisfying the traits) and needing
+      # rustc 1.95 over the 1.89 MSRV. On 0.x a minor bump is a breaking
+      # one, so those wait for a deliberate upgrade with the MSRV decided.
+      - dependency-name: "windows*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       cargo:
         patterns: ["*"]
