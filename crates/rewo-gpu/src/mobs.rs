@@ -944,6 +944,22 @@ pub struct MobCombat {
     pub swim_amount: f32,
     pub swim_in_water: bool,
     pub swim_visual: bool,
+    /// M402 — `HumanoidRenderState.isFallFlying` (shared flag 7), set only
+    /// for a kind [`reads_fall_flying`]: the head pins at −π/4 and the walk
+    /// swing divides by [`Self::fall_speed`].
+    pub fall_flying: bool,
+    /// M402 — `speedValue` while fall flying (`(|v|²/0.2)³`); read through
+    /// [`Self::walk_divisor`], so the `Default` 0 means 1.
+    pub fall_speed: f32,
+    /// M402 — `AvatarRenderer.setupRotations`' glide (an avatar only): the
+    /// body tilt in degrees, `fallFlyingScale · (−90 − xRot)` (0 during a
+    /// riptide spin), and `flyingYRot` in radians when vanilla applies it.
+    pub glide_tilt: f32,
+    pub flying_y_rot: Option<f32>,
+    /// M402 — `LivingEntityRenderState.isAutoSpinAttack` (living flags bit
+    /// 4): `setupRotations` lays the body along the look and spins it
+    /// `−75°` a tick about its own length.
+    pub auto_spin: bool,
     /// M399 — `HumanoidRenderState.isCrouching` (`Entity.isCrouching()`:
     /// the CROUCHING pose), set for an avatar (a player or a mannequin).
     pub crouching: bool,
@@ -986,6 +1002,18 @@ pub struct MobCombat {
     pub turtle_on_land: bool,
     /// M363 — `Boat.isUnderWater()` (the eye in water): no water patch.
     pub under_water: bool,
+}
+
+impl MobCombat {
+    /// M402 — what `HumanoidModel.setupAnim` divides the arms' and legs'
+    /// walk swing by: `speedValue` while fall flying, else 1.
+    pub fn walk_divisor(&self) -> f32 {
+        if self.fall_flying {
+            self.fall_speed.max(1.0)
+        } else {
+            1.0
+        }
+    }
 }
 
 impl Eq for Anim {}
@@ -15037,6 +15065,15 @@ pub fn wears_humanoid_armor(kind: EntityModelKind) -> bool {
             | EntityModelKind::PiglinBrute
             | EntityModelKind::Giant
     )
+}
+
+/// M402 — whether a model kind's render state reads `isFallFlying`:
+/// `HumanoidMobRenderer` and `AvatarRenderer` fill `HumanoidRenderState`,
+/// so it is [`wears_humanoid_armor`]'s renderer list without the armour
+/// stand (`ArmorStandRenderState` is not humanoid). The baby humanoids are
+/// left out with that list (they wear no armour in Rewo yet either).
+pub fn reads_fall_flying(kind: EntityModelKind) -> bool {
+    wears_humanoid_armor(kind) && kind != EntityModelKind::ArmorStand
 }
 
 /// Whether a model kind wears a cape — `CapeLayer` is added by

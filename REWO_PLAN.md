@@ -2180,7 +2180,8 @@ this shape once.
 | M399 (2026-10-21) — a crouching mannequin draws crouching | **r221** | — | — |
 | M400 (2026-10-21) — a swimming mannequin draws swimming | **r222** | — | — |
 | M401 (2026-10-21) — a sleeping mannequin draws lying down | **r223** | — | — |
-| *(next free)* | **r73** | — | — |
+| M402 (2026-10-26) — a gliding mannequin draws gliding | **r224** | — | — |
+| *(next free)* | **r225** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -4014,6 +4015,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M402 — gliders and riptide spinners; every layer shares the body's frame (2026-10-26)
+
+The overnight run's "Paused here" item 1 and 2. `isFallFlying()` (shared flag 7) is set for the kinds whose render state reads it (`reads_fall_flying`: the humanoid renderers and avatars, not the armour stand); `HumanoidModel.setupAnim` pins the head at −π/4 and divides the arms' and legs' walk swing by `speedValue` (`(|v|²/0.2)³`, at least 1); an avatar's `AvatarRenderer.setupRotations` glide is `XP(fallFlyingScale · (−90 − xRot))` (skipped while spinning) and `YP(flyingYRot)` (`rewo_world::glide::flying_y_rot`, from `deltaMovementOnPreviousTick`, now kept as `EntityState::motion_at`); `LivingEntityRenderer`'s riptide spin (`isAutoSpinAttack`, living flags bit 4, beside the use bits) is `XP(−90 − xRot) · YP(ageInTicks · −75)`, after the death topple and before sleeping. **Found on the way:** the armour, the cape, a worn head and the held items each carried their own copy of the placement chain with only the death topple in it, so since M400 and M401 a swimming or sleeping player's armour, cape and held items stood upright beside the lying body (and a held item on a spawner's caged mob ignored the cage's affine). `EntityFrame` is now the one chain all of them place through; the wavy cape (a world-space simulation) still takes only the topple. The elytra wings themselves are still not drawn (M403). **Unit tests** (the head pin and walk divisor; a glider and a spinner lie head-forward, the flying turn is about the body's length; the motion lerp and the spin bit); **mobtexshot m116** (a gliding player in an iron set lies 98 × 40 and the armour's own pixels 98 × 40; with the armour off the body's frame, the control, they stand 34 × 90 and m116 fails) and **m117** (a spinner, 2571 px, 88 × 24); m114 and m115 read their M400/M401 numbers exactly, so the body did not move; render check **r224** (a mannequin with an elytra, `FallFlying` and no gravity draws at the full 90° tilt).
 
 ### M401 — sleepers lie down in their beds (2026-10-21)
 

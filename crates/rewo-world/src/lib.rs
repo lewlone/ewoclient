@@ -31,6 +31,7 @@ pub mod end_flash;
 pub mod entities;
 pub mod entity_pick;
 pub mod fov;
+pub mod glide;
 pub mod inventory;
 pub mod label;
 pub mod light;

@@ -3018,9 +3018,7 @@ impl EntityPass {
         xf: &[([[f32; 3]; 3], [f32; 3])],
         left: bool,
         name: &str,
-        scale: f32,
-        st: f32,
-        ct: f32,
+        frame: &EntityFrame,
         hurt: f32,
         glint: Option<&mut GlintSink<'_>>,
     ) {
@@ -3071,24 +3069,8 @@ impl EntityPass {
                 m4[i] = v;
                 // The same model -> entity-local -> world chain the mob quads
                 // take, so an item cannot drift from the arm holding it.
-                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
-                let e = [
-                    e[0] * d.stretch[0],
-                    e[1] * d.stretch[1],
-                    e[2] * d.stretch[0],
-                ];
-                // The same death topple the body takes — `setupRotations`
-                // rotates the entity, and `ItemInHandLayer` hangs off the arm
-                // *inside* that rotation, so a corpse's sword falls with it.
-                let (sr, cr) = death_roll(d).sin_cos();
-                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
-                let x = e[0] * ct + e[2] * st;
-                let z = -e[0] * st + e[2] * ct;
-                p4[i] = [
-                    d.pos[0] + x * scale,
-                    d.pos[1] + e[1] * scale,
-                    d.pos[2] + z * scale,
-                ];
+                // M402 — the body's own frame (`EntityFrame`).
+                p4[i] = frame.place(v);
             }
             let n = face_normal(&m4);
             let shade = mobs::shade_for(n);
@@ -3125,9 +3107,7 @@ impl EntityPass {
         d: &EntityDraw<'_>,
         model: &MobModel,
         xf: &[([[f32; 3]; 3], [f32; 3])],
-        scale: f32,
-        st: f32,
-        ct: f32,
+        frame: &EntityFrame,
         hurt: f32,
     ) {
         let Some(w) = d.worn_head else {
@@ -3182,21 +3162,8 @@ impl EntityPass {
                     (r[2] + o[2]) * w.horizontal_scale,
                 ];
                 m4[i] = v;
-                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
-                let e = [
-                    e[0] * d.stretch[0],
-                    e[1] * d.stretch[1],
-                    e[2] * d.stretch[0],
-                ];
-                let (sr, cr) = death_roll(d).sin_cos();
-                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
-                let x = e[0] * ct + e[2] * st;
-                let z = -e[0] * st + e[2] * ct;
-                p4[i] = [
-                    d.pos[0] + x * scale,
-                    d.pos[1] + e[1] * scale,
-                    d.pos[2] + z * scale,
-                ];
+                // M402 — the body's own frame (`EntityFrame`).
+                p4[i] = frame.place(v);
             }
             let shade = mobs::shade_for(face_normal(&m4));
             for &i in &[0usize, 1, 2, 0, 2, 3] {
@@ -3321,6 +3288,7 @@ impl EntityPass {
         ct: f32,
         sr: f32,
         cr: f32,
+        frame: &EntityFrame,
     ) {
         let Some(cape) = d.cape else { return };
         if !mobs::wears_cape(d.kind) {
@@ -3355,24 +3323,8 @@ impl EntityPass {
                     rr[1] + o[1] + shift[1],
                     rr[2] + o[2] + shift[2],
                 ];
-                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
-                let e = [
-                    e[0] * d.stretch[0],
-                    e[1] * d.stretch[1],
-                    e[2] * d.stretch[0],
-                ];
-                let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
-                let x = e[0] * ct + e[2] * st;
-                let z = -e[0] * st + e[2] * ct;
-                let mut l = [x * scale, e[1] * scale, z * scale];
-                if let Some(mm) = &d.mount {
-                    l = [
-                        mm[0][0] * l[0] + mm[0][1] * l[1] + mm[0][2] * l[2] + mm[0][3],
-                        mm[1][0] * l[0] + mm[1][1] * l[1] + mm[1][2] * l[2] + mm[1][3],
-                        mm[2][0] * l[0] + mm[2][1] * l[1] + mm[2][2] * l[2] + mm[2][3],
-                    ];
-                }
-                p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
+                // M402 — the body's own frame (`EntityFrame`).
+                p4[i] = frame.place(v);
             }
             let n = face_normal(&p4);
             let shade = mobs::shade_for(n);
@@ -3549,11 +3501,7 @@ impl EntityPass {
         d: &EntityDraw<'_>,
         model: &MobModel,
         xf: &[([[f32; 3]; 3], [f32; 3])],
-        scale: f32,
-        st: f32,
-        ct: f32,
-        sr: f32,
-        cr: f32,
+        frame: &EntityFrame,
     ) {
         if !mobs::wears_humanoid_armor(d.kind) {
             return;
@@ -3621,24 +3569,8 @@ impl EntityPass {
                         for (i, corner) in pos.iter().enumerate() {
                             let r = mat_apply(m, *corner);
                             let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
-                            let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
-                            let e = [
-                                e[0] * d.stretch[0],
-                                e[1] * d.stretch[1],
-                                e[2] * d.stretch[0],
-                            ];
-                            let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
-                            let x = e[0] * ct + e[2] * st;
-                            let z = -e[0] * st + e[2] * ct;
-                            let mut l = [x * scale, e[1] * scale, z * scale];
-                            if let Some(mm) = &d.mount {
-                                l = [
-                                    mm[0][0] * l[0] + mm[0][1] * l[1] + mm[0][2] * l[2] + mm[0][3],
-                                    mm[1][0] * l[0] + mm[1][1] * l[1] + mm[1][2] * l[2] + mm[1][3],
-                                    mm[2][0] * l[0] + mm[2][1] * l[1] + mm[2][2] * l[2] + mm[2][3],
-                                ];
-                            }
-                            p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
+                            // M402 — the body's own frame (`EntityFrame`).
+                            p4[i] = frame.place(v);
                         }
                         let n = face_normal(&p4);
                         let shade = mobs::shade_for(n);
@@ -3798,67 +3730,15 @@ impl EntityPass {
         let s = model.scale * if d.scale_mul > 0.0 { d.scale_mul } else { 1.0 };
         // Model-space quad corners -> world space, through this entity's pose.
         // Shared by the base pass and the emissive layers so a layer can never
-        // drift off the model it is glowing on (M57).
-        // M400 — an avatar's swim tilt (`AvatarRenderer.setupRotations`).
-        let swim_on = d.mob.swim_amount > 0.0;
-        let (sw, cw) = (swim_tilt(d.mob.swim_amount, d.mob.swim_in_water, d.pitch) * DEG).sin_cos();
+        // drift off the model it is glowing on (M57); M402 — and the whole
+        // `setupRotations` chain is the one every layer places through.
+        let frame = EntityFrame::new(d, s, time);
         let place = |q: &GpuQuad| {
             let (m, o) = &xf[q.part as usize];
             let mut p4 = [[0f32; 3]; 4];
             for (i, corner) in q.pos.iter().enumerate() {
                 let r = mat_apply(m, *corner);
-                let v = [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
-                // model → entity local (px): scale(−1,−1,1) after the
-                // −1.501-block translate.
-                let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
-                let e = [
-                    e[0] * d.stretch[0],
-                    e[1] * d.stretch[1],
-                    e[2] * d.stretch[0],
-                ];
-                // M400 — `AvatarRenderer.setupRotations`' swim: `XP(tilt)`
-                // then `translate(0, −1, 0.3)` (blocks: `/ s` in these px),
-                // inside the topple.
-                let e = if swim_on {
-                    let t = if d.mob.swim_visual {
-                        [0.0, -1.0 / s, 0.3 / s]
-                    } else {
-                        [0.0; 3]
-                    };
-                    let (y, z) = (e[1] + t[1], e[2] + t[2]);
-                    [e[0] + t[0], y * cw - z * sw, y * sw + z * cw]
-                } else {
-                    e
-                };
-                // M401 — asleep: `YP(angle) · ZP(90) · YP(270)` in place of
-                // the body yaw (the death topple wins while dying, as
-                // vanilla's else-if chain has it).
-                let (x, e, z) = match d.mob.sleep_angle {
-                    Some(angle) if sr == 0.0 => {
-                        let p = sleeping_point(e, angle);
-                        (p[0], p, p[2])
-                    }
-                    _ => {
-                        // rotZ(fall · flipDegrees) — the death topple,
-                        // identity while alive because `death_roll` is then
-                        // exactly 0.
-                        let e = [e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]];
-                        // rotY(180° − yaw).
-                        (e[0] * ct + e[2] * st, e, -e[0] * st + e[2] * ct)
-                    }
-                };
-                // Feet-relative, in block units. A *mounted* entity — a
-                // spawner's caged mob — runs that through one more affine
-                // before the block position places it (M31).
-                let mut l = [x * s, e[1] * s, z * s];
-                if let Some(m) = &d.mount {
-                    l = [
-                        m[0][0] * l[0] + m[0][1] * l[1] + m[0][2] * l[2] + m[0][3],
-                        m[1][0] * l[0] + m[1][1] * l[1] + m[1][2] * l[2] + m[1][3],
-                        m[2][0] * l[0] + m[2][1] * l[1] + m[2][2] * l[2] + m[2][3],
-                    ];
-                }
-                p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
+                p4[i] = frame.place([r[0] + o[0], r[1] + o[1], r[2] + o[2]]);
             }
             p4
         };
@@ -4180,35 +4060,21 @@ impl EntityPass {
         }
         // M46: worn armour, a render layer over the body, before the held
         // item so a chestplate does not paint over a sword.
-        self.emit_armor(
-            verts,
-            trim_verts,
-            armor_glint,
-            d,
-            model,
-            &xf,
-            s,
-            st,
-            ct,
-            sr,
-            cr,
-        );
+        self.emit_armor(verts, trim_verts, armor_glint, d, model, &xf, &frame);
         // M60: the cape, hanging off the same body. `AvatarRenderer` adds
         // `HumanoidArmorLayer` first and `CapeLayer` eleven layers later, so
         // this is vanilla's order — though nothing rests on it here, since
         // both are opaque `entitySolid` draws in one range and the depth test
         // settles them. What keeps the cape off a chestplate is the clearance
         // shift, not the sequence.
-        self.emit_cape(verts, d, model, &xf, s, st, ct, sr, cr);
+        self.emit_cape(verts, d, model, &xf, s, st, ct, sr, cr, &frame);
         // M273: a worn skull, a render layer off the head.
         self.emit_worn_head(
             verts,
             d,
             model,
             &xf,
-            s,
-            st,
-            ct,
+            &frame,
             overlay_value(d.hurt, d.white_overlay),
         );
         // M22: whatever each arm holds, drawn after the body —
@@ -4224,9 +4090,7 @@ impl EntityPass {
                     &xf,
                     left,
                     name,
-                    s,
-                    st,
-                    ct,
+                    &frame,
                     hurt,
                     glint.as_deref_mut().filter(|_| d.held_glint[i]),
                 );
@@ -5715,6 +5579,11 @@ pub(crate) fn ease_in_out_expo(x: f32) -> f32 {
 /// the anims that move parts (blaze rods, crawler segments).
 fn anim_delta(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
     let (mut rot, mut off) = anim_delta_base(anim, amp, c);
+    // M402 — `HumanoidModel.setupAnim`: `if (fallFlying) head.xRot = −π/4`,
+    // assigned over the look before anything else reads it.
+    if c.mob.fall_flying && anim == mobs::Anim::Head {
+        rot[0] = -std::f32::consts::FRAC_PI_4;
+    }
     // M399 — `HumanoidModel.setupAnim`'s crouch block (after the attack,
     // before the bob, whose additions commute with these): the body bends
     // 0.5 forward and drops 3.2 with the arms, which also swing 0.4
@@ -5766,6 +5635,8 @@ fn humanoid_swim(anim: mobs::Anim, rot: &mut [f32; 3], c: &AnimCtx) {
     let swim = c.mob.swim_amount;
     let lerp = |a: f32, from: f32, to: f32| from + a * (to - from);
     match anim {
+        // M402 — `else if (swimAmount > 0)`: a glider's head stays pinned.
+        Head if c.mob.fall_flying => {}
         Head => rot[0] = rot_lerp_rad(swim, rot[0], -PI / 4.0),
         LegLeft => {
             rot[0] = lerp(
@@ -5849,6 +5720,172 @@ pub fn sleep_direction_rotation(facing: &str) -> f32 {
     }
 }
 
+/// M402 — an entity's render frame: everything `LivingEntityRenderer.submit`
+/// and `setupRotations` do between a posed model's px and the world, in one
+/// place. The body, its armour and trims, the cape, a worn head and the held
+/// items all hang off the same pose stack in vanilla, so they all place
+/// their points through this; until M402 each layer carried its own copy of
+/// the chain with only the death topple in it, and a swimming or sleeping
+/// player's armour, cape and held items stood upright beside the body.
+#[derive(Clone, Copy, Debug)]
+pub struct EntityFrame {
+    pos: [f32; 3],
+    /// The model's px→block scale times the per-entity size.
+    scale: f32,
+    stretch: [f32; 2],
+    /// `AvatarRenderer.setupRotations`' glide (`YP(flyingYRot)`, then
+    /// `XP(tilt)`), outermost of the avatar's own rotations.
+    glide: Option<YxRotation>,
+    /// The swim's `XP(tilt)` (sine, cosine) after its `translate`.
+    swim: Option<(f32, f32, [f32; 3])>,
+    inner: InnerRotation,
+    /// `YP(180 − bodyRot)` (sine, cosine).
+    yaw: (f32, f32),
+    mount: Option<[[f32; 4]; 3]>,
+}
+
+/// `LivingEntityRenderer.setupRotations`' `if (deathTime > 0) … else if
+/// (isAutoSpinAttack) … else if (SLEEPING) …` chain.
+#[derive(Clone, Copy, Debug)]
+enum InnerRotation {
+    /// `ZP(fall · flipDegrees)` (sine, cosine): identity while alive.
+    Topple(f32, f32),
+    Spin(YxRotation),
+    /// The bed's angle in degrees: replaces the body yaw.
+    Sleep(f32),
+}
+
+impl EntityFrame {
+    /// `time` is the draw's animation clock in seconds (`ageInTicks / 20`).
+    pub fn new(d: &EntityDraw<'_>, scale: f32, time: f32) -> Self {
+        let theta = (180.0 - d.yaw).to_radians();
+        let inner = if d.death_time > 0.0 {
+            let (sr, cr) = death_roll(d).sin_cos();
+            InnerRotation::Topple(sr, cr)
+        } else if d.mob.auto_spin {
+            InnerRotation::Spin(spin_rotations(d.pitch, time * 20.0))
+        } else if let Some(angle) = d.mob.sleep_angle {
+            InnerRotation::Sleep(angle)
+        } else {
+            InnerRotation::Topple(0.0, 1.0)
+        };
+        let swim = (d.mob.swim_amount > 0.0 && !d.mob.fall_flying).then(|| {
+            let (sw, cw) =
+                (swim_tilt(d.mob.swim_amount, d.mob.swim_in_water, d.pitch) * DEG).sin_cos();
+            let t = if d.mob.swim_visual {
+                [0.0, -1.0 / scale, 0.3 / scale]
+            } else {
+                [0.0; 3]
+            };
+            (sw, cw, t)
+        });
+        Self {
+            pos: d.pos,
+            scale,
+            stretch: d.stretch,
+            glide: glide_rotations(&d.mob),
+            swim,
+            inner,
+            yaw: theta.sin_cos(),
+            mount: d.mount,
+        }
+    }
+
+    /// A posed model point (px, model space, y down) in the world.
+    pub fn place(&self, v: [f32; 3]) -> [f32; 3] {
+        // model → entity local (px): scale(−1,−1,1) after the −1.501-block
+        // translate.
+        let e = [-v[0], mobs::MODEL_EYE_Y - v[1], v[2]];
+        let e = [
+            e[0] * self.stretch[0],
+            e[1] * self.stretch[1],
+            e[2] * self.stretch[0],
+        ];
+        // M402 — the glide: `YP(flyingYRot)` then `XP(tilt)`.
+        let e = match &self.glide {
+            Some(g) => g.apply(e),
+            None => e,
+        };
+        // M400 — the swim: `XP(tilt)` after `translate(0, −1, 0.3)` (blocks:
+        // `/ s` in these px).
+        let e = match self.swim {
+            Some((sw, cw, t)) => {
+                let (y, z) = (e[1] + t[1], e[2] + t[2]);
+                [e[0] + t[0], y * cw - z * sw, y * sw + z * cw]
+            }
+            None => e,
+        };
+        let (st, ct) = self.yaw;
+        let yawed = |e: [f32; 3]| [e[0] * ct + e[2] * st, e[1], -e[0] * st + e[2] * ct];
+        let w = match self.inner {
+            InnerRotation::Topple(sr, cr) => {
+                yawed([e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]])
+            }
+            InnerRotation::Spin(r) => yawed(r.apply(e)),
+            // M401 — `YP(angle) · ZP(90) · YP(270)` in place of the yaw.
+            InnerRotation::Sleep(angle) => sleeping_point(e, angle),
+        };
+        // Feet-relative, in block units. A *mounted* entity — a spawner's
+        // caged mob — runs that through one more affine before the block
+        // position places it (M31).
+        let mut l = [w[0] * self.scale, w[1] * self.scale, w[2] * self.scale];
+        if let Some(m) = &self.mount {
+            l = [
+                m[0][0] * l[0] + m[0][1] * l[1] + m[0][2] * l[2] + m[0][3],
+                m[1][0] * l[0] + m[1][1] * l[1] + m[1][2] * l[2] + m[1][3],
+                m[2][0] * l[0] + m[2][1] * l[1] + m[2][2] * l[2] + m[2][3],
+            ];
+        }
+        [self.pos[0] + l[0], self.pos[1] + l[1], self.pos[2] + l[2]]
+    }
+}
+
+/// M402 — two rotations a point runs through in order, the first about Y
+/// and the second about X (radians, as sine/cosine pairs): what a pose
+/// stack's `XP(x) · YP(y)` does to a point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct YxRotation {
+    y: Option<(f32, f32)>,
+    x: (f32, f32),
+}
+
+impl YxRotation {
+    pub fn new(y_rad: Option<f32>, x_rad: f32) -> Self {
+        Self {
+            y: y_rad.map(f32::sin_cos),
+            x: x_rad.sin_cos(),
+        }
+    }
+
+    /// The point in the entity's local px frame, `YP` first, then `XP`.
+    pub fn apply(&self, e: [f32; 3]) -> [f32; 3] {
+        let e = match self.y {
+            Some((s, c)) => [e[0] * c + e[2] * s, e[1], -e[0] * s + e[2] * c],
+            Option::None => e,
+        };
+        let (s, c) = self.x;
+        [e[0], e[1] * c - e[2] * s, e[1] * s + e[2] * c]
+    }
+}
+
+/// M402 — `AvatarRenderer.setupRotations`' fall-flying branch:
+/// `XP(fallFlyingScale · (−90 − xRot))` (skipped during a riptide spin) and
+/// `YP(flyingYRot)`, or `None` when the entity is not gliding.
+pub fn glide_rotations(mob: &mobs::MobCombat) -> Option<YxRotation> {
+    let gliding = mob.fall_flying && (mob.glide_tilt != 0.0 || mob.flying_y_rot.is_some());
+    gliding.then(|| YxRotation::new(mob.flying_y_rot, mob.glide_tilt.to_radians()))
+}
+
+/// M402 — `LivingEntityRenderer.setupRotations`' riptide spin:
+/// `XP(−90 − xRot) · YP(ageInTicks · −75)`, the body laid along the look
+/// and turning about its own length.
+pub fn spin_rotations(pitch_deg: f32, age_ticks: f32) -> YxRotation {
+    YxRotation::new(
+        Some((age_ticks * -75.0).to_radians()),
+        (-90.0 - pitch_deg).to_radians(),
+    )
+}
+
 /// M400 — `AvatarRenderer.setupRotations`' swim tilt in degrees,
 /// `lerp(swimAmount, 0, isInWater ? −90 − xRot : −90)`, and whether the
 /// `translate(0, −1, 0.3)` applies (`isVisuallySwimming`).
@@ -5903,8 +5940,14 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
             let s = if anim == LegRight { 1.0 } else { -1.0 };
             rot = [-1.4137167, s * PI / 10.0, s * 0.07853982];
         }
-        LegRight | QuadHindRight | QuadFrontLeft => rot[0] = c.f.cos() * 1.4 * c.amt * amp,
-        LegLeft | QuadHindLeft | QuadFrontRight => rot[0] = (c.f + PI).cos() * 1.4 * c.amt * amp,
+        // M402 — the humanoid legs' swing is `/ state.speedValue`; the
+        // divisor is 1 for every kind that cannot be fall flying.
+        LegRight | QuadHindRight | QuadFrontLeft => {
+            rot[0] = c.f.cos() * 1.4 * c.amt * amp / c.mob.walk_divisor()
+        }
+        LegLeft | QuadHindLeft | QuadFrontRight => {
+            rot[0] = (c.f + PI).cos() * 1.4 * c.amt * amp / c.mob.walk_divisor()
+        }
         SpiderLeg { left, phase } => {
             let swing = -((c.f * 2.0 + phase).cos()) * 0.4 * c.amt;
             let step = (c.f + phase).sin().abs() * 0.4 * c.amt;
@@ -6620,7 +6663,8 @@ fn humanoid_arm(rot: &mut [f32; 3], off: &mut [f32; 3], left: bool, c: &AnimCtx,
         // The ordinary walk swing, first — `setupAnim` assigns it before
         // `setupAttackAnimation` adds on top.
         let phase = if left { c.f } else { c.f + PI };
-        rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp;
+        // M402 — `/ state.speedValue` (1 unless fall flying).
+        rot[0] = phase.cos() * 2.0 * c.amt * 0.5 * amp / c.mob.walk_divisor();
         // M381 — `if (state.isPassenger) arm.xRot += −π/5`, right after the
         // walk swing.
         if c.mob.riding {
@@ -11697,6 +11741,103 @@ mod boat_anim_tests {
         assert!((face[1] - 1.0).abs() < 1e-5, "{face:?}");
         let south = sleeping_point([0.0, 32.0, 0.0], sleep_direction_rotation("south"));
         assert!((south[2] - 32.0).abs() < 1e-3, "south: {south:?}");
+    }
+
+    /// M402 — a glider's model: the head pins at −π/4 whatever the look
+    /// (and the swim's head lerp yields to it), and the walk swing of arms
+    /// and legs divides by `speedValue`; not gliding, nothing changes.
+    #[test]
+    fn a_gliders_head_pins_and_its_walk_slows() {
+        use mobs::Anim as A;
+        use std::f32::consts::FRAC_PI_4;
+        let mut c = ctx([0.0; 2], 0.0);
+        c.pitch = 0.6;
+        c.f = 1.0;
+        c.amt = 1.0;
+        let walk_leg = anim_delta(A::LegRight, 1.0, &c).0[0];
+        let walk_arm = anim_delta(A::HumanoidArmRight, 1.0, &c).0[0];
+        assert_eq!(anim_delta(A::Head, 1.0, &c).0[0], 0.6);
+        c.mob.fall_flying = true;
+        c.mob.fall_speed = 4.0;
+        c.mob.swim_amount = 0.5;
+        assert_eq!(anim_delta(A::Head, 1.0, &c).0[0], -FRAC_PI_4);
+        let leg = anim_delta(A::LegRight, 1.0, &c).0[0];
+        assert!(
+            (leg - (walk_leg / 4.0 * 0.5 + 0.3 * mth_cos(0.0) * 0.5)).abs() < 1e-3,
+            "{leg} {walk_leg}"
+        );
+        c.mob.swim_amount = 0.0;
+        let leg = anim_delta(A::LegRight, 1.0, &c).0[0];
+        assert!((leg - walk_leg / 4.0).abs() < 1e-6, "{leg} {walk_leg}");
+        assert!(walk_arm.abs() > 1e-3);
+        // The arm's walk divides; its idle bob (age 0: zRot only) does not
+        // touch xRot.
+        let arm = anim_delta(A::HumanoidArmRight, 1.0, &c).0[0];
+        assert!((arm - walk_arm / 4.0).abs() < 1e-6, "{arm} {walk_arm}");
+        // A divisor below 1 is vanilla's floor.
+        c.mob.fall_speed = 0.2;
+        assert_eq!(anim_delta(A::LegRight, 1.0, &c).0[0], walk_leg);
+    }
+
+    /// M402 — the render frame: a glider (`XP(−90)` at `xRot` 0) and a
+    /// riptide spinner both lie with the head toward where they look (yaw
+    /// 0 looks south, +z), the flying turn swings that toward the movement,
+    /// and the spin turns about the body's length (the head stays put).
+    #[test]
+    fn a_glider_and_a_spinner_lie_along_the_look() {
+        let frame = |glide: Option<YxRotation>, inner: InnerRotation| EntityFrame {
+            pos: [0.0; 3],
+            scale: 1.0 / 16.0,
+            stretch: [1.0, 1.0],
+            glide,
+            swim: None,
+            inner,
+            yaw: (180f32.to_radians()).sin_cos(),
+            mount: None,
+        };
+        // The crown of a standing model's head: 32 px above the feet.
+        let crown = [0.0, mobs::MODEL_EYE_Y - 32.0, 0.0];
+        let upright = frame(None, InnerRotation::Topple(0.0, 1.0)).place(crown);
+        assert!(
+            (upright[1] - 2.0).abs() < 1e-4 && upright[2].abs() < 1e-4,
+            "{upright:?}"
+        );
+        let mob = mobs::MobCombat {
+            fall_flying: true,
+            glide_tilt: -90.0,
+            ..Default::default()
+        };
+        let g = frame(glide_rotations(&mob), InnerRotation::Topple(0.0, 1.0)).place(crown);
+        assert!(g[1].abs() < 1e-4 && (g[2] - 2.0).abs() < 1e-4, "{g:?}");
+        // Moving east while looking south, the body turns a quarter toward
+        // the movement: the head comes round to the side.
+        let turned = mobs::MobCombat {
+            flying_y_rot: Some(std::f32::consts::FRAC_PI_2),
+            ..mob
+        };
+        let t = frame(glide_rotations(&turned), InnerRotation::Topple(0.0, 1.0)).place(crown);
+        assert!(
+            t[1].abs() < 1e-4 && (t[2] - 2.0).abs() < 1e-4,
+            "the turn is about the body's length: {t:?}"
+        );
+        let shoulder = [6.0, mobs::MODEL_EYE_Y - 22.0, 0.0];
+        let s0 = frame(glide_rotations(&mob), InnerRotation::Topple(0.0, 1.0)).place(shoulder);
+        let s1 = frame(glide_rotations(&turned), InnerRotation::Topple(0.0, 1.0)).place(shoulder);
+        assert!((s0[0] - s1[0]).abs() > 0.3, "{s0:?} {s1:?}");
+        // The spin: the same lie at `xRot` 0, at every spin angle.
+        for age in [0.0, 1.0, 2.5] {
+            let sp = frame(None, InnerRotation::Spin(spin_rotations(0.0, age))).place(crown);
+            assert!(
+                sp[1].abs() < 1e-4 && (sp[2] - 2.0).abs() < 1e-4,
+                "{age}: {sp:?}"
+            );
+        }
+        // No tilt and no turn is no glide at all.
+        assert!(glide_rotations(&mobs::MobCombat {
+            fall_flying: true,
+            ..Default::default()
+        })
+        .is_none());
     }
 
     /// M400 — `HumanoidModel`'s swim at full swim amount: the head pitches

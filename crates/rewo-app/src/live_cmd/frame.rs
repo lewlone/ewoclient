@@ -1084,6 +1084,11 @@ impl LiveApp {
                         | rewo_gpu::mobs::EntityModelKind::PlayerSlim
                 ) {
                     c.avatar_swim_peak = c.avatar_swim_peak.max(d.mob.swim_amount);
+                    // M402 — r224: the deepest glide tilt with the head
+                    // pinned (a glider's `fall_flying`).
+                    if d.mob.fall_flying {
+                        c.avatar_glide_peak = c.avatar_glide_peak.max(-d.mob.glide_tilt);
+                    }
                 }
             }
             // M399 — r221: an avatar drawn crouching.

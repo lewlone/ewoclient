@@ -104,7 +104,15 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 115;
+const EXPECTED_WITNESSES: usize = 117;
+/// M402 — m116's floor: the pixels a full iron set adds to a gliding
+/// player, all of which must lie with the body (wider than tall from the
+/// side). Before M402 the armour kept its own transform without the body's
+/// rotations and stood upright beside a lying body.
+const GLIDE_ARMOR_MIN: usize = 400;
+/// M402 — m117's floor: a riptide spinner's silhouette against a standing
+/// player's.
+const SPIN_MIN: usize = 1000;
 /// M401 — m115's floor: a sleeping player's silhouette against a standing
 /// one's. M401 measured 1414 (asleep 35 x 27 px from the side, nearly
 /// end-on); before M401 no avatar lay down (0 by construction).
@@ -7713,6 +7721,41 @@ fn run_check(
             .render(gpu, Some((&mut crst.wr, crst.vp)), &ov, BG)?;
         crst.off.read_rgba(gpu)?
     };
+    // m116 — M402: gliding (`fallFlyingScale` 1, `xRot` 0: `XP(−90)`), in
+    // a full iron set, with and without it; centred, since it lies along z.
+    let iron = baked
+        .equipment
+        .layers("minecraft:iron", rewo_data::equipment::ArmorLayer::Humanoid)
+        .first()
+        .map(|l| l.key.clone())
+        .ok_or("no iron humanoid armour layer in the jar")?;
+    let mut glshot = |armored: bool, spin: bool| -> Result<Vec<u8>, String> {
+        let piece = rewo_gpu::entities::ArmorPiece {
+            layers: [Some((iron.as_str(), [1.0; 3])), None],
+            trim: None,
+            foil: false,
+        };
+        let d = EntityDraw {
+            pos: [0.0, 0.4, -0.95],
+            armor: if armored { [Some(piece); 4] } else { [None; 4] },
+            mob: rewo_gpu::mobs::MobCombat {
+                fall_flying: !spin,
+                glide_tilt: if spin { 0.0 } else { -90.0 },
+                auto_spin: spin,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Player)
+        };
+        crst.wr.set_entities(&[d], crst.right, crst.up, 0.0);
+        crst.off
+            .render(gpu, Some((&mut crst.wr, crst.vp)), &ov, BG)?;
+        crst.off.read_rgba(gpu)
+    };
+    let (gl_bare, gl_iron, gl_spin) = (
+        glshot(false, false)?,
+        glshot(true, false)?,
+        glshot(false, true)?,
+    );
     crst.destroy(gpu);
     let cr_mask = |f: &[u8]| -> Vec<bool> {
         f.as_chunks::<4>()
@@ -7764,6 +7807,44 @@ fn run_check(
         format!(
             "{sleep_px} px of silhouette against standing (want >= {SLEEP_MIN}); asleep {sl_w}x{sl_h} (want wider)"
         ),
+    ));
+    // m116: the silhouette lies flat, and so do the pixels the armour adds.
+    let armor_mask: Vec<bool> = gl_bare
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(gl_iron.as_chunks::<4>().0)
+        .map(|(a, b)| a[..3] != b[..3])
+        .collect();
+    let armor_px = armor_mask.iter().filter(|&&on| on).count();
+    let (ar_w, ar_h) = {
+        let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
+        for (i, &on) in armor_mask.iter().enumerate() {
+            if on {
+                let (x, y) = (i % cw as usize, i / cw as usize);
+                (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+            }
+        }
+        (x1.saturating_sub(x0), y1.saturating_sub(y0))
+    };
+    let (gl_w, gl_h) = bbox(&gl_iron);
+    w.push(wit(
+        "m116.a_gliding_player_lies_flat_and_its_armour_with_it",
+        gl_w > gl_h && armor_px >= GLIDE_ARMOR_MIN && ar_w > ar_h,
+        format!(
+            "gliding {gl_w}x{gl_h} (want wider); the armour adds {armor_px} px (want >= {GLIDE_ARMOR_MIN}) over {ar_w}x{ar_h} (want wider)"
+        ),
+    ));
+    let spin_px = cr_mask(&cr_stand)
+        .iter()
+        .zip(&cr_mask(&gl_spin))
+        .filter(|(x, y)| x != y)
+        .count();
+    let (sp_w, sp_h) = bbox(&gl_spin);
+    w.push(wit(
+        "m117.a_riptide_spinner_lies_along_its_look",
+        spin_px >= SPIN_MIN && sp_w > sp_h,
+        format!("{spin_px} px of silhouette against standing (want >= {SPIN_MIN}); spinning {sp_w}x{sp_h} (want wider)"),
     ));
     w.push(wit(
         "m113.a_crouching_player_bends",

@@ -524,6 +524,10 @@ pub struct EntityState {
     /// truthful about the entity and less faithful to vanilla, which is why
     /// this is stored rather than computed.
     delta_movement: [f64; 3],
+    /// M402 — `ClientAvatarState.deltaMovementOnPreviousTick`: the motion
+    /// as this tick began (`AbstractClientPlayer.tick` hands it over before
+    /// `super.tick()` decays it). A glider's flying turn lerps from it.
+    delta_movement_prev: [f64; 3],
     /// `entity instanceof LivingEntity`, supplied by the caller from
     /// `rewo_data::entity_types::EntityClasses::is_living` — the `ticks_swing`
     /// precedent, because the class fact lives in a crate this one does not
@@ -667,6 +671,7 @@ impl EntityState {
             limb_swing: 0.0,
             limb_amount: 0.0,
             delta_movement: [0.0; 3],
+            delta_movement_prev: [0.0; 3],
             motion_living: false,
             motion_player: false,
             cloak: CloakAnchor::default(),
@@ -831,6 +836,9 @@ impl EntityState {
         // entity had entering this tick — the same value that becomes `xo`,
         // which is what the render then lerps `xo → getX()` against.
         self.cloak.move_cloak(before);
+        // M402 — `clientAvatarState.tick(position(), getDeltaMovement())`,
+        // in the same call.
+        self.delta_movement_prev = self.delta_movement;
         // `LivingEntity.aiStep`'s tail.
         if fall_flying {
             self.fall_fly_ticks += 1;
@@ -1020,6 +1028,22 @@ impl EntityState {
     /// `LivingEntity.getFallFlyingTicks()`.
     pub fn fall_fly_ticks(&self) -> i32 {
         self.fall_fly_ticks
+    }
+
+    /// M402 — `getDeltaMovement()` (this tick's, not interpolated).
+    pub fn motion(&self) -> [f64; 3] {
+        self.delta_movement
+    }
+
+    /// M402 — `deltaMovementOnPreviousTick().lerp(getDeltaMovement(), a)`.
+    pub fn motion_at(&self, alpha: f32) -> [f64; 3] {
+        let a = alpha as f64;
+        let (p, c) = (self.delta_movement_prev, self.delta_movement);
+        [
+            p[0] + (c[0] - p[0]) * a,
+            p[1] + (c[1] - p[1]) * a,
+            p[2] + (c[2] - p[2]) * a,
+        ]
     }
 }
 
@@ -1643,6 +1667,9 @@ pub struct UseState {
     /// sway term actually reads. Flooring this at 0 would be a plausible
     /// tidying that changed rendered output.
     pub remaining: i32,
+    /// M402 — `isAutoSpinAttack()`: bit 4 of the same flags byte (a
+    /// riptide trident's spin, `LivingEntityRenderer.setupRotations`).
+    pub auto_spin: bool,
 }
 
 impl UseState {
@@ -2826,6 +2853,7 @@ impl EntityTable {
         let st = self.uses.entry(id).or_default();
         st.using = using;
         st.hand = hand;
+        st.auto_spin = flags & 4 != 0;
         if using && st.item_id.is_none() {
             // `useItem = getItemInHand(usedHand)`. An unresolvable stack has no
             // known duration, so it latches nothing and the pose stays
@@ -4302,6 +4330,32 @@ mod tests {
         }
         assert_eq!(t.mob_state(8).sulfur_fuse, Some(0));
         assert_eq!(t.sulfur_fuse_remaining(8, 0.25), 0.75);
+    }
+
+    /// M402 — `deltaMovementOnPreviousTick` is the motion as the tick
+    /// began, and the frame lerps from it to the current; the riptide spin
+    /// is bit 4 of the living flags, beside the use bits.
+    #[test]
+    fn a_gliders_motion_lerps_and_the_spin_bit_reads() {
+        let mut t = EntityTable::default();
+        t.add(4, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.lerp_motion(4, [1.0, 0.0, 0.0], true, true);
+        t.tick_lerp();
+        t.lerp_motion(4, [0.0, 0.0, 1.0], true, true);
+        let e = t.get(4).unwrap();
+        assert_eq!(e.motion(), [0.0, 0.0, 1.0]);
+        let half = e.motion_at(0.5);
+        // The previous tick's motion is the packet's, before the tick's
+        // decay; the current is the new packet.
+        assert!(
+            (half[0] - 0.5).abs() < 1e-9 && (half[2] - 0.5).abs() < 1e-9,
+            "{half:?}"
+        );
+        assert!(!t.use_state(4).auto_spin);
+        t.set_living_flags(4, 4);
+        assert!(t.use_state(4).auto_spin && !t.use_state(4).using);
+        t.set_living_flags(4, 0);
+        assert!(!t.use_state(4).auto_spin);
     }
 
     /// M400 — the swim amount climbs 0.09 a tick to 1 in the SWIMMING pose

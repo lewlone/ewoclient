@@ -263,6 +263,10 @@ PRECMD = (
     # negative Age), clear of the lanes.
     "summon minecraft:sulfur_cube ~-30 ~ ~12 {NoAI:1b,Silent:1b,Size:1};"
     "summon minecraft:sulfur_cube ~-30 ~ ~15 {NoAI:1b,Silent:1b,Age:-24000};"
+    # M402 -- r224. A gliding mannequin: an elytra, FallFlying, no gravity,
+    # three blocks up (on the ground `updateFallFlying` would stop it).
+    "summon minecraft:mannequin ~-42 ~3 ~18 {immovable:1b,NoGravity:1b,FallFlying:1b,"
+    "equipment:{chest:{id:\"minecraft:elytra\",count:1}}};"
     # M401 -- r223. A sleeping mannequin (no bed: it lies at its yaw).
     "summon minecraft:mannequin ~-39 ~ ~18 {immovable:1b,pose:\"sleeping\"};"
     # M400 -- r222. A swimming mannequin.

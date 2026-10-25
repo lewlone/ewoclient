@@ -1701,6 +1701,14 @@ pub(crate) fn resolve_mob_combat(
         swim_amount: 0.0,
         swim_in_water: false,
         swim_visual: false,
+        // M402 — `isFallFlying()` (shared flag 7) for a kind whose render
+        // state reads it; the speed, tilt and turn are set by the caller.
+        fall_flying: rewo_gpu::mobs::reads_fall_flying(kind) && entities.shared_flag(id, 7),
+        fall_speed: 0.0,
+        glide_tilt: 0.0,
+        flying_y_rot: None,
+        // M402 — `isAutoSpinAttack()`, any living entity.
+        auto_spin: entities.use_state(id).auto_spin,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -5256,6 +5264,20 @@ pub(super) fn collect_entities<'a>(
                 let pose = session.world.entities.pose(id);
                 let gliding = session.world.entities.shared_flag(id, 7);
                 mob.swim_visual = pose == 3 || (pose == 1 && !gliding);
+            }
+        }
+        // M402 — a glider: `speedValue` for every humanoid, and an avatar's
+        // body tilt and flying turn (`AvatarRenderer.extractFlightData`).
+        if mob.fall_flying {
+            mob.fall_speed = rewo_world::glide::speed_value(e.motion());
+            if matches!(kind, EntityModelKind::Player | EntityModelKind::PlayerSlim) {
+                let scale = rewo_world::cape::fall_flying_scale(e.fall_fly_ticks() as f32 + alpha);
+                let pitch = e.render_pitch(alpha);
+                if !mob.auto_spin {
+                    mob.glide_tilt = scale * (-90.0 - pitch);
+                }
+                let look = rewo_world::glide::view_vector(pitch, e.render_yaw(alpha));
+                mob.flying_y_rot = rewo_world::glide::flying_y_rot(e.motion_at(alpha), look);
             }
         }
         // M397 — a sulfur cube's contained block (its body item's block).
