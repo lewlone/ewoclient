@@ -822,6 +822,24 @@ pub struct SoundEngine {
     gain_by_source: [f32; SoundSource::ALL.len()],
     /// `Options.soundSourceVolumes`.
     pub options: CategoryVolumes,
+    /// Every instance handed to [`Self::play_ramped`], when `Some` — the
+    /// playtest harness's sound log (`REWO_SCRIPT`). It is taken where the
+    /// harness's vanilla puppet hooks `SoundEngine.play`: the instance as it
+    /// arrived (raw volume and pitch, before any guard), plus the variant the
+    /// play resolved and its result. `None` (the default) records nothing.
+    pub play_log: Option<Vec<PlayRecord>>,
+    /// The variant the current play resolved, kept only while logging.
+    last_resolved: Option<String>,
+}
+
+/// One [`SoundEngine::play_log`] row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayRecord {
+    pub instance: SoundInstance,
+    /// `instance.getSound().getLocation()` after `resolve` — the seeded
+    /// variant (`minecraft:dig/stone1`); `None` when the play returned first.
+    pub resolved: Option<String>,
+    pub result: PlayResult,
 }
 
 impl Default for SoundEngine {
@@ -838,6 +856,8 @@ impl Default for SoundEngine {
             queued_tickable: Vec::new(),
             gain_by_source: [1.0; SoundSource::ALL.len()],
             options: CategoryVolumes::default(),
+            play_log: None,
+            last_resolved: None,
         }
     }
 }
@@ -1066,6 +1086,27 @@ impl SoundEngine {
         world: &dyn SoundWorld,
         device: &mut dyn AudioDevice,
     ) -> (InstanceId, PlayResult) {
+        let logged = self.play_log.as_ref().map(|_| instance.clone());
+        self.last_resolved = None;
+        let out = self.play_ramped_unlogged(instance, ramp, sounds, world, device);
+        if let (Some(log), Some(instance)) = (self.play_log.as_mut(), logged) {
+            log.push(PlayRecord {
+                instance,
+                resolved: self.last_resolved.take(),
+                result: out.1,
+            });
+        }
+        out
+    }
+
+    fn play_ramped_unlogged(
+        &mut self,
+        instance: SoundInstance,
+        ramp: Option<crate::tickable::Ramp>,
+        sounds: &SoundsIndex,
+        world: &dyn SoundWorld,
+        device: &mut dyn AudioDevice,
+    ) -> (InstanceId, PlayResult) {
         let id = InstanceId(self.next_id);
         self.next_id += 1;
 
@@ -1109,6 +1150,9 @@ impl SoundEngine {
             }
             None => return (id, PlayResult::NotStarted(NotStarted::UnknownEvent)),
         };
+        if self.play_log.is_some() {
+            self.last_resolved = Some(resolved.name.clone());
+        }
 
         // `float instanceVolume = instance.getVolume();` — called ONCE and
         // used for both roles. It is not a pure getter in vanilla (it samples
@@ -3400,6 +3444,36 @@ mod tests {
         assert_eq!(r, PlayResult::NotStarted(NotStarted::NotLoaded));
         assert!(dev.calls.is_empty());
         assert_eq!(dev.budget().used(Pool::Static), 0);
+    }
+
+    /// The harness's sound log sits at the head of `play`, like the vanilla
+    /// puppet's hook: a refused play is logged too, with its raw volume and
+    /// pitch, and no log is kept unless one was asked for.
+    #[test]
+    fn the_play_log_records_every_play_at_its_head() {
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        eng.play(stone(0.5, 1.5), &plain_index(), &EmptyWorld, &mut dev);
+        assert!(eng.play_log.is_none());
+        eng.play_log = Some(Vec::new());
+        eng.play(stone(0.5, 1.5), &plain_index(), &EmptyWorld, &mut dev);
+        eng.set_loaded(false);
+        let (_, r) = eng.play(stone(1.0, 0.75), &plain_index(), &EmptyWorld, &mut dev);
+        assert_eq!(r, PlayResult::NotStarted(NotStarted::NotLoaded));
+        let log = eng.play_log.as_ref().unwrap();
+        assert_eq!(log.len(), 2);
+        let (a, b) = (&log[0], &log[1]);
+        assert_eq!((a.instance.volume, a.instance.pitch), (0.5, 1.5));
+        assert_eq!((b.instance.volume, b.instance.pitch), (1.0, 0.75));
+        assert_eq!(b.instance.identifier, a.instance.identifier);
+        assert_eq!(a.result, PlayResult::Started);
+        assert!(
+            a.resolved.as_deref().is_some_and(|r| r.contains("stone")),
+            "{a:?}"
+        );
+        // Refused before resolving: no variant.
+        assert_eq!(b.result, PlayResult::NotStarted(NotStarted::NotLoaded));
+        assert_eq!(b.resolved, None);
     }
 
     #[test]

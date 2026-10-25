@@ -1,0 +1,42 @@
+# Owner list: "crafting table and furnace". GUI scale 3: both panels are 176x166 at (125, 37);
+# hotbar slot c is centred at (141 + 18c, 187); crafting grid cell (r, c) at (163 + 18c, 62 + 18r).
+name: rewo_crafting_furnace
+description: Use a crafting table, place planks in the grid (sticks appear), close; use a lit furnace smelting raw iron.
+
+world:
+  freeze: false
+  server_commands:
+    - setblock 0 -60 2 minecraft:crafting_table
+    - setblock 2 -60 2 minecraft:furnace[facing=north]
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 45]
+  commands:
+    - clear @s
+    - give @s minecraft:oak_planks 4
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: blocks, checklist: "a crafting table straight ahead and a furnace to its left (east)"}
+  - {at: 2, click: use}
+  - {at: 6, mouse: {x: 380, y: 200}}
+  - {at: 8, capture: crafting, checklist: "the crafting table screen: 3x3 grid empty, an arrow, an empty result slot, recipe-book button, planks in hotbar slot 1"}
+  - {at: 10, mouse_click: {x: 141, y: 187}}
+  - {at: 12, mouse_click: {x: 163, y: 62, button: right}}
+  - {at: 14, mouse_click: {x: 163, y: 80, button: right}}
+  - {at: 16, mouse: {x: 257, y: 80}}
+  - {at: 20, capture: sticks, checklist: "one plank in the top-left grid cell and one below it, 4 sticks in the result slot with the 'Stick' tooltip, 2 planks still on the cursor"}
+  - {at: 22, mouse_click: {x: 141, y: 187}}
+  - {at: 24, key: escape}
+  - {at: 26, command: "item replace block 2 -60 2 container.0 with minecraft:raw_iron 8"}
+  - {at: 26, command: "item replace block 2 -60 2 container.1 with minecraft:coal 4"}
+  - {at: 30, look: {yaw: -60, pitch: 40}}
+  - {at: 32, click: use}
+  - {at: 36, mouse: {x: 380, y: 200}}
+  - {at: 70, capture: furnace, checklist: "the furnace screen: raw iron in the top slot, coal in the fuel slot, the flame lit and the progress arrow partly filled"}
+  - {at: 72, key: escape}
+  - {at: 80, capture: furnace_lit, checklist: "back in the world, the furnace block lit (glowing front) to the left"}
+end_tick: 82

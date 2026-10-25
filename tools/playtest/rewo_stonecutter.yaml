@@ -1,0 +1,37 @@
+# Owner list: "stonecutter sounds". GUI scale 3: the panel at (125, 37); input slot (153, 78),
+# first recipe button (185, 60), result slot (276, 78), hotbar slot 1 at (141, 187).
+name: rewo_stonecutter
+description: Use a stonecutter, put stone in, pick a recipe (select sound), take the result (take sound).
+
+world:
+  server_commands:
+    - setblock 0 -60 2 minecraft:stonecutter
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 45]
+  commands:
+    - clear @s
+    - give @s minecraft:stone 8
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: block, checklist: "a stonecutter ahead, its blade visible"}
+  - {at: 2, click: use}
+  - {at: 6, mouse: {x: 380, y: 200}}
+  - {at: 8, capture: empty, checklist: "the stonecutter screen, empty input, an empty recipe area and a greyed scroll bar"}
+  - {at: 10, mouse_click: {x: 141, y: 187}}
+  - {at: 12, mouse_click: {x: 153, y: 78}}
+  - {at: 14, mouse: {x: 380, y: 200}}
+  - {at: 18, capture: recipes, checklist: "8 stone in the input; a grid of stone recipes (slabs, stairs, bricks...) and an active scroll bar"}
+  - {at: 20, mouse_click: {x: 185, y: 60}}
+  - {at: 20, expect_sound: minecraft:ui.stonecutter.select_recipe, window: 2}
+  - {at: 26, capture: selected, checklist: "the first recipe highlighted, its result in the result slot, the cursor over the recipe"}
+  - {at: 28, mouse_click: {x: 276, y: 78}}
+  - {at: 28, expect_sound: minecraft:ui.stonecutter.take_result, window: 6}
+  - {at: 34, capture: taken, checklist: "the cut stack on the cursor, 7 stone left in the input"}
+  - {at: 36, mouse_click: {x: 159, y: 187}}
+  - {at: 38, key: escape}
+end_tick: 40

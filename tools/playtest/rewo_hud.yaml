@@ -1,0 +1,46 @@
+# Enni's list: "the HUD". Hotbar with items, the selected item's name, armour, offhand, XP,
+# absorption hearts, damage, and F1 hiding the HUD.
+name: rewo_hud
+description: The survival HUD - hotbar items, held-item name, armour bar, offhand shield, XP bar, absorption, damage, F1.
+
+world:
+  server_commands:
+    - fill -3 -60 6 3 -57 6 minecraft:stone_bricks
+    - setworldspawn 0 -60 0
+    - gamerule block_drops false
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 10]
+  commands:
+    - clear @s
+    - give @s minecraft:diamond_sword
+    - give @s minecraft:oak_planks 32
+    - give @s minecraft:bow
+    - give @s minecraft:arrow 16
+    - give @s minecraft:apple 5
+    - give @s minecraft:compass
+    - item replace entity @s armor.chest with minecraft:iron_chestplate
+    - item replace entity @s armor.head with minecraft:iron_helmet
+    - item replace entity @s weapon.offhand with minecraft:shield
+    - xp set @s 7 levels
+    - xp set @s 40 points
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: hud, checklist: "hotbar: diamond sword (selected), 32 oak planks, bow, 16 arrows, 5 apples, compass; shield in the offhand slot left of the hotbar; armour bar (7 points) above the hearts; XP level 7 in green over a partly filled bar; diamond sword in the right hand"}
+  - {at: 2, hotbar: 2}
+  - {at: 6, capture: hotbar_name, checklist: "slot 2 selected, 'Oak Planks' shown above the hotbar, planks in hand"}
+  - {at: 8, command: "effect give @s minecraft:absorption 60 1 true"}
+  - {at: 14, capture: absorption, checklist: "four golden absorption hearts above the red hearts"}
+  - {at: 16, command: "damage @s 7 minecraft:generic"}
+  - {at: 16, expect_sound: minecraft:entity.player.hurt, window: 6}
+  - {at: 30, capture: damaged, checklist: "absorption hearts gone and some red hearts lost (7 damage minus 8 absorption: hearts full or one gone), hurt tilt over"}
+  - {at: 32, hotbar: 6}
+  - {at: 36, capture: compass, checklist: "compass in hand, 'Compass' name above the hotbar"}
+  - {at: 40, key: f1}
+  - {at: 44, capture: f1_hidden, checklist: "F1: no hotbar, hearts, crosshair or hand; only the world"}
+  - {at: 46, key: f1}
+  - {at: 50, capture: f1_back, checklist: "HUD back after a second F1"}
+end_tick: 52

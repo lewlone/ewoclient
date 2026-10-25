@@ -1,0 +1,45 @@
+# Owner list: "loom sounds" and "loom pattern scrolling". GUI scale 3: panel at (125, 37); banner
+# slot (146, 71), dye slot (166, 71), result (276, 103); pattern cell (r, c) at (192 + 14c, 57 + 14r).
+name: rewo_loom
+description: Use a loom, put a white banner and red dye in, pick a pattern (select sound), scroll the pattern list, take the banner.
+
+world:
+  server_commands:
+    - setblock 0 -60 2 minecraft:loom
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 45]
+  commands:
+    - clear @s
+    - give @s minecraft:white_banner 1
+    - give @s minecraft:red_dye 4
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 2, click: use}
+  - {at: 6, mouse: {x: 380, y: 200}}
+  - {at: 8, capture: empty, checklist: "the loom screen: empty banner, dye and pattern slots, no patterns listed"}
+  - {at: 10, mouse_click: {x: 141, y: 187}}
+  - {at: 12, mouse_click: {x: 146, y: 71}}
+  - {at: 14, mouse_click: {x: 159, y: 187}}
+  - {at: 16, mouse_click: {x: 166, y: 71}}
+  - {at: 18, mouse: {x: 380, y: 200}}
+  - {at: 22, capture: patterns, checklist: "banner and dye in their slots; a 4x4 grid of banner patterns in red-on-white; scroll bar active at the top"}
+  - {at: 24, mouse_click: {x: 206, y: 57}}
+  - {at: 24, expect_sound: minecraft:ui.loom.select_pattern, window: 2}
+  - {at: 28, mouse: {x: 380, y: 200}}
+  - {at: 30, capture: selected, checklist: "the second pattern highlighted; the banner preview on the right shows it in red; the result slot holds the patterned banner"}
+  - {at: 32, mouse_scroll: {x: 213, y: 78, dy: -1}}
+  - {at: 33, mouse_scroll: {x: 213, y: 78, dy: -1}}
+  - {at: 36, capture: scrolled, checklist: "the pattern list scrolled down two rows; the scroller moved down"}
+  - {at: 38, mouse_scroll: {x: 213, y: 78, dy: 1}}
+  - {at: 39, mouse_scroll: {x: 213, y: 78, dy: 1}}
+  - {at: 40, mouse_click: {x: 276, y: 103}}
+  - {at: 40, expect_sound: minecraft:ui.loom.take_result, window: 6}
+  - {at: 44, capture: taken, checklist: "the patterned banner on the cursor, the banner slot empty, 3 dye left"}
+  - {at: 46, mouse_click: {x: 177, y: 187}}
+  - {at: 48, key: escape}
+end_tick: 50

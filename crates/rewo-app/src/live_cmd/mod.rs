@@ -73,6 +73,8 @@ pub(crate) use hud::*;
 #[cfg(feature = "gates")]
 mod render_check;
 #[cfg(feature = "gates")]
+mod script;
+#[cfg(feature = "gates")]
 pub(crate) use render_check::*;
 mod icons;
 pub(crate) use icons::*;
@@ -594,6 +596,17 @@ impl Keys {
     }
 }
 
+/// One keyboard event as `LiveApp::key_input` reads it: the four fields of
+/// winit's `KeyEvent` the handler uses. A struct of its own because a
+/// `KeyEvent` cannot be built outside winit, and a scripted run
+/// (`REWO_SCRIPT`) presses keys through the same handler.
+pub(super) struct KeyInput {
+    pub physical_key: PhysicalKey,
+    pub state: ElementState,
+    pub text: Option<String>,
+    pub repeat: bool,
+}
+
 struct LiveState {
     window: Arc<Window>,
     gpu: Gpu,
@@ -706,6 +719,9 @@ struct LiveApp {
     /// M37 particles — `None` until the bake arrives, and stays `None` if the
     /// jar has no particle sprites.
     particles: Option<ParticleAssets>,
+    /// `REWO_SCRIPT` — the playtest harness's scenario run (`script.rs`).
+    #[cfg(feature = "gates")]
+    script: Option<script::Script>,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -1191,6 +1207,17 @@ fn run_windowed(
     }
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
+    #[cfg(feature = "gates")]
+    let script = script::load_script()?;
+    // A scripted run listens to no raw device (mouse) input at all.
+    #[cfg(feature = "gates")]
+    if script.is_some() {
+        event_loop.listen_device_events(winit::event_loop::DeviceEvents::Never);
+    }
+    #[cfg(feature = "gates")]
+    let debug_overlay = script.is_none();
+    #[cfg(not(feature = "gates"))]
+    let debug_overlay = true;
     // Every mesher table, from the bake. Built field by field this once lost
     // M164's carried water — the windowed client then meshed no waterlogged
     // water and looked EXACTLY as before (`r48` is what asks) — and would
@@ -1215,6 +1242,8 @@ fn run_windowed(
         blocks,
         capture_pending: false,
         particles: None,
+        #[cfg(feature = "gates")]
+        script,
         session: Some(session),
         // Cloned before the bake is stored, because it is `take`n when the
         // window opens and the entity draws need this every frame after.
@@ -1444,7 +1473,8 @@ fn run_windowed(
         uploaded_total: 0,
         flood_logged: false,
         dirt_item,
-        debug: true,
+        // The F3 text block; off for a scripted run, as vanilla starts.
+        debug: debug_overlay,
         // `Hud.isHidden` starts false — the HUD is showing (M70).
         hud_hidden: false,
         f3_down: false,

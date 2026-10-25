@@ -1,0 +1,26 @@
+# Owner list: "drowning bubbles". Stand at the bottom of a 3-deep pit of water: the air bar drains
+# (one bubble per 30 ticks, each pop plays a sound), then drowning damage every 20 ticks.
+name: rewo_drowning
+description: Underwater in a pit - the air bubbles drain and pop, then drowning damage.
+
+world:
+  freeze: false
+  server_commands:
+    - fill -2 -63 2 2 -61 6 minecraft:water
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -63, 4.5, 0, 0]
+  commands: [clear @s]
+  settle_ticks: 20
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: under, checklist: "underwater view (blue fog), a full air bar of 10 bubbles above the hunger bar"}
+  - {at: 120, capture: draining, checklist: "air bar part-empty: some bubbles gone"}
+  - {at: 290, capture: empty, checklist: "air bar empty or nearly"}
+  - {at: 300, expect_sound: minecraft:entity.player.hurt_drown, window: 80}
+  - {at: 360, capture: drowning, checklist: "drowning: hearts lost, red hurt flash/tilt, no bubbles left"}
+end_tick: 362

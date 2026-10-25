@@ -24,6 +24,10 @@ impl LiveApp {
     /// property of the phase bodies).
     pub(super) fn frame(&mut self, event_loop: &ActiveEventLoop) {
         let dt = self.frame_clock();
+        // `REWO_SCRIPT`: capture readiness and this tick's scripted input,
+        // ahead of everything (a scripted click's UI sound plays below).
+        #[cfg(feature = "gates")]
+        self.script_frame_head(event_loop);
         // M186 — before anything can return early: a click on the
         // disconnect screen has no session behind it and must still sound.
         self.flush_ui_sounds();
@@ -367,11 +371,28 @@ impl LiveApp {
                 Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
             return false;
         }
-        self.tick_accum += dt;
+        #[cfg(feature = "gates")]
+        self.script_after_pump(session);
+        // A scripted run owns the clock while it runs: exactly the ticks it
+        // asked for, and frames at partial tick 1.0 (`script.rs`).
+        #[cfg(feature = "gates")]
+        let mut scripted = self.script_ticks();
+        #[cfg(not(feature = "gates"))]
+        let mut scripted: Option<u32> = None;
+        if scripted.is_some() {
+            self.tick_accum = TICK_DT;
+        } else {
+            self.tick_accum += dt;
+        }
         let input = self.keys.input();
         let mut ran_tick = false;
-        while self.tick_accum >= TICK_DT {
-            self.tick_accum -= TICK_DT;
+        while match scripted.as_mut() {
+            Some(n) => std::mem::replace(n, n.saturating_sub(1)) > 0,
+            None => self.tick_accum >= TICK_DT,
+        } {
+            if scripted.is_none() {
+                self.tick_accum -= TICK_DT;
+            }
             if let Err(e) = session.tick(&input) {
                 // `onPacketError` — a handler threw. Vanilla's is the path that
                 // fills `bugReportLink`, so this is a `ClientError` and the
@@ -456,6 +477,8 @@ impl LiveApp {
                 }
             }
             ran_tick = true;
+            #[cfg(feature = "gates")]
+            self.script_after_tick(session);
         }
         if session.disconnect.is_some() {
             // Serviced at the top of the *next* frame, by the block that opens
@@ -4114,6 +4137,18 @@ impl LiveApp {
                 Ok(path) => log::info!("saved screenshot as {}", path.display()),
                 Err(e) => log::warn!("screenshot failed: {e}"),
             }
+        }
+        // `REWO_SCRIPT`'s capture frame: the same state, offscreen, as F2's.
+        #[cfg(feature = "gates")]
+        if let Some(s) = self.script.as_mut() {
+            s.capture_frame(
+                gpu,
+                world_renderer,
+                vp,
+                &draw,
+                renderer.swapchain.format,
+                renderer.swapchain.extent,
+            );
         }
         // M86's gate samples here: after every `set_*` this frame made and
         // before `render` consumes them, which is the only window in which the

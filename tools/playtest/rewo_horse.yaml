@@ -1,0 +1,35 @@
+# Enni's list: "ride a horse". Mount a tame saddled horse, ride forward, charge and release a jump,
+# dismount. freeze is off so the horse and the server tick as in play.
+name: rewo_horse
+description: Mount a saddled horse, ride south, charge the jump bar and jump, dismount with sneak.
+
+world:
+  freeze: false
+  server_commands:
+    - fill -2 -60 30 2 -58 30 minecraft:hay_block
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 25]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, command: 'summon minecraft:horse 0.5 -60 2.5 {Tame:1b,Variant:0,Rotation:[0f,0f],equipment:{saddle:{id:"minecraft:saddle",count:1}},attributes:[{id:"minecraft:movement_speed",base:0.25},{id:"minecraft:jump_strength",base:0.7}]}'}
+  - {at: 4, capture: horse, checklist: "a white (variant 0) saddled horse right in front, seen from behind and above"}
+  - {at: 5, click: use}
+  - {at: 14, look: {yaw: 0, pitch: 10}}
+  - {at: 16, capture: mounted, checklist: "riding: the horse's head and mane in front of the camera, no hand, the horse jump/health HUD: horse hearts instead of the hunger bar"}
+  - {at: 18, hold: [forward]}
+  - {at: 40, capture: riding, checklist: "riding forward toward a hay wall, camera above the horse's neck"}
+  - {at: 50, hold: [jump]}
+  - {at: 58, capture: jump_charge, checklist: "the jump bar replaces the XP bar and is partly or fully charged"}
+  - {at: 60, release: [jump]}
+  - {at: 64, capture: jump_air, checklist: "horse in the air mid-jump"}
+  - {at: 80, release: all}
+  - {at: 100, hold: [sneak]}
+  - {at: 104, release: [sneak]}
+  - {at: 112, capture: dismounted, checklist: "standing beside the horse after dismounting, hand and hunger bar back"}
+end_tick: 114

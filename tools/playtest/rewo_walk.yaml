@@ -1,0 +1,32 @@
+# The harness's spike walk at GUI scale 3 (Rewo always uses the auto scale, 3 at 1280x720):
+# a block scene, a walk with footsteps, a turn while walking.
+name: rewo_walk
+description: Walk south past a small block scene, turn right while walking, stop.
+
+world:
+  server_commands:
+    - fill -3 -60 8 3 -58 8 minecraft:bricks
+    - fill -1 -59 8 1 -59 8 minecraft:glass
+    - fill 5 -60 4 5 -56 4 minecraft:oak_log
+    - fill 4 -55 3 6 -54 5 minecraft:oak_leaves[persistent=true]
+    - fill -6 -60 3 -6 -57 3 minecraft:red_wool
+    - fill -6 -60 5 -6 -58 5 minecraft:blue_wool
+    - setblock 2 -60 2 minecraft:oak_planks
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 0]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: start, checklist: "brick wall with a glass strip ahead, tree on the left, red and blue wool posts on the right, empty hotbar, full hearts and hunger"}
+  - {at: 1, hold: [forward]}
+  - {at: 1, expect_sound: minecraft:block.grass.step, window: 30}
+  - {at: 20, turn: {yaw: 60, pitch: 20, ticks: 10}}
+  - {at: 25, capture: walk_turn, checklist: "mid-turn while walking: view tilted down-right, view bobbing"}
+  - {at: 40, release: all}
+  - {at: 60, capture: end, checklist: "standing still facing south-west, looking slightly down"}
+end_tick: 62
