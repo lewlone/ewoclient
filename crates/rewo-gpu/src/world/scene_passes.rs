@@ -98,6 +98,20 @@ impl WorldRenderer {
         }
     }
 
+    /// M425 — the clouds' `FogCloudsEnd` alone (a fog environment's
+    /// `cloudEnd`), over the deck `set_clouds` installed this frame.
+    pub fn set_cloud_fog_end(&mut self, end: f32) {
+        if let Some(pass) = self.clouds.as_mut() {
+            pass.set_fog_end(end);
+        }
+    }
+
+    /// M425 — the clouds' `FogCloudsEnd` this frame, `None` without a cloud
+    /// pass.
+    pub fn cloud_fog_end(&self) -> Option<f32> {
+        self.clouds.as_ref().map(|p| p.fog_end())
+    }
+
     /// Build the world-border pass (M80) over `misc/forcefield.png`.
     pub fn init_border(
         &mut self,

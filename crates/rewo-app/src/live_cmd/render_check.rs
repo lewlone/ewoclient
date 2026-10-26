@@ -314,6 +314,9 @@ pub(super) struct RenderCheck {
     /// and colour), and the highest water vision seen on them.
     pub(super) water_fog_frames: u32,
     pub(super) water_vision_peak: f32,
+    /// M425 — r231: of those frames, the ones whose clouds faded at the
+    /// water's band (`cloudEnd`) rather than the open air's.
+    pub(super) water_cloud_frames: u32,
     /// M407 — r228: frames on which the bot's staged sherd pot's icon
     /// resolved to its copy.
     pub(super) sherd_icon_frames: u32,
@@ -1353,7 +1356,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 230;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 231;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -2468,6 +2471,16 @@ impl RenderCheck {
             format!(
                 "{} frames drew it; water vision peaked at {:.3}",
                 self.water_fog_frames, self.water_vision_peak
+            ),
+        );
+        // M425 — r231: in r230's window the clouds' fog end is the water
+        // band's (until M425 it stayed the open air's 1024 under water).
+        row(
+            "r231 under water the clouds faded at the water's band",
+            self.water_cloud_frames >= 1 && self.water_cloud_frames == self.water_fog_frames,
+            format!(
+                "{} of r230's {} frames",
+                self.water_cloud_frames, self.water_fog_frames
             ),
         );
         // M408 — r229: r101's off-hand shield carries a lime base colour;

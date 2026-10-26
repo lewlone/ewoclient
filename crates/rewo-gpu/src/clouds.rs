@@ -501,6 +501,17 @@ impl CloudPass {
         })
     }
 
+    /// M425 — `FogCloudsEnd` alone, over the frame's mesh (a fog
+    /// environment's `cloudEnd`).
+    pub fn set_fog_end(&mut self, end: f32) {
+        self.fog_clouds_end = end;
+    }
+
+    /// M425 — the `FogCloudsEnd` the next draw pushes.
+    pub fn fog_end(&self) -> f32 {
+        self.fog_clouds_end
+    }
+
     /// Upload one frame's mesh + uniform. An empty mesh is legal and draws
     /// nothing — which is also what a dimension with a transparent cloud
     /// colour should produce, though the caller is expected to skip us

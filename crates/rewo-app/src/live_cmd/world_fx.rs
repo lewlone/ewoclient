@@ -210,6 +210,9 @@ pub(super) fn apply_fog_environment(
     if let Some(env) = plan.band {
         wr.set_env_fog([env.start, env.end]);
         wr.set_sky_end(env.sky_end);
+        // M425 — and the clouds' fade (under water the deck is gone past the
+        // water's band). The atmospheric `cloudEnd` stays [`CLOUD_FOG_END`].
+        wr.set_cloud_fog_end(env.cloud_end);
     }
     if let Some(rgb) = plan.color {
         // Back to the linear base the GPU multiplies by its tint, with the

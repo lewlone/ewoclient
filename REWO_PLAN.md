@@ -2187,7 +2187,8 @@ this shape once.
 | M407 (2026-10-26) — a decorated pot item's icon wears its sherds | **r228** | — | — |
 | M408 (2026-10-26) — the first-person hand draws a held shield's pattern copy | **r229** | — | — |
 | M424 (2026-10-26) — under water the frame draws the water's fog | **r230** | — | — |
-| *(next free)* | **r231** | — | — |
+| M425 (2026-10-26) — under water the clouds fade at the water's band | **r231** | — | — |
+| *(next free)* | **r232** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -4021,6 +4022,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M425 — under water the clouds fade at the water's band (2026-10-26)
+
+M422 applied each fog environment's band and sky end but not its `cloudEnd`, so under water (or in lava, or blinded) the cloud deck kept the open air's 1024-block fade (`CLOUD_FOG_END`, itself an approximation: vanilla's atmospheric `cloudEnd` is `min(cloudRange · 16, CLOUD_FOG_END_DISTANCE)` with a 128-chunk default range, where Rewo pins a 12-chunk deck; left as it was). `apply_fog_environment` now sets the cloud pass's `FogCloudsEnd` to the environment's `cloudEnd` over the deck `apply_weather` installed. **Render check r231** (in r230's window every frame's clouds fade at the water band's end).
 
 ### M424 — a live witness for the water's fog (2026-10-26)
 

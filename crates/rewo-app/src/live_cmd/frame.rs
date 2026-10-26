@@ -3410,6 +3410,11 @@ impl LiveApp {
                     {
                         c.water_fog_frames += 1;
                         c.water_vision_peak = c.water_vision_peak.max(session.water_vision());
+                        // M425 — r231: the clouds fade at the water's band.
+                        let end = _fog_plan.band.map(|b| b.cloud_end);
+                        if end.is_some() && state.world_renderer.cloud_fog_end() == end {
+                            c.water_cloud_frames += 1;
+                        }
                     }
                 }
             }
