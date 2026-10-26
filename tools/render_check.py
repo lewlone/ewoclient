@@ -429,7 +429,10 @@ PRECMD = (
     "summon minecraft:armor_stand ~-12 ~ ~3 {equipment:{head:{id:\"minecraft:carved_pumpkin\",count:1}}};"
     "advancement grant @s only minecraft:story/root;"
     "advancement grant @s only minecraft:adventure/root;"
-    "summon minecraft:item_frame ~ ~1 ~ "
+    # r71. Out of the bot's lines: the client now puts a frame where its box is
+    # (`hanging_center`: the block's centre, 0.03 from the wall face), so one in
+    # the bot's own block stands in front of its eye and takes every pick.
+    "summon minecraft:item_frame ~-5 ~1 ~-5 "
     "{Facing:2b,Fixed:1b,ItemRotation:3b,Item:{id:\"minecraft:diamond_sword\",count:1}}"
 )
 
