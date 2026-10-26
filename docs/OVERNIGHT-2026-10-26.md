@@ -35,7 +35,7 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   with water vision; Rewo had only the open-air fog), M423 (the
   first-person hand fogs with the world), M424 (render check r230: the
   live client under water draws the water's fog), M425 (and its clouds
-  fade at the water's band, r231), M426 (horses graze); the
+  fade at the water's band, r231), M426 (horses graze), M427 (the fog darkens toward the void, under y −32); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -133,7 +133,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `6ff40fb0` | **M423** — the first-person hand takes the world's fog; handshot g8 |
 | `773dbce8`, `528a982f` | **M424** — a live witness for the water's fog; render check r230 |
 | `90f3def4` | **M425** — under water the clouds fade at the water's band; render check r231 |
-| (next) | **M426** — horses graze; mobtexshot m126 |
+| `9d758e66` | **M426** — horses graze; mobtexshot m126 |
+| (next) | **M427** — the fog darkens toward the void; unit test |
 
 ## Flakes
 
@@ -181,8 +182,8 @@ major bumps, so the next weekly group arrives without it.
   elytra was 12 px too high (fixed there too).
 - ~~Rewo has only the atmospheric (rain) environmental fog~~: M422 (water,
   lava, powder snow, blindness, darkness, water vision). Left: a live
-  witness with the bot under water (M424: r230), the void
-  darkness, the boss bar's world darkening, the open air's cloud fade
+  witness with the bot under water (M424: r230), the void darkness (M427),
+  the boss bar's world darkening, the open air's cloud fade
   (Rewo pins a 12-chunk deck where vanilla's range defaults to 128).
 - ~~Entities take no fog at all~~: done in M412; the first-person hand
   in M423. Left: the hand's glint does not fade in fog.

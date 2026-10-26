@@ -187,6 +187,8 @@ pub(super) fn apply_fog_environment(
         water_vision: session.water_vision(),
         water_fog: [fe::WATER_FOG_START, water_end],
         render_distance: (session.effective_render_distance() * 16) as f32,
+        // M427 — the void's darkening near the world's floor.
+        void_darkness: fe::void_darkness(session.world.shape.min_y, eye[1], session.level_is_flat),
         ..session.fog_effects(partial)
     };
     let (sky_base, fog_base, sky_tint, fog_tint) = wr.sky_fog_inputs();

@@ -13,9 +13,7 @@
 //! caller keeps its band and colour. Everything here is a pure function of
 //! its inputs, so the app's per-frame step is a thin adapter.
 //!
-//! Not modelled: the void darkness (`voidDarknessOnsetRange`, a level-data
-//! value the client is not sent), `darkenWorldAmount` (the boss bar's world
-//! darkening), a boat's exception in `updateFluidOnEyes`, and the dimension
+//! Not modelled: `darkenWorldAmount` (the boss bar's world darkening), a boat's exception in `updateFluidOnEyes`, and the dimension
 //! types' own water fog attributes (none of the vanilla four sets one).
 
 use crate::physics::{fluid_top, PhysicsWorld};
@@ -207,6 +205,8 @@ pub struct FogInputs {
     pub water_vision: f32,
     /// `WATER_FOG_START_DISTANCE` / `WATER_FOG_END_DISTANCE` at the camera.
     pub water_fog: [f32; 2],
+    /// M427 — the void darkness the fog colour starts from ([`void_darkness`]).
+    pub void_darkness: f32,
     /// The render distance in blocks (`renderDistanceInChunks · 16`).
     pub render_distance: f32,
 }
@@ -303,19 +303,28 @@ pub fn color_source(fog_type: FogType) -> ColorSource {
     }
 }
 
+/// M427 — `computeFogColor`'s starting darkness, the void's:
+/// `clamp((range + minY − cameraY) / range, 0, 1)` with
+/// `ClientLevelData.voidDarknessOnsetRange()` (1 in a flat world, else 32):
+/// the fog darkens over the last 32 blocks above the world's floor.
+pub fn void_darkness(min_y: i32, camera_y: f64, flat: bool) -> f32 {
+    let range = if flat { 1.0 } else { 32.0 };
+    ((range + min_y as f32 - camera_y as f32) / range).clamp(0.0, 1.0)
+}
+
 /// `computeFogColor`'s darkness: blindness's `getModifiedDarkness` (1, or
-/// the last second's `duration / 20`) or darkness's (its blend factor),
-/// whichever environment applies first, over a starting 0 (the void darkness
-/// is not modelled).
+/// the last second's `max(duration / 20, void)`) or darkness's (`max(blend,
+/// void)`), whichever environment applies first, over the void darkness.
 pub fn fog_darkness(i: &FogInputs) -> f32 {
+    let void = i.void_darkness;
     if let Some(b) = i.blindness {
         return if b.ends_within(19) {
-            (b.duration as f32 / 20.0).max(0.0)
+            (b.duration as f32 / 20.0).max(void)
         } else {
             1.0
         };
     }
-    i.darkness.map_or(0.0, |blend| blend.max(0.0))
+    i.darkness.map_or(void, |blend| blend.max(void))
 }
 
 /// The tail of `computeFogColor` over a base colour (sRGB floats, the
@@ -694,6 +703,31 @@ mod tests {
             ..base
         };
         assert_eq!(plan(&dark, 1.0, DEFAULT_WATER_FOG_COLOR, sky).color, None);
+    }
+
+    /// M427 — the void darkness: full at the world's floor, none 32 blocks
+    /// up (1 in a flat world), and the open air's fog darkened by its square.
+    #[test]
+    fn the_fog_darkens_toward_the_void() {
+        assert_eq!(void_darkness(-64, -64.0, false), 1.0);
+        assert_eq!(void_darkness(-64, -48.0, false), 0.5);
+        assert_eq!(void_darkness(-64, -32.0, false), 0.0);
+        assert_eq!(void_darkness(-64, -63.0, true), 0.0);
+        let deep = FogInputs {
+            void_darkness: 0.5,
+            ..Default::default()
+        };
+        assert_eq!(fog_darkness(&deep), 0.5);
+        let p = plan(&deep, 0.0, DEFAULT_WATER_FOG_COLOR, [0.8, 0.4, 0.2]);
+        assert_eq!(p.color, Some([0.2, 0.1, 0.05]));
+        // A darkness effect weaker than the void does not lift it.
+        assert_eq!(
+            fog_darkness(&FogInputs {
+                darkness: Some(0.2),
+                ..deep
+            }),
+            0.5
+        );
     }
 
     /// `computeFogColor`'s tail: blindness blacks the fog out (but not in

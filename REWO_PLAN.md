@@ -4023,6 +4023,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M427 — the fog darkens toward the void (2026-10-26)
+
+M422 left `computeFogColor`'s starting darkness at 0, believing the client is not sent `voidDarknessOnsetRange`. It is derived: `ClientLevelData.voidDarknessOnsetRange()` is 1 in a flat world and 32 otherwise (`isFlat`, from the spawn info, which the session already keeps for the horizon), and the darkness is `clamp((range + minY − cameraY) / range, 0, 1)`: the fog darkens by its square over the last 32 blocks above the world's floor (below y −32 in a normal overworld), as blindness's last second and darkness's blend only ever raise it, and not in lava or powder snow. `fog_env::void_darkness`; `FogInputs::void_darkness`. **Unit test** (full at the floor, half 16 blocks up, none at 32; flat's one block; the open air's colour darkened by the square; a weaker darkness effect does not lift it).
+
 ### M426 — horses graze (2026-10-26)
 
 M417's sibling: the rest of `AbstractEquineModel.setupAnim`'s head terms. `AbstractHorse.aiStep`'s `eatAnim` (toward 1 while flag 0x10, eating, is set, else toward 0; standing zeroes it) and `mouthAnim` (flag 0x40, the renderer's `feedingAnimation`) are kept beside M404's stand clock, and the head group is now the whole formula: `xRot = standing·(π/12 + look) + eating·(125° + sin(age)·0.05) + (1 − max(standing, eating))·(π/6 + look + feeding·sin(age)·0.05)`, the yaw faded by the same factor outside rearing, the group lowered `lerp(eating, −8·standing, 7)`. With all three at 0 it is M359's term exactly. **Unit test** (the eat and mouth clocks, rearing zeroing the eating); **mobtexshot m126** (a grazing horse's top drops 18 rows from the side; looked at: the head at the ground).
