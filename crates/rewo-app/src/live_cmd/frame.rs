@@ -416,7 +416,33 @@ impl LiveApp {
             // M131 — and drain the tick's sounds. Per *tick*, not per frame:
             // `MIN_SOURCE_LIFETIME` is 20 ticks, so a per-frame drive would tie
             // a channel's grace period to the frame rate.
-            let queued = session.take_sound_events();
+            let mut queued = session.take_sound_events();
+            // `ClientLevel.tickWeatherEffects`' rain ambience, which needs the
+            // climate noise the weather renderer owns.
+            if let Some(w) = self.weather.as_mut() {
+                let rain = session.world.rain_sound(
+                    &effective_weather(session),
+                    &w.noise,
+                    eye_f64(session),
+                    WEATHER_RADIUS,
+                    session.game_time(),
+                    session.sea_level.unwrap_or(63),
+                    &mut w.rain_sound_time,
+                );
+                if let Some(r) = rain {
+                    queued.push(rewo_net::sounds::SoundEvent::Local(
+                        rewo_net::sounds::LocalSound {
+                            name: r.name.into(),
+                            source: rewo_net::sounds::SoundSource::Weather,
+                            x: r.pos[0],
+                            y: r.pos[1],
+                            z: r.pos[2],
+                            volume: r.volume,
+                            pitch: r.pitch,
+                        },
+                    ));
+                }
+            }
             self.sounds.drive(
                 &queued,
                 &session.world.entities,
@@ -2761,7 +2787,7 @@ impl LiveApp {
         let hit = session.target_block(
             eye_f64(session),
             look_dir(session.player.yaw, session.player.pitch),
-            REACH,
+            block_reach(session),
         );
         state.world_renderer.set_selection(hit.map(|h| h.block));
         let (mut leash_verts, quad_leashes) =

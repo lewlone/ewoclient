@@ -603,7 +603,7 @@ impl LiveApp {
             let hit = session.target_shape(
                 eye_f64(session),
                 look_dir(session.player.yaw, session.player.pitch),
-                REACH,
+                block_reach(session),
             )?;
             let b = hit.hit.block;
             let state = session.world.block_state_at(b[0], b[1], b[2]);

@@ -738,6 +738,81 @@ impl crate::World {
         out
     }
 
+    /// `ClientLevel.tickWeatherEffects`'s sound, once per client tick: the
+    /// rain-particle positions are drawn from a random seeded by the game
+    /// time (`gameTime * 312987231`), so the spot the sound plays from is
+    /// vanilla's exactly. `sound_time` is `ClientLevel.rainSoundTime`.
+    /// Particle status ALL (two `nextDouble` per accepted column); the
+    /// particles themselves are drawn by the renderer, not here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rain_sound(
+        &self,
+        weather: &WeatherState,
+        noise: &ClimateNoise,
+        camera: [f64; 3],
+        radius: i32,
+        game_time: i64,
+        sea_level: i32,
+        sound_time: &mut i32,
+    ) -> Option<RainSound> {
+        let rain = weather.rain_level();
+        if rain <= 0.0 {
+            return None;
+        }
+        let mut random = LegacyRandom::new(game_time.wrapping_mul(312987231));
+        let cam = camera.map(|v| v.floor() as i32);
+        let diameter = 2 * radius + 1;
+        let count = (0.225f32 * (diameter * diameter) as f32 * rain * rain) as i32;
+        let mut particle: Option<[i32; 3]> = None;
+        for _ in 0..count {
+            let x = cam[0] + random.next_int(diameter) - radius;
+            let z = cam[2] + random.next_int(diameter) - radius;
+            let Some(h) = self.motion_blocking_height(x, z) else {
+                // `getHeightmapPos` on an unloaded chunk reads minY, which
+                // fails the first test below.
+                continue;
+            };
+            let rains = h > self.shape.min_y
+                && h <= cam[1] + 10
+                && h >= cam[1] - 10
+                && self.climate_at(x, h, z).is_some_and(|c| {
+                    noise.precipitation_at(&c, x, h, z, sea_level) == Precipitation::Rain
+                });
+            if rains {
+                particle = Some([x, h - 1, z]);
+                random.next_double();
+                random.next_double();
+            }
+        }
+        let p = particle?;
+        let fire = random.next_int(3) < *sound_time;
+        *sound_time += 1;
+        if !fire {
+            return None;
+        }
+        *sound_time = 0;
+        let above = p[1] > cam[1] + 1
+            && self
+                .motion_blocking_height(cam[0], cam[2])
+                .is_some_and(|h| h > camera[1].floor() as i32);
+        let pos = [p[0] as f64 + 0.5, p[1] as f64 + 0.5, p[2] as f64 + 0.5];
+        Some(if above {
+            RainSound {
+                name: "minecraft:weather.rain.above",
+                pos,
+                volume: 0.1,
+                pitch: 0.5,
+            }
+        } else {
+            RainSound {
+                name: "minecraft:weather.rain",
+                pos,
+                volume: 0.2,
+                pitch: 1.0,
+            }
+        })
+    }
+
     /// `level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)`, or `None` when
     /// the column is not loaded or sent no such heightmap.
     pub fn motion_blocking_height(&self, x: i32, z: i32) -> Option<i32> {
@@ -759,6 +834,15 @@ impl crate::World {
             temperature_modifier: def.temperature_modifier,
         })
     }
+}
+
+/// One [`crate::World::rain_sound`]: `playLocalSound(pos, .., WEATHER, ..)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RainSound {
+    pub name: &'static str,
+    pub pos: [f64; 3],
+    pub volume: f32,
+    pub pitch: f32,
 }
 
 #[cfg(test)]
@@ -806,6 +890,54 @@ mod extract_tests {
             }
         }
         w
+    }
+
+    /// Rain on open ground: the clock `rainSoundTime` fires within a few
+    /// ticks (`nextInt(3) < time++`), at a rained-on column's top block,
+    /// `weather.rain` at 0.2 / 1.0. Under a roof (the heightmap above the
+    /// camera) and rain falling above, it is `weather.rain.above`.
+    #[test]
+    fn rain_plays_its_ambience_on_the_tick_clock() {
+        let mut w = world_at(64);
+        with_plains(
+            &mut w,
+            BiomeClimate {
+                has_precipitation: true,
+                temperature: 0.8,
+                temperature_modifier: TemperatureModifier::None,
+            },
+        );
+        let noise = ClimateNoise::new();
+        let mut weather = WeatherState::default();
+        assert!(w
+            .rain_sound(&weather, &noise, [0.5, 65.0, 0.5], 10, 0, 63, &mut 0)
+            .is_none());
+        weather.set_rain(1.0);
+        let mut time = 0;
+        let mut plays = Vec::new();
+        for t in 0..20 {
+            if let Some(s) = w.rain_sound(&weather, &noise, [0.5, 65.0, 0.5], 10, t, 63, &mut time)
+            {
+                assert_eq!(
+                    (s.name, s.volume, s.pitch),
+                    ("minecraft:weather.rain", 0.2, 1.0)
+                );
+                assert_eq!(s.pos[1], 63.5, "the block under the heightmap");
+                plays.push(t);
+            }
+        }
+        // `nextInt(3) < time++` never fires at time 0 and always by time 3.
+        assert!(!plays.is_empty() && !plays.contains(&0));
+        assert!(plays.windows(2).all(|p| p[1] - p[0] <= 4), "{plays:?}");
+        // The camera at 60 under terrain 64: still within 10, rain above.
+        let mut time = 5;
+        let s = w
+            .rain_sound(&weather, &noise, [0.5, 60.0, 0.5], 10, 7, 63, &mut time)
+            .expect("time 5 always fires");
+        assert_eq!(
+            (s.name, s.volume, s.pitch),
+            ("minecraft:weather.rain.above", 0.1, 0.5)
+        );
     }
 
     /// Zero rain means no columns at all — the guard runs before any work.

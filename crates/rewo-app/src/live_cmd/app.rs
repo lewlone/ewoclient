@@ -1913,7 +1913,7 @@ impl LiveApp {
         let hit = session.target_block(
             eye_f64(session),
             look_dir(session.player.yaw, session.player.pitch),
-            REACH,
+            block_reach(session),
         )?;
         let [x, y, z] = hit.block;
         let state = session.world.block_state_at(x, y, z);
@@ -1951,11 +1951,11 @@ impl LiveApp {
             requires_correct_tool: block.requires_correct_tool,
             tool_speed,
             tool_correct,
-            mining_efficiency: attr("minecraft:mining_efficiency", 0.0),
+            mining_efficiency: attr("mining_efficiency", 0.0),
             dig_speed_amplifier: dig,
             fatigue_amplifier: fatigue,
-            block_break_speed: attr("minecraft:block_break_speed", 1.0),
-            submerged_mining_speed: attr("minecraft:submerged_mining_speed", 0.2),
+            block_break_speed: attr("block_break_speed", 1.0),
+            submerged_mining_speed: attr("submerged_mining_speed", 0.2),
             eye_in_water: session.local_player_view().is_some_and(|v| v.underwater),
             on_ground: session.player.on_ground,
         };
@@ -2012,6 +2012,11 @@ impl LiveApp {
                     .is_some_and(|s| s.abilities.instabuild);
                 let item = self.mining_item();
                 let (sends, swing) = self.mining.tick(t, creative, item);
+                if let Some(pos) = self.mining.take_hit() {
+                    if let Some(s) = self.session.as_mut() {
+                        s.local_mining_hit(pos);
+                    }
+                }
                 self.apply_mining(sends);
                 if swing {
                     if let Some(s) = self.session.as_mut() {
@@ -2037,6 +2042,14 @@ impl LiveApp {
             return;
         };
         for s in sends {
+            // `destroyBlock` runs inside the prediction, before the packet.
+            match s {
+                MiningSend::Start {
+                    pos, broke: true, ..
+                }
+                | MiningSend::Stop { pos, .. } => session.local_destroy_block(pos),
+                _ => {}
+            }
             let r = match s {
                 MiningSend::Start {
                     pos: [x, y, z],
@@ -2353,7 +2366,17 @@ impl LiveApp {
                     offset,
                     inside,
                     swing,
-                } => session.use_item_on_hit(hand, pos, face, offset, inside, swing),
+                    places,
+                    sound,
+                } => {
+                    if places {
+                        session.expect_placement(pos, face);
+                    }
+                    if let Some(s) = sound {
+                        session.local_block_use_sound(pos, s);
+                    }
+                    session.use_item_on_hit(hand, pos, face, offset, inside, swing)
+                }
                 UseStep::Use { hand, start, swing } => session.use_held(hand, start, swing),
             };
             if let Err(e) = r {
@@ -2377,7 +2400,7 @@ impl LiveApp {
         let me = session.player_id?;
         let eye = eye_f64(session);
         let dir = look_dir(session.player.yaw, session.player.pitch);
-        let shape_hit = session.target_shape(eye, dir, REACH);
+        let shape_hit = session.target_shape(eye, dir, block_reach(session));
         let hit = shape_hit.map(|h| h.hit);
         let inside = shape_hit.is_some_and(|h| h.inside);
         let name = |slot: Option<rewo_world::inventory::ItemSlot>| {
@@ -2452,7 +2475,8 @@ impl LiveApp {
                     prop: &prop,
                     face,
                 };
-                let local = cu::use_item_on(&clicked, &clicker, hand);
+                let (local, by) = cu::use_item_on_by(&clicked, &clicker, hand);
+                let block_used = local == Outcome::Consumed && by == cu::UsedBy::Block;
                 // `BlockHitResult.getLocation() - pos`, as the packet's floats.
                 let at = [
                     eye[0] + dir[0] * h.distance,
@@ -2471,6 +2495,12 @@ impl LiveApp {
                     offset,
                     inside,
                     swing: local == Outcome::Consumed,
+                    places: local == Outcome::Consumed
+                        && !block_used
+                        && held.is_some_and(|h| {
+                            cu::item_use_on_class(h, &exists) == Some("BlockItem")
+                        }),
+                    sound: block_used.then(|| cu::block_use_sound(&clicked)).flatten(),
                 });
                 if local != Outcome::Pass {
                     return Some(plan);
@@ -2561,7 +2591,7 @@ impl LiveApp {
         let hit = session.target_block(
             eye_f64(session),
             look_dir(session.player.yaw, session.player.pitch),
-            REACH,
+            block_reach(session),
         );
         if let Some(h) = hit {
             let [x, y, z] = h.block;

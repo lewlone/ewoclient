@@ -46,6 +46,10 @@ pub struct ConfigData {
     pub overworld_clock_id: Option<i32>,
     /// The whole `minecraft:world_clock` registry in raw wire order.
     pub world_clock_ids: Vec<String>,
+    /// `minecraft:damage_type` in raw wire order (the index is the id a
+    /// `damage_event` names): each type's `effects`, which picks the local
+    /// player's hurt sound.
+    pub damage_effects: Vec<rewo_data::damage_effects::DamageEffects>,
     /// `mob_effect` ids for the M13 lightmap. A built-in registry, so these come
     /// from the datagen report (M92c); a server that does sync the registry
     /// overrides them.
@@ -83,6 +87,7 @@ impl ConfigData {
             dim_types: Vec::new(),
             overworld_clock_id: None,
             world_clock_ids: Vec::new(),
+            damage_effects: Vec::new(),
             night_vision_id: data.mob_effects.id_of("minecraft:night_vision"),
             darkness_id: data.mob_effects.id_of("minecraft:darkness"),
             swing_effect_ids: crate::SwingEffectIds {
@@ -128,6 +133,7 @@ impl ConfigData {
             dim_types: Vec::new(),
             overworld_clock_id: None,
             world_clock_ids: Vec::new(),
+            damage_effects: Vec::new(),
             night_vision_id,
             darkness_id,
             swing_effect_ids,
@@ -290,6 +296,10 @@ impl ConfigData {
         if is_clock {
             self.world_clock_ids.clear();
         }
+        let is_damage_type = registry == "minecraft:damage_type";
+        if is_damage_type {
+            self.damage_effects.clear();
+        }
         // The M13 camera lightmap keys night-vision / darkness off their raw
         // `mob_effect` registry ids, captured here rather than assumed from
         // bootstrap order (exactly like the world clock above).
@@ -360,6 +370,11 @@ impl ConfigData {
                     return Ok(());
                 }
             };
+            if is_damage_type && !has_nbt {
+                // A known-pack entry: the client's own jar has the data.
+                self.damage_effects
+                    .push(rewo_data::damage_effects::vanilla(&entry_name));
+            }
             if !has_nbt {
                 if is_biome {
                     // A biome with no NBT is degenerate; keep raw order intact
@@ -382,6 +397,14 @@ impl ConfigData {
             if is_biome {
                 self.biome_defs
                     .push(crate::biome_parse::parse_biome(&entry_name, &nbt));
+            }
+            if is_damage_type {
+                // `effects` defaults to `hurt` (`DamageType.CODEC`).
+                let effects = match nbt.get("effects") {
+                    Some(Nbt::String(s)) => rewo_data::damage_effects::DamageEffects::from_name(s),
+                    _ => None,
+                };
+                self.damage_effects.push(effects.unwrap_or_default());
             }
         }
         if is_biome {

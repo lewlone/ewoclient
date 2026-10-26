@@ -174,6 +174,7 @@ impl PlaySession {
                 self.world.set_block(x, y, z, state as u32);
                 self.sync_block_entity(x, y, z, old, state as u32);
                 self.relight(x, y, z, old, state as u32);
+                self.placed_block_sound([x, y, z], old, state as u32);
                 self.block_updates += 1;
                 self.mark_dirty_block(x, z);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
@@ -364,6 +365,19 @@ impl PlaySession {
                 let camera = Self::camera_eye(&self.player, self.spawned);
                 if let Some(s) = crate::route_level_event_sound(body, camera) {
                     self.push_sound_event(s);
+                }
+                // 2001's sound is the broken state's `SoundType`, which the
+                // level-event table cannot name (`level_event_sounds::DERIVED`).
+                if let Some(rewo_world::particles::ParticleEvent::DestroyBlock {
+                    x,
+                    y,
+                    z,
+                    block_state,
+                }) = ev
+                {
+                    if let Some(s) = self.destroy_block_sound([x, y, z], block_state) {
+                        self.push_sound_event(s);
+                    }
                 }
             }
         } else if id == ids.cb_play_sound
@@ -669,6 +683,7 @@ impl PlaySession {
                     // type, so a render-check run that loses health to
                     // something unexpected says what it was.
                     if let (Ok(ty), Ok(cause)) = (r.varint(), r.varint()) {
+                        self.local_hurt_sound(ty);
                         let cause = (cause > 0).then_some(cause - 1);
                         let cause_type = cause
                             .and_then(|c| self.world.entities.get(c))

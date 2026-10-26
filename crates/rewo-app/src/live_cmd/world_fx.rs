@@ -17,6 +17,8 @@ pub struct WeatherAssets {
     /// The eased rain-fog multiplier — state, because it ramps over ~5 ticks
     /// rather than following the rain level directly.
     pub(super) rain_fog: rewo_world::weather::RainFog,
+    /// `ClientLevel.rainSoundTime` (`World::rain_sound`).
+    pub(super) rain_sound_time: i32,
 }
 
 impl WeatherAssets {
@@ -34,6 +36,7 @@ impl WeatherAssets {
             directions: rewo_gpu::weather::ColumnDirections::new(),
             cached: None,
             rain_fog: rewo_world::weather::RainFog::default(),
+            rain_sound_time: 0,
         }
     }
 }

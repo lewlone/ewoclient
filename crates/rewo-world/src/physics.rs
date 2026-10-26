@@ -1501,7 +1501,7 @@ fn handle_on_climbable(state: &mut PlayerState, ctx: &Ctx) {
 }
 
 /// `Entity.getOnPos(offset)`.
-fn on_pos(state: &PlayerState, world: &dyn PhysicsWorld, offset: f32) -> [i32; 3] {
+pub fn on_pos(state: &PlayerState, world: &dyn PhysicsWorld, offset: f32) -> [i32; 3] {
     if let Some(sp) = state.supporting_block {
         if !(offset > 1.0e-5) {
             return sp;

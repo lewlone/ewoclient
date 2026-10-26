@@ -10,6 +10,7 @@
 
 pub mod abilities;
 pub mod ambient;
+pub mod animate_tick;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;
@@ -50,6 +51,7 @@ pub mod riding;
 pub mod rotation;
 pub mod stacked_contents;
 pub mod stats;
+pub mod step_sound;
 pub mod string_splitter;
 pub mod suggestions;
 pub mod vignette;

@@ -787,6 +787,13 @@ pub struct PlaySession {
     /// and jump factors, climbable, fluids, stuck-in blocks). Empty = every
     /// block behaves like stone, as before the table existed.
     pub block_physics: Vec<rewo_data::block_physics::BlockPhysics>,
+    /// state id → sound type and step-sound tags
+    /// (`rewo_data::sound_types::per_state`), for the player's own steps.
+    /// Empty = no step sounds (the harnesses that install no blocks).
+    pub block_sounds: Vec<rewo_data::sound_types::StateSound>,
+    /// state id → the `animateTick` sound it can make
+    /// (`rewo_world::animate_tick::emitter_for`). Empty = none.
+    pub block_emitters: Vec<rewo_world::animate_tick::Emitter>,
     /// Per entity-type `(width, height, pushable)` for entity collision.
     /// Empty disables pushing (the harnesses that don't care about mobs).
     pub entity_push: Vec<(f32, f32, bool)>,
@@ -985,6 +992,9 @@ pub struct PlaySession {
     /// the holder id. Used to turn a dimension's `default_clock` identifier
     /// into the id `set_time` keys its map by.
     world_clock_ids: Vec<String>,
+    /// `ConfigData::damage_effects`: the local player's hurt sound per
+    /// damage type id.
+    damage_effects: Vec<rewo_data::damage_effects::DamageEffects>,
     pub spawned: bool,
     pub corrections: u32,
     pub teleports: u32,
@@ -1094,6 +1104,19 @@ pub struct PlaySession {
     /// which is nanotime-seeded and reproduces nothing, so only the
     /// distribution is a transcribable fact — this is the same 48-bit LCG.
     ambient_rng: rewo_world::biome_noise::LegacyRandom,
+    /// A placement the local player's click may have made: the tick it
+    /// lapses and the two cells `BlockPlaceContext` can pick (the clicked
+    /// block when replaceable, else its neighbour on the face). See
+    /// [`Self::expect_placement`].
+    pending_place: Option<(u64, [[i32; 3]; 2])>,
+    /// `ClientLevel.animateTick`'s randoms (the level's and the thread-local
+    /// one, folded into one stream: only the distribution is vanilla's).
+    animate_rng: rewo_world::biome_noise::LegacyRandom,
+    /// The local player's `moveDist` / `nextStep` / crystal chime state.
+    step_tracker: rewo_world::step_sound::StepTracker,
+    /// The local player's own `Entity.random` (step chimes, swim pitch). Like
+    /// [`Self::ambient_rng`], only its distribution is vanilla's.
+    player_rng: rewo_world::biome_noise::LegacyRandom,
     /// The pose of the vehicle the local player rides, from `move_vehicle`.
     ///
     /// `None` in every ordinary session: that packet is only ever the server
@@ -1918,6 +1941,7 @@ impl<'a> Connection<'a> {
         let dim_types = self.cfg.dim_types.clone();
         let overworld_clock_id = self.cfg.overworld_clock_id;
         let world_clock_ids = std::mem::take(&mut self.cfg.world_clock_ids);
+        let damage_effects = std::mem::take(&mut self.cfg.damage_effects);
         let visual_effects =
             crate::effects::VisualEffects::new(self.cfg.night_vision_id, self.cfg.darkness_id);
         let swing_effect_ids = self.cfg.swing_effect_ids;
@@ -2061,6 +2085,12 @@ impl<'a> Connection<'a> {
             collide,
             outline: Vec::new(),
             block_physics: Vec::new(),
+            block_sounds: Vec::new(),
+            block_emitters: Vec::new(),
+            animate_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_A417),
+            step_tracker: Default::default(),
+            pending_place: None,
+            player_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_57E9),
             entity_push: Vec::new(),
             warden_type_id: None,
             armadillo_type_id: None,
@@ -2108,6 +2138,7 @@ impl<'a> Connection<'a> {
             dim_types,
             overworld_clock_id,
             world_clock_ids,
+            damage_effects,
             spawned: false,
             corrections: 0,
             teleports: 0,
@@ -2551,6 +2582,187 @@ impl PlaySession {
     /// closed on a renumbered registry and one that fails for the wrong reason.
     pub fn particle_types(&self) -> &rewo_data::particle_types::ParticleTypes {
         &self.particle_types
+    }
+
+    /// `LevelEventHandler`'s 2001 sound: the broken state's break sound at
+    /// the block's centre, `(volume + 1) / 2`, `pitch * 0.8`, BLOCKS
+    /// (`playLocalSound(pos, .., false)`: no distance delay). An air state, or
+    /// a session without the sound table, is silent.
+    fn destroy_block_sound(&self, pos: [i32; 3], state: u32) -> Option<crate::sounds::SoundEvent> {
+        let s = self.block_sounds.get(state as usize)?;
+        let air = self
+            .block_physics
+            .get(state as usize)
+            .is_some_and(|p| p.has(rewo_data::block_physics::flags::AIR));
+        if air {
+            return None;
+        }
+        Some(crate::sounds::SoundEvent::Local(
+            crate::sounds::LocalSound {
+                name: s.sound.break_sound.into(),
+                source: crate::sounds::SoundSource::Blocks,
+                x: pos[0] as f64 + 0.5,
+                y: pos[1] as f64 + 0.5,
+                z: pos[2] as f64 + 0.5,
+                volume: (s.sound.volume + 1.0) / 2.0,
+                pitch: s.sound.pitch * 0.8,
+            },
+        ))
+    }
+
+    /// The local player broke the block at `pos` (`MultiPlayerGameMode
+    /// .destroyBlock` → `Block.playerWillDestroy` → `levelEvent(player, 2001,
+    /// ..)`): its break sound and shards, which the server sends to everyone
+    /// but the breaker. The block itself is not predicted away (the server's
+    /// update removes it).
+    pub fn local_destroy_block(&mut self, pos: [i32; 3]) {
+        let [x, y, z] = pos;
+        let state = self.world.block_state_at(x, y, z);
+        if let Some(s) = self.destroy_block_sound(pos, state) {
+            self.push_sound_event(s);
+            self.particle_events
+                .push(rewo_world::particles::ParticleEvent::DestroyBlock {
+                    x,
+                    y,
+                    z,
+                    block_state: state,
+                });
+        }
+    }
+
+    /// `continueDestroyBlock`'s mining hit, every fourth destroy tick: the
+    /// state's hit sound at the block, `(volume + 1) / 8`, `pitch * 0.5`,
+    /// BLOCKS, unseeded.
+    pub fn local_mining_hit(&mut self, pos: [i32; 3]) {
+        let [x, y, z] = pos;
+        let state = self.world.block_state_at(x, y, z) as usize;
+        let Some(s) = self.block_sounds.get(state) else {
+            return;
+        };
+        let ev = crate::sounds::SoundEvent::Local(crate::sounds::LocalSound {
+            name: s.sound.hit_sound.into(),
+            source: crate::sounds::SoundSource::Blocks,
+            x: x as f64 + 0.5,
+            y: y as f64 + 0.5,
+            z: z as f64 + 0.5,
+            volume: (s.sound.volume + 1.0) / 8.0,
+            pitch: s.sound.pitch * 0.5,
+        });
+        self.push_sound_event(ev);
+    }
+
+    /// The app sent a `use_item_on` with a block item that spent the click
+    /// (`BlockItem.place`). Vanilla places the block inside its prediction and
+    /// plays `getPlaceSound(placedState)` there; Rewo does not predict the
+    /// block, so the sound waits for the server's `block_update` that puts a
+    /// different block in one of the two cells (a recorded deviation: on a
+    /// remote server the sound is one round trip late, and a refused
+    /// placement is silent where vanilla's plays and is rolled back).
+    pub fn expect_placement(&mut self, pos: [i32; 3], face: u8) {
+        // `Direction` order: down, up, north, south, west, east.
+        let n = match face {
+            0 => [0, -1, 0],
+            1 => [0, 1, 0],
+            2 => [0, 0, -1],
+            3 => [0, 0, 1],
+            4 => [-1, 0, 0],
+            _ => [1, 0, 0],
+        };
+        let next = [pos[0] + n[0], pos[1] + n[1], pos[2] + n[2]];
+        self.pending_place = Some((self.ticks + Self::PLACE_WINDOW_TICKS, [pos, next]));
+    }
+
+    /// How long [`Self::expect_placement`] waits for the server's update.
+    const PLACE_WINDOW_TICKS: u64 = 20;
+
+    /// A `block_update` landed: if it is the placement the local player is
+    /// waiting for (a different, non-air block in one of the cells), play
+    /// `BlockItem.place`'s sound: the new state's place sound at the block's
+    /// centre, `(volume + 1) / 2`, `pitch * 0.8`, BLOCKS.
+    fn placed_block_sound(&mut self, pos: [i32; 3], old: u32, new: u32) {
+        let Some((until, cells)) = self.pending_place else {
+            return;
+        };
+        if self.ticks > until {
+            self.pending_place = None;
+            return;
+        }
+        if !cells.contains(&pos) {
+            return;
+        }
+        let (Some(o), Some(n)) = (
+            self.block_sounds.get(old as usize),
+            self.block_sounds.get(new as usize),
+        ) else {
+            return;
+        };
+        let air = self
+            .block_physics
+            .get(new as usize)
+            .is_some_and(|p| p.has(rewo_data::block_physics::flags::AIR));
+        // A door opening is the same block in a new state, not a placement.
+        if air || o.block == n.block {
+            return;
+        }
+        let s = n.sound;
+        self.pending_place = None;
+        self.push_sound_event(crate::sounds::SoundEvent::Local(
+            crate::sounds::LocalSound {
+                name: s.place_sound.into(),
+                source: crate::sounds::SoundSource::Blocks,
+                x: pos[0] as f64 + 0.5,
+                y: pos[1] as f64 + 0.5,
+                z: pos[2] as f64 + 0.5,
+                volume: (s.volume + 1.0) / 2.0,
+                pitch: s.pitch * 0.8,
+            },
+        ));
+    }
+
+    /// A sound the local player's click on a block plays for them alone
+    /// (`rewo_world::click_use::block_use_sound`): at the block's centre,
+    /// volume 1, BLOCKS, the pitch `nextFloat() * 0.1 + 0.9` when `random_pitch`.
+    pub fn local_block_use_sound(&mut self, pos: [i32; 3], s: rewo_world::click_use::UseSound) {
+        let pitch = if s.random_pitch {
+            self.player_rng.next_float() * 0.1 + 0.9
+        } else {
+            1.0
+        };
+        self.push_sound_event(crate::sounds::SoundEvent::Local(
+            crate::sounds::LocalSound {
+                name: s.name.into(),
+                source: crate::sounds::SoundSource::Blocks,
+                x: pos[0] as f64 + 0.5,
+                y: pos[1] as f64 + 0.5,
+                z: pos[2] as f64 + 0.5,
+                volume: 1.0,
+                pitch,
+            },
+        ));
+    }
+
+    /// `LivingEntity.handleDamageEvent`'s sound for the local player:
+    /// `Player.getHurtSound` is the damage type's `effects().sound()`, played
+    /// through `Player.playSound` (for this player only) at volume 1 and pitch
+    /// `(nextFloat() - nextFloat()) * 0.2 + 1`. An unknown type id plays the
+    /// default `hurt` effect's sound.
+    fn local_hurt_sound(&mut self, damage_type: i32) {
+        let effects = usize::try_from(damage_type)
+            .ok()
+            .and_then(|i| self.damage_effects.get(i).copied())
+            .unwrap_or_default();
+        let a = self.player_rng.next_float();
+        let b = self.player_rng.next_float();
+        let ev = crate::sounds::SoundEvent::Local(crate::sounds::LocalSound {
+            name: effects.sound().into(),
+            source: crate::sounds::SoundSource::Players,
+            x: self.player.x,
+            y: self.player.y,
+            z: self.player.z,
+            volume: 1.0,
+            pitch: (a - b) * 0.2 + 1.0,
+        });
+        self.push_sound_event(ev);
     }
 
     fn push_sound_event(&mut self, ev: crate::sounds::SoundEvent) {
@@ -3087,6 +3299,7 @@ impl PlaySession {
             if slow.is_some() && !can_sprint && !self.was_sprinting {
                 phys.sprint = false;
             }
+            let before = [self.player.x, self.player.y, self.player.z];
             physics::tick_env(
                 &mut self.player,
                 &phys,
@@ -3096,6 +3309,42 @@ impl PlaySession {
                 &move_attrs,
                 &world,
             );
+            // The player's own footsteps, from the move just made
+            // (`Entity.move`'s emission; `rewo_world::step_sound`). Pushed once
+            // `world`'s borrows end, below.
+            let steps = if self.block_sounds.is_empty() {
+                Vec::new()
+            } else {
+                let p = &self.player;
+                let step_input = rewo_world::step_sound::StepInput {
+                    moved: [p.x - before[0], p.y - before[1], p.z - before[2]],
+                    flying: abilities.flying,
+                    shift_down: phys.sneak,
+                    passenger: false,
+                    silent: false,
+                    tick_count: self.ticks as i64,
+                };
+                let sounds = &self.block_sounds;
+                let level = &self.world;
+                let lookup = |x: i32, y: i32, z: i32| {
+                    let id = level.block_state_at(x, y, z) as usize;
+                    sounds
+                        .get(id)
+                        .copied()
+                        .unwrap_or(rewo_data::sound_types::StateSound {
+                            sound: rewo_data::sound_types::stone(),
+                            tags: 0,
+                            block: u32::MAX,
+                        })
+                };
+                let rng = &mut self.player_rng;
+                let at = [p.x, p.y, p.z];
+                self.step_tracker
+                    .tick(p, &step_input, &world, &lookup, &mut || rng.next_float())
+                    .into_iter()
+                    .map(|s| (s, at))
+                    .collect()
+            };
             // M239 — each rocket attached to the local player pushes it
             // while it glides (`FireworkRocketEntity.tick`, which runs after
             // the player's own tick). The rocket entity exists only on the
@@ -3122,6 +3371,19 @@ impl PlaySession {
                 .after_travel(&mut self.abilities, &self.player, spectator);
             self.collide = collide;
             self.block_physics = block_physics;
+            for (s, [x, y, z]) in steps {
+                self.push_sound_event(crate::sounds::SoundEvent::Local(
+                    crate::sounds::LocalSound {
+                        name: s.name.into(),
+                        source: crate::sounds::SoundSource::Players,
+                        x,
+                        y,
+                        z,
+                        volume: s.volume,
+                        pitch: s.pitch,
+                    },
+                ));
+            }
             if owes_packet {
                 self.send_abilities()?;
             }
@@ -3130,8 +3392,59 @@ impl PlaySession {
         // M226 — what the rider's `aiStep` just refreshed: the vehicle's
         // input next tick.
         self.prev_rider_keys = *input;
+        if self.spawned {
+            self.animate_tick_sounds();
+        }
         self.ticks += 1;
         Ok(())
+    }
+
+    /// `Minecraft.tick`'s `level.animateTick(player block pos)`, its sounds
+    /// only (`rewo_world::animate_tick`).
+    fn animate_tick_sounds(&mut self) {
+        use rewo_world::animate_tick::{self as at, Emitter};
+        if self.block_emitters.is_empty() {
+            return;
+        }
+        let center = [
+            self.player.x.floor() as i32,
+            self.player.y.floor() as i32,
+            self.player.z.floor() as i32,
+        ];
+        let world = &self.world;
+        let emitters = &self.block_emitters;
+        let physics = &self.block_physics;
+        let mut out = Vec::new();
+        at::sample_positions(center, &mut self.animate_rng, &mut |p, rng| {
+            let state = world.block_state_at(p[0], p[1], p[2]) as usize;
+            let e = emitters.get(state).copied().unwrap_or_default();
+            if e == Emitter::None {
+                return;
+            }
+            let above = world.block_state_at(p[0], p[1] + 1, p[2]) as usize;
+            let air_above = physics
+                .get(above)
+                .map_or(above == 0, |b| b.has(rewo_data::block_physics::flags::AIR));
+            out.extend(at::tick_block(e, p, air_above, rng));
+        });
+        for s in out {
+            let source = if s.ambient {
+                crate::sounds::SoundSource::Ambient
+            } else {
+                crate::sounds::SoundSource::Blocks
+            };
+            self.push_sound_event(crate::sounds::SoundEvent::Local(
+                crate::sounds::LocalSound {
+                    name: s.name.into(),
+                    source,
+                    x: s.pos[0],
+                    y: s.pos[1],
+                    z: s.pos[2],
+                    volume: s.volume,
+                    pitch: s.pitch,
+                },
+            ));
+        }
     }
 
     /// M233 — `Camera.tickFov` with `getFieldOfViewModifier`'s inputs: the
@@ -3561,6 +3874,7 @@ impl PlaySession {
         self.dim_types = cfg.dim_types.clone();
         self.overworld_clock_id = cfg.overworld_clock_id;
         self.world_clock_ids = cfg.world_clock_ids.clone();
+        self.damage_effects = cfg.damage_effects.clone();
         self.swing_effect_ids = cfg.swing_effect_ids;
         self.movement_effect_ids = cfg.movement_effect_ids;
         self.pending_biome_registry = cfg.biome_registry();
@@ -6506,9 +6820,12 @@ impl PlaySession {
 
     /// The local player's current value of attribute `name` (M217), or
     /// `None` when the server has not sent it or the registry is missing.
+    /// `name` may carry the `minecraft:` prefix: the registry is keyed
+    /// without it, and the mining inputs once asked with it and always got
+    /// the defaults (Efficiency did nothing).
     pub fn local_attribute(&self, name: &str) -> Option<f64> {
         let reg = self.attribute_registry.as_deref()?;
-        let id = reg.id_of(name)?;
+        let id = reg.id_of(name.strip_prefix("minecraft:").unwrap_or(name))?;
         Some(self.local_attributes.get(id)?.value(reg.def(id)?))
     }
 

@@ -311,6 +311,16 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         colormaps,
     )?;
     session.block_physics = baked.physics.clone();
+    // The player's own step sounds read each state's `SoundType`.
+    session.block_sounds = rewo_data::sound_types::per_state(&data.blocks);
+    // ...and the ambient `animateTick` sounds each state's block can make.
+    session.block_emitters = (0..data.blocks.state_count() as u32)
+        .map(|s| {
+            let name = data.blocks.block_name(s).unwrap_or("minecraft:air");
+            let prop = |k: &str| data.blocks.property(s, k).map(str::to_string);
+            rewo_world::animate_tick::emitter_for(name, &prop)
+        })
+        .collect();
     // M230 — the crosshair clips against outline shapes.
     session.outline = baked.outline.clone();
     // Entity collision: per-type footprint + whether it shoves (living only).
@@ -1713,8 +1723,19 @@ fn look_dir(yaw_deg: f32, pitch_deg: f32) -> [f64; 3] {
     ]
 }
 
-/// Reach distance (creative). Survival is 3.0; the test server is creative.
+/// `Attributes.BLOCK_INTERACTION_RANGE`'s default, for a session the server
+/// has not sent the attribute yet.
 const REACH: f64 = 4.5;
+
+/// `Player.blockInteractionRange()`: the synced `block_interaction_range`,
+/// which the server raises to 5.0 in creative (`ServerPlayer`'s
+/// `CREATIVE_BLOCK_INTERACTION_RANGE_MODIFIER`). A constant 4.5 missed every
+/// creative target between 4.5 and 5 blocks (the playtest's door scene).
+fn block_reach(session: &rewo_net::play::PlaySession) -> f64 {
+    session
+        .local_attribute("block_interaction_range")
+        .unwrap_or(REACH)
+}
 
 /// Face normal → MC face index (0 down, 1 up, 2 north −Z, 3 south +Z,
 /// 4 west −X, 5 east +X).
@@ -1740,6 +1761,12 @@ enum UseStep {
         offset: [f32; 3],
         inside: bool,
         swing: bool,
+        /// The hand holds a `BlockItem` and the click was spent: a block
+        /// may be placed (its sound waits for the server's update).
+        places: bool,
+        /// The block's own use spent the click and plays this for the
+        /// clicker (a door, a button).
+        sound: Option<rewo_world::click_use::UseSound>,
     },
     Use {
         hand: rewo_world::entities::InteractionHand,
