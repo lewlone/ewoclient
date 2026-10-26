@@ -638,25 +638,51 @@ impl SlotDisplay {
     ///   the stack for the ingredient display, and a result never has one.
     /// * `Empty` is nothing, which is not a failure.
     ///
-    /// `AnyFuel`, `Tag`, `Dyed`, `SmithingTrim`, `WithAnyPotion` and
-    /// `OnlyWithComponent` all need the context and yield nothing. That is
-    /// visible — an ingredient slot that would show a rotating set of tag
-    /// members shows none — and it is the honest state, because the alternative
-    /// is picking an arbitrary member and calling it the recipe.
+    /// `AnyFuel`, `SmithingTrim`, `WithAnyPotion` and `OnlyWithComponent`
+    /// need the context and yield nothing. That is visible — an ingredient
+    /// slot that would show a rotating set of members shows none — and it is
+    /// the honest state, because the alternative is picking an arbitrary
+    /// member and calling it the recipe.
+    ///
+    /// `Tag` and `Dyed` need only the item tags, which [`Self::resolve_items_in`]
+    /// takes: without them they yield nothing as well.
     pub fn resolve_items(&self, out: &mut Vec<i32>) {
+        self.resolve_items_in(None, out)
+    }
+
+    /// [`Self::resolve_items`] with the server's item tags.
+    ///
+    /// * `Tag` is `SlotDisplay.TagSlotDisplay`: the tag's members, in the
+    ///   server's order. An unknown tag yields nothing.
+    /// * `Dyed` is `DyedSlotDemo`: `applyDemoTransformation(target, dye)`
+    ///   yields one dyed copy of a target per (target, dye) pair, targets
+    ///   varying fastest, **limited to 16**. Rewo has no dyed-colour tint on
+    ///   an icon, so what it keeps is the target items, cycled to those 16
+    ///   (exact for vanilla's sixteen dyes). The dye is dropped.
+    pub fn resolve_items_in(&self, tags: Option<&crate::tags::TagOverrides>, out: &mut Vec<i32>) {
         match self {
             SlotDisplay::Item(id) => out.push(*id),
             SlotDisplay::Stack(t) => out.push(t.item_id),
             SlotDisplay::Composite(v) => {
                 for d in v {
-                    d.resolve_items(out);
+                    d.resolve_items_in(tags, out);
                 }
             }
-            SlotDisplay::WithRemainder { input, .. } => input.resolve_items(out),
+            SlotDisplay::WithRemainder { input, .. } => input.resolve_items_in(tags, out),
+            SlotDisplay::Tag(name) => {
+                if let Some(ids) = tags.and_then(|t| t.tag("minecraft:item", name)) {
+                    out.extend_from_slice(ids);
+                }
+            }
+            SlotDisplay::Dyed { target, .. } => {
+                let mut t = Vec::new();
+                target.resolve_items_in(tags, &mut t);
+                if !t.is_empty() {
+                    out.extend((0..16).map(|i| t[i % t.len()]));
+                }
+            }
             SlotDisplay::Empty
             | SlotDisplay::AnyFuel
-            | SlotDisplay::Tag(_)
-            | SlotDisplay::Dyed { .. }
             | SlotDisplay::SmithingTrim { .. }
             | SlotDisplay::WithAnyPotion(_)
             | SlotDisplay::OnlyWithComponent(..) => {}
@@ -666,6 +692,13 @@ impl SlotDisplay {
     pub fn items(&self) -> Vec<i32> {
         let mut v = Vec::new();
         self.resolve_items(&mut v);
+        v
+    }
+
+    /// [`Self::items`] with the server's item tags.
+    pub fn items_in(&self, tags: &crate::tags::TagOverrides) -> Vec<i32> {
+        let mut v = Vec::new();
+        self.resolve_items_in(Some(tags), &mut v);
         v
     }
 }
@@ -751,13 +784,13 @@ impl RecipeDisplay {
     /// A furnace display contributes its **ingredient only**. Its fuel is not
     /// in the overlay: `OverlaySmeltingRecipeButton` reads
     /// `furnaceRecipe.ingredient()` and nothing else.
-    pub fn overlay_ingredients(&self) -> Vec<Vec<i32>> {
+    pub fn overlay_ingredients(&self, tags: &crate::tags::TagOverrides) -> Vec<Vec<i32>> {
         match self {
             RecipeDisplay::CraftingShaped { ingredients, .. }
             | RecipeDisplay::CraftingShapeless { ingredients, .. } => {
-                ingredients.iter().map(|s| s.items()).collect()
+                ingredients.iter().map(|s| s.items_in(tags)).collect()
             }
-            RecipeDisplay::Furnace { ingredient, .. } => vec![ingredient.items()],
+            RecipeDisplay::Furnace { ingredient, .. } => vec![ingredient.items_in(tags)],
             RecipeDisplay::Stonecutter { .. } | RecipeDisplay::Smithing { .. } => Vec::new(),
         }
     }
@@ -920,6 +953,35 @@ mod tests {
             Vec::<i32>::new(),
             "the base is NOT yielded — a potion display is not its bottle"
         );
+    }
+
+    /// `Tag` and `Dyed` resolve once the server's item tags are supplied; the
+    /// tagless `items()` still yields nothing for them.
+    #[test]
+    fn a_tag_and_a_dyed_display_resolve_through_the_item_tags() {
+        let mut tags = crate::tags::TagOverrides::default();
+        tags.apply(&crate::tags::TagUpdate {
+            registries: vec![crate::tags::RegistryTags {
+                registry: "minecraft:item".into(),
+                tags: vec![("minecraft:dyeable".into(), vec![5, 6, 7])],
+            }],
+        });
+        let tag = SlotDisplay::Tag("minecraft:dyeable".into());
+        assert_eq!(tag.items_in(&tags), vec![5, 6, 7]);
+        assert!(tag.items().is_empty());
+        assert!(SlotDisplay::Tag("minecraft:nope".into())
+            .items_in(&tags)
+            .is_empty());
+        // `applyDemoTransformation` limits to 16 and varies the target
+        // fastest: three targets cycle through sixteen results.
+        let dyed = SlotDisplay::Dyed {
+            dye: Box::new(SlotDisplay::Item(1)),
+            target: Box::new(tag),
+        };
+        let got = dyed.items_in(&tags);
+        assert_eq!(got.len(), 16);
+        assert_eq!(&got[..4], &[5, 6, 7, 5]);
+        assert!(dyed.items().is_empty(), "no tags, no target");
     }
 
     /// The cycle is TWO levels: the modulo picks the entry and the DIVISION

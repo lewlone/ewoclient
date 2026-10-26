@@ -1514,6 +1514,7 @@ fn render(
         rb96::BookState::default(),
         None,
         "",
+        (3, 3),
     )
 }
 
@@ -1612,7 +1613,11 @@ fn the_page_holds_this_books_categories_and_no_others() {
     let e = [
         entry(1, None, EQUIP, &[7], None),
         entry(2, None, MISC, &[8], None),
-        entry(3, None, "minecraft:smoker_food", &[9], None),
+        // The smoker selects furnace displays only.
+        super::BookEntry {
+            shape: rewo_ui::recipe_overlay::Shape::Furnace,
+            ..entry(3, None, "minecraft:smoker_food", &[9], None)
+        },
         entry(4, None, "minecraft:stonecutter", &[9], None),
     ];
     let r = render(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
@@ -1706,6 +1711,7 @@ fn a_tab_index_too_big_for_this_book_clamps_rather_than_panicking() {
         st,
         None,
         "",
+        (3, 3),
     );
     assert_eq!(r.view.unwrap().selected_tab, 1, "clamped to the last tab");
 }
@@ -1734,6 +1740,7 @@ fn a_page_index_that_outlived_its_list_resets_to_the_FRONT() {
             st,
             None,
             "",
+            (3, 3),
         )
         .view
         .unwrap()
@@ -1748,6 +1755,152 @@ fn a_page_index_that_outlived_its_list_resets_to_the_FRONT() {
     // nothing on their own.
     let one_page: Vec<_> = (0..5).map(|i| entry(i, None, EQUIP, &[7], None)).collect();
     assert_eq!(page_of(3, &one_page), 0);
+}
+
+const BLOCKS: &str = "minecraft:crafting_building_blocks";
+
+/// [`entry`] with a shaped display of the given size.
+fn shaped<'a>(
+    id: i32,
+    group: Option<i32>,
+    category: &'a str,
+    results: &[i32],
+    w: usize,
+    h: usize,
+) -> super::BookEntry<'a> {
+    super::BookEntry {
+        shape: rewo_ui::recipe_overlay::Shape::Shaped {
+            w,
+            h,
+            ingredients: w * h,
+        },
+        ..entry(id, group, category, results, None)
+    }
+}
+
+/// `RecipeCollection.hasAnySelected` is the first, unconditional stage: in the
+/// player's 2x2 grid a 3x3 recipe is on no page at all, and the page count
+/// shrinks with it (the playtest's 29 pages against vanilla's 11).
+#[test]
+fn a_recipe_the_grid_cannot_hold_is_not_listed() {
+    let e = [
+        shaped(1, None, BLOCKS, &[70], 2, 2),
+        shaped(2, None, BLOCKS, &[71], 3, 3),
+        shaped(3, None, BLOCKS, &[72], 3, 1),
+    ];
+    let page = |grid: (usize, usize)| {
+        super::book_render_from(
+            rb96::BookType::Crafting,
+            false,
+            &e,
+            &mut held(&[]),
+            0,
+            rb96::BookState::default(),
+            None,
+            "",
+            grid,
+        )
+    };
+    assert_eq!(page((2, 2)).slots.len(), 1, "only the 2x2 recipe");
+    assert_eq!(page((2, 2)).slot_items, vec![Some(70)]);
+    assert_eq!(page((3, 3)).slots.len(), 3);
+    // Enough of them to page: 45 3x3 recipes are zero pages in a 2x2 grid.
+    let many: Vec<_> = (0..45)
+        .map(|i| shaped(i, None, BLOCKS, &[70], 3, 3))
+        .collect();
+    let r = super::book_render_from(
+        rb96::BookType::Crafting,
+        false,
+        &many,
+        &mut held(&[]),
+        0,
+        rb96::BookState::default(),
+        None,
+        "",
+        (2, 2),
+    );
+    assert_eq!(r.view.unwrap().total_pages, 0);
+    assert!(r.slots.is_empty());
+}
+
+/// The search tab lists category by category (`includedCategories` order,
+/// equipment first), not the book's recipes in id order.
+#[test]
+fn the_search_tab_lists_category_by_category() {
+    let e = [
+        entry(1, None, MISC, &[10], None),
+        entry(2, None, BLOCKS, &[20], None),
+        entry(3, None, EQUIP, &[30], None),
+        entry(4, None, EQUIP, &[31], None),
+    ];
+    let r = render(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
+    assert_eq!(
+        r.slot_items,
+        vec![Some(30), Some(31), Some(20), Some(10)],
+        "equipment, building blocks, misc"
+    );
+}
+
+/// The craftable filter drops uncraftable collections and, inside a kept
+/// collection, the uncraftable recipes: `RecipeButton.init` reads
+/// `getSelectedRecipes(CRAFTABLE)`, so a cell with one craftable recipe out of
+/// two is a single-recipe cell.
+#[test]
+fn the_craftable_filter_narrows_the_page_and_the_cell() {
+    let e = [
+        // Group 5: recipe 1 needs item 10, recipe 2 needs item 11.
+        entry(1, Some(5), EQUIP, &[70], Some(&[&[10]])),
+        entry(2, Some(5), EQUIP, &[71], Some(&[&[11]])),
+        // Needs an item nobody holds.
+        entry(3, None, EQUIP, &[72], Some(&[&[99]])),
+    ];
+    let go = |filtering: bool| {
+        render(
+            rb96::BookType::Crafting,
+            filtering,
+            &e,
+            &mut held(&[(10, 1)]),
+            0,
+        )
+    };
+    let all = go(false);
+    assert_eq!(all.slots, vec![(true, true), (false, false)]);
+    assert_eq!(all.slot_collections[0].len(), 2);
+    let only = go(true);
+    assert_eq!(only.slots, vec![(true, false)], "one cell, one recipe");
+    assert_eq!(only.slot_recipes, vec![Some(1)]);
+    assert_eq!(only.slot_items, vec![Some(70)]);
+    assert_eq!(only.view.unwrap().total_pages, 1);
+}
+
+/// A collection mixing a recipe the grid holds with one it does not is one
+/// cell of ONE recipe in the 2x2: `selectedEntries` is what the menu selects.
+#[test]
+fn a_cell_counts_only_the_recipes_the_menu_selected() {
+    let e = [
+        shaped(1, Some(3), BLOCKS, &[70], 2, 2),
+        shaped(2, Some(3), BLOCKS, &[71], 3, 3),
+    ];
+    let go = |grid: (usize, usize)| {
+        super::book_render_from(
+            rb96::BookType::Crafting,
+            false,
+            &e,
+            &mut held(&[]),
+            0,
+            rb96::BookState::default(),
+            None,
+            "",
+            grid,
+        )
+    };
+    let small = go((2, 2));
+    assert_eq!(small.slots, vec![(false, false)]);
+    assert_eq!(small.slot_collections[0].len(), 1);
+    assert_eq!(small.slot_recipes, vec![Some(1)]);
+    let big = go((3, 3));
+    assert_eq!(big.slots, vec![(false, true)]);
+    assert_eq!(big.slot_collections[0].len(), 2);
 }
 
 /// The hover comes from the SAME `book_hit` a press uses, so what lights up
@@ -1767,6 +1920,7 @@ fn the_hover_lights_what_a_click_would_take() {
             rb96::BookState::default(),
             Some((bx, by)),
             "",
+            (3, 3),
         )
         .hover
     };
@@ -1791,6 +1945,7 @@ fn the_hover_lights_what_a_click_would_take() {
         rb96::BookState::default(),
         None,
         "",
+        (3, 3),
     )
     .hover;
     assert!(!absent.filter && !absent.page_forward && !absent.page_backward);
@@ -1828,6 +1983,7 @@ fn search_render(entries: &[super::BookEntry<'_>], query: &str) -> super::BookRe
         rb96::BookState::default(),
         None,
         query,
+        (3, 3),
     )
 }
 

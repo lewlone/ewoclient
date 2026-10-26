@@ -511,6 +511,64 @@ pub fn collections(entries: &[(i32, Option<i32>, &str)]) -> Vec<Collection> {
     out
 }
 
+/// `ClientRecipeBook.getCollection(tab.category())` — the collections a tab
+/// lists, **in the tab's own category order**.
+///
+/// ```java
+/// byCategory.put(searchCategory, searchCategory.includedCategories().stream()
+///       .flatMap(sub -> byCategory.getOrDefault(sub, List.of()).stream()) …);
+/// ```
+///
+/// The search tab is the concatenation of its `includedCategories`' lists —
+/// equipment's collections, then building blocks', then misc's, then
+/// redstone's — and **not** the whole book in recipe-id order. Grouping
+/// ([`collections`]) is per `(category, group)`, so running it once per
+/// category and concatenating is the same thing, and a category tab is the
+/// one-category case.
+pub fn tab_collections(
+    entries: &[(i32, Option<i32>, &str)],
+    categories: &[&str],
+) -> Vec<Collection> {
+    categories
+        .iter()
+        .flat_map(|cat| {
+            let of: Vec<(i32, Option<i32>, &str)> = entries
+                .iter()
+                .copied()
+                .filter(|(_, _, c)| c == cat)
+                .collect();
+            collections(&of)
+        })
+        .collect()
+}
+
+/// The menu's `selectMatchingRecipes` predicate — which displays a book can
+/// SELECT (`RecipeCollection.hasAnySelected`).
+///
+/// * crafting (`CraftingRecipeBookComponent.canDisplay`): a shaped display
+///   needs `gridWidth >= width && gridHeight >= height`, a shapeless one
+///   `gridWidth * gridHeight >= ingredients.size()`, anything else is out. So
+///   the player's own 2x2 grid hides every 3x3 recipe.
+/// * the furnaces (`FurnaceRecipeBookComponent`): `display instanceof
+///   FurnaceRecipeDisplay`.
+///
+/// Neither is a question of what the player holds, which is `craftable`'s.
+pub fn can_display(
+    book: BookType,
+    grid: (usize, usize),
+    shape: crate::recipe_overlay::Shape,
+) -> bool {
+    use crate::recipe_overlay::Shape;
+    if book.furnace_family() {
+        return matches!(shape, Shape::Furnace);
+    }
+    match shape {
+        Shape::Shaped { w, h, .. } => grid.0 >= w && grid.1 >= h,
+        Shape::Shapeless { ingredients } => grid.0 * grid.1 >= ingredients,
+        Shape::Furnace | Shape::Other => false,
+    }
+}
+
 /// What one collection contributes to the page, for [`visible_collections`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollectionState {
@@ -3054,6 +3112,65 @@ mod tests {
         assert_eq!(c.len(), 2);
         assert_eq!(c[0].category, "a");
         assert_eq!(c[1].category, "b");
+    }
+
+    /// `getCollection(SearchRecipeBookCategory.CRAFTING)` is the flat-map of
+    /// `includedCategories()` in THEIR order, each category's list in recipe
+    /// order: a tab lists every category-"a" collection before any "b" one
+    /// even when a "b" recipe has the lower id.
+    #[test]
+    fn a_tab_lists_its_categories_in_the_tabs_order_not_by_recipe_id() {
+        let entries = [
+            (1, None, "b"),
+            (2, None, "a"),
+            (3, Some(7), "a"),
+            (4, None, "b"),
+            (5, Some(7), "a"),
+        ];
+        let c = tab_collections(&entries, &["a", "b"]);
+        let got: Vec<Vec<i32>> = c.iter().map(|c| c.recipes.clone()).collect();
+        assert_eq!(got, vec![vec![2], vec![3, 5], vec![1], vec![4]]);
+        // A category tab is the one-category case, and a category the tab
+        // does not list contributes nothing.
+        let only_b = tab_collections(&entries, &["b"]);
+        assert_eq!(only_b.len(), 2);
+        assert!(tab_collections(&entries, &["c"]).is_empty());
+    }
+
+    /// `CraftingRecipeBookComponent.canDisplay` over both grids, and the
+    /// furnaces' `instanceof FurnaceRecipeDisplay`.
+    #[test]
+    fn what_a_menu_can_display_follows_its_grid() {
+        use crate::recipe_overlay::Shape;
+        let shaped = |w, h| Shape::Shaped {
+            w,
+            h,
+            ingredients: w * h,
+        };
+        let cr = BookType::Crafting;
+        // The player's 2x2.
+        assert!(can_display(cr, (2, 2), shaped(2, 2)));
+        assert!(can_display(cr, (2, 2), shaped(1, 2)));
+        assert!(!can_display(cr, (2, 2), shaped(3, 1)), "too wide");
+        assert!(!can_display(cr, (2, 2), shaped(1, 3)), "too tall");
+        assert!(can_display(cr, (3, 3), shaped(3, 3)));
+        // Shapeless counts ingredients against the grid's AREA: four fit a
+        // 2x2, five do not.
+        assert!(can_display(cr, (2, 2), Shape::Shapeless { ingredients: 4 }));
+        assert!(!can_display(
+            cr,
+            (2, 2),
+            Shape::Shapeless { ingredients: 5 }
+        ));
+        assert!(can_display(cr, (3, 3), Shape::Shapeless { ingredients: 9 }));
+        // `default -> false`: a furnace or stonecutter display in a crafting book.
+        assert!(!can_display(cr, (3, 3), Shape::Furnace));
+        assert!(!can_display(cr, (3, 3), Shape::Other));
+        // The furnaces select furnace displays only, whatever the grid says.
+        for b in [BookType::Furnace, BookType::BlastFurnace, BookType::Smoker] {
+            assert!(can_display(b, (0, 0), Shape::Furnace));
+            assert!(!can_display(b, (3, 3), shaped(1, 1)));
+        }
     }
 
     #[test]
