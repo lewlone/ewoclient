@@ -81,6 +81,8 @@ pub struct DataComponentIds {
     /// banner in the loom. A banner's prototype carries an empty list, so a
     /// patch is the only way a stack has layers.
     pub banner_patterns: i32,
+    /// M405 — `minecraft:base_color`, a shield's base dye (`DyeColor`).
+    pub base_color: i32,
     /// `minecraft:bundle_contents` (M61) — `ItemStackTemplate.STREAM_CODEC`
     /// under `ByteBufCodecs.list()`.
     ///
@@ -225,6 +227,7 @@ impl DataComponentIds {
             dye: id("minecraft:dye")?,
             provides_banner_patterns: id("minecraft:provides_banner_patterns")?,
             banner_patterns: id("minecraft:banner_patterns")?,
+            base_color: id("minecraft:base_color")?,
             bundle_contents: id("minecraft:bundle_contents")?,
             container: id("minecraft:container")?,
             use_cooldown: id("minecraft:use_cooldown")?,

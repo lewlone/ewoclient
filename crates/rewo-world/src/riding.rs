@@ -104,6 +104,9 @@ pub struct VehicleInputs {
     /// `isBaby()` — the camel's sit anchor uses a different age offset from
     /// its uniform scale, so the flag is needed as well as the factor.
     pub baby: bool,
+    /// M404 — `AbstractHorse.standAnimO`, the rearing animation as the tick
+    /// began. Read only by the horse's seat.
+    pub stand_anim_o: f32,
 }
 
 /// Everything about the rider the derivation reads.
@@ -133,14 +136,19 @@ pub fn passenger_attachment_point(
     let height = (vp.height * v.scale) as f64;
     let default = || transform(scaled(vp.passenger_point(r.index), v.scale), v.yaw);
     Some(match att.class(v.type_id) {
-        VehicleClass::Default | VehicleClass::Horse => {
-            // `AbstractHorse` adds `(0, 0.15·standAnimO·scale,
-            // -0.7·standAnimO·scale)` — the rearing lift. `standAnimO` is a
-            // client-simulated stand animation that no packet carries, and it
-            // is **0 whenever the horse is not rearing**, which is the term
-            // this reduces to. `Llama` overrides the horse back to the plain
-            // default, so the two coincide here.
-            default()
+        VehicleClass::Default => default(),
+        VehicleClass::Horse => {
+            // M404 — `AbstractHorse` adds `(0, 0.15·standAnimO·scale,
+            // −0.7·standAnimO·scale).yRot(−yRot)`: rearing, the rider rises
+            // and slides back. `standAnimO` is the client's own animation of
+            // the synced standing flag (before M404 it was taken for 0, and a
+            // rider on a horse rearing at its jump sat 0.7 too far forward).
+            // A llama overrides the seat back to the default, and neither it
+            // nor a camel can rear, so their `standAnimO` stays 0.
+            let d = default();
+            let s = (v.stand_anim_o * v.scale) as f64;
+            let r = transform([0.0, 0.15 * s, -0.7 * s], v.yaw);
+            [d[0] + r[0], d[1] + r[1], d[2] + r[2]]
         }
         VehicleClass::Boat { raft, chest } => {
             // `AbstractBoat` replaces the lookup outright — a boat's declared
@@ -273,6 +281,7 @@ mod tests {
     const SPIDER: i32 = 5;
     const VILLAGER: i32 = 6;
     const CART: i32 = 7;
+    const HORSE: i32 = 8;
 
     static GHAST_SEATS: &[[f64; 3]] = &[
         [0.0, 4.0, 1.7],
@@ -282,6 +291,7 @@ mod tests {
     ];
     static PIG_SEAT: &[[f64; 3]] = &[[0.0, 0.86875, 0.0]];
     static CART_SEAT: &[[f64; 3]] = &[[0.0, 0.1875, 0.0]];
+    static HORSE_SEAT: &[[f64; 3]] = &[[0.0, 1.4, 0.0]];
 
     fn att() -> Attachments {
         let p = |width: f32, height: f32, passenger: &'static [[f64; 3]], vehicle| TypePoints {
@@ -299,6 +309,7 @@ mod tests {
                 (SPIDER, p(1.4, 0.9, &[[0.0, 0.765, 0.0]], None)),
                 (VILLAGER, p(0.6, 1.95, &[], None)),
                 (CART, p(0.98, 0.7, CART_SEAT, None)),
+                (HORSE, p(1.3965, 1.6, HORSE_SEAT, None)),
             ],
             &[
                 (
@@ -309,6 +320,7 @@ mod tests {
                     },
                 ),
                 (CART, VehicleClass::Minecart),
+                (HORSE, VehicleClass::Horse),
             ],
             &[PIG],
             &[VILLAGER],
@@ -328,6 +340,7 @@ mod tests {
             cube_size: 1,
             limb: (0.0, 0.0),
             baby: false,
+            stand_anim_o: 0.0,
         }
     }
 
@@ -338,6 +351,43 @@ mod tests {
             scale: 1.0,
             index,
         }
+    }
+
+    /// M404 — a rearing horse's seat: `(0, 0.15, −0.7)·standAnimO`, turned
+    /// by `yRot(−yaw)`, on the declared seat; at rest exactly the seat.
+    #[test]
+    fn a_rearing_horse_lifts_its_rider_and_slides_it_back() {
+        let a = att();
+        let r = rider(PLAYER, 0.0, 0);
+        let rest = passenger_attachment_point(&a, &vehicle(HORSE, [0.0; 3], 0.0, 1), &r).unwrap();
+        assert_eq!(rest, [0.0, 1.4, 0.0]);
+        let rearing = |yaw: f32, s: f32| {
+            let v = VehicleInputs {
+                stand_anim_o: s,
+                ..vehicle(HORSE, [0.0; 3], yaw, 1)
+            };
+            passenger_attachment_point(&a, &v, &r).unwrap()
+        };
+        // Facing south (+z): up 0.15 and back to the north.
+        let p = rearing(0.0, 1.0);
+        assert!(
+            (p[1] - 1.55).abs() < 1e-9 && (p[2] + 0.7).abs() < 1e-6,
+            "{p:?}"
+        );
+        // Facing west (yaw 90, −x): back is east.
+        let w = rearing(90.0, 1.0);
+        assert!((w[0] - 0.7).abs() < 1e-6 && w[2].abs() < 1e-6, "{w:?}");
+        let half = rearing(0.0, 0.5);
+        assert!((half[1] - 1.475).abs() < 1e-9 && (half[2] + 0.35).abs() < 1e-6);
+        // Any other class ignores it.
+        let pig = VehicleInputs {
+            stand_anim_o: 1.0,
+            ..vehicle(PIG, [0.0; 3], 0.0, 1)
+        };
+        assert_eq!(
+            passenger_attachment_point(&a, &pig, &r).unwrap(),
+            [0.0, 0.86875, 0.0]
+        );
     }
 
     #[test]

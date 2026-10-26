@@ -747,6 +747,7 @@ pub(crate) fn spawner_mob_draw(m: &OwnedSpawnerMob) -> rewo_gpu::entities::Entit
         undercoat: false,
         fish_dye: None,
         cape: None,
+        wings: None,
     }
 }
 
@@ -853,6 +854,7 @@ pub(crate) fn collect_pickups<'a>(
             undercoat: false,
             fish_dye: None,
             cape: None,
+            wings: None,
         });
     }
     out

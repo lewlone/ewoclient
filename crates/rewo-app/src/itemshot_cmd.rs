@@ -1002,6 +1002,7 @@ fn check_render(
             undercoat: false,
             fish_dye: None,
             cape: None,
+            wings: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -1079,6 +1080,7 @@ fn check_render(
             undercoat: false,
             fish_dye: None,
             cape: None,
+            wings: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -1172,6 +1174,7 @@ fn check_render(
             undercoat: false,
             fish_dye: None,
             cape: None,
+            wings: None,
         };
         wr.set_entities(&[d], right, up.to_array(), time);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;

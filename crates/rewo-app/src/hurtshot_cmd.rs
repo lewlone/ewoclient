@@ -554,6 +554,7 @@ fn render_capsule(
         undercoat: false,
         fish_dye: None,
         cape: None,
+        wings: None,
     };
     wr.set_entities(&[capsule], right, up.to_array(), 0.0);
     off.render(gpu, Some((&mut *wr, view_proj)), draw, CLEAR)?;
@@ -941,6 +942,7 @@ fn silhouette(
         undercoat: false,
         fish_dye: None,
         cape: None,
+        wings: None,
     };
     d.kind = EntityModelKind::Zombie;
 
@@ -1741,5 +1743,6 @@ fn render_marker_template() -> EntityDraw<'static> {
         undercoat: false,
         fish_dye: None,
         cape: None,
+        wings: None,
     }
 }

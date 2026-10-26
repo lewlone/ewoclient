@@ -95,13 +95,13 @@ pub fn hotbar_models(
     inv: &rewo_world::inventory::Inventory,
     items: &rewo_data::items::Items,
     trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
-    // M275 — player-head skins that have arrived (`GuiItemState::skinned`).
-    skinned: &std::collections::HashMap<String, String>,
+    // M275/M405 — the per-stack icon models (`GuiItemState::variants`).
+    variants: &super::icons::IconVariants,
 ) -> [Option<String>; 9] {
     std::array::from_fn(|i| {
         let s = inv.hotbar(i)?;
         let base = items.name(s.item_id)?;
-        if let Some(m) = skinned_icon_model(inv, s, base, skinned) {
+        if let Some(m) = variant_icon_model(inv, s, base, variants) {
             return Some(m);
         }
         // M49: the same composed name the screen slots use, so a trimmed piece
@@ -246,6 +246,8 @@ pub(super) fn preview_draw<'a>(
         undercoat: false,
         fish_dye: None,
         cape: preview_cape(cape_origin),
+        // M403 — no armour in the preview, so no elytra either.
+        wings: None,
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
     let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);
@@ -1150,9 +1152,9 @@ pub struct GuiItemState {
     pub(super) started: std::time::Instant,
     /// `misc/enchanted_glint_item.png` as `(rgba, w, h)`; `None` draws none.
     pub(super) glint: Option<(Vec<u8>, u32, u32)>,
-    /// M275 — player-head skins that have arrived, `textures` value → the
-    /// item model wearing it.
-    pub(crate) skinned: std::collections::HashMap<String, String>,
+    /// M275/M405 — the per-stack icon models built so far (skinned heads,
+    /// patterned banners and shields).
+    pub(crate) variants: super::icons::IconVariants,
 }
 
 impl GuiItemState {
@@ -1164,7 +1166,7 @@ impl GuiItemState {
             held: to_gpu_held_items(&baked.held_items),
             started: std::time::Instant::now(),
             glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
-            skinned: std::collections::HashMap::new(),
+            variants: Default::default(),
         }
     }
 }
@@ -1186,7 +1188,7 @@ pub(super) fn apply_hotbar_icons(
         &session.inventory,
         items,
         &session.trim_materials,
-        &state.skinned,
+        &state.variants,
     );
     let models: Vec<String> = names.iter().flatten().map(|n| n.to_string()).collect();
     let wanted = gui_atlas_wanted(held, &models);

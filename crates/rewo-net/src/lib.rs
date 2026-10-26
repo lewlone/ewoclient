@@ -1979,6 +1979,8 @@ fn read_slot(
                 writable_pages: c.writable_pages.clone(),
                 has_writable_book: c.has_writable_book,
                 profile_textures: c.profile_textures.clone(),
+                banner_patterns: c.banner_patterns.clone(),
+                base_color: c.base_color,
             };
             (
                 Some(rewo_world::inventory::ItemSlot {
@@ -2853,6 +2855,8 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_frame_item(eid, item);
             // M289 — and the framed stack's player-head skin.
             entities.set_stack_profile(eid, meta.stack_profile.clone().flatten());
+            // M406 — and its banner patterns.
+            entities.set_stack_patterns(eid, meta.stack_patterns.clone().flatten());
         }
         if let Some(r) = meta.int10 {
             entities.set_frame_rotation(eid, r);
@@ -2869,6 +2873,8 @@ pub(crate) fn apply_set_entity_data<'a>(
         entities.set_item_stack(eid, stack);
         // M289 — and the dropped stack's player-head skin.
         entities.set_stack_profile(eid, meta.stack_profile.clone().flatten());
+        // M406 — and its banner patterns.
+        entities.set_stack_patterns(eid, meta.stack_patterns.clone().flatten());
     }
     // Slot 9 FLOAT → `LivingEntity.DATA_HEALTH_ID` (M24 death). Same living
     // gate as slot 8, for the same reason.
@@ -3131,6 +3137,11 @@ pub(crate) fn apply_set_entity_data<'a>(
             // its first byte is 18 as well (rolling 0x02, stung 0x04,
             // nectar 0x08).
             entities.set_bee_flags(eid, wool);
+        } else if kinds.classes.is_some_and(|c| c.is_abstract_horse(type_id)) {
+            // M404 — and `AbstractHorse.DATA_ID_FLAGS`, whose only accessor
+            // is this byte at 18 (tame 0x02, saddle 0x04, bred 0x08, eating
+            // 0x10, standing 0x20, open mouth 0x40).
+            entities.set_horse_flags(eid, wool);
         }
     }
     // M64: the six metadata-driven texture variants. Three carry a `Holder`
@@ -3757,6 +3768,18 @@ pub(crate) fn apply_set_equipment(
             );
         }
         if let Some(hand) = hand {
+            // M406 — a held banner's or shield's patterns.
+            entities.set_hand_patterns(
+                eid,
+                hand,
+                match &slot {
+                    WireSlot::Stack(s) => rewo_world::inventory::StackPatterns::of(
+                        &s.components.banner_patterns,
+                        s.components.base_color,
+                    ),
+                    WireSlot::Empty => None,
+                },
+            );
             // M290 — a held player head's skin, from its `profile`.
             entities.set_hand_profile(
                 eid,
@@ -5515,6 +5538,7 @@ mod animate_tests {
             dye: 20,
             provides_banner_patterns: 21,
             banner_patterns: 1021,
+            base_color: 999,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,
@@ -5706,6 +5730,29 @@ mod set_entity_data_tests {
             Some(2),
             "index 16 INT still lands in `sizes` (the creeper's)"
         );
+    }
+
+    /// M404 — index 18 BYTE is `AbstractHorse.DATA_ID_FLAGS` on a horse
+    /// (0x20 standing makes it rear); on a zombie it is nothing.
+    #[test]
+    fn a_horses_flags_route_and_standing_rears_it() {
+        const HORSE: i32 = 850;
+        let classes = rewo_data::entity_types::EntityClasses::from_raw_ids(&[ZOMBIE], &[])
+            .with_abstract_horses(&[HORSE]);
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(61, EntityState::new(0, HORSE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(62, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(61, 18, 0, &[0x24]), &mut t, kinds);
+        apply_set_entity_data(&body(62, 18, 0, &[0x24]), &mut t, kinds);
+        assert_eq!(t.mob_state(61).horse_flags, 0x24);
+        assert_eq!(t.mob_state(62).horse_flags, 0);
+        t.tick_lerp();
+        assert!(t.stand_anim_at(61, 1.0) > 0.0);
+        assert_eq!(t.stand_anim_at(62, 1.0), 0.0);
     }
 
     /// M396 — index 19 INT is a sulfur cube's `MAX_FUSE`, which primes its
@@ -6101,6 +6148,7 @@ mod set_entity_data_tests {
             dye: 20,
             provides_banner_patterns: 21,
             banner_patterns: 1021,
+            base_color: 999,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

@@ -608,6 +608,8 @@ struct LiveApp {
     runtime_states: assets::RuntimeStateModels,
     /// M272 — player heads' own skins (fetched, then built as models).
     head_skins: block_entities::HeadSkins,
+    /// M405/M406 — the banner and shield pattern copies built so far.
+    patterns: icons::PatternModels,
     etypes: EntityTypes,
     /// `minecraft:spears` membership — decides the `SPEAR` arm pose for a
     /// spear that is merely *held* (the swinging-STAB case needs no tag).
@@ -964,6 +966,11 @@ struct LiveApp {
     /// and r92-r94's tail stage and the tick it began.
     #[cfg(feature = "gates")]
     precmd_origin: Option<[f64; 3]>,
+    /// `REWO_PRECMD` waits for the bot to stand (at most
+    /// [`PRECMD_MAX_WAIT`] ticks after spawning): `Some(ticks waited)`
+    /// until it is sent.
+    #[cfg(feature = "gates")]
+    precmd_wait: Option<u32>,
     #[cfg(feature = "gates")]
     use_stage: u8,
     #[cfg(feature = "gates")]
@@ -1224,6 +1231,7 @@ fn run_windowed(
         baked: Some(baked),
         runtime_states: Default::default(),
         head_skins: block_entities::HeadSkins::new(),
+        patterns: icons::PatternModels::default(),
         etypes,
         spears,
         chest_states,
@@ -1382,6 +1390,8 @@ fn run_windowed(
         seat_last_line: None,
         #[cfg(feature = "gates")]
         precmd_origin: None,
+        #[cfg(feature = "gates")]
+        precmd_wait: None,
         #[cfg(feature = "gates")]
         use_stage: 0,
         #[cfg(feature = "gates")]

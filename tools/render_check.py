@@ -494,6 +494,15 @@ HEAD_STAGING = (
     # main-inventory slot (clear of the hotbar the use tail fills).
     ";item replace entity @s inventory.26 with minecraft:player_head"
     "[minecraft:profile={properties:[{name:\"textures\",value:\"%s\"}]}]"
+    # M405 -- r226. A white banner with a lime cross, in the slot before it.
+    ";item replace entity @s inventory.25 with minecraft:white_banner"
+    "[minecraft:banner_patterns=[{pattern:\"minecraft:cross\",color:\"lime\"}]]"
+    # M406 -- r227. The same banner dropped, and an armour stand holding a
+    # shield with a lime base colour.
+    ";summon minecraft:item ~-13 ~ ~6 {PickupDelay:32767,Age:-32768,Item:{id:\"minecraft:white_banner\","
+    "count:1,components:{\"minecraft:banner_patterns\":[{pattern:\"minecraft:cross\",color:\"lime\"}]}}}"
+    ";summon minecraft:armor_stand ~-15 ~ ~6 {ShowArms:1b,equipment:{mainhand:{id:\"minecraft:shield\","
+    "count:1,components:{\"minecraft:base_color\":\"lime\"}}}}"
     # M289 -- r147. The same head dropped (never picked up or despawned) and
     # in a floor-mounted item frame.
     ";summon minecraft:item ~-11 ~ ~6 {PickupDelay:32767,Age:-32768,Item:{id:\"minecraft:player_head\","

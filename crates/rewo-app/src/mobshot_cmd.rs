@@ -262,6 +262,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         undercoat: false,
         fish_dye: None,
         cape: None,
+        wings: None,
     }
 }
 

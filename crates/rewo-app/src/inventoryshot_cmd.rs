@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 173;
+const EXPECTED_WITNESSES: usize = 175;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -5301,6 +5301,79 @@ fn pixels_inner(
             !skinned.is_empty() && worn >= 200 && plain == 0,
             format!(
                 "skinned model {skinned:?}: {worn} green px (want >= 200); the plain head: {plain} (want 0)"
+            ),
+        );
+    }
+
+    // M405 — a banner's and a shield's patterns reach their icons. The
+    // production `add_pattern_model` over the jar's own sheets: a white
+    // banner with a lime cross, and a shield with a lime base colour; lime
+    // (0x80C71F) is the only green-dominant colour in either slot, so the
+    // plain banner and the plain (wooden) shield must show none.
+    {
+        let mut held = baked.held_items.clone();
+        let lime = 5u8;
+        let banner = held
+            .add_pattern_model(
+                "minecraft:white_banner",
+                None,
+                &[("cross".to_string(), lime)],
+            )
+            .map(|m| m.name)
+            .unwrap_or_default();
+        let shield = held
+            .add_pattern_model("minecraft:shield", Some(lime), &[])
+            .map(|m| m.name)
+            .unwrap_or_default();
+        let held_all = crate::live_cmd::to_gpu_held_items(&held);
+        let names = vec![
+            "minecraft:white_banner".to_string(),
+            banner.clone(),
+            "minecraft:shield".to_string(),
+            shield.clone(),
+        ];
+        let wanted = crate::live_cmd::gui_atlas_wanted(&held_all, &names);
+        let hatlas = crate::live_cmd::pack_gui_atlas(&held_all, &wanted);
+        wr.init_gui_items(gpu, &hatlas.rgba, 512, 512)?;
+        let mut lime_px = |model: &str| -> Result<u32, String> {
+            if model.is_empty() {
+                return Ok(0);
+            }
+            let slot = [GuiItem {
+                model: model.into(),
+                x: 104.0,
+                y: 96.0,
+                size: 48.0,
+                glint: false,
+            }];
+            let v = build_vertices(&held_all, &slot, &lights, &|t| hatlas.uv.get(&t).copied());
+            let img = shot(gpu, off, wr, &v)?;
+            let mut n = 0;
+            for y in 96..144u32 {
+                for x in 104..152u32 {
+                    let i = ((y * W + x) * 4) as usize;
+                    let (r, g, b) = (img[i] as i32, img[i + 1] as i32, img[i + 2] as i32);
+                    if g > r + 40 && g > b + 60 {
+                        n += 1;
+                    }
+                }
+            }
+            Ok(n)
+        };
+        let (plain_banner, worn_banner) = (lime_px("minecraft:white_banner")?, lime_px(&banner)?);
+        let (plain_shield, worn_shield) = (lime_px("minecraft:shield")?, lime_px(&shield)?);
+        c.record(
+            "g22.a_banners_patterns_reach_its_icon",
+            !banner.is_empty() && worn_banner >= 30 && plain_banner == 0,
+            format!(
+                "patterned model {banner:?}: {worn_banner} lime px (want >= 30); the plain banner: {plain_banner} (want 0)"
+            ),
+        );
+        c.record(
+            "g23.a_shields_base_colour_reaches_its_icon",
+            !shield.is_empty() && worn_shield >= 100 && plain_shield == 0,
+            format!(
+                "patterned model {shield:?}: {worn_shield} lime px (want >= 100); the plain shield: {plain_shield} (want 0)"
             ),
         );
     }

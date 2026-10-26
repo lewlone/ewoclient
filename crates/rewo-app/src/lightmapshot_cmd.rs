@@ -1123,6 +1123,7 @@ fn run_entity_case(
         undercoat: false,
         fish_dye: None,
         cape: None,
+        wings: None,
         light,
     };
     wr.set_entities(&[capsule], right, up.to_array(), 0.0);

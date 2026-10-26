@@ -800,6 +800,46 @@ pub(super) fn wanted_gesture(
 /// decodes no teams), `isDiscrete()`'s 32-block sneak cut-off, `isVehicle()`,
 /// and `hud.isHidden()`. The local player never reaches here — it is not in
 /// the entity table — which is also the spec's exclusion.
+/// M403 — `WingsLayer.submit`'s gate and `getPlayerElytraTexture`: the
+/// elytra this entity wears, or `None`. Every renderer with a `WingsLayer`
+/// (avatars, the humanoid mobs, the armour stand) draws it whatever the
+/// body's visibility, as the armour does.
+pub(crate) fn resolve_wings<'a>(
+    ents: &rewo_world::entities::EntityTable,
+    id: i32,
+    kind: EntityModelKind,
+    alpha: f32,
+    cape_origin: Option<(u32, u32)>,
+    items: &rewo_data::items::Items,
+    equipment: &'a rewo_data::equipment::EquipmentAssets,
+) -> Option<rewo_gpu::entities::WingsDraw<'a>> {
+    use rewo_data::equipment::ArmorLayer;
+    use rewo_gpu::entities::WingsTexture;
+    if !rewo_gpu::mobs::wears_humanoid_armor(kind) {
+        return None;
+    }
+    // `state.chestEquipment.get(EQUIPPABLE)` with an asset, and that asset's
+    // `wings` layers (`renderLayers` draws nothing for an asset without).
+    let piece = ents.armor(id)[1]?;
+    let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
+    let def = equipment.layers(asset, ArmorLayer::Wings).first()?;
+    // `getPlayerElytraTexture`: `skin.elytra()` (no profile Rewo sees
+    // carries one), else `skin.cape()` while `showCape`.
+    let player = matches!(kind, EntityModelKind::Player | EntityModelKind::PlayerSlim)
+        && ents.shows_cape(id);
+    let texture = match cape_origin {
+        Some(origin) if def.use_player_texture && player => WingsTexture::Player(origin),
+        _ => WingsTexture::Equipment(def.key.as_str()),
+    };
+    let e = ents.get(id)?;
+    Some(rewo_gpu::entities::WingsDraw {
+        texture,
+        foil: piece.foil,
+        rot: e.elytra.at(alpha),
+        crouching: ents.pose(id) == POSE_CROUCHING,
+    })
+}
+
 /// `CapeLayer.submit`'s four gates and `AvatarRenderer.extractCapeState`'s
 /// three angles, resolved for one entity on one frame (M60).
 ///
@@ -3603,6 +3643,8 @@ pub(super) fn resolve_held_items<'a>(
     items: &'a rewo_data::items::Items,
     // M290 — a held player head takes its profile's skin.
     head_skins: Option<&'a HeadSkins>,
+    // M406 — a held banner or shield, its patterns.
+    patterns: Option<&'a super::icons::PatternModels>,
 ) -> [Option<&'a str>; 2] {
     use rewo_world::entities::{HumanoidArm, InteractionHand};
     let mut out: [Option<&str>; 2] = [None, None];
@@ -3618,6 +3660,7 @@ pub(super) fn resolve_held_items<'a>(
             out[i] = items
                 .name(held.item_id)
                 .map(|n| head_skins.map_or(n, |h| h.item_model(n, entities.hand_profile(id, hand))))
+                .map(|n| patterns.map_or(n, |p| p.get(n, entities.hand_patterns(id, hand))))
                 .map(|n| use_model(n, use_state, hand, held.charged));
         }
     }
@@ -4878,6 +4921,9 @@ pub(super) fn collect_entities<'a>(
     crosshair_pick: Option<i32>,
     // M273 — player heads' own skins, for a worn head (`None`: Steve).
     head_skins: Option<&'a HeadSkins>,
+    // M406 — banner and shield pattern copies, for what entities drop and
+    // hold (`None`: the plain models).
+    patterns: Option<&'a super::icons::PatternModels>,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -5567,8 +5613,12 @@ pub(super) fn collect_entities<'a>(
             // M289 — a dropped player head in its profile's skin.
             ground_item: thrown_model.or_else(|| {
                 let name = ground_stack.and_then(|(i, _, _)| item_names.name(i))?;
-                Some(head_skins.map_or(name, |h| {
+                let name = head_skins.map_or(name, |h| {
                     h.item_model(name, session.world.entities.stack_profile(id))
+                });
+                // M406 — a dropped banner or shield, its patterns.
+                Some(patterns.map_or(name, |p| {
+                    p.get(name, session.world.entities.stack_patterns(id))
                 }))
             }),
             // `ItemStack.hasFoil()` (M45), decoded at the wire because it
@@ -5655,7 +5705,13 @@ pub(super) fn collect_entities<'a>(
             // disjunction as of M24; M21 shipped only the first term.
             hurt: session.world.entities.has_red_overlay(id),
             // M22: what each arm is holding.
-            held: resolve_held_items(&session.world.entities, id, item_names, head_skins),
+            held: resolve_held_items(
+                &session.world.entities,
+                id,
+                item_names,
+                head_skins,
+                patterns,
+            ),
             skin_uv: player_skin.map(|ps| ps.uv),
             scale_mul,
             mount: None,
@@ -5712,6 +5768,17 @@ pub(super) fn collect_entities<'a>(
             // when one is still in flight, and either way vanilla's second
             // gate says draw nothing.
             cape: resolve_cape(
+                &session.world.entities,
+                id,
+                kind,
+                alpha,
+                player_skin.and_then(|ps| ps.cape),
+                item_names,
+                equipment,
+            ),
+            // M403 — the elytra; a caped player's own cape sheet stands in
+            // for a `use_player_texture` layer.
+            wings: resolve_wings(
                 &session.world.entities,
                 id,
                 kind,

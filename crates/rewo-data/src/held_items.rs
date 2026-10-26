@@ -125,6 +125,75 @@ pub struct HeldItems {
     /// name; their variants are baked into [`Self::models`] as
     /// `"<item>#<model reference>"`.
     pub dynamic: HashMap<String, serde_json::Value>,
+    /// M405 — the banner and shield pattern sheets by texture path
+    /// (`entity/banner/<stem>`, `entity/shield/<stem>`, and the shield's
+    /// `base` and `shield_base`). Kept on the CPU only: they are composited
+    /// into per-stack copies ([`Self::add_pattern_model`]), never drawn.
+    pub pattern_sheets: HashMap<String, HeldTexture>,
+    /// M405 — each item's dye-tinted part textures (a banner's flag, M244),
+    /// the sheets a pattern copy composites over.
+    pub tinted_parts: HashMap<String, Vec<u16>>,
+}
+
+/// M405 — a banner or shield item copied for one stack's patterns:
+/// its model name and the textures appended for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatternModel {
+    pub name: String,
+    pub textures: Vec<usize>,
+}
+
+/// M405 — `BannerRenderer.submitPatterns` composited into one sheet: each
+/// layer's mask tinted by its dye (`0xRRGGBB`, multiplied into the 8-bit
+/// sRGB texel as vanilla's vertex colour is) and alpha-blended over `base`
+/// (`SRC_ALPHA, ONE_MINUS_SRC_ALPHA`), in the 8-bit gamma space vanilla's
+/// framebuffer blends in. The layers are coplanar and share one light, so
+/// blending first and lighting after gives vanilla's pixels. `None` when a
+/// layer's size differs from the base's.
+pub fn composite_layers(base: &HeldTexture, layers: &[(&HeldTexture, u32)]) -> Option<HeldTexture> {
+    let mut out = base.clone();
+    for (mask, rgb) in layers {
+        if (mask.w, mask.h) != (base.w, base.h) {
+            return None;
+        }
+        let tint = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF];
+        for (d, s) in out
+            .rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(mask.rgba.as_chunks::<4>().0)
+        {
+            let a = s[3] as u32;
+            if a == 0 {
+                continue;
+            }
+            for c in 0..3 {
+                let src = (s[c] as u32 * tint[c] + 127) / 255;
+                d[c] = ((src * a + d[c] as u32 * (255 - a) + 127) / 255) as u8;
+            }
+            d[3] = (a + (d[3] as u32 * (255 - a) + 127) / 255).min(255) as u8;
+        }
+    }
+    Some(out)
+}
+
+/// M405 — FNV-1a over a pattern list, for a stable variant name.
+fn pattern_key(base: Option<u8>, layers: &[(String, u8)]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |b: u8| {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    eat(base.unwrap_or(0xFF));
+    for (stem, dye) in layers {
+        for b in stem.bytes() {
+            eat(b);
+        }
+        eat(0);
+        eat(*dye);
+    }
+    h
 }
 
 /// M234 — what [`UseVariants::select`] needs: the definitions of the items
@@ -226,6 +295,99 @@ impl HeldItems {
                 name
             });
         Some(SkinHeadModels { block, tex, item })
+    }
+
+    /// M405 — `item` drawn with one stack's banner patterns: a copy of its
+    /// model whose patterned sheet is the composite of
+    /// `BannerRenderer.submitPatterns` (at most 16 layers, as vanilla's loop
+    /// stops), named `"<item>#pattern<hash>"` and built once per pattern
+    /// list.
+    ///
+    /// A banner's flag already samples its dye-tinted base (M244), so its
+    /// patterns go over that. A shield's whole model samples one sheet:
+    /// `shield_base` when it has patterns or a base colour, then the
+    /// tinted `shield/base` (`base_color`, white when absent), then the
+    /// patterns from `entity/shield/`. `layers` are `(stem, DyeColor id)`;
+    /// a stem with no sheet is skipped. `None` for an item that is neither,
+    /// or a shield with nothing to draw (its plain model is right).
+    pub fn add_pattern_model(
+        &mut self,
+        item: &str,
+        base: Option<u8>,
+        layers: &[(String, u8)],
+    ) -> Option<PatternModel> {
+        let dye = |i: u8| {
+            crate::block_entity_models::DYE_DIFFUSE_COLORS
+                .get(i as usize)
+                .copied()
+                .unwrap_or(0xFFFFFF)
+        };
+        let layers = &layers[..layers.len().min(16)];
+        let name = format!("{item}#pattern{:016x}", pattern_key(base, layers));
+        if self.models.contains_key(&name) {
+            return Some(PatternModel {
+                name,
+                textures: Vec::new(),
+            });
+        }
+        let mut model = self.models.get(item)?.clone();
+        let shield = item == "minecraft:shield";
+        // (old texture, new sheet) for each sheet the copy replaces.
+        let mut swaps: Vec<(u16, HeldTexture)> = Vec::new();
+        if shield {
+            if layers.is_empty() && base.is_none() {
+                return None;
+            }
+            let old = model.quads.first()?.tex;
+            let sheet = |p: &str| self.pattern_sheets.get(p);
+            let mut ls: Vec<(&HeldTexture, u32)> =
+                vec![(sheet("entity/shield/base")?, dye(base.unwrap_or(0)))];
+            for (stem, d) in layers {
+                if let Some(m) = sheet(&format!("entity/shield/{stem}")) {
+                    ls.push((m, dye(*d)));
+                }
+            }
+            swaps.push((
+                old,
+                composite_layers(sheet("entity/shield/shield_base")?, &ls)?,
+            ));
+        } else {
+            let flags = self.tinted_parts.get(item)?;
+            if layers.is_empty() {
+                return None;
+            }
+            for &old in flags {
+                let ls: Vec<(&HeldTexture, u32)> = layers
+                    .iter()
+                    .filter_map(|(stem, d)| {
+                        self.pattern_sheets
+                            .get(&format!("entity/banner/{stem}"))
+                            .map(|m| (m, dye(*d)))
+                    })
+                    .collect();
+                swaps.push((
+                    old,
+                    composite_layers(self.textures.get(old as usize)?, &ls)?,
+                ));
+            }
+        }
+        let mut textures = Vec::new();
+        for (old, sheet) in swaps {
+            let new = u16::try_from(self.textures.len()).ok()?;
+            self.textures.push(sheet);
+            textures.push(new as usize);
+            for q in model
+                .quads
+                .iter_mut()
+                .chain(model.gui_quads.iter_mut().flatten())
+            {
+                if q.tex == old {
+                    q.tex = new;
+                }
+            }
+        }
+        self.models.insert(name.clone(), model);
+        Some(PatternModel { name, textures })
     }
 
     /// Look a model up by name across both maps — what the renderer wants,
@@ -348,6 +510,119 @@ impl TexturePool {
 mod tint_tests {
     use super::*;
 
+    fn solid(w: u32, h: u32, px: [u8; 4]) -> HeldTexture {
+        HeldTexture {
+            w,
+            h,
+            rgba: px.repeat((w * h) as usize),
+        }
+    }
+
+    /// M405 — a mask tinted by its dye blends over the base by its alpha:
+    /// opaque replaces, half alpha mixes, clear leaves the base; and a
+    /// sheet of another size refuses.
+    #[test]
+    fn layers_tint_and_blend_over_the_base() {
+        let base = solid(2, 1, [200, 100, 50, 255]);
+        let mut mask = solid(2, 1, [255, 255, 255, 255]);
+        mask.rgba[7] = 128; // the second texel at half alpha
+        let out = composite_layers(&base, &[(&mask, 0x80_40_20)]).unwrap();
+        assert_eq!(&out.rgba[0..4], &[128, 64, 32, 255]);
+        let half = |b: u32, t: u32| ((t * 128 + b * 127 + 127) / 255) as u8;
+        assert_eq!(
+            &out.rgba[4..7],
+            &[half(200, 128), half(100, 64), half(50, 32)]
+        );
+        assert_eq!(out.rgba[7], 255);
+        let clear = solid(2, 1, [255, 255, 255, 0]);
+        assert_eq!(composite_layers(&base, &[(&clear, 0)]).unwrap(), base);
+        assert!(composite_layers(&base, &[(&solid(1, 1, [0; 4]), 0)]).is_none());
+    }
+
+    fn quad(tex: u16) -> HeldQuad {
+        HeldQuad {
+            verts: [[0.0; 3]; 4],
+            uv: [[0.0; 2]; 4],
+            tex,
+            part: 0,
+            dir: 0,
+        }
+    }
+
+    fn model(quads: Vec<HeldQuad>) -> HeldItemModel {
+        HeldItemModel {
+            quads,
+            right: DisplayTransform::default(),
+            left: DisplayTransform::default(),
+            ground: DisplayTransform::default(),
+            gui: DisplayTransform::default(),
+            first_right: DisplayTransform::default(),
+            first_left: DisplayTransform::default(),
+            fixed: DisplayTransform::default(),
+            head: DisplayTransform::default(),
+            from_block: false,
+            gui_quads: None,
+        }
+    }
+
+    /// M405 — a banner copy repoints only its flag (the tinted part) at
+    /// the flag with the patterns over it; the pole keeps its sheet; one
+    /// pattern list builds once. A shield copy draws `shield_base`, the
+    /// tinted base (white without `base_color`) and its patterns; a plain
+    /// shield needs no copy.
+    #[test]
+    fn a_pattern_copy_repoints_the_patterned_sheet() {
+        let mut h = HeldItems {
+            textures: vec![
+                solid(2, 1, [10, 10, 10, 255]),
+                solid(2, 1, [255, 255, 255, 255]),
+            ],
+            ..Default::default()
+        };
+        h.models.insert(
+            "minecraft:white_banner".into(),
+            model(vec![quad(0), quad(1)]),
+        );
+        h.tinted_parts
+            .insert("minecraft:white_banner".into(), vec![1]);
+        h.pattern_sheets.insert(
+            "entity/banner/cross".into(),
+            solid(2, 1, [255, 255, 255, 255]),
+        );
+        let layers = vec![("cross".to_string(), 14u8)];
+        let made = h
+            .add_pattern_model("minecraft:white_banner", None, &layers)
+            .unwrap();
+        assert_eq!(made.textures, vec![2]);
+        let m = &h.models[&made.name];
+        assert_eq!((m.quads[0].tex, m.quads[1].tex), (0, 2));
+        // Red (14): 0xB02E26 over white.
+        assert_eq!(&h.textures[2].rgba[0..3], &[0xB0, 0x2E, 0x26]);
+        let again = h
+            .add_pattern_model("minecraft:white_banner", None, &layers)
+            .unwrap();
+        assert_eq!((again.name, again.textures), (made.name, vec![]));
+
+        h.models
+            .insert("minecraft:shield".into(), model(vec![quad(0)]));
+        for (p, px) in [
+            ("entity/shield/shield_base", [9, 9, 9, 255]),
+            ("entity/shield/base", [255, 255, 255, 255]),
+        ] {
+            h.pattern_sheets.insert(p.into(), solid(2, 1, px));
+        }
+        assert!(h.add_pattern_model("minecraft:shield", None, &[]).is_none());
+        let s = h
+            .add_pattern_model("minecraft:shield", Some(11), &[])
+            .unwrap();
+        let t = h.models[&s.name].quads[0].tex as usize;
+        // Blue (11): 0x3C44AA, the base layer's dye, opaque over shield_base.
+        assert_eq!(&h.textures[t].rgba[0..3], &[0x3C, 0x44, 0xAA]);
+        assert!(h
+            .add_pattern_model("minecraft:diamond_sword", None, &layers)
+            .is_none());
+    }
+
     /// A tinted copy multiplies RGB, keeps alpha, leaves the source alone,
     /// and is interned once per colour.
     #[test]
@@ -435,6 +710,8 @@ mod tests {
             .collect(),
             block_entities: HashMap::new(),
             textures: Vec::new(),
+            pattern_sheets: HashMap::new(),
+            tinted_parts: HashMap::new(),
             unsupported: [("minecraft:special".to_string(), 51)]
                 .into_iter()
                 .collect(),

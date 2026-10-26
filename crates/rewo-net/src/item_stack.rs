@@ -305,6 +305,10 @@ pub struct StackComponents {
     /// `minecraft:banner_patterns`' layer count (M200), for the loom's
     /// `hasMaxPatterns`. `None` when the patch does not add the component.
     pub banner_layers: Option<u32>,
+    /// M405 — and the layers themselves, for a banner's or a shield's icon.
+    pub banner_patterns: Vec<rewo_world::inventory::BannerLayer>,
+    /// M405 — `minecraft:base_color`'s `DyeColor` id.
+    pub base_color: Option<u8>,
     /// Whether the patch removed `minecraft:dye` (M93g).
     ///
     /// `isDyeItem` is `is(#LOOM_DYES) && has(DYE)`, and `has()` is false for a
@@ -924,21 +928,40 @@ fn read_interpreted(
         return Ok(true);
     }
     if ty == ids.banner_patterns {
-        // `BannerPatternLayers.STREAM_CODEC`: a list of layers. Walked through
-        // the table's own layer shape; the loom asks only how many (M200).
-        let crate::component_wire::Shape::List(layer) = shape else {
-            return Ok(false);
-        };
+        // `BannerPatternLayers.STREAM_CODEC`: a list of layers. The loom asks
+        // how many (M200); M405 — an icon reads each: `Holder<BannerPattern>`
+        // (`id + 1`, or 0 and an inline `asset_id` and `translation_key`),
+        // then the `DyeColor` id.
         let n = r.varint().map_err(|_| ())?;
         if !(0..=1024).contains(&n) {
             return Err(());
         }
+        let mut layers = Vec::with_capacity((n as usize).min(64));
         for _ in 0..n {
-            if !walk(r, layer, 1)? {
-                return Ok(false);
-            }
+            let h = r.varint().map_err(|_| ())?;
+            let pattern = if h == 0 {
+                let asset = r.string(32767).map_err(|_| ())?;
+                let _translation_key = r.string(32767).map_err(|_| ())?;
+                rewo_world::inventory::BannerPatternRef::Inline(asset)
+            } else if h > 0 {
+                rewo_world::inventory::BannerPatternRef::Registry((h - 1) as u32)
+            } else {
+                return Err(());
+            };
+            let color = r.varint().map_err(|_| ())?;
+            layers.push(rewo_world::inventory::BannerLayer {
+                pattern,
+                color: color.clamp(0, 15) as u8,
+            });
         }
+        let _ = shape;
         out.banner_layers = Some(n as u32);
+        out.banner_patterns = layers;
+        return Ok(true);
+    }
+    if ty == ids.base_color {
+        // M405 — `DyeColor.STREAM_CODEC`, by id.
+        out.base_color = Some(r.varint().map_err(|_| ())?.clamp(0, 15) as u8);
         return Ok(true);
     }
     if ty == ids.dyed_color {
@@ -1256,6 +1279,7 @@ mod tests {
         dye: 20,
         provides_banner_patterns: 21,
         banner_patterns: 24,
+        base_color: 26,
         bundle_contents: 16,
         container: 17,
         use_cooldown: 18,
@@ -1293,6 +1317,7 @@ mod tests {
             ("minecraft:dye", 20),
             ("minecraft:provides_banner_patterns", 21),
             ("minecraft:banner_patterns", 24),
+            ("minecraft:base_color", 26),
             ("minecraft:written_book_content", 22),
             ("minecraft:writable_book_content", 23),
         ]
@@ -1899,6 +1924,15 @@ mod tests {
             &[],
         ));
         assert_eq!(c.banner_layers, Some(6));
+        // M405 — and each layer: holder 300 + i is registry id 299 + i.
+        assert_eq!(c.banner_patterns.len(), 6);
+        assert_eq!(
+            c.banner_patterns[5],
+            rewo_world::inventory::BannerLayer {
+                pattern: rewo_world::inventory::BannerPatternRef::Registry(304),
+                color: 5,
+            }
+        );
         assert_eq!(
             c.damage,
             Some(9),

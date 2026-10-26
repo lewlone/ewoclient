@@ -104,7 +104,10 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 117;
+const EXPECTED_WITNESSES: usize = 118;
+/// M403 — m118's floor: the pixels an elytra at rest adds to a player seen
+/// from behind. Before M403 the wings never drew (0 by construction).
+const ELYTRA_MIN: usize = 400;
 /// M402 — m116's floor: the pixels a full iron set adds to a gliding
 /// player, all of which must lie with the body (wider than tall from the
 /// side). Before M402 the armour kept its own transform without the body's
@@ -633,6 +636,7 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
         undercoat: false,
         fish_dye: None,
         cape: None,
+        wings: None,
     }
 }
 
@@ -7757,6 +7761,58 @@ fn run_check(
         glshot(false, true)?,
     );
     crst.destroy(gpu);
+    // m118 — M403: an elytra on a standing player's back, from behind, at
+    // rest and spread (`ElytraAnimationState`'s level-glide target).
+    let mut elst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.1, -3.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    )?;
+    elst.wr.set_entities(&[], elst.right, elst.up, 0.0);
+    elst.off
+        .render(gpu, Some((&mut elst.wr, elst.vp)), &ov, BG)?;
+    let el_empty = elst.off.read_rgba(gpu)?;
+    let wings_key = baked
+        .equipment
+        .layers("minecraft:elytra", rewo_data::equipment::ArmorLayer::Wings)
+        .first()
+        .map(|l| l.key.clone())
+        .ok_or("no elytra wings layer in the jar")?;
+    let mut elshot = |rot: Option<[f32; 3]>| -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            wings: rot.map(|rot| rewo_gpu::entities::WingsDraw {
+                texture: rewo_gpu::entities::WingsTexture::Equipment(wings_key.as_str()),
+                foil: false,
+                rot,
+                crouching: false,
+            }),
+            ..neutral_draw(EntityModelKind::Player)
+        };
+        elst.wr.set_entities(&[d], elst.right, elst.up, 0.0);
+        elst.off
+            .render(gpu, Some((&mut elst.wr, elst.vp)), &ov, BG)?;
+        elst.off.read_rgba(gpu)
+    };
+    use std::f32::consts::PI;
+    let (el_bare, el_rest, el_spread) = (
+        elshot(None)?,
+        elshot(Some([PI / 12.0, 0.0, -PI / 12.0]))?,
+        elshot(Some([PI / 9.0, 0.0, -PI / 2.0]))?,
+    );
+    elst.destroy(gpu);
+    if let Some(d) = &args.out_dir {
+        for (name, f) in [
+            ("m116_glide_iron.png", &gl_iron),
+            ("m117_spin.png", &gl_spin),
+            ("m118_elytra_rest.png", &el_rest),
+            ("m118_elytra_spread.png", &el_spread),
+        ] {
+            save_png(f, cw, ch, &d.join(name))?;
+        }
+    }
     let cr_mask = |f: &[u8]| -> Vec<bool> {
         f.as_chunks::<4>()
             .0
@@ -7845,6 +7901,40 @@ fn run_check(
         "m117.a_riptide_spinner_lies_along_its_look",
         spin_px >= SPIN_MIN && sp_w > sp_h,
         format!("{spin_px} px of silhouette against standing (want >= {SPIN_MIN}); spinning {sp_w}x{sp_h} (want wider)"),
+    ));
+    // m118: the elytra adds its pixels, and spread it is wider.
+    let el_mask = |f: &[u8]| -> Vec<bool> {
+        f.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(el_empty.as_chunks::<4>().0)
+            .map(|(p, e)| p[..3] != e[..3])
+            .collect()
+    };
+    let el_width = |f: &[u8]| {
+        let m = el_mask(f);
+        let xs = m
+            .iter()
+            .enumerate()
+            .filter(|(_, on)| **on)
+            .map(|(i, _)| i % cw as usize);
+        let (lo, hi) = xs.fold((usize::MAX, 0), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        hi.saturating_sub(lo)
+    };
+    let wing_px = el_bare
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(el_rest.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    let (w_bare, w_rest, w_spread) = (el_width(&el_bare), el_width(&el_rest), el_width(&el_spread));
+    w.push(wit(
+        "m118.an_elytra_draws_and_spreads",
+        wing_px >= ELYTRA_MIN && w_spread > w_rest && w_rest >= w_bare,
+        format!(
+            "the elytra changes {wing_px} px (want >= {ELYTRA_MIN}); width bare {w_bare}, at rest {w_rest}, spread {w_spread} (want spread wider)"
+        ),
     ));
     w.push(wit(
         "m113.a_crouching_player_bends",

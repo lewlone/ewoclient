@@ -59,6 +59,8 @@ pub(crate) struct FrameInputs {
     pub light: (u8, u8),
     /// M289 — the framed stack's player-head skin (`textures` property).
     pub profile: Option<String>,
+    /// M406 — the framed banner's or shield's patterns.
+    pub patterns: Option<rewo_world::inventory::StackPatterns>,
 }
 
 /// A framed map with data.
@@ -257,6 +259,7 @@ pub(crate) fn collect_frame_inputs(
                 p[2].floor() as i32,
             ),
             profile: ents.stack_profile(id).map(str::to_string),
+            patterns: ents.stack_patterns(id).cloned(),
         });
     }
     // Stable order (the table is a hash map), so a still frame's vertex soup
@@ -282,11 +285,16 @@ pub(super) fn collect_item_frames(
     alpha: f32,
     // M289 — framed player heads take their skins.
     head_skins: Option<&super::block_entities::HeadSkins>,
+    // M406 — framed banners and shields take their patterns.
+    patterns: Option<&super::icons::PatternModels>,
 ) -> ItemFrameDraws {
     let mut out = ItemFrameDraws::default();
     for mut f in collect_frame_inputs(world, maps, lang, etypes, item_names, alpha) {
         if let (Some(h), Some(item)) = (head_skins, f.item.as_deref()) {
             f.item = Some(h.item_model(item, f.profile.as_deref()).to_string());
+        }
+        if let (Some(p), Some(item)) = (patterns, f.item.as_deref()) {
+            f.item = Some(p.get(item, f.patterns.as_ref()).to_string());
         }
         frame_draws(&f, lightmap, &mut out);
     }
@@ -324,6 +332,7 @@ mod tests {
             map,
             light: (7, 9),
             profile: None,
+            patterns: None,
         }
     }
 

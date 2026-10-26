@@ -15067,11 +15067,14 @@ pub fn wears_humanoid_armor(kind: EntityModelKind) -> bool {
     )
 }
 
-/// M402 — whether a model kind's render state reads `isFallFlying`:
-/// `HumanoidMobRenderer` and `AvatarRenderer` fill `HumanoidRenderState`,
-/// so it is [`wears_humanoid_armor`]'s renderer list without the armour
-/// stand (`ArmorStandRenderState` is not humanoid). The baby humanoids are
-/// left out with that list (they wear no armour in Rewo yet either).
+/// M402 — whether a model kind's pose reads `isFallFlying`:
+/// [`wears_humanoid_armor`]'s renderer list without the armour stand. Its
+/// `ArmorStandRenderState` is humanoid and is filled the same way, but
+/// `ArmorStandArmorModel.setupAnim` reassigns every part from the stand's
+/// poses after `HumanoidModel`'s, and `ArmorStandRenderer.setupRotations`
+/// has no glide, so nothing of a glide would show (its elytra still draws:
+/// M403). The baby humanoids are left out with that list (they wear no
+/// armour in Rewo yet either).
 pub fn reads_fall_flying(kind: EntityModelKind) -> bool {
     wears_humanoid_armor(kind) && kind != EntityModelKind::ArmorStand
 }

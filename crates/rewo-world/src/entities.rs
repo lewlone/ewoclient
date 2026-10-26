@@ -528,6 +528,8 @@ pub struct EntityState {
     /// as this tick began (`AbstractClientPlayer.tick` hands it over before
     /// `super.tick()` decays it). A glider's flying turn lerps from it.
     delta_movement_prev: [f64; 3],
+    /// M403 — `LivingEntity.elytraAnimationState`, the wings' angles.
+    pub elytra: crate::glide::ElytraAnimation,
     /// `entity instanceof LivingEntity`, supplied by the caller from
     /// `rewo_data::entity_types::EntityClasses::is_living` — the `ticks_swing`
     /// precedent, because the class fact lives in a crate this one does not
@@ -672,6 +674,7 @@ impl EntityState {
             limb_amount: 0.0,
             delta_movement: [0.0; 3],
             delta_movement_prev: [0.0; 3],
+            elytra: crate::glide::ElytraAnimation::default(),
             motion_living: false,
             motion_player: false,
             cloak: CloakAnchor::default(),
@@ -1260,6 +1263,12 @@ pub struct EntityTable {
     /// (`ClientboundSetEquipmentPacket`, slots 0 and 1), by
     /// `InteractionHand`. Cleared on removal.
     hand_profiles: HashMap<i32, [Option<String>; 2]>,
+    /// M406 — a dropped or framed banner's or shield's patterns. Cleared
+    /// on removal.
+    stack_patterns: HashMap<i32, crate::inventory::StackPatterns>,
+    /// M406 — the patterns of a banner or shield in either hand, by
+    /// `InteractionHand`. Cleared on removal.
+    hand_patterns: HashMap<i32, [Option<crate::inventory::StackPatterns>; 2]>,
     /// M309 — a mannequin's synched profile (`Mannequin.DATA_PROFILE`).
     /// Cleared on removal.
     avatar_profiles: HashMap<i32, AvatarProfile>,
@@ -1829,6 +1838,13 @@ pub struct MobState {
     /// (`onSyncedDataUpdated`), counted down a tick at a time
     /// (`tickFuse`'s `if (fuse > 0) fuse--`).
     pub sulfur_fuse: Option<i32>,
+    /// M404 — `AbstractHorse.DATA_ID_FLAGS` (index 18, BYTE): 0x20 is
+    /// `isStanding()` (rearing). 0 by default.
+    pub horse_flags: u8,
+    /// M404 — `AbstractHorse.standAnim` / `standAnimO`: the client's own
+    /// rearing animation, eased from the synced standing flag each tick.
+    pub stand_anim: f32,
+    pub stand_anim_o: f32,
     /// M394 — `AbstractBoat.DATA_ID_BUBBLE_TIME` (13, INT), and the client's
     /// `bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
     /// (`tickBubbleColumn`).
@@ -2038,6 +2054,8 @@ impl EntityTable {
             head_profiles,
             stack_profiles,
             hand_profiles,
+            stack_patterns,
+            hand_patterns,
             avatar_profiles,
             body_armor,
             saddles,
@@ -2077,6 +2095,8 @@ impl EntityTable {
         item_frames.remove(&id);
         stack_profiles.remove(&id);
         hand_profiles.remove(&id);
+        stack_patterns.remove(&id);
+        hand_patterns.remove(&id);
         avatar_profiles.remove(&id);
         body_armor.remove(&id);
         saddles.remove(&id);
@@ -2993,6 +3013,65 @@ impl EntityTable {
         self.stack_profiles.get(&id).map(String::as_str)
     }
 
+    /// M406 — a dropped or framed stack's banner patterns (`None` clears).
+    pub fn set_stack_patterns(&mut self, id: i32, p: Option<crate::inventory::StackPatterns>) {
+        match p {
+            Some(p) => {
+                self.stack_patterns.insert(id, p);
+            }
+            None => {
+                self.stack_patterns.remove(&id);
+            }
+        }
+    }
+
+    /// M406 — the banner patterns the dropped or framed stack `id` carries.
+    pub fn stack_patterns(&self, id: i32) -> Option<&crate::inventory::StackPatterns> {
+        self.stack_patterns.get(&id)
+    }
+
+    /// M406 — the patterns of a banner or shield held in `hand` (`None`
+    /// clears).
+    pub fn set_hand_patterns(
+        &mut self,
+        id: i32,
+        hand: InteractionHand,
+        p: Option<crate::inventory::StackPatterns>,
+    ) {
+        let slot = self.hand_patterns.entry(id).or_default();
+        slot[hand_slot(hand)] = p;
+        if slot.iter().all(Option::is_none) {
+            self.hand_patterns.remove(&id);
+        }
+    }
+
+    /// M406 — every dropped or framed stack's patterns, by entity.
+    pub fn all_stack_patterns(
+        &self,
+    ) -> impl Iterator<Item = (i32, &crate::inventory::StackPatterns)> {
+        self.stack_patterns.iter().map(|(id, p)| (*id, p))
+    }
+
+    /// M406 — every held banner's or shield's patterns, by entity and hand.
+    pub fn all_hand_patterns(
+        &self,
+    ) -> impl Iterator<Item = (i32, InteractionHand, &crate::inventory::StackPatterns)> {
+        self.hand_patterns.iter().flat_map(|(id, hands)| {
+            [InteractionHand::MainHand, InteractionHand::OffHand]
+                .into_iter()
+                .filter_map(move |h| hands[hand_slot(h)].as_ref().map(|p| (*id, h, p)))
+        })
+    }
+
+    /// M406 — the patterns of what `id` holds in `hand`.
+    pub fn hand_patterns(
+        &self,
+        id: i32,
+        hand: InteractionHand,
+    ) -> Option<&crate::inventory::StackPatterns> {
+        self.hand_patterns.get(&id)?[hand_slot(hand)].as_ref()
+    }
+
     /// M295 — the saddle slot's piece (`None` clears).
     pub fn set_saddle_piece(&mut self, id: i32, piece: Option<WornPiece>) {
         match piece {
@@ -3335,6 +3414,26 @@ impl EntityTable {
         self.mob_state.get(&id).and_then(|s| s.carried_block)
     }
 
+    /// M404 — an `AbstractHorse`'s `DATA_ID_FLAGS` byte. Kind-gated by the
+    /// caller.
+    pub fn set_horse_flags(&mut self, id: i32, flags: u8) {
+        self.mob_state.entry(id).or_default().horse_flags = flags;
+    }
+
+    /// M404 — `AbstractHorse.standAnimO`, the rearing animation as this
+    /// tick began (what the rider's seat reads); 0 for anything that never
+    /// stood.
+    pub fn stand_anim_o(&self, id: i32) -> f32 {
+        self.mob_state.get(&id).map_or(0.0, |s| s.stand_anim_o)
+    }
+
+    /// M404 — `getStandAnim(a)`: `Mth.lerp(a, standAnimO, standAnim)`.
+    pub fn stand_anim_at(&self, id: i32, alpha: f32) -> f32 {
+        self.mob_state.get(&id).map_or(0.0, |s| {
+            s.stand_anim_o + alpha * (s.stand_anim - s.stand_anim_o)
+        })
+    }
+
     /// M354 — a bee's `DATA_FLAGS_ID` byte. Kind-gated by the caller.
     pub fn set_bee_flags(&mut self, id: i32, flags: u8) {
         self.mob_state.entry(id).or_default().bee_flags = Some(flags);
@@ -3498,6 +3597,16 @@ impl EntityTable {
             if st.boat_damage > 0.0 {
                 st.boat_damage -= 1.0;
             }
+            // M404 — `AbstractHorse.aiStep`'s stand animation: toward 1 while
+            // standing, back to 0 (cubic ease) once not. Every mob state
+            // runs it; one that never stood stays at 0.
+            st.stand_anim_o = st.stand_anim;
+            let a = st.stand_anim;
+            st.stand_anim = if st.horse_flags & 0x20 != 0 {
+                (a + ((1.0 - a) * 0.4 + 0.05)).min(1.0)
+            } else {
+                (a + ((0.8 * a * a * a - a) * 0.6 - 0.05)).max(0.0)
+            };
             // M396 — `SulfurCube.tickFuse`.
             if let Some(f) = st.sulfur_fuse.as_mut() {
                 if *f > 0 {
@@ -3756,6 +3865,10 @@ impl EntityTable {
             // FALL_FLYING (1) while not fall flying.
             let pose = self.poses.get(id).copied().unwrap_or(0);
             e.tick_swim(pose == 3 || (pose == 1 && !fall_flying));
+            // M403 — `elytraAnimationState.tick()`, the end of `aiStep`
+            // (`isCrouching()` is the CROUCHING pose, 5).
+            let motion = e.delta_movement;
+            e.elytra.tick(fall_flying, pose == 5, motion);
             // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
             // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
             if e.dash_cooldown > 0 {
@@ -4066,6 +4179,8 @@ impl EntityTable {
             cube_size: self.sizes.get(&id).copied().unwrap_or(1),
             limb: e.limb(),
             baby,
+            // M404 — read only by the horse's seat.
+            stand_anim_o: self.stand_anim_o(id),
         })
     }
 
@@ -4330,6 +4445,34 @@ mod tests {
         }
         assert_eq!(t.mob_state(8).sulfur_fuse, Some(0));
         assert_eq!(t.sulfur_fuse_remaining(8, 0.25), 0.75);
+    }
+
+    /// M404 — the stand animation eases toward 1 while the synced flag
+    /// stands the horse (`+ (1 − a)·0.4 + 0.05`), then back down by the
+    /// cubic (`+ (0.8a³ − a)·0.6 − 0.05`); `standAnimO` is the tick's start.
+    #[test]
+    fn a_horse_rears_while_its_flag_stands_it() {
+        let mut t = EntityTable::default();
+        t.add(3, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.set_horse_flags(3, 0x20 | 0x04);
+        t.tick_lerp();
+        assert!((t.stand_anim_at(3, 1.0) - 0.45).abs() < 1e-6);
+        assert_eq!(t.stand_anim_o(3), 0.0);
+        t.tick_lerp();
+        assert!((t.stand_anim_o(3) - 0.45).abs() < 1e-6);
+        assert!((t.stand_anim_at(3, 1.0) - (0.45 + 0.55 * 0.4 + 0.05)).abs() < 1e-6);
+        for _ in 0..10 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.stand_anim_at(3, 1.0), 1.0);
+        t.set_horse_flags(3, 0x04);
+        t.tick_lerp();
+        assert!((t.stand_anim_at(3, 1.0) - (1.0 + (0.8 - 1.0) * 0.6 - 0.05)).abs() < 1e-6);
+        for _ in 0..10 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.stand_anim_at(3, 1.0), 0.0);
+        assert_eq!(t.stand_anim_o(99), 0.0);
     }
 
     /// M402 — `deltaMovementOnPreviousTick` is the motion as the tick
@@ -5652,6 +5795,8 @@ mod side_state_tests {
             head_profiles,
             stack_profiles,
             hand_profiles,
+            stack_patterns,
+            hand_patterns,
             avatar_profiles,
             body_armor,
             saddles,
@@ -5695,6 +5840,8 @@ mod side_state_tests {
             head_profiles.contains_key(&id),
             stack_profiles.contains_key(&id),
             hand_profiles.contains_key(&id),
+            stack_patterns.contains_key(&id),
+            hand_patterns.contains_key(&id),
             avatar_profiles.contains_key(&id),
             body_armor.contains_key(&id),
             saddles.contains_key(&id),

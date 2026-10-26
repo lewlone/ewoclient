@@ -189,6 +189,34 @@ fn read_entries<T>(
     out
 }
 
+/// M405 — `banner_pattern`: each entry's `asset_id` as its texture stem
+/// (`minecraft:stripe_bottom` -> `stripe_bottom`), the name both
+/// `entity/banner/<stem>` and `entity/shield/<stem>` use. `None` for an
+/// entry without one.
+pub fn parse_banner_pattern_registry(
+    r: &mut rewo_proto::reader::PacketReader,
+    count: usize,
+) -> Vec<Option<String>> {
+    read_entries(r, count, |_id, data| {
+        match data.as_ref().and_then(|d| d.get("asset_id")) {
+            Some(Nbt::String(s)) => Some(banner_pattern_stem(s)),
+            _ => None,
+        }
+    })
+}
+
+/// M405 — a banner pattern's `asset_id` as its texture stem (the path
+/// without the namespace).
+pub fn banner_pattern_stem(asset_id: &str) -> String {
+    asset_id
+        .split_once(':')
+        .map_or(asset_id, |(_, p)| p)
+        .to_string()
+}
+
+/// M405 — the `banner_pattern` registry's id.
+pub const BANNER_PATTERN_REGISTRY: &str = "minecraft:banner_pattern";
+
 /// `cat_variant` / `frog_variant` / `cow_variant` / `pig_variant` /
 /// `chicken_variant`: one `asset_id` per entry (M348: and the farm animals'
 /// `model`).

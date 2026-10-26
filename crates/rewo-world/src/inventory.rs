@@ -577,6 +577,45 @@ pub struct SlotText {
     /// M275 — `minecraft:profile`'s `textures` property: a player head's
     /// own skin, for its icon.
     pub profile_textures: Option<String>,
+    /// M405 — `minecraft:banner_patterns`' layers, for a banner's or a
+    /// shield's icon.
+    pub banner_patterns: Vec<BannerLayer>,
+    /// M405 — `minecraft:base_color` (a `DyeColor` id), a shield's base.
+    pub base_color: Option<u8>,
+}
+
+/// M405 — a banner layer's pattern, as `Holder<BannerPattern>` sends it:
+/// a `banner_pattern` registry id (configuration's wire order), or an
+/// inline definition's `asset_id`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BannerPatternRef {
+    Registry(u32),
+    Inline(String),
+}
+
+/// M405 — one `BannerPatternLayers.Layer`: a pattern and its `DyeColor` id.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BannerLayer {
+    pub pattern: BannerPatternRef,
+    pub color: u8,
+}
+
+/// M406 — what a banner or shield stack draws its patterns from:
+/// `minecraft:banner_patterns` and `minecraft:base_color`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StackPatterns {
+    pub layers: Vec<BannerLayer>,
+    pub base: Option<u8>,
+}
+
+impl StackPatterns {
+    /// `None` for a stack with neither, which draws its plain model.
+    pub fn of(layers: &[BannerLayer], base: Option<u8>) -> Option<Self> {
+        (!layers.is_empty() || base.is_some()).then(|| Self {
+            layers: layers.to_vec(),
+            base,
+        })
+    }
 }
 
 impl SlotText {
@@ -607,6 +646,8 @@ impl SlotText {
             writable_pages,
             has_writable_book,
             profile_textures,
+            banner_patterns,
+            base_color,
         } = self;
         custom_name.is_none()
             && item_name.is_none()
@@ -621,6 +662,8 @@ impl SlotText {
             && writable_pages.is_empty()
             && !*has_writable_book
             && profile_textures.is_none()
+            && banner_patterns.is_empty()
+            && base_color.is_none()
     }
 }
 

@@ -27,7 +27,7 @@ pub(crate) fn screen_icons(
     overlay: Option<&rewo_ui::recipe_overlay::Open>,
     // M275 — player-head skins that have arrived, `textures` value → item
     // model (`GuiItemState::skinned`).
-    skinned: &std::collections::HashMap<String, String>,
+    variants: &IconVariants,
 ) -> (
     Vec<rewo_gpu::gui_item::GuiItem>,
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -45,7 +45,7 @@ pub(crate) fn screen_icons(
         }
         if let Some(stack) = inv.menu_slot(slot) {
             if let Some(mut icon) = icon_for(items, trim_materials, stack, rect.0, rect.1, rect.2) {
-                if let Some(m) = skinned_icon_model(inv, stack, &icon.model, skinned) {
+                if let Some(m) = variant_icon_model(inv, stack, &icon.model, variants) {
                     icon.model = m;
                 }
                 icons.push(icon);
@@ -295,19 +295,129 @@ pub(crate) fn screen_icons(
     (icons, labels)
 }
 
-/// M275 — the item model a player-head stack draws in once the skin its
-/// profile names has arrived (`None`: the plain model).
-pub(crate) fn skinned_icon_model(
+/// The per-stack icon models built so far.
+#[derive(Default)]
+pub(crate) struct IconVariants {
+    /// M275 — player-head skins that have arrived: `textures` value → the
+    /// head item wearing it.
+    pub(crate) skinned: std::collections::HashMap<String, String>,
+    /// M405 — banner and shield stacks wearing patterns: `(item id,
+    /// component fingerprint)` → the pattern copy (or the plain model, for a
+    /// stack whose copy could not be built, so it is tried once).
+    pub(crate) patterned: std::collections::HashMap<(i32, u64), String>,
+}
+
+/// The cap on [`IconVariants::patterned`]: each entry may own a 64 × 64
+/// sheet, and past this a new pattern list draws the plain model.
+pub(crate) const MAX_PATTERNED_ICONS: usize = 256;
+
+/// The item model a stack draws in when it is its own variant (`None`: the
+/// plain model): M275 — a player head once the skin its profile names has
+/// arrived; M405 — a banner or shield wearing its patterns.
+pub(crate) fn variant_icon_model(
     inv: &rewo_world::inventory::Inventory,
     stack: rewo_world::inventory::ItemSlot,
     model: &str,
-    skinned: &std::collections::HashMap<String, String>,
+    variants: &IconVariants,
 ) -> Option<String> {
-    if model != "minecraft:player_head" {
-        return None;
+    if model == "minecraft:player_head" {
+        let value = inv.text_of(stack)?.profile_textures.as_deref()?;
+        return variants.skinned.get(value).cloned();
     }
-    let value = inv.text_of(stack)?.profile_textures.as_deref()?;
-    skinned.get(value).cloned()
+    variants
+        .patterned
+        .get(&(stack.item_id, stack.components))
+        .cloned()
+}
+
+/// M405/M406 — the pattern copies built this session, by item and pattern
+/// list: the copy's model name, or the item itself when no copy could be
+/// built (so it is tried once). Shared by the icons and the entity draws,
+/// so one pattern list is composited once wherever it shows.
+#[derive(Default)]
+pub(crate) struct PatternModels {
+    built: std::collections::HashMap<
+        String,
+        std::collections::HashMap<rewo_world::inventory::StackPatterns, String>,
+    >,
+    count: usize,
+}
+
+/// A newly built copy: its name and the sheets appended for it.
+pub(crate) type NewPatternModel = rewo_data::held_items::PatternModel;
+
+impl PatternModels {
+    /// The model `item` draws with `patterns` (the item itself until its
+    /// copy is built, or without patterns).
+    pub(crate) fn get<'a>(
+        &'a self,
+        item: &'a str,
+        patterns: Option<&rewo_world::inventory::StackPatterns>,
+    ) -> &'a str {
+        patterns
+            .and_then(|p| self.built.get(item)?.get(p))
+            .map_or(item, String::as_str)
+    }
+
+    /// Build `item`'s copy for `patterns` if this session has not yet,
+    /// returning it when it is new and appended sheets (for the GPU).
+    pub(crate) fn ensure(
+        &mut self,
+        held: &mut rewo_data::held_items::HeldItems,
+        item: &str,
+        patterns: &rewo_world::inventory::StackPatterns,
+        registry: &[Option<String>],
+    ) -> Option<NewPatternModel> {
+        if !takes_banner_patterns(item)
+            || self
+                .built
+                .get(item)
+                .is_some_and(|m| m.contains_key(patterns))
+        {
+            return None;
+        }
+        let made = (self.count < MAX_PATTERNED_ICONS)
+            .then(|| {
+                let layers = banner_layer_stems(&patterns.layers, registry);
+                held.add_pattern_model(item, patterns.base, &layers)
+            })
+            .flatten();
+        self.count += 1;
+        let name = made
+            .as_ref()
+            .map_or_else(|| item.to_string(), |m| m.name.clone());
+        self.built
+            .entry(item.to_string())
+            .or_default()
+            .insert(patterns.clone(), name);
+        made.filter(|m| !m.textures.is_empty())
+    }
+}
+
+/// M405 — a stack's banner layers as `(texture stem, DyeColor id)`: a
+/// registry pattern by the session's `banner_pattern` registry, an inline
+/// one by its own `asset_id`; one the registry does not name is dropped.
+pub(crate) fn banner_layer_stems(
+    layers: &[rewo_world::inventory::BannerLayer],
+    registry: &[Option<String>],
+) -> Vec<(String, u8)> {
+    use rewo_world::inventory::BannerPatternRef as P;
+    layers
+        .iter()
+        .filter_map(|l| {
+            let stem = match &l.pattern {
+                P::Registry(i) => registry.get(*i as usize)?.clone()?,
+                P::Inline(asset) => rewo_net::variant_parse::banner_pattern_stem(asset),
+            };
+            Some((stem, l.color))
+        })
+        .collect()
+}
+
+/// M405 — whether an item draws its stack's banner patterns: the banners
+/// (standing; a wall banner is no item) and the shield.
+pub(crate) fn takes_banner_patterns(name: &str) -> bool {
+    name == "minecraft:shield" || (name.ends_with("_banner") && !name.ends_with("wall_banner"))
 }
 
 pub(super) fn icon_for(

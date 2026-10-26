@@ -206,6 +206,7 @@ mod tests {
         dye: 115,
         provides_banner_patterns: 116,
         banner_patterns: 1116,
+        base_color: 999,
         bundle_contents: 117,
         container: 118,
         use_cooldown: 119,

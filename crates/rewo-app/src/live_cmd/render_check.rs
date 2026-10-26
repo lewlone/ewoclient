@@ -307,6 +307,13 @@ pub(super) struct RenderCheck {
     /// M274 — r132: frames on which the staged armour stand drew wearing a
     /// carved pumpkin through the head item branch.
     pub(super) worn_item_head_frames: usize,
+    /// M406 — r227: frames on which a dropped patterned banner, and a held
+    /// patterned shield, drew as pattern copies.
+    pub(super) patterned_drop_frames: u32,
+    pub(super) patterned_held_frames: u32,
+    /// M405 — r226: frames on which the bot's staged patterned banner's
+    /// icon resolved to a pattern copy the GUI pass holds.
+    pub(super) patterned_icon_frames: u32,
     /// M275 — r133: frames on which the bot's staged player-head item
     /// resolved to its per-skin icon model.
     pub(super) skinned_icon_frames: usize,
@@ -449,6 +456,9 @@ pub(super) struct RenderCheck {
     /// M402 — r224: the deepest glide tilt (degrees, positive down) an
     /// avatar drew with while fall flying.
     pub(super) avatar_glide_peak: f32,
+    /// M403 — r225: the widest elytra spread (`−elytraRotZ`, radians) an
+    /// avatar drew with.
+    pub(super) wings_spread_peak: f32,
     /// M399 — r221: whether an avatar drew crouching.
     pub(super) avatar_crouching: bool,
     /// M397 — r219: frames on which a sulfur cube drew holding a block and
@@ -1333,7 +1343,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 224;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 227;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -1551,8 +1561,9 @@ impl RenderCheck {
             ),
         );
         // M362 — r214: r99's full-draw shot flies from the frame it appears:
-        // within its first quarter second it is drawn at least 3 blocks from
-        // where it appeared, and it moved on at least 80% of those frames.
+        // within its first quarter second (stretched to five frames, at most
+        // 0.6 s, on a hitching run) it is drawn at least 3 blocks from where
+        // it appeared, and it moved on at least 80% of those frames.
         let (frames, moved, far) = self
             .arrow_track
             .map_or((0, 0, 0.0), |(_, _, _, f, m, d)| (f, m, d));
@@ -1560,7 +1571,7 @@ impl RenderCheck {
             "r214 a shot arrow flew from the frame it appeared",
             frames >= 5 && far >= 3.0 && moved * 100 >= frames * 80,
             format!(
-                "{far:.2} blocks from where it appeared within 0.25 s (want >= 3), moved on {moved} of {frames} frames (want >= 80%, >= 5 frames)"
+                "{far:.2} blocks from where it appeared within 0.25 s, or five frames up to 0.6 s (want >= 3), moved on {moved} of {frames} frames (want >= 80%, >= 5 frames)"
             ),
         );
         // M361 — r213: the tail's rides (the boat, horse, camel, nautilus):
@@ -1918,6 +1929,17 @@ impl RenderCheck {
             "r223 a sleeping mannequin drew lying down",
             self.avatar_asleep,
             format!("an avatar drew asleep: {}", self.avatar_asleep),
+        );
+        // M403 — r225: r224's glider wears an elytra; gliding without a dive
+        // (`deltaMovement.y` not below 0), `ElytraAnimationState` eases the
+        // wings toward `zRot` −π/2, 0.3 of the gap a tick.
+        row(
+            "r225 a glider's elytra drew spread",
+            self.wings_spread_peak >= 1.5,
+            format!(
+                "widest spread {:.3} rad (want >= 1.5 of pi/2; at rest it is pi/12)",
+                self.wings_spread_peak
+            ),
         );
         // M402 — r224: `render_check.py` summons a mannequin with an elytra,
         // `FallFlying` and no gravity in the air; `updateFallFlying` keeps it
@@ -2425,6 +2447,28 @@ impl RenderCheck {
                 "{} frames drew it; turn range {turn:.3}",
                 self.enchant_book_frames
             ),
+        );
+        // M406 — r227: `render_check.py` drops r226's banner (it cannot be
+        // picked up) and summons an armour stand holding a shield with a lime
+        // base colour; both must draw as their pattern copies. Until M406 a
+        // dropped, framed or held banner or shield drew plain.
+        row(
+            "r227 a dropped banner and a held shield drew their patterns",
+            self.patterned_drop_frames >= 1 && self.patterned_held_frames >= 1,
+            format!(
+                "{} frames drew the banner's copy on the ground, {} the shield's in a hand",
+                self.patterned_drop_frames, self.patterned_held_frames
+            ),
+        );
+        // M405 — r226: `render_check.py` puts a white banner with a lime
+        // cross in the bot's inventory slot 25 (menu slot 34). Its icon must
+        // resolve, through `variant_icon_model`, to a pattern copy the GUI
+        // pass holds (inventoryshot g22 checks such a copy's pixels); every
+        // patterned banner drew its plain colour until M405.
+        row(
+            "r226 a patterned banner item's icon wore its patterns",
+            self.patterned_icon_frames >= 1,
+            format!("{} frames resolved it", self.patterned_icon_frames),
         );
         // M275 — r133: `render_check.py` puts a player head ITEM whose
         // profile names r130's skin in the bot's inventory slot 26 (menu slot
@@ -7038,7 +7082,11 @@ impl LiveApp {
                     }
                 }
                 // One reading per client tick of the steered mount: the
-                // distance since the last (r88 and r89).
+                // distance since the last, per tick (r88 and r89). A frame
+                // that stalls across two ticks sees two ticks' travel; r89
+                // once read 0.8203, exactly twice the camel's 0.4101, until
+                // the distance was divided by the ticks it spans (at a
+                // steady gait the average is the step).
                 let mount_now = self
                     .session
                     .as_ref()
@@ -7046,7 +7094,8 @@ impl LiveApp {
                     .map(|h| (h.id, [h.state.x, h.state.y, h.state.z]));
                 let mount_step = match (mount_now, self.mount_last) {
                     (Some((id, p)), Some((lid, q, t))) if id == lid && t != now => {
-                        Some(((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt())
+                        let ticks = now.saturating_sub(t).max(1) as f64;
+                        Some(((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() / ticks)
                     }
                     _ => None,
                 };
@@ -7099,6 +7148,13 @@ impl LiveApp {
                                     h.state.on_ground
                                         && h.state.vx.abs() < 0.003
                                         && h.state.vz.abs() < 0.003
+                                        // M404 — and no longer rearing: the
+                                        // jump makes it stand for 20 ticks,
+                                        // the seat moves with `standAnimO`,
+                                        // and the client follows the server's
+                                        // flag a tick late (r91 once asked
+                                        // mid-rear and read 0.7 apart).
+                                        && s.world.entities.stand_anim_at(h.id, 1.0) == 0.0
                                 }),
                             )
                         })

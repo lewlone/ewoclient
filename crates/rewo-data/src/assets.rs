@@ -4964,6 +4964,31 @@ impl<'a> Baker<'a> {
         }
         let be_count = be_models.len();
         let block_entities: HashMap<String, HeldItemModel> = be_models.into_iter().collect();
+        // M405 — the pattern sheets a banner's or a shield's stack composites
+        // (CPU only), and each item's tinted parts.
+        let mut pattern_sheets = HashMap::new();
+        {
+            let mut paths = vec![
+                "entity/shield/base".to_string(),
+                "entity/shield/shield_base".to_string(),
+            ];
+            for stem in crate::block_entity_models::BANNER_PATTERNS {
+                paths.push(format!("entity/banner/{stem}"));
+                paths.push(format!("entity/shield/{stem}"));
+            }
+            for p in paths {
+                let mut bytes = Vec::new();
+                let read = self
+                    .jar
+                    .by_name(&format!("assets/minecraft/textures/{p}.png"))
+                    .ok()
+                    .and_then(|mut e| e.read_to_end(&mut bytes).ok());
+                if let Some((rgba, w, h)) = read.and_then(|_| decode_png_any(&bytes)) {
+                    pattern_sheets.insert(p, crate::held_items::HeldTexture { w, h, rgba });
+                }
+            }
+        }
+        let mut tinted_parts: HashMap<String, Vec<u16>> = HashMap::new();
         // M242/M243 — the multi-part items: each part's quads (a baked
         // block-entity model, or a block model baked like a block item's)
         // placed by its affine in block units, with the item's own display
@@ -4979,6 +5004,7 @@ impl<'a> Baker<'a> {
         {
             let mut quads = Vec::new();
             let mut complete = true;
+            let mut tinted_here: Vec<u16> = Vec::new();
             for (src, xf) in &parts {
                 let part = match src {
                     crate::item_models::PartSource::Entity(key) => block_entities
@@ -5005,6 +5031,13 @@ impl<'a> Baker<'a> {
                     complete = false;
                     break;
                 };
+                if matches!(src, crate::item_models::PartSource::TintedEntity(..)) {
+                    for q in &part {
+                        if !tinted_here.contains(&q.tex) {
+                            tinted_here.push(q.tex);
+                        }
+                    }
+                }
                 // The model's px → block units (`/ 16`), the affine, and back;
                 // the face's `dir` follows the turn (M245), so a flipped part
                 // shades by the face it now shows.
@@ -5030,6 +5063,9 @@ impl<'a> Baker<'a> {
                     Some((q, t, lit)) => (t, lit, Some(q)),
                     None => (gui, side_lit, None),
                 };
+            if !tinted_here.is_empty() {
+                tinted_parts.insert(name.clone(), tinted_here);
+            }
             models.insert(
                 name,
                 HeldItemModel {
@@ -5057,6 +5093,8 @@ impl<'a> Baker<'a> {
             textures: pool.into_textures(),
             unsupported,
             dynamic,
+            pattern_sheets,
+            tinted_parts,
         };
         log::info!(
             "rewo-data: held items — {} resolved ({} block + {} sprite), {} textures, {} unsupported",

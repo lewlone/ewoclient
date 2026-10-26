@@ -471,6 +471,9 @@ pub struct EntityDraw<'a> {
     /// and metadata live; by the time a draw is built the answer is already
     /// yes-or-no.
     pub cape: Option<CapeDraw>,
+    /// M403 — `WingsLayer`: the elytra on a chest slot whose item has a
+    /// `wings` equipment layer, resolved upstream like the armour.
+    pub wings: Option<WingsDraw<'a>>,
     /// `ageInTicks` for a dropped stack's bob and spin, overriding the pass's
     /// shared clock (M81).
     ///
@@ -481,6 +484,30 @@ pub struct EntityDraw<'a> {
     /// the capture time from the animation's own life counter rather than
     /// storing a second clock.
     pub ground_age: Option<f32>,
+}
+
+/// M403 — which sheet `WingsLayer` draws the elytra with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WingsTexture<'a> {
+    /// The equipment layer's own sheet, by its atlas key (`wings/elytra`).
+    Equipment(&'a str),
+    /// `getPlayerElytraTexture`: a caped player's own cape sheet (the
+    /// 64 × 32 cape slot at this atlas origin), for a `use_player_texture`
+    /// layer.
+    Player((u32, u32)),
+}
+
+/// M403 — one entity's elytra (`WingsLayer` + `ElytraModel`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WingsDraw<'a> {
+    pub texture: WingsTexture<'a>,
+    /// `ItemStack.hasFoil()` of the chest stack.
+    pub foil: bool,
+    /// `elytraRotX/Y/Z` (radians), the left wing's: the right mirrors `y`
+    /// and `z`.
+    pub rot: [f32; 3],
+    /// `isCrouching`: both wings drop 3 px (`ElytraModel.setupAnim`).
+    pub crouching: bool,
 }
 
 /// One player's cape, resolved for one frame (M60).
@@ -2161,6 +2188,8 @@ impl EntityPass {
                     // M295 — and the saddles' (`<kind>_saddle/`).
                     .filter(|(k, _)| {
                         k.starts_with("humanoid")
+                            // M403 — the elytra's sheet.
+                            || k.starts_with("wings/")
                             || k.starts_with("horse_body/")
                             || k.starts_with("llama_body/")
                             || k.starts_with("wolf_body/")
@@ -3481,6 +3510,78 @@ impl EntityPass {
         }
     }
 
+    /// M403 — `WingsLayer.submit`: the elytra, `ElytraModel`'s two wings
+    /// (`texOffs(22, 0)`, a 10 × 20 × 2 box grown 1.0, the right one
+    /// mirrored) at `(±5, crouching ? 3 : 0, 0)`, turned by the entity's
+    /// `elytraRot` (the right wing's `yRot` and `zRot` negated), half size on
+    /// a baby, and pushed back `translate(0, 0, 0.125)`; through the body's
+    /// own frame, so a glider's wings lie with it. `armorCutoutNoCull`: the
+    /// entity pass discards transparent texels and culls nothing. A
+    /// glinting elytra rides the armour foil, from the same positions.
+    fn emit_wings(
+        &self,
+        verts: &mut Vec<Vertex>,
+        armor_glint: &mut GlintSink<'_>,
+        d: &EntityDraw<'_>,
+        frame: &EntityFrame,
+    ) {
+        let Some(w) = d.wings else { return };
+        // The renderers that add a `WingsLayer`: avatars, the humanoid
+        // mobs and the armour stand.
+        if !mobs::wears_humanoid_armor(d.kind) {
+            return;
+        }
+        let Some((ax, ay, sheet_w, sheet_h)) = (match w.texture {
+            WingsTexture::Equipment(key) => self.armor_slots.get(key).copied(),
+            WingsTexture::Player((x, y)) => Some((x, y, 64, 32)),
+        }) else {
+            return;
+        };
+        let [light_r, light_g, light_b] = d.light;
+        let hurt = overlay_value(d.hurt, d.white_overlay);
+        let k = if d.mob.is_baby { 0.5 } else { 1.0 };
+        let y = if w.crouching { 3.0 } else { 0.0 };
+        let [rx, ry, rz] = w.rot;
+        for (pivot, rot, min, mirror) in [
+            ([5.0, y, 0.0], [rx, ry, rz], [-10.0, 0.0, 0.0], false),
+            ([-5.0, y, 0.0], [rx, -ry, -rz], [0.0, 0.0, 0.0], true),
+        ] {
+            for (_facing, pos, uvs) in
+                mobs::cube_faces((22.0, 0.0), min, [10.0, 20.0, 2.0], 1.0, mirror)
+            {
+                if verts.len() + 6 > MAX_VERTS {
+                    return;
+                }
+                let p4: [[f32; 3]; 4] = std::array::from_fn(|i| {
+                    let r = mobs::rotate_zyx(pos[i], rot);
+                    frame.place([
+                        (r[0] + pivot[0]) * k,
+                        (r[1] + pivot[1]) * k,
+                        (r[2] + pivot[2]) * k + 2.0,
+                    ])
+                });
+                let shade = mobs::shade_for(face_normal(&p4));
+                for &i in &[0usize, 1, 2, 0, 2, 3] {
+                    verts.push(Vertex {
+                        pos: p4[i],
+                        uv: [
+                            (ax as f32 + uvs[i][0]) / ATLAS_W as f32,
+                            (ay as f32 + uvs[i][1]) / ATLAS_H as f32,
+                        ],
+                        color: [shade, shade, shade, 1.0],
+                        light_hurt: [light_r, light_g, light_b, hurt],
+                    });
+                    if w.foil {
+                        armor_glint.push(
+                            p4[i],
+                            [uvs[i][0] / sheet_w as f32, uvs[i][1] / sheet_h as f32],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Worn armour, over the body it sits on (M46).
     ///
     /// `HumanoidArmorLayer` is a render *layer*: it re-poses the humanoid mesh
@@ -4061,6 +4162,8 @@ impl EntityPass {
         // M46: worn armour, a render layer over the body, before the held
         // item so a chestplate does not paint over a sword.
         self.emit_armor(verts, trim_verts, armor_glint, d, model, &xf, &frame);
+        // M403: the elytra (`WingsLayer`), off the same frame.
+        self.emit_wings(verts, armor_glint, d, &frame);
         // M60: the cape, hanging off the same body. `AvatarRenderer` adds
         // `HumanoidArmorLayer` first and `CapeLayer` eleven layers later, so
         // this is vanilla's order — though nothing rests on it here, since

@@ -90,6 +90,14 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   smooth light coordinates, and `world.vert` samples the lightmap per vertex.
   Don't move lighting back to the fragment stage or store float colours; both
   drift from vanilla.
+- **Every entity layer places through `EntityFrame`** (M402): the body,
+  armour and trims, the cape, a worn head, held items and the elytra hang
+  off one pose stack in vanilla, so one struct carries the whole
+  `setupRotations` chain (glide, swim, death / spin / sleep, yaw, scale,
+  mount). Until M402 each layer had its own copy with only the death topple,
+  and a swimming or sleeping player's armour stood upright. A new layer
+  calls `frame.place(v)`; it does not re-derive the chain. (The wavy cape,
+  a world-space simulation, is the one exception.)
 - Item display transforms: `ItemTransform.Deserializer` multiplies translation
   by 0.0625 and clamps **before** apply. Shade with the rotated normal.
 

@@ -46,7 +46,7 @@ use crate::stats::OverlayRing;
 
 /// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 5 for M64 (the
 /// re-projected collision + the inventory preview's cape).
-const EXPECTED_WITNESSES: usize = 70;
+const EXPECTED_WITNESSES: usize = 72;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -1785,6 +1785,72 @@ fn check_pixels(
             "and the frame is byte-identical to the bare player — the suppression \
              removes the geometry rather than hiding it",
         );
+        // M403 — the same wearer's elytra, through the production
+        // `resolve_wings`: its `wings` layer is `use_player_texture`, so a
+        // caped player's wings wear the cape sheet (`getPlayerElytraTexture`),
+        // and here that sheet is the magenta marker.
+        let wings = crate::live_cmd::resolve_wings(
+            &t,
+            1,
+            EntityModelKind::Player,
+            1.0,
+            Some(origin),
+            &f.items,
+            &f.equipment,
+        );
+        let on_cape = matches!(
+            wings.map(|w| w.texture),
+            Some(rewo_gpu::entities::WingsTexture::Player(o)) if o == origin
+        );
+        let winged = shot(
+            gpu,
+            &mut off,
+            &mut wr,
+            &[EntityDraw {
+                wings,
+                ..player_draw(suppressed)
+            }],
+        )?;
+        let n = magenta(&winged);
+        c.record(
+            "g6.a_caped_elytra_wearers_wings_wear_the_cape_sheet",
+            on_cape && n > 300,
+            format!("texture is the cape slot: {on_cape}; {n} marker px on the wings (want > 300)"),
+        );
+        // Hide the cape (customisation bit 0 off) and the jar's elytra
+        // sheet comes back: `showCape` is the second half of the rule.
+        t.set_model_customisation(1, 0x00);
+        let plain = crate::live_cmd::resolve_wings(
+            &t,
+            1,
+            EntityModelKind::Player,
+            1.0,
+            Some(origin),
+            &f.items,
+            &f.equipment,
+        );
+        let plain_frame = shot(
+            gpu,
+            &mut off,
+            &mut wr,
+            &[EntityDraw {
+                wings: plain,
+                ..player_draw(None)
+            }],
+        )?;
+        let jar_sheet = matches!(
+            plain.map(|w| w.texture),
+            Some(rewo_gpu::entities::WingsTexture::Equipment(k)) if k.starts_with("wings/")
+        );
+        c.record(
+            "g7.with_the_cape_hidden_the_wings_wear_the_jars_elytra",
+            jar_sheet && magenta(&plain_frame) == 0 && plain_frame != bare,
+            format!(
+                "texture is the equipment sheet: {jar_sheet}; {} marker px (want 0); differs from bare: {}",
+                magenta(&plain_frame),
+                plain_frame != bare
+            ),
+        );
 
         // ---- M61: the reduction, and the wave --------------------------
         //
@@ -2084,6 +2150,7 @@ fn check_pixels(
                 height: 1.5,
                 skin_uv: None,
                 cape: None,
+                wings: None,
                 held: [None, None],
                 ..player_draw(None)
             };
@@ -2209,6 +2276,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         fish_dye: None,
         anim_id: 0.0,
         cape,
+        wings: None,
     }
 }
 

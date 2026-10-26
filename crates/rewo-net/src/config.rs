@@ -73,6 +73,8 @@ pub struct ConfigData {
     pub zombie_nautilus_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// M254 — the `painting_variant` registry, index = protocol id.
     pub painting_variants: Vec<crate::variant_parse::PaintingVariantDef>,
+    /// M405 — the `banner_pattern` registry's texture stems, index = id.
+    pub banner_patterns: Vec<Option<String>>,
     /// The server's datapack tags (M69).
     pub tags: crate::tags::TagOverrides,
 }
@@ -112,6 +114,7 @@ impl ConfigData {
             chicken_variants: Vec::new(),
             zombie_nautilus_variants: Vec::new(),
             painting_variants: Vec::new(),
+            banner_patterns: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
     }
@@ -145,6 +148,7 @@ impl ConfigData {
             chicken_variants: Vec::new(),
             zombie_nautilus_variants: Vec::new(),
             painting_variants: Vec::new(),
+            banner_patterns: Vec::new(),
             tags: crate::tags::TagOverrides::default(),
         }
     }
@@ -225,6 +229,16 @@ impl ConfigData {
             self.wolf_variants = crate::variant_parse::parse_wolf_variant_registry(&mut r, count);
             short_registry(&registry, self.wolf_variants.len(), count);
             log::info!("net: {} wolf variant(s) synced", self.wolf_variants.len());
+            return Ok(());
+        }
+        if registry == crate::variant_parse::BANNER_PATTERN_REGISTRY {
+            self.banner_patterns =
+                crate::variant_parse::parse_banner_pattern_registry(&mut r, count);
+            short_registry(&registry, self.banner_patterns.len(), count);
+            log::info!(
+                "net: {} banner pattern(s) synced",
+                self.banner_patterns.len()
+            );
             return Ok(());
         }
         if registry == crate::variant_parse::PAINTING_VARIANT_REGISTRY {

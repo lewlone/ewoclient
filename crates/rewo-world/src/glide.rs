@@ -9,6 +9,9 @@
 //! * [`flying_y_rot`] — `AvatarRenderer.extractFlightData`'s `flyingYRot`,
 //!   the turn between where a glider looks and where it moves.
 //!
+//! * [`ElytraAnimation`] — `ElytraAnimationState` (M403), the wings'
+//!   angles, eased 0.3 a tick toward folded, crouched or spread.
+//!
 //! The body tilt's scale is [`crate::cape::fall_flying_scale`], which the
 //! cape already reads.
 
@@ -57,6 +60,54 @@ pub fn flying_y_rot(movement: [f64; 3], look: [f64; 3]) -> Option<f32> {
     Some((signum * dot.abs().min(1.0).acos()) as f32)
 }
 
+/// M403 — `ElytraAnimationState`: the left wing's `xRot`, `yRot`, `zRot`
+/// (radians; the right wing mirrors `yRot` and `zRot`), and the previous
+/// tick's for the frame's lerp. Every `LivingEntity` keeps one and ticks it
+/// at the end of `aiStep`, wearing an elytra or not, so the wings open from
+/// wherever they were when one is put on. A new entity's angles are 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ElytraAnimation {
+    rot: [f32; 3],
+    rot_old: [f32; 3],
+}
+
+impl ElytraAnimation {
+    /// `ElytraAnimationState.tick`: the target is spread while fall flying
+    /// (folding back toward the rest pose as the dive steepens, by
+    /// `1 − (−dir.y)^1.5`), raised and swept while crouching, else at rest;
+    /// each angle closes 0.3 of its gap.
+    pub fn tick(&mut self, fall_flying: bool, crouching: bool, movement: [f64; 3]) {
+        use std::f32::consts::PI;
+        self.rot_old = self.rot;
+        let target = if fall_flying {
+            let mut ratio = 1.0f32;
+            if movement[1] < 0.0 {
+                let len = (movement[0] * movement[0]
+                    + movement[1] * movement[1]
+                    + movement[2] * movement[2])
+                    .sqrt();
+                // `Vec3.normalize()` returns ZERO below 1e-5.
+                let y = if len < 1.0e-5 { 0.0 } else { movement[1] / len };
+                ratio = 1.0 - (-y).powf(1.5) as f32;
+            }
+            let lerp = |a: f32, b: f32| a + ratio * (b - a);
+            [lerp(PI / 12.0, PI / 9.0), 0.0, lerp(-PI / 12.0, -PI / 2.0)]
+        } else if crouching {
+            [PI * 2.0 / 9.0, 0.087_266_46, -PI / 4.0]
+        } else {
+            [PI / 12.0, 0.0, -PI / 12.0]
+        };
+        for (r, t) in self.rot.iter_mut().zip(target) {
+            *r += (t - *r) * 0.3;
+        }
+    }
+
+    /// `getRotX/Y/Z(partialTicks)`: `Mth.lerp(a, old, current)`.
+    pub fn at(&self, alpha: f32) -> [f32; 3] {
+        std::array::from_fn(|i| self.rot_old[i] + alpha * (self.rot[i] - self.rot_old[i]))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +149,43 @@ mod tests {
         assert!(back.abs() < 1e-6, "{back}");
         assert_eq!(flying_y_rot([0.0, -1.0, 0.001], south), None);
         assert_eq!(flying_y_rot([1.0, 0.0, 0.0], [0.0, -1.0, 0.0]), None);
+    }
+
+    /// M403 — at rest the wings ease to `(π/12, 0, −π/12)`; gliding level
+    /// they spread to `(π/9, 0, −π/2)`; diving straight down they stay
+    /// folded; crouching they sweep up; and the frame lerps from the last
+    /// tick's angles.
+    #[test]
+    fn the_wings_ease_as_elytra_animation_state() {
+        use std::f32::consts::PI;
+        let settle = |ff: bool, cr: bool, v: [f64; 3]| {
+            let mut a = ElytraAnimation::default();
+            for _ in 0..200 {
+                a.tick(ff, cr, v);
+            }
+            a.at(1.0)
+        };
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(near(
+            settle(false, false, [0.0; 3]),
+            [PI / 12.0, 0.0, -PI / 12.0]
+        ));
+        assert!(near(
+            settle(true, false, [1.0, 0.0, 0.0]),
+            [PI / 9.0, 0.0, -PI / 2.0]
+        ));
+        assert!(near(
+            settle(true, false, [0.0, -1.0, 0.0]),
+            [PI / 12.0, 0.0, -PI / 12.0]
+        ));
+        assert!(near(
+            settle(false, true, [0.0; 3]),
+            [PI * 2.0 / 9.0, 0.087_266_46, -PI / 4.0]
+        ));
+        let mut a = ElytraAnimation::default();
+        a.tick(false, false, [0.0; 3]);
+        let first = a.at(1.0)[0];
+        assert!((first - 0.3 * PI / 12.0).abs() < 1e-6);
+        assert!((a.at(0.5)[0] - first / 2.0).abs() < 1e-6);
     }
 }

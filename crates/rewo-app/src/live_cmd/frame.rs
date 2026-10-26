@@ -457,6 +457,36 @@ impl LiveApp {
             }
             ran_tick = true;
         }
+        // `REWO_PRECMD`: the same semicolon-separated op-command knob the
+        // headless path has had since M64, wired into the windowed one (M82)
+        // — without it a windowed run cannot stage anything that needs a
+        // command, and the death screen needs `/kill`. Sent once the bot
+        // stands (or `PRECMD_MAX_WAIT` ticks after spawning), and every
+        // command with a `~` is pinned to that one origin with `execute
+        // positioned`: the server resolves `~` when it runs each command, and
+        // a long batch sent while the bot still fell from a high spawn once
+        // staged nine tail witnesses' blocks and mobs where nobody looked
+        // (M329's run 2; 105 commands took 232 ms to send). M229 — the
+        // origin is also where the tail witnesses walk back to.
+        #[cfg(feature = "gates")]
+        if ran_tick && session.spawned {
+            if let Some(waited) = self.precmd_wait {
+                if session.player.on_ground || waited >= PRECMD_MAX_WAIT {
+                    self.precmd_wait = None;
+                    let o = [session.player.x, session.player.y, session.player.z];
+                    self.precmd_origin = Some(o);
+                    if let Ok(cmd) = crate::knobs::var("REWO_PRECMD") {
+                        for one in cmd.split(';').map(str::trim).filter(|c| !c.is_empty()) {
+                            let one = pin_precmd(one, o);
+                            let _ = session.send_command(&one);
+                            log::info!("REWO_PRECMD: {one}");
+                        }
+                    }
+                } else {
+                    self.precmd_wait = Some(waited + 1);
+                }
+            }
+        }
         if session.disconnect.is_some() {
             // Serviced at the top of the *next* frame, by the block that opens
             // the disconnect screen. Returning here rather than acting is what
@@ -466,21 +496,10 @@ impl LiveApp {
         }
         if ran_tick && session.spawned && !self.logged_spawn {
             self.logged_spawn = true;
-            // M229 — the origin `REWO_PRECMD`'s `~` coordinates are
-            // relative to, for the tail witnesses that walk back to them.
+            // `REWO_PRECMD` goes out once the bot stands (below).
             #[cfg(feature = "gates")]
             {
-                self.precmd_origin = Some([session.player.x, session.player.y, session.player.z]);
-            }
-            // `REWO_PRECMD`: the same semicolon-separated op-command knob the
-            // headless path has had since M64, wired into the windowed one
-            // (M82) — without it a windowed run cannot stage anything that
-            // needs a command, and the death screen needs `/kill`.
-            if let Ok(cmd) = crate::knobs::var("REWO_PRECMD") {
-                for one in cmd.split(';').map(str::trim).filter(|c| !c.is_empty()) {
-                    let _ = session.send_command(one);
-                    log::info!("REWO_PRECMD: {one}");
-                }
+                self.precmd_wait = Some(0);
             }
             // M108 — `--render-check` sends its own chat line rather than
             // making this a THIRD caller requirement beside r14's hotbar and
@@ -724,6 +743,91 @@ impl LiveApp {
                 }
             }
         }
+        // M405 — banner and shield stacks wearing patterns: each pattern
+        // list's copy is composited once on the CPU, its sheet handed to the
+        // GPU, and the stack mapped to it for the icon passes.
+        if let (Some(baked), Some(g)) = (self.baked.as_mut(), self.gui_items.as_mut()) {
+            let inv = &session.inventory;
+            let stacks = (0..inv.slot_count())
+                .filter_map(|i| inv.menu_slot(i))
+                .chain((0..9).filter_map(|i| inv.hotbar(i)))
+                .chain(inv.carried());
+            let mut new_models = Vec::new();
+            let mut new_textures = Vec::new();
+            // (item name, patterns) asked for this frame: the inventory's
+            // stacks (M405), then what entities drop, frame and hold (M406).
+            let mut asks: Vec<(
+                String,
+                rewo_world::inventory::StackPatterns,
+                Option<(i32, u64)>,
+            )> = Vec::new();
+            for stack in stacks {
+                let key = (stack.item_id, stack.components);
+                if stack.components == 0 || g.variants.patterned.contains_key(&key) {
+                    continue;
+                }
+                let Some(name) = self.items.name(stack.item_id) else {
+                    continue;
+                };
+                let p = inv.text_of(stack).and_then(|t| {
+                    rewo_world::inventory::StackPatterns::of(&t.banner_patterns, t.base_color)
+                });
+                match p {
+                    Some(p) if takes_banner_patterns(name) => {
+                        asks.push((name.to_string(), p, Some(key)))
+                    }
+                    _ => {
+                        g.variants.patterned.insert(key, name.to_string());
+                    }
+                }
+            }
+            let ents = &session.world.entities;
+            for (id, p) in ents.all_stack_patterns() {
+                let item = ents.item_stack(id).map(|(i, _, _)| i).or_else(|| {
+                    ents.item_frame(id)
+                        .and_then(|(_, _, f)| f)
+                        .map(|f| f.item_id)
+                });
+                if let Some(name) = item.and_then(|i| self.items.name(i)) {
+                    asks.push((name.to_string(), p.clone(), None));
+                }
+            }
+            for (id, hand, p) in ents.all_hand_patterns() {
+                if let Some(name) = ents
+                    .hand_item(id, hand)
+                    .held()
+                    .and_then(|h| self.items.name(h.item_id))
+                {
+                    asks.push((name.to_string(), p.clone(), None));
+                }
+            }
+            for (name, p, icon_key) in asks {
+                if let Some(made) =
+                    self.patterns
+                        .ensure(&mut baked.held_items, &name, &p, &session.banner_patterns)
+                {
+                    if let Some(m) = baked.held_items.models.get(&made.name) {
+                        new_models.push((made.name.clone(), to_gpu_held_model(m)));
+                    }
+                    new_textures.extend(
+                        made.textures
+                            .iter()
+                            .map(|&t| to_gpu_held_texture(&baked.held_items.textures[t])),
+                    );
+                }
+                if let Some(key) = icon_key {
+                    let model = self.patterns.get(&name, Some(&p)).to_string();
+                    g.variants.patterned.insert(key, model);
+                }
+            }
+            if !new_textures.is_empty() {
+                state
+                    .world_renderer
+                    .extend_held_items(new_models, new_textures);
+                // As for a skin (M275): the GUI pass's own copy, whole.
+                g.held = to_gpu_held_items(&baked.held_items);
+            }
+        }
         let head_models = head_skin_models(&session.world, &mut self.head_skins);
         // M273 — ask for the skins worn player heads name; M275 — and the
         // ones head items in the inventory name, whose icons take them.
@@ -739,9 +843,9 @@ impl LiveApp {
         }
         if let Some(g) = self.gui_items.as_mut() {
             for v in session.inventory.profile_skins() {
-                if !g.skinned.contains_key(v) {
+                if !g.variants.skinned.contains_key(v) {
                     if let Some(m) = self.head_skins.ready_item(v) {
-                        g.skinned.insert(v.to_string(), m.to_string());
+                        g.variants.skinned.insert(v.to_string(), m.to_string());
                     }
                 }
             }
@@ -763,6 +867,7 @@ impl LiveApp {
             self.hud_hidden,
             frame_crosshair_pick(session, &self.etypes, alpha),
             Some(&self.head_skins),
+            Some(&self.patterns),
         );
         // M163 — read the label OFF THE DRAW LIST, not off the entity table:
         // the claim is that the resolved string reached the renderer, and a
@@ -804,8 +909,16 @@ impl LiveApp {
         // mount's drawn position holds still from frame to frame. Until
         // M361 it opened by up to a tick's travel and closed again twenty
         // times a second. The largest frame-to-frame change is kept.
+        //
+        // M404 — except while the mount rears: `positionRider` then slides
+        // the seat back and up by `standAnimO` (up to 0.3 blocks a tick),
+        // which vanilla's rider follows too.
         #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
+            let rearing = session.local_vehicle().is_some_and(|v| {
+                let e = &session.world.entities;
+                e.stand_anim_o(v) > 0.0 || e.stand_anim_at(v, 1.0) > 0.0
+            });
             let mount = session
                 .local_vehicle()
                 .and_then(|v| session.world.entities.get(v))
@@ -818,7 +931,9 @@ impl LiveApp {
                             c.ride_frames.1 += 1;
                         }
                         let lead = |k: usize| (cam.eye[k] - at[k]) - (last_eye[k] - last_mount[k]);
-                        c.ride_lead_jump = c.ride_lead_jump.max(lead(0).hypot(lead(2)));
+                        if !rearing {
+                            c.ride_lead_jump = c.ride_lead_jump.max(lead(0).hypot(lead(2)));
+                        }
                     }
                     c.ride_last = Some((at, cam.eye));
                 }
@@ -944,6 +1059,7 @@ impl LiveApp {
             &lightmap,
             alpha,
             Some(&self.head_skins),
+            Some(&self.patterns),
         );
         prepare_frame_maps(
             &mut state.world_renderer,
@@ -1084,6 +1200,10 @@ impl LiveApp {
                         | rewo_gpu::mobs::EntityModelKind::PlayerSlim
                 ) {
                     c.avatar_swim_peak = c.avatar_swim_peak.max(d.mob.swim_amount);
+                    // M403 — r225: the widest an avatar's elytra spread.
+                    if let Some(w) = d.wings {
+                        c.wings_spread_peak = c.wings_spread_peak.max(-w.rot[2]);
+                    }
                     // M402 — r224: the deepest glide tilt with the head
                     // pinned (a glider's `fall_flying`).
                     if d.mob.fall_flying {
@@ -2050,6 +2170,35 @@ impl LiveApp {
                     }
                 }
             }
+            // M406 — r227: the dropped banner and the held shield, as drawn.
+            if draws.iter().any(|d| {
+                d.ground_item
+                    .is_some_and(|m| m.starts_with("minecraft:white_banner#pattern"))
+            }) {
+                rc.patterned_drop_frames += 1;
+            }
+            if draws.iter().any(|d| {
+                d.held
+                    .iter()
+                    .flatten()
+                    .any(|m| m.starts_with("minecraft:shield#pattern"))
+            }) {
+                rc.patterned_held_frames += 1;
+            }
+            // M405 — r226: the staged banner's icon model, likewise.
+            let banner_icon = (session.inventory.slot_count() == 46)
+                .then(|| session.inventory.menu_slot(34))
+                .flatten()
+                .zip(self.gui_items.as_ref())
+                .and_then(|(stack, g)| {
+                    let base = self.items.name(stack.item_id)?;
+                    let m = variant_icon_model(&session.inventory, stack, base, &g.variants)?;
+                    g.held.any(&m)?;
+                    Some(m)
+                });
+            if banner_icon.is_some_and(|m| m.starts_with("minecraft:white_banner#pattern")) {
+                rc.patterned_icon_frames += 1;
+            }
             // M275 — r133: the staged head item's icon model, as the screen
             // and hotbar resolve it.
             let inv = &session.inventory;
@@ -2059,7 +2208,7 @@ impl LiveApp {
                 .zip(self.gui_items.as_ref())
                 .and_then(|(stack, g)| {
                     let base = self.items.name(stack.item_id)?;
-                    let m = skinned_icon_model(inv, stack, base, &g.skinned)?;
+                    let m = variant_icon_model(inv, stack, base, &g.variants)?;
                     g.held.any(&m)?;
                     Some(m)
                 });
@@ -2308,7 +2457,13 @@ impl LiveApp {
                 let at = d.pos;
                 match c.arrow_track.as_mut() {
                     None => c.arrow_track = Some((now, at, at, 0, 0, 0.0)),
-                    Some((t0, first, last, frames, moved, far)) if now - *t0 <= 0.25 => {
+                    // The window is a quarter second, stretched (to at most
+                    // 0.6 s, still well short of the second an unflown arrow
+                    // hung for) while fewer than five frames have come: a
+                    // run hitching at 83-100 ms once drew only three in it.
+                    Some((t0, first, last, frames, moved, far))
+                        if now - *t0 <= 0.25 || (*frames < 5 && now - *t0 <= 0.6) =>
+                    {
                         *frames += 1;
                         if (0..3).any(|i| (at[i] - last[i]).abs() > 1e-5) {
                             *moved += 1;
@@ -4214,5 +4369,42 @@ impl LiveApp {
                 event_loop.exit();
             }
         }
+    }
+}
+
+/// How long `REWO_PRECMD` waits for the bot to stand after spawning, in
+/// ticks, before it is sent anyway.
+#[cfg(feature = "gates")]
+pub(super) const PRECMD_MAX_WAIT: u32 = 40;
+
+/// A `REWO_PRECMD` command with its `~` coordinates pinned to `origin`
+/// (`execute positioned X Y Z run ...`); one without a `~` is sent as is.
+#[cfg(feature = "gates")]
+pub(super) fn pin_precmd(cmd: &str, origin: [f64; 3]) -> String {
+    if cmd.contains('~') {
+        format!(
+            "execute positioned {} {} {} run {cmd}",
+            origin[0], origin[1], origin[2]
+        )
+    } else {
+        cmd.to_string()
+    }
+}
+
+#[cfg(all(test, feature = "gates"))]
+mod precmd_tests {
+    use super::pin_precmd;
+
+    /// Relative commands are pinned to the one origin; the rest pass.
+    #[test]
+    fn relative_precmds_are_pinned_to_one_origin() {
+        assert_eq!(
+            pin_precmd("setblock ~ ~4 ~ minecraft:stone", [1.5, 64.0, -2.25]),
+            "execute positioned 1.5 64 -2.25 run setblock ~ ~4 ~ minecraft:stone"
+        );
+        assert_eq!(
+            pin_precmd("gamerule doDaylightCycle false", [0.0; 3]),
+            "gamerule doDaylightCycle false"
+        );
     }
 }

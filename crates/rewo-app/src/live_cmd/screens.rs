@@ -766,7 +766,7 @@ pub(super) fn apply_screen(
         &ghosts,
         ghost_cycle,
         book_overlay,
-        &gui.skinned,
+        &gui.variants,
     );
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);

@@ -39,16 +39,16 @@
 //! `happy_ghast_body`, `llama_body` and the saddles describe geometry Rewo
 //! does not render, and reading them would build a table nothing could draw.
 //!
-//! # `Wings` is read but never drawn (M60)
+//! # `Wings`: the elytra (M60, drawn since M403)
 //!
-//! [`ArmorLayer::Wings`] is the third entry, and it is there for a
-//! *suppression* rather than a render. `CapeLayer` draws nothing when the
-//! chest item `hasLayer(WINGS)`, which is how an equipped elytra replaces the
-//! cape; before M60 the layer table held only the two humanoid entries, so an
-//! elytra and a carved pumpkin were indistinguishable — both simply had no
-//! humanoid layer — and the rule could not be written at all. Its textures
-//! are loaded like any other so the presence test reads real jar data, but
-//! nothing emits elytra geometry yet.
+//! [`ArmorLayer::Wings`] is the third entry. It began as a *suppression*:
+//! `CapeLayer` draws nothing when the chest item `hasLayer(WINGS)`, which is
+//! how an equipped elytra replaces the cape; before M60 an elytra and a
+//! carved pumpkin were indistinguishable — both simply had no humanoid layer
+//! — and the rule could not be written at all. Since M403 `WingsLayer` draws
+//! it too: its sheet is decoded **after every other sheet** (the atlas packs
+//! `textures` in order, so no earlier texel moves), and its layer's
+//! `use_player_texture` says a caped player's own cape sheet replaces it.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -146,11 +146,6 @@ impl ArmorLayer {
             ArmorLayer::Humanoid | ArmorLayer::Leggings | ArmorLayer::Wings
         )
     }
-
-    /// Whether this layer's sheets are drawn over a model (not `Wings`).
-    pub fn is_drawn(self) -> bool {
-        self != ArmorLayer::Wings
-    }
 }
 
 /// `DyedItemColor.LEATHER_COLOR` — the `color_when_undyed` every leather layer
@@ -167,6 +162,10 @@ pub struct ArmorLayerDef {
     /// `Some(None)`: absent draws untinted always, `Some(None)` draws *only*
     /// when the stack is dyed (`Layer.onlyIfDyed`).
     pub dyeable: Option<Option<u32>>,
+    /// M403 — `Layer.usePlayerTexture`: the wearer's own texture (a player's
+    /// elytra or cape sheet, `WingsLayer.getPlayerElytraTexture`) replaces
+    /// this layer's when there is one.
+    pub use_player_texture: bool,
 }
 
 /// `EquipmentLayerRenderer.getColorForLayer`, verbatim.
@@ -254,7 +253,7 @@ impl EquipmentAssets {
         // `(asset, layer) -> texture name`, gathered before any decode so the
         // same sheet named by two assets is decoded once.
         #[allow(clippy::type_complexity)]
-        let mut wanted: Vec<((String, ArmorLayer), String, Option<Option<u32>>)> = Vec::new();
+        let mut wanted: Vec<((String, ArmorLayer), String, Option<Option<u32>>, bool)> = Vec::new();
         for path in &names {
             let Some(asset) = path
                 .rsplit('/')
@@ -298,29 +297,24 @@ impl EquipmentAssets {
                             .map(|c| c as u32 & 0x00FF_FFFF)
                     });
                     let tex = tex.strip_prefix("minecraft:").unwrap_or(tex).to_string();
-                    wanted.push(((format!("minecraft:{asset}"), layer), tex, dyeable));
+                    let player = entry
+                        .get("use_player_texture")
+                        .and_then(|u| u.as_bool())
+                        .unwrap_or(false);
+                    wanted.push(((format!("minecraft:{asset}"), layer), tex, dyeable, player));
                 }
             }
         }
         // M294 — the horse_body sheets after every other: the atlas packs
         // `textures` in order, so the earlier sheets keep their places.
-        wanted.sort_by_key(|((_, layer), _, _)| layer.is_late());
-        for ((asset, layer), tex, dyeable) in wanted {
+        // M403 — and the wings after those: decoded since M403, last so
+        // that every sheet before them keeps its slot.
+        wanted.sort_by_key(|((_, layer), _, _, _)| (*layer == ArmorLayer::Wings, layer.is_late()));
+        for ((asset, layer), tex, dyeable, use_player_texture) in wanted {
             // Keyed by the **texture**, not by the asset: two assets naming the
             // same sheet share one atlas entry, and one asset's two layers name
             // two different sheets.
             let key = format!("{}/{tex}", layer.dir());
-            // `Wings` is a presence test, not a render (M60): recording the
-            // layer answers `hasLayer(WINGS)`, and *not* decoding its sheet
-            // keeps `textures` — which the entity atlas shelf-packs in order
-            // — byte-for-byte what it was, so no mob's texels move.
-            if layer == ArmorLayer::Wings {
-                out.by_asset
-                    .entry((asset, layer))
-                    .or_default()
-                    .push(ArmorLayerDef { key, dyeable });
-                continue;
-            }
             let path = format!(
                 "assets/minecraft/textures/entity/equipment/{}/{tex}.png",
                 layer.dir()
@@ -345,7 +339,11 @@ impl EquipmentAssets {
             out.by_asset
                 .entry((asset, layer))
                 .or_default()
-                .push(ArmorLayerDef { key, dyeable });
+                .push(ArmorLayerDef {
+                    key,
+                    dyeable,
+                    use_player_texture,
+                });
         }
         log::info!(
             "rewo-data: {} armour sheet(s) over {} asset/layer pair(s), {} layer(s)",

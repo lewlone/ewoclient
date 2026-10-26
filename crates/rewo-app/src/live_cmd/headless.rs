@@ -465,6 +465,7 @@ pub(super) fn run_headless(
         crate::knobs::var("REWO_HUD_HIDDEN").is_ok_and(|v| v.trim() == "1"),
         frame_crosshair_pick(&session, &etypes, 1.0),
         None,
+        None,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);
@@ -768,6 +769,7 @@ pub(super) fn run_headless(
         &items,
         &lightmap,
         1.0,
+        None,
         None,
     );
     prepare_frame_maps(&mut world_renderer, &mut gpu, &frames, &session.maps);

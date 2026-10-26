@@ -956,6 +956,8 @@ pub struct PlaySession {
     pub zombie_nautilus_variants: Vec<crate::variant_parse::MobVariantDef>,
     /// M254 — the `painting_variant` registry, index = protocol id.
     pub painting_variants: Vec<crate::variant_parse::PaintingVariantDef>,
+    /// M405 — the `banner_pattern` registry's texture stems, index = id.
+    pub banner_patterns: Vec<Option<String>>,
     /// The server's datapack tags (M69).
     ///
     /// Carried over from configuration, where a vanilla server sends them, and
@@ -1954,6 +1956,7 @@ impl<'a> Connection<'a> {
         let chicken_variants = std::mem::take(&mut self.cfg.chicken_variants);
         let zombie_nautilus_variants = std::mem::take(&mut self.cfg.zombie_nautilus_variants);
         let painting_variants = std::mem::take(&mut self.cfg.painting_variants);
+        let banner_patterns = std::mem::take(&mut self.cfg.banner_patterns);
         // The glider items (`minecraft:glider` on the prototype) as ids, so
         // the elytra take-off line can ask the inventory's chest slot without
         // a name round-trip. `minecraft:elytra` is one of them.
@@ -2052,6 +2055,7 @@ impl<'a> Connection<'a> {
             chicken_variants,
             zombie_nautilus_variants,
             painting_variants,
+            banner_patterns,
             tags,
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
@@ -3582,6 +3586,7 @@ impl PlaySession {
             chicken_variants,
             zombie_nautilus_variants,
             painting_variants,
+            banner_patterns,
             tags,
             ..
         } = cfg;
@@ -3597,6 +3602,7 @@ impl PlaySession {
         self.chicken_variants = chicken_variants;
         self.zombie_nautilus_variants = zombie_nautilus_variants;
         self.painting_variants = painting_variants;
+        self.banner_patterns = banner_patterns;
         self.tags = tags;
     }
 
