@@ -44,7 +44,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   (the sky: midnight was 6x too bright, noon's fog colour lacked vanilla's
   lean toward the sky, the sun had no halo), M435 (clouds follow the
   options: off is off, and the deck reaches vanilla's 128 chunks), M436
-  (entities take vanilla's two-light shading by world normal); the
+  (entities take vanilla's two-light shading by world normal), M437 (the
+  dragon head draws, from the ender dragon's own sheet); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -153,6 +154,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `17a590fb` | **M434** — the sky: byte-space day/night multiply, `getBaseColor`, gamma-space sky mix and celestial blend; skyshot re-derived |
 | `0dc37867` | **M435** — clouds follow `renderClouds` and `cloudRange`, in vanilla's colour space |
 | `d695c5a6` | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
+| (next) | **M437** — the dragon head draws from the ender dragon's sheet; itemshot c3g |
 
 ## A broken default build, fixed
 
@@ -193,6 +195,16 @@ default build. Bisecting across that range needs `--features gates`.
   never reached the chat at all (resolution would have drawn something);
   the re-run drew it in 62 frames. Not investigated further; the next
   sighting should log whether the server's feedback message arrived.
+- **r16 and r81 together** (M437's first render check, on a loaded PC: the
+  timed run drew 612 frames where a quiet one draws ~1300): r16 saw the
+  inventory screen in 106 of them (it wants a quarter); r81's pick, made
+  from the saddle of r72's injected horse, aimed at an entity (id
+  12582912, type 30, most likely that horse, whose box holds the rider's
+  eye) instead of the lectern. The re-run passed both (544 of 1296; the
+  pick aimed at no entity). If r81 recurs, check the crosshair pick's
+  own-vehicle rule against `ProjectileUtil.getEntityHitResult`'s
+  root-vehicle case.
+- **r329 class**: not seen in the 7 render-check runs of M432–M437.
 
 ## Dependabot PR #6
 

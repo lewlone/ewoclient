@@ -870,8 +870,9 @@ const MAP_POOL_Y: u32 = BIG_POOL_Y - MAP_SLOT; // 3264
 /// trident sample one of these. The 16×16-only pool skipped them, so a world
 /// chest, a held chest and every other block entity drew no quads at all from
 /// M25b until M246 — the witnesses graded draw lists, never pixels.
-/// Round-robin like the item pool; a texture larger than a slot (the dragon
-/// head's 256×256) still draws nothing.
+/// Round-robin like the item pool. A texture larger than a slot (the dragon
+/// head's 256×256) is drawn from the atlas's own copy of the same mob sheet
+/// when one is resident (M437, [`EntityPass::sheet_alias`]), else nothing.
 const BIG_SLOT: u32 = 64;
 const BIG_POOL_COLS: u32 = ATLAS_W / BIG_SLOT; // 16
 const BIG_POOL_ROWS: u32 = 4;
@@ -1354,6 +1355,13 @@ pub struct EntityPass {
     /// M246 — texture index -> (large slot, width, height), for the resident
     /// textures bigger than an item slot.
     big_slots: std::collections::HashMap<u16, (u32, u32, u32)>,
+    /// M437 — the mob sheets larger than a large slot, as packed into the
+    /// mob band: `(w, h, content hash, atlas origin)`.
+    big_sheets: Vec<(u32, u32, u64, (u32, u32))>,
+    /// M437 — held/block-entity texture id → `(x, y, w, h)` of the mob sheet
+    /// with the same pixels: the dragon head's 256×256 `dragon.png` is the
+    /// ender dragon's own sheet, already in the atlas, so it needs no slot.
+    sheet_alias: std::collections::HashMap<u16, (u32, u32, u32, u32)>,
     big_ring: SlotRing<u16>,
     /// M247 — the quads the last frame emitted for each block-entity draw,
     /// index-matched to the draws `set_draws` was given. A quad whose texture
@@ -1617,6 +1625,17 @@ impl EntityPass {
                 ),
             }
         }
+        // M437 — the mob sheets too big for a large slot, by content, so a
+        // block entity drawing the same sheet (the dragon head) can use them.
+        let big_sheets: Vec<(u32, u32, u64, (u32, u32))> = tex
+            .entries
+            .iter()
+            .filter(|e| e.w > BIG_SLOT || e.h > BIG_SLOT)
+            .filter_map(|e| {
+                let &(x, y, w, h) = slots.get(e.key)?;
+                Some((w, h, content_hash(e.rgba), (x, y)))
+            })
+            .collect();
         // (base key, variant id) -> atlas origin, for the offset table below.
         // The reserved emissive id is split out: it is a layer, not a variant a
         // mob can be drawn as.
@@ -2227,6 +2246,8 @@ impl EntityPass {
                 item_slots: std::collections::HashMap::new(),
                 item_ring: SlotRing::new(ITEM_SLOTS),
                 big_slots: std::collections::HashMap::new(),
+                big_sheets,
+                sheet_alias: std::collections::HashMap::new(),
                 big_ring: SlotRing::new(BIG_SLOTS),
                 be_quads: Vec::new(),
                 cem_state: std::collections::HashMap::new(),
@@ -2296,12 +2317,29 @@ impl EntityPass {
         });
         for model in models {
             for q in &model.quads {
-                if self.item_slots.contains_key(&q.tex) || self.big_slots.contains_key(&q.tex) {
+                if self.item_slots.contains_key(&q.tex)
+                    || self.big_slots.contains_key(&q.tex)
+                    || self.sheet_alias.contains_key(&q.tex)
+                {
                     continue;
                 }
                 let Some(tex) = items.textures.get(q.tex as usize) else {
                     continue;
                 };
+                // M437 — too big for a large slot: drawn from the mob band's
+                // copy of the same sheet (matched by size and pixels), if a
+                // mob put it there; else it stays absent, as before.
+                if tex.w > BIG_SLOT || tex.h > BIG_SLOT {
+                    let hash = content_hash(&tex.rgba);
+                    if let Some(&(w, h, _, (x, y))) = self
+                        .big_sheets
+                        .iter()
+                        .find(|s| s.0 == tex.w && s.1 == tex.h && s.2 == hash)
+                    {
+                        self.sheet_alias.insert(q.tex, (x, y, w, h));
+                    }
+                    continue;
+                }
                 // M246 — anything else up to 64×64 (a block-entity sheet)
                 // goes in the large pool, at its own size in a 64×64 slot.
                 if (tex.w != ITEM_SLOT || tex.h != ITEM_SLOT)
@@ -2467,6 +2505,14 @@ impl EntityPass {
 
     /// Atlas UV rect `(u0, v0, du, dv)` of a resident item texture.
     fn item_uv(&self, tex: u16) -> Option<[f32; 4]> {
+        if let Some(&(x, y, w, h)) = self.sheet_alias.get(&tex) {
+            return Some([
+                x as f32 / ATLAS_W as f32,
+                y as f32 / ATLAS_H as f32,
+                w as f32 / ATLAS_W as f32,
+                h as f32 / ATLAS_H as f32,
+            ]);
+        }
         if let Some(&(slot, w, h)) = self.big_slots.get(&tex) {
             let (sx, sy) = big_slot_origin(slot);
             return Some([
@@ -9125,6 +9171,15 @@ fn paint_debug_rect(
         }
     }
     clean
+}
+
+/// M437 — a texture's pixels as one number, to match a block entity's sheet
+/// against the mob band's.
+fn content_hash(rgba: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rgba.hash(&mut h);
+    h.finish()
 }
 
 /// sRGB component → linear (CPU-side color prep; discipline #1).

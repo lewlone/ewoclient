@@ -36,7 +36,7 @@ use crate::stats::OverlayRing;
 
 /// Includes M81's `p1`-`p13` — `take_item_entity`'s three-way branch and the
 /// pickup animation's flight.
-const EXPECTED_WITNESSES: usize = 84;
+const EXPECTED_WITNESSES: usize = 85;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -1313,6 +1313,84 @@ fn check_render(
                 "{} pixels differ from an empty scene — a chest block entity drawn \
                  by the world emitter; 0 while block-entity sheets could not page in",
                 px.len()
+            ),
+        );
+    }
+    // M437 — a placed dragon head draws from the dragon's own sheet: its
+    // 256x256 `dragon.png` fits no large slot, so until M437 it drew nothing.
+    // Every changed pixel must be some opaque texel of the jar's dragon sheet
+    // times a face shade in vanilla's [0.4, 1.0] (±2 a channel): a head that
+    // sampled another band's pixels, or the item pool's, fails it.
+    {
+        const IDENT: [[f32; 4]; 3] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        wr.prepare_held_items(&mut gpu, &["rewo:be/dragon_head"])?;
+        let be = rewo_gpu::entities::BlockEntityDraw {
+            pos: [0.0, 0.2, 0.0],
+            model: "rewo:be/dragon_head",
+            transform: rewo_data::be_transform::skull_ground(0),
+            light: [1.0; 3],
+            part_transforms: [IDENT; rewo_gpu::entities::MAX_PARTS],
+            part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
+            tint: [1.0; 3],
+            fixed_display: false,
+            glint: false,
+            white: 0.0,
+        };
+        wr.set_entities_and_block_entities(&[], &[be], &[], &[], right, up.to_array(), 0.0);
+        off.render(&gpu, Some((&mut wr, view_proj)), &draw, CLEAR)?;
+        let placed = off.read_rgba(&gpu)?;
+        if let Some(dir_out) = &args.out_dir {
+            let _ = off.save_png(&gpu, &dir_out.join("itemshot-dragon-head.png"));
+        }
+        wr.set_entities_and_block_entities(&[], &[], &[], &[], right, up.to_array(), 0.0);
+        off.render(&gpu, Some((&mut wr, view_proj)), &draw, CLEAR)?;
+        let nothing = off.read_rgba(&gpu)?;
+        let px = changed(&nothing, &placed);
+        let sheet: std::collections::HashSet<[u8; 3]> = baked
+            .mob_textures
+            .iter()
+            .find(|t| t.key == "ender_dragon")
+            .map(|t| {
+                t.rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|p| p[3] > 0)
+                    .map(|p| [p[0], p[1], p[2]])
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The shade is solved from the texel's brightest channel, then every
+        // channel must agree within 2.
+        let explained = |c: [u8; 3]| {
+            sheet.iter().any(|t| {
+                let k = (0..3).max_by_key(|&k| t[k]).unwrap_or(0);
+                if t[k] == 0 {
+                    return c.iter().all(|&v| v <= 2);
+                }
+                let s = c[k] as f32 / t[k] as f32;
+                (0.38..=1.02).contains(&s)
+                    && (0..3).all(|j| (t[j] as f32 * s - c[j] as f32).abs() <= 2.0)
+            })
+        };
+        let foreign = px
+            .iter()
+            .filter(|p| {
+                let i = ((p.1 * W + p.0) * 4) as usize;
+                !explained([placed[i], placed[i + 1], placed[i + 2]])
+            })
+            .count();
+        c.record(
+            "c3g.a_placed_dragon_head_draws_from_the_dragon_sheet",
+            !sheet.is_empty() && px.len() > 200 && foreign == 0,
+            format!(
+                "{} pixels differ from an empty scene, {foreign} of them no dragon                  texel times a shade explains ({} opaque sheet colours); 0 before                  M437, when the 256x256 sheet found no slot",
+                px.len(),
+                sheet.len()
             ),
         );
     }
