@@ -368,9 +368,9 @@ mod tests {
         assert!((p[2] - -3.0).abs() < 1e-9);
     }
 
-    /// `AbstractHorse.getPassengerAttachmentPoint` adds `(0, 0.15 * standAnimO
-    /// * scale, -0.7 * standAnimO * scale)` turned by `-yRot`: a fully reared
-    /// horse lifts its rider 0.15 and throws it 0.7 back along the horse's
+    /// `AbstractHorse.getPassengerAttachmentPoint` adds `(0, 0.15 *
+    /// standAnimO * scale, -0.7 * standAnimO * scale)` turned by `-yRot`: a
+    /// fully reared horse lifts its rider 0.15 and throws it 0.7 back along the horse's
     /// own axis, and a half-reared one half of that.
     #[test]
     fn a_rearing_horse_lifts_and_throws_back_its_rider() {
