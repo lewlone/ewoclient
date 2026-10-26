@@ -40,7 +40,7 @@ use crate::live_cmd::{
 use crate::stats::OverlayRing;
 
 /// b1-b5, d1-d7, p1-p11.
-const EXPECTED_WITNESSES: usize = 23;
+const EXPECTED_WITNESSES: usize = 25;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 512;
@@ -282,6 +282,30 @@ fn check_bake(c: &mut Checker, jar: &Path, baked: &assets::BakedAssets) -> Resul
             _ => false,
         },
         format!("baked {dirt:?}, jar {want_dirt:?}"),
+    );
+    // M419 — a framed trident (`FIXED`) is its flat sprite, as in a slot:
+    // the `#fixed` variant carries the slot's quads and `item/trident`'s own
+    // FIXED (inherited from `item/generated`), not `trident_in_hand`'s.
+    let trident = held.models.get("minecraft:trident");
+    let framed = held.models.get("minecraft:trident#fixed");
+    let want = jar_display(jar, "item/generated", "fixed");
+    c.record(
+        "b6.a_framed_tridents_model_is_its_sprite",
+        match (trident, framed, want) {
+            (Some(t), Some(f), Some((r, tr, k))) => {
+                t.gui_quads.as_ref() == Some(&f.quads)
+                    && f.fixed.rotation == r
+                    && f.fixed.translation == tr
+                    && f.fixed.scale == k
+            }
+            _ => false,
+        },
+        format!(
+            "variant baked: {}; its quads are the slot's: {}; its FIXED {:?} against the jar's {want:?}",
+            framed.is_some(),
+            matches!((trident, framed), (Some(t), Some(f)) if t.gui_quads.as_ref() == Some(&f.quads)),
+            framed.map(|f| f.fixed)
+        ),
     );
     Ok(())
 }
@@ -851,6 +875,43 @@ fn check_pixels(
         rows.push(format!("{facing}:{}", if ok { "ok" } else { "BAD" }));
     }
     c.record("p4.every_facing_faces_out", all, rows.join(" "));
+
+    // p12 — M419: the production frame path draws a trident through its
+    // FIXED variant: byte-identical to naming the variant outright, and not
+    // the empty frame.
+    let trident_prod = render(
+        gpu,
+        &mut wr,
+        &mut off,
+        &[lit_frame(2, 0, Some("minecraft:trident"), None)],
+        &MapStore::default(),
+        2,
+        "trident",
+    )?;
+    let trident_named = render(
+        gpu,
+        &mut wr,
+        &mut off,
+        &[lit_frame(2, 0, Some("minecraft:trident#fixed"), None)],
+        &MapStore::default(),
+        2,
+        "trident-fixed",
+    )?;
+    let drawn = trident_prod
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(empty.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    c.record(
+        "p12.a_framed_trident_draws_its_sprite",
+        trident_prod == trident_named && drawn > 0,
+        format!(
+            "the frame path's trident and the named `#fixed` variant compare equal: {}; {drawn} px over the empty frame",
+            trident_prod == trident_named
+        ),
+    );
 
     // p5/p6: a sword in a north frame. Its item plane is `step / 32` out; it
     // spans 0.5 blocks (`scale(0.5)` of a 1-block FIXED model), so a texel is

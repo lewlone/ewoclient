@@ -105,7 +105,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 123;
+const EXPECTED_WITNESSES: usize = 124;
 /// M417 — m123's floors: how many pixel rows a fully reared horse's top
 /// rises over a standing one's, seen from the side, and how far its saddle's
 /// centroid rises with the body. Before M417 the body never moved (0 rows
@@ -1557,12 +1557,38 @@ fn run_check(
         .collect();
     let fire_refs: Vec<&str> = fire_names.iter().map(String::as_str).collect();
     st.wr.prepare_held_items(gpu, &fire_refs)?;
+    // M419 — m124's dropped trident, and its `GROUND` variant by name.
+    const TRIDENT: &str = "minecraft:trident";
+    const TRIDENT_GROUND: &str = "minecraft:trident#ground";
+    st.wr.prepare_held_items(gpu, &[TRIDENT, TRIDENT_GROUND])?;
     let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
         st.wr.set_entities(&[d], st.right, st.up, 0.0);
         st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
         st.off.read_rgba(gpu)
     };
     let bare = shot(neutral_draw(EntityModelKind::ArmorStand))?;
+    // m124 — M419: a dropped trident draws its flat sprite (`GROUND`), not
+    // the 3D in-hand model: the production lookup's frame is byte-identical
+    // to naming the variant outright, and something is drawn.
+    let dropped = |name: &'static str| EntityDraw {
+        pos: [0.0, 1.5, 0.0],
+        ground_item: Some(name),
+        ground_count: 1,
+        ..neutral_draw(EntityModelKind::Capsule)
+    };
+    let tr_empty = shot(EntityDraw {
+        pos: [0.0, 1.5, 0.0],
+        ..neutral_draw(EntityModelKind::Capsule)
+    })?;
+    let tr_prod = shot(dropped(TRIDENT))?;
+    let tr_named = shot(dropped(TRIDENT_GROUND))?;
+    let tr_px = tr_prod
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(tr_empty.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
     let worn = shot(EntityDraw {
         worn_head: Some(rewo_gpu::entities::WornHead {
             model: SKULL,
@@ -1573,6 +1599,14 @@ fn run_check(
         }),
         ..neutral_draw(EntityModelKind::ArmorStand)
     })?;
+    w.push(wit(
+        "m124.a_dropped_trident_draws_its_sprite",
+        tr_prod == tr_named && tr_px > 0,
+        format!(
+            "the production ground lookup and the named `#ground` variant compare equal: {}; {tr_px} px drawn",
+            tr_prod == tr_named
+        ),
+    ));
     // m19 — M274: a carved pumpkin worn the same way, `CustomHeadLayer`'s
     // item branch: `translateToHead` puts the item's centre at
     // `(0, -0.25, 0)` head-local (the identity `head` transform of a block

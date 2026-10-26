@@ -2140,10 +2140,22 @@ pub(crate) fn to_gpu_held_items(
                 .map(|(k, m)| (k.clone(), to_gpu_held_model(m)))
                 .collect()
         };
+    // M419 — the `#ground` / `#fixed` variants, indexed by plain name.
+    let by_context = |suffix: &str| {
+        src.models
+            .iter()
+            .filter_map(|(k, m)| {
+                let plain = k.strip_suffix(suffix)?;
+                Some((plain.to_string(), to_gpu_held_model(m)))
+            })
+            .collect()
+    };
     rewo_gpu::held::HeldItems {
         models: conv_models(&src.models),
         block_entities: conv_models(&src.block_entities),
         textures: src.textures.iter().map(to_gpu_held_texture).collect(),
+        ground: by_context("#ground"),
+        fixed: by_context("#fixed"),
     }
 }
 

@@ -101,6 +101,12 @@ pub struct HeldItems {
     /// are a separate map rather than more entries in `models`.
     pub block_entities: HashMap<String, HeldItemModel>,
     pub textures: Vec<HeldTexture>,
+    /// M419 — the models a dropped stack (`GROUND`) and a framed one
+    /// (`FIXED`) draw, by plain item name, where the definition selects
+    /// different geometry there (the trident's, the spyglass's and the
+    /// spears' flat sprite). Absent: the item's own model.
+    pub ground: HashMap<String, HeldItemModel>,
+    pub fixed: HashMap<String, HeldItemModel>,
 }
 
 impl HeldItems {
@@ -110,6 +116,16 @@ impl HeldItems {
         self.models
             .get(name)
             .or_else(|| self.block_entities.get(name))
+    }
+
+    /// M419 — the model a dropped (or thrown) stack draws.
+    pub fn ground_model(&self, name: &str) -> Option<&HeldItemModel> {
+        self.ground.get(name).or_else(|| self.any(name))
+    }
+
+    /// M419 — the model a framed stack draws.
+    pub fn fixed_model(&self, name: &str) -> Option<&HeldItemModel> {
+        self.fixed.get(name).or_else(|| self.any(name))
     }
 }
 

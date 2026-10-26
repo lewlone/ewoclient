@@ -456,10 +456,11 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         "a1b.every_trimmed_variant_belongs_to_an_item_that_resolved",
         variants > 200
             && items.models.keys().filter_map(|k| k.split_once('#')).all(|(base, mat)| {
-                items.models.contains_key(base) && mat.starts_with("minecraft:")
+                items.models.contains_key(base)
+                    && (mat.starts_with("minecraft:") || matches!(mat, "ground" | "fixed"))
             }),
         format!(
-            "{variants} variant(s), every one `<item>#<material id>` (or, M234, `<item>#<model ref>`) over an item that              resolved on its own. `HeldItems::any` falls back to that base, which is              where a material the definition names no case for has to land"
+            "{variants} variant(s), every one `<item>#<material id>` (or, M234, `<item>#<model ref>`; M419, `<item>#ground` / `#fixed`) over an item that              resolved on its own. `HeldItems::any` falls back to that base, which is              where a material the definition names no case for has to land"
         ),
     );
     c.record(

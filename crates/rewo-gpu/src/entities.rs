@@ -2285,10 +2285,13 @@ impl EntityPass {
             return Ok(());
         };
         let mut result = Ok(());
-        for name in names {
-            let Some(model) = items.any(name) else {
-                continue;
-            };
+        // M419 — and the ground and frame variants' textures with each.
+        let models = names.iter().flat_map(|n| {
+            [items.any(n), items.ground.get(*n), items.fixed.get(*n)]
+                .into_iter()
+                .flatten()
+        });
+        for model in models {
             for q in &model.quads {
                 if self.item_slots.contains_key(&q.tex) || self.big_slots.contains_key(&q.tex) {
                     continue;
@@ -7828,7 +7831,13 @@ impl EntityPass {
             return emitted;
         };
         for (n, d) in draws.iter().enumerate() {
-            let Some(model) = items.any(d.model) else {
+            // M419 — a framed item's `FIXED` model.
+            let model = if d.fixed_display {
+                items.fixed_model(d.model)
+            } else {
+                items.any(d.model)
+            };
+            let Some(model) = model else {
                 continue;
             };
             let m = &d.transform;
@@ -7944,7 +7953,8 @@ impl EntityPass {
         let Some(items) = self.held_items.as_ref() else {
             return;
         };
-        let Some(item) = items.any(name) else {
+        // M419 — its `GROUND` model.
+        let Some(item) = items.ground_model(name) else {
             return;
         };
         let mut glint = glint;

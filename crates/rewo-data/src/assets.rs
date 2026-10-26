@@ -4654,6 +4654,30 @@ impl<'a> Baker<'a> {
                 ) if h != g => Some((g.clone(), *t)),
                 _ => None,
             };
+            // M419 — a dropped stack (`GROUND`) and a framed one (`FIXED`)
+            // resolve in their own contexts: the trident, the spyglass and
+            // the spears take their flat sprite there, as in a slot. Baked
+            // as `"<item>#ground"` / `"<item>#fixed"` only where the geometry
+            // differs from the hand's, with that model's own transforms.
+            for (display, suffix) in [
+                (crate::item_models::DisplayContext::Ground, "ground"),
+                (crate::item_models::DisplayContext::Fixed, "fixed"),
+            ] {
+                let ctx = SelectionContext {
+                    display,
+                    ..SelectionContext::hand()
+                };
+                let m = resolve_definition(&def, &mut read_model, ctx);
+                if let (
+                    ItemModel::Resolved { geometry: h, .. },
+                    ItemModel::Resolved { geometry: c, .. },
+                ) = (&hand, &m)
+                {
+                    if h != c {
+                        resolved.push((format!("{name}#{suffix}"), m, None));
+                    }
+                }
+            }
             resolved.push((name.clone(), hand, gui_geometry));
 
             // M49: a trimmed icon is a *different model*, so it needs its own

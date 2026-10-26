@@ -27,7 +27,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   husks, drowned, zombie villagers and piglins wear armour and elytras),
   M417 (horses rear: the body, head and legs, with the tail, saddle and
   chests on the body), M418 (enchanted armour and held items shimmer in
-  the inventory preview); the
+  the inventory preview), M419 (dropped and framed tridents, spyglasses
+  and spears show their flat sprite, as vanilla's do); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -117,7 +118,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `337d9ffd` | **M413–M415** — the wavy cape on a tilted body; the dressed inventory preview; remote players' motion lerp; capeshot y5, p6, p7 |
 | `c5c3333e` | **M416** — baby humanoids wear armour and elytras (and M403's baby elytra offset); mobtexshot m121, m122 |
 | `5fdc8e9e` | **M417** — horses rear; mobtexshot m123 |
-| (next) | **M418** — the inventory preview's glints; capeshot p8 |
+| `6286f464` | **M418** — the inventory preview's glints; capeshot p8 |
+| (next) | **M419** — dropped and framed tridents, spyglasses and spears are sprites; itemframeshot b6, p12, mobtexshot m124 |
 
 ## Flakes
 
@@ -164,8 +166,15 @@ major bumps, so the next weekly group arrives without it.
 - ~~Baby humanoids wear no armour~~: M416. Found on the way: M403's baby
   elytra was 12 px too high (fixed there too).
 - ~~Entities take no fog at all~~: done in M412. Left from it: the
-  first-person hand stays unfogged (vanilla's hand fogs inside lava,
-  water or blindness, where the environmental band starts near the eye).
+  first-person hand stays unfogged. Vanilla's hand inherits the world fog
+  (nothing resets it after the level), so inside lava, water, powder snow
+  or blindness its environmental band fogs the hand. Rewo's hand pass
+  pushes only a premultiplied model-view-projection; fogging it needs the
+  view-space distance, i.e. the model-view or a per-vertex distance, which
+  with the fog words passes the 128 bytes of push constant Vulkan
+  guarantees. A design choice for the next run.
+- ~~A dropped or framed trident shows its 3D model~~: M419 (and the
+  spyglass and spears).
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing
   entity's outline is vanilla's behaviour (`energySwirl` and `breezeWind`
   set no outline property), not a gap.
