@@ -136,7 +136,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `90f3def4` | **M425** — under water the clouds fade at the water's band; render check r231 |
 | `9d758e66` | **M426** — horses graze; mobtexshot m126 |
 | `2f8a563a` | **M427** — the fog darkens toward the void; unit test |
-| (next) | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
+| `1318834e` | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
 
 ## A broken default build, fixed
 
