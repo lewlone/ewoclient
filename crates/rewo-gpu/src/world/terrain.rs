@@ -371,7 +371,7 @@ impl WorldRenderer {
     /// `[camera, render start]`, `[colour, render end]`, `[env start, env
     /// end, _, _]` (the same numbers `push_world` and the lightmap UBO give
     /// `world.frag`).
-    pub(super) fn entity_fog(&self) -> [[f32; 4]; 3] {
+    pub(crate) fn entity_fog(&self) -> [[f32; 4]; 3] {
         let e = self.scene.camera_eye;
         let env = self.scene.lightmap.env_fog_words();
         [

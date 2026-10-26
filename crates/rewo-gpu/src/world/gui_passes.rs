@@ -674,6 +674,9 @@ impl WorldRenderer {
         // the world put there.
         if let (Some(pass), Some(vp)) = (&self.hand, self.gui.hand_vp) {
             clear_depth_rect(gpu, cb, vk::Rect2D::default().extent(extent));
+            // M423 — the world's fog colour and environmental band.
+            let [_, [r, g, b, _], [s, e, _, _]] = self.entity_fog();
+            pass.set_fog([[r, g, b, 0.0], [s, e, 0.0, 0.0]]);
             pass.draw(gpu, cb, vp, extent);
             self.in_gamma_space(gpu, cb, extent, || pass.draw_glint(gpu, cb, vp, extent));
         }

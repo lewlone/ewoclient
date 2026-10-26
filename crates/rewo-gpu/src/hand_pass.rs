@@ -36,7 +36,13 @@ pub struct HandPass {
     /// pieces of state the GUI glint uses, over the hand's own geometry.
     glint: Option<HandGlint>,
     glint_verts: u32,
+    /// M423 — the fog words `hand.frag` reads (`[colour, _]`, `[env start,
+    /// env end, _, _]`); [`HAND_NO_FOG`] until the world renderer sets them.
+    fog: std::cell::Cell<[[f32; 4]; 2]>,
 }
+
+/// M423 — fog words that fog nothing (the band a billion blocks out).
+pub const HAND_NO_FOG: [[f32; 4]; 2] = [[0.0; 4], [1.0e9, 1.0e9 + 1.0, 0.0, 0.0]];
 
 struct HandGlint {
     pipeline: vk::Pipeline,
@@ -126,10 +132,18 @@ impl HandPass {
                 &[],
             );
         }
-        let push = [vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .offset(0)
-            .size(64)];
+        // M423 — `view_proj` for the vertex stage, the fog words (two vec4s)
+        // for the fragment stage.
+        let push = [
+            vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .offset(0)
+                .size(64),
+            vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                .offset(64)
+                .size(32),
+        ];
         let layout = unsafe {
             device
                 .create_pipeline_layout(
@@ -155,6 +169,7 @@ impl HandPass {
             vert_count: 0,
             glint: None,
             glint_verts: 0,
+            fog: std::cell::Cell::new(HAND_NO_FOG),
         })
     }
 
@@ -363,9 +378,22 @@ impl HandPass {
                 0,
                 std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64),
             );
+            let fog = self.fog.get();
+            device.cmd_push_constants(
+                cb,
+                self.layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                64,
+                std::slice::from_raw_parts(fog.as_ptr() as *const u8, 32),
+            );
             device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.vert_count, 1, 0, 0);
         }
+    }
+
+    /// M423 — the fog the hand draws with from now on.
+    pub fn set_fog(&self, fog: [[f32; 4]; 2]) {
+        self.fog.set(fog);
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {

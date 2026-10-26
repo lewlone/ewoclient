@@ -19,9 +19,13 @@ layout(location = 2) in float in_shade;
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out float v_shade;
+// M423 — the vertex's distance from the eye (`fog_spherical_distance`): the
+// hand's positions are view space, so its length.
+layout(location = 2) out float v_dist;
 
 void main() {
     gl_Position = pc.view_proj * vec4(in_pos, 1.0);
     v_uv = in_uv;
     v_shade = in_shade;
+    v_dist = length(in_pos);
 }

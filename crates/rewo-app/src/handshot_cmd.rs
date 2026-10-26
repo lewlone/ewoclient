@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 42;
+const EXPECTED_WITNESSES: usize = 43;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -898,6 +898,53 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
             std::fs::create_dir_all(d).map_err(|e| format!("out-dir: {e}"))?;
             let _ = off.save_png(&gpu, &d.join("handshot.png"));
         }
+
+        // M423 — the hand takes the world's environmental fog: under a band
+        // that ends before it (a hand is under a block from the eye) every
+        // pixel it drew is the fog colour, and with the band cleared again
+        // the frame is the unfogged one byte for byte.
+        const FOG_LIN: [f32; 3] = [0.05, 0.4, 0.15];
+        wr.set_sky_fog_base([0.5; 3], FOG_LIN);
+        wr.set_sky_tint([1.0; 3], [1.0; 3]);
+        wr.set_env_fog([0.0, 0.01]);
+        let fogged = shot(&mut gpu, &mut off, &mut wr, &rest_verts)?;
+        wr.set_env_fog([1.0e9, 1.0e9 + 1.0]);
+        let cleared = shot(&mut gpu, &mut off, &mut wr, &rest_verts)?;
+        let enc = |c: f32| {
+            let c = c.clamp(0.0, 1.0);
+            let s = if c <= 0.003_130_8 {
+                c * 12.92
+            } else {
+                1.055 * c.powf(1.0 / 2.4) - 0.055
+            };
+            (s * 255.0 + 0.5).floor() as i32
+        };
+        let want = FOG_LIN.map(enc);
+        let (mut hand_px, mut fog_px) = (0usize, 0usize);
+        for (r, (f, e)) in rest.as_chunks::<4>().0.iter().zip(
+            fogged
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(empty.as_chunks::<4>().0),
+        ) {
+            if r[..3] == e[..3] {
+                continue;
+            }
+            hand_px += 1;
+            if (0..3).all(|k| (f[k] as i32 - want[k]).abs() <= 1) {
+                fog_px += 1;
+            }
+        }
+        c.record(
+            "g8.the_hand_takes_the_worlds_environmental_fog",
+            hand_px > 100 && fog_px == hand_px && cleared == rest,
+            format!(
+                "{fog_px} of the hand's {hand_px} px are the fog colour {want:?} under a band \
+                 ending at 0.01 blocks; the cleared band's frame equals the unfogged one: {}",
+                cleared == rest
+            ),
+        );
 
         c.record(
             "g1.an_empty_hand_draws_nothing",

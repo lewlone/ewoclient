@@ -32,7 +32,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   item worn on the head shimmers), M421 (fog bands use vanilla's
   `linear_fog_value`; Rewo had a 1-block floor on their width), M422 (fog
   under water, in lava and powder snow, and under blindness and darkness,
-  with water vision; Rewo had only the open-air fog); the
+  with water vision; Rewo had only the open-air fog), M423 (the
+  first-person hand fogs with the world); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -126,7 +127,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `294fadb5` | **M419** — dropped and framed tridents, spyglasses and spears are sprites; itemframeshot b6, p12, mobtexshot m124 |
 | `0e3bd12e` | **M420** — an enchanted worn head item shimmers; mobtexshot m125 |
 | `45994330` | **M421** — fog bands follow `linear_fog_value`; lightmapshot 9(e) |
-| (next) | **M422** — the fog environments (water, lava, powder snow, blindness, darkness); unit tests |
+| `fad13c31` | **M422** — the fog environments (water, lava, powder snow, blindness, darkness); unit tests |
+| (next) | **M423** — the first-person hand takes the world's fog; handshot g8 |
 
 ## Flakes
 
@@ -176,14 +178,8 @@ major bumps, so the next weekly group arrives without it.
   lava, powder snow, blindness, darkness, water vision). Left: a live
   witness with the bot under water (unit tests only so far), the void
   darkness, the boss bar's world darkening, the clouds' fog end.
-- ~~Entities take no fog at all~~: done in M412. Left from it: the
-  first-person hand stays unfogged. Vanilla's hand inherits the world fog
-  (nothing resets it after the level), so inside lava, water, powder snow
-  or blindness its environmental band fogs the hand. Rewo's hand pass
-  pushes only a premultiplied model-view-projection; fogging it needs the
-  view-space distance, i.e. the model-view or a per-vertex distance, which
-  with the fog words passes the 128 bytes of push constant Vulkan
-  guarantees. A design choice for the next run.
+- ~~Entities take no fog at all~~: done in M412; the first-person hand
+  in M423. Left: the hand's glint does not fade in fog.
 - ~~A dropped or framed trident shows its 3D model~~: M419 (and the
   spyglass and spears).
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing
