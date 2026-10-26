@@ -152,7 +152,7 @@ pub(super) fn apply_fog_environment(
     partial: f32,
     fov_option: f32,
     aspect: f64,
-) {
+) -> (rewo_world::fog_env::FogType, rewo_world::fog_env::FogPlan) {
     use rewo_world::fog_env as fe;
     let eye = eye_f64(session);
     let forward = look_dir(session.player.yaw, session.player.pitch);
@@ -217,6 +217,7 @@ pub(super) fn apply_fog_environment(
         wr.set_sky_fog_base(sky_base, rgb.map(srgb_to_linear));
         wr.set_sky_tint(sky_tint, [1.0; 3]);
     }
+    (fog_type, plan)
 }
 
 /// The sRGB encode, the inverse of `srgb_to_linear` (M422's colour round

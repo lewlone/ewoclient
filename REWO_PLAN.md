@@ -2186,7 +2186,8 @@ this shape once.
 | M406 (2026-10-26) — a dropped banner and a held shield draw their patterns | **r227** | — | — |
 | M407 (2026-10-26) — a decorated pot item's icon wears its sherds | **r228** | — | — |
 | M408 (2026-10-26) — the first-person hand draws a held shield's pattern copy | **r229** | — | — |
-| *(next free)* | **r230** | — | — |
+| M424 (2026-10-26) — under water the frame draws the water's fog | **r230** | — | — |
+| *(next free)* | **r231** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -4020,6 +4021,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M424 — a live witness for the water's fog (2026-10-26)
+
+M422 shipped with unit tests only: no render-check stage put the bot under water. The use tail's last stage now sets a water source at the bot's head (`setblock ~ ~1 ~ water`, after every other tail witness has staged and read, so the flowing water disturbs nothing), and `apply_fog_environment` returns its fog type and plan so the frame can count, under the gates feature, the frames that drew the water's band and colour. **Render check r230** (at least one such frame, with the water vision risen above 0).
 
 ### M423 — the first-person hand takes the world's fog (2026-10-26)
 

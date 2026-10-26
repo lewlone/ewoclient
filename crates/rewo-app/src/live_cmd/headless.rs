@@ -603,7 +603,7 @@ pub(super) fn run_headless(
     apply_border(&mut world_renderer, &mut gpu, &session, 1.0);
     apply_render_distance_fog(&mut world_renderer, &session);
     // M422 — the fog environment, as the live frame applies it.
-    apply_fog_environment(
+    let _ = apply_fog_environment(
         &mut world_renderer,
         &session,
         1.0,

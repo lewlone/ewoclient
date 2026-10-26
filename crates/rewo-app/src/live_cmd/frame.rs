@@ -3391,13 +3391,25 @@ impl LiveApp {
             // environment over the atmospheric fog.
             {
                 let extent = state.renderer.swapchain.extent;
-                apply_fog_environment(
+                let (_fog_type, _fog_plan) = apply_fog_environment(
                     &mut state.world_renderer,
                     session,
                     alpha,
                     self.modules.render().fov_degrees,
                     extent.width.max(1) as f64 / extent.height.max(1) as f64,
                 );
+                // M424 — r230: frames that drew the water's fog (its band and
+                // colour) with the bot's eyes under r230's staged water.
+                #[cfg(feature = "gates")]
+                if let Some(c) = self.check.as_mut() {
+                    if _fog_type == rewo_world::fog_env::FogType::Water
+                        && _fog_plan.band.is_some_and(|b| b.end <= 96.0)
+                        && _fog_plan.color.is_some()
+                    {
+                        c.water_fog_frames += 1;
+                        c.water_vision_peak = c.water_vision_peak.max(session.water_vision());
+                    }
+                }
             }
             if self.particles.is_none() {
                 self.particles = ParticleAssets::new(baked);

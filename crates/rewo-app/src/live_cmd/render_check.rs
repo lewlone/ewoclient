@@ -310,6 +310,10 @@ pub(super) struct RenderCheck {
     /// M408 — r229: frames on which the first-person off hand drew the
     /// staged shield's pattern copy.
     pub(super) hand_pattern_frames: u32,
+    /// M424 — r230: frames that drew the water's fog environment (its band
+    /// and colour), and the highest water vision seen on them.
+    pub(super) water_fog_frames: u32,
+    pub(super) water_vision_peak: f32,
     /// M407 — r228: frames on which the bot's staged sherd pot's icon
     /// resolved to its copy.
     pub(super) sherd_icon_frames: u32,
@@ -1349,7 +1353,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 229;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 230;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -2452,6 +2456,18 @@ impl RenderCheck {
             format!(
                 "{} frames drew it; turn range {turn:.3}",
                 self.enchant_book_frames
+            ),
+        );
+        // M424 — r230: the tail's last stage puts a water source at the
+        // bot's head; the frames under it must draw the water's fog (M422:
+        // until then Rewo had only the open-air fog), and the water vision
+        // must have started to rise.
+        row(
+            "r230 under water the frame drew the water's fog",
+            self.water_fog_frames >= 1 && self.water_vision_peak > 0.0,
+            format!(
+                "{} frames drew it; water vision peaked at {:.3}",
+                self.water_fog_frames, self.water_vision_peak
             ),
         );
         // M408 — r229: r101's off-hand shield carries a lime base colour;
@@ -5481,6 +5497,14 @@ impl LiveApp {
             }
             60 => {
                 cmd(self, "gamemode creative");
+                // M424 — r230, last of the tail: a water source at the bot's
+                // head, so its eyes (1.62 up, under the source's 8/9) are
+                // under water for the frames that follow.
+                cmd(self, "setblock ~ ~1 ~ minecraft:water");
+                self.use_tick0 = now;
+                self.use_stage = 61;
+            }
+            61 if now >= self.use_tick0 + 10 => {
                 self.use_stage = 100;
             }
             _ => {}
