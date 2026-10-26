@@ -327,7 +327,8 @@ pub(super) fn icon_for(
         .and_then(|m| trim_materials.get(m as usize))
     {
         Some(m) => format!("{base}#{}", m.id),
-        None => base.to_string(),
+        // A compass or clock draws the frame its needle is on.
+        None => needles::needle_model(base),
     };
     Some(rewo_gpu::gui_item::GuiItem {
         model,

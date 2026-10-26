@@ -1524,6 +1524,8 @@ pub struct HudSprites {
     /// `hud/jump_bar_{background,cooldown,progress}` (M168), 182x5 each —
     /// THREE, not the two a background/progress pair would suggest.
     pub jump_bar: [HudSprite; 3],
+    /// `hud/hotbar_offhand_{left,right}`, 29x24 each, in that order.
+    pub offhand: [HudSprite; 2],
     /// `mob_effect/<name>.png` for every row of
     /// [`crate::mob_effect_table::MOB_EFFECTS`], in that order — which is
     /// the registry's protocol-id order, so the index IS the wire id.
@@ -3944,6 +3946,10 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
             get(jar, "gui/sprites/hud/jump_bar_background.png")?,
             get(jar, "gui/sprites/hud/jump_bar_cooldown.png")?,
             get(jar, "gui/sprites/hud/jump_bar_progress.png")?,
+        ],
+        offhand: [
+            get(jar, "gui/sprites/hud/hotbar_offhand_left.png")?,
+            get(jar, "gui/sprites/hud/hotbar_offhand_right.png")?,
         ],
         effect_icons: {
             let mut out = Vec::with_capacity(crate::mob_effect_table::MOB_EFFECTS.len());
@@ -6832,6 +6838,34 @@ mod tests {
             Some((bake(&jar, &blocks).expect("bake"), raw))
         })
         .as_ref()
+    }
+
+    /// The compass, the recovery compass and the clock used to be suppressed
+    /// (a `range_dispatch` over a needle). Each now bakes a plain model for the
+    /// first threshold and one variant per frame the needle can pick: 32 for
+    /// each compass and 64 for the clock (`item/compass_00`..`_31`,
+    /// `item/clock_00`..`_63`, as the jar names them).
+    #[test]
+    fn the_needle_items_bake_a_model_and_every_frame() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let held = &baked.held_items;
+        let variants = held.use_variants();
+        for (item, prefix, frames) in [
+            ("compass", "compass", 32usize),
+            ("recovery_compass", "recovery_compass", 32),
+            ("clock", "clock", 64),
+        ] {
+            let name = format!("minecraft:{item}");
+            assert!(held.get(&name).is_some(), "{item} has no plain model");
+            assert!(variants.is_dynamic(&name), "{item} is not dynamic");
+            for i in 0..frames {
+                let key = format!("{name}#minecraft:item/{prefix}_{i:02}");
+                assert!(held.get(&key).is_some(), "{key} did not bake");
+            }
+        }
     }
 
     /// Every state id of `block` whose `blocks.json` property map contains

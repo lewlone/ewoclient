@@ -67,6 +67,7 @@ pub(crate) use entities::*;
 mod gui;
 pub(crate) use gui::*;
 mod headless;
+mod needles;
 use headless::*;
 mod hud;
 pub(crate) use hud::*;
@@ -783,11 +784,11 @@ struct LiveApp {
     /// `Hud.isHidden()` — F1 (M70). Vanilla's is a plain `toggle()` on press,
     /// with none of F3's modifier dance, and it starts `false`.
     ///
-    /// Rewo consumes it only where vanilla's *label* path does: it suppresses
-    /// floating nametags and health bars on un-teamed entities. Vanilla also
-    /// hides the whole GUI layer from it (`guiRenderState.isHudHidden`);
-    /// hiding Rewo's hotbar/hearts/F3 block is a separate concern this
-    /// milestone deliberately leaves alone, and is recorded as open.
+    /// It suppresses floating nametags and health bars on un-teamed entities
+    /// (M70) and, through [`HudLayers::of`], everything vanilla hides from it:
+    /// the camera overlays, crosshair, hotbar and its decorations, sidebar,
+    /// action bar, title, chat history and tab list, plus the first-person
+    /// hand and the block outline. The F3 block stays, as in vanilla.
     hud_hidden: bool,
     /// `PlayerTabOverlay.healthStates` — the per-profile blink clock (M155).
     ///
@@ -909,6 +910,8 @@ struct LiveApp {
     /// stepped on.
     vignette_brightness: f32,
     vignette_tick: u64,
+    /// The compass and clock needles' damped state (see `needles.rs`).
+    needles: needles::NeedleClock,
     /// M283 — `Player.sleepCounter` (client side) and `Hud.scopeScale`.
     sleep_counter: i32,
     scope_scale: f32,
@@ -1367,6 +1370,7 @@ fn run_windowed(
         rc_captured_at: false,
         vignette_brightness: rewo_world::vignette::VIGNETTE_START,
         vignette_tick: 0,
+        needles: Default::default(),
         sleep_counter: 0,
         scope_scale: 0.5,
         last_dt: 0.0,

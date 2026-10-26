@@ -164,6 +164,18 @@ pub fn apply_spawn_game_mode(
     );
 }
 
+/// [`PlaySession::local_game_mode`]'s choice: the mode the client was told
+/// (`localPlayerMode`) wins over the tab-list entry. The entry is keyed by a
+/// uuid that only matches the local player when the client's own uuid is the
+/// server's, so it is the unreliable half; a creative session that read it
+/// as absent drew the survival bars.
+pub fn resolve_local_game_mode(
+    told: Option<GameMode>,
+    listed: Option<GameMode>,
+) -> Option<GameMode> {
+    told.or(listed)
+}
+
 /// `UUID.toString()` — the dashed lowercase 8-4-4-4-12 form, which is what
 /// `Entity.stringUUID` holds and therefore what a non-player entity's
 /// scoreboard membership is keyed by (M70).
@@ -698,6 +710,10 @@ pub struct PlaySession {
     /// `ClientLevelData.getHorizonHeight` is the level's bottom on a flat
     /// world and 63 otherwise, which decides vanilla's dark sky disc.
     pub level_is_flat: bool,
+    /// `CommonPlayerSpawnInfo.lastDeathLocation` from the latest login /
+    /// respawn: `player.getLastDeathLocation()`, which the recovery compass
+    /// points at.
+    pub last_death_location: Option<crate::spawn_info::GlobalPos>,
     /// The chunk-batch flow-control loop (M74). Rewo used to answer
     /// `chunk_batch_finished` with the literal `64.0`; vanilla answers this
     /// calculator, whose opening bid is `3.5`. See [`crate::chunk_batch`] —
@@ -2045,6 +2061,7 @@ impl<'a> Connection<'a> {
             view_area: crate::view_area::ViewArea::default(),
             client_info: self.client_info,
             level_is_flat: false,
+            last_death_location: None,
             // Vanilla seeds `chunkBatchStartTime` in the calculator's
             // constructor, so a `chunk_batch_finished` that somehow arrives
             // before any `chunk_batch_start` still measures a finite interval.
@@ -4906,9 +4923,21 @@ impl PlaySession {
         self.gamemodes.get(&uuid).copied()
     }
 
-    /// The local player's game mode.
+    /// The local player's game mode **as the tab list holds it**
+    /// (`PlayerInfo.getGameMode()`). It needs [`Self::own_uuid`] to equal the
+    /// uuid the server lists the player under, which an offline-mode server
+    /// derives itself; use [`Self::local_game_mode`] for what
+    /// `MultiPlayerGameMode` believes.
     pub fn own_game_mode(&self) -> Option<GameMode> {
         self.own_uuid.and_then(|u| self.game_mode(u))
+    }
+
+    /// `MultiPlayerGameMode.getPlayerMode()`: the mode the login and respawn
+    /// packets and `game_event` 3 set, which is what `canHurtPlayer()`,
+    /// `hasExperience()` and the HUD gates read. The tab-list entry is only
+    /// the fallback for a session that was never told one.
+    pub fn local_game_mode(&self) -> Option<GameMode> {
+        resolve_local_game_mode(self.game_state.game_mode(), self.own_game_mode())
     }
 
     /// The local player's own attribute snapshots (M73).
@@ -5100,6 +5129,7 @@ impl PlaySession {
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, &spawn);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
         self.level_is_flat = spawn.is_flat;
+        self.last_death_location = spawn.last_death_location.clone();
         // M76. `handleLogin` builds the first `ClientLevel`, whose constructor
         // seeds the respawn data to `(8, 64, 8)` **of that level** — not to
         // `RespawnData.DEFAULT`, which no client ever holds. The server's
@@ -5169,6 +5199,7 @@ impl PlaySession {
         // parse succeeds, alongside everything else this packet establishes.
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, spawn);
         self.level_is_flat = spawn.is_flat;
+        self.last_death_location = spawn.last_death_location.clone();
         let changed = WorldTransition {
             world: &mut self.world,
             dirty: &mut self.dirty,

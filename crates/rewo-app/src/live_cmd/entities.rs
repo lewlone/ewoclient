@@ -1981,7 +1981,7 @@ pub(crate) fn use_model(
     if !variants.is_dynamic(name) {
         return name;
     }
-    let mut ctx = rewo_data::item_models::SelectionContext::hand();
+    let mut ctx = needles::with_current_needles(rewo_data::item_models::SelectionContext::hand());
     if use_state.using && use_state.hand == hand {
         let ticks = use_state.ticks_using_item();
         let pull = if charged.is_some() {

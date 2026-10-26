@@ -475,6 +475,128 @@ pub struct SelectionContext<'a> {
     /// M234 — `Charge.get`: `"arrow"` or `"rocket"` for a charged crossbow,
     /// `None` for `ChargeType.NONE`.
     pub charge_type: Option<&'a str>,
+    /// `minecraft:context_dimension` — the owner's level, which the clock's
+    /// `select` switches on. `None` matches no case (vanilla's answer with no
+    /// level), so the clock takes its fallback.
+    pub dimension: Option<&'a str>,
+    /// The compass and clock properties' current values.
+    pub needles: Needles,
+}
+
+/// What the numeric needle properties read (`CompassAngle`, `Time`), in
+/// **turns** (0..1) before the definition's `scale`.
+///
+/// A compass is a `range_dispatch` over `minecraft:compass`, whose value
+/// depends on where the owner is and which way they face; the clock's depends
+/// on the time of day. The caller computes them once per frame and the
+/// reduction only compares them with the thresholds. All zero is the model at
+/// the first threshold: the compass's `item/compass_16` and the clock's
+/// `item/clock_00`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Needles {
+    /// `CompassAngleState` for `target: spawn`.
+    pub compass_spawn: f32,
+    /// ...for `target: recovery` (the last death location).
+    pub compass_recovery: f32,
+    /// `Time` with `source: daytime`: the sun angle over 360.
+    pub clock_daytime: f32,
+}
+
+/// `Mth.positiveModulo(float, float)`.
+fn positive_modulo(x: f32, y: f32) -> f32 {
+    (x % y + y) % y
+}
+
+/// `NeedleDirectionHelper.standardWobbler`: the damped spring a compass or
+/// clock needle swings on. Vanilla keeps one per item model and advances it
+/// at most once per game tick, so it is driven here by the tick number.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wobbler {
+    rotation: f32,
+    delta_rotation: f32,
+    last_update_tick: i64,
+    /// `0.8` for the compass (`CompassAngleState`), `0.9` for the clock.
+    factor: f32,
+}
+
+impl Wobbler {
+    pub fn new(factor: f32) -> Self {
+        Self {
+            rotation: 0.0,
+            delta_rotation: 0.0,
+            last_update_tick: 0,
+            factor,
+        }
+    }
+
+    /// The current rotation, in turns.
+    pub fn rotation(&self) -> f32 {
+        self.rotation
+    }
+
+    /// `shouldUpdate(tick)` then `update(tick, target)`: pull the needle
+    /// toward `target` (turns), once per distinct tick.
+    pub fn update(&mut self, tick: i64, target: f32) {
+        if self.last_update_tick == tick {
+            return;
+        }
+        self.last_update_tick = tick;
+        let temp = positive_modulo(target - self.rotation + 0.5, 1.0) - 0.5;
+        self.delta_rotation += temp * 0.1;
+        self.delta_rotation *= self.factor;
+        self.rotation = positive_modulo(self.rotation + self.delta_rotation, 1.0);
+    }
+}
+
+/// `CompassAngleState.getRotationTowardsCompassTarget`'s two inputs for an
+/// owner at `owner` (feet position) whose body faces `body_yaw_deg`, with the
+/// target block `target`; `None` when the target is on top of the owner
+/// (`isValidCompassTargetPos`'s `distToCenterSqr < 1.0E-5`, which sends the
+/// needle spinning). The dimension test is the caller's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompassAim {
+    /// `getAngleFromEntityToPos`: `atan2(dz, dx) / 2π` toward the block's
+    /// centre.
+    pub angle_to_target: f32,
+    /// `getWrappedVisualRotationY`: the owner's body yaw over 360, wrapped.
+    pub owner_y: f32,
+}
+
+impl CompassAim {
+    pub fn new(owner: [f64; 3], body_yaw_deg: f32, target: [i32; 3]) -> Option<Self> {
+        let centre = |v: i32| f64::from(v) + 0.5;
+        let (dx, dy, dz) = (
+            centre(target[0]) - owner[0],
+            centre(target[1]) - owner[1],
+            centre(target[2]) - owner[2],
+        );
+        // The comparison is against a float literal widened to double.
+        if dx * dx + dy * dy + dz * dz < f64::from(1.0E-5f32) {
+            return None;
+        }
+        Some(Self {
+            // `Math.atan2(..) / (float)(Math.PI * 2)`.
+            angle_to_target: (dz.atan2(dx) / f64::from((std::f64::consts::PI * 2.0) as f32)) as f32,
+            owner_y: positive_modulo(body_yaw_deg / 360.0, 1.0),
+        })
+    }
+
+    /// The needle for any owner but the local player (and the value a
+    /// settled local needle converges on): `0.5 - (ownerY - 0.25 - angle)`.
+    pub fn turns(&self) -> f32 {
+        positive_modulo(0.5 - (self.owner_y - 0.25 - self.angle_to_target), 1.0)
+    }
+
+    /// What the local player's wobbler is pulled toward each tick.
+    pub fn wobble_target(&self) -> f32 {
+        0.5 - (self.owner_y - 0.25)
+    }
+
+    /// The local player's needle: the angle to the target plus the wobbler's
+    /// swing (`angleToTarget + wobbler.rotation()`).
+    pub fn turns_wobbled(&self, wobbler: &Wobbler) -> f32 {
+        positive_modulo(self.angle_to_target + wobbler.rotation(), 1.0)
+    }
 }
 
 impl<'a> SelectionContext<'a> {
@@ -487,6 +609,12 @@ impl<'a> SelectionContext<'a> {
             use_remaining: 0,
             crossbow_pull: 0.0,
             charge_type: None,
+            dimension: Some("minecraft:overworld"),
+            needles: Needles {
+                compass_spawn: 0.0,
+                compass_recovery: 0.0,
+                clock_daytime: 0.0,
+            },
         }
     }
     pub fn hand() -> Self {
@@ -512,6 +640,15 @@ impl<'a> SelectionContext<'a> {
     pub fn with_charge(self, charge_type: Option<&'a str>) -> Self {
         Self {
             charge_type,
+            ..self
+        }
+    }
+
+    /// The same context for an owner in `dimension`, with these needle values.
+    pub fn with_needles(self, dimension: Option<&'a str>, needles: Needles) -> Self {
+        Self {
+            dimension,
+            needles,
             ..self
         }
     }
@@ -669,6 +806,10 @@ fn chosen_child<'v>(
             } else if property == "minecraft:charge_type" {
                 // M234 — `Charge.get`; `NONE` matches no vanilla case.
                 ctx.charge_type.and_then(|want| case_for(node, want))
+            } else if property == "minecraft:context_dimension" {
+                // The clock: an overworld case with the day/night dial, and a
+                // fallback that spins at random everywhere else.
+                ctx.dimension.and_then(|want| case_for(node, want))
             } else if ABSENT_ON_A_PLAIN_STACK.contains(&property) {
                 // The property reads absent, so no case matches. This is
                 // vanilla's own answer, not a substitution.
@@ -710,6 +851,21 @@ fn chosen_child<'v>(
                     }
                 }
                 "minecraft:crossbow/pull" => ctx.crossbow_pull,
+                // `CompassAngle`. A lodestone target needs the stack's
+                // `lodestone_tracker`, which `has_component` reads as absent
+                // here, so only the targets a plain stack reaches are known.
+                "minecraft:compass" => match node.get("target").and_then(|t| t.as_str()) {
+                    Some("spawn") => ctx.needles.compass_spawn,
+                    Some("recovery") => ctx.needles.compass_recovery,
+                    _ => return Err(blocked(node, Some(property))),
+                },
+                // `Time`. `random` spins in the Nether and the End; a still
+                // needle is the recorded approximation.
+                "minecraft:time" => match node.get("source").and_then(|t| t.as_str()) {
+                    Some("daytime") => ctx.needles.clock_daytime,
+                    Some("random") => 0.0,
+                    _ => return Err(blocked(node, Some(property))),
+                },
                 p if ZERO_ON_A_PLAIN_STACK.contains(&p) => 0.0,
                 _ => return Err(blocked(node, Some(property))),
             };
@@ -755,16 +911,22 @@ fn chosen_child<'v>(
     }
 }
 
-/// Whether `node` branches on the owner's use or a crossbow's charge (M234):
-/// a `using_item` condition, a `use_duration` / `crossbow/pull` range
-/// dispatch, or a `charge_type` select.
+/// Whether `node` branches on live state the draw path supplies: the owner's
+/// use or a crossbow's charge (M234) -- a `using_item` condition, a
+/// `use_duration` / `crossbow/pull` range dispatch, a `charge_type` select --
+/// or a needle (the compass's and clock's range dispatches).
 fn branches_on_use(node: &Value) -> bool {
     let property = node.get("property").and_then(|p| p.as_str());
     match node.get("type").and_then(|t| t.as_str()) {
         Some("minecraft:condition") => property == Some("minecraft:using_item"),
         Some("minecraft:range_dispatch") => matches!(
             property,
-            Some("minecraft:use_duration" | "minecraft:crossbow/pull")
+            Some(
+                "minecraft:use_duration"
+                    | "minecraft:crossbow/pull"
+                    | "minecraft:compass"
+                    | "minecraft:time"
+            )
         ),
         Some("minecraft:select") => property == Some("minecraft:charge_type"),
         _ => false,
@@ -1892,13 +2054,13 @@ mod tests {
     #[test]
     fn an_unevaluable_property_names_itself_in_the_reason() {
         let def = json(
-            r#"{"model":{"type":"minecraft:select","property":"minecraft:context_dimension",
+            r#"{"model":{"type":"minecraft:select","property":"minecraft:context_entity_type",
                  "cases":[],"fallback":{"type":"minecraft:model","model":"minecraft:block/dirt"}}}"#,
         );
         let m = resolve_definition(&def, &mut reader(vec![]), SelectionContext::gui());
         assert_eq!(
             m,
-            ItemModel::Unsupported("minecraft:select (minecraft:context_dimension)".into()),
+            ItemModel::Unsupported("minecraft:select (minecraft:context_entity_type)".into()),
             "a property nobody has checked must suppress, and say which one"
         );
     }
@@ -2081,5 +2243,176 @@ mod tests {
             }
             other => panic!("expected Resolved, got {other:?}"),
         }
+    }
+
+    /// A compass's `range_dispatch` over `minecraft:compass`, three entries
+    /// out of 33: thresholds 0, 0.5 and 31.5 on a scale of 32.
+    const COMPASS: &str = r#"{"model":{"type":"minecraft:condition","property":"minecraft:has_component",
+        "component":"minecraft:lodestone_tracker",
+        "on_true":{"type":"minecraft:model","model":"minecraft:item/lodestone"},
+        "on_false":{"type":"minecraft:range_dispatch","property":"minecraft:compass",
+            "target":"spawn","scale":32.0,"entries":[
+              {"threshold":0.0,"model":{"type":"minecraft:model","model":"minecraft:item/compass_16"}},
+              {"threshold":0.5,"model":{"type":"minecraft:model","model":"minecraft:item/compass_17"}},
+              {"threshold":31.5,"model":{"type":"minecraft:model","model":"minecraft:item/compass_16"}}]}}}"#;
+
+    fn leaf_of(def: &str, ctx: SelectionContext<'_>) -> String {
+        let def = json(def);
+        reduce_definition(&def["model"], ctx)
+            .expect("reduces")
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap()
+            .to_string()
+    }
+
+    /// A compass is no longer suppressed: with every needle at zero it is the
+    /// first threshold's model, and the needle value moves it along the
+    /// entries (`RangeSelectItemModel` takes the last threshold reached, and
+    /// the scaled value wraps back to the first model past 31.5).
+    #[test]
+    fn a_compass_reduces_by_its_needle() {
+        let at = |turns: f32| {
+            leaf_of(
+                COMPASS,
+                SelectionContext::hand().with_needles(
+                    Some("minecraft:overworld"),
+                    Needles {
+                        compass_spawn: turns,
+                        ..Needles::default()
+                    },
+                ),
+            )
+        };
+        assert_eq!(
+            leaf_of(COMPASS, SelectionContext::hand()),
+            "minecraft:item/compass_16"
+        );
+        assert_eq!(at(0.0), "minecraft:item/compass_16");
+        assert_eq!(at(0.5 / 32.0), "minecraft:item/compass_17");
+        assert_eq!(at(0.9), "minecraft:item/compass_17");
+        assert_eq!(at(31.6 / 32.0), "minecraft:item/compass_16");
+    }
+
+    /// The recovery compass reads the recovery needle, not the spawn one.
+    #[test]
+    fn a_recovery_compass_reads_the_recovery_needle() {
+        let def = COMPASS.replace("\"target\":\"spawn\"", "\"target\":\"recovery\"");
+        let ctx = |spawn: f32, recovery: f32| {
+            SelectionContext::hand().with_needles(
+                Some("minecraft:overworld"),
+                Needles {
+                    compass_spawn: spawn,
+                    compass_recovery: recovery,
+                    clock_daytime: 0.0,
+                },
+            )
+        };
+        assert_eq!(leaf_of(&def, ctx(0.5, 0.0)), "minecraft:item/compass_16");
+        assert_eq!(leaf_of(&def, ctx(0.0, 0.5)), "minecraft:item/compass_17");
+    }
+
+    /// An unknown compass target is suppressed, not guessed.
+    #[test]
+    fn an_unknown_compass_target_is_suppressed() {
+        let def = json(&COMPASS.replace("\"target\":\"spawn\"", "\"target\":\"mars\""));
+        assert!(reduce_definition(&def["model"], SelectionContext::hand()).is_err());
+    }
+
+    /// The clock: the overworld case dials the sun angle, any other dimension
+    /// takes the fallback (a `random` needle, held still here).
+    #[test]
+    fn a_clock_dials_the_sun_in_the_overworld_only() {
+        let clock = r#"{"model":{"type":"minecraft:select","property":"minecraft:context_dimension",
+            "cases":[{"when":"minecraft:overworld","model":{"type":"minecraft:range_dispatch",
+                "property":"minecraft:time","source":"daytime","scale":64.0,"entries":[
+                {"threshold":0.0,"model":{"type":"minecraft:model","model":"minecraft:item/clock_00"}},
+                {"threshold":32.0,"model":{"type":"minecraft:model","model":"minecraft:item/clock_32"}}]}}],
+            "fallback":{"type":"minecraft:range_dispatch","property":"minecraft:time",
+                "source":"random","scale":64.0,"entries":[
+                {"threshold":0.0,"model":{"type":"minecraft:model","model":"minecraft:item/clock_00"}},
+                {"threshold":32.0,"model":{"type":"minecraft:model","model":"minecraft:item/clock_32"}}]}}}"#;
+        let ctx = |dim: Option<&'static str>, t: f32| {
+            SelectionContext::hand().with_needles(
+                dim,
+                Needles {
+                    clock_daytime: t,
+                    ..Needles::default()
+                },
+            )
+        };
+        assert_eq!(
+            leaf_of(clock, ctx(Some("minecraft:overworld"), 0.75)),
+            "minecraft:item/clock_32"
+        );
+        assert_eq!(
+            leaf_of(clock, ctx(Some("minecraft:the_nether"), 0.75)),
+            "minecraft:item/clock_00"
+        );
+        assert_eq!(
+            leaf_of(clock, ctx(None, 0.75)),
+            "minecraft:item/clock_00",
+            "no level matches no case"
+        );
+    }
+
+    /// Every model a compass can reach is a variant the bake must make.
+    #[test]
+    fn a_compass_bakes_every_frame_as_a_variant() {
+        let def = json(COMPASS);
+        let leaves = use_variant_leaves(&def["model"], SelectionContext::hand());
+        let models: Vec<&str> = leaves
+            .iter()
+            .filter_map(|l| l.get("model").and_then(|m| m.as_str()))
+            .collect();
+        assert!(models.contains(&"minecraft:item/compass_16"));
+        assert!(models.contains(&"minecraft:item/compass_17"), "{models:?}");
+    }
+
+    /// Facing the target, the needle points straight ahead (turn 0), whichever
+    /// way the owner faces. Derived from the compass directions, not from the
+    /// formula: Minecraft yaw 0 faces +Z, 90 faces -X, -90 (270) faces +X.
+    #[test]
+    fn facing_the_target_points_the_needle_ahead() {
+        for (yaw, target) in [
+            (0.0f32, [0, 0, 10]),
+            (90.0, [-10, 0, 0]),
+            (-90.0, [10, 0, 0]),
+            (180.0, [0, 0, -10]),
+        ] {
+            let aim = CompassAim::new([0.5, 0.0, 0.5], yaw, target).unwrap();
+            let t = aim.turns();
+            assert!(t < 1e-4 || t > 1.0 - 1e-4, "yaw {yaw}: {t}");
+        }
+        // Turning right (yaw decreases) with the target still south: the
+        // needle swings the other way round the dial.
+        let right = CompassAim::new([0.5, 0.0, 0.5], -90.0, [0, 0, 10]).unwrap();
+        assert!((right.turns() - 0.75).abs() < 1e-4 || (right.turns() - 0.25).abs() < 1e-4);
+    }
+
+    /// A target on top of the owner has no direction.
+    #[test]
+    fn a_target_under_the_owner_has_no_aim() {
+        assert!(CompassAim::new([0.5, 64.5, 0.5], 0.0, [0, 64, 0]).is_none());
+        assert!(CompassAim::new([0.5, 64.0, 0.5], 0.0, [0, 64, 1]).is_some());
+    }
+
+    /// The wobbler moves once per game tick, and settles on a steady target.
+    #[test]
+    fn the_wobbler_updates_once_per_tick_and_settles() {
+        let mut w = Wobbler::new(0.8);
+        w.update(1, 0.25);
+        let first = w.rotation();
+        assert!(first > 0.0 && first < 0.25, "{first}");
+        w.update(1, 0.25);
+        assert_eq!(
+            w.rotation(),
+            first,
+            "a second update in one tick is a no-op"
+        );
+        for tick in 2..400 {
+            w.update(tick, 0.25);
+        }
+        assert!((w.rotation() - 0.25).abs() < 1e-3, "{}", w.rotation());
     }
 }

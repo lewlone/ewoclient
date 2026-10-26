@@ -1827,6 +1827,11 @@ impl LiveApp {
         {
             log::warn!("live: held-item texture upload: {e}");
         }
+        // The compass and clock needles for every draw below and the hotbar's.
+        let needle_frame = self
+            .needles
+            .advance(session.ticks as i64, &needles::inputs_of(session));
+        needles::set_frame(needle_frame);
         // M282 — the vignette: one `updateVignetteBrightness` per game tick
         // (a long gap is a fresh session: start over rather than replay it).
         if session.ticks < self.vignette_tick || session.ticks - self.vignette_tick > 200 {
@@ -1921,11 +1926,18 @@ impl LiveApp {
         } else {
             Vec::new()
         };
+        // F1 hides `extractCameraOverlays` (vignette, spyglass, pumpkin,
+        // powder snow); the sleep fade is outside the `!isHidden` blocks.
+        let layers = HudLayers::of(self.hud_hidden, self.chat_screen.is_some());
+        if !layers.camera_overlays {
+            early.clear();
+        }
         state.world_renderer.set_camera_overlays(early, late);
         state.world_renderer.set_vignette(
             self.options
                 .vignette
-                .then(|| vignette_color_now(session, self.vignette_brightness)),
+                .then(|| vignette_color_now(session, self.vignette_brightness))
+                .filter(|_| layers.camera_overlays),
         );
         // M278 — the glowing outline's targets, at the swapchain's size.
         if let Err(e) = state.world_renderer.ensure_outline(
@@ -2789,7 +2801,11 @@ impl LiveApp {
             look_dir(session.player.yaw, session.player.pitch),
             block_reach(session),
         );
-        state.world_renderer.set_selection(hit.map(|h| h.block));
+        // `shouldRenderBlockOutline` requires `!hud.isHidden()`.
+        let outline = HudLayers::of(self.hud_hidden, self.chat_screen.is_some()).block_outline;
+        state
+            .world_renderer
+            .set_selection(hit.filter(|_| outline).map(|h| h.block));
         let (mut leash_verts, quad_leashes) =
             collect_leashes(session, &self.etypes, alpha, &lightmap);
         // M241 — the fishing lines ride the leash pass (a black ribbon).
@@ -2892,6 +2908,7 @@ impl LiveApp {
         // differ.
         let ext = state.window.inner_size();
         let (sw, sh) = (ext.width as f32, ext.height as f32);
+        let layers = HudLayers::of(self.hud_hidden, self.chat_screen.is_some());
         let hovered = self
             .screen
             .inventory_open()
@@ -3147,14 +3164,19 @@ impl LiveApp {
                 self.screen_labels.clear();
                 state.world_renderer.set_velvet_runs(Vec::new());
                 state.world_renderer.set_preview(None);
-                apply_hotbar_icons(
-                    &mut state.world_renderer,
-                    &mut state.gpu,
-                    session,
-                    &items,
-                    gi,
-                    (sw, sh),
-                );
+                if layers.hotbar_and_decorations {
+                    // The stack counts ride the text pass like the screen's.
+                    self.screen_labels = apply_hotbar_icons(
+                        &mut state.world_renderer,
+                        &mut state.gpu,
+                        session,
+                        &items,
+                        gi,
+                        (sw, sh),
+                    );
+                } else {
+                    clear_hotbar_icons(&mut state.world_renderer, &mut state.gpu, gi);
+                }
             }
         }
         if !self.screen.inventory_open() {
@@ -3173,7 +3195,8 @@ impl LiveApp {
             h.tick(session, &items);
             // M284 — and while asleep (`renderItemInHand`'s
             // `!isSleeping`): the camera lies in the bed.
-            if self.screen.inventory_open() || session.is_sleeping() {
+            // ...and `renderItemInHand`'s `!isHudHidden`.
+            if self.screen.inventory_open() || session.is_sleeping() || !layers.item_in_hand {
                 let _ = state
                     .world_renderer
                     .set_hand(&mut state.gpu, &[], [[0.0; 4]; 4]);
@@ -3263,6 +3286,7 @@ impl LiveApp {
     /// text.
     fn hud_pass(&mut self, view: &FrameView, session: &mut PlaySession, state: &mut LiveState) {
         let (alpha, extent) = (view.alpha, view.extent);
+        let layers = HudLayers::of(self.hud_hidden, self.chat_screen.is_some());
         let contextual = contextual_info(session);
         let survival_inputs = resolve_survival_inputs(
             session,
@@ -3270,15 +3294,32 @@ impl LiveApp {
             self.started.elapsed().as_millis() as u64,
             contextual,
         );
-        let survival = rewo_gpu::survival_hud::layout_for_screen(
+        let mut survival = rewo_gpu::survival_hud::layout_for_screen(
             &survival_inputs,
             extent.width as f32,
             extent.height as f32,
         );
+        // `extractItemHotbar`'s off-hand pocket, under the hotbar's gauges.
+        if session.inventory.offhand().is_some() {
+            survival.insert(
+                0,
+                rewo_gpu::hud::offhand_blit(
+                    extent.width as f32,
+                    extent.height as f32,
+                    OFFHAND_LEFT,
+                ),
+            );
+        }
         // M188 — `Hud.playAirBubblePoppedSound`, from the same inputs the
         // bars were laid out from: `LocalPlayer.playSound` is
         // `level.playLocalSound(getX(), getY(), getZ(), sound, PLAYERS, ...)`.
-        if let Some(pop) = self.bubble_popper.frame(&survival_inputs) {
+        // The pop plays from inside `extractAirBubbles`, which a hidden HUD
+        // never reaches.
+        let pop = layers
+            .hotbar_and_decorations
+            .then(|| self.bubble_popper.frame(&survival_inputs))
+            .flatten();
+        if let Some(pop) = pop {
             self.sounds.play_now(rewo_net::sounds::SoundEvent::Local(
                 rewo_net::sounds::LocalSound {
                     name: rewo_gpu::survival_hud::BubblePopper::EVENT.to_string(),
@@ -3354,6 +3395,9 @@ impl LiveApp {
             c.jump_scale_max = c.jump_scale_max.max(session.jump_riding_scale());
             c.riding_jumps_sent = session.riding_jumps_sent();
         }
+        state
+            .world_renderer
+            .set_hud_hidden(!layers.hotbar_and_decorations);
         state.world_renderer.set_hud(
             session.inventory.selected(),
             resolve_hud_gauges(
@@ -3466,14 +3510,16 @@ impl LiveApp {
             Some(l) => sidebar_fills(l),
             None => Vec::new(),
         };
-        backdrops.extend(hud_fills(
-            &session.chat,
-            session.ticks as i32,
-            px,
-            extent.height as f32,
-            &rewo_ui::chat::ChatOptions::default(),
-            chat_focused,
-        ));
+        if layers.chat_history {
+            backdrops.extend(hud_fills(
+                &session.chat,
+                session.ticks as i32,
+                px,
+                extent.height as f32,
+                &rewo_ui::chat::ChatOptions::default(),
+                chat_focused,
+            ));
+        }
         if chat_focused {
             // The input bar goes on the same list AFTER the rows, so it sits
             // over them — one list, and its order is the order on screen.
@@ -3613,6 +3659,7 @@ impl LiveApp {
             fps,
             self.debug,
             chat_focused,
+            layers.chat_history,
             state.world_renderer.font_advance().copied(),
         );
         // M132 — the sidebar's lines lead the list, for the stratum reason
@@ -3809,38 +3856,44 @@ impl LiveApp {
         // M66: the held-item name over the hotbar. Needs the font's advances
         // to centre itself, so it is built here rather than in `build_text`.
         if let Some(advance) = state.world_renderer.font_advance() {
-            text.extend(selected_item_name_line(
-                session,
-                &self.items,
-                &self.tool_highlight,
-                advance,
-                px,
-                (extent.width as f32, extent.height as f32),
-            ));
+            if layers.hotbar_and_decorations {
+                text.extend(selected_item_name_line(
+                    session,
+                    &self.items,
+                    &self.tool_highlight,
+                    advance,
+                    px,
+                    (extent.width as f32, extent.height as f32),
+                ));
+            }
             // M79: the XP level number, then the title / subtitle / action
             // bar. The titles go last so they sit over everything the HUD
             // draws, which is where `nextStratum()` puts them in vanilla.
-            text.extend(experience_level_lines(
-                &session.hud.experience,
-                has_experience(session),
-                self.baked.as_ref().map(|b| &b.lang),
-                advance,
-                px,
-                (extent.width as f32, extent.height as f32),
-            ));
-            text.extend(title_lines(
-                &session.hud.titles,
-                advance,
-                px,
-                (extent.width as f32, extent.height as f32),
-                // `deltaTracker.getGameTimeDeltaPartialTick(false)` — this
-                // frame's fraction of the way into the current tick, the same
-                // `alpha` the entity lerps use.
-                alpha,
-                // M125 — the same handover `experience_level_lines` above
-                // takes, so `/title {"translate":...}` resolves.
-                self.baked.as_ref().map(|b| &b.lang),
-            ));
+            if layers.hotbar_and_decorations {
+                text.extend(experience_level_lines(
+                    &session.hud.experience,
+                    has_experience(session),
+                    self.baked.as_ref().map(|b| &b.lang),
+                    advance,
+                    px,
+                    (extent.width as f32, extent.height as f32),
+                ));
+            }
+            if layers.overlay_messages {
+                text.extend(title_lines(
+                    &session.hud.titles,
+                    advance,
+                    px,
+                    (extent.width as f32, extent.height as f32),
+                    // `deltaTracker.getGameTimeDeltaPartialTick(false)` — this
+                    // frame's fraction of the way into the current tick, the
+                    // same `alpha` the entity lerps use.
+                    alpha,
+                    // M125 — the same handover `experience_level_lines` above
+                    // takes, so `/title {"translate":...}` resolves.
+                    self.baked.as_ref().map(|b| &b.lang),
+                ));
+            }
         }
         // The stack counts are text like any other line, drawn after the icons
         // because the text pass runs last.
@@ -4128,7 +4181,12 @@ impl LiveApp {
                 (extent.height as f32 / scale) as i32,
                 alpha,
             );
-            state.world_renderer.set_locator_bar(bar);
+            // The contextual bar is part of `extractHotbarAndDecorations`.
+            let hidden =
+                !HudLayers::of(self.hud_hidden, self.chat_screen.is_some()).hotbar_and_decorations;
+            state
+                .world_renderer
+                .set_locator_bar(bar.filter(|_| !hidden));
         }
         let vp = eye_view_proj_hurt(
             eye,
