@@ -419,6 +419,35 @@ pub struct Flight {
     pub arrow: bool,
 }
 
+/// One tick's crit-particle trail of a critical arrow
+/// (`AbstractArrow.tick`'s `if (isCritArrow())` loop): where the arrow was
+/// and the movement it moved by, before the tick's drag and gravity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CritTrail {
+    pub origin: [f64; 3],
+    pub movement: [f64; 3],
+}
+
+impl CritTrail {
+    /// The four `addParticle(CRIT, ...)` calls: `origin + movement * i / 4`
+    /// with the velocity `(-movement.x, -movement.y + 0.2, -movement.z)`.
+    pub fn particles(&self) -> [([f64; 3], [f64; 3]); 4] {
+        let (o, m) = (self.origin, self.movement);
+        let vel = [-m[0], -m[1] + 0.2, -m[2]];
+        std::array::from_fn(|i| {
+            let i = i as f64;
+            (
+                [
+                    o[0] + m[0] * i / 4.0,
+                    o[1] + m[1] * i / 4.0,
+                    o[2] + m[2] * i / 4.0,
+                ],
+                vel,
+            )
+        })
+    }
+}
+
 /// M362 — `AbstractArrow` (arrow, spectral arrow, trident): gravity 0.05,
 /// air drag 0.99.
 pub const ARROW_FLIGHT: Flight = Flight {
@@ -495,6 +524,9 @@ pub struct EntityState {
     prev_head_yaw: f32,
     /// M362 — the flight the client ticks this entity with (a projectile).
     flight: Option<Flight>,
+    /// `AbstractArrow.isCritArrow()` (`ID_FLAGS` bit 1): a critical arrow
+    /// trails crit particles while it flies.
+    arrow_crit: bool,
     /// M362 — `AbstractArrow.IN_GROUND` (or a block the client's own flight
     /// hit): the flight has ended.
     in_ground: bool,
@@ -662,6 +694,7 @@ impl EntityState {
             prev_pitch: pitch,
             prev_head_yaw: yaw,
             flight: None,
+            arrow_crit: false,
             in_ground: false,
             lerp_steps: 0,
             lerp_len: LERP_STEPS,
@@ -915,15 +948,18 @@ impl EntityState {
     /// `atan2(y, horizontal)`), the move is clipped against `solid` (a point
     /// test on the blocks' collision boxes) and a hit ends the flight there,
     /// else the entity moves by the whole movement; then the drag and the
-    /// gravity. Not modelled: water's inertia, entity hits (the server
-    /// removes the projectile).
-    pub fn step_flight(&mut self, solid: &dyn Fn([f64; 3]) -> bool) {
-        let Some(flight) = self.flight else {
-            return;
-        };
+    /// gravity. Not modelled: water's inertia (and its bubbles), entity hits
+    /// (the server removes the projectile). A critical arrow in flight
+    /// returns its crit trail.
+    pub fn step_flight(&mut self, solid: &dyn Fn([f64; 3]) -> bool) -> Option<CritTrail> {
+        let flight = self.flight?;
         if self.in_ground {
-            return;
+            return None;
         }
+        let trail = (flight.arrow && self.arrow_crit).then_some(CritTrail {
+            origin: self.cur,
+            movement: self.delta_movement,
+        });
         let m = self.delta_movement;
         let horizontal = (m[0] * m[0] + m[2] * m[2]).sqrt();
         if m.iter().any(|c| *c != 0.0) {
@@ -960,6 +996,7 @@ impl EntityState {
             }
         }
         [self.x, self.y, self.z] = self.cur;
+        trail
     }
 
     /// M377 — the camel's / nautilus's dash cooldown in ticks (0 when none).
@@ -2663,11 +2700,23 @@ impl EntityTable {
         }
     }
 
-    /// M362 — one client tick of every projectile's flight.
-    pub fn step_flights(&mut self, solid: &dyn Fn([f64; 3]) -> bool) {
-        for e in self.map.values_mut() {
-            e.step_flight(solid);
+    /// `AbstractArrow.ID_FLAGS` (index 8 BYTE; bit 1 is `FLAG_CRIT`); only an
+    /// arrow's flight reads it.
+    pub fn set_arrow_flags(&mut self, id: i32, flags: u8) {
+        if let Some(e) = self.map.get_mut(&id) {
+            if e.flight.is_some_and(|f| f.arrow) {
+                e.arrow_crit = flags & 1 != 0;
+            }
         }
+    }
+
+    /// M362 — one client tick of every projectile's flight; the crit trails
+    /// of the critical arrows that flew this tick.
+    pub fn step_flights(&mut self, solid: &dyn Fn([f64; 3]) -> bool) -> Vec<CritTrail> {
+        self.map
+            .values_mut()
+            .filter_map(|e| e.step_flight(solid))
+            .collect()
     }
 
     /// `entity.getDeltaMovement()`.
@@ -6036,6 +6085,36 @@ mod flight_tests {
         assert_eq!(flight_of("minecraft:zombie"), None);
         // Unwound to within 180 degrees first, as vanilla's: -190 toward -170.
         assert!((lerp_rotation(170.0, -170.0) + 186.0).abs() < 1e-4);
+    }
+
+    /// A critical arrow in flight reports `AbstractArrow.tick`'s four crit
+    /// particles from where it was, along the movement it is about to make
+    /// (the decompile's `origin + movement * i / 4`, velocity `-movement +
+    /// (0, 0.2, 0)`); a plain arrow, an arrow in the ground and a thrown
+    /// item report none.
+    #[test]
+    fn a_critical_arrow_trails_crit_particles() {
+        let none = |_: [f64; 3]| false;
+        let mut t = EntityTable::default();
+        for id in 1..=3 {
+            t.add(id, EntityState::new(0, id, 0.0, 70.0, 0.0, 0.0, 0.0));
+            t.get_mut(id).unwrap().set_spawn_motion([0.0, 1.0, 3.0]);
+        }
+        t.set_flight(1, ARROW_FLIGHT);
+        t.set_flight(2, ARROW_FLIGHT);
+        t.set_flight(3, THROWN_FLIGHT);
+        t.set_arrow_flags(1, 1);
+        t.set_arrow_flags(3, 1);
+        let trails = t.step_flights(&none);
+        assert_eq!(trails.len(), 1);
+        let p = trails[0].particles();
+        assert_eq!(p[0].0, [0.0, 70.0, 0.0]);
+        assert_eq!(p[2].0, [0.0, 70.5, 1.5]);
+        assert_eq!(p[3].0, [0.0, 70.75, 2.25]);
+        assert_eq!(p[1].1, [-0.0, -0.8, -3.0]);
+        // In the ground: none.
+        t.get_mut(1).unwrap().in_ground = true;
+        assert!(t.step_flights(&none).is_empty());
     }
 
     /// M362 — the server's `IN_GROUND` stops an arrow's flight, and only an

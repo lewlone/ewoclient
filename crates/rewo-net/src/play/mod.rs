@@ -3053,7 +3053,30 @@ impl PlaySession {
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         // M362 — and the projectiles' own flight, as the client ticks it.
-        self.world.step_flights(&self.collide);
+        for trail in self.world.step_flights(&self.collide) {
+            // A critical arrow's `addParticle(CRIT, ...)` calls: `count` 0 is
+            // the packet's "one particle with this velocity" form
+            // (`handleParticleEvent`); the velocity narrows to f32 there.
+            for (at, v) in trail.particles() {
+                self.particle_events
+                    .push(rewo_world::particles::ParticleEvent::Command(
+                        rewo_world::particles::ParticleCommand {
+                            kind: rewo_world::particles::ParticleKind::Crit,
+                            x: at[0],
+                            y: at[1],
+                            z: at[2],
+                            x_dist: v[0] as f32,
+                            y_dist: v[1] as f32,
+                            z_dist: v[2] as f32,
+                            max_speed: 1.0,
+                            count: 0,
+                            override_limiter: false,
+                            always_show: false,
+                            block_state: 0,
+                        },
+                    ));
+            }
+        }
         // `Display.tick` — the displays' transformation interpolation (M265).
         self.world.entities.tick_displays();
         // `PrimedTnt.tick`'s fuse countdown (M269).

@@ -2841,6 +2841,10 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(flags) = meta.living_flags {
         if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
             entities.set_living_flags(eid, flags);
+        } else {
+            // `AbstractArrow.ID_FLAGS`: the table lets it reach an arrow's
+            // flight only (bit 1 is the critical flag).
+            entities.set_arrow_flags(eid, flags);
         }
     }
     // Slots 8 DIRECTION, 9 ITEM_STACK, 10 INT → an item frame's facing, item
