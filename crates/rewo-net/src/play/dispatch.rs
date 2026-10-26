@@ -453,6 +453,13 @@ impl PlaySession {
                 {
                     self.world.entities.set_flight(eid, f);
                 }
+                if self
+                    .entity_classes
+                    .as_deref()
+                    .is_some_and(|c| c.is_camel(type_id))
+                {
+                    self.world.entities.set_camel_walk(eid);
+                }
                 self.post_add_entity_sound_instance(eid, type_id);
             } else {
                 self.decode_failed("add_entity", "malformed body");

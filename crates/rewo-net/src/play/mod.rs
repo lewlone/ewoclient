@@ -1063,6 +1063,10 @@ pub struct PlaySession {
     /// server has said about its position meanwhile (vanilla keeps only the
     /// delta codec's base for an entity it controls).
     pub steered_boat: Option<SteeredBoat>,
+    /// `LocalPlayer.isHandsBusy()`: the rider of a boat holds a movement key
+    /// (`rideTick`), which sinks the hands and blocks the use and attack
+    /// clicks.
+    pub hands_busy: bool,
     /// M222 — the horse the local player steers, simulated here.
     pub steered_horse: Option<SteeredHorse>,
     /// `move_vehicle` / `paddle_boat` packets sent (render-check r87).
@@ -2195,6 +2199,7 @@ impl<'a> Connection<'a> {
             was_sprinting: false,
             sprint_commands_sent: 0,
             steered_boat: None,
+            hands_busy: false,
             steered_horse: None,
             vehicle_moves_sent: 0,
             vehicle_rejections: 0,
@@ -3053,7 +3058,30 @@ impl PlaySession {
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         // M362 — and the projectiles' own flight, as the client ticks it.
-        self.world.step_flights(&self.collide);
+        for trail in self.world.step_flights(&self.collide) {
+            // A critical arrow's `addParticle(CRIT, ...)` calls: `count` 0 is
+            // the packet's "one particle with this velocity" form
+            // (`handleParticleEvent`); the velocity narrows to f32 there.
+            for (at, v) in trail.particles() {
+                self.particle_events
+                    .push(rewo_world::particles::ParticleEvent::Command(
+                        rewo_world::particles::ParticleCommand {
+                            kind: rewo_world::particles::ParticleKind::Crit,
+                            x: at[0],
+                            y: at[1],
+                            z: at[2],
+                            x_dist: v[0] as f32,
+                            y_dist: v[1] as f32,
+                            z_dist: v[2] as f32,
+                            max_speed: 1.0,
+                            count: 0,
+                            override_limiter: false,
+                            always_show: false,
+                            block_state: 0,
+                        },
+                    ));
+            }
+        }
         // `Display.tick` — the displays' transformation interpolation (M265).
         self.world.entities.tick_displays();
         // `PrimedTnt.tick`'s fuse countdown (M269).
@@ -3147,6 +3175,9 @@ impl PlaySession {
         // vanilla's rider reaches in its `aiStep`, AFTER the vehicle's tick:
         // the horse spends it next tick. Held until then.
         let deferred_jump = riding_jump;
+        // `LocalPlayer.rideTick` clears it, and a controlled boat sets it
+        // from the movement keys.
+        self.hands_busy = false;
         if self.spawned && self.is_mounted() {
             // M68. A passenger does not travel under its own power: vanilla's
             // `ClientLevel.tickNonPassenger` skips passengers entirely, and
@@ -3183,6 +3214,7 @@ impl PlaySession {
             let input = &rider_keys;
             let vehicle_keys = self.prev_rider_keys;
             if let Some(boat) = self.steerable_boat() {
+                self.hands_busy = input.forward != 0.0 || input.strafe != 0.0;
                 self.release_steered_horse();
                 self.tick_steered_boat(boat, &vehicle_keys, input)?;
             } else if let Some(horse) = self.steerable_horse() {
@@ -3210,6 +3242,19 @@ impl PlaySession {
                     if allowed {
                         if let Some(h) = self.steered_horse.as_mut() {
                             h.jump_pending = physics::jump_pending_scale(d);
+                        }
+                        // `AbstractHorse.onPlayerJump`'s rearing: the local
+                        // player steers this horse, so `isEffectiveAi()` holds
+                        // and `standIfPossible()` runs here, ahead of the
+                        // server's own flag (which lands a tick or two later).
+                        if !nautilus {
+                            let can_rear = self
+                                .world
+                                .entities
+                                .get(h.id)
+                                .and_then(|e| self.entity_types.as_deref()?.name(e.type_id))
+                                .is_some_and(|n| rewo_world::equine::can_perform_rearing(camel, n));
+                            self.world.entities.equine_on_player_jump(h.id, d, can_rear);
                         }
                     }
                 }
@@ -6566,6 +6611,10 @@ impl PlaySession {
             camel,
             up: 0.0,
             floats_while_ridden,
+            rearing_in_place: {
+                let (standing, sliding) = self.world.entities.equine_standing(id);
+                standing && !sliding
+            },
         };
         let collide = std::mem::take(&mut self.collide);
         let block_physics = std::mem::take(&mut self.block_physics);
@@ -6623,6 +6672,9 @@ impl PlaySession {
         if let Some(e) = self.world.entities.get_mut(id) {
             e.set_simulated([s.x, s.y, s.z], s.yaw);
         }
+        // Its walk animation and its look (`tickRidden`'s `setRot`), which
+        // the entity's own tick could not know: the move happens here.
+        self.world.entities.steered_mount_moved(id, s.yaw, s.pitch);
         self.seat_local_player(id);
         self.steered_horse = Some(steered);
         let pose = rewo_world::boat::BoatState {

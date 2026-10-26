@@ -2408,9 +2408,7 @@ impl LiveApp {
         use rewo_world::entities::InteractionHand;
         let session = self.session.as_ref()?;
         // `isHandsBusy`: a boat being paddled (`LocalPlayer.rideTick`).
-        if session.steered_boat.is_some()
-            && (self.keys.w || self.keys.a || self.keys.s || self.keys.d)
-        {
+        if session.hands_busy {
             return Some(Vec::new());
         }
         let me = session.player_id?;

@@ -1716,6 +1716,10 @@ pub(crate) fn resolve_mob_combat(
         allay_holding: 0.0,
         // M367 — set by the caller for a hoglin.
         headbutt: 0.0,
+        // Set by the caller for the horse family.
+        equine_eat: 0.0,
+        equine_stand: 0.0,
+        equine_feeding: 0.0,
         // M366 — set by the caller for a strider.
         ridden: false,
         // M365 — set by the caller for a turtle.
@@ -2899,6 +2903,10 @@ pub(super) fn collect_end_crystals(
     out
 }
 
+/// `EntityDimensions.eyeHeight` of the arrows and the trident
+/// (`sized(0.5, 0.5)`, the default `height * 0.85`).
+pub(crate) const PROJECTILE_EYE_HEIGHT: f64 = 0.5f32 as f64 * 0.85f32 as f64;
+
 /// M250 — every arrow and thrown trident this frame, as block-entity-style
 /// draws: the model at the entity's position under the renderer's own
 /// rotation, lit at the entity. Recorded: the rotation is the latest packet's
@@ -2925,7 +2933,17 @@ pub(super) fn collect_projectiles(
                 &rot_y(e.render_yaw(alpha) - 90.0),
                 &rot_z((e.render_pitch(alpha) + extra).to_radians()),
             ),
-            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            // `EntityRenderer.getPackedLightCoords` probes
+            // `getLightProbePosition`, the EYE: a stuck arrow's centre is
+            // inside its block (0.05 in), whose own light is 0, so lighting
+            // it at the centre drew every landed arrow black.
+            light: entity_light(
+                &session.world,
+                p[0],
+                p[1] + PROJECTILE_EYE_HEIGHT,
+                p[2],
+                lightmap,
+            ),
             part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
             part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
             tint: [1.0; 3],
@@ -5552,6 +5570,21 @@ pub(super) fn collect_entities<'a>(
             EntityModelKind::Strider | EntityModelKind::StriderBaby
         ) {
             mob.ridden = !session.mounts.passengers(id).is_empty();
+        }
+        // `AbstractHorseRenderer.extractRenderState`: the eat, stand and
+        // mouth animations (`getEatAnim` / `getStandAnim` / `getMouthAnim`).
+        if matches!(
+            kind,
+            EntityModelKind::Horse
+                | EntityModelKind::Donkey
+                | EntityModelKind::Mule
+                | EntityModelKind::SkeletonHorse
+                | EntityModelKind::ZombieHorse
+        ) {
+            let (eat, stand, mouth) = session.world.entities.equine_anims(id, alpha);
+            mob.equine_eat = eat;
+            mob.equine_stand = stand;
+            mob.equine_feeding = mouth;
         }
         // M365 — `TurtleRenderer.extractRenderState`: the egg flags and
         // `isOnLand = !isInWater() && onGround()`. Rewo keeps no `onGround`
