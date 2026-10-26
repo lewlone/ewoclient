@@ -309,6 +309,9 @@ pub struct StackComponents {
     pub banner_patterns: Vec<rewo_world::inventory::BannerLayer>,
     /// M405 — `minecraft:base_color`'s `DyeColor` id.
     pub base_color: Option<u8>,
+    /// M407 — `minecraft:pot_decorations`' item ids (back, left, right,
+    /// front; at most four).
+    pub pot_sherds: Vec<i32>,
     /// Whether the patch removed `minecraft:dye` (M93g).
     ///
     /// `isDyeItem` is `is(#LOOM_DYES) && has(DYE)`, and `has()` is false for a
@@ -959,6 +962,17 @@ fn read_interpreted(
         out.banner_patterns = layers;
         return Ok(true);
     }
+    if ty == ids.pot_decorations {
+        // M407 — `ByteBufCodecs.registry(ITEM).apply(list(4))`: raw item ids.
+        let n = r.varint().map_err(|_| ())?;
+        if !(0..=4).contains(&n) {
+            return Err(());
+        }
+        out.pot_sherds = (0..n)
+            .map(|_| r.varint().map_err(|_| ()))
+            .collect::<Result<_, _>>()?;
+        return Ok(true);
+    }
     if ty == ids.base_color {
         // M405 — `DyeColor.STREAM_CODEC`, by id.
         out.base_color = Some(r.varint().map_err(|_| ())?.clamp(0, 15) as u8);
@@ -1280,6 +1294,7 @@ mod tests {
         provides_banner_patterns: 21,
         banner_patterns: 24,
         base_color: 26,
+        pot_decorations: 27,
         bundle_contents: 16,
         container: 17,
         use_cooldown: 18,
@@ -1318,6 +1333,7 @@ mod tests {
             ("minecraft:provides_banner_patterns", 21),
             ("minecraft:banner_patterns", 24),
             ("minecraft:base_color", 26),
+            ("minecraft:pot_decorations", 27),
             ("minecraft:written_book_content", 22),
             ("minecraft:writable_book_content", 23),
         ]

@@ -360,13 +360,15 @@ impl PatternModels {
     }
 
     /// Build `item`'s copy for `patterns` if this session has not yet,
-    /// returning it when it is new and appended sheets (for the GPU).
+    /// returning it when one was built (its model, and any sheets it
+    /// appended, go to the GPU; a pot's copy appends none).
     pub(crate) fn ensure(
         &mut self,
         held: &mut rewo_data::held_items::HeldItems,
         item: &str,
         patterns: &rewo_world::inventory::StackPatterns,
         registry: &[Option<String>],
+        items: &rewo_data::items::Items,
     ) -> Option<NewPatternModel> {
         if !takes_banner_patterns(item)
             || self
@@ -378,6 +380,11 @@ impl PatternModels {
         }
         let made = (self.count < MAX_PATTERNED_ICONS)
             .then(|| {
+                if item == "minecraft:decorated_pot" {
+                    // M407 — the four sides, by sherd item name.
+                    let side = |i: usize| patterns.sherds.get(i).and_then(|&id| items.name(id));
+                    return held.add_pot_model([side(0), side(1), side(2), side(3)]);
+                }
                 let layers = banner_layer_stems(&patterns.layers, registry);
                 held.add_pattern_model(item, patterns.base, &layers)
             })
@@ -390,7 +397,7 @@ impl PatternModels {
             .entry(item.to_string())
             .or_default()
             .insert(patterns.clone(), name);
-        made.filter(|m| !m.textures.is_empty())
+        made
     }
 }
 
@@ -414,10 +421,13 @@ pub(crate) fn banner_layer_stems(
         .collect()
 }
 
-/// M405 — whether an item draws its stack's banner patterns: the banners
-/// (standing; a wall banner is no item) and the shield.
+/// M405 — whether an item draws its stack's patterns: the banners
+/// (standing; a wall banner is no item) and the shield; M407 — and the
+/// decorated pot, its sherds.
 pub(crate) fn takes_banner_patterns(name: &str) -> bool {
-    name == "minecraft:shield" || (name.ends_with("_banner") && !name.ends_with("wall_banner"))
+    name == "minecraft:shield"
+        || name == "minecraft:decorated_pot"
+        || (name.ends_with("_banner") && !name.ends_with("wall_banner"))
 }
 
 pub(super) fn icon_for(

@@ -390,6 +390,60 @@ impl HeldItems {
         Some(PatternModel { name, textures })
     }
 
+    /// M407 — `minecraft:decorated_pot` drawn with one stack's sherds: a
+    /// copy whose four side planes (the item's plain-side quads, in
+    /// `DecoratedPotRenderer`'s back, left, right, front order, the order the
+    /// item's parts were assembled in) sample each sherd's pattern sheet —
+    /// the placed pot's `rewo:be/pot_side/<stem>` texture. `sherds` are item
+    /// names, `None` (or brick, or anything not a sherd) the plain side.
+    /// Named `"minecraft:decorated_pot#sherds<hash>"`; `None` when every side
+    /// is plain or the item has no plain sides to repoint.
+    pub fn add_pot_model(&mut self, sherds: [Option<&str>; 4]) -> Option<PatternModel> {
+        use crate::block_entity_models::{pot_side_model, POT_SIDE_PLAIN};
+        let plain_model = POT_SIDE_PLAIN.0;
+        let side_tex = |name: &str| {
+            self.block_entities
+                .get(name)
+                .and_then(|m| m.quads.first())
+                .map(|q| q.tex)
+        };
+        let plain = side_tex(plain_model)?;
+        let texs: Vec<u16> = sherds
+            .iter()
+            .map(|s| side_tex(&pot_side_model(*s)).unwrap_or(plain))
+            .collect();
+        if texs.iter().all(|&t| t == plain) {
+            return None;
+        }
+        let mut key = 0xcbf2_9ce4_8422_2325u64;
+        for t in &texs {
+            for b in t.to_le_bytes() {
+                key ^= b as u64;
+                key = key.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        let name = format!("minecraft:decorated_pot#sherds{key:016x}");
+        if !self.models.contains_key(&name) {
+            let mut model = self.models.get("minecraft:decorated_pot")?.clone();
+            let mut k = 0;
+            for q in model.quads.iter_mut().filter(|q| q.tex == plain) {
+                if let Some(&t) = texs.get(k) {
+                    q.tex = t;
+                }
+                k += 1;
+            }
+            if k != 4 {
+                return None;
+            }
+            self.models.insert(name.clone(), model);
+        }
+        // The sheets are the placed pot's: nothing new to upload.
+        Some(PatternModel {
+            name,
+            textures: Vec::new(),
+        })
+    }
+
     /// Look a model up by name across both maps — what the renderer wants,
     /// since a draw carries a name and does not care which kind it is. The
     /// namespaces cannot collide: block-entity models are `rewo:be/…`.
@@ -563,6 +617,39 @@ mod tint_tests {
             from_block: false,
             gui_quads: None,
         }
+    }
+
+    /// M407 — a pot copy repoints the k-th plain side quad at the k-th
+    /// sherd's sheet (brick and an empty slot stay plain); four plain
+    /// sides need no copy.
+    #[test]
+    fn a_pot_copy_wears_its_sherds_side_by_side() {
+        let mut h = HeldItems::default();
+        h.block_entities
+            .insert("rewo:be/pot_side/plain".into(), model(vec![quad(1)]));
+        h.block_entities
+            .insert("rewo:be/pot_side/angler".into(), model(vec![quad(2)]));
+        h.models.insert(
+            "minecraft:decorated_pot".into(),
+            model(vec![quad(0), quad(1), quad(1), quad(1), quad(1)]),
+        );
+        let made = h
+            .add_pot_model([
+                Some("minecraft:angler_pottery_sherd"),
+                None,
+                Some("minecraft:brick"),
+                Some("minecraft:angler_pottery_sherd"),
+            ])
+            .unwrap();
+        let texs: Vec<u16> = h.models[&made.name].quads.iter().map(|q| q.tex).collect();
+        assert_eq!(texs, vec![0, 2, 1, 1, 2]);
+        assert!(
+            made.textures.is_empty(),
+            "the placed pot's sheets are reused"
+        );
+        assert!(h
+            .add_pot_model([None, Some("minecraft:brick"), None, None])
+            .is_none());
     }
 
     /// M405 — a banner copy repoints only its flag (the tinted part) at

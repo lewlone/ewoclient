@@ -307,6 +307,9 @@ pub(super) struct RenderCheck {
     /// M274 — r132: frames on which the staged armour stand drew wearing a
     /// carved pumpkin through the head item branch.
     pub(super) worn_item_head_frames: usize,
+    /// M407 — r228: frames on which the bot's staged sherd pot's icon
+    /// resolved to its copy.
+    pub(super) sherd_icon_frames: u32,
     /// M406 — r227: frames on which a dropped patterned banner, and a held
     /// patterned shield, drew as pattern copies.
     pub(super) patterned_drop_frames: u32,
@@ -1343,7 +1346,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 227;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 228;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -2447,6 +2450,15 @@ impl RenderCheck {
                 "{} frames drew it; turn range {turn:.3}",
                 self.enchant_book_frames
             ),
+        );
+        // M407 — r228: `render_check.py` puts a decorated pot with the
+        // angler sherd on its front in the bot's inventory slot 24 (menu
+        // slot 33); its icon must resolve to the sherd copy (inventoryshot
+        // g24 checks a copy's pixels). Every pot item drew plain until M407.
+        row(
+            "r228 a decorated pot item's icon wore its sherds",
+            self.sherd_icon_frames >= 1,
+            format!("{} frames resolved it", self.sherd_icon_frames),
         );
         // M406 — r227: `render_check.py` drops r226's banner (it cannot be
         // picked up) and summons an armour stand holding a shield with a lime

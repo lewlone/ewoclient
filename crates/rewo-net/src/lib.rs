@@ -1981,6 +1981,7 @@ fn read_slot(
                 profile_textures: c.profile_textures.clone(),
                 banner_patterns: c.banner_patterns.clone(),
                 base_color: c.base_color,
+                pot_sherds: c.pot_sherds.clone(),
             };
             (
                 Some(rewo_world::inventory::ItemSlot {
@@ -3776,6 +3777,7 @@ pub(crate) fn apply_set_equipment(
                     WireSlot::Stack(s) => rewo_world::inventory::StackPatterns::of(
                         &s.components.banner_patterns,
                         s.components.base_color,
+                        &s.components.pot_sherds,
                     ),
                     WireSlot::Empty => None,
                 },
@@ -5539,6 +5541,7 @@ mod animate_tests {
             provides_banner_patterns: 21,
             banner_patterns: 1021,
             base_color: 999,
+            pot_decorations: 998,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,
@@ -6149,6 +6152,7 @@ mod set_entity_data_tests {
             provides_banner_patterns: 21,
             banner_patterns: 1021,
             base_color: 999,
+            pot_decorations: 998,
             rarity: 5,
             unbreakable: 6,
             custom_name: 8,

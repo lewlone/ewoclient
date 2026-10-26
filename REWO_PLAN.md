@@ -2184,7 +2184,8 @@ this shape once.
 | M403 (2026-10-26) — a glider's elytra draws spread | **r225** | — | — |
 | M405 (2026-10-26) — a patterned banner item's icon wears its patterns | **r226** | — | — |
 | M406 (2026-10-26) — a dropped banner and a held shield draw their patterns | **r227** | — | — |
-| *(next free)* | **r228** | — | — |
+| M407 (2026-10-26) — a decorated pot item's icon wears its sherds | **r228** | — | — |
+| *(next free)* | **r229** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -4018,6 +4019,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M407 — decorated pot items wear their sherds (2026-10-26)
+
+From the follow-ups ("a pot item shows plain sides"). `minecraft:pot_decorations` (`registry(ITEM).apply(list(4))`: back, left, right, front, raw item ids) is decoded into the stack's text and the per-entity patterns, beside M405/M406's banner layers. `HeldItems::add_pot_model` copies the pot item and repoints its four plain side quads (assembled in that order from `pot_side(i)`) at each sherd's side sheet, the placed pot's own (brick, an empty slot or a non-sherd stays plain); nothing new is uploaded, which is why `PatternModels::ensure` now reports every copy it builds, not only those that appended sheets. The pot goes through the same cache for icons and for dropped, framed and held stacks. **Unit test** (side by side, brick plain, no copy for four plain sides); **inventoryshot g24** (the angler on every side: 334 px differ from the plain pot's icon); render check **r228** (the bot's staged pot's icon resolves to its copy).
 
 ### M406 — dropped, framed and held banners and shields wear their patterns (2026-10-26)
 

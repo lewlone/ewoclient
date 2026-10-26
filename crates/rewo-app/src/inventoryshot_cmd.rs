@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 175;
+const EXPECTED_WITNESSES: usize = 176;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -5325,20 +5325,25 @@ fn pixels_inner(
             .add_pattern_model("minecraft:shield", Some(lime), &[])
             .map(|m| m.name)
             .unwrap_or_default();
+        // M407 — and a decorated pot with the angler sherd on every side.
+        let sherd = Some("minecraft:angler_pottery_sherd");
+        let pot = held
+            .add_pot_model([sherd; 4])
+            .map(|m| m.name)
+            .unwrap_or_default();
         let held_all = crate::live_cmd::to_gpu_held_items(&held);
         let names = vec![
             "minecraft:white_banner".to_string(),
             banner.clone(),
             "minecraft:shield".to_string(),
             shield.clone(),
+            "minecraft:decorated_pot".to_string(),
+            pot.clone(),
         ];
         let wanted = crate::live_cmd::gui_atlas_wanted(&held_all, &names);
         let hatlas = crate::live_cmd::pack_gui_atlas(&held_all, &wanted);
         wr.init_gui_items(gpu, &hatlas.rgba, 512, 512)?;
-        let mut lime_px = |model: &str| -> Result<u32, String> {
-            if model.is_empty() {
-                return Ok(0);
-            }
+        let mut slot_shot = |model: &str| -> Result<Vec<u8>, String> {
             let slot = [GuiItem {
                 model: model.into(),
                 x: 104.0,
@@ -5347,7 +5352,28 @@ fn pixels_inner(
                 glint: false,
             }];
             let v = build_vertices(&held_all, &slot, &lights, &|t| hatlas.uv.get(&t).copied());
-            let img = shot(gpu, off, wr, &v)?;
+            shot(gpu, off, wr, &v)
+        };
+        let (plain_pot, sherd_pot) = (
+            slot_shot("minecraft:decorated_pot")?,
+            if pot.is_empty() {
+                Vec::new()
+            } else {
+                slot_shot(&pot)?
+            },
+        );
+        let pot_px = plain_pot
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(sherd_pot.as_chunks::<4>().0)
+            .filter(|(a, b)| a[..3] != b[..3])
+            .count();
+        let mut lime_px = |model: &str| -> Result<u32, String> {
+            if model.is_empty() {
+                return Ok(0);
+            }
+            let img = slot_shot(model)?;
             let mut n = 0;
             for y in 96..144u32 {
                 for x in 104..152u32 {
@@ -5367,6 +5393,13 @@ fn pixels_inner(
             !banner.is_empty() && worn_banner >= 30 && plain_banner == 0,
             format!(
                 "patterned model {banner:?}: {worn_banner} lime px (want >= 30); the plain banner: {plain_banner} (want 0)"
+            ),
+        );
+        c.record(
+            "g24.a_pots_sherds_reach_its_icon",
+            !pot.is_empty() && pot_px >= 100,
+            format!(
+                "sherd model {pot:?}: {pot_px} px differ from the plain pot's icon (want >= 100)"
             ),
         );
         c.record(

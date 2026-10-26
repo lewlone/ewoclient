@@ -83,6 +83,8 @@ pub struct DataComponentIds {
     pub banner_patterns: i32,
     /// M405 — `minecraft:base_color`, a shield's base dye (`DyeColor`).
     pub base_color: i32,
+    /// M407 — `minecraft:pot_decorations`, a decorated pot's four sherds.
+    pub pot_decorations: i32,
     /// `minecraft:bundle_contents` (M61) — `ItemStackTemplate.STREAM_CODEC`
     /// under `ByteBufCodecs.list()`.
     ///
@@ -228,6 +230,7 @@ impl DataComponentIds {
             provides_banner_patterns: id("minecraft:provides_banner_patterns")?,
             banner_patterns: id("minecraft:banner_patterns")?,
             base_color: id("minecraft:base_color")?,
+            pot_decorations: id("minecraft:pot_decorations")?,
             bundle_contents: id("minecraft:bundle_contents")?,
             container: id("minecraft:container")?,
             use_cooldown: id("minecraft:use_cooldown")?,

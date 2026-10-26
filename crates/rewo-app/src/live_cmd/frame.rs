@@ -770,7 +770,11 @@ impl LiveApp {
                     continue;
                 };
                 let p = inv.text_of(stack).and_then(|t| {
-                    rewo_world::inventory::StackPatterns::of(&t.banner_patterns, t.base_color)
+                    rewo_world::inventory::StackPatterns::of(
+                        &t.banner_patterns,
+                        t.base_color,
+                        &t.pot_sherds,
+                    )
                 });
                 match p {
                     Some(p) if takes_banner_patterns(name) => {
@@ -802,10 +806,13 @@ impl LiveApp {
                 }
             }
             for (name, p, icon_key) in asks {
-                if let Some(made) =
-                    self.patterns
-                        .ensure(&mut baked.held_items, &name, &p, &session.banner_patterns)
-                {
+                if let Some(made) = self.patterns.ensure(
+                    &mut baked.held_items,
+                    &name,
+                    &p,
+                    &session.banner_patterns,
+                    &self.items,
+                ) {
                     if let Some(m) = baked.held_items.models.get(&made.name) {
                         new_models.push((made.name.clone(), to_gpu_held_model(m)));
                     }
@@ -820,7 +827,7 @@ impl LiveApp {
                     g.variants.patterned.insert(key, model);
                 }
             }
-            if !new_textures.is_empty() {
+            if !new_models.is_empty() {
                 state
                     .world_renderer
                     .extend_held_items(new_models, new_textures);
@@ -2184,6 +2191,20 @@ impl LiveApp {
                     .any(|m| m.starts_with("minecraft:shield#pattern"))
             }) {
                 rc.patterned_held_frames += 1;
+            }
+            // M407 — r228: the staged pot's icon model.
+            let pot_icon = (session.inventory.slot_count() == 46)
+                .then(|| session.inventory.menu_slot(33))
+                .flatten()
+                .zip(self.gui_items.as_ref())
+                .and_then(|(stack, g)| {
+                    let base = self.items.name(stack.item_id)?;
+                    let m = variant_icon_model(&session.inventory, stack, base, &g.variants)?;
+                    g.held.any(&m)?;
+                    Some(m)
+                });
+            if pot_icon.is_some_and(|m| m.starts_with("minecraft:decorated_pot#sherds")) {
+                rc.sherd_icon_frames += 1;
             }
             // M405 — r226: the staged banner's icon model, likewise.
             let banner_icon = (session.inventory.slot_count() == 46)

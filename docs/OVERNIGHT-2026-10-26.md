@@ -14,7 +14,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
 - **Done so far**: M402 (gliding and riptide-spinning players and
   mannequins), M403 (the elytra wings, never drawn before), M404 (a rider on
   a rearing horse sits where the server seats it), M405/M406 (banners and
-  shields wear their patterns as icons, dropped, framed and held); the
+  shields wear their patterns as icons, dropped, framed and held), M407
+  (decorated pot items wear their sherds); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -94,6 +95,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `21cdd7ec` | `srv` tests: the fake nameserver's UDP+TCP port is drawn below the ephemeral range |
 | `50130820` | deps: rustls-webpki 0.103.16, webpki-roots 1.0.11 (CI `audit`) |
 | `a1b30116` | dependabot: windows-rs minor/major bumps wait for a deliberate upgrade (PR #6) |
+| `7bebbb7c` | **M403–M406** — the elytra; rearing horses' seats (r91's flake); patterned banners and shields as icons, dropped, framed and held; r89/r213/r214/r329 witnesses |
 
 ## Flakes
 

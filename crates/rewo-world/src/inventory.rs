@@ -582,6 +582,9 @@ pub struct SlotText {
     pub banner_patterns: Vec<BannerLayer>,
     /// M405 — `minecraft:base_color` (a `DyeColor` id), a shield's base.
     pub base_color: Option<u8>,
+    /// M407 — `minecraft:pot_decorations`: up to four item ids, back, left,
+    /// right, front.
+    pub pot_sherds: Vec<i32>,
 }
 
 /// M405 — a banner layer's pattern, as `Holder<BannerPattern>` sends it:
@@ -601,19 +604,22 @@ pub struct BannerLayer {
 }
 
 /// M406 — what a banner or shield stack draws its patterns from:
-/// `minecraft:banner_patterns` and `minecraft:base_color`.
+/// `minecraft:banner_patterns` and `minecraft:base_color`; M407 — and a
+/// decorated pot's sherds (`minecraft:pot_decorations`, item ids).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StackPatterns {
     pub layers: Vec<BannerLayer>,
     pub base: Option<u8>,
+    pub sherds: Vec<i32>,
 }
 
 impl StackPatterns {
-    /// `None` for a stack with neither, which draws its plain model.
-    pub fn of(layers: &[BannerLayer], base: Option<u8>) -> Option<Self> {
-        (!layers.is_empty() || base.is_some()).then(|| Self {
+    /// `None` for a stack with none of them, which draws its plain model.
+    pub fn of(layers: &[BannerLayer], base: Option<u8>, sherds: &[i32]) -> Option<Self> {
+        (!layers.is_empty() || base.is_some() || !sherds.is_empty()).then(|| Self {
             layers: layers.to_vec(),
             base,
+            sherds: sherds.to_vec(),
         })
     }
 }
@@ -648,6 +654,7 @@ impl SlotText {
             profile_textures,
             banner_patterns,
             base_color,
+            pot_sherds,
         } = self;
         custom_name.is_none()
             && item_name.is_none()
@@ -664,6 +671,7 @@ impl SlotText {
             && profile_textures.is_none()
             && banner_patterns.is_empty()
             && base_color.is_none()
+            && pot_sherds.is_empty()
     }
 }
 

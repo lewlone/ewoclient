@@ -497,6 +497,10 @@ HEAD_STAGING = (
     # M405 -- r226. A white banner with a lime cross, in the slot before it.
     ";item replace entity @s inventory.25 with minecraft:white_banner"
     "[minecraft:banner_patterns=[{pattern:\"minecraft:cross\",color:\"lime\"}]]"
+    # M407 -- r228. A decorated pot with the angler sherd on its front.
+    ";item replace entity @s inventory.24 with minecraft:decorated_pot"
+    "[minecraft:pot_decorations=[\"minecraft:brick\",\"minecraft:brick\",\"minecraft:brick\","
+    "\"minecraft:angler_pottery_sherd\"]]"
     # M406 -- r227. The same banner dropped, and an armour stand holding a
     # shield with a lime base colour.
     ";summon minecraft:item ~-13 ~ ~6 {PickupDelay:32767,Age:-32768,Item:{id:\"minecraft:white_banner\","

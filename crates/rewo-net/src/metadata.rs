@@ -493,6 +493,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
                     meta.stack_patterns = Some(rewo_world::inventory::StackPatterns::of(
                         &s.components.banner_patterns,
                         s.components.base_color,
+                        &s.components.pot_sherds,
                     ));
                     meta.item_stack = Some(Some((s.item_id, s.count, s.components.has_foil())))
                 }
@@ -515,6 +516,7 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
                     meta.stack_patterns = Some(rewo_world::inventory::StackPatterns::of(
                         &s.components.banner_patterns,
                         s.components.base_color,
+                        &s.components.pot_sherds,
                     ));
                     meta.frame_item = Some(Some(rewo_world::entities::FrameItem {
                         item_id: s.item_id,
