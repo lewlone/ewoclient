@@ -8459,7 +8459,14 @@ impl LiveApp {
                             // a rider seated by `positionRider` (the bot is on
                             // r72's horse from 0.28) looks down at r81's lectern
                             // (x + 2) through x + 1.5, y + 1 on its own z.
-                            let (x, y, z) = (p.x + 1.5, p.y + 1.0, p.z + 1.5);
+                            //
+                            // A real server's `add_entity` for a frame carries
+                            // the BLOCK's corner (`ItemFrame.getAddEntityPacket`
+                            // sends `getPos()`), and the client puts the frame at
+                            // its box's centre (`hanging_center`): the witness
+                            // sends the corner and expects the centre.
+                            let block = [p.x + 1.5, p.y + 1.0, p.z + 1.5].map(|c| c.floor());
+                            let (x, y, z) = (block[0], block[1], block[2]);
                             let mut add: Vec<u8> = Vec::new();
                             write(&mut add, FRAME_WITNESS_EID);
                             add.extend_from_slice(
@@ -8486,7 +8493,12 @@ impl LiveApp {
                             write(&mut meta, 3);
                             meta.push(0xFF);
                             session.inject_packet(session.ids.cb_play_set_entity_data, &meta);
-                            frame_pos = Some([x as f32, y as f32, z as f32]);
+                            frame_pos = rewo_world::entities::hanging_center(
+                                [x as i32, y as i32, z as i32],
+                                3,
+                                None,
+                            )
+                            .map(|c| c.map(|v| v as f32));
                         }
                     }
                     if let Some(c) = self.check.as_mut() {
