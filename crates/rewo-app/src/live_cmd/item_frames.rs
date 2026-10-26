@@ -240,6 +240,8 @@ pub(crate) fn collect_frame_inputs(
                     .collect(),
             })
         });
+        #[cfg(feature = "gates")]
+        log_frame_once(id, e, facing, rotation, ents.is_invisible(id), map.as_ref());
         out.push(FrameInputs {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             facing,
@@ -269,6 +271,51 @@ pub(crate) fn collect_frame_inputs(
             .then(a.facing.cmp(&b.facing))
     });
     out
+}
+
+/// Playtest diagnosis (`rewo_maps`' framed map sat half a block low and
+/// squashed): once per frame entity, what the client decoded and the pose it
+/// computed. The map pose's corners `(0,0)`, `(128,0)`, `(0,128)` and
+/// `(128,128)` and the frame model's origin are in world blocks; a correct
+/// north frame at `pos` puts the corners on a 1 x 1 vertical square
+/// centred `pos + (0, 0, -1/32 + 1/128)` (z toward the camera).
+#[cfg(feature = "gates")]
+fn log_frame_once(
+    id: i32,
+    e: &rewo_world::entities::EntityState,
+    facing: u8,
+    rotation: u8,
+    invisible: bool,
+    map: Option<&FramedMap>,
+) {
+    use std::sync::{Mutex, OnceLock};
+    static LOGGED: OnceLock<Mutex<Vec<i32>>> = OnceLock::new();
+    let seen = LOGGED.get_or_init(|| Mutex::new(Vec::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if seen.contains(&id) {
+        return;
+    }
+    seen.push(id);
+    let pose = rewo_gpu::item_frame::map_pose(facing, rotation, invisible);
+    let at = |x: f32, y: f32| {
+        pose.map(|m| {
+            let q = m.transform_point3(glam::Vec3::new(x, y, 0.0));
+            [e.x as f32 + q.x, e.y as f32 + q.y, e.z as f32 + q.z]
+        })
+    };
+    log::info!(
+        "item frame {id}: pos ({:.4}, {:.4}, {:.4}) cur {:?} spawn_data {} facing {facing} rotation {rotation} invisible {invisible} map {:?}; map corners (0,0) {:?} (128,0) {:?} (0,128) {:?} (128,128) {:?}",
+        e.x,
+        e.y,
+        e.z,
+        e.render_pos(1.0),
+        e.spawn_data,
+        map.map(|m| m.id),
+        at(0.0, 0.0),
+        at(128.0, 0.0),
+        at(0.0, 128.0),
+        at(128.0, 128.0),
+    );
 }
 
 /// The draws for every frame in the level.

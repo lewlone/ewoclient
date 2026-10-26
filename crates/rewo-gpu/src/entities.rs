@@ -8488,6 +8488,7 @@ fn kf_drive(driver: mobs::KfDriver, c: &AnimCtx) -> (f32, f32) {
             ((c.amt + amt_add) * scale_f).min(1.0),
         ),
         Age => (c.age * 0.05, 1.0),
+        Cycle { seconds } => ((c.age * 0.05).rem_euclid(seconds), 1.0),
         AgeGatedByWalk { gate } => (c.age * 0.05, (c.amt * gate).min(1.0)),
         // Only reachable under KfGate::During — the gesture is active.
         GestureAge => match c.gesture {
@@ -11420,6 +11421,40 @@ mod equine_anim_tests {
             "{f:?}"
         );
         assert_eq!(fo, [0.0, -6.0, 2.0]);
+    }
+}
+
+#[cfg(test)]
+mod camel_idle_tests {
+    use super::*;
+
+    fn ears_at(seconds: f32) -> (f32, f32) {
+        let inputs = OracleInputs {
+            age_seconds: seconds,
+            ..Default::default()
+        };
+        let parts = oracle_part_deltas(mobs::EntityModelKind::Camel, &inputs).unwrap();
+        let z = |name: &str| parts.iter().find(|p| p.0 == name).unwrap().1[2];
+        (z("left_ear"), z("right_ear"))
+    }
+
+    /// `CAMEL_IDLE`'s ears: before the first keyframe (2.5 s) a channel holds
+    /// that keyframe's value, -45 / +45 degrees about z; the twitch swings
+    /// them to +22.5 / -22.5 at 2.625 s and back by 3.0 s, where the last
+    /// keyframe holds. So a standing camel's ears sit angled up, and the rig
+    /// restarts every five seconds here.
+    #[test]
+    fn a_camels_ears_are_angled_up_but_for_the_twitch() {
+        let q = std::f32::consts::FRAC_PI_4;
+        for t in [0.0, 1.0, 2.0, 3.0, 3.5, 4.5] {
+            let (l, r) = ears_at(t);
+            assert!((l + q).abs() < 1e-4 && (r - q).abs() < 1e-4, "{t}: {l} {r}");
+        }
+        let (l, r) = ears_at(2.625);
+        assert!((l - 22.5f32.to_radians()).abs() < 1e-4, "{l}");
+        assert!((r + 22.5f32.to_radians()).abs() < 1e-4, "{r}");
+        // The rig restarts at 5 s.
+        assert_eq!(ears_at(6.0), ears_at(1.0));
     }
 }
 

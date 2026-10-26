@@ -867,6 +867,15 @@ impl LiveApp {
                 .local_vehicle()
                 .and_then(|v| session.world.entities.get(v))
                 .map(|m| m.render_pos(alpha));
+            // A rearing horse's seat moves by the stand clock (see
+            // `RIDE_LEAD_JUMP_MAX`): its frames, and the one after, are not
+            // graded for the offset's steadiness.
+            let rearing = session.local_vehicle().is_some_and(|v| {
+                let (_, stand, _) = session.world.entities.equine_anims(v, alpha);
+                stand > 0.0
+            });
+            let graded = !(rearing || c.ride_rearing_last);
+            c.ride_rearing_last = rearing;
             match (mount, c.ride_last) {
                 (Some(at), Some((last_mount, last_eye))) => {
                     if (0..3).any(|i| (at[i] - last_mount[i]).abs() > 1e-6) {
@@ -875,7 +884,9 @@ impl LiveApp {
                             c.ride_frames.1 += 1;
                         }
                         let lead = |k: usize| (cam.eye[k] - at[k]) - (last_eye[k] - last_mount[k]);
-                        c.ride_lead_jump = c.ride_lead_jump.max(lead(0).hypot(lead(2)));
+                        if graded {
+                            c.ride_lead_jump = c.ride_lead_jump.max(lead(0).hypot(lead(2)));
+                        }
                     }
                     c.ride_last = Some((at, cam.eye));
                 }

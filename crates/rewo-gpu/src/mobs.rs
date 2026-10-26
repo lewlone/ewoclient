@@ -1093,6 +1093,11 @@ pub enum KfDriver {
     },
     /// Continuous, age-driven at full scale (bat flight, breeze idle).
     Age,
+    /// Age-driven, restarting every `seconds`: `Camel.setupAnimationStates`
+    /// restarts `idleAnimationState` every `nextInt(40) + 80` ticks (an
+    /// entity's own random; Rewo takes its 5 s mean) and the 4 s rig holds
+    /// its last frame until then.
+    Cycle { seconds: f32 },
     /// Age-driven, scaled by walk amount — the rabbit-hop approximation
     /// (vanilla triggers HOP per jump; jump state isn't on our wire, so a
     /// moving rabbit hops continuously).
@@ -11081,6 +11086,14 @@ fn camel_with(saddle: CamelSaddle) -> Model {
             speed_f: 2.0,
             scale_f: 2.5,
         },
+    );
+    // `CamelModel.setupAnim`'s `idleAnimationState.apply`: before its first
+    // keyframe a channel holds that keyframe's value, so the ears sit at
+    // -45 / +45 degrees about z (angled up) all but the half second of the
+    // twitch, the tail 5 degrees up and the head a hair low.
+    b.keyframe(
+        &crate::anim_defs::CAMEL_IDLE,
+        KfDriver::Cycle { seconds: 5.0 },
     );
     // M300 — `CamelSaddleModel.createSaddleLayer()`'s boxes (the saddle on
     // the body, the bridle on the head, then the reins, `visible =

@@ -3158,7 +3158,20 @@ pub(super) fn collect_paintings(
             5 => 3.0,
             _ => continue,
         };
-        let p = e.render_pos(alpha);
+        // `Painting.calculateBoundingBox`: the entity's position is its
+        // box's centre, which depends on the variant's size and on the block
+        // the packet's position named (`hanging_center`).
+        let size = usize::try_from(session.world.entities.variant(id).unwrap_or(-1))
+            .ok()
+            .and_then(|v| session.painting_variants.get(v))
+            .map(|v| (v.width, v.height));
+        let p = session
+            .world
+            .entities
+            .hanging_block(id)
+            .zip(u8::try_from(e.spawn_data).ok())
+            .and_then(|(b, f)| rewo_world::entities::hanging_center(b, f, size))
+            .unwrap_or_else(|| e.render_pos(alpha));
         out.push(super::block_entities::OwnedBlockEntityDraw {
             pos: [p[0] as f32, p[1] as f32, p[2] as f32],
             model: rewo_data::block_entity_models::painting_model(asset),

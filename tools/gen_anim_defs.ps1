@@ -11,6 +11,7 @@ $dec = Join-Path $env:APPDATA "EwoClient/rewo/26.2/decompiled/net/minecraft/clie
 $targets = @(
     @{ File = "FrogAnimation.java";        Const = "FROG_WALK" },
     @{ File = "CamelAnimation.java";       Const = "CAMEL_WALK" },
+    @{ File = "CamelAnimation.java";       Const = "CAMEL_IDLE" },
     @{ File = "SnifferAnimation.java";     Const = "SNIFFER_WALK" },
     @{ File = "ArmadilloAnimation.java";   Const = "ARMADILLO_WALK" },
     @{ File = "BatAnimation.java";         Const = "BAT_FLYING" },

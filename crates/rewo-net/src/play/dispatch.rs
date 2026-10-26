@@ -452,6 +452,18 @@ impl PlaySession {
                     .and_then(rewo_world::entities::flight_of)
                 {
                     self.world.entities.set_flight(eid, f);
+                    // Playtest diagnosis (`rewo_bow`: where is a new arrow on
+                    // its first ticks, against vanilla's spawn position).
+                    if let Some(e) = self.world.entities.get(eid) {
+                        log::info!(
+                            "projectile {eid}: added at tick {} at ({:.3}, {:.3}, {:.3}), movement {:?}",
+                            self.ticks,
+                            e.x,
+                            e.y,
+                            e.z,
+                            self.world.entities.delta_movement(eid)
+                        );
+                    }
                 }
                 if self
                     .entity_classes
@@ -459,6 +471,25 @@ impl PlaySession {
                     .is_some_and(|c| c.is_camel(type_id))
                 {
                     self.world.entities.set_camel_walk(eid);
+                }
+                // An item frame or a painting arrives at its BLOCK's corner
+                // with its facing as the data; the client puts it where its
+                // box is (`rewo_world::entities::hanging_center`).
+                let hangs = self
+                    .entity_classes
+                    .as_deref()
+                    .is_some_and(|c| c.is_item_frame(type_id))
+                    || self.entity_types.as_deref().and_then(|t| t.name(type_id))
+                        == Some("minecraft:painting");
+                if hangs {
+                    let facing = self
+                        .world
+                        .entities
+                        .get(eid)
+                        .and_then(|e| u8::try_from(e.spawn_data).ok());
+                    if let Some(f) = facing {
+                        self.world.entities.place_hanging(eid, f);
+                    }
                 }
                 self.post_add_entity_sound_instance(eid, type_id);
             } else {
@@ -553,6 +584,12 @@ impl PlaySession {
                 if self.steers(eid) {
                     self.steered_base(Some(pos), [0.0; 3]);
                 } else if let Some(e) = self.world.entities.get_mut(eid) {
+                    if e.is_projectile() {
+                        log::info!(
+                            "projectile {eid}: position sync at tick {} to ({:.3}, {:.3}, {:.3}), was ({:.3}, {:.3}, {:.3})",
+                            self.ticks, pos[0], pos[1], pos[2], e.x, e.y, e.z
+                        );
+                    }
                     e.set_target(pos[0], pos[1], pos[2]);
                     e.set_rot(yaw, pitch);
                     // M395 — `entity.setOnGround(packet.onGround())`.
@@ -595,6 +632,12 @@ impl PlaySession {
                         if rel(1) { e.y + pos[1] } else { pos[1] },
                         if rel(2) { e.z + pos[2] } else { pos[2] },
                     );
+                    if e.is_projectile() {
+                        log::info!(
+                            "projectile {eid}: teleport at tick {} to ({tx:.3}, {ty:.3}, {tz:.3}), was ({:.3}, {:.3}, {:.3})",
+                            self.ticks, e.x, e.y, e.z
+                        );
+                    }
                     e.set_target(tx, ty, tz);
                     let yaw = if rel(3) { e.yaw + yaw } else { yaw };
                     let pitch = if rel(4) { e.pitch + pitch } else { pitch };

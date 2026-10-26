@@ -558,6 +558,9 @@ pub(super) struct RenderCheck {
     /// M361 — r213: the largest frame-to-frame change, in blocks, of the
     /// camera's horizontal offset from its mount's drawn position.
     pub(super) ride_lead_jump: f64,
+    /// Whether last frame's mount was rearing (see the exemption in
+    /// `frame.rs`).
+    pub(super) ride_rearing_last: bool,
     /// M362 — r214: the first arrow drawn: (first-seen time, first and last
     /// position, frames and frames it moved on within 0.25 s, the farthest
     /// it got from where it appeared).
@@ -1333,7 +1336,12 @@ impl RenderCheck {
     const EXPECTED_RENDER_CHECK_WITNESSES: usize = 223;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
-    /// yaw. Before M361 it jumped by a tick's travel at every tick.
+    /// yaw. Before M361 it jumped by a tick's travel at every tick. A
+    /// REARING horse is exempt, frame by frame: `AbstractHorse
+    /// .getPassengerAttachmentPoint` adds `(0, 0.15, -0.7) * standAnimO`
+    /// turned by the yaw, and `standAnimO` rises 0.45, 0.72, 0.88, ... over
+    /// the ticks after a jump, so vanilla's rider slides back 0.7 * 0.45 =
+    /// 0.3 blocks in one tick, a part of that per frame.
     const RIDE_LEAD_JUMP_MAX: f64 = 0.05;
 
     pub(super) fn report(&self) -> bool {

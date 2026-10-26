@@ -629,6 +629,53 @@ pub struct EntityState {
     /// `ClientboundAddEntityPacket.data` (M194) — per-type meaning; an item
     /// frame's facing (`Direction.from3DDataValue`). 0 when absent.
     pub spawn_data: i32,
+    /// A `BlockAttachedEntity`'s `pos`: the block it hangs in, which the
+    /// spawn packet carries INSTEAD of the entity's position
+    /// ([`hanging_center`]).
+    hanging_block: Option<[i32; 3]>,
+}
+
+/// `Direction.from3DDataValue`'s step: 0 down, 1 up, 2 north, 3 south, 4 west,
+/// 5 east.
+fn direction_step(facing: u8) -> Option<[i32; 3]> {
+    Some(match facing {
+        0 => [0, -1, 0],
+        1 => [0, 1, 0],
+        2 => [0, 0, -1],
+        3 => [0, 0, 1],
+        4 => [-1, 0, 0],
+        5 => [1, 0, 0],
+        _ => return None,
+    })
+}
+
+/// Where a hanging entity (an item frame, a painting) is: the centre of its
+/// bounding box, `Vec3.atCenterOf(blockPos).relative(direction, -0.46875)`
+/// (`HangingEntity.recalculateBoundingBox` sets the position to that box's
+/// centre). A painting (`size` = its variant's width and height in blocks) is
+/// shifted half a block to its left (`getCounterClockWise`) and up for an
+/// even side (`Painting.calculateBoundingBox`).
+///
+/// **The spawn packet does not carry this position.** `ItemFrame` and
+/// `Painting.getAddEntityPacket` send `getPos()`, the BLOCK's corner, and the
+/// client's `recreateFromPacket` → `setPos` → `setDirection` recomputes the
+/// position from it. Using the packet's position drew every framed map a
+/// block-corner away: half a block low, half a block to the side, and nearly a
+/// block toward the camera (`rewo_maps`).
+pub fn hanging_center(block: [i32; 3], facing: u8, size: Option<(i32, i32)>) -> Option<[f64; 3]> {
+    let step = direction_step(facing)?;
+    let mut p = [0, 1, 2].map(|k| f64::from(block[k]) + 0.5 - 0.46875 * f64::from(step[k]));
+    if let Some((w, h)) = size {
+        if step[1] == 0 {
+            // `getCounterClockWise` of a horizontal direction `(sx, sz)`.
+            let left = [step[2], -step[0]];
+            let h_off = if w % 2 == 0 { 0.5 } else { 0.0 };
+            p[0] += f64::from(left[0]) * h_off;
+            p[2] += f64::from(left[1]) * h_off;
+        }
+        p[1] += if h % 2 == 0 { 0.5 } else { 0.0 };
+    }
+    Some(p)
 }
 
 /// `Sniffer.State.SEARCHING` — ordinal 4.
@@ -728,6 +775,23 @@ impl EntityState {
             swim_amount_o: 0.0,
             equine: crate::equine::EquineAnim::default(),
             spawn_data: 0,
+            hanging_block: None,
+        }
+    }
+
+    /// Put a hanging entity where [`hanging_center`] says. The block is the
+    /// one the packet's position names (`BlockPos.containing`), remembered
+    /// from the first call: a later facing change moves the box around the
+    /// same block.
+    pub fn place_hanging(&mut self, facing: u8) {
+        let block = *self
+            .hanging_block
+            .get_or_insert_with(|| [self.x, self.y, self.z].map(|c| c.floor() as i32));
+        if let Some(p) = hanging_center(block, facing, None) {
+            [self.x, self.y, self.z] = p;
+            self.cur = p;
+            self.prev = p;
+            self.lerp_steps = 0;
         }
     }
 
@@ -978,6 +1042,11 @@ impl EntityState {
         if v.iter().all(|c| c.is_finite()) {
             self.delta_movement = v;
         }
+    }
+
+    /// Whether the client flies this entity (M362): an arrow, a thrown item.
+    pub fn is_projectile(&self) -> bool {
+        self.flight.is_some()
     }
 
     /// M362 — make this entity a projectile the client flies; its server
@@ -2911,6 +2980,18 @@ impl EntityTable {
     // -- item frames (M194) -------------------------------------------------
 
     /// `HangingEntity.DATA_DIRECTION` (slot 8, DIRECTION) for a frame.
+    /// [`EntityState::place_hanging`] for `id`.
+    pub fn place_hanging(&mut self, id: i32, facing: u8) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.place_hanging(facing);
+        }
+    }
+
+    /// The block a hanging entity hangs in, once placed.
+    pub fn hanging_block(&self, id: i32) -> Option<[i32; 3]> {
+        self.map.get(&id)?.hanging_block
+    }
+
     pub fn set_frame_facing(&mut self, id: i32, facing: u8) {
         self.item_frames.entry(id).or_default().facing = Some(facing);
     }
@@ -6148,6 +6229,62 @@ mod render_rotation_tests {
         e.tick(false, false);
         assert_eq!(e.render_yaw(0.0), 50.0);
         assert_eq!(e.render_head_yaw(0.3), 30.0);
+    }
+}
+
+#[cfg(test)]
+mod hanging_tests {
+    use super::*;
+
+    /// The `rewo_maps` frame: `summon item_frame 0.5 -59.5 5.97 {Facing:2b}`
+    /// hangs in block (0, -60, 5) facing north, so its box centre is
+    /// `(0.5, -59.5, 5.5 + 0.46875)` (the 5.97 the summon typed). The packet
+    /// carries `(0, -60, 5)`.
+    #[test]
+    fn a_frame_is_placed_from_its_block_not_the_packets_corner() {
+        assert_eq!(
+            hanging_center([0, -60, 5], 2, None),
+            Some([0.5, -59.5, 5.96875])
+        );
+        // South, west, east, and the vertical ones.
+        assert_eq!(
+            hanging_center([0, 0, 0], 3, None),
+            Some([0.5, 0.5, 0.03125])
+        );
+        assert_eq!(
+            hanging_center([0, 0, 0], 4, None),
+            Some([0.96875, 0.5, 0.5])
+        );
+        assert_eq!(
+            hanging_center([0, 0, 0], 5, None),
+            Some([0.03125, 0.5, 0.5])
+        );
+        assert_eq!(
+            hanging_center([0, 0, 0], 1, None),
+            Some([0.5, 0.03125, 0.5])
+        );
+        assert_eq!(
+            hanging_center([0, 0, 0], 0, None),
+            Some([0.5, 0.96875, 0.5])
+        );
+        assert_eq!(hanging_center([0, 0, 0], 9, None), None);
+        let mut e = EntityState::new(0, 1, 0.0, -60.0, 5.0, 0.0, 0.0);
+        e.place_hanging(2);
+        assert_eq!(e.render_pos(0.0), [0.5, -59.5, 5.96875]);
+        // A later facing keeps the block: south puts it on the near side.
+        e.place_hanging(3);
+        assert_eq!(e.render_pos(1.0), [0.5, -59.5, 5.03125]);
+    }
+
+    /// `Painting.calculateBoundingBox`: an even width shifts half a block to
+    /// the painting's left (`getCounterClockWise`: north -> west), an even
+    /// height half a block up; an odd size none.
+    #[test]
+    fn a_painting_is_shifted_by_its_even_sides() {
+        assert_eq!(
+            hanging_center([0, 0, 0], 2, Some((2, 1))),
+            Some([0.0, 0.5, 0.96875])
+        );
     }
 }
 
