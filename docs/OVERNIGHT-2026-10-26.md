@@ -143,7 +143,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `0cb644fb` | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
 | `f4cb1932` | **M430** — the hand's glint fades in the fog; handshot g9 |
 | `022d78ce` | **M431** — the inventory preview's armour trims; capeshot p9 |
-| (next) | **M432** — terrain, water, hand and particles shade in sRGB space (from `c92d8dcc`); lightmapshot re-derived, demo hash `51c791c78cd6d0ea` |
+| `958f37ae` | **M432** — terrain, water, hand and particles shade in sRGB space (from `c92d8dcc`); lightmapshot re-derived, demo hash `51c791c78cd6d0ea` |
 
 ## A broken default build, fixed
 
