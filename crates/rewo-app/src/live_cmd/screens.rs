@@ -885,6 +885,28 @@ pub(super) fn apply_screen(
             |glyphs| {
                 // `StonecutterScreen.extractTooltip` runs `super`'s (the slot's)
                 // first and adds its recipe button's only if that set none.
+                // `LoomScreen.extractBackground` sets its pattern button's before
+                // `super.extractTooltip` runs, so it comes first.
+                let dye = session
+                    .menus
+                    .shown_open()
+                    .filter(|m| m.layout.protocol_id == rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID)
+                    .and_then(|m| m.menu.menu_slot(1))
+                    .and_then(|s| items.name(s.item_id))
+                    .and_then(|n| rewo_ui::menu_screen::dye_index_of(n, "_dye"))
+                    .unwrap_or(0);
+                if let Some(t) = loom_tooltip(
+                    loom.as_ref(),
+                    dye,
+                    panel_mouse,
+                    &baked.lang,
+                    advance,
+                    glyphs.as_deref_mut(),
+                    mouse,
+                    (w, h),
+                ) {
+                    return Some(t);
+                }
                 let slot = screen_tooltip(
                     menu,
                     items,

@@ -4184,6 +4184,19 @@ pub fn loom_flag(
     })
 }
 
+/// The tooltip key of a pattern button: `pattern.value().translationKey() + "."
+/// + patternColor.getName()` (`LoomScreen.extractBackground`), with the vanilla
+/// registry's `translation_key` of `block.minecraft.banner.<name>`. The dye is
+/// the dye slot's colour index, white when it names none.
+pub fn loom_pattern_tooltip_key(pattern: &str, dye: usize) -> String {
+    let stem = pattern.strip_prefix("minecraft:").unwrap_or(pattern);
+    let colour = rewo_data::block_entity_models::DYE_COLORS
+        .get(dye)
+        .copied()
+        .unwrap_or("white");
+    format!("block.minecraft.banner.{stem}.{colour}")
+}
+
 /// The flag's destination and source in the panel: the same blit for every
 /// layer, only the sprite and tint change.
 pub fn loom_flag_blit() -> ProgressBlit {
@@ -4261,6 +4274,23 @@ mod loom_flag_tests {
             .unwrap();
             assert_eq!((f.base, f.layer), (11, None), "selected {selected}");
         }
+    }
+
+    #[test]
+    fn a_pattern_buttons_tooltip_key_is_the_patterns_with_the_dyes_colour() {
+        assert_eq!(
+            loom_pattern_tooltip_key("minecraft:flower", 14),
+            "block.minecraft.banner.flower.red"
+        );
+        assert_eq!(
+            loom_pattern_tooltip_key("minecraft:stripe_top", 8),
+            "block.minecraft.banner.stripe_top.light_gray"
+        );
+        assert_eq!(
+            loom_pattern_tooltip_key("minecraft:border", 99),
+            "block.minecraft.banner.border.white",
+            "no dye reads as white"
+        );
     }
 
     #[test]

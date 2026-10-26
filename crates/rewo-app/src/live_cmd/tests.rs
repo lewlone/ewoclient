@@ -4871,3 +4871,50 @@ fn a_stonecutter_button_tooltips_its_result() {
     // The grid is hidden when `displayRecipes` is false.
     assert!(tip(&view(false), (71.0, 19.0)).is_none());
 }
+
+// -- the loom's pattern-button tooltip ----------------------------------------
+
+/// A shown, unselected pattern button names its pattern in the dye's colour.
+#[test]
+fn a_loom_pattern_button_tooltips_the_pattern_in_the_dyes_colour() {
+    static PATTERNS: [&str; 3] = ["minecraft:border", "minecraft:flower", "minecraft:globe"];
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        "block.minecraft.banner.flower.red".to_string(),
+        "Red Flower Charge".to_string(),
+    );
+    let lang = rewo_data::lang::Language::from_map(map);
+    let view = |display, selected| LoomView {
+        patterns: &PATTERNS,
+        start_row: 0,
+        scroll_offs: 0.0,
+        selected,
+        display,
+        has_max: false,
+        flag: None,
+    };
+    let tip = |v: &LoomView, panel: (f64, f64)| {
+        super::tooltips::loom_tooltip(
+            Some(v),
+            14,
+            panel,
+            &lang,
+            &advances(),
+            None,
+            (500.0, 400.0),
+            (1280.0, 720.0),
+        )
+    };
+    let (cx, cy) = rewo_ui::menu_screen::loom_cell_origin(0, 1);
+    let over = (cx as f64 + 3.0, cy as f64 + 3.0);
+    let hit = tip(&view(true, -1), over).expect("over the second button");
+    assert_eq!(hit.1[0].text, "Red Flower Charge");
+    assert!(
+        tip(&view(true, 1), over).is_none(),
+        "the selected button sets none"
+    );
+    assert!(tip(&view(false, -1), over).is_none(), "no grid, no button");
+    // Cell 3 is past the end of the three-pattern list.
+    let (px, py) = rewo_ui::menu_screen::loom_cell_origin(0, 3);
+    assert!(tip(&view(true, -1), (px as f64 + 3.0, py as f64 + 3.0)).is_none());
+}

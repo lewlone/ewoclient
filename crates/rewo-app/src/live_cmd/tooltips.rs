@@ -789,6 +789,43 @@ pub(crate) fn cut_tooltip(
     tooltip_layout(lines, advance, glyphs, mouse, size)
 }
 
+/// The loom's pattern-button tooltip (`LoomScreen.extractBackground`): the
+/// hovered button's pattern in the dye slot's colour ("Red Flower Charge"),
+/// a plain white line.
+///
+/// Only for a button that is shown (`displayPatterns`, an index inside the
+/// selectable list) and that is not the selected one: vanilla tests the
+/// selected index first, so its button takes the selected chrome and sets no
+/// tooltip. `dye` is the dye slot's colour index (white when it names none).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn loom_tooltip(
+    view: Option<&LoomView>,
+    dye: usize,
+    panel_mouse: (f64, f64),
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    size: (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    let v = view.filter(|v| v.display)?;
+    let index = rewo_ui::menu_screen::loom_cell_at(panel_mouse.0, panel_mouse.1, v.start_row)?;
+    if !rewo_ui::menu_screen::loom_button_accepted(index, v.patterns.len()) || index == v.selected {
+        return None;
+    }
+    let pattern = v.patterns.get(usize::try_from(index).ok()?)?;
+    let key = rewo_ui::menu_screen::loom_pattern_tooltip_key(pattern, dye);
+    let line = vec![rewo_gpu::tooltip::Span::new(
+        lang.or_key(&key).to_string(),
+        WHITE_TEXT,
+    )];
+    tooltip_layout(vec![line], advance, glyphs, mouse, size)
+}
+
 /// The tooltip of the recipe cell under the cursor (M106).
 ///
 /// `RecipeBookPage.extractTooltip` — `Screen.getTooltipFromItem(displayStack)`
