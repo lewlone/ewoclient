@@ -137,7 +137,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `9d758e66` | **M426** — horses graze; mobtexshot m126 |
 | `2f8a563a` | **M427** — the fog darkens toward the void; unit test |
 | `1318834e` | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
-| (next) | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
+| `0cb644fb` | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
 
 ## A broken default build, fixed
 
