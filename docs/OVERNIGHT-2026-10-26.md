@@ -18,7 +18,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   (decorated pot items wear their sherds), M408 (the first-person hand
   draws skinned heads and patterned items), M409 (the ender dragon flies
   on its flight history: the audit's last open row), M410 (mannequins'
-  "NPC" description and below-name scores); the
+  "NPC" description and below-name scores), M411 (the cursor draws a
+  carried stack's own copy); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -145,3 +146,9 @@ major bumps, so the next weekly group arrives without it.
 - Remote players' motion is applied directly, not lerped over
   `updateInterval + 1` steps as `RemotePlayer.lerpMotion` does.
 - Baby humanoids wear no armour (and so no elytra) in Rewo.
+- **Entities take no fog at all** (found while checking the swirls'
+  fog): `entity.frag` has none, so mobs, items and tags stay crisp at the
+  render-distance edge and in water, lava or blindness. Next milestone.
+- Corrected follow-up: the swirls (M285-M287) not reaching a glowing
+  entity's outline is vanilla's behaviour (`energySwirl` and `breezeWind`
+  set no outline property), not a gap.

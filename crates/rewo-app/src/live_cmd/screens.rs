@@ -768,7 +768,15 @@ pub(super) fn apply_screen(
         book_overlay,
         &gui.variants,
     );
-    if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
+    if let Some((icon, label)) = carried_icon(
+        menu,
+        items,
+        &session.trim_materials,
+        mouse,
+        w,
+        h,
+        Some(&gui.variants),
+    ) {
         icons.push(icon);
         labels.extend(label);
     }
@@ -823,7 +831,8 @@ pub(super) fn apply_screen(
             .map(|i| (menu.menu_slot(i), rects[i]))
             .collect();
         if let Some(carried) = menu.carried() {
-            if let Some((icon, _)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h)
+            if let Some((icon, _)) =
+                carried_icon(menu, items, &session.trim_materials, mouse, w, h, None)
             {
                 stacks.push((Some(carried), (icon.x, icon.y, icon.size)));
             }

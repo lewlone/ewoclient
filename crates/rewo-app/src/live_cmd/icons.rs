@@ -837,6 +837,9 @@ pub(super) fn carried_icon(
     mouse: (f64, f64),
     w: f32,
     h: f32,
+    // M411 — the per-stack copies (a skinned head, a patterned banner,
+    // shield or pot), which the cursor draws like any slot.
+    variants: Option<&IconVariants>,
 ) -> Option<(
     rewo_gpu::gui_item::GuiItem,
     Option<rewo_gpu::world::OwnedTextLine>,
@@ -844,7 +847,10 @@ pub(super) fn carried_icon(
     let stack = inv.carried()?;
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
     let (x, y) = (mouse.0 as f32 - 8.0 * scale, mouse.1 as f32 - 8.0 * scale);
-    let icon = icon_for(items, trim_materials, stack, x, y, 16.0 * scale)?;
+    let mut icon = icon_for(items, trim_materials, stack, x, y, 16.0 * scale)?;
+    if let Some(m) = variants.and_then(|v| variant_icon_model(inv, stack, &icon.model, v)) {
+        icon.model = m;
+    }
     Some((icon, count_label(stack, x, y, scale)))
 }
 

@@ -4737,3 +4737,49 @@ fn a_mannequin_shows_its_description_below_its_name() {
     // The name rises one line over a score line: 9 · 1.15 · 0.025 blocks.
     assert!((rewo_gpu::entities::SCORE_LINE_LIFT - 0.25875).abs() < 1e-6);
 }
+
+/// M411 — the cursor draws a carried stack's own copy, as its slot would:
+/// a banner whose stack maps to a pattern copy shows the copy under the
+/// pointer, and without the variants (the second, position-only caller) the
+/// plain model.
+#[test]
+fn the_cursor_draws_a_carried_stacks_own_copy() {
+    let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+        rewo_data::skip_test!("no local 26.2 data");
+        return;
+    };
+    let Ok(items) = rewo_data::items::Items::load(&paths.registries_json()) else {
+        rewo_data::skip_test!("no local 26.2 registries");
+        return;
+    };
+    let id = items.id("minecraft:white_banner").expect("white banner");
+    let mut inv = rewo_world::inventory::Inventory::default();
+    inv.set_carried(Some(rewo_world::inventory::ItemSlot {
+        item_id: id,
+        count: 1,
+        has_components: true,
+        components: 42,
+        damage: None,
+        max_damage: None,
+        enchanted: false,
+        any_enchantments: false,
+        unbreakable: false,
+        dye_removed: false,
+        provides_banner_patterns_removed: false,
+        has_map_id: false,
+        damage_component_removed: false,
+        trim_material: None,
+    }));
+    let mut v = super::icons::IconVariants::default();
+    v.patterned
+        .insert((id, 42), "minecraft:white_banner#pattern1".to_string());
+    let icon = |variants| {
+        super::icons::carried_icon(&inv, &items, &[], (100.0, 100.0), 640.0, 480.0, variants)
+            .map(|(i, _)| i.model)
+    };
+    assert_eq!(
+        icon(Some(&v)).as_deref(),
+        Some("minecraft:white_banner#pattern1")
+    );
+    assert_eq!(icon(None).as_deref(), Some("minecraft:white_banner"));
+}

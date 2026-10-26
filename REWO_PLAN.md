@@ -4021,6 +4021,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M411 — the cursor draws a carried stack's own copy (2026-10-26)
+
+M408's last gap ("skinned player heads ... on the cursor still draw Steve"). `carried_icon` (`extractCarriedItem`) takes the icon variants and resolves the carried stack through `variant_icon_model`, as every slot does: a skinned head, a patterned banner or shield, a sherd pot. The position-only caller (the slot-highlight pass) passes none. **Unit test** (with the variants the copy, without them the plain model; real registry).
+
 ### M410 — the below-name line: a mannequin's description, a below-name score (2026-10-26)
 
 From the follow-ups ("a mannequin's description label is not drawn"). Vanilla's `EntityRenderState.scoreText` is `belowNameDisplay()` within the below-name distance (the attribute's default, 10 blocks, applied to every entity): for a mannequin its description (`Mannequin.DATA_DESCRIPTION`, index 19 OPTIONAL_COMPONENT, now decoded and kept per entity; until one is synced the default `entity.minecraft.mannequin.label`, "NPC"; nothing when `hide_description`), for anything else its BELOW_NAME score (`formatValue(numberFormatOrDefault(NO_STYLE)) + " " + displayName`, keyed by its scoreboard name: a player's profile name, else its UUID string). `submitNameDisplay` draws it at the tag's place and lifts the name `9·1.15·0.025` blocks over it, whether or not the name shows. Plain text, as Rewo's tags are; the deadmau5 ears' offset is not modelled. **Unit test** (the default, a synced and a hidden description, the range, the UUID name, the lift); **labelshot f17** (a score line is a second tag: exactly one plate and three glyphs beside the name's, 54/54). No live witness (the staged mannequins stand beyond 10 blocks of every place the bot stops); the render check stays 229/229 with the path live.
