@@ -4023,6 +4023,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M426 — horses graze (2026-10-26)
+
+M417's sibling: the rest of `AbstractEquineModel.setupAnim`'s head terms. `AbstractHorse.aiStep`'s `eatAnim` (toward 1 while flag 0x10, eating, is set, else toward 0; standing zeroes it) and `mouthAnim` (flag 0x40, the renderer's `feedingAnimation`) are kept beside M404's stand clock, and the head group is now the whole formula: `xRot = standing·(π/12 + look) + eating·(125° + sin(age)·0.05) + (1 − max(standing, eating))·(π/6 + look + feeding·sin(age)·0.05)`, the yaw faded by the same factor outside rearing, the group lowered `lerp(eating, −8·standing, 7)`. With all three at 0 it is M359's term exactly. **Unit test** (the eat and mouth clocks, rearing zeroing the eating); **mobtexshot m126** (a grazing horse's top drops 18 rows from the side; looked at: the head at the ground).
+
 ### M425 — under water the clouds fade at the water's band (2026-10-26)
 
 M422 applied each fog environment's band and sky end but not its `cloudEnd`, so under water (or in lava, or blinded) the cloud deck kept the open air's 1024-block fade (`CLOUD_FOG_END`, itself an approximation: vanilla's atmospheric `cloudEnd` is `min(cloudRange · 16, CLOUD_FOG_END_DISTANCE)` with a 128-chunk default range, where Rewo pins a 12-chunk deck; left as it was). `apply_fog_environment` now sets the cloud pass's `FogCloudsEnd` to the environment's `cloudEnd` over the deck `apply_weather` installed. **Render check r231** (in r230's window every frame's clouds fade at the water band's end).

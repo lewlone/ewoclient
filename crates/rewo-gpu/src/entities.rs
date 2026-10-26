@@ -6208,17 +6208,27 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
         // body rears −π/4, the front legs rise 12 and come forward 4 and
         // paw at `−π/3 ± cos(age·0.6 + π)`, the hind legs brace at π/12;
         // each walk term fades by `1 − standing`.
+        // M426 — and grazing: `xRot = standing·(π/12 + look) + eating·
+        // (125° + sin(age)·0.05) + (1 − max(standing, eating))·(π/6 + look +
+        // feeding·sin(age)·0.05)`, the yaw faded by the same factor outside
+        // rearing, the group lowered `lerp(eating, −8·standing, 7)`.
         EquineHead => {
-            let s = c.mob.stand_anim;
-            rot[0] = c.pitch
+            let (s, e) = (c.mob.stand_anim, c.mob.eat_anim);
+            let look = c.pitch
                 + if c.amt > 0.2 {
                     (c.pos * 0.8).cos() * 0.15 * c.amt
                 } else {
                     0.0
-                }
-                - s * PI / 12.0;
-            rot[1] = c.net.clamp(-20f32.to_radians(), 20f32.to_radians());
-            off = [0.0, -8.0 * s, 8.0 * s];
+                };
+            let wobble = c.age.sin() * 0.05;
+            let free = 1.0 - s.max(e);
+            let x = s * (PI / 12.0 + look)
+                + e * (2.181_661_6 + wobble)
+                + free * (PI / 6.0 + look + c.mob.feeding_anim * wobble);
+            rot[0] = x - PI / 6.0;
+            let yaw = c.net.clamp(-20f32.to_radians(), 20f32.to_radians());
+            rot[1] = s * yaw + free * yaw;
+            off = [0.0, -8.0 * s + e * (7.0 + 8.0 * s), 8.0 * s];
         }
         EquineBody => rot[0] = c.mob.stand_anim * -PI / 4.0,
         EquineLeg { hind, left } => {

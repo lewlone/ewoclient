@@ -1743,6 +1743,9 @@ pub(crate) fn resolve_mob_combat(
         age_scale: 1.0,
         // M417 — set by the caller, which has the partial tick.
         stand_anim: 0.0,
+        // M426 — likewise.
+        eat_anim: 0.0,
+        feeding_anim: 0.0,
         // M358 — set by the caller with the sheep's eat clock.
         sheep_eat: None,
         // M363 — set by the caller for a boat.
@@ -5487,6 +5490,9 @@ pub(super) fn collect_entities<'a>(
         let mut mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
         // M417 — a horse's rearing (0 for anything that never rears).
         mob.stand_anim = session.world.entities.stand_anim_at(id, alpha);
+        // M426 — its grazing and its mouth.
+        mob.eat_anim = session.world.entities.eat_anim_at(id, alpha);
+        mob.feeding_anim = session.world.entities.mouth_anim_at(id, alpha);
         // M401 — a sleeper (the SLEEPING pose): the bed's orientation from
         // the block at its sleeping position, the angle it lies at, and the
         // head offset toward the bed's foot (below, on the position).

@@ -105,7 +105,10 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 125;
+const EXPECTED_WITNESSES: usize = 126;
+/// M426 — m126's floor: how many pixel rows a grazing horse's top drops
+/// below a standing one's from the side (its raised head goes down).
+const GRAZE_TOP_MIN: usize = 4;
 /// M417 — m123's floors: how many pixel rows a fully reared horse's top
 /// rises over a standing one's, seen from the side, and how far its saddle's
 /// centroid rises with the body. Before M417 the body never moved (0 rows
@@ -7588,7 +7591,7 @@ fn run_check(
         Vec3::new(6.0, 1.4, 0.0),
         Vec3::new(0.0, 1.2, 0.0),
     )?;
-    let mut rhshot = |stand: f32, saddled: bool| -> Result<Vec<u8>, String> {
+    let mut rhshot = |stand: f32, saddled: bool, eat: f32| -> Result<Vec<u8>, String> {
         let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
         layers[0] = Some((SADDLE, [1.0, 1.0, 1.0]));
         let d = EntityDraw {
@@ -7598,6 +7601,7 @@ fn run_check(
             }),
             mob: rewo_gpu::mobs::MobCombat {
                 stand_anim: stand,
+                eat_anim: eat,
                 ..Default::default()
             },
             ..neutral_draw(EntityModelKind::Horse)
@@ -7607,8 +7611,10 @@ fn run_check(
             .render(gpu, Some((&mut rhst.wr, rhst.vp)), &ov, BG)?;
         rhst.off.read_rgba(gpu)
     };
-    let (rh_stand, rh_rear) = (rhshot(0.0, false)?, rhshot(1.0, false)?);
-    let (rh_stand_s, rh_rear_s) = (rhshot(0.0, true)?, rhshot(1.0, true)?);
+    let (rh_stand, rh_rear) = (rhshot(0.0, false, 0.0)?, rhshot(1.0, false, 0.0)?);
+    let (rh_stand_s, rh_rear_s) = (rhshot(0.0, true, 0.0)?, rhshot(1.0, true, 0.0)?);
+    // m126 — M426: the same horse grazing (`eatAnimation` 1).
+    let rh_graze = rhshot(0.0, false, 1.0)?;
     rhst.wr.set_entities(&[], rhst.right, rhst.up, 0.0);
     rhst.off
         .render(gpu, Some((&mut rhst.wr, rhst.vp)), &ov, BG)?;
@@ -7617,6 +7623,7 @@ fn run_check(
     if let Some(d) = &args.out_dir {
         save_png(&rh_stand_s, cw, ch, &d.join("m123_horse_standing.png"))?;
         save_png(&rh_rear_s, cw, ch, &d.join("m123_horse_rearing.png"))?;
+        save_png(&rh_graze, cw, ch, &d.join("m126_horse_grazing.png"))?;
     }
     let changed = |a: &[u8], b: &[u8]| -> Vec<usize> {
         a.as_chunks::<4>()
@@ -7639,6 +7646,12 @@ fn run_check(
         px.iter().map(|i| (i / cw as usize) as f32).sum::<f32>() / px.len().max(1) as f32
     };
     let saddle_up = centroid(&rh_stand_s, &rh_stand) - centroid(&rh_rear_s, &rh_rear);
+    let rows_down = top(&rh_graze).saturating_sub(top(&rh_stand));
+    w.push(wit(
+        "m126.a_grazing_horse_lowers_its_head",
+        rows_down >= GRAZE_TOP_MIN,
+        format!("its top drops {rows_down} rows (want >= {GRAZE_TOP_MIN}); before M426 the head never moved"),
+    ));
     w.push(wit(
         "m123.a_rearing_horse_rises_and_its_saddle_with_its_body",
         rows_up >= REAR_TOP_MIN && saddle_up >= REAR_SADDLE_MIN,

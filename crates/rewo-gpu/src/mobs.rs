@@ -916,6 +916,10 @@ pub struct MobCombat {
     /// M417 — `AbstractHorse.getStandAnim(partialTicks)`: 0 standing, 1
     /// fully reared (`EquineRenderState.standAnimation`).
     pub stand_anim: f32,
+    /// M426 — `getEatAnim` (grazing) and `getMouthAnim` (the renderer's
+    /// `feedingAnimation`).
+    pub eat_anim: f32,
+    pub feeding_anim: f32,
     /// M356 — `TamableAnimal.isInSittingPose()` (the wolf's sitting pose).
     pub sitting: bool,
     /// M356 — `LivingEntity.getAgeScale()`: 0.5 for a baby, else 1; the

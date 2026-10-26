@@ -35,7 +35,7 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   with water vision; Rewo had only the open-air fog), M423 (the
   first-person hand fogs with the world), M424 (render check r230: the
   live client under water draws the water's fog), M425 (and its clouds
-  fade at the water's band, r231); the
+  fade at the water's band, r231), M426 (horses graze); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -132,7 +132,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `fad13c31` | **M422** — the fog environments (water, lava, powder snow, blindness, darkness); unit tests |
 | `6ff40fb0` | **M423** — the first-person hand takes the world's fog; handshot g8 |
 | `773dbce8`, `528a982f` | **M424** — a live witness for the water's fog; render check r230 |
-| (next) | **M425** — under water the clouds fade at the water's band; render check r231 |
+| `90f3def4` | **M425** — under water the clouds fade at the water's band; render check r231 |
+| (next) | **M426** — horses graze; mobtexshot m126 |
 
 ## Flakes
 
@@ -168,9 +169,9 @@ major bumps, so the next weekly group arrives without it.
 
 ## Follow-ups found, not done
 
-- ~~The horse family's rearing pose~~: M417 (adults). Left: eating
-  (`eatAnimation`) and the baby horses' and donkeys' animation (their
-  models are static in Rewo).
+- ~~The horse family's rearing pose~~: M417 (adults); grazing M426.
+  Left: the baby horses' and donkeys' animation (their models are static
+  in Rewo).
 - ~~The wavy cape takes only the death topple~~: M413 (a tilted wearer
   draws the vanilla cape).
 - ~~The inventory preview draws no armour~~: M414; its glints M418. Left:

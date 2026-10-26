@@ -1869,6 +1869,12 @@ pub struct MobState {
     /// rearing animation, eased from the synced standing flag each tick.
     pub stand_anim: f32,
     pub stand_anim_o: f32,
+    /// M426 — `eatAnim` / `eatAnimO` (grazing, flag 0x10) and `mouthAnim` /
+    /// `mouthAnimO` (flag 0x40, the renderer's `feedingAnimation`).
+    pub eat_anim: f32,
+    pub eat_anim_o: f32,
+    pub mouth_anim: f32,
+    pub mouth_anim_o: f32,
     /// M394 — `AbstractBoat.DATA_ID_BUBBLE_TIME` (13, INT), and the client's
     /// `bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
     /// (`tickBubbleColumn`).
@@ -3495,6 +3501,20 @@ impl EntityTable {
         self.mob_state.get(&id).map_or(0.0, |s| s.stand_anim_o)
     }
 
+    /// M426 — `getEatAnim(a)`: `Mth.lerp(a, eatAnimO, eatAnim)`.
+    pub fn eat_anim_at(&self, id: i32, alpha: f32) -> f32 {
+        self.mob_state
+            .get(&id)
+            .map_or(0.0, |s| s.eat_anim_o + alpha * (s.eat_anim - s.eat_anim_o))
+    }
+
+    /// M426 — `getMouthAnim(a)`, the renderer's `feedingAnimation`.
+    pub fn mouth_anim_at(&self, id: i32, alpha: f32) -> f32 {
+        self.mob_state.get(&id).map_or(0.0, |s| {
+            s.mouth_anim_o + alpha * (s.mouth_anim - s.mouth_anim_o)
+        })
+    }
+
     /// M404 — `getStandAnim(a)`: `Mth.lerp(a, standAnimO, standAnim)`.
     pub fn stand_anim_at(&self, id: i32, alpha: f32) -> f32 {
         self.mob_state.get(&id).map_or(0.0, |s| {
@@ -3665,15 +3685,35 @@ impl EntityTable {
             if st.boat_damage > 0.0 {
                 st.boat_damage -= 1.0;
             }
+            // M426 — the eat animation first, as `aiStep` runs it: toward 1
+            // while eating (flag 0x10), toward 0 otherwise.
+            st.eat_anim_o = st.eat_anim;
+            let e = st.eat_anim;
+            st.eat_anim = if st.horse_flags & 0x10 != 0 {
+                (e + ((1.0 - e) * 0.4 + 0.05)).min(1.0)
+            } else {
+                (e + ((0.0 - e) * 0.4 - 0.05)).max(0.0)
+            };
             // M404 — `AbstractHorse.aiStep`'s stand animation: toward 1 while
             // standing, back to 0 (cubic ease) once not. Every mob state
-            // runs it; one that never stood stays at 0.
+            // runs it; one that never stood stays at 0. M426 — standing
+            // zeroes the eat animation.
             st.stand_anim_o = st.stand_anim;
             let a = st.stand_anim;
             st.stand_anim = if st.horse_flags & 0x20 != 0 {
+                st.eat_anim = 0.0;
+                st.eat_anim_o = 0.0;
                 (a + ((1.0 - a) * 0.4 + 0.05)).min(1.0)
             } else {
                 (a + ((0.8 * a * a * a - a) * 0.6 - 0.05)).max(0.0)
+            };
+            // M426 — the mouth (flag 0x40).
+            st.mouth_anim_o = st.mouth_anim;
+            let m = st.mouth_anim;
+            st.mouth_anim = if st.horse_flags & 0x40 != 0 {
+                (m + ((1.0 - m) * 0.7 + 0.05)).min(1.0)
+            } else {
+                (m + ((0.0 - m) * 0.7 - 0.05)).max(0.0)
             };
             // M396 — `SulfurCube.tickFuse`.
             if let Some(f) = st.sulfur_fuse.as_mut() {
@@ -4537,6 +4577,24 @@ mod tests {
     /// M404 — the stand animation eases toward 1 while the synced flag
     /// stands the horse (`+ (1 − a)·0.4 + 0.05`), then back down by the
     /// cubic (`+ (0.8a³ − a)·0.6 − 0.05`); `standAnimO` is the tick's start.
+    /// M426 — `aiStep`'s eat and mouth animations: eating (0x10) eases the
+    /// first toward 1 (0.45 after one tick from rest), the mouth (0x40) the
+    /// second (0.75), and standing (0x20) zeroes the eat animation.
+    #[test]
+    fn a_horse_eats_and_works_its_mouth_and_rearing_stops_it() {
+        let mut t = EntityTable::default();
+        t.add(5, EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0));
+        t.set_horse_flags(5, 0x10 | 0x40);
+        t.tick_lerp();
+        assert!((t.eat_anim_at(5, 1.0) - 0.45).abs() < 1e-6);
+        assert!((t.mouth_anim_at(5, 1.0) - 0.75).abs() < 1e-6);
+        assert_eq!(t.eat_anim_at(5, 0.0), 0.0);
+        t.set_horse_flags(5, 0x10 | 0x20);
+        t.tick_lerp();
+        assert_eq!(t.eat_anim_at(5, 1.0), 0.0);
+        assert_eq!(t.eat_anim_at(5, 0.0), 0.0);
+    }
+
     #[test]
     fn a_horse_rears_while_its_flag_stands_it() {
         let mut t = EntityTable::default();
