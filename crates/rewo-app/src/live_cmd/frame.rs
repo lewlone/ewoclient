@@ -2824,9 +2824,17 @@ impl LiveApp {
         );
         // `shouldRenderBlockOutline` requires `!hud.isHidden()`.
         let outline = HudLayers::of(self.hud_hidden, self.chat_screen.is_some()).block_outline;
-        state
-            .world_renderer
-            .set_selection(hit.filter(|_| outline).map(|h| h.block));
+        let hit = hit.filter(|_| outline);
+        state.world_renderer.set_selection(hit.map(|h| h.block));
+        // `BlockOutlineRenderState.shape()`: the state's outline shape.
+        let boxes = hit
+            .and_then(|h| {
+                let [x, y, z] = h.block;
+                let state = session.world.block_state_at(x, y, z) as usize;
+                session.outline.get(state)
+            })
+            .map_or(&[][..], |b| b.as_slice());
+        state.world_renderer.set_selection_boxes(boxes);
         let (mut leash_verts, quad_leashes) =
             collect_leashes(session, &self.etypes, alpha, &lightmap);
         // M241 — the fishing lines ride the leash pass (a black ribbon).

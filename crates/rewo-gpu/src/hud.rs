@@ -301,6 +301,16 @@ pub struct HudPass {
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     pipeline: vk::Pipeline,
+    /// `RenderPipelines.CROSSHAIR`: `BlendFunction.INVERT`
+    /// (`ONE_MINUS_DST_COLOR, ONE_MINUS_SRC_COLOR`), built for the UNORM
+    /// twin of the colour format so the inversion is of the gamma-encoded
+    /// value, as vanilla's is (`1 - dst` in linear light is a different grey).
+    /// `None` without a UNORM counterpart: the crosshair then draws in the
+    /// main pipeline, plain white, as before.
+    crosshair_pipeline: Option<vk::Pipeline>,
+    /// How many leading vertices of this frame's list are the crosshair (6,
+    /// or 0 when hidden or drawn by the main pipeline).
+    crosshair_verts: u32,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -676,7 +686,11 @@ impl HudPass {
                     None,
                 )
                 .map_err(|e| format!("hud layout: {e}"))?;
-            let pipeline = build_pipeline(&device, layout, color_format)?;
+            let pipeline = build_pipeline(&device, layout, color_format, false)?;
+            let crosshair_pipeline = match crate::world::unorm_of(color_format) {
+                Some(unorm) => Some(build_pipeline(&device, layout, unorm, true)?),
+                None => None,
+            };
 
             let ring = crate::buf_ring::BufRing::with_capacity(
                 gpu,
@@ -697,6 +711,8 @@ impl HudPass {
                 view,
                 ring,
                 verts: 0,
+                crosshair_pipeline,
+                crosshair_verts: 0,
                 hotbar,
                 selection,
                 crosshair,
@@ -1051,6 +1067,13 @@ impl HudPass {
 
         let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
         self.verts = (kept / VERTEX_STRIDE as usize) as u32;
+        // The crosshair is the list's first quad when it is drawn at all; it
+        // moves to `draw_crosshair` when the invert pipeline exists.
+        self.crosshair_verts = if !hidden && self.crosshair_pipeline.is_some() {
+            6.min(self.verts)
+        } else {
+            0
+        };
         let Some(vbuf) = self.ring.bind() else {
             return;
         };
@@ -1079,7 +1102,52 @@ impl HudPass {
                 std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
             );
             device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
-            device.cmd_draw(cb, self.verts, 1, 0, 0);
+            device.cmd_draw(
+                cb,
+                self.verts - self.crosshair_verts,
+                1,
+                self.crosshair_verts,
+                0,
+            );
+        }
+    }
+
+    /// The crosshair, recorded inside a scope rendering to the UNORM twin of
+    /// the colour attachment (`WorldRenderer::in_gamma_space`), after
+    /// [`Self::draw`] uploaded this frame's list. Draws nothing when the
+    /// crosshair is hidden or the main pipeline already drew it.
+    pub fn draw_crosshair(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
+        let (Some(pipeline), true) = (self.crosshair_pipeline, self.crosshair_verts > 0) else {
+            return;
+        };
+        let Some(vbuf) = self.ring.bind() else {
+            return;
+        };
+        let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
+        let device = &gpu.device;
+        unsafe {
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            let viewport = vk::Viewport::default().width(w).height(h).max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[self.set],
+                &[],
+            );
+            let screen = [w, h];
+            device.cmd_push_constants(
+                cb,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
+            );
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
+            device.cmd_draw(cb, self.crosshair_verts, 1, 0, 0);
         }
     }
 
@@ -1190,6 +1258,9 @@ impl HudPass {
         unsafe {
             let device = &gpu.device;
             device.destroy_pipeline(self.pipeline, None);
+            if let Some(p) = self.crosshair_pipeline {
+                device.destroy_pipeline(p, None);
+            }
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_pool(self.pool, None);
             device.destroy_descriptor_set_layout(self.set_layout, None);
@@ -1207,6 +1278,8 @@ fn build_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
+    // `BlendFunction.INVERT` instead of the translucent blend (the crosshair).
+    invert: bool,
 ) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
@@ -1266,10 +1339,21 @@ fn build_pipeline(
         let depth = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(false)
             .depth_write_enable(false);
+        let (src, dst) = if invert {
+            (
+                vk::BlendFactor::ONE_MINUS_DST_COLOR,
+                vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+            )
+        } else {
+            (
+                vk::BlendFactor::SRC_ALPHA,
+                vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+            )
+        };
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .src_color_blend_factor(src)
+            .dst_color_blend_factor(dst)
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)

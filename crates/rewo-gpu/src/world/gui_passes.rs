@@ -729,6 +729,11 @@ impl WorldRenderer {
                 &self.gui.hud_fills,
                 &self.gui.hud_icons,
             );
+            // `Hud.extractCrosshair` draws with `RenderPipelines.CROSSHAIR`
+            // (`BlendFunction.INVERT`), in vanilla's gamma space.
+            if let Some(hud) = self.hud.as_ref() {
+                self.in_gamma_space(gpu, cb, extent, || hud.draw_crosshair(gpu, cb, extent));
+            }
             if screen.is_none() {
                 // M83 — the contextual bar's slot, which is the XP bar's slot:
                 // `Hud.nextContextualInfoState` picks one of them and the
