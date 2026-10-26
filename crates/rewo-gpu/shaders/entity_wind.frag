@@ -5,8 +5,8 @@
 // sampler repeats), the vertex colour is white, and the lightmap multiplies
 // the texel. Blended TRANSLUCENT through the UNORM view, so the texel, the
 // light and the blend are vanilla's gamma-space numbers: the light arrives
-// linear (the entity vertex's ABI) and is encoded back here. Fog is dropped,
-// as the glint's is.
+// linear (the entity vertex's ABI) and is encoded back here. M412 —
+// `apply_fog` toward the gamma-encoded fog colour.
 
 layout(set = 0, binding = 0) uniform sampler2D u_wind;
 
@@ -15,6 +15,33 @@ layout(location = 1) in vec4 v_color;
 layout(location = 2) in vec4 v_light_hurt;
 
 layout(location = 0) out vec4 out_color;
+
+// M412 — vanilla's fog (`fog.glsl`), as `world.frag` applies it: the
+// render-distance band over the cylindrical distance, the environmental band
+// over the spherical one, the larger of the two. In the fragment-only push
+// range after the vertex stage's `view_proj`.
+layout(push_constant) uniform Fog {
+    layout(offset = 64) vec4 cam_fog; // xyz camera, w render-distance fog start
+    vec4 fog_col;                     // rgb fog colour (linear), w its end
+    vec4 env_fog;                     // x environmental start, y its end
+} fog;
+
+layout(location = 3) in vec3 v_worldpos;
+
+float fog_render() {
+    vec3 rel = v_worldpos - fog.cam_fog.xyz;
+    float cyl = max(length(rel.xz), abs(rel.y));
+    return clamp((cyl - fog.cam_fog.w) / max(fog.fog_col.w - fog.cam_fog.w, 1.0), 0.0, 1.0);
+}
+
+float fog_env() {
+    float dist = length(v_worldpos - fog.cam_fog.xyz);
+    return clamp((dist - fog.env_fog.x) / max(fog.env_fog.y - fog.env_fog.x, 1.0), 0.0, 1.0);
+}
+
+float fog_amount() {
+    return max(fog_render(), fog_env());
+}
 
 vec3 to_srgb(vec3 c) {
     return mix(c * 12.92,
@@ -27,5 +54,6 @@ void main() {
     if (c.a < 0.1) {
         discard;
     }
-    out_color = vec4(c.rgb * to_srgb(v_light_hurt.rgb), c.a);
+    vec3 lit = c.rgb * to_srgb(v_light_hurt.rgb);
+    out_color = vec4(mix(lit, to_srgb(fog.fog_col.rgb), fog_amount()), c.a);
 }

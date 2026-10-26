@@ -19,7 +19,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   draws skinned heads and patterned items), M409 (the ender dragon flies
   on its flight history: the audit's last open row), M410 (mannequins'
   "NPC" description and below-name scores), M411 (the cursor draws a
-  carried stack's own copy); the
+  carried stack's own copy), M412 (entities, items and name tags take the
+  terrain's fog; they never had); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -100,6 +101,12 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `50130820` | deps: rustls-webpki 0.103.16, webpki-roots 1.0.11 (CI `audit`) |
 | `a1b30116` | dependabot: windows-rs minor/major bumps wait for a deliberate upgrade (PR #6) |
 | `7bebbb7c` | **M403–M406** — the elytra; rearing horses' seats (r91's flake); patterned banners and shields as icons, dropped, framed and held; r89/r213/r214/r329 witnesses |
+| `36b07250` | **M407** — decorated pot items wear their sherds; inventoryshot g24, r228 |
+| `d8ac1c37` | **M408** — the first-person hand draws a stack's own copy; r229 |
+| `c2ca650d` | **M409** — the ender dragon flies on its flight history; mobtexshot m119 |
+| `334342ca` | **M410** — the below-name line (a mannequin's description, below-name scores); labelshot f17 |
+| `3523cbfe` | **M411** — the cursor draws a carried stack's own copy |
+| (next) | **M412** — entities take the terrain's fog; mobtexshot m120 |
 
 ## Flakes
 
@@ -146,9 +153,9 @@ major bumps, so the next weekly group arrives without it.
 - Remote players' motion is applied directly, not lerped over
   `updateInterval + 1` steps as `RemotePlayer.lerpMotion` does.
 - Baby humanoids wear no armour (and so no elytra) in Rewo.
-- **Entities take no fog at all** (found while checking the swirls'
-  fog): `entity.frag` has none, so mobs, items and tags stay crisp at the
-  render-distance edge and in water, lava or blindness. Next milestone.
+- ~~Entities take no fog at all~~: done in M412. Left from it: the
+  first-person hand stays unfogged (vanilla's hand fogs inside lava,
+  water or blindness, where the environmental band starts near the eye).
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing
   entity's outline is vanilla's behaviour (`energySwirl` and `breezeWind`
   set no outline property), not a gap.

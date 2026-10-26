@@ -56,6 +56,8 @@ impl WorldRenderer {
         self.draw_leash(gpu, cb, view_proj, extent);
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
+            // M412 — the entities fog as the terrain does.
+            pass.set_fog(self.entity_fog());
             pass.draw_solid(gpu, cb, view_proj, extent);
             // M363 — the boats' water patches into depth, before the
             // translucent water below tests against it.

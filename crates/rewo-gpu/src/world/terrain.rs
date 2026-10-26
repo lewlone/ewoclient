@@ -367,6 +367,25 @@ impl TerrainPass {
 }
 
 impl WorldRenderer {
+    /// M412 — the terrain's fog as the entity pass's fragment words:
+    /// `[camera, render start]`, `[colour, render end]`, `[env start, env
+    /// end, _, _]` (the same numbers `push_world` and the lightmap UBO give
+    /// `world.frag`).
+    pub(super) fn entity_fog(&self) -> [[f32; 4]; 3] {
+        let e = self.scene.camera_eye;
+        let env = self.scene.lightmap.env_fog_words();
+        [
+            [e[0], e[1], e[2], self.scene.fog[0]],
+            [
+                self.scene.fog_base[0] * self.scene.fog_tint[0],
+                self.scene.fog_base[1] * self.scene.fog_tint[1],
+                self.scene.fog_base[2] * self.scene.fog_tint[2],
+                self.scene.fog[1],
+            ],
+            [env[0], env[1], 0.0, 0.0],
+        ]
+    }
+
     /// Push the world/fog constants (view_proj + camera + fog band).
     fn push_world(&self, device: &ash::Device, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
         let (light, sky_col) = self.scene.lightmap.push_words();

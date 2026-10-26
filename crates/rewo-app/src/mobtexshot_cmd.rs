@@ -26,9 +26,10 @@
 //!   pixel samples exactly one texel — there is no filtering blend to model;
 //! * the solid range's pipeline is `blend_enable(!solid)`, i.e. **off**, so an
 //!   entity pixel is written rather than mixed with the sky behind it;
-//! * `entity.frag` is `out = texel * v_color.rgb * v_light_hurt.rgb` with no
-//!   fog term at all, and this gate draws at `light = [1,1,1]`, so the light
-//!   factor is the identity;
+//! * `entity.frag` is `out = texel * v_color.rgb * v_light_hurt.rgb` and its
+//!   fog (M412) is pushed out of reach by every stage ([`stage_from`]; m120
+//!   alone sets a band), and this gate draws at `light = [1,1,1]`, so the
+//!   light factor is the identity;
 //! * `v_color.rgb` is `q.shade * slot_tint`, and `mobs::shade_for` returns one
 //!   of **five** values — re-declared as [`SHADES`] here rather than imported,
 //!   per M93r: a witness that reads the constant the renderer reads grades
@@ -104,7 +105,13 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 119;
+const EXPECTED_WITNESSES: usize = 120;
+/// M412 — m120's linear fog colour: a mid colour unlike any pig texel and
+/// unlike [`BG`], so a fogged pixel is told from an unfogged one and from the
+/// clear colour.
+const FOG_TEST: [f32; 3] = [0.05, 0.4, 0.15];
+/// M412 — m120's floor of pig pixels (a pig 6 blocks off covers 274).
+const FOG_PIG_MIN: usize = 200;
 /// M409 — m119's floor: the silhouette a turning, climbing flight history
 /// changes against a straight one (the same flap). Before M409 the model
 /// read no history (0 by construction).
@@ -7415,6 +7422,68 @@ fn run_check(
         format!("half a second apart {dg_moved} px of silhouette (want >= {DRAGON_MIN})"),
     ));
 
+    // m120 — M412: entities take the terrain's fog. A pig 6 blocks off
+    // under a band that ends at 2 blocks is the fog colour in every pixel
+    // it covers; under 3..9 it is a mix of its own colour and the fog's.
+    let mut fgst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.5, 6.0),
+        Vec3::new(0.0, 0.5, 0.0),
+    )?;
+    fgst.wr.set_sky_fog_base([0.5; 3], FOG_TEST);
+    fgst.wr.set_sky_tint([1.0; 3], [1.0; 3]);
+    let mut fgshot = |pig: bool, band: [f32; 2]| -> Result<Vec<u8>, String> {
+        fgst.wr.set_fog(band[0], band[1]);
+        let draws = if pig {
+            vec![neutral_draw(EntityModelKind::Pig)]
+        } else {
+            Vec::new()
+        };
+        fgst.wr.set_entities(&draws, fgst.right, fgst.up, 0.0);
+        fgst.off
+            .render(gpu, Some((&mut fgst.wr, fgst.vp)), &ov, BG)?;
+        fgst.off.read_rgba(gpu)
+    };
+    let fg_empty = fgshot(false, [1.0e6, 1.0e6 + 1.0])?;
+    let fg_clear = fgshot(true, [1.0e6, 1.0e6 + 1.0])?;
+    let fg_full = fgshot(true, [1.0, 2.0])?;
+    let fg_part = fgshot(true, [3.0, 9.0])?;
+    fgst.destroy(gpu);
+    if let Some(d) = &args.out_dir {
+        save_png(&fg_clear, cw, ch, &d.join("m120_pig_clear.png"))?;
+        save_png(&fg_full, cw, ch, &d.join("m120_pig_full_fog.png"))?;
+        save_png(&fg_part, cw, ch, &d.join("m120_pig_part_fog.png"))?;
+    }
+    let want = FOG_TEST.map(srgb_encode);
+    let px = |f: &[u8], i: usize| [f[i * 4], f[i * 4 + 1], f[i * 4 + 2]];
+    let near =
+        |a: [u8; 3], b: [u8; 3], tol: i32| (0..3).all(|c| (a[c] as i32 - b[c] as i32).abs() <= tol);
+    let pig: Vec<usize> = (0..(cw * ch) as usize)
+        .filter(|&i| px(&fg_clear, i) != px(&fg_empty, i))
+        .collect();
+    let full_ok = pig
+        .iter()
+        .filter(|&&i| near(px(&fg_full, i), want, 1))
+        .count();
+    let part_mixed = pig
+        .iter()
+        .filter(|&&i| {
+            let p = px(&fg_part, i);
+            !near(p, px(&fg_clear, i), 2) && !near(p, want, 2)
+        })
+        .count();
+    w.push(wit(
+        "m120.entities_fade_into_the_terrains_fog",
+        pig.len() >= FOG_PIG_MIN && full_ok == pig.len() && part_mixed * 10 >= pig.len() * 9,
+        format!(
+            "{} pig px (want >= {FOG_PIG_MIN}); past the band {full_ok} are the fog colour {want:?}; inside it {part_mixed} are a mix (want >= 90%)",
+            pig.len()
+        ),
+    ));
+
     // m106 — M390: a piglin's arm pose follows `getArmPose()`: dancing,
     // admiring an item and holding its weapon high each against standing,
     // at the same age (3 s: dancePos 1).
@@ -8269,6 +8338,9 @@ fn stage_from(
     )?;
     let dir = (center - eye).normalize();
     wr.set_camera(eye.to_array());
+    // M412 — no distance fog: the oracle grades sheets, and the default band
+    // (80..180) reaches the big grid's far rows. m120 sets its own.
+    wr.set_fog(1.0e6, 1.0e6 + 1.0);
     let view = crate::view_math::look_to_rh(eye, dir, Vec3::Y);
     let proj = Mat4::from_cols_array_2d(&rewo_gpu::world::perspective_reverse_z(
         55f32.to_radians(),

@@ -1267,6 +1267,11 @@ pub struct EntityPass {
     emissive_verts: u32,
     /// M278 — the glowing entities' outline copies, the seventh range.
     outline_verts: u32,
+    /// M412 — the fog words the fragment stages read: camera and
+    /// render-distance start, fog colour and end, environmental band.
+    /// [`NO_FOG`] until the world renderer sets them, so a GUI preview
+    /// pass draws unfogged.
+    fog: std::cell::Cell<[[f32; 4]; 3]>,
     /// M285 — the energy swirl (`RenderPipelines.ENERGY_SWIRL`): its own
     /// sheet (`creeper_armor.png`, REPEAT and NEAREST: no `.mcmeta`), its own
     /// additive pipeline, the eighth range.
@@ -2055,10 +2060,18 @@ impl EntityPass {
                 &[],
             );
 
-            let pc = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
-                .offset(0)
-                .size(64)];
+            // M412 — `view_proj` for the vertex stage, then the fog words
+            // (three vec4s) for the fragment stage.
+            let pc = [
+                vk::PushConstantRange::default()
+                    .stage_flags(vk::ShaderStageFlags::VERTEX)
+                    .offset(0)
+                    .size(64),
+                vk::PushConstantRange::default()
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                    .offset(64)
+                    .size(48),
+            ];
             let layout = device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -2145,6 +2158,7 @@ impl EntityPass {
                 water_mask_pipeline,
                 water_mask_verts: 0,
                 outline_verts: 0,
+                fog: std::cell::Cell::new(NO_FOG),
                 swirl: None,
                 swirl_pipeline: None,
                 swirl_verts: 0,
@@ -4662,8 +4676,24 @@ impl EntityPass {
             0,
             std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64),
         );
+        // M412 — this frame's fog (none, for a pass nobody set it on).
+        let fog = self.fog.get();
+        device.cmd_push_constants(
+            cb,
+            self.layout,
+            vk::ShaderStageFlags::FRAGMENT,
+            64,
+            std::slice::from_raw_parts(fog.as_ptr() as *const u8, 48),
+        );
         device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
         true
+    }
+
+    /// M412 — the fog this pass draws with from now on (`world.frag`'s:
+    /// `[camera, render start]`, `[colour, render end]`, `[env start, env
+    /// end, _, _]`).
+    pub fn set_fog(&self, fog: [[f32; 4]; 3]) {
+        self.fog.set(fog);
     }
 
     /// M278 — the entity pass's pipeline layout, which the outline's
@@ -5968,6 +5998,14 @@ impl EntityFrame {
         [self.pos[0] + l[0], self.pos[1] + l[1], self.pos[2] + l[2]]
     }
 }
+
+/// M412 — fog words that fog nothing (both bands start a billion blocks
+/// out).
+pub const NO_FOG: [[f32; 4]; 3] = [
+    [0.0, 0.0, 0.0, 1.0e9],
+    [0.0, 0.0, 0.0, 1.0e9 + 1.0],
+    [1.0e9, 1.0e9 + 1.0, 0.0, 0.0],
+];
 
 /// M410 — `submitNameDisplay`'s `translate(0, 9·1.15·0.025, 0)`: how far
 /// the name rises over a score line, in blocks.

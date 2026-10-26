@@ -1,7 +1,7 @@
 #version 450
 // The enchantment glint over world-space geometry — a ground stack or one held
-// by a mob (M45), and worn armour (M50). `core/glint.fsh` with the fog term
-// dropped, exactly as the GUI and hand glints do.
+// by a mob (M45), and worn armour (M50). `core/glint.fsh`; M412 — with its
+// fog fade (the GUI and hand glints, which vanilla does not fog, drop it).
 //
 // One shader for both because `ARMOR_ENTITY_GLINT` and `ENTITY_GLINT` differ
 // only in their texture and their `TextureTransform` scale — both of which the
@@ -34,10 +34,40 @@ layout(location = 2) in vec4 v_light_hurt;
 
 layout(location = 0) out vec4 out_color;
 
+// M412 — vanilla's fog (`fog.glsl`), as `world.frag` applies it: the
+// render-distance band over the cylindrical distance, the environmental band
+// over the spherical one, the larger of the two. In the fragment-only push
+// range after the vertex stage's `view_proj`.
+layout(push_constant) uniform Fog {
+    layout(offset = 64) vec4 cam_fog; // xyz camera, w render-distance fog start
+    vec4 fog_col;                     // rgb fog colour (linear), w its end
+    vec4 env_fog;                     // x environmental start, y its end
+} fog;
+
+layout(location = 3) in vec3 v_worldpos;
+
+float fog_render() {
+    vec3 rel = v_worldpos - fog.cam_fog.xyz;
+    float cyl = max(length(rel.xz), abs(rel.y));
+    return clamp((cyl - fog.cam_fog.w) / max(fog.fog_col.w - fog.cam_fog.w, 1.0), 0.0, 1.0);
+}
+
+float fog_env() {
+    float dist = length(v_worldpos - fog.cam_fog.xyz);
+    return clamp((dist - fog.env_fog.x) / max(fog.env_fog.y - fog.env_fog.x, 1.0), 0.0, 1.0);
+}
+
+float fog_amount() {
+    return max(fog_render(), fog_env());
+}
+
 void main() {
     vec4 c = texture(u_glint, v_uv);
     if (c.a < 0.1) {
         discard;
     }
-    out_color = vec4(c.rgb * v_color.a, c.a);
+    // M412 — `linear_fog_fade` of both bands, multiplied: the sheen fades
+    // out rather than toward a colour (it is additive).
+    float fade = (1.0 - fog_env()) * (1.0 - fog_render());
+    out_color = vec4(c.rgb * v_color.a * fade, c.a);
 }
