@@ -1056,6 +1056,8 @@ mod tests {
             dye_removed: false,
             provides_banner_patterns_removed: false,
             trim_material: None,
+            trim_pattern: None,
+            dyed_color: None,
         });
         inv.set_content(1, &content, None);
         assert_eq!(m.open().unwrap().enchant_lapis(), 13, "the COUNT, not 1");

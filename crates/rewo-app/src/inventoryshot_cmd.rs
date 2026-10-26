@@ -620,6 +620,8 @@ fn plain(item_id: i32, count: i32) -> Option<ItemSlot> {
         dye_removed: false,
         provides_banner_patterns_removed: false,
         trim_material: None,
+        trim_pattern: None,
+        dyed_color: None,
     })
 }
 
@@ -641,6 +643,8 @@ fn patched_stack(item_id: i32, count: i32, fingerprint: u64) -> Option<ItemSlot>
         dye_removed: false,
         provides_banner_patterns_removed: false,
         trim_material: None,
+        trim_pattern: None,
+        dyed_color: None,
     })
 }
 

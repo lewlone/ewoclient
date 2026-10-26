@@ -95,7 +95,7 @@ impl ElytraAnimation {
         } else if crouching {
             [PI * 2.0 / 9.0, 0.087_266_46, -PI / 4.0]
         } else {
-            [PI / 12.0, 0.0, -PI / 12.0]
+            ELYTRA_REST
         };
         for (r, t) in self.rot.iter_mut().zip(target) {
             *r += (t - *r) * 0.3;
@@ -107,6 +107,14 @@ impl ElytraAnimation {
         std::array::from_fn(|i| self.rot_old[i] + alpha * (self.rot[i] - self.rot_old[i]))
     }
 }
+
+/// `ElytraAnimationState`'s rest target (neither gliding nor crouching):
+/// what a still wearer's wings settle on (M414: the inventory preview's).
+pub const ELYTRA_REST: [f32; 3] = [
+    std::f32::consts::PI / 12.0,
+    0.0,
+    -std::f32::consts::PI / 12.0,
+];
 
 /// M409 — `EnderDragonPhase` ids (creation order).
 pub const DRAGON_LANDING: i32 = 3;

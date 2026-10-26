@@ -130,10 +130,8 @@ pub fn hotbar_models(
 /// *moving* case, for the reason the limbs are missing — nothing in Rewo
 /// consumes the local player's animation state.
 ///
-/// `chest_humanoid` is false because the preview draws no armour at all
-/// (`armor: [None; 4]`): nothing there can be wearing a chestplate to shift
-/// the cape clear, and by the same token nothing can be wearing an elytra to
-/// suppress it — so `CapeLayer`'s other two gates have nothing to act on.
+/// `chest_humanoid` is false here; M414's [`preview_equipment`] applies
+/// `CapeLayer`'s other two gates against the worn chest piece.
 pub(crate) fn preview_cape(origin: Option<(u32, u32)>) -> Option<rewo_gpu::entities::CapeDraw> {
     origin.map(|origin| rewo_gpu::entities::CapeDraw {
         origin,
@@ -143,6 +141,51 @@ pub(crate) fn preview_cape(origin: Option<(u32, u32)>) -> Option<rewo_gpu::entit
         chest_humanoid: false,
         wavy: None,
     })
+}
+
+/// M414 — what the inventory preview wears: the local player's four armour
+/// slots (head first) as [`armor_keys_of`] resolves any wearer's, without
+/// trims (they live in the world pass's pool, not the preview's), the
+/// elytra at rest (`ELYTRA_REST`: a still player's settled wings; on the
+/// cape sheet the preview holds, as `getPlayerElytraTexture` takes it), and
+/// the cape behind `CapeLayer`'s chest gates.
+pub(crate) struct PreviewEquipment<'a> {
+    pub armor: [Option<rewo_gpu::entities::ArmorPiece<'a>>; 4],
+    pub wings: Option<rewo_gpu::entities::WingsDraw<'a>>,
+    pub cape: Option<rewo_gpu::entities::CapeDraw>,
+}
+
+pub(crate) fn preview_equipment<'a>(
+    worn: [Option<rewo_world::entities::WornPiece>; 4],
+    cape_origin: Option<(u32, u32)>,
+    items: &rewo_data::items::Items,
+    equipment: &'a rewo_data::equipment::EquipmentAssets,
+) -> PreviewEquipment<'a> {
+    let cape = super::entities::cape_chest_gates(worn[1], items, equipment).and_then(|humanoid| {
+        preview_cape(cape_origin).map(|c| rewo_gpu::entities::CapeDraw {
+            chest_humanoid: humanoid,
+            ..c
+        })
+    });
+    PreviewEquipment {
+        armor: super::entities::armor_keys_of(worn, items, equipment, |_, _, _| None),
+        wings: super::entities::wings_of(
+            worn[1],
+            cape_origin,
+            rewo_world::glide::ELYTRA_REST,
+            false,
+            items,
+            equipment,
+        ),
+        cape,
+    }
+}
+
+/// The local player's armour slots as worn pieces, head first (M414).
+pub(crate) fn local_worn(
+    inv: &rewo_world::inventory::Inventory,
+) -> [Option<rewo_world::entities::WornPiece>; 4] {
+    std::array::from_fn(|i| inv.armor(i).map(|s| s.worn()))
 }
 
 /// The player model shown in the inventory screen's window (M36).
@@ -157,17 +200,19 @@ pub(crate) fn preview_cape(origin: Option<(u32, u32)>) -> Option<rewo_gpu::entit
 /// preview too; that would need the local player's animation state, which
 /// nothing else in Rewo consumes yet.
 ///
-/// **The cape (M64)** hangs from `cape_origin`, an address in the preview
-/// pass's own atlas — see [`preview_cape`] for why its three angles are zero.
+/// **The cape (M64)** hangs from an address in the preview pass's own atlas
+/// — see [`preview_cape`] for why its three angles are zero; M414's `worn`
+/// carries it with the armour and elytra.
 pub(super) fn preview_draw<'a>(
     session: &PlaySession,
     skin: Option<[f32; 2]>,
     slim: bool,
-    cape_origin: Option<(u32, u32)>,
     held: [Option<&'a str>; 2],
     w: f32,
     h: f32,
     mouse: (f64, f64),
+    // M414 — the armour, elytra and cape it wears.
+    worn: PreviewEquipment<'a>,
 ) -> (EntityDraw<'a>, [[f32; 4]; 4], ash::vk::Rect2D) {
     let (x_angle, y_angle) = rewo_gpu::container::preview_angles(mouse, w, h);
     // `LivingEntityRenderState.boundingBoxHeight / scale`, and the player's
@@ -190,7 +235,7 @@ pub(super) fn preview_draw<'a>(
         yaw: 180.0 + x_angle,
         death_time: 0.0,
         ground_item: None,
-        armor: [None; 4],
+        armor: worn.armor,
         held_glint: [false; 2],
         ground_glint: false,
         ground_count: 0,
@@ -245,9 +290,9 @@ pub(super) fn preview_draw<'a>(
         collar: None,
         undercoat: false,
         fish_dye: None,
-        cape: preview_cape(cape_origin),
-        // M403 — no armour in the preview, so no elytra either.
-        wings: None,
+        cape: worn.cape,
+        // M414 — and its elytra.
+        wings: worn.wings,
         score_text: None,
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);

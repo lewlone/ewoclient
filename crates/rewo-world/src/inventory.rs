@@ -115,10 +115,14 @@ pub struct ItemSlot {
     /// (M93e) — see `StackComponents::damage_component_removed`.
     pub damage_component_removed: bool,
     /// `minecraft:trim`'s material registry id (M49), for picking the icon
-    /// variant. The pattern is not here: an item definition's `select` is on
-    /// `minecraft:trim_material` alone, so the pattern changes the worn model
-    /// and never the icon.
+    /// variant (an item definition's `select` is on `minecraft:trim_material`
+    /// alone, so the pattern changes the worn model and never the icon).
     pub trim_material: Option<i32>,
+    /// M414 — `minecraft:trim`'s pattern registry id, with
+    /// [`Self::trim_material`] the worn trim (the inventory preview's).
+    pub trim_pattern: Option<i32>,
+    /// M414 — `minecraft:dyed_color`'s RGB, a worn piece's tint.
+    pub dyed_color: Option<i32>,
 }
 
 impl ItemSlot {
@@ -145,6 +149,22 @@ impl ItemSlot {
             has_map_id: false,
             damage_component_removed: false,
             trim_material: None,
+            trim_pattern: None,
+            dyed_color: None,
+        }
+    }
+
+    /// M414 — this stack as a worn piece: what an equipment packet would
+    /// have carried for it (`rewo-net`'s `set_equipment` decode reads the
+    /// same components off the wire).
+    pub fn worn(&self) -> crate::entities::WornPiece {
+        crate::entities::WornPiece {
+            item: self.item_id,
+            dye: self.dyed_color,
+            trim: self.trim_material.zip(self.trim_pattern),
+            foil: self.enchanted,
+            wear: (!self.unbreakable && !self.damage_component_removed)
+                .then_some((self.damage.unwrap_or(0), self.max_damage)),
         }
     }
 }
@@ -2010,6 +2030,34 @@ impl Inventory {
 
 #[cfg(test)]
 mod tests {
+
+    /// M414 — a slot's stack as a worn piece carries what the equipment
+    /// packet would: the dye, the whole trim (only with both halves), the
+    /// foil, and the wear unless unbreakable.
+    #[test]
+    fn a_slot_stack_wears_as_the_equipment_packet_would_have_sent_it() {
+        let mut s = ItemSlot::plain(7, 1);
+        s.dyed_color = Some(0x12_34_56);
+        s.trim_material = Some(3);
+        s.trim_pattern = Some(9);
+        s.enchanted = true;
+        s.damage = Some(4);
+        s.max_damage = Some(80);
+        let w = s.worn();
+        assert_eq!(
+            (w.item, w.dye, w.trim, w.foil, w.wear),
+            (7, Some(0x12_34_56), Some((3, 9)), true, Some((4, Some(80))))
+        );
+        s.trim_pattern = None;
+        s.unbreakable = true;
+        let w = s.worn();
+        assert_eq!((w.trim, w.wear), (None, None));
+        let plain = ItemSlot::plain(7, 1).worn();
+        assert_eq!(
+            (plain.dye, plain.trim, plain.foil, plain.wear),
+            (None, None, false, Some((0, None)))
+        );
+    }
 
     /// `isUsableForCrafting` — three independent disqualifiers, and a plain
     /// stack passes all three.
@@ -4048,6 +4096,8 @@ mod tests {
             dye_removed: false,
             provides_banner_patterns_removed: false,
             trim_material: None,
+            trim_pattern: None,
+            dyed_color: None,
         })
     }
 

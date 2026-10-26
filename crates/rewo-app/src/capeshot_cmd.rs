@@ -46,7 +46,7 @@ use crate::stats::OverlayRing;
 
 /// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 5 for M64 (the
 /// re-projected collision + the inventory preview's cape).
-const EXPECTED_WITNESSES: usize = 72;
+const EXPECTED_WITNESSES: usize = 75;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -1972,6 +1972,27 @@ fn check_pixels(
              emitter reads the chain and never advances it, so a paused game \
              cannot drift",
         );
+        // M413 — a swimming wearer: the chain cannot follow the body's tilt,
+        // so the wavy cape gives way to the vanilla one (which does).
+        let swimming = |cape: CapeDraw| {
+            let mut d = player_draw(Some(cape));
+            d.mob.swim_amount = 1.0;
+            d.mob.swim_in_water = true;
+            d
+        };
+        let f_swim_w = shot(gpu, &mut off, &mut wr, &[swimming(mot_w)])?;
+        let f_swim_v = shot(gpu, &mut off, &mut wr, &[swimming(mot_v)])?;
+        c.record(
+            "y5.a_swimmers_wavy_cape_is_the_vanilla_cape",
+            f_swim_w == f_swim_v && f_swim_v != f_mot_v && magenta(&f_swim_v) > 0,
+            format!(
+                "the swimming player's wavy and vanilla capes compare equal as \
+                 raw bytes ({} marker px), and differ from the upright \
+                 player's: before M413 the chain hung world-down beside the \
+                 lying body",
+                magenta(&f_swim_v)
+            ),
+        );
 
         // ---- M64: the inventory preview's cape -------------------------
         //
@@ -2130,9 +2151,64 @@ fn check_pixels(
                      player standing in an open inventory has let it close — \
                      the *moving* preview is missing for the same reason its \
                      legs are, not by a different simplification. \
-                     `chest_humanoid` is false because the preview draws no \
-                     armour at all, so neither of `CapeLayer`'s other two \
-                     gates has anything to act on"
+                     `chest_humanoid` is false because `preview_cape` sees \
+                     no chest piece; `CapeLayer`'s other two gates act in \
+                     `preview_equipment` (p6, p7)"
+                ),
+            );
+            // M414 — the preview wears the local player's armour, through
+            // the production `preview_equipment`: an elytra (whose wings
+            // take the cape sheet the preview holds, and which suppresses
+            // the cape) and a chestplate (drawn, and shifting the cape).
+            let dressed = |chest: i32| {
+                crate::live_cmd::preview_equipment(
+                    [None, Some(worn(chest)), None, None],
+                    Some(p_origin),
+                    &f.items,
+                    &f.equipment,
+                )
+            };
+            let mut prev_dressed = |chest: i32| -> Result<Vec<u8>, String> {
+                let e = dressed(chest);
+                let mut d = player_draw(e.cape);
+                d.armor = e.armor;
+                d.wings = e.wings;
+                wr.set_preview(Some((&d, vp_prev, rect)));
+                off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
+                off.read_rgba(gpu)
+            };
+            let el = dressed(f.elytra);
+            let p_elytra = prev_dressed(f.elytra)?;
+            let p_chest = prev_dressed(f.chestplate)?;
+            let el_on_cape = matches!(
+                el.wings.map(|w| w.texture),
+                Some(rewo_gpu::entities::WingsTexture::Player(o)) if o == p_origin
+            );
+            let el_px = magenta_in(&p_elytra, window);
+            c.record(
+                "p6.the_preview_wears_an_elytra_on_its_cape_sheet",
+                el.cape.is_none() && el_on_cape && el_px > 300,
+                format!(
+                    "cape suppressed: {}; wings on the preview's cape slot: \
+                     {el_on_cape}; {el_px} marker px on the wings in the window \
+                     (want > 300). Before M414 the preview drew `armor: [None; \
+                     4]` and no wings",
+                    el.cape.is_none()
+                ),
+            );
+            let ch = dressed(f.chestplate);
+            c.record(
+                "p7.the_preview_wears_a_chestplate_and_shifts_its_cape",
+                ch.armor[1].is_some()
+                    && ch.cape.is_some_and(|c| c.chest_humanoid)
+                    && p_chest != p_back
+                    && magenta_in(&p_chest, window) > 0,
+                format!(
+                    "chest piece resolved: {}; cape shifted clear: {}; the \
+                     frame differs from the bare caped preview: {}",
+                    ch.armor[1].is_some(),
+                    ch.cape.is_some_and(|c| c.chest_humanoid),
+                    p_chest != p_back
                 ),
             );
             // M292 — the mount screen's window: a donkey, through the

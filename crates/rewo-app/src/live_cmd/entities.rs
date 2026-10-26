@@ -813,30 +813,50 @@ pub(crate) fn resolve_wings<'a>(
     items: &rewo_data::items::Items,
     equipment: &'a rewo_data::equipment::EquipmentAssets,
 ) -> Option<rewo_gpu::entities::WingsDraw<'a>> {
-    use rewo_data::equipment::ArmorLayer;
-    use rewo_gpu::entities::WingsTexture;
     if !rewo_gpu::mobs::wears_humanoid_armor(kind) {
         return None;
     }
-    // `state.chestEquipment.get(EQUIPPABLE)` with an asset, and that asset's
-    // `wings` layers (`renderLayers` draws nothing for an asset without).
-    let piece = ents.armor(id)[1]?;
-    let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
-    let def = equipment.layers(asset, ArmorLayer::Wings).first()?;
     // `getPlayerElytraTexture`: `skin.elytra()` (no profile Rewo sees
     // carries one), else `skin.cape()` while `showCape`.
     let player = matches!(kind, EntityModelKind::Player | EntityModelKind::PlayerSlim)
         && ents.shows_cape(id);
-    let texture = match cape_origin {
-        Some(origin) if def.use_player_texture && player => WingsTexture::Player(origin),
+    let e = ents.get(id)?;
+    wings_of(
+        ents.armor(id)[1],
+        cape_origin.filter(|_| player),
+        e.elytra.at(alpha),
+        ents.pose(id) == POSE_CROUCHING,
+        items,
+        equipment,
+    )
+}
+
+/// M414 — `WingsLayer` for a chest piece: `state.chestEquipment` with an
+/// asset whose `wings` layers draw (`renderLayers` draws nothing for an
+/// asset without), on the wearer's cape sheet when the layer says
+/// `use_player_texture` and `player_cape` is the shown cape's slot.
+pub(crate) fn wings_of<'a>(
+    chest: Option<rewo_world::entities::WornPiece>,
+    player_cape: Option<(u32, u32)>,
+    rot: [f32; 3],
+    crouching: bool,
+    items: &rewo_data::items::Items,
+    equipment: &'a rewo_data::equipment::EquipmentAssets,
+) -> Option<rewo_gpu::entities::WingsDraw<'a>> {
+    use rewo_data::equipment::ArmorLayer;
+    use rewo_gpu::entities::WingsTexture;
+    let piece = chest?;
+    let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
+    let def = equipment.layers(asset, ArmorLayer::Wings).first()?;
+    let texture = match player_cape {
+        Some(origin) if def.use_player_texture => WingsTexture::Player(origin),
         _ => WingsTexture::Equipment(def.key.as_str()),
     };
-    let e = ents.get(id)?;
     Some(rewo_gpu::entities::WingsDraw {
         texture,
         foil: piece.foil,
-        rot: e.elytra.at(alpha),
-        crouching: ents.pose(id) == POSE_CROUCHING,
+        rot,
+        crouching,
     })
 }
 
@@ -872,7 +892,6 @@ pub(crate) fn resolve_cape(
     items: &rewo_data::items::Items,
     equipment: &rewo_data::equipment::EquipmentAssets,
 ) -> Option<rewo_gpu::entities::CapeDraw> {
-    use rewo_data::equipment::ArmorLayer;
     // `CapeLayer` is added by `AvatarRenderer` alone — a zombie has a torso
     // and no cape layer.
     if !rewo_gpu::mobs::wears_cape(kind) {
@@ -884,12 +903,8 @@ pub(crate) fn resolve_cape(
     }
     // Gate 2.
     let origin = cape_origin?;
-    // Gates 3 + 4 — one lookup of the chest item, two different questions.
-    let chest = ents.armor(id)[1].and_then(|p| items.name(p.item));
-    if chest.is_some_and(|n| equipment.has_layer(n, ArmorLayer::Wings)) {
-        return None;
-    }
-    let chest_humanoid = chest.is_some_and(|n| equipment.has_layer(n, ArmorLayer::Humanoid));
+    // Gates 3 + 4.
+    let chest_humanoid = cape_chest_gates(ents.armor(id)[1], items, equipment)?;
 
     let e = ents.get(id)?;
     let a = rewo_world::cape::cape_angles(
@@ -918,6 +933,23 @@ pub(crate) fn resolve_cape(
         // this runs once per frame and `interpolated` takes `&self`.
         wavy: resolve_wavy_cape(ents, id, alpha),
     })
+}
+
+/// `CapeLayer`'s gates 3 and 4 ([`resolve_cape`]), one lookup of the chest
+/// piece and two questions: `None` when it has a `wings` layer (an elytra
+/// replaces the cape), else whether it has a `humanoid` one (a chestplate
+/// shifts the cape clear).
+pub(crate) fn cape_chest_gates(
+    chest: Option<rewo_world::entities::WornPiece>,
+    items: &rewo_data::items::Items,
+    equipment: &rewo_data::equipment::EquipmentAssets,
+) -> Option<bool> {
+    use rewo_data::equipment::ArmorLayer;
+    let chest = chest.and_then(|p| items.name(p.item));
+    if chest.is_some_and(|n| equipment.has_layer(n, ArmorLayer::Wings)) {
+        return None;
+    }
+    Some(chest.is_some_and(|n| equipment.has_layer(n, ArmorLayer::Humanoid)))
 }
 
 /// The frame's interpolated cape spine, or `None` for the vanilla cape.
@@ -3861,8 +3893,30 @@ pub(crate) fn armor_keys<'a>(
     equipment: &'a rewo_data::equipment::EquipmentAssets,
     trim_slots: &std::collections::HashMap<String, (u32, u32)>,
 ) -> [Option<rewo_gpu::entities::ArmorPiece<'a>>; 4] {
+    armor_keys_of(
+        session.world.entities.armor(id),
+        items,
+        equipment,
+        |piece, asset, layer| {
+            trim_sprite_path(session, piece, asset, layer).and_then(|p| trim_slots.get(&p).copied())
+        },
+    )
+}
+
+/// M414 — [`armor_keys`] over any four worn pieces (head first): the
+/// inventory preview's are the local player's armour slots. `trim` places a
+/// piece's trim sprite in the drawing pass's pool (`None`: not there).
+pub(crate) fn armor_keys_of<'a>(
+    worn: [Option<rewo_world::entities::WornPiece>; 4],
+    items: &rewo_data::items::Items,
+    equipment: &'a rewo_data::equipment::EquipmentAssets,
+    trim: impl Fn(
+        &rewo_world::entities::WornPiece,
+        &str,
+        rewo_data::equipment::ArmorLayer,
+    ) -> Option<(u32, u32)>,
+) -> [Option<rewo_gpu::entities::ArmorPiece<'a>>; 4] {
     use rewo_data::equipment::{color_for_layer, dye_argb, ArmorLayer};
-    let worn = session.world.entities.armor(id);
     std::array::from_fn(|i| {
         let piece = worn[i]?;
         let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
@@ -3890,8 +3944,7 @@ pub(crate) fn armor_keys<'a>(
             ..Default::default()
         };
         // The trim, if this piece has one and its sprite made it into the pool.
-        out.trim = trim_sprite_path(session, &piece, asset, layer)
-            .and_then(|p| trim_slots.get(&p).copied());
+        out.trim = trim(&piece, asset, layer);
         let mut n = 0;
         for def in defs {
             let color = color_for_layer(def.dyeable, dye);

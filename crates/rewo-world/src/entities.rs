@@ -17,6 +17,10 @@ use rewo_data::use_item::{ItemUseAnimation, UseProfile};
 /// Vanilla's interpolation step count for tracked entities.
 const LERP_STEPS: u32 = 3;
 
+/// M415 — `RemotePlayer.lerpMotion`'s `getType().updateInterval() + 1`: the
+/// player type's `updateInterval(2)` (`EntityTypes.PLAYER`), plus one.
+const REMOTE_PLAYER_MOTION_STEPS: u8 = 2 + 1;
+
 /// `net.minecraft.world.InteractionHand`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum InteractionHand {
@@ -545,9 +549,13 @@ pub struct EntityState {
     /// than convenient: the velocity is zero until then, and every rule below
     /// maps zero to zero.
     motion_living: bool,
-    /// `entity.is(EntityTypes.PLAYER)` — the deadband has **two forms** and
-    /// this picks between them. See [`Self::tick`].
+    /// `entity.is(EntityTypes.PLAYER)`: a `RemotePlayer`, whose `aiStep`
+    /// replaces `LivingEntity`'s (M415: no decay, no deadband; its motion
+    /// eases toward the last packet's). See [`Self::tick_motion`].
     motion_player: bool,
+    /// M415 — `RemotePlayer.lerpDeltaMovement` / `lerpDeltaMovementSteps`.
+    lerp_motion_target: [f64; 3],
+    lerp_motion_steps: u8,
     /// The cape's lagging anchor (M60) — vanilla `ClientAvatarState`'s
     /// cloak position. Carried by every entity rather than only players
     /// because [`EntityState`] is one `Copy` struct and a side map keyed by
@@ -677,6 +685,8 @@ impl EntityState {
             elytra: crate::glide::ElytraAnimation::default(),
             motion_living: false,
             motion_player: false,
+            lerp_motion_target: [0.0; 3],
+            lerp_motion_steps: 0,
             cloak: CloakAnchor::default(),
             fall_fly_ticks: 0,
             saddled: false,
@@ -792,15 +802,27 @@ impl EntityState {
     /// player riding this entity. Rewo's local player is not in the table at
     /// all, so for everything else it is false.
     ///
-    /// **The deadband has two forms and they genuinely differ.** A player's is
-    /// joint (`horizontalDistanceSqr() < 9.0E-6`, so x and z fall together);
-    /// everything else's is per-axis (`|x| < 0.003`). At `(0.0025, 0.0025)`
-    /// the per-axis rule zeroes both and the joint rule keeps them, because
-    /// the magnitude is 0.00354. `physics.rs` already records this for the
-    /// local player from the other side.
+    /// **The deadband is per-axis** (`|x| < 0.003`). A player's form is
+    /// joint (`horizontalDistanceSqr() < 9.0E-6`), but only the local player
+    /// runs it (`physics.rs`): a remote one's `aiStep` is `RemotePlayer`'s,
+    /// which runs neither the decay nor the deadband (M415; until then this
+    /// applied the joint form to remote players).
     fn tick_motion(&mut self, interpolating: bool, authoritative: bool) {
         if !self.motion_living {
             // `aiStep` is `LivingEntity`'s. A minecart holds its last packet.
+            return;
+        }
+        if self.motion_player {
+            // M415 — `RemotePlayer.aiStep`, which does not call `super`: the
+            // motion closes `1/steps` of its gap to the packet's each tick
+            // and nothing else touches it.
+            if self.lerp_motion_steps > 0 {
+                let n = self.lerp_motion_steps as f64;
+                for (c, t) in self.delta_movement.iter_mut().zip(self.lerp_motion_target) {
+                    *c += (t - *c) / n;
+                }
+                self.lerp_motion_steps -= 1;
+            }
             return;
         }
         if !interpolating && !authoritative {
@@ -813,18 +835,11 @@ impl EntityState {
         // axis zeroed here cannot change another axis's verdict.
         let [x, y, z] = self.delta_movement;
         let (mut dx, mut dy, mut dz) = (x, y, z);
-        if self.motion_player {
-            if x * x + z * z < 9.0e-6 {
-                dx = 0.0;
-                dz = 0.0;
-            }
-        } else {
-            if x.abs() < 0.003 {
-                dx = 0.0;
-            }
-            if z.abs() < 0.003 {
-                dz = 0.0;
-            }
+        if x.abs() < 0.003 {
+            dx = 0.0;
+        }
+        if z.abs() < 0.003 {
+            dz = 0.0;
         }
         if y.abs() < 0.003 {
             dy = 0.0;
@@ -2656,7 +2671,15 @@ impl EntityTable {
         };
         e.motion_living = living;
         e.motion_player = player;
-        if movement.iter().all(|c| c.is_finite()) {
+        if !movement.iter().all(|c| c.is_finite()) {
+            return;
+        }
+        if player && living {
+            // M415 — `RemotePlayer.lerpMotion`: eased in over the player
+            // type's `updateInterval() + 1` ticks.
+            e.lerp_motion_target = movement;
+            e.lerp_motion_steps = REMOTE_PLAYER_MOTION_STEPS;
+        } else {
             e.delta_movement = movement;
         }
     }
@@ -4546,9 +4569,9 @@ mod tests {
     fn a_gliders_motion_lerps_and_the_spin_bit_reads() {
         let mut t = EntityTable::default();
         t.add(4, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
-        t.lerp_motion(4, [1.0, 0.0, 0.0], true, true);
+        t.lerp_motion(4, [1.0, 0.0, 0.0], true, false);
         t.tick_lerp();
-        t.lerp_motion(4, [0.0, 0.0, 1.0], true, true);
+        t.lerp_motion(4, [0.0, 0.0, 1.0], true, false);
         let e = t.get(4).unwrap();
         assert_eq!(e.motion(), [0.0, 0.0, 1.0]);
         let half = e.motion_at(0.5);
@@ -5528,43 +5551,59 @@ mod m21_hurt_tests {
         assert!((t.delta_movement(1).unwrap()[0] - 0.98).abs() < 1e-12);
     }
 
-    /// **The deadband has two forms and they disagree at (0.0025, 0.0025)** —
-    /// per-axis zeroes both, joint keeps both, because the magnitude is
-    /// 0.00354. `physics.rs` records the same divergence from the player's
-    /// side; this is the non-player half.
+    /// The deadband is per-axis: (0.0025, 0.0025) zeroes both axes even
+    /// though the magnitude, 0.00354, is above 0.003.
     #[test]
-    fn the_deadband_is_per_axis_for_a_mob_and_joint_for_a_player() {
-        // A mob: each axis below 0.003 is zeroed on its own.
+    fn the_deadband_is_per_axis_for_a_mob() {
         let mut t = living(1);
         t.lerp_motion(1, [0.0025, 0.0, 0.0025], true, false);
         t.tick_lerp();
         assert_eq!(t.delta_movement(1), Some([0.0, 0.0, 0.0]), "per-axis");
 
-        // A player: the same vector survives, because 0.0025² + 0.0025² is
-        // 1.25e-5 and the threshold is 9e-6.
-        let mut t = living(2);
-        t.lerp_motion(2, [0.0025, 0.0, 0.0025], true, true);
-        t.tick_lerp();
-        let v = t.delta_movement(2).unwrap();
-        assert!(v[0] > 0.0 && v[2] > 0.0, "joint rule keeps it: {v:?}");
-
-        // Y is per-axis for both — and the witness is TWO-SIDED, because a
-        // one-sided one cannot see the threshold move. `0.002` is below 0.003
-        // and below any larger wrong value, so on its own it passes against a
+        // Y too, and the witness is TWO-SIDED, because a one-sided one
+        // cannot see the threshold move. `0.002` is below 0.003 and below
+        // any larger wrong value, so on its own it passes against a
         // deadband ten times too wide; `0.01` is the value that separates
         // them. The battery found exactly that.
         let mut t = living(3);
-        t.lerp_motion(3, [1.0, 0.002, 0.0], true, true);
+        t.lerp_motion(3, [1.0, 0.002, 0.0], true, false);
         t.tick_lerp();
         assert_eq!(t.delta_movement(3).unwrap()[1], 0.0, "below the threshold");
 
         let mut t = living(4);
-        t.lerp_motion(4, [1.0, 0.01, 0.0], true, true);
+        t.lerp_motion(4, [1.0, 0.01, 0.0], true, false);
         t.tick_lerp();
         assert!(
             t.delta_movement(4).unwrap()[1] > 0.0,
             "0.01 decays to 0.0098, which is ABOVE 0.003 and must survive"
         );
+    }
+
+    /// M415 — `RemotePlayer.lerpMotion` / `aiStep`: a remote player's
+    /// motion closes 1/3, 1/2, then all of its gap to the packet's over
+    /// three ticks (`updateInterval(2) + 1`), and then holds: no decay, no
+    /// deadband, however small.
+    #[test]
+    fn a_remote_players_motion_eases_in_and_holds() {
+        let mut t = living(2);
+        t.lerp_motion(2, [0.9, 0.0, 0.0025], true, true);
+        assert_eq!(t.delta_movement(2), Some([0.0; 3]), "not applied at once");
+        let mut xs = Vec::new();
+        for _ in 0..6 {
+            t.tick_lerp();
+            xs.push(t.delta_movement(2).unwrap());
+        }
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(
+            near(xs[0][0], 0.3) && near(xs[1][0], 0.6) && near(xs[2][0], 0.9),
+            "{xs:?}"
+        );
+        assert!(xs[3..].iter().all(|v| *v == xs[2]), "holds: {xs:?}");
+        assert!(near(xs[5][2], 0.0025), "no deadband: {xs:?}");
+        // A new packet restarts the three steps from where the motion stands.
+        t.lerp_motion(2, [0.0; 3], true, true);
+        t.tick_lerp();
+        assert!(near(t.delta_movement(2).unwrap()[0], 0.6));
     }
 
     /// The decay terminates *at* zero rather than approaching it, because the

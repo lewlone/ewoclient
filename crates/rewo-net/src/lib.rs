@@ -2008,6 +2008,10 @@ fn read_slot(
                     provides_banner_patterns_removed: c.provides_banner_patterns_removed,
                     // M49: only the material — the icon's `select` is on it alone.
                     trim_material: c.trim.map(|(m, _)| m),
+                    // M414 — the rest of the trim, and the dye, for the
+                    // worn piece the inventory preview draws.
+                    trim_pattern: c.trim.map(|(_, p)| p),
+                    dyed_color: c.dyed_color,
                 }),
                 Some((c.fingerprint, text)),
                 Some((c.fingerprint, c.detail())),

@@ -989,7 +989,13 @@ pub(super) fn apply_screen(
             }
             None => (None, false, None),
         };
-        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, cape_origin, held, w, h, mouse);
+        let worn = super::gui::preview_equipment(
+            super::gui::local_worn(&session.inventory),
+            cape_origin,
+            items,
+            &baked.equipment,
+        );
+        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse, worn);
         if let Err(e) =
             wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>())
         {

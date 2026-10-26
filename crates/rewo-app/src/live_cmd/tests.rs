@@ -4769,6 +4769,8 @@ fn the_cursor_draws_a_carried_stacks_own_copy() {
         has_map_id: false,
         damage_component_removed: false,
         trim_material: None,
+        trim_pattern: None,
+        dyed_color: None,
     }));
     let mut v = super::icons::IconVariants::default();
     v.patterned

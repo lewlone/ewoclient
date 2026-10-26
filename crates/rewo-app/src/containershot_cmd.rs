@@ -1242,6 +1242,8 @@ fn overlays(
             dye_removed: false,
             provides_banner_patterns_removed: false,
             trim_material: None,
+            trim_pattern: None,
+            dyed_color: None,
         };
         // A crafter with the same stack in grid slots 0 and 4.
         let mut m = menu(7, &[]);
@@ -1449,6 +1451,8 @@ fn overlays(
                 dye_removed: false,
                 provides_banner_patterns_removed: false,
                 trim_material: None,
+                trim_pattern: None,
+                dyed_color: None,
             });
             assert!(open.menu.set_content(1, &content, None));
         }
@@ -3267,6 +3271,8 @@ fn overlays(
             dye_removed: false,
             provides_banner_patterns_removed: false,
             trim_material: None,
+            trim_pattern: None,
+            dyed_color: None,
         };
         // Menu slot 1 of a crafting table: its grid, not its output. Slot 0 is
         // the result, whose position differs enough that a 77 px error could

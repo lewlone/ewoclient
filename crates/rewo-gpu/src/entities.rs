@@ -3362,7 +3362,12 @@ impl EntityPass {
         // have produced that — a rigid two-joint chain is a pendulum and
         // hangs straight down, where the vanilla cape sits at
         // `Rx(6 + capeLean/2 + capeFlap)`.
-        if let Some(w) = cape.wavy.filter(|w| w.segments() >= 2) {
+        //
+        // M413 — and only on an upright body: the chain simulates in
+        // world-aligned cape space, which knows the death roll but not a
+        // glide, swim, spin, sleep or pitch. A body in any of those wears
+        // the vanilla cape, which places through the frame like every layer.
+        if let Some(w) = cape.wavy.filter(|w| w.segments() >= 2 && frame.upright()) {
             self.emit_wavy_cape(verts, d, &cape, &w, m, o, shift, scale, st, ct, sr, cr);
             return;
         }
@@ -5941,6 +5946,15 @@ impl EntityFrame {
             yaw: theta.sin_cos(),
             mount: d.mount,
         }
+    }
+
+    /// M413 — whether the chain is the plain yaw (a death topple aside):
+    /// no glide, swim, spin, sleep or pitch.
+    pub fn upright(&self) -> bool {
+        self.glide.is_none()
+            && self.swim.is_none()
+            && self.pitch.is_none()
+            && matches!(self.inner, InnerRotation::Topple(..))
     }
 
     /// A posed model point (px, model space, y down) in the world.

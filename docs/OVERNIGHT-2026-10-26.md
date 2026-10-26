@@ -20,7 +20,10 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   on its flight history: the audit's last open row), M410 (mannequins'
   "NPC" description and below-name scores), M411 (the cursor draws a
   carried stack's own copy), M412 (entities, items and name tags take the
-  terrain's fog; they never had); the
+  terrain's fog; they never had), M413 (the opt-in wavy cape gives way to
+  the vanilla one on a tilted body), M414 (the inventory preview wears
+  your armour and elytra), M415 (remote players' motion eases in as
+  vanilla's does, instead of decaying like a mob's); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -106,7 +109,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `c2ca650d` | **M409** — the ender dragon flies on its flight history; mobtexshot m119 |
 | `334342ca` | **M410** — the below-name line (a mannequin's description, below-name scores); labelshot f17 |
 | `3523cbfe` | **M411** — the cursor draws a carried stack's own copy |
-| (next) | **M412** — entities take the terrain's fog; mobtexshot m120 |
+| `00f7edcc` | **M412** — entities take the terrain's fog; mobtexshot m120 |
+| (next) | **M413–M415** — the wavy cape on a tilted body; the dressed inventory preview; remote players' motion lerp; capeshot y5, p6, p7 |
 
 ## Flakes
 
@@ -147,12 +151,15 @@ major bumps, so the next weekly group arrives without it.
   the hind legs braced; the babies' own overrides). M404 models the seat;
   the model needs the body turned into a part with the tail, chests, saddle
   and armour shells hanging from it.
-- The wavy cape (M61) still takes only the death topple, not the swim,
-  sleep or glide rotations.
-- The inventory's player preview draws no armour and so no elytra.
-- Remote players' motion is applied directly, not lerped over
-  `updateInterval + 1` steps as `RemotePlayer.lerpMotion` does.
-- Baby humanoids wear no armour (and so no elytra) in Rewo.
+- ~~The wavy cape takes only the death topple~~: M413 (a tilted wearer
+  draws the vanilla cape).
+- ~~The inventory preview draws no armour~~: M414. Left: its trims and
+  armour glint.
+- ~~Remote players' motion is applied directly~~: M415.
+- Baby humanoids wear no armour (and so no elytra) in Rewo. Vanilla has a
+  `humanoid_baby` equipment layer and three baby armour mesh sets
+  (`HumanoidModel`, `AbstractPiglinModel` and `ZombieVillagerModel`'s
+  `createBabyArmorMeshSet`, 64×64 sheets). Next.
 - ~~Entities take no fog at all~~: done in M412. Left from it: the
   first-person hand stays unfogged (vanilla's hand fogs inside lava,
   water or blindness, where the environmental band starts near the eye).
