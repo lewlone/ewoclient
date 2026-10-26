@@ -6389,6 +6389,26 @@ mod default_skin_tests {
             assert_eq!(default_skin_index(id), want, "{id:032x}");
         }
     }
+
+    /// The playtest's offline player "Puppet": the server names it
+    /// `nameUUIDFromBytes("OfflinePlayer:Puppet")` = 4ec89bdb-6fa0-38e0-88fd-
+    /// c71ec9524c16 (worked with an independent MD5 and Java's `UUID.hashCode`
+    /// in Python), whose floorMod 18 is 17: `DEFAULT_SKINS[17]`, the wide Zuri
+    /// - which is what vanilla showed in the inventory, not the Steve Rewo
+    /// fell back to while its own UUID was unknown.
+    #[test]
+    fn an_offline_player_wears_the_default_skin_of_its_server_assigned_uuid() {
+        let id = 0x4ec89bdb_6fa0_38e0_88fd_c71ec9524c16;
+        assert_eq!(rewo_net::skins::offline_player_uuid("Puppet"), id);
+        let i = default_skin_index(id);
+        assert_eq!(i, 17);
+        assert_eq!(
+            rewo_data::assets::DEFAULT_SKIN_PATHS[i],
+            "entity/player/wide/zuri.png"
+        );
+        // The wide models are the last nine.
+        assert!(i >= 9);
+    }
 }
 
 #[cfg(test)]

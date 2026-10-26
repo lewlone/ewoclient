@@ -704,6 +704,10 @@ impl LiveApp {
         // The inventory preview draws the local player from its own atlas, so
         // it takes the pixels rather than the world pass's upload.
         if let Some(own) = self.skins.take_own_preview() {
+            // ...and the first-person arm wears the same sheet.
+            if let (Some(h), Some(skin)) = (self.hand.as_mut(), own.skin.as_ref()) {
+                h.set_skin(skin.clone());
+            }
             self.preview_skin = Some(own);
         }
 
@@ -3237,7 +3241,14 @@ impl LiveApp {
                 c.hand_frames += 1;
             }
             let items = self.items.clone();
-            let h = self.hand.get_or_insert_with(|| HandState::new(baked));
+            let own_skin = self.preview_skin.as_ref().and_then(|p| p.skin.clone());
+            let h = self.hand.get_or_insert_with(|| {
+                let mut h = HandState::new(baked);
+                if let Some(skin) = own_skin {
+                    h.set_skin(skin);
+                }
+                h
+            });
             h.tick(session, &items);
             // M284 — and while asleep (`renderItemInHand`'s
             // `!isSleeping`): the camera lies in the bed.

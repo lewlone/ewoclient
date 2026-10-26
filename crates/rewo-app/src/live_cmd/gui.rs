@@ -513,6 +513,15 @@ pub struct HandState {
 }
 
 impl HandState {
+    /// The local player's own skin for the arm (`PlayerSkin` of the local
+    /// player: its real skin, else `DefaultPlayerSkin.get(uuid)`), replacing
+    /// the wide Steve the state starts with. Marks the atlas stale so the
+    /// next frame repacks it with the new sheet.
+    pub(super) fn set_skin(&mut self, skin: (Vec<u8>, bool)) {
+        self.skin = Some(skin);
+        self.skin_resident = false;
+    }
+
     pub fn new(baked: &assets::BakedAssets) -> Self {
         Self {
             resident: Vec::new(),

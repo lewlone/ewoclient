@@ -5371,6 +5371,10 @@ fn a_hotbar_count_is_dimmed_by_the_wash_and_keeps_its_place() {
     // y 700 of 720 -> a = (192 + 16 * 0.9722) / 255 -> 0.2371 in sRGB, which is
     // 0.0459 as linear light.
     let want = 0.0459;
-    assert!((out[0].color_linear[0] - want).abs() < 2e-3, "{:?}", out[0].color_linear);
+    assert!(
+        (out[0].color_linear[0] - want).abs() < 2e-3,
+        "{:?}",
+        out[0].color_linear
+    );
     assert!(out[0].color_linear[0] < 0.1, "darker than the plain white");
 }
