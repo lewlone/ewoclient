@@ -1,0 +1,32 @@
+# REWO_AUDIO_PLAN.md section 4: "gain falling off with distance and cutting out at the radius" and
+# "the stereo image tracking while turning", as far as sound events show them: the same note at
+# 2, 8, 15 and 30 blocks (the last beyond the 16-block radius), left and right of the player, and
+# while turning. The harness compares each event's position, volume and pitch; whether it SOUNDS
+# right still needs ears.
+name: rewo_audio_distance
+description: playsound at 2, 8, 15 and 30 blocks, left, right and while turning; a jukebox-free positional check.
+
+world:
+  server_commands: [setworldspawn 0 -60 0]
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 0]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 2, command: "playsound minecraft:block.note_block.harp record @s 0.5 -59 2.5 1 1"}
+  - {at: 10, command: "playsound minecraft:block.note_block.harp record @s 0.5 -59 8.5 1 1"}
+  - {at: 18, command: "playsound minecraft:block.note_block.harp record @s 0.5 -59 15.5 1 1"}
+  - {at: 26, command: "playsound minecraft:block.note_block.harp record @s 0.5 -59 30.5 1 1"}
+  - {at: 34, command: "playsound minecraft:block.note_block.harp record @s 6.5 -59 0.5 1 1.5"}
+  - {at: 42, command: "playsound minecraft:block.note_block.harp record @s -5.5 -59 0.5 1 0.5"}
+  - {at: 50, turn: {yaw: 180, ticks: 20}}
+  - {at: 52, command: "playsound minecraft:block.note_block.bell record @s 0.5 -59 6.5 0.5 1"}
+  - {at: 60, command: "playsound minecraft:block.note_block.bell record @s 0.5 -59 6.5 0.5 1"}
+  - {at: 68, command: "playsound minecraft:block.note_block.bell record @s 0.5 -59 6.5 0.5 1"}
+  - {at: 76, command: "playsound minecraft:entity.experience_orb.pickup master @s 0.5 -60 0.5 1 1"}
+  - {at: 80, capture: end, checklist: "facing north after the turn; nothing else to see"}
+end_tick: 82

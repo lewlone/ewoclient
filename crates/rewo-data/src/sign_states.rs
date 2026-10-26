@@ -1,8 +1,11 @@
 //! Sign block states → the text transform `AbstractSignRenderer` pushes (M25e).
 //!
-//! A sign's *board* is an ordinary block model, which Rewo has drawn since M2.
-//! What was missing is the text, and vanilla places it with a transform per
-//! face:
+//! A sign's *board* is an ordinary block model (26.2 has no `SignModel`; the
+//! renderers submit text only), but its sprite is 32 x 32, so the bake drew
+//! none of it until `assets::split_quad_over_tiles` cut it over layer-sized
+//! tiles. The text is what this module places, and vanilla places it with a
+//! transform per face (a standing or wall sign's, below; a hanging sign's has
+//! its own anchor and scale, see [`SignState::text_transform`]):
 //!
 //! ```text
 //! StandingSignRenderer.textTransformation(attachment, angle, isFrontText):
@@ -44,6 +47,10 @@ pub const HANGING_MAX_WIDTH: f32 = 60.0;
 const TEXT_OFFSET: [f32; 3] = [0.0, 0.333_333_34, 0.046_666_667];
 /// The font-pixel → block scale in that transform.
 const TEXT_SCALE: f32 = 0.010_416_667;
+/// `HangingSignRenderer.TEXT_OFFSET`.
+const HANGING_TEXT_OFFSET: [f32; 3] = [0.0, -0.32, 0.073];
+/// The hanging sign's font-pixel → block scale (`0.0140625F`).
+const HANGING_TEXT_SCALE: f32 = 0.0140625;
 /// The wall sign's extra drop, so the text sits on the plaque rather than
 /// where a standing sign's would be.
 const WALL_OFFSET: [f32; 3] = [0.0, -0.3125, -0.4375];
@@ -84,6 +91,30 @@ pub struct SignState {
 impl SignState {
     /// The front or back text transform.
     pub fn text_transform(self, front: bool) -> Affine {
+        if self.hanging {
+            // `HangingSignRenderer.textTransformation(angle, isFrontText)`,
+            // the same for a ceiling and a wall hanging sign:
+            // translation(0.5, 0.9375, 0.5) . YP(-angle)
+            // . translate(0, -0.3125, 0) [. YP(180) if back]
+            // . translate(0, -0.32, 0.073) . scale(s, -s, s), s = 0.0140625.
+            let mut m = mul(&translation(0.5, 0.9375, 0.5), &rot_y(-self.angle));
+            m = mul(&m, &translation(0.0, -0.3125, 0.0));
+            if !front {
+                m = mul(&m, &rot_y(180.0));
+            }
+            m = mul(
+                &m,
+                &translation(
+                    HANGING_TEXT_OFFSET[0],
+                    HANGING_TEXT_OFFSET[1],
+                    HANGING_TEXT_OFFSET[2],
+                ),
+            );
+            return mul(
+                &m,
+                &scale(HANGING_TEXT_SCALE, -HANGING_TEXT_SCALE, HANGING_TEXT_SCALE),
+            );
+        }
         let mut m = mul(&translation(0.5, 0.5, 0.5), &rot_y(-self.angle));
         if self.attachment == SignAttachment::Wall {
             m = mul(
@@ -283,6 +314,51 @@ mod tests {
         let w = apply(&wall.text_transform(true), [0.0, 0.0, 0.0]);
         assert!(w[1] < g[1], "wall text sits lower: {w:?} vs {g:?}");
         assert!(w[2] < g[2], "and further back");
+    }
+
+    const HANGING: SignState = SignState {
+        hanging: true,
+        line_height: HANGING_LINE_HEIGHT,
+        max_line_width: HANGING_MAX_WIDTH,
+        ..GROUND
+    };
+
+    /// `HangingSignRenderer.textTransformation`, worked by hand for a sign at
+    /// angle 0: the anchor (0.5, 0.9375, 0.5), the board drop -0.3125 and the
+    /// text offset (0, -0.32, 0.073) put a line's origin at y = 0.305 and a
+    /// hair in front of (or behind, for the back) the block's middle; one
+    /// font pixel is 0.0140625 of a block, y flipped. The standing sign's
+    /// transform (0.5 high, 1/96 scale) was used for all four shapes before.
+    #[test]
+    fn a_hanging_signs_text_hangs_from_its_own_anchor() {
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        let front = HANGING.text_transform(true);
+        assert!(near(apply(&front, [0.0; 3]), [0.5, 0.305, 0.573]));
+        assert!(near(
+            apply(&HANGING.text_transform(false), [0.0; 3]),
+            [0.5, 0.305, 0.427]
+        ));
+        let one_px = apply(&front, [1.0, 1.0, 0.0]);
+        assert!(near(one_px, [0.5 + 0.0140625, 0.305 - 0.0140625, 0.573]));
+        // Rotation 4 (angle 90): `YP(-90)` takes the +0.073 of z to -0.073 of
+        // x (x' = x cos + z sin, with sin(-90) = -1), the anchor staying put.
+        let turned = SignState {
+            angle: 90.0,
+            ..HANGING
+        };
+        assert!(near(
+            apply(&turned.text_transform(true), [0.0; 3]),
+            [0.5 - 0.073, 0.305, 0.5]
+        ));
+        // A wall hanging sign takes the same transform: no wall drop.
+        let wall = SignState {
+            attachment: SignAttachment::Wall,
+            ..HANGING
+        };
+        assert!(near(
+            apply(&wall.text_transform(true), [0.0; 3]),
+            apply(&front, [0.0; 3])
+        ));
     }
 
     #[test]

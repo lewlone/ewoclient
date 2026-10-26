@@ -1,0 +1,32 @@
+# Owner list: "page turns". A held written book (BookViewScreen at x 117, y 2 at GUI scale 3):
+# forward arrow at (244, 165), back arrow at (171, 165).
+name: rewo_book
+description: Open a written book, turn forward twice and back once (page turn sounds), close.
+
+world:
+  server_commands: [setworldspawn 0 -60 0]
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 10]
+  commands:
+    - clear @s
+    - 'give @s minecraft:written_book[written_book_content={title:"Playtest",author:"Puppet",pages:["Page one. The quick brown fox jumps over the lazy dog.","Page two.","Page three, the last."]}]'
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 2, click: use}
+  - {at: 6, mouse: {x: 380, y: 220}}
+  - {at: 8, capture: page1, checklist: "the book open on page 1 of 3: 'Page one. The quick brown fox...' in black, 'Page 1 of 3' top right, a forward arrow only, a Done button below"}
+  - {at: 10, mouse_click: {x: 244, y: 165}}
+  - {at: 10, expect_sound: minecraft:item.book.page_turn, window: 2}
+  - {at: 12, mouse_click: {x: 244, y: 165}}
+  - {at: 14, mouse: {x: 380, y: 220}}
+  - {at: 16, capture: page3, checklist: "page 3 of 3: 'Page three, the last.', a back arrow only"}
+  - {at: 18, mouse_click: {x: 171, y: 165}}
+  - {at: 18, expect_sound: minecraft:item.book.page_turn, window: 2}
+  - {at: 20, mouse: {x: 244, y: 165}}
+  - {at: 22, capture: page2_hover, checklist: "page 2 of 3, both arrows, the forward arrow highlighted under the cursor"}
+  - {at: 24, key: escape}
+end_tick: 26

@@ -1720,6 +1720,8 @@ pub(crate) fn resolve_mob_combat(
         _ => P::Crossed,
     };
     MobCombat {
+        // Set by the caller, which has the registries and the invisibility.
+        villager: None,
         aggressive: st.is_aggressive(),
         main_hand_empty,
         holding_bow,
@@ -2070,7 +2072,7 @@ pub(crate) fn use_model(
     if !variants.is_dynamic(name) {
         return name;
     }
-    let mut ctx = rewo_data::item_models::SelectionContext::hand();
+    let mut ctx = needles::with_current_needles(rewo_data::item_models::SelectionContext::hand());
     if use_state.using && use_state.hand == hand {
         let ticks = use_state.ticks_using_item();
         let pull = if charged.is_some() {
@@ -2998,6 +3000,10 @@ pub(super) fn collect_end_crystals(
     out
 }
 
+/// `EntityDimensions.eyeHeight` of the arrows and the trident
+/// (`sized(0.5, 0.5)`, the default `height * 0.85`).
+pub(crate) const PROJECTILE_EYE_HEIGHT: f64 = 0.5f32 as f64 * 0.85f32 as f64;
+
 /// M250 — every arrow and thrown trident this frame, as block-entity-style
 /// draws: the model at the entity's position under the renderer's own
 /// rotation, lit at the entity. Recorded: the rotation is the latest packet's
@@ -3024,7 +3030,17 @@ pub(super) fn collect_projectiles(
                 &rot_y(e.render_yaw(alpha) - 90.0),
                 &rot_z((e.render_pitch(alpha) + extra).to_radians()),
             ),
-            light: entity_light(&session.world, p[0], p[1], p[2], lightmap),
+            // `EntityRenderer.getPackedLightCoords` probes
+            // `getLightProbePosition`, the EYE: a stuck arrow's centre is
+            // inside its block (0.05 in), whose own light is 0, so lighting
+            // it at the centre drew every landed arrow black.
+            light: entity_light(
+                &session.world,
+                p[0],
+                p[1] + PROJECTILE_EYE_HEIGHT,
+                p[2],
+                lightmap,
+            ),
             part_transforms: [IDENTITY; rewo_gpu::entities::MAX_PARTS],
             part_pivots: [[0.0; 3]; rewo_gpu::entities::MAX_PARTS],
             tint: [1.0; 3],
@@ -4319,6 +4335,151 @@ pub(crate) fn undercoat_visible(kind: EntityModelKind, dye: Option<u8>, is_baby:
     kind == EntityModelKind::Sheep && dye.unwrap_or(0) != 0 && !is_baby
 }
 
+/// `VillagerProfessionLayer.submit` for one entity: the sheets it wears, or
+/// `None` for a kind without the layer, an invisible entity (`if
+/// (!state.isInvisible)`), or data that names no registry entry.
+///
+/// A villager the server sent no `VillagerData` for is the default one
+/// (`Villager.createDefaultVillagerData()`: plains, none, level 1), because
+/// synched data omits a value equal to its default: a jobless plains villager
+/// still wears its biome sheet. A zombie villager's default is random on each
+/// side, so one never told draws nothing rather than a guess.
+pub(crate) fn villager_layers(
+    regs: Option<&rewo_data::villager::VillagerRegistries>,
+    data: Option<(i32, i32, i32)>,
+    kind: EntityModelKind,
+    invisible: bool,
+) -> Option<rewo_gpu::mobs::VillagerLayers> {
+    let (zombie, baby) = match kind {
+        EntityModelKind::Villager => (false, false),
+        EntityModelKind::VillagerBaby => (false, true),
+        EntityModelKind::ZombieVillager => (true, false),
+        EntityModelKind::ZombieVillagerBaby => (true, true),
+        _ => return None,
+    };
+    if invisible {
+        return None;
+    }
+    let plan = match data {
+        Some(d) => regs?.plan(zombie, d, baby)?,
+        None if !zombie => rewo_data::villager::plan(false, "plains", "none", 1, baby)?,
+        None => return None,
+    };
+    Some(rewo_gpu::mobs::VillagerLayers {
+        type_key: plan.type_key,
+        type_with_head: plan.type_with_head,
+        profession_key: plan.profession_key,
+        level_key: plan.level_key,
+    })
+}
+
+/// [`rewo_world::shadow::ShadowGround`] over the live session: its blocks,
+/// light and the collision / outline tables.
+struct SessionGround<'a> {
+    session: &'a PlaySession,
+    blocks: &'a rewo_data::blocks::Blocks,
+    /// `Level.skyDarken`, the day's.
+    sky_darken: i32,
+}
+
+impl rewo_world::shadow::ShadowGround for SessionGround<'_> {
+    fn raw_brightness(&self, x: i32, y: i32, z: i32) -> i32 {
+        let (block, sky) = self.session.world.light_at(x, y, z);
+        rewo_world::vignette::raw_brightness(block, sky, self.sky_darken)
+    }
+
+    fn ground(&self, x: i32, y: i32, z: i32) -> Option<[f32; 6]> {
+        let state = self.session.world.block_state_at(x, y - 1, z);
+        // The barrier is the one full-collision block whose render shape is
+        // `INVISIBLE`; everything else a table calls a full block draws.
+        if self.blocks.block_name(state) == Some("minecraft:barrier") {
+            return None;
+        }
+        let at = state as usize;
+        let outline = self
+            .session
+            .outline
+            .get(at)
+            .map_or(&[][..], |o| o.as_slice());
+        rewo_world::shadow::ground_shape(self.session.collide.get(at)?, outline)
+    }
+}
+
+/// `EntityRenderer.extractShadow` for every entity this frame, as the quads
+/// `ShadowFeatureRenderer` draws.
+///
+/// `camera` is the camera's position (`distanceToCameraSq` is measured from
+/// it to the entity's feet); `ambient_light` and `sky_darken` are the
+/// dimension's and the day's. An invisible entity casts none, and neither does
+/// one whose renderer has no radius (items frames, paintings, arrows).
+pub(super) fn collect_entity_shadows(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    blocks: &rewo_data::blocks::Blocks,
+    alpha: f32,
+    camera: [f64; 3],
+    sky_darken: i32,
+) -> Vec<rewo_gpu::entities::ShadowQuad> {
+    let ents = &session.world.entities;
+    let attr_reg = session.attribute_registry.as_deref();
+    let ambient = session
+        .active_dimension_type
+        .as_ref()
+        .map_or(0.0, |d| d.ambient_light);
+    let ground = SessionGround {
+        session,
+        blocks,
+        sky_darken,
+    };
+    let mut out = Vec::new();
+    for (id, e) in ents.iter() {
+        let name = etypes.name(e.type_id).unwrap_or("");
+        let Some(def) = rewo_data::shadow::def(name) else {
+            continue;
+        };
+        if ents.is_invisible(id) {
+            continue;
+        }
+        let inputs = rewo_data::shadow::ShadowInputs {
+            baby: ents.is_baby(id),
+            // `LivingEntityRenderState.scale` is the `minecraft:scale`
+            // attribute; absent (not living, or never synced) is 1.
+            scale: attr_reg
+                .and_then(|r| {
+                    rewo_world::attributes::resolve(ents.attributes(id), Some(name), "scale", r)
+                })
+                .map_or(1.0, |(v, _)| v as f32),
+            cube_size: ents.size(id).unwrap_or(1).clamp(1, 32),
+            // `Pufferfish.PUFF_STATE` is not decoded: a deflated fish.
+            puff_state: 0,
+        };
+        let radius = def.shadow_radius(&inputs);
+        if radius <= 0.0 {
+            continue;
+        }
+        let p = e.render_pos(alpha);
+        let distance_sq =
+            (p[0] - camera[0]).powi(2) + (p[1] - camera[1]).powi(2) + (p[2] - camera[2]).powi(2);
+        for piece in rewo_world::shadow::extract_shadow_pieces(
+            p,
+            radius,
+            def.shadow_strength(),
+            distance_sq,
+            ambient,
+            &ground,
+        ) {
+            out.push(rewo_gpu::entities::ShadowQuad::from_piece(
+                p,
+                radius,
+                piece.rel,
+                piece.bounds,
+                piece.alpha,
+            ));
+        }
+    }
+    out
+}
+
 /// The baby's own model, where vanilla's renderer swaps one in: M307 —
 /// `SulfurCubeRenderer.submit`'s `this.model = state.isBaby ? smallModel :
 /// normalModel`; M314 — `AgeableMobRenderer`'s for the happy ghast.
@@ -5512,6 +5673,12 @@ pub(super) fn collect_entities<'a>(
         // M426 — its grazing and its mouth.
         mob.eat_anim = session.world.entities.eat_anim_at(id, alpha);
         mob.feeding_anim = session.world.entities.mouth_anim_at(id, alpha);
+        mob.villager = villager_layers(
+            session.villager_registries.as_deref(),
+            session.world.entities.villager_data(id),
+            kind,
+            session.world.entities.is_invisible(id),
+        );
         // M401 — a sleeper (the SLEEPING pose): the bed's orientation from
         // the block at its sleeping position, the angle it lies at, and the
         // head offset toward the bed's foot (below, on the position).
@@ -6147,6 +6314,10 @@ pub(crate) fn init_entities_maybe_cem(
     if let Some(t) = breeze_wind_texture(baked) {
         wr.init_entity_wind(gpu, &t.rgba, t.w, t.h)?;
     }
+    // The entity shadow's sheet (`misc/shadow.png`).
+    if let Some(s) = baked.shadow.as_ref() {
+        wr.init_entity_shadow(gpu, &s.rgba, s.w, s.h)?;
+    }
     // M282: the HUD vignette's texture; M283: the other camera overlays'
     // (`blur` in the pumpkin's mcmeta, none in the other two).
     if let Some(v) = baked.vignette.as_ref() {
@@ -6299,6 +6470,18 @@ pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
                 h: t.h,
                 rgba: &t.rgba,
             }))
+            .collect(),
+        // The villager profession layer's sheets, packed after everything
+        // else (so no earlier address moves) and found by name.
+        layers: baked
+            .villager_textures
+            .iter()
+            .map(|t| MobTexEntry {
+                key: t.key,
+                w: t.w,
+                h: t.h,
+                rgba: &t.rgba,
+            })
             .collect(),
     }
 }

@@ -1,0 +1,34 @@
+# Enni's list: "ride a camel". Mount a saddled camel (it stands up), walk, dash with jump, dismount.
+name: rewo_camel
+description: Mount a saddled camel, ride south, dash (jump key), dismount.
+
+world:
+  freeze: false
+  server_commands:
+    - fill -2 -60 30 2 -58 30 minecraft:sandstone
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 20]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, command: 'summon minecraft:camel 0.5 -60 3 {Rotation:[0f,0f],equipment:{saddle:{id:"minecraft:saddle",count:1}}}'}
+  - {at: 6, capture: camel, checklist: "a saddled camel in front, seen from behind"}
+  - {at: 7, click: use}
+  - {at: 16, look: {yaw: 0, pitch: 15}}
+  - {at: 20, capture: mounted, checklist: "on the camel: its head and hump ahead, high camera, camel health hearts"}
+  - {at: 50, hold: [forward]}
+  - {at: 80, capture: riding, checklist: "riding toward a sandstone wall, camera swaying with the camel's walk"}
+  - {at: 82, hold: [jump]}
+  - {at: 90, capture: dash_charge, checklist: "the dash bar is charging in place of the XP bar"}
+  - {at: 92, release: [jump]}
+  - {at: 96, capture: dash, checklist: "dashing forward: faster, field of view wider"}
+  - {at: 110, release: all}
+  - {at: 130, hold: [sneak]}
+  - {at: 134, release: [sneak]}
+  - {at: 150, capture: dismounted, checklist: "standing beside the camel"}
+end_tick: 152

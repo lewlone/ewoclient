@@ -10,6 +10,8 @@
 
 pub mod abilities;
 pub mod ambient;
+pub mod animate_tick;
+pub mod attack_strength;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;
@@ -30,6 +32,7 @@ pub mod dimension;
 pub mod end_flash;
 pub mod entities;
 pub mod entity_pick;
+pub mod equine;
 pub mod fog_env;
 pub mod fov;
 pub mod glide;
@@ -50,8 +53,10 @@ pub mod pickup;
 pub mod raycast;
 pub mod riding;
 pub mod rotation;
+pub mod shadow;
 pub mod stacked_contents;
 pub mod stats;
+pub mod step_sound;
 pub mod string_splitter;
 pub mod suggestions;
 pub mod vignette;
@@ -298,7 +303,7 @@ impl World {
     /// M362 — every projectile's client-side flight for one tick, clipped
     /// against the blocks' collision boxes (`collide[state]`, block-local
     /// `[x0, y0, z0, x1, y1, z1]`; an unloaded column is open air).
-    pub fn step_flights(&mut self, collide: &[Vec<[f32; 6]>]) {
+    pub fn step_flights(&mut self, collide: &[Vec<[f32; 6]>]) -> Vec<entities::CritTrail> {
         let (columns, shape) = (&self.columns, &self.shape);
         let solid = |p: [f64; 3]| -> bool {
             let [x, y, z] = p.map(|c| c.floor() as i32);
@@ -317,7 +322,7 @@ impl World {
                     .any(|b| (0..3).all(|k| l[k] >= b[k] && l[k] <= b[k + 3]))
             })
         };
-        self.entities.step_flights(&solid);
+        self.entities.step_flights(&solid)
     }
 
     /// True when the column holding (x,z) is loaded.

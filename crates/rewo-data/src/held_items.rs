@@ -240,6 +240,12 @@ impl UseVariants {
     pub fn variant_count(&self) -> usize {
         self.keys.len()
     }
+
+    /// How many of them are `name`'s (`"<name>#..."`).
+    pub fn variants_of(&self, name: &str) -> usize {
+        let prefix = format!("{name}#");
+        self.keys.iter().filter(|k| k.starts_with(&prefix)).count()
+    }
 }
 
 impl HeldItemModel {

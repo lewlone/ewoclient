@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -324,9 +325,15 @@ def rewrite_plan(block: list[str]) -> None:
 
 def run_tests() -> str:
     print("$", " ".join(TEST_CMD), flush=True)
-    p = subprocess.run(TEST_CMD, cwd=ROOT, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
-    return p.stdout + "\n" + p.stderr
+    # One merged stream: cargo writes its `Running ...` headers to stderr and
+    # the test binaries write `test result:` to stdout, and `parse_tests`
+    # attributes each result to the header before it. Capturing the two apart
+    # and appending stderr put every header after every result (every crate
+    # read as `?`).
+    env = dict(os.environ, CARGO_TERM_COLOR="never")
+    p = subprocess.run(TEST_CMD, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, encoding="utf-8", errors="replace", env=env)
+    return p.stdout
 
 
 def run_gates() -> list[dict]:

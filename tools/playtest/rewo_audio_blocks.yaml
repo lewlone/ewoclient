@@ -1,0 +1,76 @@
+# REWO_AUDIO_PLAN.md section 4's listening checklist, as far as sound events can stand in for it:
+# footsteps on six materials (variety, pitch), place and break three materials, a chest and a door
+# open and close. The harness compares id, volume, pitch, position and the resolved variant (the
+# seeded pick), which is the "variant variety on repeated blocks" item, per event.
+name: rewo_audio_blocks
+description: Walk across six materials; place and break planks, stone and wool; open and close a chest and a door.
+
+world:
+  server_commands:
+    - fill -1 -61 1 1 -61 3 minecraft:stone
+    - fill -1 -61 4 1 -61 6 minecraft:oak_planks
+    - fill -1 -61 7 1 -61 9 minecraft:sand
+    - fill -1 -61 10 1 -61 12 minecraft:gravel
+    - fill -1 -61 13 1 -61 15 minecraft:white_wool
+    - fill -1 -61 16 1 -61 18 minecraft:grass_block
+    - setblock 3 -60 20 minecraft:chest[facing=west]
+    - setblock -3 -60 20 minecraft:oak_door[facing=east,half=lower]
+    - setblock -3 -59 20 minecraft:oak_door[facing=east,half=upper]
+    - setworldspawn 0 -60 0
+    - gamerule block_drops false
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 30]
+  commands:
+    - clear @s
+    - give @s minecraft:oak_planks 4
+    - give @s minecraft:stone 4
+    - give @s minecraft:white_wool 4
+    - gamemode creative @s
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 1, hold: [forward]}
+  - {at: 1, expect_sound: minecraft:block.stone.step, window: 30}
+  - {at: 20, expect_sound: minecraft:block.wood.step, window: 40}
+  - {at: 40, expect_sound: minecraft:block.sand.step, window: 40}
+  - {at: 60, expect_sound: minecraft:block.gravel.step, window: 40}
+  - {at: 80, expect_sound: minecraft:block.wool.step, window: 40}
+  - {at: 40, capture: walking, checklist: "walking south over coloured material strips"}
+  - {at: 100, release: all}
+  - {at: 104, look: {yaw: 90, pitch: 60}}
+  - {at: 106, click: use}
+  - {at: 106, expect_sound: minecraft:block.wood.place, window: 4}
+  - {at: 110, hotbar: 2}
+  - {at: 112, look: {yaw: 60, pitch: 60}}
+  - {at: 114, click: use}
+  - {at: 114, expect_sound: minecraft:block.stone.place, window: 4}
+  - {at: 118, hotbar: 3}
+  - {at: 120, look: {yaw: 120, pitch: 60}}
+  - {at: 122, click: use}
+  - {at: 122, expect_sound: minecraft:block.wool.place, window: 4}
+  - {at: 126, capture: placed, checklist: "three placed blocks to the west: planks, stone and wool"}
+  - {at: 130, look: {yaw: 90, pitch: 60}}
+  - {at: 132, click: attack}
+  - {at: 132, expect_sound: minecraft:block.wood.break, window: 4}
+  - {at: 136, look: {yaw: 60, pitch: 60}}
+  - {at: 138, click: attack}
+  - {at: 138, expect_sound: minecraft:block.stone.break, window: 4}
+  - {at: 142, look: {yaw: 120, pitch: 60}}
+  - {at: 144, click: attack}
+  - {at: 144, expect_sound: minecraft:block.wool.break, window: 4}
+  - {at: 150, command: "tp @s 0.5 -60 20.5 -90 20"}
+  - {at: 156, click: use}
+  - {at: 156, expect_sound: minecraft:block.chest.open, window: 6}
+  - {at: 162, capture: chest, checklist: "the chest screen open: 27 empty slots over the player inventory"}
+  - {at: 164, key: escape}
+  - {at: 164, expect_sound: minecraft:block.chest.close, window: 20}
+  - {at: 172, look: {yaw: 90, pitch: 20}}
+  - {at: 174, click: use}
+  - {at: 174, expect_sound: minecraft:block.wooden_door.open, window: 4}
+  - {at: 180, capture: door_open, checklist: "the oak door open"}
+  - {at: 182, click: use}
+  - {at: 182, expect_sound: minecraft:block.wooden_door.close, window: 4}
+end_tick: 186

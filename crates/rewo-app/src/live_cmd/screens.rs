@@ -813,6 +813,21 @@ pub(super) fn apply_screen(
     ) {
         labels.extend(enchant_cost_labels(rows, &font.advance, w, h));
     }
+    // `extractLabels`: the title, "Inventory" and the merchant's and beacon's
+    // own. Before the anvil's field so the cost line and the field's text, which
+    // vanilla draws after `super.extractLabels`, stay on top.
+    if let Some(font) = baked.font.as_ref() {
+        labels.extend(super::icons::container_label_lines(
+            layout,
+            session.menus.shown_open(),
+            merchant,
+            &baked.lang,
+            &font.advance,
+            w,
+            h,
+            book_open,
+        ));
+    }
     // The text and the append cursor are labels; the insert cursor and the
     // selection travelled with the panel as solid quads — M93q's `FILL_SPRITE`
     // doing the job it was built for, one screen over.
@@ -877,7 +892,31 @@ pub(super) fn apply_screen(
                 )
             },
             |glyphs| {
-                screen_tooltip(
+                // `StonecutterScreen.extractTooltip` runs `super`'s (the slot's)
+                // first and adds its recipe button's only if that set none.
+                // `LoomScreen.extractBackground` sets its pattern button's before
+                // `super.extractTooltip` runs, so it comes first.
+                let dye = session
+                    .menus
+                    .shown_open()
+                    .filter(|m| m.layout.protocol_id == rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID)
+                    .and_then(|m| m.menu.menu_slot(1))
+                    .and_then(|s| items.name(s.item_id))
+                    .and_then(|n| rewo_ui::menu_screen::dye_index_of(n, "_dye"))
+                    .unwrap_or(0);
+                if let Some(t) = loom_tooltip(
+                    loom.as_ref(),
+                    dye,
+                    panel_mouse,
+                    &baked.lang,
+                    advance,
+                    glyphs.as_deref_mut(),
+                    mouse,
+                    (w, h),
+                ) {
+                    return Some(t);
+                }
+                let slot = screen_tooltip(
                     menu,
                     items,
                     &baked.item_names,
@@ -899,7 +938,20 @@ pub(super) fn apply_screen(
                         .is_some_and(|m| m.is_spectator()),
                     book_open,
                     &session.maps,
-                )
+                );
+                slot.or_else(|| {
+                    cut_tooltip(
+                        cut,
+                        panel_mouse,
+                        &baked.item_names,
+                        &baked.lang,
+                        flag,
+                        advance,
+                        glyphs.as_deref_mut(),
+                        mouse,
+                        (w, h),
+                    )
+                })
             },
             // The book's cell tooltip, SECOND. Vanilla calls it AFTER the
             // container's and it still loses — first-wins, not last-wins.
@@ -1011,7 +1063,8 @@ pub(super) fn apply_screen(
                     .and_then(|p| preview_trims.get(&p).copied())
             },
         );
-        let (mut draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse, worn);
+        let (mut draw, vp, rect) =
+            preview_draw(session, skin_uv, slim, held, w, h, mouse, worn, book_open);
         // M418 — `hasFoil()` of what the preview holds.
         draw.held_glint = [
             session.inventory.held().is_some_and(|s| s.enchanted),

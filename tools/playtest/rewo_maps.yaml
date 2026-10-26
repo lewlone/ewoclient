@@ -1,0 +1,43 @@
+# Owner list: "maps held in one and two hands, with tooltips and markers". A fresh map is made by
+# using an empty map; a copy goes into an item frame, so the held map also shows the frame's marker.
+# The map's pixels arrive over several server ticks, so freeze is off.
+name: rewo_maps
+description: Make a map, hold it in both hands, in one hand (torch in the offhand), in the offhand; frame a copy (marker); the inventory tooltip.
+
+world:
+  freeze: false
+  server_commands:
+    - fill -4 -60 6 4 -57 6 minecraft:stone_bricks
+    - fill -8 -60 -8 -4 -60 -4 minecraft:water
+    - fill 4 -60 -8 8 -58 -4 minecraft:oak_planks
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 30]
+  commands:
+    - clear @s
+    - give @s minecraft:map 1
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 2, click: use}
+  - {at: 2, expect_sound: minecraft:ui.cartography_table.take_result, window: 6}
+  - {at: 40, look: {yaw: 0, pitch: 40}}
+  - {at: 44, capture: two_hands, checklist: "the filled map held in both hands, centred low on screen: terrain colours, the stone wall, the pond and the plank block; a white player arrow in the middle"}
+  - {at: 46, command: "item replace entity @s weapon.offhand with minecraft:torch"}
+  - {at: 52, capture: one_hand, checklist: "the map held in the right hand only (smaller, to the right), a torch in the left hand"}
+  - {at: 54, command: "item replace entity @s weapon.offhand with minecraft:filled_map[map_id=0]"}
+  - {at: 54, command: "item replace entity @s weapon.mainhand with minecraft:air"}
+  - {at: 60, capture: offhand, checklist: "the map held in the left (off) hand, the right hand empty"}
+  - {at: 62, command: "item replace entity @s weapon.mainhand with minecraft:filled_map[map_id=0]"}
+  - {at: 62, command: "item replace entity @s weapon.offhand with minecraft:air"}
+  - {at: 62, command: "summon minecraft:item_frame 0.5 -59.5 5.97 {Facing:2b,Fixed:1b,Item:{id:\"minecraft:filled_map\",count:1,components:{\"minecraft:map_id\":0}}}"}
+  - {at: 62, look: {yaw: 0, pitch: 10}}
+  - {at: 72, capture: framed, checklist: "an item frame on the stone wall showing the map; the held map (both hands) shows a green frame marker"}
+  - {at: 74, key: inventory}
+  - {at: 76, mouse: {x: 141, y: 187}}
+  - {at: 80, capture: tooltip, checklist: "inventory open, the cursor on hotbar slot 1 with the map; tooltip 'Map #0' (and its scale/level line)"}
+  - {at: 82, key: escape}
+end_tick: 84

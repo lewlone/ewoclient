@@ -116,6 +116,8 @@ pub(crate) fn hud_sprites(
         effect_background: hud_sprite(&h.effect_background),
         effect_background_ambient: hud_sprite(&h.effect_background_ambient),
         jump_bar: std::array::from_fn(|i| hud_sprite(&h.jump_bar[i])),
+        offhand: std::array::from_fn(|i| hud_sprite(&h.offhand[i])),
+        attack_indicator: std::array::from_fn(|i| hud_sprite(&h.attack_indicator[i])),
         effect_icons: h.effect_icons.iter().map(hud_sprite).collect(),
     })
 }

@@ -4804,3 +4804,479 @@ fn the_cloud_options_set_the_status_and_the_fog_end() {
     assert_eq!(cloud_fog_end(128), 2048.0);
     assert_eq!(cloud_fog_end(12), 192.0);
 }
+
+/// F1 (`Hud.isHidden`) hides every layer `Hud.extractRenderState` wraps in
+/// `if (!this.isHidden)`, plus the hand and the outline, and nothing else.
+#[test]
+fn f1_hides_the_hud_the_hand_and_the_outline() {
+    let shown = super::hud::HudLayers::of(false, false);
+    assert!(
+        shown.camera_overlays
+            && shown.hotbar_and_decorations
+            && shown.overlay_messages
+            && shown.chat_history
+            && shown.item_in_hand
+            && shown.block_outline
+    );
+    let hidden = super::hud::HudLayers::of(true, false);
+    assert!(
+        !hidden.camera_overlays
+            && !hidden.hotbar_and_decorations
+            && !hidden.overlay_messages
+            && !hidden.chat_history
+            && !hidden.item_in_hand
+            && !hidden.block_outline,
+        "{hidden:?}"
+    );
+}
+
+/// `ChatScreen.extractRenderState` draws the chat itself, so a focused chat
+/// keeps its history under F1 while the rest of the HUD stays hidden.
+#[test]
+fn a_focused_chat_keeps_its_history_under_f1() {
+    let layers = super::hud::HudLayers::of(true, true);
+    assert!(layers.chat_history);
+    assert!(!layers.hotbar_and_decorations && !layers.overlay_messages);
+}
+
+/// `itemCount`: a stack of one has no digit, any other count is white text
+/// bottom-right in its own slot, and an empty slot has none. The labels come
+/// from the rects the icons were placed from.
+#[test]
+fn the_hotbar_counts_sit_in_their_slots_and_skip_singles() {
+    use rewo_world::inventory::ItemSlot;
+    let scale = 3.0;
+    let slots = rewo_gpu::hud::hotbar_slot_rects(182.0, 22.0, 1280.0, 720.0);
+    let stacks = vec![
+        (Some(ItemSlot::plain(1, 32)), slots[0]),
+        (Some(ItemSlot::plain(1, 1)), slots[1]),
+        (None, slots[2]),
+        (Some(ItemSlot::plain(1, 5)), slots[3]),
+    ];
+    let labels = super::gui::hotbar_count_labels(&stacks, scale);
+    let texts: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["32", "5"]);
+    // `x + 19 - 2 - width` with a 6 px digit, `y + 6 + 3`, in screen px.
+    let l = &labels[0];
+    assert_eq!(l.x, slots[0].0 + (17.0 - 11.0) * scale);
+    assert_eq!(l.y, slots[0].1 + 9.0 * scale);
+    assert!(l.shadow && l.color_linear == [1.0; 3]);
+    assert_eq!(labels[1].x, slots[3].0 + (17.0 - 5.0) * scale);
+}
+
+// -- container labels (titles) ------------------------------------------------
+
+fn label_lang() -> rewo_data::lang::Language {
+    let map = [
+        ("container.chest", "Chest"),
+        ("container.inventory", "Inventory"),
+        ("container.crafting", "Crafting"),
+        ("merchant.title", "%s - %s"),
+        ("merchant.level.2", "Apprentice"),
+        ("merchant.trades", "Trades"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    rewo_data::lang::Language::from_map(map)
+}
+
+fn translatable(key: &str) -> rewo_proto::nbt::Nbt {
+    rewo_proto::nbt::Nbt::Compound(vec![(
+        "translate".to_string(),
+        rewo_proto::nbt::Nbt::String(key.to_string()),
+    )])
+}
+
+fn opened(menu_type: i32, title: rewo_proto::nbt::Nbt) -> rewo_world::menu::Menus {
+    let mut m = rewo_world::menu::Menus::new();
+    assert!(m.apply_open_screen(3, menu_type, String::new()));
+    m.open_mut().unwrap().title_component = Some(title);
+    m
+}
+
+/// A vanilla chest's title is a translatable; it must come out as "Chest",
+/// at (8, 6), and the "Inventory" label 94 above the bottom, both in
+/// `0x404040` with no shadow (`extractLabels`).
+#[test]
+fn a_chests_labels_are_resolved_and_unshadowed() {
+    let menus = opened(2, translatable("container.chest"));
+    let open = menus.open().unwrap();
+    let lines = super::container_label_lines(
+        open.layout,
+        Some(open),
+        None,
+        &label_lang(),
+        &advances(),
+        1280.0,
+        720.0,
+        false,
+    );
+    let texts: Vec<_> = lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["Chest", "Inventory"]);
+    let (left, top, scale) = rewo_gpu::container::gui_origin_for(1280.0, 720.0, 176.0, 168.0);
+    assert_eq!(
+        (lines[0].x, lines[0].y),
+        (left + 8.0 * scale, top + 6.0 * scale)
+    );
+    assert_eq!(
+        (lines[1].x, lines[1].y),
+        (left + 8.0 * scale, top + 74.0 * scale)
+    );
+    assert!(lines.iter().all(|l| !l.shadow));
+    // 0x40 in sRGB bytes.
+    let grey = srgb_bytes_to_linear(0x404040);
+    assert!(lines.iter().all(|l| l.color_linear == grey));
+}
+
+/// The player's own screen draws "Crafting" at x 97 and no "Inventory".
+#[test]
+fn the_players_screen_draws_crafting_only() {
+    let lines = super::container_label_lines(
+        &rewo_world::menu_layout::PLAYER,
+        None,
+        None,
+        &label_lang(),
+        &advances(),
+        1280.0,
+        720.0,
+        false,
+    );
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].text, "Crafting");
+    let (left, top, scale) = rewo_gpu::container::gui_origin_for(1280.0, 720.0, 176.0, 166.0);
+    assert_eq!(
+        (lines[0].x, lines[0].y),
+        (left + 97.0 * scale, top + 6.0 * scale)
+    );
+}
+
+/// An open recipe book shifts the panel, and the labels with it.
+#[test]
+fn the_labels_follow_a_book_shifted_panel() {
+    let draw = |book| {
+        super::container_label_lines(
+            &rewo_world::menu_layout::PLAYER,
+            None,
+            None,
+            &label_lang(),
+            &advances(),
+            1280.0,
+            720.0,
+            book,
+        )[0]
+        .x
+    };
+    // 1280 / 3 = 426 GUI px: 177 + (426 - 176 - 200) / 2 = 202 against 125.
+    assert_eq!(draw(true) - draw(false), (202.0 - 125.0) * 3.0);
+}
+
+/// A leveled merchant's title is `merchant.title` with the level's name; a
+/// wandering trader (no progress bar) keeps the plain title.
+#[test]
+fn a_merchants_title_carries_its_level_only_with_a_progress_bar() {
+    let menus = opened(19, translatable("container.chest"));
+    let open = menus.open().unwrap();
+    let view = |show_progress| MerchantView {
+        offers: Vec::new(),
+        scroll_off: 0,
+        cost_a_counts: Vec::new(),
+        selected: 0,
+        level: 2,
+        xp: 0,
+        show_progress,
+        future_xp: 0,
+    };
+    let title = |v: Option<&MerchantView>| {
+        rewo_world::chat_style::plain_text(&super::icons::container_title_line(
+            Some(open),
+            v,
+            &label_lang(),
+        ))
+    };
+    assert_eq!(title(Some(&view(true))), "Chest - Apprentice");
+    assert_eq!(title(Some(&view(false))), "Chest");
+    assert_eq!(title(None), "Chest");
+}
+
+// -- the stonecutter's recipe-button tooltip ----------------------------------
+
+/// Hovering a recipe button names its result, over the icon's own box
+/// (`posY = y + row * 18 + 2`), and only while the grid is displayed.
+#[test]
+fn a_stonecutter_button_tooltips_its_result() {
+    let recipes = rewo_data::stonecutter_table::select_by_input("minecraft:stone");
+    assert!(recipes.len() > 1, "stone cuts into several things");
+    let result = recipes[1].result;
+    let names: std::collections::HashMap<String, String> = recipes
+        .iter()
+        .map(|r| (r.result.to_string(), format!("name of {}", r.result)))
+        .collect();
+    let view = |display| CutView {
+        recipes: recipes.clone(),
+        start_index: 0,
+        selected: -1,
+        scroll_offs: 0.0,
+        display,
+    };
+    let tip = |cut: &CutView, panel: (f64, f64)| {
+        super::tooltips::cut_tooltip(
+            Some(cut),
+            panel,
+            &names,
+            &label_lang(),
+            rewo_gpu::tooltip::TooltipFlag::NORMAL,
+            &advances(),
+            None,
+            (500.0, 400.0),
+            (1280.0, 720.0),
+        )
+    };
+    // Cell 1 starts at (52 + 16, 14 + 2).
+    let hit = tip(&view(true), (68.0 + 3.0, 16.0 + 3.0)).expect("over cell 1");
+    assert_eq!(hit.1.len(), 1, "one line: the name");
+    assert_eq!(hit.1[0].text, format!("name of {result}"));
+    // The icon's box starts two pixels below the grid's top: y 14 is no cell.
+    assert!(tip(&view(true), (60.0, 14.0)).is_none());
+    // The grid is hidden when `displayRecipes` is false.
+    assert!(tip(&view(false), (71.0, 19.0)).is_none());
+}
+
+// -- the loom's pattern-button tooltip ----------------------------------------
+
+/// A shown, unselected pattern button names its pattern in the dye's colour.
+#[test]
+fn a_loom_pattern_button_tooltips_the_pattern_in_the_dyes_colour() {
+    static PATTERNS: [&str; 3] = ["minecraft:border", "minecraft:flower", "minecraft:globe"];
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        "block.minecraft.banner.flower.red".to_string(),
+        "Red Flower Charge".to_string(),
+    );
+    let lang = rewo_data::lang::Language::from_map(map);
+    let view = |display, selected| LoomView {
+        patterns: &PATTERNS,
+        start_row: 0,
+        scroll_offs: 0.0,
+        selected,
+        display,
+        has_max: false,
+        flag: None,
+    };
+    let tip = |v: &LoomView, panel: (f64, f64)| {
+        super::tooltips::loom_tooltip(
+            Some(v),
+            14,
+            panel,
+            &lang,
+            &advances(),
+            None,
+            (500.0, 400.0),
+            (1280.0, 720.0),
+        )
+    };
+    let (cx, cy) = rewo_ui::menu_screen::loom_cell_origin(0, 1);
+    let over = (cx as f64 + 3.0, cy as f64 + 3.0);
+    let hit = tip(&view(true, -1), over).expect("over the second button");
+    assert_eq!(hit.1[0].text, "Red Flower Charge");
+    assert!(
+        tip(&view(true, 1), over).is_none(),
+        "the selected button sets none"
+    );
+    assert!(tip(&view(false, -1), over).is_none(), "no grid, no button");
+    // Cell 3 is past the end of the three-pattern list.
+    let (px, py) = rewo_ui::menu_screen::loom_cell_origin(0, 3);
+    assert!(tip(&view(true, -1), (px as f64 + 3.0, py as f64 + 3.0)).is_none());
+}
+// -- entity shadows -------------------------------------------------------
+
+/// The real collision and outline tables decide which blocks carry a shadow:
+/// the cubes (including grass, whose model is not a cube) do, and the blocks
+/// vanilla's `isCollisionShapeFullBlock` rejects (a slab, a path, farmland,
+/// soul sand, a snow layer, a stair, a chest, a fence) and air do not. The
+/// sheet itself is a 64 x 64 radial shadow with a clear border.
+#[test]
+fn the_real_tables_pick_the_blocks_that_carry_a_shadow() {
+    let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+        rewo_data::skip_test!("no config dir");
+        return;
+    };
+    let Some(jar) = super::client_jar_path("26.2") else {
+        rewo_data::skip_test!("no local 26.2 client jar");
+        return;
+    };
+    if !paths.blocks_json().is_file() {
+        rewo_data::skip_test!("no datagen report");
+        return;
+    }
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json()).expect("bake");
+    let blocks = rewo_data::blocks::Blocks::load(&paths.blocks_json()).unwrap();
+    let shape = |name: &str| {
+        let s = blocks.default_state(name).expect(name) as usize;
+        rewo_world::shadow::ground_shape(&baked.collide[s], &baked.outline[s])
+    };
+    for full in [
+        "minecraft:stone",
+        "minecraft:dirt",
+        "minecraft:grass_block",
+        "minecraft:oak_planks",
+        "minecraft:sand",
+        "minecraft:glass",
+    ] {
+        assert_eq!(shape(full), Some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), "{full}");
+    }
+    for partial in [
+        "minecraft:air",
+        "minecraft:oak_slab",
+        "minecraft:oak_stairs",
+        "minecraft:dirt_path",
+        "minecraft:farmland",
+        "minecraft:soul_sand",
+        "minecraft:snow",
+        "minecraft:chest",
+        "minecraft:oak_fence",
+        "minecraft:water",
+    ] {
+        assert_eq!(shape(partial), None, "{partial}");
+    }
+    let sheet = baked.shadow.as_ref().expect("misc/shadow.png");
+    assert_eq!((sheet.w, sheet.h), (64, 64));
+    let alpha = |x: usize, y: usize| sheet.rgba[(y * 64 + x) * 4 + 3];
+    assert_eq!(alpha(32, 32), 255, "the centre is opaque");
+    assert!(
+        (0..64).all(|i| [alpha(i, 0), alpha(i, 63), alpha(0, i), alpha(63, i)] == [0; 4]),
+        "the border is clear, so a clamped read outside the sheet draws nothing"
+    );
+    assert_eq!(&sheet.rgba[(32 * 64 + 32) * 4..][..3], &[0, 0, 0], "black");
+}
+
+// -- the villager profession layer ---------------------------------------
+
+fn villager_ids() -> rewo_data::villager::VillagerRegistries {
+    // The 26.2 report's order, spelled out so a test of the plan does not
+    // need the report (the report is graded against the tables in rewo-data).
+    rewo_data::villager::VillagerRegistries::from_pairs(
+        &[
+            (0, "minecraft:desert"),
+            (1, "minecraft:jungle"),
+            (2, "minecraft:plains"),
+            (3, "minecraft:savanna"),
+            (4, "minecraft:snow"),
+            (5, "minecraft:swamp"),
+            (6, "minecraft:taiga"),
+        ],
+        &[(0, "minecraft:none"), (5, "minecraft:farmer")],
+    )
+}
+
+/// The playtest villager (plains, farmer, level 1) wears the biome sheet on
+/// the headless model, then the farmer and the stone badge on the full one.
+#[test]
+fn a_farmer_wears_its_three_layers() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let regs = villager_ids();
+    let l = super::entities::villager_layers(Some(&regs), Some((2, 5, 1)), K::Villager, false)
+        .expect("layers");
+    assert_eq!(
+        l.passes(),
+        [
+            Some(("villager/type/plains", false)),
+            Some(("villager/profession/farmer", true)),
+            Some(("villager/profession_level/stone", true)),
+        ]
+    );
+}
+
+/// A villager the server sent nothing for is the default (plains, none,
+/// level 1): the biome sheet and nothing else. A zombie villager never told
+/// draws nothing, an unknown id draws nothing, and an invisible entity and a
+/// kind without the layer draw nothing.
+#[test]
+fn an_unsent_villager_is_the_default_one() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let regs = villager_ids();
+    let l = super::entities::villager_layers(Some(&regs), None, K::Villager, false).unwrap();
+    assert_eq!(l.passes()[0], Some(("villager/type/plains", true)));
+    assert_eq!(l.passes()[1..], [None, None]);
+    // Without the registries the default still draws; sent data cannot.
+    assert!(super::entities::villager_layers(None, None, K::Villager, false).is_some());
+    assert!(super::entities::villager_layers(None, Some((2, 5, 1)), K::Villager, false).is_none());
+    assert!(
+        super::entities::villager_layers(Some(&regs), None, K::ZombieVillager, false).is_none()
+    );
+    assert!(
+        super::entities::villager_layers(Some(&regs), Some((9, 5, 1)), K::Villager, false)
+            .is_none()
+    );
+    assert!(
+        super::entities::villager_layers(Some(&regs), Some((2, 5, 1)), K::Villager, true).is_none()
+    );
+    assert!(super::entities::villager_layers(Some(&regs), None, K::Cow, false).is_none());
+}
+
+/// Babies and zombie villagers pick their own families: the baby wears
+/// `baby/<type>` and no profession even when it has one, the zombie villager
+/// its own folders.
+#[test]
+fn babies_and_zombies_pick_their_own_sheets() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let regs = villager_ids();
+    let baby =
+        super::entities::villager_layers(Some(&regs), Some((6, 5, 3)), K::VillagerBaby, false)
+            .unwrap();
+    assert_eq!(baby.passes()[0].map(|p| p.0), Some("villager/baby/taiga"));
+    assert_eq!(baby.passes()[1..], [None, None]);
+    let zombie =
+        super::entities::villager_layers(Some(&regs), Some((3, 5, 5)), K::ZombieVillager, false)
+            .unwrap();
+    assert_eq!(
+        zombie.passes().map(|p| p.map(|p| p.0)),
+        [
+            Some("zombie_villager/type/savanna"),
+            Some("zombie_villager/profession/farmer"),
+            Some("zombie_villager/profession_level/diamond"),
+        ]
+    );
+    let zbaby = super::entities::villager_layers(
+        Some(&regs),
+        Some((0, 0, 1)),
+        K::ZombieVillagerBaby,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        zbaby.passes()[0].map(|p| p.0),
+        Some("zombie_villager/baby/desert")
+    );
+}
+
+/// The atlas has room for every sheet, the villager layers' included: the
+/// real bake, packed by the entity pass's own packer. A sheet that finds no
+/// shelf is logged and skipped at run time, which no draw-list gate sees.
+#[test]
+fn every_sheet_finds_room_in_the_entity_atlas() {
+    let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+        rewo_data::skip_test!("no config dir");
+        return;
+    };
+    let Some(jar) = super::client_jar_path("26.2") else {
+        rewo_data::skip_test!("no local 26.2 client jar");
+        return;
+    };
+    if !paths.blocks_json().is_file() {
+        rewo_data::skip_test!("no datagen report");
+        return;
+    }
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json()).expect("bake");
+    assert_eq!(
+        baked.villager_textures.len(),
+        rewo_data::villager::SHEETS.len(),
+        "every sheet is in the jar"
+    );
+    let tex = super::entity_textures(&baked);
+    assert_eq!(tex.layers.len(), baked.villager_textures.len());
+    assert_eq!(
+        rewo_gpu::entities::unpacked_textures(&tex),
+        Vec::<String>::new()
+    );
+}

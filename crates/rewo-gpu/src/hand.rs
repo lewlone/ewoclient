@@ -134,9 +134,20 @@ impl EquipHeight {
 
     /// One client tick. `held` is the item id in this hand, `None` for empty.
     pub fn tick(&mut self, held: Option<i32>) {
+        self.tick_busy(held, false);
+    }
+
+    /// [`Self::tick`] with `LocalPlayer.isHandsBusy()`: busy hands sink at
+    /// `0.4` a tick whatever is held (`height = clamp(height - 0.4, 0, 1)`),
+    /// out of view, until the keys are released.
+    pub fn tick_busy(&mut self, held: Option<i32>, busy: bool) {
         self.previous = self.height;
-        let target = if self.visible == held { 1.0 } else { 0.0 };
-        self.height += (target - self.height).clamp(-Self::STEP, Self::STEP);
+        if busy {
+            self.height = (self.height - Self::STEP).clamp(0.0, 1.0);
+        } else {
+            let target = if self.visible == held { 1.0 } else { 0.0 };
+            self.height += (target - self.height).clamp(-Self::STEP, Self::STEP);
+        }
         if self.height < Self::SWAP_BELOW {
             self.visible = held;
         }
@@ -1186,6 +1197,24 @@ mod tests {
         // And it climbs back.
         h.tick(Some(2));
         assert!(h.inverse(1.0) < 0.8, "rising again");
+    }
+
+    /// `ItemInHandRenderer.tick` with `isHandsBusy()` (a paddled boat): the
+    /// height falls 0.4 a tick whatever is held, bottoms out at 0, and
+    /// climbs back the usual way once the keys are released.
+    #[test]
+    fn busy_hands_sink_out_of_view_and_come_back() {
+        let mut h = EquipHeight::default();
+        for _ in 0..8 {
+            h.tick(None);
+        }
+        assert!((h.inverse(1.0) - 0.0).abs() < 1e-6);
+        for want in [0.4, 0.8, 1.0, 1.0] {
+            h.tick_busy(None, true);
+            assert!((h.inverse(1.0) - want).abs() < 1e-6, "{want}");
+        }
+        h.tick_busy(None, false);
+        assert!((h.inverse(1.0) - 0.6).abs() < 1e-6, "rising again");
     }
 
     /// The swing's yaw and pitch peak at different times — `sin(attack²·π)`

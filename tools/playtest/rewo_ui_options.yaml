@@ -1,0 +1,40 @@
+# Owner list: "button and slider click sounds". Coordinates from a vanilla probe at GUI scale 3:
+# pause screen Options... at (213, 150); options screen FOV slider x 59..209 at y 39, Music & Sounds
+# at (292, 97), Done at (213, 224).
+name: rewo_ui_options
+description: Pause menu, Options (button click), drag-free FOV slider click (click on release), Music & Sounds, Done.
+
+world:
+  server_commands: [setworldspawn 0 -60 0]
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 10]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 2, key: escape}
+  - {at: 4, mouse: {x: 5, y: 5}}
+  - {at: 6, capture: pause, checklist: "the Game Menu over a blurred world: Back to Game, Advancements | Statistics, a row of icon buttons, Options..., Disconnect"}
+  - {at: 8, mouse_click: {x: 213, y: 150}}
+  - {at: 8, expect_sound: minecraft:ui.button.click, window: 2}
+  - {at: 10, mouse: {x: 5, y: 5}}
+  - {at: 12, capture: options, checklist: "the Options screen: FOV slider (Normal) and World Options at the top, then a two-column grid of settings buttons, Done at the bottom"}
+  - {at: 14, mouse_click: {x: 100, y: 39}}
+  - {at: 14, expect_sound: minecraft:ui.button.click, window: 2}
+  - {at: 16, mouse: {x: 5, y: 5}}
+  - {at: 18, capture: fov_changed, checklist: "the FOV slider moved left of centre, its label a number near 50 instead of 'Normal'"}
+  - {at: 20, mouse_click: {x: 292, y: 97}}
+  - {at: 20, expect_sound: minecraft:ui.button.click, window: 2}
+  - {at: 22, mouse: {x: 5, y: 5}}
+  - {at: 24, capture: sounds, checklist: "the Music & Sounds screen: Master Volume and the per-category volume sliders, Done at the bottom"}
+  - {at: 26, mouse_click: {x: 213, y: 224}}
+  - {at: 26, expect_sound: minecraft:ui.button.click, window: 2}
+  - {at: 28, mouse_click: {x: 213, y: 224}}
+  - {at: 30, mouse: {x: 5, y: 5}}
+  - {at: 32, capture: back_to_pause, checklist: "back on the Game Menu after two Done presses"}
+  - {at: 34, key: escape}
+  - {at: 38, capture: closed, checklist: "the game again, FOV visibly narrower than at the start (the slider moved it)"}
+end_tick: 40

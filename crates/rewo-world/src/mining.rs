@@ -112,6 +112,9 @@ pub struct Mining {
     progress: f32,
     ticks: f32,
     delay: i32,
+    /// The last [`Self::tick`] played the mining hit sound (`destroyTicks % 4
+    /// == 0`), until [`Self::take_hit`].
+    hit: bool,
 }
 
 impl Mining {
@@ -185,6 +188,9 @@ impl Mining {
                 return (Vec::new(), false);
             }
             self.progress += t.progress;
+            // The hit sound tests the count BEFORE it advances, so the first
+            // tick on a block plays it.
+            self.hit = self.ticks % 4.0 == 0.0;
             self.ticks += 1.0;
             if self.progress >= 1.0 {
                 self.destroying = false;
@@ -221,6 +227,12 @@ impl Mining {
         } else {
             -1
         }
+    }
+
+    /// Whether the last [`Self::tick`] owes `continueDestroyBlock`'s hit
+    /// sound, and where; clears it.
+    pub fn take_hit(&mut self) -> Option<[i32; 3]> {
+        std::mem::take(&mut self.hit).then_some(self.pos)
     }
 
     pub fn destroying(&self) -> bool {
@@ -394,5 +406,26 @@ mod tests {
             .filter(|_| !m.tick(dirt(p), true, None).0.is_empty())
             .collect();
         assert_eq!(sends.len(), 2, "ticks 6 and 12");
+    }
+
+    /// `continueDestroyBlock` plays the hit sound when `destroyTicks % 4 ==
+    /// 0` BEFORE the count advances: destroy ticks 0, 4, 8 and 12 of dirt's
+    /// fifteen (the press itself is `startDestroyBlock`, which plays none).
+    #[test]
+    fn the_mining_hit_sounds_every_fourth_destroy_tick() {
+        let mut m = Mining::default();
+        let p = [1, 64, 2];
+        m.start(dirt(p), false, None);
+        assert_eq!(m.take_hit(), None, "the press plays no hit");
+        let mut hits = Vec::new();
+        for tick in 1..=15 {
+            m.tick(dirt(p), false, None);
+            if let Some(at) = m.take_hit() {
+                assert_eq!(at, p);
+                hits.push(tick);
+            }
+            assert_eq!(m.take_hit(), None, "taking clears it");
+        }
+        assert_eq!(hits, vec![1, 5, 9, 13]);
     }
 }

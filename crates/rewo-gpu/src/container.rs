@@ -308,7 +308,20 @@ pub fn preview_rect(w: f32, h: f32) -> (f32, f32, f32, f32) {
 
 /// [`preview_rect`] for any window (M292).
 pub fn preview_rect_for(win: &PreviewWindow, w: f32, h: f32) -> (f32, f32, f32, f32) {
-    let (left, top, scale) = gui_origin(w, h);
+    preview_rect_at(win, gui_origin(w, h))
+}
+
+/// The panel origin `(left, top, scale)` the inventory's preview hangs from:
+/// the 176x166 panel through the same [`Placement`] the panel is drawn with,
+/// so an open recipe book (`leftPos` moved right by
+/// `RecipeBookComponent.updateScreenPosition`) takes the model with it.
+pub fn preview_origin(w: f32, h: f32, book_open: bool) -> (f32, f32, f32) {
+    gui_origin_placed(w, h, Placement::with_book(GUI_WIDTH, GUI_HEIGHT, book_open))
+}
+
+/// [`preview_rect_for`] on an explicit panel origin (see [`preview_origin`]).
+pub fn preview_rect_at(win: &PreviewWindow, origin: (f32, f32, f32)) -> (f32, f32, f32, f32) {
+    let (left, top, scale) = origin;
     let (x0, y0, x1, y1) = win.rect;
     (
         left + x0 as f32 * scale,
@@ -330,7 +343,17 @@ pub fn preview_angles(mouse: (f64, f64), w: f32, h: f32) -> (f32, f32) {
 
 /// [`preview_angles`] for any window (M292).
 pub fn preview_angles_for(win: &PreviewWindow, mouse: (f64, f64), w: f32, h: f32) -> (f32, f32) {
-    let (left, top, scale) = gui_origin(w, h);
+    preview_angles_at(win, mouse, gui_origin(w, h))
+}
+
+/// [`preview_angles_for`] on an explicit panel origin (see [`preview_origin`]):
+/// the window's centre is part of the angle, so it moves with the panel.
+pub fn preview_angles_at(
+    win: &PreviewWindow,
+    mouse: (f64, f64),
+    origin: (f32, f32, f32),
+) -> (f32, f32) {
+    let (left, top, scale) = origin;
     let (x0, y0, x1, y1) = win.rect;
     let centre_x = (x0 + x1) as f32 / 2.0;
     let centre_y = (y0 + y1) as f32 / 2.0;
@@ -386,8 +409,28 @@ pub fn preview_view_proj_for(
     bb_height: f32,
     y_angle_deg: f32,
 ) -> [[f32; 4]; 4] {
-    let (rx, ry, rw, rh) = preview_rect_for(win, screen_w, screen_h);
-    let (_, _, gui_scale) = gui_origin(screen_w, screen_h);
+    preview_view_proj_at(
+        win,
+        gui_origin(screen_w, screen_h),
+        screen_w,
+        screen_h,
+        bb_height,
+        y_angle_deg,
+    )
+}
+
+/// [`preview_view_proj_for`] on an explicit panel origin (see
+/// [`preview_origin`]).
+pub fn preview_view_proj_at(
+    win: &PreviewWindow,
+    origin: (f32, f32, f32),
+    screen_w: f32,
+    screen_h: f32,
+    bb_height: f32,
+    y_angle_deg: f32,
+) -> [[f32; 4]; 4] {
+    let (rx, ry, rw, rh) = preview_rect_at(win, origin);
+    let gui_scale = origin.2;
     let s = gui_scale * win.size;
 
     // Model → preview-local pixels, y down, origin at the window's top-left.
@@ -1731,6 +1774,30 @@ pub(crate) fn build_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_recipe_book_carries_the_preview_with_the_panel() {
+        // 1280x720 at GUI scale 3 is 426 wide: the panel's left is 125 shut
+        // and 177 + (426 - 176 - 200) / 2 = 202 with the book open.
+        let shut = preview_origin(1280.0, 720.0, false);
+        let open = preview_origin(1280.0, 720.0, true);
+        assert_eq!(shut, gui_origin(1280.0, 720.0));
+        assert_eq!((shut.0, open.0, open.2), (375.0, 606.0, 3.0));
+        assert_eq!(shut.1, open.1, "the shift is horizontal only");
+        // The window is the same box, moved by the same 77 GUI px.
+        let (x0, y0, w0, h0) = preview_rect_at(&INVENTORY_PREVIEW, shut);
+        assert_eq!((x0, y0, w0, h0), preview_rect(1280.0, 720.0));
+        let (x1, y1, w1, h1) = preview_rect_at(&INVENTORY_PREVIEW, open);
+        assert_eq!((x1 - x0, y1, w1, h1), (77.0 * 3.0, y0, w0, h0));
+        // The cursor angle is measured from the moved window's centre, so the
+        // same cursor offset from it turns the model the same amount.
+        let m0 = (x0 as f64 + 100.0, 300.0);
+        let m1 = (x1 as f64 + 100.0, 300.0);
+        assert_eq!(
+            preview_angles_at(&INVENTORY_PREVIEW, m0, shut),
+            preview_angles_at(&INVENTORY_PREVIEW, m1, open)
+        );
+    }
 
     #[test]
     fn the_packed_sheets_never_overlap_and_stay_inside_the_atlas() {

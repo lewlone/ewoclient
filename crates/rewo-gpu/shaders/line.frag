@@ -1,5 +1,5 @@
 #version 450
-// Flat line color (the selection outline). Linear rgba from the push,
+// Flat line colour (`celestial.rs`). Linear rgba from the push,
 // alpha-blended; alpha writes masked so readback PNGs stay opaque.
 
 layout(push_constant) uniform PC {

@@ -2193,26 +2193,34 @@ mod tests {
     /// `pushed_buffers` re-asks for four buffers on every tick, and forty ticks
     /// would queue far more than the queue holds. Counting requests holds it at
     /// `QUEUED_BUFFER_COUNT`.
+    ///
+    /// The forty ticks start once the first pump has been requested: the open
+    /// lands on the worker, and under a loaded `cargo test` it once took longer
+    /// than a fixed 80 ms window, which failed the "opened" precondition rather
+    /// than the invariant.
     #[test]
     fn a_slow_read_is_not_re_requested_on_every_tick() {
+        fn requested(s: &LiveSink<Watched>) -> u64 {
+            s.channels
+                .get(&1)
+                .and_then(|s| s.stream.as_ref())
+                .map(|s| s.requested_buffers)
+                .unwrap_or(0)
+        }
         let (mut sink, gate, _readers) = watched_sink();
         let held = gate.lock().unwrap();
         sink.submit(1, &ChannelCall::AttachBufferStream("music".into(), false));
         sink.submit(1, &ChannelCall::Play);
+        tick_until(
+            &mut sink,
+            "the stream to open and request its first pump",
+            |s| requested(s) > 0,
+        );
         for _ in 0..40 {
             sink.tick();
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        let requested = sink
-            .channels
-            .get(&1)
-            .and_then(|s| s.stream.as_ref())
-            .map(|s| s.requested_buffers)
-            .unwrap_or(0);
-        assert!(
-            requested > 0,
-            "the stream was opened and its first pump requested"
-        );
+        let requested = requested(&sink);
         assert!(
             requested <= QUEUED_BUFFER_COUNT as u64,
             "forty ticks with nothing landing asked for {requested} buffers, not \

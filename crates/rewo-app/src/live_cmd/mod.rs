@@ -67,11 +67,14 @@ pub(crate) use entities::*;
 mod gui;
 pub(crate) use gui::*;
 mod headless;
+mod needles;
 use headless::*;
 mod hud;
 pub(crate) use hud::*;
 #[cfg(feature = "gates")]
 mod render_check;
+#[cfg(feature = "gates")]
+mod script;
 #[cfg(feature = "gates")]
 pub(crate) use render_check::*;
 mod icons;
@@ -309,6 +312,16 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         colormaps,
     )?;
     session.block_physics = baked.physics.clone();
+    // The player's own step sounds read each state's `SoundType`.
+    session.block_sounds = rewo_data::sound_types::per_state(&data.blocks);
+    // ...and the ambient `animateTick` sounds each state's block can make.
+    session.block_emitters = (0..data.blocks.state_count() as u32)
+        .map(|s| {
+            let name = data.blocks.block_name(s).unwrap_or("minecraft:air");
+            let prop = |k: &str| data.blocks.property(s, k).map(str::to_string);
+            rewo_world::animate_tick::emitter_for(name, &prop)
+        })
+        .collect();
     // M230 — the crosshair clips against outline shapes.
     session.outline = baked.outline.clone();
     // Entity collision: per-type footprint + whether it shoves (living only).
@@ -501,6 +514,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // `route_update_attributes` recognises the packet and stores nothing.
     session.entity_types = Some(std::sync::Arc::new(etypes.clone()));
     session.attribute_registry = Some(data.attributes.clone());
+    // The built-in registries a villager's metadata ids index (the profession
+    // layer's sheets).
+    session.villager_registries = Some(data.villager_registries.clone());
 
     let want_validation = cfg!(debug_assertions) && !args.no_validation;
     match &args.out {
@@ -597,6 +613,17 @@ impl Keys {
             fall_flying: false,
         }
     }
+}
+
+/// One keyboard event as `LiveApp::key_input` reads it: the four fields of
+/// winit's `KeyEvent` the handler uses. A struct of its own because a
+/// `KeyEvent` cannot be built outside winit, and a scripted run
+/// (`REWO_SCRIPT`) presses keys through the same handler.
+pub(super) struct KeyInput {
+    pub physical_key: PhysicalKey,
+    pub state: ElementState,
+    pub text: Option<String>,
+    pub repeat: bool,
 }
 
 struct LiveState {
@@ -713,6 +740,9 @@ struct LiveApp {
     /// M37 particles — `None` until the bake arrives, and stays `None` if the
     /// jar has no particle sprites.
     particles: Option<ParticleAssets>,
+    /// `REWO_SCRIPT` — the playtest harness's scenario run (`script.rs`).
+    #[cfg(feature = "gates")]
+    script: Option<script::Script>,
     keys: Keys,
     want_validation: bool,
     run_seconds: Option<f32>,
@@ -764,11 +794,11 @@ struct LiveApp {
     /// `Hud.isHidden()` — F1 (M70). Vanilla's is a plain `toggle()` on press,
     /// with none of F3's modifier dance, and it starts `false`.
     ///
-    /// Rewo consumes it only where vanilla's *label* path does: it suppresses
-    /// floating nametags and health bars on un-teamed entities. Vanilla also
-    /// hides the whole GUI layer from it (`guiRenderState.isHudHidden`);
-    /// hiding Rewo's hotbar/hearts/F3 block is a separate concern this
-    /// milestone deliberately leaves alone, and is recorded as open.
+    /// It suppresses floating nametags and health bars on un-teamed entities
+    /// (M70) and, through [`HudLayers::of`], everything vanilla hides from it:
+    /// the camera overlays, crosshair, hotbar and its decorations, sidebar,
+    /// action bar, title, chat history and tab list, plus the first-person
+    /// hand and the block outline. The F3 block stays, as in vanilla.
     hud_hidden: bool,
     /// `PlayerTabOverlay.healthStates` — the per-profile blink clock (M155).
     ///
@@ -890,6 +920,8 @@ struct LiveApp {
     /// stepped on.
     vignette_brightness: f32,
     vignette_tick: u64,
+    /// The compass and clock needles' damped state (see `needles.rs`).
+    needles: needles::NeedleClock,
     /// M283 — `Player.sleepCounter` (client side) and `Hud.scopeScale`.
     sleep_counter: i32,
     scope_scale: f32,
@@ -1203,6 +1235,26 @@ fn run_windowed(
     }
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
+    #[cfg(feature = "gates")]
+    let script = script::load_script()?;
+    // A scripted run listens to no raw device (mouse) input at all.
+    #[cfg(feature = "gates")]
+    if script.is_some() {
+        event_loop.listen_device_events(winit::event_loop::DeviceEvents::Never);
+    }
+    // …and records every sound play for its `sounds.jsonl`.
+    #[cfg(feature = "gates")]
+    let sounds = {
+        let mut sounds = sounds;
+        if script.is_some() {
+            sounds.system.engine.play_log = Some(Vec::new());
+        }
+        sounds
+    };
+    #[cfg(feature = "gates")]
+    let scripted = script.is_some();
+    #[cfg(not(feature = "gates"))]
+    let scripted = false;
     // Every mesher table, from the bake. Built field by field this once lost
     // M164's carried water — the windowed client then meshed no waterlogged
     // water and looked EXACTLY as before (`r48` is what asks) — and would
@@ -1227,6 +1279,8 @@ fn run_windowed(
         blocks,
         capture_pending: false,
         particles: None,
+        #[cfg(feature = "gates")]
+        script,
         session: Some(session),
         // Cloned before the bake is stored, because it is `take`n when the
         // window opens and the entity draws need this every frame after.
@@ -1332,6 +1386,7 @@ fn run_windowed(
         rc_captured_at: false,
         vignette_brightness: rewo_world::vignette::VIGNETTE_START,
         vignette_tick: 0,
+        needles: Default::default(),
         sleep_counter: 0,
         scope_scale: 0.5,
         last_dt: 0.0,
@@ -1459,7 +1514,8 @@ fn run_windowed(
         uploaded_total: 0,
         flood_logged: false,
         dirt_item,
-        debug: true,
+        // The F3 text block; off for a scripted run, as vanilla starts.
+        debug: !scripted,
         // `Hud.isHidden` starts false — the HUD is showing (M70).
         hud_hidden: false,
         f3_down: false,
@@ -1481,7 +1537,13 @@ fn run_windowed(
         screen_forced_open: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         locator_styles: Vec::new(),
-        modules: crate::modules::Modules::load(),
+        // A scripted run compares against vanilla, so it never reads the
+        // player's module profile (an FOV or zoom module would move every frame).
+        modules: if scripted {
+            crate::modules::Modules::from_defaults()
+        } else {
+            crate::modules::Modules::load()
+        },
         glyphs: load_velvet_fonts(),
         gestures: GestureTracker::default(),
         flicker: BlockLightFlicker::random(),
@@ -1683,8 +1745,19 @@ fn look_dir(yaw_deg: f32, pitch_deg: f32) -> [f64; 3] {
     ]
 }
 
-/// Reach distance (creative). Survival is 3.0; the test server is creative.
+/// `Attributes.BLOCK_INTERACTION_RANGE`'s default, for a session the server
+/// has not sent the attribute yet.
 const REACH: f64 = 4.5;
+
+/// `Player.blockInteractionRange()`: the synced `block_interaction_range`,
+/// which the server raises to 5.0 in creative (`ServerPlayer`'s
+/// `CREATIVE_BLOCK_INTERACTION_RANGE_MODIFIER`). A constant 4.5 missed every
+/// creative target between 4.5 and 5 blocks (the playtest's door scene).
+fn block_reach(session: &rewo_net::play::PlaySession) -> f64 {
+    session
+        .local_attribute("block_interaction_range")
+        .unwrap_or(REACH)
+}
 
 /// Face normal → MC face index (0 down, 1 up, 2 north −Z, 3 south +Z,
 /// 4 west −X, 5 east +X).
@@ -1710,6 +1783,12 @@ enum UseStep {
         offset: [f32; 3],
         inside: bool,
         swing: bool,
+        /// The hand holds a `BlockItem` and the click was spent: a block
+        /// may be placed (its sound waits for the server's update).
+        places: bool,
+        /// The block's own use spent the click and plays this for the
+        /// clicker (a door, a button).
+        sound: Option<rewo_world::click_use::UseSound>,
     },
     Use {
         hand: rewo_world::entities::InteractionHand,

@@ -393,6 +393,14 @@ pub struct EntityMeta {
     pub bool10: Option<bool>,
     pub int12: Option<i32>,
     pub bool13: Option<bool>,
+    /// `VillagerData` (serializer 18): the raw `(villager_type id,
+    /// villager_profession id, level)`. The codec is
+    /// `composite(holderRegistry(VILLAGER_TYPE),
+    /// holderRegistry(VILLAGER_PROFESSION), VAR_INT)`: the two holders are RAW
+    /// 0-based ids of built-in registries (names come from the report, see
+    /// `rewo_data::villager`), and the level is kept as sent (the constructor
+    /// does `max(1, level)`, the layer clamps to `1..=5` itself).
+    pub villager_data: Option<(i32, i32, i32)>,
 }
 
 /// `N` big-endian f32s (a VECTOR3 or QUATERNION value), or `None` short.
@@ -681,6 +689,17 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (21, 1) => meta.int21 = r.varint().ok(),
             (23, 1) => meta.int23 = r.varint().ok(),
             (23, 25) => meta.wolf_variant = r.varint().ok(),
+            // VILLAGER_DATA (serializer 18) at `Villager.DATA_VILLAGER_DATA`
+            // (19, after `AbstractVillager.DATA_UNHAPPY_COUNTER` at 18) and
+            // `ZombieVillager.DATA_VILLAGER_DATA` (20, after
+            // `DATA_CONVERTING_ID` at 19). The serializer is those two
+            // classes' alone, so the index is not consulted.
+            (_, 18) => match (r.varint(), r.varint(), r.varint()) {
+                (Ok(kind), Ok(profession), Ok(level)) => {
+                    meta.villager_data = Some((kind, profession, level))
+                }
+                _ => break,
+            },
             _ => {
                 if !skip_value_with(r, ty, components) {
                     break; // unknown/complex type — stop (already have ours)
@@ -1106,5 +1125,117 @@ mod m168_tests {
             "a FALSE dash entry is still an entry"
         );
         assert_eq!(m.long19, Some(77));
+    }
+
+    /// The raw registry ids of `name`'s entries, by `protocol_id` (never the
+    /// iteration order of the sorted map), or `None` without the local report.
+    fn report_ids(registry: &str) -> Option<std::collections::HashMap<String, i32>> {
+        let paths = rewo_data::DataPaths::for_version("26.2")?;
+        let text = std::fs::read_to_string(paths.registries_json()).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+        Some(
+            json[registry]["entries"]
+                .as_object()?
+                .iter()
+                .map(|(n, e)| (n.clone(), e["protocol_id"].as_i64().unwrap() as i32))
+                .collect(),
+        )
+    }
+
+    /// The serializer ids come from `EntityDataSerializers`' registration
+    /// order, so the one this decode reads at must be where VILLAGER_DATA is
+    /// registered in the decompile.
+    #[test]
+    fn villager_data_is_serializer_eighteen_in_the_decompile() {
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+            rewo_data::skip_test!("no config dir");
+            return;
+        };
+        let src = paths
+            .root
+            .join("decompiled/net/minecraft/network/syncher/EntityDataSerializers.java");
+        let Ok(text) = std::fs::read_to_string(&src) else {
+            rewo_data::skip_test!("no decompile at {}", src.display());
+            return;
+        };
+        let order: Vec<&str> = text
+            .lines()
+            .filter_map(|l| {
+                l.trim()
+                    .strip_prefix("registerSerializer(")?
+                    .strip_suffix(");")
+            })
+            .collect();
+        assert_eq!(order.iter().position(|n| *n == "VILLAGER_DATA"), Some(18));
+    }
+
+    /// A villager's real tail: `AbstractVillager.DATA_UNHAPPY_COUNTER` (INT at
+    /// 18) then `Villager.DATA_VILLAGER_DATA` (19), here taiga / librarian /
+    /// level 3 with the ids the report gives. The var-ints are 1 byte each.
+    #[test]
+    fn reads_a_villagers_data_with_the_reports_ids() {
+        let (Some(types), Some(professions)) = (
+            report_ids("minecraft:villager_type"),
+            report_ids("minecraft:villager_profession"),
+        ) else {
+            rewo_data::skip_test!("no datagen report");
+            return;
+        };
+        let (taiga, librarian) = (types["minecraft:taiga"], professions["minecraft:librarian"]);
+        let mut w = PacketWriter::default();
+        w.u8(18);
+        w.varint(1); // INT — the unhappy counter
+        w.varint(0);
+        w.u8(19);
+        w.varint(18); // VILLAGER_DATA
+        w.varint(taiga);
+        w.varint(librarian);
+        w.varint(3);
+        w.u8(0);
+        w.varint(0); // BYTE flags after it: the walk did not desync
+        w.u8(0x20);
+        w.u8(0xFF);
+        let bytes = w.into_bytes();
+        let m = parse(&mut PacketReader::new(&bytes), MetaKinds::default());
+        assert_eq!(m.villager_data, Some((taiga, librarian, 3)));
+        assert_eq!(m.flags, Some(0x20));
+        assert!(
+            taiga != 0 && librarian != 0,
+            "the fixture must not sit where the first registry entry would read the same"
+        );
+    }
+
+    /// A zombie villager's data sits one slot later (`DATA_CONVERTING_ID`
+    /// BOOLEAN at 19, the data at 20), and a level past 127 is a 2-byte
+    /// var-int that must be read whole.
+    #[test]
+    fn reads_a_zombie_villagers_data_after_its_converting_flag() {
+        let mut w = PacketWriter::default();
+        w.u8(19);
+        w.varint(8); // BOOLEAN — converting
+        w.u8(1);
+        w.u8(20);
+        w.varint(18);
+        w.varint(6); // taiga's position in a 7-entry registry
+        w.varint(14);
+        w.varint(300);
+        w.u8(0xFF);
+        let bytes = w.into_bytes();
+        let m = parse(&mut PacketReader::new(&bytes), MetaKinds::default());
+        assert_eq!(m.villager_data, Some((6, 14, 300)));
+        assert_eq!(m.bool19, Some(true));
+    }
+
+    /// A body that ends inside the level ends the parse without a value.
+    #[test]
+    fn a_truncated_villager_data_reads_nothing() {
+        let mut w = PacketWriter::default();
+        w.u8(19);
+        w.varint(18);
+        w.varint(2);
+        w.varint(5);
+        let bytes = w.into_bytes();
+        let m = parse(&mut PacketReader::new(&bytes), MetaKinds::default());
+        assert_eq!(m.villager_data, None);
     }
 }

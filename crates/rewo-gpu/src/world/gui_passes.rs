@@ -84,6 +84,11 @@ pub(super) struct GuiFrame {
     /// M168 — this frame's survival gauges (`survival_hud::layout`), in GUI
     /// pixels. Replaced every frame with the rest of `hud_state`.
     pub(super) hud_survival: Vec<crate::hud::HudBlit>,
+    /// `Hud.isHidden` (F1): the HUD pass skips the crosshair, the hotbar and
+    /// every gauge, and keeps only the caller-placed fills and icons (the
+    /// chat screen's own chat). Written every frame; `false` for any caller
+    /// that never sets it.
+    pub(super) hud_hidden: bool,
     /// This frame's chat backdrops (M109). A separate field from
     /// [`Self::hud_state`] because it is set on a different cadence — the HUD
     /// state comes from the packet stream and this comes from the chat store's
@@ -555,6 +560,15 @@ impl WorldRenderer {
         self.gui.hud_survival = survival;
     }
 
+    /// `Hud.isHidden`: draw this frame's HUD without its crosshair, hotbar,
+    /// experience bar, cooldown washes and survival gauges. The fills and icons
+    /// set through [`Self::set_hud_fills`] and [`Self::set_hud_icons`] are the
+    /// caller's to empty, because a focused chat draws them even while the HUD
+    /// is hidden.
+    pub fn set_hud_hidden(&mut self, hidden: bool) {
+        self.gui.hud_hidden = hidden;
+    }
+
     /// Set this frame's chat backdrops (M109), in GUI pixels.
     ///
     /// **Replaces**, and an empty slice is how chat says it has nothing to
@@ -712,11 +726,17 @@ impl WorldRenderer {
                 cb,
                 extent,
                 &self.gui.hud_survival,
+                self.gui.hud_hidden,
                 slot,
                 gauges,
                 &self.gui.hud_fills,
                 &self.gui.hud_icons,
             );
+            // `Hud.extractCrosshair` draws with `RenderPipelines.CROSSHAIR`
+            // (`BlendFunction.INVERT`), in vanilla's gamma space.
+            if let Some(hud) = self.hud.as_ref() {
+                self.in_gamma_space(gpu, cb, extent, || hud.draw_crosshair(gpu, cb, extent));
+            }
             if screen.is_none() {
                 // M83 — the contextual bar's slot, which is the XP bar's slot:
                 // `Hud.nextContextualInfoState` picks one of them and the

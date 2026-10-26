@@ -716,6 +716,116 @@ pub(crate) fn screen_tooltip(
     tooltip_layout(lines, advance, glyphs, mouse, (w, h))
 }
 
+/// `Screen.getTooltipFromItem` for a stack that is only an item: its
+/// rarity-coloured name, then the advanced block F3+H adds. The shape of
+/// every tooltip whose stack comes from a recipe rather than an inventory
+/// (the recipe book's cells, the stonecutter's buttons).
+///
+/// A recipe result is undamaged by construction. The stack carries no
+/// components (the recipe displays hand Rewo an item id), so a result that
+/// shipped with a custom name or lore would show its plain name.
+pub(super) fn plain_item_lines(
+    item_name: &str,
+    names: &std::collections::HashMap<String, String>,
+    lang: &rewo_data::lang::Language,
+    flag: rewo_gpu::tooltip::TooltipFlag,
+) -> Option<Vec<rewo_gpu::tooltip::Line>> {
+    let mut lines: Vec<rewo_gpu::tooltip::Line> = vec![vec![rewo_gpu::tooltip::Span::new(
+        names.get(item_name)?.to_string(),
+        rarity_color(stack_rarity(Some(item_name), None, false)),
+    )]];
+    let has = |c: &str| stack_has_component(item_name, c, None, None);
+    let durability = rewo_gpu::tooltip::DurabilityState {
+        damage: 0,
+        max: rewo_data::item_props_table::max_damage(item_name).unwrap_or(0),
+        has_max_damage: has("minecraft:max_damage").unwrap_or(false),
+        has_damage: has("minecraft:damage").unwrap_or(false),
+        unbreakable: has("minecraft:unbreakable").unwrap_or(false),
+    };
+    let advanced = rewo_gpu::tooltip::advanced_lines(
+        flag,
+        durability,
+        true,
+        rewo_data::item_components_table::prototype_component_count(item_name),
+    );
+    lines.extend(advanced_tooltip_lines(&advanced, item_name, lang));
+    Some(lines)
+}
+
+/// The stonecutter's recipe-button tooltip (`StonecutterScreen.extractTooltip`,
+/// after `super.extractTooltip`): the hovered button's result, as
+/// `Screen.getTooltipFromItem` lists it.
+///
+/// The hit box is the icon's (`posY = y + row * 18 + 2`, 16 x 18), the one
+/// [`rewo_ui::menu_screen::cut_cell_highlight_at`] already answers, and only
+/// while the grid is displayed. Unlike a slot's tooltip there is no
+/// carried-stack guard. The caller tries the slot's tooltip first, because the
+/// first tooltip of a frame wins.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cut_tooltip(
+    cut: Option<&CutView>,
+    panel_mouse: (f64, f64),
+    names: &std::collections::HashMap<String, String>,
+    lang: &rewo_data::lang::Language,
+    flag: rewo_gpu::tooltip::TooltipFlag,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    size: (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    let c = cut.filter(|c| c.display)?;
+    let index = rewo_ui::menu_screen::cut_cell_highlight_at(
+        panel_mouse.0,
+        panel_mouse.1,
+        c.start_index,
+        c.recipes.len(),
+    )?;
+    let recipe = c.recipes.get(usize::try_from(index).ok()?)?;
+    let lines = plain_item_lines(recipe.result, names, lang, flag)?;
+    tooltip_layout(lines, advance, glyphs, mouse, size)
+}
+
+/// The loom's pattern-button tooltip (`LoomScreen.extractBackground`): the
+/// hovered button's pattern in the dye slot's colour ("Red Flower Charge"),
+/// a plain white line.
+///
+/// Only for a button that is shown (`displayPatterns`, an index inside the
+/// selectable list) and that is not the selected one: vanilla tests the
+/// selected index first, so its button takes the selected chrome and sets no
+/// tooltip. `dye` is the dye slot's colour index (white when it names none).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn loom_tooltip(
+    view: Option<&LoomView>,
+    dye: usize,
+    panel_mouse: (f64, f64),
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    size: (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    let v = view.filter(|v| v.display)?;
+    let index = rewo_ui::menu_screen::loom_cell_at(panel_mouse.0, panel_mouse.1, v.start_row)?;
+    if !rewo_ui::menu_screen::loom_button_accepted(index, v.patterns.len()) || index == v.selected {
+        return None;
+    }
+    let pattern = v.patterns.get(usize::try_from(index).ok()?)?;
+    let key = rewo_ui::menu_screen::loom_pattern_tooltip_key(pattern, dye);
+    let line = vec![rewo_gpu::tooltip::Span::new(
+        lang.or_key(&key).to_string(),
+        WHITE_TEXT,
+    )];
+    tooltip_layout(vec![line], advance, glyphs, mouse, size)
+}
+
 /// The tooltip of the recipe cell under the cursor (M106).
 ///
 /// `RecipeBookPage.extractTooltip` — `Screen.getTooltipFromItem(displayStack)`
@@ -767,30 +877,7 @@ pub(crate) fn book_tooltip(
     // context Rewo cannot build has `None` and shows nothing, rather than a
     // tooltip for some other member of the group.
     let item = (*b.slot_items.get(slot)?)?;
-    let item_name = items.name(item)?;
-    let mut lines: Vec<rewo_gpu::tooltip::Line> = vec![vec![rewo_gpu::tooltip::Span::new(
-        names.get(item_name)?.to_string(),
-        rarity_color(stack_rarity(Some(item_name), None, false)),
-    )]];
-    {
-        let has = |c: &str| stack_has_component(item_name, c, None, None);
-        let durability = rewo_gpu::tooltip::DurabilityState {
-            // A recipe result is undamaged by construction: the display stack
-            // comes from the recipe, not from an inventory.
-            damage: 0,
-            max: rewo_data::item_props_table::max_damage(item_name).unwrap_or(0),
-            has_max_damage: has("minecraft:max_damage").unwrap_or(false),
-            has_damage: has("minecraft:damage").unwrap_or(false),
-            unbreakable: has("minecraft:unbreakable").unwrap_or(false),
-        };
-        let advanced = rewo_gpu::tooltip::advanced_lines(
-            flag,
-            durability,
-            true,
-            rewo_data::item_components_table::prototype_component_count(item_name),
-        );
-        lines.extend(advanced_tooltip_lines(&advanced, item_name, lang));
-    }
+    let mut lines = plain_item_lines(items.name(item)?, names, lang, flag)?;
     // `if (this.hasMultipleRecipes()) texts.add(MORE_RECIPES_TOOLTIP)` — LAST,
     // after everything the item contributed, including the advanced block.
     if b.slots.get(slot).is_some_and(|&(_, multiple)| multiple) {

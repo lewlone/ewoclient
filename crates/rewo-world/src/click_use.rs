@@ -447,22 +447,89 @@ fn item_use_on(item: &str, c: &Clicked, p: &Clicker) -> Outcome {
 
 /// `MultiPlayerGameMode.performUseItemOn`'s local result for one hand.
 pub fn use_item_on(c: &Clicked, p: &Clicker, hand: Hand) -> Outcome {
+    use_item_on_by(c, p, hand).0
+}
+
+/// Which half of [`use_item_on`] answered: the block's own `useItemOn` /
+/// `useWithoutItem`, or the held item's `useOn`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsedBy {
+    Block,
+    Item,
+}
+
+/// [`use_item_on`] and which half answered it.
+pub fn use_item_on_by(c: &Clicked, p: &Clicker, hand: Hand) -> (Outcome, UsedBy) {
     let suppress = p.sneaking && (p.main.is_some() || p.off.is_some());
     if !suppress {
         match block_item_on(block_item_on_class(c.block), c, p, hand) {
-            ItemOn::Consumed => return Outcome::Consumed,
+            ItemOn::Consumed => return (Outcome::Consumed, UsedBy::Block),
             ItemOn::TryEmptyHand
                 if hand == Hand::Main
                     && block_without_item(block_without_item_class(c.block), c, p) =>
             {
-                return Outcome::Consumed;
+                return (Outcome::Consumed, UsedBy::Block);
             }
             _ => {}
         }
     }
-    match p.held(hand) {
+    let out = match p.held(hand) {
         Some(item) => item_use_on(item, c, p),
         None => Outcome::Pass,
+    };
+    (out, UsedBy::Item)
+}
+
+/// A sound a block's own `useWithoutItem` plays for the player who clicked
+/// it: `level.playSound(player, pos, ..)`, which the server sends to everyone
+/// else, so the clicker's client plays it or nobody does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UseSound {
+    pub name: &'static str,
+    /// `level.getRandom().nextFloat() * 0.1F + 0.9F` (doors, trapdoors,
+    /// gates); otherwise 1.0. The volume is 1.0 for all of them.
+    pub random_pitch: bool,
+}
+
+/// The [`UseSound`] of a block whose `useWithoutItem` just spent a click
+/// (`c` is the state BEFORE the click): a door, trapdoor or fence gate
+/// toggling `open`, an unpowered button pressing. `None` for every other
+/// block (a lever's click is the server's `playSound(null, ..)`).
+pub fn block_use_sound(c: &Clicked) -> Option<UseSound> {
+    use rewo_data::sound_types::{block_set_sounds, fence_gate_sounds};
+    let opens = !is_true(c, "open");
+    let toggle = |name| UseSound {
+        name,
+        random_pitch: true,
+    };
+    match block_without_item_class(c.block)? {
+        // `DoorBlock.playSound(player, level, pos, state.getValue(OPEN))`
+        // after `cycle(OPEN)`.
+        "DoorBlock" => {
+            let s = block_set_sounds(c.block)?;
+            Some(toggle(if opens { s.door_open } else { s.door_close }))
+        }
+        // `TrapDoorBlock.toggle`: `playSound(player, level, pos, open)`.
+        "TrapDoorBlock" => {
+            let s = block_set_sounds(c.block)?;
+            Some(toggle(if opens {
+                s.trapdoor_open
+            } else {
+                s.trapdoor_close
+            }))
+        }
+        "FenceGateBlock" => {
+            let (close, open) = fence_gate_sounds(c.block)?;
+            Some(toggle(if opens { open } else { close }))
+        }
+        // `ButtonBlock.useWithoutItem`: a powered button is CONSUME with no
+        // sound; `press` then `playSound(player, .., true)`, the default
+        // volume and pitch of `playSound(player, pos, sound, source)`.
+        "ButtonBlock" if !is_true(c, "powered") => Some(UseSound {
+            name: block_set_sounds(c.block)?.button_on,
+            random_pitch: false,
+        }),
+        _ => None,
     }
 }
 
@@ -494,6 +561,48 @@ pub fn use_item(item: &str, p: &Clicker, use_duration: i32, armor_slot: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Expectations from `BlockSetType.OAK` / `WoodType.OAK`'s `SoundEvents`
+    /// and the classes' `useWithoutItem` (`cycle(OPEN)` before the sound).
+    #[test]
+    fn toggled_blocks_play_their_block_set_sound() {
+        let at = |block: &'static str, props: &'static [(&'static str, &'static str)]| {
+            let prop = move |k: &str| {
+                props
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            };
+            block_use_sound(&Clicked {
+                block,
+                prop: &prop,
+                face: 1,
+            })
+        };
+        let name = |s: Option<UseSound>| s.map(|s| s.name);
+        assert_eq!(
+            name(at("minecraft:oak_door", &[("open", "false")])),
+            Some("minecraft:block.wooden_door.open")
+        );
+        assert_eq!(
+            name(at("minecraft:oak_door", &[("open", "true")])),
+            Some("minecraft:block.wooden_door.close")
+        );
+        assert_eq!(
+            name(at("minecraft:spruce_trapdoor", &[("open", "false")])),
+            Some("minecraft:block.wooden_trapdoor.open")
+        );
+        assert_eq!(
+            name(at("minecraft:oak_fence_gate", &[("open", "true")])),
+            Some("minecraft:block.fence_gate.close")
+        );
+        let button = at("minecraft:stone_button", &[("powered", "false")]).unwrap();
+        assert_eq!(button.name, "minecraft:block.stone_button.click_on");
+        assert!(!button.random_pitch);
+        assert_eq!(at("minecraft:stone_button", &[("powered", "true")]), None);
+        assert_eq!(at("minecraft:lever", &[("powered", "false")]), None);
+        assert_eq!(at("minecraft:chest", &[]), None);
+    }
 
     struct Env {
         props: Vec<(&'static str, &'static str)>,

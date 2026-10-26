@@ -233,14 +233,15 @@ pub fn route(ids: MenuIds, id: i32, body: &[u8], menus: &mut rewo_world::menu::M
     if id == ids.open_screen {
         match read_open_screen(body) {
             Ok(p) => {
-                // M163 left this flattened: `OpenMenu::title` has zero
-                // readers, so the label is not drawn at all. Resolving it
-                // changes nothing, and DRAWING it without resolving would
-                // write `container.chest` across every vanilla chest — ship
-                // both or neither. See the register on
-                // `component_wire::nbt_text`.
+                // `title` stays the unresolved flatten (a log line, a witness);
+                // the screen draws `title_component`, resolved against the
+                // language table at draw time.
                 let title = crate::hud_state::plain(&p.title);
-                if !menus.apply_open_screen(p.container_id, p.menu_type, title) {
+                if menus.apply_open_screen(p.container_id, p.menu_type, title) {
+                    if let Some(open) = menus.open_mut() {
+                        open.title_component = Some(p.title);
+                    }
+                } else {
                     // `MenuScreens.create` logs a warning and does nothing for
                     // an unregistered type; same here, and at the same volume.
                     log::warn!(
@@ -346,6 +347,17 @@ mod tests {
         open_screen: 59,
         container_set_data: 19,
     };
+
+    #[test]
+    fn the_opened_menu_keeps_the_title_component_for_the_screen_to_resolve() {
+        let mut m = rewo_world::menu::Menus::new();
+        assert!(route(IDS, 59, &open_screen_body(3, 2), &mut m));
+        let open = m.open().unwrap();
+        assert_eq!(
+            open.title_component,
+            Some(rewo_proto::nbt::Nbt::String("Chest".into()))
+        );
+    }
 
     #[test]
     fn routing_open_screen_opens_the_menu() {

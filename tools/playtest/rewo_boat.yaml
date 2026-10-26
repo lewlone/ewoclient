@@ -1,0 +1,35 @@
+# Enni's list: "float a boat". A one-deep pond, an oak boat, board it, paddle forward and turn.
+name: rewo_boat
+description: Board an oak boat on a pond, paddle forward, turn left, look at the boat's inside.
+
+world:
+  freeze: false
+  server_commands:
+    - fill -6 -61 2 6 -61 26 minecraft:water
+    - fill -6 -60 27 6 -59 27 minecraft:oak_planks
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 35]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, command: 'summon minecraft:oak_boat 0.5 -60.45 3.5 {Rotation:[0f,0f]}'}
+  - {at: 6, capture: boat, checklist: "an oak boat floating on the pond in front, water with ripples around it"}
+  - {at: 8, click: use}
+  - {at: 10, click: use}
+  - {at: 16, look: {yaw: 0, pitch: 40}}
+  - {at: 16, note: "the second click is a no-op once seated; it covers a first click that missed"}
+  - {at: 20, capture: seated, checklist: "seated in the boat looking down: the boat's floor and sides around the camera, and NO water visible inside the boat (vanilla masks it)"}
+  - {at: 22, look: {yaw: 0, pitch: 5}}
+  - {at: 24, hold: [forward]}
+  - {at: 24, expect_sound: minecraft:entity.boat.paddle_water, window: 30}
+  - {at: 44, capture: paddling, checklist: "paddling forward: both oars visible, moving across the pond toward a plank wall"}
+  - {at: 46, hold: [left]}
+  - {at: 56, capture: turning, checklist: "turning left while paddling, one oar raised"}
+  - {at: 60, release: all}
+  - {at: 80, capture: drifting, checklist: "boat drifting to a stop, oars at rest"}
+end_tick: 82

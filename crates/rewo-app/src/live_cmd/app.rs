@@ -8,6 +8,16 @@ impl ApplicationHandler for LiveApp {
         let attrs = Window::default_attributes()
             .with_title("Rewo · live")
             .with_inner_size(LogicalSize::new(1280.0, 720.0));
+        // A scripted run's window is never shown and is sized in PHYSICAL
+        // pixels, so captures are exactly the scenario's size at any DPI.
+        #[cfg(feature = "gates")]
+        let attrs = match self.script.as_ref() {
+            Some(s) => attrs
+                .with_visible(false)
+                .with_active(false)
+                .with_inner_size(winit::dpi::PhysicalSize::new(s.width, s.height)),
+            None => attrs,
+        };
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -105,8 +115,14 @@ impl ApplicationHandler for LiveApp {
         })();
         match init {
             Ok((state, baked)) => {
-                let _ = state.window.set_cursor_grab(CursorGrabMode::Confined);
-                state.window.set_cursor_visible(false);
+                #[cfg(feature = "gates")]
+                let scripted = self.script.is_some();
+                #[cfg(not(feature = "gates"))]
+                let scripted = false;
+                if !scripted {
+                    let _ = state.window.set_cursor_grab(CursorGrabMode::Confined);
+                    state.window.set_cursor_visible(false);
+                }
                 self.started = Instant::now();
                 self.state = Some(state);
                 // The half M3 forgot. Without it every baked-gated branch in
@@ -121,6 +137,19 @@ impl ApplicationHandler for LiveApp {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // A scripted run (`REWO_SCRIPT`) takes no real mouse input: only the
+        // events `script.rs` synthesizes reach the arms below.
+        #[cfg(feature = "gates")]
+        if self.script.as_ref().is_some_and(|s| !s.injecting)
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseWheel { .. }
+            )
+        {
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -138,558 +167,20 @@ impl ApplicationHandler for LiveApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                let p = event.state == ElementState::Pressed;
-                // While the screen is open the player stands still: only the
-                // two keys that close it are read, and every movement key is
-                // released so a key held at the moment of opening does not
-                // stick down behind it.
-                // With the screen open the keys that reach the world are
-                // swallowed, but the screen has keys of its own: a number key
-                // or F swaps the hovered slot with a hotbar slot, Q drops from
-                // it. Ctrl is tracked either way, because Ctrl+Q drops the
-                // whole stack.
-                if matches!(event.physical_key, PhysicalKey::Code(KeyCode::ControlLeft)) {
-                    self.ctrl = p;
+                #[cfg(feature = "gates")]
+                if self.script.is_some() {
+                    // A scripted run takes no real input (`script.rs`).
+                    return;
                 }
-                if matches!(event.physical_key, PhysicalKey::Code(KeyCode::AltLeft)) {
-                    self.alt = p;
-                }
-                // Ctrl+V pastes the SYSTEM clipboard, as vanilla's edit boxes do
-                // (`KeyboardHandler.getClipboard`): refresh the buffer every
-                // edit box pastes from before any of them sees the key.
-                if p && self.ctrl && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV))
-                {
-                    if let Some(text) = crate::os_clipboard::read() {
-                        self.clipboard_synced = text.clone();
-                        self.clipboard = text;
-                    }
-                }
-                // M151 — the tab-list hold's RELEASE, ahead of both screen
-                // gates below, because `KeyboardHandler.keyPress` is
-                // asymmetric about exactly this:
-                //
-                //   if (action == 0)      KeyMapping.set(key, false);   // always
-                //   else if (handlesGameInput) KeyMapping.set(key, true);
-                //
-                // (`KeyboardHandler.java:519-552`.) The press is gated on there
-                // being no screen — so Tab with the inventory open does not
-                // open the list, which is why the press arm lives in the match
-                // below — while the release is unconditional. Without this,
-                // holding Tab, opening the inventory and letting go would leave
-                // the list on screen behind it with nothing able to take it
-                // down. The movement keys have the same asymmetry and Rewo does
-                // not reproduce it for them; that predates this and is not the
-                // subject here.
-                if !p && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Tab)) {
-                    self.keys.tab_list = false;
-                }
-                // M110 — the chat screen owns the keyboard entirely while it
-                // is open, and it goes ahead of every other screen because
-                // `Gui.screen` is ONE slot: with a chat screen in it there is
-                // no inventory to route to. Opening it is handled after this
-                // block, so `T` cannot both open the screen and be typed into
-                // it on the same event.
-                if self.chat_screen.is_some() {
-                    if p {
-                        if let Some(key) = glfw_key(event.physical_key) {
-                            let mods = (i32::from(self.shift))
-                                | (i32::from(self.ctrl) << 1)
-                                | (i32::from(self.alt) << 2);
-                            self.chat_key(key, mods);
-                        }
-                        if let Some(text) = event.text.as_ref() {
-                            let chars: Vec<char> = text.chars().collect();
-                            for ch in chars {
-                                self.chat_char(ch);
-                            }
-                        }
-                    }
-                    // Shift is tracked either way: it holds the wheel to one
-                    // line and is read by `mouse_scrolled`.
-                    if !matches!(
-                        event.physical_key,
-                        PhysicalKey::Code(KeyCode::ShiftLeft)
-                            | PhysicalKey::Code(KeyCode::ShiftRight)
-                    ) {
-                        return;
-                    }
-                }
-                // M174 — the sign editor owns the keyboard entirely while it
-                // is open (`Screens` is ONE slot; there is no inventory behind
-                // it to route to). Its own bindings run first, then the field,
-                // then Esc → `onClose()`; a key nothing wanted is swallowed,
-                // which is the anvil's arrangement and vanilla's.
-                if self.sign_edit.is_some() {
-                    if p {
-                        let advance = self.advance();
-                        if let (Some(key), Some(advance)) =
-                            (glfw_key(event.physical_key), advance.as_ref())
-                        {
-                            let mods = (i32::from(self.shift))
-                                | (i32::from(self.ctrl) << 1)
-                                | (i32::from(self.alt) << 2);
-                            let width_fn = |t: &str| rewo_gpu::text::width(t, advance);
-                            let mut clip = std::mem::take(&mut self.clipboard);
-                            let outcome = self.sign_edit.as_mut().map(|v| {
-                                v.state.key_pressed(
-                                    rewo_ui::edit_box::Input::new(key, mods),
-                                    &width_fn,
-                                    &mut clip,
-                                )
-                            });
-                            self.clipboard = clip;
-                            match outcome {
-                                Some(rewo_ui::sign_edit_screen::SignKey::Handled) => {
-                                    self.echo_sign_edit();
-                                    return;
-                                }
-                                Some(rewo_ui::sign_edit_screen::SignKey::Close) => {
-                                    self.close_sign_edit();
-                                    return;
-                                }
-                                _ => {}
-                            }
-                        }
-                        // `charTyped` — the screen returns true EITHER WAY, so
-                        // every typed character is consumed whether or not it
-                        // was an allowed chat character (the insert itself is
-                        // gated inside the model).
-                        if let Some(text) = event.text.as_ref() {
-                            if let Some(advance) = self.advance() {
-                                let width_fn = |t: &str| rewo_gpu::text::width(t, &advance);
-                                for ch in text.chars() {
-                                    if let Some(v) = self.sign_edit.as_mut() {
-                                        v.state.char_typed(ch, &width_fn);
-                                    }
-                                }
-                                self.echo_sign_edit();
-                            }
-                        }
-                    }
-                    // Shift is tracked either way (Ctrl/Alt above).
-                    if !matches!(
-                        event.physical_key,
-                        PhysicalKey::Code(KeyCode::ShiftLeft)
-                            | PhysicalKey::Code(KeyCode::ShiftRight)
-                    ) {
-                        return;
-                    }
-                }
-                if self.screen.inventory_open() {
-                    if p {
-                        // M93t — the anvil's name field runs FIRST and, while
-                        // it can consume input, swallows everything but Escape.
-                        // Vanilla's `AnvilScreen.keyPressed` reaches `super`
-                        // only when the box neither handled the key nor could
-                        // have, so with an item in slot 0 no screen shortcut
-                        // fires at all.
-                        let items = self.items.clone();
-                        let mods = (i32::from(self.shift))
-                            | (i32::from(self.ctrl) << 1)
-                            | (i32::from(self.alt) << 2);
-                        if let (Some(session), Some(key)) =
-                            (self.session.as_mut(), glfw_key(event.physical_key))
-                        {
-                            let mut clip = std::mem::take(&mut self.clipboard);
-                            // M99 — the book's search field first, when it has
-                            // focus. Only one field can be focused at a time
-                            // (a click on the book unfocuses nothing else, but
-                            // the anvil's is only reachable while an anvil is
-                            // open and the book's only while the book is), so
-                            // the order is belt-and-braces rather than a
-                            // contract.
-                            if self.screen.book_search.is_focused() {
-                                let input = rewo_ui::edit_box::Input::new(key, mods);
-                                let consumed =
-                                    self.screen.book_search.key_pressed(input, &mut clip);
-                                self.clipboard = clip;
-                                if consumed {
-                                    follow_cursor(
-                                        &mut self.screen.book_search,
-                                        self.baked.as_ref(),
-                                        rewo_ui::recipe_book_screen::SEARCH_INNER_W,
-                                    );
-                                    return;
-                                }
-                                clip = self.clipboard.clone();
-                            }
-                            let consumed = anvil_key(
-                                session,
-                                &mut self.screen,
-                                &items,
-                                self.baked.as_ref(),
-                                rewo_ui::edit_box::Input::new(key, mods),
-                                &mut clip,
-                            );
-                            self.clipboard = clip;
-                            if consumed {
-                                return;
-                            }
-                        }
-                        // A typed character. winit reports it separately from
-                        // the key, which is exactly the seam Rewo never read —
-                        // `KeyEvent.text`, not `PhysicalKey`.
-                        if let (Some(session), Some(text)) =
-                            (self.session.as_mut(), event.text.as_ref())
-                        {
-                            let mut any = false;
-                            for ch in text.chars() {
-                                if self.screen.book_search.is_focused()
-                                    && self.screen.book_search.char_typed(ch)
-                                {
-                                    any = true;
-                                    follow_cursor(
-                                        &mut self.screen.book_search,
-                                        self.baked.as_ref(),
-                                        rewo_ui::recipe_book_screen::SEARCH_INNER_W,
-                                    );
-                                }
-                                any |= anvil_char(
-                                    session,
-                                    &mut self.screen,
-                                    &items,
-                                    self.baked.as_ref(),
-                                    ch,
-                                );
-                            }
-                            if any {
-                                return;
-                            }
-                        }
-                        if let Some(action) = screen_key_action(event.physical_key, self.ctrl) {
-                            let ext = self.state.as_ref().map(|s| s.window.inner_size());
-                            let items = self.items.clone();
-                            if let (Some(session), Some(ext)) = (self.session.as_mut(), ext) {
-                                click_screen(
-                                    session,
-                                    &items,
-                                    &mut self.screen,
-                                    action,
-                                    ext.width as f32,
-                                    ext.height as f32,
-                                );
-                            }
-                            return;
-                        }
-                    }
-                    if !matches!(
-                        event.physical_key,
-                        PhysicalKey::Code(KeyCode::Escape)
-                            | PhysicalKey::Code(KeyCode::KeyE)
-                            | PhysicalKey::Code(KeyCode::ShiftLeft)
-                            | PhysicalKey::Code(KeyCode::ShiftRight)
-                    ) {
-                        return;
-                    }
-                }
-                // M82: a non-inventory screen owns the keyboard.
-                //
-                // `Screen.keyPressed`'s order is Esc → the focused widget →
-                // Tab; the inventory is exempt above only because its own
-                // `keyPressed` override runs first and it has no widgets to
-                // focus. The three debug keys still get through, which is
-                // vanilla's arrangement too — `KeyboardHandler.keyPress`
-                // handles the screenshot and debug keys before it hands the
-                // event to `minecraft.gui.screen()`. **Esc is not on that
-                // list**, so a death screen (`shouldCloseOnEsc() == false`)
-                // swallows it and `rewo live` does not quit.
-                if self.screen.any_open() && !self.screen.inventory_open() {
-                    // M173: Left/Right on a FOCUSED options slider steps by
-                    // one handle-pixel (`1/(width-8)` — the 310- and 150-wide
-                    // sliders step differently by design). Before the generic
-                    // dispatch, which never consumes the arrows.
-                    if p && self.options_view.is_some() {
-                        if let Some(right) = match glfw_key(event.physical_key) {
-                            Some(263) => Some(false),
-                            Some(262) => Some(true),
-                            _ => None,
-                        } {
-                            let changed = self
-                                .screen
-                                .screens
-                                .current_mut()
-                                .and_then(|sc| sc.slider_key(right));
-                            if let Some((id, v)) = changed {
-                                self.options_slider_changed(id, v);
-                            }
-                            return;
-                        }
-                    }
-                    // M172: the book's page keys — GLFW 266 PageUp -> BACK,
-                    // 267 PageDown -> FORWARD (the pairing reads inverted and
-                    // is vanilla's). Only these two; the arrows are NOT bound.
-                    // Checked before the generic dispatch, which never
-                    // consumes them (it handles Esc / Enter / Space / Tab).
-                    if p && self.book.is_some() {
-                        if let Some(k @ (266 | 267)) = glfw_key(event.physical_key) {
-                            // M184: the lectern's page keys are sends too —
-                            // the same buttons the arrows send.
-                            if self.lectern_shown.is_some() {
-                                let button = if k == 266 {
-                                    rewo_ui::book_view_screen::LECTERN_PAGE_BACK
-                                } else {
-                                    rewo_ui::book_view_screen::LECTERN_PAGE_FORWARD
-                                };
-                                if let Some(session) = self.session.as_mut() {
-                                    if let Err(e) = session.container_button_click(button) {
-                                        log::warn!("live: lectern page key: {e}");
-                                    }
-                                }
-                            } else if let Some(b) = self.book.as_mut() {
-                                b.key(k);
-                            }
-                            return;
-                        }
-                    }
-                    // M178: the advancements key closes the screen while it is
-                    // up — `keyAdvancements.matches(event)` → `setScreen(null)`
-                    // + `grabMouse()`. Vanilla default IS L.
-                    if p && self.advancements.is_some() {
-                        if let Some(76) = glfw_key(event.physical_key) {
-                            self.close_advancements();
-                            return;
-                        }
-                    }
-                    if p {
-                        let shift = self.shift;
-                        let result = glfw_key(event.physical_key).and_then(|k| {
-                            self.screen.screens.current_mut().map(|s| {
-                                // `ConfirmScreen.keyPressed`: Esc is the "No"
-                                // answer, ahead of `Screen.keyPressed`.
-                                if s.kind == rewo_ui::screen::ScreenKind::ConfirmLink {
-                                    (
-                                        s.kind,
-                                        rewo_ui::confirm_link_screen::key_pressed(s, k, shift),
-                                    )
-                                } else {
-                                    (s.kind, s.key_pressed(k, shift))
-                                }
-                            })
-                        });
-                        match result {
-                            Some((kind, rewo_ui::screen::KeyResult::Pressed(id))) => {
-                                // M186 — `AbstractButton.keyPressed` plays the
-                                // click before `onPress`. Not for the link
-                                // prompt's Esc: `ConfirmScreen.keyPressed`
-                                // answers "No" through the callback, never
-                                // through the button.
-                                let esc_answer = kind == rewo_ui::screen::ScreenKind::ConfirmLink
-                                    && glfw_key(event.physical_key) == Some(256);
-                                if !esc_answer {
-                                    self.queue_down_sound(id);
-                                }
-                                self.press_widget(kind, id);
-                                return;
-                            }
-                            Some((kind, rewo_ui::screen::KeyResult::Close)) => {
-                                // `onClose()`. For a dialog that is
-                                // `DialogAction.CLOSE` → the previous screen,
-                                // which is the pause screen it was opened
-                                // from; for everything else it is
-                                // `setScreen(null)`.
-                                if kind == rewo_ui::screen::ScreenKind::ServerLinks {
-                                    self.open_pause_screen();
-                                } else if kind == rewo_ui::screen::ScreenKind::Stats {
-                                    // M84: a screen with per-screen state must
-                                    // drop it here too, or `pump_stats_screen`
-                                    // re-opens the screen Esc just closed.
-                                    self.close_stats();
-                                } else if kind == rewo_ui::screen::ScreenKind::BookView {
-                                    // M172: same rule — the render arm keys on
-                                    // `self.book`, so it drops with the screen.
-                                    self.close_book();
-                                } else if kind == rewo_ui::screen::ScreenKind::SignEdit {
-                                    // M174: Esc COMMITS (belt-and-braces — the
-                                    // sign arm consumes Esc before this
-                                    // dispatch can see it).
-                                    self.close_sign_edit();
-                                } else if kind == rewo_ui::screen::ScreenKind::Options
-                                    && self.options_view.is_some()
-                                {
-                                    // M173: Esc = onClose — a sub-page returns
-                                    // to the root, the root to the pause
-                                    // screen, and leaving a sub-page saves.
-                                    self.close_options();
-                                } else {
-                                    self.close_view_screen();
-                                }
-                                return;
-                            }
-                            Some((_, rewo_ui::screen::KeyResult::Handled)) => return,
-                            _ => {}
-                        }
-                    }
-                    if !matches!(
-                        event.physical_key,
-                        PhysicalKey::Code(KeyCode::F1)
-                            | PhysicalKey::Code(KeyCode::F2)
-                            | PhysicalKey::Code(KeyCode::F3)
-                    ) {
-                        return;
-                    }
-                }
-                match event.physical_key {
-                    PhysicalKey::Code(KeyCode::KeyW) => self.keys.w = p,
-                    PhysicalKey::Code(KeyCode::KeyA) => self.keys.a = p,
-                    PhysicalKey::Code(KeyCode::KeyS) => self.keys.s = p,
-                    PhysicalKey::Code(KeyCode::KeyD) => self.keys.d = p,
-                    PhysicalKey::Code(KeyCode::Space) => self.keys.jump = p,
-                    // M151 — Tab holds the player list up. Only the press
-                    // reaches here (the release is handled above, before the
-                    // screen gates); assigning `p` rather than `true` is
-                    // harmless and keeps the arm reading like its neighbours.
-                    PhysicalKey::Code(KeyCode::Tab) => self.keys.tab_list = p,
-                    // M52 Toggle Sneak: with the module on, Shift *flips*
-                    // sneak instead of holding it. `!event.repeat` is load
-                    // bearing -- the OS auto-repeats a held key, and without
-                    // the guard holding Shift would flip sneak dozens of times
-                    // a second rather than once.
-                    PhysicalKey::Code(KeyCode::ShiftLeft) => {
-                        if self.modules.is_on("toggle_sneak") {
-                            if p && !event.repeat {
-                                self.keys.sneak = !self.keys.sneak;
-                            }
-                        } else {
-                            self.keys.sneak = p;
-                        }
-                        self.shift = p;
-                    }
-                    PhysicalKey::Code(KeyCode::ShiftRight) => self.shift = p,
-                    // M52 Toggle Sprint, same shape as Toggle Sneak.
-                    PhysicalKey::Code(KeyCode::ControlLeft) => {
-                        if self.modules.is_on("toggle_sprint") {
-                            if p && !event.repeat {
-                                self.keys.sprint = !self.keys.sprint;
-                            }
-                        } else {
-                            self.keys.sprint = p;
-                        }
-                    }
-                    // M52 Zoom: a HELD key, not a toggle -- every one of the
-                    // 54 zoom mods in the survey binds it that way. C is
-                    // Zoomify's default. The divide happens in
-                    // `Modules::render` so it composes with FOV Control.
-                    PhysicalKey::Code(KeyCode::KeyC) => self.modules.set_zoom_held(p),
-                    // Esc closes the inventory if it is open, opens the
-                    // **pause screen** if a session is running, and only quits
-                    // otherwise (M85 — before it, Esc quit outright).
-                    //
-                    // A non-inventory screen never reaches this arm: the block
-                    // above hands Esc to `Screen.keyPressed`, whose
-                    // `shouldCloseOnEsc()` decides. That is why the pause
-                    // screen closes on Esc and the death and disconnect
-                    // screens do not.
-                    PhysicalKey::Code(KeyCode::Escape) if p => {
-                        if self.screen.inventory_open() {
-                            // `AbstractContainerScreen.onClose` →
-                            // `player.closeContainer()`.
-                            self.close_container_screen();
-                        } else if self.session.is_some() {
-                            self.open_pause_screen();
-                        } else {
-                            event_loop.exit();
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) => {}
-                    // F6 opens and closes the statistics screen (M84).
-                    //
-                    // **A Rewo-specific binding.** Vanilla reaches this screen
-                    // from the pause menu's `Statistics` button; M85's pause
-                    // screen transcribes `PauseScreen`'s own grid, which does
-                    // not carry one (`StatsScreen` is reached from the
-                    // *singleplayer* pause menu's second row, which M85's
-                    // multiplayer transcription omits). A key is the interim
-                    // route rather than a claim about vanilla's input.
-                    PhysicalKey::Code(KeyCode::F6) if p && !event.repeat => {
-                        if self.stats.is_some() {
-                            self.close_stats();
-                        } else {
-                            self.open_stats();
-                        }
-                    }
-                    // M178: L opens the advancements screen — this one IS
-                    // vanilla's binding (`keyAdvancements`, default L), so no
-                    // Rewo-specific caveat is needed, unlike F6 above.
-                    PhysicalKey::Code(KeyCode::KeyL) if p && !event.repeat => {
-                        if self.advancements.is_some() {
-                            self.close_advancements();
-                        } else if self.session.is_some() {
-                            self.open_advancements();
-                        }
-                    }
-                    // T and `/` open the chat screen (M110).
-                    //
-                    // Two keys, one screen, differing only in the prefix the
-                    // field starts with — and in which drafts they will
-                    // restore, which is `ChatMethod.isDraftRestorable` and not
-                    // symmetric. The routing branch above returns before this
-                    // whenever a chat screen is already open, so `T` cannot
-                    // both open the screen and be typed into it.
-                    PhysicalKey::Code(KeyCode::KeyT) if p => {
-                        self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Message);
-                    }
-                    PhysicalKey::Code(KeyCode::Slash) if p => {
-                        self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
-                    }
-                    // E opens and closes the inventory (M35).
-                    PhysicalKey::Code(KeyCode::KeyE) if p => self.inventory_key(),
-                    // F3 is a **modifier** whose release toggles the overlay
-                    // (M66). `keyDebugModifier` and `keyDebugOverlay` are the
-                    // same key, so `KeyboardHandler` defers the toggle to
-                    // `action == 0` and skips it when a chord already fired:
-                    //
-                    //   if (usedDebugKeyAsModifier) usedDebugKeyAsModifier = false;
-                    //   else                        toggleDebugOverlay();
-                    //
-                    // Toggling on press instead would flip the overlay every
-                    // time you pressed F3+H.
-                    // F1 — `Hud.toggle()` (M70). On **press**, and with no
-                    // modifier dance: F1 is not also a chord prefix, so unlike
-                    // F3 there is nothing to disambiguate. `!event.repeat`
-                    // guards the OS auto-repeat, which would otherwise flip it
-                    // dozens of times a second while held.
-                    PhysicalKey::Code(KeyCode::F1) if p && !event.repeat => {
-                        self.hud_hidden = !self.hud_hidden;
-                        log::info!("hud.{}", if self.hud_hidden { "hidden" } else { "shown" });
-                    }
-                    PhysicalKey::Code(KeyCode::F3) => {
-                        self.f3_down = p;
-                        if !p {
-                            if self.f3_used_as_modifier {
-                                self.f3_used_as_modifier = false;
-                            } else {
-                                self.debug = !self.debug;
-                            }
-                        }
-                    }
-                    // F3+H — `keyDebugShowAdvancedTooltips`.
-                    PhysicalKey::Code(KeyCode::KeyH) if p && self.f3_down => {
-                        self.advanced_tooltips = !self.advanced_tooltips;
-                        self.f3_used_as_modifier = true;
-                        log::info!(
-                            "debug.advanced_tooltips.{}",
-                            if self.advanced_tooltips { "on" } else { "off" }
-                        );
-                    }
-                    // F2 captures a screenshot — vanilla's `keyScreenshot`,
-                    // GLFW key 291. Only the request is recorded here; the
-                    // capture itself happens after the frame.
-                    PhysicalKey::Code(KeyCode::F2) if p => self.capture_pending = true,
-                    // M218 — `keyDrop` (Q; with Ctrl the whole stack) and
-                    // `keySwapOffhand` (F), both refused to a spectator.
-                    PhysicalKey::Code(KeyCode::KeyQ) if p => self.drop_key(),
-                    PhysicalKey::Code(KeyCode::KeyF) if p => self.swap_hands_key(),
-                    // Number keys 1..9 select the hotbar slot (HUD frame +
-                    // sent to the server so the held item matches).
-                    PhysicalKey::Code(code) if p => {
-                        if let Some(n) = digit_key(code) {
-                            if let Some(s) = self.session.as_mut() {
-                                let _ = s.select_hotbar(n);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+                self.key_input(
+                    event_loop,
+                    KeyInput {
+                        physical_key: event.physical_key,
+                        state: event.state,
+                        text: event.text.as_ref().map(|t| t.to_string()),
+                        repeat: event.repeat,
+                    },
+                );
             }
             // M128 — a click on chat text, while the chat screen is open.
             // Ahead of every other mouse arm for the reason the keyboard block
@@ -852,6 +343,7 @@ impl ApplicationHandler for LiveApp {
                 self.attack_held = false;
                 if let Some(a) = self.mining.stop() {
                     self.apply_mining(vec![a]);
+                    self.reset_attack_strength();
                 }
             }
             // Releasing the right button: `keyUse` is up, so the next tick's
@@ -1000,6 +492,10 @@ impl ApplicationHandler for LiveApp {
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        #[cfg(feature = "gates")]
+        if self.script.is_some() {
+            return;
+        }
         if self.screen.any_open() || self.chat_screen.is_some() {
             // The cursor is free and driving the screen (the chat screen is
             // not in `self.screen`, so it is checked on its own); the camera
@@ -1017,6 +513,16 @@ impl ApplicationHandler for LiveApp {
     }
 
     fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+        // A hidden window gets no `WM_PAINT`, so a scripted run drives its
+        // frames from here (paced to ~60 fps, like the puppet's `maxFps`).
+        #[cfg(feature = "gates")]
+        if self.script.is_some() {
+            if self.state.is_some() {
+                self.script_pace();
+                self.frame(_el);
+            }
+            return;
+        }
         if let Some(state) = &self.state {
             state.window.request_redraw();
         }
@@ -1024,6 +530,552 @@ impl ApplicationHandler for LiveApp {
 }
 
 impl LiveApp {
+    /// One keyboard event — the body of `window_event`'s `KeyboardInput`
+    /// arm, a method so a scripted run (`REWO_SCRIPT`, `script.rs`) presses
+    /// keys through the same code a real key takes.
+    pub(super) fn key_input(&mut self, event_loop: &ActiveEventLoop, event: KeyInput) {
+        let p = event.state == ElementState::Pressed;
+        // While the screen is open the player stands still: only the
+        // two keys that close it are read, and every movement key is
+        // released so a key held at the moment of opening does not
+        // stick down behind it.
+        // With the screen open the keys that reach the world are
+        // swallowed, but the screen has keys of its own: a number key
+        // or F swaps the hovered slot with a hotbar slot, Q drops from
+        // it. Ctrl is tracked either way, because Ctrl+Q drops the
+        // whole stack.
+        if matches!(event.physical_key, PhysicalKey::Code(KeyCode::ControlLeft)) {
+            self.ctrl = p;
+        }
+        if matches!(event.physical_key, PhysicalKey::Code(KeyCode::AltLeft)) {
+            self.alt = p;
+        }
+        // Ctrl+V pastes the SYSTEM clipboard, as vanilla's edit boxes do
+        // (`KeyboardHandler.getClipboard`): refresh the buffer every
+        // edit box pastes from before any of them sees the key.
+        if p && self.ctrl && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV)) {
+            if let Some(text) = crate::os_clipboard::read() {
+                self.clipboard_synced = text.clone();
+                self.clipboard = text;
+            }
+        }
+        // M151 — the tab-list hold's RELEASE, ahead of both screen
+        // gates below, because `KeyboardHandler.keyPress` is
+        // asymmetric about exactly this:
+        //
+        //   if (action == 0)      KeyMapping.set(key, false);   // always
+        //   else if (handlesGameInput) KeyMapping.set(key, true);
+        //
+        // (`KeyboardHandler.java:519-552`.) The press is gated on there
+        // being no screen — so Tab with the inventory open does not
+        // open the list, which is why the press arm lives in the match
+        // below — while the release is unconditional. Without this,
+        // holding Tab, opening the inventory and letting go would leave
+        // the list on screen behind it with nothing able to take it
+        // down. The movement keys have the same asymmetry and Rewo does
+        // not reproduce it for them; that predates this and is not the
+        // subject here.
+        if !p && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Tab)) {
+            self.keys.tab_list = false;
+        }
+        // M110 — the chat screen owns the keyboard entirely while it
+        // is open, and it goes ahead of every other screen because
+        // `Gui.screen` is ONE slot: with a chat screen in it there is
+        // no inventory to route to. Opening it is handled after this
+        // block, so `T` cannot both open the screen and be typed into
+        // it on the same event.
+        if self.chat_screen.is_some() {
+            if p {
+                if let Some(key) = glfw_key(event.physical_key) {
+                    let mods = (i32::from(self.shift))
+                        | (i32::from(self.ctrl) << 1)
+                        | (i32::from(self.alt) << 2);
+                    self.chat_key(key, mods);
+                }
+                if let Some(text) = event.text.as_ref() {
+                    let chars: Vec<char> = text.chars().collect();
+                    for ch in chars {
+                        self.chat_char(ch);
+                    }
+                }
+            }
+            // Shift is tracked either way: it holds the wheel to one
+            // line and is read by `mouse_scrolled`.
+            if !matches!(
+                event.physical_key,
+                PhysicalKey::Code(KeyCode::ShiftLeft) | PhysicalKey::Code(KeyCode::ShiftRight)
+            ) {
+                return;
+            }
+        }
+        // M174 — the sign editor owns the keyboard entirely while it
+        // is open (`Screens` is ONE slot; there is no inventory behind
+        // it to route to). Its own bindings run first, then the field,
+        // then Esc → `onClose()`; a key nothing wanted is swallowed,
+        // which is the anvil's arrangement and vanilla's.
+        if self.sign_edit.is_some() {
+            if p {
+                let advance = self.advance();
+                if let (Some(key), Some(advance)) = (glfw_key(event.physical_key), advance.as_ref())
+                {
+                    let mods = (i32::from(self.shift))
+                        | (i32::from(self.ctrl) << 1)
+                        | (i32::from(self.alt) << 2);
+                    let width_fn = |t: &str| rewo_gpu::text::width(t, advance);
+                    let mut clip = std::mem::take(&mut self.clipboard);
+                    let outcome = self.sign_edit.as_mut().map(|v| {
+                        v.state.key_pressed(
+                            rewo_ui::edit_box::Input::new(key, mods),
+                            &width_fn,
+                            &mut clip,
+                        )
+                    });
+                    self.clipboard = clip;
+                    match outcome {
+                        Some(rewo_ui::sign_edit_screen::SignKey::Handled) => {
+                            self.echo_sign_edit();
+                            return;
+                        }
+                        Some(rewo_ui::sign_edit_screen::SignKey::Close) => {
+                            self.close_sign_edit();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                // `charTyped` — the screen returns true EITHER WAY, so
+                // every typed character is consumed whether or not it
+                // was an allowed chat character (the insert itself is
+                // gated inside the model).
+                if let Some(text) = event.text.as_ref() {
+                    if let Some(advance) = self.advance() {
+                        let width_fn = |t: &str| rewo_gpu::text::width(t, &advance);
+                        for ch in text.chars() {
+                            if let Some(v) = self.sign_edit.as_mut() {
+                                v.state.char_typed(ch, &width_fn);
+                            }
+                        }
+                        self.echo_sign_edit();
+                    }
+                }
+            }
+            // Shift is tracked either way (Ctrl/Alt above).
+            if !matches!(
+                event.physical_key,
+                PhysicalKey::Code(KeyCode::ShiftLeft) | PhysicalKey::Code(KeyCode::ShiftRight)
+            ) {
+                return;
+            }
+        }
+        if self.screen.inventory_open() {
+            if p {
+                // M93t — the anvil's name field runs FIRST and, while
+                // it can consume input, swallows everything but Escape.
+                // Vanilla's `AnvilScreen.keyPressed` reaches `super`
+                // only when the box neither handled the key nor could
+                // have, so with an item in slot 0 no screen shortcut
+                // fires at all.
+                let items = self.items.clone();
+                let mods = (i32::from(self.shift))
+                    | (i32::from(self.ctrl) << 1)
+                    | (i32::from(self.alt) << 2);
+                if let (Some(session), Some(key)) =
+                    (self.session.as_mut(), glfw_key(event.physical_key))
+                {
+                    let mut clip = std::mem::take(&mut self.clipboard);
+                    // M99 — the book's search field first, when it has
+                    // focus. Only one field can be focused at a time
+                    // (a click on the book unfocuses nothing else, but
+                    // the anvil's is only reachable while an anvil is
+                    // open and the book's only while the book is), so
+                    // the order is belt-and-braces rather than a
+                    // contract.
+                    if self.screen.book_search.is_focused() {
+                        let input = rewo_ui::edit_box::Input::new(key, mods);
+                        let consumed = self.screen.book_search.key_pressed(input, &mut clip);
+                        self.clipboard = clip;
+                        if consumed {
+                            follow_cursor(
+                                &mut self.screen.book_search,
+                                self.baked.as_ref(),
+                                rewo_ui::recipe_book_screen::SEARCH_INNER_W,
+                            );
+                            return;
+                        }
+                        clip = self.clipboard.clone();
+                    }
+                    let consumed = anvil_key(
+                        session,
+                        &mut self.screen,
+                        &items,
+                        self.baked.as_ref(),
+                        rewo_ui::edit_box::Input::new(key, mods),
+                        &mut clip,
+                    );
+                    self.clipboard = clip;
+                    if consumed {
+                        return;
+                    }
+                }
+                // A typed character. winit reports it separately from
+                // the key, which is exactly the seam Rewo never read —
+                // `KeyEvent.text`, not `PhysicalKey`.
+                if let (Some(session), Some(text)) = (self.session.as_mut(), event.text.as_ref()) {
+                    let mut any = false;
+                    for ch in text.chars() {
+                        if self.screen.book_search.is_focused()
+                            && self.screen.book_search.char_typed(ch)
+                        {
+                            any = true;
+                            follow_cursor(
+                                &mut self.screen.book_search,
+                                self.baked.as_ref(),
+                                rewo_ui::recipe_book_screen::SEARCH_INNER_W,
+                            );
+                        }
+                        any |=
+                            anvil_char(session, &mut self.screen, &items, self.baked.as_ref(), ch);
+                    }
+                    if any {
+                        return;
+                    }
+                }
+                if let Some(action) = screen_key_action(event.physical_key, self.ctrl) {
+                    let ext = self.state.as_ref().map(|s| s.window.inner_size());
+                    let items = self.items.clone();
+                    if let (Some(session), Some(ext)) = (self.session.as_mut(), ext) {
+                        click_screen(
+                            session,
+                            &items,
+                            &mut self.screen,
+                            action,
+                            ext.width as f32,
+                            ext.height as f32,
+                        );
+                    }
+                    return;
+                }
+            }
+            if !matches!(
+                event.physical_key,
+                PhysicalKey::Code(KeyCode::Escape)
+                    | PhysicalKey::Code(KeyCode::KeyE)
+                    | PhysicalKey::Code(KeyCode::ShiftLeft)
+                    | PhysicalKey::Code(KeyCode::ShiftRight)
+            ) {
+                return;
+            }
+        }
+        // M82: a non-inventory screen owns the keyboard.
+        //
+        // `Screen.keyPressed`'s order is Esc → the focused widget →
+        // Tab; the inventory is exempt above only because its own
+        // `keyPressed` override runs first and it has no widgets to
+        // focus. The three debug keys still get through, which is
+        // vanilla's arrangement too — `KeyboardHandler.keyPress`
+        // handles the screenshot and debug keys before it hands the
+        // event to `minecraft.gui.screen()`. **Esc is not on that
+        // list**, so a death screen (`shouldCloseOnEsc() == false`)
+        // swallows it and `rewo live` does not quit.
+        if self.screen.any_open() && !self.screen.inventory_open() {
+            // M173: Left/Right on a FOCUSED options slider steps by
+            // one handle-pixel (`1/(width-8)` — the 310- and 150-wide
+            // sliders step differently by design). Before the generic
+            // dispatch, which never consumes the arrows.
+            if p && self.options_view.is_some() {
+                if let Some(right) = match glfw_key(event.physical_key) {
+                    Some(263) => Some(false),
+                    Some(262) => Some(true),
+                    _ => None,
+                } {
+                    let changed = self
+                        .screen
+                        .screens
+                        .current_mut()
+                        .and_then(|sc| sc.slider_key(right));
+                    if let Some((id, v)) = changed {
+                        self.options_slider_changed(id, v);
+                    }
+                    return;
+                }
+            }
+            // M172: the book's page keys — GLFW 266 PageUp -> BACK,
+            // 267 PageDown -> FORWARD (the pairing reads inverted and
+            // is vanilla's). Only these two; the arrows are NOT bound.
+            // Checked before the generic dispatch, which never
+            // consumes them (it handles Esc / Enter / Space / Tab).
+            if p && self.book.is_some() {
+                if let Some(k @ (266 | 267)) = glfw_key(event.physical_key) {
+                    // M184: the lectern's page keys are sends too —
+                    // the same buttons the arrows send.
+                    if self.lectern_shown.is_some() {
+                        let button = if k == 266 {
+                            rewo_ui::book_view_screen::LECTERN_PAGE_BACK
+                        } else {
+                            rewo_ui::book_view_screen::LECTERN_PAGE_FORWARD
+                        };
+                        if let Some(session) = self.session.as_mut() {
+                            if let Err(e) = session.container_button_click(button) {
+                                log::warn!("live: lectern page key: {e}");
+                            }
+                        }
+                    } else if let Some(b) = self.book.as_mut() {
+                        b.key(k);
+                    }
+                    return;
+                }
+            }
+            // M178: the advancements key closes the screen while it is
+            // up — `keyAdvancements.matches(event)` → `setScreen(null)`
+            // + `grabMouse()`. Vanilla default IS L.
+            if p && self.advancements.is_some() {
+                if let Some(76) = glfw_key(event.physical_key) {
+                    self.close_advancements();
+                    return;
+                }
+            }
+            if p {
+                let shift = self.shift;
+                let result = glfw_key(event.physical_key).and_then(|k| {
+                    self.screen.screens.current_mut().map(|s| {
+                        // `ConfirmScreen.keyPressed`: Esc is the "No"
+                        // answer, ahead of `Screen.keyPressed`.
+                        if s.kind == rewo_ui::screen::ScreenKind::ConfirmLink {
+                            (
+                                s.kind,
+                                rewo_ui::confirm_link_screen::key_pressed(s, k, shift),
+                            )
+                        } else {
+                            (s.kind, s.key_pressed(k, shift))
+                        }
+                    })
+                });
+                match result {
+                    Some((kind, rewo_ui::screen::KeyResult::Pressed(id))) => {
+                        // M186 — `AbstractButton.keyPressed` plays the
+                        // click before `onPress`. Not for the link
+                        // prompt's Esc: `ConfirmScreen.keyPressed`
+                        // answers "No" through the callback, never
+                        // through the button.
+                        let esc_answer = kind == rewo_ui::screen::ScreenKind::ConfirmLink
+                            && glfw_key(event.physical_key) == Some(256);
+                        if !esc_answer {
+                            self.queue_down_sound(id);
+                        }
+                        self.press_widget(kind, id);
+                        return;
+                    }
+                    Some((kind, rewo_ui::screen::KeyResult::Close)) => {
+                        // `onClose()`. For a dialog that is
+                        // `DialogAction.CLOSE` → the previous screen,
+                        // which is the pause screen it was opened
+                        // from; for everything else it is
+                        // `setScreen(null)`.
+                        if kind == rewo_ui::screen::ScreenKind::ServerLinks {
+                            self.open_pause_screen();
+                        } else if kind == rewo_ui::screen::ScreenKind::Stats {
+                            // M84: a screen with per-screen state must
+                            // drop it here too, or `pump_stats_screen`
+                            // re-opens the screen Esc just closed.
+                            self.close_stats();
+                        } else if kind == rewo_ui::screen::ScreenKind::BookView {
+                            // M172: same rule — the render arm keys on
+                            // `self.book`, so it drops with the screen.
+                            self.close_book();
+                        } else if kind == rewo_ui::screen::ScreenKind::SignEdit {
+                            // M174: Esc COMMITS (belt-and-braces — the
+                            // sign arm consumes Esc before this
+                            // dispatch can see it).
+                            self.close_sign_edit();
+                        } else if kind == rewo_ui::screen::ScreenKind::Options
+                            && self.options_view.is_some()
+                        {
+                            // M173: Esc = onClose — a sub-page returns
+                            // to the root, the root to the pause
+                            // screen, and leaving a sub-page saves.
+                            self.close_options();
+                        } else {
+                            self.close_view_screen();
+                        }
+                        return;
+                    }
+                    Some((_, rewo_ui::screen::KeyResult::Handled)) => return,
+                    _ => {}
+                }
+            }
+            if !matches!(
+                event.physical_key,
+                PhysicalKey::Code(KeyCode::F1)
+                    | PhysicalKey::Code(KeyCode::F2)
+                    | PhysicalKey::Code(KeyCode::F3)
+            ) {
+                return;
+            }
+        }
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::KeyW) => self.keys.w = p,
+            PhysicalKey::Code(KeyCode::KeyA) => self.keys.a = p,
+            PhysicalKey::Code(KeyCode::KeyS) => self.keys.s = p,
+            PhysicalKey::Code(KeyCode::KeyD) => self.keys.d = p,
+            PhysicalKey::Code(KeyCode::Space) => self.keys.jump = p,
+            // M151 — Tab holds the player list up. Only the press
+            // reaches here (the release is handled above, before the
+            // screen gates); assigning `p` rather than `true` is
+            // harmless and keeps the arm reading like its neighbours.
+            PhysicalKey::Code(KeyCode::Tab) => self.keys.tab_list = p,
+            // M52 Toggle Sneak: with the module on, Shift *flips*
+            // sneak instead of holding it. `!event.repeat` is load
+            // bearing -- the OS auto-repeats a held key, and without
+            // the guard holding Shift would flip sneak dozens of times
+            // a second rather than once.
+            PhysicalKey::Code(KeyCode::ShiftLeft) => {
+                if self.modules.is_on("toggle_sneak") {
+                    if p && !event.repeat {
+                        self.keys.sneak = !self.keys.sneak;
+                    }
+                } else {
+                    self.keys.sneak = p;
+                }
+                self.shift = p;
+            }
+            PhysicalKey::Code(KeyCode::ShiftRight) => self.shift = p,
+            // M52 Toggle Sprint, same shape as Toggle Sneak.
+            PhysicalKey::Code(KeyCode::ControlLeft) => {
+                if self.modules.is_on("toggle_sprint") {
+                    if p && !event.repeat {
+                        self.keys.sprint = !self.keys.sprint;
+                    }
+                } else {
+                    self.keys.sprint = p;
+                }
+            }
+            // M52 Zoom: a HELD key, not a toggle -- every one of the
+            // 54 zoom mods in the survey binds it that way. C is
+            // Zoomify's default. The divide happens in
+            // `Modules::render` so it composes with FOV Control.
+            PhysicalKey::Code(KeyCode::KeyC) => self.modules.set_zoom_held(p),
+            // Esc closes the inventory if it is open, opens the
+            // **pause screen** if a session is running, and only quits
+            // otherwise (M85 — before it, Esc quit outright).
+            //
+            // A non-inventory screen never reaches this arm: the block
+            // above hands Esc to `Screen.keyPressed`, whose
+            // `shouldCloseOnEsc()` decides. That is why the pause
+            // screen closes on Esc and the death and disconnect
+            // screens do not.
+            PhysicalKey::Code(KeyCode::Escape) if p => {
+                if self.screen.inventory_open() {
+                    // `AbstractContainerScreen.onClose` →
+                    // `player.closeContainer()`.
+                    self.close_container_screen();
+                } else if self.session.is_some() {
+                    self.open_pause_screen();
+                } else {
+                    event_loop.exit();
+                }
+            }
+            PhysicalKey::Code(KeyCode::Escape) => {}
+            // F6 opens and closes the statistics screen (M84).
+            //
+            // **A Rewo-specific binding.** Vanilla reaches this screen
+            // from the pause menu's `Statistics` button; M85's pause
+            // screen transcribes `PauseScreen`'s own grid, which does
+            // not carry one (`StatsScreen` is reached from the
+            // *singleplayer* pause menu's second row, which M85's
+            // multiplayer transcription omits). A key is the interim
+            // route rather than a claim about vanilla's input.
+            PhysicalKey::Code(KeyCode::F6) if p && !event.repeat => {
+                if self.stats.is_some() {
+                    self.close_stats();
+                } else {
+                    self.open_stats();
+                }
+            }
+            // M178: L opens the advancements screen — this one IS
+            // vanilla's binding (`keyAdvancements`, default L), so no
+            // Rewo-specific caveat is needed, unlike F6 above.
+            PhysicalKey::Code(KeyCode::KeyL) if p && !event.repeat => {
+                if self.advancements.is_some() {
+                    self.close_advancements();
+                } else if self.session.is_some() {
+                    self.open_advancements();
+                }
+            }
+            // T and `/` open the chat screen (M110).
+            //
+            // Two keys, one screen, differing only in the prefix the
+            // field starts with — and in which drafts they will
+            // restore, which is `ChatMethod.isDraftRestorable` and not
+            // symmetric. The routing branch above returns before this
+            // whenever a chat screen is already open, so `T` cannot
+            // both open the screen and be typed into it.
+            PhysicalKey::Code(KeyCode::KeyT) if p => {
+                self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Message);
+            }
+            PhysicalKey::Code(KeyCode::Slash) if p => {
+                self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
+            }
+            // E opens and closes the inventory (M35).
+            PhysicalKey::Code(KeyCode::KeyE) if p => self.inventory_key(),
+            // F3 is a **modifier** whose release toggles the overlay
+            // (M66). `keyDebugModifier` and `keyDebugOverlay` are the
+            // same key, so `KeyboardHandler` defers the toggle to
+            // `action == 0` and skips it when a chord already fired:
+            //
+            //   if (usedDebugKeyAsModifier) usedDebugKeyAsModifier = false;
+            //   else                        toggleDebugOverlay();
+            //
+            // Toggling on press instead would flip the overlay every
+            // time you pressed F3+H.
+            // F1 — `Hud.toggle()` (M70). On **press**, and with no
+            // modifier dance: F1 is not also a chord prefix, so unlike
+            // F3 there is nothing to disambiguate. `!event.repeat`
+            // guards the OS auto-repeat, which would otherwise flip it
+            // dozens of times a second while held.
+            PhysicalKey::Code(KeyCode::F1) if p && !event.repeat => {
+                self.hud_hidden = !self.hud_hidden;
+                log::info!("hud.{}", if self.hud_hidden { "hidden" } else { "shown" });
+            }
+            PhysicalKey::Code(KeyCode::F3) => {
+                self.f3_down = p;
+                if !p {
+                    if self.f3_used_as_modifier {
+                        self.f3_used_as_modifier = false;
+                    } else {
+                        self.debug = !self.debug;
+                    }
+                }
+            }
+            // F3+H — `keyDebugShowAdvancedTooltips`.
+            PhysicalKey::Code(KeyCode::KeyH) if p && self.f3_down => {
+                self.advanced_tooltips = !self.advanced_tooltips;
+                self.f3_used_as_modifier = true;
+                log::info!(
+                    "debug.advanced_tooltips.{}",
+                    if self.advanced_tooltips { "on" } else { "off" }
+                );
+            }
+            // F2 captures a screenshot — vanilla's `keyScreenshot`,
+            // GLFW key 291. Only the request is recorded here; the
+            // capture itself happens after the frame.
+            PhysicalKey::Code(KeyCode::F2) if p => self.capture_pending = true,
+            // M218 — `keyDrop` (Q; with Ctrl the whole stack) and
+            // `keySwapOffhand` (F), both refused to a spectator.
+            PhysicalKey::Code(KeyCode::KeyQ) if p => self.drop_key(),
+            PhysicalKey::Code(KeyCode::KeyF) if p => self.swap_hands_key(),
+            // Number keys 1..9 select the hotbar slot (HUD frame +
+            // sent to the server so the held item matches).
+            PhysicalKey::Code(code) if p => {
+                if let Some(n) = digit_key(code) {
+                    if let Some(s) = self.session.as_mut() {
+                        let _ = s.select_hotbar(n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn merchant_wheel(&mut self, dy: f64) {
         use rewo_ui::merchant_screen as ms;
         let Some(session) = self.session.as_ref() else {
@@ -1252,6 +1304,16 @@ impl LiveApp {
         let Some(state) = self.state.as_ref() else {
             return;
         };
+        // A scripted run never touches the real cursor; the screen's mouse
+        // is still parked at the centre, as vanilla's `releaseMouse` does.
+        #[cfg(feature = "gates")]
+        if self.script.is_some() {
+            if open {
+                let size = state.window.inner_size();
+                self.screen.mouse = (size.width as f64 / 2.0, size.height as f64 / 2.0);
+            }
+            return;
+        }
         if open {
             let size = state.window.inner_size();
             self.screen.mouse = (size.width as f64 / 2.0, size.height as f64 / 2.0);
@@ -1852,7 +1914,7 @@ impl LiveApp {
         let hit = session.target_block(
             eye_f64(session),
             look_dir(session.player.yaw, session.player.pitch),
-            REACH,
+            block_reach(session),
         )?;
         let [x, y, z] = hit.block;
         let state = session.world.block_state_at(x, y, z);
@@ -1890,11 +1952,11 @@ impl LiveApp {
             requires_correct_tool: block.requires_correct_tool,
             tool_speed,
             tool_correct,
-            mining_efficiency: attr("minecraft:mining_efficiency", 0.0),
+            mining_efficiency: attr("mining_efficiency", 0.0),
             dig_speed_amplifier: dig,
             fatigue_amplifier: fatigue,
-            block_break_speed: attr("minecraft:block_break_speed", 1.0),
-            submerged_mining_speed: attr("minecraft:submerged_mining_speed", 0.2),
+            block_break_speed: attr("block_break_speed", 1.0),
+            submerged_mining_speed: attr("submerged_mining_speed", 0.2),
             eye_in_water: session.local_player_view().is_some_and(|v| v.underwater),
             on_ground: session.player.on_ground,
         };
@@ -1912,11 +1974,25 @@ impl LiveApp {
         Some((s.item_id, s.components))
     }
 
+    /// `player.resetAttackStrengthTicker()`, which `startAttack`'s MISS arm
+    /// and `stopDestroyBlock` both call.
+    fn reset_attack_strength(&mut self) {
+        if let Some(s) = self.session.as_mut() {
+            s.attack_strength.reset();
+        }
+    }
+
     /// `startAttack`'s BLOCK arm: `startDestroyBlock`, then the swing.
     pub(super) fn mining_press(&mut self) {
         let Some(t) = self.mining_target() else {
+            // `startAttack`'s MISS arm.
+            self.reset_attack_strength();
             return;
         };
+        if t.air {
+            // ...which a targeted air block also falls into.
+            self.reset_attack_strength();
+        }
         let creative = self
             .session
             .as_ref()
@@ -1951,6 +2027,11 @@ impl LiveApp {
                     .is_some_and(|s| s.abilities.instabuild);
                 let item = self.mining_item();
                 let (sends, swing) = self.mining.tick(t, creative, item);
+                if let Some(pos) = self.mining.take_hit() {
+                    if let Some(s) = self.session.as_mut() {
+                        s.local_mining_hit(pos);
+                    }
+                }
                 self.apply_mining(sends);
                 if swing {
                     if let Some(s) = self.session.as_mut() {
@@ -1961,6 +2042,7 @@ impl LiveApp {
             None => {
                 if let Some(a) = self.mining.stop() {
                     self.apply_mining(vec![a]);
+                    self.reset_attack_strength();
                 }
             }
         }
@@ -1976,6 +2058,14 @@ impl LiveApp {
             return;
         };
         for s in sends {
+            // `destroyBlock` runs inside the prediction, before the packet.
+            match s {
+                MiningSend::Start {
+                    pos, broke: true, ..
+                }
+                | MiningSend::Stop { pos, .. } => session.local_destroy_block(pos),
+                _ => {}
+            }
             let r = match s {
                 MiningSend::Start {
                     pos: [x, y, z],
@@ -2292,7 +2382,17 @@ impl LiveApp {
                     offset,
                     inside,
                     swing,
-                } => session.use_item_on_hit(hand, pos, face, offset, inside, swing),
+                    places,
+                    sound,
+                } => {
+                    if places {
+                        session.expect_placement(pos, face);
+                    }
+                    if let Some(s) = sound {
+                        session.local_block_use_sound(pos, s);
+                    }
+                    session.use_item_on_hit(hand, pos, face, offset, inside, swing)
+                }
                 UseStep::Use { hand, start, swing } => session.use_held(hand, start, swing),
             };
             if let Err(e) = r {
@@ -2308,15 +2408,13 @@ impl LiveApp {
         use rewo_world::entities::InteractionHand;
         let session = self.session.as_ref()?;
         // `isHandsBusy`: a boat being paddled (`LocalPlayer.rideTick`).
-        if session.steered_boat.is_some()
-            && (self.keys.w || self.keys.a || self.keys.s || self.keys.d)
-        {
+        if session.hands_busy {
             return Some(Vec::new());
         }
         let me = session.player_id?;
         let eye = eye_f64(session);
         let dir = look_dir(session.player.yaw, session.player.pitch);
-        let shape_hit = session.target_shape(eye, dir, REACH);
+        let shape_hit = session.target_shape(eye, dir, block_reach(session));
         let hit = shape_hit.map(|h| h.hit);
         let inside = shape_hit.is_some_and(|h| h.inside);
         let name = |slot: Option<rewo_world::inventory::ItemSlot>| {
@@ -2391,7 +2489,8 @@ impl LiveApp {
                     prop: &prop,
                     face,
                 };
-                let local = cu::use_item_on(&clicked, &clicker, hand);
+                let (local, by) = cu::use_item_on_by(&clicked, &clicker, hand);
+                let block_used = local == Outcome::Consumed && by == cu::UsedBy::Block;
                 // `BlockHitResult.getLocation() - pos`, as the packet's floats.
                 let at = [
                     eye[0] + dir[0] * h.distance,
@@ -2410,6 +2509,12 @@ impl LiveApp {
                     offset,
                     inside,
                     swing: local == Outcome::Consumed,
+                    places: local == Outcome::Consumed
+                        && !block_used
+                        && held.is_some_and(|h| {
+                            cu::item_use_on_class(h, &exists) == Some("BlockItem")
+                        }),
+                    sound: block_used.then(|| cu::block_use_sound(&clicked)).flatten(),
                 });
                 if local != Outcome::Pass {
                     return Some(plan);
@@ -2500,7 +2605,7 @@ impl LiveApp {
         let hit = session.target_block(
             eye_f64(session),
             look_dir(session.player.yaw, session.player.pitch),
-            REACH,
+            block_reach(session),
         );
         if let Some(h) = hit {
             let [x, y, z] = h.block;

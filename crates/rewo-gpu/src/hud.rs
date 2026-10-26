@@ -39,7 +39,9 @@ const ATLAS_W: u32 = 256;
 /// bar strips (y 201..218). Every `Rect` is normalised by this constant,
 /// so the placements above y=80 do not move — only the face pool is
 /// addressed absolutely, and it stays at `FACE_ATLAS_Y`.
-const ATLAS_H: u32 = 224;
+/// The off-hand slot's two 29x24 sprites then took y 224..248 (224 -> 256);
+/// the same argument applies.
+const ATLAS_H: u32 = 256;
 
 /// Where the face pool starts, and how big it is (M155).
 ///
@@ -47,6 +49,9 @@ const ATLAS_H: u32 = 224;
 /// both layers and the draw picks between them with a sub-rect. Two rows of
 /// sixteen fills `ATLAS_W` exactly.
 const FACE_ATLAS_Y: u32 = 64;
+/// Where the two off-hand pocket sprites sit: below the jump bar's last strip
+/// (y 213..218), 24 px tall.
+const OFFHAND_ATLAS_Y: u32 = 224;
 const FACE_SLOT_W: u32 = 16;
 const FACE_SLOT_H: u32 = 8;
 const FACE_COLS: u32 = ATLAS_W / FACE_SLOT_W;
@@ -101,6 +106,10 @@ pub struct HudSpritesData<'a> {
     pub effect_background_ambient: HudSpriteData<'a>,
     /// `hud/jump_bar_{background,cooldown,progress}` (M168), 182x5 each.
     pub jump_bar: [HudSpriteData<'a>; 3],
+    /// `hud/hotbar_offhand_{left,right}`, 29x24 each, in that order.
+    pub offhand: [HudSpriteData<'a>; 2],
+    /// `hud/crosshair_attack_indicator_{full,background,progress}`.
+    pub attack_indicator: [HudSpriteData<'a>; 3],
     /// `mob_effect/<name>.png`, one per registry id IN REGISTRY ORDER
     /// (M168) — `HudIcon::Effect(id)` is an index into this.
     pub effect_icons: Vec<HudSpriteData<'a>>,
@@ -190,6 +199,23 @@ pub enum HudIcon {
     /// and the UV is clipped to `w / 182`, `blitSprite(.., 182, 5, 0, 0,
     /// left, top, progress, 5)`'s ten-argument form.
     JumpBar(crate::survival_hud::JumpBarSprite),
+    /// `hud/hotbar_offhand_left` (`left`) or `_right`: the 29x24 pocket beside
+    /// the hotbar that holds the off-hand stack. See [`offhand_blit`].
+    Offhand {
+        left: bool,
+    },
+    /// The crosshair's attack-cooldown indicator. See [`attack_indicator`].
+    AttackIndicator(AttackSprite),
+}
+
+/// Which `hud/crosshair_attack_indicator_*` sprite a [`HudIcon::AttackIndicator`]
+/// names. `Progress` is a sub-rectangle like the jump bar's: the blit's `w` is
+/// the filled width of a 16 px sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttackSprite {
+    Full,
+    Background,
+    Progress,
 }
 
 /// This frame's M79 gauges, as the renderer needs them.
@@ -275,6 +301,16 @@ pub struct HudPass {
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     pipeline: vk::Pipeline,
+    /// `RenderPipelines.CROSSHAIR`: `BlendFunction.INVERT`
+    /// (`ONE_MINUS_DST_COLOR, ONE_MINUS_SRC_COLOR`), built for the UNORM
+    /// twin of the colour format so the inversion is of the gamma-encoded
+    /// value, as vanilla's is (`1 - dst` in linear light is a different grey).
+    /// `None` without a UNORM counterpart: the crosshair then draws in the
+    /// main pipeline, plain white, as before.
+    crosshair_pipeline: Option<vk::Pipeline>,
+    /// How many leading vertices of this frame's list are the crosshair (6,
+    /// or 0 when hidden or drawn by the main pipeline).
+    crosshair_verts: u32,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -314,6 +350,10 @@ pub struct HudPass {
     effect_background: Rect,
     effect_background_ambient: Rect,
     jump_bar: [Rect; 3],
+    /// The off-hand pocket, left then right.
+    offhand: [Rect; 2],
+    /// The attack indicator: full, background, progress.
+    attack_indicator: [Rect; 3],
     effect_icons: Vec<Rect>,
     /// The tab-list face pool (M155), keyed by player UUID and LRU over the
     /// frames whose tab list drew each slot (see
@@ -466,6 +506,30 @@ impl HudPass {
                 *slot = row(&mut atlas, std::slice::from_ref(s), 0, 201 + 6 * i as u32)[0];
             }
             out
+        };
+        // The off-hand pocket's two sprites, in the strip the 80 -> 256 growth
+        // opened below the jump bar (y 224..248).
+        let offhand: [Rect; 2] = {
+            let mut out = [Rect::default(); 2];
+            for (slot, (s, x)) in out.iter_mut().zip(sprites.offhand.iter().zip([0u32, 30])) {
+                *slot = row(&mut atlas, std::slice::from_ref(s), x, OFFHAND_ATLAS_Y)[0];
+            }
+            out
+        };
+        // The attack indicator's three sprites, right of the pockets on the
+        // same strip: the 16x16 full one at x 60, the two 16x4 strips at x 80.
+        let attack_indicator: [Rect; 3] = {
+            let s = &sprites.attack_indicator;
+            [
+                row(&mut atlas, std::slice::from_ref(&s[0]), 60, OFFHAND_ATLAS_Y)[0],
+                row(&mut atlas, std::slice::from_ref(&s[1]), 80, OFFHAND_ATLAS_Y)[0],
+                row(
+                    &mut atlas,
+                    std::slice::from_ref(&s[2]),
+                    80,
+                    OFFHAND_ATLAS_Y + 6,
+                )[0],
+            ]
         };
         // `GuiGraphicsExtractor.itemCooldown` fills with `Integer.MAX_VALUE`,
         // which as ARGB is a half-transparent white. Nothing in the jar carries
@@ -622,7 +686,11 @@ impl HudPass {
                     None,
                 )
                 .map_err(|e| format!("hud layout: {e}"))?;
-            let pipeline = build_pipeline(&device, layout, color_format)?;
+            let pipeline = build_pipeline(&device, layout, color_format, false)?;
+            let crosshair_pipeline = match crate::world::unorm_of(color_format) {
+                Some(unorm) => Some(build_pipeline(&device, layout, unorm, true)?),
+                None => None,
+            };
 
             let ring = crate::buf_ring::BufRing::with_capacity(
                 gpu,
@@ -643,6 +711,8 @@ impl HudPass {
                 view,
                 ring,
                 verts: 0,
+                crosshair_pipeline,
+                crosshair_verts: 0,
                 hotbar,
                 selection,
                 crosshair,
@@ -667,6 +737,8 @@ impl HudPass {
                 effect_background,
                 effect_background_ambient,
                 jump_bar,
+                offhand,
+                attack_indicator,
                 effect_icons,
             })
         }
@@ -723,6 +795,7 @@ impl HudPass {
         cb: vk::CommandBuffer,
         extent: vk::Extent2D,
         survival: &[HudBlit],
+        hidden: bool,
         slot: u8,
         gauges: HudGauges,
         chat: &[HudFill],
@@ -788,19 +861,31 @@ impl HudPass {
             }};
         }
 
-        // Crosshair (centered).
-        quad!(
-            (sw - self.crosshair.w) / 2.0,
-            (sh - self.crosshair.h) / 2.0,
-            &self.crosshair
-        );
-
-        // Hotbar (bottom-center) + selection frame over the active slot.
+        // `Hud.extractRenderState` with `isHidden` (F1) skips the crosshair,
+        // the hotbar and everything `extractHotbarAndDecorations` draws, so a
+        // hidden frame keeps only the caller's fills and icons (a focused
+        // chat's backdrops). The gauges and the survival blits are emptied
+        // here rather than gated one by one below.
+        let (gauges, survival) = if hidden {
+            (HudGauges::default(), &[][..])
+        } else {
+            (gauges, survival)
+        };
         let bar_x = (sw - self.hotbar.w) / 2.0;
         let bar_y = sh - self.hotbar.h;
-        quad!(bar_x, bar_y, &self.hotbar);
-        let sel_x = bar_x - 1.0 + slot.min(8) as f32 * 20.0;
-        quad!(sel_x, bar_y - 1.0, &self.selection);
+        if !hidden {
+            // Crosshair (centered).
+            quad!(
+                (sw - self.crosshair.w) / 2.0,
+                (sh - self.crosshair.h) / 2.0,
+                &self.crosshair
+            );
+
+            // Hotbar (bottom-center) + selection frame over the active slot.
+            quad!(bar_x, bar_y, &self.hotbar);
+            let sel_x = bar_x - 1.0 + slot.min(8) as f32 * 20.0;
+            quad!(sel_x, bar_y - 1.0, &self.selection);
+        }
 
         // M79's XP gauge — `ExperienceBar.extractBackground`. The bar is
         // positioned by `ContextualBar`'s own `left`/`top`, not by the hotbar,
@@ -904,6 +989,7 @@ impl HudPass {
             let uw = if matches!(
                 b.icon,
                 HudIcon::JumpBar(crate::survival_hud::JumpBarSprite::Progress)
+                    | HudIcon::AttackIndicator(AttackSprite::Progress)
             ) {
                 b.w / r.w
             } else {
@@ -981,6 +1067,13 @@ impl HudPass {
 
         let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
         self.verts = (kept / VERTEX_STRIDE as usize) as u32;
+        // The crosshair is the list's first quad when it is drawn at all; it
+        // moves to `draw_crosshair` when the invert pipeline exists.
+        self.crosshair_verts = if !hidden && self.crosshair_pipeline.is_some() {
+            6.min(self.verts)
+        } else {
+            0
+        };
         let Some(vbuf) = self.ring.bind() else {
             return;
         };
@@ -1009,7 +1102,52 @@ impl HudPass {
                 std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
             );
             device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
-            device.cmd_draw(cb, self.verts, 1, 0, 0);
+            device.cmd_draw(
+                cb,
+                self.verts - self.crosshair_verts,
+                1,
+                self.crosshair_verts,
+                0,
+            );
+        }
+    }
+
+    /// The crosshair, recorded inside a scope rendering to the UNORM twin of
+    /// the colour attachment (`WorldRenderer::in_gamma_space`), after
+    /// [`Self::draw`] uploaded this frame's list. Draws nothing when the
+    /// crosshair is hidden or the main pipeline already drew it.
+    pub fn draw_crosshair(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
+        let (Some(pipeline), true) = (self.crosshair_pipeline, self.crosshair_verts > 0) else {
+            return;
+        };
+        let Some(vbuf) = self.ring.bind() else {
+            return;
+        };
+        let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
+        let device = &gpu.device;
+        unsafe {
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            let viewport = vk::Viewport::default().width(w).height(h).max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[self.set],
+                &[],
+            );
+            let screen = [w, h];
+            device.cmd_push_constants(
+                cb,
+                self.layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
+            );
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
+            device.cmd_draw(cb, self.crosshair_verts, 1, 0, 0);
         }
     }
 
@@ -1106,6 +1244,12 @@ impl HudPass {
                 JumpBarSprite::Cooldown => self.jump_bar[1],
                 JumpBarSprite::Progress => self.jump_bar[2],
             },
+            HudIcon::Offhand { left } => self.offhand[usize::from(!left)],
+            HudIcon::AttackIndicator(a) => match a {
+                AttackSprite::Full => self.attack_indicator[0],
+                AttackSprite::Background => self.attack_indicator[1],
+                AttackSprite::Progress => self.attack_indicator[2],
+            },
         })
     }
 
@@ -1114,6 +1258,9 @@ impl HudPass {
         unsafe {
             let device = &gpu.device;
             device.destroy_pipeline(self.pipeline, None);
+            if let Some(p) = self.crosshair_pipeline {
+                device.destroy_pipeline(p, None);
+            }
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_pool(self.pool, None);
             device.destroy_descriptor_set_layout(self.set_layout, None);
@@ -1131,6 +1278,8 @@ fn build_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
+    // `BlendFunction.INVERT` instead of the translucent blend (the crosshair).
+    invert: bool,
 ) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
@@ -1190,10 +1339,21 @@ fn build_pipeline(
         let depth = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(false)
             .depth_write_enable(false);
+        let (src, dst) = if invert {
+            (
+                vk::BlendFactor::ONE_MINUS_DST_COLOR,
+                vk::BlendFactor::ONE_MINUS_SRC_COLOR,
+            )
+        } else {
+            (
+                vk::BlendFactor::SRC_ALPHA,
+                vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+            )
+        };
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .src_color_blend_factor(src)
+            .dst_color_blend_factor(dst)
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
@@ -1256,6 +1416,109 @@ pub fn hotbar_slot_rects(bar_w: f32, bar_h: f32, w: f32, h: f32) -> [(f32, f32, 
             16.0 * scale,
         )
     })
+}
+
+/// `Hud.extractCrosshair`'s attack indicator, as the blits it draws. `scale`
+/// is `getAttackStrengthScale(0)`, `delay` is `getCurrentItemAttackStrengthDelay`
+/// and `target_alive` is "the crosshair entity is a living entity that
+/// `isAlive()`".
+///
+/// ```java
+/// if (target != null && target instanceof LivingEntity && scale >= 1.0F) {
+///    full = player.getCurrentItemAttackStrengthDelay() > 5.0F;
+///    full &= target.isAlive();
+/// }
+/// int y = guiHeight / 2 - 7 + 16;   int x = guiWidth / 2 - 8;
+/// if (full)            blitSprite(FULL, x, y, 16, 16);
+/// else if (scale < 1)  { progress = (int)(scale * 17);
+///                        blitSprite(BACKGROUND, x, y, 16, 4);
+///                        blitSprite(PROGRESS, 16, 4, 0, 0, x, y, progress, 4); }
+/// ```
+///
+/// The `ATTACK_RANGE` component test (a spear's reach) is not applied.
+pub fn attack_indicator(
+    scale: f32,
+    delay: f32,
+    target_alive: bool,
+    gui_w: i32,
+    gui_h: i32,
+) -> Vec<HudBlit> {
+    let (x, y) = ((gui_w / 2 - 8) as f32, (gui_h / 2 - 7 + 16) as f32);
+    let blit = |w: f32, h: f32, sprite: AttackSprite| HudBlit {
+        x,
+        y,
+        w,
+        h,
+        alpha: 1.0,
+        icon: HudIcon::AttackIndicator(sprite),
+    };
+    if target_alive && scale >= 1.0 && delay > 5.0 {
+        vec![blit(16.0, 16.0, AttackSprite::Full)]
+    } else if scale < 1.0 {
+        let progress = (scale * 17.0) as i32;
+        vec![
+            blit(16.0, 4.0, AttackSprite::Background),
+            blit(progress as f32, 4.0, AttackSprite::Progress),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The off-hand pocket sprite's size (`hotbar_offhand_left`/`_right`).
+pub const OFFHAND_W: f32 = 29.0;
+pub const OFFHAND_H: f32 = 24.0;
+
+/// `Hud.extractItemHotbar`'s off-hand placement, in GUI pixels measured from
+/// the hotbar's own top-left `(bar_x, bar_y)`:
+/// `(sprite_x, sprite_y, item_x, item_y)`.
+///
+/// ```java
+/// // offhandArm == LEFT                       // RIGHT
+/// blitSprite(OFFHAND_LEFT,  center - 91 - 29, // blitSprite(OFFHAND_RIGHT, center + 91,
+///            guiHeight - 23, 29, 24);         //            guiHeight - 23, 29, 24);
+/// extractSlot(center - 91 - 26, guiHeight-19) // extractSlot(center + 91 + 10, ...)
+/// ```
+///
+/// `center - 91` is the hotbar's left edge and `guiHeight - 22` its top.
+pub fn offhand_placement(bar_x: f32, bar_y: f32, left: bool) -> (f32, f32, f32, f32) {
+    let (sprite_x, item_x) = if left {
+        (bar_x - 29.0, bar_x - 26.0)
+    } else {
+        (bar_x + 182.0, bar_x + 182.0 + 10.0)
+    };
+    (sprite_x, bar_y - 1.0, item_x, bar_y + 3.0)
+}
+
+/// The hotbar's top-left in GUI pixels for a `w` x `h` screen, as
+/// [`HudPass::draw`] places the hotbar sprite.
+fn hotbar_origin(w: f32, h: f32) -> (f32, f32, f32) {
+    let scale = gui_scale(w, h);
+    let (sw, sh) = (w / scale, h / scale);
+    ((sw - 182.0) / 2.0, sh - 22.0, scale)
+}
+
+/// The off-hand pocket sprite as a HUD blit, for the survival blit list.
+/// `left` is `player.getMainArm().getOpposite() == LEFT`.
+pub fn offhand_blit(w: f32, h: f32, left: bool) -> HudBlit {
+    let (bar_x, bar_y, _) = hotbar_origin(w, h);
+    let (x, y, _, _) = offhand_placement(bar_x, bar_y, left);
+    HudBlit {
+        x,
+        y,
+        w: OFFHAND_W,
+        h: OFFHAND_H,
+        alpha: 1.0,
+        icon: HudIcon::Offhand { left },
+    }
+}
+
+/// The off-hand stack's 16x16 icon rect in **screen** pixels
+/// `(x, y, size)`, the shape [`hotbar_slot_rects`] returns.
+pub fn offhand_slot_rect(w: f32, h: f32, left: bool) -> (f32, f32, f32) {
+    let (bar_x, bar_y, scale) = hotbar_origin(w, h);
+    let (_, _, x, y) = offhand_placement(bar_x, bar_y, left);
+    (x * scale, y * scale, 16.0 * scale)
 }
 
 impl HudPass {
@@ -1976,5 +2239,124 @@ mod hotbar_slot_tests {
         let bar_top = h - BAR.1 * scale;
         assert!((r[0].1 - (bar_top + 3.0 * scale)).abs() < 1e-3);
         assert!(r[0].1 + r[0].2 < h, "the icon ends above the screen edge");
+    }
+}
+
+#[cfg(test)]
+mod offhand_tests {
+    use super::*;
+
+    /// `Hud.extractItemHotbar`, transcribed for a GUI that is 427 wide and 240
+    /// tall so `center - 91` is an integer: the left pocket is at
+    /// `center - 91 - 29`, the right at `center + 91`, both at `guiHeight - 23`,
+    /// and the items at `center - 91 - 26` / `center + 91 + 10`, `guiHeight - 19`.
+    #[test]
+    fn the_pocket_and_its_item_sit_where_the_vanilla_literals_put_them() {
+        let (gui_w, gui_h) = (426.0f32, 240.0f32);
+        let center = gui_w / 2.0;
+        let (bar_x, bar_y) = (center - 91.0, gui_h - 22.0);
+        assert_eq!(
+            offhand_placement(bar_x, bar_y, true),
+            (
+                center - 91.0 - 29.0,
+                gui_h - 23.0,
+                center - 91.0 - 26.0,
+                gui_h - 19.0
+            )
+        );
+        assert_eq!(
+            offhand_placement(bar_x, bar_y, false),
+            (
+                center + 91.0,
+                gui_h - 23.0,
+                center + 91.0 + 10.0,
+                gui_h - 19.0
+            )
+        );
+    }
+
+    /// The icon is 16 scaled px and lands inside the 29x24 pocket with the
+    /// pocket's own 3 px inset on the side that touches the hotbar's far edge.
+    #[test]
+    fn the_item_rect_is_inside_the_pocket_at_every_scale() {
+        for (w, h) in [(854.0f32, 480.0f32), (1280.0, 720.0), (1920.0, 1080.0)] {
+            let scale = gui_scale(w, h);
+            for left in [true, false] {
+                let blit = offhand_blit(w, h, left);
+                let (ix, iy, size) = offhand_slot_rect(w, h, left);
+                assert_eq!(size, 16.0 * scale);
+                assert!(ix >= blit.x * scale && ix + size <= (blit.x + blit.w) * scale);
+                assert!(iy >= blit.y * scale && iy + size <= (blit.y + blit.h) * scale);
+                assert_eq!(blit.icon, HudIcon::Offhand { left });
+                assert_eq!((blit.w, blit.h), (OFFHAND_W, OFFHAND_H));
+            }
+        }
+    }
+
+    /// The left pocket ends where the hotbar begins and the right begins where
+    /// it ends, so the three sprites form one strip.
+    #[test]
+    fn the_pockets_abut_the_hotbar() {
+        let (w, h) = (1280.0f32, 720.0f32);
+        let scale = gui_scale(w, h);
+        let bar_x = (w / scale - 182.0) / 2.0;
+        let l = offhand_blit(w, h, true);
+        let r = offhand_blit(w, h, false);
+        assert!((l.x + l.w - bar_x).abs() < 1e-3);
+        assert!((r.x - (bar_x + 182.0)).abs() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod attack_indicator_tests {
+    use super::*;
+
+    fn sprites(v: &[HudBlit]) -> Vec<(AttackSprite, f32, f32)> {
+        v.iter()
+            .map(|b| match b.icon {
+                HudIcon::AttackIndicator(s) => (s, b.w, b.h),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// A charging swing draws the 16x4 background and a progress strip of
+    /// `(int)(scale * 17)` pixels, 16 px below the crosshair's centre row.
+    #[test]
+    fn a_charging_swing_draws_the_strip() {
+        let v = attack_indicator(0.5, 12.5, true, 426, 240);
+        assert_eq!(
+            sprites(&v),
+            [
+                (AttackSprite::Background, 16.0, 4.0),
+                (AttackSprite::Progress, 8.0, 4.0)
+            ]
+        );
+        // guiWidth / 2 - 8, guiHeight / 2 - 7 + 16.
+        assert_eq!((v[0].x, v[0].y), (205.0, 129.0));
+        assert_eq!((v[1].x, v[1].y), (205.0, 129.0));
+        // 0.999 * 17 truncates to 16: never a full bar before the full icon.
+        let nearly = attack_indicator(0.999, 12.5, true, 426, 240);
+        assert_eq!(nearly[1].w, 16.0);
+    }
+
+    /// At a full charge the sword icon shows only over a living, alive target
+    /// and only for a weapon slower than 5 ticks' delay; otherwise nothing.
+    #[test]
+    fn the_full_icon_needs_a_live_target_and_a_slow_weapon() {
+        let full = attack_indicator(1.0, 12.5, true, 426, 240);
+        assert_eq!(sprites(&full), [(AttackSprite::Full, 16.0, 16.0)]);
+        assert!(attack_indicator(1.0, 12.5, false, 426, 240).is_empty());
+        assert!(
+            attack_indicator(1.0, 5.0, true, 426, 240).is_empty(),
+            "a bare hand's delay is exactly 5: not above it"
+        );
+    }
+
+    /// A target does not hide the strip while it is still charging.
+    #[test]
+    fn a_target_does_not_replace_the_strip_mid_charge() {
+        let v = attack_indicator(0.4, 12.5, true, 426, 240);
+        assert_eq!(v.len(), 2);
     }
 }

@@ -1,0 +1,32 @@
+# Owner list: "the recipe-book button in the inventory". GUI scale 3 (426x240 GUI pixels):
+# the inventory panel is at (125, 37); its recipe-book button at (229, 98), 20x18.
+name: rewo_recipe_book
+description: Open the inventory, press the recipe-book button (it opens and shifts the panel right), press it again.
+
+world:
+  server_commands: [setworldspawn 0 -60 0]
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 10]
+  commands:
+    - clear @s
+    - give @s minecraft:oak_planks 4
+    - give @s minecraft:stick 2
+    - recipe give @s *
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 2, key: inventory}
+  - {at: 4, mouse: {x: 380, y: 200}}
+  - {at: 6, capture: inventory, checklist: "the survival inventory: 2x2 crafting grid, player model, armour slots, oak planks and sticks in the hotbar, the green recipe-book button left of the crafting grid"}
+  - {at: 8, mouse_click: {x: 239, y: 107}}
+  - {at: 8, expect_sound: minecraft:ui.button.click, window: 2}
+  - {at: 14, capture: book_open, checklist: "the recipe book open on the left with recipe tabs and a page of recipes; the inventory panel moved right"}
+  - {at: 16, mouse: {x: 330, y: 200}}
+  - {at: 18, mouse_click: {x: 316, y: 107}}
+  - {at: 18, expect_sound: minecraft:ui.button.click, window: 2}
+  - {at: 24, capture: book_closed, checklist: "the recipe book closed again, the panel back in the middle"}
+  - {at: 26, key: escape}
+end_tick: 28

@@ -98,22 +98,38 @@ pub fn hotbar_models(
     // M275/M405 — the per-stack icon models (`GuiItemState::variants`).
     variants: &super::icons::IconVariants,
 ) -> [Option<String>; 9] {
-    std::array::from_fn(|i| {
-        let s = inv.hotbar(i)?;
-        let base = items.name(s.item_id)?;
-        if let Some(m) = variant_icon_model(inv, s, base, variants) {
-            return Some(m);
-        }
-        // M49: the same composed name the screen slots use, so a trimmed piece
-        // wears its trim in the hotbar too.
-        Some(
-            match s.trim_material.and_then(|m| trim_materials.get(m as usize)) {
-                Some(m) => format!("{base}#{}", m.id),
-                None => base.to_string(),
-            },
-        )
-    })
+    std::array::from_fn(|i| slot_icon_model(inv, inv.hotbar(i)?, items, trim_materials, variants))
 }
+
+/// The model one HUD slot's icon draws: the stack's own copy (a skinned
+/// head, M275; a patterned banner, shield or pot, M405/M407), else the item's
+/// name composed with its trim (M49), so a trimmed piece wears its trim in
+/// the hotbar and the off-hand pocket as it does in the screen's slots.
+pub(super) fn slot_icon_model(
+    inv: &rewo_world::inventory::Inventory,
+    s: rewo_world::inventory::ItemSlot,
+    items: &rewo_data::items::Items,
+    trim_materials: &[rewo_net::trim_parse::TrimMaterialDef],
+    variants: &super::icons::IconVariants,
+) -> Option<String> {
+    let base = items.name(s.item_id)?;
+    if let Some(m) = variant_icon_model(inv, s, base, variants) {
+        return Some(m);
+    }
+    Some(
+        match s.trim_material.and_then(|m| trim_materials.get(m as usize)) {
+            Some(m) => format!("{base}#{}", m.id),
+            // A compass or clock draws the frame its needle is on.
+            None => needles::needle_model(base),
+        },
+    )
+}
+
+/// Which side of the hotbar the off-hand pocket sits on:
+/// `player.getMainArm().getOpposite() == LEFT`. Rewo's client information
+/// always announces the right main hand (`client_info::MAIN_HAND_RIGHT`, with
+/// no option to change it), so the pocket is always on the left.
+pub(super) const OFFHAND_LEFT: bool = true;
 
 /// The inventory preview's cape, from its slot in the **preview** pass's own
 /// atlas (M64).
@@ -235,8 +251,13 @@ pub(super) fn preview_draw<'a>(
     mouse: (f64, f64),
     // M414 — the armour, elytra and cape it wears.
     worn: PreviewEquipment<'a>,
+    // `RecipeBookComponent.isVisible()`: an open book moves `leftPos`, and
+    // `extractEntityInInventoryFollowsMouse` takes `xo + 26` from it.
+    book_open: bool,
 ) -> (EntityDraw<'a>, [[f32; 4]; 4], ash::vk::Rect2D) {
-    let (x_angle, y_angle) = rewo_gpu::container::preview_angles(mouse, w, h);
+    let origin = rewo_gpu::container::preview_origin(w, h, book_open);
+    let win = &rewo_gpu::container::INVENTORY_PREVIEW;
+    let (x_angle, y_angle) = rewo_gpu::container::preview_angles_at(win, mouse, origin);
     // `LivingEntityRenderState.boundingBoxHeight / scale`, and the player's
     // scale is 1 — so this is the standing hitbox, which is what centres the
     // model in its window.
@@ -317,8 +338,8 @@ pub(super) fn preview_draw<'a>(
         wings: worn.wings,
         score_text: None,
     };
-    let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
-    let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);
+    let vp = rewo_gpu::container::preview_view_proj_at(win, origin, w, h, PLAYER_HEIGHT, y_angle);
+    let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect_at(win, origin);
     let rect = ash::vk::Rect2D {
         offset: ash::vk::Offset2D {
             x: rx as i32,
@@ -642,8 +663,11 @@ impl HandState {
         let id = |s: Option<rewo_world::inventory::ItemSlot>| {
             s.and_then(|s| items.name(s.item_id).map(|_| s.item_id))
         };
-        self.main_equip.tick(id(session.inventory.held()));
-        self.off_equip.tick(id(session.inventory.offhand()));
+        let busy = session.hands_busy;
+        self.main_equip
+            .tick_busy(id(session.inventory.held()), busy);
+        self.off_equip
+            .tick_busy(id(session.inventory.offhand()), busy);
         self.bob.tick(session.player.pitch, session.player.yaw);
     }
 
@@ -1279,7 +1303,7 @@ pub(super) fn apply_hotbar_icons(
     items: &rewo_data::items::Items,
     state: &mut GuiItemState,
     extent: (f32, f32),
-) {
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
     let held = &state.held;
     let names = hotbar_models(
         &session.inventory,
@@ -1287,7 +1311,24 @@ pub(super) fn apply_hotbar_icons(
         &session.trim_materials,
         &state.variants,
     );
-    let models: Vec<String> = names.iter().flatten().map(|n| n.to_string()).collect();
+    // `extractItemHotbar` draws the off-hand stack in its pocket after the
+    // nine slots.
+    let offhand = session.inventory.offhand();
+    let offhand_name = offhand.and_then(|s| {
+        slot_icon_model(
+            &session.inventory,
+            s,
+            items,
+            &session.trim_materials,
+            &state.variants,
+        )
+    });
+    let models: Vec<String> = names
+        .iter()
+        .flatten()
+        .chain(offhand_name.iter())
+        .map(|n| n.to_string())
+        .collect();
     let wanted = gui_atlas_wanted(held, &models);
 
     // Repack only when the hotbar needs a texture the resident atlas does not
@@ -1297,7 +1338,7 @@ pub(super) fn apply_hotbar_icons(
         let atlas = pack_gui_atlas(held, &wanted);
         if let Err(e) = wr.init_gui_items(gpu, &atlas.rgba, GUI_ATLAS_W, GUI_ATLAS_H) {
             log::warn!("live: gui-item atlas upload failed: {e}");
-            return;
+            return Vec::new();
         }
         // The glint rides on the item pass, and the item pass is rebuilt
         // whenever its atlas is repacked — so the glint is rebuilt here too.
@@ -1312,7 +1353,7 @@ pub(super) fn apply_hotbar_icons(
         state.resident = wanted;
     }
     let slots = rewo_gpu::hud::hotbar_slot_rects(182.0, 22.0, extent.0, extent.1);
-    let gui: Vec<rewo_gpu::gui_item::GuiItem> = names
+    let mut gui: Vec<rewo_gpu::gui_item::GuiItem> = names
         .iter()
         .enumerate()
         .filter_map(|(i, n)| {
@@ -1325,18 +1366,51 @@ pub(super) fn apply_hotbar_icons(
             })
         })
         .collect();
+    let pocket = rewo_gpu::hud::offhand_slot_rect(extent.0, extent.1, OFFHAND_LEFT);
+    if let (Some(model), Some(stack)) = (offhand_name, offhand) {
+        gui.push(rewo_gpu::gui_item::GuiItem {
+            model,
+            x: pocket.0,
+            y: pocket.1,
+            size: pocket.2,
+            glint: stack.enchanted,
+        });
+    }
     upload_gui_icons(wr, gpu, state, &gui);
     // The nine hotbar stacks' durability bars, in the same rects the icons
-    // were placed from.
-    let stacks: Vec<_> = (0..rewo_world::inventory::HOTBAR_SIZE)
+    // were placed from, and the off-hand's.
+    let mut stacks: Vec<_> = (0..rewo_world::inventory::HOTBAR_SIZE)
         .map(|i| (session.inventory.hotbar(i), slots[i]))
         .collect();
+    stacks.push((offhand, pocket));
     // `!has(UNBREAKABLE)`. No item's *prototype* carries the component in
     // 26.2 — it is only ever patched on — so the patch flag is the whole
     // answer here.
     wr.set_item_bars(item_bars(&stacks, items, |s| {
         session.inventory.text_of(s).is_some_and(|t| t.unbreakable)
     }));
+    hotbar_count_labels(&stacks, rewo_gpu::hud::gui_scale(extent.0, extent.1))
+}
+
+/// `itemDecorations`' count text for the hotbar's stacks (and the off-hand's),
+/// bottom-right in each icon's slot, from the rects the icons were placed
+/// from. The screen's slots build theirs the same way ([`count_label`]), so a
+/// stack reads the same in the hotbar as in the inventory.
+pub(super) fn hotbar_count_labels(
+    stacks: &[(Option<rewo_world::inventory::ItemSlot>, (f32, f32, f32))],
+    scale: f32,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    stacks
+        .iter()
+        .filter_map(|(stack, (x, y, _))| count_label((*stack)?, *x, *y, scale))
+        .collect()
+}
+
+/// The HUD item icons with nothing in them: what F1 leaves of the hotbar.
+/// The atlas stays resident, so un-hiding is one vertex upload.
+pub(super) fn clear_hotbar_icons(wr: &mut WorldRenderer, gpu: &mut Gpu, state: &GuiItemState) {
+    upload_gui_icons(wr, gpu, state, &[]);
+    wr.set_item_bars(Vec::new());
 }
 
 /// Place, shade and upload an arbitrary list of icons (M35).

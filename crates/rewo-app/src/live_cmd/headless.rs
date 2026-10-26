@@ -620,12 +620,11 @@ pub(super) fn run_headless(
     // M35: `REWO_OPEN_INVENTORY=1` opens the screen for the headless shot, so
     // a PNG can show it without a windowed session and a keypress. The cursor
     // is parked at the window centre, which is where `set_screen_open` puts it.
-    let mut headless_screen_labels: Vec<rewo_gpu::world::OwnedTextLine> = Vec::new();
     let (sw, sh) = (off.extent.width as f32, off.extent.height as f32);
     let screen_open = crate::knobs::var("REWO_OPEN_INVENTORY")
         .map(|v| v != "0")
         .unwrap_or(false);
-    if screen_open {
+    let headless_screen_labels: Vec<rewo_gpu::world::OwnedTextLine> = if screen_open {
         // `REWO_MOUSE=x,y` moves the cursor for the shot, which is the only way
         // to photograph the preview turning to follow it.
         let mouse = crate::knobs::var("REWO_MOUSE")
@@ -721,7 +720,7 @@ pub(super) fn run_headless(
             // …nor tick a smithing screen's icons.
             None,
         );
-        headless_screen_labels = labels;
+        labels
     } else {
         apply_hotbar_icons(
             &mut world_renderer,
@@ -730,8 +729,8 @@ pub(super) fn run_headless(
             &items,
             &mut gui_items,
             (sw, sh),
-        );
-    }
+        )
+    };
     if let Some(p) = particle_assets.as_mut() {
         let view = eye_view(eye, session.player.yaw, session.player.pitch).to_cols_array_2d();
         apply_particles(
@@ -907,6 +906,7 @@ pub(super) fn run_headless(
         None,
         true,
         false,
+        true,
         world_renderer.font_advance().copied(),
     );
     headless_text.extend(headless_screen_labels);

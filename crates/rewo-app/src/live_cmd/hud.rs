@@ -64,6 +64,9 @@ pub(super) fn build_text(
     fps: Option<f32>,
     debug: bool,
     chat_focused: bool,
+    // False while F1 hides the chat history (`Hud.extractChat` is inside the
+    // `!isHidden` block); a focused chat screen draws it regardless.
+    show_chat: bool,
     advance: Option<[u8; 256]>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -138,15 +141,19 @@ pub(super) fn build_text(
             });
         }
     }
-    let (chat, chat_rows) = chat_lines(
-        &session.chat,
-        session.ticks as i32,
-        px,
-        screen_h,
-        &rewo_ui::chat::ChatOptions::default(),
-        advance.as_ref(),
-        chat_focused,
-    );
+    let (chat, chat_rows) = if show_chat {
+        chat_lines(
+            &session.chat,
+            session.ticks as i32,
+            px,
+            screen_h,
+            &rewo_ui::chat::ChatOptions::default(),
+            advance.as_ref(),
+            chat_focused,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
     // The range the chat occupies, so a witness can read the lines that were
     // DRAWN rather than re-deriving `chat_lines` (M93q). Chat is appended last
     // here; the caller extends further afterwards, which is why this is a
@@ -1469,7 +1476,7 @@ pub(super) fn selected_item_name_line(
     (screen_w, screen_h): (f32, f32),
 ) -> Option<rewo_gpu::world::OwnedTextLine> {
     if session
-        .own_game_mode()
+        .local_game_mode()
         .is_some_and(rewo_net::play::GameMode::is_spectator)
     {
         return None;
@@ -1486,7 +1493,7 @@ pub(super) fn selected_item_name_line(
     // `UPDATE_GAME_MODE` leaves it unknown, and survival is the assumption the
     // rest of Rewo's HUD already makes — it draws hearts unconditionally.
     let can_hurt = session
-        .own_game_mode()
+        .local_game_mode()
         .map(rewo_net::play::GameMode::is_survival)
         .unwrap_or(true);
     let (gw, gh) = ((screen_w / px) as i32, (screen_h / px) as i32);
@@ -1709,7 +1716,7 @@ pub(crate) fn resolve_survival_inputs(
             cooldown: session.jumpable_vehicle().map_or(0, |v| v.cooldown),
         }
     });
-    let game_mode = session.own_game_mode();
+    let game_mode = session.local_game_mode();
     let local_attributes = session.local_attributes().clone();
     let registry = session.attribute_registry.clone();
     let effects = session.visual_effects().clone();
@@ -2038,7 +2045,7 @@ pub(crate) fn locator_bar_state(
 /// already make (M66 records the reasoning at `selected_item_name_line`).
 pub(crate) fn has_experience(session: &PlaySession) -> bool {
     session
-        .own_game_mode()
+        .local_game_mode()
         .map(rewo_net::play::GameMode::is_survival)
         .unwrap_or(true)
 }
@@ -2249,4 +2256,83 @@ pub(crate) fn title_lines(
         }
     }
     out
+}
+
+/// Which parts of the HUD and the view a frame draws, given F1
+/// (`Hud.isHidden`). One function so the sites that gate on it cannot
+/// disagree about what the key hides.
+///
+/// ```java
+/// // Hud.extractRenderState
+/// if (!this.isHidden) {                       // camera overlays, crosshair,
+///    extractCameraOverlays; extractCrosshair; //   hotbar and every decoration
+///    extractHotbarAndDecorations;             //   (health, armour, food, air,
+///    extractEffects; extractBossOverlay;      //   XP, held-item name), effects,
+/// }                                           //   boss bar
+/// extractSleepOverlay(...);                   // always
+/// if (!this.isHidden) {                       // demo, sidebar, action bar,
+///    extractDemoOverlay; extractScoreboardSidebar; extractOverlayMessage;
+///    extractTitle; extractChat; extractTabList; ...   // title, chat, tab list
+/// }
+/// // GameRenderer.renderItemInHand: `&& !isHudHidden`
+/// // GameRenderer.shouldRenderBlockOutline: `&& !this.minecraft.gui.hud.isHidden()`
+/// ```
+///
+/// The F3 overlay (`Gui.extractDebugOverlay`) is outside `Hud.extractRenderState`
+/// and stays. So does a focused chat: `ChatScreen` draws the chat itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HudLayers {
+    /// The vignette, spyglass scope, pumpkin and powder-snow overlays.
+    pub camera_overlays: bool,
+    /// The crosshair, the hotbar with its icons, counts, bars and off-hand
+    /// pocket, the survival gauges, the vehicle hearts, the jump bar, the XP
+    /// or locator bar and level number, the held-item name, and the effect
+    /// icons: everything `HudPass` and the item pass draw for the HUD.
+    pub hotbar_and_decorations: bool,
+    /// The scoreboard sidebar, action bar, title, subtitle and tab list.
+    pub overlay_messages: bool,
+    /// The chat history (the unfocused chat component).
+    pub chat_history: bool,
+    /// The first-person hand.
+    pub item_in_hand: bool,
+    /// The block selection outline.
+    pub block_outline: bool,
+}
+
+impl HudLayers {
+    /// The layers a frame draws. `chat_focused` is `ChatScreen` being up,
+    /// whose own draw shows the chat even with the HUD hidden.
+    pub(crate) fn of(hud_hidden: bool, chat_focused: bool) -> Self {
+        let shown = !hud_hidden;
+        Self {
+            camera_overlays: shown,
+            hotbar_and_decorations: shown,
+            overlay_messages: shown,
+            chat_history: shown || chat_focused,
+            item_in_hand: shown,
+            block_outline: shown,
+        }
+    }
+}
+
+/// `Hud.extractCrosshair`'s `crosshairPickEntity instanceof LivingEntity &&
+/// isAlive()`: the entity under the crosshair is a living one with health left
+/// (`LivingEntity.isAlive` is `!isRemoved() && getHealth() > 0`; an entity in
+/// the table is not removed).
+pub(crate) fn crosshair_target_alive(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    alpha: f32,
+) -> bool {
+    let Some(id) = super::entities::frame_crosshair_pick(session, etypes, alpha) else {
+        return false;
+    };
+    let Some(e) = session.world.entities.get(id) else {
+        return false;
+    };
+    session
+        .entity_classes
+        .as_deref()
+        .is_some_and(|c| c.is_living(e.type_id))
+        && session.world.entities.death_state(id).health > 0.0
 }

@@ -647,16 +647,25 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         format!("diamond_helmet → {helmet:?} (no TRIM component, so no case matches)"),
     );
     // The fail-closed half: a property Rewo cannot evaluate must still
-    // suppress. A clock branches on which dimension you are in, which a baked
-    // model has no way to know.
-    let clock = jar_json(jar, "assets/minecraft/items/clock.json")
-        .map(|d| resolve_definition(&d, &mut |_| None, SelectionContext::gui()));
+    // suppress. Since the needle items (compass, clock) evaluate, the one
+    // jar subtree left is a lodestone compass's needle: `CompassAngle` with
+    // `target: lodestone` needs the stack's `lodestone_tracker`. It is the
+    // `on_true` arm of compass.json's `has_component` condition, resolved as
+    // a definition of its own because a plain stack never reaches it.
+    let lodestone = jar_json(jar, "assets/minecraft/items/compass.json").and_then(|d| {
+        let arm = d.get("model")?.get("on_true")?.clone();
+        Some(resolve_definition(
+            &serde_json::json!({ "model": arm }),
+            &mut |_| None,
+            SelectionContext::gui(),
+        ))
+    });
     c.record(
         "a8.an_unevaluable_property_still_suppresses",
-        matches!(&clock, Some(ItemModel::Unsupported(k))
-            if k == "minecraft:select (minecraft:context_dimension)"),
+        matches!(&lodestone, Some(ItemModel::Unsupported(k))
+            if k == "minecraft:range_dispatch (minecraft:compass)"),
         format!(
-            "clock → {clock:?} — the reason names the property, not just the type,              so a bucket says what could not be answered"
+            "lodestone compass needle → {lodestone:?} — the reason names the property, not just the type, so a bucket says what could not be answered"
         ),
     );
     // And the context half: a spear selects *different geometry* per display
@@ -714,12 +723,18 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         .filter(|(i, r)| !baked_apart(i, r))
         .map(|(i, r)| format!("{i}#{r}"))
         .collect();
+    // Counted per item: the compass and clock needle frames are baked as
+    // variants too, so the total is not this witness's number.
+    let use_items = ["minecraft:bow", "minecraft:crossbow", "minecraft:goat_horn"];
+    let use_variant_count = use_items
+        .iter()
+        .map(|i| variants.variants_of(i))
+        .sum::<usize>();
     c.record(
         "a10.every_use_variant_of_the_bow_crossbow_and_goat_horn_is_baked",
-        missing.is_empty() && variants.variant_count() == wanted.len(),
+        missing.is_empty() && use_variant_count == wanted.len(),
         format!(
-            "{} variant(s) baked; missing or identical to the plain model: {missing:?}",
-            variants.variant_count()
+            "{use_variant_count} variant(s) baked for the bow, crossbow and horn; missing or identical to the plain model: {missing:?}"
         ),
     );
     // And the reduction picks them where vanilla does. The tick counts are
@@ -1194,7 +1209,7 @@ fn check_render(
     )?;
     let dirt = render([Some("minecraft:dirt"), None], &mut gpu, &mut wr, &mut off)?;
     let bow = render(
-        [Some("minecraft:compass"), None],
+        [Some("minecraft:spyglass"), None],
         &mut gpu,
         &mut wr,
         &mut off,
@@ -1241,9 +1256,10 @@ fn check_render(
         "c3.a_suppressed_item_renders_as_an_empty_hand",
         bow_px.is_empty(),
         format!(
-            "{} pixels differ (want 0) — a compass is a `range_dispatch` on the \
-             needle's angle, which this client does not evaluate (until M243 \
-             this was a bed, until M244 a banner, until M246 a shield)",
+            "{} pixels differ (want 0) — a spyglass's in-hand model has no \
+             parent, so it is a bespoke model this client does not draw (until \
+             M243 this was a bed, until M244 a banner, until M246 a shield, \
+             until the needle items a compass)",
             bow_px.len()
         ),
     );
@@ -1743,7 +1759,7 @@ fn check_render(
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
     let g_bow = ground(
-        Some("minecraft:compass"),
+        Some("minecraft:spyglass"),
         1,
         0.0,
         3,
@@ -1757,9 +1773,11 @@ fn check_render(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
         format!(
-            "{} pixels differ (want 0) — a compass's definition is a \
-             `range_dispatch` on its angle, so it has no baked model in either \
-             context (a bed until M243, a banner until M244, a shield until M246)",
+            "{} pixels differ (want 0) — a spyglass's in-hand model is \
+             bespoke and the bake skips an item whose hand model is, so it has \
+             no baked model on the ground either (a bed until M243, a banner \
+             until M244, a shield until M246, a compass until the needle \
+             items)",
             changed(&g_none, &g_bow).len()
         ),
     );

@@ -2848,6 +2848,10 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(flags) = meta.living_flags {
         if kinds.classes.is_some_and(|c| c.is_living(type_id)) {
             entities.set_living_flags(eid, flags);
+        } else {
+            // `AbstractArrow.ID_FLAGS`: the table lets it reach an arrow's
+            // flight only (bit 1 is the critical flag).
+            entities.set_arrow_flags(eid, flags);
         }
     }
     // Slots 8 DIRECTION, 9 ITEM_STACK, 10 INT → an item frame's facing, item
@@ -3149,10 +3153,10 @@ pub(crate) fn apply_set_entity_data<'a>(
             // nectar 0x08).
             entities.set_bee_flags(eid, wool);
         } else if kinds.classes.is_some_and(|c| c.is_abstract_horse(type_id)) {
-            // M404 — and `AbstractHorse.DATA_ID_FLAGS`, whose only accessor
-            // is this byte at 18 (tame 0x02, saddle 0x04, bred 0x08, eating
-            // 0x10, standing 0x20, open mouth 0x40).
-            entities.set_horse_flags(eid, wool);
+            // And `AbstractHorse.DATA_ID_FLAGS` (the horse family, camels and
+            // llamas included): tame 2, bred 8, eating 16, standing 32,
+            // open mouth 64. The rearing, eating and mouth clocks run off it.
+            entities.set_equine_flags(eid, wool);
         }
     }
     // M64: the six metadata-driven texture variants. Three carry a `Holder`
@@ -3173,6 +3177,11 @@ pub(crate) fn apply_set_entity_data<'a>(
     // (0 is empty), gated on the enderman.
     if let (Some(s), true) = (meta.opt_block16, vk.enderman == Some(type_id)) {
         entities.set_carried_block(eid, u32::try_from(s).ok().filter(|s| *s != 0));
+    }
+    // `VillagerData` (serializer 18, the villager's and the zombie villager's
+    // alone) → `VillagerProfessionLayer`'s outfit.
+    if let Some(data) = meta.villager_data {
+        entities.set_villager_data(eid, data);
     }
     // M362 — Slot 10 BOOLEAN → `AbstractArrow.IN_GROUND`; the table only
     // lets it reach an entity flying an arrow's flight.
@@ -5761,8 +5770,7 @@ mod set_entity_data_tests {
         t.add(62, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
         apply_set_entity_data(&body(61, 18, 0, &[0x24]), &mut t, kinds);
         apply_set_entity_data(&body(62, 18, 0, &[0x24]), &mut t, kinds);
-        assert_eq!(t.mob_state(61).horse_flags, 0x24);
-        assert_eq!(t.mob_state(62).horse_flags, 0);
+        assert!(t.equine_standing(61).0 && !t.equine_standing(62).0);
         t.tick_lerp();
         assert!(t.stand_anim_at(61, 1.0) > 0.0);
         assert_eq!(t.stand_anim_at(62, 1.0), 0.0);
@@ -5786,6 +5794,24 @@ mod set_entity_data_tests {
         apply_set_entity_data(&body(52, 19, 1, &[40]), &mut t, kinds);
         assert_eq!(t.mob_state(51).sulfur_fuse, Some(40));
         assert_eq!(t.mob_state(52).sulfur_fuse, None);
+    }
+
+    /// A villager's `VillagerData` (serializer 18) lands in the entity's own
+    /// row at either class's slot (19 for the villager, 20 for the zombie
+    /// villager), and an untracked id is dropped like any other metadata.
+    #[test]
+    fn a_villagers_data_is_stored_for_the_entity_it_names() {
+        const VILLAGER: i32 = 801;
+        let mut t = EntityTable::default();
+        t.add(61, EntityState::new(0, VILLAGER, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(62, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        let kinds = crate::MetaKinds::default();
+        apply_set_entity_data(&body(61, 19, 18, &[2, 5, 3]), &mut t, kinds);
+        apply_set_entity_data(&body(62, 20, 18, &[4, 9, 5]), &mut t, kinds);
+        apply_set_entity_data(&body(63, 19, 18, &[1, 1, 1]), &mut t, kinds);
+        assert_eq!(t.villager_data(61), Some((2, 5, 3)));
+        assert_eq!(t.villager_data(62), Some((4, 9, 5)));
+        assert_eq!(t.villager_data(63), None);
     }
 
     /// M393 — a boat's 8 INT / 9 INT / 10 FLOAT are its hurt, hurt
@@ -6986,6 +7012,38 @@ mod registry_kind_tests {
         assert_eq!(t.minecart_display(8), Default::default());
         apply_set_entity_data(&body(7, 11, 15, &[0]), &mut t, kinds);
         assert_eq!(t.minecart_display(7).custom_block, None);
+    }
+
+    /// `AbstractHorse.DATA_ID_FLAGS` is index 18 (`Mob` 15, `AgeableMob` 16
+    /// and 17): its standing bit (32) starts the stand clock on a horse, and
+    /// the same byte on a sheep (`DATA_WOOL_ID`) starts nothing.
+    #[test]
+    fn the_horse_flags_byte_starts_the_stand_clock_on_a_horse_only() {
+        let Some(paths) =
+            rewo_data::DataPaths::for_version("26.2").filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report");
+            return;
+        };
+        let types = rewo_data::entity_types::EntityTypes::load(&paths.registries_json()).unwrap();
+        let classes = rewo_data::entity_types::EntityClasses::resolve(&types).unwrap();
+        let horse = types.id_of("minecraft:horse").unwrap();
+        let sheep = types.id_of("minecraft:sheep").unwrap();
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            sheep: Some(sheep),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, horse, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, sheep, 0.0, 0.0, 0.0, 0.0, 0.0));
+        for eid in [7u8, 8] {
+            apply_set_entity_data(&[eid, 18, 0, 32, 0xFF], &mut t, kinds);
+        }
+        t.tick_lerp();
+        assert!((t.equine_anims(7, 1.0).1 - 0.45).abs() < 1e-6);
+        assert_eq!(t.equine_anims(8, 1.0), (0.0, 0.0, 0.0));
+        assert!(t.equine_standing(7).0 && !t.equine_standing(8).0);
     }
 }
 

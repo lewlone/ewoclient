@@ -164,6 +164,34 @@ pub fn apply_spawn_game_mode(
     );
 }
 
+/// [`PlaySession::local_game_mode`]'s choice: the mode the client was told
+/// (`localPlayerMode`) wins over the tab-list entry. The entry is keyed by a
+/// uuid that only matches the local player when the client's own uuid is the
+/// server's, so it is the unreliable half; a creative session that read it
+/// as absent drew the survival bars.
+pub fn resolve_local_game_mode(
+    told: Option<GameMode>,
+    listed: Option<GameMode>,
+) -> Option<GameMode> {
+    told.or(listed)
+}
+
+/// `Component.translatable("mount.onboard", keyShift.getTranslatedKeyMessage())`
+/// as the NBT component the action bar holds.
+pub fn mount_onboard_message() -> rewo_proto::nbt::Nbt {
+    use rewo_proto::nbt::Nbt;
+    Nbt::Compound(vec![
+        ("translate".into(), Nbt::String("mount.onboard".into())),
+        (
+            "with".into(),
+            Nbt::List(vec![Nbt::Compound(vec![(
+                "translate".into(),
+                Nbt::String("key.keyboard.left.shift".into()),
+            )])]),
+        ),
+    ])
+}
+
 /// `UUID.toString()` — the dashed lowercase 8-4-4-4-12 form, which is what
 /// `Entity.stringUUID` holds and therefore what a non-player entity's
 /// scoreboard membership is keyed by (M70).
@@ -698,6 +726,13 @@ pub struct PlaySession {
     /// `ClientLevelData.getHorizonHeight` is the level's bottom on a flat
     /// world and 63 otherwise, which decides vanilla's dark sky disc.
     pub level_is_flat: bool,
+    /// `CommonPlayerSpawnInfo.lastDeathLocation` from the latest login /
+    /// respawn: `player.getLastDeathLocation()`, which the recovery compass
+    /// points at.
+    pub last_death_location: Option<crate::spawn_info::GlobalPos>,
+    /// `Player.attackStrengthTicker`: the attack indicator's clock. Ticked in
+    /// [`Self::tick`]'s tail; reset by an attack, a miss and a new player.
+    pub attack_strength: rewo_world::attack_strength::AttackStrength,
     /// The chunk-batch flow-control loop (M74). Rewo used to answer
     /// `chunk_batch_finished` with the literal `64.0`; vanilla answers this
     /// calculator, whose opening bid is `3.5`. See [`crate::chunk_batch`] —
@@ -787,6 +822,13 @@ pub struct PlaySession {
     /// and jump factors, climbable, fluids, stuck-in blocks). Empty = every
     /// block behaves like stone, as before the table existed.
     pub block_physics: Vec<rewo_data::block_physics::BlockPhysics>,
+    /// state id → sound type and step-sound tags
+    /// (`rewo_data::sound_types::per_state`), for the player's own steps.
+    /// Empty = no step sounds (the harnesses that install no blocks).
+    pub block_sounds: Vec<rewo_data::sound_types::StateSound>,
+    /// state id → the `animateTick` sound it can make
+    /// (`rewo_world::animate_tick::emitter_for`). Empty = none.
+    pub block_emitters: Vec<rewo_world::animate_tick::Emitter>,
     /// Per entity-type `(width, height, pushable)` for entity collision.
     /// Empty disables pushing (the harnesses that don't care about mobs).
     pub entity_push: Vec<(f32, f32, bool)>,
@@ -920,6 +962,9 @@ pub struct PlaySession {
     /// The `minecraft:attribute` registry plus the per-entity suppliers (M52).
     /// `None` → as above.
     pub attribute_registry: Option<std::sync::Arc<rewo_data::attributes::AttributeRegistry>>,
+    /// The `villager_type` / `villager_profession` ids a villager's metadata
+    /// carries, for the profession layer's sheets. `None` → no layer.
+    pub villager_registries: Option<std::sync::Arc<rewo_data::villager::VillagerRegistries>>,
     /// Item → prototype swing animation + the data-component ids the equipment
     /// patch reader needs (M19). `None` (the headless protocol harnesses) →
     /// equipment packets are recognised but interpret no item, so every swing
@@ -987,6 +1032,9 @@ pub struct PlaySession {
     /// the holder id. Used to turn a dimension's `default_clock` identifier
     /// into the id `set_time` keys its map by.
     world_clock_ids: Vec<String>,
+    /// `ConfigData::damage_effects`: the local player's hurt sound per
+    /// damage type id.
+    damage_effects: Vec<rewo_data::damage_effects::DamageEffects>,
     pub spawned: bool,
     pub corrections: u32,
     pub teleports: u32,
@@ -1017,6 +1065,10 @@ pub struct PlaySession {
     /// server has said about its position meanwhile (vanilla keeps only the
     /// delta codec's base for an entity it controls).
     pub steered_boat: Option<SteeredBoat>,
+    /// `LocalPlayer.isHandsBusy()`: the rider of a boat holds a movement key
+    /// (`rideTick`), which sinks the hands and blocks the use and attack
+    /// clicks.
+    pub hands_busy: bool,
     /// M222 — the horse the local player steers, simulated here.
     pub steered_horse: Option<SteeredHorse>,
     /// `move_vehicle` / `paddle_boat` packets sent (render-check r87).
@@ -1096,6 +1148,19 @@ pub struct PlaySession {
     /// which is nanotime-seeded and reproduces nothing, so only the
     /// distribution is a transcribable fact — this is the same 48-bit LCG.
     ambient_rng: rewo_world::biome_noise::LegacyRandom,
+    /// A placement the local player's click may have made: the tick it
+    /// lapses and the two cells `BlockPlaceContext` can pick (the clicked
+    /// block when replaceable, else its neighbour on the face). See
+    /// [`Self::expect_placement`].
+    pending_place: Option<(u64, [[i32; 3]; 2])>,
+    /// `ClientLevel.animateTick`'s randoms (the level's and the thread-local
+    /// one, folded into one stream: only the distribution is vanilla's).
+    animate_rng: rewo_world::biome_noise::LegacyRandom,
+    /// The local player's `moveDist` / `nextStep` / crystal chime state.
+    step_tracker: rewo_world::step_sound::StepTracker,
+    /// The local player's own `Entity.random` (step chimes, swim pitch). Like
+    /// [`Self::ambient_rng`], only its distribution is vanilla's.
+    player_rng: rewo_world::biome_noise::LegacyRandom,
     /// The pose of the vehicle the local player rides, from `move_vehicle`.
     ///
     /// `None` in every ordinary session: that packet is only ever the server
@@ -1923,6 +1988,7 @@ impl<'a> Connection<'a> {
         let dim_types = self.cfg.dim_types.clone();
         let overworld_clock_id = self.cfg.overworld_clock_id;
         let world_clock_ids = std::mem::take(&mut self.cfg.world_clock_ids);
+        let damage_effects = std::mem::take(&mut self.cfg.damage_effects);
         let visual_effects =
             crate::effects::VisualEffects::new(self.cfg.night_vision_id, self.cfg.darkness_id);
         let swing_effect_ids = self.cfg.swing_effect_ids;
@@ -2027,6 +2093,8 @@ impl<'a> Connection<'a> {
             view_area: crate::view_area::ViewArea::default(),
             client_info: self.client_info,
             level_is_flat: false,
+            last_death_location: None,
+            attack_strength: Default::default(),
             // Vanilla seeds `chunkBatchStartTime` in the calculator's
             // constructor, so a `chunk_batch_finished` that somehow arrives
             // before any `chunk_batch_start` still measures a finite interval.
@@ -2068,6 +2136,12 @@ impl<'a> Connection<'a> {
             collide,
             outline: Vec::new(),
             block_physics: Vec::new(),
+            block_sounds: Vec::new(),
+            block_emitters: Vec::new(),
+            animate_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_A417),
+            step_tracker: Default::default(),
+            pending_place: None,
+            player_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_57E9),
             entity_push: Vec::new(),
             warden_type_id: None,
             armadillo_type_id: None,
@@ -2107,6 +2181,7 @@ impl<'a> Connection<'a> {
             entity_shapes: None,
             entity_shapes_tried: false,
             attribute_registry: None,
+            villager_registries: None,
             swing_data: None,
             recipe_display_ids: None,
             swing_effect_ids,
@@ -2115,6 +2190,7 @@ impl<'a> Connection<'a> {
             dim_types,
             overworld_clock_id,
             world_clock_ids,
+            damage_effects,
             spawned: false,
             corrections: 0,
             teleports: 0,
@@ -2130,6 +2206,7 @@ impl<'a> Connection<'a> {
             was_sprinting: false,
             sprint_commands_sent: 0,
             steered_boat: None,
+            hands_busy: false,
             steered_horse: None,
             vehicle_moves_sent: 0,
             vehicle_rejections: 0,
@@ -2561,6 +2638,187 @@ impl PlaySession {
         &self.particle_types
     }
 
+    /// `LevelEventHandler`'s 2001 sound: the broken state's break sound at
+    /// the block's centre, `(volume + 1) / 2`, `pitch * 0.8`, BLOCKS
+    /// (`playLocalSound(pos, .., false)`: no distance delay). An air state, or
+    /// a session without the sound table, is silent.
+    fn destroy_block_sound(&self, pos: [i32; 3], state: u32) -> Option<crate::sounds::SoundEvent> {
+        let s = self.block_sounds.get(state as usize)?;
+        let air = self
+            .block_physics
+            .get(state as usize)
+            .is_some_and(|p| p.has(rewo_data::block_physics::flags::AIR));
+        if air {
+            return None;
+        }
+        Some(crate::sounds::SoundEvent::Local(
+            crate::sounds::LocalSound {
+                name: s.sound.break_sound.into(),
+                source: crate::sounds::SoundSource::Blocks,
+                x: pos[0] as f64 + 0.5,
+                y: pos[1] as f64 + 0.5,
+                z: pos[2] as f64 + 0.5,
+                volume: (s.sound.volume + 1.0) / 2.0,
+                pitch: s.sound.pitch * 0.8,
+            },
+        ))
+    }
+
+    /// The local player broke the block at `pos` (`MultiPlayerGameMode
+    /// .destroyBlock` → `Block.playerWillDestroy` → `levelEvent(player, 2001,
+    /// ..)`): its break sound and shards, which the server sends to everyone
+    /// but the breaker. The block itself is not predicted away (the server's
+    /// update removes it).
+    pub fn local_destroy_block(&mut self, pos: [i32; 3]) {
+        let [x, y, z] = pos;
+        let state = self.world.block_state_at(x, y, z);
+        if let Some(s) = self.destroy_block_sound(pos, state) {
+            self.push_sound_event(s);
+            self.particle_events
+                .push(rewo_world::particles::ParticleEvent::DestroyBlock {
+                    x,
+                    y,
+                    z,
+                    block_state: state,
+                });
+        }
+    }
+
+    /// `continueDestroyBlock`'s mining hit, every fourth destroy tick: the
+    /// state's hit sound at the block, `(volume + 1) / 8`, `pitch * 0.5`,
+    /// BLOCKS, unseeded.
+    pub fn local_mining_hit(&mut self, pos: [i32; 3]) {
+        let [x, y, z] = pos;
+        let state = self.world.block_state_at(x, y, z) as usize;
+        let Some(s) = self.block_sounds.get(state) else {
+            return;
+        };
+        let ev = crate::sounds::SoundEvent::Local(crate::sounds::LocalSound {
+            name: s.sound.hit_sound.into(),
+            source: crate::sounds::SoundSource::Blocks,
+            x: x as f64 + 0.5,
+            y: y as f64 + 0.5,
+            z: z as f64 + 0.5,
+            volume: (s.sound.volume + 1.0) / 8.0,
+            pitch: s.sound.pitch * 0.5,
+        });
+        self.push_sound_event(ev);
+    }
+
+    /// The app sent a `use_item_on` with a block item that spent the click
+    /// (`BlockItem.place`). Vanilla places the block inside its prediction and
+    /// plays `getPlaceSound(placedState)` there; Rewo does not predict the
+    /// block, so the sound waits for the server's `block_update` that puts a
+    /// different block in one of the two cells (a recorded deviation: on a
+    /// remote server the sound is one round trip late, and a refused
+    /// placement is silent where vanilla's plays and is rolled back).
+    pub fn expect_placement(&mut self, pos: [i32; 3], face: u8) {
+        // `Direction` order: down, up, north, south, west, east.
+        let n = match face {
+            0 => [0, -1, 0],
+            1 => [0, 1, 0],
+            2 => [0, 0, -1],
+            3 => [0, 0, 1],
+            4 => [-1, 0, 0],
+            _ => [1, 0, 0],
+        };
+        let next = [pos[0] + n[0], pos[1] + n[1], pos[2] + n[2]];
+        self.pending_place = Some((self.ticks + Self::PLACE_WINDOW_TICKS, [pos, next]));
+    }
+
+    /// How long [`Self::expect_placement`] waits for the server's update.
+    const PLACE_WINDOW_TICKS: u64 = 20;
+
+    /// A `block_update` landed: if it is the placement the local player is
+    /// waiting for (a different, non-air block in one of the cells), play
+    /// `BlockItem.place`'s sound: the new state's place sound at the block's
+    /// centre, `(volume + 1) / 2`, `pitch * 0.8`, BLOCKS.
+    fn placed_block_sound(&mut self, pos: [i32; 3], old: u32, new: u32) {
+        let Some((until, cells)) = self.pending_place else {
+            return;
+        };
+        if self.ticks > until {
+            self.pending_place = None;
+            return;
+        }
+        if !cells.contains(&pos) {
+            return;
+        }
+        let (Some(o), Some(n)) = (
+            self.block_sounds.get(old as usize),
+            self.block_sounds.get(new as usize),
+        ) else {
+            return;
+        };
+        let air = self
+            .block_physics
+            .get(new as usize)
+            .is_some_and(|p| p.has(rewo_data::block_physics::flags::AIR));
+        // A door opening is the same block in a new state, not a placement.
+        if air || o.block == n.block {
+            return;
+        }
+        let s = n.sound;
+        self.pending_place = None;
+        self.push_sound_event(crate::sounds::SoundEvent::Local(
+            crate::sounds::LocalSound {
+                name: s.place_sound.into(),
+                source: crate::sounds::SoundSource::Blocks,
+                x: pos[0] as f64 + 0.5,
+                y: pos[1] as f64 + 0.5,
+                z: pos[2] as f64 + 0.5,
+                volume: (s.volume + 1.0) / 2.0,
+                pitch: s.pitch * 0.8,
+            },
+        ));
+    }
+
+    /// A sound the local player's click on a block plays for them alone
+    /// (`rewo_world::click_use::block_use_sound`): at the block's centre,
+    /// volume 1, BLOCKS, the pitch `nextFloat() * 0.1 + 0.9` when `random_pitch`.
+    pub fn local_block_use_sound(&mut self, pos: [i32; 3], s: rewo_world::click_use::UseSound) {
+        let pitch = if s.random_pitch {
+            self.player_rng.next_float() * 0.1 + 0.9
+        } else {
+            1.0
+        };
+        self.push_sound_event(crate::sounds::SoundEvent::Local(
+            crate::sounds::LocalSound {
+                name: s.name.into(),
+                source: crate::sounds::SoundSource::Blocks,
+                x: pos[0] as f64 + 0.5,
+                y: pos[1] as f64 + 0.5,
+                z: pos[2] as f64 + 0.5,
+                volume: 1.0,
+                pitch,
+            },
+        ));
+    }
+
+    /// `LivingEntity.handleDamageEvent`'s sound for the local player:
+    /// `Player.getHurtSound` is the damage type's `effects().sound()`, played
+    /// through `Player.playSound` (for this player only) at volume 1 and pitch
+    /// `(nextFloat() - nextFloat()) * 0.2 + 1`. An unknown type id plays the
+    /// default `hurt` effect's sound.
+    fn local_hurt_sound(&mut self, damage_type: i32) {
+        let effects = usize::try_from(damage_type)
+            .ok()
+            .and_then(|i| self.damage_effects.get(i).copied())
+            .unwrap_or_default();
+        let a = self.player_rng.next_float();
+        let b = self.player_rng.next_float();
+        let ev = crate::sounds::SoundEvent::Local(crate::sounds::LocalSound {
+            name: effects.sound().into(),
+            source: crate::sounds::SoundSource::Players,
+            x: self.player.x,
+            y: self.player.y,
+            z: self.player.z,
+            volume: 1.0,
+            pitch: (a - b) * 0.2 + 1.0,
+        });
+        self.push_sound_event(ev);
+    }
+
     fn push_sound_event(&mut self, ev: crate::sounds::SoundEvent) {
         if self.sound_events.len() >= Self::MAX_PENDING_SOUNDS {
             self.sound_events.remove(0);
@@ -2808,7 +3066,30 @@ impl PlaySession {
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         // M362 — and the projectiles' own flight, as the client ticks it.
-        self.world.step_flights(&self.collide);
+        for trail in self.world.step_flights(&self.collide) {
+            // A critical arrow's `addParticle(CRIT, ...)` calls: `count` 0 is
+            // the packet's "one particle with this velocity" form
+            // (`handleParticleEvent`); the velocity narrows to f32 there.
+            for (at, v) in trail.particles() {
+                self.particle_events
+                    .push(rewo_world::particles::ParticleEvent::Command(
+                        rewo_world::particles::ParticleCommand {
+                            kind: rewo_world::particles::ParticleKind::Crit,
+                            x: at[0],
+                            y: at[1],
+                            z: at[2],
+                            x_dist: v[0] as f32,
+                            y_dist: v[1] as f32,
+                            z_dist: v[2] as f32,
+                            max_speed: 1.0,
+                            count: 0,
+                            override_limiter: false,
+                            always_show: false,
+                            block_state: 0,
+                        },
+                    ));
+            }
+        }
         // `Display.tick` — the displays' transformation interpolation (M265).
         self.world.entities.tick_displays();
         // `PrimedTnt.tick`'s fuse countdown (M269).
@@ -2902,6 +3183,9 @@ impl PlaySession {
         // vanilla's rider reaches in its `aiStep`, AFTER the vehicle's tick:
         // the horse spends it next tick. Held until then.
         let deferred_jump = riding_jump;
+        // `LocalPlayer.rideTick` clears it, and a controlled boat sets it
+        // from the movement keys.
+        self.hands_busy = false;
         if self.spawned && self.is_mounted() {
             // M68. A passenger does not travel under its own power: vanilla's
             // `ClientLevel.tickNonPassenger` skips passengers entirely, and
@@ -2938,6 +3222,7 @@ impl PlaySession {
             let input = &rider_keys;
             let vehicle_keys = self.prev_rider_keys;
             if let Some(boat) = self.steerable_boat() {
+                self.hands_busy = input.forward != 0.0 || input.strafe != 0.0;
                 self.release_steered_horse();
                 self.tick_steered_boat(boat, &vehicle_keys, input)?;
             } else if let Some(horse) = self.steerable_horse() {
@@ -2965,6 +3250,19 @@ impl PlaySession {
                     if allowed {
                         if let Some(h) = self.steered_horse.as_mut() {
                             h.jump_pending = physics::jump_pending_scale(d);
+                        }
+                        // `AbstractHorse.onPlayerJump`'s rearing: the local
+                        // player steers this horse, so `isEffectiveAi()` holds
+                        // and `standIfPossible()` runs here, ahead of the
+                        // server's own flag (which lands a tick or two later).
+                        if !nautilus {
+                            let can_rear = self
+                                .world
+                                .entities
+                                .get(h.id)
+                                .and_then(|e| self.entity_types.as_deref()?.name(e.type_id))
+                                .is_some_and(|n| rewo_world::equine::can_perform_rearing(camel, n));
+                            self.world.entities.equine_on_player_jump(h.id, d, can_rear);
                         }
                     }
                 }
@@ -3095,6 +3393,7 @@ impl PlaySession {
             if slow.is_some() && !can_sprint && !self.was_sprinting {
                 phys.sprint = false;
             }
+            let before = [self.player.x, self.player.y, self.player.z];
             physics::tick_env(
                 &mut self.player,
                 &phys,
@@ -3104,6 +3403,42 @@ impl PlaySession {
                 &move_attrs,
                 &world,
             );
+            // The player's own footsteps, from the move just made
+            // (`Entity.move`'s emission; `rewo_world::step_sound`). Pushed once
+            // `world`'s borrows end, below.
+            let steps = if self.block_sounds.is_empty() {
+                Vec::new()
+            } else {
+                let p = &self.player;
+                let step_input = rewo_world::step_sound::StepInput {
+                    moved: [p.x - before[0], p.y - before[1], p.z - before[2]],
+                    flying: abilities.flying,
+                    shift_down: phys.sneak,
+                    passenger: false,
+                    silent: false,
+                    tick_count: self.ticks as i64,
+                };
+                let sounds = &self.block_sounds;
+                let level = &self.world;
+                let lookup = |x: i32, y: i32, z: i32| {
+                    let id = level.block_state_at(x, y, z) as usize;
+                    sounds
+                        .get(id)
+                        .copied()
+                        .unwrap_or(rewo_data::sound_types::StateSound {
+                            sound: rewo_data::sound_types::stone(),
+                            tags: 0,
+                            block: u32::MAX,
+                        })
+                };
+                let rng = &mut self.player_rng;
+                let at = [p.x, p.y, p.z];
+                self.step_tracker
+                    .tick(p, &step_input, &world, &lookup, &mut || rng.next_float())
+                    .into_iter()
+                    .map(|s| (s, at))
+                    .collect()
+            };
             // M239 — each rocket attached to the local player pushes it
             // while it glides (`FireworkRocketEntity.tick`, which runs after
             // the player's own tick). The rocket entity exists only on the
@@ -3143,6 +3478,19 @@ impl PlaySession {
                 self.player.z,
             );
             self.water_vision.tick(eyes_in_water, spectator);
+            for (s, [x, y, z]) in steps {
+                self.push_sound_event(crate::sounds::SoundEvent::Local(
+                    crate::sounds::LocalSound {
+                        name: s.name.into(),
+                        source: crate::sounds::SoundSource::Players,
+                        x,
+                        y,
+                        z,
+                        volume: s.volume,
+                        pitch: s.pitch,
+                    },
+                ));
+            }
             if owes_packet {
                 self.send_abilities()?;
             }
@@ -3151,8 +3499,63 @@ impl PlaySession {
         // M226 — what the rider's `aiStep` just refreshed: the vehicle's
         // input next tick.
         self.prev_rider_keys = *input;
+        if self.spawned {
+            self.animate_tick_sounds();
+        }
+        // `Player.tick`: `attackStrengthTicker++`, and a changed main-hand
+        // item type resets it.
+        self.attack_strength
+            .tick(self.inventory.held().map(|s| s.item_id));
         self.ticks += 1;
         Ok(())
+    }
+
+    /// `Minecraft.tick`'s `level.animateTick(player block pos)`, its sounds
+    /// only (`rewo_world::animate_tick`).
+    fn animate_tick_sounds(&mut self) {
+        use rewo_world::animate_tick::{self as at, Emitter};
+        if self.block_emitters.is_empty() {
+            return;
+        }
+        let center = [
+            self.player.x.floor() as i32,
+            self.player.y.floor() as i32,
+            self.player.z.floor() as i32,
+        ];
+        let world = &self.world;
+        let emitters = &self.block_emitters;
+        let physics = &self.block_physics;
+        let mut out = Vec::new();
+        at::sample_positions(center, &mut self.animate_rng, &mut |p, rng| {
+            let state = world.block_state_at(p[0], p[1], p[2]) as usize;
+            let e = emitters.get(state).copied().unwrap_or_default();
+            if e == Emitter::None {
+                return;
+            }
+            let above = world.block_state_at(p[0], p[1] + 1, p[2]) as usize;
+            let air_above = physics
+                .get(above)
+                .map_or(above == 0, |b| b.has(rewo_data::block_physics::flags::AIR));
+            out.extend(at::tick_block(e, p, air_above, rng));
+        });
+        for s in out {
+            let source = if s.ambient {
+                crate::sounds::SoundSource::Ambient
+            } else {
+                crate::sounds::SoundSource::Blocks
+            };
+            self.push_sound_event(crate::sounds::SoundEvent::Local(
+                crate::sounds::LocalSound {
+                    name: s.name.into(),
+                    source,
+                    x: s.pos[0],
+                    y: s.pos[1],
+                    z: s.pos[2],
+                    volume: s.volume,
+                    pitch: s.pitch,
+                },
+            ));
+        }
     }
 
     /// M233 — `Camera.tickFov` with `getFieldOfViewModifier`'s inputs: the
@@ -3607,6 +4010,7 @@ impl PlaySession {
         self.dim_types = cfg.dim_types.clone();
         self.overworld_clock_id = cfg.overworld_clock_id;
         self.world_clock_ids = cfg.world_clock_ids.clone();
+        self.damage_effects = cfg.damage_effects.clone();
         self.swing_effect_ids = cfg.swing_effect_ids;
         self.movement_effect_ids = cfg.movement_effect_ids;
         self.pending_biome_registry = cfg.biome_registry();
@@ -4142,6 +4546,26 @@ impl PlaySession {
         let (Ok(eid), Ok(event)) = (r.i32(), r.i8()) else {
             return;
         };
+        // `LivingEntity.handleEntityEvent(3)` plays the death sound through
+        // `Entity.playSound`, i.e. `level.playSound(null, ..)`, which the
+        // client plays only for its own player (`Player.playSound` excepts
+        // itself, and the server sends that sound to everyone else). A mob's
+        // hurt and death sounds arrive as sound packets. The local player is
+        // not in the entity table, so its death sound is played here.
+        if event == 3 && Some(eid) == self.player_id {
+            let (a, b) = (self.player_rng.next_float(), self.player_rng.next_float());
+            let ev = crate::sounds::SoundEvent::Local(crate::sounds::LocalSound {
+                name: "minecraft:entity.player.death".into(),
+                source: crate::sounds::SoundSource::Players,
+                x: self.player.x,
+                y: self.player.y,
+                z: self.player.z,
+                volume: 1.0,
+                pitch: (a - b) * 0.2 + 1.0,
+            });
+            self.push_sound_event(ev);
+            return;
+        }
         // `packet.getEntity(this.level)` — `if (entity != null)`.
         let Some(type_id) = self.world.entities.get(eid).map(|e| e.type_id) else {
             return;
@@ -4482,6 +4906,12 @@ impl PlaySession {
                 // has no such field: a mount is a rider list that now names
                 // you (M68).
                 self.start_riding_sound();
+                // `handleSetEntityPassengersPacket`: newly mounted, the action
+                // bar says how to get off, with the sneak key's name (Rewo has
+                // no rebinding, so the default left shift).
+                self.hud
+                    .titles
+                    .set_overlay_message(mount_onboard_message(), false);
             }
             (true, false) => {
                 self.motion_stats.local_dismounts += 1;
@@ -4640,9 +5070,21 @@ impl PlaySession {
         self.gamemodes.get(&uuid).copied()
     }
 
-    /// The local player's game mode.
+    /// The local player's game mode **as the tab list holds it**
+    /// (`PlayerInfo.getGameMode()`). It needs [`Self::own_uuid`] to equal the
+    /// uuid the server lists the player under, which an offline-mode server
+    /// derives itself; use [`Self::local_game_mode`] for what
+    /// `MultiPlayerGameMode` believes.
     pub fn own_game_mode(&self) -> Option<GameMode> {
         self.own_uuid.and_then(|u| self.game_mode(u))
+    }
+
+    /// `MultiPlayerGameMode.getPlayerMode()`: the mode the login and respawn
+    /// packets and `game_event` 3 set, which is what `canHurtPlayer()`,
+    /// `hasExperience()` and the HUD gates read. The tab-list entry is only
+    /// the fallback for a session that was never told one.
+    pub fn local_game_mode(&self) -> Option<GameMode> {
+        resolve_local_game_mode(self.game_state.game_mode(), self.own_game_mode())
     }
 
     /// The local player's own attribute snapshots (M73).
@@ -4834,6 +5276,9 @@ impl PlaySession {
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, &spawn);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
         self.level_is_flat = spawn.is_flat;
+        self.last_death_location = spawn.last_death_location.clone();
+        // A new `LocalPlayer`: its ticker and last main-hand item start over.
+        self.attack_strength = Default::default();
         // M76. `handleLogin` builds the first `ClientLevel`, whose constructor
         // seeds the respawn data to `(8, 64, 8)` **of that level** — not to
         // `RespawnData.DEFAULT`, which no client ever holds. The server's
@@ -4903,6 +5348,9 @@ impl PlaySession {
         // parse succeeds, alongside everything else this packet establishes.
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, spawn);
         self.level_is_flat = spawn.is_flat;
+        self.last_death_location = spawn.last_death_location.clone();
+        // A new `LocalPlayer`: its ticker and last main-hand item start over.
+        self.attack_strength = Default::default();
         let changed = WorldTransition {
             world: &mut self.world,
             dirty: &mut self.dirty,
@@ -6213,6 +6661,10 @@ impl PlaySession {
             camel,
             up: 0.0,
             floats_while_ridden,
+            rearing_in_place: {
+                let (standing, sliding) = self.world.entities.equine_standing(id);
+                standing && !sliding
+            },
         };
         let collide = std::mem::take(&mut self.collide);
         let block_physics = std::mem::take(&mut self.block_physics);
@@ -6270,6 +6722,9 @@ impl PlaySession {
         if let Some(e) = self.world.entities.get_mut(id) {
             e.set_simulated([s.x, s.y, s.z], s.yaw);
         }
+        // Its walk animation and its look (`tickRidden`'s `setRot`), which
+        // the entity's own tick could not know: the move happens here.
+        self.world.entities.steered_mount_moved(id, s.yaw, s.pitch);
         self.seat_local_player(id);
         self.steered_horse = Some(steered);
         let pose = rewo_world::boat::BoatState {
@@ -6556,9 +7011,12 @@ impl PlaySession {
 
     /// The local player's current value of attribute `name` (M217), or
     /// `None` when the server has not sent it or the registry is missing.
+    /// `name` may carry the `minecraft:` prefix: the registry is keyed
+    /// without it, and the mining inputs once asked with it and always got
+    /// the defaults (Efficiency did nothing).
     pub fn local_attribute(&self, name: &str) -> Option<f64> {
         let reg = self.attribute_registry.as_deref()?;
-        let id = reg.id_of(name)?;
+        let id = reg.id_of(name.strip_prefix("minecraft:").unwrap_or(name))?;
         Some(self.local_attributes.get(id)?.value(reg.def(id)?))
     }
 
@@ -6655,7 +7113,21 @@ impl PlaySession {
         let mut p = PacketWriter::packet(id);
         p.varint(entity_id);
         self.send(p)?;
+        // `MultiPlayerGameMode.attack`'s `player.resetAttackStrengthTicker()`.
+        self.attack_strength.reset();
         self.swing()
+    }
+
+    /// `Player.getCurrentItemAttackStrengthDelay`, from the synced
+    /// `attack_speed` attribute (its registered default, 4, before the server
+    /// has sent one).
+    pub fn attack_strength_delay(&self) -> f32 {
+        rewo_world::attack_strength::delay(self.local_attribute("attack_speed").unwrap_or(4.0))
+    }
+
+    /// `Player.getAttackStrengthScale(a)`.
+    pub fn attack_strength_scale(&self, a: f32) -> f32 {
+        self.attack_strength.scale(a, self.attack_strength_delay())
     }
 
     /// `MultiPlayerGameMode.interact` (M216): `ServerboundInteractPacket(

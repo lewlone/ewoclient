@@ -113,16 +113,20 @@ pub enum Anim {
     /// mane, mouth and ears, and the bridle with them): `xRot` π/6 (the
     /// part's rest) + the look's pitch, + cos(walkPos · 0.8) · 0.15 · speed
     /// above a speed of 0.2; `yRot` the net head yaw clamped to ±20°.
+    /// M417/M426 — with the rearing, eating and feeding blends
+    /// ([`MobCombat::stand_anim`] and kin).
     EquineHead,
     /// M359 — the equine legs: `legAnim1 = cos(walkPos · 0.6662 + π)`; the
     /// front legs at ±legAnim1 · 0.8 · speed (left +), the hind at ∓legAnim1
-    /// · 0.5 · speed (left −).
+    /// · 0.5 · speed (left −). M-playtest — rearing: the front legs lift 12
+    /// and step 4 forward and bob, the hind lean back π/12.
     EquineLeg {
         hind: bool,
         left: bool,
     },
     /// M359 — the tail: `xRot` its π/6 rest + speed · 0.75, `y` + speed,
-    /// `z` + 2 · speed (× the age scale, 1 for the adults that use it).
+    /// `z` + 2 · speed (× the age scale, 1 for the adults that use it). A
+    /// child of [`Anim::EquineBody`] since the rearing.
     EquineTail,
     /// M417 — the equine body, `xRot` `standing · −π/4` (rearing); the
     /// tail, the saddle and a donkey's chests hang from it.
@@ -898,11 +902,40 @@ pub enum PiglinArmPose {
     CrossbowHold,
 }
 
+/// What `VillagerProfessionLayer` draws over a villager or zombie villager,
+/// resolved by the app (`rewo_data::villager::LayerPlan`; the keys are the
+/// layer sheets' names in the entity atlas).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct VillagerLayers {
+    /// The biome sheet (`baby/<type>` for a baby).
+    pub type_key: Option<&'static str>,
+    /// `typeHatVisible`: the type sheet on the full model, else on the
+    /// `*_NO_HAT` model (no head subtree).
+    pub type_with_head: bool,
+    pub profession_key: Option<&'static str>,
+    pub level_key: Option<&'static str>,
+}
+
+impl VillagerLayers {
+    /// The layers in `submit`'s order as `(sheet key, draws the head)`: the
+    /// type sheet, then the profession sheet and the badge, which always go
+    /// on the full model.
+    pub fn passes(&self) -> [Option<(&'static str, bool)>; 3] {
+        [
+            self.type_key.map(|k| (k, self.type_with_head)),
+            self.profession_key.map(|k| (k, true)),
+            self.level_key.map(|k| (k, true)),
+        ]
+    }
+}
+
 /// The synced mob state the M20 arm rigs read, mirrored into `rewo-gpu` so the
 /// renderer keeps no `rewo-world` dependency (the same pattern [`AllayDance`]
 /// and [`SwingKind`] use).
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct MobCombat {
+    /// The villager profession layer (`None` draws only the base sheet).
+    pub villager: Option<VillagerLayers>,
     /// `Mob.isAggressive()` — deepens the undead arm drop from −π/2.25 to
     /// −π/1.5 and gates the skeleton rig entirely.
     pub aggressive: bool,
@@ -5793,7 +5826,7 @@ fn villager_build(b: &mut ModelBuilder, witch: bool) -> (usize, Option<usize>) {
 /// part), the body, the robe (`bb_main`, 0.2) and two short legs on the
 /// villager's half-amplitude walk. Its layout is not the adult's: the baby
 /// sheet painted onto the adult mesh (M175 to M317) scrambled it. Only the
-/// base sheet, as Rewo's adult villager draws (no type or profession layer).
+/// base sheet; the biome layer is drawn over it from [`VillagerLayers`].
 fn villager_baby() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 16.0, 0.0], Anim::Head, 1.0);
@@ -6722,8 +6755,8 @@ fn dolphin_baby() -> Model {
 /// villager's head (8 x 8 x 7, looking) with its hat (0.3), brim and nose on
 /// child folds, a body with its robe (0.1), two 2 x 5 x 2 arms on
 /// `animateZombieArms` (named, as the adult's are) and two short legs on the
-/// humanoid walk. Only the base sheet, as Rewo's adult draws (no type or
-/// profession layer).
+/// humanoid walk. The base sheet; the biome layer is drawn over it from
+/// [`VillagerLayers`].
 fn zombie_villager_baby() -> Model {
     let mut b = ModelBuilder::new();
     let body = [Fold::at([0.0, 18.75, 0.0])];
@@ -17531,6 +17564,50 @@ mod equine_head_tests {
             donkey.quads.iter().filter(|q| q.part == head).count(),
             6 * 6
         );
+    }
+}
+
+#[cfg(test)]
+mod equine_body_tests {
+    use super::*;
+
+    /// The body is part 2 in every equine builder (after the head group), so
+    /// the saddle's boxes, the chests and the tail all ride the rearing tilt:
+    /// the tail and the chests are its children, and the saddle's box is on
+    /// the same part index as the body's.
+    #[test]
+    fn the_rearing_body_carries_the_saddle_the_chests_and_the_tail() {
+        let donkey = equine_with(true, 0.0);
+        let body = donkey
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::EquineBody)
+            .unwrap();
+        assert_eq!(body, 2);
+        assert_eq!(donkey.parts[body].pivot, [0.0, 11.0, 5.0]);
+        let tail = donkey
+            .parts
+            .iter()
+            .find(|p| p.anim == Anim::EquineTail)
+            .unwrap();
+        assert_eq!(tail.parent, Some(body as u16));
+        // Its rest in the body's frame, plus the body's pivot, is where the
+        // layer's tail has always stood: (0, 6, 7).
+        assert_eq!(tail.pivot, [0.0, -5.0, 2.0]);
+        assert_eq!(tail.rot, [PI / 6.0, 0.0, 0.0]);
+        let chests: Vec<_> = donkey
+            .parts
+            .iter()
+            .filter(|p| p.show == Show::Chested)
+            .collect();
+        assert_eq!(chests.len(), 1);
+        assert_eq!(chests[0].parent, Some(body as u16));
+        // The body box (six faces) is on the part.
+        assert!(donkey.quads.iter().filter(|q| q.part == body).count() >= 6);
+        let (saddle, _) = equine_saddle(true, 1.0);
+        let on_body = saddle.quads.iter().filter(|q| q.part == body).count();
+        let base_on_body = donkey.quads.iter().filter(|q| q.part == body).count();
+        assert_eq!(on_body, base_on_body + 6, "the saddle box rides the body");
     }
 }
 

@@ -1,0 +1,35 @@
+# Enni's list: "shoot arrows". Draw a bow fully, release, watch the arrow fly and stick in a hay wall.
+# The arrow's spread is the server's random, so its exact landing point differs run to run.
+name: rewo_bow
+description: Draw a bow (FOV narrows, bow pulls back), release, the arrow flies and sticks in a hay wall 12 blocks away.
+
+world:
+  freeze: false
+  server_commands:
+    - fill -4 -60 13 4 -56 13 minecraft:hay_block
+    - setworldspawn 0 -60 0
+    - gamerule block_drops false
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, -2]
+  commands:
+    - clear @s
+    - give @s minecraft:bow
+    - give @s minecraft:arrow 8
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: ready, checklist: "bow in the right hand, a hay bale wall ahead, 8 arrows in slot 2"}
+  - {at: 2, hold: [use]}
+  - {at: 8, capture: drawing, checklist: "bow being drawn: the bow is pulled toward the centre, an arrow nocked, FOV starting to narrow"}
+  - {at: 24, capture: drawn, checklist: "bow fully drawn, field of view visibly narrower than 'ready'"}
+  - {at: 26, release: [use]}
+  - {at: 26, expect_sound: minecraft:entity.arrow.shoot, window: 3}
+  - {at: 28, capture: flight, checklist: "an arrow in flight ahead, the bow back at rest, 7 arrows left"}
+  - {at: 50, capture: stuck, checklist: "the arrow stuck in the hay wall"}
+  - {at: 52, hold: [use]}
+  - {at: 58, release: [use]}
+  - {at: 62, capture: weak_shot, checklist: "a weak (barely drawn) shot: arrow drops short in front"}
+end_tick: 64

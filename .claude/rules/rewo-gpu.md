@@ -53,6 +53,31 @@ goes into the module that owns the subsystem, not back into `world.rs`.
   `BakedAssets::state_quads`. M260 read `models[state]` and drew another
   block's model (an oak stair in cinnabar bricks) while r119, a quad
   count, passed; a scratch render caught it.
+- **A block sprite wider than 16 is tiled, not dropped.** The terrain layer
+  array is 16 × 16, and `layer_for` refused 26.x's 32 × 32 signs, hanging
+  signs, shelves and dried-ghast tentacles, so every such state baked to no
+  quads (a sign was only its text; 26.2 has no `SignModel`, the board is a
+  block model). `Baker::big_sprite` cuts a sprite into layer-sized tiles and
+  `split_quad_over_tiles` cuts each face over them; the sign text transform
+  is `sign_states::SignState::text_transform` (a hanging sign has its own).
+- **Entity shadows** (`ShadowFeatureRenderer`): `rewo_world::shadow` ports
+  `extractShadow` behind the `ShadowGround` trait, the per-renderer radius and
+  strength are the generated `shadow_radius_table` (`tools/gen_shadow_radius.py`)
+  plus `rewo_data::shadow`'s rules, and `EntityPass` draws them as the last
+  range (gamma space, `GREATER_OR_EQUAL`, no depth write, vertices pulled
+  toward the camera by `1 - 1/4096` for `VIEW_OFFSET_Z_LAYERING`). The
+  `entityShadows` option gates it.
+- **Villager outfits** (`VillagerProfessionLayer`): the type, profession and
+  badge sheets are `rewo_data::villager::SHEETS`, packed after every other
+  atlas texture and found by name; `emit_model` redraws the base model's quads
+  on each into the layer range (the no-hat model skips the head subtree),
+  drawn by `draw_layers` with `GREATER_OR_EQUAL` AND depth writes. Not
+  `EQUAL`: the hat and rim are texels the base sheet leaves transparent, so
+  the base never wrote their depth (M-playtest: a farmer with no hat).
+  `mobtexshot`'s `vo1` checks the hat widens the head. Adding atlas textures
+  means growing `ATLAS_H` and the cape gate's `*_SHELF_GROWTH` sum, and moves
+  every atlas V denominator (a witness that rests on one or two edge texels
+  can flip: `m77`'s puppy did).
 - **World text frames are y-down** (a sign's and a text display's
   transform end in a negative y scale, as vanilla's font layout does), so
   `emit_world_text` maps a glyph's top to its cell's top (`glyph_uv`'s

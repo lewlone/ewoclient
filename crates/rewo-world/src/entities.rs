@@ -423,6 +423,35 @@ pub struct Flight {
     pub arrow: bool,
 }
 
+/// One tick's crit-particle trail of a critical arrow
+/// (`AbstractArrow.tick`'s `if (isCritArrow())` loop): where the arrow was
+/// and the movement it moved by, before the tick's drag and gravity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CritTrail {
+    pub origin: [f64; 3],
+    pub movement: [f64; 3],
+}
+
+impl CritTrail {
+    /// The four `addParticle(CRIT, ...)` calls: `origin + movement * i / 4`
+    /// with the velocity `(-movement.x, -movement.y + 0.2, -movement.z)`.
+    pub fn particles(&self) -> [([f64; 3], [f64; 3]); 4] {
+        let (o, m) = (self.origin, self.movement);
+        let vel = [-m[0], -m[1] + 0.2, -m[2]];
+        std::array::from_fn(|i| {
+            let i = i as f64;
+            (
+                [
+                    o[0] + m[0] * i / 4.0,
+                    o[1] + m[1] * i / 4.0,
+                    o[2] + m[2] * i / 4.0,
+                ],
+                vel,
+            )
+        })
+    }
+}
+
 /// M362 — `AbstractArrow` (arrow, spectral arrow, trident): gravity 0.05,
 /// air drag 0.99.
 pub const ARROW_FLIGHT: Flight = Flight {
@@ -499,6 +528,14 @@ pub struct EntityState {
     prev_head_yaw: f32,
     /// M362 — the flight the client ticks this entity with (a projectile).
     flight: Option<Flight>,
+    /// `AbstractArrow.isCritArrow()` (`ID_FLAGS` bit 1): a critical arrow
+    /// trails crit particles while it flies.
+    arrow_crit: bool,
+    /// `Camel.updateWalkAnimation`: the camel's walk target is
+    /// `min(distance * 6, 1)` eased by 0.2 (the default is `* 4`, `0.4`),
+    /// and 0 while it is not standing.
+    camel_walk: bool,
+    camel_still: bool,
     /// M362 — `AbstractArrow.IN_GROUND` (or a block the client's own flight
     /// hit): the flight has ended.
     in_ground: bool,
@@ -600,6 +637,9 @@ pub struct EntityState {
     /// ±0.09 a tick toward 1 while visually swimming, else 0).
     pub swim_amount: f32,
     pub swim_amount_o: f32,
+    /// `AbstractHorse`'s rearing, eating and mouth clocks and its flags byte
+    /// ([`crate::equine`]); all zero for anything else.
+    equine: crate::equine::EquineAnim,
     /// `ClientboundAddEntityPacket.data` (M194) — per-type meaning; an item
     /// frame's facing (`Direction.from3DDataValue`). 0 when absent.
     pub spawn_data: i32,
@@ -673,6 +713,9 @@ impl EntityState {
             prev_pitch: pitch,
             prev_head_yaw: yaw,
             flight: None,
+            arrow_crit: false,
+            camel_walk: false,
+            camel_still: false,
             in_ground: false,
             lerp_steps: 0,
             lerp_len: LERP_STEPS,
@@ -701,6 +744,7 @@ impl EntityState {
             was_on_ground: false,
             swim_amount: 0.0,
             swim_amount_o: 0.0,
+            equine: crate::equine::EquineAnim::default(),
             spawn_data: 0,
         }
     }
@@ -879,13 +923,51 @@ impl EntityState {
             self.lerp_steps -= 1;
         }
         // Walk animation from this tick's horizontal displacement (vanilla
-        // LivingEntity.aiStep): target = min(1, dist·4), smoothed by 0.4,
-        // phase advances by the smoothed amount.
-        let dx = self.cur[0] - before[0];
-        let dz = self.cur[2] - before[2];
-        let target = ((dx * dx + dz * dz).sqrt() as f32 * 4.0).min(1.0);
-        self.limb_amount += (target - self.limb_amount) * 0.4;
+        // LivingEntity.aiStep). A vehicle the local player steers moves AFTER
+        // this (the session's own simulation), so its walk is updated by
+        // [`Self::update_walk_after_move`] once it has.
+        if !authoritative {
+            self.update_walk(before);
+        }
+    }
+
+    /// `LivingEntity.calculateEntityAnimation` → `updateWalkAnimation`:
+    /// `target = min(distance * 4, 1)`, `speed += (target - speed) * 0.4`,
+    /// the phase advances by the new speed. A camel's is `* 6` and `0.2`,
+    /// and 0 while it is not standing (`Camel.updateWalkAnimation`).
+    fn update_walk(&mut self, from: [f64; 3]) {
+        let dx = self.cur[0] - from[0];
+        let dz = self.cur[2] - from[2];
+        let distance = (dx * dx + dz * dz).sqrt() as f32;
+        let (scale, factor) = if self.camel_walk {
+            (6.0, 0.2)
+        } else {
+            (4.0, 0.4)
+        };
+        let target = if self.camel_walk && self.camel_still {
+            0.0
+        } else {
+            (distance * scale).min(1.0)
+        };
+        self.limb_amount += (target - self.limb_amount) * factor;
         self.limb_swing += self.limb_amount;
+    }
+
+    /// The walk animation of a mount the local player steers, once the
+    /// session has moved it this tick: the displacement since the tick's
+    /// start (`prev`, which [`Self::tick`] set). Until M-playtest a steered
+    /// horse or camel stood on frozen limbs, because its position changes
+    /// after the entity's own tick and the displacement that tick saw was 0.
+    pub fn update_walk_after_move(&mut self) {
+        self.update_walk(self.prev);
+    }
+
+    /// `AbstractHorse.tickRidden`'s `setRot(rider yaw, rider pitch * 0.5)`
+    /// and `yHeadRot = yRot`: the mount looks where its rider does.
+    pub fn set_ridden_look(&mut self, yaw: f32, pitch: f32) {
+        self.yaw = yaw;
+        self.head_yaw = yaw;
+        self.pitch = pitch;
     }
 
     /// Overwrite **this tick's** position without touching `prev` or the
@@ -937,15 +1019,18 @@ impl EntityState {
     /// `atan2(y, horizontal)`), the move is clipped against `solid` (a point
     /// test on the blocks' collision boxes) and a hit ends the flight there,
     /// else the entity moves by the whole movement; then the drag and the
-    /// gravity. Not modelled: water's inertia, entity hits (the server
-    /// removes the projectile).
-    pub fn step_flight(&mut self, solid: &dyn Fn([f64; 3]) -> bool) {
-        let Some(flight) = self.flight else {
-            return;
-        };
+    /// gravity. Not modelled: water's inertia (and its bubbles), entity hits
+    /// (the server removes the projectile). A critical arrow in flight
+    /// returns its crit trail.
+    pub fn step_flight(&mut self, solid: &dyn Fn([f64; 3]) -> bool) -> Option<CritTrail> {
+        let flight = self.flight?;
         if self.in_ground {
-            return;
+            return None;
         }
+        let trail = (flight.arrow && self.arrow_crit).then_some(CritTrail {
+            origin: self.cur,
+            movement: self.delta_movement,
+        });
         let m = self.delta_movement;
         let horizontal = (m[0] * m[0] + m[2] * m[2]).sqrt();
         if m.iter().any(|c| *c != 0.0) {
@@ -982,6 +1067,7 @@ impl EntityState {
             }
         }
         [self.x, self.y, self.z] = self.cur;
+        trail
     }
 
     /// M377 — the camel's / nautilus's dash cooldown in ticks (0 when none).
@@ -1862,19 +1948,6 @@ pub struct MobState {
     /// (`onSyncedDataUpdated`), counted down a tick at a time
     /// (`tickFuse`'s `if (fuse > 0) fuse--`).
     pub sulfur_fuse: Option<i32>,
-    /// M404 — `AbstractHorse.DATA_ID_FLAGS` (index 18, BYTE): 0x20 is
-    /// `isStanding()` (rearing). 0 by default.
-    pub horse_flags: u8,
-    /// M404 — `AbstractHorse.standAnim` / `standAnimO`: the client's own
-    /// rearing animation, eased from the synced standing flag each tick.
-    pub stand_anim: f32,
-    pub stand_anim_o: f32,
-    /// M426 — `eatAnim` / `eatAnimO` (grazing, flag 0x10) and `mouthAnim` /
-    /// `mouthAnimO` (flag 0x40, the renderer's `feedingAnimation`).
-    pub eat_anim: f32,
-    pub eat_anim_o: f32,
-    pub mouth_anim: f32,
-    pub mouth_anim_o: f32,
     /// M394 — `AbstractBoat.DATA_ID_BUBBLE_TIME` (13, INT), and the client's
     /// `bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
     /// (`tickBubbleColumn`).
@@ -1943,6 +2016,11 @@ pub struct MobState {
     /// M18 rule again, and the reason `apply_set_entity_data` gates this on
     /// the type being a cat or a wolf.
     pub tamable_flags: u8,
+    /// `VillagerData` (serializer 18) of a villager or zombie villager: the
+    /// raw `(villager_type id, villager_profession id, level)`. `None` until
+    /// the server sends it, which is not vanilla's default (plains / none /
+    /// 1): the layer draws that default only once it is told.
+    pub villager_data: Option<(i32, i32, i32)>,
 }
 
 impl MobState {
@@ -2271,6 +2349,42 @@ impl EntityTable {
                 e.dash_cooldown = ticks;
             }
         }
+    }
+
+    /// `AbstractHorse.DATA_ID_FLAGS` (index 17 BYTE) arrived: the tame, bred,
+    /// eating, standing and open-mouth bits ([`crate::equine`]).
+    pub fn set_equine_flags(&mut self, id: i32, flags: u8) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.equine.set_flags(flags);
+        }
+    }
+
+    /// `AbstractHorse.onPlayerJump(amount)`'s rearing, run for the horse the
+    /// local player steers (`isEffectiveAi()` is then true): see
+    /// [`crate::equine::EquineAnim::on_player_jump`].
+    pub fn equine_on_player_jump(&mut self, id: i32, jump_amount: i32, can_rear: bool) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.equine.on_player_jump(jump_amount, can_rear);
+        }
+    }
+
+    /// The horse's rearing, eating and mouth clocks at partial tick `alpha`:
+    /// `(getEatAnim, getStandAnim, getMouthAnim)`, all 0 for anything else.
+    pub fn equine_anims(&self, id: i32, alpha: f32) -> (f32, f32, f32) {
+        self.map.get(&id).map_or((0.0, 0.0, 0.0), |e| {
+            (
+                e.equine.eat_anim(alpha),
+                e.equine.stand_anim(alpha),
+                e.equine.mouth_anim(alpha),
+            )
+        })
+    }
+
+    /// `isStanding()` and `allowStandSliding`, for `getRiddenInput`.
+    pub fn equine_standing(&self, id: i32) -> (bool, bool) {
+        self.map.get(&id).map_or((false, false), |e| {
+            (e.equine.is_standing(), e.equine.allow_stand_sliding())
+        })
     }
 
     /// `getJumpCooldown()` for a camel or nautilus (M169); 0 otherwise.
@@ -2708,11 +2822,41 @@ impl EntityTable {
         }
     }
 
-    /// M362 — one client tick of every projectile's flight.
-    pub fn step_flights(&mut self, solid: &dyn Fn([f64; 3]) -> bool) {
-        for e in self.map.values_mut() {
-            e.step_flight(solid);
+    /// Mark `id` a camel: its walk animation follows `Camel.
+    /// updateWalkAnimation` (see [`EntityState::update_walk`]).
+    pub fn set_camel_walk(&mut self, id: i32) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.camel_walk = true;
         }
+    }
+
+    /// The walk animation of the mount the local player steers, after the
+    /// session moved it (see [`EntityState::update_walk_after_move`]), and
+    /// its look (`tickRidden`'s `setRot`).
+    pub fn steered_mount_moved(&mut self, id: i32, yaw: f32, pitch: f32) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.update_walk_after_move();
+            e.set_ridden_look(yaw, pitch);
+        }
+    }
+
+    /// `AbstractArrow.ID_FLAGS` (index 8 BYTE; bit 1 is `FLAG_CRIT`); only an
+    /// arrow's flight reads it.
+    pub fn set_arrow_flags(&mut self, id: i32, flags: u8) {
+        if let Some(e) = self.map.get_mut(&id) {
+            if e.flight.is_some_and(|f| f.arrow) {
+                e.arrow_crit = flags & 1 != 0;
+            }
+        }
+    }
+
+    /// M362 — one client tick of every projectile's flight; the crit trails
+    /// of the critical arrows that flew this tick.
+    pub fn step_flights(&mut self, solid: &dyn Fn([f64; 3]) -> bool) -> Vec<CritTrail> {
+        self.map
+            .values_mut()
+            .filter_map(|e| e.step_flight(solid))
+            .collect()
     }
 
     /// `entity.getDeltaMovement()`.
@@ -3466,6 +3610,17 @@ impl EntityTable {
         self.mob_state.get(&id).and_then(|s| s.variant)
     }
 
+    /// A villager's or zombie villager's `VillagerData`, as the raw wire ids
+    /// (see [`MobState::villager_data`]).
+    pub fn set_villager_data(&mut self, id: i32, data: (i32, i32, i32)) {
+        self.mob_state.entry(id).or_default().villager_data = Some(data);
+    }
+
+    /// The `VillagerData` the server sent, `None` if it sent none.
+    pub fn villager_data(&self, id: i32) -> Option<(i32, i32, i32)> {
+        self.mob_state.get(&id).and_then(|s| s.villager_data)
+    }
+
     /// M342 — a wolf's collar colour (`DATA_COLLAR_COLOR`). Kind-gated by the
     /// caller: the llama's variant is the same index and serializer.
     pub fn set_collar(&mut self, id: i32, color: i32) {
@@ -3488,38 +3643,30 @@ impl EntityTable {
         self.mob_state.get(&id).and_then(|s| s.carried_block)
     }
 
-    /// M404 — an `AbstractHorse`'s `DATA_ID_FLAGS` byte. Kind-gated by the
-    /// caller.
-    pub fn set_horse_flags(&mut self, id: i32, flags: u8) {
-        self.mob_state.entry(id).or_default().horse_flags = flags;
-    }
-
     /// M404 — `AbstractHorse.standAnimO`, the rearing animation as this
     /// tick began (what the rider's seat reads); 0 for anything that never
-    /// stood.
+    /// stood. The clocks are [`crate::equine::EquineAnim`]'s.
     pub fn stand_anim_o(&self, id: i32) -> f32 {
-        self.mob_state.get(&id).map_or(0.0, |s| s.stand_anim_o)
+        self.map.get(&id).map_or(0.0, |e| e.equine.stand_anim_o())
     }
 
     /// M426 — `getEatAnim(a)`: `Mth.lerp(a, eatAnimO, eatAnim)`.
     pub fn eat_anim_at(&self, id: i32, alpha: f32) -> f32 {
-        self.mob_state
-            .get(&id)
-            .map_or(0.0, |s| s.eat_anim_o + alpha * (s.eat_anim - s.eat_anim_o))
+        self.map.get(&id).map_or(0.0, |e| e.equine.eat_anim(alpha))
     }
 
     /// M426 — `getMouthAnim(a)`, the renderer's `feedingAnimation`.
     pub fn mouth_anim_at(&self, id: i32, alpha: f32) -> f32 {
-        self.mob_state.get(&id).map_or(0.0, |s| {
-            s.mouth_anim_o + alpha * (s.mouth_anim - s.mouth_anim_o)
-        })
+        self.map
+            .get(&id)
+            .map_or(0.0, |e| e.equine.mouth_anim(alpha))
     }
 
     /// M404 — `getStandAnim(a)`: `Mth.lerp(a, standAnimO, standAnim)`.
     pub fn stand_anim_at(&self, id: i32, alpha: f32) -> f32 {
-        self.mob_state.get(&id).map_or(0.0, |s| {
-            s.stand_anim_o + alpha * (s.stand_anim - s.stand_anim_o)
-        })
+        self.map
+            .get(&id)
+            .map_or(0.0, |e| e.equine.stand_anim(alpha))
     }
 
     /// M354 — a bee's `DATA_FLAGS_ID` byte. Kind-gated by the caller.
@@ -3685,36 +3832,6 @@ impl EntityTable {
             if st.boat_damage > 0.0 {
                 st.boat_damage -= 1.0;
             }
-            // M426 — the eat animation first, as `aiStep` runs it: toward 1
-            // while eating (flag 0x10), toward 0 otherwise.
-            st.eat_anim_o = st.eat_anim;
-            let e = st.eat_anim;
-            st.eat_anim = if st.horse_flags & 0x10 != 0 {
-                (e + ((1.0 - e) * 0.4 + 0.05)).min(1.0)
-            } else {
-                (e + ((0.0 - e) * 0.4 - 0.05)).max(0.0)
-            };
-            // M404 — `AbstractHorse.aiStep`'s stand animation: toward 1 while
-            // standing, back to 0 (cubic ease) once not. Every mob state
-            // runs it; one that never stood stays at 0. M426 — standing
-            // zeroes the eat animation.
-            st.stand_anim_o = st.stand_anim;
-            let a = st.stand_anim;
-            st.stand_anim = if st.horse_flags & 0x20 != 0 {
-                st.eat_anim = 0.0;
-                st.eat_anim_o = 0.0;
-                (a + ((1.0 - a) * 0.4 + 0.05)).min(1.0)
-            } else {
-                (a + ((0.8 * a * a * a - a) * 0.6 - 0.05)).max(0.0)
-            };
-            // M426 — the mouth (flag 0x40).
-            st.mouth_anim_o = st.mouth_anim;
-            let m = st.mouth_anim;
-            st.mouth_anim = if st.horse_flags & 0x40 != 0 {
-                (m + ((1.0 - m) * 0.7 + 0.05)).min(1.0)
-            } else {
-                (m + ((0.0 - m) * 0.7 - 0.05)).max(0.0)
-            };
             // M396 — `SulfurCube.tickFuse`.
             if let Some(f) = st.sulfur_fuse.as_mut() {
                 if *f > 0 {
@@ -3996,6 +4113,10 @@ impl EntityTable {
             // (`isCrouching()` is the CROUCHING pose, 5).
             let motion = e.delta_movement;
             e.elytra.tick(fall_flying, pose == 5, motion);
+            // `AbstractHorse.tick`'s stand / eat / mouth clocks.
+            e.equine.tick();
+            // `Camel.updateWalkAnimation`: only `Pose.STANDING` (0) walks.
+            e.camel_still = pose != 0;
             // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
             // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
             if e.dash_cooldown > 0 {
@@ -4306,8 +4427,7 @@ impl EntityTable {
             cube_size: self.sizes.get(&id).copied().unwrap_or(1),
             limb: e.limb(),
             baby,
-            // M404 — read only by the horse's seat.
-            stand_anim_o: self.stand_anim_o(id),
+            stand_anim_o: e.equine.stand_anim_o(),
         })
     }
 
@@ -4584,12 +4704,12 @@ mod tests {
     fn a_horse_eats_and_works_its_mouth_and_rearing_stops_it() {
         let mut t = EntityTable::default();
         t.add(5, EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0));
-        t.set_horse_flags(5, 0x10 | 0x40);
+        t.set_equine_flags(5, 0x10 | 0x40);
         t.tick_lerp();
         assert!((t.eat_anim_at(5, 1.0) - 0.45).abs() < 1e-6);
         assert!((t.mouth_anim_at(5, 1.0) - 0.75).abs() < 1e-6);
         assert_eq!(t.eat_anim_at(5, 0.0), 0.0);
-        t.set_horse_flags(5, 0x10 | 0x20);
+        t.set_equine_flags(5, 0x10 | 0x20);
         t.tick_lerp();
         assert_eq!(t.eat_anim_at(5, 1.0), 0.0);
         assert_eq!(t.eat_anim_at(5, 0.0), 0.0);
@@ -4599,7 +4719,7 @@ mod tests {
     fn a_horse_rears_while_its_flag_stands_it() {
         let mut t = EntityTable::default();
         t.add(3, EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0));
-        t.set_horse_flags(3, 0x20 | 0x04);
+        t.set_equine_flags(3, 0x20 | 0x04);
         t.tick_lerp();
         assert!((t.stand_anim_at(3, 1.0) - 0.45).abs() < 1e-6);
         assert_eq!(t.stand_anim_o(3), 0.0);
@@ -4610,7 +4730,7 @@ mod tests {
             t.tick_lerp();
         }
         assert_eq!(t.stand_anim_at(3, 1.0), 1.0);
-        t.set_horse_flags(3, 0x04);
+        t.set_equine_flags(3, 0x04);
         t.tick_lerp();
         assert!((t.stand_anim_at(3, 1.0) - (1.0 + (0.8 - 1.0) * 0.6 - 0.05)).abs() < 1e-6);
         for _ in 0..10 {
@@ -4819,6 +4939,49 @@ mod tests {
         let (swing, amt) = e.limb();
         assert!(amt > 0.5, "sustained walk drives amount up: {amt}");
         assert!(swing > 0.0, "phase advanced: {swing}");
+    }
+
+    /// A mount the local player steers moves after its own tick, so its
+    /// walk animation reads the move the session made (`calculateEntityAnimation`
+    /// at the end of `LivingEntity.tick`): `target = min(0.1 * 4, 1) = 0.4`,
+    /// eased by 0.4 to 0.16, and the phase advances by that speed. Before the
+    /// fix the limbs of a ridden horse never moved.
+    #[test]
+    fn a_steered_mount_walks_by_the_move_the_session_made() {
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.tick(false, true);
+        e.set_simulated([0.0, 0.0, 0.1], 0.0);
+        assert_eq!(e.limb(), (0.0, 0.0), "the entity's own tick sees no move");
+        e.update_walk_after_move();
+        let (swing, amount) = e.limb();
+        assert!((amount - 0.16).abs() < 1e-6 && (swing - 0.16).abs() < 1e-6);
+        // A second tick builds on it (the displacement is from the tick's start).
+        e.tick(false, true);
+        e.set_simulated([0.0, 0.0, 0.2], 0.0);
+        e.update_walk_after_move();
+        assert!((e.limb().1 - (0.16 + (0.4 - 0.16) * 0.4)).abs() < 1e-6);
+    }
+
+    /// `Camel.updateWalkAnimation`: `min(distance * 6, 1)` eased by 0.2, and
+    /// 0 while the pose is not STANDING.
+    #[test]
+    fn a_camel_walks_at_six_times_the_distance_and_a_fifth_the_ease() {
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.camel_walk = true;
+        e.nudge(0.0, 0.0, 0.1);
+        for _ in 0..3 {
+            e.tick(false, false);
+        }
+        // 0.1 over the three lerp ticks, a third each: 0.0333 * 6 = 0.2,
+        // eased by 0.2 three times from 0.
+        let (_, amount) = e.limb();
+        let want = (0..3).fold(0.0f32, |a, _| a + (0.2 - a) * 0.2);
+        assert!((amount - want).abs() < 1e-4, "{amount} vs {want}");
+        // Sitting: the target is 0 and the speed decays.
+        e.camel_still = true;
+        e.nudge(0.0, 0.0, 0.3);
+        e.tick(false, false);
+        assert!(e.limb().1 < amount);
     }
 
     #[test]
@@ -6208,6 +6371,27 @@ mod side_state_tests {
         assert!(t.get(8).is_some(), "and the entity itself is there");
     }
 
+    /// A villager's profession is the entity's alone: stored per id, and a
+    /// reused id starts with none (its outfit would otherwise follow the id).
+    #[test]
+    fn a_villagers_data_is_per_entity_and_does_not_survive_the_id() {
+        let mut t = EntityTable::default();
+        spawned(&mut t, 4);
+        spawned(&mut t, 6);
+        assert_eq!(t.villager_data(4), None, "nothing sent yet");
+        t.set_villager_data(4, (2, 5, 3));
+        assert_eq!(t.villager_data(4), Some((2, 5, 3)));
+        assert_eq!(t.villager_data(6), None, "a neighbour is unaffected");
+        t.set_villager_data(4, (0, 9, 1));
+        assert_eq!(t.villager_data(4), Some((0, 9, 1)), "the latest wins");
+        spawned(&mut t, 4);
+        assert_eq!(t.villager_data(4), None, "a re-add inherits nothing");
+        t.set_villager_data(4, (1, 1, 1));
+        t.remove(4);
+        assert_eq!(t.villager_data(4), None);
+        assert_eq!(side_rows(&t, 4), 0);
+    }
+
     /// Churn does not grow the side maps: a thousand ids spawned, dressed and
     /// removed leave every map empty (the unbounded growth the audit named).
     #[test]
@@ -6323,6 +6507,36 @@ mod flight_tests {
         assert_eq!(flight_of("minecraft:zombie"), None);
         // Unwound to within 180 degrees first, as vanilla's: -190 toward -170.
         assert!((lerp_rotation(170.0, -170.0) + 186.0).abs() < 1e-4);
+    }
+
+    /// A critical arrow in flight reports `AbstractArrow.tick`'s four crit
+    /// particles from where it was, along the movement it is about to make
+    /// (the decompile's `origin + movement * i / 4`, velocity `-movement +
+    /// (0, 0.2, 0)`); a plain arrow, an arrow in the ground and a thrown
+    /// item report none.
+    #[test]
+    fn a_critical_arrow_trails_crit_particles() {
+        let none = |_: [f64; 3]| false;
+        let mut t = EntityTable::default();
+        for id in 1..=3 {
+            t.add(id, EntityState::new(0, id, 0.0, 70.0, 0.0, 0.0, 0.0));
+            t.get_mut(id).unwrap().set_spawn_motion([0.0, 1.0, 3.0]);
+        }
+        t.set_flight(1, ARROW_FLIGHT);
+        t.set_flight(2, ARROW_FLIGHT);
+        t.set_flight(3, THROWN_FLIGHT);
+        t.set_arrow_flags(1, 1);
+        t.set_arrow_flags(3, 1);
+        let trails = t.step_flights(&none);
+        assert_eq!(trails.len(), 1);
+        let p = trails[0].particles();
+        assert_eq!(p[0].0, [0.0, 70.0, 0.0]);
+        assert_eq!(p[2].0, [0.0, 70.5, 1.5]);
+        assert_eq!(p[3].0, [0.0, 70.75, 2.25]);
+        assert_eq!(p[1].1, [-0.0, -0.8, -3.0]);
+        // In the ground: none.
+        t.get_mut(1).unwrap().in_ground = true;
+        assert!(t.step_flights(&none).is_empty());
     }
 
     /// M362 — the server's `IN_GROUND` stops an arrow's flight, and only an

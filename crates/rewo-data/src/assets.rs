@@ -727,6 +727,10 @@ pub struct BakedAssets {
     pub armor_glint: Option<DecodedImage>,
     /// M282 — `misc/vignette.png`, the HUD vignette.
     pub vignette: Option<DecodedImage>,
+    /// `misc/shadow.png` (64 x 64 grey + alpha), the texture
+    /// `ShadowFeatureRenderer` projects onto the ground under an entity. `None`
+    /// draws no shadows.
+    pub shadow: Option<DecodedImage>,
     /// M283 — the other camera overlays: `misc/pumpkinblur.png`,
     /// `misc/powder_snow_outline.png`, `misc/spyglass_scope.png`.
     pub pumpkin_blur: Option<DecodedImage>,
@@ -915,6 +919,12 @@ pub struct BakedAssets {
     /// shape as [`MobTexture`] plus the variant id that addresses it, because
     /// they ride M57b's ETF variant machinery into the same atlas.
     pub mob_variant_textures: Vec<MobVariantTexture>,
+    /// The villager and zombie villager overlay sheets
+    /// (`crate::villager::SHEETS`, `VillagerProfessionLayer`), keyed by the
+    /// sheet's atlas key. A layer re-uses the base model's UVs, so each is the
+    /// base sheet's size; a missing jar entry is simply absent and that layer
+    /// is not drawn.
+    pub villager_textures: Vec<MobTexture>,
     /// Held-item models (M22): every resolvable item's quads + textures.
     pub held_items: crate::held_items::HeldItems,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
@@ -1524,6 +1534,11 @@ pub struct HudSprites {
     /// `hud/jump_bar_{background,cooldown,progress}` (M168), 182x5 each —
     /// THREE, not the two a background/progress pair would suggest.
     pub jump_bar: [HudSprite; 3],
+    /// `hud/hotbar_offhand_{left,right}`, 29x24 each, in that order.
+    pub offhand: [HudSprite; 2],
+    /// `hud/crosshair_attack_indicator_{full,background,progress}`, in that
+    /// order: 16x16, 16x4, 16x4.
+    pub attack_indicator: [HudSprite; 3],
     /// `mob_effect/<name>.png` for every row of
     /// [`crate::mob_effect_table::MOB_EFFECTS`], in that order — which is
     /// the registry's protocol-id order, so the index IS the wire id.
@@ -1974,6 +1989,22 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             None => log::warn!("rewo-data: {path} missing — {key} keeps its base texture there"),
         }
     }
+    let mut villager_textures = Vec::with_capacity(crate::villager::SHEETS.len());
+    for sheet in crate::villager::SHEETS {
+        let size = crate::villager::SHEET_SIZE;
+        match bake_entity_tex(&mut jar, sheet.path, size, size) {
+            Some(rgba) => villager_textures.push(MobTexture {
+                key: sheet.key,
+                w: size,
+                h: size,
+                rgba,
+            }),
+            None => log::warn!(
+                "rewo-data: {} missing, that villager layer is not drawn",
+                sheet.path
+            ),
+        }
+    }
     let hud = bake_hud(&mut jar);
     let locator = bake_locator(&mut jar);
     let container = bake_container(&mut jar);
@@ -1987,6 +2018,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     // different scale, it is a different texture at a different scale.
     let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
     let vignette = bake_misc_texture(&mut jar, "vignette.png");
+    let shadow = bake_misc_texture(&mut jar, "shadow.png");
     let pumpkin_blur = bake_misc_texture(&mut jar, "pumpkinblur.png");
     let powder_snow = bake_misc_texture(&mut jar, "powder_snow_outline.png");
     let spyglass_scope = bake_misc_texture(&mut jar, "spyglass_scope.png");
@@ -2063,6 +2095,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         jar: &mut jar,
         model_cache: HashMap::new(),
         layer_index: HashMap::new(),
+        big_sprites: HashMap::new(),
         layers: Vec::new(),
         layer_names: Vec::new(),
         animations: Vec::new(),
@@ -2335,12 +2368,24 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             outline[id as usize] = if let Some(b) = constant_outline.get(block_name.as_str()) {
                 b.to_vec()
             } else if state_outline.contains(block_name.as_str()) {
-                match bs.as_ref() {
+                let from_model = match bs.as_ref() {
                     Some(bs) => {
                         let refs = baker.state_refs(bs, props);
                         baker.outline_boxes(&refs)
                     }
                     None => Vec::new(),
+                };
+                // A block-entity-rendered class (a chest, a bed, a shulker
+                // box) has a model with no geometry, so its outline came out
+                // EMPTY and the crosshair passed straight through it: a chest
+                // could not be targeted, opened or broken (found by the
+                // playtest harness, `tools/playtest/rewo_containers.yaml`).
+                // Those classes override `getShape` only, so the outline is
+                // the shape `special_collision` transcribes.
+                if from_model.is_empty() {
+                    special_collision(short, props).unwrap_or_default()
+                } else {
+                    from_model
                 }
             } else {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
@@ -2606,6 +2651,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         glint,
         armor_glint,
         vignette,
+        shadow,
         pumpkin_blur,
         powder_snow,
         spyglass_scope,
@@ -2646,6 +2692,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         font,
         mob_textures,
         mob_variant_textures,
+        villager_textures,
         baby_swap_baked,
         baby_swap_skips,
         hud,
@@ -3933,6 +3980,21 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
             get(jar, "gui/sprites/hud/jump_bar_cooldown.png")?,
             get(jar, "gui/sprites/hud/jump_bar_progress.png")?,
         ],
+        offhand: [
+            get(jar, "gui/sprites/hud/hotbar_offhand_left.png")?,
+            get(jar, "gui/sprites/hud/hotbar_offhand_right.png")?,
+        ],
+        attack_indicator: [
+            get(jar, "gui/sprites/hud/crosshair_attack_indicator_full.png")?,
+            get(
+                jar,
+                "gui/sprites/hud/crosshair_attack_indicator_background.png",
+            )?,
+            get(
+                jar,
+                "gui/sprites/hud/crosshair_attack_indicator_progress.png",
+            )?,
+        ],
         effect_icons: {
             let mut out = Vec::with_capacity(crate::mob_effect_table::MOB_EFFECTS.len());
             for d in crate::mob_effect_table::MOB_EFFECTS.iter() {
@@ -4204,6 +4266,10 @@ struct Baker<'a> {
     jar: Jar<'a>,
     model_cache: HashMap<String, Option<ResolvedModel>>,
     layer_index: HashMap<String, u16>,
+    /// Block sprites wider than a layer, cut into layer-sized tiles
+    /// ([`Baker::big_sprite`]), by `layer_index`'s key; `None` for a sprite
+    /// that is not one.
+    big_sprites: HashMap<String, Option<BigSprite>>,
     layers: Vec<Vec<u8>>,
     layer_names: Vec<String>,
     animations: Vec<AnimatedLayer>,
@@ -4531,15 +4597,35 @@ impl<'a> Baker<'a> {
             let Some(tex_name) = resolve_texture_var(tex, textures) else {
                 continue;
             };
-            let Some(layer) = self.layer_for(&tex_name, foliage_of(&tex_name, tint.foliage)) else {
-                continue;
-            };
-            let Some(raw_layer) = self.layer_for(&tex_name, TintKind::None) else {
-                continue;
+            let tint_kind = foliage_of(&tex_name, tint.foliage);
+            // A sprite wider than a layer (26.x's 32 x 32 signs, shelves and
+            // tentacles) is a grid of layers; the face is cut over it below.
+            let sprite = self
+                .big_sprite(&tex_name, tint_kind)
+                .zip(self.big_sprite(&tex_name, TintKind::None));
+            let (layer, raw_layer) = match &sprite {
+                Some((tinted, raw)) => (tinted.layers[0], raw.layers[0]),
+                None => {
+                    let Some(layer) = self.layer_for(&tex_name, tint_kind) else {
+                        continue;
+                    };
+                    let Some(raw_layer) = self.layer_for(&tex_name, TintKind::None) else {
+                        continue;
+                    };
+                    (layer, raw_layer)
+                }
             };
             if texture_var_forced(tex, textures, forced) {
-                self.forced_layers.insert(layer);
-                self.forced_layers.insert(raw_layer);
+                match &sprite {
+                    Some((tinted, raw)) => {
+                        self.forced_layers
+                            .extend(tinted.layers.iter().chain(&raw.layers));
+                    }
+                    None => {
+                        self.forced_layers.insert(layer);
+                        self.forced_layers.insert(raw_layer);
+                    }
+                }
             }
             let tint_src = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
             let has_cull = face.get("cullface").is_some();
@@ -4572,7 +4658,7 @@ impl<'a> Baker<'a> {
                 -1
             };
 
-            out.push(Quad {
+            let quad = Quad {
                 verts: fverts,
                 uv,
                 layer,
@@ -4583,7 +4669,11 @@ impl<'a> Baker<'a> {
                 shade,
                 // Resolved after the bake, once every forced layer is known.
                 translucent: false,
-            });
+            };
+            match &sprite {
+                Some((tinted, raw)) => out.extend(split_quad_over_tiles(&quad, tinted, raw)),
+                None => out.push(quad),
+            }
         }
     }
 
@@ -5548,6 +5638,82 @@ impl<'a> Baker<'a> {
         self.layer_index.insert(cache_key, layer);
         Some(layer)
     }
+
+    /// A block sprite larger than one layer (`TEX_SIZE` square), cut into
+    /// layer-sized tiles, or `None` for any other texture (including a
+    /// missing or an animated one, which [`Self::layer_for`] handles).
+    ///
+    /// 26.x signs, hanging signs, shelves and the dried ghast's tentacles are
+    /// 32 x 32 sprites addressed in the model's usual 0..16 uv grid (two
+    /// texels to the unit). The layer array is `TEX_SIZE` square, so
+    /// `layer_for` refused them and every one of those blocks baked to no
+    /// quads at all: a sign was only its text. Cutting the sprite into tiles
+    /// keeps its full resolution; [`split_quad_over_tiles`] cuts the model
+    /// face to match.
+    fn big_sprite(&mut self, tex_name: &str, apply_tint: TintKind) -> Option<BigSprite> {
+        let cache_key = format!("{tex_name}#{apply_tint:?}");
+        if let Some(known) = self.big_sprites.get(&cache_key) {
+            return known.clone();
+        }
+        let short = tex_name.strip_prefix("minecraft:").unwrap_or(tex_name);
+        let path = format!("assets/minecraft/textures/{short}.png");
+        let mut bytes = Vec::new();
+        let sprite = (|| {
+            self.jar.by_name(&path).ok()?.read_to_end(&mut bytes).ok()?;
+            // The header first: nearly every texture is a plain layer and
+            // needs no full decode here.
+            let (w, h) = png_header_dims(&bytes)?;
+            if w <= TEX_SIZE || w % TEX_SIZE != 0 || h < TEX_SIZE || h % TEX_SIZE != 0 {
+                return None;
+            }
+            let (rgba, w, h) = decode_png_rgba(&bytes)?;
+            // A wide frame strip (an `animation` section) is not something to
+            // tile.
+            if read_mcmeta(self.jar, &path, 1).is_some() {
+                return None;
+            }
+            let tint = match apply_tint {
+                TintKind::Grass => Some(self.grass_tint),
+                TintKind::Foliage => Some(self.foliage_tint),
+                TintKind::Water => Some([0x3F, 0x76, 0xE4]),
+                TintKind::None => None,
+            };
+            let (tiles_x, tiles_y) = (w / TEX_SIZE, h / TEX_SIZE);
+            let mut layers = Vec::with_capacity((tiles_x * tiles_y) as usize);
+            for ty in 0..tiles_y {
+                for tx in 0..tiles_x {
+                    let mut tile = vec![0u8; (TEX_SIZE * TEX_SIZE * 4) as usize];
+                    for row in 0..TEX_SIZE {
+                        let src = (((ty * TEX_SIZE + row) * w + tx * TEX_SIZE) * 4) as usize;
+                        let dst = (row * TEX_SIZE * 4) as usize;
+                        let n = (TEX_SIZE * 4) as usize;
+                        tile[dst..dst + n].copy_from_slice(&rgba[src..src + n]);
+                    }
+                    if let Some(color) = tint {
+                        tint_rgb(&mut tile, color);
+                    }
+                    layers.push(self.layers.len() as u16);
+                    self.layer_names.push(format!("{cache_key}@{tx},{ty}"));
+                    self.layers.push(tile);
+                }
+            }
+            Some(BigSprite {
+                tiles_x,
+                tiles_y,
+                layers,
+            })
+        })();
+        self.big_sprites.insert(cache_key, sprite.clone());
+        sprite
+    }
+}
+
+/// A block sprite cut into `TEX_SIZE`-square layers, row-major.
+#[derive(Clone, Debug, PartialEq)]
+struct BigSprite {
+    tiles_x: u32,
+    tiles_y: u32,
+    layers: Vec<u16>,
 }
 
 /// Parse `<texture>.png.mcmeta` → (frame order, frametime in ticks).
@@ -5649,6 +5815,81 @@ fn face_geometry(
     );
     let uv = [[u1, v1], [u2, v1], [u2, v2], [u1, v2]];
     (verts, uv)
+}
+
+/// Cut a model face over the tiles of a sprite wider than one layer, so each
+/// piece samples exactly one `TEX_SIZE`-square layer ([`Baker::big_sprite`]).
+///
+/// `q.uv` is in the sprite's `0..1` and the sprite is `tinted.tiles_x` by
+/// `tiles_y` tiles. Block faces are rectangles whose uv rect is axis-aligned
+/// (turned or mirrored by a multiple of 90 degrees at most), so position is an
+/// affine function of uv and a piece is the original quad restricted to one
+/// tile's uv cell: its corners keep their pairing with the original's (a
+/// vertex at the rect's high-u edge stays at the piece's high-u edge), which
+/// is what keeps a flipped or turned face flipped or turned. A quad with no
+/// uv area (an edge-on face) is not cut: it gets the tile its centre is in.
+///
+/// Every piece keeps the face's `cull`, `dir`, tint and shading.
+fn split_quad_over_tiles(q: &Quad, tinted: &BigSprite, raw: &BigSprite) -> Vec<Quad> {
+    const EPS: f32 = 1e-4;
+    let (nx, ny) = (tinted.tiles_x, tinted.tiles_y);
+    // The quad's uv in tile units: tile `(tx, ty)` is `tx..tx+1` by `ty..ty+1`.
+    let t: [[f32; 2]; 4] = q.uv.map(|[u, v]| [u * nx as f32, v * ny as f32]);
+    let lo = |axis: usize| t.iter().map(|p| p[axis]).fold(f32::INFINITY, f32::min);
+    let hi = |axis: usize| t.iter().map(|p| p[axis]).fold(f32::NEG_INFINITY, f32::max);
+    let (umin, umax, vmin, vmax) = (lo(0), hi(0), lo(1), hi(1));
+    let piece = |tx: u32, ty: u32, verts: [[f32; 3]; 4], uv: [[f32; 2]; 4]| {
+        let i = (ty * nx + tx) as usize;
+        Quad {
+            verts,
+            uv: uv.map(|[u, v]| [u - tx as f32, v - ty as f32]),
+            layer: tinted.layers[i],
+            raw_layer: raw.layers[i],
+            ..q.clone()
+        }
+    };
+    let cell = |x: f32, n: u32| (x.floor().max(0.0) as u32).min(n - 1);
+    let d1 = [t[1][0] - t[0][0], t[1][1] - t[0][1]];
+    let d3 = [t[3][0] - t[0][0], t[3][1] - t[0][1]];
+    let det = d1[0] * d3[1] - d1[1] * d3[0];
+    if umax - umin <= EPS || vmax - vmin <= EPS || det.abs() <= 1e-9 {
+        let (tx, ty) = (cell((umin + umax) / 2.0, nx), cell((vmin + vmax) / 2.0, ny));
+        return vec![piece(tx, ty, q.verts, t)];
+    }
+    let first = |lo: f32, n: u32| cell(lo + EPS, n);
+    let last = |hi: f32, n: u32| ((hi - EPS).ceil().max(1.0) as u32).min(n);
+    let (umid, vmid) = ((umin + umax) / 2.0, (vmin + vmax) / 2.0);
+    let mut out = Vec::new();
+    for ty in first(vmin, ny)..last(vmax, ny) {
+        for tx in first(umin, nx)..last(umax, nx) {
+            let (u0, u1) = (umin.max(tx as f32), umax.min(tx as f32 + 1.0));
+            let (v0, v1) = (vmin.max(ty as f32), vmax.min(ty as f32 + 1.0));
+            if u1 - u0 <= EPS || v1 - v0 <= EPS {
+                continue;
+            }
+            let mut verts = [[0.0f32; 3]; 4];
+            let mut uv = [[0.0f32; 2]; 4];
+            for i in 0..4 {
+                // The corner of the cell this vertex's corner of the whole
+                // rect falls in.
+                let target = [
+                    if t[i][0] >= umid { u1 } else { u0 },
+                    if t[i][1] >= vmid { v1 } else { v0 },
+                ];
+                let d = [target[0] - t[0][0], target[1] - t[0][1]];
+                let s = (d[0] * d3[1] - d[1] * d3[0]) / det;
+                let r = (d1[0] * d[1] - d1[1] * d[0]) / det;
+                for a in 0..3 {
+                    verts[i][a] = q.verts[0][a]
+                        + s * (q.verts[1][a] - q.verts[0][a])
+                        + r * (q.verts[3][a] - q.verts[0][a]);
+                }
+                uv[i] = target;
+            }
+            out.push(piece(tx, ty, verts, uv));
+        }
+    }
+    out
 }
 
 /// Default uv from the element's extent projected onto the face.
@@ -5921,14 +6162,33 @@ fn resolve_texture_var<'a>(
 /// Decode a block texture into its 16×16 RGBA frames — one for a plain
 /// texture, N for an animation strip (width 16, height N×16).
 fn decode_png_rgba_frames(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let (rgba, w, h) = decode_png_rgba(bytes)?;
+    if w != TEX_SIZE || h < TEX_SIZE || h % TEX_SIZE != 0 {
+        return None;
+    }
+    let frame_bytes = (TEX_SIZE * TEX_SIZE * 4) as usize;
+    Some(rgba.chunks_exact(frame_bytes).map(|c| c.to_vec()).collect())
+}
+
+/// `(width, height)` from a PNG's IHDR chunk (the signature, then the
+/// chunk's length and type, then two big-endian `u32`s), without decoding.
+fn png_header_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let u32_at =
+        |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    Some((u32_at(16), u32_at(20)))
+}
+
+/// A PNG of any size as RGBA8: `(pixels, width, height)`.
+fn decode_png_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
-    if info.width != TEX_SIZE || info.height < TEX_SIZE || info.height % TEX_SIZE != 0 {
-        return None;
-    }
     let n = (info.width as usize) * (info.height as usize);
     let mut rgba = vec![0u8; n * 4];
     match info.color_type {
@@ -5959,8 +6219,7 @@ fn decode_png_rgba_frames(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
         }
         png::ColorType::Indexed => return None,
     }
-    let frame_bytes = (TEX_SIZE * TEX_SIZE * 4) as usize;
-    Some(rgba.chunks_exact(frame_bytes).map(|c| c.to_vec()).collect())
+    Some((rgba, info.width, info.height))
 }
 
 /// Center pixel of a colormap PNG (the "plains" reference point).
@@ -6884,6 +7143,34 @@ mod tests {
         .as_ref()
     }
 
+    /// The compass, the recovery compass and the clock used to be suppressed
+    /// (a `range_dispatch` over a needle). Each now bakes a plain model for the
+    /// first threshold and one variant per frame the needle can pick: 32 for
+    /// each compass and 64 for the clock (`item/compass_00`..`_31`,
+    /// `item/clock_00`..`_63`, as the jar names them).
+    #[test]
+    fn the_needle_items_bake_a_model_and_every_frame() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let held = &baked.held_items;
+        let variants = held.use_variants();
+        for (item, prefix, frames) in [
+            ("compass", "compass", 32usize),
+            ("recovery_compass", "recovery_compass", 32),
+            ("clock", "clock", 64),
+        ] {
+            let name = format!("minecraft:{item}");
+            assert!(held.get(&name).is_some(), "{item} has no plain model");
+            assert!(variants.is_dynamic(&name), "{item} is not dynamic");
+            for i in 0..frames {
+                let key = format!("{name}#minecraft:item/{prefix}_{i:02}");
+                assert!(held.get(&key).is_some(), "{key} did not bake");
+            }
+        }
+    }
+
     /// Every state id of `block` whose `blocks.json` property map contains
     /// `props` (the report lists all of a state's properties, so a caller
     /// names only the ones it cares about). Panics on an empty match, so a
@@ -7213,6 +7500,39 @@ mod tests {
         }
     }
 
+    /// A chest's model is `builtin/entity` (no elements), so a model-derived
+    /// outline was empty and the crosshair could not hit one. Every state of
+    /// the block-entity-rendered classes now has vanilla's `getShape`.
+    #[test]
+    fn block_entity_rendered_blocks_are_targetable() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        const P: f32 = 1.0 / 16.0;
+        for block in [
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:red_bed",
+            "minecraft:shulker_box",
+        ] {
+            let ids = states_where(raw, block, &[]);
+            assert!(!ids.is_empty(), "{block}");
+            for id in ids {
+                assert!(
+                    !baked.outline[id].is_empty(),
+                    "{block} state {id} has no outline"
+                );
+            }
+        }
+        for id in states_where(raw, "minecraft:chest", &[("type", "single")]) {
+            assert_eq!(
+                baked.outline[id],
+                vec![[P, 0.0, P, 15.0 * P, 14.0 * P, 15.0 * P]]
+            );
+        }
+    }
+
     /// `MudBlock` and `SoulSandBlock` return 0.2F from `getShadeBrightness`
     /// although their collision shape is 14/16 tall, not a full block — and
     /// both registrations call `.isViewBlocking(Blocks::always)`, so they do
@@ -7302,6 +7622,239 @@ mod tests {
             assert!(q.verts.iter().all(|v| (v[axis] - at).abs() < 1e-6), "{q:?}");
         }
         assert!(baked.state_quads(0).is_none(), "air has no quads");
+    }
+
+    // ---- 26.x's 32 x 32 block sprites (signs, shelves, tentacles) ----------
+
+    fn tiles_2x2(first: u16) -> BigSprite {
+        BigSprite {
+            tiles_x: 2,
+            tiles_y: 2,
+            layers: (first..first + 4).collect(),
+        }
+    }
+
+    /// A face in the z = 0 plane, corners TL, TR, BR, BL as `face_geometry`
+    /// orders them, with the given sprite-normalised uv.
+    fn flat_quad(uv: [[f32; 2]; 4]) -> Quad {
+        Quad {
+            verts: [
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            uv,
+            layer: 0,
+            raw_layer: 0,
+            cull: 3,
+            dir: 3,
+            tint: TintSource::None,
+            shade: true,
+            translucent: false,
+        }
+    }
+
+    /// The sign board's front face: uv `[0, 1, 12, 7]` of the model's 16
+    /// grid on a 32 px sprite is texels x 0..24, y 2..14 — across the tile
+    /// seam at x = 16 and inside the top row. Two pieces, cut where texel 16
+    /// is (16/24 of the way across), each in its own tile with local uv, and
+    /// each keeping the face's culling, shading and direction.
+    #[test]
+    fn a_face_across_a_tile_seam_is_cut_there() {
+        let (u1, v1, u2, v2) = (0.0, 2.0 / 32.0, 24.0 / 32.0, 14.0 / 32.0);
+        let q = flat_quad([[u1, v1], [u2, v1], [u2, v2], [u1, v2]]);
+        let pieces = split_quad_over_tiles(&q, &tiles_2x2(10), &tiles_2x2(20));
+        assert_eq!(pieces.len(), 2);
+        let seam = 16.0 / 24.0;
+        let (a, b) = (&pieces[0], &pieces[1]);
+        assert_eq!((a.layer, a.raw_layer), (10, 20), "tile (0, 0)");
+        assert_eq!((b.layer, b.raw_layer), (11, 21), "tile (1, 0)");
+        let xs = |p: &Quad| p.verts.map(|v| v[0]);
+        assert_eq!(xs(a), [0.0, seam, seam, 0.0]);
+        assert_eq!(xs(b), [seam, 1.0, 1.0, seam]);
+        for p in &pieces {
+            assert!(p.verts.iter().all(|v| v[2] == 0.0), "stays in its plane");
+            assert_eq!((p.cull, p.dir, p.shade), (3, 3, true));
+        }
+        // Tile-local uv: the whole tile width in the first piece (texels
+        // 0..16), the first half in the second (16..24), rows 2..14 of 16.
+        let (v_lo, v_hi) = (2.0 / 16.0, 14.0 / 16.0);
+        assert_eq!(a.uv, [[0.0, v_lo], [1.0, v_lo], [1.0, v_hi], [0.0, v_hi]]);
+        assert_eq!(b.uv, [[0.0, v_lo], [0.5, v_lo], [0.5, v_hi], [0.0, v_hi]]);
+    }
+
+    /// A face inside one tile is one piece with its own geometry, only its
+    /// uv rebased to the tile.
+    #[test]
+    fn a_face_inside_one_tile_is_not_cut() {
+        // Texels x 28..30, y 16..30: the sign post, in tile (1, 1).
+        let (u1, v1, u2, v2) = (28.0 / 32.0, 16.0 / 32.0, 30.0 / 32.0, 30.0 / 32.0);
+        let q = flat_quad([[u1, v1], [u2, v1], [u2, v2], [u1, v2]]);
+        let pieces = split_quad_over_tiles(&q, &tiles_2x2(0), &tiles_2x2(4));
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].verts, q.verts);
+        assert_eq!((pieces[0].layer, pieces[0].raw_layer), (3, 7));
+        let want = [
+            [12.0 / 16.0, 0.0],
+            [14.0 / 16.0, 0.0],
+            [14.0 / 16.0, 14.0 / 16.0],
+        ];
+        assert_eq!(pieces[0].uv[..3], want);
+    }
+
+    /// Position-to-uv on the original quad (a rectangle, so affine), worked
+    /// out here from the edge vectors with dot products, not from the
+    /// splitter's inverse: for every vertex of every piece the global uv
+    /// (tile + local uv, over the tile count) is what the original face has
+    /// at that position. Flips and quarter turns keep their corners paired.
+    #[test]
+    fn every_piece_corner_keeps_the_original_uv_at_its_position() {
+        let (a, b, c, d) = (0.1, 0.2, 0.95, 0.8);
+        let cases = [
+            ("upright", [[a, b], [c, b], [c, d], [a, d]]),
+            ("mirrored in u", [[c, b], [a, b], [a, d], [c, d]]),
+            ("flipped in v", [[a, d], [c, d], [c, b], [a, b]]),
+            ("turned a quarter", [[a, d], [a, b], [c, b], [c, d]]),
+        ];
+        for (name, uv) in cases {
+            let q = Quad {
+                // A rectangle off the axes, so no coordinate can stand in
+                // for another.
+                verts: [
+                    [0.5, 2.0, 1.0],
+                    [1.5, 2.0, 1.5],
+                    [1.5, 0.5, 1.5],
+                    [0.5, 0.5, 1.0],
+                ],
+                ..flat_quad(uv)
+            };
+            let pieces = split_quad_over_tiles(&q, &tiles_2x2(0), &tiles_2x2(4));
+            assert_eq!(pieces.len(), 4, "{name}: the rect covers all four tiles");
+            let sub = |x: [f32; 3], y: [f32; 3]| [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+            let dot = |x: [f32; 3], y: [f32; 3]| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+            let (e1, e3) = (sub(q.verts[1], q.verts[0]), sub(q.verts[3], q.verts[0]));
+            let mut area = 0.0f32;
+            for p in &pieces {
+                let tile = p.layer as f32;
+                let (tx, ty) = (tile % 2.0, (tile / 2.0).floor());
+                for i in 0..4 {
+                    let rel = sub(p.verts[i], q.verts[0]);
+                    let (s, r) = (dot(rel, e1) / dot(e1, e1), dot(rel, e3) / dot(e3, e3));
+                    for axis in 0..2 {
+                        let want = q.uv[0][axis]
+                            + s * (q.uv[1][axis] - q.uv[0][axis])
+                            + r * (q.uv[3][axis] - q.uv[0][axis]);
+                        let got = ([tx, ty][axis] + p.uv[i][axis]) / 2.0;
+                        assert!((want - got).abs() < 1e-5, "{name}: piece corner {i}");
+                    }
+                }
+                // The piece is a sub-rectangle: |edge 1| x |edge 3|.
+                let len = |v: [f32; 3]| dot(v, v).sqrt();
+                area += len(sub(p.verts[1], p.verts[0])) * len(sub(p.verts[3], p.verts[0]));
+            }
+            let whole = dot(e1, e1).sqrt() * dot(e3, e3).sqrt();
+            assert!((area - whole).abs() < 1e-4, "{name}: pieces tile the face");
+        }
+    }
+
+    /// The decode keeps its old contract for a layer: 16 wide, whole frames.
+    #[test]
+    fn a_big_sprite_is_not_a_frame_strip() {
+        let png = |w: u32, h: u32| {
+            let mut out = Vec::new();
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header()
+                .unwrap()
+                .write_image_data(&vec![255u8; (w * h * 4) as usize])
+                .unwrap();
+            out
+        };
+        assert_eq!(png_header_dims(&png(32, 32)), Some((32, 32)));
+        assert_eq!(png_header_dims(&png(16, 48)), Some((16, 48)));
+        assert_eq!(png_header_dims(b"not a png at all, nothing like one"), None);
+        assert!(decode_png_rgba_frames(&png(16, 48)).is_some_and(|f| f.len() == 3));
+        assert!(decode_png_rgba_frames(&png(32, 32)).is_none());
+        assert!(decode_png_rgba(&png(32, 32))
+            .is_some_and(|(px, w, h)| (w, h, px.len()) == (32, 32, 32 * 32 * 4)));
+    }
+
+    /// Every sign, hanging sign, shelf and dried ghast state bakes to quads
+    /// (they were all `Invisible`: their sprites are 32 x 32), and the sign
+    /// sprites' tiles
+    /// are the jar's own texels: for each of oak sign's quads the texel under
+    /// its centre in its tile is the PNG's texel at the same place.
+    #[test]
+    fn signs_and_shelves_bake_from_their_32_pixel_sprites() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let mut checked = 0;
+        for (block, def) in raw.as_object().unwrap() {
+            if !(block.ends_with("_sign")
+                || block.ends_with("_shelf")
+                || block == "minecraft:dried_ghast")
+            {
+                continue;
+            }
+            for st in def["states"].as_array().unwrap() {
+                let id = st["id"].as_u64().unwrap() as usize;
+                assert!(
+                    !matches!(baked.render[id], RenderKind::Invisible),
+                    "{block} state {id} has no model"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 12 * 16,
+            "the sign families were walked: {checked}"
+        );
+
+        let paths = crate::DataPaths::for_version("26.2").unwrap();
+        let blocks = crate::blocks::Blocks::load(&paths.blocks_json()).unwrap();
+        let sign = blocks
+            .state_with("minecraft:oak_sign", &[("rotation", "0")])
+            .unwrap();
+        let quads = baked.state_quads(sign).unwrap();
+        // The post's five faces and the board's six, the faces that cross a
+        // tile seam cut in two (the board's 24 texel wide front and back, the
+        // 24 texel top and bottom).
+        assert!(quads.len() > 11, "{}", quads.len());
+        let jar = paths
+            .root
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap()
+            .join("shared/versions/26.2/26.2.jar");
+        let mut z = zip::ZipArchive::new(std::fs::File::open(jar).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        z.by_name("assets/minecraft/textures/block/oak_sign.png")
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        let (sheet, sw, sh) = decode_png_any(&bytes).unwrap();
+        assert_eq!((sw, sh), (32, 32));
+        let mut opaque = 0;
+        for q in &quads {
+            let name = &baked.layer_names[q.layer as usize];
+            let (sprite, tile) = name
+                .split_once('@')
+                .unwrap_or_else(|| panic!("a sign quad on {name}"));
+            assert!(sprite.ends_with("block/oak_sign#None"), "{name}");
+            let (tx, ty) = tile.split_once(',').unwrap();
+            let (tx, ty): (usize, usize) = (tx.parse().unwrap(), ty.parse().unwrap());
+            let centre = |axis: usize| q.uv.iter().map(|p| p[axis]).sum::<f32>() / 4.0 * 16.0;
+            let (lx, ly) = (centre(0) as usize, centre(1) as usize);
+            let mine = &baked.layers[q.layer as usize][(ly * 16 + lx) * 4..][..4];
+            let theirs = &sheet[((ty * 16 + ly) * 32 + tx * 16 + lx) * 4..][..4];
+            assert_eq!(mine, theirs, "tile ({tx}, {ty}) texel ({lx}, {ly})");
+            opaque += usize::from(theirs[3] == 255);
+        }
+        assert!(opaque > 0, "no quad centre fell on a painted texel");
     }
 
     /// M276 — the enchanting book baked at rest and posed by

@@ -1,0 +1,33 @@
+# Not on Enni's list: added after rewo_walk showed Rewo's whole frame 10-30% brighter than vanilla's,
+# unevenly by face. White concrete (an almost flat texture) shows each face's shade and the lightmap
+# apart: a cube seen from a corner (top, north and west faces), the same cube under a roof (sky
+# light only from the side), and at midnight beside a torch (block light).
+name: rewo_lighting
+description: White concrete faces at noon in the open, under a roof, and at midnight lit by a torch.
+
+world:
+  server_commands:
+    - fill 2 -60 4 3 -59 5 minecraft:white_concrete
+    - fill -5 -60 4 -4 -59 5 minecraft:white_concrete
+    - fill -7 -57 2 -2 -57 7 minecraft:stone
+    - fill -7 -60 7 -2 -58 7 minecraft:stone
+    - fill -2 -60 2 -2 -58 2 minecraft:stone
+    - setblock 4 -60 3 minecraft:torch
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 20]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, look: {yaw: -30, pitch: 25}}
+  - {at: 4, capture: noon_open, checklist: "a white concrete cube from its north-west corner: the top face brightest, the two sides darker by vanilla's face shading (north 0.8, west 0.6), a torch beside it"}
+  - {at: 6, look: {yaw: 45, pitch: 20}}
+  - {at: 10, capture: noon_roofed, checklist: "a second white cube under a stone roof, darker than the open one"}
+  - {at: 12, command: "time set 18000"}
+  - {at: 14, look: {yaw: -30, pitch: 25}}
+  - {at: 20, capture: midnight_torch, checklist: "midnight: the open cube lit warm-yellow by the torch on its near side, dark elsewhere; stars in the sky"}
+end_tick: 22

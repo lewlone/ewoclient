@@ -24,6 +24,10 @@ impl LiveApp {
     /// property of the phase bodies).
     pub(super) fn frame(&mut self, event_loop: &ActiveEventLoop) {
         let dt = self.frame_clock();
+        // `REWO_SCRIPT`: capture readiness and this tick's scripted input,
+        // ahead of everything (a scripted click's UI sound plays below).
+        #[cfg(feature = "gates")]
+        self.script_frame_head(event_loop);
         // M186 — before anything can return early: a click on the
         // disconnect screen has no session behind it and must still sound.
         self.flush_ui_sounds();
@@ -367,11 +371,28 @@ impl LiveApp {
                 Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
             return false;
         }
-        self.tick_accum += dt;
+        #[cfg(feature = "gates")]
+        self.script_after_pump(session);
+        // A scripted run owns the clock while it runs: exactly the ticks it
+        // asked for, and frames at partial tick 1.0 (`script.rs`).
+        #[cfg(feature = "gates")]
+        let mut scripted = self.script_ticks();
+        #[cfg(not(feature = "gates"))]
+        let mut scripted: Option<u32> = None;
+        if scripted.is_some() {
+            self.tick_accum = TICK_DT;
+        } else {
+            self.tick_accum += dt;
+        }
         let input = self.keys.input();
         let mut ran_tick = false;
-        while self.tick_accum >= TICK_DT {
-            self.tick_accum -= TICK_DT;
+        while match scripted.as_mut() {
+            Some(n) => std::mem::replace(n, n.saturating_sub(1)) > 0,
+            None => self.tick_accum >= TICK_DT,
+        } {
+            if scripted.is_none() {
+                self.tick_accum -= TICK_DT;
+            }
             if let Err(e) = session.tick(&input) {
                 // `onPacketError` — a handler threw. Vanilla's is the path that
                 // fills `bugReportLink`, so this is a `ClientError` and the
@@ -395,7 +416,33 @@ impl LiveApp {
             // M131 — and drain the tick's sounds. Per *tick*, not per frame:
             // `MIN_SOURCE_LIFETIME` is 20 ticks, so a per-frame drive would tie
             // a channel's grace period to the frame rate.
-            let queued = session.take_sound_events();
+            let mut queued = session.take_sound_events();
+            // `ClientLevel.tickWeatherEffects`' rain ambience, which needs the
+            // climate noise the weather renderer owns.
+            if let Some(w) = self.weather.as_mut() {
+                let rain = session.world.rain_sound(
+                    &effective_weather(session),
+                    &w.noise,
+                    eye_f64(session),
+                    WEATHER_RADIUS,
+                    session.game_time(),
+                    session.sea_level.unwrap_or(63),
+                    &mut w.rain_sound_time,
+                );
+                if let Some(r) = rain {
+                    queued.push(rewo_net::sounds::SoundEvent::Local(
+                        rewo_net::sounds::LocalSound {
+                            name: r.name.into(),
+                            source: rewo_net::sounds::SoundSource::Weather,
+                            x: r.pos[0],
+                            y: r.pos[1],
+                            z: r.pos[2],
+                            volume: r.volume,
+                            pitch: r.pitch,
+                        },
+                    ));
+                }
+            }
             self.sounds.drive(
                 &queued,
                 &session.world.entities,
@@ -456,6 +503,16 @@ impl LiveApp {
                 }
             }
             ran_tick = true;
+            #[cfg(feature = "gates")]
+            {
+                self.script_after_tick(session);
+                // A script that reached tick 0 takes the clock over: no more
+                // accumulator ticks this frame, or tick 0 would run without
+                // its steps.
+                if scripted.is_none() && self.script.as_ref().is_some_and(|s| s.owns_clock()) {
+                    break;
+                }
+            }
         }
         // `REWO_PRECMD`: the same semicolon-separated op-command knob the
         // headless path has had since M64, wired into the windowed one (M82)
@@ -1922,6 +1979,11 @@ impl LiveApp {
         {
             log::warn!("live: held-item texture upload: {e}");
         }
+        // The compass and clock needles for every draw below and the hotbar's.
+        let needle_frame = self
+            .needles
+            .advance(session.ticks as i64, &needles::inputs_of(session));
+        needles::set_frame(needle_frame);
         // M282 — the vignette: one `updateVignetteBrightness` per game tick
         // (a long gap is a fresh session: start over rather than replay it).
         if session.ticks < self.vignette_tick || session.ticks - self.vignette_tick > 200 {
@@ -2016,11 +2078,18 @@ impl LiveApp {
         } else {
             Vec::new()
         };
+        // F1 hides `extractCameraOverlays` (vignette, spyglass, pumpkin,
+        // powder snow); the sleep fade is outside the `!isHidden` blocks.
+        let layers = HudLayers::of(self.hud_hidden, self.chat_screen.is_some());
+        if !layers.camera_overlays {
+            early.clear();
+        }
         state.world_renderer.set_camera_overlays(early, late);
         state.world_renderer.set_vignette(
             self.options
                 .vignette
-                .then(|| vignette_color_now(session, self.vignette_brightness)),
+                .then(|| vignette_color_now(session, self.vignette_brightness))
+                .filter(|_| layers.camera_overlays),
         );
         // M278 — the glowing outline's targets, at the swapchain's size.
         if let Err(e) = state.world_renderer.ensure_outline(
@@ -2323,6 +2392,27 @@ impl LiveApp {
         state
             .world_renderer
             .set_entity_nether_light(nether_entity_light(session));
+        // `EntityRenderer.extractShadow` for this frame's entities, staged for
+        // the entity pass to build into its shadow range. The `entityShadows`
+        // option gates it (default on).
+        let shadows = if self.options.entity_shadows {
+            let sky_darken = dimension_timeline(
+                session.day_ticks,
+                &dimension_light(session.active_dimension_type.as_ref()),
+            )
+            .sky_darken();
+            collect_entity_shadows(
+                session,
+                &self.etypes,
+                &self.blocks,
+                alpha,
+                cam.eye,
+                sky_darken,
+            )
+        } else {
+            Vec::new()
+        };
+        state.world_renderer.set_entity_shadows(shadows);
         state.world_renderer.set_entities_and_block_entities(
             &draws,
             &be_draws,
@@ -2935,9 +3025,21 @@ impl LiveApp {
         let hit = session.target_block(
             eye_f64(session),
             look_dir(session.player.yaw, session.player.pitch),
-            REACH,
+            block_reach(session),
         );
+        // `shouldRenderBlockOutline` requires `!hud.isHidden()`.
+        let outline = HudLayers::of(self.hud_hidden, self.chat_screen.is_some()).block_outline;
+        let hit = hit.filter(|_| outline);
         state.world_renderer.set_selection(hit.map(|h| h.block));
+        // `BlockOutlineRenderState.shape()`: the state's outline shape.
+        let boxes = hit
+            .and_then(|h| {
+                let [x, y, z] = h.block;
+                let state = session.world.block_state_at(x, y, z) as usize;
+                session.outline.get(state)
+            })
+            .map_or(&[][..], |b| b.as_slice());
+        state.world_renderer.set_selection_boxes(boxes);
         let (mut leash_verts, quad_leashes) =
             collect_leashes(session, &self.etypes, alpha, &lightmap);
         // M241 — the fishing lines ride the leash pass (a black ribbon).
@@ -3040,6 +3142,7 @@ impl LiveApp {
         // differ.
         let ext = state.window.inner_size();
         let (sw, sh) = (ext.width as f32, ext.height as f32);
+        let layers = HudLayers::of(self.hud_hidden, self.chat_screen.is_some());
         let hovered = self
             .screen
             .inventory_open()
@@ -3295,22 +3398,29 @@ impl LiveApp {
                 self.screen_labels.clear();
                 state.world_renderer.set_velvet_runs(Vec::new());
                 state.world_renderer.set_preview(None);
-                apply_hotbar_icons(
-                    &mut state.world_renderer,
-                    &mut state.gpu,
-                    session,
-                    &items,
-                    gi,
-                    (sw, sh),
-                );
+                if layers.hotbar_and_decorations {
+                    // The stack counts ride the text pass like the screen's.
+                    self.screen_labels = apply_hotbar_icons(
+                        &mut state.world_renderer,
+                        &mut state.gpu,
+                        session,
+                        &items,
+                        gi,
+                        (sw, sh),
+                    );
+                } else {
+                    clear_hotbar_icons(&mut state.world_renderer, &mut state.gpu, gi);
+                }
             }
         }
         if !self.screen.inventory_open() {
             state.world_renderer.set_container(false, None);
         }
         let _ = hovered;
-        // M38: the first-person hand. Suppressed while the inventory screen is
-        // open — the screen owns the view, and vanilla does the same.
+        // M38: the first-person hand. Drawn under an open screen too:
+        // `GameRenderer.render` renders the level and the hand first, then the
+        // HUD, then the screen over them (its backdrop dims what is under it),
+        // and the pass order here is the same — hand, HUD, container panel.
         if let Some(baked) = self.baked.as_ref() {
             #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
@@ -3321,7 +3431,8 @@ impl LiveApp {
             h.tick(session, &items);
             // M284 — and while asleep (`renderItemInHand`'s
             // `!isSleeping`): the camera lies in the bed.
-            if self.screen.inventory_open() || session.is_sleeping() {
+            // ...and `renderItemInHand`'s `!isHudHidden`.
+            if session.is_sleeping() || !layers.item_in_hand {
                 let _ = state
                     .world_renderer
                     .set_hand(&mut state.gpu, &[], [[0.0; 4]; 4]);
@@ -3461,6 +3572,7 @@ impl LiveApp {
     /// text.
     fn hud_pass(&mut self, view: &FrameView, session: &mut PlaySession, state: &mut LiveState) {
         let (alpha, extent) = (view.alpha, view.extent);
+        let layers = HudLayers::of(self.hud_hidden, self.chat_screen.is_some());
         let contextual = contextual_info(session);
         let survival_inputs = resolve_survival_inputs(
             session,
@@ -3468,15 +3580,52 @@ impl LiveApp {
             self.started.elapsed().as_millis() as u64,
             contextual,
         );
-        let survival = rewo_gpu::survival_hud::layout_for_screen(
+        let mut survival = rewo_gpu::survival_hud::layout_for_screen(
             &survival_inputs,
             extent.width as f32,
             extent.height as f32,
         );
+        // `extractItemHotbar`'s off-hand pocket, under the hotbar's gauges.
+        if session.inventory.offhand().is_some() {
+            survival.insert(
+                0,
+                rewo_gpu::hud::offhand_blit(
+                    extent.width as f32,
+                    extent.height as f32,
+                    OFFHAND_LEFT,
+                ),
+            );
+        }
+        // `extractCrosshair`'s attack indicator, under the F1 gate with the
+        // rest of the survival list.
+        if layers.hotbar_and_decorations
+            && self.options.attack_indicator == rewo_net::options::AttackIndicator::Crosshair
+        {
+            let scale = session.attack_strength_scale(0.0);
+            let delay = session.attack_strength_delay();
+            // Only a full charge on a slow weapon asks what the crosshair is
+            // on, and that is a pick: skip it when the answer cannot matter.
+            let target_alive =
+                scale >= 1.0 && delay > 5.0 && crosshair_target_alive(session, &self.etypes, alpha);
+            let px = rewo_gpu::hud::gui_scale(extent.width as f32, extent.height as f32);
+            survival.extend(rewo_gpu::hud::attack_indicator(
+                scale,
+                delay,
+                target_alive,
+                (extent.width as f32 / px) as i32,
+                (extent.height as f32 / px) as i32,
+            ));
+        }
         // M188 — `Hud.playAirBubblePoppedSound`, from the same inputs the
         // bars were laid out from: `LocalPlayer.playSound` is
         // `level.playLocalSound(getX(), getY(), getZ(), sound, PLAYERS, ...)`.
-        if let Some(pop) = self.bubble_popper.frame(&survival_inputs) {
+        // The pop plays from inside `extractAirBubbles`, which a hidden HUD
+        // never reaches.
+        let pop = layers
+            .hotbar_and_decorations
+            .then(|| self.bubble_popper.frame(&survival_inputs))
+            .flatten();
+        if let Some(pop) = pop {
             self.sounds.play_now(rewo_net::sounds::SoundEvent::Local(
                 rewo_net::sounds::LocalSound {
                     name: rewo_gpu::survival_hud::BubblePopper::EVENT.to_string(),
@@ -3552,6 +3701,9 @@ impl LiveApp {
             c.jump_scale_max = c.jump_scale_max.max(session.jump_riding_scale());
             c.riding_jumps_sent = session.riding_jumps_sent();
         }
+        state
+            .world_renderer
+            .set_hud_hidden(!layers.hotbar_and_decorations);
         state.world_renderer.set_hud(
             session.inventory.selected(),
             resolve_hud_gauges(
@@ -3664,14 +3816,16 @@ impl LiveApp {
             Some(l) => sidebar_fills(l),
             None => Vec::new(),
         };
-        backdrops.extend(hud_fills(
-            &session.chat,
-            session.ticks as i32,
-            px,
-            extent.height as f32,
-            &rewo_ui::chat::ChatOptions::default(),
-            chat_focused,
-        ));
+        if layers.chat_history {
+            backdrops.extend(hud_fills(
+                &session.chat,
+                session.ticks as i32,
+                px,
+                extent.height as f32,
+                &rewo_ui::chat::ChatOptions::default(),
+                chat_focused,
+            ));
+        }
         if chat_focused {
             // The input bar goes on the same list AFTER the rows, so it sits
             // over them — one list, and its order is the order on screen.
@@ -3811,6 +3965,7 @@ impl LiveApp {
             fps,
             self.debug,
             chat_focused,
+            layers.chat_history,
             state.world_renderer.font_advance().copied(),
         );
         // M132 — the sidebar's lines lead the list, for the stratum reason
@@ -4007,38 +4162,50 @@ impl LiveApp {
         // M66: the held-item name over the hotbar. Needs the font's advances
         // to centre itself, so it is built here rather than in `build_text`.
         if let Some(advance) = state.world_renderer.font_advance() {
-            text.extend(selected_item_name_line(
-                session,
-                &self.items,
-                &self.tool_highlight,
-                advance,
-                px,
-                (extent.width as f32, extent.height as f32),
-            ));
+            // Vanilla draws these two in the HUD stratum, UNDER an open screen's
+            // backdrop. Rewo's text pass runs after the screen's chrome, so
+            // they would sit over the panel at full brightness: left out
+            // while a screen is up (drawing them underneath needs a second
+            // text pass before the container pass).
+            let under_screen = self.screen.any_open();
+            if layers.hotbar_and_decorations && !under_screen {
+                text.extend(selected_item_name_line(
+                    session,
+                    &self.items,
+                    &self.tool_highlight,
+                    advance,
+                    px,
+                    (extent.width as f32, extent.height as f32),
+                ));
+            }
             // M79: the XP level number, then the title / subtitle / action
             // bar. The titles go last so they sit over everything the HUD
             // draws, which is where `nextStratum()` puts them in vanilla.
-            text.extend(experience_level_lines(
-                &session.hud.experience,
-                has_experience(session),
-                self.baked.as_ref().map(|b| &b.lang),
-                advance,
-                px,
-                (extent.width as f32, extent.height as f32),
-            ));
-            text.extend(title_lines(
-                &session.hud.titles,
-                advance,
-                px,
-                (extent.width as f32, extent.height as f32),
-                // `deltaTracker.getGameTimeDeltaPartialTick(false)` — this
-                // frame's fraction of the way into the current tick, the same
-                // `alpha` the entity lerps use.
-                alpha,
-                // M125 — the same handover `experience_level_lines` above
-                // takes, so `/title {"translate":...}` resolves.
-                self.baked.as_ref().map(|b| &b.lang),
-            ));
+            if layers.hotbar_and_decorations && !under_screen {
+                text.extend(experience_level_lines(
+                    &session.hud.experience,
+                    has_experience(session),
+                    self.baked.as_ref().map(|b| &b.lang),
+                    advance,
+                    px,
+                    (extent.width as f32, extent.height as f32),
+                ));
+            }
+            if layers.overlay_messages {
+                text.extend(title_lines(
+                    &session.hud.titles,
+                    advance,
+                    px,
+                    (extent.width as f32, extent.height as f32),
+                    // `deltaTracker.getGameTimeDeltaPartialTick(false)` — this
+                    // frame's fraction of the way into the current tick, the
+                    // same `alpha` the entity lerps use.
+                    alpha,
+                    // M125 — the same handover `experience_level_lines` above
+                    // takes, so `/title {"translate":...}` resolves.
+                    self.baked.as_ref().map(|b| &b.lang),
+                ));
+            }
         }
         // The stack counts are text like any other line, drawn after the icons
         // because the text pass runs last.
@@ -4326,7 +4493,12 @@ impl LiveApp {
                 (extent.height as f32 / scale) as i32,
                 alpha,
             );
-            state.world_renderer.set_locator_bar(bar);
+            // The contextual bar is part of `extractHotbarAndDecorations`.
+            let hidden =
+                !HudLayers::of(self.hud_hidden, self.chat_screen.is_some()).hotbar_and_decorations;
+            state
+                .world_renderer
+                .set_locator_bar(bar.filter(|_| !hidden));
         }
         let vp = eye_view_proj_hurt(
             eye,
@@ -4336,11 +4508,21 @@ impl LiveApp {
             render_modules.fov_degrees,
             local_hurt_tilt(session, alpha, render_modules.damage_tilt_strength),
         );
+        // The frame-time chart is Rewo's own dev overlay; a scripted run
+        // (compared against vanilla, which has none) draws it off-screen.
+        #[cfg(feature = "gates")]
+        let chart_origin = if self.script.is_some() {
+            [-100_000.0, -100_000.0]
+        } else {
+            [16.0, 16.0]
+        };
+        #[cfg(not(feature = "gates"))]
+        let chart_origin = [16.0, 16.0];
         let draw = OverlayDraw {
             samples_ms: &self.ring.data,
             head: self.ring.head(),
             scale_ms: 20.0,
-            origin: [16.0, 16.0],
+            origin: chart_origin,
             size: [560.0, 140.0],
         };
         let LiveState {
@@ -4369,6 +4551,18 @@ impl LiveApp {
                 Ok(path) => log::info!("saved screenshot as {}", path.display()),
                 Err(e) => log::warn!("screenshot failed: {e}"),
             }
+        }
+        // `REWO_SCRIPT`'s capture frame: the same state, offscreen, as F2's.
+        #[cfg(feature = "gates")]
+        if let Some(s) = self.script.as_mut() {
+            s.capture_frame(
+                gpu,
+                world_renderer,
+                vp,
+                &draw,
+                renderer.swapchain.format,
+                renderer.swapchain.extent,
+            );
         }
         // M86's gate samples here: after every `set_*` this frame made and
         // before `render` consumes them, which is the only window in which the

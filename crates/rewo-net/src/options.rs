@@ -50,6 +50,15 @@ pub struct Options {
     pub hide_lightning_flash: bool,
     /// M282 — `options.vignette`, default on.
     pub vignette: bool,
+    /// `options.renderClouds` (`CloudStatus`), default FANCY.
+    pub clouds: CloudOption,
+    /// `options.entityShadows` ("Entity Shadows", `Options.java:514`), default
+    /// ON: `EntityRenderer.extractShadow` collects no shadow piece when it is
+    /// off. Read-only here (no Rewo screen sets it), so the line passes
+    /// through a save untouched.
+    pub entity_shadows: bool,
+    /// `options.attackIndicator` (`AttackIndicatorStatus`), default CROSSHAIR.
+    pub attack_indicator: AttackIndicator,
     /// `options.ambientOcclusion` — vanilla's "Smooth Lighting" (`options.ao`).
     ///
     /// Off, every block takes vanilla's FLAT lighting (`tesselateFlat`'s
@@ -87,26 +96,13 @@ pub struct Options {
     pub model_parts: u8,
     /// `options.allowServerListing` (M206), default ON. Read-only.
     pub allow_server_listing: bool,
-    /// M435 — `options.renderClouds` (`CloudStatus`: `"true"` fancy, `"fast"`,
-    /// `"false"` off; a bare boolean is the legacy alternative), default
-    /// fancy. Read-only.
-    pub clouds: CloudOption,
     /// M435 — `options.renderCloudsDistance`, in chunks: `IntRange(2, 128)`,
     /// default 128. It sizes the deck and its fog end. Read-only.
     pub cloud_range: i32,
 }
 
-/// M435 — `CloudStatus`, the `renderClouds` option.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CloudOption {
-    Off,
-    Fast,
-    Fancy,
-}
-
-/// `options.renderClouds`' and `options.renderCloudsDistance`'s keys, and the
-/// latter's range (`IntRange(2, 128)`, default 128).
-pub const KEY_RENDER_CLOUDS: &str = "renderClouds";
+/// M435 — `options.renderCloudsDistance`'s key and range (`IntRange(2, 128)`,
+/// default 128).
 pub const KEY_CLOUD_RANGE: &str = "cloudRange";
 pub const CLOUD_RANGE_MIN: i32 = 2;
 pub const CLOUD_RANGE_MAX: i32 = 128;
@@ -139,6 +135,9 @@ impl Default for Options {
             music_frequency: MusicFrequency::Default,
             hide_lightning_flash: false,
             vignette: true,
+            clouds: CloudOption::Fancy,
+            entity_shadows: true,
+            attack_indicator: AttackIndicator::Crosshair,
             // `OptionInstance.createBoolean("options.ao", true, ..)`
             // (`Options.java:236`) — ON unless the file says otherwise.
             smooth_lighting: true,
@@ -153,8 +152,7 @@ impl Default for Options {
             model_parts: 0x7f,
             // `createBoolean("options.allowServerListing", .., true, ..)`.
             allow_server_listing: true,
-            // `CloudStatus.FANCY` and `128` (`Options.java`'s declarations).
-            clouds: CloudOption::Fancy,
+            // M435 — `128` (`Options.java`'s declaration).
             cloud_range: CLOUD_RANGE_DEFAULT,
         }
     }
@@ -169,6 +167,59 @@ pub const KEY_CHAT_LINKS_PROMPT: &str = "chatLinksPrompt";
 /// M282 — `options.vignette`'s key (`Options.java:1539`). Read, not
 /// written: Rewo has no control for it, so the line passes through.
 pub const KEY_VIGNETTE: &str = "vignette";
+/// `options.renderClouds`' key (`Options.java:1533`). Read, not written, as
+/// [`KEY_VIGNETTE`].
+pub const KEY_RENDER_CLOUDS: &str = "renderClouds";
+
+/// `options.attackIndicator`'s key (`Options.java:1594`). Read, not written, as
+/// [`KEY_VIGNETTE`].
+pub const KEY_ATTACK_INDICATOR: &str = "attackIndicator";
+
+/// `AttackIndicatorStatus`: `OFF(0)`, `CROSSHAIR(1)`, `HOTBAR(2)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AttackIndicator {
+    Off,
+    #[default]
+    Crosshair,
+    Hotbar,
+}
+
+impl AttackIndicator {
+    /// `LEGACY_CODEC`: a plain int through `ByIdMap.continuous(.., WRAP)`, so
+    /// 3 is OFF again and -1 is HOTBAR.
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw.trim().parse::<i64>().ok()?.rem_euclid(3) {
+            0 => Self::Off,
+            1 => Self::Crosshair,
+            _ => Self::Hotbar,
+        })
+    }
+}
+
+/// `CloudStatus`: `OFF("false")`, `FAST("fast")`, `FANCY("true")`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CloudOption {
+    Off,
+    Fast,
+    #[default]
+    Fancy,
+}
+
+impl CloudOption {
+    /// The option's file value: `CloudStatus.CODEC`'s serialized names
+    /// (quoted, as every string option is), or the `Codec.BOOL` alternative
+    /// (`true` FANCY, `false` OFF).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().trim_matches('"') {
+            "true" => Some(Self::Fancy),
+            "fast" => Some(Self::Fast),
+            "false" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+/// `options.entityShadows`' key (`Options.java:1509`). Read, not written.
+pub const KEY_ENTITY_SHADOWS: &str = "entityShadows";
 /// `options.hideLightningFlashes`' key in the file.
 pub const KEY_HIDE_LIGHTNING: &str = "hideLightningFlashes";
 /// `options.ambientOcclusion`'s key in the file — the two-letter `ao`, not
@@ -260,6 +311,20 @@ impl Options {
                     None => false,
                 }
             }
+            KEY_RENDER_CLOUDS => match CloudOption::parse(raw) {
+                Some(c) => {
+                    self.clouds = c;
+                    true
+                }
+                None => false,
+            },
+            KEY_ATTACK_INDICATOR => match AttackIndicator::parse(raw) {
+                Some(a) => {
+                    self.attack_indicator = a;
+                    true
+                }
+                None => false,
+            },
             KEY_VIGNETTE => match raw.trim() {
                 "true" => {
                     self.vignette = true;
@@ -267,6 +332,18 @@ impl Options {
                 }
                 "false" => {
                     self.vignette = false;
+                    true
+                }
+                _ => false,
+            },
+            // `Codec.BOOL` like `vignette`: bare JSON, `TRUE` is not a value.
+            KEY_ENTITY_SHADOWS => match raw.trim() {
+                "true" => {
+                    self.entity_shadows = true;
+                    true
+                }
+                "false" => {
+                    self.entity_shadows = false;
                     true
                 }
                 _ => false,
@@ -305,25 +382,7 @@ impl Options {
                 }
                 _ => false,
             },
-            // `IntRange.codec()` is `Codec.intRange(2, 32)`: a value outside
-            // FAILS the parse (logged, the default stands), not clamped.
-            // `CloudStatus.CODEC` (a quoted serialized name) or the legacy
-            // `BOOL` alternative (`b ? FANCY : OFF`).
-            KEY_RENDER_CLOUDS => match raw.trim().trim_matches('"') {
-                "true" => {
-                    self.clouds = CloudOption::Fancy;
-                    true
-                }
-                "fast" => {
-                    self.clouds = CloudOption::Fast;
-                    true
-                }
-                "false" => {
-                    self.clouds = CloudOption::Off;
-                    true
-                }
-                _ => false,
-            },
+            // M435 — `IntRange(2, 128)`; outside it the default stands.
             KEY_CLOUD_RANGE => match raw.trim().parse::<i32>() {
                 Ok(v) if (CLOUD_RANGE_MIN..=CLOUD_RANGE_MAX).contains(&v) => {
                     self.cloud_range = v;
@@ -331,6 +390,8 @@ impl Options {
                 }
                 _ => false,
             },
+            // `IntRange.codec()` is `Codec.intRange(2, 32)`: a value outside
+            // FAILS the parse (logged, the default stands), not clamped.
             KEY_RENDER_DISTANCE => match raw.trim().parse::<i32>() {
                 Ok(v) if (RENDER_DISTANCE_MIN..=RENDER_DISTANCE_MAX).contains(&v) => {
                     self.render_distance = v;
@@ -543,6 +604,28 @@ mod tests {
         }
     }
 
+    /// `entityShadows` is a `Codec.BOOL`, default ON; a value that is not
+    /// bare `true`/`false` keeps the default, and a save leaves the line alone
+    /// (no Rewo screen owns it).
+    #[test]
+    fn entity_shadows_default_on_and_read_as_a_bare_bool() {
+        assert!(Options::default().entity_shadows);
+        assert!(!Options::parse("entityShadows:false").entity_shadows);
+        assert!(Options::parse("entityShadows:true").entity_shadows);
+        for line in [
+            "entityShadows:\"false\"",
+            "entityShadows:FALSE",
+            "entityShadows:0",
+        ] {
+            assert!(Options::parse(line).entity_shadows, "{line}");
+        }
+        let merged = Options::default().merge_into("entityShadows:false\nao:true\n");
+        assert!(
+            merged.lines().any(|l| l == "entityShadows:false"),
+            "{merged}"
+        );
+    }
+
     /// M206: `modelPart_*` is the plain boolean rule — anything but `true`
     /// hides the part — and each part is its own bit.
     #[test]
@@ -576,6 +659,30 @@ mod tests {
         for line in existing.lines() {
             assert_eq!(out.matches(line).count(), 1, "{line}");
         }
+    }
+
+    #[test]
+    fn the_attack_indicator_reads_its_legacy_int_and_wraps() {
+        let read = |line: &str| Options::parse(line).attack_indicator;
+        assert_eq!(read("attackIndicator:0"), AttackIndicator::Off);
+        assert_eq!(read("attackIndicator:1"), AttackIndicator::Crosshair);
+        assert_eq!(read("attackIndicator:2"), AttackIndicator::Hotbar);
+        assert_eq!(read("attackIndicator:3"), AttackIndicator::Off, "wraps");
+        assert_eq!(read("attackIndicator:-1"), AttackIndicator::Hotbar, "wraps");
+        assert_eq!(read(""), AttackIndicator::Crosshair, "the default");
+        assert_eq!(read("attackIndicator:x"), AttackIndicator::Crosshair);
+    }
+
+    #[test]
+    fn render_clouds_reads_every_cloud_status_form() {
+        // `CloudStatus`: OFF "false", FAST "fast", FANCY "true"; the file
+        // quotes them, and `Codec.BOOL` is accepted as an alternative.
+        let read = |line: &str| Options::parse(line).clouds;
+        assert_eq!(read("renderClouds:\"false\""), CloudOption::Off);
+        assert_eq!(read("renderClouds:\"fast\""), CloudOption::Fast);
+        assert_eq!(read("renderClouds:\"true\""), CloudOption::Fancy);
+        assert_eq!(read("renderClouds:false"), CloudOption::Off);
+        assert_eq!(read(""), CloudOption::Fancy, "the default");
     }
 
     /// **The serialized name is the UPPERCASE constructor argument.**

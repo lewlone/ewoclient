@@ -1,6 +1,6 @@
 #version 450
-// World-space lines (the block selection outline). Positions are already in
-// world space; just transform by view_proj.
+// World-space lines (`celestial.rs`; the selection outline has its own,
+// `selection_line.vert`). Positions are in world space; transform by view_proj.
 
 layout(push_constant) uniform PC {
     mat4 view_proj;

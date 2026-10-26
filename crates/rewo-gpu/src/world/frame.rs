@@ -59,6 +59,8 @@ impl WorldRenderer {
             // M412 — the entities fog as the terrain does.
             pass.set_fog(self.entity_fog());
             pass.draw_solid(gpu, cb, view_proj, extent);
+            // The villager profession layers over their base models.
+            pass.draw_layers(gpu, cb, view_proj, extent);
             // M363 — the boats' water patches into depth, before the
             // translucent water below tests against it.
             pass.draw_water_mask(gpu, cb, view_proj, extent);
@@ -79,6 +81,12 @@ impl WorldRenderer {
             // likewise blended in gamma space.
             self.in_gamma_space(gpu, cb, extent, || {
                 pass.draw_translucent(gpu, cb, view_proj, extent)
+            });
+            // The entity shadows (`ShadowFeatureRenderer`): translucent in
+            // gamma space, depth-tested against the solid models and the
+            // terrain just written and not written themselves.
+            self.in_gamma_space(gpu, cb, extent, || {
+                pass.draw_shadow(gpu, cb, view_proj, extent)
             });
             // M50: the worn-armour foil, then the trim. All three depth-test
             // `EQUAL` against the solid geometry just written, so all three

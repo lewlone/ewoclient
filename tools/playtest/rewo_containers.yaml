@@ -1,0 +1,41 @@
+# Added after rewo_audio_blocks: Rewo's right-click on a chest (holding white wool, creative) opened
+# nothing where vanilla's opened the chest. This isolates the cases: an empty hand, a block in the
+# hand in survival, the same in creative, and a barrel. Each container is 2.5 blocks east.
+name: rewo_containers
+description: Right-click a chest with an empty hand, with a block in hand (survival, then creative), and a barrel.
+
+world:
+  server_commands:
+    - setblock 3 -60 0 minecraft:chest[facing=west]
+    - setblock 3 -60 6 minecraft:barrel[facing=west]
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, -90, 20]
+  commands:
+    - clear @s
+    - gamemode survival @s
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: aim, checklist: "a chest straight ahead (east), the crosshair on its front"}
+  - {at: 2, click: use}
+  - {at: 2, expect_sound: minecraft:block.chest.open, window: 6}
+  - {at: 8, capture: empty_hand, checklist: "the chest screen open (27 slots over the inventory)"}
+  - {at: 10, key: escape}
+  - {at: 16, command: "give @s minecraft:white_wool 4"}
+  - {at: 22, click: use}
+  - {at: 28, capture: block_in_hand, checklist: "the chest screen open again: a container takes the click over the held block (no wool placed)"}
+  - {at: 30, key: escape}
+  - {at: 36, command: "gamemode creative @s"}
+  - {at: 42, click: use}
+  - {at: 48, capture: creative_block_in_hand, checklist: "creative: the chest screen open again, no wool placed"}
+  - {at: 50, key: escape}
+  - {at: 56, command: "tp @s 0.5 -60 6.5 -90 20"}
+  - {at: 62, click: use}
+  - {at: 62, expect_sound: minecraft:block.barrel.open, window: 6}
+  - {at: 68, capture: barrel, checklist: "the barrel screen open (27 slots)"}
+  - {at: 70, key: escape}
+end_tick: 74

@@ -562,6 +562,12 @@ pub struct RiddenInput {
     /// camels): in water deeper than its fluid-jump threshold, a ridden
     /// mount rises 0.04 a tick (`floatInWaterWhileRidden`).
     pub floats_while_ridden: bool,
+    /// `isStanding() && !allowStandSliding`: a horse that reared for another
+    /// reason than its rider's jump gives no ridden input while it stands on
+    /// the ground with no jump pending (`getRiddenInput` returns
+    /// `Vec3.ZERO`). The jump's own rearing sets `allowStandSliding`, so the
+    /// horse still moves.
+    pub rearing_in_place: bool,
 }
 
 /// What `Camel` changes about `AbstractHorse`'s ride (M225).
@@ -612,8 +618,8 @@ pub fn jump_pending_scale(jump_amount: i32) -> f32 {
 /// scale · getJumpPower()` up, both added to its motion.
 ///
 /// `state.body` must be the mount's. Returns whether the jump fired.
-/// Not modelled: rearing (`isStanding` zeroes the input while the mount
-/// rears).
+/// `input.rearing_in_place` is `getRiddenInput`'s rearing test (the stand
+/// flag without `allowStandSliding`).
 pub fn tick_ridden(
     state: &mut PlayerState,
     input: RiddenInput,
@@ -646,7 +652,9 @@ pub fn tick_ridden(
     state.no_jump_delay = 0;
     let refuse = input.camel.is_some_and(|c| c.refuse_to_move);
     // -- travelRidden: getRiddenInput (`Camel`: zero while it refuses) ------
-    let (sideways, forward) = if refuse {
+    // `AbstractHorse.getRiddenInput` opens with the rearing test.
+    let rearing = state.on_ground && *jump_pending == 0.0 && input.rearing_in_place;
+    let (sideways, forward) = if refuse || rearing {
         (0.0, 0.0)
     } else {
         let forward = if input.forward <= 0.0 {
@@ -1501,7 +1509,7 @@ fn handle_on_climbable(state: &mut PlayerState, ctx: &Ctx) {
 }
 
 /// `Entity.getOnPos(offset)`.
-fn on_pos(state: &PlayerState, world: &dyn PhysicsWorld, offset: f32) -> [i32; 3] {
+pub fn on_pos(state: &PlayerState, world: &dyn PhysicsWorld, offset: f32) -> [i32; 3] {
     if let Some(sp) = state.supporting_block {
         if !(offset > 1.0e-5) {
             return sp;
@@ -4695,6 +4703,49 @@ mod tests {
         );
     }
 
+    /// `AbstractHorse.getRiddenInput` returns `Vec3.ZERO` while the horse is
+    /// on the ground, rearing without `allowStandSliding`, with no jump
+    /// pending; a pending jump, the air, or a sliding rear all give the
+    /// ordinary input back.
+    #[test]
+    fn a_horse_that_reared_by_itself_gives_no_ridden_input() {
+        let shapes = |_x: i32, y: i32, _z: i32| -> &'static [[f32; 6]] {
+            if y < 0 {
+                FULL
+            } else {
+                &[]
+            }
+        };
+        let world = ShapesOnly { shapes: &shapes };
+        let attrs = MoveAttributes {
+            movement_speed: 0.3375,
+            step_height: 1.0,
+            jump_strength: 0.7,
+            ..MoveAttributes::default()
+        };
+        let run = |rearing_in_place: bool, pending: f32, on_ground: bool| {
+            let mut horse = PlayerState::at(0.5, if on_ground { 0.0 } else { 3.0 }, 0.5);
+            horse.body = Some(Body {
+                width: 1.3964844,
+                height: 1.6,
+                eye: 1.52,
+            });
+            horse.on_ground = on_ground;
+            let mut pending = pending;
+            let input = RiddenInput {
+                forward: 1.0,
+                rearing_in_place,
+                ..RiddenInput::default()
+            };
+            tick_ridden(&mut horse, input, &mut pending, &attrs, None, &world);
+            horse.vz
+        };
+        assert_eq!(run(true, 0.0, true), 0.0, "still: the input is zero");
+        assert!(run(false, 0.0, true) > 0.0, "not rearing: it walks");
+        assert!(run(true, 1.0, true) > 0.0, "a pending jump gives it back");
+        assert!(run(true, 0.0, false) > 0.0, "in the air it is not zeroed");
+    }
+
     /// `executeRidersJump`: on the ground with a pending scale, the vertical
     /// speed is `jump_strength * scale` (stone's jump factor is 1), plus the
     /// forward push `0.4 * scale` along the yaw when moving forward; the
@@ -4759,6 +4810,64 @@ mod tests {
             "the forward push: {} vs {expect}",
             horse.vz
         );
+    }
+
+    /// The rider's rise through a full-charge jump on a horse with
+    /// `jump_strength` 0.7, against the playtest's vanilla run (`rewo_horse`,
+    /// `positions.jsonl`, player y at ticks 60..64: -59.15625, -58.45625,
+    /// -57.78115, -57.22360, -56.77099): the rises 0.7, 0.6751, 0.5576 and
+    /// 0.4526. The mount's own motion is `executeRidersJump` then gravity
+    /// (0.7, then 0.6076, 0.517, 0.4283); the rest is the seat's rearing lift
+    /// `0.15 * standAnimO`, whose tick-to-tick change is
+    /// `0.15 * (0, 0.45, 0.72, 0.882)` stepped. Without the lift the second
+    /// rise is 0.6076 and the apex 0.15 lower.
+    #[test]
+    fn a_charged_jump_rises_as_vanillas_rider_does() {
+        use crate::equine::EquineAnim;
+        let shapes = |_x: i32, y: i32, _z: i32| -> &'static [[f32; 6]] {
+            if y < 0 {
+                FULL
+            } else {
+                &[]
+            }
+        };
+        let world = ShapesOnly { shapes: &shapes };
+        let attrs = MoveAttributes {
+            movement_speed: 0.25,
+            step_height: 1.0,
+            jump_strength: 0.7,
+            ..MoveAttributes::default()
+        };
+        let mut horse = PlayerState::at(0.5, 0.0, 0.5);
+        horse.body = Some(Body {
+            width: 1.3964844,
+            height: 1.6,
+            eye: 1.52,
+        });
+        horse.on_ground = true;
+        // The release tick: `onPlayerJump(100)` sets the pending scale and
+        // the rearing.
+        let mut pending = jump_pending_scale(100);
+        let mut anim = EquineAnim::default();
+        anim.on_player_jump(100, true);
+        let idle = RiddenInput::default();
+        let mut stand_o = 0.0;
+        let want = [0.7, 0.6751, 0.5576, 0.4526];
+        for (t, want) in want.iter().enumerate() {
+            // The mount's tick, then the clock (`AbstractHorse.tick` ends with
+            // it), with the seat reading the clock's previous value.
+            anim.tick();
+            let y0 = horse.y;
+            tick_ridden(&mut horse, idle, &mut pending, &attrs, None, &world);
+            let so = anim.stand_anim_o();
+            let rise = horse.y - y0 + 0.15 * (so - stand_o) as f64;
+            stand_o = so;
+            assert!(
+                (rise - want).abs() < 1e-3,
+                "tick {}: {rise} vs {want}",
+                t + 1
+            );
+        }
     }
 
     /// A world of water: still water everywhere above y = 0, stone below.

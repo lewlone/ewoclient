@@ -2402,3 +2402,33 @@ fn a_boat_rider_turns_with_the_boat_and_stays_within_105_degrees() {
     // Across the wrap: 350 is -10 relative to a boat at 0, left alone.
     assert_eq!(boat_rider_yaw(350.0, 0.0, 0.0), 350.0);
 }
+
+mod local_game_mode_tests {
+    use super::{resolve_local_game_mode, GameMode};
+
+    /// The mode the client was told beats the tab-list entry: a creative
+    /// session whose own uuid is not the listed one reads no entry at all, and
+    /// must not fall back to the survival assumption.
+    #[test]
+    fn the_told_mode_wins_over_the_tab_list() {
+        assert_eq!(
+            resolve_local_game_mode(Some(GameMode::Creative), None),
+            Some(GameMode::Creative)
+        );
+        assert_eq!(
+            resolve_local_game_mode(Some(GameMode::Creative), Some(GameMode::Survival)),
+            Some(GameMode::Creative)
+        );
+    }
+
+    /// With nothing told, the listed mode is the fallback, and with neither it
+    /// stays unknown (callers choose their own default).
+    #[test]
+    fn the_tab_list_is_the_fallback_and_neither_is_unknown() {
+        assert_eq!(
+            resolve_local_game_mode(None, Some(GameMode::Spectator)),
+            Some(GameMode::Spectator)
+        );
+        assert_eq!(resolve_local_game_mode(None, None), None);
+    }
+}

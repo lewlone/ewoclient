@@ -110,7 +110,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 128;
+const EXPECTED_WITNESSES: usize = 129;
 /// M428 — m127's floor: rows a foal's top rises rearing and drops grazing.
 /// Before M428 the foal was static (0 by construction).
 const FOAL_ROWS_MIN: usize = 2;
@@ -5971,6 +5971,21 @@ fn run_check(
     wst.wr.set_entities(&[], wst.right, wst.up, 0.0);
     wst.off.render(gpu, Some((&mut wst.wr, wst.vp)), &ov, BG)?;
     let w_empty = wst.off.read_rgba(gpu)?;
+    // A close stage in front of the face for the anger comparison: level
+    // with the head (the wolf's pivot is 13.5 px down its 24, 0.66 blocks up)
+    // and straight down -z, so one of the four yaws below looks it in the
+    // eye. (The first framing, (0.45, 0.5, -0.45), sat inside the wolf's
+    // length under its head and saw the belly and legs; it passed on
+    // incidental pixels that vanilla's darker underside shading, M436,
+    // brings level.)
+    let mut fst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 0.7, -1.4),
+        Vec3::new(0.0, 0.65, 0.0),
+    )?;
     let mut w_ok = true;
     let mut w_rows = Vec::new();
     for (kind, key, path) in [
@@ -6024,24 +6039,130 @@ fn run_check(
             }
         }
         let tail = diff_bytes(&mad, &raised);
+        // The anger shows in the eyes (twelve texels on the puppy's sheet), so
+        // it is only visible from the side the face is on, and from the
+        // behind-and-aside camera the shots above use the face is turned away:
+        // which pixels carried it depended on how a texel edge rounded (it
+        // fell from 6 bytes to 0 when the atlas grew). Compare the two sheets
+        // close up from all four sides and keep the best.
+        let mut facing = |variant: u16, yaw: f32| -> Result<Vec<u8>, String> {
+            // The head turns with the body: with `head_yaw` left at the
+            // neutral 0 the head kept one heading and, at the yaw the body
+            // faced the camera, showed the back of its head.
+            let d = EntityDraw {
+                variant,
+                yaw,
+                head_yaw: yaw,
+                ..neutral_draw(kind)
+            };
+            fst.wr.set_entities(&[d], fst.right, fst.up, 0.0);
+            fst.off.render(gpu, Some((&mut fst.wr, fst.vp)), &ov, BG)?;
+            fst.off.read_rgba(gpu)
+        };
+        let mut per_side = Vec::new();
+        for yaw in [0.0, 90.0, 180.0, 270.0] {
+            per_side.push(diff_bytes(&facing(0, yaw)?, &facing(angry, yaw)?));
+        }
+        let anger = per_side.iter().copied().max().unwrap_or(0);
         w_ok &= angry != 0
             && !sheet.is_empty()
             && px >= 200
             && bad.is_none()
-            && diff_bytes(&wild, &mad) > 0
+            && anger >= 12
             && tail > 0;
         w_rows.push(format!(
-            "{key} angry: {px} px, first colour it cannot produce {:?}, the raised tail moves {tail} bytes",
-            bad.map(|c| format!("#{c:06x}"))
+            "{key} angry: variant id {angry:#x}, sheet colours {}, {px} px, first colour it cannot produce {:?}, differs from the wild one by {per_side:?} bytes close up from four sides, {side} bytes from the behind-and-aside camera, the raised tail moves {tail} bytes",
+            sheet.len(),
+            bad.map(|c| format!("#{c:06x}")),
+            side = diff_bytes(&wild, &mad),
         ));
     }
     wst.destroy(gpu);
+    fst.destroy(gpu);
     w.push(wit(
         "m77.the_wolf_and_puppy_wear_their_anger_and_raise_the_tail",
         w_ok,
         format!(
-            "{} (want >= 200 px, none foreign, unlike the wild sheet, the tail moving)",
+            "{} (want >= 200 px, none foreign, >= 12 bytes unlike the wild sheet face-on, the tail moving)",
             w_rows.join("; ")
+        ),
+    ));
+
+    // vo1 — the villager's outfit (`VillagerProfessionLayer`): a plains farmer
+    // of level 1, built through the production `villager_layers`, wears the
+    // farmer sheet's straw hat. The hat and its rim (a 16 x 16 brim on a
+    // head 8 across) are the widest thing on the head, so the witness is the
+    // silhouette in the head's rows: the layered villager is at least half
+    // again as wide there as the bare one (the head's own width), and a few
+    // hundred pixels change. Rendered through the real atlas and entity pass.
+    let mut vst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 1.5, 2.6),
+        Vec3::new(0.0, 1.2, 0.0),
+    )?;
+    vst.wr.set_entities(&[], vst.right, vst.up, 0.0);
+    vst.off.render(gpu, Some((&mut vst.wr, vst.vp)), &ov, BG)?;
+    let v_empty = vst.off.read_rgba(gpu)?;
+    let regs = rewo_data::villager::VillagerRegistries::from_pairs(
+        &[(2, "minecraft:plains")],
+        &[(5, "minecraft:farmer")],
+    );
+    let farmer_layers = crate::live_cmd::villager_layers(
+        Some(&regs),
+        Some((2, 5, 1)),
+        EntityModelKind::Villager,
+        false,
+    );
+    let mut shot_v = |layers: Option<rewo_gpu::mobs::VillagerLayers>| -> Result<Vec<u8>, String> {
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                villager: layers,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Villager)
+        };
+        vst.wr.set_entities(&[d], vst.right, vst.up, 0.0);
+        vst.off.render(gpu, Some((&mut vst.wr, vst.vp)), &ov, BG)?;
+        vst.off.read_rgba(gpu)
+    };
+    let bare = shot_v(None)?;
+    let farmer = shot_v(farmer_layers)?;
+    vst.destroy(gpu);
+    // The rows of the bare villager's head: from its top for 12 pixels.
+    let drawn = |frame: &[u8], x: usize, y: usize| {
+        let i = (y * cw as usize + x) * 4;
+        frame[i..i + 3] != v_empty[i..i + 3]
+    };
+    let top = (0..ch as usize).find(|&y| (0..cw as usize).any(|x| drawn(&bare, x, y)));
+    let span = |frame: &[u8], rows: std::ops::Range<usize>| -> usize {
+        let xs: Vec<usize> = rows
+            .flat_map(|y| (0..cw as usize).map(move |x| (x, y)))
+            .filter(|&(x, y)| drawn(frame, x, y))
+            .map(|(x, _)| x)
+            .collect();
+        match (xs.iter().min(), xs.iter().max()) {
+            (Some(lo), Some(hi)) => hi - lo + 1,
+            _ => 0,
+        }
+    };
+    let rows = top.map_or(0..0, |t| t..t + 12);
+    let (bare_w, farmer_w) = (span(&bare, rows.clone()), span(&farmer, rows));
+    let changed = bare
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(farmer.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    w.push(wit(
+        "vo1.a_farmer_wears_its_straw_hat",
+        farmer_layers.is_some() && bare_w > 0 && farmer_w * 2 >= bare_w * 3 && changed >= 200,
+        format!(
+            "a plains farmer's head rows span {farmer_w} px against the bare villager's \
+             {bare_w}, and {changed} px change (want layers resolved, >= 1.5x as wide, >= 200 px)"
         ),
     ));
 
