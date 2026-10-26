@@ -1063,6 +1063,10 @@ pub struct PlaySession {
     /// server has said about its position meanwhile (vanilla keeps only the
     /// delta codec's base for an entity it controls).
     pub steered_boat: Option<SteeredBoat>,
+    /// `LocalPlayer.isHandsBusy()`: the rider of a boat holds a movement key
+    /// (`rideTick`), which sinks the hands and blocks the use and attack
+    /// clicks.
+    pub hands_busy: bool,
     /// M222 — the horse the local player steers, simulated here.
     pub steered_horse: Option<SteeredHorse>,
     /// `move_vehicle` / `paddle_boat` packets sent (render-check r87).
@@ -2195,6 +2199,7 @@ impl<'a> Connection<'a> {
             was_sprinting: false,
             sprint_commands_sent: 0,
             steered_boat: None,
+            hands_busy: false,
             steered_horse: None,
             vehicle_moves_sent: 0,
             vehicle_rejections: 0,
@@ -3170,6 +3175,9 @@ impl PlaySession {
         // vanilla's rider reaches in its `aiStep`, AFTER the vehicle's tick:
         // the horse spends it next tick. Held until then.
         let deferred_jump = riding_jump;
+        // `LocalPlayer.rideTick` clears it, and a controlled boat sets it
+        // from the movement keys.
+        self.hands_busy = false;
         if self.spawned && self.is_mounted() {
             // M68. A passenger does not travel under its own power: vanilla's
             // `ClientLevel.tickNonPassenger` skips passengers entirely, and
@@ -3206,6 +3214,7 @@ impl PlaySession {
             let input = &rider_keys;
             let vehicle_keys = self.prev_rider_keys;
             if let Some(boat) = self.steerable_boat() {
+                self.hands_busy = input.forward != 0.0 || input.strafe != 0.0;
                 self.release_steered_horse();
                 self.tick_steered_boat(boat, &vehicle_keys, input)?;
             } else if let Some(horse) = self.steerable_horse() {

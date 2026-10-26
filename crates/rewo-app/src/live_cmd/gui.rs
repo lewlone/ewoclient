@@ -587,8 +587,11 @@ impl HandState {
         let id = |s: Option<rewo_world::inventory::ItemSlot>| {
             s.and_then(|s| items.name(s.item_id).map(|_| s.item_id))
         };
-        self.main_equip.tick(id(session.inventory.held()));
-        self.off_equip.tick(id(session.inventory.offhand()));
+        let busy = session.hands_busy;
+        self.main_equip
+            .tick_busy(id(session.inventory.held()), busy);
+        self.off_equip
+            .tick_busy(id(session.inventory.offhand()), busy);
         self.bob.tick(session.player.pitch, session.player.yaw);
     }
 
