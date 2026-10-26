@@ -19,7 +19,7 @@ scenario under the harness's runs/, and a summary (JSON + Markdown) printed and 
 <harness>/runs/playtest-<stamp>.json.
 
 Shared-PC rules hold: the harness takes tools/gpu_lock.py around each client run, waits while
-G:\\w\\specs\\G4-RUNNING exists (PLAYTEST_WAIT_G4, default an hour), and its server listens on
+G:\\w\\specs\\G4-RUNNING exists (PLAYTEST_WAIT_G4, default four hours; builds wait too), and its server listens on
 PLAYTEST_PORT (default 25712 here, inside the harness's 25710-25719).
 """
 from __future__ import annotations
@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +38,19 @@ SCENARIOS = ROOT / "tools" / "playtest"
 HARNESS = Path(os.environ.get("PLAYTEST_HARNESS", Path.home() / "Desktop" / "playtest-harness"))
 
 
+G4_FLAG = Path(r"G:\w\specs\G4-RUNNING")
+
+
+def wait_g4() -> None:
+    """678's GPU perf gate also needs the CPU quiet: no build while its flag exists."""
+    if G4_FLAG.exists():
+        print(f"[playtest] {G4_FLAG} exists; waiting before building", flush=True)
+    while G4_FLAG.exists():
+        time.sleep(15)
+
+
 def build() -> Path:
+    wait_g4()
     print("[playtest] cargo build -p rewo-app --features gates", flush=True)
     r = subprocess.run(["cargo", "build", "-p", "rewo-app", "--features", "gates"], cwd=ROOT)
     if r.returncode != 0:
@@ -98,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         exe = build()
     os.environ["PLAYTEST_REWO_EXE"] = str(exe)
     os.environ.setdefault("PLAYTEST_PORT", "25712")
-    os.environ.setdefault("PLAYTEST_WAIT_G4", "3600")
+    os.environ.setdefault("PLAYTEST_WAIT_G4", "14400")
     # tools/ holds a numbers.py that shadows the stdlib module numpy imports: drop it from the path.
     here = Path(__file__).resolve().parent
     sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != here]

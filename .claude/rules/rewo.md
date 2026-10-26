@@ -210,6 +210,25 @@ a self-check path.
   Parallel branches once minted the same id, and git merges that silently.
 - Write new files as LF bytes. PowerShell `Add-Content` appends CRLF.
 
+## Playtest harness (Rewo vs vanilla)
+
+- `python tools/playtest.py [NAME..] [--review]` plays `tools/playtest/*.yaml` with vanilla 26.2
+  (the harness's Fabric "puppet") and with Rewo on one fresh vanilla server, then compares SSIM
+  per region, sounds (id, volume, pitch, position, resolved variant), the position trace and the
+  server corrections; `--review` adds Opus findings (~$0.25 a scenario). The harness lives in
+  `Desktop\playtest-harness` (`PLAYTEST_HARNESS`); its `docs/SCENARIO.md` is the format.
+- Rewo's side is `REWO_SCRIPT=<puppet-scenario.json>` (gates): `live_cmd/script.rs`. Input goes
+  through the production handlers (`LiveApp::key_input` is the `KeyboardInput` arm; clicks,
+  cursor and wheel are synthesized `WindowEvent`s), the window is hidden, the cursor never
+  grabbed, real input dropped, the module profile ignored. While running, the script owns the
+  20 Hz clock (no tick while a capture waits; frames at partial tick 1.0). Sounds come from
+  `SoundEngine::play_log`, the head of `play` where the puppet hooks vanilla's.
+- Scenarios run at **GUI scale 3**: Rewo has no GUI-scale option (always the auto scale, 3 at
+  1280x720), so vanilla is set to 3 to match and GUI coordinates in steps are 426x240 pixels.
+- A difference is a finding, not a failure: renderer differences are expected. Rewo has no seam
+  to reseed its client randoms or clear particles at tick 0, so a Rewo run reproduces only where
+  those don't show.
+
 ## Build features and test knobs
 
 - **`--features gates`** (rewo-app; enables `rewo-gpu/gates` and

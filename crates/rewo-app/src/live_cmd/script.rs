@@ -684,15 +684,22 @@ impl LiveApp {
             steps.push(s.sc.steps[s.step_index].clone());
             s.step_index += 1;
         }
-        let turns: Vec<(f32, f32)> = s.turns.iter().map(|t| (t.0, t.1)).collect();
-        for t in s.turns.iter_mut() {
-            t.2 -= 1;
-        }
-        s.turns.retain(|t| t.2 > 0);
         s.tick_now = true;
         for step in &steps {
             self.script_apply(event_loop, step);
         }
+        // Turns after the steps, so a turn starts on its own tick (the puppet's order).
+        let turns: Vec<(f32, f32)> = match self.script.as_mut() {
+            Some(s) => {
+                let now = s.turns.iter().map(|t| (t.0, t.1)).collect();
+                for t in s.turns.iter_mut() {
+                    t.2 -= 1;
+                }
+                s.turns.retain(|t| t.2 > 0);
+                now
+            }
+            None => Vec::new(),
+        };
         if let Some(session) = self.session.as_mut() {
             for (dy, dp) in turns {
                 session.player.yaw += dy;
@@ -863,8 +870,9 @@ impl LiveApp {
                     let p = &session.player;
                     let pos = serde_json::json!({ "position": [p.x, p.y, p.z], "yaw": p.yaw, "pitch": p.pitch });
                     s.event("tick0", pos);
-                    // The first running tick comes from the script's clock.
-                    self.tick_accum = TICK_DT;
+                    // The first running tick comes from the script's clock
+                    // (`tick_session` stops its accumulator loop here).
+                    self.tick_accum = 0.0;
                 }
             }
             Phase::Running => {

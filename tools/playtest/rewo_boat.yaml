@@ -17,10 +17,12 @@ client:
   options: {guiScale: 3}
 
 steps:
-  - {at: 0, command: 'summon minecraft:oak_boat 0.5 -61 3.5 {Rotation:[0f,0f]}'}
+  - {at: 0, command: 'summon minecraft:oak_boat 0.5 -60.45 3.5 {Rotation:[0f,0f]}'}
   - {at: 6, capture: boat, checklist: "an oak boat floating on the pond in front, water with ripples around it"}
-  - {at: 7, click: use}
+  - {at: 8, click: use}
+  - {at: 10, click: use}
   - {at: 16, look: {yaw: 0, pitch: 40}}
+  - {at: 16, note: "the second click is a no-op once seated; it covers a first click that missed"}
   - {at: 20, capture: seated, checklist: "seated in the boat looking down: the boat's floor and sides around the camera, and NO water visible inside the boat (vanilla masks it)"}
   - {at: 22, look: {yaw: 0, pitch: 5}}
   - {at: 24, hold: [forward]}

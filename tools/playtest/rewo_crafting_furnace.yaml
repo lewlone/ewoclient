@@ -21,6 +21,7 @@ client:
 
 steps:
   - {at: 0, capture: blocks, checklist: "a crafting table straight ahead and a furnace to its left (east)"}
+  - {at: 1, look: {yaw: 0, pitch: 29}}
   - {at: 2, click: use}
   - {at: 6, mouse: {x: 380, y: 200}}
   - {at: 8, capture: crafting, checklist: "the crafting table screen: 3x3 grid empty, an arrow, an empty result slot, recipe-book button, planks in hotbar slot 1"}
@@ -28,12 +29,12 @@ steps:
   - {at: 12, mouse_click: {x: 163, y: 62, button: right}}
   - {at: 14, mouse_click: {x: 163, y: 80, button: right}}
   - {at: 16, mouse: {x: 257, y: 80}}
-  - {at: 20, capture: sticks, checklist: "one plank in the top-left grid cell and one below it, 4 sticks in the result slot with the 'Stick' tooltip, 2 planks still on the cursor"}
+  - {at: 20, capture: sticks, checklist: "one plank in the top-left grid cell and one below it, their recipe's result in the result slot with its tooltip under the cursor, 2 planks still on the cursor"}
   - {at: 22, mouse_click: {x: 141, y: 187}}
   - {at: 24, key: escape}
   - {at: 26, command: "item replace block 2 -60 2 container.0 with minecraft:raw_iron 8"}
   - {at: 26, command: "item replace block 2 -60 2 container.1 with minecraft:coal 4"}
-  - {at: 30, look: {yaw: -60, pitch: 40}}
+  - {at: 30, look: {yaw: -53, pitch: 22}}
   - {at: 32, click: use}
   - {at: 36, mouse: {x: 380, y: 200}}
   - {at: 70, capture: furnace, checklist: "the furnace screen: raw iron in the top slot, coal in the fuel slot, the flame lit and the progress arrow partly filled"}

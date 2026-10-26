@@ -90,6 +90,7 @@ python tools/gates.py --only mobshot,itemshot
 python tools/render_check.py                 # stages a fresh vanilla server, runs `rewo live --render-check`
 python tools/load_check.py                   # NORMAL terrain at RD16: exact tracked column count, 0 deferred, no VUIDs
 python tools/load_check.py --light           # normal world: play bot, CORRECTIONS 0 + `--light-check` against the server
+python tools/playtest.py [NAME..] [--review]  # Rewo vs vanilla on the playtest harness (tools/playtest/*.yaml)
 python tools/numbers.py                      # regenerate REWO_PLAN.md §0.0's numbers block (--from-logs to skip re-running)
 cargo run -p ewo-launcher                    # launcher (add --dev for the tweaks overlay)
 cargo run -p rewo-app -- live --host HOST --port PORT
@@ -192,8 +193,11 @@ configured and the account is linked.
 Every change ships with a self-check path: a PNG render harness, a
 `*shot --check` gate, an auto-exit soak, or a test server you start yourself.
 
-- Rewo gates and the live render check are described in `.claude/rules/rewo.md` and
-  §0.0.
+- Rewo gates and the live render check: `.claude/rules/rewo.md` and §0.0.
+- **A client-visible Rewo change is done after a playtest**: `python tools/playtest.py
+  <scenario> --review` plays `tools/playtest/*.yaml` with vanilla and with Rewo on one
+  vanilla server (shared harness, `Desktop\playtest-harness`) and compares frames, sounds
+  and corrections. Read the findings; add a scenario when none covers the change.
 - `ewo-*` crate tests run in CI, but no gate exercises the launcher's pixels or
   the HUD in a live game. Run `cargo test -p <crate>` when you touch one.
 - In-game mod changes go through `ingame-mod/build.ps1`, never hand `javac`.

@@ -1214,10 +1214,19 @@ fn run_windowed(
     if script.is_some() {
         event_loop.listen_device_events(winit::event_loop::DeviceEvents::Never);
     }
+    // …and records every sound play for its `sounds.jsonl`.
     #[cfg(feature = "gates")]
-    let debug_overlay = script.is_none();
+    let sounds = {
+        let mut sounds = sounds;
+        if script.is_some() {
+            sounds.system.engine.play_log = Some(Vec::new());
+        }
+        sounds
+    };
+    #[cfg(feature = "gates")]
+    let scripted = script.is_some();
     #[cfg(not(feature = "gates"))]
-    let debug_overlay = true;
+    let scripted = false;
     // Every mesher table, from the bake. Built field by field this once lost
     // M164's carried water — the windowed client then meshed no waterlogged
     // water and looked EXACTLY as before (`r48` is what asks) — and would
@@ -1474,7 +1483,7 @@ fn run_windowed(
         flood_logged: false,
         dirt_item,
         // The F3 text block; off for a scripted run, as vanilla starts.
-        debug: debug_overlay,
+        debug: !scripted,
         // `Hud.isHidden` starts false — the HUD is showing (M70).
         hud_hidden: false,
         f3_down: false,
@@ -1496,7 +1505,13 @@ fn run_windowed(
         screen_forced_open: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         locator_styles: Vec::new(),
-        modules: crate::modules::Modules::load(),
+        // A scripted run compares against vanilla, so it never reads the
+        // player's module profile (an FOV or zoom module would move every frame).
+        modules: if scripted {
+            crate::modules::Modules::from_defaults()
+        } else {
+            crate::modules::Modules::load()
+        },
         glyphs: load_velvet_fonts(),
         gestures: GestureTracker::default(),
         flicker: BlockLightFlicker::random(),

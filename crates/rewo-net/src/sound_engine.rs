@@ -830,6 +830,8 @@ pub struct SoundEngine {
     pub play_log: Option<Vec<PlayRecord>>,
     /// The variant the current play resolved, kept only while logging.
     last_resolved: Option<String>,
+    /// The unseeded stream's state ([`Self::next_unseeded_seed`]).
+    unseeded: u64,
 }
 
 /// One [`SoundEngine::play_log`] row.
@@ -858,6 +860,7 @@ impl Default for SoundEngine {
             options: CategoryVolumes::default(),
             play_log: None,
             last_resolved: None,
+            unseeded: 0,
         }
     }
 }
@@ -1042,15 +1045,35 @@ impl SoundEngine {
         self.live.iter().any(|l| l.id == id)
     }
 
-    fn resolve(instance: &SoundInstance, sounds: &SoundsIndex) -> Option<ResolvedSound> {
+    fn resolve(&mut self, instance: &SoundInstance, sounds: &SoundsIndex) -> Option<ResolvedSound> {
         match instance.seed {
             Some(seed) => sounds.get_sound_seeded(&instance.identifier, seed),
-            // `SoundInstance.createUnseededRandom()`. There is no wire seed to
-            // reproduce, so any generator is as faithful as any other; a fixed
-            // one keeps this crate deterministic and free of a clock. A device
-            // milestone that wants real variety can seed it per play.
-            None => sounds.get_sound_seeded(&instance.identifier, 0),
+            // `SoundInstance.createUnseededRandom()`: a fresh generator per
+            // play. There is no wire seed to reproduce, so any well-spread seed
+            // is as faithful as vanilla's `nanoTime` one; a splitmix64 stream
+            // keeps this crate deterministic and free of a clock.
+            //
+            // It used to be a fixed 0, so every UI click, page turn, music
+            // pick and underwater bubble played the SAME variant every time
+            // (found by the playtest harness: 3/3 page turns `open_flip1`,
+            // 9/9 music picks `dry_hands`). Not a counter either: sequential
+            // seeds give `LegacyRandomSource` an almost constant first draw
+            // under a power-of-two total weight (soundshot's `s6` note).
+            None => {
+                let seed = self.next_unseeded_seed();
+                sounds.get_sound_seeded(&instance.identifier, seed)
+            }
         }
+    }
+
+    /// The next seed of the unseeded stream: splitmix64 over a per-engine
+    /// counter, so consecutive plays get unrelated seeds.
+    fn next_unseeded_seed(&mut self) -> i64 {
+        self.unseeded = self.unseeded.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.unseeded;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z ^ (z >> 31)) as i64
     }
 
     /// `SoundEngine.play(SoundInstance)`.
@@ -1139,7 +1162,7 @@ impl SoundEngine {
         // .EMPTY_SOUND` — reference equality against a singleton — so a pack
         // that genuinely declares a file named `minecraft:empty` is **played**,
         // not skipped. A name comparison would silence it.
-        let resolved = match Self::resolve(&instance, sounds) {
+        let resolved = match self.resolve(&instance, sounds) {
             Some(r) if r.is_intentionally_empty() => {
                 // The one no-play path vanilla does not warn about.
                 return (id, PlayResult::NotStarted(NotStarted::IntentionallyEmpty));
@@ -3474,6 +3497,45 @@ mod tests {
         // Refused before resolving: no variant.
         assert_eq!(b.result, PlayResult::NotStarted(NotStarted::NotLoaded));
         assert_eq!(b.resolved, None);
+    }
+
+    /// An unseeded instance (UI, music, a client-local sound) draws a fresh
+    /// variant each play, as vanilla's `createUnseededRandom()` does — it was
+    /// a fixed seed 0, which played one variant forever. Four variants: a
+    /// power-of-two total, the case a sequential seed fails (soundshot `s6`).
+    #[test]
+    fn unseeded_plays_vary_their_variant_and_stay_reproducible() {
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            "minecraft:item.book.page_turn",
+            &SoundEventRegistration {
+                sounds: (1..=4)
+                    .map(|i| Sound::file(&format!("minecraft:item/book/open_flip{i}")))
+                    .collect(),
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        let picks = || {
+            let mut eng = SoundEngine::new();
+            eng.play_log = Some(Vec::new());
+            let mut dev = RecordingDevice::default();
+            for _ in 0..12 {
+                let i = SoundInstance::for_ui("minecraft:item.book.page_turn", 1.0);
+                assert_eq!(i.seed, None);
+                eng.play(i, &idx, &EmptyWorld, &mut dev);
+            }
+            eng.play_log
+                .unwrap()
+                .into_iter()
+                .map(|r| r.resolved.unwrap())
+                .collect::<Vec<_>>()
+        };
+        let a = picks();
+        let distinct: std::collections::BTreeSet<_> = a.iter().collect();
+        assert!(distinct.len() >= 3, "{a:?}");
+        assert_eq!(a, picks(), "a fresh engine replays the same stream");
     }
 
     #[test]

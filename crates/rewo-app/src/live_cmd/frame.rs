@@ -478,7 +478,15 @@ impl LiveApp {
             }
             ran_tick = true;
             #[cfg(feature = "gates")]
-            self.script_after_tick(session);
+            {
+                self.script_after_tick(session);
+                // A script that reached tick 0 takes the clock over: no more
+                // accumulator ticks this frame, or tick 0 would run without
+                // its steps.
+                if scripted.is_none() && self.script.as_ref().is_some_and(|s| s.owns_clock()) {
+                    break;
+                }
+            }
         }
         if session.disconnect.is_some() {
             // Serviced at the top of the *next* frame, by the block that opens
@@ -4104,11 +4112,21 @@ impl LiveApp {
             render_modules.fov_degrees,
             local_hurt_tilt(session, alpha, render_modules.damage_tilt_strength),
         );
+        // The frame-time chart is Rewo's own dev overlay; a scripted run
+        // (compared against vanilla, which has none) draws it off-screen.
+        #[cfg(feature = "gates")]
+        let chart_origin = if self.script.is_some() {
+            [-100_000.0, -100_000.0]
+        } else {
+            [16.0, 16.0]
+        };
+        #[cfg(not(feature = "gates"))]
+        let chart_origin = [16.0, 16.0];
         let draw = OverlayDraw {
             samples_ms: &self.ring.data,
             head: self.ring.head(),
             scale_ms: 20.0,
-            origin: [16.0, 16.0],
+            origin: chart_origin,
             size: [560.0, 140.0],
         };
         let LiveState {
