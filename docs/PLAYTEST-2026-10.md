@@ -44,7 +44,53 @@ expected and not listed. **A difference here is a finding, not a verdict.**
    `dry_hands`. `SoundEngine::resolve` now draws a splitmix64 seed stream (deterministic per engine;
    not a counter, see soundshot's `s6` note). Rerun: page turns vary.
 
+## Fixed after the report (phase B, same branch)
+
+Each item below was re-played against vanilla on the harness; the numbers are the scenario's
+sound comparison (events matched within two ticks, same id, volume and position; pitch and
+variant are random on both sides).
+
+1. **The player's own sounds.** Generated tables (`tools/gen_block_sounds.py`: every block's
+   `SoundType`, the `BlockSetType` / `WoodType` sounds, the step tags) and ports of
+   `applyMovementEmissionAndPlaySound` / `Player.playStepSound` (`rewo_world::step_sound`),
+   `BlockItem.place`, the local 2001 break event, `continueDestroyBlock`'s hit, the door,
+   trapdoor, gate and button sounds (`click_use::block_use_sound`) and `handleDamageEvent`'s
+   hurt sound (the damage type's `effects`).
+   - `rewo_walk`: 5/5 (was 0/5). `rewo_audio_blocks`: 21/21 (was 1/21). `rewo_hud`: the hurt
+     sound plays. `rewo_drowning`: `hurt_drown` plays.
+   - The place sound waits for the server's `block_update` instead of a client prediction
+     (Rewo does not predict placements): one round trip late on a remote server.
+2. **Ambience.** `ClientLevel.animateTick`'s sounds (flowing water, lava, fire, lit furnaces,
+   smoker, campfire, nether portal; `rewo_world::animate_tick`) and `tickWeatherEffects`' rain
+   (`World::rain_sound`, seeded from the game time as vanilla's).
+   - `rewo_maps`: `block.water.ambient` 34 times in Rewo, 33 in vanilla over the whole run
+     (positions are random on both sides, so events do not pair up).
+   - `rewo_sky_weather`: `weather.rain` 6/6 with the same volume and pitch, each within two
+     ticks; the spot differs because the rain level ramps on each client's own tick alignment.
+   - `rewo_crafting_furnace` runs under `/tick freeze`, which stops vanilla's animate tick too,
+     so it cannot witness the furnace crackle.
+3. **Block reach** is the synced `block_interaction_range` (5.0 in creative), not a constant
+   4.5. `rewo_audio_blocks`' second door click targeted grass 4.74 blocks away in vanilla and
+   nothing in Rewo. Also: the mining inputs asked for `minecraft:`-prefixed attribute names and
+   always got the defaults (Efficiency did nothing client-side).
+4. **HUD** (a worker branch, merged): hotbar stack counts, the off-hand pocket, the compass,
+   recovery compass and clock (needle frames), F1 hiding what `Hud.isHidden` hides (crosshair,
+   hotbar, bars, effects, titles, chat, the hand and the outline), and no hearts or food in
+   creative (the game mode is read from the login/respawn, not the tab list). `rewo_hud` with
+   the Opus review: hotbar, item names, off-hand shield, compass in hand and F1 hiding the HUD
+   and the hand all match; the grass colour (the colour-space item) and the missing
+   attack-cooldown indicator remain.
+5. `rewo_drowning`'s air clock offset is join timing, not Rewo: the positions match tick for
+   tick, the world is not frozen, and the server drains air from the spawn, before tick 0.
+   The pops are 30 ticks apart on both sides.
+
+Underwater fog moved to Enni's EwoClientV3 session (M422 on `claude/autonomous-run-1026`,
+every `FogRenderer` environment, render-check r230/r231).
+
 ## Verified, not merged: shading in the wrong colour space (branch `claude/rewo-srgb-terrain`)
+
+Since landed for terrain, water, the hand and particles as M432 (958f37ae on
+`claude/autonomous-run-1026`); entity shading and the sky follow there.
 
 Every Rewo frame is 10-30% brighter than vanilla's, with flat side faces, grey-blue grass and a
 dusk-like midnight. `rewo-gpu/shaders/world.frag` multiplies the texel, which the sRGB image has
@@ -75,7 +121,7 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
 
 ### Sound
 
-- **None of the player's own sounds play** (`rewo_audio_blocks` 1 of 21, `rewo_walk` 0 of 5,
+- **Fixed (phase B 1-2).** **None of the player's own sounds play** (`rewo_audio_blocks` 1 of 21, `rewo_walk` 0 of 5,
   `rewo_maps` 1 of 20). Missing: footsteps on every material, block place, break and hit, door
   open/close, `entity.player.hurt` and `hurt_drown` (`rewo_hud`, `rewo_drowning`), the blocks'
   `animateTick` sounds (`block.water.ambient` 26 times in `rewo_maps`; a lit furnace's
@@ -88,10 +134,10 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
 
 ### HUD
 
-- No **offhand slot**; no **stack counts** in the hotbar (32, 16, 5, 8 arrows); no **compass**
-  icon (in the hotbar or the hand).
-- **Creative mode** still shows hearts and hunger (vanilla hides them).
-- **F1** hides only the sidebar, the tab list and name labels. Vanilla's `Hud.isHidden` also hides
+- **Fixed (phase B 4).** No **offhand slot**; no **stack counts** in the hotbar (32, 16, 5, 8
+  arrows); no **compass** icon (in the hotbar or the hand).
+- **Fixed (phase B 4).** **Creative mode** still shows hearts and hunger (vanilla hides them).
+- **Fixed (phase B 4).** **F1** hides only the sidebar, the tab list and name labels. Vanilla's `Hud.isHidden` also hides
   the crosshair, hotbar and bars, effects, boss bar, action bar, title, chat, the hand
   (`renderItemInHand`) and the block outline.
 - No **attack-cooldown indicator**; no **"Press Left Shift to Dismount"** message when mounting.
@@ -100,7 +146,7 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
 ### World and entities
 
 - The **block outline** is a broken 1-pixel line; vanilla's is a solid line about 2 pixels wide.
-- **Underwater** there is no fog or tint: vanilla goes dark blue, Rewo stays bright
+- **Moved to M422** (`claude/autonomous-run-1026`). **Underwater** there is no fog or tint: vanilla goes dark blue, Rewo stays bright
   (`rewo_drowning`). Water surfaces are pale grey-blue (partly the colour-space issue).
 - No **entity shadows** (`rewo_horse`, `rewo_mobs`).
 - A **standing sign** draws its text with no board or post (`rewo_blocks`).
